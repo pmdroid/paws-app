@@ -84,7 +84,7 @@ describe("queued pull requests that conflict with main", () => {
     expect(await sweeps(h)).toHaveLength(1);
     expect(await h.sweep(main)).toEqual(["ENG-3"]);
 
-    expect(getWorkItem(h.db, "ENG-3")?.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(h.db), "ENG-3"))?.state).toBe("queued");
     expect(await restarts(h)).toEqual([
       expect.objectContaining({
         itemId: "ENG-3",
@@ -93,7 +93,7 @@ describe("queued pull requests that conflict with main", () => {
       }),
     ]);
     expect(h.state.pullReads.get(3)).toBe(3);
-    expect(getWorkItem(h.db, "ENG-2")?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(h.db), "ENG-2"))?.state).toBe("merge_queue");
     expect(h.state.pullReads.get(2)).toBe(1);
     expect(h.state.pullReads.get(1)).toBe(frontReads);
     expect(h.bodies("thought")).toEqual([REBASE_CONFLICT_THOUGHT]);
@@ -121,7 +121,7 @@ describe("queued pull requests that conflict with main", () => {
     await returnToMergeQueue(sqliteDb(h.db), "ENG-3");
     const again = await h.moveMain("README.md", "main again\n");
     expect(await h.sweep(again)).toEqual([]);
-    expect(getWorkItem(h.db, "ENG-3")?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(h.db), "ENG-3"))?.state).toBe("merge_queue");
     expect((await restarts(h)).map((payload) => payload.itemId)).toEqual(["ENG-3"]);
     expect(h.bodies("thought")).toEqual([REBASE_CONFLICT_THOUGHT]);
   });
@@ -199,8 +199,8 @@ describe("queued pull requests that conflict with main", () => {
     expect(await h.sweep(null)).toEqual([]);
     expect(await restarts(h)).toEqual([]);
     expect(await findOpenQuestion(sqliteDb(h.db), "ses-ENG-2")).toBeNull();
-    expect(getWorkItem(h.db, "ENG-2")?.state).toBe("merge_queue");
-    expect(getWorkItem(h.db, "ENG-3")?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(h.db), "ENG-2"))?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(h.db), "ENG-3"))?.state).toBe("merge_queue");
     expect(h.bodies("thought")).toEqual([]);
   });
 
@@ -220,7 +220,7 @@ describe("queued pull requests that conflict with main", () => {
     const main = await h.moveMain("ok.txt", "main moved\n");
     expect(await h.sweep(main)).toEqual(["ENG-3"]);
     expect(await restarts(h)).toEqual([]);
-    expect(getWorkItem(h.db, "ENG-3")?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(h.db), "ENG-3"))?.state).toBe("awaiting_input");
     expect((await findOpenQuestion(sqliteDb(h.db), "ses-ENG-3"))?.body).toContain(
       `The branch still conflicts with main after ${MAX_REBASE_RETURNS} attempts`,
     );

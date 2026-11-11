@@ -60,7 +60,7 @@ describe("shutdown WIP", () => {
       (await git(["-C", worktreePath(home, "ENG-21"), "branch", "--show-current"])).trim(),
     ).toBe("paws/eng-21");
     const db = openDatabase(paws.paths.db);
-    expect(getWorkItem(db, "ENG-21")?.state).toBe("recovering");
+    expect((await getWorkItem(sqliteDb(db), "ENG-21"))?.state).toBe("recovering");
     db.close();
   }, 20_000);
 
@@ -195,7 +195,7 @@ describe("shutdown WIP", () => {
           .get()!.n > 0;
       for (let i = 0; i < 2_000 && !ticked(); i += 5) await Bun.sleep(5);
       expect(ticked()).toBe(true);
-      expect(getWorkItem(paws.db, answer.id)?.state).toBe("queued");
+      expect((await getWorkItem(sqliteDb(paws.db), answer.id))?.state).toBe("queued");
       expect(existsSync(evidence)).toBe(false);
       expect(existsSync(`${evidence}.descendant`)).toBe(false);
       insertQueuedItem(paws.db, { id: "ENG-21", branchName: "paws/eng-21" });
@@ -212,14 +212,14 @@ describe("shutdown WIP", () => {
       const stopping = paws.stop();
       expect(paws.stop()).toBe(stopping);
       await stopping;
-      expect(() => getWorkItem(paws.db, answer.id)).toThrow();
+      await expect(getWorkItem(sqliteDb(paws.db), answer.id)).rejects.toThrow();
       expect(
         (await git(["-C", worktreePath(home, "ENG-21"), "log", "-1", "--format=%s"])).trim(),
       ).toBe("wip: shutdown");
       const recovered = openDatabase(paws.paths.db);
       try {
-        expect(getWorkItem(recovered, "ENG-21")?.state).toBe("recovering");
-        expect(getWorkItem(recovered, answer.id)?.state).toBe("queued");
+        expect((await getWorkItem(sqliteDb(recovered), "ENG-21"))?.state).toBe("recovering");
+        expect((await getWorkItem(sqliteDb(recovered), answer.id))?.state).toBe("queued");
       } finally {
         recovered.close();
       }
@@ -269,7 +269,7 @@ describe("shutdown WIP", () => {
         (await git(["-C", worktreePath(home, "ENG-21"), "log", "-1", "--format=%s"])).trim(),
       ).toBe("wip: shutdown");
       const after = openDatabase(join(home, "paws.db"));
-      expect(getWorkItem(after, "ENG-21")?.state).toBe("recovering");
+      expect((await getWorkItem(sqliteDb(after), "ENG-21"))?.state).toBe("recovering");
       after.close();
     } finally {
       proc.kill();

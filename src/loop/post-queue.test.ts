@@ -43,7 +43,7 @@ async function fixture() {
   });
   insertQueuedItem(db, { id: "ENG-7", sessionKey: "ses_1", now: clock.now() });
   await beginImplementRun(sqliteDb(db), "ENG-7", clock.now());
-  const item = getWorkItem(db, "ENG-7")!;
+  const item = (await getWorkItem(sqliteDb(db), "ENG-7"))!;
   const post = (key: string) => orchestrator["post"](item, "response", `Body ${key}.`, key);
   const keys = async () =>
     (await listOutbox(sqliteDb(db), "ses_1")).map((row) => row.idempotencyKey);

@@ -93,7 +93,7 @@ async function runtimesFor(
           input: { role: string; worktreePath: string; readOnly: boolean },
         ): Promise<{ runtimes?: () => Promise<RuntimeList> }>;
       }
-    ).trustedRunInputs(getWorkItem(db, "task")!, {
+    ).trustedRunInputs((await getWorkItem(sqliteDb(db), "task"))!, {
       role: "implementer",
       worktreePath: options.worktreePath,
       readOnly: options.mode !== "code",

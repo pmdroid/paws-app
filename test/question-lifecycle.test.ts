@@ -106,7 +106,7 @@ test("a newer CI help replaces only its own task's queued CI help", async () => 
 
 async function queuedCloseoutHelp() {
   const { db, asker } = await setup();
-  saveCheckpoint(db, asker.itemId, {
+  await saveCheckpoint(sqliteDb(db), asker.itemId, {
     phase: "awaiting_input",
     baseSha: "base",
     wipCommit: "head-1",
@@ -154,7 +154,11 @@ test("a queued Closeout help for the same candidate and policy is delivered", as
 
 test("a queued Closeout help is dropped once its candidate moved", async () => {
   const { db, asker, help } = await queuedCloseoutHelp();
-  saveCheckpoint(db, asker.itemId, { phase: "verifying", baseSha: "base", wipCommit: "head-2" });
+  await saveCheckpoint(sqliteDb(db), asker.itemId, {
+    phase: "verifying",
+    baseSha: "base",
+    wipCommit: "head-2",
+  });
   expect(await promote(db)).toEqual([
     `question ${help.id} dropped from the queue: its candidate moved`,
   ]);

@@ -108,7 +108,7 @@ test("a 403 from GitHub answers with the permission message and leaves the item 
   expect(answer).toContain("with status 403");
   expect(await listCiReruns(sqliteDb(db), "item")).toEqual([]);
   expect(journal).toEqual([]);
-  const after = getWorkItem(db, "item");
+  const after = await getWorkItem(sqliteDb(db), "item");
   expect(after?.state).toBe(before.state);
   expect(after?.version).toBe(before.version);
 });

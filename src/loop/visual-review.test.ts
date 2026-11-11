@@ -40,7 +40,7 @@ async function verifying() {
 test("a Paws without an https dashboard link asks nothing in Linear and says why once", async () => {
   const { db, itemId, runId } = await verifying();
   const input = {
-    item: getWorkItem(db, itemId)!,
+    item: (await getWorkItem(sqliteDb(db), itemId))!,
     runId,
     sessionId: "ses_1",
     checkId: "visual-proof",
@@ -62,7 +62,7 @@ test("a Paws without an https dashboard link asks nothing in Linear and says why
     VISUAL_REVIEW_NEEDS_LINK,
   ]);
   // The check stays unapproved; the item keeps verifying.
-  expect(getWorkItem(db, itemId)?.state).toBe("verifying");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("verifying");
 });
 
 /** A review question Linear asked with options before the link ask, still open. */
@@ -101,7 +101,7 @@ test("Accept on a question asked before the link ask requests changes and never 
     outcome: "changes_requested",
     feedback: "Accept",
   });
-  expect(getWorkItem(db, itemId)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
   const [resume] = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
   expect(resume).toMatchObject({ jobKey: `resume:answer:${question.id}` });
   expect((resume!.payload as { reason: string }).reason).toBe("review");
@@ -120,7 +120,7 @@ test("Request changes restarts the item for review with the feedback", async () 
     ),
   );
   expect((await getVisualReview(sqliteDb(db), question.id))?.outcome).toBe("changes_requested");
-  expect(getWorkItem(db, itemId)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
   const [resume] = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
   expect((resume!.payload as { handoff: string }).handoff).toContain("Make the hint shorter");
 });
@@ -162,6 +162,6 @@ test("the round-limit question waits behind a sibling's queued question", async 
     body: visualReviewContinueQuestion(VISUAL_REVIEW_ROUNDS),
     options: [...VISUAL_REVIEW_CONTINUE_OPTIONS],
   });
-  expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
   expect((await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
 });

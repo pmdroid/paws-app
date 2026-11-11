@@ -196,7 +196,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
       await runtime.assignments.authorize({ ...event, deliveryId: "duplicate" }),
     ).toMatchObject({ outcome: "refused" });
     expect(await dbApi.workspaceLinearMember(sqliteDb(db), "workspace", "creator")).toBeNull();
-    expect(dbApi.listWorkItems(db)).toHaveLength(0);
+    expect(await dbApi.listWorkItems(sqliteDb(db))).toHaveLength(0);
     expect(await dbApi.listOutbox(sqliteDb(db))).toHaveLength(1);
     const prompt = (await dbApi.listOutbox(sqliteDb(db)))[0]!.payload as {
       auth: { url: string; userId: string };
@@ -232,15 +232,15 @@ test("onboarded authoritative creator resumes once with current App and no perso
         .map((job) => job.lastError),
     ).toEqual([null]);
     expect(continuations).toBe(1);
-    expect(dbApi.listWorkItems(db)).toHaveLength(1);
-    const itemId = dbApi.listWorkItems(db)[0]!.id;
+    expect(await dbApi.listWorkItems(sqliteDb(db))).toHaveLength(1);
+    const itemId = (await dbApi.listWorkItems(sqliteDb(db)))[0]!.id;
     expect(await dbApi.delegatedLinearUserId(sqliteDb(db), itemId)).toBe("creator");
     expect(
       db.query("SELECT 1 FROM workspace_access_audit WHERE action='assignment.resumed'").all(),
     ).toHaveLength(1);
     expect(await runtime.assignments.authorize(event)).toMatchObject({ outcome: "refused" });
     await dbApi.beginImplementRun(sqliteDb(db), itemId, now());
-    const current = () => dbApi.getWorkItem(db, itemId)!;
+    const current = async () => (await dbApi.getWorkItem(sqliteDb(db), itemId))!;
     const privateKeyPem = generateKeyPairSync("rsa", {
       modulusLength: 2048,
       privateKeyEncoding: { type: "pkcs8", format: "pem" },
@@ -300,7 +300,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
     });
     const policy = async (): Promise<GitCommitPolicy> => ({
       bot: await botProvider.botIdentity!(),
-      credit: await workspace.delegatorCommitCredit(db, current().id),
+      credit: await workspace.delegatorCommitCredit(db, (await current()).id),
     });
     auth = new GitHubInstallationCheck(
       sqliteDb(db),
@@ -313,13 +313,13 @@ test("onboarded authoritative creator resumes once with current App and no perso
       now,
     );
     const signal = new AbortController().signal;
-    expect(await auth.ensure(current(), "initial", signal)).toBe(false);
-    expect(current().state).toBe("awaiting_input");
+    expect(await auth.ensure(await current(), "initial", signal)).toBe(false);
+    expect((await current()).state).toBe("awaiting_input");
     installed = true;
     rotateDuringCheck = true;
     expect(await installation("acme/widgets", "write", signal)).toBe(false);
     await auth.recover();
-    expect(current().state).toBe("running");
+    expect((await current()).state).toBe("running");
     expect(policyCoauthors(await policy())).toEqual([]);
     expect(
       (await dbApi.listJobs(sqliteDb(db))).filter((job) => job.queue === "run.resume"),
@@ -352,7 +352,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
     );
     await Promise.all([auth.recover(), auth.recover()]);
     await auth.recover();
-    expect(current().state).toBe("running");
+    expect((await current()).state).toBe("running");
     expect(
       (await dbApi.listJobs(sqliteDb(db))).filter((job) => job.queue === "run.resume"),
     ).toHaveLength(1);
@@ -364,12 +364,13 @@ test("onboarded authoritative creator resumes once with current App and no perso
     expect(policyCoauthors(await policy())).toEqual([
       { id: 7, login: "creator", name: "Creator", email: "7+creator@users.noreply.github.com" },
     ]);
-    await saveRunCommitPolicy(sqliteDb(db), current().currentRunId!, captured);
+    await saveRunCommitPolicy(sqliteDb(db), (await current()).currentRunId!, captured);
     const persisted = dbApi.openDatabase(path);
     try {
-      expect(dbApi.getRun(persisted, current().currentRunId!)!.checkpoint!.commitPolicy).toEqual(
-        captured,
-      );
+      expect(
+        (await dbApi.getRun(sqliteDb(persisted), (await current()).currentRunId!))!.checkpoint!
+          .commitPolicy,
+      ).toEqual(captured);
     } finally {
       persisted.close();
     }
@@ -379,9 +380,9 @@ test("onboarded authoritative creator resumes once with current App and no perso
       now(),
     );
     expect(policyCoauthors(await policy())).toEqual([]);
-    expect(await auth.ensure(current(), "publication", signal)).toBe(true);
+    expect(await auth.ensure(await current(), "publication", signal)).toBe(true);
     await auth.recover();
-    expect(current().state).toBe("running");
+    expect((await current()).state).toBe("running");
     expect(
       (await dbApi.listJobs(sqliteDb(db))).filter((job) => job.queue === "run.reverify"),
     ).toHaveLength(0);

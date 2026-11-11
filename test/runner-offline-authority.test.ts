@@ -433,7 +433,7 @@ test.skipIf(!linuxUser)(
       expect(f.replaced).toEqual([]);
       expect(f.workEnded()).toBe(false);
       expect(f.executing()).toBe(true);
-      expect(getWorkItem(f.db, f.item.id)?.state).toBe("running");
+      expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("running");
       await expect(f.nextGeneration()).rejects.toThrow();
       f.finish();
       f.setLink("up");
@@ -460,7 +460,7 @@ test.skipIf(!linuxUser)(
       expect(f.overlaps).toEqual([]);
       expect(f.stopped()).toBe(1);
       expect(f.errors.join("\n")).toContain("lease deadline passed");
-      expect(getWorkItem(f.db, f.item.id)?.state).toBe("recovering");
+      expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("recovering");
       f.finish();
       f.setLink("up");
       await f.tickUntil(() => f.refusedResults.length > 0 || f.posted.length > 0);

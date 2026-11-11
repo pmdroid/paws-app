@@ -116,16 +116,20 @@ test("a session delegated while every runner slot is busy is queued at once and 
     await orchestrator.onLinearEvent(event);
     const itemId = db.query<{ id: string }, []>("SELECT id FROM work_item").get()?.id;
     const atIntake = {
-      state: itemId ? getWorkItem(db, itemId)?.state : null,
+      state: itemId ? (await getWorkItem(sqliteDb(db), itemId))?.state : null,
       mode: itemId ? await getTaskMode(sqliteDb(db), itemId) : null,
       purposes: [...purposes],
     };
     busy = false;
-    for (let tick = 0; tick < 5 && getWorkItem(db, itemId!)?.state !== "completed"; tick++)
+    for (
+      let tick = 0;
+      tick < 5 && (await getWorkItem(sqliteDb(db), itemId!))?.state !== "completed";
+      tick++
+    )
       await jobs.tick();
     expect({
       atIntake,
-      state: getWorkItem(db, itemId!)?.state,
+      state: (await getWorkItem(sqliteDb(db), itemId!))?.state,
       mode: await getTaskMode(sqliteDb(db), itemId!),
       purposes,
     }).toEqual({

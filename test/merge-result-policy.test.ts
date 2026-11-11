@@ -51,7 +51,7 @@ describe("advanceMerge when the pull request changes the Closeout policy", () =>
 
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
     expect(h.github.merged).toEqual([]);
-    expect(getWorkItem(h.db, "ENG-1")?.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("queued");
     const resume = (await listJobs(sqliteDb(h.db))).find((job) => job.queue === JOB_KIND.resume);
     const payload = resume?.payload as { reason: string; handoff: string };
     expect(payload.reason).toBe("findings");
@@ -131,7 +131,7 @@ describe("advanceMerge when the pull request changes the Closeout policy", () =>
     expect((await listJobs(sqliteDb(h.db))).filter((job) => job.queue === JOB_KIND.resume)).toEqual(
       [],
     );
-    expect(getWorkItem(h.db, "ENG-1")?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("merge_queue");
   });
 
   test("with GitHub's merge queue, main's policy breaking while queued takes the pull request out and holds it", async () => {

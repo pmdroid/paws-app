@@ -103,9 +103,13 @@ async function setup(state: "running" | "verifying" | "merge_queue") {
       clock,
       FILTER,
     );
-  const pull = () => ({
+  const pull = async () => ({
     number: 7,
-    head: { ref: worktreeBranch(getWorkItem(db, "eng-1")!), sha: "h", repo: { id: 11 } },
+    head: {
+      ref: worktreeBranch((await getWorkItem(sqliteDb(db), "eng-1"))!),
+      sha: "h",
+      repo: { id: 11 },
+    },
   });
   const inline = async (id: number, author: string, body: string) => {
     await send("pull_request_review_comment", {
@@ -118,12 +122,12 @@ async function setup(state: "running" | "verifying" | "merge_queue") {
         line: 40,
         user: { login: author },
       },
-      pull_request: pull(),
+      pull_request: await pull(),
     });
     await send("pull_request_review", {
       action: "submitted",
       review: { id: id + 1, state: "commented", body: null, user: { login: author } },
-      pull_request: pull(),
+      pull_request: await pull(),
     });
   };
   const conversation = (id: number, author: string, body: string) =>
@@ -136,7 +140,11 @@ async function setup(state: "running" | "verifying" | "merge_queue") {
     reason: "conflict" | "ci" | "findings",
     lead: string,
   ): Promise<number | null> => {
-    const reads = await readPendingFeedback(sqliteDb(db), getWorkItem(db, "eng-1")!, caps);
+    const reads = await readPendingFeedback(
+      sqliteDb(db),
+      (await getWorkItem(sqliteDb(db), "eng-1"))!,
+      caps,
+    );
     const restarted = await sqliteDb(db).transaction(function* (q) {
       const current = (yield* getWorkItemSteps(q, "eng-1"))!;
       return yield* restartWithFeedbackSteps(q, current, {
@@ -254,7 +262,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
     await backToMergeQueue(h.db);
     expect(await handlePullComments(sqliteDb(h.db), "eng-1", h.caps)).toBe("asked");
     expect((await findOpenQuestion(sqliteDb(h.db), "s-1"))?.body).toContain(BOT_FINDING);
-    expect(getWorkItem(h.db, "eng-1")?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(h.db), "eng-1"))?.state).toBe("awaiting_input");
     expect(await handoffs(h.db)).toHaveLength(1);
   });
 
@@ -264,7 +272,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
     await h.inline(9401, "cursor[bot]", BOT_FINDING);
     expect(await handlePullComments(sqliteDb(h.db), "eng-1", h.caps)).toBe("wait");
     expect(await handoffs(h.db)).toHaveLength(0);
-    expect(getWorkItem(h.db, "eng-1")?.state).toBe("running");
+    expect((await getWorkItem(sqliteDb(h.db), "eng-1"))?.state).toBe("running");
 
     await applyWorkItemEvent(sqliteDb(h.db), "eng-1", "turn_ended");
     await h.sendBack("conflict", REBASE_CONFLICT_INSTRUCTION);

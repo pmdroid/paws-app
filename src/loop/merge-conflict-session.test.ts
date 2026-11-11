@@ -40,10 +40,10 @@ function fixture() {
       clock.advance(60_000);
     }
   };
-  const announce = () =>
-    sqliteDb(db).transaction((q) =>
-      postMergeConflictSteps(q, getWorkItem(db, "ACME-7")!, NOTICE, clock.now()),
-    );
+  const announce = async () => {
+    const item = (await getWorkItem(sqliteDb(db), "ACME-7"))!;
+    return sqliteDb(db).transaction((q) => postMergeConflictSteps(q, item, NOTICE, clock.now()));
+  };
   return { db, tracker, enqueue, deliver, announce };
 }
 

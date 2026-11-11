@@ -182,7 +182,7 @@ test("the fallback and its handoff are saved before the candidate ref moves", as
         return git(args.map((arg) => (arg === GITHUB_URL ? origin : arg)));
       },
       baseSha: base,
-      persistFallback(fallback) {
+      async persistFallback(fallback) {
         saved.push(fallback);
         // Paws stops here, after the save and before the reset.
         throw new Error("Paws stopped");
@@ -523,7 +523,7 @@ async function startScenario(input: {
   });
   db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, item.id]);
   // Paws recorded the last fetched commit as the item's head.
-  saveCheckpoint(db, item.id, {
+  await saveCheckpoint(sqliteDb(db), item.id, {
     phase: "running",
     baseSha: base,
     wipCommit:
@@ -580,7 +580,7 @@ async function startScenario(input: {
         ) as RunnerCommand;
         if (command.type !== "run" || assigned) continue;
         assigned = command;
-        pendingAtAssignment = getWorkItem(db, item.id)?.checkpoint?.lostCommits;
+        pendingAtAssignment = (await getWorkItem(sqliteDb(db), item.id))?.checkpoint?.lostCommits;
         executions++;
         const cancelled = input.cancelFirstRun === true && executions === 1;
         await work.acknowledge(runnerId, command.id);
@@ -625,7 +625,7 @@ async function startScenario(input: {
       attempt++
     ) {
       if (attempt) {
-        pendingBetween = getWorkItem(db, item.id)?.checkpoint?.lostCommits;
+        pendingBetween = (await getWorkItem(sqliteDb(db), item.id))?.checkpoint?.lostCommits;
         assigned = undefined;
       }
       error = undefined;
@@ -660,7 +660,7 @@ async function startScenario(input: {
           error = caught;
         });
     }
-    const stored = getWorkItem(db, item.id);
+    const stored = await getWorkItem(sqliteDb(db), item.id);
     return {
       error,
       base,

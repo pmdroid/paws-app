@@ -34,7 +34,11 @@ export default {
       insertQueuedItem(db, { id: "quiet", sessionKey: "quiet-session", now: clock.now() });
       await beginImplementRun(sqliteDb(db), "quiet", clock.now());
       await applyWorkItemEvent(sqliteDb(db), "quiet", "turn_ended", { now: clock.now() });
-      saveCheckpoint(db, "quiet", { phase: "verifying", baseSha: "base", wipCommit: "head" });
+      await saveCheckpoint(sqliteDb(db), "quiet", {
+        phase: "verifying",
+        baseSha: "base",
+        wipCommit: "head",
+      });
       const oldJob = await enqueueJob(sqliteDb(db), {
         queue: JOB_KIND.reverify,
         payload: { itemId: "quiet" },
@@ -51,7 +55,12 @@ export default {
         });
         if (attempt === 0) {
           // The real re-verify closes the quiet run and opens a new one on the same head.
-          await markRun(sqliteDb(db), getWorkItem(db, "quiet")!.currentRunId!, "lost", clock.now());
+          await markRun(
+            sqliteDb(db),
+            (await getWorkItem(sqliteDb(db), "quiet"))!.currentRunId!,
+            "lost",
+            clock.now(),
+          );
           const rerun = await insertRun(sqliteDb(db), {
             itemId: "quiet",
             kind: "recheck",
@@ -76,7 +85,7 @@ export default {
       proof.expect("one retry journal line", lines.length === 1, lines);
       proof.expect(
         "second stall asks a person",
-        getWorkItem(db, "quiet")?.state === "awaiting_input",
+        (await getWorkItem(sqliteDb(db), "quiet"))?.state === "awaiting_input",
         await findOpenQuestion(sqliteDb(db), "quiet-session"),
       );
       await answer(
@@ -92,8 +101,8 @@ export default {
       );
       proof.expect(
         "person retries verification on the same head",
-        getWorkItem(db, "quiet")?.state === "verifying" &&
-          getWorkItem(db, "quiet")?.checkpoint?.wipCommit === "head",
+        (await getWorkItem(sqliteDb(db), "quiet"))?.state === "verifying" &&
+          (await getWorkItem(sqliteDb(db), "quiet"))?.checkpoint?.wipCommit === "head",
       );
     } finally {
       db.close();

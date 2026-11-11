@@ -178,7 +178,9 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     placement: {
       ...placement,
       async candidates(request) {
-        const want = waiting.has(getWorkItem(db, request.itemId ?? "")?.linearIdentifier ?? "")
+        const want = waiting.has(
+          (await getWorkItem(sqliteDb(db), request.itemId ?? ""))?.linearIdentifier ?? "",
+        )
           ? busyRunner
           : freeRunner;
         return (await placement.candidates(request)).filter((runner) => runner.id === want);
@@ -252,7 +254,8 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
           });
         if (command.type === "run")
           started.add(
-            listWorkItems(db).find((item) => item.currentRunId === command.runId)!.linearIdentifier,
+            (await listWorkItems(sqliteDb(db))).find((item) => item.currentRunId === command.runId)!
+              .linearIdentifier,
           );
       }
       await Bun.sleep(5);
@@ -277,7 +280,9 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
         updatedAtMs: Date.now(),
         payload: "{}",
       });
-      const item = listWorkItems(db).find((row) => row.sessionKey === `session-${index}`)!;
+      const item = (await listWorkItems(sqliteDb(db))).find(
+        (row) => row.sessionKey === `session-${index}`,
+      )!;
       await recordLinearInstallation(sqliteDb(db), {
         organizationId: "org",
         oauthClientId: "app",
@@ -317,15 +322,17 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
       ).length;
     while (Date.now() < deadline && !(started.has("ENG-5") && (await parked()) === 4))
       await Bun.sleep(10);
+    const items = await listWorkItems(sqliteDb(db));
+    const identifierOf = new Map(items.map((item) => [item.id, item.linearIdentifier]));
     const itemJob = (job: Job) =>
-      getWorkItem(db, (job.payload as { itemId: string }).itemId)?.linearIdentifier ?? "";
+      identifierOf.get((job.payload as { itemId: string }).itemId) ?? "";
     const executions = (await listJobs(sqliteDb(db))).filter((job) =>
       [JOB_KIND.start, JOB_KIND.resume].includes(job.queue as typeof JOB_KIND.start),
     );
     const detail = JSON.stringify({
       started: [...started],
       jobs: executions.map((job) => `${itemJob(job)}:${job.queue}:${job.status}`),
-      items: listWorkItems(db).map((item) => `${item.linearIdentifier}:${item.state}`),
+      items: items.map((item) => `${item.linearIdentifier}:${item.state}`),
     });
     expect([...started], detail).toEqual(["ENG-5"]);
     expect(

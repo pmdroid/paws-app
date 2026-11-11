@@ -105,7 +105,7 @@ function instance(input: {
   const runner = async (options: RunAgentOptions): Promise<RunAgentResult> => {
     const result = await clone(options);
     if (options.role !== "implementer" || options.checkpoint === false) return result;
-    const item = listWorkItems(db)[0]!;
+    const item = (await listWorkItems(sqliteDb(db)))[0]!;
     const mirror = mirrorPath(options.pawsRoot, repository.owner, repository.repo);
     const sha = await git("--git-dir", mirror, "rev-parse", candidateRef(options.itemId));
     await git(
@@ -189,8 +189,8 @@ test("instance B verifies and merges the candidate instance A imported, from the
     await turn;
     await a.flush();
 
-    const item = listWorkItems(b.db)[0]!;
-    expect(getWorkItem(b.db, item.id)?.state).toBe("awaiting_input");
+    const item = (await listWorkItems(sqliteDb(b.db)))[0]!;
+    expect((await getWorkItem(sqliteDb(b.db), item.id))?.state).toBe("awaiting_input");
     const recorded = (await getItemCandidate(sqliteDb(b.db), item.id))!;
     expect(recorded.branch).toBe(item.branchName);
     expect(checksRuns).toEqual([`a:${recorded.sha}`]);
@@ -221,13 +221,17 @@ test("instance B verifies and merges the candidate instance A imported, from the
         "refs/paws/candidates",
       ),
     ).toBe(recorded.sha);
-    expect(getWorkItem(b.db, item.id)?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(b.db), item.id))?.state).toBe("merge_queue");
 
-    for (let tick = 0; tick < 20 && getWorkItem(b.db, item.id)?.state !== "merged"; tick++) {
+    for (
+      let tick = 0;
+      tick < 20 && (await getWorkItem(sqliteDb(b.db), item.id))?.state !== "merged";
+      tick++
+    ) {
       await b.jobs.tick();
       await b.flush();
     }
-    expect(getWorkItem(b.db, item.id)?.state).toBe("merged");
+    expect((await getWorkItem(sqliteDb(b.db), item.id))?.state).toBe("merged");
     expect(b.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([recorded.sha]);
     expect(a.github.merged).toEqual([]);
   } finally {
@@ -377,8 +381,8 @@ async function originWithPolicy(root: string, checkMark: string): Promise<string
 
 async function attachRunnerLease(db: Database): Promise<void> {
   for (let attempt = 0; attempt < 2000; attempt += 1) {
-    const item = listWorkItems(db)[0];
-    const run = item?.currentRunId ? getRun(db, item.currentRunId) : null;
+    const item = (await listWorkItems(sqliteDb(db)))[0];
+    const run = item?.currentRunId ? await getRun(sqliteDb(db), item.currentRunId) : null;
     if (run?.status === "active") {
       const now = Date.now();
       const userId = await putWorkspaceUser(sqliteDb(db), {

@@ -39,7 +39,11 @@ async function held(publicUrl: string | null = "https://paws.example") {
   const item = insertQueuedItem(db, { id: "PAS-633", sessionKey: "ses_1", title: "Signed URLs" });
   await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
   await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
-  saveCheckpoint(db, item.id, { phase: "verifying", baseSha: "base", wipCommit: HEAD });
+  await saveCheckpoint(sqliteDb(db), item.id, {
+    phase: "verifying",
+    baseSha: "base",
+    wipCommit: HEAD,
+  });
   db.run("UPDATE work_item SET delegated_by = 'delegator' WHERE id = ?", [item.id]);
   await sqliteDb(db).run((q) =>
     saveSchedulingContextSteps(q, { itemId: item.id, projectId: "project", projectLeadId: "lead" }),
@@ -102,7 +106,7 @@ const effects: LinkAskEffects = { rule: reverifyBypassedSteps };
 
 test("a broken approve rule is a rule link ask with its summary and the link", async () => {
   const { db, itemId, question } = await held();
-  expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
   expect(question.kind).toBe("link");
   expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
     kind: "rule",
@@ -140,7 +144,7 @@ test("Approve records who and why and verifies the same head again", async () =>
       effects,
     ),
   ).toBe("answered");
-  expect(getWorkItem(db, itemId)).toMatchObject({
+  expect(await getWorkItem(sqliteDb(db), itemId)).toMatchObject({
     state: "verifying",
     checkpoint: { phase: "verifying", baseSha: "base", wipCommit: HEAD },
   });
@@ -210,7 +214,7 @@ test("Approve needs a reason and a person who may decide", async () => {
     ),
   ).toBe("forbidden");
   expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
-  expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
   expect((await recoveryOptions(sqliteDb(db), itemId)).bypasses).toEqual([]);
 });
 
@@ -230,7 +234,7 @@ test("Send back restarts the agent with the finding", async () => {
       effects,
     ),
   ).toBe("answered");
-  expect(getWorkItem(db, itemId)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
   const handoff = (
     (await listJobs(sqliteDb(db))).find((job) => job.queue === JOB_KIND.resume)!.payload as {
       handoff: string;
@@ -261,7 +265,7 @@ test("a reply in Linear sends the finding back and approves nothing", async () =
     decision: null,
     closedReason: "guidance",
   });
-  expect(getWorkItem(db, itemId)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
   expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.reverify)).toBe(false);
   const handoff = (
     (await listJobs(sqliteDb(db))).find((job) => job.queue === JOB_KIND.resume)!.payload as {
@@ -284,5 +288,5 @@ test("without a public link the rule is a Linear question a reply sends back", a
   const { db, itemId, question } = await held(null);
   expect(question.kind).toBe("closeout-help");
   expect(await getLinkAsk(sqliteDb(db), question.id)).toBeNull();
-  expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
 });

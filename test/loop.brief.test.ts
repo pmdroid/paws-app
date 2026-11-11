@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
 import { worktreePath } from "../src/acp";
-import { JobLoop, OutboxDispatcher, getWorkItem, migrate, openDatabase } from "../src/db";
+import { sqliteDb, JobLoop, OutboxDispatcher, getWorkItem, migrate, openDatabase } from "../src/db";
 import { systemClock, defaultBriefTemplate } from "../src/core";
 import { writeBriefTemplates } from "../src/config";
 import {
@@ -190,7 +190,7 @@ test.each([
         projects: override ? { "acme/widgets": `${override}\n\n${defaultBriefTemplate()}` } : {},
       });
       await tickWithRestarts(jobs, orchestrator, db);
-      const item = getWorkItem(db, itemId!);
+      const item = await getWorkItem(sqliteDb(db), itemId!);
       const prompts = readFileSync(evidence, "utf8")
         .trim()
         .split("\n")

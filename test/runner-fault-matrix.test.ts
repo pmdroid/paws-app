@@ -529,7 +529,10 @@ async function runRemoteFault(fault: Fault) {
     if (!deferred) return;
     if (fault === "unpaired") runner.faultedAttempts++;
     runner.faulty = false;
-    runner.deferredState = getWorkItem(db, (deferred.payload as { itemId: string }).itemId)!.state;
+    runner.deferredState = (await getWorkItem(
+      sqliteDb(db),
+      (deferred.payload as { itemId: string }).itemId,
+    ))!.state;
     if (fault === "busy")
       db.run("UPDATE runner_helper SET ended_at=? WHERE ended_at IS NULL", [Date.now()]);
     runner.heldSlots = db
@@ -770,7 +773,7 @@ async function runRemoteFault(fault: Fault) {
       updatedAtMs: Date.now(),
       payload: "{}",
     });
-    const item = listWorkItems(db)[0]!;
+    const item = (await listWorkItems(sqliteDb(db)))[0]!;
     await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "app",
@@ -793,7 +796,7 @@ async function runRemoteFault(fault: Fault) {
     while (
       Date.now() < deadline &&
       !["merge_queue", "merged", "failed", "awaiting_input"].includes(
-        getWorkItem(db, item.id)?.state ?? "",
+        (await getWorkItem(sqliteDb(db), item.id))?.state ?? "",
       )
     ) {
       const ran = await jobs.tick();
@@ -807,7 +810,7 @@ async function runRemoteFault(fault: Fault) {
     const progress = (kind: string) =>
       tracker.progress.filter((update) => update.kind === kind).map((update) => update.body);
     return {
-      state: getWorkItem(db, item.id)?.state ?? null,
+      state: (await getWorkItem(sqliteDb(db), item.id))?.state ?? null,
       thoughts: progress("thought"),
       errors: progress("error"),
       retries: (await listJobs(sqliteDb(db)))
@@ -823,7 +826,7 @@ async function runRemoteFault(fault: Fault) {
       checkpointSha: runner.checkpointSha,
       recovered: runner.recovered,
       detail: JSON.stringify({
-        state: getWorkItem(db, item.id)?.state,
+        state: (await getWorkItem(sqliteDb(db), item.id))?.state,
         runs: (await listRuns(sqliteDb(db))).map((run) => `${run.kind}:${run.status}`),
         jobs: (await listJobs(sqliteDb(db))).map(
           (job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`,

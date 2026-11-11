@@ -88,8 +88,8 @@ for (const state of [
                 ? (["turn_ended", "closeout_accepted"] as const)
                 : [])
         await applyWorkItemEvent(sqliteDb(paws.db), "legacy", event);
-      const held = getWorkItem(paws.db, "legacy")!;
-      const runStatus = getRun(paws.db, run.id)?.status;
+      const held = (await getWorkItem(sqliteDb(paws.db), "legacy"))!;
+      const runStatus = (await getRun(sqliteDb(paws.db), run.id))?.status;
       const outbox = (await listOutbox(sqliteDb(paws.db))).length;
       clock.sleep(2 * 60 * 60_000 + 1);
       for (let i = 0; i < 100 && paws.db.query("SELECT 1 FROM wake").get() === null; i++)
@@ -102,14 +102,14 @@ for (const state of [
             job.status === "pending",
         ),
       ).toBe(false);
-      expect(getWorkItem(paws.db, "legacy")).toMatchObject({
+      expect(await getWorkItem(sqliteDb(paws.db), "legacy")).toMatchObject({
         state: held.state,
         currentRunId: run.id,
         checkpoint: held.checkpoint,
         acceptedHead: held.acceptedHead,
         branchName: "paws/legacy",
       });
-      expect(getRun(paws.db, run.id)?.status).toBe(runStatus);
+      expect((await getRun(sqliteDb(paws.db), run.id))?.status).toBe(runStatus);
       expect(await listOutbox(sqliteDb(paws.db))).toHaveLength(outbox);
       expect((await git(["-C", tree, "rev-parse", "HEAD"], { env })).trim()).toBe(before);
       expect(readFileSync(join(tree, "dirty"), "utf8")).toBe("preserve exact legacy WIP");

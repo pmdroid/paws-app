@@ -174,7 +174,10 @@ test.each(["dismissed", "ended", "complete", "error", "stopping"])(
       await f.orchestrator.onLinearEvent(created("new"));
       expect((await getLinearSession(sqliteDb(f.db), "old"))?.stoppedAt).not.toBeNull();
       expect((await getLinearSession(sqliteDb(f.db), "new"))!.activeItemId).toBe(f.oldId);
-      expect(getWorkItem(f.db, f.oldId)).toMatchObject({ state: "queued", sessionKey: "new" });
+      expect(await getWorkItem(sqliteDb(f.db), f.oldId)).toMatchObject({
+        state: "queued",
+        sessionKey: "new",
+      });
       await f.orchestrator.onLinearEvent(created("new"));
       expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(1);
     } finally {
@@ -193,10 +196,13 @@ test("re-delegating an issue a Linear Stop paused resumes the same item", async 
       signal: "stop",
       updatedAtMs: 15,
     });
-    expect(getWorkItem(f.db, f.oldId)?.state).toBe("paused");
+    expect((await getWorkItem(sqliteDb(f.db), f.oldId))?.state).toBe("paused");
     await f.orchestrator.onLinearEvent(created("new"));
     expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(1);
-    expect(getWorkItem(f.db, f.oldId)).toMatchObject({ state: "queued", sessionKey: "new" });
+    expect(await getWorkItem(sqliteDb(f.db), f.oldId)).toMatchObject({
+      state: "queued",
+      sessionKey: "new",
+    });
     expect((await getLinearSession(sqliteDb(f.db), "new"))?.activeItemId).toBe(f.oldId);
   } finally {
     await f.close();
@@ -213,7 +219,7 @@ test.each(["pending", "active", "awaitingInput", "stale", "unknown"])(
       await expect(f.orchestrator.onLinearEvent(created("new"))).rejects.toThrow(
         "unfinished attempt",
       );
-      expect(getWorkItem(f.db, f.oldId)?.state).toBe("awaiting_input");
+      expect((await getWorkItem(sqliteDb(f.db), f.oldId))?.state).toBe("awaiting_input");
       expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(1);
     } finally {
       await f.close();
@@ -228,7 +234,7 @@ test.each(["organization_id", "oauth_client_id", "app_user_id", "team_id"])(
     f.db.run(`UPDATE linear_session SET ${column} = 'different' WHERE session_id = 'new'`);
     try {
       await expect(f.orchestrator.onLinearEvent(created("new"))).rejects.toThrow();
-      expect(getWorkItem(f.db, f.oldId)?.state).toBe("awaiting_input");
+      expect((await getWorkItem(sqliteDb(f.db), f.oldId))?.state).toBe("awaiting_input");
     } finally {
       await f.close();
     }
@@ -256,7 +262,7 @@ test.each(["unavailable", "issue", "app", "id", "generation", "authorization"])(
     await store.commit(event);
     try {
       await expect(linear.webhook.onEvent!(event)).rejects.toThrow("retry automatically");
-      expect(getWorkItem(f.db, f.oldId)?.state).toBe("awaiting_input");
+      expect((await getWorkItem(sqliteDb(f.db), f.oldId))?.state).toBe("awaiting_input");
       expect(await store.listUnhandled()).toHaveLength(1);
       expect(
         f.fake.progress.filter((update) => update.sessionId === "new").map((update) => update.kind),
@@ -335,7 +341,7 @@ test.each([
   async (_case, gone) => {
     const f = await fixture();
     try {
-      const old = getWorkItem(f.db, f.oldId)!;
+      const old = (await getWorkItem(sqliteDb(f.db), f.oldId))!;
       const now = Date.now();
       // The run failed on agentbox with a cleanup error, then the item was cancelled.
       blockConversation(f.db, f.oldId, now);

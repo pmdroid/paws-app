@@ -68,7 +68,7 @@ describe("combined recovery scenarios", () => {
     try {
       const id = "merge_queue";
       const jobKey = `ci-failed:${id}:recheck:head`;
-      const first = restart(w.db, getWorkItem(w.db, id)!, {
+      const first = restart(w.db, (await getWorkItem(sqliteDb(w.db), id))!, {
         reason: "ci",
         body: "first failure",
         jobKey,
@@ -92,15 +92,15 @@ describe("combined recovery scenarios", () => {
       await applyWorkItemEvent(sqliteDb(w.db), id, "closeout_accepted", { now: w.now });
       await markCloseoutAccepted(sqliteDb(w.db), id, "head");
 
-      const second = () =>
-        restart(w.db, getWorkItem(w.db, id)!, {
+      const second = async () =>
+        restart(w.db, (await getWorkItem(sqliteDb(w.db), id))!, {
           reason: "ci",
           body: "second failure",
           jobKey,
           now: w.now,
         });
       expect((await getJob(sqliteDb(w.db), first))?.status).toBe("running");
-      expect(second()).toBe(first);
+      expect(await second()).toBe(first);
       expect(await getJob(sqliteDb(w.db), first)).toMatchObject({
         status: "pending",
         payload: { handoff: "second failure", reason: "ci" },
@@ -124,7 +124,7 @@ describe("combined recovery scenarios", () => {
     const w = await new World().seed(["verifying_rejected"]);
     try {
       const id = "verifying_rejected";
-      await deferWorkItem(sqliteDb(w.db), getWorkItem(w.db, id)!, {
+      await deferWorkItem(sqliteDb(w.db), (await getWorkItem(sqliteDb(w.db), id))!, {
         retry: 1,
         delayMs: MINUTE,
         handoff: null,
@@ -175,9 +175,13 @@ describe("combined recovery scenarios", () => {
         await w.start();
         const facts = await factsOf(w.db, id);
         expect([facts.state, facts.mergeCall]).toEqual(["merge_queue", true]);
-        expect(restart(w.db, getWorkItem(w.db, id)!, { reason: "ci", body: "x", now: w.now })).toBe(
-          null,
-        );
+        expect(
+          restart(w.db, (await getWorkItem(sqliteDb(w.db), id))!, {
+            reason: "ci",
+            body: "x",
+            now: w.now,
+          }),
+        ).toBe(null);
         expect((await liveExecution(w, id)).map((job) => job.queue)).toEqual([JOB_KIND.merge]);
       }
       await recordConfirmedRemoteMerge(sqliteDb(w.db), {
@@ -200,9 +204,10 @@ describe("combined recovery scenarios", () => {
       expect(
         (await applyLinearCommand(sqliteDb(w.db), { ...stop, requestedAt: w.now })).applied,
       ).toBe(false);
-      expect(() =>
-        restart(w.db, getWorkItem(w.db, id)!, { reason: "ci", body: "late", now: w.now }),
-      ).toThrow("illegal_transition");
+      const current = (await getWorkItem(sqliteDb(w.db), id))!;
+      expect(() => restart(w.db, current, { reason: "ci", body: "late", now: w.now })).toThrow(
+        "illegal_transition",
+      );
       expect(await completeMergedItem(sqliteDb(w.db), { itemId: id, now: w.now })).toBeNull();
       await w.settle();
       expect(await factsOf(w.db, id)).toMatchObject({ state: "merged", version: merged.version });
@@ -236,7 +241,11 @@ describe("combined recovery scenarios", () => {
           },
           pull_request: {
             number: 7,
-            head: { ref: worktreeBranch(getWorkItem(w.db, id)!), sha: "head", repo: { id: 1 } },
+            head: {
+              ref: worktreeBranch((await getWorkItem(sqliteDb(w.db), id))!),
+              sha: "head",
+              repo: { id: 1 },
+            },
             base: { ref: "main" },
           },
           action: "submitted",
@@ -272,7 +281,7 @@ describe("combined recovery scenarios", () => {
   test("PAS-965: lapsed runner leases get one follow-up each before the orphan grace, and restarts add none", async () => {
     const w = await new World().seed(["running_leased", "verifying_leased", "merge_active_run"]);
     try {
-      const merging = getWorkItem(w.db, "merge_active_run")!;
+      const merging = (await getWorkItem(sqliteDb(w.db), "merge_active_run"))!;
       leaseRunnerWork(w.db, merging.currentRunId!, w.now);
       w.advance(MINUTE + RUNNER_LEASE_GRACE_MS);
       await w.sweep();
@@ -495,7 +504,7 @@ describe("runner control across Paws restarts", () => {
       expect((await controller().currentAsync(run.id, 1)).command.id).toBe("work-1");
       w.advance(10 * MINUTE + RUNNER_LEASE_GRACE_MS);
       await w.sweep();
-      expect(getRun(w.db, run.id)?.status).toBe("lost");
+      expect((await getRun(sqliteDb(w.db), run.id))?.status).toBe("lost");
       expect((await factsOf(w.db, "item")).state).toBe("recovering");
       for (const restartWith of ["crash", "stop"] as const) {
         if (restartWith === "crash") w.crash();

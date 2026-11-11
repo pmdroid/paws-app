@@ -52,7 +52,11 @@ async function parked(db: Database, id: string) {
   insertQueuedItem(db, { id, sessionKey: `ses-${id}`, now: NOW });
   await beginImplementRun(sqliteDb(db), id, NOW);
   await applyWorkItemEvent(sqliteDb(db), id, "blocking_question");
-  saveCheckpoint(db, id, { phase: "awaiting_input", baseSha: "base", wipCommit: "head" });
+  await saveCheckpoint(sqliteDb(db), id, {
+    phase: "awaiting_input",
+    baseSha: "base",
+    wipCommit: "head",
+  });
 }
 
 function help(id: string): CloseoutHelp {
@@ -139,7 +143,7 @@ describe("a closeout-help question blocked by an unreadable policy on main", () 
       answer: "Answered by Paws: the policy on main loads again at f100000.",
       answeredBy: "paws",
     });
-    expect(getWorkItem(db, "ENG-1")?.state).toBe("verifying");
+    expect((await getWorkItem(sqliteDb(db), "ENG-1"))?.state).toBe("verifying");
     expect(await reverifies(db)).toEqual([`retry-closeout:${asked.id}`]);
     expect((await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume)).toEqual(
       [],
@@ -154,8 +158,8 @@ describe("a closeout-help question blocked by an unreadable policy on main", () 
     const second = await blockedOnMain(db, "ENG-2");
     const elsewhere = await blockedOnMain(db, "ENG-3", "acme/website");
     expect(await retry(db, LOADS)).toEqual([first.id, second.id]);
-    expect(getWorkItem(db, "ENG-1")?.state).toBe("verifying");
-    expect(getWorkItem(db, "ENG-2")?.state).toBe("verifying");
+    expect((await getWorkItem(sqliteDb(db), "ENG-1"))?.state).toBe("verifying");
+    expect((await getWorkItem(sqliteDb(db), "ENG-2"))?.state).toBe("verifying");
     expect((await getQuestion(sqliteDb(db), elsewhere.id))?.status).toBe("open");
   });
 
@@ -189,7 +193,7 @@ describe("a closeout-help question blocked by an unreadable policy on main", () 
     expect(await retry(db, UNREADABLE)).toEqual([]);
     expect(await retry(db, null)).toEqual([]);
     expect((await getQuestion(sqliteDb(db), asked.id))?.status).toBe("open");
-    expect(getWorkItem(db, "ENG-1")?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(db), "ENG-1"))?.state).toBe("awaiting_input");
     expect(await reverifies(db)).toEqual([]);
   });
 
@@ -205,6 +209,6 @@ describe("a closeout-help question blocked by an unreadable policy on main", () 
     expect(asked.options).toEqual(["Retry Closeout"]);
     expect(await retry(db, LOADS)).toEqual([]);
     expect((await getQuestion(sqliteDb(db), asked.id))?.status).toBe("open");
-    expect(getWorkItem(db, "ENG-1")?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(db), "ENG-1"))?.state).toBe("awaiting_input");
   });
 });

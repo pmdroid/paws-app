@@ -254,9 +254,9 @@ test("run attribution snapshot persists across reopen and cannot switch repair i
   db.close();
   db = openDatabase(path);
   try {
-    expect(getRun(db, run.id)?.checkpoint?.commitPolicy).toEqual(policy);
+    expect((await getRun(sqliteDb(db), run.id))?.checkpoint?.commitPolicy).toEqual(policy);
     await insertRun(sqliteDb(db), { itemId: item.id, now: 2 });
-    expect(getItemRunCommitPolicy(db, item.id)).toEqual(policy);
+    expect(await getItemRunCommitPolicy(sqliteDb(db), item.id)).toEqual(policy);
     await expect(
       saveRunCommitPolicy(sqliteDb(db), run.id, { ...policy, credit: { ...credit, id: 9 } }),
     ).rejects.toThrow("cannot change");
@@ -282,13 +282,16 @@ test("a run stored with the old lead and steerer policy keeps crediting only the
       }),
       run.id,
     ]);
-    expect(getItemRunCommitPolicy(db, item.id)).toEqual(policy);
+    expect(await getItemRunCommitPolicy(sqliteDb(db), item.id)).toEqual(policy);
     await saveRunCommitPolicy(sqliteDb(db), run.id, policy);
     db.run("UPDATE run SET checkpoint=? WHERE id=?", [
       JSON.stringify({ phase: "running", commitPolicy: { bot: policy.bot, projectLead: null } }),
       run.id,
     ]);
-    expect(getRun(db, run.id)?.checkpoint?.commitPolicy).toEqual({ bot: policy.bot, credit: null });
+    expect((await getRun(sqliteDb(db), run.id))?.checkpoint?.commitPolicy).toEqual({
+      bot: policy.bot,
+      credit: null,
+    });
   } finally {
     db.close();
   }

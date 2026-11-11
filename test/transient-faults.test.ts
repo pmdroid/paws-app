@@ -612,7 +612,7 @@ async function runWithFault(fault: {
     const item = db
       .query<{ id: string }, []>("SELECT id FROM work_item WHERE linear_identifier='ENG-7'")
       .get();
-    const recorded = item ? getWorkItem(db, item.id) : null;
+    const recorded = item ? await getWorkItem(sqliteDb(db), item.id) : null;
     return {
       events: db
         .query(

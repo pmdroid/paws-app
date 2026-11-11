@@ -68,7 +68,7 @@ export async function probeResponseTaskRecovery(root: string) {
       );
     }
     await prepareShutdown(sqliteDb(db), clock.now());
-    assert.equal(getWorkItem(db, item.id)?.checkpoint, null);
+    assert.equal((await getWorkItem(sqliteDb(db), item.id))?.checkpoint, null);
     db.close();
     db = openDatabase(path);
     const jobs = new JobLoop(db, clock);
@@ -116,8 +116,8 @@ export async function probeResponseTaskRecovery(root: string) {
       assert.deepEqual(await recoverOnStartup(sqliteDb(db), clock.now()), [
         { type: "resume", freshSession: true, checkpoint: null },
       ]);
-      assert.equal(getWorkItem(db, item.id)?.recoveryAttempts, 1);
-      assert.equal(getRun(db, run.id)?.status, "active");
+      assert.equal((await getWorkItem(sqliteDb(db), item.id))?.recoveryAttempts, 1);
+      assert.equal((await getRun(sqliteDb(db), run.id))?.status, "active");
       assert.equal(
         (await listJobs(sqliteDb(db))).filter(
           (job) => job.queue === JOB_KIND.resume && job.status === "pending",
@@ -125,8 +125,8 @@ export async function probeResponseTaskRecovery(root: string) {
         1,
       );
       await jobs.tick();
-      assert.equal(getWorkItem(db, item.id)?.state, "completed");
-      assert.equal(getWorkItem(db, item.id)?.checkpoint, null);
+      assert.equal((await getWorkItem(sqliteDb(db), item.id))?.state, "completed");
+      assert.equal((await getWorkItem(sqliteDb(db), item.id))?.checkpoint, null);
       assert.equal(launches, 1);
       const trace = JSON.parse(readFileSync(tracePath, "utf8"));
       assert.match(JSON.stringify(trace.prompts), /The user answered: use the Create VM page/);

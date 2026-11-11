@@ -68,7 +68,7 @@ async function setup(file = ":memory:") {
     body: "Earlier feedback",
     receivedAt: 1,
   });
-  const branch = worktreeBranch(getWorkItem(db, "first")!);
+  const branch = worktreeBranch((await getWorkItem(sqliteDb(db), "first"))!);
   const delivery = (kind: string) => ({
     deliveryId: "delivery",
     event:

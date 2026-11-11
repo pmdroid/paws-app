@@ -127,7 +127,7 @@ describe("a push outage", () => {
       });
     }
     for (const name of ["a", "b", "c"]) {
-      expect(getWorkItem(db, `item-${name}`)?.state).toBe("running");
+      expect((await getWorkItem(sqliteDb(db), `item-${name}`))?.state).toBe("running");
       expect(await findOpenQuestion(sqliteDb(db), `ses-${name}`)).toBeNull();
     }
     expect((await listOutbox(sqliteDb(db))).filter((row) => row.op === "elicitation")).toEqual([]);
@@ -198,7 +198,7 @@ describe("a push outage", () => {
     expect(await askAboutPushOutage(sqliteDb(db), REPOSITORY, hour + 10 * MINUTE)).toBe("already");
     for (const name of ["b", "c"])
       expect(await findOpenQuestion(sqliteDb(db), `ses-${name}`)).toBeNull();
-    expect(getWorkItem(db, "item-a")?.state).toBe("running");
+    expect((await getWorkItem(sqliteDb(db), "item-a"))?.state).toBe("running");
     expect(
       (await listOutbox(sqliteDb(db)))
         .filter((row) => row.op === "elicitation")

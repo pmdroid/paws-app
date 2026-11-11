@@ -26,7 +26,11 @@ async function parked() {
   const item = insertQueuedItem(db, { id: "ENG-2", sessionKey: "ses_1", title: "Export rows" });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
   await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
-  saveCheckpoint(db, item.id, { phase: "awaiting_input", baseSha: "base", wipCommit: "head" });
+  await saveCheckpoint(sqliteDb(db), item.id, {
+    phase: "awaiting_input",
+    baseSha: "base",
+    wipCommit: "head",
+  });
   return { db, asker: { itemId: item.id, runId: run.id, sessionId: "ses_1" } };
 }
 
@@ -67,7 +71,7 @@ const jobs = async (db: ReturnType<typeof tempDb>) =>
 test("a Closeout guidance answer resumes the agent with the Closeout summary", async () => {
   const { db, asker, question } = await closeoutHelp();
   await answer(db, reply("Create ok.txt"), questionEffects(sqliteDb(db), { now: NOW + 100 }));
-  expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), asker.itemId))?.state).toBe("queued");
   expect(await jobs(db)).toEqual([
     {
       queue: JOB_KIND.resume,
@@ -86,7 +90,7 @@ test("a /paws bypass reply is guidance: it restarts the agent and bypasses nothi
   const { db, asker, question } = await closeoutHelp();
   const body = "/paws bypass test -- Known fixture failure";
   await answer(db, reply(body), questionEffects(sqliteDb(db), { now: NOW + 100 }));
-  expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), asker.itemId))?.state).toBe("queued");
   expect(await jobs(db)).toEqual([
     {
       queue: JOB_KIND.resume,
@@ -190,7 +194,7 @@ test("a CI help answer resumes the agent with the handoff", async () => {
     now: NOW,
   });
   await answer(db, reply("Fix the flaky test"), questionEffects(sqliteDb(db), { now: NOW + 100 }));
-  expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), asker.itemId))?.state).toBe("queued");
   expect((await jobs(db)).map((job) => job.jobKey)).toEqual([`resume:answer:${question.id}`]);
 });
 
@@ -221,7 +225,7 @@ for (const body of ["Retry Closeout", "  RETRY "])
     expect(question.options).toEqual(["Retry Closeout"]);
     expect((await delivered(db))[0]?.body).toContain("Choose Retry Closeout, or reply retry");
     await answer(db, reply(body), questionEffects(sqliteDb(db), { now: NOW + 100 }));
-    expect(getWorkItem(db, asker.itemId)?.state).toBe("verifying");
+    expect((await getWorkItem(sqliteDb(db), asker.itemId))?.state).toBe("verifying");
     expect(await jobs(db)).toEqual([
       {
         queue: JOB_KIND.reverify,
@@ -247,7 +251,7 @@ test("a longer reply to that question is guidance and restarts the agent with it
     reply("retry, but also fix X"),
     questionEffects(sqliteDb(db), { now: NOW + 100 }),
   );
-  expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), asker.itemId))?.state).toBe("queued");
   expect(await jobs(db)).toMatchObject([
     {
       queue: JOB_KIND.resume,
@@ -267,7 +271,7 @@ test("a check failing on the code offers no Retry Closeout, and retry restarts t
   expect(question.options).toEqual([]);
   expect((await delivered(db))[0]?.body).not.toContain("Retry Closeout");
   await answer(db, reply("retry"), questionEffects(sqliteDb(db), { now: NOW + 100 }));
-  expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), asker.itemId))?.state).toBe("queued");
   expect((await jobs(db)).map((job) => job.jobKey)).toEqual([`closeout-guidance:${question.id}`]);
 });
 
@@ -305,7 +309,7 @@ test("the exported re-verify path settles an unanswered question without the age
   await sqliteDb(db).transaction((q) =>
     verifyAgainSteps(q, answered, { now: NOW + 100, key: "policy-loaded" }),
   );
-  expect(getWorkItem(db, asker.itemId)?.state).toBe("verifying");
+  expect((await getWorkItem(sqliteDb(db), asker.itemId))?.state).toBe("verifying");
   expect((await jobs(db)).map((job) => job.jobKey)).toEqual([`policy-loaded:${question.id}`]);
   expect(runs(db)).toBe(1);
 });

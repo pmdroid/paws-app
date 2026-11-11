@@ -140,8 +140,8 @@ test("a checks run whose rule breaks asks the rule question before the checks, a
     await turn;
     await flush();
 
-    const item = listWorkItems(db)[0]!;
-    expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
+    const item = (await listWorkItems(sqliteDb(db)))[0]!;
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("awaiting_input");
     expect(checksRuns).toEqual([true]);
     expect(existsSync(checkMark)).toBe(false);
     const question = (await findOpenQuestion(sqliteDb(db), "ses_1"))!;
@@ -162,7 +162,7 @@ test("a checks run whose rule breaks asks the rule question before the checks, a
 
     expect(checksRuns).toEqual([true, undefined]);
     expect(existsSync(checkMark)).toBe(true);
-    expect(getWorkItem(db, item.id)?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("merge_queue");
     // A runner-backed item reaches the merge queue with no worktree on the control plane.
     expect(existsSync(path.join(pawsRoot, "worktrees"))).toBe(false);
   } finally {
@@ -215,8 +215,8 @@ async function originWithPolicy(root: string, checkMark: string): Promise<string
 
 async function attachRunnerLease(db: Database): Promise<void> {
   for (let attempt = 0; attempt < 2000; attempt += 1) {
-    const item = listWorkItems(db)[0];
-    const run = item?.currentRunId ? getRun(db, item.currentRunId) : null;
+    const item = (await listWorkItems(sqliteDb(db)))[0];
+    const run = item?.currentRunId ? await getRun(sqliteDb(db), item.currentRunId) : null;
     if (run?.status === "active") {
       const now = Date.now();
       const userId = await putWorkspaceUser(sqliteDb(db), {

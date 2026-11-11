@@ -79,7 +79,9 @@ async function blockedFixture(options: { blocked?: boolean; lowBudget?: boolean 
     now: () => clock,
   });
   await reconciler.sweep({ now: clock });
-  const child = listWorkItems(db).find((item) => item.linearIssueId === "acme-child")!;
+  const child = (await listWorkItems(sqliteDb(db))).find(
+    (item) => item.linearIssueId === "acme-child",
+  )!;
   if (options.blocked !== false)
     await saveItemHolds(sqliteDb(db), [
       { itemId: child.id, reason: "blocked", blockers: ["ACME-12"] },

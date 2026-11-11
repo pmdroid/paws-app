@@ -120,8 +120,10 @@ test("answer mode and full prepared response survive reopen as a terminal comple
   const restored = openDatabase(file);
   try {
     expect(await getTaskMode(sqliteDb(restored), item.id)).toBe("answer");
-    expect(getWorkItem(restored, item.id)?.state).toBe("completed");
-    expect(isTerminalWorkItemState(getWorkItem(restored, item.id)!.state)).toBe(true);
+    expect((await getWorkItem(sqliteDb(restored), item.id))?.state).toBe("completed");
+    expect(isTerminalWorkItemState((await getWorkItem(sqliteDb(restored), item.id))!.state)).toBe(
+      true,
+    );
     const dashboard = await createLiveStatusProvider(restored).issues();
     expect(dashboard.issues[0]?.state).toBe("completed");
     expect(dashboard.runs[0]?.state).toBe("done");
@@ -147,7 +149,7 @@ test.each(["code", "artifact"] as const)(
       await expect(completeAnswerTask(sqliteDb(db), item.id, "Done")).rejects.toThrow(
         "Only answer tasks",
       );
-      expect(getWorkItem(db, item.id)?.state).toBe("running");
+      expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("running");
       expect(await listOutbox(sqliteDb(db))).toEqual([]);
       await expect(saveTaskMode(sqliteDb(db), item.id, "answer")).rejects.toThrow(
         "already selected",

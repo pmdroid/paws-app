@@ -250,7 +250,10 @@ test("Paws down 20 minutes with a 30-minute budget: the runner still holds the w
     expect(f.leaseUntil()).toBe(before + 20 * MINUTE);
     expect(await resumes(f.db)).toHaveLength(1);
     expect((await resumes(f.db))[0]?.payload).toMatchObject({ reason: "process_restart" });
-    expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "running", recoveryAttempts: 0 });
+    expect(await getWorkItem(sqliteDb(f.db), f.item.id)).toMatchObject({
+      state: "running",
+      recoveryAttempts: 0,
+    });
     const beat = await f.work.heartbeat(f.runnerId);
     expect(beat.fenced).toEqual([]);
     expect(beat.offlineBudgetMs).toBe(BUDGET);
@@ -423,7 +426,7 @@ test("Paws down longer than the budget: the run resumes as today", async () => {
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
     expect(f.leaseUntil()).toBe(before + BUDGET);
-    expect(getWorkItem(f.db, f.item.id)).toMatchObject({
+    expect(await getWorkItem(sqliteDb(f.db), f.item.id)).toMatchObject({
       state: "recovering",
       recoveryAttempts: 1,
     });

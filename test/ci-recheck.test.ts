@@ -106,7 +106,10 @@ test("a merge-queue re-check waits for CI, sends red CI to a fix, a conflict to 
   const pull = async (): Promise<GitHubResponse | null> => {
     if (conflicted !== null || heads.length !== 2) return null;
     const row = db.query<{ id: string }, []>("SELECT id FROM work_item").get()!;
-    const worktree = worktreePath(layout.pawsRoot, itemPathId(getWorkItem(db, row.id)!));
+    const worktree = worktreePath(
+      layout.pawsRoot,
+      itemPathId((await getWorkItem(sqliteDb(db), row.id))!),
+    );
     const head = (await git(worktree, ["rev-parse", "HEAD"])).trim();
     if (heads.includes(head)) return null;
     conflicted = head;

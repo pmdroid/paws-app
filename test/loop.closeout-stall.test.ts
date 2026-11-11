@@ -95,7 +95,7 @@ function fixFailed(head: string): CloseoutVerdict {
 test("a fix_failed verdict after the live operation was aborted restarts the item in the same job", async () => {
   const f = await verifyingWithHeldGate();
   try {
-    const item = listWorkItems(f.db)[0]!;
+    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
     expect(item.state).toBe("verifying");
     // As for PAS-629, an item.start job for the same item waits while this job verifies it.
     const second = await enqueueJob(sqliteDb(f.db), {
@@ -110,7 +110,7 @@ test("a fix_failed verdict after the live operation was aborted restarts the ite
     await f.turn;
     await interrupted;
 
-    expect(getWorkItem(f.db, item.id)?.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("queued");
     expect(restartReasons(f.db, item.id)).toEqual(["findings"]);
     const jobs = await listJobs(sqliteDb(f.db));
     // restart() fences the job that verified the item, and the pending item.start with it.
@@ -136,7 +136,7 @@ async function closeoutFaultJobs(db: Database) {
 test("a job that ends without a Closeout result re-verifies the same head after a minute without asking", async () => {
   const f = await verifyingWithHeldGate();
   try {
-    const item = listWorkItems(f.db)[0]!;
+    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
     const head = f.gate.runs[0]!.headSha;
     // The aborted Closeout run throws instead of returning a verdict.
     f.throwFromRun(new DOMException("The operation was aborted.", "AbortError"));
@@ -150,7 +150,7 @@ test("a job that ends without a Closeout result re-verifies the same head after 
     expect(f.stalls()).toEqual([
       `job ${f.jobId} ${JOB_KIND.start} left item ${item.id} (ENG-7) in verifying: the job ended without a Closeout result`,
     ]);
-    expect(getWorkItem(f.db, item.id)?.state).toBe("verifying");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("verifying");
     expect(await findOpenQuestion(sqliteDb(f.db), "ses_1")).toBeNull();
     expect(await listCloseoutRecoveries(sqliteDb(f.db), item.id)).toHaveLength(0);
     const [retry, ...rest] = await closeoutFaultJobs(f.db);
@@ -176,7 +176,7 @@ test("a job that ends without a Closeout result re-verifies the same head after 
 test("repeated Closeout faults on one head back off further and the fourth asks once", async () => {
   const f = await verifyingWithHeldGate();
   try {
-    const item = listWorkItems(f.db)[0]!;
+    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
     f.throwFromRun(new DOMException("The operation was aborted.", "AbortError"));
     f.db.run("UPDATE job SET locked_by = 'lost' WHERE id = ?", [f.jobId]);
     f.release();
@@ -210,7 +210,7 @@ test("repeated Closeout faults on one head back off further and the fourth asks 
     }
     expect(delays).toEqual([60_000, 5 * 60_000, 15 * 60_000]);
     expect(await closeoutFaultJobs(f.db)).toHaveLength(3);
-    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("awaiting_input");
     expect((await findOpenQuestion(sqliteDb(f.db), "ses_1"))?.kind).toBe("closeout-help");
     const asks = f.tracker.questions.filter((question) =>
       question.body.includes("Verification stopped without moving the task on"),
@@ -226,7 +226,7 @@ test("repeated Closeout faults on one head back off further and the fourth asks 
 test("a successful re-verify after one Closeout fault reaches the merge queue and clears the count", async () => {
   const f = await verifyingWithHeldGate();
   try {
-    const item = listWorkItems(f.db)[0]!;
+    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
     f.throwFromRun(new DOMException("The operation was aborted.", "AbortError"));
     const interrupted = f.orchestrator.interruptLinearSession("ses_1");
     f.release();
@@ -240,7 +240,7 @@ test("a successful re-verify after one Closeout fault reaches the merge queue an
     expect((await listJobs(sqliteDb(f.db))).find((job) => job.id === retry!.id)?.status).toBe(
       "done",
     );
-    expect(getWorkItem(f.db, item.id)?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("merge_queue");
     expect(await findOpenQuestion(sqliteDb(f.db), "ses_1")).toBeNull();
     expect(
       (await listJobs(sqliteDb(f.db))).filter(
@@ -255,7 +255,7 @@ test("a successful re-verify after one Closeout fault reaches the merge queue an
 test("a reverify waits beside the turn's own Closeout and survives its state change", async () => {
   const f = await verifyingWithHeldGate({ remote: true });
   try {
-    const item = listWorkItems(f.db)[0]!;
+    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
     const runId = item.currentRunId!;
     const jobId = await enqueueJob(sqliteDb(f.db), {
       queue: JOB_KIND.reverify,
@@ -274,19 +274,22 @@ test("a reverify waits beside the turn's own Closeout and survives its state cha
       lastError: null,
     });
     expect(f.gate.runs).toHaveLength(1);
-    expect(getWorkItem(f.db, item.id)).toMatchObject({ state: "verifying", currentRunId: runId });
+    expect(await getWorkItem(sqliteDb(f.db), item.id)).toMatchObject({
+      state: "verifying",
+      currentRunId: runId,
+    });
     expect(f.stalls()).toEqual([]);
     expect(await findOpenQuestion(sqliteDb(f.db), "ses_1")).toBeNull();
 
     f.release();
     await f.turn;
-    expect(getWorkItem(f.db, item.id)?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("merge_queue");
     f.db.run("UPDATE job SET run_at=0 WHERE id=?", [jobId]);
     await f.tickReverify();
     expect((await listJobs(sqliteDb(f.db))).find((job) => job.id === jobId)?.status).toBe("done");
     // The run it waited for accepted the same head, so it starts no second run (PAS-1491).
     expect(f.gate.runs).toHaveLength(1);
-    expect(getWorkItem(f.db, item.id)?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("merge_queue");
   } finally {
     f.release();
     await f.turn;
@@ -301,7 +304,7 @@ test("a check run whose lease lapsed keeps its claim, and a reverify waiting on 
     f.release();
     await f.turn;
     await f.restart();
-    const item = listWorkItems(f.db)[0]!;
+    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
     const head = f.gate.runs[0]!.headSha;
     f.gate.held = new Promise<void>((resolve) => {
       release = resolve;
@@ -342,7 +345,10 @@ test("a check run whose lease lapsed keeps its claim, and a reverify waiting on 
       status: "done",
       lastError: null,
     });
-    expect(getWorkItem(f.db, item.id)).toMatchObject({ state: "merge_queue", acceptedHead: head });
+    expect(await getWorkItem(sqliteDb(f.db), item.id)).toMatchObject({
+      state: "merge_queue",
+      acceptedHead: head,
+    });
     expect((await closeoutFaultJobs(f.db)).filter((job) => job.id !== checkJob)).toEqual([]);
 
     f.db.run("UPDATE job SET run_at = 0 WHERE id = ?", [waiter]);
@@ -366,7 +372,7 @@ for (const hold of ["sibling", "live-decide"] as const)
         await f.turn;
         await f.restart();
       }
-      const item = listWorkItems(f.db)[0]!;
+      const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
       // Reproduce the sibling context installed by the merge lane's hold().
       const contexts = (
         f.orchestrator as unknown as {
@@ -408,7 +414,7 @@ for (const hold of ["sibling", "live-decide"] as const)
         lastError: null,
       });
       expect(f.gate.decisions).toHaveLength(1);
-      expect(getWorkItem(f.db, item.id)?.state).toBe("merge_queue");
+      expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("merge_queue");
     } finally {
       f.release();
       await f.turn;
@@ -419,7 +425,7 @@ for (const hold of ["sibling", "live-decide"] as const)
 test("a deferred duplicate survives an aborted live Closeout with its flags", async () => {
   const f = await verifyingWithHeldGate({ remote: true });
   try {
-    const item = listWorkItems(f.db)[0]!;
+    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
     const jobId = await enqueueJob(sqliteDb(f.db), {
       queue: JOB_KIND.reverify,
       maxAttempts: 1,
@@ -446,7 +452,7 @@ test("a deferred duplicate survives an aborted live Closeout with its flags", as
       status: "done",
       lastError: null,
     });
-    expect(getWorkItem(f.db, item.id)?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("merge_queue");
     expect(f.gate.runs).toHaveLength(2);
   } finally {
     f.release();
@@ -463,7 +469,7 @@ for (const scenario of ["imported", "retry", "terminal", "mismatch", "question",
       f.release();
       await f.turn;
       await f.restart();
-      const item = listWorkItems(f.db)[0]!;
+      const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
       const runId = item.currentRunId!;
       f.db.run("UPDATE run SET status='active' WHERE id=?", [runId]);
       f.db.run("UPDATE work_item SET state='verifying' WHERE id=?", [item.id]);
@@ -498,8 +504,8 @@ for (const scenario of ["imported", "retry", "terminal", "mismatch", "question",
       let imported = false;
       const verify = f.gate.run;
       f.gate.run = async (input) => {
-        expect(getWorkItem(f.db, item.id)?.currentRunId).toBe(runId);
-        expect(getRun(f.db, runId)?.status).toBe("active");
+        expect((await getWorkItem(sqliteDb(f.db), item.id))?.currentRunId).toBe(runId);
+        expect((await getRun(sqliteDb(f.db), runId))?.status).toBe("active");
         expect(
           f.db.query("SELECT 1 FROM runner_work WHERE run_id=? AND ended_at IS NULL").get(runId),
         ).not.toBeNull();
@@ -522,7 +528,7 @@ for (const scenario of ["imported", "retry", "terminal", "mismatch", "question",
       await f.tickReverify();
       if (scenario === "reader") {
         expect(f.gate.runs).toHaveLength(1);
-        expect(getRun(f.db, runId)?.status).toBe("active");
+        expect((await getRun(sqliteDb(f.db), runId))?.status).toBe("active");
         expect((await listJobs(sqliteDb(f.db))).find((j) => j.id === jobId)?.status).toBe(
           "pending",
         );
@@ -531,13 +537,13 @@ for (const scenario of ["imported", "retry", "terminal", "mismatch", "question",
         await f.tickReverify();
       }
       expect(imported).toBe(importResult);
-      const current = getWorkItem(f.db, item.id)!;
+      const current = (await getWorkItem(sqliteDb(f.db), item.id))!;
       if (scenario === "terminal") {
         expect(current.state).toBe("failed");
-        expect(getRun(f.db, runId)?.status).toBe("lost");
+        expect((await getRun(sqliteDb(f.db), runId))?.status).toBe("lost");
       } else if (scenario === "question") {
         expect(current.state).toBe("awaiting_input");
-        expect(getRun(f.db, runId)?.status).toBe("active");
+        expect((await getRun(sqliteDb(f.db), runId))?.status).toBe("active");
       } else {
         expect((await listJobs(sqliteDb(f.db))).find((job) => job.id === jobId)?.status).toBe(
           importResult ? "done" : "pending",
@@ -546,7 +552,9 @@ for (const scenario of ["imported", "retry", "terminal", "mismatch", "question",
           state: importResult || scenario === "mismatch" ? "merge_queue" : "verifying",
           currentRunId: runId,
         });
-        expect(getRun(f.db, runId)?.status).toBe(importResult ? "ended" : "active");
+        expect((await getRun(sqliteDb(f.db), runId))?.status).toBe(
+          importResult ? "ended" : "active",
+        );
       }
       expect(
         f.db.query("SELECT 1 FROM runner_work WHERE run_id=? AND ended_at IS NULL").get(runId) !==
@@ -565,7 +573,7 @@ test("a prolonged sibling ownership hold cannot interrupt its healthy owner", as
     f.release();
     await f.turn;
     await f.restart();
-    const item = listWorkItems(f.db)[0]!;
+    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
     const contexts = (f.orchestrator as unknown as { jobContexts: Map<string, unknown> })
       .jobContexts;
     contexts.set(item.id, {
@@ -584,7 +592,7 @@ test("a prolonged sibling ownership hold cannot interrupt its healthy owner", as
       status: "pending",
       lastError: null,
     });
-    expect(getWorkItem(f.db, item.id)?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("merge_queue");
     expect(await findOpenQuestion(sqliteDb(f.db), "ses_1")).toBeNull();
     expect(f.gate.runs).toHaveLength(1);
   } finally {
@@ -597,7 +605,7 @@ test("a prolonged sibling ownership hold cannot interrupt its healthy owner", as
 test("a long live Closeout finishes without a waiter opening a blocked question", async () => {
   const f = await verifyingWithHeldGate({ remote: true });
   try {
-    const item = listWorkItems(f.db)[0]!;
+    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
     const jobId = await enqueueJob(sqliteDb(f.db), {
       queue: JOB_KIND.reverify,
       now: Date.now(),
@@ -605,12 +613,12 @@ test("a long live Closeout finishes without a waiter opening a blocked question"
     });
     f.db.run("UPDATE job SET queue='held-test-turn' WHERE id=?", [f.jobId]);
     await f.tickReverify();
-    expect(getWorkItem(f.db, item.id)?.state).toBe("verifying");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("verifying");
     expect(await findOpenQuestion(sqliteDb(f.db), "ses_1")).toBeNull();
     expect((await listJobs(sqliteDb(f.db))).find((j) => j.id === jobId)?.status).toBe("pending");
     f.release();
     await f.turn;
-    expect(getWorkItem(f.db, item.id)?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("merge_queue");
   } finally {
     f.release();
     await f.turn;
@@ -624,7 +632,7 @@ test("ownership acquired during preparation preserves the original wait timer", 
     f.release();
     await f.turn;
     await f.restart();
-    const item = listWorkItems(f.db)[0]!;
+    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
     f.db.run("UPDATE run SET status='active' WHERE id=?", [item.currentRunId]);
     const port = f.orchestrator as unknown as {
       live: Map<string, { itemId: string }>;
@@ -676,7 +684,7 @@ for (const state of [
       f.release();
       await f.turn;
       await f.restart();
-      const item = listWorkItems(f.db)[0]!;
+      const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
       f.db.run("UPDATE work_item SET state=?,cancel_requested=? WHERE id=?", [
         state === "cancel-requested" ? "verifying" : state,
         state === "cancel-requested" ? 1 : 0,
@@ -697,7 +705,7 @@ for (const state of [
       contexts.delete(item.id);
       expect((await listJobs(sqliteDb(f.db))).find((job) => job.id === jobId)?.status).toBe("done");
       expect(await findOpenQuestion(sqliteDb(f.db), "ses_1")).toBeNull();
-      expect(getWorkItem(f.db, item.id)?.state).toBe(
+      expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe(
         state === "cancel-requested" ? "verifying" : state,
       );
       expect(f.gate.runs).toHaveLength(1);
@@ -714,7 +722,7 @@ test("an ownership timer is cleared before work and a later hold starts a fresh 
     f.release();
     await f.turn;
     await f.restart();
-    const item = listWorkItems(f.db)[0]!;
+    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
     const contexts = (f.orchestrator as unknown as { jobContexts: Map<string, unknown> })
       .jobContexts;
     const jobId = await enqueueJob(sqliteDb(f.db), {
@@ -762,7 +770,7 @@ for (const problem of ["no-session", "notification-error"] as const)
       f.release();
       await f.turn;
       await f.restart();
-      const item = listWorkItems(f.db)[0]!;
+      const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
       const internals = f.orchestrator as unknown as {
         jobContexts: Map<string, unknown>;
         activitySession: () => string | null;
@@ -786,7 +794,7 @@ for (const problem of ["no-session", "notification-error"] as const)
       });
       await f.tickReverify();
       internals.jobContexts.delete(item.id);
-      expect(getWorkItem(f.db, item.id)?.state).toBe("failed");
+      expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("failed");
       expect(["done", "cancelled"]).toContain(
         (await listJobs(sqliteDb(f.db))).find((job) => job.id === jobId)?.status ?? "",
       );
@@ -806,7 +814,7 @@ for (const state of ["verifying", "merge_queue"] as const)
         f.release();
         await f.turn;
         await f.restart();
-        const item = listWorkItems(f.db)[0]!;
+        const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
         const runId = item.currentRunId!;
         // A rebased merge-queue head still needs a new round even with a verifying checkpoint.
         f.db.run(
@@ -852,8 +860,11 @@ for (const state of ["verifying", "merge_queue"] as const)
         });
         if (waiting) {
           expect(f.gate.runs).toHaveLength(1);
-          expect(getRun(f.db, runId)?.status).toBe("active");
-          expect(getWorkItem(f.db, item.id)).toMatchObject({ state, currentRunId: runId });
+          expect((await getRun(sqliteDb(f.db), runId))?.status).toBe("active");
+          expect(await getWorkItem(sqliteDb(f.db), item.id)).toMatchObject({
+            state,
+            currentRunId: runId,
+          });
           // The same durable request must take over promptly once the lease expires.
           f.db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [
             Date.now() - RUNNER_LEASE_GRACE_MS - 1_000,
@@ -870,14 +881,14 @@ for (const state of ["verifying", "merge_queue"] as const)
         {
           expect(f.gate.runs).toHaveLength(2);
           expect(rounds).toBe(state === "merge_queue" ? 1 : 0);
-          expect(getRun(f.db, runId)?.status).toBe("lost");
+          expect((await getRun(sqliteDb(f.db), runId))?.status).toBe("lost");
           expect(
             f.db.query("SELECT 1 FROM runner_work WHERE run_id=? AND ended_at IS NULL").all(runId),
           ).toEqual([]);
-          const current = getWorkItem(f.db, item.id)!;
+          const current = (await getWorkItem(sqliteDb(f.db), item.id))!;
           expect(current.state).toBe("merge_queue");
           expect(current.currentRunId).not.toBe(runId);
-          expect(getRun(f.db, current.currentRunId!)).toMatchObject({
+          expect(await getRun(sqliteDb(f.db), current.currentRunId!)).toMatchObject({
             kind: "recheck",
             status: "ended",
           });
@@ -930,13 +941,13 @@ function reviewExhausted(head: string): CloseoutVerdict {
 test("running out of review attempts asks on the item page instead of failing", async () => {
   const f = await verifyingWithHeldGate({ publicUrl: "https://paws.example" });
   try {
-    const item = listWorkItems(f.db)[0]!;
+    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
     f.gate.next = reviewExhausted(f.gate.runs[0]!.headSha);
     f.release();
     await f.turn;
     await f.flush();
 
-    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("awaiting_input");
     const question = (await findOpenQuestion(sqliteDb(f.db), "ses_1"))!;
     expect(question.kind).toBe("link");
     expect(await getLinkAsk(sqliteDb(f.db), question.id)).toMatchObject({
@@ -961,13 +972,13 @@ test("running out of review attempts asks on the item page instead of failing", 
 test("a Paws without a public link asks in Linear when review attempts run out", async () => {
   const f = await verifyingWithHeldGate();
   try {
-    const item = listWorkItems(f.db)[0]!;
+    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
     f.gate.next = reviewExhausted(f.gate.runs[0]!.headSha);
     f.release();
     await f.turn;
     await f.flush();
 
-    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("awaiting_input");
     expect((await findOpenQuestion(sqliteDb(f.db), "ses_1"))?.kind).toBe("closeout-help");
   } finally {
     await f.close();
@@ -1017,13 +1028,13 @@ function ruleBroke(head: string, check: "passed" | "failed" = "passed"): Closeou
 test("a broken approve rule waits for a person on the item page and uses no fix round", async () => {
   const f = await verifyingWithHeldGate({ publicUrl: "https://paws.example" });
   try {
-    const item = listWorkItems(f.db)[0]!;
+    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
     f.gate.next = ruleBroke(f.gate.runs[0]!.headSha);
     f.release();
     await f.turn;
     await f.flush();
 
-    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("awaiting_input");
     expect(restartReasons(f.db, item.id)).toEqual([]);
     const question = (await findOpenQuestion(sqliteDb(f.db), "ses_1"))!;
     expect(await getLinkAsk(sqliteDb(f.db), question.id)).toMatchObject({
@@ -1048,13 +1059,13 @@ test("a broken approve rule waits for a person on the item page and uses no fix 
 test("a broken approve rule beside a failed check sends only the check to the agent", async () => {
   const f = await verifyingWithHeldGate({ publicUrl: "https://paws.example" });
   try {
-    const item = listWorkItems(f.db)[0]!;
+    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
     f.gate.next = ruleBroke(f.gate.runs[0]!.headSha, "failed");
     f.release();
     await f.turn;
     await f.flush();
 
-    expect(getWorkItem(f.db, item.id)?.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("queued");
     expect(restartReasons(f.db, item.id)).toEqual(["findings"]);
     const resume = (await listJobs(sqliteDb(f.db))).find(
       (job) => job.queue === JOB_KIND.resume && job.status === "pending",
@@ -1159,7 +1170,11 @@ async function verifyingWithHeldGate(options: { publicUrl?: string; remote?: boo
   while (gate.runs.length === 0) {
     if (Date.now() > deadline)
       throw new Error(
-        JSON.stringify({ items: listWorkItems(db), lines, progress: tracker.progress }),
+        JSON.stringify({
+          items: await listWorkItems(sqliteDb(db)),
+          lines,
+          progress: tracker.progress,
+        }),
       );
     await Bun.sleep(20);
   }
@@ -1206,8 +1221,8 @@ async function verifyingWithHeldGate(options: { publicUrl?: string; remote?: boo
 
 async function attachRunnerLease(db: Database): Promise<void> {
   for (let attempt = 0; attempt < 2000; attempt += 1) {
-    const item = listWorkItems(db)[0];
-    const run = item?.currentRunId ? getRun(db, item.currentRunId) : null;
+    const item = (await listWorkItems(sqliteDb(db)))[0];
+    const run = item?.currentRunId ? await getRun(sqliteDb(db), item.currentRunId) : null;
     if (run?.status === "active") {
       const now = Date.now();
       const userId = await putWorkspaceUser(sqliteDb(db), {
@@ -1283,7 +1298,7 @@ function created(): AcceptedLinearEvent {
 test("Retry Closeout on a policy that did not load verifies the same head into the merge queue", async () => {
   const f = await verifyingWithHeldGate();
   try {
-    const item = listWorkItems(f.db)[0]!;
+    const item = (await listWorkItems(sqliteDb(f.db)))[0]!;
     const runId = item.currentRunId;
     f.gate.next = {
       decision: "blocked",
@@ -1305,7 +1320,7 @@ test("Retry Closeout on a policy that did not load verifies the same head into t
         answeredByName: "Delegator",
       }),
     ).toBe("answered");
-    expect(getWorkItem(f.db, item.id)?.state).toBe("verifying");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("verifying");
     expect(
       (await listJobs(sqliteDb(f.db)))
         .filter((job) => job.queue === JOB_KIND.reverify)
@@ -1313,7 +1328,10 @@ test("Retry Closeout on a policy that did not load verifies the same head into t
     ).toEqual([`retry-closeout:${question.id}`]);
     await f.tickReverify();
 
-    expect(getWorkItem(f.db, item.id)).toMatchObject({ state: "merge_queue", currentRunId: runId });
+    expect(await getWorkItem(sqliteDb(f.db), item.id)).toMatchObject({
+      state: "merge_queue",
+      currentRunId: runId,
+    });
     expect(f.gate.runs.map((run) => run.headSha)).toEqual([
       f.gate.runs[0]!.headSha,
       f.gate.runs[0]!.headSha,

@@ -32,7 +32,7 @@ async function enqueueMerges(h: MergeHarness, ids: string[]): Promise<void> {
     await enqueueJob(sqliteDb(h.db), {
       queue: JOB_KIND.merge,
       jobKey: `merge:${id}`,
-      payload: { itemId: id, head: getWorkItem(h.db, id)!.checkpoint!.wipCommit },
+      payload: { itemId: id, head: (await getWorkItem(sqliteDb(h.db), id))!.checkpoint!.wipCommit },
       now: h.clock.now(),
     });
 }
@@ -82,7 +82,7 @@ describe("a Paws restart and the merge queue", () => {
       };
       await expect(h.pass(item.id)).rejects.toThrow("preparation failed");
       expect(await mergeCallInFlight(sqliteDb(h.db), item.id)).toBe(false);
-      expect(getWorkItem(h.db, item.id)?.state).toBe("merge_queue");
+      expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("merge_queue");
       expect(await reverifies(h)).toEqual([]);
       expect(h.github.merged).toEqual([]);
       expect(listMergeQueues(h.db).map((entry) => entry.itemId)).toEqual([item.id]);
@@ -123,7 +123,8 @@ describe("a Paws restart and the merge queue", () => {
     await restart(h);
 
     expect(await reverifies(h)).toEqual([]);
-    for (const id of ids) expect(getWorkItem(h.db, id)?.state).toBe("merge_queue");
+    for (const id of ids)
+      expect((await getWorkItem(sqliteDb(h.db), id))?.state).toBe("merge_queue");
     expect(listMergeQueues(h.db).map((entry) => entry.itemId)).toEqual(ids);
 
     h.state.ci = () => undefined;
@@ -148,7 +149,7 @@ describe("a Paws restart and the merge queue", () => {
 
     await restart(h);
 
-    expect(getWorkItem(h.db, item.id)?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("merge_queue");
     expect(await reverifies(h)).toEqual([]);
     const payload = await openMergeJob(h, item.id);
     expect(payload.mergeCallInFlight).toBe(true);
@@ -189,7 +190,7 @@ describe("a Paws restart and the merge queue", () => {
         expect(await mergeCallInFlight(sqliteDb(h.db), item.id)).toBe(true);
         expect(listMergeQueues(h.db)).toEqual(queue);
         expect(await getConfirmedRemoteMerge(sqliteDb(h.db), item.id)).toBeNull();
-        expect(getWorkItem(h.db, item.id)?.state).toBe("merge_queue");
+        expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("merge_queue");
         expect(await reverifies(h)).toEqual([]);
         expect(h.published).toHaveLength(published);
         h.clock.advance(300_000);
@@ -230,10 +231,10 @@ describe("a Paws restart and the merge queue", () => {
     expect(await reverifies(h)).toEqual([]);
     h.state.mergeReadUnknown = false;
     expect(await h.pass(first.id, { itemId: first.id })).toEqual({ kind: "returned" });
-    expect(getWorkItem(h.db, first.id)?.state).toBe("verifying");
+    expect((await getWorkItem(sqliteDb(h.db), first.id))?.state).toBe("verifying");
     expect((await reverifies(h)).map((job) => job.payload)).toEqual([{ itemId: first.id }]);
     expect(await mergeCallInFlight(sqliteDb(h.db), first.id)).toBe(false);
-    expect(getWorkItem(h.db, second.id)?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(h.db), second.id))?.state).toBe("merge_queue");
     expect(listMergeQueues(h.db).map((entry) => entry.itemId)).toEqual([first.id, second.id]);
     expect(h.github.merged).toEqual([]);
   });
@@ -261,7 +262,7 @@ test("a stop after the last squash guard defers until the remote merge completes
       })
     ).deferred,
   ).toBe(true);
-  expect(getWorkItem(h.db, item.id)?.state).toBe("merge_queue");
+  expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("merge_queue");
   release();
   expect(await turn).toEqual({ kind: "merged" });
   expect(h.github.merged).toHaveLength(1);
@@ -269,13 +270,13 @@ test("a stop after the last squash guard defers until the remote merge completes
   // A retry in the gap between the remote response and local completion still waits.
   h.clock.advance(1_000);
   await drainCommands(sqliteDb(h.db), new CommandBus(), h.clock.now());
-  expect(getWorkItem(h.db, item.id)?.state).toBe("merge_queue");
+  expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("merge_queue");
   expect(
     (await completeMergedItem(sqliteDb(h.db), { itemId: item.id, now: h.clock.now() }))?.state,
   ).toBe("merged");
   h.clock.advance(1_000);
   await drainCommands(sqliteDb(h.db), new CommandBus(), h.clock.now());
-  expect(getWorkItem(h.db, item.id)?.state).toBe("merged");
+  expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("merged");
   expect(
     (await listOutbox(sqliteDb(h.db))).filter((row) =>
       String((row.payload as { body?: string }).body).includes("was already merged"),
@@ -313,5 +314,5 @@ test("a stop during the final squash reads still prevents the GitHub call", asyn
   expect(h.github.merged).toEqual([]);
   h.clock.advance(1_000);
   await drainCommands(sqliteDb(h.db), new CommandBus(), h.clock.now());
-  expect(getWorkItem(h.db, item.id)?.state).toBe("paused");
+  expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("paused");
 });

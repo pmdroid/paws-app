@@ -91,7 +91,7 @@ async function executions(db: Database, itemId = "eng-9"): Promise<Job[]> {
 }
 
 async function snapshot(db: Database, itemId = "eng-9") {
-  const item = getWorkItem(db, itemId)!;
+  const item = (await getWorkItem(sqliteDb(db), itemId))!;
   return {
     item: {
       state: item.state,
@@ -104,7 +104,8 @@ async function snapshot(db: Database, itemId = "eng-9") {
       agentMs: item.agentMs,
       cancelRequested: item.cancelRequested,
     },
-    run: item.currentRunId === null ? null : getRun(db, item.currentRunId)?.status,
+    run:
+      item.currentRunId === null ? null : (await getRun(sqliteDb(db), item.currentRunId))?.status,
     jobs: (await executions(db, itemId)).map(
       ({ id, queue, status, runAt, attempts, maxAttempts, payload }) => ({
         id,
@@ -273,7 +274,7 @@ describe("ownership a clock gap does not invent", () => {
         const resumes = (await executions(db)).filter((job) => job.id !== owner);
         expect(resumes).toHaveLength(1);
         expect(await jobVersionCurrent(sqliteDb(db), resumes[0]!)).toBe(true);
-        expect(getWorkItem(db, "eng-9")).toMatchObject({
+        expect(await getWorkItem(sqliteDb(db), "eng-9")).toMatchObject({
           state: "recovering",
           recoveryAttempts: 1,
         });
@@ -373,7 +374,7 @@ describe("repeated clock gaps with holds and parked waits side by side", () => {
       for (const id of ids) after.push(await snapshot(db, id));
       expect(after).toEqual(before);
       expect(await getRunnerSetupHold(sqliteDb(db), "eng-11")).toEqual(hold);
-      expect(getWorkItem(db, "eng-12")?.state).toBe("awaiting_input");
+      expect((await getWorkItem(sqliteDb(db), "eng-12"))?.state).toBe("awaiting_input");
       expect(await listOutbox(sqliteDb(db))).toHaveLength(outbox);
       expect(db.query("SELECT COUNT(*) AS n FROM wake").get()).toEqual({ n: 3 });
       expect(

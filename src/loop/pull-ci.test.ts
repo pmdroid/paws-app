@@ -256,8 +256,8 @@ async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 
       clock,
       FILTER(wait),
     );
-  const branch = () => worktreeBranch(getWorkItem(db, "eng-1")!);
-  const checkRun = (head = HEAD, headBranch = branch(), id?: string) =>
+  const branch = async () => worktreeBranch((await getWorkItem(sqliteDb(db), "eng-1"))!);
+  const checkRun = async (head = HEAD, headBranch?: string, id?: string) =>
     send(
       "check_run",
       {
@@ -266,19 +266,22 @@ async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 
           head_sha: head,
           conclusion: "failure",
           name: "test",
-          check_suite: { head_branch: headBranch },
+          check_suite: { head_branch: headBranch ?? (await branch()) },
         },
       },
       id,
     );
-  const pull = () => ({ number: 7, head: { ref: branch(), sha: HEAD, repo: { id: 11 } } });
+  const pull = async () => ({
+    number: 7,
+    head: { ref: await branch(), sha: HEAD, repo: { id: 11 } },
+  });
   const conversation = (id: number, author: string, body: string) =>
     send("issue_comment", {
       action: "created",
       issue: { number: 7, pull_request: { url: "https://api.github.com/repos/acme/one/pulls/7" } },
       comment: { id, body, user: { login: author } },
     });
-  const changesRequested = (id: number, body: string) =>
+  const changesRequested = async (id: number, body: string) =>
     send("pull_request_review", {
       action: "submitted",
       review: {
@@ -288,7 +291,7 @@ async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 
         commit_id: HEAD,
         user: { login: "pascal" },
       },
-      pull_request: pull(),
+      pull_request: await pull(),
     });
   return {
     db,
@@ -402,7 +405,11 @@ describe("failed CI while a pull request waits for review", () => {
     const h = await setup();
     await h.evaluate();
     const moved = "c".repeat(40);
-    saveCheckpoint(h.db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: moved });
+    await saveCheckpoint(sqliteDb(h.db), "eng-1", {
+      phase: "merge_queue",
+      baseSha: "b",
+      wipCommit: moved,
+    });
     h.state.ci = () => [{ name: "test", conclusion: null, detailsUrl: null }];
     h.tick(10_000);
     expect(await h.evaluate()).toMatchObject({ kind: "wait", reason: "review" });
@@ -524,7 +531,7 @@ describe("failed CI while a pull request waits for review", () => {
     h.tick(60_000);
     expect(await h.runDue()).toEqual(["restarted"]);
     expect((await resumes(h.db)).map((resume) => resume.reason)).toEqual(["ci"]);
-    expect(getWorkItem(h.db, "eng-1")?.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(h.db), "eng-1"))?.state).toBe("queued");
   });
 
   test("pending, green or unreadable CI waits for the review without spending a round", async () => {

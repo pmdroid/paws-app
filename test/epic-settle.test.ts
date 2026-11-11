@@ -166,7 +166,7 @@ test("the orchestrator pump treats a delegation whose items are all merged as fi
       db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").get(),
     ).toBeNull();
     await orchestrator.reconcileExecution();
-    expect(getWorkItem(db, finished.items[0]!.id)?.state).toBe("merged");
+    expect((await getWorkItem(sqliteDb(db), finished.items[0]!.id))?.state).toBe("merged");
     expect(
       db
         .query<{ itemId: string }, [string]>(

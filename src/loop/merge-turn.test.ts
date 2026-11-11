@@ -95,7 +95,7 @@ test("a Merge answer that ends a hung turn's job no longer parks the merge behin
   const { db, clock, jobs, lines, resumeId } = await hungTurn();
   expect(await mergeAcceptedWork(sqliteDb(db), ITEM, { now: clock.now() })).toBe(true);
   expect((await getJob(sqliteDb(db), resumeId))?.status).toBe("cancelled");
-  expect(getWorkItem(db, ITEM)?.state).toBe("merge_queue");
+  expect((await getWorkItem(sqliteDb(db), ITEM))?.state).toBe("merge_queue");
   const merge = db
     .query<{ id: number }, [string]>("SELECT id FROM job WHERE queue = ? AND status = 'pending'")
     .get(JOB_KIND.merge)!.id;

@@ -166,7 +166,12 @@ test("a Linear delegation publishes and merges three GitHub pull requests with o
     expect(github.opened[0]?.body).toContain("Fix attempts: 0");
     expect(prompts.some((prompt) => prompt.includes("P1") && prompt.includes("failOn"))).toBe(true);
     const history = await readFile(
-      path.join(layout.pawsRoot, "runs", runDirectory(db, "DEMO-2"), "closeout-history.jsonl"),
+      path.join(
+        layout.pawsRoot,
+        "runs",
+        await runDirectory(db, "DEMO-2"),
+        "closeout-history.jsonl",
+      ),
       "utf8",
     );
     expect(history).toContain("failOn P1");
@@ -308,11 +313,11 @@ function reply(sessionId: string, body: string): AcceptedLinearEvent {
   };
 }
 
-function runDirectory(db: Database, identifier: string): string {
+async function runDirectory(db: Database, identifier: string): Promise<string> {
   const row = db
     .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_identifier = ?")
     .get(identifier)!;
-  return itemPathId(getWorkItem(db, row.id)!);
+  return itemPathId((await getWorkItem(sqliteDb(db), row.id))!);
 }
 
 function created(issueId: string): AcceptedLinearEvent {
@@ -508,10 +513,9 @@ async function seedCloseoutPolicy(seed: string): Promise<void> {
 
 function stateOf(db: Database, identifier: string): string | null {
   const row = db
-    .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_identifier = ?")
+    .query<{ state: string }, [string]>("SELECT state FROM work_item WHERE linear_identifier = ?")
     .get(identifier);
-  if (!row) return null;
-  return getWorkItem(db, row.id)?.state ?? null;
+  return row?.state ?? null;
 }
 
 function delegationMerged(db: Database): boolean {

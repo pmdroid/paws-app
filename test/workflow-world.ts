@@ -168,13 +168,13 @@ export async function seedFixture(
     await claimedJob(db, JOB_KIND.start, { itemId: id, runId: run.id }, now);
   const toVerifying = async () => {
     await applyWorkItemEvent(sqliteDb(db), id, "turn_ended", { now });
-    saveCheckpoint(db, id, CANDIDATE);
+    await saveCheckpoint(sqliteDb(db), id, CANDIDATE);
   };
   const toMergeQueue = async (runEnded = true) => {
     await toVerifying();
     await accept(db, id, now);
     await applyWorkItemEvent(sqliteDb(db), id, "closeout_accepted", { now });
-    saveCheckpoint(db, id, MERGING);
+    await saveCheckpoint(sqliteDb(db), id, MERGING);
     await joinMergeQueue(sqliteDb(db), { itemId: id, repository: "owner/repo", now });
     if (runEnded) await markRun(sqliteDb(db), run.id, "ended", now);
     await enqueueJob(sqliteDb(db), {
@@ -225,7 +225,7 @@ export async function seedFixture(
       });
       return;
     case "parked_wait":
-      await deferWorkItem(sqliteDb(db), getWorkItem(db, id)!, {
+      await deferWorkItem(sqliteDb(db), (await getWorkItem(sqliteDb(db), id))!, {
         retry: 0,
         delayMs: 5 * MINUTE,
         handoff: null,
@@ -235,7 +235,7 @@ export async function seedFixture(
       });
       return;
     case "transient_retry":
-      await deferWorkItem(sqliteDb(db), getWorkItem(db, id)!, {
+      await deferWorkItem(sqliteDb(db), (await getWorkItem(sqliteDb(db), id))!, {
         retry: 2,
         delayMs: 5 * MINUTE,
         handoff: null,
@@ -457,14 +457,17 @@ function liveRunnerWork(db: Database, item: WorkItemRecord, now: number): boolea
 }
 
 export async function factsOf(db: Database, id: string): Promise<ItemFacts> {
-  const item = getWorkItem(db, id)!;
+  const item = (await getWorkItem(sqliteDb(db), id))!;
   return {
     state: item.state,
     version: item.version,
     recoveryAttempts: item.recoveryAttempts,
     acceptedHead: item.acceptedHead,
     checkpoint: item.checkpoint,
-    runStatus: item.currentRunId === null ? null : (getRun(db, item.currentRunId)?.status ?? null),
+    runStatus:
+      item.currentRunId === null
+        ? null
+        : ((await getRun(sqliteDb(db), item.currentRunId))?.status ?? null),
     cancelRequested: item.cancelRequested,
     liveJobs: (await liveJobsOf(db, item)).map((job) => `${job.queue}:${job.status}`).sort(),
     questions: actionableQuestions(db, id),
@@ -535,7 +538,7 @@ export async function violations(
   { liveness = true }: Checks = {},
 ): Promise<string[]> {
   const found: string[] = [];
-  for (const item of listWorkItems(db)) {
+  for (const item of await listWorkItems(sqliteDb(db))) {
     const say = (message: string) => found.push(`${item.id} (${item.state}): ${message}`);
     const live = await liveJobsOf(db, item);
     const execution = live.filter((job) => EXECUTION_QUEUES.includes(job.queue));

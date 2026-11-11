@@ -52,10 +52,10 @@ test("transient production authorization persists a wait, survives restart and r
   const auth = new GitHubInstallationCheck(sqliteDb(db), host, () => 1000);
   insertQueuedItem(db, { id: "unavailable", sessionKey: "unavailable", title: "unavailable" });
   await beginImplementRun(sqliteDb(db), "unavailable", 1000);
-  const first = getWorkItem(db, "unavailable")!;
+  const first = (await getWorkItem(sqliteDb(db), "unavailable"))!;
   try {
     expect(await auth.ensure(first, "initial", signal)).toBe(false);
-    expect(getWorkItem(db, first.id)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(db), first.id))?.state).toBe("awaiting_input");
     expect(
       (await listOutbox(sqliteDb(db))).filter((entry) => entry.op === "elicitation"),
     ).toHaveLength(0);
@@ -65,7 +65,7 @@ test("transient production authorization persists a wait, survives restart and r
       ),
     ).toBe(true);
     await auth.recover();
-    expect(getWorkItem(db, first.id)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(db), first.id))?.state).toBe("awaiting_input");
   } finally {
     auth.close();
     db.close();
@@ -81,26 +81,26 @@ test("transient production authorization persists a wait, survives restart and r
     insertQueuedItem(reopened, { id: "sibling", sessionKey: "sibling", title: "sibling" });
     await beginImplementRun(sqliteDb(reopened), "sibling", 2000);
     host.check = async (item) => item.id !== "sibling";
-    await recovered.ensure(getWorkItem(reopened, "sibling")!, "initial", signal);
+    await recovered.ensure((await getWorkItem(sqliteDb(reopened), "sibling"))!, "initial", signal);
     host.check = async () => true;
     host.unavailableRetryMs = [];
     await recovered.recover();
-    expect(getWorkItem(reopened, first.id)?.state).toBe("awaiting_input");
-    expect(getWorkItem(reopened, "sibling")?.state).toBe("running");
+    expect((await getWorkItem(sqliteDb(reopened), first.id))?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(reopened), "sibling"))?.state).toBe("running");
     unavailable = false;
     await Promise.all([recovered.recover(), recovered.recover()]);
     await recovered.recover();
-    expect(getWorkItem(reopened, first.id)?.state).toBe("running");
+    expect((await getWorkItem(sqliteDb(reopened), first.id))?.state).toBe("running");
     expect(
       (await listJobs(sqliteDb(reopened))).filter((job) => job.queue === "run.resume"),
     ).toHaveLength(2);
     insertQueuedItem(reopened, { id: "revoked", sessionKey: "revoked", title: "revoked" });
     await beginImplementRun(sqliteDb(reopened), "revoked", 2000);
     host.check = async () => false;
-    await recovered.ensure(getWorkItem(reopened, "revoked")!, "initial", signal);
+    await recovered.ensure((await getWorkItem(sqliteDb(reopened), "revoked"))!, "initial", signal);
     denied = true;
     await recovered.recover();
-    expect(getWorkItem(reopened, "revoked")?.state).toBe("cancelled");
+    expect((await getWorkItem(sqliteDb(reopened), "revoked"))?.state).toBe("cancelled");
   } finally {
     recovered.close();
     reopened.close();
@@ -161,8 +161,12 @@ test("real LinearTaskAccess distinguishes revoked installation from unavailable 
   host.unavailableRetryMs = [];
   const auth = new GitHubInstallationCheck(sqliteDb(db), host, () => 1000);
   try {
-    await auth.ensure(getWorkItem(db, item.id)!, "initial", new AbortController().signal);
-    expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
+    await auth.ensure(
+      (await getWorkItem(sqliteDb(db), item.id))!,
+      "initial",
+      new AbortController().signal,
+    );
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("awaiting_input");
     unavailable = false;
     await revokeLinearInstallation(sqliteDb(db), {
       ...scope,
@@ -170,7 +174,7 @@ test("real LinearTaskAccess distinguishes revoked installation from unavailable 
       createdAtMs: 20,
     });
     await auth.recover();
-    expect(getWorkItem(db, item.id)?.state).toBe("cancelled");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("cancelled");
     expect(
       db.query<{ status: string }, []>("SELECT status FROM github_integration_hold").get()?.status,
     ).toBe("revoked");
@@ -202,9 +206,13 @@ test("an App task with a selected repository starts without an attribution wait"
   await beginImplementRun(sqliteDb(db), item.id, 1000);
   try {
     expect(
-      await auth.ensure(getWorkItem(db, item.id)!, "initial", new AbortController().signal),
+      await auth.ensure(
+        (await getWorkItem(sqliteDb(db), item.id))!,
+        "initial",
+        new AbortController().signal,
+      ),
     ).toBe(true);
-    expect(getWorkItem(db, item.id)?.state).toBe("running");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("running");
     expect(
       (await listOutbox(sqliteDb(db))).some((entry) =>
         JSON.stringify(entry.payload).includes("commit policy"),
@@ -240,7 +248,9 @@ for (const later of [60_000, 11 * 60_000]) {
     await beginImplementRun(sqliteDb(db), "cached", now);
     const signal = new AbortController().signal;
     try {
-      expect(await auth.ensure(getWorkItem(db, "cached")!, "initial", signal)).toBe(true);
+      expect(
+        await auth.ensure((await getWorkItem(sqliteDb(db), "cached"))!, "initial", signal),
+      ).toBe(true);
       let failures = 2;
       host.unavailableRetryMs = [0];
       host.check = async () => {
@@ -248,8 +258,10 @@ for (const later of [60_000, 11 * 60_000]) {
         return true;
       };
       now += later;
-      expect(await auth.ensure(getWorkItem(db, "cached")!, "initial", signal)).toBe(true);
-      expect(getWorkItem(db, "cached")?.state).toBe("running");
+      expect(
+        await auth.ensure((await getWorkItem(sqliteDb(db), "cached"))!, "initial", signal),
+      ).toBe(true);
+      expect((await getWorkItem(sqliteDb(db), "cached"))?.state).toBe("running");
       expect(db.query("SELECT * FROM question").all()).toHaveLength(0);
     } finally {
       auth.close();
@@ -281,11 +293,15 @@ test("a denied authorization after an issue change still stops the task", async 
   await beginImplementRun(sqliteDb(db), "revoked", 1_000);
   const signal = new AbortController().signal;
   try {
-    expect(await auth.ensure(getWorkItem(db, "revoked")!, "initial", signal)).toBe(true);
+    expect(
+      await auth.ensure((await getWorkItem(sqliteDb(db), "revoked"))!, "initial", signal),
+    ).toBe(true);
     allowed = false;
     await auth.invalidate({ issueId: "lin-item-revoked" });
-    expect(await auth.ensure(getWorkItem(db, "revoked")!, "initial", signal)).toBe(false);
-    expect(getWorkItem(db, "revoked")?.state).not.toBe("running");
+    expect(
+      await auth.ensure((await getWorkItem(sqliteDb(db), "revoked"))!, "initial", signal),
+    ).toBe(false);
+    expect((await getWorkItem(sqliteDb(db), "revoked"))?.state).not.toBe("running");
   } finally {
     auth.close();
     db.close();
@@ -334,8 +350,13 @@ async function cachedAuthorization() {
   const auth = new GitHubInstallationCheck(sqliteDb(db), host, () => clock.now);
   insertQueuedItem(db, { id: "task", sessionKey: "session", title: "task" });
   await beginImplementRun(sqliteDb(db), "task", clock.now);
-  const ensure = (options?: { fresh?: boolean }) =>
-    auth.ensure(getWorkItem(db, "task")!, "initial", new AbortController().signal, options);
+  const ensure = async (options?: { fresh?: boolean }) =>
+    auth.ensure(
+      (await getWorkItem(sqliteDb(db), "task"))!,
+      "initial",
+      new AbortController().signal,
+      options,
+    );
   return {
     db,
     auth,
@@ -419,7 +440,7 @@ test("an invalidation still keeps the recent ready check as a fallback for a tra
       throw new Error("GitHub API request failed with 502");
     };
     expect(await f.ensure()).toBe(true);
-    expect(getWorkItem(f.db, "task")?.state).toBe("running");
+    expect((await getWorkItem(sqliteDb(f.db), "task"))?.state).toBe("running");
   } finally {
     f.close();
   }

@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { getWorkItem, mergeQueuePosition } from "../db";
+import { sqliteDb, getWorkItem, mergeQueuePosition } from "../db";
 import { mergeHarness, type MergeHarness } from "./advance-harness";
 import { mergeable, type MergeFacts } from "./mergeable";
 
@@ -57,7 +57,7 @@ test("a high-risk head is held out of the merge queue and asked about", async ()
   expect(h.state.riskAsked).toEqual([item.accepted]);
   expect(h.github.merged).toEqual([]);
   expect(mergeQueuePosition(h.db, "ENG-1")).toBeNull();
-  expect(getWorkItem(h.db, "ENG-1")?.state).toBe("merge_queue");
+  expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("merge_queue");
 });
 
 test("an approved high-risk head joins the queue and merges", async () => {

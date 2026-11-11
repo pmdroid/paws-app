@@ -154,9 +154,11 @@ async function runAccepted(options: {
       db.run("UPDATE job SET max_attempts = 3 WHERE queue = ? AND status = 'pending'", [
         JOB_KIND.merge,
       ]);
-      const item = listWorkItems(db).find((entry) => entry.linearIdentifier === "ENG-8");
+      const item = (await listWorkItems(sqliteDb(db))).find(
+        (entry) => entry.linearIdentifier === "ENG-8",
+      );
       if (options.capAfterAcceptance && !capChecked && item?.state === "merge_queue") {
-        expect(getWorkItem(db, item.id)?.acceptedHead).toMatch(/^[0-9a-f]{40}$/);
+        expect((await getWorkItem(sqliteDb(db), item.id))?.acceptedHead).toMatch(/^[0-9a-f]{40}$/);
         const runId = item.currentRunId;
         if (runId) await markRun(sqliteDb(db), runId, "active", Date.now());
         db.run("UPDATE work_item SET max_awake_ms = 1, awake_ms = 60000 WHERE id = ?", [item.id]);
@@ -175,7 +177,9 @@ async function runAccepted(options: {
     while ((await outbox.tick()).length > 0) await outbox.idle();
     const progress = (kind: string) =>
       tracker.progress.filter((update) => update.kind === kind).map((update) => update.body);
-    const item = listWorkItems(db).find((entry) => entry.linearIdentifier === "ENG-8");
+    const item = (await listWorkItems(sqliteDb(db))).find(
+      (entry) => entry.linearIdentifier === "ENG-8",
+    );
     const merges = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.merge);
     return {
       state: stateOf(db, "ENG-8"),
@@ -187,7 +191,7 @@ async function runAccepted(options: {
       errors: progress("error"),
       questions: progress("elicitation"),
       detail: JSON.stringify({
-        state: item ? getWorkItem(db, item.id)?.state : null,
+        state: item ? (await getWorkItem(sqliteDb(db), item.id))?.state : null,
         jobs: (await listJobs(sqliteDb(db))).map(
           (job) => `${job.queue}:${job.status}:${job.attempts}:${job.lastError ?? ""}`,
         ),

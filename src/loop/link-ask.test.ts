@@ -51,9 +51,10 @@ async function asked(
     "Lea",
     "lea@example.com",
   ]);
+  const current = (await getWorkItem(sqliteDb(db), item.id))!;
   const opened = await sqliteDb(db).transaction((q) =>
     askWithLinkSteps(q, {
-      item: getWorkItem(db, item.id)!,
+      item: current,
       runId: run.id,
       kind,
       head: HEAD,
@@ -69,7 +70,7 @@ const actor = { workspaceId: "ws", userId: "user-lead", name: "Lea" };
 
 test("a link ask opens one elicitation without options and puts the link on the session", async () => {
   const { db, itemId, question, linkAsk } = await asked();
-  expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
   expect(linkAsk).toMatchObject({
     kind: "bypass",
     headCommit: HEAD,
@@ -119,7 +120,7 @@ test("an answer from someone who did not delegate and does not lead the project 
   ).toBe("forbidden");
   expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
   expect((await getLinkAsk(sqliteDb(db), question.id))?.closedAt).toBeNull();
-  expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
 });
 
 test("the project lead decides on the item page: audit row, decided note, back to the merge queue", async () => {
@@ -166,7 +167,7 @@ test("the project lead decides on the item page: audit row, decided note, back t
     ),
   ).toBe(true);
   // The approval binds to the head and never goes to the agent: Closeout completes S again.
-  expect(getWorkItem(db, itemId)?.state).toBe("verifying");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("verifying");
   // A second decision finds nothing open.
   expect(
     await decideLinkAsk(sqliteDb(db), {
@@ -194,7 +195,7 @@ test("a Linear reply never resolves an approval kind, whatever it says", async (
   const linkAsk = (await getLinkAsk(sqliteDb(db), question.id))!;
   expect(linkAsk).toMatchObject({ decision: null, closedReason: "guidance" });
   expect(db.query("SELECT COUNT(*) AS n FROM workspace_access_audit").get()).toEqual({ n: 0 });
-  expect(getWorkItem(db, itemId)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
   const resume = (await listJobs(sqliteDb(db))).find((job) => job.queue === JOB_KIND.resume)!;
   expect((resume.payload as { handoff: string }).handoff).toContain(
     "The reply is guidance and approves nothing",

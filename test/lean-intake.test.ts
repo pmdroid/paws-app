@@ -170,7 +170,12 @@ test("intake of a lone issue reads the issue and its relations after the first a
     expect(f.intakeCalls).toEqual(["loadEpic", "listDeps"]);
     expect(f.launches).toEqual([]);
     expect(
-      getWorkItem(f.db, (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!)?.state,
+      (
+        await getWorkItem(
+          sqliteDb(f.db),
+          (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!,
+        )
+      )?.state,
     ).toBe("queued");
   } finally {
     f.db.close();
@@ -192,10 +197,10 @@ test("a lone issue hydrates its session context and classifies at start", async 
     expect(classify?.[0]).toBe("classify");
     expect(Number(classify?.[1])).toBeGreaterThanOrEqual(hydrated);
     expect(answer?.[0]).toBe("answer");
-    const item = getWorkItem(
-      f.db,
+    const item = (await getWorkItem(
+      sqliteDb(f.db),
       (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!,
-    )!;
+    ))!;
     expect(await getTaskMode(sqliteDb(f.db), item.id)).toBe("answer");
     expect(item.state).toBe("completed");
   } finally {
@@ -211,10 +216,10 @@ test("a parent with open sub-issues still classifies at intake", async () => {
   try {
     await f.intake();
     expect(f.launches.map((launch) => launch.split("@")[0])).toEqual(["classify"]);
-    const item = getWorkItem(
-      f.db,
+    const item = (await getWorkItem(
+      sqliteDb(f.db),
       (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!,
-    )!;
+    ))!;
     expect(item.linearIssueId).toBe("solo");
     expect(await getTaskMode(sqliteDb(f.db), item.id)).toBe("answer");
   } finally {

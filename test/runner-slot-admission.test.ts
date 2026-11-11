@@ -393,7 +393,7 @@ test("an enabled but unavailable placement scope stays queued while disabled che
   await queue("unknown");
   const options = { now: NOW, admission: workspaceAdmission(db) };
   expect(await dispatch(db, { ...options, itemRunners: () => syncSteps(() => null) })).toEqual([]);
-  expect(getWorkItem(db, "unknown")?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), "unknown"))?.state).toBe("queued");
   expect((await listItemHolds(sqliteDb(db)))[0]?.blockers[0]).toContain("placement scope");
   expect(await dispatch(db, options)).toEqual(["unknown"]);
 });
@@ -501,7 +501,7 @@ test("unavailable session authority holds only its item and does not abort unrel
     ),
   ).toBeNull();
   expect(await pass()).toEqual(["b-ready"]);
-  expect(getWorkItem(db, "a-stopped")?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), "a-stopped"))?.state).toBe("queued");
 });
 
 test("a queued restart reuses its active run's held slot without admitting unrelated work", async () => {
@@ -517,7 +517,7 @@ test("a queued restart reuses its active run's held slot without admitting unrel
     [run.id, pinned, workspace.id, NOW - 1, NOW - 1, NOW - 1],
   );
   expect(await pass()).toEqual(["b-resume"]);
-  expect(getWorkItem(db, "a-unrelated")?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), "a-unrelated"))?.state).toBe("queued");
   expect(
     (await schedulerRunnerSlots(sqliteDb(db), NOW)).find((row) => row.itemId === "b-resume")
       ?.runnerId,

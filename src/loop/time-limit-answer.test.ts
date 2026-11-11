@@ -38,7 +38,11 @@ async function askedAtTimeLimit(pendingHandoff?: string) {
   await markCloseoutAccepted(sqliteDb(db), item.id, "accepted");
   await applyWorkItemEvent(sqliteDb(db), item.id, "restart", { kind: "restart", reason: "review" });
   await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
-  saveCheckpoint(db, item.id, { phase: "running", baseSha: "base", wipCommit: "accepted" });
+  await saveCheckpoint(sqliteDb(db), item.id, {
+    phase: "running",
+    baseSha: "base",
+    wipCommit: "accepted",
+  });
   if (pendingHandoff !== undefined)
     await enqueueJob(sqliteDb(db), {
       queue: "run.resume",
@@ -55,14 +59,12 @@ async function askedAtTimeLimit(pendingHandoff?: string) {
     body: string;
     options: string[];
   };
+  const runId = (await getWorkItem(sqliteDb(db), item.id))!.currentRunId;
   await sqliteDb(db).transaction((q) =>
-    askSteps(
-      q,
-      { itemId: item.id, runId: getWorkItem(db, item.id)!.currentRunId, sessionId: "ses" },
-      "time-limit",
-      request.body,
-      { options: request.options, now: clock.now() },
-    ),
+    askSteps(q, { itemId: item.id, runId, sessionId: "ses" }, "time-limit", request.body, {
+      options: request.options,
+      now: clock.now(),
+    }),
   );
   return { clock, db, item };
 }
@@ -79,7 +81,7 @@ async function askedBeforeAcceptance(state: "running" | "verifying") {
     now: clock.now(),
   });
   await beginImplementRun(sqliteDb(db), item.id, clock.now());
-  saveCheckpoint(db, item.id, { phase: state, baseSha: "base", wipCommit: "head" });
+  await saveCheckpoint(sqliteDb(db), item.id, { phase: state, baseSha: "base", wipCommit: "head" });
   const queue = state === "verifying" ? JOB_KIND.reverify : JOB_KIND.resume;
   if (state === "verifying") await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
   await enqueueJob(sqliteDb(db), { queue, payload: { itemId: item.id }, now: clock.now() });
@@ -106,14 +108,13 @@ async function askedBeforeAcceptance(state: "running" | "verifying") {
     options: string[];
     reason: string;
   };
+  const runId = (await getWorkItem(sqliteDb(db), item.id))!.currentRunId;
   await sqliteDb(db).transaction((q) =>
-    askSteps(
-      q,
-      { itemId: item.id, runId: getWorkItem(db, item.id)!.currentRunId, sessionId: "ses" },
-      "time-limit",
-      request.body,
-      { options: request.options, reason: request.reason, now: clock.now() },
-    ),
+    askSteps(q, { itemId: item.id, runId, sessionId: "ses" }, "time-limit", request.body, {
+      options: request.options,
+      reason: request.reason,
+      now: clock.now(),
+    }),
   );
   return { clock, db, item };
 }
@@ -136,7 +137,7 @@ async function reply(
 test("Continue at the time limit starts a fresh budget and resumes it", async () => {
   const { clock, db, item } = await askedAtTimeLimit();
   expect((await reply(db, "Continue", clock.now())).status).toBe("answered");
-  expect(getWorkItem(db, item.id)).toMatchObject({
+  expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
     state: "queued",
     fixMs: 0,
     maxAwakeMs: 3 * 60 * MINUTE,
@@ -176,13 +177,13 @@ test("Continue hands over a review the time limit cut off before the agent start
   const handoff = (resumes[1]!.payload as { handoff: string }).handoff;
   expect(handoff.startsWith(review)).toBe(true);
   expect(handoff).toContain("Answer: Continue");
-  expect(getWorkItem(db, item.id)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("queued");
 });
 
 test("Stop at the time limit ends the task and names the accepted branch", async () => {
   const { clock, db, item } = await askedAtTimeLimit();
   expect((await reply(db, "Stop", clock.now())).status).toBe("answered");
-  expect(getWorkItem(db, item.id)?.state).toBe("failed");
+  expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("failed");
   expect((await listJobs(sqliteDb(db))).some((job) => job.queue === "run.resume")).toBe(false);
   expect((await listOutbox(sqliteDb(db))).at(-1)?.payload).toMatchObject({
     kind: "error",
@@ -194,9 +195,9 @@ test("Stop at the time limit ends the task and names the accepted branch", async
 
 test("Continue while the stopped run is still finishing queues one fenced restart", async () => {
   const { clock, db, item } = await askedAtTimeLimit();
-  const runId = getWorkItem(db, item.id)!.currentRunId!;
+  const runId = (await getWorkItem(sqliteDb(db), item.id))!.currentRunId!;
   expect((await reply(db, "Continue", clock.now(), (id) => id === runId)).status).toBe("answered");
-  expect(getWorkItem(db, item.id)).toMatchObject({
+  expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
     state: "queued",
     fixMs: 0,
     maxAwakeMs: 3 * 60 * MINUTE,
@@ -220,8 +221,8 @@ test("the time-limit question for accepted work offers Merge, Continue and Stop"
 test("Merge the accepted work at the time limit goes to the merge queue without a turn", async () => {
   const { clock, db, item } = await askedAtTimeLimit();
   expect((await reply(db, "Merge the accepted work", clock.now())).status).toBe("answered");
-  expect(getWorkItem(db, item.id)).toMatchObject({ state: "merge_queue" });
-  expect(getWorkItem(db, item.id)?.checkpoint).toMatchObject({
+  expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({ state: "merge_queue" });
+  expect((await getWorkItem(sqliteDb(db), item.id))?.checkpoint).toMatchObject({
     phase: "merge_queue",
     wipCommit: "accepted",
   });
@@ -242,7 +243,10 @@ test("Continue with new instructions at the time limit starts a fresh budget", a
   expect((await reply(db, "Continue, but fix the acme lint first", clock.now())).status).toBe(
     "answered",
   );
-  expect(getWorkItem(db, item.id)).toMatchObject({ fixMs: 0, maxAwakeMs: 3 * 60 * MINUTE });
+  expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
+    fixMs: 0,
+    maxAwakeMs: 3 * 60 * MINUTE,
+  });
   expect(
     (await listOutbox(sqliteDb(db))).some((row) => row.idempotencyKey.startsWith("fresh-budget:")),
   ).toBe(true);
@@ -251,7 +255,7 @@ test("Continue with new instructions at the time limit starts a fresh budget", a
 for (const state of ["running", "verifying"] as const) {
   test(`a ${state} item without an accepted head asks Continue or Stop at the time limit`, async () => {
     const { db, item } = await askedBeforeAcceptance(state);
-    expect(getWorkItem(db, item.id)).toMatchObject({
+    expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
       state: "awaiting_input",
       cancelRequested: false,
     });
@@ -276,7 +280,7 @@ for (const state of ["running", "verifying"] as const) {
 test("Continue after the time limit stopped Closeout checks the same head again with a fresh budget", async () => {
   const { clock, db, item } = await askedBeforeAcceptance("verifying");
   expect((await reply(db, "Continue", clock.now())).status).toBe("answered");
-  expect(getWorkItem(db, item.id)).toMatchObject({
+  expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
     state: "verifying",
     closeoutMs: 0,
     maxAwakeMs: 3 * 60 * MINUTE,
@@ -295,7 +299,7 @@ test("Continue after the time limit stopped Closeout checks the same head again 
 test("Continue after the time limit stopped an agent without an accepted head resumes it", async () => {
   const { clock, db, item } = await askedBeforeAcceptance("running");
   expect((await reply(db, "Continue", clock.now())).status).toBe("answered");
-  expect(getWorkItem(db, item.id)).toMatchObject({
+  expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
     state: "queued",
     implementMs: 0,
     maxAwakeMs: 3 * 60 * MINUTE,
@@ -310,7 +314,7 @@ test("Continue after the time limit stopped an agent without an accepted head re
 test("Stop at the time limit without an accepted head names the branch with the work", async () => {
   const { clock, db, item } = await askedBeforeAcceptance("verifying");
   expect((await reply(db, "Stop", clock.now())).status).toBe("answered");
-  expect(getWorkItem(db, item.id)?.state).toBe("failed");
+  expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("failed");
   expect((await listOutbox(sqliteDb(db))).at(-1)?.payload).toMatchObject({
     kind: "error",
     body: expect.stringMatching(

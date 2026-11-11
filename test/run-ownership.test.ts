@@ -75,11 +75,19 @@ describe("run ownership", () => {
       expect(await recoverOnStartup(sqliteDb(b), 1_000, undefined, other.id)).toEqual([
         { type: "resume", freshSession: true, checkpoint },
       ]);
-      expect(getWorkItem(b, "acme-1")).toMatchObject({ state: "running", recoveryAttempts: 0 });
+      expect(await getWorkItem(sqliteDb(b), "acme-1")).toMatchObject({
+        state: "running",
+        recoveryAttempts: 0,
+      });
       expect(await resumeJobs(b, "acme-1")).toEqual([]);
       expect(await runOwner(sqliteDb(b), ownedRun)).toBe(acme.id);
-      expect(getWorkItem(b, "acme-2")).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
-      expect(await runOwner(sqliteDb(b), getWorkItem(b, "acme-2")!.currentRunId!)).toBe(other.id);
+      expect(await getWorkItem(sqliteDb(b), "acme-2")).toMatchObject({
+        state: "recovering",
+        recoveryAttempts: 1,
+      });
+      expect(
+        await runOwner(sqliteDb(b), (await getWorkItem(sqliteDb(b), "acme-2"))!.currentRunId!),
+      ).toBe(other.id);
     } finally {
       b.close();
       a.close();
@@ -157,7 +165,10 @@ describe("run ownership", () => {
       expect(decisions).toHaveLength(1);
       expect(decisions[0]!.decision).toEqual({ type: "resume", freshSession: true, checkpoint });
       expect(await runOwner(sqliteDb(b), runId)).toBe(decisions[0]!.by);
-      expect(getWorkItem(b, "acme-1")).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
+      expect(await getWorkItem(sqliteDb(b), "acme-1")).toMatchObject({
+        state: "recovering",
+        recoveryAttempts: 1,
+      });
       expect(await resumeJobs(b, "acme-1")).toHaveLength(1);
     } finally {
       c.close();
@@ -217,10 +228,10 @@ describe("run ownership", () => {
 
       await prepareShutdown(sqliteDb(a), 1_000, undefined, acme.id);
 
-      expect(getRun(a, mine)?.status).toBe("lost");
-      expect(getWorkItem(a, "acme-1")?.state).toBe("recovering");
-      expect(getRun(a, theirs)?.status).toBe("active");
-      expect(getWorkItem(a, "acme-2")?.state).toBe("running");
+      expect((await getRun(sqliteDb(a), mine))?.status).toBe("lost");
+      expect((await getWorkItem(sqliteDb(a), "acme-1"))?.state).toBe("recovering");
+      expect((await getRun(sqliteDb(a), theirs))?.status).toBe("active");
+      expect((await getWorkItem(sqliteDb(a), "acme-2"))?.state).toBe("running");
     } finally {
       b.close();
       a.close();
@@ -272,7 +283,10 @@ describe("run ownership across two Paws processes", () => {
 
       second = spawnPaws(home);
       const b = await readyInstance(second);
-      expect(getWorkItem(db, "acme-1")).toMatchObject({ state: "running", recoveryAttempts: 0 });
+      expect(await getWorkItem(sqliteDb(db), "acme-1")).toMatchObject({
+        state: "running",
+        recoveryAttempts: 0,
+      });
       expect(await resumeJobs(db, "acme-1")).toEqual([]);
       expect(await runOwner(sqliteDb(db), aRun)).toBe(a);
       const bRun = await runningItem(db, "acme-2", b, Date.now());
@@ -280,10 +294,10 @@ describe("run ownership across two Paws processes", () => {
       first.kill("SIGTERM");
       expect(await first.exited).toBe(0);
 
-      expect(getRun(db, aRun)?.status).toBe("lost");
-      expect(getWorkItem(db, "acme-1")?.state).toBe("recovering");
-      expect(getRun(db, bRun)?.status).toBe("active");
-      expect(getWorkItem(db, "acme-2")?.state).toBe("running");
+      expect((await getRun(sqliteDb(db), aRun))?.status).toBe("lost");
+      expect((await getWorkItem(sqliteDb(db), "acme-1"))?.state).toBe("recovering");
+      expect((await getRun(sqliteDb(db), bRun))?.status).toBe("active");
+      expect((await getWorkItem(sqliteDb(db), "acme-2"))?.state).toBe("running");
     } finally {
       first.kill("SIGKILL");
       second?.kill("SIGKILL");

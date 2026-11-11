@@ -304,13 +304,19 @@ test("an answer task mid-turn keeps running through a Paws restart and finishes 
     expect(f.commandCount("cancel")).toBe(0);
 
     await prepareShutdown(sqliteDb(f.db));
-    expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "running", recoveryAttempts: 0 });
-    expect(getRun(f.db, f.run.id)?.status).toBe("active");
+    expect(await getWorkItem(sqliteDb(f.db), f.item.id)).toMatchObject({
+      state: "running",
+      recoveryAttempts: 0,
+    });
+    expect((await getRun(sqliteDb(f.db), f.run.id))?.status).toBe("active");
     f.restart();
     expect(await recoverOnStartup(sqliteDb(f.db))).toEqual([
       { type: "resume", freshSession: true, checkpoint: null, reattach: true },
     ]);
-    expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "running", recoveryAttempts: 0 });
+    expect(await getWorkItem(sqliteDb(f.db), f.item.id)).toMatchObject({
+      state: "running",
+      recoveryAttempts: 0,
+    });
     expect(
       (await listJobs(sqliteDb(f.db))).filter(
         (job) => job.queue === "run.resume" && job.status === "pending",
@@ -378,12 +384,12 @@ test("an answer task whose runner lease ran past its grace resumes from the star
 
     const later = Date.now() + 60_001 + RUNNER_LEASE_GRACE_MS;
     await prepareShutdown(sqliteDb(f.db), later);
-    expect(getWorkItem(f.db, f.item.id)?.state).toBe("recovering");
+    expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("recovering");
     f.restart();
     expect(await recoverOnStartup(sqliteDb(f.db), later)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
-    expect(getWorkItem(f.db, f.item.id)).toMatchObject({ recoveryAttempts: 1 });
+    expect(await getWorkItem(sqliteDb(f.db), f.item.id)).toMatchObject({ recoveryAttempts: 1 });
   } finally {
     await f.close();
   }

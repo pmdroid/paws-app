@@ -72,7 +72,11 @@ async function acceptedItem(maxAwakeMs: number) {
   await completeJob(sqliteDb(db), verifying, clock.now());
   await applyWorkItemEvent(sqliteDb(db), item.id, "closeout_accepted");
   await markCloseoutAccepted(sqliteDb(db), item.id, "accepted");
-  saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: "accepted" });
+  await saveCheckpoint(sqliteDb(db), item.id, {
+    phase: "merge_queue",
+    baseSha: "base",
+    wipCommit: "accepted",
+  });
   return { clock, db, item, run };
 }
 
@@ -153,7 +157,10 @@ test("the job loop bills only active agent and Closeout work across every waitin
   );
   clock.advance(60 * MINUTE); // The claim must settle queued time even without a supervisor tick.
   expect(await jobs.tick([JOB_KIND.start])).not.toBeNull();
-  expect(getWorkItem(db, item.id)).toMatchObject({ state: "merge_queue", awakeMs: 10 * MINUTE });
+  expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
+    state: "merge_queue",
+    awakeMs: 10 * MINUTE,
+  });
   db.close();
 });
 
@@ -228,25 +235,25 @@ test("a job retry backoff in running counts nothing and work resumes at the next
     now: clock.now(),
   });
   await jobs.tick([JOB_KIND.resume]);
-  expect(getWorkItem(db, item.id)?.awakeMs).toBe(2 * MINUTE);
+  expect((await getWorkItem(sqliteDb(db), item.id))?.awakeMs).toBe(2 * MINUTE);
   clock.advance(120 * MINUTE);
   expect((await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now())).item.awakeMs).toBe(
     2 * MINUTE,
   );
   await jobs.tick([JOB_KIND.resume]);
   expect(attempts).toBe(2);
-  expect(getWorkItem(db, item.id)?.awakeMs).toBe(4 * MINUTE);
+  expect((await getWorkItem(sqliteDb(db), item.id))?.awakeMs).toBe(4 * MINUTE);
   db.close();
 });
 
 describe("awake-time cap after Closeout accepted the work", () => {
   test("re-verification after a restart doesn't add awake time", async () => {
     const { clock, db, item } = await acceptedItem(3 * 60 * MINUTE);
-    expect(getWorkItem(db, item.id)?.awakeMs).toBe(15 * MINUTE);
+    expect((await getWorkItem(sqliteDb(db), item.id))?.awakeMs).toBe(15 * MINUTE);
     await applyWorkItemEvent(sqliteDb(db), item.id, "reverify_requested");
 
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([{ type: "reverify" }]);
-    const restarted = getWorkItem(db, item.id);
+    const restarted = await getWorkItem(sqliteDb(db), item.id);
     expect(restarted?.state).toBe("verifying");
     expect(restarted?.checkpoint?.phase).toBe("verifying");
     expect((await listJobs(sqliteDb(db))).some((job) => job.queue === "run.reverify")).toBe(true);
@@ -270,7 +277,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     expect((await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now())).capped).toBe(
       false,
     );
-    expect(getWorkItem(db, item.id)?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("merge_queue");
 
     await applyWorkItemEvent(sqliteDb(db), item.id, "reverify_requested");
     await recoverOnStartup(sqliteDb(db), clock.now());
@@ -279,7 +286,11 @@ describe("awake-time cap after Closeout accepted the work", () => {
       false,
     );
 
-    saveCheckpoint(db, item.id, { phase: "verifying", baseSha: "base", wipCommit: "newer" });
+    await saveCheckpoint(sqliteDb(db), item.id, {
+      phase: "verifying",
+      baseSha: "base",
+      wipCommit: "newer",
+    });
     clock.advance(60 * MINUTE);
     const verifying = await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now());
     expect(verifying.capped).toBe(false);
@@ -294,7 +305,11 @@ describe("awake-time cap after Closeout accepted the work", () => {
       reason: "follow_up",
     });
     await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
-    saveCheckpoint(db, item.id, { phase: "running", baseSha: "base", wipCommit: "accepted" });
+    await saveCheckpoint(sqliteDb(db), item.id, {
+      phase: "running",
+      baseSha: "base",
+      wipCommit: "accepted",
+    });
     await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
     clock.advance(20 * MINUTE);
 
@@ -323,7 +338,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
       "item.ask": "pending",
     });
     expect(result.item).toMatchObject({ state: "running", cancelRequested: false });
-    expect(getRun(db, run.id)?.status).toBe("ended");
+    expect((await getRun(sqliteDb(db), run.id))?.status).toBe("ended");
     const request = (await listJobs(sqliteDb(db))).find((job) => job.queue === "item.ask")?.payload;
     expect(request).toMatchObject({
       kind: "time-limit",
@@ -399,7 +414,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
         clock.mono(),
         clock.now(),
         undefined,
-        getWorkItem(db, item.id)?.state === "running" ? true : undefined,
+        (await getWorkItem(sqliteDb(db), item.id))?.state === "running" ? true : undefined,
       );
     await beginImplementRun(sqliteDb(db), item.id, clock.now());
     await accrue();
@@ -410,7 +425,10 @@ describe("awake-time cap after Closeout accepted the work", () => {
     // Two idle hours in verifying, then a job claims the item before the next accrual.
     clock.advance(2 * 60 * MINUTE);
     let { running } = await verify();
-    expect(getWorkItem(db, item.id)).toMatchObject({ awakeMs: 41 * MINUTE, closeoutMs: 0 });
+    expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
+      awakeMs: 41 * MINUTE,
+      closeoutMs: 0,
+    });
     clock.advance(10 * MINUTE);
     await accrue();
     // The job ends between accruals: its last five minutes still count.
@@ -465,7 +483,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
         queues: [JOB_KIND.resume],
       }))!;
       await accrueAtJobBoundary(sqliteDb(db), job, "claimed", clock.mono(), clock.now());
-      expect(getWorkItem(db, item.id)).toMatchObject({
+      expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
         state,
         currentRunId: run.id,
         awakeMs: 0,
@@ -687,17 +705,21 @@ describe("awake-time cap after Closeout accepted the work", () => {
     await beginImplementRun(sqliteDb(db), item.id, clock.now());
     await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
     await applyWorkItemEvent(sqliteDb(db), item.id, "closeout_accepted");
-    saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: "accepted" });
+    await saveCheckpoint(sqliteDb(db), item.id, {
+      phase: "merge_queue",
+      baseSha: "base",
+      wipCommit: "accepted",
+    });
     for (const column of ["accepted_head", "agent_ms", "closeout_ms", "waiting_ms", "recheck_ms"])
       db.run(`ALTER TABLE work_item DROP COLUMN ${column}`);
     db.run("DELETE FROM schema_migration WHERE id = '117_work_item_awake_breakdown'");
     db.run("UPDATE work_item SET awake_ms = ? WHERE id = ?", [29 * MINUTE, item.id]);
 
     legacyMigrate(db);
-    expect(getWorkItem(db, item.id)?.acceptedHead).toBe("accepted");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.acceptedHead).toBe("accepted");
     await applyWorkItemEvent(sqliteDb(db), item.id, "reverify_requested");
     await recoverOnStartup(sqliteDb(db), clock.now());
-    expect(getWorkItem(db, item.id)?.state).toBe("verifying");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("verifying");
     await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now());
     clock.advance(32 * MINUTE);
     const result = await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now());
@@ -718,7 +740,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     await beginImplementRun(sqliteDb(db), accepted.id, clock.now());
     await applyWorkItemEvent(sqliteDb(db), accepted.id, "turn_ended");
     await applyWorkItemEvent(sqliteDb(db), accepted.id, "closeout_accepted");
-    saveCheckpoint(db, accepted.id, {
+    await saveCheckpoint(sqliteDb(db), accepted.id, {
       phase: "merge_queue",
       baseSha: "base",
       wipCommit: "accepted",
@@ -726,7 +748,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     db.run("UPDATE work_item SET accepted_head = NULL");
     await applyWorkItemEvent(sqliteDb(db), accepted.id, "reverify_requested");
     await recoverOnStartup(sqliteDb(db), clock.now());
-    expect(getWorkItem(db, accepted.id)).toMatchObject({
+    expect(await getWorkItem(sqliteDb(db), accepted.id)).toMatchObject({
       state: "verifying",
       checkpoint: { phase: "verifying" },
     });
@@ -738,15 +760,19 @@ describe("awake-time cap after Closeout accepted the work", () => {
     });
     await beginImplementRun(sqliteDb(db), fresh.id, clock.now());
     await applyWorkItemEvent(sqliteDb(db), fresh.id, "turn_ended");
-    saveCheckpoint(db, fresh.id, { phase: "verifying", baseSha: "base", wipCommit: "unchecked" });
+    await saveCheckpoint(sqliteDb(db), fresh.id, {
+      phase: "verifying",
+      baseSha: "base",
+      wipCommit: "unchecked",
+    });
     for (const column of ["accepted_head", "agent_ms", "closeout_ms", "waiting_ms", "recheck_ms"])
       db.run(`ALTER TABLE work_item DROP COLUMN ${column}`);
     db.run("DELETE FROM schema_migration WHERE id = '117_work_item_awake_breakdown'");
     db.run("UPDATE work_item SET awake_ms = ? WHERE id = ?", [29 * MINUTE, accepted.id]);
 
     legacyMigrate(db);
-    expect(getWorkItem(db, accepted.id)?.acceptedHead).toBe("accepted");
-    expect(getWorkItem(db, fresh.id)?.acceptedHead).toBeNull();
+    expect((await getWorkItem(sqliteDb(db), accepted.id))?.acceptedHead).toBe("accepted");
+    expect((await getWorkItem(sqliteDb(db), fresh.id))?.acceptedHead).toBeNull();
     await accrueAwake(sqliteDb(db), accepted.id, clock.mono(), clock.now());
     clock.advance(32 * MINUTE);
     const result = await accrueAwake(sqliteDb(db), accepted.id, clock.mono(), clock.now());
@@ -763,7 +789,11 @@ describe("awake-time cap after Closeout accepted the work", () => {
     });
     await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
     await setCurrentRun(sqliteDb(db), item.id, run.id);
-    saveCheckpoint(db, item.id, { phase: "running", baseSha: "base", wipCommit: "accepted" });
+    await saveCheckpoint(sqliteDb(db), item.id, {
+      phase: "running",
+      baseSha: "base",
+      wipCommit: "accepted",
+    });
     await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
     clock.advance(20 * MINUTE);
     await enqueueJob(sqliteDb(db), {
@@ -792,7 +822,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
       cancelRequested: false,
       maxAwakeMs: 30 * MINUTE + 60 * MINUTE,
     });
-    expect(getRun(db, run.id)?.status).toBe("ended");
+    expect((await getRun(sqliteDb(db), run.id))?.status).toBe("ended");
     expect(
       (await listOutbox(sqliteDb(db))).some(
         (row) => (row.payload as { kind?: string }).kind === "error",

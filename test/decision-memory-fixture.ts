@@ -88,7 +88,7 @@ export async function probeDecisionMemory(root: string) {
     const options = await suggest(pending.id, pending.body);
     assert.equal(options.length, 1);
     assert.equal((await getQuestion(sqliteDb(f.db), pending.id))?.status, "open");
-    assert.equal(getWorkItem(f.db, "controlled")?.state, "awaiting_input");
+    assert.equal((await getWorkItem(sqliteDb(f.db), "controlled"))?.state, "awaiting_input");
     assert.equal(f.db.query("SELECT * FROM job WHERE queue='run.resume'").all().length, 0);
     observations.push("Search and persisted suggestions leave work awaiting human input");
     await assert.rejects(confirm(pending.id, options[0]!.value, "inactive"));
@@ -121,7 +121,7 @@ export async function probeDecisionMemory(root: string) {
       updatedAtMs: Date.now() + 500,
       payload: JSON.stringify({ questionId: pending.id, answeredBy: "member" }),
     });
-    assert.equal(getWorkItem(f.db, "controlled")?.state, "awaiting_input");
+    assert.equal((await getWorkItem(sqliteDb(f.db), "controlled"))?.state, "awaiting_input");
     assert.equal(
       f.db
         .query<{ kind: string }, []>(

@@ -259,7 +259,7 @@ test("an incomplete access scan retries without binding the surviving repository
     await f.attach().onLinearEvent(event());
     await f.jobs.tick();
     const item = f.db.query<{ id: string }, []>("SELECT id FROM work_item").get()!;
-    expect(getWorkItem(f.db, item.id)?.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("queued");
     expect(getWorkItemRepository(f.db, item.id)).toBeNull();
     expect(await findOpenQuestion(sqliteDb(f.db), "session")).toBeNull();
     expect(
@@ -333,7 +333,7 @@ test("ambiguous configured repositories ask before any worktree or issue-state m
       "https://github.com/acme/two",
       "https://github.com/acme/one",
     ]);
-    expect(getWorkItem(f.db, question.itemId)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(f.db), question.itemId))?.state).toBe("awaiting_input");
     expect(f.checked).toEqual(["one", "two", "private"]);
     const request = {
       issueId: "issue",
@@ -525,7 +525,7 @@ test("Stop interrupts repository interpretation before any binding or repository
     });
     await pending;
     expect(getWorkItemRepository(f.db, question.itemId)).toBeNull();
-    expect(getWorkItem(f.db, question.itemId)?.state).toBe("paused");
+    expect((await getWorkItem(sqliteDb(f.db), question.itemId))?.state).toBe("paused");
     expect(f.tracker.statuses).toEqual([]);
     expect(existsSync(join(f.pawsRoot, "worktrees"))).toBe(false);
   } finally {
@@ -861,13 +861,17 @@ test("a bound repository outside the team's new links is explained once, not can
       "INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES('workspace','acme/one','team')",
     );
     const signal = new AbortController().signal;
-    expect(await check.ensure(getWorkItem(f.db, id)!, "publication", signal, { fresh: true })).toBe(
-      false,
-    );
-    expect(await check.ensure(getWorkItem(f.db, id)!, "publication", signal, { fresh: true })).toBe(
-      false,
-    );
-    expect(getWorkItem(f.db, id)?.state).toBe("cancelled");
+    expect(
+      await check.ensure((await getWorkItem(sqliteDb(f.db), id))!, "publication", signal, {
+        fresh: true,
+      }),
+    ).toBe(false);
+    expect(
+      await check.ensure((await getWorkItem(sqliteDb(f.db), id))!, "publication", signal, {
+        fresh: true,
+      }),
+    ).toBe(false);
+    expect((await getWorkItem(sqliteDb(f.db), id))?.state).toBe("cancelled");
     const responses = (await listOutbox(sqliteDb(f.db)))
       .filter((entry) => entry.delivery === "stop")
       .map((entry) => (entry.payload as { body: string }).body);

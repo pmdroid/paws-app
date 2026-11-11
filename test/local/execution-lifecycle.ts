@@ -259,7 +259,9 @@ export async function probeExecutionLifecycle(
         .get()!.n;
       observe(
         "a skipped start can be admitted once after reconciliation clears",
-        held === 0 && resumed === 1 && getWorkItem(guardDb, "guard-item")?.state === "queued",
+        held === 0 &&
+          resumed === 1 &&
+          (await getWorkItem(sqliteDb(guardDb), "guard-item"))?.state === "queued",
         { held, resumed },
       );
     } finally {

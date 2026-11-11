@@ -88,11 +88,11 @@ test("a ready item waiting for a runner slot is queued once in Linear and fails 
 
     clock.advance(DAY - 1_000);
     await orchestrator.reconcileExecution();
-    expect(getWorkItem(db, "waiting")?.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(db), "waiting"))?.state).toBe("queued");
 
     clock.advance(2_000);
     await orchestrator.reconcileExecution();
-    expect(getWorkItem(db, "waiting")?.state).toBe("failed");
+    expect((await getWorkItem(sqliteDb(db), "waiting"))?.state).toBe("failed");
     expect((await bodies("error")).some((body) => body.includes("within 24 hours"))).toBe(true);
   } finally {
     await orchestrator.shutdown();
@@ -138,11 +138,11 @@ test("the queued thought shows the place in line, and the start timeout comes fr
 
     clock.advance(2 * HOUR - 1_000);
     await orchestrator.reconcileExecution();
-    expect(getWorkItem(db, "waiting")?.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(db), "waiting"))?.state).toBe("queued");
 
     clock.advance(2_000);
     await orchestrator.reconcileExecution();
-    expect(getWorkItem(db, "waiting")?.state).toBe("failed");
+    expect((await getWorkItem(sqliteDb(db), "waiting"))?.state).toBe("failed");
     expect((await bodies("error")).some((body) => body.includes("PAS-1 within 2 hours"))).toBe(
       true,
     );

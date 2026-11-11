@@ -50,7 +50,10 @@ test("3 h of implementation and 2 h of CI fixes reach only the implementation li
   const { db, id, work, question } = await harness("[time_limits]\nimplementation_minutes = 180\n");
   expect((await work(2 * HOUR)).asked).toBeUndefined();
   expect((await work(2 * HOUR, "ci")).asked).toBeUndefined();
-  expect(getWorkItem(db, id)).toMatchObject({ implementMs: 2 * HOUR, fixMs: 2 * HOUR });
+  expect(await getWorkItem(sqliteDb(db), id)).toMatchObject({
+    implementMs: 2 * HOUR,
+    fixMs: 2 * HOUR,
+  });
   expect((await work(HOUR - 1, "follow_up")).asked).toBeUndefined();
   expect((await work(1)).asked).toBe(true);
   expect(await question()).toStartWith("Implementation reached its 3 h limit; continue or stop?");
@@ -67,7 +70,7 @@ test("with fixes_minutes = 60, the second hour of fixes asks and names the fixes
   await sqliteDb(db).transaction((q) =>
     startFreshBudgetSteps(q, { itemId: id, sessionId: null, key: "q", stage: "fixes", now: 0 }),
   );
-  expect(getWorkItem(db, id)).toMatchObject({
+  expect(await getWorkItem(sqliteDb(db), id)).toMatchObject({
     implementMs: 30 * MINUTE,
     fixMs: 0,
     maxFixMs: HOUR,

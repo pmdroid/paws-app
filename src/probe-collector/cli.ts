@@ -78,7 +78,7 @@ export async function readStoredFindings(input: {
   const db = openDatabase(input.dbPath);
   const tasks: string[] = [];
   try {
-    for (const item of listWorkItems(db)) {
+    for (const item of await listWorkItems(sqliteDb(db))) {
       const bound = await sqliteDb(db).run((q) => getWorkItemRepositorySteps(q, item.id));
       if (bound?.owner.toLowerCase() !== input.owner.toLowerCase()) continue;
       if (bound.repo.toLowerCase() !== input.repo.toLowerCase()) continue;

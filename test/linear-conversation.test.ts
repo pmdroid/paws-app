@@ -228,7 +228,10 @@ function fixture(
       return orchestrator;
     },
     async item() {
-      return getWorkItem(db, (await getLinearSession(sqliteDb(db), "session"))!.activeItemId!)!;
+      return (await getWorkItem(
+        sqliteDb(db),
+        (await getLinearSession(sqliteDb(db), "session"))!.activeItemId!,
+      ))!;
     },
     prompts() {
       return existsSync(evidence)
@@ -348,7 +351,7 @@ test("new prompt after completion creates a new task and preserves the terminal 
     expect(next.id).not.toBe(original.id);
     expect(next.linearIssueId).toBe(original.linearIssueId);
     expect(itemPathId(next)).not.toBe(itemPathId(original));
-    expect(getWorkItem(f.db, original.id)?.state).toBe("merged");
+    expect((await getWorkItem(sqliteDb(f.db), original.id))?.state).toBe("merged");
     f.reopen();
     for (let attempt = 0; attempt < 3 && (await f.item()).state === "queued"; attempt++)
       await tickWithRestarts(f.jobs, f.orchestrator, f.db);
@@ -568,7 +571,7 @@ test.each(["answer", "artifact"] as const)(
       await f.orchestrator.onLinearEvent(reply);
       await original;
       await tickWithRestarts(f.jobs, f.orchestrator, f.db);
-      expect(getWorkItem(f.db, discussion)?.state).toBe("cancelled");
+      expect((await getWorkItem(sqliteDb(f.db), discussion))?.state).toBe("cancelled");
       const children = f.db
         .query<{ id: string; linear_issue_id: string }, []>(
           "SELECT id, linear_issue_id FROM work_item WHERE linear_issue_id != 'issue' ORDER BY position",

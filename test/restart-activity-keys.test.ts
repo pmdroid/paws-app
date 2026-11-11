@@ -124,7 +124,7 @@ test("updates from a run that Paws resumes after a restart all land in the outbo
     await paws.orchestrator.onLinearEvent(createdEvent());
     await until(paws, 3);
     expect(sent).toBe(3);
-    const runId = listWorkItems(db)[0]!.currentRunId!;
+    const runId = (await listWorkItems(sqliteDb(db)))[0]!.currentRunId!;
 
     await paws.orchestrator.shutdown();
     await prepareShutdown(sqliteDb(db));
@@ -141,7 +141,7 @@ test("updates from a run that Paws resumes after a restart all land in the outbo
     ];
     await until(paws, 7);
     expect(sent).toBe(7);
-    expect(listWorkItems(db)[0]!.currentRunId).toBe(runId);
+    expect((await listWorkItems(sqliteDb(db)))[0]!.currentRunId).toBe(runId);
 
     const bodies = (await listOutbox(sqliteDb(db)))
       .filter((row) => row.idempotencyKey.startsWith(`${runId}:acp:`))

@@ -208,7 +208,11 @@ test("a corrupt classified-risk row does not fail the item page", async () => {
 
 test("display follows the lane's rebased head even while the checkpoint still names the old head", async () => {
   const f = await fixture();
-  saveCheckpoint(f.db, f.item.id, { phase: "merge_queue", wipCommit: "head", baseSha: "base" });
+  await saveCheckpoint(sqliteDb(f.db), f.item.id, {
+    phase: "merge_queue",
+    wipCommit: "head",
+    baseSha: "base",
+  });
   await f.reader.remember(f.item.id, "rebased-head", f.context);
   const detail = (await f.provider.issue(f.item.id))!;
   expect(detail.risk?.head).toBe("rebased-head");

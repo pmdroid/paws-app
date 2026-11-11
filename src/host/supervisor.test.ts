@@ -37,7 +37,7 @@ import { WakeDetector } from "./wake";
 async function agentJob(db: Database, itemId: string, now: number) {
   const id = await enqueueJob(sqliteDb(db), {
     queue: JOB_KIND.resume,
-    jobKey: `fixture-agent:${itemId}:${getWorkItem(db, itemId)!.version}`,
+    jobKey: `fixture-agent:${itemId}:${(await getWorkItem(sqliteDb(db), itemId))!.version}`,
     payload: { itemId },
     now,
   });
@@ -68,7 +68,7 @@ async function applyWorkItemEvent(
   event: WorkItemEvent,
   record?: WorkItemEventRecord,
 ) {
-  const before = getWorkItem(db, id)!.state;
+  const before = (await getWorkItem(sqliteDb(db), id))!.state;
   const result = await applyEvent(sqliteDb(db), id, event, record);
   if (before === "running" && result.state !== "running") endAgentJob(db, id);
   if (before !== "running" && result.state === "running") await agentJob(db, id, 1_000_000);
@@ -147,7 +147,7 @@ describe("supervisor accrual writes", () => {
       clock.advance(5 * 60_000);
       await host.tick();
 
-      expect(getWorkItem(db, "eng-9")).toMatchObject({
+      expect(await getWorkItem(sqliteDb(db), "eng-9")).toMatchObject({
         state: "running",
         agentMs: 15 * 60_000,
         awakeMs: 15 * 60_000,
@@ -179,9 +179,18 @@ describe("supervisor accrual writes", () => {
       clock.advance(250);
       await host.tick();
       expect(writes()).toEqual([{ id: "awake" }]);
-      expect(getWorkItem(db, "awake")).toMatchObject({ awakeMs: 250, agentMs: 250 });
-      expect(getWorkItem(db, "paused")).toMatchObject({ awakeMs: 0, lastMonoMs: null });
-      expect(getWorkItem(db, "idle")).toMatchObject({ awakeMs: 0, lastMonoMs: null });
+      expect(await getWorkItem(sqliteDb(db), "awake")).toMatchObject({
+        awakeMs: 250,
+        agentMs: 250,
+      });
+      expect(await getWorkItem(sqliteDb(db), "paused")).toMatchObject({
+        awakeMs: 0,
+        lastMonoMs: null,
+      });
+      expect(await getWorkItem(sqliteDb(db), "idle")).toMatchObject({
+        awakeMs: 0,
+        lastMonoMs: null,
+      });
       await host.tick();
       clock.sleep(1_000);
       await host.tick();
@@ -195,7 +204,10 @@ describe("supervisor accrual writes", () => {
       clock.advance(250);
       await host.tick();
       expect(writes()).toEqual([{ id: "awake" }, { id: "paused" }]);
-      expect(getWorkItem(db, "paused")).toMatchObject({ awakeMs: 250, agentMs: 250 });
+      expect(await getWorkItem(sqliteDb(db), "paused")).toMatchObject({
+        awakeMs: 250,
+        agentMs: 250,
+      });
     } finally {
       host.stop();
       db.close();
@@ -216,12 +228,26 @@ describe("supervisor accrual writes", () => {
         WHEN NEW.id = 'second' BEGIN SELECT RAISE(ABORT, 'tick failed'); END;
       `);
       await expect(host.tick()).rejects.toThrow("tick failed");
-      expect(getWorkItem(db, "first")).toMatchObject({ awakeMs: 0, agentMs: 0, lastMonoMs: null });
-      expect(getWorkItem(db, "second")).toMatchObject({ awakeMs: 0, agentMs: 0, lastMonoMs: null });
+      expect(await getWorkItem(sqliteDb(db), "first")).toMatchObject({
+        awakeMs: 0,
+        agentMs: 0,
+        lastMonoMs: null,
+      });
+      expect(await getWorkItem(sqliteDb(db), "second")).toMatchObject({
+        awakeMs: 0,
+        agentMs: 0,
+        lastMonoMs: null,
+      });
       db.exec("DROP TRIGGER reject_second");
       await host.tick();
-      expect(getWorkItem(db, "first")).toMatchObject({ awakeMs: 250, agentMs: 250 });
-      expect(getWorkItem(db, "second")).toMatchObject({ awakeMs: 250, agentMs: 250 });
+      expect(await getWorkItem(sqliteDb(db), "first")).toMatchObject({
+        awakeMs: 250,
+        agentMs: 250,
+      });
+      expect(await getWorkItem(sqliteDb(db), "second")).toMatchObject({
+        awakeMs: 250,
+        agentMs: 250,
+      });
     } finally {
       host.stop();
       db.close();
@@ -297,7 +323,7 @@ describe("host suspension and clock gaps", () => {
   }
 
   async function snapshot(db: ReturnType<typeof boot>["db"], runId: string) {
-    const item = getWorkItem(db, "eng-9")!;
+    const item = (await getWorkItem(sqliteDb(db), "eng-9"))!;
     return {
       item: {
         state: item.state,
@@ -307,7 +333,7 @@ describe("host suspension and clock gaps", () => {
         branchName: item.branchName,
         version: item.version,
       },
-      run: getRun(db, runId)?.status,
+      run: (await getRun(sqliteDb(db), runId))?.status,
       jobs: (await storedJobs(sqliteDb(db))).filter((job) => job.queue !== JOB_KIND.catchup),
       mergeCall: db.query("SELECT * FROM merge_call WHERE item_id = 'eng-9'").get(),
     };
@@ -363,7 +389,7 @@ describe("host suspension and clock gaps", () => {
       wall.mono += 1_000;
       await host.tick();
       expect(await snapshot(db, run.id)).toEqual(before);
-      expect(getWorkItem(db, "eng-9")?.agentMs).toBe(2_000);
+      expect((await getWorkItem(sqliteDb(db), "eng-9"))?.agentMs).toBe(2_000);
       expect(db.query("SELECT slept_ms FROM wake").all()).toEqual([{ slept_ms: 3 * 60 * 60_000 }]);
       expect(await activities(db)).toEqual([]);
     } finally {
@@ -400,7 +426,10 @@ describe("host suspension and clock gaps", () => {
     clock.sleep(30 * 60_000);
     clock.advance(10);
     await host.tick();
-    expect(getWorkItem(db, "eng-9")).toMatchObject({ state: "running", awakeMs: 10 });
+    expect(await getWorkItem(sqliteDb(db), "eng-9")).toMatchObject({
+      state: "running",
+      awakeMs: 10,
+    });
 
     clock.advance(990);
     await host.tick();
@@ -414,12 +443,12 @@ describe("host suspension and clock gaps", () => {
       await host.tick();
       clock.advance(45 * 60_000);
       await host.tick();
-      expect(getWorkItem(db, "eng-9")?.state).toBe("running");
+      expect((await getWorkItem(sqliteDb(db), "eng-9"))?.state).toBe("running");
       await applyWorkItemEvent(db, "eng-9", "turn_ended");
       await verifyingJob(db, clock);
       clock.advance(4 * 60 * 60_000);
       await host.tick();
-      expect(getWorkItem(db, "eng-9")).toMatchObject({
+      expect(await getWorkItem(sqliteDb(db), "eng-9")).toMatchObject({
         state: "verifying",
         implementMs: 45 * 60_000,
         closeoutMs: 4 * 60 * 60_000,
@@ -473,7 +502,7 @@ describe("host suspension and clock gaps", () => {
       await running;
       clock.advance(2 * 60 * 60_000);
       await host.tick();
-      expect(getWorkItem(db, "eng-9")).toMatchObject({
+      expect(await getWorkItem(sqliteDb(db), "eng-9")).toMatchObject({
         state: "verifying",
         awakeMs: 65 * 60_000,
         agentMs: 40 * 60_000,
@@ -495,7 +524,7 @@ describe("host suspension and clock gaps", () => {
     await applyWorkItemEvent(db, "eng-9", "answer_received");
     clock.advance(100);
     await host.tick();
-    expect(getWorkItem(db, "eng-9")?.awakeMs).toBe(100);
+    expect((await getWorkItem(sqliteDb(db), "eng-9"))?.awakeMs).toBe(100);
   });
 
   test("a wake with nothing in flight still enqueues catch-up and no pause note", async () => {
@@ -511,13 +540,13 @@ describe("host suspension and clock gaps", () => {
     const { db, clock } = boot();
     const { run } = await startRun(db, clock);
     const commits: { branchName: string; sha: string }[] = [];
-    await prepareShutdown(sqliteDb(db), clock.now(), (item) => {
-      expect(getWorkItem(db, item.id)?.state).toBe("running");
+    await prepareShutdown(sqliteDb(db), clock.now(), async (item) => {
+      expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("running");
       commits.push({ branchName: item.branchName, sha: "wip-sha" });
     });
     expect(commits).toEqual([{ branchName: "paws/eng-9", sha: "wip-sha" }]);
-    expect(getWorkItem(db, "eng-9")?.state).toBe("recovering");
-    expect(getRun(db, run.id)?.status).toBe("lost");
+    expect((await getWorkItem(sqliteDb(db), "eng-9"))?.state).toBe("recovering");
+    expect((await getRun(sqliteDb(db), run.id))?.status).toBe("lost");
   });
 
   test("stop leaves the item resumable", async () => {
@@ -527,9 +556,9 @@ describe("host suspension and clock gaps", () => {
     host.stop();
     clock.advance(100);
     await host.tick();
-    expect(getWorkItem(db, "eng-9")?.awakeMs).toBe(0);
+    expect((await getWorkItem(sqliteDb(db), "eng-9"))?.awakeMs).toBe(0);
     await prepareShutdown(sqliteDb(db), clock.now());
-    expect(getWorkItem(db, "eng-9")?.state).toBe("recovering");
+    expect((await getWorkItem(sqliteDb(db), "eng-9"))?.state).toBe("recovering");
     await host.tick();
   });
 });
@@ -552,9 +581,9 @@ test("the supervisor stops the live agent when the time limit asks instead of fa
   clock.advance(600);
   await host.tick();
   expect(stopped).toEqual(["eng-9"]);
-  expect(getWorkItem(db, "eng-9")?.state).toBe("running");
+  expect((await getWorkItem(sqliteDb(db), "eng-9"))?.state).toBe("running");
   expect((await listJobs(db)).filter((job) => job.queue === "item.ask")).toHaveLength(1);
-  expect(getRun(db, run.id)?.status).toBe("ended");
+  expect((await getRun(sqliteDb(db), run.id))?.status).toBe("ended");
   await host.tick();
   expect(stopped).toEqual(["eng-9"]);
 });

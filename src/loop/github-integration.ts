@@ -150,7 +150,7 @@ export class GitHubInstallationCheck {
 
   async invalidate(scope: { sessionId?: string; issueId?: string } = {}): Promise<void> {
     for (const [itemId, ready] of this.lastReady) {
-      const item = await this.store.run((q) => getWorkItemSteps(q, itemId));
+      const item = await getWorkItem(this.store, itemId);
       if (
         item === null ||
         ((scope.sessionId === undefined || item.sessionKey === scope.sessionId) &&
