@@ -1,6 +1,5 @@
 import { itemWorkPlacementSteps } from "./session";
 import { createRunnerPlacement, PlacementUnavailableError } from "./placement";
-import type { Database } from "bun:sqlite";
 import {
   getRunnerSteps,
   getWorkItemRepositorySteps,
@@ -8,10 +7,9 @@ import {
   legacyAgentBindingId,
   legacyBindingAccountHealthSteps,
   runnerRepositoryRefusalSteps,
-  settled,
-  sqliteDb,
   type ItemRunnerVerdict,
   type ItemRunnerVerdicts,
+  type Db,
   type Q,
   type Steps,
 } from "../db";
@@ -132,16 +130,9 @@ function* runnerVerdictsSteps(
   return { repository, runners };
 }
 
-export function itemRunnerVerdicts(
-  db: Database,
-  input: { itemId: string; agent: string; model?: string | null; now: number },
-): ItemRunnerVerdicts | null {
-  return settled(sqliteDb(db).run((q) => itemRunnerVerdictsSteps(q, db, input)));
-}
-
 export function* itemRunnerVerdictsSteps(
   q: Q,
-  db: Database,
+  store: Db,
   input: { itemId: string; agent: string; model?: string | null; now: number },
 ): Steps<ItemRunnerVerdicts | null> {
   const found = yield* runnerVerdictsSteps(q, input);
@@ -150,7 +141,7 @@ export function* itemRunnerVerdictsSteps(
   let order: string[];
   try {
     // A new instance is safe here: session grace is kept per database, so this does not restart it.
-    order = (yield* createRunnerPlacement({ db, now: () => input.now }).previewSteps!(q, {
+    order = (yield* createRunnerPlacement({ store, now: () => input.now }).previewSteps!(q, {
       itemId: input.itemId,
       profile: { agent: input.agent as RunnerCodingAgent, model: input.model },
       role: "implementer",

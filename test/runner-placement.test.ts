@@ -114,7 +114,7 @@ async function placeItem(bindTask = true) {
     db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [id]);
   }
   const placement = createRunnerPlacement({
-    db,
+    store: sqliteDb(db),
     now: () => clock,
   });
   return {
@@ -559,15 +559,17 @@ test("a runner with quota left goes before one running on extra usage, which nam
       pool.occupy("b");
       expect(await pool.ids()).toEqual(["b", "a"]);
       const profile = { agent: "codex" as const, model: "implementation-model" };
-      pool.placement.started({
-        commandId: "command-a",
-        runnerId: "a",
-        itemId: "item",
-        profile,
-        role: "implementer",
-        purpose: "work",
-        startedAt: pool.now(),
-      });
+      await sqliteDb(pool.db).transaction((q) =>
+        pool.placement.startedSteps(q, {
+          commandId: "command-a",
+          runnerId: "a",
+          itemId: "item",
+          profile,
+          role: "implementer",
+          purpose: "work",
+          startedAt: pool.now(),
+        }),
+      );
       const response = await createRunnerPlacementBrowser({ db: pool.db })(
         new Request("http://127.0.0.1/api/runners/usage"),
         {
@@ -824,16 +826,18 @@ test("a moved run goes to the idle runner that can continue its agent session", 
       restore,
     });
     for (const runnerId of ["second", "own"])
-      placed.placement.started({
-        commandId: `command-${runnerId}`,
-        runnerId,
-        itemId: "item",
-        runId: placed.run.id,
-        profile,
-        role: "implementer",
-        purpose: "work",
-        startedAt: placed.now(),
-      });
+      await sqliteDb(placed.db).transaction((q) =>
+        placed.placement.startedSteps(q, {
+          commandId: `command-${runnerId}`,
+          runnerId,
+          itemId: "item",
+          runId: placed.run.id,
+          profile,
+          role: "implementer",
+          purpose: "work",
+          startedAt: placed.now(),
+        }),
+      );
     const response = await createRunnerPlacementBrowser({ db: placed.db })(
       new Request("http://127.0.0.1/api/runners/usage"),
       {
@@ -923,7 +927,7 @@ test("fresh admission previews share the session grace period with execution", a
     const preview = async () =>
       (
         await sqliteDb(placed.db).run((q) =>
-          createRunnerPlacement({ db: placed.db, now: placed.now }).previewSteps!(q, {
+          createRunnerPlacement({ store: sqliteDb(placed.db), now: placed.now }).previewSteps!(q, {
             itemId: "item",
             profile: { agent: "codex", model: "implementation-model" },
             role: "implementer",

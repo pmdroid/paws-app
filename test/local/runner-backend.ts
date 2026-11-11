@@ -2370,7 +2370,7 @@ export async function probeRunnerBackend(
       );
     }
     const placement = createRunnerPlacement({
-      db,
+      store: sqliteDb(db),
       now: () => now,
     });
     let selectionReads = 0;

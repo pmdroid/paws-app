@@ -1,4 +1,4 @@
-import { getWorkItem, insertRun, schedulerRunnerSlots } from "../../src/db";
+import { getWorkItem, insertRun, schedulerRunnerSlots, sqliteDb } from "../../src/db";
 import { createRunnerPlacement } from "../../src/runner-placement";
 import { workspaceWithRunners, REPOSITORY, NOW } from "../runner-slot-fixture";
 import type { Proof } from "./harness";
@@ -30,13 +30,15 @@ export default {
       "the restart retains its runner",
       schedulerRunnerSlots(db, NOW).find((row) => row.itemId === "b-resume")?.runnerId === pinned,
     );
-    const offered = await createRunnerPlacement({ db, now: () => NOW }).candidates({
-      itemId: "b-resume",
-      role: "implementer",
-      purpose: "work",
-      profile: { agent: "claude" },
-      pinnedRunnerId: pinned,
-    });
+    const offered = await createRunnerPlacement({ store: sqliteDb(db), now: () => NOW }).candidates(
+      {
+        itemId: "b-resume",
+        role: "implementer",
+        purpose: "work",
+        profile: { agent: "claude" },
+        pinnedRunnerId: pinned,
+      },
+    );
     proof.expect(
       "placement accepts the restart on the held slot",
       offered.length === 1 && offered[0]?.id === pinned,

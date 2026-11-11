@@ -17,7 +17,7 @@ import {
 } from "../src/db";
 import {
   createRunnerPlacement,
-  itemOwnerHasEligibleRunner,
+  itemOwnerHasEligibleRunnerSteps,
   type PlacementRequest,
 } from "../src/runner-placement";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
@@ -62,7 +62,7 @@ function acme() {
     db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [id]);
     db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',0)", [id]);
   }
-  const placement = createRunnerPlacement({ db, now: () => now });
+  const placement = createRunnerPlacement({ store: sqliteDb(db), now: () => now });
   const place = async (request: Partial<PlacementRequest> = {}) => {
     const rejected: { runnerId: string; reason: string; until?: number }[] = [];
     const placed = await placement.candidates({
@@ -103,16 +103,18 @@ test("two runners signed in to Claude, one with its 5-hour window spent: the imp
     "INSERT INTO runner_command(id,runner_id,kind,envelope,expires_at) VALUES('cmd','acme-2','run','{}',?)",
     [f.now + HOUR],
   );
-  f.placement.started({
-    commandId: "cmd",
-    runnerId: "acme-2",
-    itemId: f.item.id,
-    profile: { agent: "claude", model: "opus" },
-    account: placed[0]!.account!,
-    role: "implementer",
-    purpose: "work",
-    startedAt: f.now,
-  });
+  await sqliteDb(f.db).transaction((q) =>
+    f.placement.startedSteps(q, {
+      commandId: "cmd",
+      runnerId: "acme-2",
+      itemId: f.item.id,
+      profile: { agent: "claude", model: "opus" },
+      account: placed[0]!.account!,
+      role: "implementer",
+      purpose: "work",
+      startedAt: f.now,
+    }),
+  );
   expect(
     f.db
       .query(
@@ -137,9 +139,11 @@ test("no runner signed in to the reviewer's agent: placement offers none and wai
   expect(
     await f.placement.setupNeed!({ itemId: f.item.id, purpose: "work", ...reviewer }),
   ).toMatchObject({ reason: "agent-not-signed-in", runnerId: "acme-1", agent: "codex" });
-  expect(itemOwnerHasEligibleRunner(f.db, { itemId: f.item.id, agent: "codex", now: f.now })).toBe(
-    false,
-  );
+  expect(
+    await sqliteDb(f.db).run((q) =>
+      itemOwnerHasEligibleRunnerSteps(q, { itemId: f.item.id, agent: "codex", now: f.now }),
+    ),
+  ).toBe(false);
 });
 
 test("a named account bound to a runner no longer stands in for that runner's own sign-in", async () => {
@@ -171,7 +175,9 @@ test("a named account bound to a runner no longer stands in for that runner's ow
   expect(placed.map((entry) => entry.id)).toEqual(["acme-2"]);
   expect(rejected).toEqual([{ runnerId: "acme-1", reason: "agent-not-signed-in" }]);
   f.db.run("UPDATE runner_agent_policy SET ready=0 WHERE runner_id='acme-2' AND agent='claude'");
-  expect(itemOwnerHasEligibleRunner(f.db, { itemId: f.item.id, agent: "claude", now: f.now })).toBe(
-    false,
-  );
+  expect(
+    await sqliteDb(f.db).run((q) =>
+      itemOwnerHasEligibleRunnerSteps(q, { itemId: f.item.id, agent: "claude", now: f.now }),
+    ),
+  ).toBe(false);
 });

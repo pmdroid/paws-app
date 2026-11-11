@@ -22,6 +22,7 @@ import {
   recordLinearInstallation,
   recoverOnStartup,
   saveCheckpoint,
+  sqliteDb,
 } from "../src/db";
 import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerControl } from "../src/runner-control";
@@ -140,7 +141,7 @@ async function fixture(agentRead?: AgentRead) {
       work,
       results,
       health: createRunnerHealth({ db, work }),
-      placement: createRunnerPlacement({ db }),
+      placement: createRunnerPlacement({ store: sqliteDb(db) }),
       pollIntervalMs: 5,
       ...(agentRead ? { agentRead } : {}),
       // The check run reports the head the worktree already holds.

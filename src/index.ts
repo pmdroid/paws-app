@@ -292,7 +292,7 @@ import {
   itemOwnerRunnerSetupNeedSteps,
   itemRepositoryAllowedOnSteps,
   itemRepositoryRefusalsSteps,
-  itemRepositoryRunner,
+  itemRepositoryRunnerSteps,
 } from "./runner-placement";
 import { releaseVersionFromPath } from "./runner-protocol";
 import { startServer } from "./server";
@@ -1086,7 +1086,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         })
       : null;
   const placement = linear
-    ? createRunnerPlacement({ db, ...(parents ? { sessionActor: parents.actor } : {}) })
+    ? createRunnerPlacement({
+        store,
+        ...(parents ? { sessionActorSteps: parents.actorSteps } : {}),
+      })
     : undefined;
   const placementBrowser = createRunnerPlacementBrowser({ db });
   const accountManagement = createAccountManagement();
@@ -1559,7 +1562,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
                 itemId: string,
                 profile: { agent: string; model?: string | null },
                 now: number,
-              ) => itemRunnerVerdictsSteps(q, db, { itemId, ...profile, now }),
+              ) => itemRunnerVerdictsSteps(q, store, { itemId, ...profile, now }),
               onRunnerHostRefusals: runnerHostRefusals.report,
               runnerSetupNeed: (itemId: string, agent: string, now: number) =>
                 store.run((q) => itemOwnerRunnerSetupNeedSteps(q, { itemId, agent, now })),
@@ -1575,7 +1578,9 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
                 signal: AbortSignal,
               ) => {
                 const now = Date.now();
-                const target = itemRepositoryRunner(db, { itemId: item.id, now });
+                const target = await store.run((q) =>
+                  itemRepositoryRunnerSteps(q, { itemId: item.id, now }),
+                );
                 const repository = await store.run((q) => getWorkItemRepositorySteps(q, item.id));
                 if (!target || !repository)
                   return { outcome: "failed" as const, reason: "no eligible runner" };

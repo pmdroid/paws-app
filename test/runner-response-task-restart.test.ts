@@ -20,6 +20,7 @@ import {
   recordLinearInstallation,
   recoverOnStartup,
   saveTaskMode,
+  sqliteDb,
 } from "../src/db";
 import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerControl } from "../src/runner-control";
@@ -119,7 +120,7 @@ async function fixture() {
       work,
       results,
       health: createRunnerHealth({ db, work }),
-      placement: createRunnerPlacement({ db }),
+      placement: createRunnerPlacement({ store: sqliteDb(db) }),
       pollIntervalMs: 5,
       async fetchCandidate() {
         throw new Error("A response task has no candidate");

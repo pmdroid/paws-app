@@ -29,7 +29,7 @@ import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerHealth } from "../src/runner-health";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
-import { createRunnerPlacement, itemOwnerEligibleRunner } from "../src/runner-placement";
+import { createRunnerPlacement, itemOwnerEligibleRunnerSteps } from "../src/runner-placement";
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { dispatch } from "../src/scheduler";
@@ -190,7 +190,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     results,
     health,
     pollIntervalMs: 5,
-    placement: createRunnerPlacement({ db }),
+    placement: createRunnerPlacement({ store: sqliteDb(db) }),
     async fetchCandidate() {
       throw new Error("This fixture does not return a candidate");
     },
@@ -234,7 +234,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     scheduling: async () => ({}),
     runnersUrl: RUNNERS_URL,
     eligibleRunner: async (itemId, agent, at) =>
-      itemOwnerEligibleRunner(db, { itemId, agent, now: at }),
+      sqliteDb(db).run((q) => itemOwnerEligibleRunnerSteps(q, { itemId, agent, now: at })),
     launch() {
       return { command: "/forbidden-local-agent", args: [] };
     },

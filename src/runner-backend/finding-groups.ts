@@ -13,7 +13,7 @@ export function createFindingGroupHelper(options: {
   profile: () => AgentProfile;
   placement?: RunnerPlacement;
 }): GroupingHelper {
-  const placement = options.placement ?? createRunnerPlacement({ db: options.db });
+  const placement = options.placement ?? createRunnerPlacement({ store: sqliteDb(options.db) });
   return async (input) => {
     if (!(await linearSessionInWorkspace(sqliteDb(options.db), input.sessionId, input.workspaceId)))
       throw new Error("Finding grouping session is outside the workspace.");

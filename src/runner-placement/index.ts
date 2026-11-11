@@ -4,7 +4,7 @@ import type { RunnerProfile, RunnerResult, RunnerHelperResult } from "../runner-
 export { quotaSignal, type QuotaSignal } from "../core";
 export {
   BINDING_REASON_TEXT,
-  bindingReadiness,
+  bindingReadinessSteps,
   classifyAgentFailure,
   type AgentFailure,
   type AgentFailureKind,
@@ -64,18 +64,13 @@ export type RepositoryRefusal = {
   allowed: string[];
 };
 export {
-  eligibleRunners,
-  itemRepositoryAllowedOn,
+  eligibleRunnersSteps,
   itemRepositoryAllowedOnSteps,
-  itemRepositoryRefusals,
   itemRepositoryRefusalsSteps,
-  itemOwnerEligibleRunner,
   itemOwnerEligibleRunnerSteps,
-  itemOwnerHasEligibleRunner,
   itemOwnerHasEligibleRunnerSteps,
-  itemOwnerRunnerSetupNeed,
   itemOwnerRunnerSetupNeedSteps,
-  itemRepositoryRunner,
+  itemRepositoryRunnerSteps,
   RUNNER_ONLINE_MS,
 } from "./eligible";
 /**
@@ -173,7 +168,7 @@ export {
 } from "./placement";
 
 export { createRunnerPlacementBrowser } from "./browser";
-export { itemRunnerVerdicts, itemRunnerVerdictsSteps } from "./fit";
+export { itemRunnerVerdictsSteps } from "./fit";
 export { createRunnerHostRefusals } from "./host-refusals";
 
 export { sessionHolderSteps, runRunnerSteps } from "./session";

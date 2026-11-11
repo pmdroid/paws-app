@@ -57,8 +57,8 @@ import {
 } from "../db";
 import {
   BINDING_REASON_TEXT,
-  bindingReadiness,
-  eligibleRunners,
+  bindingReadinessSteps,
+  eligibleRunnersSteps,
   type BindingUnavailableReason,
   type EligibleRunner,
 } from "../runner-placement";
@@ -246,15 +246,17 @@ export async function retroRunnerCandidates(
   let incompatible = 0;
   const candidates: Candidate[] = [];
   for (const admin of admins) {
-    const runners = eligibleRunners(db, {
-      workspaceId: input.workspaceId,
-      teamId: "",
-      ownerUserId: admin.id,
-      leadUserIds: [],
-      agent: input.agent,
-      purpose: "work",
-      now: input.now,
-    });
+    const runners = await store.run((q) =>
+      eligibleRunnersSteps(q, {
+        workspaceId: input.workspaceId,
+        teamId: "",
+        ownerUserId: admin.id,
+        leadUserIds: [],
+        agent: input.agent,
+        purpose: "work",
+        now: input.now,
+      }),
+    );
     for (const runner of runners) {
       if (!runner.eligible || runner.ownerId !== admin.id || seen.has(runner.id)) continue;
       seen.add(runner.id);
@@ -291,7 +293,6 @@ type HealthHold = { reason: BindingUnavailableReason; until: number | null } | n
 
 function* accountHealthHoldSteps(
   q: Q,
-  db: Database,
   runnerId: string,
   accountId: string,
   model: string | null | undefined,
@@ -299,7 +300,7 @@ function* accountHealthHoldSteps(
 ): Steps<HealthHold> {
   const binding = yield* liveAccountBindingSteps(q, runnerId, accountId);
   if (binding === null) return null;
-  const readiness = bindingReadiness(db, { bindingId: binding.id, model, now });
+  const readiness = yield* bindingReadinessSteps(q, { bindingId: binding.id, model, now });
   return !readiness.ready && HEALTH_HOLDS.has(readiness.reason)
     ? { reason: readiness.reason, until: readiness.until }
     : null;
@@ -594,7 +595,7 @@ export function createRetroDispatcher(options: {
         `The workspace's default ${profile.agent} account is not enabled.`,
       );
     const heldSteps = (q: Q, runnerId: string) =>
-      accountHealthHoldSteps(q, db, runnerId, accountId, profile.model, at);
+      accountHealthHoldSteps(q, runnerId, accountId, profile.model, at);
     const holds: HealthHold[] = [];
     for (const runner of candidates) holds.push(await store.run((q) => heldSteps(q, runner.id)));
     const healthy = candidates.filter((_, index) => holds[index] === null);
