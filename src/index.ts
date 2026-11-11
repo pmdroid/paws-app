@@ -117,7 +117,6 @@ import {
   taskRequiresRepository,
   listWorkItems,
   listReviewEscapesSteps,
-  clearUsagePauses,
   countLinearRequest,
   linearBudgetStore,
   migrate,
@@ -133,19 +132,13 @@ import {
   setAsideLegacyDatabase,
   prepareShutdown,
   stopInstance,
-  heartbeatInstance,
   COMMAND_DELIVERY_MS,
   bindInstance,
   INSTANCE_HEARTBEAT_MS,
-  jobInstanceElsewhere,
   MEMBERSHIP_BACKSTOP_MS,
-  registerInstance,
   roleRunsJobs,
-  runPendingJobNow,
-  recoverOnStartup,
   RUN_TAKEOVER_JOB,
   RUN_TAKEOVER_MS,
-  takeOverGoneRuns,
   listRepositoryCatalog,
   refreshRepositoryCatalog,
   startLoops,
@@ -178,6 +171,16 @@ import {
   workspaceForOrganizationSteps,
   workspaceLinearMemberSteps,
   type Db,
+  clearUsagePausesSteps,
+  emitJobReady,
+  heartbeatInstanceSteps,
+  isLinearAppRevokedSteps,
+  jobInstanceElsewhereSteps,
+  recoverOnStartupSteps,
+  registerInstanceSteps,
+  runPendingJobNowSteps,
+  stopInstanceSteps,
+  takeOverGoneRunsSteps,
 } from "./db";
 import { doctorChecks, formatDoctor, realProbe } from "./doctor";
 import { installHostMain } from "./install-host";
@@ -460,18 +463,20 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   migrate(db);
   importLinearTokenFile(db, paths.secretsDir, runtime.linearTokenFile);
   importCredentialFile(db, paths.secretsDir, "slack", join(paths.secretsDir, "slack-oauth.json"));
-  clearUsagePauses(db);
+  await store.run(clearUsagePausesSteps);
   const linearRevoked = () =>
-    isLinearAppRevoked(db, {
-      oauthClientId: runtime.linearClientId,
-      appUserId: runtime.linearViewerId,
-    });
+    store.run((q) =>
+      isLinearAppRevokedSteps(q, {
+        oauthClientId: runtime.linearClientId,
+        appUserId: runtime.linearViewerId,
+      }),
+    );
   if (
     publicDashboard &&
-    (linearRevoked() ||
+    ((await linearRevoked()) ||
       (runtime.linearAccessToken === null && readStoredToken(db, paths.secretsDir) === null))
   ) {
-    const reconnect = linearRevoked();
+    const reconnect = await linearRevoked();
     db.close();
     return startBrowserOnboarding(
       runtime,
@@ -485,13 +490,15 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     db.close();
     throw new Error("Public dashboard requires the Linear app OAuth client.");
   }
-  const instance = registerInstance(db, {
-    role: runtime.role,
-    host: hostname(),
-    version: installedPawsVersion(),
-    now: Date.now(),
-    pid: process.pid,
-  });
+  const instance = await store.run((q) =>
+    registerInstanceSteps(q, {
+      role: runtime.role,
+      host: hostname(),
+      version: installedPawsVersion(),
+      now: Date.now(),
+      pid: process.pid,
+    }),
+  );
   bindInstance(db, instance.id);
   const releaseSettings = useSettingsStore(paths.configFile, {
     read: () => readSetting(db, CONFIG_SETTINGS_KEY),
@@ -515,7 +522,12 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const resolveApp = (repository: string) => appActivation.resolve(repository);
   repositoryAccess ??= runnerRepositoryAccess(runtime, resolveApp);
   const commentFilter = pullCommentFilter(runtime, paths.configFile, resolveApp);
-  recoverOnStartup(db, Date.now(), undefined, instance.id);
+  const recoveryWake = { armed: false };
+  const recoveredAt = Date.now();
+  await store.transaction((q) =>
+    recoverOnStartupSteps(q, recoveredAt, undefined, instance.id, recoveryWake),
+  );
+  if (recoveryWake.armed) emitJobReady(store);
   const abort = new AbortController();
   let orchestrator: Orchestrator | null = null;
   let reconciler: ReturnType<typeof createItemReconciler> | null = null;
@@ -786,7 +798,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   if (publicDashboard) {
     if (linear?.memberships === null || linear?.memberships === undefined) {
       releaseSettings();
-      stopInstance(db, instance.id, Date.now());
+      await store.run((q) => stopInstanceSteps(q, instance.id, Date.now()));
       db.close();
       throw new Error("Public dashboard requires a connected Linear app installation.");
     }
@@ -840,7 +852,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     } catch (error) {
       abort.abort();
       releaseSettings();
-      stopInstance(db, instance.id, Date.now());
+      await store.run((q) => stopInstanceSteps(q, instance.id, Date.now()));
       db.close();
       throw error;
     }
@@ -1174,7 +1186,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       onboarding: async (request, client) =>
         reconnectLinear &&
         !new URL(request.url).pathname.startsWith("/webhooks/") &&
-        linearRevoked()
+        (await linearRevoked())
           ? reconnectLinear(request, client)
           : null,
       ...(linear?.findingIssues ? { findingGroups: { issues: linear.findingIssues } } : {}),
@@ -1357,7 +1369,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   } catch (error) {
     abort.abort();
     releaseSettings();
-    stopInstance(db, instance.id, Date.now());
+    await store.run((q) => stopInstanceSteps(q, instance.id, Date.now()));
     if (runnerConfig !== null)
       void Promise.all([workspace?.stop(), stopRunner()]).then(() => db.close());
     else if (workspace === undefined) db.close();
@@ -1433,10 +1445,13 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     signal: abort.signal,
     async prepare(created) {
       // A crashed instance's runs move to a live one without waiting for a restart.
-      created.jobs.register(RUN_TAKEOVER_JOB, () => {
-        takeOverGoneRuns(db, instance.id, Date.now());
+      created.jobs.register(RUN_TAKEOVER_JOB, async () => {
+        const wake = { armed: false };
+        const now = Date.now();
+        await store.transaction((q) => takeOverGoneRunsSteps(q, instance.id, now, wake));
+        if (wake.armed) emitJobReady(store);
       });
-      enqueueJobOnce(db, {
+      await enqueueJobOnceAsync(store, {
         queue: RUN_TAKEOVER_JOB,
         jobKey: RUN_TAKEOVER_JOB,
         recurringEveryMs: RUN_TAKEOVER_MS,
@@ -1843,7 +1858,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           await linearCaller("epics-sweep", () => reconciler?.sweep({ signal: abort.signal }));
           await attached.reconcileExecution();
         });
-        enqueueJobOnce(db, {
+        await enqueueJobOnceAsync(store, {
           queue: "linear.epics.reconcile",
           jobKey: "linear.epics.reconcile",
           recurringEveryMs: 1_800_000,
@@ -1865,7 +1880,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         created.jobs.register("linear.relations.poll", async () => {
           await relations.all(abort.signal);
         });
-        enqueueJobOnce(db, {
+        await enqueueJobOnceAsync(store, {
           queue: "linear.relations.poll",
           jobKey: "linear.relations.poll",
           recurringEveryMs: RELATIONS_POLL_MS,
@@ -1874,7 +1889,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         created.jobs.register("linear.relations.poll.blocked", async () => {
           await relations.blocked(abort.signal);
         });
-        enqueueJobOnce(db, {
+        await enqueueJobOnceAsync(store, {
           queue: "linear.relations.poll.blocked",
           jobKey: "linear.relations.poll.blocked",
           recurringEveryMs: BLOCKED_RELATIONS_POLL_MS,
@@ -1892,7 +1907,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       // A conversation blocked on an unverified cleanup continues once its runner reports the
       // old command gone.
       created.jobs.register("conversation.block.release", () => attached.releaseCleanupBlocks());
-      enqueueJobOnce(db, {
+      await enqueueJobOnceAsync(store, {
         queue: "conversation.block.release",
         jobKey: "conversation.block.release",
         recurringEveryMs: 30_000,
@@ -1910,24 +1925,27 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         created.jobs.register(FAILED_ISSUE_SWEEP_JOB, async (_job, context) => {
           await sweepFailed(context.signal);
         });
-        const sweep = enqueueJobOnce(db, {
+        const sweep = await enqueueJobOnceAsync(store, {
           queue: FAILED_ISSUE_SWEEP_JOB,
           jobKey: FAILED_ISSUE_SWEEP_JOB,
           recurringEveryMs: FAILED_ISSUE_SWEEP_MS,
           now: Date.now(),
         });
-        if (roleRunsJobs(runtime.role) && !jobInstanceElsewhere(db, instance.id, Date.now()))
-          runPendingJobNow(db, sweep, Date.now());
+        if (
+          roleRunsJobs(runtime.role) &&
+          !(await store.run((q) => jobInstanceElsewhereSteps(q, instance.id, Date.now())))
+        )
+          await store.run((q) => runPendingJobNowSteps(q, sweep, Date.now()));
       }
       created.jobs.register(POLICY_BLOCK_CHECK_JOB, () => attached.checkPolicyBlocks());
-      enqueueJobOnce(db, {
+      await enqueueJobOnceAsync(store, {
         queue: POLICY_BLOCK_CHECK_JOB,
         jobKey: POLICY_BLOCK_CHECK_JOB,
         recurringEveryMs: POLICY_BLOCK_CHECK_MS,
         now: Date.now(),
       });
       created.jobs.register("closeout.stall", () => attached.recoverStalledCloseout());
-      enqueueJobOnce(db, {
+      await enqueueJobOnceAsync(store, {
         queue: "closeout.stall",
         jobKey: "closeout.stall",
         recurringEveryMs: 60_000,
@@ -1936,7 +1954,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       created.jobs.register("worktree.sweep", (_job, context) =>
         attached.sweepWorktrees(context.signal),
       );
-      enqueueJobOnce(db, {
+      await enqueueJobOnceAsync(store, {
         queue: "worktree.sweep",
         jobKey: "worktree.sweep",
         recurringEveryMs: 3_600_000,
@@ -1970,7 +1988,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           },
         ),
       );
-      enqueueJobOnce(db, {
+      await enqueueJobOnceAsync(store, {
         queue: RUNNER_EVENT_PRUNE_JOB,
         jobKey: RUNNER_EVENT_PRUNE_JOB,
         recurringEveryMs: RUNNER_EVENT_PRUNE_EVERY_MS,
@@ -1988,7 +2006,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       created.jobs.register(RETRO_SCHEDULE_JOB, async () => {
         retroScheduler.tick();
       });
-      enqueueJobOnce(db, {
+      await enqueueJobOnceAsync(store, {
         queue: RETRO_SCHEDULE_JOB,
         jobKey: RETRO_SCHEDULE_JOB,
         recurringEveryMs: RETRO_SCHEDULE_TICK_MS,
@@ -1998,18 +2016,20 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         await runnerReady;
         await retroDispatcher?.tick();
       });
-      enqueueJobOnce(db, {
+      await enqueueJobOnceAsync(store, {
         queue: RETRO_DISPATCH_JOB,
         jobKey: RETRO_DISPATCH_JOB,
         recurringEveryMs: RETRO_DISPATCH_TIMING.tickMs,
         now: Date.now(),
       });
-      const alone = !jobInstanceElsewhere(db, instance.id, Date.now());
+      const alone = !(await store.run((q) =>
+        jobInstanceElsewhereSteps(q, instance.id, Date.now()),
+      ));
       for (const work of periodic) {
         created.jobs.register(work.queue, async (_job, context) => {
           await work.run(context.signal);
         });
-        const id = enqueueJobOnce(db, {
+        const id = await enqueueJobOnceAsync(store, {
           queue: work.queue,
           jobKey: work.queue,
           recurringEveryMs: work.everyMs,
@@ -2018,11 +2038,11 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         });
         if (work.atStartup && alone && roleRunsJobs(runtime.role)) {
           work.startup?.();
-          runPendingJobNow(db, id, Date.now());
+          await store.run((q) => runPendingJobNowSteps(q, id, Date.now()));
         }
       }
       created.jobs.register("github.auth.recover", () => attached.recoverGitHubAuth());
-      enqueueJobOnce(db, {
+      await enqueueJobOnceAsync(store, {
         queue: "github.auth.recover",
         jobKey: "github.auth.recover",
         recurringEveryMs: 30_000,
@@ -2054,11 +2074,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   });
 
   const instanceTimer = setInterval(() => {
-    try {
-      heartbeatInstance(db, instance.id, Date.now());
-    } catch (error) {
-      journalCaught(error, "index.startPaws.heartbeatInstance", null);
-    }
+    const now = Date.now();
+    void store
+      .run((q) => heartbeatInstanceSteps(q, instance.id, now))
+      .catch((error: unknown) => journalCaught(error, "index.startPaws.heartbeatInstance", null));
   }, INSTANCE_HEARTBEAT_MS);
   instanceTimer.unref?.();
   const commandTimer = setInterval(() => {
