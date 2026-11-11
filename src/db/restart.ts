@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import type { Database } from "bun:sqlite";
 import {
   and,
   desc,
@@ -15,7 +14,7 @@ import {
   type SQL,
 } from "drizzle-orm";
 import { JOB_KIND, type RestartReason } from "../core";
-import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
+import { type Db, type Q, type Steps } from "./db";
 import { haltSteps } from "./halt";
 import { applyWorkItemEventSteps, saveCheckpointSteps, type WorkItemRecord } from "./items";
 import { emitJobReady, reenqueueJobSteps } from "./jobs";

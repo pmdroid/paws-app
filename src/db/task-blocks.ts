@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, desc, eq, inArray, ne, notExists, notInArray, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
 import { jsonText } from "./json-text";
 
 export type TaskBlock = {

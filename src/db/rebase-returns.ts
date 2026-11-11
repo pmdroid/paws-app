@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, count, eq, gte, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
 
 export type RebaseReturn = {

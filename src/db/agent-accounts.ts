@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   aliasedTable,
   type AnyColumn,
@@ -26,7 +25,7 @@ import {
   type RunnerCommand,
   type RunnerRetroCommand,
 } from "../runner-protocol";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
 import { TEARDOWN_UNRESOLVED } from "./runner-capacity";
 import { runnerLeaseCutoff } from "./runner-lease";
