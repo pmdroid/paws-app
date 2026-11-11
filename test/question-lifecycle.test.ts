@@ -13,6 +13,7 @@ import {
   setJournalSink,
   syncSteps,
   type Q,
+  sqliteDb,
 } from "../src/db";
 import { findOpenQuestion, getQuestion, openQuestion } from "../src/questions";
 import { answer, ask, cancelItemQuestions } from "./questions";
@@ -119,7 +120,7 @@ async function queuedCloseoutHelp() {
   );
   await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
   const help = await ask(db, asker, "closeout-help", "Closeout needs your help.", { now: NOW + 1 });
-  saveCloseoutRecovery(db, {
+  await saveCloseoutRecovery(sqliteDb(db), {
     questionId: help.question.id,
     taskId: "ENG-7",
     itemId: asker.itemId,

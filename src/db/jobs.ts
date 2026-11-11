@@ -412,8 +412,8 @@ export function* jobStatusByKeySteps(q: Q, jobKey: string) {
   return row?.status ?? null;
 }
 
-export function jobStatusByKey(db: Database, jobKey: string): string | null {
-  return run(db, (q) => jobStatusByKeySteps(q, jobKey));
+export async function jobStatusByKey(store: Db, jobKey: string): Promise<string | null> {
+  return store.run((q) => jobStatusByKeySteps(q, jobKey));
 }
 
 export function* listJobsSteps(q: Q) {
@@ -615,13 +615,13 @@ export function* hasLiveJobSteps(q: Q, itemId: string, now: number, exceptJobId?
 }
 
 /** Whether a claimed job with an unexpired lease, other than `exceptJobId`, is working on the item. */
-export function hasLiveJob(
-  db: Database,
+export async function hasLiveJob(
+  store: Db,
   itemId: string,
   now: number,
   exceptJobId?: number,
-): boolean {
-  return run(db, (q) => hasLiveJobSteps(q, itemId, now, exceptJobId));
+): Promise<boolean> {
+  return store.run((q) => hasLiveJobSteps(q, itemId, now, exceptJobId));
 }
 
 export function* hasOpenItemJobSteps(q: Q, queue: string, itemId: string, exceptJobId?: number) {
@@ -643,13 +643,13 @@ export function* hasOpenItemJobSteps(q: Q, queue: string, itemId: string, except
   return row !== undefined;
 }
 
-export function hasOpenItemJob(
-  db: Database,
+export async function hasOpenItemJob(
+  store: Db,
   queue: string,
   itemId: string,
   exceptJobId?: number,
-): boolean {
-  return run(db, (q) => hasOpenItemJobSteps(q, queue, itemId, exceptJobId));
+): Promise<boolean> {
+  return store.run((q) => hasOpenItemJobSteps(q, queue, itemId, exceptJobId));
 }
 
 export function* cancelItemPendingJobsSteps(q: Q, itemId: string, now: number) {
@@ -662,8 +662,8 @@ export function* cancelItemPendingJobsSteps(q: Q, itemId: string, now: number) {
   );
 }
 
-export function cancelItemPendingJobs(db: Database, itemId: string, now: number): void {
-  run(db, (q) => cancelItemPendingJobsSteps(q, itemId, now));
+export async function cancelItemPendingJobs(store: Db, itemId: string, now: number): Promise<void> {
+  await store.run((q) => cancelItemPendingJobsSteps(q, itemId, now));
 }
 
 export function* extendJobLeaseSteps(q: Q, job: Job, now: number, leaseMs: number) {
@@ -915,8 +915,8 @@ export function* itemJobRunningSteps(q: Q, queue: string, itemId: string) {
   return row !== undefined;
 }
 
-export function itemJobRunning(db: Database, queue: string, itemId: string): boolean {
-  return run(db, (q) => itemJobRunningSteps(q, queue, itemId));
+export async function itemJobRunning(store: Db, queue: string, itemId: string): Promise<boolean> {
+  return store.run((q) => itemJobRunningSteps(q, queue, itemId));
 }
 
 export function* cancelPendingItemJobsSteps(q: Q, queue: string, itemId: string, now: number) {
@@ -967,8 +967,8 @@ export function* runPendingJobNowSteps(q: Q, id: number, now: number) {
   );
 }
 
-export function runPendingJobNow(db: Database, id: number, now: number): void {
-  run(db, (q) => runPendingJobNowSteps(q, id, now));
+export async function runPendingJobNow(store: Db, id: number, now: number): Promise<void> {
+  await store.run((q) => runPendingJobNowSteps(q, id, now));
 }
 
 export function* leasedJobsForItemSteps(q: Q, queue: string, itemId: string, now: number) {
@@ -1087,13 +1087,13 @@ export function* cancelAcceptedWorkJobsSteps(
   );
 }
 
-export function cancelAcceptedWorkJobs(
-  db: Database,
+export async function cancelAcceptedWorkJobs(
+  store: Db,
   itemId: string,
   now: number,
   exceptJobId?: number,
-): void {
-  run(db, (q) => cancelAcceptedWorkJobsSteps(q, itemId, now, exceptJobId));
+): Promise<void> {
+  await store.run((q) => cancelAcceptedWorkJobsSteps(q, itemId, now, exceptJobId));
 }
 
 /** The summary on the item's newest merge job. */
@@ -1110,8 +1110,8 @@ export function* latestMergeJobSummarySteps(q: Q, itemId: string) {
   return row?.summary ?? null;
 }
 
-export function latestMergeJobSummary(db: Database, itemId: string): string | null {
-  return run(db, (q) => latestMergeJobSummarySteps(q, itemId));
+export async function latestMergeJobSummary(store: Db, itemId: string): Promise<string | null> {
+  return store.run((q) => latestMergeJobSummarySteps(q, itemId));
 }
 
 export function* runningJobIdSteps(q: Q, queue: string, jobKey: string) {
@@ -1144,8 +1144,8 @@ export function* openMergeJobsSteps(q: Q) {
   );
 }
 
-export function openMergeJobs(
-  db: Database,
-): { id: number; activationId: number; payload: string }[] {
-  return run(db, openMergeJobsSteps);
+export async function openMergeJobs(
+  store: Db,
+): Promise<{ id: number; activationId: number; payload: string }[]> {
+  return store.run((q) => openMergeJobsSteps(q));
 }

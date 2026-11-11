@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, gt, lte } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 import type { browserInstallationRequest } from "./schema-pg";
 
 type BrowserInstallation = typeof browserInstallationRequest.$inferSelect;
@@ -11,8 +10,11 @@ export function* saveBrowserInstallationSteps(q: Q, input: BrowserInstallation) 
   yield* q.exec(q.orm.insert(request).values(input));
 }
 
-export function saveBrowserInstallation(db: Database, input: BrowserInstallation): void {
-  settled(sqliteDb(db).run((q) => saveBrowserInstallationSteps(q, input)));
+export async function saveBrowserInstallation(
+  store: Db,
+  input: BrowserInstallation,
+): Promise<void> {
+  await store.run((q) => saveBrowserInstallationSteps(q, input));
 }
 
 export function* consumeBrowserInstallationSteps(
@@ -37,13 +39,11 @@ export function* consumeBrowserInstallationSteps(
   return row?.identity ?? null;
 }
 
-export function consumeBrowserInstallation(
-  db: Database,
+export async function consumeBrowserInstallation(
+  store: Db,
   stateHash: string,
   browserHash: string,
   now: number,
-): string | null {
-  return settled(
-    sqliteDb(db).run((q) => consumeBrowserInstallationSteps(q, stateHash, browserHash, now)),
-  );
+): Promise<string | null> {
+  return store.run((q) => consumeBrowserInstallationSteps(q, stateHash, browserHash, now));
 }

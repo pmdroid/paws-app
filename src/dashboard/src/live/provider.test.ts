@@ -617,7 +617,7 @@ describe("live status provider", () => {
       answerers: ["delegator"],
       createdAt: now,
     });
-    saveCloseoutRecovery(db, {
+    await saveCloseoutRecovery(sqliteDb(db), {
       questionId: "q-bypass",
       taskId: "ENG-3",
       itemId: item.id,

@@ -533,7 +533,7 @@ test("retry on a task Closeout blocked for an uncovered file asks a new review r
       body: "Closeout needs your help.",
       now: Date.now(),
     });
-    saveCloseoutRecovery(f.db, {
+    await saveCloseoutRecovery(sqliteDb(f.db), {
       questionId: blocked.id,
       taskId: item.id,
       itemId: item.id,

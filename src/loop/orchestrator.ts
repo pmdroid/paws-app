@@ -10140,7 +10140,7 @@ export class Orchestrator {
         summary === NO_SESSION_MODEL &&
         base !== "" &&
         base === head &&
-        jobStatusByKey(this.db, jobKey) === null
+        (await jobStatusByKey(sqliteDb(this.db), jobKey)) === null
       ) {
         restart(this.db, item, {
           reason: "follow_up",

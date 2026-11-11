@@ -35,7 +35,7 @@ async function closeoutHelp() {
   const { question } = await ask(db, asker, "closeout-help", "Closeout needs your help.", {
     now: NOW,
   });
-  saveCloseoutRecovery(db, {
+  await saveCloseoutRecovery(sqliteDb(db), {
     questionId: question.id,
     taskId: "ENG-2",
     itemId: asker.itemId,

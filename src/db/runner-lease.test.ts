@@ -163,10 +163,10 @@ describe("the runner lease grace", () => {
     expect(getRun(db, run.id)?.status).toBe("active");
   });
 
-  test("halt keeps an unsettled runner occupied through the grace", () => {
+  test("halt keeps an unsettled runner occupied through the grace", async () => {
     const { clock, db, item, run } = leased();
     clock.advance(RENEWAL_MS + 59_000);
-    halt(db, getWorkItem(db, item.id)!, clock.now());
+    await halt(sqliteDb(db), getWorkItem(db, item.id)!, clock.now());
     expect(getRun(db, run.id)?.status).toBe("ended");
     expect(runnerHasCapacity(db, "runner", clock.now())).toBe(false);
     clock.advance(RUNNER_LEASE_GRACE_MS);
