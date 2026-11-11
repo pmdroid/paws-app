@@ -80,7 +80,7 @@ export function createParentFixture(
     target: { kind: "issue" | "comment"; id: string },
     _url: string,
     _signal?: AbortSignal,
-    accept?: (event: AcceptedLinearEvent) => void,
+    accept?: (event: AcceptedLinearEvent) => Promise<void>,
   ) {
     const sessionId = `session-${target.id}`;
     const event: AcceptedLinearEvent = {
@@ -96,7 +96,7 @@ export function createParentFixture(
       updatedAtMs: clock.now(),
       payload: "{}",
     };
-    accept!(event);
+    await accept!(event);
     ensureLinearSession(db, { sessionId, issueId: target.id, creatorId: "app" });
     recordLinearInstallation(db, {
       sessionId,
