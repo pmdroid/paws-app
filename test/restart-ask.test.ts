@@ -284,7 +284,7 @@ describe("restart and ask", () => {
       jobs: await listJobs(sqliteDb(db)),
     };
     expect(
-      await acceptCloseout(db, {
+      await acceptCloseout(sqliteDb(db), {
         itemId: item.id,
         expected: { version: verifying.version, runId: verifying.currentRunId },
         base: "base",

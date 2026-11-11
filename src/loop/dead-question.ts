@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   dropDeadElicitationsSteps,
   getWorkItemSteps,
@@ -6,7 +5,7 @@ import {
   questionHasLinkedRecordsSteps,
   recordQuestionReaskSteps,
   redeliverQuestionSteps,
-  sqliteDb,
+  type Db,
 } from "../db";
 import { cancelQuestionSteps, getQuestionSteps } from "../questions";
 import { askSteps } from "./operations";
@@ -25,10 +24,10 @@ import { askSteps } from "./operations";
  * or null when the item or the question has moved on.
  */
 export async function reaskDeadQuestion(
-  db: Database,
+  store: Db,
   input: { itemId: string; questionId: string; jobId: number; now: number },
 ): Promise<string | null> {
-  return await sqliteDb(db).transaction(function* (q) {
+  return await store.transaction(function* (q) {
     const { itemId, questionId, jobId, now } = input;
     const item = yield* getWorkItemSteps(q, itemId);
     const question = yield* getQuestionSteps(q, questionId);

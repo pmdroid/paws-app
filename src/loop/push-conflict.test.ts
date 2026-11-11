@@ -28,7 +28,7 @@ test("a candidate that conflicts with its moved branch restarts with reason conf
   expect(getWorkItem(db, itemId)?.state).toBe("running");
 
   expect(
-    await restartForPushConflict(db, itemId, {
+    await restartForPushConflict(sqliteDb(db), itemId, {
       branch: "paws/pas-886",
       files: ["src/a.ts", "src/b.ts"],
       now: 2_000,
@@ -52,7 +52,11 @@ test("an item that is no longer running is not restarted for a push conflict", a
   const { db, itemId } = await runningItem();
   await applyWorkItemEvent(sqliteDb(db), itemId, "turn_ended");
   expect(
-    await restartForPushConflict(db, itemId, { branch: "paws/pas-886", files: ["a"], now: 2_000 }),
+    await restartForPushConflict(sqliteDb(db), itemId, {
+      branch: "paws/pas-886",
+      files: ["a"],
+      now: 2_000,
+    }),
   ).toBe(false);
   expect((await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
 });
@@ -61,7 +65,7 @@ test("three genuine push conflicts spend the shared budget, then ask for guidanc
   const { db, itemId } = await runningItem();
   for (let attempt = 0; attempt < 3; attempt++) {
     expect(
-      await restartForPushConflict(db, itemId, {
+      await restartForPushConflict(sqliteDb(db), itemId, {
         branch: "paws/topic",
         files: ["a.ts"],
         now: 2_000 + attempt,
@@ -70,7 +74,11 @@ test("three genuine push conflicts spend the shared budget, then ask for guidanc
     await applyWorkItemEvent(sqliteDb(db), itemId, "dispatched");
   }
   expect(
-    await restartForPushConflict(db, itemId, { branch: "paws/topic", files: ["b.ts"], now: 3_000 }),
+    await restartForPushConflict(sqliteDb(db), itemId, {
+      branch: "paws/topic",
+      files: ["b.ts"],
+      now: 3_000,
+    }),
   ).toBe(true);
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
   expect(db.query("SELECT COUNT(*) AS n FROM rebase_return WHERE reason='push'").get()).toEqual({
@@ -104,7 +112,11 @@ test("push conflicts also respect the six-return rolling hour budget", async () 
     });
   }
   expect(
-    await restartForPushConflict(db, itemId, { branch: "paws/topic", files: ["a.ts"], now: 2_000 }),
+    await restartForPushConflict(sqliteDb(db), itemId, {
+      branch: "paws/topic",
+      files: ["a.ts"],
+      now: 2_000,
+    }),
   ).toBe(true);
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
   expect(db.query("SELECT body FROM question").get()).toEqual({
@@ -116,7 +128,7 @@ test("push conflicts also respect the six-return rolling hour budget", async () 
 test("a person's answer refills the consecutive push-conflict budget", async () => {
   const { db, itemId } = await runningItem();
   for (let n = 0; n < 3; n++) {
-    await restartForPushConflict(db, itemId, {
+    await restartForPushConflict(sqliteDb(db), itemId, {
       branch: "paws/topic",
       files: ["a.ts"],
       now: 2_000 + n,
@@ -129,7 +141,11 @@ test("a person's answer refills the consecutive push-conflict budget", async () 
     now: 3_000,
   });
   expect(
-    await restartForPushConflict(db, itemId, { branch: "paws/topic", files: ["a.ts"], now: 4_000 }),
+    await restartForPushConflict(sqliteDb(db), itemId, {
+      branch: "paws/topic",
+      files: ["a.ts"],
+      now: 4_000,
+    }),
   ).toBe(true);
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
   expect(db.query("SELECT COUNT(*) AS n FROM question").get()).toEqual({ n: 0 });

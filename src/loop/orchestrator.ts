@@ -1967,18 +1967,20 @@ export class Orchestrator {
     jobs.register(JOB_KIND.visualReviewReminder, async (job, context) => {
       const questionId = readString(job.payload, "questionId");
       if (!(await context.isCurrent()) || questionId === null) return;
-      if (await remindVisualReview(this.db, questionId, this.now())) await this.flush();
+      if (await remindVisualReview(this.store, questionId, this.now())) await this.flush();
     });
     jobs.register(JOB_KIND.linkAskReminder, async (job, context) => {
       const questionId = readString(job.payload, "questionId");
       if (!(await context.isCurrent()) || questionId === null) return;
-      if (await remindLinkAsk(this.db, questionId, this.now())) await this.flush();
+      if (await remindLinkAsk(this.store, questionId, this.now())) await this.flush();
     });
     jobs.register(JOB_KIND.reaskQuestion, async (job, context) => {
       const itemId = readString(job.payload, "itemId");
       const questionId = readString(job.payload, "questionId");
       if (!(await context.isCurrent()) || itemId === null || questionId === null) return;
-      if (await reaskDeadQuestion(this.db, { itemId, questionId, jobId: job.id, now: this.now() }))
+      if (
+        await reaskDeadQuestion(this.store, { itemId, questionId, jobId: job.id, now: this.now() })
+      )
         await this.flush();
     });
     jobs.register(JOB_KIND.runnerSetupCheck, async (job) => {
@@ -2076,14 +2078,14 @@ export class Orchestrator {
           await clearWait();
           const waitingId = readString(job.payload, "itemId");
           if (waitingId) await this.settleItemAwake(waitingId);
-          await waitForRunnerSlot(this.db, job, this.now(), this.runnerWaitMs(wait), wait);
+          await waitForRunnerSlot(this.store, job, this.now(), this.runnerWaitMs(wait), wait);
         }
       });
     });
     jobs.register(JOB_KIND.merge, async (job, context) => {
       const ownerId = readString(job.payload, "itemId");
       if (ownerId !== null && (await this.mergeTurnTaken(ownerId))) {
-        if (await context.isCurrent()) await waitForMergeTurn(this.db, job, this.now());
+        if (await context.isCurrent()) await waitForMergeTurn(this.store, job, this.now());
         return;
       }
       let waiting: MergeWait | undefined;
@@ -2103,7 +2105,7 @@ export class Orchestrator {
 
         const delayMs = transientRetryDelayMs(job.attempts, error, this.options.retryBaseMs);
 
-        if (!(await retryMergeLater(this.db, job, this.now(), delayMs, error))) throw error;
+        if (!(await retryMergeLater(this.store, job, this.now(), delayMs, error))) throw error;
         await this.noteHostDiskFull(readString(job.payload, "itemId"), error);
         journalCaught(
           error,
@@ -2123,7 +2125,7 @@ export class Orchestrator {
       if (
         parked === "ask" &&
         itemId &&
-        (await askAboutSlowCi(this.db, itemId, { checks: waiting.message, now: this.now() }))
+        (await askAboutSlowCi(this.store, itemId, { checks: waiting.message, now: this.now() }))
       ) {
         await this.flush();
         return;
@@ -2190,7 +2192,7 @@ export class Orchestrator {
       });
       if (step === "wait" && (await context.isCurrent()))
         await waitForMergeTurn(
-          this.db,
+          this.store,
           withReviewWait(job, reviewWait),
           this.now(),
           PULL_REVIEW_POLL_MS,
@@ -2207,7 +2209,7 @@ export class Orchestrator {
         this.linearCommentCapabilities(policy, context.signal),
       );
       if (step === "wait" && (await context.isCurrent()))
-        await waitForMergeTurn(this.db, job, this.now(), PULL_REVIEW_POLL_MS);
+        await waitForMergeTurn(this.store, job, this.now(), PULL_REVIEW_POLL_MS);
     });
     jobs.register(JOB_KIND.pullComments, async (job, context) => {
       const itemId = (job.payload as { pullCommentsFor?: unknown }).pullCommentsFor;
@@ -2221,7 +2223,7 @@ export class Orchestrator {
       });
       if (step === "wait" && (await context.isCurrent()))
         await waitForMergeTurn(
-          this.db,
+          this.store,
           withReviewWait(job, reviewWait),
           this.now(),
           PULL_REVIEW_POLL_MS,
@@ -2665,7 +2667,7 @@ export class Orchestrator {
         await this.settleItemAwake(item.id);
         if (
           (await waitForRunnerSlot(
-            this.db,
+            this.store,
             job,
             this.now(),
             this.runnerWaitMs(wait, job.queue === JOB_KIND.resume),
@@ -3049,7 +3051,7 @@ export class Orchestrator {
     const talk = itemId === null ? null : await this.options.conversations?.();
     if (!talk || (await talk.open(itemId!)).length === 0 || !(await context.isCurrent()))
       return false;
-    await waitForMergeTurn(this.db, job, this.now(), PULL_REVIEW_POLL_MS);
+    await waitForMergeTurn(this.store, job, this.now(), PULL_REVIEW_POLL_MS);
     return true;
   }
 
@@ -3074,7 +3076,7 @@ export class Orchestrator {
     const next = { ...waited, attempt: waited.attempt + 1 };
     job = (await beforePark?.()) ?? job;
     const delayMs = this.runnerWaitMs(next, job.queue === JOB_KIND.resume);
-    await waitForRunnerSlot(this.db, job, this.now(), delayMs, next);
+    await waitForRunnerSlot(this.store, job, this.now(), delayMs, next);
     return true;
   }
 
@@ -3091,7 +3093,7 @@ export class Orchestrator {
     if (!refused || !item || !repository) return false;
     const github = this.githubForRepository(repository);
     const repositoryName = `${repository.owner}/${repository.repo}`;
-    const outage = await pushRefused(this.db, {
+    const outage = await pushRefused(this.store, {
       repository: repositoryName,
       error: refused,
       jobId: job.id,
@@ -3100,7 +3102,7 @@ export class Orchestrator {
     });
     // The outage ended between the hold and now: look again shortly.
     if (outage === null) {
-      if ((await waitForMergeTurn(this.db, job, this.now())) === "lost") throw error;
+      if ((await waitForMergeTurn(this.store, job, this.now())) === "lost") throw error;
       return true;
     }
     if (!refused.held)
@@ -3111,8 +3113,8 @@ export class Orchestrator {
         `push outage on ${repositoryName}; the push waits`,
         this.options.journal,
       );
-    const asked = (await askAboutPushOutage(this.db, repositoryName, this.now())) === "asked";
-    if ((await parkForPushOutage(this.db, job, outage, this.now())) === "lost") throw error;
+    const asked = (await askAboutPushOutage(this.store, repositoryName, this.now())) === "asked";
+    if ((await parkForPushOutage(this.store, job, outage, this.now())) === "lost") throw error;
     if (asked) await this.flush();
     return true;
   }
@@ -4175,7 +4177,7 @@ export class Orchestrator {
     if (options.startRound) await this.startCloseoutRound(item, head);
     if (
       (await closeLinkAsksOnHead(
-        this.db,
+        this.store,
         item.id,
         head,
         this.now(),
@@ -4223,7 +4225,7 @@ export class Orchestrator {
         const acceptedHead = (
           await git(["-C", worktree, "rev-parse", (await this.itemHead(item)).ref])
         ).trim();
-        const mergeJob = await acceptCloseout(this.db, {
+        const mergeJob = await acceptCloseout(this.store, {
           itemId: item.id,
           expected: verdict.owner,
           base,
@@ -6629,7 +6631,7 @@ export class Orchestrator {
         }
         if (
           request.pushRejected?.conflicts &&
-          (await restartForPushConflict(this.db, item.id, {
+          (await restartForPushConflict(this.store, item.id, {
             branch: request.pushRejected.branch,
             files: request.pushRejected.conflicts,
             now: this.now(),
@@ -6983,7 +6985,7 @@ export class Orchestrator {
         await this.flush();
         return "rejected";
       }
-      const guided = await guideLinkAsk(this.db, {
+      const guided = await guideLinkAsk(this.store, {
         questionId: open.id,
         eventKey: event.dedupeKey,
         body: answer,
@@ -9690,7 +9692,7 @@ export class Orchestrator {
       );
       if (due === null) break;
       const plan = await planVisualReviewCarry(
-        this.db,
+        this.store,
         item.id,
         due.requirement.id,
         due.evidenceIds,
@@ -9822,7 +9824,7 @@ export class Orchestrator {
     if (itemId && (await this.store.run((q) => getWorkItemSteps(q, itemId)))?.state === "paused")
       return "rejected";
     const outcome = await decideLinkAsk(
-      this.db,
+      this.store,
       { ...input, now: this.now() },
       {
         bypass: reverifyBypassedSteps,

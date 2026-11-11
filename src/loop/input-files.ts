@@ -162,7 +162,7 @@ export function createReviewMarkLoader(options: {
       request.signal.throwIfAborted();
       const mark = await sqliteDb(options.db).run((q) => getVisualReviewMarkSteps(q, id));
       if (mark?.itemId !== options.itemId) continue;
-      const bytes = await readEvidenceBytes(options.db, options.storage, id);
+      const bytes = await readEvidenceBytes(sqliteDb(options.db), options.storage, id);
       if (digest(bytes) !== mark.sha256) continue;
       const path = join(workspace, REVIEW_MARK_DIRECTORY, turn, `${id}.png`);
       await writeAtomic(path, bytes);

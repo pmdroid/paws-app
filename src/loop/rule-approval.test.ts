@@ -128,7 +128,7 @@ test("Approve records who and why and verifies the same head again", async () =>
   const { db, itemId, question } = await held();
   expect(
     await decideLinkAsk(
-      db,
+      sqliteDb(db),
       {
         questionId: question.id,
         decision: "approve",
@@ -190,14 +190,14 @@ test("Approve needs a reason and a person who may decide", async () => {
   for (const note of [null, "  "])
     expect(
       await decideLinkAsk(
-        db,
+        sqliteDb(db),
         { questionId: question.id, decision: "approve", note, answeredBy: "lead", actor, now: NOW },
         effects,
       ),
     ).toBe("rejected");
   expect(
     await decideLinkAsk(
-      db,
+      sqliteDb(db),
       {
         questionId: question.id,
         decision: "approve",
@@ -218,7 +218,7 @@ test("Send back restarts the agent with the finding", async () => {
   const { db, itemId, question } = await held();
   expect(
     await decideLinkAsk(
-      db,
+      sqliteDb(db),
       {
         questionId: question.id,
         decision: "changes",
@@ -249,7 +249,7 @@ test("Send back restarts the agent with the finding", async () => {
 test("a reply in Linear sends the finding back and approves nothing", async () => {
   const { db, itemId, question } = await held();
   expect(
-    await guideLinkAsk(db, {
+    await guideLinkAsk(sqliteDb(db), {
       questionId: question.id,
       eventKey: "activity:approve",
       body: "Approved, ship it",

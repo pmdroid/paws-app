@@ -61,7 +61,7 @@ describe("a question whose elicitation died twice", () => {
     expect(getWorkItem(db, "item-q")?.state).toBe("awaiting_input");
     expect(await listDeadDeliveries(sqliteDb(db), "item-q")).toHaveLength(1);
 
-    const again = await reaskDeadQuestion(db, {
+    const again = await reaskDeadQuestion(sqliteDb(db), {
       itemId: "item-q",
       questionId: question.id,
       jobId: job,
@@ -95,7 +95,7 @@ describe("a question whose elicitation died twice", () => {
   test("a visual review keeps its question and review, and is delivered again", async () => {
     const { db, question, job } = await waitingItem("visual-review");
 
-    const again = await reaskDeadQuestion(db, {
+    const again = await reaskDeadQuestion(sqliteDb(db), {
       itemId: "item-q",
       questionId: question.id,
       jobId: job,
@@ -123,7 +123,7 @@ describe("a question whose elicitation died twice", () => {
     const moved = await waitingItem();
     moved.db.run("UPDATE work_item SET state = 'running' WHERE id = 'item-q'");
     expect(
-      await reaskDeadQuestion(moved.db, {
+      await reaskDeadQuestion(sqliteDb(moved.db), {
         itemId: "item-q",
         questionId: moved.question.id,
         jobId: moved.job,
@@ -135,7 +135,7 @@ describe("a question whose elicitation died twice", () => {
     const answered = await waitingItem();
     answered.db.run("UPDATE question SET status = 'answered' WHERE id = ?", [answered.question.id]);
     expect(
-      await reaskDeadQuestion(answered.db, {
+      await reaskDeadQuestion(sqliteDb(answered.db), {
         itemId: "item-q",
         questionId: answered.question.id,
         jobId: answered.job,

@@ -81,14 +81,14 @@ async function attempt(
     return { id: job.id, pushed: true };
   } catch (error) {
     if (!(error instanceof PushOutageError)) throw error;
-    const outage = await pushRefused(db, {
+    const outage = await pushRefused(sqliteDb(db), {
       repository: REPOSITORY,
       error,
       jobId: job.id,
       installationUrl: "https://github.com/settings/installations/2",
       now,
     });
-    expect(await parkForPushOutage(db, job, outage!, now)).toBe("parked");
+    expect(await parkForPushOutage(sqliteDb(db), job, outage!, now)).toBe("parked");
     return { id: job.id, pushed: false, held: error.held };
   }
 }
@@ -186,16 +186,16 @@ describe("a push outage", () => {
     await attempt(db, 100, () => "refused");
     await attempt(db, 101, () => "works");
     await attempt(db, 102, () => "works");
-    expect(await askAboutPushOutage(db, REPOSITORY, hour - 1)).toBe("not_yet");
+    expect(await askAboutPushOutage(sqliteDb(db), REPOSITORY, hour - 1)).toBe("not_yet");
     expect(findOpenQuestion(db, "ses-a")).toBeNull();
 
-    expect(await askAboutPushOutage(db, REPOSITORY, hour)).toBe("asked");
+    expect(await askAboutPushOutage(sqliteDb(db), REPOSITORY, hour)).toBe("asked");
     const question = findOpenQuestion(db, "ses-a")!;
     expect(question).toMatchObject({ kind: "push-outage", itemId: "item-a" });
     expect(question.body).toContain("https://github.com/settings/installations/2");
     expect(question.body).toContain("denied to paws-helper[bot]");
     // One question for the workspace, not one per item, and the item keeps its state.
-    expect(await askAboutPushOutage(db, REPOSITORY, hour + 10 * MINUTE)).toBe("already");
+    expect(await askAboutPushOutage(sqliteDb(db), REPOSITORY, hour + 10 * MINUTE)).toBe("already");
     for (const name of ["b", "c"]) expect(findOpenQuestion(db, `ses-${name}`)).toBeNull();
     expect(getWorkItem(db, "item-a")?.state).toBe("running");
     expect(

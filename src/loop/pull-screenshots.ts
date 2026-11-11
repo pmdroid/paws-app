@@ -79,7 +79,7 @@ async function readEvidence(
   storage: EvidenceStorage,
   row: StoredEvidence,
 ): Promise<Uint8Array> {
-  const bytes = await readEvidenceBytes(db, storage, row.id);
+  const bytes = await readEvidenceBytes(sqliteDb(db), storage, row.id);
   if (
     bytes.byteLength !== row.sizeBytes ||
     createHash("sha256").update(bytes).digest("hex") !== row.sha256

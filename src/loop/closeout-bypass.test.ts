@@ -124,7 +124,7 @@ test("bypassing from the page writes the rows and verifies the same head again",
   const { db, itemId, question } = await blocked();
   expect(
     await decideLinkAsk(
-      db,
+      sqliteDb(db),
       {
         questionId: question.id,
         decision: "approve",
@@ -197,7 +197,7 @@ test("a bypass needs offered checks, each once, each with a reason", async () =>
   ])
     expect(
       await decideLinkAsk(
-        db,
+        sqliteDb(db),
         {
           questionId: question.id,
           decision: "approve",
@@ -219,7 +219,7 @@ test("someone who did not delegate and does not lead the project cannot bypass",
   const { db, itemId, question } = await blocked();
   expect(
     await decideLinkAsk(
-      db,
+      sqliteDb(db),
       {
         questionId: question.id,
         decision: "approve",
@@ -242,7 +242,7 @@ test("someone who did not delegate and does not lead the project cannot bypass",
 test("a /paws bypass reply in Linear is guidance and gets the link back once", async () => {
   const { db, itemId, question } = await blocked();
   expect(
-    await guideLinkAsk(db, {
+    await guideLinkAsk(sqliteDb(db), {
       questionId: question.id,
       eventKey: "activity:bypass",
       body: "/paws bypass test -- Known fixture failure",
@@ -269,7 +269,7 @@ test("guidance from the page restarts the agent and authorizes a new round", asy
   const { db, itemId, question } = await blocked();
   expect(
     await decideLinkAsk(
-      db,
+      sqliteDb(db),
       {
         questionId: question.id,
         decision: "changes",

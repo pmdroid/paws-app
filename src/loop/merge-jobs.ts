@@ -21,6 +21,7 @@ import {
   type Q,
   type RunnerCapacityWaitState,
   markCloseoutAcceptedSteps,
+  type Db,
 } from "../db";
 import {
   MERGE_CI_ASK_AFTER_MS,
@@ -36,12 +37,12 @@ import { worktreeBranch } from "./sources";
 export const MERGE_OWNER_POLL_MS = 5_000;
 
 export async function waitForMergeTurn(
-  db: Database,
+  store: Db,
   job: Job,
   now: number,
   delayMs = MERGE_OWNER_POLL_MS,
 ): Promise<"parked" | "lost"> {
-  const parked = await sqliteDb(db).run((q) =>
+  const parked = await store.run((q) =>
     parkLeasedJobSteps(q, job, {
       runAt: now + delayMs,
       payload: payloadRecord(job.payload),
@@ -53,13 +54,13 @@ export async function waitForMergeTurn(
 }
 
 export async function waitForRunnerSlot(
-  db: Database,
+  store: Db,
   job: Job,
   now: number,
   delayMs: number,
   capacityWait: RunnerCapacityWaitState,
 ): Promise<"parked" | "lost"> {
-  return (await parkLeasedJob(sqliteDb(db), job, {
+  return (await parkLeasedJob(store, job, {
     runAt: now + delayMs,
     payload: { ...payloadRecord(job.payload), capacityWait },
     attempts: job.attempts - 1,
@@ -70,13 +71,13 @@ export async function waitForRunnerSlot(
 }
 
 export async function retryMergeLater(
-  db: Database,
+  store: Db,
   job: Job,
   now: number,
   delayMs: number,
   error: unknown,
 ): Promise<boolean> {
-  return await sqliteDb(db).run((q) =>
+  return await store.run((q) =>
     retryLeasedJobSteps(
       q,
       job,
@@ -234,7 +235,7 @@ function* applyCloseoutAcceptanceSteps(q: Q, itemId: string, expected: Verificat
 }
 
 export async function acceptCloseout(
-  db: Database,
+  store: Db,
   input: {
     itemId: string;
     expected: VerificationOwner;
@@ -245,7 +246,6 @@ export async function acceptCloseout(
     reverifyJobId?: number;
   },
 ): Promise<number | null> {
-  const store = sqliteDb(db);
   const accepted = await store.transaction(function* (q) {
     if (!(yield* applyCloseoutAcceptanceSteps(q, input.itemId, input.expected))) return null;
     yield* markCloseoutAcceptedSteps(q, input.itemId, input.head);
@@ -271,12 +271,12 @@ export async function acceptCloseout(
 export const SLOW_CI_REASON = "ci_slow";
 
 export async function askAboutSlowCi(
-  db: Database,
+  store: Db,
   itemId: string,
   input: { checks: string; now: number },
 ): Promise<boolean> {
   // The read and the ask stay in one synchronous pass on SQLite, as before.
-  return await sqliteDb(db).transaction(function* (q) {
+  return await store.transaction(function* (q) {
     const item = yield* getWorkItemSteps(q, itemId);
     if (!item?.sessionKey || item.cancelRequested || item.state !== "merge_queue") return false;
     const hours = Math.round(MERGE_CI_ASK_AFTER_MS / (60 * 60_000));

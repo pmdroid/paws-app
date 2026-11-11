@@ -61,7 +61,7 @@ export async function handleEvidenceRequest(
       headers: { ...headers, "content-range": `bytes */${size}` },
     });
   const head = request.method === "HEAD";
-  const file = await openEvidenceFile(options.db, options, id, range ?? undefined);
+  const file = await openEvidenceFile(sqliteDb(options.db), options, id, range ?? undefined);
   if (file === null || file.size !== size) return notFound();
   if (head && file.body instanceof ReadableStream) await file.body.cancel();
   if (range === null)

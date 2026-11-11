@@ -1,5 +1,4 @@
 import { askSteps, restartSteps } from "./operations";
-import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
   outboxKeyExistsSteps,
@@ -25,7 +24,6 @@ import {
   schedulingProjectLeadSteps,
   recordLinkAskDecisionSteps,
   saveCheckpointSteps,
-  sqliteDb,
   type LinkAsk,
   type LinkAskDecision,
   type LinkAskKind,
@@ -34,6 +32,7 @@ import {
   type Q,
   type Steps,
   type WorkItemRecord,
+  type Db,
 } from "../db";
 import {
   answerQuestionSteps,
@@ -153,12 +152,8 @@ export function* askWithLinkSteps(
 }
 
 /** Posts the one reminder while the ask is still open. Returns whether it posted. */
-export async function remindLinkAsk(
-  db: Database,
-  questionId: string,
-  now: number,
-): Promise<boolean> {
-  return await sqliteDb(db).transaction(function* (q) {
+export async function remindLinkAsk(store: Db, questionId: string, now: number): Promise<boolean> {
+  return await store.transaction(function* (q) {
     const question = yield* getQuestionSteps(q, questionId);
     const linkAsk = yield* getLinkAskSteps(q, questionId);
     if (question?.status !== "open" || linkAsk === null || linkAsk.closedAt !== null) return false;
@@ -213,7 +208,7 @@ export const RULE_REPLY_NOTE =
  * Risk card: the item stops and its pull request stays open.
  */
 export async function decideLinkAsk(
-  db: Database,
+  store: Db,
   input: {
     questionId: string;
     decision: LinkAskDecision;
@@ -228,7 +223,6 @@ export async function decideLinkAsk(
   },
   effects: LinkAskEffects = {},
 ): Promise<"answered" | "forbidden" | "rejected"> {
-  const store = sqliteDb(db);
   let jobReady = false;
   const notifications = { ready: false };
   const outcome = await store.transaction(function* (q): Steps<
@@ -246,7 +240,7 @@ export async function decideLinkAsk(
     if (!LINK_ASK_DECISIONS[linkAsk.kind].includes(input.decision)) return "rejected";
     if (LINK_ASK_NOTE_REQUIRED.has(input.decision) && !input.note) return "rejected";
     if (input.decision === "stop" && linkAsk.kind === "risk")
-      return yield* stopRiskAskSteps(q, db, linkAsk, item, input, notifications);
+      return yield* stopRiskAskSteps(q, store, linkAsk, item, input, notifications);
     const bypassing = linkAsk.kind === "bypass" && input.decision === "approve";
     // Approving a rule break needs a reason; it covers every rule the ask holds.
     const approvingRule = linkAsk.kind === "rule" && input.decision === "approve";
@@ -392,7 +386,7 @@ function* ruleFindingsSteps(q: Q, linkAsk: LinkAsk): Steps<{ findings?: string }
  */
 function* stopRiskAskSteps(
   q: Q,
-  db: Database,
+  store: Db,
   linkAsk: LinkAsk,
   item: WorkItemRecord,
   input: {
@@ -437,7 +431,7 @@ function* stopRiskAskSteps(
       (yield* getWorkItemSteps(q, item.id))!,
       input.actor.name,
       now,
-      commandInstance(db),
+      commandInstance(store),
       notifications,
     ))
   )
@@ -513,10 +507,9 @@ export function* reverifyBypassedSteps(
  * Request changes on the page.
  */
 export async function guideLinkAsk(
-  db: Database,
+  store: Db,
   input: { questionId: string; eventKey: string; body: string; answeredBy: string; now: number },
 ): Promise<boolean> {
-  const store = sqliteDb(db);
   const notifications = { ready: false };
   const guided = await store.transaction(function* (q) {
     const { now } = input;
@@ -626,13 +619,13 @@ export async function guideLinkAsk(
  * open. Returns how many closed.
  */
 export async function closeLinkAsksOnHead(
-  db: Database,
+  store: Db,
   itemId: string,
   head: string,
   now: number,
   keep: readonly string[] = [],
 ): Promise<number> {
-  return await sqliteDb(db).transaction(function* (q) {
+  return await store.transaction(function* (q) {
     const moved = (yield* openLinkAsksSteps(q, itemId)).filter(
       (entry) => entry.headCommit !== head && !keep.includes(entry.questionId),
     );
