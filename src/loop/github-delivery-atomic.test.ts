@@ -58,7 +58,7 @@ async function setup(file = ":memory:") {
       runAt: 90_000,
     });
   }
-  recordPullReview(db, {
+  await recordPullReview(sqliteDb(db), {
     reviewId: 40,
     itemId: "first",
     state: "changes_requested",

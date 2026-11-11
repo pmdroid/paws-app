@@ -150,21 +150,23 @@ test("wrong-account use: a command, result or heartbeat that mixes identities is
       account,
     }) as RunnerCommand;
   expect(
-    await code(async () =>
-      recordCommandAccount(
-        f.db,
-        command("x1", "R1", { accountId: f.accounts.a, bindingId: f.bindings.b1 }),
-        f.now(),
-      ),
+    await code(
+      async () =>
+        await recordCommandAccount(
+          sqliteDb(f.db),
+          command("x1", "R1", { accountId: f.accounts.a, bindingId: f.bindings.b1 }),
+          f.now(),
+        ),
     ),
   ).toBe("binding_mismatch");
   expect(
-    await code(async () =>
-      recordCommandAccount(
-        f.db,
-        command("x2", "R1", { accountId: f.accounts.a, bindingId: f.bindings.a2 }),
-        f.now(),
-      ),
+    await code(
+      async () =>
+        await recordCommandAccount(
+          sqliteDb(f.db),
+          command("x2", "R1", { accountId: f.accounts.a, bindingId: f.bindings.a2 }),
+          f.now(),
+        ),
     ),
   ).toBe("binding_mismatch");
   expect(
@@ -290,8 +292,8 @@ test("a legacy installation upgrades to default sign-in accounts and rolls back 
       { protocol: 1, bindings: [{ bindingId: binding.id, agent: "claude" }] },
       10,
     );
-    recordCommandAccount(
-      db,
+    await recordCommandAccount(
+      sqliteDb(db),
       {
         id: "named",
         runnerId: "r",

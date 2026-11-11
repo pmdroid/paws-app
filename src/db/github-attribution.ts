@@ -108,12 +108,12 @@ export function* beginGitHubAttributionSteps(q: Q, binding: AttributionBinding, 
   );
 }
 
-export function beginGitHubAttribution(
-  db: Database,
+export async function beginGitHubAttribution(
+  store: Db,
   binding: AttributionBinding,
   input: BeginInput,
 ) {
-  settled(sqliteDb(db).transaction((q) => beginGitHubAttributionSteps(q, binding, input)));
+  return store.transaction((q) => beginGitHubAttributionSteps(q, binding, input));
 }
 
 type ConsumeInput = { stateHash: string; browserHash: string; now: number };

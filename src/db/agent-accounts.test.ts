@@ -334,7 +334,7 @@ test("the schema keeps each binding to one workspace, account and agent", async 
 
 test("commands without an account record the runner's legacy identity", async () => {
   const db = fresh();
-  expect(recordCommandAccount(db, loginCheck("C1", "R1", "W1"), NOW)).toEqual({
+  expect(await recordCommandAccount(sqliteDb(db), loginCheck("C1", "R1", "W1"), NOW)).toEqual({
     commandId: "C1",
     workspaceId: "W1",
     runnerId: "R1",
@@ -344,15 +344,15 @@ test("commands without an account record the runner's legacy identity", async ()
     named: false,
     recordedAt: NOW,
   });
-  recordCommandAccount(db, probe("C2", "R2", "W1"), NOW);
+  await recordCommandAccount(sqliteDb(db), probe("C2", "R2", "W1"), NOW);
   expect(await commandAccount(sqliteDb(db), "C2")).toMatchObject({
     bindingId: "legacy_claude_R2",
     named: false,
   });
   expect(await commandAccount(sqliteDb(db), "unknown")).toBeNull();
   expect(
-    recordCommandAccount(
-      db,
+    await recordCommandAccount(
+      sqliteDb(db),
       {
         ...base,
         id: "C3",
@@ -365,10 +365,12 @@ test("commands without an account record the runner's legacy identity", async ()
       NOW,
     ),
   ).toBeNull();
-  expect(await code(async () => recordCommandAccount(db, probe("C4", "R3", "W1"), NOW))).toBe(
-    "foreign_workspace",
-  );
-  expect(() => recordCommandAccount(db, probe("C1", "R1", "W1"), NOW)).toThrow(/UNIQUE/);
+  expect(
+    await code(async () => await recordCommandAccount(sqliteDb(db), probe("C4", "R3", "W1"), NOW)),
+  ).toBe("foreign_workspace");
+  await expect(
+    await recordCommandAccount(sqliteDb(db), probe("C1", "R1", "W1"), NOW),
+  ).rejects.toThrow(/UNIQUE/);
   db.close();
 });
 
@@ -388,7 +390,10 @@ test("a named account is refused unless the runner reports the binding", async (
   });
   const named = { accountId: a.id, bindingId: bound.id };
   const attempt = (id: string, account = named, runner = "R1", workspace = "W1") =>
-    code(async () => recordCommandAccount(db, probe(id, runner, workspace, account), NOW));
+    code(
+      async () =>
+        await recordCommandAccount(sqliteDb(db), probe(id, runner, workspace, account), NOW),
+    );
   expect(await attempt("N1")).toBe("runner_unsupported");
   db.run(
     "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('R1','0.1.59',?)",
@@ -453,7 +458,7 @@ test("identity stays attached after an account is disabled or removed", async ()
     NOW,
   );
   const named = { accountId: a.id, bindingId: bound.id };
-  recordCommandAccount(db, probe("BEFORE", "R1", "W1", named), NOW);
+  await recordCommandAccount(sqliteDb(db), probe("BEFORE", "R1", "W1", named), NOW);
 
   await setAgentAccountEnabled(sqliteDb(db), {
     workspaceId: "W1",
@@ -462,13 +467,19 @@ test("identity stays attached after an account is disabled or removed", async ()
     now: NOW,
   });
   expect(
-    await code(async () => recordCommandAccount(db, probe("OFF", "R1", "W1", named), NOW)),
+    await code(
+      async () => await recordCommandAccount(sqliteDb(db), probe("OFF", "R1", "W1", named), NOW),
+    ),
   ).toBe("disabled");
-  expect(recordCommandAccount(db, loginCheck("CHECK", "R1", "W1", named), NOW)?.named).toBe(true);
+  expect(
+    (await recordCommandAccount(sqliteDb(db), loginCheck("CHECK", "R1", "W1", named), NOW))?.named,
+  ).toBe(true);
 
   await removeAgentAccount(sqliteDb(db), { workspaceId: "W1", accountId: a.id, now: NOW + 1 });
   expect(
-    await code(async () => recordCommandAccount(db, probe("GONE", "R1", "W1", named), NOW)),
+    await code(
+      async () => await recordCommandAccount(sqliteDb(db), probe("GONE", "R1", "W1", named), NOW),
+    ),
   ).toBe("removed");
   expect((await listAgentBindings(sqliteDb(db), "W1", a.id))[0]?.removedAt).toBe(NOW + 1);
   expect(await commandAccount(sqliteDb(db), "BEFORE")).toMatchObject({
@@ -498,16 +509,18 @@ test("identity stays attached after an account is disabled or removed", async ()
     ).label,
   ).toBe("A");
 
-  recordCommandAccount(db, loginCheck("LEGACY_CHECK", "R2", "W1"), NOW);
+  await recordCommandAccount(sqliteDb(db), loginCheck("LEGACY_CHECK", "R2", "W1"), NOW);
   await setAgentAccountEnabled(sqliteDb(db), {
     workspaceId: "W1",
     accountId: "legacy_claude_W1",
     enabled: false,
     now: NOW,
   });
-  expect(await code(async () => recordCommandAccount(db, probe("LEGACY", "R2", "W1"), NOW))).toBe(
-    "disabled",
-  );
+  expect(
+    await code(
+      async () => await recordCommandAccount(sqliteDb(db), probe("LEGACY", "R2", "W1"), NOW),
+    ),
+  ).toBe("disabled");
   expect(
     await code(
       async () =>

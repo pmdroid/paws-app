@@ -67,7 +67,7 @@ export async function probeStandaloneAttribution(root: string) {
   };
   const consent = async () => {
     const stateHash = randomUUID();
-    beginGitHubAttribution(db, binding, { stateHash, browserHash: stateHash, now });
+    await beginGitHubAttribution(sqliteDb(db), binding, { stateHash, browserHash: stateHash, now });
     const revision = await consumeGitHubAttribution(db, binding, {
       stateHash,
       browserHash: stateHash,

@@ -41,12 +41,12 @@ export function* saveTaskBlocksSteps(
   }
 }
 
-export function saveTaskBlocks(
-  db: Database,
+export async function saveTaskBlocks(
+  store: Db,
   blockedLinearIssueIds: readonly string[],
   edges: readonly TaskBlock[],
-): void {
-  settled(sqliteDb(db).transaction((q) => saveTaskBlocksSteps(q, blockedLinearIssueIds, edges)));
+): Promise<void> {
+  await store.transaction((q) => saveTaskBlocksSteps(q, blockedLinearIssueIds, edges));
 }
 
 export function* listTaskBlockersSteps(q: Q, blockedLinearIssueId: string) {

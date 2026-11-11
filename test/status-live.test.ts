@@ -66,8 +66,8 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
       id: "linear-exports",
       name: "Exports",
     });
-    saveTaskBlocks(
-      db,
+    await saveTaskBlocks(
+      sqliteDb(db),
       [merging.linearIssueId],
       [
         {

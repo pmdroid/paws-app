@@ -678,12 +678,12 @@ export function* recordCommandAccountSteps(
   return (yield* commandAccountSteps(q, command.id))!;
 }
 
-export function recordCommandAccount(
-  db: Database,
+export async function recordCommandAccount(
+  store: Db,
   command: RunnerCommand | RunnerRetroCommand,
   at: number,
-): CommandAccount | null {
-  return settled(sqliteDb(db).transaction((q) => recordCommandAccountSteps(q, command, at)));
+): Promise<CommandAccount | null> {
+  return store.transaction((q) => recordCommandAccountSteps(q, command, at));
 }
 
 export function* commandAccountSteps(q: Q, commandId: string) {

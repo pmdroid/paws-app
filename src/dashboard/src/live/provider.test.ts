@@ -1286,8 +1286,8 @@ describe("live status provider", () => {
     const item = insertQueuedItem(db, { id: "ENG-8", title: "Detail", sessionKey: "ses_8", now });
     const blocked = insertQueuedItem(db, { id: "ENG-9", sessionKey: "ses_8", now: now + 1 });
     insertQueuedItem(db, { id: "ENG-10", sessionKey: "ses_other", now });
-    saveTaskBlocks(
-      db,
+    await saveTaskBlocks(
+      sqliteDb(db),
       [blocked.linearIssueId],
       [{ blockerLinearIssueId: item.linearIssueId, blockedLinearIssueId: blocked.linearIssueId }],
     );
@@ -1829,8 +1829,8 @@ describe("live status provider", () => {
           mergeSha,
           confirmedAt: 30,
         });
-      saveTaskBlocks(
-        db,
+      await saveTaskBlocks(
+        sqliteDb(db),
         [blocked.linearIssueId],
         [
           {
@@ -1859,8 +1859,8 @@ describe("live status provider", () => {
       newer.id,
     ]);
     db.run("UPDATE work_item SET linear_identifier = 'ENG-BLOCK' WHERE id = ?", [blocked.id]);
-    saveTaskBlocks(
-      db,
+    await saveTaskBlocks(
+      sqliteDb(db),
       [blocked.linearIssueId],
       [
         {

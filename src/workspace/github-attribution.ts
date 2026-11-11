@@ -41,14 +41,14 @@ export function createGitHubAttributionLink(options: {
   if (options.client && (!options.client.clientId || !options.client.clientSecret))
     throw new Error("Configured GitHub App client metadata is required.");
   /** Records one pending link and builds GitHub's authorize address for it. */
-  function begin(
+  async function begin(
     client: { clientId: string; clientSecret: string },
     binding: AttributionBinding,
     returnPath?: string,
   ) {
     const state = workspaceSecret();
     const browser = workspaceSecret();
-    beginGitHubAttribution(options.db, binding, {
+    await beginGitHubAttribution(sqliteDb(options.db), binding, {
       stateHash: workspaceTokenHash(state),
       browserHash: workspaceTokenHash(browser),
       now: now(),
@@ -116,7 +116,7 @@ export function createGitHubAttributionLink(options: {
         )
           throw new Error("Session changed.");
         await requireAttributionSession(sqliteDb(options.db), binding, now());
-        const started = begin(options.client, binding, returnPath);
+        const started = await begin(options.client, binding, returnPath);
         return new Response(null, {
           status: 303,
           headers: {
@@ -201,7 +201,7 @@ export function createGitHubAttributionLink(options: {
               },
               400,
             );
-          const started = begin(options.client, binding);
+          const started = await begin(options.client, binding);
           return reply({ authorizeUrl: started.authorizeUrl }, 200, {
             "set-cookie": started.cookie,
           });

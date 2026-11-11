@@ -47,7 +47,7 @@ async function fixture() {
       sessionHash: session.session.tokenHash,
     };
     bindings.set(id, binding);
-    beginGitHubAttribution(db, binding, { stateHash: id, browserHash: id, now });
+    await beginGitHubAttribution(sqliteDb(db), binding, { stateHash: id, browserHash: id, now });
     const revision = await consumeGitHubAttribution(db, binding, {
       stateHash: id,
       browserHash: id,
