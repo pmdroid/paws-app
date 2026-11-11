@@ -411,7 +411,7 @@ const runtimeOptions: Parameters<typeof openRunnerRuntime>[0] = {
     },
     async postResult(runId, generation, value, token) {
       reachable();
-      const receipt = services.results.submit({
+      const receipt = await services.results.submit({
         runnerId,
         runId,
         generation,

@@ -238,7 +238,7 @@ async function setup() {
     db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 1, runners.b]);
   }
   /** A finished turn: optional runner events, then the result. */
-  function finish(command: RunCommand, runnerId: string, events: RunnerEvent[] = []) {
+  async function finish(command: RunCommand, runnerId: string, events: RunnerEvent[] = []) {
     const grant = work.issueGrant({
       runnerId,
       runId: command.runId,
@@ -255,7 +255,7 @@ async function setup() {
         event,
       }),
     );
-    results.submit({
+    await results.submit({
       runnerId,
       runId: command.runId,
       generation: command.generation,
@@ -352,7 +352,7 @@ async function setup() {
     db.run("UPDATE runner SET status='active' WHERE id=?", [runners.b]);
     const sealed =
       options.snapshot === false ? undefined : await seal(onA, options.agent ?? "claude");
-    finish(onA, runners.a);
+    await finish(onA, runners.a);
     await first;
     expect(onA.restoreSession).toBeUndefined();
     notices.length = 0;
@@ -364,7 +364,7 @@ async function setup() {
     const target = options.stay ? runners.a : runners.b;
     const onB = (await next(target)) as RunCommand;
     await options.dispatched?.(onB, target);
-    finish(onB, target, options.events);
+    await finish(onB, target, options.events);
     await second;
     db.run("UPDATE run SET status='ended' WHERE id=?", [record.runId]);
     return { record, onA, onB, sealed, notices };
@@ -667,7 +667,7 @@ async function mergeQueueItemOnFullRunner() {
     });
   const first = turn();
   const onA = (await context.next(runners.a)) as RunCommand;
-  context.finish(onA, runners.a);
+  await context.finish(onA, runners.a);
   await first;
   db.run("UPDATE runner SET status='active' WHERE id=?", [runners.b]);
   context.work.heartbeat(runners.a);
@@ -704,7 +704,7 @@ test("a merge-queue re-verify's checks run on a free runner while the pinned run
     const onB = (await context.next(runners.b)) as RunCommand;
     expect(onB.runnerId).toBe(runners.b);
     expect(onB.checkpoint).toBe(false);
-    context.finish(onB, runners.b);
+    await context.finish(onB, runners.b);
     await checks;
   } finally {
     freeA();
@@ -734,14 +734,14 @@ test("after checks ran on another runner, the next agent turn returns to the run
   try {
     const checks = turn({ checkpoint: false });
     const onB = (await context.next(runners.b)) as RunCommand;
-    context.finish(onB, runners.b);
+    await context.finish(onB, runners.b);
     await checks;
     freeA();
     const fix = turn();
     const onA = (await context.next(runners.a)) as RunCommand;
     expect(onA.runnerId).toBe(runners.a);
     expect(onA.resumeSessionId).toBe("claude-session");
-    context.finish(onA, runners.a);
+    await context.finish(onA, runners.a);
     await fix;
   } finally {
     freeA();

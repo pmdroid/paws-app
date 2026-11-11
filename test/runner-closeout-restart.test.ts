@@ -374,7 +374,7 @@ test("a Closeout review keeps running through a Paws restart and its result is u
     restartWithRunnerHolding(f);
 
     // The runner delivers the review it finished while Paws was down.
-    expect(f.finish(command, { reviewText: REVIEW_TEXT })).toEqual({ duplicate: false });
+    expect(await f.finish(command, { reviewText: REVIEW_TEXT })).toEqual({ duplicate: false });
     const commands = f.commandCount();
     f.events.length = 0;
     const result = await f.services.backend.forItem(f.item.id)(
@@ -403,7 +403,7 @@ test("a Closeout check run keeps running through a Paws restart and its report i
     const commands = f.commandCount();
     f.events.length = 0;
     const resumed = f.services.backend.forItem(f.item.id)(f.checks(new AbortController().signal));
-    expect(f.finish(command, { candidateSha: f.head, closeoutReport: REPORT })).toEqual({
+    expect(await f.finish(command, { candidateSha: f.head, closeoutReport: REPORT })).toEqual({
       duplicate: false,
     });
     const result = await resumed;
@@ -424,7 +424,7 @@ test("a delivered Closeout result has only one backend importer", async () => {
   try {
     const command = await shutDownMidCommand(f, f.review);
     restartWithRunnerHolding(f);
-    f.finish(command, { reviewText: REVIEW_TEXT });
+    await f.finish(command, { reviewText: REVIEW_TEXT });
     let release!: () => void;
     const held = new Promise<void>((resolve) => {
       release = resolve;
@@ -473,7 +473,7 @@ test("a kept Closeout command for another head is cancelled and the checks are p
     const placed = f.placed[1]!;
     expect(placed.prompt).toBe(`Run the Closeout checks at ${f.head}.`);
     expect(placed.generation).toBe(stale.generation + 1);
-    f.finish(placed, { candidateSha: f.head, closeoutReport: REPORT });
+    await f.finish(placed, { candidateSha: f.head, closeoutReport: REPORT });
     expect(await resumed).toMatchObject({ closeoutReport: REPORT });
   } finally {
     await f.close();
@@ -532,7 +532,7 @@ test("a review command carries the brief and earlier findings only to a runner t
       await f.until(() => f.placed.length === 1);
       const command = f.placed[0]!;
       expect(command.type === "review" && command.reviewCommand).toEqual(expected(base));
-      f.finish(command, { reviewText: REVIEW_TEXT });
+      await f.finish(command, { reviewText: REVIEW_TEXT });
       expect(await running).toMatchObject({ stopReason: "end_turn" });
     } finally {
       await f.close();
@@ -555,7 +555,7 @@ test("a checks run asks for rules first only on a runner that accepts it", async
       await f.until(() => f.placed.length === 1);
       const command = f.placed[0]!;
       expect(command.type === "run" && command.closeoutRulesFirst).toBe(expected);
-      f.finish(command, { candidateSha: f.head, closeoutReport: REPORT });
+      await f.finish(command, { candidateSha: f.head, closeoutReport: REPORT });
       expect(await running).toMatchObject({ stopReason: "end_turn" });
     } finally {
       await f.close();
@@ -601,7 +601,7 @@ test("a turn on a runner that takes it gets one read token and its prompt line; 
       expect(command.prompt?.endsWith(`\n\n${READ_PROMPT}`)).toBe(current);
       f.say(command, 1, `gh printed ${READ_TOKEN}`);
       await f.until(() => f.consumed() === 1);
-      f.finish(command, { candidateSha: f.head, closeoutReport: REPORT });
+      await f.finish(command, { candidateSha: f.head, closeoutReport: REPORT });
       expect(await running).toMatchObject({ stopReason: "end_turn" });
       expect(read.opened).toEqual(
         current
@@ -640,7 +640,7 @@ test("a turn without a token still runs, and a stopped turn revokes its token", 
     const command = f.placed[0]!;
     expect(command.type === "run" && command.githubRead).toBeUndefined();
     expect(command.prompt).not.toContain(READ_PROMPT);
-    f.finish(command, { candidateSha: f.head, closeoutReport: REPORT });
+    await f.finish(command, { candidateSha: f.head, closeoutReport: REPORT });
     expect(await running).toMatchObject({ stopReason: "end_turn" });
     expect(failed.opened).toHaveLength(1);
     expect(failed.closed).toEqual([]);
@@ -677,7 +677,7 @@ test("a turn Paws reattaches after a restart gets a fresh read lease, and the ol
     restartWithRunnerHolding(f);
     const resumed = f.services.backend.forItem(f.item.id)(withRead(new AbortController().signal));
     await f.until(() => read.opened.length === 2);
-    f.finish(command, { candidateSha: f.head, closeoutReport: REPORT });
+    await f.finish(command, { candidateSha: f.head, closeoutReport: REPORT });
     expect(await resumed).toMatchObject({ stopReason: "end_turn", closeoutReport: REPORT });
     expect(f.placed).toHaveLength(1);
     expect(read.opened).toEqual([

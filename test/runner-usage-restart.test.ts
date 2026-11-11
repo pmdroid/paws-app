@@ -410,7 +410,7 @@ async function usageLimitScenario(
             commandId: command.id,
             generation: command.generation,
           });
-          results.submit({
+          await results.submit({
             runnerId,
             runId: command.runId,
             generation: command.generation,

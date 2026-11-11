@@ -541,7 +541,7 @@ async function runRemoteFault(fault: Fault) {
   }
   const handled = new Set<string>();
   let unreachable: { command: RunnerCommand; since: number } | undefined;
-  function deliver(command: Extract<RunnerCommand, { type: "run" }>) {
+  async function deliver(command: Extract<RunnerCommand, { type: "run" }>) {
     const grant = work.issueGrant({
       runnerId,
       runId: command.runId,
@@ -555,7 +555,7 @@ async function runRemoteFault(fault: Fault) {
       runner.faultedAttempts++;
       runner.faulty = false;
     }
-    results.submit({
+    await results.submit({
       runnerId,
       runId: command.runId,
       generation: command.generation,
@@ -610,12 +610,12 @@ async function runRemoteFault(fault: Fault) {
         runner.stale = false;
         runner.faulty = false;
         heartbeat();
-        if (command.type === "run") deliver(command);
+        if (command.type === "run") await deliver(command);
       }
       for (const [key, entry] of live)
         if (!entry.hung && Date.now() - entry.at > SILENT_RUN_MS * 2) {
           live.delete(key);
-          deliver(entry.command);
+          await deliver(entry.command);
         }
       if (!runner.stale) {
         const lostBefore =
@@ -747,7 +747,7 @@ async function runRemoteFault(fault: Fault) {
         }
         if (fault === "silent-hung-checkpoint" && runner.checkpointSha)
           runner.recovered = { restore: command.restoreCheckpoint?.sha, prompt: command.prompt };
-        deliver(command);
+        await deliver(command);
       }
       await Bun.sleep(5);
     }

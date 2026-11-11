@@ -252,7 +252,7 @@ export async function probeRunnerResults(root: string, observe: Observe) {
       );
       assert.equal(answers!.status, 200);
       assert.deepEqual(await answers!.json(), { answers: [{ sequence: 2, answer: "A" }] });
-      assert.deepEqual(results.answers({ ...access, after: 2 }), []);
+      assert.deepEqual(await results.answers({ ...access, after: 2 }), []);
       work.event({
         ...access,
         sequence: 3,
@@ -264,24 +264,24 @@ export async function probeRunnerResults(root: string, observe: Observe) {
         event: { type: "question", text: "Newer question", options: ["B"] },
       });
       results.answer({ runId: run.id, generation, sequence: 4, answer: "B" });
-      assert.deepEqual(results.answers({ ...access, after: 2 }), []);
+      assert.deepEqual(await results.answers({ ...access, after: 2 }), []);
       results.answer({ runId: run.id, generation, sequence: 3, answer: "A" });
-      assert.deepEqual(results.answers({ ...access, after: 2 }), [
+      assert.deepEqual(await results.answers({ ...access, after: 2 }), [
         { sequence: 3, answer: "A" },
         { sequence: 4, answer: "B" },
       ]);
-      assert.deepEqual(results.answers({ ...access, after: 4 }), []);
+      assert.deepEqual(await results.answers({ ...access, after: 4 }), []);
       if (type === "run") {
-        assert.equal(results.deliverFollowUp(item.id, "Also cover the empty state"), false);
+        assert.equal(await results.deliverFollowUp(item.id, "Also cover the empty state"), false);
         db.run(
           "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?)",
           [runnerId, "0.1.11", Date.now()],
         );
-        assert.equal(results.deliverFollowUp(item.id, "Also cover the empty state"), false);
+        assert.equal(await results.deliverFollowUp(item.id, "Also cover the empty state"), false);
         db.run("UPDATE runner_host_status SET runner_version='0.1.12' WHERE runner_id=?", [
           runnerId,
         ]);
-        assert.equal(results.deliverFollowUp(item.id, "Also cover the empty state"), true);
+        assert.equal(await results.deliverFollowUp(item.id, "Also cover the empty state"), true);
         const followUps = await results.fetch(
           new Request(`https://runner.invalid/v1/runs/${run.id}/follow-ups`, {
             method: "POST",
@@ -297,7 +297,7 @@ export async function probeRunnerResults(root: string, observe: Observe) {
         assert.deepEqual(await followUps!.json(), {
           followUps: [{ sequence: 1, body: "Also cover the empty state" }],
         });
-        assert.deepEqual(results.followUps({ ...access, after: 1 }), []);
+        assert.deepEqual(await results.followUps({ ...access, after: 1 }), []);
       }
       let pulls = 0;
       let cancelled = false;
