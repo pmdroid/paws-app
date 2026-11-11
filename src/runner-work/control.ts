@@ -547,6 +547,7 @@ export function createRunnerWork(options: {
     return yield* queueSteps(q, command);
   }
   return {
+    supportsAgentSteps,
     supportsAgent(runnerId: string, agent: string) {
       return read((q) => supportsAgentSteps(q, runnerId, agent));
     },
