@@ -11,11 +11,19 @@ import {
 import { dirname } from "node:path";
 
 export type SettingsStore = {
-  read(): string | null;
-  update(change: (stored: string | null) => string): void;
+  read(): Promise<string | null>;
+  update(change: (stored: string | null) => string): Promise<void>;
 };
 
-const stores = new Map<string, SettingsStore>();
+type SettingsSnapshot = {
+  refresh(): Promise<void>;
+  release(): void;
+};
+
+type Snapshot = { store: SettingsStore; stored: string | null; ticket: number };
+
+const snapshots = new Map<string, Snapshot>();
+let tickets = 0;
 let fallback: ((configPath: string) => string | null) | null = null;
 
 export function useSavedSettingsReader(read: (configPath: string) => string | null): () => void {
@@ -25,10 +33,24 @@ export function useSavedSettingsReader(read: (configPath: string) => string | nu
   };
 }
 
-export function useSettingsStore(configPath: string, store: SettingsStore): () => void {
-  stores.set(configPath, store);
-  return () => {
-    if (stores.get(configPath) === store) stores.delete(configPath);
+export async function useSettingsStore(
+  configPath: string,
+  store: SettingsStore,
+): Promise<SettingsSnapshot> {
+  const ticket = ++tickets;
+  const snapshot: Snapshot = { store, stored: await store.read(), ticket };
+  snapshots.set(configPath, snapshot);
+  return {
+    async refresh() {
+      const started = ++tickets;
+      const stored = await store.read();
+      if (started < snapshot.ticket) return;
+      snapshot.stored = stored;
+      snapshot.ticket = started;
+    },
+    release() {
+      if (snapshots.get(configPath) === snapshot) snapshots.delete(configPath);
+    },
   };
 }
 
@@ -38,16 +60,31 @@ export function readConfigText(configPath: string): string {
   return stored === null ? file : withSettings(file, stored);
 }
 
-export function updateConfigText(configPath: string, change: (current: string) => string): void {
-  const store = stores.get(configPath);
-  if (store === undefined) {
+export function updateConfigText(
+  configPath: string,
+  change: (current: string) => string,
+): Promise<void> {
+  const snapshot = snapshots.get(configPath);
+  if (snapshot === undefined) {
     replaceConfigText(configPath, change(readFileText(configPath)));
-    return;
+    return Promise.resolve();
   }
-  store.update((stored) => {
+  return saveSettings(configPath, snapshot, change);
+}
+
+async function saveSettings(
+  configPath: string,
+  snapshot: Snapshot,
+  change: (current: string) => string,
+): Promise<void> {
+  let saved = "";
+  await snapshot.store.update((stored) => {
     const file = readFileText(configPath);
-    return settingsSections(change(stored === null ? file : withSettings(file, stored)));
+    saved = settingsSections(change(stored === null ? file : withSettings(file, stored)));
+    return saved;
   });
+  snapshot.stored = saved;
+  snapshot.ticket = ++tickets;
 }
 
 export function overriddenConfigSections(configPath: string): string[] {
@@ -78,8 +115,8 @@ function replaceConfigText(path: string, next: string): void {
 }
 
 function storedSettings(configPath: string): string | null {
-  const store = stores.get(configPath);
-  if (store !== undefined) return store.read();
+  const snapshot = snapshots.get(configPath);
+  if (snapshot !== undefined) return snapshot.stored;
   return fallback?.(configPath) ?? null;
 }
 

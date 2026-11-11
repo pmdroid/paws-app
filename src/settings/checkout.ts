@@ -92,7 +92,7 @@ export async function handleCheckoutSettingsRequest(
     else delete after[repo];
   }
   try {
-    writeCheckoutProjects(options.configPath, after);
+    await writeCheckoutProjects(options.configPath, after);
   } catch {
     return json({ error: "Checkout settings could not be saved" }, 503);
   }

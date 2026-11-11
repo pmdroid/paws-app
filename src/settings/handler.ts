@@ -143,7 +143,7 @@ export async function handleAgentSettingsRequest(
   let savedQueue: QueueSettings;
   let waitingRuns = 0;
   try {
-    writeAgentSettings(options.configPath, settings, merge, queue);
+    await writeAgentSettings(options.configPath, settings, merge, queue);
     const config = loadConfigFile(options.configPath);
     saved = readMergeSettings(config).ciFixAttempts;
     savedQueue = queue ?? readQueueSettings(config);

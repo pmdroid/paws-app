@@ -119,9 +119,7 @@ import {
   connectPostgres,
   type PostgresConnection,
   readSavedSettings,
-  readSetting,
   readSettingSteps,
-  updateSetting,
   updateSettingSteps,
   CONFIG_SETTINGS_KEY,
   setAsideLegacyDatabase,
@@ -410,6 +408,7 @@ export type StartOptions = {
 
 const LOOPBACK = "127.0.0.1";
 const SKILL_UPDATES_KEY = "skills.updates";
+const SETTINGS_REFRESH_MS = 5_000;
 
 /** Open ~/.paws, migrate, recover in-flight work, and listen on 127.0.0.1. */
 export async function startPaws(source?: EnvSource, options?: StartOptions): Promise<PawsProcess> {
@@ -499,10 +498,21 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     }),
   );
   bindInstance(db, instance.id);
-  const releaseSettings = useSettingsStore(paths.configFile, {
-    read: () => readSetting(db, CONFIG_SETTINGS_KEY),
-    update: (change) => updateSetting(db, CONFIG_SETTINGS_KEY, change),
+  const savedSettings = await useSettingsStore(paths.configFile, {
+    read: () => store.run((q) => readSettingSteps(q, CONFIG_SETTINGS_KEY)),
+    update: (change) =>
+      store.transaction((q) => updateSettingSteps(q, CONFIG_SETTINGS_KEY, change)),
   });
+  const settingsTimer = setInterval(() => {
+    void savedSettings
+      .refresh()
+      .catch((error: unknown) => journalCaught(error, "index.startPaws.refreshSettings", null));
+  }, SETTINGS_REFRESH_MS);
+  settingsTimer.unref?.();
+  const releaseSettings = () => {
+    clearInterval(settingsTimer);
+    savedSettings.release();
+  };
   const overriddenSections = overriddenConfigSections(paths.configFile);
   if (overriddenSections.length > 0) journal(describeOverriddenSections(overriddenSections));
   const reconnectLinear = publicDashboard
