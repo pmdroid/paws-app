@@ -142,7 +142,7 @@ function fixture() {
     privateKey: generateKeyPairSync("ed25519").privateKey,
     now: () => at,
   });
-  const helper = (runnerId: string, purpose: "classify" | "conversation" = "classify") => {
+  const helper = async (runnerId: string, purpose: "classify" | "conversation" = "classify") => {
     const sessionId = crypto.randomUUID();
     recordLinearInstallation(db, {
       organizationId: "sign-in-org",
@@ -152,7 +152,7 @@ function fixture() {
       teamId: "team",
       observedAtMs: at,
     });
-    return helpers.dispatch({
+    const { command } = await helpers.dispatch({
       runnerId,
       sessionId,
       purpose,
@@ -167,7 +167,8 @@ function fixture() {
             },
           }
         : {}),
-    }).command;
+    });
+    return command;
   };
   const delivered = async (runnerId: string) =>
     (await work.commands(runnerId)).map((envelope) => {
@@ -289,7 +290,7 @@ test("a pending helper goes out before a queued login check, which waits until t
   await f.work.acknowledge(runnerId, first!.id);
   await f.answer({ id: first!.id, runnerId, agent: "claude" });
 
-  const helper = f.helper(runnerId);
+  const helper = await f.helper(runnerId);
   expect(await f.helpers.commands(runnerId)).toHaveLength(1);
   expect(await f.delivered(runnerId)).toEqual([]);
 
@@ -306,13 +307,13 @@ test("a helper that expired unserved, or a conversation in its own lane, holds n
   f.db.run("UPDATE runner_host_status SET runner_version='0.1.77' WHERE runner_id=?", [runnerId]);
   recordRunnerCapacity(f.db, runnerId, 1, 1, 2);
   await f.health.refresh();
-  f.helper(runnerId, "conversation");
+  await f.helper(runnerId, "conversation");
   expect((await f.delivered(runnerId)).map(({ type }) => type)).toEqual(["login_check"]);
 
   const g = fixture();
   const other = g.runner();
   await g.health.refresh();
-  g.helper(other);
+  await g.helper(other);
   expect(await g.delivered(other)).toEqual([]);
   g.advance(60_001);
   expect((await g.delivered(other)).map(({ type }) => type)).toEqual(["login_check"]);
@@ -321,7 +322,7 @@ test("a helper that expired unserved, or a conversation in its own lane, holds n
 test("no check is queued while a helper waits for the lane", async () => {
   const f = fixture();
   const runnerId = f.runner();
-  f.helper(runnerId);
+  await f.helper(runnerId);
   await f.health.refresh();
   expect(f.checks()).toHaveLength(0);
 });

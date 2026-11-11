@@ -149,7 +149,7 @@ export async function probeRunnerSessionHelpers(
       prompt: "Classify this Linear request",
     };
     assert.equal(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()!.n, 0);
-    const first = coordinator.helpers.dispatch(input);
+    const first = await coordinator.helpers.dispatch(input);
     assert.throws(() => coordinator.work.enqueue(first.command), /session assignment/);
     const queued = await call("/v1/helper-commands");
     assert.equal(queued.status, 200);
@@ -171,7 +171,7 @@ export async function probeRunnerSessionHelpers(
       sessionGeneration: first.command.sessionGeneration,
       mTLS: true,
     });
-    assert.throws(() => coordinator.helpers.dispatch(input), /busy/);
+    await assert.rejects(coordinator.helpers.dispatch(input), /busy/);
     assert.equal((await call(`/v1/helper-commands/${first.command.id}/ack`, {})).status, 200);
     assert.equal((await call(`/v1/helper-commands/${first.command.id}/ack`, {})).status, 200);
     assert.deepEqual((await call("/v1/helper-commands")).body.commands, []);
@@ -242,7 +242,7 @@ export async function probeRunnerSessionHelpers(
       leaseStatus: 409,
       resultStatus: 409,
     });
-    const selected = coordinator.helpers.dispatch({ ...input, purpose: "select_repository" });
+    const selected = await coordinator.helpers.dispatch({ ...input, purpose: "select_repository" });
     assert.equal(selected.command.sessionGeneration, 1);
     assert.equal(selected.command.purpose, "select_repository");
     const item = insertQueuedItem(db, { id: "task", sessionKey: "session", now });
@@ -273,18 +273,18 @@ export async function probeRunnerSessionHelpers(
     assert.throws(() => coordinator.work.assign(workCommand), /occupied by active work/);
     coordinator.helpers.finish(selected.command.id);
     coordinator.work.assign(workCommand);
-    assert.throws(() => coordinator.helpers.dispatch(input), /busy/);
+    await assert.rejects(coordinator.helpers.dispatch(input), /busy/);
     await coordinator.work.finish(run.id, 1);
     observe("helper and repository execution cannot claim the same runner simultaneously", true, {
       helperThenRunDenied: true,
       runThenHelperDenied: true,
     });
-    const stopped = coordinator.helpers.dispatch(input);
+    const stopped = await coordinator.helpers.dispatch(input);
     db.run("UPDATE linear_session SET stopped_at=? WHERE session_id=?", [now, "session"]);
     assert.equal((await call(`/v1/helper-commands/${stopped.command.id}/lease`, {})).status, 409);
     coordinator.helpers.finish(stopped.command.id);
     db.run("UPDATE linear_session SET stopped_at=NULL WHERE session_id=?", ["session"]);
-    const expired = coordinator.helpers.dispatch(input);
+    const expired = await coordinator.helpers.dispatch(input);
     now = expired.command.expiresAt;
     assert.equal((await call(`/v1/helper-commands/${expired.command.id}/lease`, {})).status, 409);
     assert.deepEqual((await call("/v1/helper-commands")).body.commands, []);
@@ -302,15 +302,15 @@ export async function probeRunnerSessionHelpers(
       teamId: "team",
       observedAtMs: now,
     });
-    assert.throws(
-      () => coordinator.helpers.dispatch({ ...input, sessionId: "other-session" }),
+    await assert.rejects(
+      coordinator.helpers.dispatch({ ...input, sessionId: "other-session" }),
       /authority changed/,
     );
-    const fenced = coordinator.helpers.dispatch(input);
+    const fenced = await coordinator.helpers.dispatch(input);
     db.run("UPDATE runner SET fence=fence+1 WHERE id=?", [runnerId]);
     await assert.rejects(coordinator.helpers.result(fenced.command.id), /identity changed/);
     coordinator.helpers.finish(fenced.command.id);
-    const removed = coordinator.helpers.dispatch(input);
+    const removed = await coordinator.helpers.dispatch(input);
     db.run("UPDATE workspace_member SET active=0 WHERE workspace_id=? AND user_id=?", [
       workspace.id,
       userId,
@@ -339,7 +339,7 @@ export async function probeRunnerSessionHelpers(
     );
     coordinator.helpers.finish(removed.command.id);
     const replacement = await pair("Revoked helper runner", RUNNER_IDENTITIES[1]);
-    const pending = coordinator.helpers.dispatch({ ...input, runnerId: replacement });
+    const pending = await coordinator.helpers.dispatch({ ...input, runnerId: replacement });
     await coordinator.control.setStatus(principal, replacement, "revoked");
     await assert.rejects(
       coordinator.helpers.current(pending.command.id),

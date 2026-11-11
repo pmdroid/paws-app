@@ -932,7 +932,7 @@ test("a helper the runner never picked up waits for the lane, one it ran and fai
 
 test("a retry reuses the item's open helper instead of sending a second", async () => {
   const f = fixture();
-  const out = f.helpers.dispatch({
+  const out = await f.helpers.dispatch({
     runnerId: "runner",
     sessionId: "session",
     purpose: "classify",
@@ -983,7 +983,7 @@ test("a reused helper's sign-in failure excludes its named account, not the runn
     Date.now(),
   );
   const named = { accountId: account.id, bindingId: binding.id };
-  const out = f.helpers.dispatch({
+  const out = await f.helpers.dispatch({
     runnerId: "runner",
     sessionId: "session",
     purpose: "classify",
@@ -1021,7 +1021,7 @@ test("held-back helpers journal one line per runner at most every five minutes",
   const f = fixture();
   linearSession(f, "waiting");
   const holdOnce = async () => {
-    const out = f.helpers.dispatch({
+    const out = await f.helpers.dispatch({
       runnerId: "runner",
       sessionId: "session",
       purpose: "classify",
@@ -1049,7 +1049,7 @@ test("held-back helpers journal one line per runner at most every five minutes",
   expect(f.journaled).toHaveLength(2);
 });
 
-test("a sign-in goes first: no new helper goes out while one waits", () => {
+test("a sign-in goes first: no new helper goes out while one waits", async () => {
   const f = fixture();
   const dispatch = () =>
     f.helpers.dispatch({
@@ -1073,9 +1073,9 @@ test("a sign-in goes first: no new helper goes out while one waits", () => {
     "INSERT INTO runner_login(id,runner_id,workspace_id,user_id,agent,state,expires_at,updated_at) VALUES('sign-in','runner',?,?,'codex','waiting',?,?)",
     [owner.workspace, owner.user, expires, f.advance(0)],
   );
-  expect(dispatch).toThrow(/busy/);
+  await expect(dispatch()).rejects.toThrow(/busy/);
   f.db.run("UPDATE runner_login SET state='cancelled' WHERE id='sign-in'");
-  expect(dispatch().command.purpose).toBe("classify");
+  expect((await dispatch()).command.purpose).toBe("classify");
 });
 
 const HELPER_LANE_BUSY = "Queued: the runner's helper lane is busy. Paws retries when it frees.";

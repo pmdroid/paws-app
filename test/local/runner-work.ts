@@ -676,7 +676,7 @@ export async function probeRunnerWork(
         profile: command.profile,
         prompt: "Classify this request.",
       };
-      assert.throws(() => helpers.dispatch(helperInput), /busy/);
+      await assert.rejects(helpers.dispatch(helperInput), /busy/);
       await work.finish(winner.runId, 1);
       work.assign(waiting);
       // The runner keeps the slot through the lease grace, so the next assignment waits it out.
@@ -720,7 +720,7 @@ export async function probeRunnerWork(
         .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM runner_command")
         .get()!.count;
       assert.throws(() => work.assign(afterCancel), /(?:cancellation|free slot)/);
-      assert.throws(() => helpers.dispatch(helperInput), /(?:cancellation|free slot|busy)/);
+      await assert.rejects(helpers.dispatch(helperInput), /(?:cancellation|free slot|busy)/);
       assert.equal(
         db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM runner_command").get()!
           .count,
@@ -750,13 +750,13 @@ export async function probeRunnerWork(
         /not accepting/,
       );
       await control.setStatus(principal, firstRunner, "active");
-      const helper = helpers.dispatch(helperInput);
+      const helper = await helpers.dispatch(helperInput);
       const review = { ...afterCancel, type: "review" as const, id: workspaceId(), generation: 3 };
       assert.throws(() => work.assign(review), /occupied/);
       await work.heartbeat(firstRunner, 2);
       work.assign({ ...released, id: workspaceId(), generation: 3 });
       assert.throws(() => work.assign(review), /occupied/);
-      assert.throws(() => helpers.dispatch(helperInput), /busy/);
+      await assert.rejects(helpers.dispatch(helperInput), /busy/);
       await work.finish(released.runId, 3);
       await work.heartbeat(firstRunner, 1);
       helpers.finish(helper.command.id);
@@ -862,7 +862,7 @@ export async function probeRunnerWork(
           }),
         /(?:cancellation|free slot)/,
       );
-      assert.throws(() => helpers.dispatch(helperInput), /(?:cancellation|free slot|busy)/);
+      await assert.rejects(helpers.dispatch(helperInput), /(?:cancellation|free slot|busy)/);
       const retriedCancel = backend.cancelItem(waiting.itemId);
       await until(() => latestCancel()?.id !== expiredCancel.id);
       const replacementCancellation = latestCancel()!;
@@ -891,7 +891,7 @@ export async function probeRunnerWork(
         expiresAt: now + 60_000,
       });
       await work.finish(waiting.runId, 8);
-      const recoveredHelper = helpers.dispatch(helperInput);
+      const recoveredHelper = await helpers.dispatch(helperInput);
       helpers.finish(recoveredHelper.command.id);
       observe(
         "Expired cancellation recovery joins a fresh signed command without fabricating the older acknowledgement",
