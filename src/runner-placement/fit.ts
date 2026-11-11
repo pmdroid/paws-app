@@ -2,55 +2,71 @@ import { itemWorkPlacement } from "./session";
 import { createRunnerPlacement, PlacementUnavailableError } from "./placement";
 import type { Database } from "bun:sqlite";
 import {
-  getRunner,
-  getWorkItemRepository,
+  getRunnerSteps,
+  getWorkItemRepositorySteps,
   legacyAgentAccountId,
   legacyAgentBindingId,
-  legacyBindingAccountHealth,
-  runnerRepositoryRefusal,
+  legacyBindingAccountHealthSteps,
+  runnerRepositoryRefusalSteps,
+  settled,
+  sqliteDb,
   type ItemRunnerVerdict,
   type ItemRunnerVerdicts,
+  type Q,
+  type Steps,
 } from "../db";
 import type { RunnerCodingAgent } from "../runner-protocol";
-import { accountHealthBlock, BINDING_REASON_TEXT } from "./account-health";
-import { eligibleRunners, isInRunnerScope, itemOwnerScope } from "./eligible";
+import { accountHealthBlockSteps, BINDING_REASON_TEXT } from "./account-health";
+import { eligibleRunnersSteps, isInRunnerScope, itemOwnerScopeSteps } from "./eligible";
 import type { EligibleRunner, PlacementAccount, PlacementPurpose } from "./index";
 
 type AccountRefusal = { reason: string; until?: number };
 type AccountFit = { account: PlacementAccount; low: boolean };
+type SignInRunner = Pick<EligibleRunner, "id" | "cooldownUntil" | "quotaState"> & {
+  signedIn: boolean;
+};
+type SignInInput = {
+  agent: RunnerCodingAgent;
+  model: string | null | undefined;
+  purpose: PlacementPurpose;
+  at: number;
+};
 
-export function repositoryRejection(
-  db: Database,
+export function* repositoryRejectionSteps(
+  q: Q,
   runnerId: string,
   repository: string,
-): string | null {
-  const refusal = runnerRepositoryRefusal(db, runnerId, repository);
+): Steps<string | null> {
+  const refusal = yield* runnerRepositoryRefusalSteps(q, runnerId, repository);
   if (!refusal) return null;
   return refusal.list === "admin"
     ? "repository not allowed on the runner's page"
     : "repository not allowed in the runner's host config";
 }
 
-export function signInFit(
+export function repositoryRejection(
   db: Database,
-  runner: Pick<EligibleRunner, "id" | "cooldownUntil" | "quotaState"> & { signedIn: boolean },
+  runnerId: string,
+  repository: string,
+): string | null {
+  return settled(sqliteDb(db).run((q) => repositoryRejectionSteps(q, runnerId, repository)));
+}
+
+export function* signInFitSteps(
+  q: Q,
+  runner: SignInRunner,
   workspaceId: string,
-  input: {
-    agent: RunnerCodingAgent;
-    model: string | null | undefined;
-    purpose: PlacementPurpose;
-    at: number;
-  },
-): AccountFit | AccountRefusal {
+  input: SignInInput,
+): Steps<AccountFit | AccountRefusal> {
   const { agent, at, purpose } = input;
   if (!runner.signedIn) return { reason: "agent not signed in" };
   if (runner.cooldownUntil > at)
     return { reason: "agent quota cooldown", until: runner.cooldownUntil };
   const bindingId = legacyAgentBindingId(runner.id, agent);
-  const health = accountHealthBlock(
-    db,
+  const health = yield* accountHealthBlockSteps(
+    q,
     bindingId,
-    legacyBindingAccountHealth(db, runner.id, agent, input.model).filter(
+    (yield* legacyBindingAccountHealthSteps(q, runner.id, agent, input.model)).filter(
       (row) => row.kind !== "quota" && row.kind !== "auth",
     ),
     at,
@@ -67,51 +83,79 @@ export function signInFit(
   };
 }
 
-export function itemRunnerVerdicts(
+export function signInFit(
   db: Database,
+  runner: SignInRunner,
+  workspaceId: string,
+  input: SignInInput,
+): AccountFit | AccountRefusal {
+  return settled(sqliteDb(db).run((q) => signInFitSteps(q, runner, workspaceId, input)));
+}
+
+function* runnerVerdictsSteps(
+  q: Q,
   input: { itemId: string; agent: string; model?: string | null; now: number },
-): ItemRunnerVerdicts | null {
-  const scope = itemOwnerScope(db, input.itemId);
+) {
+  const scope = yield* itemOwnerScopeSteps(q, input.itemId);
   if (!scope) return null;
-  const binding = getWorkItemRepository(db, input.itemId);
+  const binding = yield* getWorkItemRepositorySteps(q, input.itemId);
   const repository = binding ? `${binding.owner}/${binding.repo}` : null;
-  const runners = eligibleRunners(db, {
+  const runners: ItemRunnerVerdict[] = [];
+  for (const runner of yield* eligibleRunnersSteps(q, {
     ...scope,
     agent: input.agent,
     purpose: "work",
     now: input.now,
-  })
-    .filter((runner) => isInRunnerScope(runner.reason))
-    .map((runner): ItemRunnerVerdict => {
-      const verdict = (rejection: string | null, hostConfig: ItemRunnerVerdict["hostConfig"]) => ({
-        id: runner.id,
-        name: getRunner(db, runner.id)?.name ?? runner.id,
-        rejection,
-        hostConfig,
-      });
-      if (!runner.eligible)
-        return verdict(
+  })) {
+    if (!isInRunnerScope(runner.reason)) continue;
+    const name = (yield* getRunnerSteps(q, runner.id))?.name ?? runner.id;
+    const verdict = (rejection: string | null, hostConfig: ItemRunnerVerdict["hostConfig"]) => ({
+      id: runner.id,
+      name,
+      rejection,
+      hostConfig,
+    });
+    if (!runner.eligible) {
+      runners.push(
+        verdict(
           runner.reason,
           runner.reason === "agent-not-signed-in" || runner.reason === "auth-expired"
             ? "sign-in"
             : null,
-        );
-      const refused = repository && repositoryRejection(db, runner.id, repository);
-      if (refused)
-        return verdict(
+        ),
+      );
+      continue;
+    }
+    const refused = repository && (yield* repositoryRejectionSteps(q, runner.id, repository));
+    if (refused) {
+      runners.push(
+        verdict(
           refused,
-          runnerRepositoryRefusal(db, runner.id, repository!)?.list === "host"
+          (yield* runnerRepositoryRefusalSteps(q, runner.id, repository!))?.list === "host"
             ? "repository"
             : null,
-        );
-      const fit = signInFit(db, { ...runner, signedIn: true }, scope.workspaceId, {
-        agent: input.agent as RunnerCodingAgent,
-        model: input.model,
-        purpose: "work",
-        at: input.now,
-      });
-      return verdict("reason" in fit ? fit.reason : null, null);
+        ),
+      );
+      continue;
+    }
+    const fit = yield* signInFitSteps(q, { ...runner, signedIn: true }, scope.workspaceId, {
+      agent: input.agent as RunnerCodingAgent,
+      model: input.model,
+      purpose: "work",
+      at: input.now,
     });
+    runners.push(verdict("reason" in fit ? fit.reason : null, null));
+  }
+  return { repository, runners };
+}
+
+export function itemRunnerVerdicts(
+  db: Database,
+  input: { itemId: string; agent: string; model?: string | null; now: number },
+): ItemRunnerVerdicts | null {
+  const found = settled(sqliteDb(db).run((q) => runnerVerdictsSteps(q, input)));
+  if (!found) return null;
+  const { repository, runners } = found;
   let order: string[];
   try {
     // A new instance is safe here: session grace is kept per database, so this does not restart it.
