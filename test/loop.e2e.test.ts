@@ -4226,7 +4226,7 @@ async function runRebaseConflict(
       | undefined;
     if (mode === "linear") {
       // The pull request is open, and Linear's review page sends "Fix merge conflicts".
-      enqueueOutboxOnce(db, {
+      await enqueueOutboxOnce(sqliteDb(db), {
         target: "linear",
         op: "activity",
         orderingKey: "ses_1",

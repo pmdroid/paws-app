@@ -78,7 +78,7 @@ async function fixture() {
     linearAccess: gate,
   });
   const enqueue = async (op: "activity" | "status", stop = false) =>
-    enqueueOutboxOnce(db, {
+    await enqueueOutboxOnce(sqliteDb(db), {
       target: "linear",
       op,
       orderingKey: "session",

@@ -1,5 +1,4 @@
 import { journalCaught, journalItemId } from "../journal";
-import type { Database } from "bun:sqlite";
 import { and, asc, desc, eq, gt, ilike, inArray, like, lt, lte, ne, or, sql } from "drizzle-orm";
 import {
   DEFAULT_BACKOFF_BASE_MS,
@@ -8,7 +7,7 @@ import {
   JOB_KIND,
   retryBackoffMs,
 } from "../core";
-import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
+import { type Db, type Q, type Steps } from "./db";
 import { jsonField } from "./json-text";
 import { emitJobReady, enqueueJobOnceSteps, errorText } from "./jobs";
 import { journal } from "./journal";
@@ -119,8 +118,8 @@ export function* enqueueOutboxSteps(q: Q, row: NewOutbox) {
 }
 
 /** Store the row once. A repeat of the same idempotency key returns the original id. */
-export function enqueueOutboxOnce(db: Database, row: NewOutbox): number {
-  return settled(sqliteDb(db).transaction((q) => enqueueOutboxOnceSteps(q, row)));
+export async function enqueueOutboxOnce(store: Db, row: NewOutbox): Promise<number> {
+  return store.transaction((q) => enqueueOutboxOnceSteps(q, row));
 }
 
 export function* enqueueOutboxOnceSteps(q: Q, row: NewOutbox) {

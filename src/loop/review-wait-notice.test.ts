@@ -41,7 +41,7 @@ async function fixture() {
   await beginImplementRun(sqliteDb(db), "ENG-7", clock.now());
   await applyWorkItemEvent(sqliteDb(db), "ENG-7", "turn_ended");
   await applyWorkItemEvent(sqliteDb(db), "ENG-7", "closeout_accepted");
-  enqueueOutboxOnce(db, {
+  await enqueueOutboxOnce(sqliteDb(db), {
     target: "linear",
     op: "activity",
     orderingKey: "ses_1",

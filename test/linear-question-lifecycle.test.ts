@@ -124,7 +124,7 @@ test.each([NOW - 1, NOW])(
 test("an answer racing delivery suppresses the unsent elicitation", async () => {
   const { db, question, orchestrator } = await setup();
   try {
-    enqueueOutboxOnce(db, {
+    await enqueueOutboxOnce(sqliteDb(db), {
       target: "linear",
       op: "elicitation",
       orderingKey: "ses_1",
@@ -164,7 +164,7 @@ test("an answer aborts an elicitation currently being delivered", async () => {
     });
   const { db, question, orchestrator, outbox } = await setup(tracker);
   try {
-    enqueueOutboxOnce(db, {
+    await enqueueOutboxOnce(sqliteDb(db), {
       target: "linear",
       op: "elicitation",
       orderingKey: "ses_1",

@@ -105,7 +105,7 @@ for (const delivered of [true, false, "completed"] as const)
       }
       const runId = listWorkItems(db)[0]!.currentRunId!;
       if (delivered === "completed") {
-        enqueueOutboxOnce(db, {
+        await enqueueOutboxOnce(sqliteDb(db), {
           target: "linear",
           op: "activity",
           orderingKey: "ses_1",

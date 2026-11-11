@@ -24,7 +24,7 @@ function fixture() {
   const delivery = new OutboxDispatcher(db, clock);
   delivery.setHandler((row) => deliverLinearOutbox(row, tracker, async () => {}, undefined, db));
   const enqueue = (key: string, kind: string, body: string) =>
-    enqueueOutboxOnce(db, {
+    enqueueOutboxOnce(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: "ses_1",
@@ -50,7 +50,7 @@ function fixture() {
 test("a conflict after the pull request response wakes the session once per head", async () => {
   const f = fixture();
   try {
-    f.enqueue("pull-request-ready:ACME-7:0", "response", "Opened #988.");
+    await f.enqueue("pull-request-ready:ACME-7:0", "response", "Opened #988.");
     await f.deliver();
 
     await f.announce();
@@ -71,11 +71,11 @@ test("a conflict after the pull request response wakes the session once per head
 test("the gate still drops other progress after the pull request response", async () => {
   const f = fixture();
   try {
-    f.enqueue("pull-request-ready:ACME-7:0", "response", "Opened #988.");
+    await f.enqueue("pull-request-ready:ACME-7:0", "response", "Opened #988.");
     await f.deliver();
 
-    f.enqueue("note:ACME-7:1", "thought", "Reading the failing test.");
-    f.enqueue("merge-review-other:ACME-7:1", "action", "Ran the tests.");
+    await f.enqueue("note:ACME-7:1", "thought", "Reading the failing test.");
+    await f.enqueue("merge-review-other:ACME-7:1", "action", "Ran the tests.");
     await f.announce();
     await f.deliver();
 

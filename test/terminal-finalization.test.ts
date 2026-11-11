@@ -269,7 +269,7 @@ test("a terminal failure after PR publication commits one ordered closed respons
   const db = tempDb();
   databases.push(db);
   const { item } = await runningTask(db);
-  enqueueOutboxOnce(db, {
+  await enqueueOutboxOnce(sqliteDb(db), {
     target: "linear",
     op: "activity",
     orderingKey: "session",

@@ -288,7 +288,7 @@ test("the answer record reaches Linear after the pull request response", async (
       ["pull-request-ready:PAS-1003", "response"],
       ["late-thought", "thought"],
     ] as const)
-      enqueueOutboxOnce(db, {
+      await enqueueOutboxOnce(sqliteDb(db), {
         target: "linear",
         op: "activity",
         orderingKey: "ses_1",
