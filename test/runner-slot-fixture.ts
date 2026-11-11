@@ -10,8 +10,11 @@ import {
   recordRunnerCapacity,
   recordRunnerRepositories,
   type RunnerHostRefusal,
-  sqliteDb,
+  storeOf,
+  type Db,
 } from "../src/db";
+import { eq } from "drizzle-orm";
+import { seed } from "./dialects";
 import { itemRunnerVerdictsSteps } from "../src/runner-placement";
 import { dispatch } from "../src/scheduler";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
@@ -19,44 +22,59 @@ import { workspaceAdmission } from "./fake-workspace";
 export const REPOSITORY = "pmdroid/paws-app";
 export const NOW = 1_800_000_000_000;
 
-export async function workspaceWithRunners(db: Database) {
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+export async function workspaceWithRunners(source: Database | Db) {
+  const db = storeOf(source);
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", NOW)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", NOW)),
     now: NOW,
   });
-  db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, REPOSITORY, "team"]);
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspaceRepository)
+      .values({ workspaceId: workspace.id, repository: REPOSITORY, teamId: "team" }),
+  );
   const pair = async (name: string, slots: number, repositories: string[] | null) => {
     const id = workspaceId();
-    db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
-      [id, workspace.id, userId, name, NOW, NOW],
+    await seed(
+      db,
+      (q) =>
+        q.orm.insert(q.t.runner).values({
+          id,
+          workspaceId: workspace.id,
+          ownerUserId: userId,
+          name,
+          status: "active",
+          createdAt: NOW,
+          lastSeenAt: NOW,
+        }),
+      (q) => q.orm.insert(q.t.runnerPolicy).values({ runnerId: id }),
+      (q) =>
+        q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: id, agent: "claude", ready: 1 }),
     );
-    db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [id]);
-    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [id]);
-    await recordRunnerCapacity(sqliteDb(db), id, slots, undefined, undefined, NOW);
-    await recordRunnerRepositories(sqliteDb(db), id, repositories, NOW);
+    await recordRunnerCapacity(db, id, slots, undefined, undefined, NOW);
+    await recordRunnerRepositories(db, id, repositories, NOW);
     return id;
   };
   const queue = async (id: string) => {
     const [owner, repo] = REPOSITORY.split("/") as [string, string];
     const sessionKey = `session-${id}`;
     await insertQueuedItem(db, { id, now: NOW, sessionKey });
-    await bindWorkItemRepository(sqliteDb(db), id, {
+    await bindWorkItemRepository(db, id, {
       owner,
       repo,
       remoteUrl: `https://github.com/${REPOSITORY}.git`,
     });
-    await recordLinearInstallation(sqliteDb(db), {
+    await recordLinearInstallation(db, {
       organizationId: "org",
       oauthClientId: "app",
       appUserId: "app-user",
@@ -64,16 +82,18 @@ export async function workspaceWithRunners(db: Database) {
       teamId: "team",
       observedAtMs: NOW,
     });
-    const delegationId = (await getWorkItem(sqliteDb(db), id))!.delegationId;
-    await bindLinearSessionTask(sqliteDb(db), sessionKey, delegationId, { actorId: "owner" });
-    db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
+    const delegationId = (await getWorkItem(db, id))!.delegationId;
+    await bindLinearSessionTask(db, sessionKey, delegationId, { actorId: "owner" });
+    await seed(db, (q) =>
+      q.orm.update(q.t.workItem).set({ ownerUserId: userId }).where(eq(q.t.workItem.id, id)),
+    );
   };
   const pass = (reported: RunnerHostRefusal[][] = []) =>
-    dispatch(sqliteDb(db), {
+    dispatch(db, {
       now: NOW,
-      admission: workspaceAdmission(db),
+      admission: workspaceAdmission(source),
       itemRunners: (q, itemId) =>
-        itemRunnerVerdictsSteps(q, sqliteDb(db), { itemId, agent: "claude", now: NOW }),
+        itemRunnerVerdictsSteps(q, db, { itemId, agent: "claude", now: NOW }),
       onRunnerHostRefusals: (refusals) => reported.push([...refusals]),
     });
   return { pair, queue, pass, workspace, userId };
