@@ -1,6 +1,5 @@
 import type { RunnerCapacityWaitState } from "./items";
 import { CONVERSATION_TOOLS_RUNNER_VERSION, runnerReleaseAtLeast } from "../runner-protocol";
-import type { Database } from "bun:sqlite";
 import {
   and,
   asc,
@@ -18,7 +17,7 @@ import {
   type SQL,
 } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import type { Q, Steps, Db } from "./db";
 import { JOB_KIND } from "../core";
 import { runnerCapacityWait } from "./items";
 import { emitJobReady } from "./jobs";

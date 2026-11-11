@@ -7,7 +7,6 @@ import {
   sqliteDb,
   syncWorkspaceMember,
   workspaceSessionIds,
-  sqliteDb,
 } from "../src/db";
 import { startServer } from "../src/server";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
