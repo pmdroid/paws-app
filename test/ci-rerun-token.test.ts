@@ -80,7 +80,7 @@ test("the merge lane and rerun_ci re-run CI with the App's Actions write token",
       repo: "widgets",
       prNumber: 5,
       alreadyRerun: () => false,
-      tokenProvider: gitHostToken(authProvider(runtime, repository, "write", () => active)!),
+      tokenProvider: gitHostToken(authProvider(runtime, repository, "write", async () => active)!),
     });
     expect(result.rerun).toEqual({ head, runIds: [77] });
     expect(requested.at(-1)).toEqual({ actions: "write", contents: "read", metadata: "read" });

@@ -40,7 +40,7 @@ import type { PullReviewCapabilities } from "./pull-reviews";
 import { worktreeBranch } from "./sources";
 
 const FILTER: PullCommentFilter = {
-  appId: () => "42",
+  appId: async () => "42",
   appLogin: () => "paws-test[bot]",
   ignoredBots: () => DEFAULT_IGNORED_COMMENT_BOTS.map((login) => login.toLowerCase()),
   ignoredMarkers: () => [],

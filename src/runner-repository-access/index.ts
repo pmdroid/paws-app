@@ -86,7 +86,7 @@ function remember<V>(cache: Map<string, Promise<V>>, key: string, load: () => Pr
 export function cacheRepositoryCredentials<
   T extends {
     github: GitHubApp;
-    installationForRepository(repository: string): string | null;
+    installationForRepository(repository: string): Promise<string | null>;
     checkpointBot?: (repository: string) => Promise<Bot>;
   },
 >(options: T, now: () => number = Date.now): T {
@@ -110,9 +110,11 @@ export function cacheRepositoryCredentials<
     },
     ...(checkpointBot
       ? {
-          checkpointBot: (repository: string) =>
-            remember(bots, `${options.installationForRepository(repository)}:${repository}`, () =>
-              checkpointBot(repository),
+          checkpointBot: async (repository: string) =>
+            remember(
+              bots,
+              `${await options.installationForRepository(repository)}:${repository}`,
+              () => checkpointBot(repository),
             ),
         }
       : {}),
@@ -122,7 +124,7 @@ export function cacheRepositoryCredentials<
 export function createRunnerRepositoryAccess(options: {
   work: RunnerWork;
   github: GitHubApp;
-  installationForRepository(repository: string): string | null;
+  installationForRepository(repository: string): Promise<string | null>;
   checkpointBot?: (repository: string) => Promise<{ appId: string; login: string; id: number }>;
   now?: () => number;
 }) {
@@ -145,7 +147,7 @@ export function createRunnerRepositoryAccess(options: {
       if (input.access === "write" && (initial.command.type !== "run" || !initial.branch))
         return denied();
       const repository = `${initial.command.repository.owner}/${initial.command.repository.repo}`;
-      const installationId = options.installationForRepository(repository);
+      const installationId = await options.installationForRepository(repository);
       if (!installationId) return denied();
       const expectedBot =
         initial.command.type === "run"
@@ -157,7 +159,7 @@ export function createRunnerRepositoryAccess(options: {
       };
       if (!(await matchesBot())) return denied();
       await options.work.authorizeAsync(access);
-      if (options.installationForRepository(repository) !== installationId) return denied();
+      if ((await options.installationForRepository(repository)) !== installationId) return denied();
       const credential = await github(() =>
         options.github.mintInstallationToken({
           access: input.access,
@@ -168,7 +170,7 @@ export function createRunnerRepositoryAccess(options: {
       if (!(await matchesBot())) return denied();
       const current = await options.work.authorizeAsync(access);
       const checkedAt = now();
-      if (options.installationForRepository(repository) !== installationId) return denied();
+      if ((await options.installationForRepository(repository)) !== installationId) return denied();
       if (
         current.command.id !== initial.command.id ||
         !current.command.repository ||
@@ -216,7 +218,7 @@ export type AgentReadTokens = ReturnType<typeof createAgentReadTokens>;
 
 export function createAgentReadTokens(options: {
   github: GitHubApp;
-  installationForRepository(repository: string): string | null;
+  installationForRepository(repository: string): Promise<string | null>;
   revoke(token: string): Promise<void>;
   store?: { read(): readonly string[]; write(tokens: readonly string[]): void };
   now?: () => number;
@@ -264,7 +266,7 @@ export function createAgentReadTokens(options: {
       const lease = { ...input, repository: input.repository ?? "none" };
       try {
         if (!input.repository) throw new Error("the item has no repository");
-        const installationId = options.installationForRepository(input.repository);
+        const installationId = await options.installationForRepository(input.repository);
         if (!installationId) throw new Error("no GitHub App installation covers the repository");
         const current = await mint(input.repository, installationId);
         leases.set(input.commandId, {
@@ -386,7 +388,7 @@ export function createAgentReadAccess(options: { work: RunnerWork; agentRead: Ag
 export function createRepositoryCommandAccess(options: {
   db: Database;
   github: GitHubApp;
-  installationForRepository(repository: string): string | null;
+  installationForRepository(repository: string): Promise<string | null>;
   checkpointBot?: (repository: string) => Promise<Bot>;
   now?: () => number;
 }) {
@@ -409,14 +411,14 @@ export function createRepositoryCommandAccess(options: {
       const command = await authorize();
       if (!/^paws\//.test(command.branch)) return denied();
       const repository = `${command.repository.owner}/${command.repository.repo}`;
-      const installationId = options.installationForRepository(repository);
+      const installationId = await options.installationForRepository(repository);
       const checkpointBot = options.checkpointBot;
       if (!installationId || !checkpointBot) return denied();
       const matchesBot = async () =>
         sameBot(await github(() => checkpointBot(repository)), command.bot);
       if (!(await matchesBot())) return denied();
       await authorize();
-      if (options.installationForRepository(repository) !== installationId) return denied();
+      if ((await options.installationForRepository(repository)) !== installationId) return denied();
       const credential = await github(() =>
         options.github.mintInstallationToken({ access: "write", repository, installationId }),
       );
@@ -424,7 +426,7 @@ export function createRepositoryCommandAccess(options: {
       const current = await authorize();
       const checkedAt = now();
       if (
-        options.installationForRepository(repository) !== installationId ||
+        (await options.installationForRepository(repository)) !== installationId ||
         current.id !== command.id ||
         current.branch !== command.branch ||
         !usableCredential(credential, repository, checkedAt)

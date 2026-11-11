@@ -245,7 +245,7 @@ test("filter and identity refresh callbacks run outside the write transaction, n
     calls.push(name);
   };
   const filter = {
-    appId: () => {
+    appId: async () => {
       check("id");
       return null;
     },

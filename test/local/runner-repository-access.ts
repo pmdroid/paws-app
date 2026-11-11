@@ -134,7 +134,7 @@ export async function probeRunnerRepositoryAccess(
     work,
     github,
     now: () => now,
-    installationForRepository(repository) {
+    async installationForRepository(repository: string) {
       assert.equal(repository, "fixture/repository");
       return installation;
     },

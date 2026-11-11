@@ -161,7 +161,7 @@ if (mode === "remote") {
       startPaws(source, {
         runnerRepositoryAccess: {
           github: createFakeGitHub(),
-          installationForRepository: () => "fixture-installation",
+          installationForRepository: async () => "fixture-installation",
         },
       }),
     /configuration is missing or invalid/,
@@ -175,7 +175,7 @@ const paws = await startPaws(source, {
     ? {
         runnerRepositoryAccess: {
           github: createFakeGitHub(),
-          installationForRepository: () => "fixture-installation",
+          installationForRepository: async () => "fixture-installation",
         },
         ...(mode === "remote"
           ? {}

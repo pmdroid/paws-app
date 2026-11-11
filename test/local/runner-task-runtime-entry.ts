@@ -79,7 +79,10 @@ async function coordinator(port: number) {
     hostname: "127.0.0.1",
     port,
     transcripts: { objects, key: Buffer.alloc(32, 7) },
-    repositoryAccess: { github: createFakeGitHub(), installationForRepository: () => "fixture" },
+    repositoryAccess: {
+      github: createFakeGitHub(),
+      installationForRepository: async () => "fixture",
+    },
     onError: () => {},
   });
   return { db, service };

@@ -141,7 +141,7 @@ test("Paws does not read its own working-on-it comment back as a new comment", a
       },
       clock.now(),
       {
-        appId: () => "42",
+        appId: async () => "42",
         appLogin: () => "paws-test[bot]",
         ignoredBots: () => [],
         ignoredMarkers: () => [],

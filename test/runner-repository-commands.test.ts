@@ -85,7 +85,7 @@ function fixture(file = ":memory:") {
   const access = createRepositoryCommandAccess({
     db,
     github,
-    installationForRepository: () => "installation",
+    installationForRepository: async () => "installation",
     checkpointBot: async () => bot,
     now: () => now,
   });

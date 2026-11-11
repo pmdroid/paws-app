@@ -87,7 +87,7 @@ const CLOSEOUT_FINDINGS: StoredReviewFinding[] = [
 ];
 
 const FILTER: PullCommentFilter = {
-  appId: () => "42",
+  appId: async () => "42",
   appLogin: () => "paws-test[bot]",
   ignoredBots: () => DEFAULT_IGNORED_COMMENT_BOTS.map((login) => login.toLowerCase()),
   ignoredMarkers: (repository) =>

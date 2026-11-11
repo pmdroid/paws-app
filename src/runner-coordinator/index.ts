@@ -49,7 +49,7 @@ import {
 
 export type RunnerRepositoryAccessOptions = {
   github: GitHubApp;
-  installationForRepository(repository: string): string | null;
+  installationForRepository(repository: string): Promise<string | null>;
   checkpointBot?: (repository: string) => Promise<{ appId: string; login: string; id: number }>;
   revokeToken?: (token: string) => Promise<void>;
 };

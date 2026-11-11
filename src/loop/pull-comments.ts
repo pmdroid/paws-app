@@ -89,7 +89,7 @@ export function suggestedFindingsSection(
 /** Which comments never reach the agent. */
 export type PullCommentFilter = {
   /** The Paws GitHub App id for `owner/repo`; comments made through it are its own. */
-  appId(repository: string): string | null;
+  appId(repository: string): Promise<string | null>;
   /** The Paws App's bot login for `owner/repo`, when known. */
   appLogin(repository: string): string | null;
   /** Lowercased bot logins whose comments only report status on `owner/repo`. */
@@ -100,7 +100,7 @@ export type PullCommentFilter = {
 };
 
 const NO_FILTER: PullCommentFilter = {
-  appId: () => null,
+  appId: async () => null,
   appLogin: () => null,
   ignoredBots: () => [],
   ignoredMarkers: () => [],
@@ -113,12 +113,12 @@ const NO_FILTER: PullCommentFilter = {
  * Filtering resolves before the receipt transaction, since callbacks may start provider work; the
  * returned Steps run inside it.
  */
-export function prepareCommentDelivery(
+export async function prepareCommentDelivery(
   event: string,
   body: unknown,
   now: number,
   filter: PullCommentFilter = NO_FILTER,
-): ((q: Q) => Steps<CommentReceipt>) | null {
+): Promise<((q: Q) => Steps<CommentReceipt>) | null> {
   const payload = record(body);
   const repository = record(payload.repository);
   const owner = record(repository.owner).login;
@@ -144,7 +144,7 @@ export function prepareCommentDelivery(
   const user = record(comment.user);
   const author = typeof user.login === "string" ? user.login : null;
   const viaApp = record(comment.performed_via_github_app).id;
-  const appId = filter.appId(name);
+  const appId = await filter.appId(name);
   const appLogin = filter.appLogin(name);
   if (appId !== null && viaApp !== undefined && String(viaApp) === appId) return null;
   if (author !== null) {

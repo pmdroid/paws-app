@@ -71,7 +71,7 @@ const transcripts = {
 };
 const repositoryAccess = {
   github: createFakeGitHub(),
-  installationForRepository: () => "fixture-installation",
+  installationForRepository: async () => "fixture-installation",
 };
 if (mode === "prepare") {
   mkdirSync(server, { recursive: true, mode: 0o700 });

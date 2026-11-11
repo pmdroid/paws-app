@@ -35,7 +35,7 @@ function fixture() {
   const cached = cacheRepositoryCredentials(
     {
       github,
-      installationForRepository: () => "1",
+      installationForRepository: async () => "1",
       async checkpointBot(repository: string) {
         lookups.push(repository);
         return bot;

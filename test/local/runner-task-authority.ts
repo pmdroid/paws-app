@@ -134,7 +134,7 @@ export async function probeRunnerTaskAuthority(
           };
         },
       },
-      installationForRepository: () => "fixture-installation",
+      installationForRepository: async () => "fixture-installation",
     },
     onError(error) {
       throw error;

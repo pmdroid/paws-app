@@ -213,7 +213,7 @@ describe("Settings › Merging › Ignored PR comments", () => {
     });
     const settings = () => readMergeSettings(loadConfigFile(options.configPath));
     const filter: PullCommentFilter = {
-      appId: () => null,
+      appId: async () => null,
       appLogin: () => null,
       ignoredBots: (repository) => ignoredCommentBots(settings(), repository),
       ignoredMarkers: (repository) => ignoredCommentMarkers(settings(), repository),

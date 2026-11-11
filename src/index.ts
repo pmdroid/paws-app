@@ -521,7 +521,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         installed() {},
       })
     : null;
-  const appActivation = createWorkspaceGitHubActivation(db, runtime.env.home, envSource);
+  const appActivation = createWorkspaceGitHubActivation(store, runtime.env.home, envSource);
   const resolveApp = (repository: string) => appActivation.resolve(repository);
   repositoryAccess ??= runnerRepositoryAccess(runtime, resolveApp);
   const commentFilter = pullCommentFilter(runtime, paths.configFile, resolveApp);
@@ -543,7 +543,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const listCatalog = async () => {
     const client = createFetchGitHubClient();
     const lists = await Promise.all(
-      appActivation.installations().map((app) =>
+      (await appActivation.installations()).map((app) =>
         listAppRepositories({
           client,
           appId: app.appId,
@@ -2242,13 +2242,13 @@ export function unavailableRemoteExecution(): NonNullable<OrchestratorOptions["r
 function pullCommentFilter(
   runtime: RuntimeConfig,
   configFile: string,
-  resolveApp: (repository: string) => ActiveGitHubApp,
+  resolveApp: (repository: string) => Promise<ActiveGitHubApp>,
 ): PullCommentFilter {
   const logins = new Map<string, string | null>();
   return {
-    appId(repository) {
+    async appId(repository) {
       try {
-        return resolveApp(repository).appId;
+        return (await resolveApp(repository)).appId;
       } catch {
         return runtime.env.githubAppId;
       }
@@ -2339,12 +2339,12 @@ function githubBinding(auth: AuthTokenProvider | null): GitHubBinding | null {
 
 export function runnerRepositoryAccess(
   runtime: RuntimeConfig,
-  resolveApp?: (repository: string) => ActiveGitHubApp,
+  resolveApp?: (repository: string) => Promise<ActiveGitHubApp>,
 ): RunnerRepositoryAccessOptions | undefined {
   return cacheRepositoryCredentials({
     github: {
       async mintInstallationToken(input) {
-        const before = resolveApp?.(input.repository);
+        const before = await resolveApp?.(input.repository);
         if (!before || before.installationId !== input.installationId)
           throw new Error("GitHub integration unavailable.");
         const token = await createGitHubApp({
@@ -2352,14 +2352,14 @@ export function runnerRepositoryAccess(
           appId: before.appId,
           privateKeyPem: before.privateKeyPem,
         }).mintInstallationToken(input);
-        if (JSON.stringify(resolveApp?.(input.repository)) !== JSON.stringify(before))
+        if (JSON.stringify(await resolveApp?.(input.repository)) !== JSON.stringify(before))
           throw new Error("GitHub integration replaced.");
         return token;
       },
     },
-    installationForRepository: (repository) => {
+    installationForRepository: async (repository) => {
       try {
-        return resolveApp?.(repository).installationId ?? null;
+        return (await resolveApp?.(repository))?.installationId ?? null;
       } catch (caughtError13) {
         journalCaught(caughtError13, "index.installationForRepository.resolveApp", null);
         return null;
@@ -2384,12 +2384,12 @@ export function authProvider(
   runtime: RuntimeConfig,
   repository: RepositoryBinding,
   access: "read" | "write" = "write",
-  resolveApp?: (repository: string) => ActiveGitHubApp,
+  resolveApp?: (repository: string) => Promise<ActiveGitHubApp>,
 ): AuthTokenProvider | null {
   if (resolveApp) {
     const name = `${repository.owner}/${repository.repo}`;
-    const provider = () => {
-      const active = resolveApp(name);
+    const provider = async () => {
+      const active = await resolveApp(name);
       return {
         active,
         provider: createGitHubTokenProvider({
@@ -2403,9 +2403,9 @@ export function authProvider(
       };
     };
     const perform = async <T>(operation: (current: AuthTokenProvider) => Promise<T>) => {
-      const before = provider();
+      const before = await provider();
       const result = await operation(before.provider);
-      if (JSON.stringify(resolveApp(name)) !== JSON.stringify(before.active))
+      if (JSON.stringify(await resolveApp(name)) !== JSON.stringify(before.active))
         throw new Error("GitHub integration replaced.");
       return result;
     };
@@ -2448,7 +2448,7 @@ export function authProvider(
 export function createGitHubIntegration(input: {
   runtime: RuntimeConfig;
   env: EnvSource;
-  resolveApp?: (repository: string) => ActiveGitHubApp;
+  resolveApp?: (repository: string) => Promise<ActiveGitHubApp>;
   repositoryForItem: (item: WorkItemRecord) => Promise<RepositoryBinding | null>;
   /** False, or a `GitHubDenial` with the reason the session ends with, cancels the item. */
   authorizeItem?: (
@@ -2631,7 +2631,7 @@ async function probesMain(argv: string[]): Promise<number> {
     const db = existsSync(paths.db) ? openDatabase(paths.db) : null;
     if (db) process.once("exit", () => db.close());
     const appActivation = db
-      ? createWorkspaceGitHubActivation(db, runtime.env.home, process.env)
+      ? createWorkspaceGitHubActivation(sqliteDb(db), runtime.env.home, process.env)
       : null;
     const provider = authProvider(
       runtime,

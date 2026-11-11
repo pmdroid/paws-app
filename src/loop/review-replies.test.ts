@@ -79,7 +79,7 @@ const THREADS: FakeReviewThread[] = [
 ];
 
 const FILTER: PullCommentFilter = {
-  appId: () => "42",
+  appId: async () => "42",
   appLogin: () => "paws-test[bot]",
   ignoredBots: () => [],
   ignoredMarkers: () => [],

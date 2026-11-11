@@ -69,7 +69,7 @@ export function createGitHubRepositorySetup(options: {
   const store = sqliteDb(db);
   const now = options.now ?? Date.now;
   const http = options.fetch ?? fetch;
-  const activation = createWorkspaceGitHubActivation(db, options.home, options.env);
+  const activation = createWorkspaceGitHubActivation(store, options.home, options.env);
   const origin = new URL(options.origin).origin;
   if (!origin.startsWith("https://")) throw new Error("GitHub setup requires HTTPS.");
   return async (request: Request): Promise<Response | null> => {

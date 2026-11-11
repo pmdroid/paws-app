@@ -309,7 +309,7 @@ async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 
 
 function FILTER(wait: PullFeedbackWait): PullCommentFilter {
   return {
-    appId: () => "42",
+    appId: async () => "42",
     appLogin: () => "paws-test[bot]",
     ignoredBots: () => [],
     ignoredMarkers: () => [],

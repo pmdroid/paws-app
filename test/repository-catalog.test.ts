@@ -164,16 +164,16 @@ test("the catalog is replaced on refresh and kept when a refresh fails", async (
   }
 });
 
-test("app installations come from the workspace GitHub connections", () => {
+test("app installations come from the workspace GitHub connections", async () => {
   const db = tempDb();
   const home = tempHome();
   try {
     mkdirSync(join(home, "secrets"), { recursive: true, mode: 0o700 });
-    const activation = createWorkspaceGitHubActivation(db, home, {});
+    const activation = createWorkspaceGitHubActivation(sqliteDb(db), home, {});
     db.run(
       "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('ws','org','Workspace',0)",
     );
-    expect(activation.installations()).toEqual([]);
+    expect(await activation.installations()).toEqual([]);
     activation.save("secret-1", {
       appId: "1",
       clientId: "client",
@@ -185,7 +185,7 @@ test("app installations come from the workspace GitHub connections", () => {
     db.run(
       "INSERT INTO workspace_github_connection(workspace_id,generation,secret_id,installation_id) VALUES('ws',3,'secret-1','42')",
     );
-    expect(activation.installations()).toEqual([
+    expect(await activation.installations()).toEqual([
       expect.objectContaining({ appId: "1", installationId: "42", generation: 3 }),
     ]);
   } finally {
