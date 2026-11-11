@@ -88,13 +88,7 @@ import {
   type RuntimeConfig,
   sweepTmpDir,
 } from "./config";
-import {
-  type LinearCommand,
-  type GitCommitPolicy,
-  type AppBotIdentity,
-  type Clock,
-  isTransient,
-} from "./core";
+import { type LinearCommand, type GitCommitPolicy, type Clock, isTransient } from "./core";
 import {
   workspaceMemberUsable,
   enqueueCommand,
@@ -2408,18 +2402,18 @@ export function authProvider(
         }),
       };
     };
-    const perform = async (operation: "token" | "user" | "botIdentity") => {
+    const perform = async <T>(operation: (current: AuthTokenProvider) => Promise<T>) => {
       const before = provider();
-      const result = await before.provider[operation]!();
+      const result = await operation(before.provider);
       if (JSON.stringify(resolveApp(name)) !== JSON.stringify(before.active))
         throw new Error("GitHub integration replaced.");
       return result;
     };
     return {
       source: "app",
-      token: async () => (await perform("token")) as string,
-      user: async () => (await perform("user")) as { login: string; id: number },
-      botIdentity: async () => (await perform("botIdentity")) as AppBotIdentity,
+      token: (purpose) => perform((current) => current.token(purpose)),
+      user: () => perform((current) => current.user()),
+      botIdentity: () => perform((current) => current.botIdentity!()),
     };
   }
   const env = runtime.env;
@@ -2824,7 +2818,7 @@ if (import.meta.main) {
 export function gitHostToken(provider: AuthTokenProvider): GitHubTokenProvider {
   return {
     mode: provider.source,
-    tokenFor: () => provider.token(),
+    tokenFor: (purpose) => provider.token(purpose),
   };
 }
 

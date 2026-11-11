@@ -1,6 +1,6 @@
 import type { AppBotIdentity } from "../core";
 import { createAppTokenProvider, createFetchGitHubClient } from "../github";
-import type { GitHubClient } from "../github";
+import type { GitHubClient, TokenPurpose } from "../github";
 import { gitHubAppBot } from "./github-app";
 
 /** The only GitHub credential Paws uses. */
@@ -17,7 +17,7 @@ export const MISSING_GITHUB_APP_MESSAGE =
  * `user()` and `botIdentity()` read the App bot account.
  */
 export type GitHubTokenProvider = {
-  token(): Promise<string>;
+  token(purpose?: TokenPurpose): Promise<string>;
   user(): Promise<{ login: string; id: number }>;
   readonly source: GitHubAuthSource;
   botIdentity?(): Promise<AppBotIdentity>;
@@ -58,7 +58,7 @@ export function createGitHubTokenProvider(config: GitHubTokenProviderConfig): Gi
   return {
     source: "app",
     botIdentity: resolveBot,
-    token: () => app.tokenFor("push"),
+    token: (purpose = "push") => app.tokenFor(purpose),
     user: async () => {
       const bot = await resolveBot();
       return { login: bot.login, id: bot.id };
