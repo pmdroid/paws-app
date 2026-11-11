@@ -508,8 +508,16 @@ describe("job queue", () => {
 
   test("an open dedupe key collapses to one pending row", async () => {
     const { db, clock } = queue();
-    const first = enqueueJobOnce(db, { queue: "tick", jobKey: "poller", now: clock.now() });
-    const second = enqueueJobOnce(db, { queue: "tick", jobKey: "poller", now: clock.now() });
+    const first = await enqueueJobOnce(sqliteDb(db), {
+      queue: "tick",
+      jobKey: "poller",
+      now: clock.now(),
+    });
+    const second = await enqueueJobOnce(sqliteDb(db), {
+      queue: "tick",
+      jobKey: "poller",
+      now: clock.now(),
+    });
     expect(second).toBe(first);
     expect(await listJobs(sqliteDb(db))).toHaveLength(1);
   });
@@ -631,14 +639,14 @@ test.each(["done", "cancelled", "dead"] as const)(
       payload: { itemId: "revive", body: "old" },
       now: 1,
     };
-    const id = enqueueJobOnce(db, original);
+    const id = await enqueueJobOnce(sqliteDb(db), original);
     db.run("UPDATE job SET status=?, attempts=7, finished_at=2, last_error='old' WHERE id=?", [
       status,
       id,
     ]);
     db.run("UPDATE work_item SET version=version+1 WHERE id='revive'");
     const fresh = { ...original, payload: { itemId: "revive", body: "new" }, now: 3 };
-    expect(enqueueJobOnce(db, fresh)).toBe(id);
+    expect(await enqueueJobOnce(sqliteDb(db), fresh)).toBe(id);
     expect(await getJob(sqliteDb(db), id)).toMatchObject({
       status,
       attempts: 7,

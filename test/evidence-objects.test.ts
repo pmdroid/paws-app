@@ -135,7 +135,9 @@ describe("evidence in the run file object store", () => {
     rmSync(join(a.root, saved.id));
     const b = instance(db, objects);
     expect(new Uint8Array(await (await b.get(saved.id)).arrayBuffer())).toEqual(VIDEO);
-    expect(await readEvidenceBytes(db, { root: b.root, objects }, saved.id)).toEqual(VIDEO);
+    expect(await readEvidenceBytes(sqliteDb(db), { root: b.root, objects }, saved.id)).toEqual(
+      VIDEO,
+    );
   });
 
   test("migrated evidence still reads from its local copy once S3 is turned off", async () => {

@@ -90,7 +90,7 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
       repository: "pmdroid/paws-demo",
       now: 1,
     });
-    const open = getWorkItem(db, waiting.id);
+    const open = await getWorkItem(sqliteDb(db), waiting.id);
     expect(open?.state).toBe("awaiting_input");
     const question = await openQuestion(db, {
       itemId: waiting.id,

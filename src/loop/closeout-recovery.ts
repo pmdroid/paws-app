@@ -1,11 +1,10 @@
-import type { Database } from "bun:sqlite";
 import {
   getLinkAskSteps,
   humanRetryBaselineSteps,
   listCloseoutBypassChecksSteps,
   listCloseoutRecoveriesSteps,
-  sqliteDb,
   type CloseoutRecovery,
+  type Db,
 } from "../db";
 import type { CloseoutBypass } from "../closeout";
 import { getQuestionSteps, type StoredQuestion } from "../questions";
@@ -35,10 +34,9 @@ export function retriesCloseout(question: Pick<StoredQuestion, "options" | "answ
 export const BYPASS_REPLY = /^\s*\/?(?:paws\s+)?bypass\b/i;
 
 export async function recoveryOptions(
-  db: Database,
+  store: Db,
   itemId: string,
 ): Promise<{ retryBaseline: readonly string[]; bypasses: CloseoutBypass[] }> {
-  const store = sqliteDb(db);
   const retryBaseline = new Set<string>(await store.run((q) => humanRetryBaselineSteps(q, itemId)));
   const bypasses: CloseoutBypass[] = [];
   // Only a person authorizes fresh check attempts or a bypass. Rebases retain failures.

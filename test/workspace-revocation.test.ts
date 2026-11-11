@@ -108,8 +108,8 @@ test("admin revoke atomically ends sessions, runners, queued and running work; s
         .get()!.revoked_at,
     ).toBe(member.revokedAt!);
     for (const id of ["controlled", "other", "unmapped"])
-      expect(getWorkItem(db, id)?.state).toBe("cancelled");
-    expect(getWorkItem(db, "foreign")?.state).toBe("queued");
+      expect((await getWorkItem(sqliteDb(db), id))?.state).toBe("cancelled");
+    expect((await getWorkItem(sqliteDb(db), "foreign"))?.state).toBe("queued");
     const responses = (await listOutbox(sqliteDb(db)))
       .map((row) => row.payload as { body?: string; sessionId?: string })
       .filter((payload) => payload.body === WORKSPACE_REVOKED_RESPONSE);
@@ -139,8 +139,8 @@ test("admin revoke atomically ends sessions, runners, queued and running work; s
       issueWorkspaceSession(db, { workspaceId: "workspace", userId: "member", now }),
     ).rejects.toThrow(WORKSPACE_REVOKED_SIGN_IN);
     expect(
-      requestWorkspaceSession(
-        db,
+      await requestWorkspaceSession(
+        sqliteDb(db),
         new Request(f.origin, {
           headers: { cookie: `${WORKSPACE_COOKIE}=${f.sessions["member"]!.token}` },
         }),
@@ -236,7 +236,7 @@ test("a failed Stop rolls back the whole revocation", async () => {
         .query("SELECT 1 FROM workspace_access_audit WHERE action='workspace.member_revoked'")
         .get(),
     ).toBeNull();
-    expect(getWorkItem(f.db, "controlled")?.state).toBe("running");
+    expect((await getWorkItem(sqliteDb(f.db), "controlled"))?.state).toBe("running");
   });
 });
 
@@ -281,7 +281,7 @@ test("revocation uses resolved delegator ownership, not the session creator", as
     });
     expect(new Set(stopped)).toEqual(new Set(["owner", "delegated", "creator"]));
     for (const [id, , , , stop] of cases) {
-      expect(getWorkItem(db, id)?.state).toBe(stop ? "cancelled" : "queued");
+      expect((await getWorkItem(sqliteDb(db), id))?.state).toBe(stop ? "cancelled" : "queued");
       if (stop) expect(await delegatedLinearUserId(sqliteDb(db), id)).toBe("linear-member");
     }
     const responses = (await listOutbox(sqliteDb(db)))
@@ -310,7 +310,7 @@ test("revocation stops accepted work without closing its pull request", async ()
       revoked: true,
       now: Date.now(),
     });
-    expect(getWorkItem(db, "controlled")?.state).toBe("cancelled");
+    expect((await getWorkItem(sqliteDb(db), "controlled"))?.state).toBe("cancelled");
     expect(db.query("SELECT 1 FROM job WHERE queue=?").get(JOB_KIND.closeStoppedPull)).toBeNull();
     expect(
       db.query("SELECT pull_number FROM item_pull_request WHERE item_id='controlled'").get(),
@@ -340,7 +340,7 @@ test("revoke returns after durable Stop while all interrupts are still pending",
         const response = await Promise.race([pending, Bun.sleep(2000).then(() => null)]);
         expect(response?.status).toBe(200);
         expect(new Set(called)).toEqual(new Set(["controlled", "other"]));
-        expect(getWorkItem(f.db, "controlled")?.state).toBe("cancelled");
+        expect((await getWorkItem(sqliteDb(f.db), "controlled"))?.state).toBe("cancelled");
       },
       {
         interruptItem: async (id) => {
@@ -452,7 +452,7 @@ test("revocation stops explicit owners and delegators without session metadata",
     const expected = cases.filter((c) => c[4]);
     expect(new Set(stopped)).toEqual(new Set(expected.map((c) => c[0])));
     for (const [id, , , , stop] of cases)
-      expect(getWorkItem(db, id)?.state).toBe(stop ? "cancelled" : "queued");
+      expect((await getWorkItem(sqliteDb(db), id))?.state).toBe(stop ? "cancelled" : "queued");
     const responses = (await listOutbox(sqliteDb(db)))
       .map((row) => row.payload as { body?: string; sessionId?: string })
       .filter((row) => row.body === WORKSPACE_REVOKED_RESPONSE);

@@ -1,7 +1,7 @@
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { changeDecision, decisionAnswers, listDecisions } from "../decisions";
-import type { WorkspaceSession } from "../db";
+import { sqliteDb, type WorkspaceSession } from "../db";
 import { readWorkspaceJson } from "./administration";
 import { requestWorkspaceSession, validWorkspaceCsrf, type WorkspacePrincipal } from "./session";
 
@@ -57,7 +57,7 @@ export async function handleDecisions(
       (value["retire"] !== undefined && typeof value["retire"] !== "boolean")
     )
       throw new Error("Invalid decision fields.");
-    const current = requestWorkspaceSession(options.db, request, options.now());
+    const current = await requestWorkspaceSession(sqliteDb(options.db), request, options.now());
     if (
       !current ||
       current.principal.workspaceId !== actor.workspaceId ||

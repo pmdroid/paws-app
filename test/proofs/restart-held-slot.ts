@@ -25,7 +25,10 @@ export default {
       admitted.length === 1 && admitted[0] === "b-resume",
       admitted,
     );
-    proof.expect("unrelated work stays queued", getWorkItem(db, "a-unrelated")?.state === "queued");
+    proof.expect(
+      "unrelated work stays queued",
+      (await getWorkItem(sqliteDb(db), "a-unrelated"))?.state === "queued",
+    );
     proof.expect(
       "the restart retains its runner",
       (await schedulerRunnerSlots(sqliteDb(db), NOW)).find((row) => row.itemId === "b-resume")

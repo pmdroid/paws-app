@@ -113,7 +113,7 @@ test("a merge attempt that gets HTTP 500 on a conflicting pull request goes back
   try {
     expect(await f.failed(500)).toBe(true);
     expect(f.reads).toEqual(["GET /repos/acme/monorepo/pulls/6496"]);
-    expect(getWorkItem(f.db, "DEP-661")?.state).not.toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(f.db), "DEP-661"))?.state).not.toBe("merge_queue");
     const [resume] = await f.resumes();
     const payload = resume?.payload as { reason: string; handoff: string };
     expect(payload.reason).toBe("conflict");
@@ -143,8 +143,10 @@ test("an HTTP 500 on a conflicting pull request with the rebase budget spent ask
       });
     expect(await f.failed(500)).toBe(true);
     expect(await f.resumes()).toEqual([]);
-    expect(getWorkItem(f.db, "DEP-661")?.state).toBe("awaiting_input");
-    expect(findOpenQuestion(f.db, "ses-1")).toMatchObject({ reason: "rebase_budget_spent" });
+    expect((await getWorkItem(sqliteDb(f.db), "DEP-661"))?.state).toBe("awaiting_input");
+    expect(await findOpenQuestion(sqliteDb(f.db), "ses-1")).toMatchObject({
+      reason: "rebase_budget_spent",
+    });
   } finally {
     await f.cleanup();
   }
@@ -158,7 +160,7 @@ test.each([true, null])(
       expect(await f.failed(502)).toBe(false);
       expect(f.reads).toHaveLength(1);
       expect(await f.resumes()).toEqual([]);
-      expect(getWorkItem(f.db, "DEP-661")?.state).toBe("merge_queue");
+      expect((await getWorkItem(sqliteDb(f.db), "DEP-661"))?.state).toBe("merge_queue");
     } finally {
       await f.cleanup();
     }

@@ -55,7 +55,7 @@ for (const changedIdentity of [false, true]) {
       "rejected",
       20,
     );
-    expect(getWorkItem(db, "item")?.acceptedHead).toBeNull();
+    expect((await getWorkItem(sqliteDb(db), "item"))?.acceptedHead).toBeNull();
     expect((await closeoutPolicyDigests(sqliteDb(db), "item", "s"))?.decision).toBe("rejected");
     expect(await acceptedCloseoutReviews(sqliteDb(db), "item", "s")).toBeNull();
     db.close();
@@ -71,7 +71,9 @@ for (const decision of ["exhausted", "blocked"] as const) {
     await finishCloseoutProgress(sqliteDb(db), "item", identity, "accepted", 10);
     await markCloseoutAccepted(sqliteDb(db), "item", "s");
     await finishCloseoutProgress(sqliteDb(db), "item", { ...identity, base: "c" }, decision, 20);
-    expect(getWorkItem(db, "item")?.acceptedHead).toBe(decision === "exhausted" ? null : "s");
+    expect((await getWorkItem(sqliteDb(db), "item"))?.acceptedHead).toBe(
+      decision === "exhausted" ? null : "s",
+    );
     // Either way the older acceptance is not resurrected by the newer identity's row.
     expect(await acceptedCloseoutReviews(sqliteDb(db), "item", "s")).toBeNull();
     db.close();
@@ -97,6 +99,6 @@ test("rejecting a carried head retires its source acceptance", async () => {
     "rejected",
     20,
   );
-  expect(getWorkItem(db, "item")?.acceptedHead).toBeNull();
+  expect((await getWorkItem(sqliteDb(db), "item"))?.acceptedHead).toBeNull();
   db.close();
 });

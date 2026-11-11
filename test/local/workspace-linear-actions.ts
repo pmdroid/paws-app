@@ -742,7 +742,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
         ).length,
       },
     );
-    await until(() => getWorkItem(db, allowed.item.id)?.state === "failed");
+    await until(async () => (await getWorkItem(sqliteDb(db), allowed.item.id))?.state === "failed");
     const permittedStop = await task("new-member", "stop");
     // A real item has its Linear snapshot, so the scheduler's sweep does not reconcile it mid-stop.
     await saveDependencySnapshot(sqliteDb(db), {
@@ -758,10 +758,10 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     observe(
       "normal catch-up retains canonical Stop for an authorized teammate",
       (await getQuestion(sqliteDb(db), permittedStop.question.id))?.status === "open" &&
-        getWorkItem(db, permittedStop.item.id)?.state === "paused",
+        (await getWorkItem(sqliteDb(db), permittedStop.item.id))?.state === "paused",
       {
         question: (await getQuestion(sqliteDb(db), permittedStop.question.id))?.status,
-        state: getWorkItem(db, permittedStop.item.id)?.state,
+        state: (await getWorkItem(sqliteDb(db), permittedStop.item.id))?.state,
       },
     );
   } finally {

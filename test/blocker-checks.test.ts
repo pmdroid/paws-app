@@ -46,7 +46,7 @@ async function blockedFixture(options: { blocked?: boolean; lowBudget?: boolean 
   });
   lifecycle.issues.set("acme-child", { ...lifecycle.issue, id: "acme-child" });
   lifecycle.issues.set("acme-b", { ...lifecycle.issue, id: "acme-b" });
-  const intake = await intakeDelegatedIssue(db, tracker, {
+  const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
     linearIssueId: "acme-parent",
     now: 1000,
   });
@@ -79,7 +79,9 @@ async function blockedFixture(options: { blocked?: boolean; lowBudget?: boolean 
     now: () => clock,
   });
   await reconciler.sweep({ now: clock });
-  const child = listWorkItems(db).find((item) => item.linearIssueId === "acme-child")!;
+  const child = (await listWorkItems(sqliteDb(db))).find(
+    (item) => item.linearIssueId === "acme-child",
+  )!;
   if (options.blocked !== false)
     await saveItemHolds(sqliteDb(db), [
       { itemId: child.id, reason: "blocked", blockers: ["ACME-12"] },

@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   and,
   asc,
@@ -15,7 +14,7 @@ import {
 import { readCheckpoint } from "./checkpoint";
 import { randomUUID } from "node:crypto";
 import type { Checkpoint, RunKind, RunStatus, GitCommitPolicy } from "../core";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import type { Q, Steps, Db } from "./db";
 import { jsonText } from "./json-text";
 
 export type StoredRun = {
@@ -72,8 +71,8 @@ export function* getRunSteps(q: Q, id: string): Steps<StoredRun | null> {
   return row === undefined ? null : mapRun(q, row);
 }
 
-export function getRun(db: Database, id: string): StoredRun | null {
-  return settled(sqliteDb(db).run((q) => getRunSteps(q, id)));
+export async function getRun(store: Db, id: string): Promise<StoredRun | null> {
+  return store.run((q) => getRunSteps(q, id));
 }
 
 export function* listRunsSteps(q: Q, itemId?: string): Steps<StoredRun[]> {
@@ -271,8 +270,11 @@ export function* getItemRunCommitPolicySteps(
     ?.commitPolicy;
 }
 
-export function getItemRunCommitPolicy(db: Database, itemId: string): GitCommitPolicy | undefined {
-  return settled(sqliteDb(db).run((q) => getItemRunCommitPolicySteps(q, itemId)));
+export async function getItemRunCommitPolicy(
+  store: Db,
+  itemId: string,
+): Promise<GitCommitPolicy | undefined> {
+  return store.run((q) => getItemRunCommitPolicySteps(q, itemId));
 }
 
 export function* listWaitingProfileRunsSteps(q: Q, now: number): Steps<StoredRun[]> {

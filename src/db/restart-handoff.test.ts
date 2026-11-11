@@ -43,10 +43,15 @@ for (const reason of ["findings", "review", "ci"] as const) {
       if (reason === "findings")
         await finishCloseoutProgress(sqliteDb(db), "item", identity, "rejected", 3);
       const body = `Address pending ${reason}`;
-      const jobId = restart(db, getWorkItem(db, "item")!, { reason, body, limit: 4, now: 4 })!;
+      const jobId = restart(db, (await getWorkItem(sqliteDb(db), "item"))!, {
+        reason,
+        body,
+        limit: 4,
+        now: 4,
+      })!;
       await applyWorkItemEvent(sqliteDb(db), "item", "dispatched");
       db.run("UPDATE job SET status='dead', finished_at=5 WHERE id=?", [jobId]);
-      const item = getWorkItem(db, "item")!;
+      const item = (await getWorkItem(sqliteDb(db), "item"))!;
       if (recovery === "transient") {
         await deferWorkItem(sqliteDb(db), item, {
           retry: 1,
@@ -63,7 +68,8 @@ for (const reason of ["findings", "review", "ci"] as const) {
       const job = (await listJobs(sqliteDb(db))).at(-1)!;
       expect(job.payload).toMatchObject({ handoff: body, limit: 4 });
       expect((await pendingRestartHandoff(sqliteDb(db), "item")).handoff).toBe(body);
-      if (reason === "findings") expect(getWorkItem(db, "item")?.acceptedHead).toBeNull();
+      if (reason === "findings")
+        expect((await getWorkItem(sqliteDb(db), "item"))?.acceptedHead).toBeNull();
       db.close();
     });
   }
@@ -124,7 +130,7 @@ async function acceptedFollowUp() {
   await applyWorkItemEvent(sqliteDb(db), "item", "closeout_accepted");
   await markCloseoutAccepted(sqliteDb(db), "item", "s");
   const body = "Fix the failing CI checks on acme/widgets";
-  const jobId = restart(db, getWorkItem(db, "item")!, {
+  const jobId = restart(db, (await getWorkItem(sqliteDb(db), "item"))!, {
     reason: "follow_up",
     body,
     now: Date.now(),

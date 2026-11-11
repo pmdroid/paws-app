@@ -624,7 +624,7 @@ test("the sync wrapper announces a new job after its transaction commits", async
     const during: boolean[] = [];
     const stop = onJobReady(() => during.push(database.inTransaction));
     try {
-      await deferWorkItem(sqliteDb(database), getWorkItem(database, "i")!, {
+      await deferWorkItem(sqliteDb(database), (await getWorkItem(sqliteDb(database), "i"))!, {
         retry: 1,
         delayMs: 1,
         handoff: null,

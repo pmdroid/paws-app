@@ -47,7 +47,7 @@ async function fixture(child = false, actorId: string | null = "human") {
         : [],
     },
   ]);
-  const task = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent" });
+  const task = await intakeDelegatedIssue(sqliteDb(db), tracker, { linearIssueId: "parent" });
   if (!task.ok) throw new Error("Unexpected cycle");
   await recordLinearInstallation(sqliteDb(db), {
     ...scope,
@@ -101,7 +101,7 @@ async function fixture(child = false, actorId: string | null = "human") {
       }),
     now: () => clock.now,
   });
-  const item = getWorkItem(db, task.items[0]!.id)!;
+  const item = (await getWorkItem(sqliteDb(db), task.items[0]!.id))!;
   return { db, path, task, item, access, lifecycle, stopped, gate, clock };
 }
 
@@ -341,7 +341,10 @@ test("a task that runs 50 git operations reads Linear task access once", async (
   for (let i = 0; i < 50; i++) {
     f.clock.now += 60_000;
     await f.gate.assert(f.item, signal);
-    await f.gate.assertDelivery("session", signal, { itemId: f.item.id, isCurrent: () => true });
+    await f.gate.assertDelivery("session", signal, {
+      itemId: f.item.id,
+      isCurrent: async () => true,
+    });
   }
   expect(linearReads(f)).toBe(once);
   expect(f.lifecycle.started.map((input) => input.issueId)).toEqual(["child", "parent"]);
@@ -431,7 +434,7 @@ test("a task queued behind a blocker is cancelled when its issue is undelegated 
     { notify: (command) => cancelled.push(command.itemId) },
   );
   expect(cancelled).toEqual([f.item.id]);
-  const item = getWorkItem(f.db, f.item.id)!;
+  const item = (await getWorkItem(sqliteDb(f.db), f.item.id))!;
   expect(item.state).toBe("cancelled");
   await expect(f.gate.prepare(item, new AbortController().signal)).rejects.toThrow(
     "Linear task was stopped or superseded.",
@@ -447,5 +450,5 @@ test("an undelegation that predates the task leaves it queued", async () => {
     { ...scope, issueId: "parent", createdAtMs: 0 },
     { notify: () => {} },
   );
-  expect(getWorkItem(f.db, f.item.id)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("queued");
 });

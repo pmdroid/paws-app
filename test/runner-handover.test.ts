@@ -405,7 +405,7 @@ test("a fake runner handover leaves its WIP commit on the Paws side as the check
   expect(git(["--git-dir", paws, "rev-parse", `${ref}^{tree}`])).toBe(
     git(["-C", runner, "rev-parse", "HEAD^{tree}"]),
   );
-  expect(getWorkItem(context.db, record.id)?.checkpoint).toMatchObject({
+  expect((await getWorkItem(sqliteDb(context.db), record.id))?.checkpoint).toMatchObject({
     phase: "running",
     baseSha: context.base,
     wipCommit: wip,
@@ -582,7 +582,8 @@ test("a run stopped for the time cap saves its runner's work first, and the rest
         interval = git(["-C", runner, "rev-parse", "HEAD"]);
         // An interval checkpoint becomes the item's checkpoint while the turn runs.
         await context.events(command, [{ type: "checkpoint", reason: "interval", sha: interval }]);
-        while (getWorkItem(db, record.id)?.checkpoint?.wipCommit !== interval) await delay(1);
+        while ((await getWorkItem(sqliteDb(db), record.id))?.checkpoint?.wipCommit !== interval)
+          await delay(1);
         writeFileSync(join(runner, "findings.tsx"), "<Findings />\n");
         git(["-C", runner, "add", "-A"]);
         git(["-C", runner, "commit", "-q", "-m", "Show the findings"]);
@@ -623,7 +624,7 @@ test("a run stopped for the time cap saves its runner's work first, and the rest
       true,
     );
     expect(result?.stopReason ?? "cancelled").toBe("cancelled");
-    expect(getWorkItem(db, record.id)?.checkpoint?.wipCommit).toBe(snapshot);
+    expect((await getWorkItem(sqliteDb(db), record.id))?.checkpoint?.wipCommit).toBe(snapshot);
     const thoughts = db
       .query<{ payload: string }, [string]>(
         "SELECT payload FROM outbox WHERE target='linear' AND idempotency_key LIKE ?",
@@ -686,7 +687,11 @@ test("a restarted turn whose saved work cannot be fetched fails instead of start
   const record = await context.item();
   // A checkpoint the runner published that Paws no longer can fetch.
   const lost = "f".repeat(40);
-  saveCheckpoint(db, record.id, { phase: "running", baseSha: context.base, wipCommit: lost });
+  await saveCheckpoint(sqliteDb(db), record.id, {
+    phase: "running",
+    baseSha: context.base,
+    wipCommit: lost,
+  });
   const running = context.backend.forItem(record.id)({
     profile: { agent: "claude", model: "model" },
     role: "implementer",
@@ -701,7 +706,7 @@ test("a restarted turn whose saved work cannot be fetched fails instead of start
   expect(
     db.query("SELECT 1 FROM runner_command WHERE run_id=? AND kind='run'").get(record.runId),
   ).toBeNull();
-  expect(getWorkItem(db, record.id)?.checkpoint?.wipCommit).toBe(lost);
+  expect((await getWorkItem(sqliteDb(db), record.id))?.checkpoint?.wipCommit).toBe(lost);
 });
 
 test("a stop while a handover is under way is cancelled at once, leaving the checkpoint to the handover", async () => {

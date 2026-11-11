@@ -30,7 +30,7 @@ async function reply(h: MergeHarness, id: string, body: string): Promise<void> {
   await answer(
     h.db,
     { sessionId: `ses-${id}`, deliveryId: `reply:${++replies}`, body, answeredBy: "acme-dev", now },
-    questionEffects(h.db, { now }),
+    questionEffects(sqliteDb(h.db), { now }),
   );
 }
 
@@ -57,9 +57,9 @@ describe("a merge GitHub refuses", () => {
     const item = await h.addItem("ACME-1");
     refuse(h);
     expect(await h.pass(item.id)).toEqual({ kind: "asked" });
-    expect(getWorkItem(h.db, item.id)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("awaiting_input");
     expect(await mergeCallInFlight(sqliteDb(h.db), item.id)).toBe(false);
-    const question = findOpenQuestion(h.db, `ses-${item.id}`)!;
+    const question = (await findOpenQuestion(sqliteDb(h.db), `ses-${item.id}`))!;
     expect(question.options).toEqual([RETRY_MERGE]);
     expect(question.body).toContain("status 405");
     expect(question.body).toContain("Repository rule violations found");
@@ -74,7 +74,7 @@ describe("a merge GitHub refuses", () => {
     refuse(h);
     await h.pass(item.id);
     await reply(h, item.id, RETRY_MERGE);
-    expect(getWorkItem(h.db, item.id)?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("merge_queue");
     expect(await agentJobs(h)).toEqual([]);
     expect(
       (await listJobs(sqliteDb(h.db))).filter((job) => job.queue === JOB_KIND.reverify),
@@ -121,8 +121,8 @@ describe("a merge GitHub refuses", () => {
       };
     };
     expect(await h.pass(item.id)).toMatchObject({ kind: "wait", reason: "ci" });
-    expect(findOpenQuestion(h.db, `ses-${item.id}`)).toBeNull();
-    expect(getWorkItem(h.db, item.id)?.state).toBe("merge_queue");
+    expect(await findOpenQuestion(sqliteDb(h.db), `ses-${item.id}`)).toBeNull();
+    expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("merge_queue");
     h.state.mergeState = null;
     expect(await h.pass(item.id)).toMatchObject({ kind: "wait", reason: "ci" });
     expect(await h.remoteHead(item.id)).not.toBe(item.accepted);
@@ -138,6 +138,6 @@ describe("a merge GitHub refuses", () => {
       body: { message: "Resource not accessible by integration" },
     });
     expect(await h.pass(item.id)).toMatchObject({ kind: "failed", reason: "merge" });
-    expect(findOpenQuestion(h.db, `ses-${item.id}`)).toBeNull();
+    expect(await findOpenQuestion(sqliteDb(h.db), `ses-${item.id}`)).toBeNull();
   });
 });

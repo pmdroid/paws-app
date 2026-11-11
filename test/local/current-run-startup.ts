@@ -116,7 +116,7 @@ export async function probeCurrentRunStartup(root: string) {
           now: clock.now(),
         });
       await jobs.tick();
-      const current = getWorkItem(db, item.id)!;
+      const current = (await getWorkItem(sqliteDb(db), item.id))!;
       const hold = db
         .query<{ current_run_id: string; status: string }, []>(
           "SELECT current_run_id,status FROM github_integration_hold",

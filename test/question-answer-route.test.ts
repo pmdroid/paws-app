@@ -193,8 +193,8 @@ test("an option answered in Paws restarts the item as a Linear reply does, once"
       "linear-1",
     );
     expect(history(paws.db, paws.item.id)).toEqual(history(linear.db, linear.item.id));
-    expect(getWorkItem(paws.db, paws.item.id)?.state).toBe(
-      getWorkItem(linear.db, linear.item.id)!.state,
+    expect((await getWorkItem(sqliteDb(paws.db), paws.item.id))?.state).toBe(
+      (await getWorkItem(sqliteDb(linear.db), linear.item.id))!.state,
     );
     expect(await resumes(paws.db)).toHaveLength(1);
     expect(await resumes(paws.db)).toEqual(await resumes(linear.db));
@@ -288,7 +288,7 @@ test("the answer record reaches Linear after the pull request response", async (
       ["pull-request-ready:PAS-1003", "response"],
       ["late-thought", "thought"],
     ] as const)
-      enqueueOutboxOnce(db, {
+      await enqueueOutboxOnce(sqliteDb(db), {
         target: "linear",
         op: "activity",
         orderingKey: "ses_1",

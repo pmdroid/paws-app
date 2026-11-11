@@ -9,6 +9,7 @@ import {
   saveEvidenceObject,
   type EvidenceObject,
   sqliteDb,
+  type Db,
 } from "../db";
 import { journalCaught } from "../journal";
 import { RUN_FILE_CHUNK_BYTES, type RunFileObjects } from "../run-files";
@@ -62,7 +63,7 @@ export async function removeEvidenceChunks(
 }
 
 export async function writeEvidenceFile(
-  db: Database,
+  store: Db,
   storage: EvidenceStorage,
   location: Location,
   id: string,
@@ -78,30 +79,30 @@ export async function writeEvidenceFile(
   }
   const prefix = evidenceObjectPrefix(location, id);
   const sizeBytes = await writeEvidenceChunks(objects, prefix, [bytes]);
-  await saveEvidenceObject(sqliteDb(db), { id, prefix, sizeBytes, storedAt: now });
+  await saveEvidenceObject(store, { id, prefix, sizeBytes, storedAt: now });
 }
 
 export async function removeEvidenceFile(
-  db: Database,
+  store: Db,
   storage: EvidenceStorage,
   id: string,
 ): Promise<void> {
-  const row = await getEvidenceObject(sqliteDb(db), id);
+  const row = await getEvidenceObject(store, id);
   if (row) {
     const objects = storage.objects?.();
     if (objects) await removeEvidenceChunks(objects, row.prefix, row.sizeBytes);
-    await deleteEvidenceObject(sqliteDb(db), id);
+    await deleteEvidenceObject(store, id);
   }
   await rm(join(storage.root, id), { force: true });
 }
 
 export async function openEvidenceFile(
-  db: Database,
+  store: Db,
   storage: EvidenceStorage,
   id: string,
   range?: { start: number; end: number },
 ): Promise<{ size: number; body: Blob | ReadableStream<Uint8Array> } | null> {
-  const row = await getEvidenceObject(sqliteDb(db), id);
+  const row = await getEvidenceObject(store, id);
   const objects = row === null ? null : storage.objects?.();
   if (row === null || !objects) {
     const file = Bun.file(join(storage.root, id));
@@ -147,11 +148,11 @@ export async function* readChunks(
 }
 
 export async function readEvidenceBytes(
-  db: Database,
+  store: Db,
   storage: EvidenceStorage,
   id: string,
 ): Promise<Uint8Array> {
-  const file = await openEvidenceFile(db, storage, id);
+  const file = await openEvidenceFile(store, storage, id);
   if (file === null) throw new Error(`Evidence file ${id} is missing`);
   return new Uint8Array(await new Response(file.body).arrayBuffer());
 }

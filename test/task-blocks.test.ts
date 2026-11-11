@@ -138,9 +138,9 @@ describe("task blocks", () => {
     expect(
       db.query<{ status: string }, [number]>("SELECT status FROM job WHERE id=?").get(job)?.status,
     ).toBe("cancelled");
-    expect(getWorkItem(db, "m-older")?.cancelRequested).toBe(true);
-    expect(getWorkItem(db, "m-older")?.state).toBe("cancelled");
-    expect(getWorkItem(db, "a-newer")?.state).toBe("running");
+    expect((await getWorkItem(sqliteDb(db), "m-older"))?.cancelRequested).toBe(true);
+    expect((await getWorkItem(sqliteDb(db), "m-older"))?.state).toBe("cancelled");
+    expect((await getWorkItem(sqliteDb(db), "a-newer"))?.state).toBe("running");
     expect(
       db.query("SELECT 1 FROM schema_migration WHERE id = '058_one_active_item'").get(),
     ).toBeTruthy();
@@ -158,11 +158,11 @@ describe("task blocks", () => {
     const done = insertQueuedItem(db, { id: "done", now: 4 });
     db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [done.id]);
     db.run("UPDATE work_item SET linear_issue_id = ? WHERE id = ?", ["shared-issue", done.id]);
-    expect(getWorkItem(db, "done")).toMatchObject({
+    expect(await getWorkItem(sqliteDb(db), "done")).toMatchObject({
       state: "merged",
       linearIssueId: "shared-issue",
     });
-    expect(getWorkItem(db, "a-newer")?.state).toBe("running");
+    expect((await getWorkItem(sqliteDb(db), "a-newer"))?.state).toBe("running");
     db.close();
   });
 

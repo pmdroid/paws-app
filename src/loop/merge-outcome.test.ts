@@ -47,7 +47,7 @@ async function fixture() {
   });
   return {
     db,
-    read: () => orchestrator["mergedOutsideLane"](getWorkItem(db, "item")!),
+    read: async () => orchestrator["mergedOutsideLane"]((await getWorkItem(sqliteDb(db), "item"))!),
     respond: (next: typeof response) => {
       response = next;
     },

@@ -106,7 +106,7 @@ test("a newer CI help replaces only its own task's queued CI help", async () => 
 
 async function queuedCloseoutHelp() {
   const { db, asker } = await setup();
-  saveCheckpoint(db, asker.itemId, {
+  await saveCheckpoint(sqliteDb(db), asker.itemId, {
     phase: "awaiting_input",
     baseSha: "base",
     wipCommit: "head-1",
@@ -148,13 +148,17 @@ async function promote(db: Database): Promise<string[]> {
 test("a queued Closeout help for the same candidate and policy is delivered", async () => {
   const { db, help } = await queuedCloseoutHelp();
   expect(await promote(db)).toEqual([]);
-  expect(findOpenQuestion(db, "ses_1")?.id).toBe(help.id);
+  expect((await findOpenQuestion(sqliteDb(db), "ses_1"))?.id).toBe(help.id);
   expect(await elicitations(db)).toEqual([help.id]);
 });
 
 test("a queued Closeout help is dropped once its candidate moved", async () => {
   const { db, asker, help } = await queuedCloseoutHelp();
-  saveCheckpoint(db, asker.itemId, { phase: "verifying", baseSha: "base", wipCommit: "head-2" });
+  await saveCheckpoint(sqliteDb(db), asker.itemId, {
+    phase: "verifying",
+    baseSha: "base",
+    wipCommit: "head-2",
+  });
   expect(await promote(db)).toEqual([
     `question ${help.id} dropped from the queue: its candidate moved`,
   ]);
@@ -211,7 +215,7 @@ test("a queued question for a run that is no longer current is dropped with a jo
     restore();
   }
   expect((await getQuestion(sqliteDb(db), stale.question.id))?.status).toBe("cancelled");
-  expect(findOpenQuestion(db, "ses_1")).toBeNull();
+  expect(await findOpenQuestion(sqliteDb(db), "ses_1")).toBeNull();
   expect(lines).toEqual([
     `question ${stale.question.id} dropped from the queue: its run is no longer current`,
   ]);

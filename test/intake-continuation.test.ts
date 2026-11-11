@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { getWorkItem } from "../src/db";
+import { getWorkItem, sqliteDb } from "../src/db";
 import { openPullRequest, readBranchWork, type GitHubClient } from "../src/github";
 import {
   asksForFreshStart,
@@ -46,7 +46,7 @@ function fakeClient(
 /** The first delegation's item ran on its own branch and then ended with `state`. */
 async function earlierAttempt(db: Database, state: string): Promise<string> {
   const tracker = createFakeTracker([issue]);
-  const first = await intakeDelegatedIssue(db, tracker, {
+  const first = await intakeDelegatedIssue(sqliteDb(db), tracker, {
     linearIssueId: "only",
     sessionId: "ses_1",
     taskKey: "session:ses_1",
@@ -68,7 +68,7 @@ async function redelegate(
   options: { startFresh?: boolean } = {},
 ) {
   const inspected: EarlierAttempt[] = [];
-  const result = await intakeDelegatedIssue(db, createFakeTracker([issue]), {
+  const result = await intakeDelegatedIssue(sqliteDb(db), createFakeTracker([issue]), {
     linearIssueId: "only",
     sessionId: "ses_2",
     taskKey: "session:ses_2",
@@ -81,14 +81,14 @@ async function redelegate(
   if (!result.ok) throw new Error("expected intake");
   expect(result.alreadyExisted).toBe(false);
   expect(result.items).toHaveLength(1);
-  return { item: getWorkItem(db, result.items[0]!.id)!, inspected };
+  return { item: (await getWorkItem(sqliteDb(db), result.items[0]!.id))!, inspected };
 }
 
 describe("re-delegating an issue", () => {
   test("with an open pull request reuses that pull request and its branch", async () => {
     const db = tempDb();
     const earlierId = await earlierAttempt(db, "cancelled");
-    const earlierBranch = getWorkItem(db, earlierId)!.branchName;
+    const earlierBranch = (await getWorkItem(sqliteDb(db), earlierId))!.branchName;
     const { item, inspected } = await redelegate(db, { pull: "open", commits: 6 });
     expect(inspected).toEqual([
       {
@@ -141,7 +141,7 @@ describe("re-delegating an issue", () => {
   test("with a closed pull request but a branch with commits continues the branch and opens a pull request from it", async () => {
     const db = tempDb();
     const earlierId = await earlierAttempt(db, "cancelled");
-    const earlierBranch = getWorkItem(db, earlierId)!.branchName;
+    const earlierBranch = (await getWorkItem(sqliteDb(db), earlierId))!.branchName;
     const { item } = await redelegate(db, { pull: "closed", commits: 5 });
     expect(item.continuesItemId).toBe(earlierId);
     expect(worktreeBranch(item)).toBe(earlierBranch);
@@ -189,7 +189,7 @@ describe("re-delegating an issue", () => {
     expect(item.continuesItemId).toBeNull();
     expect(item.continuesBranch).toBeNull();
     expect(worktreeBranch(item)).toBe(`paws/eng-9-${item.id.toLowerCase()}`);
-    expect(worktreeBranch(item)).not.toBe(getWorkItem(db, earlierId)!.branchName);
+    expect(worktreeBranch(item)).not.toBe((await getWorkItem(sqliteDb(db), earlierId))!.branchName);
     db.close();
   });
 
@@ -222,7 +222,7 @@ describe("re-delegating an issue", () => {
     const tracker = createFakeTracker([issue]);
     let inspected = 0;
     await expect(
-      intakeDelegatedIssue(db, tracker, {
+      intakeDelegatedIssue(sqliteDb(db), tracker, {
         linearIssueId: "only",
         sessionId: "ses_2",
         taskKey: "session:ses_2",
@@ -236,7 +236,7 @@ describe("re-delegating an issue", () => {
     expect(db.query<{ id: string }, []>("SELECT id FROM work_item").all()).toEqual([
       { id: earlierId },
     ]);
-    expect(getWorkItem(db, earlierId)?.state).toBe("running");
+    expect((await getWorkItem(sqliteDb(db), earlierId))?.state).toBe("running");
     db.close();
   });
 });

@@ -151,7 +151,7 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
     await firstLoop;
     await prepareShutdown(sqliteDb(db));
     expect(
-      listWorkItems(db).map((item) => item.state),
+      (await listWorkItems(sqliteDb(db))).map((item) => item.state),
       await detail(db),
     ).toEqual(ISSUES.map(() => "recovering"));
 
@@ -189,7 +189,11 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
 
     expect(reads).toEqual(ISSUES.flatMap((id) => [`start:${id}`, `end:${id}`]));
     expect(
-      listWorkItems(db).map((item) => getWorkItem(db, item.id)?.state),
+      await Promise.all(
+        (await listWorkItems(sqliteDb(db))).map(
+          async (item) => (await getWorkItem(sqliteDb(db), item.id))?.state,
+        ),
+      ),
       await detail(db),
     ).toEqual(ISSUES.map(() => "running"));
   } finally {
@@ -215,7 +219,9 @@ async function until(
 
 async function detail(db: ReturnType<typeof openDatabase>): Promise<string> {
   return JSON.stringify({
-    items: listWorkItems(db).map((item) => `${item.linearIdentifier}:${item.state}`),
+    items: (await listWorkItems(sqliteDb(db))).map(
+      (item) => `${item.linearIdentifier}:${item.state}`,
+    ),
     jobs: (await listJobs(sqliteDb(db))).map(
       (job) => `${job.queue}:${job.status}:${job.runAt}:${job.lastError ?? ""}`,
     ),

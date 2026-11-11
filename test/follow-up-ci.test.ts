@@ -287,7 +287,7 @@ test("a head that moves during the CI read attaches no stale CI facts", async ()
     onCiRead: async (db, itemId) =>
       await recordItemBranchState(sqliteDb(db), {
         itemId,
-        runId: getWorkItem(db, itemId)!.currentRunId!,
+        runId: (await getWorkItem(sqliteDb(db), itemId))!.currentRunId!,
         head: OTHER,
         base: "f".repeat(40),
         commits: 2,
@@ -315,7 +315,7 @@ test("a stop during the CI read restarts nothing", async () => {
   try {
     await f.orchestrator.onLinearEvent(linearEvent("reply-1", "Please fix the build"));
     expect(await f.resumes()).toEqual([]);
-    expect(getWorkItem(f.db, f.itemId)!.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(f.db), f.itemId))!.state).toBe("merge_queue");
     expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toEqual([]);
     expect(
       (await listJobs(sqliteDb(f.db))).some((job) => job.jobKey?.startsWith("linear-turn:")),
@@ -394,7 +394,7 @@ test("a person's follow-up on accepted work starts with a fresh time budget and 
     spent(f.db, f.itemId);
     await f.orchestrator.onLinearEvent(linearEvent("reply-1", "CI still fails, fix the acme lint"));
     expect(await f.resumes()).toHaveLength(1);
-    expect(getWorkItem(f.db, f.itemId)).toMatchObject({
+    expect(await getWorkItem(sqliteDb(f.db), f.itemId)).toMatchObject({
       awakeMs: 0,
       maxAwakeMs: DEFAULT_MAX_AWAKE_MS,
     });
@@ -413,13 +413,13 @@ test("an automatic CI repair restart keeps adding to the same clock", async () =
   const f = await waitingTask({ ci: "green" });
   try {
     spent(f.db, f.itemId);
-    const before = getWorkItem(f.db, f.itemId)!;
+    const before = (await getWorkItem(sqliteDb(f.db), f.itemId))!;
     restart(f.db, before, {
       reason: "ci",
       body: "CI failed on the pull request.",
       now: Date.now(),
     });
-    expect(getWorkItem(f.db, f.itemId)!.awakeMs).toBe(before.awakeMs);
+    expect((await getWorkItem(sqliteDb(f.db), f.itemId))!.awakeMs).toBe(before.awakeMs);
   } finally {
     await f.close();
   }
@@ -434,7 +434,7 @@ test("a failed item's follow-up clears the stop and the retries and resets the c
     ]);
     spent(f.db, f.itemId);
     await f.orchestrator.onLinearEvent(linearEvent("reply-1", "Try again on the acme widgets"));
-    expect(getWorkItem(f.db, f.itemId)).toMatchObject({
+    expect(await getWorkItem(sqliteDb(f.db), f.itemId)).toMatchObject({
       cancelRequested: false,
       recoveryAttempts: 0,
       awakeMs: 0,

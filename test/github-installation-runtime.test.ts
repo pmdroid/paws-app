@@ -108,10 +108,10 @@ test("a missing installation holds the item before Git and a reply cannot releas
   const f = await fixture();
   try {
     await f.jobs.tick();
-    const question = findOpenQuestion(f.db, "session")!;
+    const question = (await findOpenQuestion(sqliteDb(f.db), "session"))!;
     expect(question.kind).toBe("github-auth");
     expect(question.body).toContain("Waiting for a workspace admin");
-    expect(getWorkItem(f.db, f.item.id)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("awaiting_input");
     expect(existsSync(join(f.home, "worktrees"))).toBe(false);
     expect(f.tracker.statuses).toEqual([]);
     expect(
@@ -140,13 +140,13 @@ test("the item resumes once by itself when the installation returns", async () =
   const f = await fixture();
   try {
     await f.jobs.tick();
-    const question = findOpenQuestion(f.db, "session")!;
+    const question = (await findOpenQuestion(sqliteDb(f.db), "session"))!;
     await f.orchestrator.recoverGitHubAuth();
-    expect(getWorkItem(f.db, f.item.id)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("awaiting_input");
     f.host.installed = true;
     await f.orchestrator.recoverGitHubAuth();
     expect((await getQuestion(sqliteDb(f.db), question.id))?.answeredBy).toBe("paws");
-    expect(getWorkItem(f.db, f.item.id)?.state).toBe("running");
+    expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("running");
     expect(
       (await listJobs(sqliteDb(f.db))).filter((job) => job.queue === JOB_KIND.resume),
     ).toHaveLength(1);
@@ -164,12 +164,12 @@ test("Stop prevents a returning installation from resuming the item", async () =
   const f = await fixture();
   try {
     await f.jobs.tick();
-    const question = findOpenQuestion(f.db, "session")!;
+    const question = (await findOpenQuestion(sqliteDb(f.db), "session"))!;
     await f.orchestrator.onLinearEvent({ ...prompt("linear-owner", "stop"), signal: "stop" });
     f.host.installed = true;
     await f.orchestrator.recoverGitHubAuth();
     expect((await getQuestion(sqliteDb(f.db), question.id))?.status).toBe("open");
-    expect(getWorkItem(f.db, f.item.id)?.state).toBe("paused");
+    expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("paused");
     expect((await listJobs(sqliteDb(f.db))).filter((job) => job.queue === JOB_KIND.resume)).toEqual(
       [],
     );
@@ -214,7 +214,7 @@ test.each(["pending", "rejected"] as const)(
       const writer = insertQueuedItem(f.db, { id: "ENG-2", sessionKey: "writer" });
       await applyWorkItemEvent(sqliteDb(f.db), writer.id, "dispatched");
       await saveTaskMode(sqliteDb(f.db), writer.id, "answer");
-      enqueueJobOnce(f.db, {
+      await enqueueJobOnce(sqliteDb(f.db), {
         queue: JOB_KIND.resume,
         jobKey: "writer",
         payload: { itemId: writer.id },
@@ -234,7 +234,7 @@ test.each(["pending", "rejected"] as const)(
       await running;
       const pid = Number(readFileSync(pidFile, "utf8"));
       expect(alive(pid)).toBe(false);
-      expect(getWorkItem(f.db, writer.id)?.state).toBe("running");
+      expect((await getWorkItem(sqliteDb(f.db), writer.id))?.state).toBe("running");
     } finally {
       if (!released) linked.resolve(true);
       await Promise.allSettled([shutting, running]);

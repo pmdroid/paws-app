@@ -87,7 +87,7 @@ describe("closeout progress backend", () => {
     expect(credentialSecrets({ HOME: "/home/dev", PATH: "/usr/bin" })).toEqual([]);
   });
 
-  test("a new running attempt clears earlier output and timestamps and keeps other identities", () => {
+  test("a new running attempt clears earlier output and timestamps and keeps other identities", async () => {
     const db = openDatabase(":memory:");
     migrate(db);
     let clock = 1_000;
@@ -117,7 +117,7 @@ describe("closeout progress backend", () => {
         detail: "still going",
       }),
     );
-    expect(only(db, identity).steps[0]).toMatchObject({
+    expect((await only(db, identity)).steps[0]).toMatchObject({
       startedAt: 100,
       stdout: "OLD-OUT",
       state: "running",
@@ -176,7 +176,7 @@ describe("closeout progress backend", () => {
       identity,
       progressStep({ state: "pending", attempt: 0, findings: null, logPath: null }),
     );
-    const pending = only(db, identity).steps[0];
+    const pending = (await only(db, identity)).steps[0];
     expect(pending).toMatchObject({
       state: "pending",
       stdout: "",
@@ -192,7 +192,7 @@ describe("closeout progress backend", () => {
       progressStep({ state: "running", attempt: 2, startedAt: 500, logPath: "logs/2.log" }),
     );
     progress.output(identity, "probe", "stdout", "NEW-OUT", false);
-    const running = only(db, identity);
+    const running = await only(db, identity);
     expect(running.decision).toBeNull();
     expect(running.steps[0]).toMatchObject({
       state: "running",
@@ -206,12 +206,12 @@ describe("closeout progress backend", () => {
     });
     expect(running.steps[0]?.stdout).not.toContain("OLD");
     progress.finish(identity, "rejected");
-    expect(only(db, samePolicyOtherHead).steps[0]?.detail).toBe("other-head");
-    expect(only(db, samePolicyOtherHead).decision).toBeNull();
-    expect(only(db, otherBaseSameHead).steps[0]?.detail).toBe("other-base");
-    expect(only(db, otherPolicy).steps[0]?.detail).toBe("other-policy");
-    expect(only(db, identity).decision).toBe("rejected");
-    expect(listCloseoutProgress(db)).toHaveLength(4);
+    expect((await only(db, samePolicyOtherHead)).steps[0]?.detail).toBe("other-head");
+    expect((await only(db, samePolicyOtherHead)).decision).toBeNull();
+    expect((await only(db, otherBaseSameHead)).steps[0]?.detail).toBe("other-base");
+    expect((await only(db, otherPolicy)).steps[0]?.detail).toBe("other-policy");
+    expect((await only(db, identity)).decision).toBe("rejected");
+    expect(await listCloseoutProgress(sqliteDb(db))).toHaveLength(4);
   });
 
   test("direct evaluation does not publish before a progress identity exists", async () => {
@@ -231,7 +231,7 @@ describe("closeout progress backend", () => {
       progress: createDbCloseoutProgress(sqliteDb(db), "item-1"),
     });
     expect(result.outcome).toBe("invalid");
-    expect(listCloseoutProgress(db)).toEqual([]);
+    expect(await listCloseoutProgress(sqliteDb(db))).toEqual([]);
   });
 
   test("streams output before the step finishes and a later attempt replaces it", async () => {
@@ -261,7 +261,7 @@ describe("closeout progress backend", () => {
       const progress = createDbCloseoutProgress(sqliteDb(db), "item-1", () => Date.now());
       const first = await evaluateCandidate(evalInput(repo, progress));
       expect(first.outcome).toBe("rejected");
-      const firstRow = only(db, rowIdentity(db));
+      const firstRow = await only(db, await rowIdentity(db));
       const firstStep = firstRow.steps[0];
       expect(firstStep?.stdout).toContain("OUT:one");
       expect(firstStep?.stderr).toContain("ERR:one");
@@ -279,8 +279,8 @@ describe("closeout progress backend", () => {
       const second = await evaluateCandidate(
         evalInput(
           repo,
-          watching(progress, () => {
-            const current = listCloseoutProgress(db)[0];
+          watching(progress, async () => {
+            const current = (await listCloseoutProgress(sqliteDb(db)))[0];
             const step = current?.steps[0];
             if (current && step?.state === "running" && step.stdout.includes("OUT:two"))
               live = current;
@@ -304,7 +304,7 @@ describe("closeout progress backend", () => {
       expect(seen.steps[0]?.stderr).not.toContain("ERR:one");
       expect(seen.steps[0]?.startedAt).toBeGreaterThan(firstStep?.finishedAt ?? 0);
 
-      const stored = only(db, rowIdentity(db));
+      const stored = await only(db, await rowIdentity(db));
       expect(stored.decision).toBe("rejected");
       expect(stored.steps[0]?.stdout).toContain("OUT:two");
       expect(stored.steps[0]?.stdout).not.toContain("OUT:one");
@@ -317,7 +317,7 @@ describe("closeout progress backend", () => {
       db.close();
       const reopened = openDatabase(dbPath);
       migrate(reopened);
-      const again = listCloseoutProgress(reopened)[0];
+      const again = (await listCloseoutProgress(sqliteDb(reopened)))[0];
       expect(again?.decision).toBe("rejected");
       expect(again?.steps[0]?.stdout).toContain("OUT:two");
       expect(again?.steps[0]?.stdout).not.toContain("OUT:one");
@@ -348,7 +348,7 @@ describe("closeout progress backend", () => {
         ...evalInput(repo, progress),
         reviewer: {
           async review() {
-            const row = listCloseoutProgress(db)[0];
+            const row = (await listCloseoutProgress(sqliteDb(db)))[0];
             const step = row?.steps.find((entry) => entry.kind === "review");
             expect(row?.decision).toBeNull();
             expect(row?.decision).not.toBe("accepted");
@@ -361,7 +361,7 @@ describe("closeout progress backend", () => {
         },
       });
       expect(result.outcome).toBe("blocked");
-      const row = listCloseoutProgress(db)[0];
+      const row = (await listCloseoutProgress(sqliteDb(db)))[0];
       const step = row?.steps.find((entry) => entry.kind === "review");
       expect(row?.decision).toBe("blocked");
       expect(row?.policyDigest.length).toBeGreaterThan(0);
@@ -374,7 +374,7 @@ describe("closeout progress backend", () => {
       expect(JSON.stringify(row)).not.toContain(API_KEY);
       const invalid = await evaluateCandidate({ ...evalInput(repo, progress), head: "invalid" });
       expect(invalid.outcome).toBe("invalid");
-      expect(listCloseoutProgress(db)[0]).toEqual(row);
+      expect((await listCloseoutProgress(sqliteDb(db)))[0]).toEqual(row);
     } finally {
       if (previous === undefined) delete process.env.DEMO_API_KEY;
       else process.env.DEMO_API_KEY = previous;
@@ -478,7 +478,7 @@ describe("closeout progress backend", () => {
         },
       }).catch((error: unknown) => error);
       expect(thrown).toBe(outage);
-      const stopped = listCloseoutProgress(db)[0];
+      const stopped = (await listCloseoutProgress(sqliteDb(db)))[0];
       const step = stopped?.steps.find((entry) => entry.kind === "review");
       expect(stopped?.steps.some((entry) => entry.state === "running")).toBe(false);
       expect(stopped?.finishedAt).not.toBeNull();
@@ -497,7 +497,7 @@ describe("closeout progress backend", () => {
         ...evalInput(repo, progress),
         reviewer: {
           async review() {
-            const row = listCloseoutProgress(db)[0];
+            const row = (await listCloseoutProgress(sqliteDb(db)))[0];
             expect(row?.decision).toBeNull();
             expect(row?.finishedAt).toBeNull();
             return { session: "review-session", model: "gpt-5", provider: "openai", findings: [] };
@@ -505,7 +505,7 @@ describe("closeout progress backend", () => {
         },
       });
       expect(retried.outcome).toBe("accepted");
-      const sealed = listCloseoutProgress(db);
+      const sealed = await listCloseoutProgress(sqliteDb(db));
       expect(sealed).toHaveLength(1);
       expect(sealed[0]?.decision).toBe("accepted");
       expect(sealed[0]?.steps.find((entry) => entry.kind === "review")?.state).toBe("passed");
@@ -530,7 +530,7 @@ describe("closeout progress backend", () => {
         ...evalInput(repo, createDbCloseoutProgress(sqliteDb(db), "item-1")),
         reviewer: {
           async review() {
-            const row = listCloseoutProgress(db)[0];
+            const row = (await listCloseoutProgress(sqliteDb(db)))[0];
             startedAt = row?.steps.find((entry) => entry.kind === "review")?.startedAt ?? null;
             expect(row?.decision).not.toBe("accepted");
             await wait(20);
@@ -551,7 +551,7 @@ describe("closeout progress backend", () => {
         },
       });
       expect(result.outcome).toBe("rejected");
-      const row = listCloseoutProgress(db)[0];
+      const row = (await listCloseoutProgress(sqliteDb(db)))[0];
       const step = row?.steps.find((entry) => entry.kind === "review");
       expect(row?.decision).toBe("rejected");
       expect(step).toMatchObject({ state: "failed", attempt: 1 });
@@ -582,7 +582,7 @@ describe("closeout progress backend", () => {
         reviewer: {
           async review() {
             calls += 1;
-            const row = listCloseoutProgress(db)[0];
+            const row = (await listCloseoutProgress(sqliteDb(db)))[0];
             expect(row?.decision).not.toBe("accepted");
             return {
               session: "review-session",
@@ -602,7 +602,7 @@ describe("closeout progress backend", () => {
       });
       expect(result.outcome).toBe("exhausted");
       expect(calls).toBe(1);
-      const row = listCloseoutProgress(db)[0];
+      const row = (await listCloseoutProgress(sqliteDb(db)))[0];
       const step = row?.steps.find((entry) => entry.kind === "review");
       expect(row?.decision).toBe("exhausted");
       expect(step).toMatchObject({ state: "exhausted", attempt: 1 });
@@ -641,7 +641,7 @@ describe("closeout progress backend", () => {
       turn: 4,
     });
     await applyWorkItemEvent(sqliteDb(db), "item-1", "turn_ended");
-    saveCheckpoint(db, "item-1", {
+    await saveCheckpoint(sqliteDb(db), "item-1", {
       phase: "verifying",
       baseSha: repo.head,
       wipCommit: repo.head,
@@ -664,9 +664,9 @@ describe("closeout progress backend", () => {
           },
         },
         fixer: committingFixer(repo.dir),
-        progress: watching(progress, () => {
-          const checkpoint = getWorkItem(db, "item-1")?.checkpoint;
-          const rows = listCloseoutProgress(db);
+        progress: watching(progress, async () => {
+          const checkpoint = (await getWorkItem(sqliteDb(db), "item-1"))?.checkpoint;
+          const rows = await listCloseoutProgress(sqliteDb(db));
           const current = rows.find((row) => row.head === checkpoint?.wipCommit);
           const step = current?.steps.find((entry) => entry.id === "probe");
           if (current && step?.stdout.includes("NOW-NEW") && step.state === "running") {
@@ -683,13 +683,13 @@ describe("closeout progress backend", () => {
       });
       expect(result.outcome).toBe("accepted");
       expect(liveHead).toBeDefined();
-      const checkpoint = getWorkItem(db, "item-1")?.checkpoint;
+      const checkpoint = (await getWorkItem(sqliteDb(db), "item-1"))?.checkpoint;
       expect(checkpoint?.phase).toBe("verifying");
       expect(checkpoint?.turn).toBe(4);
       expect(checkpoint?.baseSha).toBe(repo.head);
       expect(checkpoint?.wipCommit).toBe(liveHead);
       expect(checkpoint?.wipCommit).not.toBe(repo.head);
-      const rows = listCloseoutProgress(db);
+      const rows = await listCloseoutProgress(sqliteDb(db));
       expect(rows).toHaveLength(2);
       const previous = rows.find((row) => row.head === repo.head);
       const current = rows.find((row) => row.head === liveHead);
@@ -706,11 +706,13 @@ describe("closeout progress backend", () => {
       db.close();
       const reopened = openDatabase(dbPath);
       migrate(reopened);
-      const again = listCloseoutProgress(reopened);
+      const again = await listCloseoutProgress(sqliteDb(reopened));
       expect(again.find((row) => row.head === repo.head)?.decision).toBe("rejected");
       expect(again.find((row) => row.head === liveHead)?.decision).toBe("accepted");
       expect(again.find((row) => row.head === liveHead)?.steps[0]?.stdout).toContain("NOW-NEW");
-      expect(getWorkItem(reopened, "item-1")?.checkpoint?.wipCommit).toBe(liveHead);
+      expect((await getWorkItem(sqliteDb(reopened), "item-1"))?.checkpoint?.wipCommit).toBe(
+        liveHead,
+      );
       reopened.close();
       expect(await readFile(oldLog, "utf8")).toContain("STILL-OLD");
     } finally {
@@ -760,8 +762,8 @@ describe("closeout progress backend", () => {
       const result = await evaluateCandidate(
         evalInput(
           repo,
-          watching(createDbCloseoutProgress(sqliteDb(db), "item-1"), () => {
-            const row = listCloseoutProgress(db)[0];
+          watching(createDbCloseoutProgress(sqliteDb(db), "item-1"), async () => {
+            const row = (await listCloseoutProgress(sqliteDb(db)))[0];
             const step = row?.steps[0];
             if (step?.state !== "running") return;
             const dump = JSON.stringify(step);
@@ -773,7 +775,7 @@ describe("closeout progress backend", () => {
       );
       expect(result.outcome).toBe("accepted");
       expect(runningClean).toBe(true);
-      const row = listCloseoutProgress(db)[0];
+      const row = (await listCloseoutProgress(sqliteDb(db)))[0];
       const dump = JSON.stringify(row);
       for (const secret of [API_KEY, PASSWORD, SECRET, TOKEN, GHP, SK]) {
         expect(dump).not.toContain(secret);
@@ -830,11 +832,11 @@ function progressStep(patch: Partial<CloseoutProgressStep>): CloseoutProgressSte
   };
 }
 
-function only(
+async function only(
   db: ReturnType<typeof openDatabase>,
   identity: CloseoutProgressIdentity,
-): CloseoutProgressRecord {
-  const found = listCloseoutProgress(db).find(
+): Promise<CloseoutProgressRecord> {
+  const found = (await listCloseoutProgress(sqliteDb(db))).find(
     (row) =>
       row.taskId === identity.taskId &&
       row.base === identity.base &&
@@ -845,8 +847,8 @@ function only(
   return found;
 }
 
-function rowIdentity(db: ReturnType<typeof openDatabase>): CloseoutProgressIdentity {
-  const row = listCloseoutProgress(db)[0];
+async function rowIdentity(db: ReturnType<typeof openDatabase>): Promise<CloseoutProgressIdentity> {
+  const row = (await listCloseoutProgress(sqliteDb(db)))[0];
   if (row === undefined) throw new Error("missing progress row");
   return {
     taskId: row.taskId,
@@ -857,7 +859,7 @@ function rowIdentity(db: ReturnType<typeof openDatabase>): CloseoutProgressIdent
   };
 }
 
-function watching(inner: CloseoutProgress, onOutput: () => void): CloseoutProgress {
+function watching(inner: CloseoutProgress, onOutput: () => Promise<void>): CloseoutProgress {
   return {
     begin(identity) {
       return inner.begin(identity);
@@ -867,7 +869,7 @@ function watching(inner: CloseoutProgress, onOutput: () => void): CloseoutProgre
     },
     async output(identity, stepId, stream, text, truncated) {
       await inner.output(identity, stepId, stream, text, truncated);
-      onOutput();
+      await onOutput();
     },
     finish(identity, decision) {
       return inner.finish(identity, decision);

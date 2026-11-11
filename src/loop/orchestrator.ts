@@ -23,7 +23,7 @@ import {
   deferWorkItem,
   delegatedLinearUserIdSteps,
   deleteCancelledLinearTurnSteps,
-  enqueueJobOnceAsync,
+  enqueueJobOnce,
   enqueueOutboxOnceSteps,
   ensureLinearSessionSteps,
   gatherLinearComments,
@@ -966,7 +966,7 @@ export class Orchestrator {
   constructor(private readonly options: OrchestratorOptions) {
     this.store = options.store ?? sqliteDb(options.db);
     this.riskDisplayReader = new RiskDisplayReader({
-      db: options.db,
+      store: this.store,
       configPath: join(options.pawsRoot, "config.toml"),
       readSettings: () => this.readMergePolicy(),
       publicUrl: options.publicUrl,
@@ -976,22 +976,21 @@ export class Orchestrator {
     this.admission = options.admission ?? createAdmission({ db: options.db });
     this.githubAuth = options.githubInstallation
       ? new GitHubInstallationCheck(
-          options.db,
+          this.store,
           options.githubInstallation,
           () => this.now(),
           (q, item) => this.sessionAccessAllowedSteps(q, item),
-          this.store,
         )
       : null;
     this.inputLoader = options.files
       ? createLinearInputLoader({
-          db: options.db,
+          store: this.store,
           files: options.files,
           cacheDir: join(options.secretsDir ?? join(options.pawsRoot, "secrets"), "linear-inputs"),
         })
       : null;
     this.taskPlanner = createTaskPlanner({
-      db: options.db,
+      store: this.store,
       pawsRoot: options.pawsRoot,
       home: options.home,
       launch: (input) => this.launchAgent(input),
@@ -1003,7 +1002,9 @@ export class Orchestrator {
     });
     this.catchUpFn = options.catchUp ?? (() => Promise.resolve());
     this.bus.subscribe((command) => {
-      this.githubAuth?.revoke(command.itemId);
+      void this.githubAuth
+        ?.revoke(command.itemId)
+        .catch((error: unknown) => journalCaught(error, "orchestrator.bus.revoke", command.itemId));
       this.abortItem(command.itemId);
     });
     this.register();
@@ -1139,10 +1140,10 @@ export class Orchestrator {
     const wait = policy.wait?.() ?? this.feedbackWait();
     for (const received of await this.store.run((q) => receivedLinearCommentsSteps(q))) {
       if (received.issueId !== comment.issueId) continue;
-      const route = await routeLinearComment(this.db, received, policy);
+      const route = await routeLinearComment(this.store, received, policy);
       const authorized =
         route.kind === "queue" ? await authorizeLinearComment(route, policy) : true;
-      await commitLinearCommentRoute(this.db, received.commentId, route, {
+      await commitLinearCommentRoute(this.store, received.commentId, route, {
         now: this.now(),
         wait,
         authorized,
@@ -1268,7 +1269,7 @@ export class Orchestrator {
 
   async interruptLinearSession(sessionId: string): Promise<void> {
     const items = await this.itemsForSession(sessionId);
-    for (const item of items) this.githubAuth?.revoke(item.id);
+    for (const item of items) await this.githubAuth?.revoke(item.id);
     const owned = [...this.live.values()].filter((live) =>
       items.some((item) => item.id === live.itemId),
     );
@@ -1688,7 +1689,7 @@ export class Orchestrator {
         (await this.store.run((q) => authorize(q, sessionId, authorized)))
       );
     };
-    const result = await intakeDelegatedIssue(this.db, intakeTracker, {
+    const result = await intakeDelegatedIssue(this.store, intakeTracker, {
       linearIssueId: issueId,
       sessionId,
       acknowledged: options.acknowledged,
@@ -1967,18 +1968,20 @@ export class Orchestrator {
     jobs.register(JOB_KIND.visualReviewReminder, async (job, context) => {
       const questionId = readString(job.payload, "questionId");
       if (!(await context.isCurrent()) || questionId === null) return;
-      if (await remindVisualReview(this.db, questionId, this.now())) await this.flush();
+      if (await remindVisualReview(this.store, questionId, this.now())) await this.flush();
     });
     jobs.register(JOB_KIND.linkAskReminder, async (job, context) => {
       const questionId = readString(job.payload, "questionId");
       if (!(await context.isCurrent()) || questionId === null) return;
-      if (await remindLinkAsk(this.db, questionId, this.now())) await this.flush();
+      if (await remindLinkAsk(this.store, questionId, this.now())) await this.flush();
     });
     jobs.register(JOB_KIND.reaskQuestion, async (job, context) => {
       const itemId = readString(job.payload, "itemId");
       const questionId = readString(job.payload, "questionId");
       if (!(await context.isCurrent()) || itemId === null || questionId === null) return;
-      if (await reaskDeadQuestion(this.db, { itemId, questionId, jobId: job.id, now: this.now() }))
+      if (
+        await reaskDeadQuestion(this.store, { itemId, questionId, jobId: job.id, now: this.now() })
+      )
         await this.flush();
     });
     jobs.register(JOB_KIND.runnerSetupCheck, async (job) => {
@@ -2076,14 +2079,14 @@ export class Orchestrator {
           await clearWait();
           const waitingId = readString(job.payload, "itemId");
           if (waitingId) await this.settleItemAwake(waitingId);
-          await waitForRunnerSlot(this.db, job, this.now(), this.runnerWaitMs(wait), wait);
+          await waitForRunnerSlot(this.store, job, this.now(), this.runnerWaitMs(wait), wait);
         }
       });
     });
     jobs.register(JOB_KIND.merge, async (job, context) => {
       const ownerId = readString(job.payload, "itemId");
       if (ownerId !== null && (await this.mergeTurnTaken(ownerId))) {
-        if (await context.isCurrent()) await waitForMergeTurn(this.db, job, this.now());
+        if (await context.isCurrent()) await waitForMergeTurn(this.store, job, this.now());
         return;
       }
       let waiting: MergeWait | undefined;
@@ -2103,7 +2106,7 @@ export class Orchestrator {
 
         const delayMs = transientRetryDelayMs(job.attempts, error, this.options.retryBaseMs);
 
-        if (!(await retryMergeLater(this.db, job, this.now(), delayMs, error))) throw error;
+        if (!(await retryMergeLater(this.store, job, this.now(), delayMs, error))) throw error;
         await this.noteHostDiskFull(readString(job.payload, "itemId"), error);
         journalCaught(
           error,
@@ -2123,7 +2126,7 @@ export class Orchestrator {
       if (
         parked === "ask" &&
         itemId &&
-        (await askAboutSlowCi(this.db, itemId, { checks: waiting.message, now: this.now() }))
+        (await askAboutSlowCi(this.store, itemId, { checks: waiting.message, now: this.now() }))
       ) {
         await this.flush();
         return;
@@ -2182,7 +2185,7 @@ export class Orchestrator {
       const reviewId = (job.payload as { reviewId?: unknown }).reviewId;
       if (typeof reviewId !== "number" || !(await context.isCurrent())) return;
       let reviewWait: ReviewCheckWait | null | undefined;
-      const step = await handlePullReview(this.db, reviewId, {
+      const step = await handlePullReview(this.store, reviewId, {
         ...this.pullFeedbackCapabilities(context.signal),
         noteReviewWait: (wait) => {
           reviewWait = wait;
@@ -2190,7 +2193,7 @@ export class Orchestrator {
       });
       if (step === "wait" && (await context.isCurrent()))
         await waitForMergeTurn(
-          this.db,
+          this.store,
           withReviewWait(job, reviewWait),
           this.now(),
           PULL_REVIEW_POLL_MS,
@@ -2202,18 +2205,18 @@ export class Orchestrator {
       if (typeof itemId !== "string" || policy === undefined || !(await context.isCurrent()))
         return;
       const step = await deliverLinearComments(
-        this.db,
+        this.store,
         itemId,
         this.linearCommentCapabilities(policy, context.signal),
       );
       if (step === "wait" && (await context.isCurrent()))
-        await waitForMergeTurn(this.db, job, this.now(), PULL_REVIEW_POLL_MS);
+        await waitForMergeTurn(this.store, job, this.now(), PULL_REVIEW_POLL_MS);
     });
     jobs.register(JOB_KIND.pullComments, async (job, context) => {
       const itemId = (job.payload as { pullCommentsFor?: unknown }).pullCommentsFor;
       if (typeof itemId !== "string" || !(await context.isCurrent())) return;
       let reviewWait: ReviewCheckWait | null | undefined;
-      const step = await handlePullComments(this.db, itemId, {
+      const step = await handlePullComments(this.store, itemId, {
         ...this.pullFeedbackCapabilities(context.signal),
         noteReviewWait: (wait) => {
           reviewWait = wait;
@@ -2221,7 +2224,7 @@ export class Orchestrator {
       });
       if (step === "wait" && (await context.isCurrent()))
         await waitForMergeTurn(
-          this.db,
+          this.store,
           withReviewWait(job, reviewWait),
           this.now(),
           PULL_REVIEW_POLL_MS,
@@ -2665,7 +2668,7 @@ export class Orchestrator {
         await this.settleItemAwake(item.id);
         if (
           (await waitForRunnerSlot(
-            this.db,
+            this.store,
             job,
             this.now(),
             this.runnerWaitMs(wait, job.queue === JOB_KIND.resume),
@@ -3004,7 +3007,7 @@ export class Orchestrator {
             answeredBy,
             now,
           },
-          questionEffects(this.db, { now, maxAwakeMs: this.options.caps?.maxAwakeMs }),
+          questionEffects(this.store, { now, maxAwakeMs: this.options.caps?.maxAwakeMs }),
         );
         answered = outcome.status === "answered" || answered;
       }
@@ -3049,7 +3052,7 @@ export class Orchestrator {
     const talk = itemId === null ? null : await this.options.conversations?.();
     if (!talk || (await talk.open(itemId!)).length === 0 || !(await context.isCurrent()))
       return false;
-    await waitForMergeTurn(this.db, job, this.now(), PULL_REVIEW_POLL_MS);
+    await waitForMergeTurn(this.store, job, this.now(), PULL_REVIEW_POLL_MS);
     return true;
   }
 
@@ -3074,7 +3077,7 @@ export class Orchestrator {
     const next = { ...waited, attempt: waited.attempt + 1 };
     job = (await beforePark?.()) ?? job;
     const delayMs = this.runnerWaitMs(next, job.queue === JOB_KIND.resume);
-    await waitForRunnerSlot(this.db, job, this.now(), delayMs, next);
+    await waitForRunnerSlot(this.store, job, this.now(), delayMs, next);
     return true;
   }
 
@@ -3091,7 +3094,7 @@ export class Orchestrator {
     if (!refused || !item || !repository) return false;
     const github = this.githubForRepository(repository);
     const repositoryName = `${repository.owner}/${repository.repo}`;
-    const outage = await pushRefused(this.db, {
+    const outage = await pushRefused(this.store, {
       repository: repositoryName,
       error: refused,
       jobId: job.id,
@@ -3100,7 +3103,7 @@ export class Orchestrator {
     });
     // The outage ended between the hold and now: look again shortly.
     if (outage === null) {
-      if ((await waitForMergeTurn(this.db, job, this.now())) === "lost") throw error;
+      if ((await waitForMergeTurn(this.store, job, this.now())) === "lost") throw error;
       return true;
     }
     if (!refused.held)
@@ -3111,8 +3114,8 @@ export class Orchestrator {
         `push outage on ${repositoryName}; the push waits`,
         this.options.journal,
       );
-    const asked = (await askAboutPushOutage(this.db, repositoryName, this.now())) === "asked";
-    if ((await parkForPushOutage(this.db, job, outage, this.now())) === "lost") throw error;
+    const asked = (await askAboutPushOutage(this.store, repositoryName, this.now())) === "asked";
+    if ((await parkForPushOutage(this.store, job, outage, this.now())) === "lost") throw error;
     if (asked) await this.flush();
     return true;
   }
@@ -4175,7 +4178,7 @@ export class Orchestrator {
     if (options.startRound) await this.startCloseoutRound(item, head);
     if (
       (await closeLinkAsksOnHead(
-        this.db,
+        this.store,
         item.id,
         head,
         this.now(),
@@ -4223,7 +4226,7 @@ export class Orchestrator {
         const acceptedHead = (
           await git(["-C", worktree, "rev-parse", (await this.itemHead(item)).ref])
         ).trim();
-        const mergeJob = await acceptCloseout(this.db, {
+        const mergeJob = await acceptCloseout(this.store, {
           itemId: item.id,
           expected: verdict.owner,
           base,
@@ -4507,7 +4510,7 @@ export class Orchestrator {
         return undefined;
       return saved.report;
     };
-    const recovery = await recoveryOptions(this.db, item.id);
+    const recovery = await recoveryOptions(this.store, item.id);
     let rulesFirst = !recovery.bypasses.some((bypass) => bypass.head === head);
     let stoppedOnRule: string | undefined;
     const runnerChecks = new Map<string, Promise<void>>();
@@ -4612,7 +4615,7 @@ export class Orchestrator {
     const gate = (this.options.closeoutGate ?? createCloseoutGate)({
       checkoutExclusions,
       candidate,
-      published: () => publishedEvidence(this.db, item.id),
+      published: () => publishedEvidence(this.store, item.id),
       approvals: () =>
         this.store.run((q) => visualReviewApprovalsSteps(q, item.id, itemPathId(item))),
       ...(fromCi.length > 0 ? { fromCi } : {}),
@@ -5206,7 +5209,7 @@ export class Orchestrator {
 
   private async readPendingFeedback(item: WorkItemRecord): Promise<FeedbackReads | null> {
     return readPendingFeedback(
-      this.db,
+      this.store,
       item,
       this.pullFeedbackCapabilities(this.jobContexts.get(item.id)?.signal),
     );
@@ -5327,14 +5330,14 @@ export class Orchestrator {
     const brokenMain =
       repositoryName && policyFailed
         ? await policyOutageNote(
-            this.db,
+            this.store,
             repositoryName,
             item.id,
             this.options.publicUrl ?? null,
             unreadable,
           )
         : null;
-    await askCloseoutHelp(this.db, sessionId, context, {
+    await askCloseoutHelp(this.store, sessionId, context, {
       now: this.now(),
       ...(brokenMain ? { error: brokenMain } : {}),
       ...(repositoryName && unreadable
@@ -5398,7 +5401,7 @@ export class Orchestrator {
     try {
       rounds = await readReviewRounds(
         itemPathId(item),
-        (await recoveryOptions(this.db, item.id)).retryBaseline,
+        (await recoveryOptions(this.store, item.id)).retryBaseline,
         this.options.pawsRoot,
       );
     } catch (caught) {
@@ -5416,7 +5419,7 @@ export class Orchestrator {
     );
     const findings = reviewFindingText(await this.failedReviewFindings(item));
     await this.assertJobCurrent(item.id);
-    const question = await askReviewRounds(this.db, {
+    const question = await askReviewRounds(this.store, {
       item,
       help,
       findings,
@@ -5670,7 +5673,7 @@ export class Orchestrator {
     if (!repository) return;
     const name = `${repository.owner}/${repository.repo}`;
     if ((await this.store.run((q) => listOpenPolicyBlocksSteps(q, name))).length === 0) return;
-    await retryPolicyBlocks(this.db, {
+    await retryPolicyBlocks(this.store, {
       repository: name,
       main,
       policy: await this.candidatePolicy(item, (await this.itemHead(item)).repo),
@@ -5722,7 +5725,6 @@ export class Orchestrator {
       return this.candidatePolicy(item, worktree);
     };
     return advanceMerge(
-      this.db,
       this.store,
       { itemId, payload, jobId },
       {
@@ -5754,7 +5756,7 @@ export class Orchestrator {
           const { autoApproveHighRisk, policyDigest, policyPaths } = context;
           let approvedHead: string | undefined;
           let approvalKind: "exact" | "same_patch" | "fix" | undefined;
-          return riskApprovalFor(this.db, {
+          return riskApprovalFor(this.store, {
             itemId: item.id,
             head: published.head,
             publicUrl: this.options.publicUrl,
@@ -5779,7 +5781,7 @@ export class Orchestrator {
           });
         },
         askRiskApproval: async (item, published) => {
-          const asked = await askRiskApproval(this.db, {
+          const asked = await askRiskApproval(this.store, {
             item,
             head: published.head,
             publicUrl: this.options.publicUrl ?? null,
@@ -5801,7 +5803,7 @@ export class Orchestrator {
     const github = repository ? this.githubForRepository(repository) : null;
     if (!repository || !github) return "no GitHub binding for the item";
     return rerunItemCi({
-      db: this.db,
+      store: this.store,
       itemId: item.id,
       label: item.linearIdentifier,
       reason,
@@ -6002,7 +6004,7 @@ export class Orchestrator {
     if (newPublication) await (await this.sessionProgress(item))?.phase("publishing");
     const draft = await this.store.run((q) => getPullRequestDraftSteps(q, item.id));
     const screenshots = await pullRequestScreenshots({
-      db: this.db,
+      db: this.store,
       itemId: item.id,
       storage: this.evidenceStorage(),
       owner: repository.owner,
@@ -6629,7 +6631,7 @@ export class Orchestrator {
         }
         if (
           request.pushRejected?.conflicts &&
-          (await restartForPushConflict(this.db, item.id, {
+          (await restartForPushConflict(this.store, item.id, {
             branch: request.pushRejected.branch,
             files: request.pushRejected.conflicts,
             now: this.now(),
@@ -6798,7 +6800,7 @@ export class Orchestrator {
     await this.store.run((q) => releaseRunCapacitySteps(q, runId, this.now()));
     const answered = await this.store.run((q) => latestRunningAnswerSteps(q, runId));
     if (!answered) return;
-    await enqueueJobOnceAsync(this.store, {
+    await enqueueJobOnce(this.store, {
       queue: JOB_KIND.resume,
       jobKey: `resume:answer:${answered.id}`,
       payload: {
@@ -6983,7 +6985,7 @@ export class Orchestrator {
         await this.flush();
         return "rejected";
       }
-      const guided = await guideLinkAsk(this.db, {
+      const guided = await guideLinkAsk(this.store, {
         questionId: open.id,
         eventKey: event.dedupeKey,
         body: answer,
@@ -7007,7 +7009,7 @@ export class Orchestrator {
     ) {
       const outcome = await this.answerInStore(
         { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: this.now() },
-        questionEffects(this.db, {
+        questionEffects(this.store, {
           now: this.now(),
           maxAwakeMs: this.options.caps?.maxAwakeMs,
           timeLimits: this.options.caps?.limits,
@@ -7027,7 +7029,7 @@ export class Orchestrator {
         return "rejected";
       const outcome = await this.answerInStore(
         { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: this.now() },
-        questionEffects(this.db, {
+        questionEffects(this.store, {
           now: this.now(),
           maxAwakeMs: this.options.caps?.maxAwakeMs,
           timeLimits: this.options.caps?.limits,
@@ -7036,7 +7038,7 @@ export class Orchestrator {
       await this.flush();
       return outcome.status === "answered" ? "answered" : "rejected";
     }
-    const db = this.db;
+    const store = this.store;
     const now = () => this.now();
     const caps = this.options.caps;
     const journalTo = this.options.journal;
@@ -7073,7 +7075,7 @@ export class Orchestrator {
       const answered = yield* answerSteps(
         q,
         { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: now() },
-        questionEffects(db, {
+        questionEffects(store, {
           maxAwakeMs: caps?.maxAwakeMs,
           timeLimits: caps?.limits,
           now: now(),
@@ -7411,11 +7413,11 @@ export class Orchestrator {
     return { armed: restarted?.armed ?? false };
   }
 
-  deliverInstanceCommands(): number {
+  async deliverInstanceCommands(): Promise<number> {
     const self = this.options.instanceId;
     if (self === undefined) return 0;
-    return drainInstanceCommands(
-      this.db,
+    return await drainInstanceCommands(
+      this.store,
       self,
       ({ command, stoppedAtVersion }) => {
         const live = [...this.live.values()].filter((entry) => entry.itemId === command.itemId);
@@ -7430,7 +7432,10 @@ export class Orchestrator {
         });
       },
       this.now(),
-    );
+    ).catch((error: unknown) => {
+      journalCaught(error, "orchestrator.deliverInstanceCommands.drain", null);
+      return 0;
+    });
   }
 
   async interruptItem(itemId: string): Promise<void> {
@@ -7453,7 +7458,7 @@ export class Orchestrator {
     const affected = new Set(itemIds);
     const owned = [...this.live.values()].filter((live) => affected.has(live.itemId));
     for (const itemId of affected) {
-      this.githubAuth?.revoke(itemId);
+      await this.githubAuth?.revoke(itemId);
       this.abortItem(itemId);
     }
     const joined = await Promise.allSettled([
@@ -7478,7 +7483,7 @@ export class Orchestrator {
   }
 
   async recoverStalledCloseout(): Promise<void> {
-    await recoverStalledCloseout(this.db, {
+    await recoverStalledCloseout(this.store, {
       now: this.now(),
       cancel: (id) => this.joinChangedItems([id]),
       journal: this.options.journal ?? journal,
@@ -8096,7 +8101,7 @@ export class Orchestrator {
 
   private async continueAfterRateLimit(item: WorkItemRecord, retryAfterMs: number): Promise<void> {
     const key = `linear-rate-limit:${item.id}:${item.version}`;
-    await enqueueJobOnceAsync(this.store, {
+    await enqueueJobOnce(this.store, {
       queue: item.state === "running" ? JOB_KIND.resume : JOB_KIND.reverify,
       jobKey: key,
       payload: { itemId: item.id, reason: "linear-rate-limit" },
@@ -9690,7 +9695,7 @@ export class Orchestrator {
       );
       if (due === null) break;
       const plan = await planVisualReviewCarry(
-        this.db,
+        this.store,
         item.id,
         due.requirement.id,
         due.evidenceIds,
@@ -9822,7 +9827,7 @@ export class Orchestrator {
     if (itemId && (await this.store.run((q) => getWorkItemSteps(q, itemId)))?.state === "paused")
       return "rejected";
     const outcome = await decideLinkAsk(
-      this.db,
+      this.store,
       { ...input, now: this.now() },
       {
         bypass: reverifyBypassedSteps,
@@ -9971,9 +9976,8 @@ export class Orchestrator {
     marks?: readonly VisualReviewMark[],
   ): Promise<"answered" | "rejected"> {
     const sessionId = open.sessionId;
-    const db = this.db;
     const now = this.now();
-    const effects = questionEffects(db, {
+    const effects = questionEffects(this.store, {
       now,
       asking: (runId) => this.askedRuns.has(runId),
       ...(marks ? { marks } : {}),
@@ -10083,7 +10087,7 @@ export class Orchestrator {
       {
         kind: "visual-review",
         delegatorId: await this.store.run((q) => delegatedLinearUserIdSteps(q, item.id)),
-        leadId: await projectLeadId(this.db, item.id),
+        leadId: await projectLeadId(this.store, item.id),
       },
       { id: actorId },
     );
@@ -10099,7 +10103,7 @@ export class Orchestrator {
         : undefined;
     const storage = this.evidenceStorage();
     if (!storage) return linear;
-    const marks = createReviewMarkLoader({ db: this.db, storage, itemId: item.id, turnId });
+    const marks = createReviewMarkLoader({ store: this.store, storage, itemId: item.id, turnId });
     return async (input: { workspace: string; prompt: string; signal: AbortSignal }) => {
       const marked = await marks(input);
       if (!linear) return marked;
@@ -10116,7 +10120,7 @@ export class Orchestrator {
   private async pullCloseoutEvidence(item: WorkItemRecord, strict = false): Promise<void> {
     const storage = this.closeoutEvidence();
     if (storage === null) return;
-    const restored = hydrateCloseoutEvidence(this.db, storage, [itemPathId(item)], { strict });
+    const restored = hydrateCloseoutEvidence(this.store, storage, [itemPathId(item)], { strict });
     if (strict) await restored;
     else
       await restored.catch((error: unknown) =>
@@ -10127,7 +10131,7 @@ export class Orchestrator {
   private async pushCloseoutEvidence(item: WorkItemRecord): Promise<void> {
     const storage = this.closeoutEvidence();
     if (storage === null) return;
-    await publishCloseoutEvidence(this.db, storage, itemPathId(item));
+    await publishCloseoutEvidence(this.store, storage, itemPathId(item));
   }
 
   private evidenceStorage(): EvidenceStorage | undefined {
@@ -10630,7 +10634,7 @@ export class Orchestrator {
         ? {
             ciRerun: (reason: string) =>
               rerunItemCi({
-                db: this.db,
+                store: this.store,
                 itemId: item.id,
                 label: item.linearIdentifier,
                 reason,

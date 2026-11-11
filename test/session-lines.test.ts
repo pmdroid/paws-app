@@ -32,8 +32,13 @@ function database(): Database {
   return db;
 }
 
-function thought(db: Database, key: string, body: string, ephemeral = false): number {
-  return enqueueOutboxOnce(db, {
+async function thought(
+  db: Database,
+  key: string,
+  body: string,
+  ephemeral = false,
+): Promise<number> {
+  return enqueueOutboxOnce(sqliteDb(db), {
     target: "linear",
     op: "activity",
     orderingKey: "ses-1",
@@ -51,20 +56,20 @@ describe("lifecycle lines", () => {
   test("a thought that repeats the last sent or pending thought is not enqueued", async () => {
     const db = database();
     const fix = "Fixing Closeout findings for PAS-619 (1 of 3).";
-    const first = thought(db, "fix:1", fix);
+    const first = await thought(db, "fix:1", fix);
     // The resumed fix path and the keepalive say the same line again.
-    expect(thought(db, "fix:2", fix)).toBe(first);
-    expect(thought(db, "keep:1", fix, true)).toBe(first);
+    expect(await thought(db, "fix:2", fix)).toBe(first);
+    expect(await thought(db, "keep:1", fix, true)).toBe(first);
     db.run("UPDATE outbox SET status = 'sent', sent_at = 1 WHERE id = ?", [first]);
-    expect(thought(db, "fix:3", fix)).toBe(first);
+    expect(await thought(db, "fix:3", fix)).toBe(first);
     // A repeated idempotency key still returns its own row.
-    expect(thought(db, "fix:1", fix)).toBe(first);
+    expect(await thought(db, "fix:1", fix)).toBe(first);
     expect(await bodies(db)).toEqual([fix]);
 
-    thought(db, "runtime:1", "Starting on agentbox in pmdroid/paws-app, bun 1.4.2.");
-    thought(db, "runtime:2", "Starting on agentbox in pmdroid/paws-app, bun 1.4.2.");
+    await thought(db, "runtime:1", "Starting on agentbox in pmdroid/paws-app, bun 1.4.2.");
+    await thought(db, "runtime:2", "Starting on agentbox in pmdroid/paws-app, bun 1.4.2.");
     // A different line in between makes the earlier line news again.
-    thought(db, "fix:4", fix);
+    await thought(db, "fix:4", fix);
     expect(await bodies(db)).toEqual([
       fix,
       "Starting on agentbox in pmdroid/paws-app, bun 1.4.2.",
@@ -74,7 +79,7 @@ describe("lifecycle lines", () => {
 
   test("a response starts a new phase, and an ephemeral line Linear already shows may repeat", async () => {
     const db = database();
-    thought(db, "a", "Verifying PAS-1.");
+    await thought(db, "a", "Verifying PAS-1.");
     await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
@@ -83,10 +88,10 @@ describe("lifecycle lines", () => {
       delivery: "ordered",
       payload: { sessionId: "ses-1", kind: "error", body: "Closeout could not start." },
     });
-    thought(db, "b", "Verifying PAS-1.");
-    const keep = thought(db, "keep:1", "Step 2 of 5: rank runners.", true);
+    await thought(db, "b", "Verifying PAS-1.");
+    const keep = await thought(db, "keep:1", "Step 2 of 5: rank runners.", true);
     db.run("UPDATE outbox SET status = 'sent', sent_at = 1 WHERE id = ?", [keep]);
-    expect(thought(db, "keep:2", "Step 2 of 5: rank runners.", true)).not.toBe(keep);
+    expect(await thought(db, "keep:2", "Step 2 of 5: rank runners.", true)).not.toBe(keep);
     expect(await bodies(db)).toEqual([
       "Verifying PAS-1.",
       "Closeout could not start.",
@@ -101,7 +106,7 @@ describe("a waiting question", () => {
   async function waiting(db: Database) {
     insertQueuedItem(db, { id: "item-q", sessionKey: "ses-1", now: 0 });
     await beginImplementRun(sqliteDb(db), "item-q", 1_000);
-    const item = getWorkItem(db, "item-q")!;
+    const item = (await getWorkItem(sqliteDb(db), "item-q"))!;
     await sqliteDb(db).transaction((q) =>
       askSteps(
         q,
@@ -111,7 +116,7 @@ describe("a waiting question", () => {
         { options: ["paws-app", "paws-runner"], now: 2_000 },
       ),
     );
-    expect(getWorkItem(db, "item-q")?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(db), "item-q"))?.state).toBe("awaiting_input");
   }
 
   const errorActivity = async (db: Database, key: string) =>

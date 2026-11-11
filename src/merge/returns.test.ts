@@ -54,8 +54,8 @@ describe("merge returns", () => {
     const db = await queued();
     const { sent, announced } = await sendBack(db);
     expect(sent).toBe(true);
-    expect(getWorkItem(db, "eng-1")?.state).toBe("queued");
-    expect(getWorkItem(db, "eng-1")?.checkpoint?.phase).toBe("running");
+    expect((await getWorkItem(sqliteDb(db), "eng-1"))?.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(db), "eng-1"))?.checkpoint?.phase).toBe("running");
     expect(
       (await listJobs(sqliteDb(db))).map((job) => [job.queue, job.jobKey, job.payload]),
     ).toEqual([
@@ -64,7 +64,7 @@ describe("merge returns", () => {
         "rebase-conflict:eng-1:0:0",
         {
           itemId: "eng-1",
-          runId: getWorkItem(db, "eng-1")?.currentRunId,
+          runId: (await getWorkItem(sqliteDb(db), "eng-1"))?.currentRunId,
           handoff: "rebase",
           reason: "conflict",
         },
@@ -158,8 +158,8 @@ describe("merge returns", () => {
         session: (item) => item.sessionKey,
       }),
     ).toBe(true);
-    expect(getWorkItem(db, "eng-1")?.state).toBe("awaiting_input");
-    expect(findOpenQuestion(db, "s-1")?.body).toBe("CI failed.");
+    expect((await getWorkItem(sqliteDb(db), "eng-1"))?.state).toBe("awaiting_input");
+    expect((await findOpenQuestion(sqliteDb(db), "s-1"))?.body).toBe("CI failed.");
   });
 
   test("CI help asked while another task's question is open waits its turn", async () => {
@@ -177,8 +177,8 @@ describe("merge returns", () => {
         session: () => "s-1",
       }),
     ).toBe(true);
-    expect(getWorkItem(db, "eng-1")?.state).toBe("awaiting_input");
-    expect(findOpenQuestion(db, "s-1")?.id).toBe(open.question.id);
+    expect((await getWorkItem(sqliteDb(db), "eng-1"))?.state).toBe("awaiting_input");
+    expect((await findOpenQuestion(sqliteDb(db), "s-1"))?.id).toBe(open.question.id);
     const queuedHelp = db
       .query<{ id: string }, []>("SELECT id FROM question WHERE item_id = 'eng-1'")
       .get()!;

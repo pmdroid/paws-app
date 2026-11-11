@@ -98,7 +98,7 @@ test("16 screenshots of a check post one thought with the count and the link, on
         head,
         link: f.link,
       }))
-        enqueueOutboxOnce(f.db, {
+        await enqueueOutboxOnce(sqliteDb(f.db), {
           target: "linear",
           op: "activity",
           orderingKey: "session",

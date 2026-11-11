@@ -36,7 +36,7 @@ const snapshot = {
 };
 
 async function task(db: ReturnType<typeof legacyTempDb>, key?: string) {
-  const result = await intakeDelegatedIssue(db, createFakeTracker([snapshot]), {
+  const result = await intakeDelegatedIssue(sqliteDb(db), createFakeTracker([snapshot]), {
     linearIssueId: "issue",
     taskKey: key,
   });
@@ -87,7 +87,7 @@ test("identity migration preserves existing rows, run foreign keys and original 
     legacyMigrate(db);
     expect(db.query("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });
     expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
-    expect(getWorkItem(db, "item")?.state).toBe("merged");
+    expect((await getWorkItem(sqliteDb(db), "item"))?.state).toBe("merged");
     expect((await getLinearSession(sqliteDb(db), "session"))?.delegationId).toBe("epic");
     expect((await getLinearSession(sqliteDb(db), "session"))?.activeItemId).toBe("running");
     await activateLinearItem(sqliteDb(db), "session", "running");
@@ -111,7 +111,7 @@ test("identity migration preserves existing rows, run foreign keys and original 
     expect(
       db.query<{ item_id: string }, []>("SELECT item_id FROM run WHERE id = 'run'").get()?.item_id,
     ).toBe("item");
-    expect(getWorkItem(db, "item")?.state).toBe("merged");
+    expect((await getWorkItem(sqliteDb(db), "item"))?.state).toBe("merged");
   } finally {
     db.close();
   }
@@ -126,8 +126,8 @@ test("new tasks keep source IDs and get separate worktree identities while intak
     const replay = await task(db, "turn:followup");
     expect(replay.delegation.id).toBe(later.delegation.id);
     expect(initial.delegation.id).not.toBe(later.delegation.id);
-    const first = getWorkItem(db, initial.items[0]!.id)!;
-    const next = getWorkItem(db, later.items[0]!.id)!;
+    const first = (await getWorkItem(sqliteDb(db), initial.items[0]!.id))!;
+    const next = (await getWorkItem(sqliteDb(db), later.items[0]!.id))!;
     expect(first.linearIssueId).toBe(next.linearIssueId);
     expect(itemPathId(first)).toBe("ENG-1");
     expect(itemPathId(next)).toContain(next.id);
@@ -166,7 +166,7 @@ test("session ownership and active child routing remain separate from shared iss
     await expect(activateLinearItem(sqliteDb(db), "second", first.items[0]!.id)).rejects.toThrow(
       "route changed",
     );
-    expect(getWorkItem(db, first.items[0]!.id)?.sessionKey).toBe("first");
+    expect((await getWorkItem(sqliteDb(db), first.items[0]!.id))?.sessionKey).toBe("first");
   } finally {
     db.close();
   }
@@ -305,7 +305,7 @@ test("a redirect cancels the previous item before the replacement is inserted", 
     const replaced = await orchestrator.intakeLinearTask("issue", "session", "original");
     expect(replaced.ok).toBe(true);
     if (!replaced.ok) return;
-    expect(getWorkItem(db, previousId)?.state).toBe("cancelled");
+    expect((await getWorkItem(sqliteDb(db), previousId))?.state).toBe("cancelled");
     expect(replaced.items).toHaveLength(1);
     expect(replaced.items[0]?.id).not.toBe(previousId);
     expect(replaced.items[0]?.state).toBe("queued");

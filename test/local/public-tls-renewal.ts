@@ -395,7 +395,7 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
       "wip: shutdown",
     );
     const after = openDatabase(join(home, "paws.db"));
-    const state = getWorkItem(after, itemId)?.state;
+    const state = (await getWorkItem(sqliteDb(after), itemId))?.state;
     after.close();
     assert.equal(state, "recovering");
     const restarted = runCli("cli-restarted.log");

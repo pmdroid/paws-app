@@ -99,7 +99,7 @@ test("a re-check of a rebased head retains the spent check budget", async () => 
 
     const recheck = await runCloseoutGate({
       ...input,
-      ...(await recoveryOptions(db, "item-390")),
+      ...(await recoveryOptions(sqliteDb(db), "item-390")),
       maxFixAttempts: 5,
     });
     expect(recheck.outcome).toBe("exhausted");

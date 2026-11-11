@@ -83,9 +83,9 @@ async function hold(db: Database, now: number, kind: Hold, merging: boolean): Pr
   }
   if (merging) {
     await markCloseoutAccepted(sqliteDb(db), "item", "wip");
-    saveCheckpoint(db, "item", MERGING);
+    await saveCheckpoint(sqliteDb(db), "item", MERGING);
   }
-  expect(getWorkItem(db, "item")?.state).toBe(kind);
+  expect((await getWorkItem(sqliteDb(db), "item"))?.state).toBe(kind);
 }
 
 async function executions(db: Database) {
@@ -104,7 +104,7 @@ function actionableQuestions(db: Database) {
 }
 
 async function snapshot(db: Database) {
-  const item = getWorkItem(db, "item")!;
+  const item = (await getWorkItem(sqliteDb(db), "item"))!;
   return {
     item: {
       state: item.state,
@@ -115,7 +115,7 @@ async function snapshot(db: Database) {
       recoveryAttempts: item.recoveryAttempts,
       cancelRequested: item.cancelRequested,
     },
-    run: item.currentRunId ? getRun(db, item.currentRunId)?.status : null,
+    run: item.currentRunId ? (await getRun(sqliteDb(db), item.currentRunId))?.status : null,
     jobs: (await listJobs(sqliteDb(db)))
       .filter((job) => job.queue !== JOB_KIND.catchup)
       .map((job) => ({ id: job.id, queue: job.queue, status: job.status, runAt: job.runAt })),
@@ -180,11 +180,12 @@ describe("clock gaps preserve human holds", () => {
             expect(await snapshot(db)).toEqual(before);
             expect(await executions(db)).toEqual([]);
             expect(actionableQuestions(db)).toHaveLength(kind === "awaiting_input" ? 1 : 0);
-            if (kind === "awaiting_input") expect(findOpenQuestion(db, "session")).not.toBeNull();
+            if (kind === "awaiting_input")
+              expect(await findOpenQuestion(sqliteDb(db), "session")).not.toBeNull();
 
             await recoverOnStartup(sqliteDb(db), clock.now());
             expect(await requeueOrphanedWork(sqliteDb(db), clock.now() + TWO_HOURS)).toEqual([]);
-            expect(getWorkItem(db, "item")).toMatchObject(before.item);
+            expect(await getWorkItem(sqliteDb(db), "item")).toMatchObject(before.item);
             expect(await executions(db)).toEqual([]);
             expect(actionableQuestions(db)).toHaveLength(kind === "awaiting_input" ? 1 : 0);
           } finally {
@@ -208,9 +209,9 @@ describe("clock gaps preserve human holds", () => {
           answeredBy: "lead",
           now: clock.now(),
         };
-        const effects = () => questionEffects(db, { now: reply.now });
+        const effects = () => questionEffects(sqliteDb(db), { now: reply.now });
         expect((await answer(db, reply, effects())).status).toBe("answered");
-        const released = getWorkItem(db, "item")!;
+        const released = (await getWorkItem(sqliteDb(db), "item"))!;
         expect(released.state).toBe("queued");
         expect((await executions(db)).map((job) => job.jobKey)).toEqual([
           expect.stringMatching(/^resume:answer:/),
@@ -221,7 +222,7 @@ describe("clock gaps preserve human holds", () => {
           "unasked",
         );
         await observeGaps(db, clock, TWO_HOURS + 1);
-        expect(getWorkItem(db, "item")?.version).toBe(released.version);
+        expect((await getWorkItem(sqliteDb(db), "item"))?.version).toBe(released.version);
         expect(await executions(db)).toHaveLength(1);
       } finally {
         db.close();
@@ -237,9 +238,9 @@ describe("clock gaps preserve human holds", () => {
       db.run("UPDATE question SET cancelled_at=? WHERE item_id='item'", [clock.now()]);
       const before = await snapshot(db);
       const reply = { sessionId: "session", deliveryId: "late", body: "Go", answeredBy: "lead" };
-      expect((await answer(db, reply, questionEffects(db, { now: clock.now() }))).status).toBe(
-        "unasked",
-      );
+      expect(
+        (await answer(db, reply, questionEffects(sqliteDb(db), { now: clock.now() }))).status,
+      ).toBe("unasked");
       expect(await snapshot(db)).toEqual(before);
       expect(await executions(db)).toEqual([]);
     } finally {

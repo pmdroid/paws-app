@@ -142,7 +142,10 @@ test("migration 059 drops the old block tables and task_block holds each depende
     });
     lifecycle.issues.set("b", { ...lifecycle.issue, id: "b" });
     lifecycle.issues.set("outside", { ...lifecycle.issue, id: "outside", stateType: "started" });
-    const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent", now: 1000 });
+    const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+      linearIssueId: "parent",
+      now: 1000,
+    });
     expect(intake.ok).toBe(true);
     if (!intake.ok) return;
     db.run("INSERT OR IGNORE INTO workspace VALUES('workspace','org','Workspace',1000)");

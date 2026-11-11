@@ -198,7 +198,10 @@ test("an accepted result survives a reopen and lease expiry, and recovery reatta
     await recoverOnStartup(sqliteDb(f.db), f.clock.at);
     expect(await resumes(f.db)).toHaveLength(1);
     expect((await resumes(f.db))[0]?.payload).not.toHaveProperty("handoff");
-    expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "running", recoveryAttempts: 0 });
+    expect(await getWorkItem(sqliteDb(f.db), f.item.id)).toMatchObject({
+      state: "running",
+      recoveryAttempts: 0,
+    });
     await f.work.finish(f.run.id, 1);
     await expect(f.results.read(f.run.id, 1, command.id)).rejects.toThrow();
   } finally {
@@ -220,7 +223,7 @@ test("an expired execution without an accepted result follows the existing recov
     expect(await recoverOnStartup(sqliteDb(f.db), f.clock.at)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
-    expect(getWorkItem(f.db, f.item.id)).toMatchObject({
+    expect(await getWorkItem(sqliteDb(f.db), f.item.id)).toMatchObject({
       state: "recovering",
       recoveryAttempts: 1,
     });

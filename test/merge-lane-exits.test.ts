@@ -86,7 +86,10 @@ test("a stop during a successful squash waits for completion and answers already
   bus.subscribe((c) => emitted.push(c));
   await beginMergeCall(sqliteDb(db), "holder", "head", 5);
   expect(await submitCommand(sqliteDb(db), bus, command)).toEqual({ applied: false });
-  expect(getWorkItem(db, "holder")).toMatchObject({ state: "merge_queue", cancelRequested: false });
+  expect(await getWorkItem(sqliteDb(db), "holder")).toMatchObject({
+    state: "merge_queue",
+    cancelRequested: false,
+  });
   expect(await mergeStopRequested(sqliteDb(db), "holder")).toBe(true);
   expect(await drainCommands(sqliteDb(db), bus, 1_010)).toBe(1);
   await recordConfirmedRemoteMerge(sqliteDb(db), {
@@ -106,7 +109,7 @@ test("a stop during a successful squash waits for completion and answers already
   await drainCommands(sqliteDb(db), bus, 2_010);
   await drainCommands(sqliteDb(db), bus, 3_010);
   expect(emitted).toEqual([]);
-  expect(getWorkItem(db, "holder")?.state).toBe("merged");
+  expect((await getWorkItem(sqliteDb(db), "holder"))?.state).toBe("merged");
   const bodies = (await listOutbox(sqliteDb(db))).map((row) =>
     String((row.payload as { body?: string }).body),
   );
@@ -132,7 +135,7 @@ test("a deferred stop cancels when the squash did not succeed", async () => {
   ).toBe(true);
   await endMergeCall(sqliteDb(db), "holder");
   await drainCommands(sqliteDb(db), bus, 1_010);
-  expect(getWorkItem(db, "holder")?.state).toBe("cancelled");
+  expect((await getWorkItem(sqliteDb(db), "holder"))?.state).toBe("cancelled");
   expect((await listJobs(sqliteDb(db))).some((j) => j.queue === JOB_KIND.closeStoppedPull)).toBe(
     false,
   );

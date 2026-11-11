@@ -47,7 +47,7 @@ export async function ensureStartOnRemote(input: {
    * Saves the fallback before the candidate ref moves, so a stop between the reset and the dispatch
    * still finds the handoff for the lost commits.
    */
-  persistFallback: (fallback: { head: string; start: string; lost: string[] }) => void;
+  persistFallback: (fallback: { head: string; start: string; lost: string[] }) => Promise<void>;
   signal: AbortSignal;
 }): Promise<StartCommit> {
   const run = (args: string[]) =>
@@ -144,7 +144,7 @@ export async function ensureStartOnRemote(input: {
     await unchanged();
     // Retain the original commits even after the candidate moves to the remote fallback.
     await run(["update-ref", `refs/paws/unpublished/${head}`, head]);
-    input.persistFallback({ head, start, lost });
+    await input.persistFallback({ head, start, lost });
     await unchanged();
     // The old value refuses a candidate that moved after the last check.
     await run(["update-ref", input.ref, start, head]);

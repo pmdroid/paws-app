@@ -60,8 +60,11 @@ describe("restart recovery", () => {
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([
       { type: "resume", freshSession: true, checkpoint },
     ]);
-    expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
-    expect(getRun(db, run.id)?.status).toBe("active");
+    expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
+      state: "recovering",
+      recoveryAttempts: 1,
+    });
+    expect((await getRun(sqliteDb(db), run.id))?.status).toBe("active");
     expect(await listOutbox(sqliteDb(db))).toHaveLength(0);
     const resume = (await listJobs(sqliteDb(db))).find((job) => job.queue === "run.resume");
     expect(resume?.status).toBe("pending");
@@ -69,8 +72,11 @@ describe("restart recovery", () => {
     expect(resume?.payload).not.toHaveProperty("handoff");
 
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([{ type: "ask_restart" }]);
-    expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
-    expect(getRun(db, run.id)?.status).toBe("ended");
+    expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
+      state: "recovering",
+      recoveryAttempts: 1,
+    });
+    expect((await getRun(sqliteDb(db), run.id))?.status).toBe("ended");
     expect((await listJobs(sqliteDb(db))).find((job) => job.queue === "run.resume")?.status).toBe(
       "cancelled",
     );
@@ -90,7 +96,7 @@ describe("restart recovery", () => {
     await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
     await recoverOnStartup(sqliteDb(db), clock.now());
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([{ type: "ask_restart" }]);
-    expect(getWorkItem(db, item.id)?.state).toBe("failed");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("failed");
     expect((await listOutbox(sqliteDb(db)))[0]?.payload).toMatchObject({
       kind: "error",
       body: "Stopped after a restart because this run was already resumed once.",
@@ -110,7 +116,10 @@ describe("restart recovery", () => {
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
-    expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
+    expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
+      state: "recovering",
+      recoveryAttempts: 1,
+    });
     const resume = (await listJobs(sqliteDb(db))).find((job) => job.queue === "run.resume");
     expect(resume?.status).toBe("pending");
     expect(resume?.payload).toMatchObject({
@@ -136,7 +145,10 @@ describe("restart recovery", () => {
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([
       { type: "resume", freshSession: true, checkpoint },
     ]);
-    expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
+    expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
+      state: "recovering",
+      recoveryAttempts: 1,
+    });
     expect(await listOutbox(sqliteDb(db))).toHaveLength(0);
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([{ type: "ask_restart" }]);
   });
@@ -152,7 +164,7 @@ describe("restart recovery", () => {
         if (queue === JOB_KIND.resume)
           await applyWorkItemEvent(sqliteDb(db), item.id, "lease_expired");
         db.run("UPDATE work_item SET recovery_attempts=1 WHERE id=?", [item.id]);
-        const state = getWorkItem(db, item.id)!.state;
+        const state = (await getWorkItem(sqliteDb(db), item.id))!.state;
         const id = await enqueueJob(sqliteDb(db), {
           queue,
           payload: {
@@ -168,14 +180,14 @@ describe("restart recovery", () => {
           clock.advance(20 * 60_000);
           await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now());
         }
-        expect(getWorkItem(db, item.id)).toMatchObject({
+        expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
           state,
           currentRunId: run.id,
           recoveryAttempts: 1,
           awakeMs: 0,
           waitingMs: 60 * 60_000,
         });
-        expect(getRun(db, run.id)?.status).toBe("active");
+        expect((await getRun(sqliteDb(db), run.id))?.status).toBe("active");
         expect(
           (await listJobs(sqliteDb(db))).filter((job) => job.status === "pending"),
         ).toMatchObject([{ id }]);
@@ -202,8 +214,8 @@ describe("restart recovery", () => {
       await recoverOnStartup(sqliteDb(db), clock.now());
     }
     expect({
-      item: getWorkItem(db, item.id),
-      run: getRun(db, run.id)?.status,
+      item: await getWorkItem(sqliteDb(db), item.id),
+      run: (await getRun(sqliteDb(db), run.id))?.status,
     }).toMatchObject({ item: { state: "running", recoveryAttempts: 0 }, run: "active" });
   });
 
@@ -282,7 +294,10 @@ describe("restart recovery", () => {
       expect(await pendingResumes(db)).toMatchObject([
         { runAt, payload: { reason: "transient_failure", retry: 4, handoff: "keep going" } },
       ]);
-      expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 0 });
+      expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
+        state: "recovering",
+        recoveryAttempts: 0,
+      });
       expect(await claimNextJob(sqliteDb(db), { now: clock.now() })).toBeNull();
     });
 
@@ -317,7 +332,10 @@ describe("restart recovery", () => {
     );
     await prepareShutdown(sqliteDb(db), clock.now());
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([{ type: "reverify" }]);
-    expect(getWorkItem(db, item.id)).toMatchObject({ state: "verifying", recoveryAttempts: 0 });
+    expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
+      state: "verifying",
+      recoveryAttempts: 0,
+    });
     expect(
       (await listJobs(sqliteDb(db))).filter(
         (job) => job.queue === JOB_KIND.reverify && job.status === "pending",
@@ -330,15 +348,21 @@ describe("restart recovery", () => {
     const item = insertQueuedItem(db, { sessionKey: "ses", now: clock.now() });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
     await prepareShutdown(sqliteDb(db), clock.now());
-    expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 0 });
-    expect(getRun(db, run.id)?.status).toBe("lost");
+    expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
+      state: "recovering",
+      recoveryAttempts: 0,
+    });
+    expect((await getRun(sqliteDb(db), run.id))?.status).toBe("lost");
 
     await recoverOnStartup(sqliteDb(db), clock.now());
-    expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
-    expect(getRun(db, run.id)?.status).toBe("active");
+    expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
+      state: "recovering",
+      recoveryAttempts: 1,
+    });
+    expect((await getRun(sqliteDb(db), run.id))?.status).toBe("active");
 
     await prepareShutdown(sqliteDb(db), clock.now());
-    expect(getWorkItem(db, item.id)?.recoveryAttempts).toBe(1);
+    expect((await getWorkItem(sqliteDb(db), item.id))?.recoveryAttempts).toBe(1);
     await recoverOnStartup(sqliteDb(db), clock.now());
     expect(
       (await listJobs(sqliteDb(db))).some(
@@ -367,11 +391,11 @@ describe("restart recovery", () => {
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([
       { type: "keep_place", mergeCallInFlight: false },
     ]);
-    expect(getWorkItem(db, item.id)).toMatchObject({
+    expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
       state: "merge_queue",
       checkpoint: { phase: "merge_queue" },
     });
-    expect(getRun(db, run.id)?.status).toBe("ended");
+    expect((await getRun(sqliteDb(db), run.id))?.status).toBe("ended");
     expect((await getJob(sqliteDb(db), merge))?.status).toBe("pending");
     expect((await listJobs(sqliteDb(db))).map((job) => job.queue)).toEqual(["github.merge"]);
     expect(await listOutbox(sqliteDb(db))).toHaveLength(0);
@@ -420,7 +444,7 @@ describe("restart recovery", () => {
             }
             if (inFlight) await beginMergeCall(sqliteDb(db), "keep", "abc", clock.now());
             const savedJob = await getJob(sqliteDb(db), mergeId);
-            const savedItem = getWorkItem(db, "keep");
+            const savedItem = await getWorkItem(sqliteDb(db), "keep");
             const savedMarker = db.query("SELECT * FROM merge_call WHERE item_id = ?").get("keep");
             const ownMerge = await enqueueJob(sqliteDb(db), {
               queue: JOB_KIND.merge,
@@ -440,12 +464,12 @@ describe("restart recovery", () => {
               await recoverOnStartup(sqliteDb(db), clock.now());
               await applyDecision(
                 sqliteDb(db),
-                getWorkItem(db, "reverify")!,
+                (await getWorkItem(sqliteDb(db), "reverify"))!,
                 { type: "reverify" },
                 clock.now(),
               );
               expect(await getJob(sqliteDb(db), mergeId)).toEqual(savedJob);
-              expect(getWorkItem(db, "keep")).toEqual(savedItem);
+              expect(await getWorkItem(sqliteDb(db), "keep")).toEqual(savedItem);
               expect(db.query("SELECT * FROM merge_call WHERE item_id = ?").get("keep")).toEqual(
                 savedMarker,
               );
@@ -469,9 +493,9 @@ describe("restart recovery", () => {
     await enterMergeQueue(sqliteDb(db), item.id, checkpoint);
 
     await prepareShutdown(sqliteDb(db), clock.now());
-    expect(getRun(db, run.id)?.status).toBe("lost");
+    expect((await getRun(sqliteDb(db), run.id))?.status).toBe("lost");
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([{ type: "reverify" }]);
-    expect(getWorkItem(db, item.id)?.state).toBe("verifying");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("verifying");
   });
 
   test("a merge job the shutdown ended is queued again, and asks GitHub after a merge call", async () => {
@@ -492,7 +516,7 @@ describe("restart recovery", () => {
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([
       { type: "keep_place", mergeCallInFlight: true },
     ]);
-    expect(getWorkItem(db, item.id)?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("merge_queue");
     expect(
       (await listJobs(sqliteDb(db)))
         .filter((job) => job.status === "pending")
@@ -514,7 +538,7 @@ describe("restart recovery", () => {
     await applyWorkItemEvent(sqliteDb(db), item.id, "reverify_requested");
 
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([{ type: "reverify" }]);
-    expect(getWorkItem(db, item.id)?.state).toBe("verifying");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("verifying");
     db.run("UPDATE job SET status='done', finished_at=? WHERE queue='run.reverify'", [clock.now()]);
     await applyWorkItemEvent(sqliteDb(db), item.id, "closeout_accepted");
     clock.advance(10 * 60_000);
@@ -522,7 +546,7 @@ describe("restart recovery", () => {
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([
       { type: "keep_place", mergeCallInFlight: false },
     ]);
-    expect(getWorkItem(db, item.id)?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("merge_queue");
     expect(
       (await listJobs(sqliteDb(db))).filter(
         (job) => job.queue === "run.reverify" && job.status === "pending",
@@ -535,11 +559,11 @@ describe("restart recovery", () => {
     const item = insertQueuedItem(db, { now: clock.now() });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now());
     await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
-    saveCheckpoint(db, item.id, { ...checkpoint, phase: "awaiting_input" });
+    await saveCheckpoint(sqliteDb(db), item.id, { ...checkpoint, phase: "awaiting_input" });
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([{ type: "none" }]);
-    expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
-    expect(getWorkItem(db, item.id)?.recoveryAttempts).toBe(0);
-    expect(getRun(db, run.id)?.status).toBe("ended");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.recoveryAttempts).toBe(0);
+    expect((await getRun(sqliteDb(db), run.id))?.status).toBe("ended");
     expect((await listJobs(sqliteDb(db))).map((job) => job.queue)).toEqual([JOB_KIND.catchup]);
   });
 
@@ -550,14 +574,17 @@ describe("restart recovery", () => {
     await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
     await markRun(sqliteDb(db), run.id, "ended", clock.now());
     await applyWorkItemEvent(sqliteDb(db), item.id, "answer_received");
-    enqueueJobOnce(db, {
+    await enqueueJobOnce(sqliteDb(db), {
       queue: JOB_KIND.resume,
       jobKey: "resume:answer:q-1",
       payload: { itemId: item.id, freshSession: true, reason: "answer", handoff: "Q and A" },
       now: clock.now(),
     });
     expect(await recoverOnStartup(sqliteDb(db), clock.now() + 1)).toEqual([]);
-    expect(getWorkItem(db, item.id)).toMatchObject({ state: "running", recoveryAttempts: 0 });
+    expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
+      state: "running",
+      recoveryAttempts: 0,
+    });
     expect((await listJobs(sqliteDb(db))).map((job) => job.jobKey)).toEqual(["resume:answer:q-1"]);
   });
 
@@ -567,7 +594,7 @@ describe("restart recovery", () => {
     await expect(applyWorkItemEvent(sqliteDb(db), item.id, "merge_accepted")).rejects.toThrow(
       TransitionRejectedError,
     );
-    expect(getWorkItem(db, item.id)?.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("queued");
   });
 
   test("a new process resumes a running item once and does not post a duplicate activity", async () => {
@@ -587,12 +614,14 @@ describe("restart recovery", () => {
     const second = openDatabase(path);
     migrate(second);
     const recovery = await recoverOnStartup(sqliteDb(second), clock.now());
-    expect(getWorkItem(second, "eng-1")).toMatchObject({
+    expect(await getWorkItem(sqliteDb(second), "eng-1")).toMatchObject({
       state: "recovering",
       recoveryAttempts: 1,
     });
-    expect(getRun(second, run.id)?.status).toBe("active");
-    expect(getRun(second, run.id)?.checkpoint?.resultBody).toBe("Implemented and checked locally.");
+    expect((await getRun(sqliteDb(second), run.id))?.status).toBe("active");
+    expect((await getRun(sqliteDb(second), run.id))?.checkpoint?.resultBody).toBe(
+      "Implemented and checked locally.",
+    );
     expect(recovery).toEqual([{ type: "resume", freshSession: true, checkpoint }]);
     expect(await listOutbox(sqliteDb(second))).toHaveLength(0);
     expect(
@@ -613,7 +642,7 @@ describe("hard caps", () => {
     expect(
       (await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true)).capped,
     ).toBe(false);
-    expect(getWorkItem(db, item.id)?.state).toBe("running");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("running");
     expect(await listOutbox(sqliteDb(db))).toHaveLength(0);
   });
 
@@ -629,12 +658,12 @@ describe("hard caps", () => {
       (await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true)).item
         .awakeMs,
     ).toBe(400);
-    expect(getWorkItem(db, item.id)?.state).toBe("running");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("running");
     clock.advance(600);
     expect(
       (await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true)).capped,
     ).toBe(true);
-    expect(getWorkItem(db, item.id)?.state).toBe("failed");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("failed");
     expect((await listOutbox(sqliteDb(db)))[0]?.payload).toEqual({
       sessionId: item.id,
       kind: "error",
@@ -676,7 +705,7 @@ describe("hard caps", () => {
     );
     expect(result.capped).toBe(false);
     expect(result.item.awakeMs).toBe(0);
-    expect(getWorkItem(db, item.id)?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("merge_queue");
   });
 
   test("re-checking a candidate Closeout accepted is not awake time", async () => {
@@ -686,7 +715,11 @@ describe("hard caps", () => {
     await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
     await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
     await applyWorkItemEvent(sqliteDb(db), item.id, "closeout_accepted");
-    saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: "head" });
+    await saveCheckpoint(sqliteDb(db), item.id, {
+      phase: "merge_queue",
+      baseSha: "base",
+      wipCommit: "head",
+    });
     await applyWorkItemEvent(sqliteDb(db), item.id, "reverify_requested");
     clock.advance(4 * 60 * 60_000);
     const result = await accrueAwake(
@@ -699,7 +732,7 @@ describe("hard caps", () => {
     );
     expect(result.capped).toBe(false);
     expect(result.item.awakeMs).toBe(0);
-    expect(getWorkItem(db, item.id)?.state).toBe("verifying");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("verifying");
   });
 
   test("an accepted task sent back to the agent counts awake time again", async () => {
@@ -709,7 +742,11 @@ describe("hard caps", () => {
     await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
     await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
     await applyWorkItemEvent(sqliteDb(db), item.id, "closeout_accepted");
-    saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: "head" });
+    await saveCheckpoint(sqliteDb(db), item.id, {
+      phase: "merge_queue",
+      baseSha: "base",
+      wipCommit: "head",
+    });
     await applyWorkItemEvent(sqliteDb(db), item.id, "restart", {
       kind: "restart",
       reason: "review",
@@ -768,8 +805,11 @@ describe("linear commands", () => {
 
     expect(result.applied).toBe(true);
     expect(seen).toEqual(["stop"]);
-    expect(getWorkItem(db, "eng-2")).toMatchObject({ state: "paused", cancelRequested: false });
-    expect(getRun(db, run.id)?.status).not.toBe("active");
+    expect(await getWorkItem(sqliteDb(db), "eng-2")).toMatchObject({
+      state: "paused",
+      cancelRequested: false,
+    });
+    expect((await getRun(sqliteDb(db), run.id))?.status).not.toBe("active");
     expect((await listOutbox(sqliteDb(db))).find((row) => row.op === "activity")?.payload).toEqual({
       sessionId: "ses",
       kind: "response",
@@ -803,7 +843,10 @@ describe("linear commands", () => {
         })
       ).applied,
     ).toBe(true);
-    expect(getWorkItem(db, "eng-2")).toMatchObject({ state: "cancelled", cancelRequested: true });
+    expect(await getWorkItem(sqliteDb(db), "eng-2")).toMatchObject({
+      state: "cancelled",
+      cancelRequested: true,
+    });
   });
 
   test("a Linear stop in the merge queue pauses the item and holds its merge", async () => {
@@ -825,7 +868,7 @@ describe("linear commands", () => {
       requestedAt: clock.now(),
     });
 
-    expect(getWorkItem(db, "eng-3")?.state).toBe("paused");
+    expect((await getWorkItem(sqliteDb(db), "eng-3"))?.state).toBe("paused");
     expect(
       await claimNextJob(sqliteDb(db), {
         workerId: "m",
@@ -868,7 +911,7 @@ describe("linear commands", () => {
     });
     expect(rows.find((row) => row.op === "linear.session.plan")?.payload).toMatchObject({
       sessionId: "ses",
-      summary: `${getWorkItem(db, "eng-5")!.linearIdentifier}: stopped`,
+      summary: `${(await getWorkItem(sqliteDb(db), "eng-5"))!.linearIdentifier}: stopped`,
     });
     db.close();
   });
@@ -876,7 +919,7 @@ describe("linear commands", () => {
   test("a stop without a pull request says none was opened and cancels the remaining plan", async () => {
     const { db, clock } = harness();
     insertQueuedItem(db, { id: "eng-6", sessionKey: "ses", now: clock.now() });
-    const identifier = getWorkItem(db, "eng-6")!.linearIdentifier;
+    const identifier = (await getWorkItem(sqliteDb(db), "eng-6"))!.linearIdentifier;
     await beginImplementRun(sqliteDb(db), "eng-6", clock.now());
     db.run(
       `INSERT INTO outbox (target, op, ordering_key, idempotency_key, payload, priority, not_before,
@@ -950,14 +993,14 @@ describe("linear commands", () => {
   test("a take over ends the session with who took it and the manual title", async () => {
     const { db, clock } = harness();
     insertQueuedItem(db, { id: "eng-9", sessionKey: "ses", now: clock.now() });
-    const identifier = getWorkItem(db, "eng-9")!.linearIdentifier;
+    const identifier = (await getWorkItem(sqliteDb(db), "eng-9"))!.linearIdentifier;
     await beginImplementRun(sqliteDb(db), "eng-9", clock.now());
     expect((await takeOverItem(sqliteDb(db), "eng-9", "Ada", clock.now())).applied).toBe(false);
     await applyWorkItemEvent(sqliteDb(db), "eng-9", "run_failed");
-    const version = getWorkItem(db, "eng-9")!.version;
+    const version = (await getWorkItem(sqliteDb(db), "eng-9"))!.version;
     expect((await takeOverItem(sqliteDb(db), "eng-9", "Ada", clock.now())).applied).toBe(true);
-    expect(getWorkItem(db, "eng-9")).toMatchObject({ state: "manual" });
-    expect(getWorkItem(db, "eng-9")!.version).toBeGreaterThan(version + 1);
+    expect(await getWorkItem(sqliteDb(db), "eng-9")).toMatchObject({ state: "manual" });
+    expect((await getWorkItem(sqliteDb(db), "eng-9"))!.version).toBeGreaterThan(version + 1);
     const stop = (await listOutbox(sqliteDb(db))).filter((row) => row.delivery === "stop");
     expect(stop.find((row) => row.op === "activity")?.payload).toMatchObject({
       kind: "response",
@@ -1001,7 +1044,7 @@ describe("linear commands", () => {
       itemId: "eng-4",
       requestedAt: clock.now(),
     });
-    expect(getWorkItem(db, "eng-4")?.state).toBe("cancelled");
+    expect((await getWorkItem(sqliteDb(db), "eng-4"))?.state).toBe("cancelled");
     expect(
       (await listJobs(sqliteDb(db))).find((job) => job.queue === JOB_KIND.command)?.lastError,
     ).toBe("listener blew up");

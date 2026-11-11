@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, desc, eq, ne, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
 
 /** Inputs observed by the lane, never an automatic approval. */
 export type RiskAutoContext = {
@@ -116,11 +115,4 @@ export function* listRiskAutoContextsSteps(q: Q) {
       .from(riskAutoContext),
   );
   return rows.map((row) => ({ ...row, context: contextOf(row.context) }));
-}
-
-/** Restored outside the request path so file watches survive a process restart. */
-export function listRiskAutoContexts(
-  db: Database,
-): Array<{ itemId: string; head: string; context: RiskAutoContext }> {
-  return settled(sqliteDb(db).run((q) => listRiskAutoContextsSteps(q)));
 }

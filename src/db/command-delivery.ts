@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { and, eq, gt, ne } from "drizzle-orm";
 import { JOB_KIND, parseLinearCommand, type LinearCommand } from "../core";
 import { journalCaught } from "../journal";
-import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
+import { sqliteDb, type Db, type Q, type Steps } from "./db";
 import { INSTANCE_DEAD_MS } from "./instances";
 import { getWorkItemSteps } from "./items";
 import {
@@ -102,25 +102,7 @@ function deliverCommand(delivery: DeliveredCommand, deliver: (d: DeliveredComman
   }
 }
 
-export function drainInstanceCommands(
-  db: Database,
-  self: string,
-  deliver: (delivery: DeliveredCommand) => void,
-  now = Date.now(),
-): number {
-  const store = sqliteDb(db);
-  let delivered = 0;
-  for (;;) {
-    const job = settled(store.run((q) => claimNextJobSteps(q, claimOptions(self, now))));
-    if (job === null) return delivered;
-    const delivery = deliveryOf(job);
-    if (!settled(store.run((q) => completeJobSteps(q, job, now))) || delivery === null) continue;
-    deliverCommand(delivery, deliver);
-    delivered += 1;
-  }
-}
-
-export async function drainInstanceCommandsAsync(
+export async function drainInstanceCommands(
   store: Db,
   self: string,
   deliver: (delivery: DeliveredCommand) => void,

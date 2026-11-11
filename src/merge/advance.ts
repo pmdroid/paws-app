@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
   applyWorkItemEventSteps,
@@ -29,7 +28,6 @@ import {
   getItemCandidate,
   recordItemCandidateSteps,
   wakeMergesBehindSteps,
-  sqliteDb,
 } from "../db";
 import {
   adoptRunnerRebase,
@@ -187,7 +185,6 @@ async function rerunCancelledCi(
  * its CI is green. `overlap` merges a head main's new commits do not touch without a rebase.
  */
 export async function advanceMerge(
-  db: Database,
   store: Db,
   input: { itemId: string; payload: unknown; jobId: number },
   caps: MergeCapabilities,
@@ -212,7 +209,7 @@ export async function advanceMerge(
     await reverifyAfterRestart(store, item, input.jobId, caps.now());
     return { kind: "returned" };
   }
-  const merge: MergeContext = { db, store, item, caps };
+  const merge: MergeContext = { store, item, caps };
   const held = await feedbackHold(merge, input.payload);
   if (held) return held;
   const waiting = await dependencyWait(store, item, caps);
@@ -264,7 +261,7 @@ export async function advanceMerge(
   }
   const lane: SerialMergeInput = {
     publishedAt: async (head) => {
-      const candidate = await getItemCandidate(sqliteDb(db), item.id);
+      const candidate = await getItemCandidate(store, item.id);
       return candidate?.sha === head ? candidate.recordedAt : null;
     },
     worktree: published.worktree,

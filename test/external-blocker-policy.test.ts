@@ -31,7 +31,10 @@ async function fixture() {
     delegateId: null,
   });
   tracker.deps.set("parent", [{ blockerLinearIssueId: "a", blockedLinearIssueId: "b" }]);
-  const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent", now: 1000 });
+  const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    linearIssueId: "parent",
+    now: 1000,
+  });
   if (!intake.ok) throw new Error("Intake failed");
   db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
   db.run(
@@ -111,7 +114,10 @@ test("Managed blockers in another delegation require canonical delivery", async 
       description: null,
       subIssues: [],
     });
-    const intake = await intakeDelegatedIssue(f.db, f.tracker, { linearIssueId: "a", now: 2000 });
+    const intake = await intakeDelegatedIssue(sqliteDb(f.db), f.tracker, {
+      linearIssueId: "a",
+      now: 2000,
+    });
     if (!intake.ok) throw new Error("Intake failed");
     await recordLinearInstallation(sqliteDb(f.db), {
       organizationId: "org",
@@ -154,7 +160,10 @@ test("A blocker whose Paws tasks were all cancelled follows its Linear state", a
       description: null,
       subIssues: [],
     });
-    const intake = await intakeDelegatedIssue(f.db, f.tracker, { linearIssueId: "a", now: 2000 });
+    const intake = await intakeDelegatedIssue(sqliteDb(f.db), f.tracker, {
+      linearIssueId: "a",
+      now: 2000,
+    });
     if (!intake.ok) throw new Error("Intake failed");
     await recordLinearInstallation(sqliteDb(f.db), {
       organizationId: "org",
@@ -188,7 +197,10 @@ test("Re-delegated managed blockers follow the latest active item", async () => 
       description: null,
       subIssues: [],
     });
-    const intake = await intakeDelegatedIssue(f.db, f.tracker, { linearIssueId: "a", now: 2000 });
+    const intake = await intakeDelegatedIssue(sqliteDb(f.db), f.tracker, {
+      linearIssueId: "a",
+      now: 2000,
+    });
     if (!intake.ok) throw new Error("Intake failed");
     await recordLinearInstallation(sqliteDb(f.db), {
       organizationId: "org",

@@ -1,12 +1,11 @@
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, link, lstat, mkdir, open, realpath, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { git, requestText, type AgentInputFile } from "../acp";
 import type { LinearFileTransfer } from "../linear";
-import { getVisualReviewMarkSteps, recordLinearInput, sqliteDb } from "../db";
+import { getVisualReviewMarkSteps, recordLinearInput, type Db } from "../db";
 import { readEvidenceBytes, type EvidenceStorage } from "../evidence";
 
 const MAX_BYTES = 20 * 1024 * 1024;
@@ -15,7 +14,7 @@ const INPUT_DIRECTORY = ".paws-linear-inputs";
 type CachedInput = { filename: string; mimeType: string; sha256: string; data: string };
 
 export function createLinearInputLoader(options: {
-  db: Database;
+  store: Db;
   files: Pick<LinearFileTransfer, "download">;
   cacheDir: string;
 }) {
@@ -74,7 +73,7 @@ export function createLinearInputLoader(options: {
       const path = join(turnDirectory, `${id}${extension}`);
       await writeAtomic(path, bytes);
       request.signal.throwIfAborted();
-      await recordLinearInput(sqliteDb(options.db), {
+      await recordLinearInput(options.store, {
         sessionId: request.sessionId,
         turnId: request.turnId,
         assetId: id,
@@ -139,7 +138,7 @@ export function reviewMarkPath(markId: string): string {
 const REVIEW_MARK = /\.\/\.paws-visual-review\/([0-9A-HJKMNP-TV-Z]{26})\.png/g;
 
 export function createReviewMarkLoader(options: {
-  db: Database;
+  store: Db;
   storage: EvidenceStorage;
   itemId: string;
   turnId: string;
@@ -160,9 +159,9 @@ export function createReviewMarkLoader(options: {
     const local = new Map<string, string>();
     for (const id of ids) {
       request.signal.throwIfAborted();
-      const mark = await sqliteDb(options.db).run((q) => getVisualReviewMarkSteps(q, id));
+      const mark = await options.store.run((q) => getVisualReviewMarkSteps(q, id));
       if (mark?.itemId !== options.itemId) continue;
-      const bytes = await readEvidenceBytes(options.db, options.storage, id);
+      const bytes = await readEvidenceBytes(options.store, options.storage, id);
       if (digest(bytes) !== mark.sha256) continue;
       const path = join(workspace, REVIEW_MARK_DIRECTORY, turn, `${id}.png`);
       await writeAtomic(path, bytes);

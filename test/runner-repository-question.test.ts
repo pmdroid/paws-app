@@ -160,7 +160,7 @@ test("the only runner's host list lacks the repository: one question names the r
     await recordRunnerRepositories(sqliteDb(db), "runner-1", ["acme/monorepo"], START);
     await paws.reconcileExecution();
     await start(jobs);
-    expect(getWorkItem(db, "cli")?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(db), "cli"))?.state).toBe("awaiting_input");
     const [question, ...rest] = questions(db);
     expect(rest).toEqual([]);
     expect(question!.body).toContain("No runner can run acme/cli.");
@@ -247,7 +247,7 @@ test("Retry with nothing fixed asks once more; Retry after the host list is fixe
     ).toBe("answered");
     expect(startJobs(db)).toBe(1);
     await start(jobs);
-    expect(getWorkItem(db, "cli")?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(db), "cli"))?.state).toBe("awaiting_input");
     const [, second, ...rest] = questions(db);
     expect(rest).toEqual([]);
     expect(second!.status).toBe("open");
@@ -265,7 +265,7 @@ test("Retry with nothing fixed asks once more; Retry after the host list is fixe
         answeredByName: "me",
       }),
     ).toBe("answered");
-    expect(getWorkItem(db, "cli")?.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(db), "cli"))?.state).toBe("queued");
     expect(startJobs(db)).toBe(1);
     expect(
       await sqliteDb(db).run((q) =>
@@ -295,7 +295,7 @@ test("a heartbeat that now allows the repository answers the question as Retry",
       answer: "Retry",
       by: "runner:runner-1",
     });
-    expect(getWorkItem(db, "cli")?.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(db), "cli"))?.state).toBe("queued");
     expect(startJobs(db)).toBe(1);
   });
 });
@@ -314,7 +314,7 @@ test("Stop cancels the item", async () => {
         answeredByName: "me",
       }),
     ).toBe("answered");
-    expect(getWorkItem(db, "cli")?.state).toBe("cancelled");
+    expect((await getWorkItem(sqliteDb(db), "cli"))?.state).toBe("cancelled");
   });
 });
 

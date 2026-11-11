@@ -201,12 +201,12 @@ test("a natural-language repository choice survives an installation wait and res
   try {
     await orchestrator.onLinearEvent(event());
     await f.jobs.tick();
-    const repositoryQuestion = findOpenQuestion(f.db, "session")!;
+    const repositoryQuestion = (await findOpenQuestion(sqliteDb(f.db), "session"))!;
     expect(f.checked).toEqual([]);
     expect(f.tracker.statuses).toEqual([]);
     await orchestrator.onLinearEvent(event("Use the backend one, acme/two."));
     await f.jobs.tick();
-    const authQuestion = findOpenQuestion(f.db, "session")!;
+    const authQuestion = (await findOpenQuestion(sqliteDb(f.db), "session"))!;
     expect(authQuestion.id).not.toBe(repositoryQuestion.id);
     expect(await getWorkItemRepositoryChoice(sqliteDb(f.db), repositoryQuestion.itemId)).toEqual(
       repositories[1]!,
@@ -238,12 +238,12 @@ test("a ready installation cannot bind a provisionally chosen inaccessible repos
   try {
     await orchestrator.onLinearEvent(event());
     await f.jobs.tick();
-    const question = findOpenQuestion(f.db, "session")!;
+    const question = (await findOpenQuestion(sqliteDb(f.db), "session"))!;
     await orchestrator.onLinearEvent(event("acme/private"));
     await f.jobs.tick();
     expect(getWorkItemRepository(f.db, question.itemId)).toBeNull();
     expect(f.checked).toEqual(["private"]);
-    expect(findOpenQuestion(f.db, "session")?.id).not.toBe(question.id);
+    expect((await findOpenQuestion(sqliteDb(f.db), "session"))?.id).not.toBe(question.id);
     expect(f.tracker.statuses).toEqual([]);
     expect(f.launches()).toBe(0);
   } finally {
@@ -259,9 +259,9 @@ test("an incomplete access scan retries without binding the surviving repository
     await f.attach().onLinearEvent(event());
     await f.jobs.tick();
     const item = f.db.query<{ id: string }, []>("SELECT id FROM work_item").get()!;
-    expect(getWorkItem(f.db, item.id)?.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("queued");
     expect(getWorkItemRepository(f.db, item.id)).toBeNull();
-    expect(findOpenQuestion(f.db, "session")).toBeNull();
+    expect(await findOpenQuestion(sqliteDb(f.db), "session")).toBeNull();
     expect(
       (await listJobs(sqliteDb(f.db))).some(
         (job) =>
@@ -273,7 +273,7 @@ test("an incomplete access scan retries without binding the surviving repository
     f.clock.advance(10_000);
     await workspaceDispatch(f.db, { now: f.clock.now() });
     await f.jobs.tick();
-    expect(findOpenQuestion(f.db, "session")?.options).toHaveLength(2);
+    expect((await findOpenQuestion(sqliteDb(f.db), "session"))?.options).toHaveLength(2);
     expect(getWorkItemRepository(f.db, item.id)).toBeNull();
   } finally {
     f.db.close();
@@ -288,7 +288,7 @@ test.each(["https://github.com/acme/two.git", "https://github.com/ACME/TWO.git"]
       const orchestrator = f.attach();
       await orchestrator.onLinearEvent(event());
       await f.jobs.tick();
-      const question = findOpenQuestion(f.db, "session")!;
+      const question = (await findOpenQuestion(sqliteDb(f.db), "session"))!;
       await orchestrator.onLinearEvent(event(answer));
       await f.jobs.tick();
       expect(getWorkItemRepository(f.db, question.itemId)).toEqual(repositories[1]!);
@@ -305,7 +305,7 @@ test("an obsolete merge job cannot bind a repository while a repository answer i
     const orchestrator = f.attach();
     await orchestrator.onLinearEvent(event());
     await f.jobs.tick();
-    const question = findOpenQuestion(f.db, "session")!;
+    const question = (await findOpenQuestion(sqliteDb(f.db), "session"))!;
     await enqueueJob(sqliteDb(f.db), {
       queue: "github.merge",
       payload: { itemId: question.itemId },
@@ -327,13 +327,13 @@ test("ambiguous configured repositories ask before any worktree or issue-state m
     const orchestrator = f.attach();
     await orchestrator.onLinearEvent(event());
     await f.jobs.tick();
-    const question = findOpenQuestion(f.db, "session")!;
+    const question = (await findOpenQuestion(sqliteDb(f.db), "session"))!;
     expect(question.kind).toBe("repository");
     expect(question.options).toEqual([
       "https://github.com/acme/two",
       "https://github.com/acme/one",
     ]);
-    expect(getWorkItem(f.db, question.itemId)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(f.db), question.itemId))?.state).toBe("awaiting_input");
     expect(f.checked).toEqual(["one", "two", "private"]);
     const request = {
       issueId: "issue",
@@ -369,11 +369,11 @@ test.each(["acme/elsewhere", "acme/two"])(
       const orchestrator = f.attach();
       await orchestrator.onLinearEvent(event());
       await f.jobs.tick();
-      const before = findOpenQuestion(f.db, "session")!;
+      const before = (await findOpenQuestion(sqliteDb(f.db), "session"))!;
       if (answer === "acme/two") f.denied.add("two");
       await orchestrator.onLinearEvent(event(answer));
       await f.jobs.tick();
-      const after = findOpenQuestion(f.db, "session")!;
+      const after = (await findOpenQuestion(sqliteDb(f.db), "session"))!;
       expect(after.id).not.toBe(before.id);
       expect(getWorkItemRepository(f.db, before.itemId)).toBeNull();
       expect(f.launches()).toBe(0);
@@ -398,7 +398,7 @@ test.each([
       let orchestrator = f.attach();
       await orchestrator.onLinearEvent(event());
       await f.jobs.tick();
-      const question = findOpenQuestion(f.db, "session")!;
+      const question = (await findOpenQuestion(sqliteDb(f.db), "session"))!;
       await orchestrator.onLinearEvent(event("Use the second option, the frontend one."));
       orchestrator = f.attach();
       await f.jobs.tick();
@@ -413,7 +413,7 @@ test.each([
         selected ? repositories[0]! : null,
       );
       if (!selected) {
-        expect(findOpenQuestion(f.db, "session")?.id).not.toBe(question.id);
+        expect((await findOpenQuestion(sqliteDb(f.db), "session"))?.id).not.toBe(question.id);
         expect(existsSync(join(f.pawsRoot, "worktrees"))).toBe(false);
         expect(f.tracker.statuses).toEqual([]);
       }
@@ -436,7 +436,7 @@ test.each([
       const orchestrator = f.attach();
       await orchestrator.onLinearEvent(event());
       await f.jobs.tick();
-      const question = findOpenQuestion(f.db, "session")!;
+      const question = (await findOpenQuestion(sqliteDb(f.db), "session"))!;
       await orchestrator.onLinearEvent(event(reply));
       await f.jobs.tick();
       expect(f.launches()).toBe(1);
@@ -455,12 +455,14 @@ test("an inaccessible original option is not renumbered into a different reposit
     const orchestrator = f.attach();
     await orchestrator.onLinearEvent(event());
     await f.jobs.tick();
-    const question = findOpenQuestion(f.db, "session")!;
+    const question = (await findOpenQuestion(sqliteDb(f.db), "session"))!;
     f.denied.add("two");
     await orchestrator.onLinearEvent(event("Use the first option."));
     await f.jobs.tick();
     expect(getWorkItemRepository(f.db, question.itemId)).toBeNull();
-    expect(findOpenQuestion(f.db, "session")?.options).toEqual(["https://github.com/acme/one"]);
+    expect((await findOpenQuestion(sqliteDb(f.db), "session"))?.options).toEqual([
+      "https://github.com/acme/one",
+    ]);
     const trace = JSON.parse(readFileSync(f.interpretationTraces[0]!, "utf8"));
     expect(trace.prompts[0][0].text).toContain('"offeredOptions":["acme/two","acme/one"]');
     expect(trace.prompts[0][0].text).toContain('"accessibleCandidates":["acme/one"]');
@@ -478,12 +480,14 @@ test("access removed during interpretation prevents binding and asks with the re
     const orchestrator = f.attach();
     await orchestrator.onLinearEvent(event());
     await f.jobs.tick();
-    const question = findOpenQuestion(f.db, "session")!;
+    const question = (await findOpenQuestion(sqliteDb(f.db), "session"))!;
     await orchestrator.onLinearEvent(event("Use the second option."));
     await f.jobs.tick();
     expect(f.interpretationTraces).toHaveLength(1);
     expect(getWorkItemRepository(f.db, question.itemId)).toBeNull();
-    expect(findOpenQuestion(f.db, "session")?.options).toEqual(["https://github.com/acme/two"]);
+    expect((await findOpenQuestion(sqliteDb(f.db), "session"))?.options).toEqual([
+      "https://github.com/acme/two",
+    ]);
     expect(existsSync(join(f.pawsRoot, "worktrees"))).toBe(false);
     expect(f.tracker.statuses).toEqual([]);
   } finally {
@@ -500,7 +504,7 @@ test("Stop interrupts repository interpretation before any binding or repository
     const orchestrator = f.attach();
     await orchestrator.onLinearEvent(event());
     await f.jobs.tick();
-    const question = findOpenQuestion(f.db, "session")!;
+    const question = (await findOpenQuestion(sqliteDb(f.db), "session"))!;
     await orchestrator.onLinearEvent(event("Use the frontend one."));
     pending = f.jobs.tick();
     let started = false;
@@ -521,7 +525,7 @@ test("Stop interrupts repository interpretation before any binding or repository
     });
     await pending;
     expect(getWorkItemRepository(f.db, question.itemId)).toBeNull();
-    expect(getWorkItem(f.db, question.itemId)?.state).toBe("paused");
+    expect((await getWorkItem(sqliteDb(f.db), question.itemId))?.state).toBe("paused");
     expect(f.tracker.statuses).toEqual([]);
     expect(existsSync(join(f.pawsRoot, "worktrees"))).toBe(false);
   } finally {
@@ -539,7 +543,7 @@ test("a persisted cleanup fence prevents another repository interpreter or selec
     await saveConversation(sqliteDb(f.db), item.id, "[]", null, true);
     await f.jobs.tick();
     expect(f.launches()).toBe(0);
-    expect(findOpenQuestion(f.db, "session")).toBeNull();
+    expect(await findOpenQuestion(sqliteDb(f.db), "session")).toBeNull();
     expect(getWorkItemRepository(f.db, item.id)).toBeNull();
   } finally {
     f.db.close();
@@ -682,7 +686,7 @@ test("close Linear suggestions ask with the top three repositories", async () =>
     const orchestrator = f.attach();
     await orchestrator.onLinearEvent(event());
     await f.jobs.tick();
-    expect(findOpenQuestion(f.db, "session")!.options).toEqual([
+    expect((await findOpenQuestion(sqliteDb(f.db), "session"))!.options).toEqual([
       "https://github.com/acme/two",
       "https://github.com/acme/one",
       "https://github.com/acme/private",
@@ -838,7 +842,7 @@ test("a bound repository outside the team's new links is explained once, not can
     },
   });
   integration = teamRepositoryIntegration(f.db);
-  const check = new GitHubInstallationCheck(f.db, integration, () => f.clock.now());
+  const check = new GitHubInstallationCheck(sqliteDb(f.db), integration, () => f.clock.now());
   try {
     await refreshRepositoryCatalog(f.db, async () => [
       {
@@ -857,13 +861,17 @@ test("a bound repository outside the team's new links is explained once, not can
       "INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES('workspace','acme/one','team')",
     );
     const signal = new AbortController().signal;
-    expect(await check.ensure(getWorkItem(f.db, id)!, "publication", signal, { fresh: true })).toBe(
-      false,
-    );
-    expect(await check.ensure(getWorkItem(f.db, id)!, "publication", signal, { fresh: true })).toBe(
-      false,
-    );
-    expect(getWorkItem(f.db, id)?.state).toBe("cancelled");
+    expect(
+      await check.ensure((await getWorkItem(sqliteDb(f.db), id))!, "publication", signal, {
+        fresh: true,
+      }),
+    ).toBe(false);
+    expect(
+      await check.ensure((await getWorkItem(sqliteDb(f.db), id))!, "publication", signal, {
+        fresh: true,
+      }),
+    ).toBe(false);
+    expect((await getWorkItem(sqliteDb(f.db), id))?.state).toBe("cancelled");
     const responses = (await listOutbox(sqliteDb(f.db)))
       .filter((entry) => entry.delivery === "stop")
       .map((entry) => (entry.payload as { body: string }).body);
@@ -959,7 +967,7 @@ test("two repo labels on the issue ask with just those repositories", async () =
     const orchestrator = f.attach();
     await orchestrator.onLinearEvent(event());
     await f.jobs.tick();
-    expect(findOpenQuestion(f.db, "session")!.options).toEqual([
+    expect((await findOpenQuestion(sqliteDb(f.db), "session"))!.options).toEqual([
       "https://github.com/acme/private",
       "https://github.com/acme/one",
     ]);
@@ -1015,7 +1023,7 @@ test("an answered repository question labels the issue with that repository", as
     const orchestrator = f.attach();
     await orchestrator.onLinearEvent(event());
     await f.jobs.tick();
-    const question = findOpenQuestion(f.db, "session")!;
+    const question = (await findOpenQuestion(sqliteDb(f.db), "session"))!;
     await orchestrator.onLinearEvent(event("acme/two"));
     await f.jobs.tick();
     expect(getWorkItemRepository(f.db, question.itemId)).toEqual(repositories[1]!);

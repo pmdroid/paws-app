@@ -25,7 +25,7 @@ import {
   retryAfterMs,
   retryBackoffMs,
 } from "../core";
-import { settled, sqliteDb, type Db, type Q } from "./db";
+import { type Db, type Q } from "./db";
 import { journal } from "./journal";
 import { jsonField, jsonText } from "./json-text";
 
@@ -310,13 +310,7 @@ export function* enqueueJobOnceSteps(q: Q, job: NewJob) {
   }
 }
 
-export function enqueueJobOnce(db: Database, job: NewJob): number {
-  const { id, inserted } = settled(sqliteDb(db).run((q) => enqueueJobOnceSteps(q, job)));
-  if (inserted) emitJobReady(db);
-  return id;
-}
-
-export async function enqueueJobOnceAsync(store: Db, job: NewJob): Promise<number> {
+export async function enqueueJobOnce(store: Db, job: NewJob): Promise<number> {
   const { id, inserted } = await store.transaction((q) => enqueueJobOnceSteps(q, job));
   if (inserted) emitJobReady(store);
   return id;

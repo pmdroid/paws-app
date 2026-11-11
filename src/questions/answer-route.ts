@@ -77,7 +77,7 @@ export async function handleQuestionAnswer(
     return Response.json({ error: "Send a question and an answer." }, { status: 400 });
   const questionId = body.questionId;
   const question = await sqliteDb(db).run((q) => getQuestionSteps(q, questionId));
-  const item = question ? getWorkItem(db, question.itemId) : null;
+  const item = question ? await getWorkItem(sqliteDb(db), question.itemId) : null;
   if (
     question?.status !== "open" ||
     item?.sessionKey == null ||

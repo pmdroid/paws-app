@@ -59,7 +59,7 @@ async function fixture(
   };
   const lines: string[] = [];
   const reader = new RiskDisplayReader({
-    db,
+    store: sqliteDb(db),
     configPath: "/tmp/pas934-no-config",
     readSettings: () => {
       settingsReads++;
@@ -186,7 +186,7 @@ test("failed display persistence cannot reject the merge gate", async () => {
   await expect(f.reader.remember(f.item.id, "head", f.context)).resolves.toBeUndefined();
   expect(f.lines.some((line) => line.includes("display write failed"))).toBe(true);
   expect(
-    await riskApprovalFor(f.db, {
+    await riskApprovalFor(sqliteDb(f.db), {
       itemId: f.item.id,
       head: "head",
       publicUrl: "https://paws.example",
@@ -208,7 +208,11 @@ test("a corrupt classified-risk row does not fail the item page", async () => {
 
 test("display follows the lane's rebased head even while the checkpoint still names the old head", async () => {
   const f = await fixture();
-  saveCheckpoint(f.db, f.item.id, { phase: "merge_queue", wipCommit: "head", baseSha: "base" });
+  await saveCheckpoint(sqliteDb(f.db), f.item.id, {
+    phase: "merge_queue",
+    wipCommit: "head",
+    baseSha: "base",
+  });
   await f.reader.remember(f.item.id, "rebased-head", f.context);
   const detail = (await f.provider.issue(f.item.id))!;
   expect(detail.risk?.head).toBe("rebased-head");
@@ -224,7 +228,7 @@ test("the disabled risk gate does not claim manual approval is required", async 
     "Risk gate is off: approval is not required",
   );
   expect(
-    await riskApprovalFor(f.db, {
+    await riskApprovalFor(sqliteDb(f.db), {
       itemId: f.item.id,
       head: "head",
       publicUrl: null,
@@ -270,7 +274,7 @@ test("a human approval carried over by the lane is displayed as approved", async
   await approve(f, "earlier-head");
   let approvedHead: string | undefined;
   let approvalKind: "exact" | "same_patch" | "fix" | undefined;
-  const result = await riskApprovalFor(f.db, {
+  const result = await riskApprovalFor(sqliteDb(f.db), {
     onHumanApproval: (head, kind) => {
       approvedHead = head;
       approvalKind = kind;
@@ -325,7 +329,7 @@ test("hand edits to config are observed outside the status read path", async () 
   writeFileSync(path, "[merge]\nauto_approve_high_risk = true\n");
   let reads = 0;
   const reader = new RiskDisplayReader({
-    db: f.db,
+    store: sqliteDb(f.db),
     configPath: path,
     publicUrl: "https://paws.example",
     readSettings: () => {
@@ -364,7 +368,7 @@ test("policy file edits invalidate display evidence, including across a reader r
   );
   f.reader.close();
   const restarted = new RiskDisplayReader({
-    db: f.db,
+    store: sqliteDb(f.db),
     configPath: "/tmp/pas934-no-config",
     publicUrl: "https://paws.example",
     readSettings: () => f.settings,
@@ -410,7 +414,7 @@ test("a failing human-approval display observer cannot reject an approved head",
   const f = await fixture("off");
   await approve(f, "head");
   expect(
-    await riskApprovalFor(f.db, {
+    await riskApprovalFor(sqliteDb(f.db), {
       itemId: f.item.id,
       head: "head",
       publicUrl: "https://paws.example",

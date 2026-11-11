@@ -87,9 +87,10 @@ async function reviewing() {
     "lea@example.com",
   ]);
   await evidence(db, item.id, run.id);
+  const current = (await getWorkItem(sqliteDb(db), item.id))!;
   const asked = await sqliteDb(db).transaction((q) =>
     askForVisualReviewSteps(q, {
-      item: getWorkItem(db, item.id)!,
+      item: current,
       runId: run.id,
       sessionId: "ses_1",
       checkId: "visual-proof",
@@ -101,13 +102,13 @@ async function reviewing() {
     }),
   );
   expect(asked).toBe(true);
-  return { db, itemId: item.id, question: findOpenQuestion(db, "ses_1")! };
+  return { db, itemId: item.id, question: (await findOpenQuestion(sqliteDb(db), "ses_1"))! };
 }
 
 test("the visual review is a link ask without options, reminded once from the shared link ask", async () => {
   const { db, itemId, question } = await reviewing();
   // Asked beside the other checks: the item keeps verifying.
-  expect(getWorkItem(db, itemId)?.state).toBe("verifying");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("verifying");
   expect(question.kind).toBe("link");
   expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
     kind: "screenshots",
@@ -122,10 +123,10 @@ test("the visual review is a link ask without options, reminded once from the sh
     headCommit: HEAD,
     outcome: null,
   });
-  expect(
-    (await sqliteDb(db).run((q) => pendingVisualReviewSteps(q, getWorkItem(db, itemId)!)))?.question
-      .id,
-  ).toBe(question.id);
+  const current = (await getWorkItem(sqliteDb(db), itemId))!;
+  expect((await sqliteDb(db).run((q) => pendingVisualReviewSteps(q, current)))?.question.id).toBe(
+    question.id,
+  );
   const elicitations = (await listOutbox(sqliteDb(db))).filter((row) => row.op === "elicitation");
   expect(elicitations).toHaveLength(1);
   const payload = elicitations[0]!.payload as { options: unknown[]; body: string };
@@ -141,7 +142,7 @@ test("the visual review is a link ask without options, reminded once from the sh
 
 test("Approve on the page passes the check for that head and those files", async () => {
   const { db, itemId, question } = await reviewing();
-  const outcome = await decideLinkAsk(db, {
+  const outcome = await decideLinkAsk(sqliteDb(db), {
     questionId: question.id,
     decision: "approve",
     note: null,
@@ -167,7 +168,7 @@ test("Approve on the page passes the check for that head and those files", async
     }),
   ).toBeNull();
   // The evaluation still running on S picks the approval up; nothing restarts.
-  expect(getWorkItem(db, itemId)?.state).toBe("verifying");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("verifying");
   expect((await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
   const notes = (await listOutbox(sqliteDb(db))).filter((row) => row.op === "activity");
   expect(notes.map((row) => (row.payload as { body: string }).body)).toContain(
@@ -177,11 +178,10 @@ test("Approve on the page passes the check for that head and those files", async
 
 test("Approve after the other checks finished completes the evaluation of the same head", async () => {
   const { db, itemId, question } = await reviewing();
-  await sqliteDb(db).transaction((q) =>
-    awaitQuestionSteps(q, getWorkItem(db, itemId)!, question, NOW + 50),
-  );
-  expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
-  await decideLinkAsk(db, {
+  const current = (await getWorkItem(sqliteDb(db), itemId))!;
+  await sqliteDb(db).transaction((q) => awaitQuestionSteps(q, current, question, NOW + 50));
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
+  await decideLinkAsk(sqliteDb(db), {
     questionId: question.id,
     decision: "approve",
     note: null,
@@ -189,7 +189,7 @@ test("Approve after the other checks finished completes the evaluation of the sa
     actor,
     now: NOW + 100,
   });
-  expect(getWorkItem(db, itemId)?.state).toBe("verifying");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("verifying");
   expect(
     (await listJobs(sqliteDb(db)))
       .filter((job) => job.queue === JOB_KIND.reverify)
@@ -200,7 +200,7 @@ test("Approve after the other checks finished completes the evaluation of the sa
 test("someone else cannot approve on the page", async () => {
   const { db, question } = await reviewing();
   expect(
-    await decideLinkAsk(db, {
+    await decideLinkAsk(sqliteDb(db), {
       questionId: question.id,
       decision: "approve",
       note: null,
@@ -224,7 +224,7 @@ test("Request changes on the page restarts the item with the marks and the note"
       createdAt: NOW + 90,
     },
   ];
-  const outcome = await decideLinkAsk(db, {
+  const outcome = await decideLinkAsk(sqliteDb(db), {
     questionId: question.id,
     decision: "changes",
     note: "The Retry button wraps under the row.",
@@ -241,7 +241,7 @@ test("Request changes on the page restarts the item with the marks and the note"
   expect((await listVisualReviewMarks(sqliteDb(db), question.id)).map((mark) => mark.id)).toEqual([
     "mark-1",
   ]);
-  expect(getWorkItem(db, itemId)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
   const [resume] = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
   const handoff = (resume!.payload as { handoff: string }).handoff;
   expect(handoff).toContain("The Retry button wraps under the row.");
@@ -251,7 +251,7 @@ test("Request changes on the page restarts the item with the marks and the note"
 
 test("a Linear reply that says approve requests changes and never approves", async () => {
   const { db, itemId, question } = await reviewing();
-  const guided = await guideLinkAsk(db, {
+  const guided = await guideLinkAsk(sqliteDb(db), {
     questionId: question.id,
     eventKey: "activity:reply",
     body: "approve",
@@ -270,7 +270,7 @@ test("a Linear reply that says approve requests changes and never approves", asy
     closedReason: "guidance",
     decision: null,
   });
-  expect(getWorkItem(db, itemId)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
   const [resume] = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
   expect((resume!.payload as { handoff: string }).handoff).toContain(
     "The reviewer requested changes in the visual review of check visual-proof:\napprove",
@@ -283,11 +283,13 @@ test("a Linear reply that says approve requests changes and never approves", asy
 
 test("a new head closes the open ask unless it has the same patch", async () => {
   const { db, itemId, question } = await reviewing();
-  expect(await closeLinkAsksOnHead(db, itemId, "rebased", NOW + 10, [question.id])).toBe(0);
+  expect(await closeLinkAsksOnHead(sqliteDb(db), itemId, "rebased", NOW + 10, [question.id])).toBe(
+    0,
+  );
   expect((await getLinkAsk(sqliteDb(db), question.id))?.closedAt).toBeNull();
-  expect(await closeLinkAsksOnHead(db, itemId, "different", NOW + 20)).toBe(1);
+  expect(await closeLinkAsksOnHead(sqliteDb(db), itemId, "different", NOW + 20)).toBe(1);
   expect((await getLinkAsk(sqliteDb(db), question.id))?.closedReason).toBe("head_moved");
-  expect(findOpenQuestion(db, "ses_1")).toBeNull();
+  expect(await findOpenQuestion(sqliteDb(db), "ses_1")).toBeNull();
 });
 
 let repo: string | null = null;
@@ -319,7 +321,7 @@ test("a later commit with a different patch asks again", async () => {
   const approved = commit("retry button on one line");
   const { db, itemId, question } = await reviewing();
   db.run("UPDATE link_ask SET head_commit = ? WHERE question_id = ?", [approved, question.id]);
-  await decideLinkAsk(db, {
+  await decideLinkAsk(sqliteDb(db), {
     questionId: question.id,
     decision: "approve",
     note: null,

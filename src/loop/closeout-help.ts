@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   emitJobReady,
   getWorkItemSteps,
@@ -6,8 +5,8 @@ import {
   saveCloseoutBypassChecksSteps,
   saveCloseoutRecoverySteps,
   savePolicyBlockSteps,
-  sqliteDb,
   type CloseoutRecovery,
+  type Db,
 } from "../db";
 import type { RuleApproval } from "../closeout";
 import { shortCommit } from "../questions";
@@ -64,7 +63,7 @@ export type CloseoutHelpCheck = {
  * reason, and Send back or a reply in Linear hands the agent the finding.
  */
 export async function askCloseoutHelp(
-  db: Database,
+  store: Db,
   sessionId: string,
   help: CloseoutHelp,
   input: {
@@ -79,7 +78,6 @@ export async function askCloseoutHelp(
   },
 ): Promise<void> {
   const rules = input.rules ?? [];
-  const store = sqliteDb(db);
   const linked = await store.transaction(function* (q) {
     const item = yield* getWorkItemSteps(q, help.itemId);
     if (!item || item.state === "cancelled") return false;

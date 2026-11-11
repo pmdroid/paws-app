@@ -35,7 +35,7 @@ async function setup() {
       return new Response(bytes, { headers: { "content-type": "image/png" } });
     },
   });
-  const loader = () => createLinearInputLoader({ db, files, cacheDir });
+  const loader = () => createLinearInputLoader({ store: sqliteDb(db), files, cacheDir });
   const request = {
     workspace,
     sessionId: "session",
@@ -168,7 +168,7 @@ test("a Linear link that cannot be downloaded stays a link and the turn continue
     });
     const missing = "https://uploads.linear.app/workspace/missing.png?signature=secret";
     const result = await createLinearInputLoader({
-      db: tempDb(),
+      store: sqliteDb(tempDb()),
       files,
       cacheDir: join(tempHome(), "inputs"),
     })({

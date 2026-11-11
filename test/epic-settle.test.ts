@@ -148,11 +148,11 @@ test("the orchestrator pump treats a delegation whose items are all merged as fi
     },
   ]);
   try {
-    const finished = await intakeDelegatedIssue(db, tracker, {
+    const finished = await intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "finished-issue",
       now: clock.now(),
     });
-    const open = await intakeDelegatedIssue(db, tracker, {
+    const open = await intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "open-issue",
       now: clock.now(),
     });
@@ -166,7 +166,7 @@ test("the orchestrator pump treats a delegation whose items are all merged as fi
       db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").get(),
     ).toBeNull();
     await orchestrator.reconcileExecution();
-    expect(getWorkItem(db, finished.items[0]!.id)?.state).toBe("merged");
+    expect((await getWorkItem(sqliteDb(db), finished.items[0]!.id))?.state).toBe("merged");
     expect(
       db
         .query<{ itemId: string }, [string]>(
@@ -207,7 +207,7 @@ test("a follow-up session turn routes by the item's task key without the epic ro
     },
   });
   try {
-    const intake = await intakeDelegatedIssue(db, tracker, {
+    const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "parent",
       sessionId: "session",
       taskKey: "session:session",

@@ -256,8 +256,8 @@ export function* saveSchedulingContextSteps(q: Q, input: SchedulingContext): Ste
 }
 
 /** Linear user id of the item's project lead as last saved from Linear, or null. */
-export async function projectLeadId(db: Database, itemId: string): Promise<string | null> {
-  return await schedulingProjectLead(sqliteDb(db), itemId);
+export async function projectLeadId(store: Db, itemId: string): Promise<string | null> {
+  return await schedulingProjectLead(store, itemId);
 }
 
 export function hintedPaths(brief: string | null): string[] {
@@ -876,11 +876,11 @@ async function admit(
   return result.admitted;
 }
 
-export function registerScheduler(
+export async function registerScheduler(
   jobs: JobLoop,
   tick: () => void | Promise<void>,
   now = Date.now(),
-): void {
+): Promise<void> {
   jobs.register(TICK, tick);
-  enqueueJobOnce(jobs.db, { queue: TICK, jobKey: TICK, recurringEveryMs: 30_000, now });
+  await enqueueJobOnce(jobs.store, { queue: TICK, jobKey: TICK, recurringEveryMs: 30_000, now });
 }

@@ -74,7 +74,7 @@ export async function handleVisualReviewChanges(
   if (!workspaceMemberUsable(member) || !member.linearUserId)
     return Response.json({ error: "Your membership can't answer reviews." }, { status: 403 });
   const review = await openVisualReviewFiles(sqliteDb(db), questionId);
-  const item = review ? getWorkItem(db, review.itemId) : null;
+  const item = review ? await getWorkItem(sqliteDb(db), review.itemId) : null;
   if (!review || item?.sessionKey == null || !sessionIds.includes(item.sessionKey))
     return Response.json(
       { error: "This review is no longer waiting. Refresh the run." },
@@ -108,7 +108,7 @@ export async function handleVisualReviewChanges(
   try {
     for (const file of files) {
       const id = ulid(now);
-      await writeEvidenceFile(db, options, file.evidence, id, file.bytes, now);
+      await writeEvidenceFile(sqliteDb(db), options, file.evidence, id, file.bytes, now);
       marks.push({
         id,
         questionId,
@@ -150,5 +150,5 @@ async function removeMarks(
   storage: EvidenceStorage,
   marks: readonly VisualReviewMark[],
 ): Promise<void> {
-  await Promise.all(marks.map((mark) => removeEvidenceFile(db, storage, mark.id)));
+  await Promise.all(marks.map((mark) => removeEvidenceFile(sqliteDb(db), storage, mark.id)));
 }

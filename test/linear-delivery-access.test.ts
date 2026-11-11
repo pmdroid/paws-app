@@ -78,7 +78,7 @@ async function fixture() {
     linearAccess: gate,
   });
   const enqueue = async (op: "activity" | "status", stop = false) =>
-    enqueueOutboxOnce(db, {
+    await enqueueOutboxOnce(sqliteDb(db), {
       target: "linear",
       op,
       orderingKey: "session",
@@ -171,7 +171,7 @@ test("a queued final response verifies live access and survives the task's own c
     await f.outbox.idle();
     expect(f.tracker.progress.map((update) => update.body)).toEqual(["Confirmed result."]);
     expect(f.access.calls.map((call) => call.method)).toEqual(["session", "team"]);
-    expect(getWorkItem(f.db, f.item.id)?.state).toBe("merged");
+    expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("merged");
     expect(f.lifecycle.started).toEqual([]);
   } finally {
     f.db.close();
@@ -220,7 +220,7 @@ test("a stopped task can acknowledge removal of delegation while installation ac
     await f.outbox.tick();
     await f.outbox.idle();
     expect(f.tracker.progress.map((update) => update.body)).toEqual(["Confirmed result."]);
-    expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
+    expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("cancelled");
     expect(f.access.calls).toEqual([]);
     expect(f.lifecycle.started).toEqual([]);
   } finally {

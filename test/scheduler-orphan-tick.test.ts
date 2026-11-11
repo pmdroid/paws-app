@@ -38,7 +38,7 @@ test("one scheduler tick requeues an orphan and admits its resume in the same pa
     insertQueuedItem(db, { id: "next", now: 2 });
     const jobs = new JobLoop(db, clock);
     const ticks: string[][] = [];
-    registerScheduler(
+    await registerScheduler(
       jobs,
       async () => {
         ticks.push(await workspaceDispatch(db, { now: clock.now() }));

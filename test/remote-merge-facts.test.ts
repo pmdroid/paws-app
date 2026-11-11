@@ -40,14 +40,14 @@ test.each(["cancelled", "merged"] as const)(
         await applyWorkItemEvent(sqliteDb(db), item.id, "closeout_accepted");
         await applyWorkItemEvent(sqliteDb(db), item.id, "merge_accepted");
       }
-      const before = getWorkItem(db, item.id);
+      const before = await getWorkItem(sqliteDb(db), item.id);
       await recordConfirmedRemoteMerge(sqliteDb(db), fact());
       db.close();
       db = openDatabase(path);
       migrate(db);
       expect(await getConfirmedRemoteMerge(sqliteDb(db), item.id)).toEqual(fact());
-      expect(getWorkItem(db, item.id)).toEqual(before);
-      expect(getWorkItem(db, item.id)?.state).toBe(state);
+      expect(await getWorkItem(sqliteDb(db), item.id)).toEqual(before);
+      expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe(state);
       expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM job").get()?.n).toBe(0);
       expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM outbox").get()?.n).toBe(0);
     } finally {
@@ -71,7 +71,7 @@ test("replayed confirmation preserves its original observation and rejects confl
       recordConfirmedRemoteMerge(sqliteDb(db), { ...fact(), mergeSha: "b".repeat(40) }),
     ).rejects.toThrow("conflicts");
     expect(await getConfirmedRemoteMerge(sqliteDb(db), "item")).toEqual(fact());
-    expect(getWorkItem(db, "item")?.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(db), "item"))?.state).toBe("queued");
   } finally {
     db.close();
   }
@@ -103,7 +103,7 @@ test("a failed fact write leaves terminal task history and earlier confirmed mer
     await expect(recordConfirmedRemoteMerge(sqliteDb(db), fact("second"))).rejects.toThrow(
       "storage failure",
     );
-    expect(getWorkItem(db, "second")?.state).toBe("cancelled");
+    expect((await getWorkItem(sqliteDb(db), "second"))?.state).toBe("cancelled");
     expect(await getConfirmedRemoteMerge(sqliteDb(db), "second")).toBeNull();
     expect(await getConfirmedRemoteMerge(sqliteDb(db), "item")).toEqual(fact());
   } finally {

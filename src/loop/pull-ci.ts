@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   fixRoundsSteps,
   getItemPullRequestSteps,
@@ -6,11 +5,11 @@ import {
   recordCiRoundSteps,
   recordReviewEscapeSteps,
   settlePullCiFailuresSteps,
-  sqliteDb,
   type PullCiFailureRecord,
   type Q,
   type Steps,
   type WorkItemRecord,
+  type Db,
 } from "../db";
 import { ciFixHandoff, ciFixQuestion, ciFixRoundLine } from "../merge";
 
@@ -65,13 +64,12 @@ export function* currentPullCiSteps(
  * the job waits rather than act on an unconfirmed head.
  */
 export async function pullCiHead(
-  db: Database,
+  store: Db,
   item: WorkItemRecord,
   pullNumber: number,
   read: (item: WorkItemRecord, pullNumber: number) => Promise<string | null>,
 ): Promise<string | null | "unreadable"> {
-  if ((await sqliteDb(db).run((q) => pendingPullCiFailuresSteps(q, item.id))).length === 0)
-    return null;
+  if ((await store.run((q) => pendingPullCiFailuresSteps(q, item.id))).length === 0) return null;
   return (await read(item, pullNumber)) ?? "unreadable";
 }
 

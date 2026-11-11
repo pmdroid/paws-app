@@ -47,7 +47,7 @@ describe("work_item_event", () => {
     ]);
     expect(rows[0]).toMatchObject({ version: running.version, at: 2_000, actor: null });
     expect(rows[1]).toMatchObject({ payloadDigest: "sha256:abc", actor: "paws", at: 3_000 });
-    expect(rows.at(-1)?.version).toBe(getWorkItem(db, item.id)?.version);
+    expect(rows.at(-1)?.version).toBe((await getWorkItem(sqliteDb(db), item.id))?.version);
   });
 
   test("a rolled-back transition leaves no event row and no state change", async () => {
@@ -59,7 +59,10 @@ describe("work_item_event", () => {
       }),
     ).rejects.toThrow("the caller's next write failed");
 
-    expect(getWorkItem(db, item.id)).toMatchObject({ state: "queued", version: item.version });
+    expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
+      state: "queued",
+      version: item.version,
+    });
     expect(await listWorkItemEventRows(sqliteDb(db), item.id)).toEqual([]);
   });
 

@@ -112,7 +112,7 @@ export async function probeStandaloneAttribution(root: string) {
     { preconnect: realFetch.preconnect },
   ) as typeof fetch;
   const auth = new GitHubInstallationCheck(
-    db,
+    sqliteDb(db),
     {
       check: async () => true,
       identity: () => syncSteps(() => "workspace-repository"),
@@ -126,10 +126,14 @@ export async function probeStandaloneAttribution(root: string) {
     assert.deepEqual(policy, { bot, credit: null });
     assert.equal(policyCoauthors(policy).length, 0);
     assert.equal(
-      await auth.ensure(getWorkItem(db, item.id)!, "initial", new AbortController().signal),
+      await auth.ensure(
+        (await getWorkItem(sqliteDb(db), item.id))!,
+        "initial",
+        new AbortController().signal,
+      ),
       true,
     );
-    assert.equal(getWorkItem(db, item.id)!.state, "running");
+    assert.equal((await getWorkItem(sqliteDb(db), item.id))!.state, "running");
     assert.equal(
       (await listJobs(sqliteDb(db))).filter((job) => job.queue === "run.resume").length,
       0,
@@ -153,10 +157,14 @@ export async function probeStandaloneAttribution(root: string) {
     await revokeGitHubAttribution(sqliteDb(db), binding, now);
     assert.equal((await policyForItem()).credit, null);
     assert.equal(
-      await auth.ensure(getWorkItem(db, item.id)!, "initial", new AbortController().signal),
+      await auth.ensure(
+        (await getWorkItem(sqliteDb(db), item.id))!,
+        "initial",
+        new AbortController().signal,
+      ),
       true,
     );
-    assert.equal(getWorkItem(db, item.id)!.state, "running");
+    assert.equal((await getWorkItem(sqliteDb(db), item.id))!.state, "running");
     assert.deepEqual(requests, []);
     observations.push(
       "linking credits exactly the delegator from a local lookup, and revoking credit creates no hold",
@@ -164,7 +172,7 @@ export async function probeStandaloneAttribution(root: string) {
     await saveRunCommitPolicy(sqliteDb(db), run.id, policy);
     const reopened = openDatabase(dbPath);
     try {
-      assert.deepEqual(getItemRunCommitPolicy(reopened, item.id), policy);
+      assert.deepEqual(await getItemRunCommitPolicy(sqliteDb(reopened), item.id), policy);
     } finally {
       reopened.close();
     }

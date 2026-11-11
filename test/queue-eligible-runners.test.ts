@@ -130,7 +130,7 @@ test("a delegator with no runner they may use is not queued behind busy slots an
     clock.advance(2 * DAY);
     db.run("UPDATE runner SET last_seen_at=?", [clock.now()]);
     await paws.reconcileExecution();
-    expect(getWorkItem(db, "mine")?.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(db), "mine"))?.state).toBe("queued");
     expect(await bodies(db, "error")).toEqual([]);
     expect(
       (await bodies(db, "thought")).filter((body) => body.includes("runner you can use")),

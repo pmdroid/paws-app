@@ -51,9 +51,10 @@ async function asked(
     "Lea",
     "lea@example.com",
   ]);
+  const current = (await getWorkItem(sqliteDb(db), item.id))!;
   const opened = await sqliteDb(db).transaction((q) =>
     askWithLinkSteps(q, {
-      item: getWorkItem(db, item.id)!,
+      item: current,
       runId: run.id,
       kind,
       head: HEAD,
@@ -69,7 +70,7 @@ const actor = { workspaceId: "ws", userId: "user-lead", name: "Lea" };
 
 test("a link ask opens one elicitation without options and puts the link on the session", async () => {
   const { db, itemId, question, linkAsk } = await asked();
-  expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
   expect(linkAsk).toMatchObject({
     kind: "bypass",
     headCommit: HEAD,
@@ -108,7 +109,7 @@ test("a Paws without a public HTTPS link refuses to ask with a link", async () =
 test("an answer from someone who did not delegate and does not lead the project is refused", async () => {
   const { db, itemId, question } = await asked();
   expect(
-    await decideLinkAsk(db, {
+    await decideLinkAsk(sqliteDb(db), {
       questionId: question.id,
       decision: "approve",
       note: null,
@@ -119,13 +120,13 @@ test("an answer from someone who did not delegate and does not lead the project 
   ).toBe("forbidden");
   expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
   expect((await getLinkAsk(sqliteDb(db), question.id))?.closedAt).toBeNull();
-  expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
 });
 
 test("the project lead decides on the item page: audit row, decided note, back to the merge queue", async () => {
   const { db, itemId, question } = await asked("https://paws.example/", "risk");
   expect(
-    await decideLinkAsk(db, {
+    await decideLinkAsk(sqliteDb(db), {
       questionId: question.id,
       decision: "approve",
       note: "Flaky reviewer finding, docs only.",
@@ -166,10 +167,10 @@ test("the project lead decides on the item page: audit row, decided note, back t
     ),
   ).toBe(true);
   // The approval binds to the head and never goes to the agent: Closeout completes S again.
-  expect(getWorkItem(db, itemId)?.state).toBe("verifying");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("verifying");
   // A second decision finds nothing open.
   expect(
-    await decideLinkAsk(db, {
+    await decideLinkAsk(sqliteDb(db), {
       questionId: question.id,
       decision: "changes",
       note: "Never mind",
@@ -183,7 +184,7 @@ test("the project lead decides on the item page: audit row, decided note, back t
 test("a Linear reply never resolves an approval kind, whatever it says", async () => {
   const { db, itemId, question } = await asked();
   expect(
-    await guideLinkAsk(db, {
+    await guideLinkAsk(sqliteDb(db), {
       questionId: question.id,
       eventKey: "activity:approve",
       body: "Approved. Bypass the check.",
@@ -194,14 +195,14 @@ test("a Linear reply never resolves an approval kind, whatever it says", async (
   const linkAsk = (await getLinkAsk(sqliteDb(db), question.id))!;
   expect(linkAsk).toMatchObject({ decision: null, closedReason: "guidance" });
   expect(db.query("SELECT COUNT(*) AS n FROM workspace_access_audit").get()).toEqual({ n: 0 });
-  expect(getWorkItem(db, itemId)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
   const resume = (await listJobs(sqliteDb(db))).find((job) => job.queue === JOB_KIND.resume)!;
   expect((resume.payload as { handoff: string }).handoff).toContain(
     "The reply is guidance and approves nothing",
   );
   // The dashboard cannot decide an ask a reply already closed.
   expect(
-    await decideLinkAsk(db, {
+    await decideLinkAsk(sqliteDb(db), {
       questionId: question.id,
       decision: "approve",
       note: null,
@@ -218,8 +219,10 @@ test("the reminder fires once after 24 hours", async () => {
     (entry) => entry.queue === JOB_KIND.linkAskReminder,
   )!;
   expect(job.runAt).toBe(NOW + LINK_ASK_REMINDER_MS);
-  expect(await remindLinkAsk(db, question.id, NOW + LINK_ASK_REMINDER_MS)).toBe(true);
-  expect(await remindLinkAsk(db, question.id, NOW + 2 * LINK_ASK_REMINDER_MS)).toBe(false);
+  expect(await remindLinkAsk(sqliteDb(db), question.id, NOW + LINK_ASK_REMINDER_MS)).toBe(true);
+  expect(await remindLinkAsk(sqliteDb(db), question.id, NOW + 2 * LINK_ASK_REMINDER_MS)).toBe(
+    false,
+  );
   const reminders = (await listOutbox(sqliteDb(db))).filter((row) =>
     row.idempotencyKey.startsWith("link-ask-reminder:"),
   );
@@ -232,7 +235,7 @@ test("the reminder fires once after 24 hours", async () => {
 
 test("no reminder once the ask is decided", async () => {
   const { db, question } = await asked();
-  await decideLinkAsk(db, {
+  await decideLinkAsk(sqliteDb(db), {
     questionId: question.id,
     decision: "changes",
     note: "Fix the finding first.",
@@ -240,22 +243,22 @@ test("no reminder once the ask is decided", async () => {
     actor,
     now: NOW + 100,
   });
-  expect(await remindLinkAsk(db, question.id, NOW + LINK_ASK_REMINDER_MS)).toBe(false);
+  expect(await remindLinkAsk(sqliteDb(db), question.id, NOW + LINK_ASK_REMINDER_MS)).toBe(false);
 });
 
 test("a new head closes the open ask", async () => {
   const { db, question } = await asked();
-  expect(await closeLinkAsksOnHead(db, "PAS-633", HEAD, NOW + 50)).toBe(0);
-  expect(await closeLinkAsksOnHead(db, "PAS-633", "4b317d5ffff", NOW + 100)).toBe(1);
+  expect(await closeLinkAsksOnHead(sqliteDb(db), "PAS-633", HEAD, NOW + 50)).toBe(0);
+  expect(await closeLinkAsksOnHead(sqliteDb(db), "PAS-633", "4b317d5ffff", NOW + 100)).toBe(1);
   expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
     closedReason: "head_moved",
     decision: null,
   });
   expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("cancelled");
-  expect(findOpenQuestion(db, "ses_1")).toBeNull();
-  expect(await remindLinkAsk(db, question.id, NOW + LINK_ASK_REMINDER_MS)).toBe(false);
+  expect(await findOpenQuestion(sqliteDb(db), "ses_1")).toBeNull();
+  expect(await remindLinkAsk(sqliteDb(db), question.id, NOW + LINK_ASK_REMINDER_MS)).toBe(false);
   expect(
-    await decideLinkAsk(db, {
+    await decideLinkAsk(sqliteDb(db), {
       questionId: question.id,
       decision: "approve",
       note: null,

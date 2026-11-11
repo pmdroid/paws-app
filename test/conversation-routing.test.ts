@@ -197,7 +197,7 @@ async function setup(options: { version?: string; conversations?: number } = {})
     say: async (itemId: string, id: string, body: string) => {
       expect(await orchestrator.onLinearEvent(comment(itemId, id, body))).toBe(true);
     },
-    deliver: (itemId: string) => deliverLinearComments(db, itemId, caps()),
+    deliver: (itemId: string) => deliverLinearComments(sqliteDb(db), itemId, caps()),
     turn: async (session: string, key: string, body: string) =>
       await recordLinearTurn(sqliteDb(db), {
         eventKey: key,
@@ -222,8 +222,8 @@ async function setup(options: { version?: string; conversations?: number } = {})
       });
       await orchestrator["resumeLinearSession"](session);
     },
-    brief: (itemId: string) =>
-      linearCommentBrief(sqliteDb(db), getWorkItem(db, itemId)!, {
+    brief: async (itemId: string) =>
+      linearCommentBrief(sqliteDb(db), (await getWorkItem(sqliteDb(db), itemId))!, {
         now: () => clock.now(),
         policy,
       }),
@@ -282,7 +282,7 @@ test("with every work slot busy, a message on an idle item starts a conversation
   });
   expect(started!.command.prompt).toContain("Why does checkout retry the card twice?");
   expect(await f.taskSlots()).toEqual(slots);
-  expect(getWorkItem(f.db, "acme-1")!.state).toBe("merge_queue");
+  expect((await getWorkItem(sqliteDb(f.db), "acme-1"))!.state).toBe("merge_queue");
   expect(await f.resumes()).toEqual([]);
   expect((await getLinearComment(sqliteDb(f.db), "c-1"))!.state).toBe("delivered");
 
@@ -295,7 +295,7 @@ test("with every work slot busy, a message on an idle item starts a conversation
     "The gateway retries once on a network timeout; Paws does not retry.",
   ]);
   expect(await f.conversations()).toEqual([]);
-  expect(getWorkItem(f.db, "acme-1")!.state).toBe("merge_queue");
+  expect((await getWorkItem(sqliteDb(f.db), "acme-1"))!.state).toBe("merge_queue");
 });
 
 test("a reply in the Linear session of an idle item goes to a conversation, not a restart", async () => {
@@ -307,7 +307,7 @@ test("a reply in the Linear session of an idle item goes to a conversation, not 
   const [started] = await f.conversations();
   expect(started!.command.prompt).toContain("Is the retry covered by a test?");
   expect(await listPendingLinearTurns(sqliteDb(f.db), acme.session)).toEqual([]);
-  expect(getWorkItem(f.db, "acme-1")!.state).toBe("merge_queue");
+  expect((await getWorkItem(sqliteDb(f.db), "acme-1"))!.state).toBe("merge_queue");
 });
 
 test("a turn that ends without a reply posts its final message as the reply", async () => {
@@ -318,7 +318,7 @@ test("a turn that ends without a reply posts its final message as the reply", as
   await f.answer((await f.conversations())[0]!.id, { text: "It is src/checkout/form.tsx." });
   expect(await f.deliver("acme-1")).toBe("done");
   expect(await f.responses(acme.session)).toEqual(["It is src/checkout/form.tsx."]);
-  expect(getWorkItem(f.db, "acme-1")!.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(f.db), "acme-1"))!.state).toBe("queued");
 });
 
 test("three messages on three items with a conversation limit of 2: two run and the third waits for a conversation slot", async () => {
@@ -357,7 +357,7 @@ test("a timeout posts the timeout reply once and keeps the session", async () =>
   expect(await f.deliver("acme-1")).toBe("done");
   expect(await f.responses(acme.session)).toEqual([CONVERSATION_TIMEOUT_REPLY]);
   expect((await getLinearSession(sqliteDb(f.db), acme.session))!.stoppedAt).toBeNull();
-  expect(getWorkItem(f.db, "acme-1")!.state).toBe("merge_queue");
+  expect((await getWorkItem(sqliteDb(f.db), "acme-1"))!.state).toBe("merge_queue");
 });
 
 test("a helper that expires without a result posts the timeout reply once", async () => {
@@ -425,7 +425,7 @@ test("a queued item's start job waits while a conversation runs on its session",
     status: "pending",
     attempts: job.attempts - 1,
   });
-  expect(getWorkItem(f.db, "acme-1")!.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(f.db), "acme-1"))!.state).toBe("queued");
 
   await f.answer(started!.id, { text: "Only the tests." });
   expect(await f.deliver("acme-1")).toBe("done");
@@ -483,7 +483,7 @@ test("start_work in a conversation on a 0.1.77 runner restarts the item with the
   expect(await f.resumes()).toHaveLength(1);
   expect(resume!.payload).toMatchObject({ itemId: "acme-1", reason: "follow_up" });
   expect((resume!.payload as { handoff: string }).handoff).toContain(plan);
-  expect(getWorkItem(f.db, "acme-1")!.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(f.db), "acme-1"))!.state).toBe("queued");
   // Waiting in line holds neither a conversation nor a work slot: only acme-busy holds one.
   expect(await f.conversations()).toEqual([]);
   expect((await f.taskSlots())[0]).toMatchObject({ used: 1, capacity: 1 });

@@ -30,7 +30,10 @@ async function sweepFixture() {
     delegateId: "app",
   });
   lifecycle.issues.set("child", { ...lifecycle.issue, id: "child" });
-  const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent", now: 1000 });
+  const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    linearIssueId: "parent",
+    now: 1000,
+  });
   if (!intake.ok) throw new Error("intake failed");
   db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
   await recordLinearInstallation(sqliteDb(db), {

@@ -178,7 +178,7 @@ export async function probeRunnerPlacement(
       sharedExcluded: true,
     });
     await placement.candidates(request);
-    saveCheckpoint(db, item.id, {
+    await saveCheckpoint(sqliteDb(db), item.id, {
       phase: "running",
       baseSha: "a".repeat(40),
       wipCommit: "b".repeat(40),

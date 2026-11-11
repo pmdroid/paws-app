@@ -102,11 +102,11 @@ describe("roles", () => {
         instanceId: id,
         role,
         signal: controller.signal,
-        prepare({ jobs }) {
+        async prepare({ jobs }) {
           jobs.register("acme.catalog.refresh", () => {
             runs.push(role);
           });
-          enqueueJobOnce(db, {
+          await enqueueJobOnce(sqliteDb(db), {
             queue: "acme.catalog.refresh",
             jobKey: "acme.catalog.refresh",
             recurringEveryMs: 600_000,
@@ -138,7 +138,12 @@ describe("roles", () => {
       now,
     });
     for (const queue of ["acme.kept", "acme.legacy"])
-      enqueueJobOnce(first, { queue, jobKey: queue, recurringEveryMs: 600_000, now: now + 60_000 });
+      await enqueueJobOnce(sqliteDb(first), {
+        queue,
+        jobKey: queue,
+        recurringEveryMs: 600_000,
+        now: now + 60_000,
+      });
     const run = async (role: InstanceRole) => {
       const controller = new AbortController();
       const loops = await startLoops({
@@ -182,7 +187,7 @@ describe("roles", () => {
       const workerUrl = await readyUrl(worker);
       const db = openDatabase(join(home, "paws.db"));
       try {
-        enqueueJobOnce(db, {
+        await enqueueJobOnce(sqliteDb(db), {
           queue: "acme.worker-only",
           jobKey: "acme.worker-only",
           recurringEveryMs: 600_000,

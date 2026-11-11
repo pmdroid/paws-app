@@ -53,7 +53,7 @@ async function fixture() {
     onAccepted?: (q: Q, result: IntakeResult) => Steps<void>,
     taskKey = sessionId,
   ) =>
-    intakeDelegatedIssue(db, tracker, {
+    intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "issue",
       sessionId,
       taskKey,
@@ -71,7 +71,7 @@ async function failedAttempt() {
   await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
   await failWorkItem(
     sqliteDb(db),
-    getWorkItem(db, id)!,
+    (await getWorkItem(sqliteDb(db), id))!,
     "no_repository",
     "No repository accessible",
     10,
@@ -87,7 +87,10 @@ test("a new session replaces an empty failed attempt and preserves its history",
   if (!replacement.ok) return;
   expect(replacement.items[0]?.id).not.toBe(id);
   expect(replacement.items[0]?.state).toBe("queued");
-  expect(getWorkItem(db, id)).toMatchObject({ state: "cancelled", cancelRequested: true });
+  expect(await getWorkItem(sqliteDb(db), id)).toMatchObject({
+    state: "cancelled",
+    cancelRequested: true,
+  });
   expect(db.query("SELECT last_error FROM job").get()).toEqual({ last_error: "no_repository" });
   expect(db.query("SELECT id FROM outbox").all()).toHaveLength(1);
   expect(db.query("SELECT id FROM run").all()).toHaveLength(0);
@@ -96,7 +99,7 @@ test("a new session replaces an empty failed attempt and preserves its history",
   expect(replay.ok && replay.items[0]?.id).toBe(replacement.items[0]?.id);
   const oldReplay = await admit("old");
   expect(oldReplay.ok && oldReplay.alreadyExisted).toBe(true);
-  expect(getWorkItem(db, id)?.state).toBe("cancelled");
+  expect((await getWorkItem(sqliteDb(db), id))?.state).toBe("cancelled");
   expect(db.query("SELECT id FROM work_item").all()).toHaveLength(2);
 });
 
@@ -108,7 +111,7 @@ test("replacement and retirement roll back together when admission fails", async
       throw new Error("Admission failed");
     }),
   ).rejects.toThrow("Admission failed");
-  expect(getWorkItem(db, id)?.state).toBe("failed");
+  expect((await getWorkItem(sqliteDb(db), id))?.state).toBe("failed");
   expect(db.query("SELECT id FROM work_item").all()).toHaveLength(1);
   expect((await admit("new")).ok).toBe(true);
 });
@@ -125,7 +128,7 @@ test("the original session keeps its failed attempt for ordinary resume", async 
   const { db, id, admit } = await failedAttempt();
   expect((await admit("old")).ok).toBe(true);
   await expect(admit("old", undefined, "another-task")).rejects.toThrow("PAS-372");
-  expect(getWorkItem(db, id)?.state).toBe("failed");
+  expect((await getWorkItem(sqliteDb(db), id))?.state).toBe("failed");
 });
 
 test.each(["run", "checkpoint", "job", "conversation", "cleanup", "parent", "sibling"])(
@@ -138,7 +141,7 @@ test.each(["run", "checkpoint", "job", "conversation", "cleanup", "parent", "sib
     if (held === "job")
       await enqueueJob(sqliteDb(db), { queue: "item.start", payload: { itemId: id } });
     if (held === "conversation") await saveConversation(sqliteDb(db), id, "[]", null, true);
-    if (held === "cleanup") blockLinearSessionCleanup(db, "old");
+    if (held === "cleanup") await blockLinearSessionCleanup(sqliteDb(db), "old");
     if (held === "parent")
       db.run("UPDATE work_item SET brief = json_set(brief, '$.epic', json(?)) WHERE id = ?", [
         '{"issueId":"parent"}',
@@ -152,7 +155,7 @@ test.each(["run", "checkpoint", "job", "conversation", "cleanup", "parent", "sib
         [id],
       );
     await expect(admit("new")).rejects.toThrow("PAS-372");
-    expect(getWorkItem(db, id)?.state).toBe("failed");
+    expect((await getWorkItem(sqliteDb(db), id))?.state).toBe("failed");
   },
 );
 
@@ -162,7 +165,7 @@ test.each(["organization_id", "oauth_client_id", "app_user_id", "team_id"])(
     const { db, id, admit } = await failedAttempt();
     db.run(`UPDATE linear_session SET ${column} = 'different' WHERE session_id = 'new'`);
     await expect(admit("new")).rejects.toThrow("PAS-372");
-    expect(getWorkItem(db, id)?.state).toBe("failed");
+    expect((await getWorkItem(sqliteDb(db), id))?.state).toBe("failed");
   },
 );
 
@@ -172,7 +175,7 @@ test.each(["queued", "running", "awaiting_input", "paused"])(
     const { db, id, admit } = await failedAttempt();
     db.run("UPDATE work_item SET state = ?, cancel_requested = 0 WHERE id = ?", [state, id]);
     await expect(admit("new")).rejects.toThrow("PAS-372");
-    expect(getWorkItem(db, id)?.state).toBe(state);
+    expect((await getWorkItem(sqliteDb(db), id))?.state).toBe(state);
   },
 );
 
@@ -241,7 +244,7 @@ test("created events replace a failed start, bind the new session and fence repl
     await applyWorkItemEvent(sqliteDb(db), originalId, "dispatched");
     await failWorkItem(
       sqliteDb(db),
-      getWorkItem(db, originalId)!,
+      (await getWorkItem(sqliteDb(db), originalId))!,
       "no_repository",
       "No repository accessible",
       10,
@@ -249,8 +252,11 @@ test("created events replace a failed start, bind the new session and fence repl
     await orchestrator.onLinearEvent(created("new"));
     const replacementId = (await getLinearSession(sqliteDb(db), "new"))!.activeItemId!;
     expect(replacementId).not.toBe(originalId);
-    expect(getWorkItem(db, replacementId)).toMatchObject({ state: "queued", sessionKey: "new" });
-    expect(getWorkItem(db, originalId)?.state).toBe("cancelled");
+    expect(await getWorkItem(sqliteDb(db), replacementId)).toMatchObject({
+      state: "queued",
+      sessionKey: "new",
+    });
+    expect((await getWorkItem(sqliteDb(db), originalId))?.state).toBe("cancelled");
     await orchestrator.onLinearEvent(created("new"));
     await orchestrator.onLinearEvent(created("old"));
     await expect(
@@ -262,7 +268,7 @@ test("created events replace a failed start, bind the new session and fence repl
         body: "retry",
       }),
     ).rejects.toThrow("PAS-372");
-    expect(getWorkItem(db, originalId)?.state).toBe("cancelled");
+    expect((await getWorkItem(sqliteDb(db), originalId))?.state).toBe("cancelled");
     expect((await getLinearSession(sqliteDb(db), "new"))!.activeItemId).toBe(replacementId);
     expect(db.query("SELECT id FROM work_item").all()).toHaveLength(2);
   } finally {
@@ -275,7 +281,7 @@ test("concurrent deliveries of the same task share admission after session recon
   const ready = Promise.withResolvers<void>();
   let arrivals = 0;
   const admit = () =>
-    intakeDelegatedIssue(db, tracker, {
+    intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "issue",
       sessionId: "new",
       taskKey: "same-task",

@@ -24,9 +24,9 @@ import { startServer } from "../../src/server";
 import { createWorkspaceAccess, type WorkspaceAccess } from "../../src/workspace";
 import { createExecutionControlsFixture } from "./execution-controls";
 
-async function until(predicate: () => boolean, message: string, timeout = 5000) {
+async function until(predicate: () => boolean | Promise<boolean>, message: string, timeout = 5000) {
   const deadline = performance.now() + timeout;
-  while (!predicate()) {
+  while (!(await predicate())) {
     assert(performance.now() < deadline, message);
     await Bun.sleep(5);
   }
@@ -237,9 +237,10 @@ async function remoteFixture(
     })();
     void loop.catch(() => undefined);
     await until(
-      () =>
+      async () =>
         ready &&
-        (state !== "awaiting_input" || getWorkItem(db, "controlled")!.state === "awaiting_input"),
+        (state !== "awaiting_input" ||
+          (await getWorkItem(sqliteDb(db), "controlled"))!.state === "awaiting_input"),
       "Remote ACP did not become ready",
     );
     const backend = createRemoteAgentRunner({
@@ -356,8 +357,8 @@ export async function probeExecutionStopStates(root: string) {
         queue: state === "merge_queue" ? "github.merge" : "run.resume",
         payload: { itemId: "controlled" },
       });
-      const unrelated = getWorkItem(db, "other")!;
-      const branch = getWorkItem(db, "controlled")!.branchName;
+      const unrelated = (await getWorkItem(sqliteDb(db), "other"))!;
+      const branch = (await getWorkItem(sqliteDb(db), "controlled"))!.branchName;
       const initialQuestions = db
         .query<{ id: string }, []>(
           "SELECT id FROM question WHERE item_id='controlled' AND cancelled_at IS NULL",
@@ -369,7 +370,7 @@ export async function probeExecutionStopStates(root: string) {
       remote?.beforeAck(() =>
         assert.equal(returned, false, "HTTP Stop returned before persisted remote ACK"),
       );
-      const initialState = getWorkItem(db, "controlled")!.state;
+      const initialState = (await getWorkItem(sqliteDb(db), "controlled"))!.state;
       assert.equal(initialState, state, "Stop must begin in the claimed canonical state");
       const started = performance.now();
       const response = await fetch(`${origin}/api/execution-controls`, {
@@ -384,9 +385,9 @@ export async function probeExecutionStopStates(root: string) {
       const elapsedMs = performance.now() - started;
       assert.equal(response.status, 200, await response.text());
       assert(elapsedMs < 10_000);
-      assert.equal(getWorkItem(db, "controlled")!.state, "cancelled");
-      assert.equal(getWorkItem(db, "controlled")!.branchName, branch);
-      assert.deepEqual(getWorkItem(db, "other"), unrelated);
+      assert.equal((await getWorkItem(sqliteDb(db), "controlled"))!.state, "cancelled");
+      assert.equal((await getWorkItem(sqliteDb(db), "controlled"))!.branchName, branch);
+      assert.deepEqual(await getWorkItem(sqliteDb(db), "other"), unrelated);
       assert.equal(
         db
           .query<{ n: number }, []>(

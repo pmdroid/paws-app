@@ -159,7 +159,7 @@ test("a delegator without a runner, beside another member's free runner, is held
       db.run("UPDATE runner SET last_seen_at=?", [clock.now()]);
       await paws.reconcileExecution();
     }
-    expect(getWorkItem(db, "mine")?.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(db), "mine"))?.state).toBe("queued");
     expect((await listOutbox(sqliteDb(db))).length).toBe(outbox);
     expect(itemJobs(db, "mine")).toBe(0);
 
@@ -419,8 +419,8 @@ function labelled(db: Database, clock: FakeClock, jobs: JobLoop, presets = true)
     return read(issueId, options);
   };
   const paws = orchestrator(db, clock, jobs, { tracker, pawsRoot });
-  const label = (implementer: string) =>
-    tracker.repositoryHints.set(getWorkItem(db, "mine")!.linearIssueId, {
+  const label = async (implementer: string) =>
+    tracker.repositoryHints.set((await getWorkItem(sqliteDb(db), "mine"))!.linearIssueId, {
       mentions: [],
       issueLabels: [],
       parentLabels: [],
@@ -442,7 +442,7 @@ test("an Acme issue labelled Codex starts on its owner's Codex-only runner", asy
     const users = await workspace(db);
     addRunner(db, "own", users.me!, START, 1);
     onlyCodex(db, "own");
-    label("Codex");
+    await label("Codex");
     await paws.reconcileExecution();
     expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toBeNull();
     await Bun.sleep(0);
@@ -463,7 +463,7 @@ test("a labelled Acme issue is held for its labelled agent and resumes when that
   try {
     const users = await workspace(db);
     addRunner(db, "own", users.me!, START, 0);
-    label("Codex");
+    await label("Codex");
     await paws.reconcileExecution();
     await Bun.sleep(0);
     expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toMatchObject({

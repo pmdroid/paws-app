@@ -296,7 +296,7 @@ describe("ephemeral progress coalescing", () => {
     const latest = await enqueue("latest", {
       payload: { kind: "thought", body: "Latest", ephemeral: true },
     });
-    enqueueOutboxOnce(db, {
+    await enqueueOutboxOnce(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: "A",
@@ -316,7 +316,7 @@ describe("persisted Stop fences", () => {
     await enqueue("progress");
     dispatcher.setHandler(async (row, context) => {
       if (row.idempotencyKey === "progress") await gate.promise;
-      if (context.isCurrent()) calls.push(row.idempotencyKey);
+      if (await context.isCurrent()) calls.push(row.idempotencyKey);
     });
     await dispatcher.tick();
     const completed = await enqueue("completed-status", {
@@ -327,7 +327,7 @@ describe("persisted Stop fences", () => {
     const generation = await stopOutboxSession(sqliteDb(db), "linear", "A", clock.now());
     expect(await stopOutboxSession(sqliteDb(db), "linear", "A", clock.now() + 1)).toBe(generation);
     for (let attempt = 0; attempt < 2; attempt += 1)
-      enqueueOutboxOnce(db, {
+      await enqueueOutboxOnce(sqliteDb(db), {
         target: "linear",
         op: "activity",
         orderingKey: "A",

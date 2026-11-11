@@ -181,8 +181,8 @@ test("removeWorktree failure is journaled once after the confirmed merge", async
 
     await mkdir(mirrorPath(f.root, repository.owner, repository.repo), { recursive: true });
     await mkdir(worktreePath(f.root, itemPathId(f.item)), { recursive: true });
-    await f.operations.completeMerge(getWorkItem(f.db, f.item.id)!, repository);
-    expect(getWorkItem(f.db, f.item.id)?.state).toBe("merged");
+    await f.operations.completeMerge((await getWorkItem(sqliteDb(f.db), f.item.id))!, repository);
+    expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("merged");
     expect(f.lines).toHaveLength(1);
     expect(f.lines[0]).toContain("item=item-715");
     expect(f.lines[0]).toContain("operation=orchestrator.completeMerge.removeWorktree");

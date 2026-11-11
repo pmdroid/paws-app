@@ -33,7 +33,7 @@ async function verifying(db: Database, state = "verifying") {
     now: 1,
   });
   await setCurrentRun(sqliteDb(db), "item", run.id);
-  const item = getWorkItem(db, "item")!;
+  const item = (await getWorkItem(sqliteDb(db), "item"))!;
   return { version: item.version, runId: run.id };
 }
 
@@ -42,7 +42,7 @@ async function accept(
   expected: { version: number; runId: string | null },
   extra = {},
 ) {
-  return await acceptCloseout(db, {
+  return await acceptCloseout(sqliteDb(db), {
     itemId: "item",
     expected,
     base,
@@ -61,7 +61,7 @@ test("initial verification commits acceptance, checkpoint, a fresh queue place a
   const db = tempDb();
   const expected = await verifying(db);
   expect(await accept(db, expected)).not.toBeNull();
-  const item = getWorkItem(db, "item")!;
+  const item = (await getWorkItem(sqliteDb(db), "item"))!;
   expect(item.state).toBe("merge_queue");
   expect(item.checkpoint).toEqual({ phase: "merge_queue", baseSha: base, wipCommit: head });
   expect(queueEntries(db)).toBe(0);
@@ -74,8 +74,8 @@ test("re-verification from the merge queue keeps its place and keys the job to t
   const db = tempDb();
   const expected = await verifying(db, "merge_queue");
   expect(await accept(db, expected, { reverifyJobId: 7 })).not.toBeNull();
-  expect(getWorkItem(db, "item")?.state).toBe("merge_queue");
-  expect(getWorkItem(db, "item")?.checkpoint?.wipCommit).toBe(head);
+  expect((await getWorkItem(sqliteDb(db), "item"))?.state).toBe("merge_queue");
+  expect((await getWorkItem(sqliteDb(db), "item"))?.checkpoint?.wipCommit).toBe(head);
   expect(queueEntries(db)).toBe(1);
   expect((await listJobs(sqliteDb(db))).map((job) => job.jobKey)).toEqual([
     `merge:item:${head}:reverify:7`,
@@ -118,9 +118,9 @@ test.each([
   const db = tempDb();
   const expected = await verifying(db);
   await change(db);
-  const before = getWorkItem(db, "item");
+  const before = await getWorkItem(sqliteDb(db), "item");
   expect(await accept(db, expected)).toBeNull();
-  expect(getWorkItem(db, "item")).toEqual(before);
+  expect(await getWorkItem(sqliteDb(db), "item")).toEqual(before);
   expect(queueEntries(db)).toBe(1);
   expect(await listJobs(sqliteDb(db))).toHaveLength(0);
 });
@@ -128,10 +128,10 @@ test.each([
 test("a failure while writing the merge job rolls back the state, checkpoint and queue place", async () => {
   const db = tempDb();
   const expected = await verifying(db);
-  const before = getWorkItem(db, "item");
+  const before = await getWorkItem(sqliteDb(db), "item");
   db.run("CREATE TRIGGER fail_job BEFORE INSERT ON job BEGIN SELECT RAISE(ABORT, 'injected'); END");
   await expect(accept(db, expected)).rejects.toThrow("injected");
-  expect(getWorkItem(db, "item")).toEqual(before);
+  expect(await getWorkItem(sqliteDb(db), "item")).toEqual(before);
   expect(queueEntries(db)).toBe(1);
   expect(await listJobs(sqliteDb(db))).toHaveLength(0);
 });
@@ -144,8 +144,8 @@ test("a reopened database finds the accepted candidate's merge job", async () =>
     await accept(db, await verifying(db));
     db.close();
     const reopened = openDatabase(path);
-    expect(getWorkItem(reopened, "item")?.state).toBe("merge_queue");
-    expect(getWorkItem(reopened, "item")?.checkpoint?.wipCommit).toBe(head);
+    expect((await getWorkItem(sqliteDb(reopened), "item"))?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(reopened), "item"))?.checkpoint?.wipCommit).toBe(head);
     expect((await listJobs(sqliteDb(reopened))).map((job) => job.status)).toEqual(["pending"]);
     reopened.close();
   } finally {
@@ -161,7 +161,7 @@ test.each(["merged", "completed", "cancelled", "failed"])(
     const id = (await accept(db, expected))!;
     db.run("UPDATE job SET status='done' WHERE id=?", [id]);
     db.run("UPDATE work_item SET state=? WHERE id='item'", [state]);
-    const item = getWorkItem(db, "item")!;
+    const item = (await getWorkItem(sqliteDb(db), "item"))!;
     expect(await accept(db, { version: item.version, runId: item.currentRunId })).toBeNull();
     expect((await getJob(sqliteDb(db), id))?.status).toBe("done");
     db.close();
@@ -173,13 +173,13 @@ test("re-acceptance revives a done merge job with the current item fence", async
   const id = (await accept(db, await verifying(db)))!;
   db.run("UPDATE job SET status='done', attempts=3 WHERE id=?", [id]);
   db.run("UPDATE work_item SET state='verifying', version=version+1 WHERE id='item'");
-  const item = getWorkItem(db, "item")!;
+  const item = (await getWorkItem(sqliteDb(db), "item"))!;
   expect(await accept(db, { version: item.version, runId: item.currentRunId })).toBe(id);
   expect(await getJob(sqliteDb(db), id)).toMatchObject({ status: "pending", attempts: 0 });
   expect(await jobVersionCurrent(sqliteDb(db), (await getJob(sqliteDb(db), id))!)).toBe(true);
   db.run("UPDATE job SET status='done' WHERE id=?", [id]);
   db.run("UPDATE work_item SET cancel_requested=1 WHERE id='item'");
-  const cancelled = getWorkItem(db, "item")!;
+  const cancelled = (await getWorkItem(sqliteDb(db), "item"))!;
   expect(
     await accept(db, { version: cancelled.version, runId: cancelled.currentRunId }),
   ).toBeNull();
@@ -200,7 +200,7 @@ test("a confirmed merge cannot be revived while the merged item edge is still pe
     mergeSha: "merged",
     confirmedAt: 11,
   });
-  const item = getWorkItem(db, "item")!;
+  const item = (await getWorkItem(sqliteDb(db), "item"))!;
   expect(item.state).toBe("merge_queue");
   expect(await accept(db, { version: item.version, runId: item.currentRunId })).toBeNull();
   expect((await getJob(sqliteDb(db), id))?.status).toBe("done");

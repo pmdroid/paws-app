@@ -61,7 +61,7 @@ export async function probeSchedulerRuntime(
   await activateLinearItem(sqliteDb(db), "session", "original");
   const heldLoop = new JobLoop(db, clock);
   let heldTicks = 0;
-  registerScheduler(
+  await registerScheduler(
     heldLoop,
     () => {
       heldTicks += 1;
@@ -98,7 +98,7 @@ export async function probeSchedulerRuntime(
     scheduling: async () => ({}),
   });
   try {
-    registerScheduler(
+    await registerScheduler(
       jobs,
       async () => {
         events.push(`reconcile:${(await getLinearSession(sqliteDb(db), "session"))?.activeItemId}`);
@@ -133,12 +133,12 @@ export async function probeSchedulerRuntime(
     observe(
       "the admitted blocker claims and activates the yielded canonical session",
       start?.queue === JOB_KIND.start &&
-        getWorkItem(db, "blocker")?.state === "running" &&
+        (await getWorkItem(sqliteDb(db), "blocker"))?.state === "running" &&
         (await getLinearSession(sqliteDb(db), "session"))?.activeItemId === "blocker" &&
-        getWorkItem(db, "original")?.state === "merge_queue",
+        (await getWorkItem(sqliteDb(db), "original"))?.state === "merge_queue",
       {
         queue: start?.queue,
-        state: getWorkItem(db, "blocker")?.state,
+        state: (await getWorkItem(sqliteDb(db), "blocker"))?.state,
         activeItemId: (await getLinearSession(sqliteDb(db), "session"))?.activeItemId,
       },
     );
@@ -160,7 +160,7 @@ export async function probeSchedulerRuntime(
     );
     const loop = new JobLoop(defaults, clock);
     const run = () => workspaceDispatch(defaults, { now: clock.now() });
-    registerScheduler(
+    await registerScheduler(
       loop,
       async () => {
         await run();

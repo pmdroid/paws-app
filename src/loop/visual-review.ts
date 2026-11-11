@@ -1,7 +1,6 @@
 import { askSteps, restartSteps } from "./operations";
 import { askWithLinkSteps, linkAskAvailable } from "./link-ask";
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import type { EvidenceApproval, ResolvedEvidence } from "../closeout";
 import { readEvidenceBytes, type EvidenceStorage } from "../evidence";
@@ -24,7 +23,6 @@ import {
   listVisualReviewsSteps,
   saveCheckpointSteps,
   saveVisualReviewMarksSteps,
-  sqliteDb,
   type Db,
   type Q,
   type Steps,
@@ -108,14 +106,13 @@ export type VisualReviewCarryPlan = {
  * A file with no accepted predecessor is asked. Reads files, so call outside a transaction.
  */
 export async function planVisualReviewCarry(
-  db: Database,
+  store: Db,
   itemId: string,
   checkId: string,
   evidenceIds: readonly string[],
   storage: EvidenceStorage | undefined,
 ): Promise<VisualReviewCarryPlan> {
   const plan: VisualReviewCarryPlan = { carried: [], approved: new Map() };
-  const store = sqliteDb(db);
   const origins = await store.run((q) => humanApprovedScreensSteps(q, itemId, checkId));
   const approved: ((typeof origins)[number] & { row: StoredEvidence })[] = [];
   for (const origin of origins) {
@@ -138,7 +135,7 @@ export async function planVisualReviewCarry(
       storage !== undefined &&
       seen.mediaType.startsWith("image/") &&
       row.mediaType.startsWith("image/") &&
-      (await looksTheSame(db, storage, seen.id, row.id))
+      (await looksTheSame(store, storage, seen.id, row.id))
     ) {
       plan.carried.push({ ...origin, evidenceId: id, match: "similar" });
       continue;
@@ -149,15 +146,15 @@ export async function planVisualReviewCarry(
 }
 
 async function looksTheSame(
-  db: Database,
+  store: Db,
   storage: EvidenceStorage,
   before: string,
   after: string,
 ): Promise<boolean> {
   try {
     const [a, b] = await Promise.all([
-      readEvidenceBytes(db, storage, before),
-      readEvidenceBytes(db, storage, after),
+      readEvidenceBytes(store, storage, before),
+      readEvidenceBytes(store, storage, after),
     ]);
     return (await compareScreenshots(a, b))?.same === true;
   } catch (caughtError1) {
@@ -310,11 +307,10 @@ export const VISUAL_REVIEW_NEEDS_LINK =
 
 /** Posts the one reminder while the review is still open and the task still waits on it. */
 export async function remindVisualReview(
-  db: Database,
+  store: Db,
   questionId: string,
   now: number,
 ): Promise<boolean> {
-  const store = sqliteDb(db);
   const question = await store.run((q) => getQuestionSteps(q, questionId));
   if (
     question === null ||

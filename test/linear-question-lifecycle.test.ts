@@ -124,7 +124,7 @@ test.each([NOW - 1, NOW])(
 test("an answer racing delivery suppresses the unsent elicitation", async () => {
   const { db, question, orchestrator } = await setup();
   try {
-    enqueueOutboxOnce(db, {
+    await enqueueOutboxOnce(sqliteDb(db), {
       target: "linear",
       op: "elicitation",
       orderingKey: "ses_1",
@@ -164,7 +164,7 @@ test("an answer aborts an elicitation currently being delivered", async () => {
     });
   const { db, question, orchestrator, outbox } = await setup(tracker);
   try {
-    enqueueOutboxOnce(db, {
+    await enqueueOutboxOnce(sqliteDb(db), {
       target: "linear",
       op: "elicitation",
       orderingKey: "ses_1",
@@ -241,7 +241,7 @@ test("only one blocking question may be open on a session", async () => {
         now: NOW + 1,
       }),
     ).rejects.toThrow("already has an unanswered question");
-    expect(findOpenQuestion(db, "ses_1")?.id).toBe(question.id);
+    expect((await findOpenQuestion(sqliteDb(db), "ses_1"))?.id).toBe(question.id);
   } finally {
     db.close();
   }
@@ -254,7 +254,7 @@ test("a continuation write failure rolls back the answer and state transition", 
       WHEN NEW.queue = 'run.resume' BEGIN SELECT RAISE(ABORT, 'resume unavailable'); END`);
     await expect(orchestrator.onLinearEvent(prompt())).rejects.toThrow("resume unavailable");
     expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
-    expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("awaiting_input");
     db.run("DROP TRIGGER reject_resume");
     await orchestrator.onLinearEvent(prompt());
     expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("answered");
@@ -267,16 +267,16 @@ test("a Linear Stop pauses the item with its question open, and a reply restarts
   const { db, item, question, orchestrator } = await setup(createFakeTracker([]));
   try {
     await orchestrator.onLinearEvent({ ...prompt(), body: null, signal: "stop" });
-    expect(getWorkItem(db, item.id)?.state).toBe("paused");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("paused");
     expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
     expect(
       (await listOutbox(sqliteDb(db))).map((row) => (row.payload as { body?: string }).body),
     ).toContain("Paused. Reply here or re-delegate to continue.");
 
     await orchestrator.onLinearEvent(prompt(NOW + 500, "reply-1"));
-    expect(getWorkItem(db, item.id)?.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("queued");
     expect((await getQuestion(sqliteDb(db), question.id))?.answer).toBeNull();
-    expect(findOpenQuestion(db, "ses_1")).toBeNull();
+    expect(await findOpenQuestion(sqliteDb(db), "ses_1")).toBeNull();
     const resume = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
     expect(resume).toHaveLength(1);
     expect(resume[0]!.payload).toMatchObject({
@@ -393,7 +393,11 @@ test("a runner wait asked before a restart is answered by the next process witho
     await applyWorkItemEvent(sqliteDb(db), item.id, "answer_received");
     const wait = await ask(
       db,
-      { itemId: item.id, runId: getWorkItem(db, item.id)!.currentRunId, sessionId: "ses_1" },
+      {
+        itemId: item.id,
+        runId: (await getWorkItem(sqliteDb(db), item.id))!.currentRunId,
+        sessionId: "ses_1",
+      },
       "runner-wait",
       "Move the task to another runner, or keep waiting?",
       { options: ["Move to another runner", "Keep waiting"], now: NOW },

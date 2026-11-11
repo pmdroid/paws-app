@@ -35,7 +35,7 @@ for (const [type, source] of [
       const tracker = createFakeTracker();
       for (let round = 0; round < 10; round += 1)
         for (const head of await claimOutboxHeads(sqliteDb(db), { now: 10 + round })) {
-          expect(isOutboxCurrent(db, head)).toBe(true);
+          expect(await isOutboxCurrent(sqliteDb(db), head)).toBe(true);
           if (head.op === "status") await deliverLinearOutbox(head, tracker, async () => {});
           await completeOutbox(sqliteDb(db), head, 10 + round);
         }

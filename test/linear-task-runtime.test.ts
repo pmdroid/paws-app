@@ -223,13 +223,13 @@ test("a parent discussion classifies before fanout and completes without Git, is
   try {
     await f.orchestrator.onLinearEvent(event());
     const session = (await getLinearSession(sqliteDb(f.db), "session"))!;
-    const item = getWorkItem(f.db, session.activeItemId!)!;
+    const item = (await getWorkItem(sqliteDb(f.db), session.activeItemId!))!;
     expect(item.linearIssueId).toBe("parent");
     expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(1);
     expect(await getTaskMode(sqliteDb(f.db), item.id)).toBe("answer");
     expect(f.launches).toEqual(["classify"]);
     await f.jobs.tick();
-    expect(getWorkItem(f.db, item.id)?.state).toBe("completed");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("completed");
     expect(f.launches).toEqual(["classify", "answer"]);
     expect(f.tracker.statuses).toEqual([]);
     expect(
@@ -241,10 +241,10 @@ test("a parent discussion classifies before fanout and completes without Git, is
     expect(existsSync(join(f.root, "mirrors"))).toBe(false);
     for (const trace of f.traces)
       expect(JSON.parse(readFileSync(trace, "utf8")).fs[0].ok).toBe(false);
-    expect(getWorkItem(f.db, item.id)?.checkpoint?.wipCommit).toBeUndefined();
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.checkpoint?.wipCommit).toBeUndefined();
     await f.orchestrator.onLinearEvent(event());
     expect(f.launches).toEqual(["classify", "answer"]);
-    expect(getWorkItem(f.db, item.id)?.state).toBe("completed");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("completed");
     expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(1);
   } finally {
     f.db.close();
@@ -256,7 +256,7 @@ test("code classification persists before child work is dispatched", async () =>
   try {
     await f.orchestrator.onLinearEvent(event());
     const session = (await getLinearSession(sqliteDb(f.db), "session"))!;
-    const item = getWorkItem(f.db, session.activeItemId!)!;
+    const item = (await getWorkItem(sqliteDb(f.db), session.activeItemId!))!;
     expect(item.linearIssueId).toBe("child");
     expect(await getTaskMode(sqliteDb(f.db), item.id)).toBe("code");
     expect(f.launches).toEqual(["classify"]);
@@ -273,7 +273,9 @@ test("ambiguous outcomes ask for clarification before repository access", async 
     await f.orchestrator.onLinearEvent(event());
     await f.jobs.tick();
     const session = (await getLinearSession(sqliteDb(f.db), "session"))!;
-    expect(getWorkItem(f.db, session.activeItemId!)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(f.db), session.activeItemId!))?.state).toBe(
+      "awaiting_input",
+    );
     expect(f.tracker.questions[0]?.body).toBe(
       elicitationBody("Explain it, create a file, or change the code?"),
     );
@@ -304,7 +306,7 @@ test("a clarification asked while the session waits on another question queues b
     await f.orchestrator.onLinearEvent(event());
     await f.jobs.tick();
     const itemId = (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!;
-    expect(getWorkItem(f.db, itemId)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(f.db), itemId))?.state).toBe("awaiting_input");
     expect(await questionOf(f.db, itemId)).toMatchObject({
       kind: "clarification",
       status: "queued",
@@ -346,7 +348,7 @@ test("ask_team while the session waits on another question queues the agent's qu
     await f.orchestrator.onLinearEvent(event());
     await f.jobs.tick();
     const itemId = (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!;
-    expect(getWorkItem(f.db, itemId)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(f.db), itemId))?.state).toBe("awaiting_input");
     expect(await questionOf(f.db, itemId)).toMatchObject({
       kind: "agent",
       status: "queued",
@@ -395,8 +397,10 @@ test.each([null, "", " \n "])(
       };
       running = f.jobs.tick();
       await ready.promise;
-      expect(f.orchestrator.agentAlive(getWorkItem(f.db, itemId)!.currentRunId!)).toBe(true);
-      expect(findOpenQuestion(f.db, "session")).toBeNull();
+      expect(
+        f.orchestrator.agentAlive((await getWorkItem(sqliteDb(f.db), itemId))!.currentRunId!),
+      ).toBe(true);
+      expect(await findOpenQuestion(sqliteDb(f.db), "session")).toBeNull();
       const store = createInboxStore(sqliteDb(f.db));
       await store.commit({
         ...event(),
@@ -432,9 +436,9 @@ test.each([null, "", " \n "])(
         0,
       );
       release.resolve();
-      await waitFor(() => findOpenQuestion(f.db, "session") !== null);
-      const question = findOpenQuestion(f.db, "session")!;
-      expect(getWorkItem(f.db, itemId)?.state).toBe("awaiting_input");
+      await waitFor(async () => (await findOpenQuestion(sqliteDb(f.db), "session")) !== null);
+      const question = (await findOpenQuestion(sqliteDb(f.db), "session"))!;
+      expect((await getWorkItem(sqliteDb(f.db), itemId))?.state).toBe("awaiting_input");
       steps.length = 0;
       const answeredAt = Math.max(Date.now(), question.createdAt + 1);
       reply = {
@@ -458,7 +462,7 @@ test.each([null, "", " \n "])(
       expect((await getQuestion(sqliteDb(f.db), question.id))?.answer).toBe(reply.body);
       expect(await store.listUnhandled()).toHaveLength(0);
       await f.jobs.tick();
-      expect(getWorkItem(f.db, itemId)?.state).toBe("completed");
+      expect((await getWorkItem(sqliteDb(f.db), itemId))?.state).toBe("completed");
       expect(f.tracker.progress.filter((update) => update.kind === "response")).toHaveLength(1);
       expect(f.launches).toEqual(["classify", "answer", "classify", "answer"]);
     } finally {
@@ -496,10 +500,10 @@ test("clarified parent code requests recover the ordered child queue and every c
     ]);
     await f.orchestrator.onLinearEvent(event());
     await f.jobs.tick();
-    const previous = getWorkItem(
-      db,
+    const previous = (await getWorkItem(
+      sqliteDb(db),
       (await getLinearSession(sqliteDb(db), "session"))!.activeItemId!,
-    )!;
+    ))!;
     const answer = "Implement both child issues with the corrected chart layout.";
     await f.orchestrator.onLinearEvent({
       ...event(),
@@ -511,7 +515,7 @@ test("clarified parent code requests recover the ordered child queue and every c
     await f.jobs.tick();
     const session = (await getLinearSession(sqliteDb(db), "session"))!;
     expect(session.delegationId).not.toBe(previous.delegationId);
-    expect(getWorkItem(db, previous.id)?.state).toBe("cancelled");
+    expect((await getWorkItem(sqliteDb(db), previous.id))?.state).toBe("cancelled");
     expect(f.launches).toEqual(["classify", "classify"]);
     const children = db
       .query<{ id: string; linear_issue_id: string; state: string }, [string]>(
@@ -569,7 +573,10 @@ test("clarifying a parent discussion as an answer keeps its children undispatche
   try {
     await f.orchestrator.onLinearEvent(event());
     await f.jobs.tick();
-    const answeredAt = Math.max(Date.now(), findOpenQuestion(f.db, "session")!.createdAt + 1);
+    const answeredAt = Math.max(
+      Date.now(),
+      (await findOpenQuestion(sqliteDb(f.db), "session"))!.createdAt + 1,
+    );
     await f.orchestrator.onLinearEvent({
       ...event(),
       action: "prompted",
@@ -583,7 +590,12 @@ test("clarifying a parent discussion as an answer keeps its children undispatche
     expect(f.launches).toEqual(["classify", "classify", "answer"]);
     expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()!.n).toBe(1);
     expect(
-      getWorkItem(f.db, (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!)?.state,
+      (
+        await getWorkItem(
+          sqliteDb(f.db),
+          (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!,
+        )
+      )?.state,
     ).toBe("completed");
     expect(f.tracker.statuses).toEqual([]);
   } finally {
@@ -596,7 +608,7 @@ test("a question reply resumes through history containing an action with an empt
   try {
     await f.orchestrator.onLinearEvent(event());
     await f.jobs.tick();
-    const question = findOpenQuestion(f.db, "session")!;
+    const question = (await findOpenQuestion(sqliteDb(f.db), "session"))!;
     const answeredAt = Math.max(Date.now(), question.createdAt + 1);
     f.tracker.listSessionActivities = createLinearTracker({
       async query() {
@@ -639,7 +651,7 @@ test("a question reply resumes through history containing an action with an empt
     );
     await f.jobs.tick();
     const itemId = (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!;
-    expect(getWorkItem(f.db, itemId)?.state).toBe("completed");
+    expect((await getWorkItem(sqliteDb(f.db), itemId))?.state).toBe("completed");
     expect(f.launches).toEqual(["classify", "classify", "artifact"]);
     expect(f.uploads()).toBe(1);
     expect(f.tracker.progress.filter((update) => update.kind === "response")).toHaveLength(1);
@@ -705,7 +717,7 @@ test.each(["ok", "fail", "omit"] as const)(
       const responses = f.tracker.progress.filter((update) => update.kind === "response");
       if (upload === "ok") {
         expect(f.uploads()).toBe(1);
-        expect(getWorkItem(f.db, itemId)?.state).toBe("completed");
+        expect((await getWorkItem(sqliteDb(f.db), itemId))?.state).toBe("completed");
         expect((await listArtifacts(sqliteDb(f.db), itemId))[0]?.state).toBe("uploaded");
         expect(responses).toHaveLength(1);
         expect(responses[0]?.body).toContain(f.answer.trim());
@@ -720,7 +732,7 @@ test.each(["ok", "fail", "omit"] as const)(
           f.tracker.progress.findIndex((update) => update.kind === "response"),
         );
       } else {
-        expect(getWorkItem(f.db, itemId)?.state).toBe("failed");
+        expect((await getWorkItem(sqliteDb(f.db), itemId))?.state).toBe("failed");
         expect(responses).toHaveLength(0);
       }
     } finally {
@@ -749,7 +761,7 @@ test.each(["answer", "artifact"] as const)(
       await f.orchestrator.onLinearEvent(incoming);
       const session = (await getLinearSession(sqliteDb(f.db), "session"))!;
       await f.jobs.tick();
-      expect(getWorkItem(f.db, session.activeItemId!)?.state).toBe("completed");
+      expect((await getWorkItem(sqliteDb(f.db), session.activeItemId!))?.state).toBe("completed");
       expect(f.downloads()).toBe(2);
       const trace = JSON.parse(readFileSync(f.traces.at(-1)!, "utf8"));
       const prompt = JSON.stringify(trace.prompts);
@@ -847,8 +859,12 @@ test.each(["answer", "artifact"] as const)(
         ),
       ).toBe(true);
       expect(
-        getWorkItem(f.db, (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!)
-          ?.state,
+        (
+          await getWorkItem(
+            sqliteDb(f.db),
+            (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!,
+          )
+        )?.state,
       ).toBe("completed");
     } finally {
       f.db.close();
@@ -893,7 +909,12 @@ test("Stop fences pending answer plans and prevents completed session metadata",
       false,
     );
     expect(
-      getWorkItem(f.db, (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!)?.state,
+      (
+        await getWorkItem(
+          sqliteDb(f.db),
+          (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!,
+        )
+      )?.state,
     ).toBe("paused");
   } finally {
     f.db.close();

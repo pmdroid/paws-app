@@ -74,7 +74,7 @@ describe("advanceMerge", () => {
     migrate(db);
     const { caps } = capabilities();
     expect(
-      await advanceMerge(db, sqliteDb(db), { itemId: "gone", payload: {}, jobId: 1 }, caps),
+      await advanceMerge(sqliteDb(db), { itemId: "gone", payload: {}, jobId: 1 }, caps),
     ).toEqual({
       kind: "obsolete",
     });
@@ -94,11 +94,11 @@ describe("advanceMerge", () => {
     await beginMergeCall(sqliteDb(db), "eng-1", "h", 1);
     const { caps, calls } = capabilities();
     expect(
-      await advanceMerge(db, sqliteDb(db), { itemId: "eng-1", payload: {}, jobId: 1 }, caps),
+      await advanceMerge(sqliteDb(db), { itemId: "eng-1", payload: {}, jobId: 1 }, caps),
     ).toEqual({
       kind: "obsolete",
     });
-    expect(getWorkItem(db, "eng-1")?.state).toBe("merged");
+    expect((await getWorkItem(sqliteDb(db), "eng-1"))?.state).toBe("merged");
     expect(calls).toEqual(["completed"]);
     expect(await mergeCallInFlight(sqliteDb(db), "eng-1")).toBe(false);
   });
@@ -109,11 +109,11 @@ describe("advanceMerge", () => {
       await beginMergeCall(sqliteDb(db), "eng-1", "h", 1);
       const { caps } = capabilities();
       expect(
-        await advanceMerge(db, sqliteDb(db), { itemId: "eng-1", payload: {}, jobId: 1 }, caps),
+        await advanceMerge(sqliteDb(db), { itemId: "eng-1", payload: {}, jobId: 1 }, caps),
       ).toEqual({
         kind: "returned",
       });
-      expect(getWorkItem(db, "eng-1")?.state).toBe("verifying");
+      expect((await getWorkItem(sqliteDb(db), "eng-1"))?.state).toBe("verifying");
       expect(await mergeCallInFlight(sqliteDb(db), "eng-1")).toBe(false);
     } finally {
       db.close();
@@ -132,7 +132,7 @@ describe("advanceMerge", () => {
         }),
       });
       expect(
-        await advanceMerge(db, sqliteDb(db), { itemId: "eng-1", payload: {}, jobId: 1 }, caps),
+        await advanceMerge(sqliteDb(db), { itemId: "eng-1", payload: {}, jobId: 1 }, caps),
       ).toMatchObject({
         kind: "failed",
         reason: "no_github",
@@ -149,7 +149,7 @@ describe("advanceMerge", () => {
       publish: async () => ({ kind: "failed", reason: "publish", message: "no pull request" }),
     });
     expect(
-      await advanceMerge(db, sqliteDb(db), { itemId: "eng-1", payload: {}, jobId: 1 }, caps),
+      await advanceMerge(sqliteDb(db), { itemId: "eng-1", payload: {}, jobId: 1 }, caps),
     ).toEqual({
       kind: "failed",
       reason: "publish",

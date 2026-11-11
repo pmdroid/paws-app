@@ -58,7 +58,7 @@ export async function deliverLinearOutbox(
 ): Promise<void> {
   const store = db && sqliteDb(db);
   context?.signal.throwIfAborted();
-  if (context && !context.isCurrent())
+  if (context && !(await context.isCurrent()))
     throw new Error("Linear delivery superseded by a session fence.");
   if (store && tracker.supportsActivityReconciliation) {
     const unprepared = message;
@@ -299,7 +299,7 @@ async function uploadEvidence(
   if (evidence.assetUrl) return;
   try {
     if (!uploads) throw new Error("Linear file uploads are unavailable");
-    const bytes = await readEvidenceBytes(db, uploads, evidence.id);
+    const bytes = await readEvidenceBytes(sqliteDb(db), uploads, evidence.id);
     if (
       bytes.byteLength !== evidence.sizeBytes ||
       createHash("sha256").update(bytes).digest("hex") !== evidence.sha256

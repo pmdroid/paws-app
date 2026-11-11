@@ -61,7 +61,7 @@ async function fixture() {
       subIssues: [],
     },
   ]);
-  const task = await intakeDelegatedIssue(db, tracker, { linearIssueId: "issue" });
+  const task = await intakeDelegatedIssue(sqliteDb(db), tracker, { linearIssueId: "issue" });
   if (!task.ok) throw new Error("Unexpected issue cycle");
   await recordLinearInstallation(sqliteDb(db), {
     ...scope,
@@ -165,7 +165,7 @@ test("a failed task whose issue moves to Done leaves Needs a person and complete
   expect(response.status).toBe(200);
   await handled.promise;
 
-  expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
+  expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("cancelled");
   expect(await needsPerson()).toEqual([]);
   expect(notified).toEqual([f.item.id]);
   expect(interrupted).toEqual(["session"]);
@@ -201,7 +201,7 @@ test("an issue moved to Canceled cancels a queued task", async () => {
     notify: (command) => notified.push(command.itemId),
   });
   expect(outcomes).toEqual([{ itemId: f.item.id, outcome: "cancelled" }]);
-  expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
+  expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("cancelled");
   expect(notified).toEqual([f.item.id]);
   const responses = (await listOutbox(sqliteDb(f.db))).filter(
     (row) => (row.payload as { kind?: string }).kind === "response",
@@ -215,7 +215,7 @@ test("an issue moved to Canceled cancels a queued task", async () => {
 test("a failed task whose issue moves to Duplicate is cancelled with the canceled response", async () => {
   const f = await fixture();
   await applyWorkItemEvent(sqliteDb(f.db), f.item.id, "start_timed_out");
-  expect(getWorkItem(f.db, f.item.id)?.state).toBe("failed");
+  expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("failed");
   const closed = parseLinearIssueClosed(
     parseAgentEvent(JSON.stringify(issueUpdate("duplicate")), "issue-duplicate", Date.now())!,
   )!;
@@ -223,7 +223,7 @@ test("a failed task whose issue moves to Duplicate is cancelled with the cancele
   expect(await closeClosedIssueTasks(f.db, closed, { notify: () => {} })).toEqual([
     { itemId: f.item.id, outcome: "cancelled" },
   ]);
-  expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
+  expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("cancelled");
   const responses = (await listOutbox(sqliteDb(f.db))).filter(
     (row) => (row.payload as { kind?: string }).kind === "response",
   );
@@ -250,7 +250,7 @@ test("a confirmed merge from the task's own branch completes the task as merged"
   )!;
   const outcomes = await closeClosedIssueTasks(f.db, closed, { notify: () => {} });
   expect(outcomes).toEqual([{ itemId: f.item.id, outcome: "merged" }]);
-  expect(getWorkItem(f.db, f.item.id)?.state).toBe("merged");
+  expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("merged");
 });
 
 test("Done cancels a merge-queue task without a confirmed merge and completes its session", async () => {
@@ -263,7 +263,7 @@ test("Done cancels a merge-queue task without a confirmed merge and completes it
   expect(await closeClosedIssueTasks(f.db, closed, { notify: () => {} })).toEqual([
     { itemId: f.item.id, outcome: "cancelled" },
   ]);
-  expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
+  expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("cancelled");
   const responses = (await listOutbox(sqliteDb(f.db))).filter(
     (row) => (row.payload as { kind?: string }).kind === "response",
   );
@@ -293,7 +293,7 @@ test("a task created after the issue closed is a later delegation and stays", as
     { notify: () => {} },
   );
   expect(outcomes).toEqual([]);
-  expect(getWorkItem(f.db, f.item.id)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("queued");
 });
 
 test("the catch-up poll closes the tasks of an issue whose webhook was missed", async () => {
@@ -343,7 +343,7 @@ test("the catch-up poll closes the tasks of an issue whose webhook was missed", 
   cleanup.push(() => void poller.stop());
   await poller.pollNow();
   expect(seen.map((event) => event.issueId)).toEqual(["issue"]);
-  expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
+  expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("cancelled");
   expect(await store.get(seen[0]!.dedupeKey)).not.toBeNull();
   expect((await store.listUnhandled()).map((event) => event.dedupeKey)).not.toContain(
     seen[0]!.dedupeKey,
@@ -401,7 +401,7 @@ for (const exit of ["closed", "undelegated"] as const) {
     }
     expect(notified).toBe(0);
     expect(interrupted).toEqual([]);
-    expect(getWorkItem(f.db, f.item.id)).toMatchObject({
+    expect(await getWorkItem(sqliteDb(f.db), f.item.id)).toMatchObject({
       state: "merge_queue",
       cancelRequested: false,
     });
@@ -412,6 +412,6 @@ for (const exit of ["closed", "undelegated"] as const) {
     ).toHaveLength(1);
     await endMergeCall(sqliteDb(f.db), f.item.id);
     await drainCommands(sqliteDb(f.db), new CommandBus(), now + 2_000);
-    expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
+    expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("cancelled");
   });
 }

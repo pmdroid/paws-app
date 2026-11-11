@@ -83,7 +83,7 @@ async function scene() {
     identity: () => syncSteps(() => "member:acme/widgets"),
     unavailableRetryMs: [0],
   };
-  const auth = new GitHubInstallationCheck(db, integration, () => clock.now);
+  const auth = new GitHubInstallationCheck(sqliteDb(db), integration, () => clock.now);
   insertQueuedItem(db, { id: "PAS-1055", sessionKey: "session-1055", title: "PAS-1055" });
   await beginImplementRun(sqliteDb(db), "PAS-1055", 1_000);
   return {
@@ -93,7 +93,7 @@ async function scene() {
     clock,
     integration,
     installation,
-    item: () => getWorkItem(db, "PAS-1055")!,
+    item: async () => (await getWorkItem(sqliteDb(db), "PAS-1055"))!,
     signal: new AbortController().signal,
     questions: () => db.query<{ status: string }, []>("SELECT status FROM question").all(),
     elicitations: async () =>
@@ -115,8 +115,8 @@ test("a DNS failure posts no github-auth question, and the item proceeds once Gi
     return check(item, signal);
   };
   try {
-    expect(await s.auth.ensure(s.item(), "initial", s.signal)).toBe(true);
-    expect(s.item().state).toBe("running");
+    expect(await s.auth.ensure(await s.item(), "initial", s.signal)).toBe(true);
+    expect((await s.item()).state).toBe("running");
     expect(s.questions()).toHaveLength(0);
     expect(await listOutbox(sqliteDb(s.db))).toHaveLength(0);
   } finally {
@@ -128,8 +128,8 @@ test("a 404 for the repository installation still posts the admin question", asy
   const s = await scene();
   s.github.mode = "missing";
   try {
-    expect(await s.auth.ensure(s.item(), "initial", s.signal)).toBe(false);
-    expect(s.item().state).toBe("awaiting_input");
+    expect(await s.auth.ensure(await s.item(), "initial", s.signal)).toBe(false);
+    expect((await s.item()).state).toBe("awaiting_input");
     expect(s.questions()).toEqual([{ status: "open" }]);
     expect(await s.elicitations()).toHaveLength(1);
   } finally {
@@ -141,15 +141,15 @@ test("an open github-auth question closes on the recheck once access works, and 
   const s = await scene();
   s.github.mode = "missing";
   try {
-    await s.auth.ensure(s.item(), "initial", s.signal);
+    await s.auth.ensure(await s.item(), "initial", s.signal);
     s.github.mode = "dns";
     await s.auth.recover();
     expect(s.questions()).toEqual([{ status: "open" }]);
-    expect(s.item().state).toBe("awaiting_input");
+    expect((await s.item()).state).toBe("awaiting_input");
     s.github.mode = "ok";
     await s.auth.recover();
     expect(s.questions()).toEqual([{ status: "answered" }]);
-    expect(s.item().state).toBe("running");
+    expect((await s.item()).state).toBe("running");
   } finally {
     s.close();
   }
@@ -165,7 +165,7 @@ test("an outage past ten minutes posts one network status line and no admin ques
     return check(item, signal);
   };
   try {
-    expect(await s.auth.ensure(s.item(), "initial", s.signal)).toBe(true);
+    expect(await s.auth.ensure(await s.item(), "initial", s.signal)).toBe(true);
     const lines = (await listOutbox(sqliteDb(s.db))).map((entry) => JSON.stringify(entry.payload));
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain(`Can't reach GitHub: ${DNS}`);
@@ -200,13 +200,13 @@ test("an authorization that can't reach Linear doesn't cancel the item; a defini
     return true;
   };
   try {
-    expect(await s.auth.ensure(s.item(), "initial", s.signal)).toBe(true);
-    expect(s.item().state).toBe("running");
-    expect(s.item().cancelRequested).toBe(false);
+    expect(await s.auth.ensure(await s.item(), "initial", s.signal)).toBe(true);
+    expect((await s.item()).state).toBe("running");
+    expect((await s.item()).cancelRequested).toBe(false);
     expect(s.questions()).toHaveLength(0);
     s.integration.authorize = async () => ({ denied: true, reason: "You're not in Pascal." });
-    expect(await s.auth.ensure(s.item(), "initial", s.signal, { fresh: true })).toBe(false);
-    expect(s.item().state).toBe("cancelled");
+    expect(await s.auth.ensure(await s.item(), "initial", s.signal, { fresh: true })).toBe(false);
+    expect((await s.item()).state).toBe("cancelled");
   } finally {
     s.close();
   }

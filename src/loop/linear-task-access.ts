@@ -280,7 +280,7 @@ export class LinearTaskAccess {
       issueId?: string;
       stop?: boolean;
       fresh?: boolean;
-      isCurrent(): boolean;
+      isCurrent(): Promise<boolean>;
     },
   ): Promise<void> {
     if (this.options.access === null || this.options.lifecycle === null)
@@ -289,7 +289,7 @@ export class LinearTaskAccess {
     const current = async () => {
       signal.throwIfAborted();
       if (
-        !options.isCurrent() ||
+        !(await options.isCurrent()) ||
         (await this.sessionGeneration(sessionId)) !== generation ||
         (await this.sessionAccess(sessionId)) !== "allowed"
       )

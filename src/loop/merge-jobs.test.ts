@@ -247,7 +247,7 @@ describe("merge CI wait", () => {
       status: "pending",
       runAt: clock.now() + MERGE_BACKSTOP_POLL_MS,
     });
-    expect(getWorkItem(db, "eng-1")?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(db), "eng-1"))?.state).toBe("merge_queue");
   });
 
   test("CI that turns green during the backstop wait merges once", async () => {
@@ -324,7 +324,7 @@ describe("merge job retries", () => {
     });
     const loop = new JobLoop(db, clock, { leaseMs: 60_000 });
     loop.register(JOB_KIND.merge, async (job) => {
-      await waitForMergeTurn(db, job, clock.now());
+      await waitForMergeTurn(sqliteDb(db), job, clock.now());
     });
     for (let pass = 0; pass < 5; pass++) {
       await loop.tick();
@@ -347,7 +347,13 @@ describe("merge job retries", () => {
     });
     const loop = new JobLoop(db, clock, { leaseMs: 60_000 });
     loop.register(JOB_KIND.merge, async (job) => {
-      await retryMergeLater(db, job, clock.now(), 30_000, new Error("GitHub returned 502"));
+      await retryMergeLater(
+        sqliteDb(db),
+        job,
+        clock.now(),
+        30_000,
+        new Error("GitHub returned 502"),
+      );
     });
     await loop.tick();
     expect(await getJob(sqliteDb(db), id)).toMatchObject({
@@ -380,7 +386,7 @@ describe("GitHub deliveries", () => {
       summary: "accepted",
       ...(githubQueue ? { githubQueue } : {}),
     });
-    const branch = worktreeBranch(getWorkItem(db, "eng-1")!);
+    const branch = worktreeBranch((await getWorkItem(sqliteDb(db), "eng-1"))!);
     return { db, clock, id, branch };
   }
 
@@ -677,8 +683,8 @@ describe("slow CI question", () => {
     expect(await parkMerge(sqliteDb(db), again, clock.now(), { reason: "ci", head: "h" })).toBe(
       "ask",
     );
-    expect(await askAboutSlowCi(db, "eng-1", { checks, now: clock.now() })).toBe(true);
-    expect(await askAboutSlowCi(db, "eng-1", { checks, now: clock.now() })).toBe(false);
+    expect(await askAboutSlowCi(sqliteDb(db), "eng-1", { checks, now: clock.now() })).toBe(true);
+    expect(await askAboutSlowCi(sqliteDb(db), "eng-1", { checks, now: clock.now() })).toBe(false);
     await completeJob(sqliteDb(db), again, clock.now());
     return { db, clock };
   }
@@ -689,7 +695,7 @@ describe("slow CI question", () => {
         answerSteps(
           q,
           { sessionId: "ses", deliveryId: `reply:${body}`, body, answeredBy: "pascal", now },
-          questionEffects(db, { now }),
+          questionEffects(sqliteDb(db), { now }),
         ),
       )
     ).status;
@@ -702,16 +708,21 @@ describe("slow CI question", () => {
       .all();
     expect(questions).toHaveLength(1);
     expect(questions[0]!.body).toContain(checks);
-    expect(questions[0]!.body).toContain(`\`${worktreeBranch(getWorkItem(db, "eng-1")!)}\``);
+    expect(questions[0]!.body).toContain(
+      `\`${worktreeBranch((await getWorkItem(sqliteDb(db), "eng-1"))!)}\``,
+    );
     expect(JSON.parse(questions[0]!.options)).toEqual(["Merge the accepted work", "Stop"]);
-    expect(getWorkItem(db, "eng-1")?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(db), "eng-1"))?.state).toBe("awaiting_input");
   });
 
   test("Merge returns the accepted head to the merge queue and starts a fresh wait", async () => {
     const { db, clock } = await askedAboutSlowCi();
     const runs = (await listRuns(sqliteDb(db), "eng-1")).length;
     expect(await reply(db, "Merge the accepted work", clock.now())).toBe("answered");
-    expect(getWorkItem(db, "eng-1")).toMatchObject({ state: "merge_queue", acceptedHead: "h" });
+    expect(await getWorkItem(sqliteDb(db), "eng-1")).toMatchObject({
+      state: "merge_queue",
+      acceptedHead: "h",
+    });
     expect(await listRuns(sqliteDb(db), "eng-1")).toHaveLength(runs);
     const job = (await claimNextJob(sqliteDb(db), { now: clock.now(), queues: [JOB_KIND.merge] }))!;
     expect(job.payload).toMatchObject({ itemId: "eng-1", head: "h" });
@@ -727,7 +738,7 @@ describe("slow CI question", () => {
   test("Stop fails the item by answer and keeps the accepted branch", async () => {
     const { db, clock } = await askedAboutSlowCi();
     expect(await reply(db, "Stop", clock.now())).toBe("answered");
-    expect(getWorkItem(db, "eng-1")?.state).toBe("failed");
+    expect((await getWorkItem(sqliteDb(db), "eng-1"))?.state).toBe("failed");
     const event = db
       .query<{ event: string }, []>("SELECT event FROM work_item_event ORDER BY id DESC LIMIT 1")
       .get();

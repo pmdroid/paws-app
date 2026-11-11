@@ -76,7 +76,7 @@ const ASK_TURN_REPLY =
 test("asking ends the run and an answer resumes through verification", async () => {
   const fixture = await askOnce();
   try {
-    const item = listWorkItems(fixture.db)[0]!;
+    const item = (await listWorkItems(sqliteDb(fixture.db)))[0]!;
     const tree = worktreePath(fixture.layout.pawsRoot, itemPathId(item));
     const head = (await exec("git", ["-C", tree, "rev-parse", "HEAD"])).stdout.trim();
     expect(await exec("git", ["-C", tree, "show", `HEAD:during-question.txt`])).toMatchObject({
@@ -90,7 +90,7 @@ test("asking ends the run and an answer resumes through verification", async () 
     });
     expect(item.checkpoint).toMatchObject({ phase: "awaiting_input", wipCommit: head });
     expect(item.state).toBe("awaiting_input");
-    expect(getRun(fixture.db, item.currentRunId!)?.status).toBe("ended");
+    expect((await getRun(sqliteDb(fixture.db), item.currentRunId!))?.status).toBe("ended");
     expect(
       fixture.results
         .map(
@@ -133,7 +133,7 @@ test("asking ends the run and an answer resumes through verification", async () 
     });
 
     await drive(fixture, ["verifying", "merge_queue", "merged"]);
-    const state = getWorkItem(fixture.db, item.id)?.state ?? "";
+    const state = (await getWorkItem(sqliteDb(fixture.db), item.id))?.state ?? "";
     expect(["verifying", "merge_queue", "merged"]).toContain(state);
     expect(fixture.prompts.some((prompt) => prompt.includes("Answer: parquet"))).toBe(true);
     const received = fixture.results
@@ -146,9 +146,9 @@ test("asking ends the run and an answer resumes through verification", async () 
     expect(firstRequest.length).toBeGreaterThan(10);
     expect(received.find((prompt) => prompt.includes("Answer: parquet"))).toContain(firstRequest);
     expect(fixture.resumeHeads).toEqual([head]);
-    const resumed = getWorkItem(fixture.db, item.id)!;
+    const resumed = (await getWorkItem(sqliteDb(fixture.db), item.id))!;
     expect(resumed.currentRunId).toBe(item.currentRunId);
-    const status = getRun(fixture.db, resumed.currentRunId!)?.status ?? "";
+    const status = (await getRun(sqliteDb(fixture.db), resumed.currentRunId!))?.status ?? "";
     expect(["active", "ended"]).toContain(status);
   } finally {
     await fixture.orchestrator.shutdown();
@@ -160,21 +160,21 @@ test("asking ends the run and an answer resumes through verification", async () 
 test("startup leaves an open question parked and its answer resumes the run", async () => {
   const fixture = await askOnce();
   try {
-    const item = listWorkItems(fixture.db)[0]!;
-    const open = findOpenQuestion(fixture.db, "ses_1");
+    const item = (await listWorkItems(sqliteDb(fixture.db)))[0]!;
+    const open = await findOpenQuestion(sqliteDb(fixture.db), "ses_1");
     expect(open?.status).toBe("open");
     const jobsBefore = (await listJobs(sqliteDb(fixture.db))).filter(
       (job) => job.queue === JOB_KIND.resume,
     );
     expect(await recoverOnStartup(sqliteDb(fixture.db))).toEqual([{ type: "none" }]);
-    expect(getWorkItem(fixture.db, item.id)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(fixture.db), item.id))?.state).toBe("awaiting_input");
     expect(
       (await listJobs(sqliteDb(fixture.db))).filter((job) => job.queue === JOB_KIND.resume),
     ).toEqual(jobsBefore);
-    expect(getRun(fixture.db, item.currentRunId!)?.status).toBe("ended");
+    expect((await getRun(sqliteDb(fixture.db), item.currentRunId!))?.status).toBe("ended");
 
     await fixture.orchestrator.onLinearEvent(prompted("parquet"));
-    expect(getWorkItem(fixture.db, item.id)).toMatchObject({
+    expect(await getWorkItem(sqliteDb(fixture.db), item.id)).toMatchObject({
       state: "queued",
       recoveryAttempts: 0,
     });
@@ -204,9 +204,9 @@ test("startup leaves an open question parked and its answer resumes the run", as
 test("an answer that arrives before the asking turn ends resumes once after the run ends", async () => {
   const fixture = await askOnce("parquet");
   try {
-    const item = listWorkItems(fixture.db)[0]!;
+    const item = (await listWorkItems(sqliteDb(fixture.db)))[0]!;
     expect(fixture.resumeJobsDuringTurn).toEqual([1]);
-    expect(getRun(fixture.db, item.currentRunId!)?.status).toBe("ended");
+    expect((await getRun(sqliteDb(fixture.db), item.currentRunId!))?.status).toBe("ended");
     const resumes = (await listJobs(sqliteDb(fixture.db))).filter(
       (job) => job.queue === JOB_KIND.resume,
     );
@@ -454,8 +454,8 @@ async function askOnce(answerDuringTurn?: string): Promise<{
 function leaseActiveRun(db: Database): Promise<string> {
   return (async () => {
     for (let attempt = 0; attempt < 2000; attempt += 1) {
-      const item = listWorkItems(db)[0];
-      const run = item?.currentRunId ? getRun(db, item.currentRunId) : null;
+      const item = (await listWorkItems(sqliteDb(db)))[0];
+      const run = item?.currentRunId ? await getRun(sqliteDb(db), item.currentRunId) : null;
       if (run?.status === "active") return await attachLease(db, run.id);
       await Bun.sleep(10);
     }
@@ -504,7 +504,9 @@ async function drive(
   const deadline = Date.now() + 60_000;
   let idle = 0;
   while (Date.now() < deadline) {
-    const state = getWorkItem(fixture.db, listWorkItems(fixture.db)[0]!.id)?.state;
+    const state = (
+      await getWorkItem(sqliteDb(fixture.db), (await listWorkItems(sqliteDb(fixture.db)))[0]!.id)
+    )?.state;
     if (state && states.includes(state)) return;
     if (state === "failed") {
       throw new Error(JSON.stringify(await listJobs(sqliteDb(fixture.db))));

@@ -11,6 +11,7 @@ import {
   beginImplementRun,
   enqueueOutboxOnce,
   getWorkItem,
+  getWorkItemSteps,
   insertQueuedItem,
   listOutbox,
   migrate,
@@ -41,7 +42,7 @@ async function fixture() {
   await beginImplementRun(sqliteDb(db), "ENG-7", clock.now());
   await applyWorkItemEvent(sqliteDb(db), "ENG-7", "turn_ended");
   await applyWorkItemEvent(sqliteDb(db), "ENG-7", "closeout_accepted");
-  enqueueOutboxOnce(db, {
+  await enqueueOutboxOnce(sqliteDb(db), {
     target: "linear",
     op: "activity",
     orderingKey: "ses_1",
@@ -81,9 +82,9 @@ async function fixture() {
     review: (next: string) => {
       decision = next;
     },
-    wake: (head: string) =>
+    wake: async (head: string) =>
       mergeQueueTurn(
-        { db, store: sqliteDb(db), item: getWorkItem(db, "ENG-7")!, caps },
+        { store: sqliteDb(db), item: (await getWorkItem(sqliteDb(db), "ENG-7"))!, caps },
         { owner: "acme", repo: "app" },
         github,
         { number: 7, url: PULL_URL, head },
@@ -164,9 +165,10 @@ test("changes requested and a new head each post their own notice, in order", as
 test("other progress after the pull request response stays quiet", async () => {
   const f = await fixture();
   try {
-    await sqliteDb(f.db).run((q) =>
-      f.caps.voice.thought(q, getWorkItem(f.db, "ENG-7")!, "Checking reviews.", "merge-thought:1"),
-    );
+    await sqliteDb(f.db).run(function* (q) {
+      const item = (yield* getWorkItemSteps(q, "ENG-7"))!;
+      return yield* f.caps.voice.thought(q, item, "Checking reviews.", "merge-thought:1");
+    });
     await f.wake("h1");
     await f.deliver();
     expect((await listOutbox(sqliteDb(f.db), "ses_1")).map((row) => row.idempotencyKey)).toEqual([

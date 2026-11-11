@@ -233,7 +233,7 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
       updatedAtMs: Date.now(),
       payload: "{}",
     });
-    const item = listWorkItems(db).find((row) => row.sessionKey === "session-1")!;
+    const item = (await listWorkItems(sqliteDb(db))).find((row) => row.sessionKey === "session-1")!;
     await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "app",
@@ -261,12 +261,16 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
     await dispatch(db, { now: Date.now() });
     loop = jobs.run(controller.signal, (ms) => Bun.sleep(ms));
     const deadline = Date.now() + 20_000;
-    while (Date.now() < deadline && !runs.length && getWorkItem(db, item.id)?.state !== "failed")
+    while (
+      Date.now() < deadline &&
+      !runs.length &&
+      (await getWorkItem(sqliteDb(db), item.id))?.state !== "failed"
+    )
       await Bun.sleep(10);
     return {
       runnerId,
       runs: [...runs],
-      state: getWorkItem(db, item.id)?.state,
+      state: (await getWorkItem(sqliteDb(db), item.id))?.state,
       events: (await listWorkItemEventRows(sqliteDb(db), item.id)).map((row) => row.event),
     };
   } finally {

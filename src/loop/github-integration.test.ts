@@ -35,7 +35,7 @@ function fixture(path = ":memory:") {
     identity: () => syncSteps(() => authority),
   };
   const auth = new GitHubInstallationCheck(
-    db,
+    sqliteDb(db),
     integration,
     () => 1000,
     () => syncSteps(() => allowed),
@@ -43,7 +43,7 @@ function fixture(path = ":memory:") {
   const item = async (id: string) => {
     insertQueuedItem(db, { id, sessionKey: `session-${id}`, title: id });
     await beginImplementRun(sqliteDb(db), id, 1000);
-    return getWorkItem(db, id)!;
+    return (await getWorkItem(sqliteDb(db), id))!;
   };
   return {
     db,
@@ -84,7 +84,9 @@ test("missing installation: the waiting message shows once and the item resumes 
   try {
     const item = await f.item("member");
     expect(await f.auth.ensure(item, "initial", f.signal)).toBe(false);
-    expect(await f.auth.ensure(getWorkItem(f.db, item.id)!, "initial", f.signal)).toBe(false);
+    expect(
+      await f.auth.ensure((await getWorkItem(sqliteDb(f.db), item.id))!, "initial", f.signal),
+    ).toBe(false);
     await f.auth.recover();
     const waiting = (await listOutbox(sqliteDb(f.db))).filter(
       (entry) =>
@@ -93,10 +95,10 @@ test("missing installation: the waiting message shows once and the item resumes 
     );
     expect(waiting).toHaveLength(1);
     expect(f.db.query("SELECT * FROM question").all()).toHaveLength(1);
-    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("awaiting_input");
     f.ready();
     await f.auth.recover();
-    expect(getWorkItem(f.db, item.id)?.state).toBe("running");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("running");
     expect((await listJobs(sqliteDb(f.db))).map((job) => job.queue)).toEqual(["run.resume"]);
     expect(f.db.query("SELECT * FROM question WHERE status='open'").all()).toHaveLength(0);
   } finally {
@@ -132,7 +134,9 @@ test("App hold survives restart, notifies only administrators and revalidates ex
   const f = fixture(path);
   const item = await f.item("member");
   expect(await f.auth.ensure(item, "initial", f.signal)).toBe(false);
-  expect(await f.auth.ensure(getWorkItem(f.db, item.id)!, "initial", f.signal)).toBe(false);
+  expect(
+    await f.auth.ensure((await getWorkItem(sqliteDb(f.db), item.id))!, "initial", f.signal),
+  ).toBe(false);
   const prompts = (await listOutbox(sqliteDb(f.db))).filter((entry) => entry.op === "elicitation");
   expect(prompts).toHaveLength(2);
   expect(
@@ -146,12 +150,12 @@ test("App hold survives restart, notifies only administrators and revalidates ex
   f.db.close();
   const reopened = openDatabase(path);
   f.ready();
-  const recovered = new GitHubInstallationCheck(reopened, f.integration, () => 1000000);
+  const recovered = new GitHubInstallationCheck(sqliteDb(reopened), f.integration, () => 1000000);
   try {
     await Promise.all([recovered.recover(), recovered.recover()]);
     await recovered.recover();
     expect(await listJobs(sqliteDb(reopened))).toHaveLength(1);
-    expect(getWorkItem(reopened, item.id)?.state).toBe("running");
+    expect((await getWorkItem(sqliteDb(reopened), item.id))?.state).toBe("running");
     expect(
       reopened.query<{ status: string }, []>("SELECT status FROM github_integration_hold").get()
         ?.status,
@@ -182,7 +186,7 @@ for (const invalidation of [
         await advanceLinearSessionGeneration(sqliteDb(f.db), item.sessionKey!);
       if (invalidation === "candidate") f.supersede();
       if (invalidation === "checkpoint")
-        saveCheckpoint(f.db, item.id, {
+        await saveCheckpoint(sqliteDb(f.db), item.id, {
           phase: "running",
           wipCommit: "changed",
         });
@@ -193,7 +197,8 @@ for (const invalidation of [
           (job) => job.queue === "run.resume" || job.queue === "run.reverify",
         ),
       ).toHaveLength(0);
-      if (invalidation !== "stop") expect(getWorkItem(f.db, item.id)?.state).toBe("cancelled");
+      if (invalidation !== "stop")
+        expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("cancelled");
       expect(
         f.db.query("SELECT * FROM question WHERE status='open' AND cancelled_at IS NULL").all(),
       ).toHaveLength(0);
@@ -208,7 +213,7 @@ test("App preflight refuses a checkpoint changed during installation lookup", as
   const f = fixture();
   const item = await f.item("member");
   f.integration.check = async () => {
-    saveCheckpoint(f.db, item.id, { phase: "running", wipCommit: "new" });
+    await saveCheckpoint(sqliteDb(f.db), item.id, { phase: "running", wipCommit: "new" });
     return true;
   };
   try {
@@ -231,7 +236,7 @@ test("unavailable: a failed check holds the item with the retry message and no a
   try {
     const item = await f.item("outage");
     expect(await f.auth.ensure(item, "initial", f.signal)).toBe(false);
-    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("awaiting_input");
     expect(f.db.query<{ body: string }, []>("SELECT body FROM question").get()?.body).toContain(
       "could not be checked",
     );
@@ -252,7 +257,7 @@ test("denied: a member who loses access while held is cancelled on recovery", as
     f.deny();
     f.ready();
     await f.auth.recover();
-    expect(getWorkItem(f.db, item.id)?.state).toBe("cancelled");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("cancelled");
     expect(
       (await listJobs(sqliteDb(f.db))).filter((job) => job.queue === "run.resume"),
     ).toHaveLength(0);
@@ -274,8 +279,8 @@ test("one unavailable requester does not stop recovery of other held work", asyn
   f.ready();
   try {
     await f.auth.recover();
-    expect(getWorkItem(f.db, "unavailable")?.state).toBe("awaiting_input");
-    expect(getWorkItem(f.db, "ready")?.state).toBe("running");
+    expect((await getWorkItem(sqliteDb(f.db), "unavailable"))?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(f.db), "ready"))?.state).toBe("running");
     expect(await listJobs(sqliteDb(f.db))).toHaveLength(1);
   } finally {
     f.auth.close();
@@ -289,11 +294,11 @@ test("App publication recovery queues fresh verification, not publication", asyn
     const item = await f.item("member");
     await applyWorkItemEvent(sqliteDb(f.db), item.id, "turn_ended");
     await applyWorkItemEvent(sqliteDb(f.db), item.id, "closeout_accepted");
-    await f.auth.ensure(getWorkItem(f.db, item.id)!, "publication", f.signal);
+    await f.auth.ensure((await getWorkItem(sqliteDb(f.db), item.id))!, "publication", f.signal);
     f.ready();
     await f.auth.recover();
     expect((await listJobs(sqliteDb(f.db))).map((job) => job.queue)).toEqual(["run.reverify"]);
-    expect(getWorkItem(f.db, item.id)?.state).toBe("verifying");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("verifying");
   } finally {
     f.auth.close();
     f.db.close();
@@ -305,7 +310,7 @@ for (const source of ["local", "live"] as const) {
     const f = fixture();
     const item = await f.item("denied");
     const auth = new GitHubInstallationCheck(
-      f.db,
+      sqliteDb(f.db),
       {
         ...f.integration,
         current: () => syncSteps(() => source !== "local"),
@@ -315,8 +320,8 @@ for (const source of ["local", "live"] as const) {
     );
     try {
       expect(await auth.ensure(item, "initial", f.signal)).toBe(false);
-      expect(getWorkItem(f.db, item.id)?.state).toBe("cancelled");
-      expect(getWorkItem(f.db, item.id)?.cancelRequested).toBe(true);
+      expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("cancelled");
+      expect((await getWorkItem(sqliteDb(f.db), item.id))?.cancelRequested).toBe(true);
       expect(f.db.query("SELECT * FROM github_integration_hold").all()).toHaveLength(0);
       expect((await listOutbox(sqliteDb(f.db))).some((entry) => entry.delivery === "stop")).toBe(
         true,
@@ -355,14 +360,14 @@ test("recovery replaces an unavailable message with the current installation blo
         JSON.stringify(entry.payload).includes(blocker),
       ),
     ).toHaveLength(1);
-    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("awaiting_input");
     expect(
       (await listJobs(sqliteDb(f.db))).filter((job) => job.queue === "run.resume"),
     ).toHaveLength(0);
     installed = true;
     await f.auth.recover();
     await f.auth.recover();
-    expect(getWorkItem(f.db, item.id)?.state).toBe("running");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("running");
     expect(
       (await listJobs(sqliteDb(f.db))).filter((job) => job.queue === "run.resume"),
     ).toHaveLength(1);
@@ -385,7 +390,7 @@ test("a check that fails briefly is retried quietly before the task is held", as
   try {
     const item = await f.item("restarted");
     expect(await f.auth.ensure(item, "initial", f.signal)).toBe(true);
-    expect(getWorkItem(f.db, item.id)?.state).toBe("running");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("running");
     expect(f.db.query("SELECT * FROM github_integration_hold").all()).toHaveLength(0);
     expect(await listOutbox(sqliteDb(f.db))).toHaveLength(0);
   } finally {
@@ -416,7 +421,7 @@ test("a rate-limited check keeps retrying quietly and posts nothing in Linear", 
   try {
     const item = await f.item("limited");
     expect(await f.auth.ensure(item, "initial", f.signal)).toBe(true);
-    expect(getWorkItem(f.db, item.id)?.state).toBe("running");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("running");
     expect(f.db.query("SELECT * FROM github_integration_hold").all()).toHaveLength(0);
     expect(await listOutbox(sqliteDb(f.db))).toHaveLength(0);
   } finally {
@@ -439,7 +444,7 @@ test("a check that keeps failing still holds the task after the quiet retries", 
     const item = await f.item("outage");
     expect(await f.auth.ensure(item, "initial", f.signal)).toBe(false);
     expect(calls).toBe(3);
-    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(f.db), item.id))?.state).toBe("awaiting_input");
   } finally {
     f.auth.close();
     f.db.close();

@@ -424,7 +424,7 @@ async function firstDelegation(
     authorizeLinearIntake: (q, sessionId, spec) =>
       assignments.authorizeIntakeSteps(q, sessionId, spec),
   });
-  const state = () => listWorkItems(db)[0]?.state ?? null;
+  const state = async () => (await listWorkItems(sqliteDb(db)))[0]?.state ?? null;
   /** Runs every due job and outbox row, then lets `minutes` of fake time pass with nothing due. */
   const settle = async (minutes = 1) => {
     for (let minute = 0; minute < minutes; minute++) {
@@ -497,7 +497,7 @@ async function firstDelegation(
     // 4. The hold resumes and intake runs. Nova has no runner yet.
     await settle(2);
     const resumed = server.total;
-    const item = listWorkItems(db)[0];
+    const item = (await listWorkItems(sqliteDb(db)))[0];
     if (item === undefined)
       return {
         server,
@@ -540,15 +540,15 @@ async function firstDelegation(
       clock.now(),
     );
     const deadline = Date.now() + 20_000;
-    while (!["merged", "failed", "cancelled"].includes(state() ?? "")) {
-      if (Date.now() > deadline) throw new Error(`The task is stuck in ${state()}`);
+    while (!["merged", "failed", "cancelled"].includes((await state()) ?? "")) {
+      if (Date.now() > deadline) throw new Error(`The task is stuck in ${await state()}`);
       await settle();
     }
     while ((await outbox.tick()).length > 0) await outbox.idle();
     return {
       server,
       refused: false as const,
-      state: state(),
+      state: await state(),
       phases: {
         hold: held,
         waitingForSignIn,

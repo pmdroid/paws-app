@@ -29,7 +29,7 @@ test("child notifications refresh only their installation sessions and retain co
       subIssues: [{ linearIssueId: "child", identifier: "ENG-2", title: "Child" }],
     },
   ]);
-  const task = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent" });
+  const task = await intakeDelegatedIssue(sqliteDb(db), tracker, { linearIssueId: "parent" });
   if (!task.ok) throw new Error("Unexpected intake cycle");
   await recordLinearInstallation(sqliteDb(db), {
     ...scope,

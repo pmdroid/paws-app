@@ -186,10 +186,10 @@ async function setup(threads = THREADS) {
       clock,
       FILTER,
     );
-  const pull = (headRepository = 11) => ({
+  const pull = async (headRepository = 11) => ({
     number: 7,
     head: {
-      ref: worktreeBranch(getWorkItem(db, "eng-1")!),
+      ref: worktreeBranch((await getWorkItem(sqliteDb(db), "eng-1"))!),
       sha: "h",
       repo: { id: headRepository },
     },
@@ -214,12 +214,12 @@ async function setup(threads = THREADS) {
         line: 12,
         user: { login: input.author },
       },
-      pull_request: pull(input.headRepository),
+      pull_request: await pull(input.headRepository),
     });
     await send("pull_request_review", {
       action: input.action === "edited" ? "edited" : "submitted",
       review: { id: input.review, state: "commented", body: null, user: { login: input.author } },
-      pull_request: pull(input.headRepository),
+      pull_request: await pull(input.headRepository),
     });
   };
   const conversation = (input: {
@@ -288,8 +288,8 @@ describe("pull request comments restart the item", () => {
     expect(await commentJobs(db)).toHaveLength(1);
     expect((await commentJobs(db))[0]?.payload).toEqual({ pullCommentsFor: "eng-1" });
 
-    expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
-    expect(getWorkItem(db, "eng-1")?.state).toBe("queued");
+    expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("restarted");
+    expect((await getWorkItem(sqliteDb(db), "eng-1"))?.state).toBe("queued");
     expect(fixRounds(db, "eng-1")).toBe(1);
     expect(await resumeJobs(db)).toHaveLength(1);
     const { handoff: text, reason } = (await handoff(db))!;
@@ -318,7 +318,7 @@ describe("pull request comments restart the item", () => {
       body: "This sorts the wrong way round.",
     });
     expect(await pendingPullComments(sqliteDb(db), "eng-1")).toHaveLength(0);
-    expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
+    expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("done");
     expect(await resumeJobs(db)).toHaveLength(1);
     expect(await feedbackThoughts(db)).toHaveLength(1);
   });
@@ -332,7 +332,7 @@ describe("pull request comments restart the item", () => {
       body: "Bug: the cache key ignores the tenant.",
       path: "src/cache.ts",
     });
-    expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
+    expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("restarted");
     expect(await resumeJobs(db)).toHaveLength(1);
     expect((await handoff(db))?.handoff).toContain(
       "@cursor[bot]: Bug: the cache key ignores the tenant.",
@@ -350,8 +350,8 @@ describe("pull request comments restart the item", () => {
       body: "Drop the tenant from the cache key; it splits the cache for no reason.",
       path: "src/cache.ts",
     });
-    expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
-    expect(findOpenQuestion(db, "eng-1")).toBeNull();
+    expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("restarted");
+    expect(await findOpenQuestion(sqliteDb(db), "eng-1")).toBeNull();
     const text = (await handoff(db))!.handoff;
     expect(text).toContain("Closeout's independent review reported these findings");
     expect(text).toContain(
@@ -382,8 +382,8 @@ describe("pull request comments restart the item", () => {
       body: "Bug: the README example uses the old flag.",
       path: "README.md",
     });
-    expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
-    expect(findOpenQuestion(db, "eng-1")).toBeNull();
+    expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("restarted");
+    expect(await findOpenQuestion(sqliteDb(db), "eng-1")).toBeNull();
     const text = (await handoff(db))!.handoff;
     expect(text).toContain("Bug: the README example uses the old flag.");
     expect(text).toContain("- fixed, P1 at `src/cache.ts:41`");
@@ -395,7 +395,7 @@ describe("pull request comments restart the item", () => {
   test("without stored Closeout findings the handoff has no findings note", async () => {
     const { db, caps, conversation } = await setup();
     await conversation({ id: 3002, author: "pascal", body: "Please also fix the README." });
-    expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
+    expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("restarted");
     expect((await handoff(db))!.handoff).not.toContain("Closeout's independent review");
     expect((await handoff(db))!.handoff).not.toContain(CONTRADICTION_INSTRUCTION);
   });
@@ -407,7 +407,7 @@ describe("pull request comments restart the item", () => {
     ).toBe(true);
     await conversation({ id: 3001, author: "pascal", body: "Please also fix the README." });
     expect(await pendingPullComments(sqliteDb(db), "eng-1")).toHaveLength(1);
-    expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
+    expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("restarted");
     expect(await resumeJobs(db)).toHaveLength(1);
     expect((await handoff(db))?.handoff).toContain("@pascal in the conversation:");
     expect((await handoff(db))?.handoff).toContain("Please also fix the README.");
@@ -419,9 +419,9 @@ describe("pull request comments restart the item", () => {
     await conversation({ id: 3001, author: "pascal", body: "This drops the last page." });
     await conversation({ id: 3001, author: "pascal", body: "This drops the last page." });
     await inline({ id: 9001, review: 601, author: "cursor[bot]", body: "Bug: off by one." });
-    expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
+    expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("restarted");
     await conversation({ id: 3001, author: "pascal", body: "This drops the last page." });
-    expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
+    expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("done");
     expect(await listReviewEscapes(sqliteDb(db))).toEqual([
       expect.objectContaining({
         itemId: "eng-1",
@@ -448,7 +448,7 @@ describe("pull request comments restart the item", () => {
       body: "Rename this.",
       path: "src/a.ts",
     });
-    expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
+    expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("restarted");
     expect((await handoff(db))?.handoff).toContain("`src/a.ts:12`: Rename this.");
   });
 });
@@ -478,7 +478,7 @@ describe("comments that do not restart", () => {
     ).toBe(true);
     expect(await getPullComment(sqliteDb(db), "conversation", 11)).toBeNull();
     expect(await commentJobs(db)).toHaveLength(0);
-    expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
+    expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("done");
     expect(await resumeJobs(db)).toHaveLength(0);
 
     await conversation({
@@ -489,7 +489,7 @@ describe("comments that do not restart", () => {
     expect(
       (await pendingPullComments(sqliteDb(db), "eng-1")).map((comment) => comment.commentId),
     ).toEqual([12]);
-    expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
+    expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("restarted");
     expect((await handoff(db))?.handoff).toContain("the staging token is readable");
   });
 
@@ -501,7 +501,7 @@ describe("comments that do not restart", () => {
       author: "cursor[bot]",
       body: "Bug: the retry never stops.",
     });
-    expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
+    expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("restarted");
     expect((await handoff(db))?.handoff).toContain("Bug: the retry never stops.");
   });
 
@@ -526,7 +526,7 @@ describe("comments that do not restart", () => {
     });
     expect(await pendingPullComments(sqliteDb(db), "eng-1")).toHaveLength(0);
     expect(await commentJobs(db)).toHaveLength(0);
-    expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
+    expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("done");
     expect(await resumeJobs(db)).toHaveLength(0);
   });
 
@@ -552,7 +552,7 @@ describe("comments that do not restart", () => {
     const { db, caps, conversation } = await setup();
     await conversation({ id: 1, author: "pascal", body: "Fix this." });
     db.run("UPDATE work_item SET state='cancelled' WHERE id='eng-1'");
-    expect(await handlePullComments(db, "eng-1", caps)).toBe("dropped");
+    expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("dropped");
     expect(await resumeJobs(db)).toHaveLength(0);
   });
 
@@ -568,16 +568,16 @@ describe("comments that do not restart", () => {
         line: 12,
         user: { login: "pascal" },
       },
-      pull_request: pull(),
+      pull_request: await pull(),
     });
     await send("pull_request_review", {
       action: "submitted",
       review: { id: 601, state: "changes_requested", body: "Fix.", user: { login: "pascal" } },
-      pull_request: pull(),
+      pull_request: await pull(),
     });
-    expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
+    expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("done");
     expect((await getPullComment(sqliteDb(db), "inline", 5001))?.outcome).toBe("covered");
-    expect(await handlePullReview(db, 601, caps)).toBe("restarted");
+    expect(await handlePullReview(sqliteDb(db), 601, caps)).toBe("restarted");
     expect(await resumeJobs(db)).toHaveLength(1);
   });
 });
@@ -596,7 +596,7 @@ describe("timing", () => {
     expect(await commentJobs(db)).toHaveLength(1);
     expect((await commentJobs(db))[0]?.runAt).toBe(1_000 + 55_000 + PULL_COMMENT_SETTLE_MS);
 
-    expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
+    expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("restarted");
     expect(await resumeJobs(db)).toHaveLength(1);
     const text = (await handoff(db))!.handoff;
     expect(text).toContain("1. @pascal in the conversation:");
@@ -609,29 +609,28 @@ describe("timing", () => {
     const { db, caps, conversation, setBusy } = await setup();
     db.run("UPDATE work_item SET state='verifying' WHERE id='eng-1'");
     await conversation({ id: 1, author: "pascal", body: "Also this." });
-    expect(await handlePullComments(db, "eng-1", caps)).toBe("wait");
+    expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("wait");
     db.run("UPDATE work_item SET state='merge_queue' WHERE id='eng-1'");
     setBusy(true);
-    expect(await handlePullComments(db, "eng-1", caps)).toBe("wait");
+    expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("wait");
     const step = await advanceMerge(
-      db,
       sqliteDb(db),
       { itemId: "eng-1", payload: {}, jobId: 1 },
       laneCapabilities(),
     );
     expect(step).toMatchObject({ kind: "wait", reason: "review" });
     setBusy(false);
-    expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
+    expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("restarted");
   });
 
   test("with the fix rounds spent, the next comment asks and does not restart", async () => {
     const { db, caps, conversation, setLimit } = await setup();
     setLimit(0);
     await conversation({ id: 1, author: "pascal", body: "Rename it." });
-    expect(await handlePullComments(db, "eng-1", caps)).toBe("asked");
-    expect(getWorkItem(db, "eng-1")?.state).toBe("awaiting_input");
+    expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("asked");
+    expect((await getWorkItem(sqliteDb(db), "eng-1"))?.state).toBe("awaiting_input");
     expect(await resumeJobs(db)).toHaveLength(0);
-    const question = findOpenQuestion(db, "s-1");
+    const question = await findOpenQuestion(sqliteDb(db), "s-1");
     expect(question?.body).toContain("@pascal commented on pull request #7");
     expect(question?.body).toContain("all 0 fix rounds are spent");
     expect(question?.body).toContain("Rename it.");
@@ -660,7 +659,7 @@ describe("review apps still checking the head", () => {
       body: "Bug: the key ignores the tenant.",
     });
     f.tick(PULL_COMMENT_SETTLE_MS);
-    expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("wait");
+    expect(await handlePullComments(sqliteDb(f.db), "eng-1", f.caps)).toBe("wait");
     expect(await resumeJobs(f.db)).toHaveLength(0);
     expect(f.reviewWaits.at(-1)).toEqual({ head: "h", names: ["Acme Lint"] });
 
@@ -670,7 +669,6 @@ describe("review apps still checking the head", () => {
     );
     expect(
       await advanceMerge(
-        f.db,
         sqliteDb(f.db),
         { itemId: "eng-1", payload: {}, jobId: 1 },
         laneCapabilities(),
@@ -681,7 +679,7 @@ describe("review apps still checking the head", () => {
     f.checkRuns.runs.h = f.checkRuns.runs.h.map((check) => ({ ...check, status: "completed" }));
     await f.conversation({ id: 2, author: "acme-lint[bot]", body: "Nit: rename the helper." });
     f.tick(PULL_COMMENT_SETTLE_MS);
-    expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("restarted");
+    expect(await handlePullComments(sqliteDb(f.db), "eng-1", f.caps)).toBe("restarted");
     expect(await resumeJobs(f.db)).toHaveLength(1);
     const text = (await handoff(f.db))!.handoff;
     expect(text).toContain("@acme-review[bot] in the conversation");
@@ -695,9 +693,9 @@ describe("review apps still checking the head", () => {
     f.setReviewApps(["acme-lint"]);
     await f.conversation({ id: 1, author: "pascal", body: "Rename it." });
     f.tick(PULL_COMMENT_SETTLE_MS);
-    expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("wait");
+    expect(await handlePullComments(sqliteDb(f.db), "eng-1", f.caps)).toBe("wait");
     f.tick(900_000);
-    expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("restarted");
+    expect(await handlePullComments(sqliteDb(f.db), "eng-1", f.caps)).toBe("restarted");
     expect((await handoff(f.db))!.handoff).toContain("Rename it.");
   });
 
@@ -713,16 +711,16 @@ describe("review apps still checking the head", () => {
         body: "Fix the key.",
         user: { login: "acme-review[bot]" },
       },
-      pull_request: f.pull(),
+      pull_request: await f.pull(),
     });
-    expect(await handlePullReview(f.db, 602, f.caps)).toBe("wait");
+    expect(await handlePullReview(sqliteDb(f.db), 602, f.caps)).toBe("wait");
     expect(await resumeJobs(f.db)).toHaveLength(0);
     expect(f.reviewWaits.at(-1)).toEqual({ head: "h", names: ["Acme Lint"] });
 
     f.checkRuns.runs.h = [run("Acme Lint", "acme-lint", "completed")];
     await f.conversation({ id: 3, author: "acme-lint[bot]", body: "Nit: rename the helper." });
     f.tick(PULL_COMMENT_SETTLE_MS);
-    expect(await handlePullReview(f.db, 602, f.caps)).toBe("restarted");
+    expect(await handlePullReview(sqliteDb(f.db), 602, f.caps)).toBe("restarted");
     expect(await resumeJobs(f.db)).toHaveLength(1);
     const text = (await handoff(f.db))!.handoff;
     expect(text).toContain("Fix the key.");
@@ -735,13 +733,13 @@ describe("review apps still checking the head", () => {
     f.checkRuns.runs.h = [run("Acme Lint", "acme-lint", "in_progress")];
     await f.conversation({ id: 1, author: "pascal", body: "Rename it." });
     f.tick(PULL_COMMENT_SETTLE_MS);
-    expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("wait");
+    expect(await handlePullComments(sqliteDb(f.db), "eng-1", f.caps)).toBe("wait");
     f.checkRuns.failing = true;
     f.tick(60_000);
-    expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("wait");
+    expect(await handlePullComments(sqliteDb(f.db), "eng-1", f.caps)).toBe("wait");
     expect(await resumeJobs(f.db)).toHaveLength(0);
     f.tick(900_000);
-    expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("restarted");
+    expect(await handlePullComments(sqliteDb(f.db), "eng-1", f.caps)).toBe("restarted");
   });
 
   test("the longest wait counts from the head's push, not from when its checks start", async () => {
@@ -752,10 +750,10 @@ describe("review apps still checking the head", () => {
     f.tick(600_000);
     await f.conversation({ id: 1, author: "pascal", body: "Rename it." });
     f.tick(PULL_COMMENT_SETTLE_MS);
-    expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("wait");
+    expect(await handlePullComments(sqliteDb(f.db), "eng-1", f.caps)).toBe("wait");
     f.checkRuns.runs.h = [run("Acme Lint", "acme-lint", "in_progress")];
     f.tick(300_000);
-    expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("restarted");
+    expect(await handlePullComments(sqliteDb(f.db), "eng-1", f.caps)).toBe("restarted");
   });
 
   test("with no review check pending, the quiet window alone decides", async () => {
@@ -766,7 +764,7 @@ describe("review apps still checking the head", () => {
       run("ci", "github-actions", "queued"),
     ];
     await f.conversation({ id: 1, author: "pascal", body: "Rename it." });
-    expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("restarted");
+    expect(await handlePullComments(sqliteDb(f.db), "eng-1", f.caps)).toBe("restarted");
     expect(f.checkRuns.reads).toBe(1);
     expect(await resumeJobs(f.db)).toHaveLength(1);
   });

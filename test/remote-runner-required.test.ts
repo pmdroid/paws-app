@@ -66,10 +66,14 @@ test("with a workspace and no paired runner a delegated task fails because a rem
     const itemId = db.query<{ id: string }, []>("SELECT id FROM work_item").get()!.id;
     await saveTaskMode(sqliteDb(db), itemId, "answer");
     await orchestrator.reconcileExecution();
-    for (let tick = 0; tick < 5 && getWorkItem(db, itemId)?.state !== "failed"; tick++)
+    for (
+      let tick = 0;
+      tick < 5 && (await getWorkItem(sqliteDb(db), itemId))?.state !== "failed";
+      tick++
+    )
       await jobs.tick();
     await outbox.idle();
-    expect(getWorkItem(db, itemId)?.state).toBe("failed");
+    expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("failed");
     expect(stderr.mock.calls.map(([line]) => line)).toContain(
       "ENG-1 failed (answer_error): A remote runner is required.",
     );

@@ -72,7 +72,7 @@ function publish(
     request: async (request) => git.respond(request) ?? { status: 404, body: null },
   };
   return pullRequestScreenshots({
-    db: s.db,
+    db: sqliteDb(s.db),
     itemId: s.itemId,
     storage: { root: s.root },
     owner: "acme",

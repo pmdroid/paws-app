@@ -121,7 +121,7 @@ export async function probeExecutionChanges(
   };
   try {
     await seed("criteria", ["merge_queue", "awaiting_input", "paused", "merged", "queued"]);
-    saveCheckpoint(db, "criteria-2", {
+    await saveCheckpoint(sqliteDb(db), "criteria-2", {
       phase: "running",
       wipCommit: "paused-existing-work",
       baseSha: "previous-base",
@@ -141,7 +141,10 @@ export async function probeExecutionChanges(
       now: clock.now(),
     });
     await setCurrentRun(sqliteDb(db), "criteria-0", run.id);
-    saveCheckpoint(db, "criteria-0", { phase: "merge_queue", wipCommit: "old-verified-candidate" });
+    await saveCheckpoint(sqliteDb(db), "criteria-0", {
+      phase: "merge_queue",
+      wipCommit: "old-verified-candidate",
+    });
     const oldJob = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "criteria-0", head: "old-verified-candidate" },
@@ -165,42 +168,50 @@ export async function probeExecutionChanges(
     );
     observe(
       "criteria effects roll back with their brief publication",
-      getWorkItem(db, "criteria-0")?.state === "merge_queue" &&
+      (await getWorkItem(sqliteDb(db), "criteria-0"))?.state === "merge_queue" &&
         db.query<{ status: string }, [number]>("SELECT status FROM job WHERE id=?").get(oldJob)
           ?.status === "pending",
-      getWorkItem(db, "criteria-0"),
+      await getWorkItem(sqliteDb(db), "criteria-0"),
     );
     orchestrator.applyDelegationChanges(changed);
     observe(
       "criteria edits atomically retire old approval and candidate identity",
-      getWorkItem(db, "criteria-0")?.state === "queued" &&
-        getWorkItem(db, "criteria-0")?.checkpoint?.phase === "running" &&
-        getWorkItem(db, "criteria-0")?.currentRunId === run.id &&
+      (await getWorkItem(sqliteDb(db), "criteria-0"))?.state === "queued" &&
+        (await getWorkItem(sqliteDb(db), "criteria-0"))?.checkpoint?.phase === "running" &&
+        (await getWorkItem(sqliteDb(db), "criteria-0"))?.currentRunId === run.id &&
         db.query<{ status: string }, [number]>("SELECT status FROM job WHERE id=?").get(oldJob)
           ?.status === "cancelled" &&
         db.query<{ status: string }, [string]>("SELECT status FROM run WHERE id=?").get(run.id)
           ?.status === "ended",
-      getWorkItem(db, "criteria-0"),
+      await getWorkItem(sqliteDb(db), "criteria-0"),
     );
     observe(
       "criteria edits withdraw stale signoff but preserve explicit pause and merged work",
-      getWorkItem(db, "criteria-1")?.state === "queued" &&
-        getWorkItem(db, "criteria-2")?.state === "paused" &&
-        getWorkItem(db, "criteria-3")?.state === "merged" &&
+      (await getWorkItem(sqliteDb(db), "criteria-1"))?.state === "queued" &&
+        (await getWorkItem(sqliteDb(db), "criteria-2"))?.state === "paused" &&
+        (await getWorkItem(sqliteDb(db), "criteria-3"))?.state === "merged" &&
         db
           .query<{ cancelled_at: number | null }, [string]>(
             "SELECT cancelled_at FROM question WHERE id=?",
           )
           .get(question.id)?.cancelled_at === clock.now(),
-      [getWorkItem(db, "criteria-1"), getWorkItem(db, "criteria-2"), getWorkItem(db, "criteria-3")],
+      [
+        await getWorkItem(sqliteDb(db), "criteria-1"),
+        await getWorkItem(sqliteDb(db), "criteria-2"),
+        await getWorkItem(sqliteDb(db), "criteria-3"),
+      ],
     );
     observe(
       "queued criteria advance their task version and paused edits preserve WIP",
-      getWorkItem(db, "criteria-4")!.version > 0 &&
+      (await getWorkItem(sqliteDb(db), "criteria-4"))!.version > 0 &&
         db.query<{ status: string }, [number]>("SELECT status FROM job WHERE id=?").get(oldStart)
           ?.status === "cancelled" &&
-        getWorkItem(db, "criteria-2")?.checkpoint?.wipCommit === "paused-existing-work",
-      { queued: getWorkItem(db, "criteria-4"), paused: getWorkItem(db, "criteria-2") },
+        (await getWorkItem(sqliteDb(db), "criteria-2"))?.checkpoint?.wipCommit ===
+          "paused-existing-work",
+      {
+        queued: await getWorkItem(sqliteDb(db), "criteria-4"),
+        paused: await getWorkItem(sqliteDb(db), "criteria-2"),
+      },
     );
     await orchestrator.finishDelegationChanges(changed);
     observe(
@@ -228,9 +239,14 @@ export async function probeExecutionChanges(
     );
     await seed("cancel", activeStates);
     orchestrator.applyDelegationChanges(changes("cancel", { parentCanceled: true }));
+    const cancelledStates = await Promise.all(
+      activeStates.map(
+        async (_, index) => (await getWorkItem(sqliteDb(db), `cancel-${index}`))?.state,
+      ),
+    );
     observe(
       "epic cancellation cascades through every nonterminal state",
-      activeStates.every((_, index) => getWorkItem(db, `cancel-${index}`)?.state === "cancelled"),
+      cancelledStates.every((state) => state === "cancelled"),
       activeStates,
     );
     await seed("blocker", ["queued", "queued"]);
@@ -240,13 +256,13 @@ export async function probeExecutionChanges(
     orchestrator.applyDelegationChanges(changes("blocker", { canceledItemIds: ["blocker-0"] }));
     observe(
       "cancelled blockers leave dependents held with a Linear explanation",
-      getWorkItem(db, "blocker-1")?.state === "queued" &&
+      (await getWorkItem(sqliteDb(db), "blocker-1"))?.state === "queued" &&
         db
           .query<{ n: number }, []>(
             "SELECT COUNT(*) AS n FROM outbox WHERE idempotency_key LIKE 'cancelled-blocker:blocker-0:%'",
           )
           .get()?.n === 1,
-      getWorkItem(db, "blocker-1"),
+      await getWorkItem(sqliteDb(db), "blocker-1"),
     );
     await assert.rejects(
       () =>
@@ -255,13 +271,16 @@ export async function probeExecutionChanges(
     );
     observe(
       "cross-epic callbacks reject without changing the other task",
-      getWorkItem(db, "added-0")?.state === "queued",
-      getWorkItem(db, "added-0"),
+      (await getWorkItem(sqliteDb(db), "added-0"))?.state === "queued",
+      await getWorkItem(sqliteDb(db), "added-0"),
     );
     db.run("UPDATE work_item SET state='cancelled' WHERE state IN ('queued','paused')");
     await seed("pause", ["queued"]);
     await saveTaskMode(sqliteDb(db), "pause-0", "answer");
-    saveCheckpoint(db, "pause-0", { phase: "running", wipCommit: "preserved-commit" });
+    await saveCheckpoint(sqliteDb(db), "pause-0", {
+      phase: "running",
+      wipCommit: "preserved-commit",
+    });
     const pauseJob = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.start,
       payload: { itemId: "pause-0" },
@@ -288,22 +307,23 @@ export async function probeExecutionChanges(
     await pending;
     observe(
       "pause joins the selected remote agent before returning",
-      paused && portJoined && getWorkItem(db, "pause-0")?.state === "paused",
+      paused && portJoined && (await getWorkItem(sqliteDb(db), "pause-0"))?.state === "paused",
       { paused, portStarted, portJoined, cancelReceipts },
     );
     const resumed = await orchestrator.resumeItem("pause-0");
     observe(
       "resume preserves branch checkpoint and supplies its context to fresh dispatch",
       resumed &&
-        getWorkItem(db, "pause-0")?.state === "queued" &&
-        getWorkItem(db, "pause-0")?.checkpoint?.wipCommit === "preserved-commit" &&
+        (await getWorkItem(sqliteDb(db), "pause-0"))?.state === "queued" &&
+        (await getWorkItem(sqliteDb(db), "pause-0"))?.checkpoint?.wipCommit ===
+          "preserved-commit" &&
         (await orchestrator.dependencyHandoff("pause-0"))?.includes("preserved-commit") === true,
-      getWorkItem(db, "pause-0"),
+      await getWorkItem(sqliteDb(db), "pause-0"),
     );
     observe(
       "pause refuses nonrunning tasks",
       !(await orchestrator.pauseItem("pause-0")),
-      getWorkItem(db, "pause-0")?.state,
+      (await getWorkItem(sqliteDb(db), "pause-0"))?.state,
     );
   } finally {
     await orchestrator.shutdown();

@@ -60,7 +60,7 @@ describe("journal", () => {
     const db = database();
     insertQueuedItem(db, { id: "PAS-2", sessionKey: "s" });
     await beginImplementRun(sqliteDb(db), "PAS-2", 1_000);
-    const item = getWorkItem(db, "PAS-2");
+    const item = await getWorkItem(sqliteDb(db), "PAS-2");
     if (item === null) throw new Error("missing item");
     lines = [];
     await failWorkItem(sqliteDb(db), item, "start_timeout", "secret prompt text", 2_000);

@@ -122,7 +122,7 @@ async function apply(w: World, sequence: Sequence, action: Action): Promise<void
       w.advance(-action.ms);
       return;
     case "answer": {
-      const item = getWorkItem(w.db, id(action.item))!;
+      const item = (await getWorkItem(sqliteDb(w.db), id(action.item)))!;
       if (item.sessionKey === null) return;
       const reply = {
         sessionId: item.sessionKey,
@@ -131,10 +131,10 @@ async function apply(w: World, sequence: Sequence, action: Action): Promise<void
         answeredBy: "lead",
         now: w.now,
       };
-      const first = await answer(w.db, reply, questionEffects(w.db, { now: w.now }));
+      const first = await answer(w.db, reply, questionEffects(sqliteDb(w.db), { now: w.now }));
       const after = dump(w.db);
       w.crash();
-      const again = await answer(w.db, reply, questionEffects(w.db, { now: w.now }));
+      const again = await answer(w.db, reply, questionEffects(sqliteDb(w.db), { now: w.now }));
       if (first.status === "answered") expect(again.status).toBe("duplicate");
       expect(dump(w.db)).toEqual(after);
       return;
@@ -165,7 +165,7 @@ async function apply(w: World, sequence: Sequence, action: Action): Promise<void
       return;
     }
     case "reconnect": {
-      const item = getWorkItem(w.db, id(action.item))!;
+      const item = (await getWorkItem(sqliteDb(w.db), id(action.item)))!;
       const open = w.db
         .query<{ generation: number }, [string]>(
           "SELECT generation FROM runner_work WHERE run_id=? AND ended_at IS NULL",

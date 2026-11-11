@@ -228,7 +228,10 @@ function fixture(
       return orchestrator;
     },
     async item() {
-      return getWorkItem(db, (await getLinearSession(sqliteDb(db), "session"))!.activeItemId!)!;
+      return (await getWorkItem(
+        sqliteDb(db),
+        (await getLinearSession(sqliteDb(db), "session"))!.activeItemId!,
+      ))!;
     },
     prompts() {
       return existsSync(evidence)
@@ -272,9 +275,9 @@ function running(pid: number): boolean {
   }
 }
 
-async function until(condition: () => boolean): Promise<void> {
+async function until(condition: () => boolean | Promise<boolean>): Promise<void> {
   for (let attempt = 0; attempt < 300; attempt++) {
-    if (condition()) return;
+    if (await condition()) return;
     await Bun.sleep(10);
   }
   throw new Error("Fixture condition did not arrive");
@@ -348,7 +351,7 @@ test("new prompt after completion creates a new task and preserves the terminal 
     expect(next.id).not.toBe(original.id);
     expect(next.linearIssueId).toBe(original.linearIssueId);
     expect(itemPathId(next)).not.toBe(itemPathId(original));
-    expect(getWorkItem(f.db, original.id)?.state).toBe("merged");
+    expect((await getWorkItem(sqliteDb(f.db), original.id))?.state).toBe("merged");
     f.reopen();
     for (let attempt = 0; attempt < 3 && (await f.item()).state === "queued"; attempt++)
       await tickWithRestarts(f.jobs, f.orchestrator, f.db);
@@ -483,7 +486,7 @@ test("an accepted answer question redirects through classification before code e
     await f.orchestrator.onLinearEvent(event("created", null, 1));
     const task = (await f.item()).id;
     const original = tickWithRestarts(f.jobs, f.orchestrator, f.db);
-    await until(() => Boolean(findOpenQuestion(f.db, "session")));
+    await until(async () => Boolean(await findOpenQuestion(sqliteDb(f.db), "session")));
     expect(await getTaskMode(sqliteDb(f.db), task)).toBe("answer");
     expect(f.starts).toEqual(["classify", "answer"]);
     const reply = {
@@ -493,7 +496,7 @@ test("an accepted answer question redirects through classification before code e
     };
     await f.orchestrator.onLinearEvent(reply);
     await original;
-    expect(findOpenQuestion(f.db, "session")).toBeNull();
+    expect(await findOpenQuestion(sqliteDb(f.db), "session")).toBeNull();
     expect((await f.item()).id).toBe(task);
     expect(f.tracker.progress.filter((row) => row.kind === "response")).toHaveLength(0);
     await tickWithRestarts(f.jobs, f.orchestrator, f.db);
@@ -559,7 +562,7 @@ test.each(["answer", "artifact"] as const)(
       await f.orchestrator.onLinearEvent(event("created", null, 1));
       const discussion = (await f.item()).id;
       const original = tickWithRestarts(f.jobs, f.orchestrator, f.db);
-      await until(() => Boolean(findOpenQuestion(f.db, "session")));
+      await until(async () => Boolean(await findOpenQuestion(sqliteDb(f.db), "session")));
       const reply = {
         ...event("redirect-children", "Also implement both child changes", Date.now()),
         actorId: "human",
@@ -568,7 +571,7 @@ test.each(["answer", "artifact"] as const)(
       await f.orchestrator.onLinearEvent(reply);
       await original;
       await tickWithRestarts(f.jobs, f.orchestrator, f.db);
-      expect(getWorkItem(f.db, discussion)?.state).toBe("cancelled");
+      expect((await getWorkItem(sqliteDb(f.db), discussion))?.state).toBe("cancelled");
       const children = f.db
         .query<{ id: string; linear_issue_id: string }, []>(
           "SELECT id, linear_issue_id FROM work_item WHERE linear_issue_id != 'issue' ORDER BY position",

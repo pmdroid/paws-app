@@ -406,7 +406,10 @@ export async function probeScheduler(
       },
     ]);
     tracker.deps.set("parent", [{ blockerLinearIssueId: "a", blockedLinearIssueId: "b" }]);
-    const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent", now: 1000 });
+    const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+      linearIssueId: "parent",
+      now: 1000,
+    });
     assert(intake.ok);
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
     await recordLinearInstallation(sqliteDb(db), {
@@ -480,7 +483,10 @@ export async function probeScheduler(
     });
     const sessions = new Map<string, string[]>();
     for (const parent of ["one", "two"]) {
-      const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: parent, now: 1000 });
+      const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+        linearIssueId: parent,
+        now: 1000,
+      });
       assert(intake.ok);
       const sessionId = `session-${parent}`;
       await recordLinearInstallation(sqliteDb(db), {
@@ -591,7 +597,7 @@ export async function probeScheduler(
     const { db } = await setup("tick", 1);
     let now = 1000;
     const loop = new JobLoop(db, { now: () => now, mono: () => now });
-    registerScheduler(
+    await registerScheduler(
       loop,
       async () => {
         await workspaceDispatch(db, { now });

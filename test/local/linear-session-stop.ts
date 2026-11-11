@@ -134,9 +134,9 @@ export async function probeLinearSessionStop(root: string) {
       await sleeping;
       await poller.pollNow();
       await poller.stop();
-      assert.equal(getWorkItem(db, old.id)?.state, "paused");
+      assert.equal((await getWorkItem(sqliteDb(db), old.id))?.state, "paused");
       assert.equal((await getLinearSession(sqliteDb(db), old.sessionKey!))?.stoppedAt, 9_000);
-      assert.equal(getWorkItem(db, replacement.id)?.state, "queued");
+      assert.equal((await getWorkItem(sqliteDb(db), replacement.id))?.state, "queued");
       observations.push({
         case: field,
         oldStopped: true,
@@ -152,7 +152,7 @@ export async function probeLinearSessionStop(root: string) {
       requestedAt: clock.now(),
     });
     await jobs.tick();
-    assert.equal(getWorkItem(db, queued.id)?.state, "paused");
+    assert.equal((await getWorkItem(sqliteDb(db), queued.id))?.state, "paused");
     observations.push({ case: "claimed-stop-job", passed: true });
     assert.equal(joined, 3);
     for (const field of ["stop", "archivedAt", "dismissedAt", "stopping"] as const) {
@@ -216,7 +216,7 @@ export async function probeLinearSessionStop(root: string) {
       try {
         const unsigned = await fetch(server.url, { method: "POST", body });
         assert.equal(unsigned.status, 401);
-        assert.equal(getWorkItem(db, old.id)?.state, "merge_queue");
+        assert.equal((await getWorkItem(sqliteDb(db), old.id))?.state, "merge_queue");
         for (let attempt = 0; attempt < 2; attempt++) {
           const response = await fetch(server.url, {
             method: "POST",
@@ -226,8 +226,8 @@ export async function probeLinearSessionStop(root: string) {
           assert.equal(response.status, 200);
           await done;
         }
-        assert.equal(getWorkItem(db, old.id)?.state, "paused");
-        assert.equal(getWorkItem(db, replacement.id)?.state, "queued");
+        assert.equal((await getWorkItem(sqliteDb(db), old.id))?.state, "paused");
+        assert.equal((await getWorkItem(sqliteDb(db), replacement.id))?.state, "queued");
         // A stop or archive from Linear leaves the pull request and the issue status alone.
         assert.ok(
           !(await listJobs(sqliteDb(db))).some(

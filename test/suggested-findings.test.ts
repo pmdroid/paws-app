@@ -51,7 +51,7 @@ test("own_turn starts exactly one suggestion restart from merge_queue, and none 
     expect(
       await startTurn(db, { itemId: "acme-1", head: "a".repeat(40), suggestions: 1, now: 5 }),
     ).toBe("started");
-    expect(getWorkItem(db, "acme-1")?.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(db), "acme-1"))?.state).toBe("queued");
     expect((await resumeJobs(db, "acme-1")).map((job) => job.jobKey)).toEqual([
       "suggested-findings:acme-1",
     ]);
@@ -90,7 +90,7 @@ test("own_turn starts nothing without suggestions or when another restart is alr
     expect(
       await startTurn(db, { itemId: "acme-2", head: "a".repeat(40), suggestions: 1, now: 5 }),
     ).toBe("skipped");
-    expect(getWorkItem(db, "acme-2")?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(db), "acme-2"))?.state).toBe("merge_queue");
     expect(await resumeJobs(db, "acme-2")).toEqual([]);
   } finally {
     db.close();
@@ -103,7 +103,7 @@ test("own_turn skips the suggestion restart under 45 minutes of awake budget and
     expect(
       await startTurn(db, { itemId: "acme-3", head: "a".repeat(40), suggestions: 1, now: 5 }),
     ).toBe("skipped");
-    expect(getWorkItem(db, "acme-3")?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(db), "acme-3"))?.state).toBe("merge_queue");
     expect(await getSuggestionTurn(sqliteDb(db), "acme-3")).toMatchObject({
       outcome: "skipped",
       reason: expect.stringContaining("44 minutes of the awake budget remain, under 45"),

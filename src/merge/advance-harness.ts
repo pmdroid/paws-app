@@ -604,7 +604,7 @@ export async function mergeHarness(
           owner: "acme",
           repo: "app",
           prNumber,
-          alreadyRerun: (head) => hasCiRerun(db, current.id, head),
+          alreadyRerun: (head) => hasCiRerun(store, current.id, head),
           tokenProvider: { mode: "app", tokenFor: async () => "ghs_test" },
         });
         const { rerun } = result;
@@ -631,7 +631,7 @@ export async function mergeHarness(
   async function pass(id: string, jobPayload?: Record<string, unknown>): Promise<MergeStep> {
     jobId += 1;
     const payload = jobPayload ?? payloads.get(id)!;
-    const step = await advanceMerge(db, store, { itemId: id, payload, jobId }, capabilities(id));
+    const step = await advanceMerge(store, { itemId: id, payload, jobId }, capabilities(id));
     if (step.kind === "wait")
       payloads.set(id, {
         ...payload,

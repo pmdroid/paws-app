@@ -64,7 +64,7 @@ export async function workspaceWithRunners(db: Database) {
       teamId: "team",
       observedAtMs: NOW,
     });
-    const delegationId = getWorkItem(db, id)!.delegationId;
+    const delegationId = (await getWorkItem(sqliteDb(db), id))!.delegationId;
     await bindLinearSessionTask(sqliteDb(db), sessionKey, delegationId, { actorId: "owner" });
     db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
   };
