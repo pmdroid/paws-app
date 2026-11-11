@@ -2,7 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { JOB_KIND } from "../src/core";
 import { getWorkItem, listJobs, mergeCallInFlight } from "../src/db";
 import { questionEffects } from "../src/loop";
-import { answer, findOpenQuestion } from "../src/questions";
+import { findOpenQuestion } from "../src/questions";
+import { answer } from "./questions";
 import { mergeHarness, type MergeHarness } from "../src/merge/advance-harness";
 import { RETRY_MERGE } from "../src/merge";
 
@@ -24,9 +25,9 @@ function refuse(h: MergeHarness): void {
 
 let replies = 0;
 
-function reply(h: MergeHarness, id: string, body: string): void {
+async function reply(h: MergeHarness, id: string, body: string): Promise<void> {
   const now = h.clock.now();
-  answer(
+  await answer(
     h.db,
     { sessionId: `ses-${id}`, deliveryId: `reply:${++replies}`, body, answeredBy: "acme-dev", now },
     questionEffects(h.db, { now }),
@@ -72,7 +73,7 @@ describe("a merge GitHub refuses", () => {
     const item = await h.addItem("ACME-2");
     refuse(h);
     await h.pass(item.id);
-    reply(h, item.id, RETRY_MERGE);
+    await reply(h, item.id, RETRY_MERGE);
     expect(getWorkItem(h.db, item.id)?.state).toBe("merge_queue");
     expect(agentJobs(h)).toEqual([]);
     expect(listJobs(h.db).filter((job) => job.queue === JOB_KIND.reverify)).toEqual([]);
@@ -86,7 +87,7 @@ describe("a merge GitHub refuses", () => {
     const item = await h.addItem("ACME-3");
     refuse(h);
     await h.pass(item.id);
-    reply(h, item.id, "Squash merges are off; enable them in the repository settings first.");
+    await reply(h, item.id, "Squash merges are off; enable them in the repository settings first.");
     expect(agentJobs(h).map((job) => job.queue)).toEqual([JOB_KIND.resume]);
   });
 
@@ -95,9 +96,9 @@ describe("a merge GitHub refuses", () => {
     const item = await h.addItem("ACME-4");
     refuse(h);
     expect(await h.pass(item.id)).toEqual({ kind: "asked" });
-    reply(h, item.id, "retry");
+    await reply(h, item.id, "retry");
     expect(await h.pass(item.id, mergeJob(h, item.id))).toEqual({ kind: "asked" });
-    reply(h, item.id, RETRY_MERGE);
+    await reply(h, item.id, RETRY_MERGE);
     const failed = await h.pass(item.id, mergeJob(h, item.id));
     expect(failed).toMatchObject({ kind: "failed", reason: "merge" });
     expect((failed as { message: string }).message).toContain("status 405");

@@ -17,7 +17,8 @@ import { writeAgentSettings } from "../src/config";
 import { handleAgentSettingsRequest } from "../src/settings";
 import { createFakeTracker } from "../src/linear";
 import { Orchestrator } from "../src/loop";
-import { answerQuestion, findOpenQuestion } from "../src/questions";
+import { findOpenQuestion } from "../src/questions";
+import { answerQuestion } from "./questions";
 
 const oldProfiles = {
   implementer: { agent: "claude", model: "old" },
@@ -487,7 +488,7 @@ test("an unknown label asks, starts nothing, and Use the default holds for the i
   expect(open.options).toEqual(["Use the default", "I fixed the label"]);
   expect(f.item().state).toBe("awaiting_input");
   expect(f.db.query("SELECT status FROM run WHERE id=?").get(run.id)).toEqual({ status: "ended" });
-  answerQuestion(f.db, open.id, { answer: "Use the default", answeredBy: "acme-user" });
+  await answerQuestion(f.db, open.id, { answer: "Use the default", answeredBy: "acme-user" });
   f.db.run("UPDATE work_item SET state='running' WHERE id=?", [f.item().id]);
   expect(await f.gate.checkProfileLabels(f.item(), run.id)).toBe(true);
   expect(f.snapshot(run.id).profiles.implementer).toEqual(oldProfiles.implementer);
@@ -502,7 +503,7 @@ test("I fixed the label reads the corrected label before the run goes on", async
   f.label({ implementer: "Acme unknown" });
   const run = await f.gate.ensureRun(f.item());
   await f.gate.checkProfileLabels(f.item(), run.id);
-  answerQuestion(f.db, findOpenQuestion(f.db, "acme-session")!.id, {
+  await answerQuestion(f.db, findOpenQuestion(f.db, "acme-session")!.id, {
     answer: "I fixed the label",
     answeredBy: "acme-user",
   });

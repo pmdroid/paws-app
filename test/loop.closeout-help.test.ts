@@ -15,7 +15,8 @@ import {
 import { formatEvidenceSummary } from "../src/closeout";
 import { askCloseoutHelp, questionEffects, verifyAgainSteps } from "../src/loop";
 import { recoveryOptions } from "../src/loop/closeout-recovery";
-import { answer, ask, findOpenQuestion, getQuestion, handoffNote } from "../src/questions";
+import { findOpenQuestion, getQuestion, handoffNote } from "../src/questions";
+import { answer, ask } from "./questions";
 import { tempDb } from "./helpers";
 
 const NOW = 1_700_000_000_000;
@@ -29,9 +30,11 @@ function parked() {
   return { db, asker: { itemId: item.id, runId: run.id, sessionId: "ses_1" } };
 }
 
-function closeoutHelp() {
+async function closeoutHelp() {
   const { db, asker } = parked();
-  const { question } = ask(db, asker, "closeout-help", "Closeout needs your help.", { now: NOW });
+  const { question } = await ask(db, asker, "closeout-help", "Closeout needs your help.", {
+    now: NOW,
+  });
   saveCloseoutRecovery(db, {
     questionId: question.id,
     taskId: "ENG-2",
@@ -57,9 +60,9 @@ const reply = (body: string) => ({
 const jobs = (db: ReturnType<typeof tempDb>) =>
   listJobs(db).map((job) => ({ queue: job.queue, jobKey: job.jobKey, payload: job.payload }));
 
-test("a Closeout guidance answer resumes the agent with the Closeout summary", () => {
-  const { db, asker, question } = closeoutHelp();
-  answer(db, reply("Create ok.txt"), questionEffects(db, { now: NOW + 100 }));
+test("a Closeout guidance answer resumes the agent with the Closeout summary", async () => {
+  const { db, asker, question } = await closeoutHelp();
+  await answer(db, reply("Create ok.txt"), questionEffects(db, { now: NOW + 100 }));
   expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
   expect(jobs(db)).toEqual([
     {
@@ -76,9 +79,9 @@ test("a Closeout guidance answer resumes the agent with the Closeout summary", (
 });
 
 test("a /paws bypass reply is guidance: it restarts the agent and bypasses nothing", async () => {
-  const { db, asker, question } = closeoutHelp();
+  const { db, asker, question } = await closeoutHelp();
   const body = "/paws bypass test -- Known fixture failure";
-  answer(db, reply(body), questionEffects(db, { now: NOW + 100 }));
+  await answer(db, reply(body), questionEffects(db, { now: NOW + 100 }));
   expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
   expect(jobs(db)).toEqual([
     {
@@ -116,7 +119,7 @@ const delivered = (db: ReturnType<typeof tempDb>) =>
 
 test("a Closeout stall asked while another question is open is delivered after its answer", async () => {
   const { db, asker } = parked();
-  const open = ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW });
+  const open = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW });
   await askCloseoutHelp(db, "ses_1", help("Closeout: blocked\nMessage: stalled"), { now: NOW + 1 });
   const queued = listCloseoutRecoveries(db, asker.itemId)[0]!;
   expect(getQuestion(db, queued.questionId)).toMatchObject({
@@ -125,7 +128,7 @@ test("a Closeout stall asked while another question is open is delivered after i
   });
   expect(delivered(db).map((payload) => payload.questionId)).toEqual([open.question.id]);
 
-  answer(db, reply("Keep waiting"), questionEffects(db, { now: NOW + 100 }));
+  await answer(db, reply("Keep waiting"), questionEffects(db, { now: NOW + 100 }));
 
   expect(findOpenQuestion(db, "ses_1")?.id).toBe(queued.questionId);
   expect(delivered(db).at(-1)?.body).toContain("Closeout needs your help.");
@@ -175,10 +178,12 @@ test("the Closeout help question names the task as its Linear identifier", async
   expect(body).not.toContain("01M5NDWPQZ0JQ91E1MFMVEY6EP");
 });
 
-test("a CI help answer resumes the agent with the handoff", () => {
+test("a CI help answer resumes the agent with the handoff", async () => {
   const { db, asker } = parked();
-  const { question } = ask(db, asker, "ci-help", "CI failed on the pull request.", { now: NOW });
-  answer(db, reply("Fix the flaky test"), questionEffects(db, { now: NOW + 100 }));
+  const { question } = await ask(db, asker, "ci-help", "CI failed on the pull request.", {
+    now: NOW,
+  });
+  await answer(db, reply("Fix the flaky test"), questionEffects(db, { now: NOW + 100 }));
   expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
   expect(jobs(db).map((job) => job.jobKey)).toEqual([`resume:answer:${question.id}`]);
 });
@@ -206,7 +211,7 @@ for (const body of ["Retry Closeout", "  RETRY "])
     const { db, asker, question } = await askedAbout([]);
     expect(question.options).toEqual(["Retry Closeout"]);
     expect(delivered(db)[0]?.body).toContain("Choose Retry Closeout, or reply retry");
-    answer(db, reply(body), questionEffects(db, { now: NOW + 100 }));
+    await answer(db, reply(body), questionEffects(db, { now: NOW + 100 }));
     expect(getWorkItem(db, asker.itemId)?.state).toBe("verifying");
     expect(jobs(db)).toEqual([
       {
@@ -228,7 +233,7 @@ test("a longer reply to that question is guidance and restarts the agent with it
     { id: "test", kind: "command", state: "failed", message: "command timed out" },
   ]);
   expect(question.options).toEqual(["Retry Closeout"]);
-  answer(db, reply("retry, but also fix X"), questionEffects(db, { now: NOW + 100 }));
+  await answer(db, reply("retry, but also fix X"), questionEffects(db, { now: NOW + 100 }));
   expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
   expect(jobs(db)).toMatchObject([
     {
@@ -248,7 +253,7 @@ test("a check failing on the code offers no Retry Closeout, and retry restarts t
   ]);
   expect(question.options).toEqual([]);
   expect(delivered(db)[0]?.body).not.toContain("Retry Closeout");
-  answer(db, reply("retry"), questionEffects(db, { now: NOW + 100 }));
+  await answer(db, reply("retry"), questionEffects(db, { now: NOW + 100 }));
   expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
   expect(jobs(db).map((job) => job.jobKey)).toEqual([`closeout-guidance:${question.id}`]);
 });

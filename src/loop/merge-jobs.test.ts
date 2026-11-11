@@ -22,6 +22,7 @@ import {
   openDatabase,
   sqliteDb,
 } from "../db";
+import { answerSteps } from "../questions";
 import {
   MERGE_BACKSTOP_POLL_MS,
   MERGE_CI_ASK_AFTER_MS,
@@ -30,7 +31,6 @@ import {
   ciWaitVerification,
   parkMerge,
 } from "../merge";
-import { answer } from "../questions";
 import {
   acceptGitHubDelivery,
   askAboutSlowCi,
@@ -649,11 +649,15 @@ describe("slow CI question", () => {
     return { db, clock };
   }
 
-  function reply(db: ReturnType<typeof queue>["db"], body: string, now: number) {
-    return answer(
-      db,
-      { sessionId: "ses", deliveryId: `reply:${body}`, body, answeredBy: "pascal", now },
-      questionEffects(db, { now }),
+  async function reply(db: ReturnType<typeof queue>["db"], body: string, now: number) {
+    return (
+      await sqliteDb(db).transaction((q) =>
+        answerSteps(
+          q,
+          { sessionId: "ses", deliveryId: `reply:${body}`, body, answeredBy: "pascal", now },
+          questionEffects(db, { now }),
+        ),
+      )
     ).status;
   }
 
@@ -672,7 +676,7 @@ describe("slow CI question", () => {
   test("Merge returns the accepted head to the merge queue and starts a fresh wait", async () => {
     const { db, clock } = await askedAboutSlowCi();
     const runs = (await listRuns(sqliteDb(db), "eng-1")).length;
-    expect(reply(db, "Merge the accepted work", clock.now())).toBe("answered");
+    expect(await reply(db, "Merge the accepted work", clock.now())).toBe("answered");
     expect(getWorkItem(db, "eng-1")).toMatchObject({ state: "merge_queue", acceptedHead: "h" });
     expect(await listRuns(sqliteDb(db), "eng-1")).toHaveLength(runs);
     const job = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] })!;
@@ -688,7 +692,7 @@ describe("slow CI question", () => {
 
   test("Stop fails the item by answer and keeps the accepted branch", async () => {
     const { db, clock } = await askedAboutSlowCi();
-    expect(reply(db, "Stop", clock.now())).toBe("answered");
+    expect(await reply(db, "Stop", clock.now())).toBe("answered");
     expect(getWorkItem(db, "eng-1")?.state).toBe("failed");
     const event = db
       .query<{ event: string }, []>("SELECT event FROM work_item_event ORDER BY id DESC LIMIT 1")

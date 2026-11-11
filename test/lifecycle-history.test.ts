@@ -21,7 +21,7 @@ import {
   sqliteDb,
 } from "../src/db";
 import { ask, questionEffects, restart } from "../src/loop";
-import { answer } from "../src/questions";
+import { answer } from "./questions";
 import { parseIssueListResponse } from "../src/dashboard";
 import { createLiveStatusProvider } from "../src/dashboard/src/live/provider";
 
@@ -44,8 +44,8 @@ function history(db: Database, itemId: string, fromVersion = 0): string[] {
     .map((row) => `${row.fromState} -${row.event}-> ${row.toState}`);
 }
 
-function reply(db: Database, body: string, now: number) {
-  return answer(
+async function reply(db: Database, body: string, now: number) {
+  return await answer(
     db,
     { sessionId: "ses", deliveryId: `reply:${body}:${now}`, body, answeredBy: "pascal", now },
     questionEffects(db, { now }),
@@ -91,7 +91,7 @@ async function askedAtTimeLimit() {
 test("Merge at the time limit records one acceptance, no agent turn, and no running time", async () => {
   const { clock, db, itemId, askedAt } = await askedAtTimeLimit();
   clock.advance(10 * MINUTE);
-  expect(reply(db, "Merge the accepted work", clock.now()).status).toBe("answered");
+  expect((await reply(db, "Merge the accepted work", clock.now())).status).toBe("answered");
   expect(history(db, itemId, askedAt)).toEqual(["awaiting_input -closeout_accepted-> merge_queue"]);
 
   clock.advance(5 * MINUTE);
@@ -110,11 +110,11 @@ test("Merge at the time limit records one acceptance, no agent turn, and no runn
 
 test("Stop at the time limit records answer_stopped from the wait, not a run failure", async () => {
   const { clock, db, itemId, askedAt } = await askedAtTimeLimit();
-  expect(reply(db, "Stop", clock.now()).status).toBe("answered");
+  expect((await reply(db, "Stop", clock.now())).status).toBe("answered");
   expect(history(db, itemId, askedAt)).toEqual(["awaiting_input -answer_stopped-> failed"]);
 });
 
-test("an answered runner wait re-verifies without passing through running", () => {
+test("an answered runner wait re-verifies without passing through running", async () => {
   const db = database();
   const item = insertQueuedItem(db, { id: "eng-8", sessionKey: "ses", now: 1_000 });
   const { run } = beginImplementRun(db, item.id, 1_000);
@@ -127,12 +127,12 @@ test("an answered runner wait re-verifies without passing through running", () =
     { options: ["Keep waiting", "Move"], now: 2_000 },
   );
   const askedAt = getWorkItem(db, item.id)!.version;
-  expect(reply(db, "Keep waiting", 3_000).status).toBe("answered");
+  expect((await reply(db, "Keep waiting", 3_000)).status).toBe("answered");
   expect(history(db, item.id, askedAt)).toEqual(["awaiting_input -reverify_requested-> verifying"]);
   expect(listJobs(db).some((job) => job.queue === "run.reverify")).toBe(true);
 });
 
-test("Discarding a plan completes it from the wait with one answer_completed", () => {
+test("Discarding a plan completes it from the wait with one answer_completed", async () => {
   const db = database();
   const item = insertQueuedItem(db, { id: "eng-9", sessionKey: "ses", now: 1_000 });
   saveTaskMode(db, item.id, "plan");
@@ -155,7 +155,7 @@ test("Discarding a plan completes it from the wait with one answer_completed", (
     now: 2_000,
   });
   const askedAt = getWorkItem(db, item.id)!.version;
-  expect(reply(db, "Discard", 3_000).status).toBe("answered");
+  expect((await reply(db, "Discard", 3_000)).status).toBe("answered");
   expect(history(db, item.id, askedAt)).toEqual(["awaiting_input -answer_completed-> completed"]);
 });
 

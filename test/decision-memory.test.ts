@@ -9,7 +9,8 @@ import {
   listDecisions,
   decisionAnswers,
 } from "../src/decisions";
-import { openQuestion, answer, ask } from "../src/questions";
+import { openQuestion } from "../src/questions";
+import { answer, ask } from "./questions";
 import { decisionFixture, probeDecisionMemory } from "./local/decision-memory";
 
 test("decision memory requires accessible confirmed human answers and never resumes on a search match", async () => {
@@ -23,12 +24,12 @@ test("decision memory requires accessible confirmed human answers and never resu
 
 test("only agent and clarification answers are offered as decisions", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-decisions-"));
-  const f = decisionFixture(root);
+  const f = await decisionFixture(root);
   try {
     const asker = { itemId: "controlled", runId: f.runId, sessionId: "session-controlled" };
     for (const kind of ["runner-wait", "repository", "clarification"] as const) {
-      ask(f.db, asker, kind, `${kind} question`, { now: Date.now() });
-      answer(f.db, {
+      await ask(f.db, asker, kind, `${kind} question`, { now: Date.now() });
+      await answer(f.db, {
         sessionId: "session-controlled",
         deliveryId: kind,
         body: `${kind} answer`,
@@ -48,7 +49,7 @@ test("only agent and clarification answers are offered as decisions", async () =
 
 test("two concurrent confirmations accept one suggestion once, with every read inside a transaction", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-confirm-decision-"));
-  const f = decisionFixture(root);
+  const f = await decisionFixture(root);
   const children: Bun.Subprocess<"pipe", "pipe", "pipe">[] = [];
   try {
     const actor = { workspaceId: "workspace", userId: "member", clientId: "client" };
@@ -63,7 +64,7 @@ test("two concurrent confirmations accept one suggestion once, with every read i
       },
       Date.now(),
     );
-    const pending = openQuestion(f.db, {
+    const pending = await openQuestion(f.db, {
       itemId: "controlled",
       sessionId: "session-controlled",
       body: "Which pagination format?",

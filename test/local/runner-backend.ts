@@ -59,7 +59,8 @@ import {
   createFakeRunnerTranscriptObjects,
   RUNNER_TRANSCRIPT_CHUNK_BYTES,
 } from "../../src/runner-transcripts";
-import { openQuestion, answerQuestion, ask as askQuestion } from "../../src/questions";
+import { openQuestion } from "../../src/questions";
+import { answerQuestion, ask as askQuestion } from "../questions";
 import { applyWorkItemEvent } from "../../src/db";
 import { PawsShutdown, RunnerCapacityWait } from "../../src/core";
 import { createRunnerPlacement } from "../../src/runner-placement";
@@ -2049,7 +2050,7 @@ export async function probeRunnerBackend(
           async ask(request, context) {
             assert.equal(context.runId, asked.run.id);
             if (request.question === "Which rows count as archived?") {
-              const asked2 = askQuestion(
+              const asked2 = await askQuestion(
                 db,
                 { itemId: asked.id, runId: asked.run.id, sessionId: `session-${sequence}` },
                 "agent",
@@ -2066,14 +2067,18 @@ export async function probeRunnerBackend(
                   "SELECT json_extract(payload,'$.body') AS body FROM outbox WHERE op='elicitation' AND idempotency_key=?",
                 )
                 .get(`question:${asked2.question.id}`)?.body;
-              answerQuestion(db, asked2.question.id, { answer: "all", answeredBy: "owner", now });
+              await answerQuestion(db, asked2.question.id, {
+                answer: "all",
+                answeredBy: "owner",
+                now,
+              });
               return { answer: "all" };
             }
             assert.equal(request.question, "Include archived rows?");
             assert.deepEqual(request.options, [{ label: "Include", value: "yes" }]);
             assert.equal(request.context, undefined);
             applyWorkItemEvent(db, asked.id, "blocking_question");
-            const question = openQuestion(db, {
+            const question = await openQuestion(db, {
               itemId: asked.id,
               runId: asked.run.id,
               sessionId: `session-${sequence}`,
@@ -2082,7 +2087,7 @@ export async function probeRunnerBackend(
             });
             opened = true;
             await delay(10, undefined, { signal: context.signal });
-            answerQuestion(db, question.id, { answer: "yes", answeredBy: "owner", now });
+            await answerQuestion(db, question.id, { answer: "yes", answeredBy: "owner", now });
             applyWorkItemEvent(db, asked.id, "answer_received");
             return { answer: "yes" };
           },
@@ -2862,7 +2867,7 @@ export async function probeRunnerBackend(
         askTeam: {
           async ask(request, context) {
             applyWorkItemEvent(db, artifactItem.id, "blocking_question");
-            const question = openQuestion(db, {
+            const question = await openQuestion(db, {
               itemId: artifactItem.id,
               runId: artifactItem.run.id,
               sessionId: getWorkItem(db, artifactItem.id)!.sessionKey!,
@@ -2872,7 +2877,7 @@ export async function probeRunnerBackend(
             continuationState.questionId = question.id;
             while (continuationState.answer === null)
               await delay(1, undefined, { signal: context.signal });
-            answerQuestion(db, question.id, {
+            await answerQuestion(db, question.id, {
               answer: continuationState.answer,
               answeredBy: "owner",
               now,

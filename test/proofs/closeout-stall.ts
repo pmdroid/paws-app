@@ -14,7 +14,8 @@ import {
   saveCheckpoint,
   setCurrentRun,
 } from "../../src/db";
-import { answer, findOpenQuestion } from "../../src/questions";
+import { findOpenQuestion } from "../../src/questions";
+import { answer } from "../questions";
 import { recoverStalledCloseout } from "../../src/loop/closeout-stall";
 import { questionEffects } from "../../src/loop/question-effects";
 import type { Proof } from "./harness";
@@ -75,7 +76,7 @@ export default {
         getWorkItem(db, "quiet")?.state === "awaiting_input",
         findOpenQuestion(db, "quiet-session"),
       );
-      answer(
+      await answer(
         db,
         {
           sessionId: "quiet-session",

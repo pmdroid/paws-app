@@ -60,12 +60,16 @@ export type NewQuestion = {
   now?: number;
 };
 
-export function openQuestion(db: Database, input: NewQuestion): StoredQuestion {
-  const existing = findOpenQuestion(db, input.sessionId);
+export function* openQuestionSteps(q: Q, input: NewQuestion): Steps<StoredQuestion> {
+  const existing = yield* findOpenQuestionSteps(q, input.sessionId);
   if (existing !== null) {
     throw new Error(`Session ${input.sessionId} already has an unanswered question`);
   }
-  return insertQuestion(db, { ...input, kind: "agent", status: "open" });
+  return yield* insertQuestionSteps(q, { ...input, kind: "agent", status: "open" });
+}
+
+export function openQuestion(db: Database, input: NewQuestion): Promise<StoredQuestion> {
+  return sqliteDb(db).run((q) => openQuestionSteps(q, input));
 }
 
 type QuestionInsert = NewQuestion & {
@@ -93,10 +97,6 @@ export function* insertQuestionSteps(q: Q, input: QuestionInsert): Steps<StoredQ
   const stored = yield* getQuestionSteps(q, id);
   if (stored === null) throw new Error("insertQuestion did not store a row");
   return stored;
-}
-
-export function insertQuestion(db: Database, input: QuestionInsert): StoredQuestion {
-  return settled(sqliteDb(db).run((q) => insertQuestionSteps(q, input)));
 }
 
 export function* getQuestionSteps(q: Q, id: string): Steps<StoredQuestion | null> {

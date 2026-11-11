@@ -19,7 +19,8 @@ import {
 } from "../src/db";
 import { createFakeTracker } from "../src/linear";
 import { attachOrchestrator, type Orchestrator } from "../src/loop";
-import { answerQuestion, findOpenQuestion } from "../src/questions";
+import { findOpenQuestion } from "../src/questions";
+import { answerQuestion } from "./questions";
 
 type PreflightRunner = { runItem(item: WorkItemRecord, handoff?: string): Promise<void> };
 
@@ -114,7 +115,7 @@ for await (const line of createInterface({ input: process.stdin })) {
       db.close();
       db = openDatabase(databasePath);
       expect(getConversation(db, item.id).blocked).toBe(true);
-      answerQuestion(db, question!.id, { answer: "Retry", answeredBy: "human" });
+      await answerQuestion(db, question!.id, { answer: "Retry", answeredBy: "human" });
       applyWorkItemEvent(db, item.id, "answer_received");
       orchestrator = create();
       const priorLaunches = launches;

@@ -143,7 +143,7 @@ export async function probeExecutionChanges(
       jobKey: "old-approval",
       now: clock.now(),
     });
-    const question = openQuestion(db, {
+    const question = await openQuestion(db, {
       itemId: "criteria-1",
       sessionId: "criteria-session",
       body: "Old criteria signoff?",

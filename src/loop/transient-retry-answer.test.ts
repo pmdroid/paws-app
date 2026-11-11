@@ -11,7 +11,7 @@ import {
   openDatabase,
   sqliteDb,
 } from "../db";
-import { answer } from "../questions";
+import { answerSteps } from "../questions";
 import { ask } from "./operations";
 import { questionEffects } from "./question-effects";
 
@@ -42,16 +42,20 @@ test("an answer restarts the task with a fresh transient-retry count", async () 
   );
   clock.advance(60_000);
   expect(
-    answer(
-      db,
-      {
-        sessionId: "ses",
-        deliveryId: "reply:widgets",
-        body: "Count blue widgets.",
-        answeredBy: "pascal",
-        now: clock.now(),
-      },
-      questionEffects(db, { now: clock.now() }),
+    (
+      await sqliteDb(db).transaction((q) =>
+        answerSteps(
+          q,
+          {
+            sessionId: "ses",
+            deliveryId: "reply:widgets",
+            body: "Count blue widgets.",
+            answeredBy: "pascal",
+            now: clock.now(),
+          },
+          questionEffects(db, { now: clock.now() }),
+        ),
+      )
     ).status,
   ).toBe("answered");
   expect(getWorkItem(db, item.id)?.state).toBe("queued");

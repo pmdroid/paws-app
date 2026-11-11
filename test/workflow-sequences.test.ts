@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { JOB_KIND, isTerminalWorkItemState } from "../src/core";
 import { applyLinearCommand, claimNextJob, completeJob, getWorkItem } from "../src/db";
 import { questionEffects } from "../src/loop";
-import { answer } from "../src/questions";
+import { answer } from "./questions";
 import {
   FIXTURES,
   HOUR,
@@ -95,7 +95,7 @@ function generate(seed: number, steps = 14, size = 7): Sequence {
   return { seed, fixtures, actions };
 }
 
-function apply(w: World, sequence: Sequence, action: Action): void {
+async function apply(w: World, sequence: Sequence, action: Action): Promise<void> {
   const id = (index: number) => sequence.fixtures[index % sequence.fixtures.length]!;
   switch (action.kind) {
     case "crash_start":
@@ -131,10 +131,10 @@ function apply(w: World, sequence: Sequence, action: Action): void {
         answeredBy: "lead",
         now: w.now,
       };
-      const first = answer(w.db, reply, questionEffects(w.db, { now: w.now }));
+      const first = await answer(w.db, reply, questionEffects(w.db, { now: w.now }));
       const after = dump(w.db);
       w.crash();
-      const again = answer(w.db, reply, questionEffects(w.db, { now: w.now }));
+      const again = await answer(w.db, reply, questionEffects(w.db, { now: w.now }));
       if (first.status === "answered") expect(again.status).toBe("duplicate");
       expect(dump(w.db)).toEqual(after);
       return;
@@ -226,7 +226,7 @@ async function failure(sequence: Sequence): Promise<string | null> {
     for (const [step, action] of sequence.actions.entries()) {
       const before = new Map(ids.map((id) => [id, factsOf(w.db, id)]));
       try {
-        apply(w, sequence, action);
+        await apply(w, sequence, action);
       } catch (error) {
         return `step ${step} ${action.kind} threw: ${String(error)}`;
       }

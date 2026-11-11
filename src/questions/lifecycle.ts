@@ -5,7 +5,6 @@ import {
   cancelQueuedQuestionsSteps,
   closeLinkAskSteps,
   dropQuestionElicitationsSteps,
-  emitJobReady,
   enqueueOutboxOnceSteps,
   getLinkAskSteps,
   getWorkItemSteps,
@@ -124,16 +123,6 @@ export function* askSteps(
   return { status: "asked", question };
 }
 
-export function ask(
-  db: Database,
-  asker: QuestionAsker,
-  kind: QuestionKind,
-  body: string,
-  input: AskInput = {},
-): Asked {
-  return settled(sqliteDb(db).transaction((q) => askSteps(q, asker, kind, body, input)));
-}
-
 export function* answerSteps(
   q: Q,
   reply: QuestionReply,
@@ -159,16 +148,6 @@ export function* answerSteps(
   };
 }
 
-export function answer(
-  db: Database,
-  reply: QuestionReply,
-  effects: AnswerEffects = {},
-): AnswerOutcome {
-  const outcome = settled(sqliteDb(db).transaction((q) => answerSteps(q, reply, effects)));
-  emitJobReady(db);
-  return outcome;
-}
-
 type AnswerInput = { answer: string; answeredBy: string; eventKey?: string; now?: number };
 
 export function* answerQuestionSteps(
@@ -188,15 +167,6 @@ export function* answerQuestionSteps(
   const answered = yield* getQuestionSteps(q, id);
   if (answered !== null) yield* promoteNextSteps(q, answered.sessionId, now);
   return answered;
-}
-
-/** Mark the open question answered. A second delivery does not overwrite it. */
-export function answerQuestion(
-  db: Database,
-  id: string,
-  input: AnswerInput,
-): StoredQuestion | null {
-  return settled(sqliteDb(db).transaction((q) => answerQuestionSteps(q, id, input)));
 }
 
 export function* cancelQuestionSteps(q: Q, id: string, now = Date.now()): Steps<void> {

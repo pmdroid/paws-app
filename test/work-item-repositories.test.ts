@@ -14,7 +14,8 @@ import {
   openDatabase,
   sqliteDb,
 } from "../src/db";
-import { answerQuestion, openQuestion } from "../src/questions";
+import { openQuestion } from "../src/questions";
+import { answerQuestion } from "./questions";
 
 test("repository binding survives restart and rejects a different binding", () => {
   const root = mkdtempSync(join(tmpdir(), "paws-repository-"));
@@ -61,7 +62,7 @@ test("an interpreted offered repository survives restart without changing the an
   try {
     migrate(db);
     const item = insertQueuedItem(db);
-    const question = openQuestion(db, {
+    const question = await openQuestion(db, {
       itemId: item.id,
       sessionId: "session",
       body: "Which repository?",
@@ -70,7 +71,7 @@ test("an interpreted offered repository survives restart without changing the an
     expect(
       await rememberWorkItemRepositoryChoice(sqliteDb(db), item.id, question.id, repositories[1]!),
     ).toBe(false);
-    answerQuestion(db, question.id, {
+    await answerQuestion(db, question.id, {
       answer: "Use the second repository for this change.",
       answeredBy: "owner",
     });
@@ -91,7 +92,7 @@ test("an interpreted offered repository survives restart without changing the an
     expect(getWorkItemRepositoryAnswer(db, item.id)?.answer).toBe(
       "Use the second repository for this change.",
     );
-    const replacement = openQuestion(db, {
+    const replacement = await openQuestion(db, {
       itemId: item.id,
       sessionId: "session",
       body: "Choose an accessible repository.",

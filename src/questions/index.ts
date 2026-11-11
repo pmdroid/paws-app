@@ -40,11 +40,8 @@ export {
   type LinkAskAnswerOptions,
 } from "./link-ask-route";
 export {
-  answer,
   answerSteps,
-  answerQuestion,
   answerQuestionSteps,
-  ask,
   askSteps,
   cancelItemQuestions,
   cancelItemQuestionsSteps,
