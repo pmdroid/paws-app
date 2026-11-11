@@ -12,7 +12,16 @@ import {
   resolveAgentProfiles,
   useSettingsStore,
 } from "../src/config";
-import { CONFIG_SETTINGS_KEY, migrate, openDatabase, readSetting, updateSetting } from "../src/db";
+import {
+  CONFIG_SETTINGS_KEY,
+  migrate,
+  openDatabase,
+  readSetting,
+  readSettingSteps,
+  sqliteDb,
+  updateSetting,
+  updateSettingSteps,
+} from "../src/db";
 import { useSavedSettings } from "../src/index";
 import { handleTimeLimitSettingsRequest } from "../src/settings";
 import { tempHome } from "./helpers";
@@ -32,22 +41,24 @@ afterEach(() => {
   for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 });
 
-function instance(dbPath: string, team: string) {
+async function instance(dbPath: string, team: string) {
   const home = tempHome();
   const configPath = join(home, "config.toml");
   writeFileSync(configPath, BOOTSTRAP.replace("ACME", team));
   const db = openDatabase(dbPath);
   migrate(db);
-  const release = useSettingsStore(configPath, {
-    read: () => readSetting(db, CONFIG_SETTINGS_KEY),
-    update: (change) => updateSetting(db, CONFIG_SETTINGS_KEY, change),
+  const store = sqliteDb(db);
+  const settings = await useSettingsStore(configPath, {
+    read: () => store.run((q) => readSettingSteps(q, CONFIG_SETTINGS_KEY)),
+    update: (change) =>
+      store.transaction((q) => updateSettingSteps(q, CONFIG_SETTINGS_KEY, change)),
   });
   cleanups.push(() => {
-    release();
+    settings.release();
     db.close();
     rmSync(home, { recursive: true, force: true });
   });
-  return { db, configPath };
+  return { db, configPath, refresh: settings.refresh };
 }
 
 function shared() {
@@ -70,34 +81,39 @@ function saveTimeLimits(configPath: string, implementationMinutes: number) {
   );
 }
 
-test("an empty setting table reads config.toml as the bootstrap", () => {
-  const a = instance(shared(), "ACME");
+test("an empty setting table reads config.toml as the bootstrap", async () => {
+  const a = await instance(shared(), "ACME");
   expect(readSetting(a.db, CONFIG_SETTINGS_KEY)).toBe(null);
   expect(readMergeSettings(loadConfigFile(a.configPath)).default.order).toBe("queue");
   expect(loadConfigFile(a.configPath).linearTeam).toBe("ACME");
 });
 
-test("a setting saved on instance A is read by instance B on its next use", async () => {
+test("a setting saved on instance A is read by instance B after its next refresh", async () => {
   const dbPath = shared();
-  const a = instance(dbPath, "ACME");
-  const b = instance(dbPath, "ACME-B");
+  const a = await instance(dbPath, "ACME");
+  const b = await instance(dbPath, "ACME-B");
   expect(loadConfigFile(b.configPath).timeLimits).toBeUndefined();
 
   expect((await saveTimeLimits(a.configPath, 45))?.status).toBe(200);
+  expect(loadConfigFile(a.configPath).timeLimits?.implementationMinutes).toBe(45);
+  expect(loadConfigFile(b.configPath).timeLimits).toBeUndefined();
 
+  await b.refresh();
   expect(loadConfigFile(b.configPath).timeLimits?.implementationMinutes).toBe(45);
   expect(readMergeSettings(loadConfigFile(b.configPath)).default.order).toBe("queue");
   expect(loadConfigFile(b.configPath).linearTeam).toBe("ACME-B");
   expect(readFileSync(a.configPath, "utf8")).toBe(BOOTSTRAP);
 
   expect((await saveTimeLimits(b.configPath, 30))?.status).toBe(200);
+  await a.refresh();
   expect(loadConfigFile(a.configPath).timeLimits?.implementationMinutes).toBe(30);
 });
 
-test("once the table holds settings, config.toml supplies only what Settings does not own", () => {
-  const a = instance(shared(), "ACME");
+test("once the table holds settings, config.toml supplies only what Settings does not own", async () => {
+  const a = await instance(shared(), "ACME");
   writeFileSync(a.configPath, `${BOOTSTRAP}\n[queue]\nmax_running_per_owner = 2\n`);
   updateSetting(a.db, CONFIG_SETTINGS_KEY, () => '[merge]\norder = "ci-green"\n');
+  await a.refresh();
   const config = loadConfigFile(a.configPath);
   expect(readMergeSettings(config).default.order).toBe("ci-green");
   expect(config.queueMaxRunningPerOwner).toBeUndefined();
@@ -129,11 +145,12 @@ test("a command without a running Paws, such as paws doctor, reads the saved set
   expect(runtime.linearTeam).toBe("ACME");
 });
 
-test("a table-like line inside a multiline string is not read as a section", () => {
-  const a = instance(shared(), "ACME");
+test("a table-like line inside a multiline string is not read as a section", async () => {
+  const a = await instance(shared(), "ACME");
   const template = "Summarise the issue.\n[example]\nKeep it short.\n";
   writeFileSync(a.configPath, `${BOOTSTRAP}\n[brief]\ntemplate = """\n${template}"""\n`);
   updateSetting(a.db, CONFIG_SETTINGS_KEY, () => "[queue]\nmax_running_per_owner = 2\n");
+  await a.refresh();
   const text = readConfigText(a.configPath);
   expect(text).not.toContain("[example]");
   expect(parseBriefTemplates(text).template).toBe(null);
@@ -143,17 +160,19 @@ test("a table-like line inside a multiline string is not read as a section", () 
     CONFIG_SETTINGS_KEY,
     () => `[brief]\ntemplate = """\n${template}"""\n\n[queue]\nmax_running_per_owner = 2\n`,
   );
+  await a.refresh();
   expect(parseBriefTemplates(readConfigText(a.configPath)).template).toBe(template);
 });
 
-test("triple quotes in a comment or a one-line string do not hide later sections", () => {
+test("triple quotes in a comment or a one-line string do not hide later sections", async () => {
   for (const quote of ['"""', "'''"]) {
-    const a = instance(shared(), "ACME");
+    const a = await instance(shared(), "ACME");
     writeFileSync(
       a.configPath,
       `[linear]\nteam = "ACME" # see ${quote}\nnote = "${quote === '"""' ? "'''" : '\\"\\"\\"'}"\n\n[caps]\nmax_awake_ms = 5400000\n\n[merge]\norder = "queue"\n`,
     );
     updateSetting(a.db, CONFIG_SETTINGS_KEY, () => '[merge]\norder = "ci-green"\n');
+    await a.refresh();
     const text = readConfigText(a.configPath);
     expect(text).not.toContain('order = "queue"');
     expect(text).toContain("max_awake_ms = 5400000");
@@ -161,13 +180,70 @@ test("triple quotes in a comment or a one-line string do not hide later sections
   }
 });
 
-test("config.toml sections the saved settings override are named, the rest are not", () => {
-  const a = instance(shared(), "ACME");
+test("config.toml sections the saved settings override are named, the rest are not", async () => {
+  const a = await instance(shared(), "ACME");
   writeFileSync(a.configPath, `${BOOTSTRAP}\n[merge.projects.abc]\nmain_moved = "ci"\n`);
   expect(overriddenConfigSections(a.configPath)).toEqual([]);
   updateSetting(a.db, CONFIG_SETTINGS_KEY, () => '[merge]\norder = "ci-green"\n');
+  await a.refresh();
   expect(overriddenConfigSections(a.configPath)).toEqual(["merge", "merge.projects.abc"]);
   expect(describeOverriddenSections(["merge"])).toBe(
     "config.toml [merge] is ignored: the Settings page saved this section to the database, which wins",
   );
+});
+
+function gatedStore(initial: string | null) {
+  let stored = initial;
+  let gate: PromiseWithResolvers<void> | null = null;
+  let failure: Error | null = null;
+  return {
+    store: {
+      async read() {
+        const value = stored;
+        if (failure !== null) throw failure;
+        if (gate !== null) await gate.promise;
+        return value;
+      },
+      async update(change: (current: string | null) => string) {
+        stored = change(stored);
+      },
+    },
+    hold() {
+      gate = Promise.withResolvers<void>();
+      return gate;
+    },
+    fail(error: Error) {
+      failure = error;
+    },
+  };
+}
+
+async function gatedInstance(initial: string) {
+  const home = tempHome();
+  const configPath = join(home, "config.toml");
+  writeFileSync(configPath, BOOTSTRAP);
+  const gated = gatedStore(initial);
+  const settings = await useSettingsStore(configPath, gated.store);
+  cleanups.push(() => {
+    settings.release();
+    rmSync(home, { recursive: true, force: true });
+  });
+  return { configPath, settings, gated };
+}
+
+test("a refresh that read before a local save does not overwrite the save", async () => {
+  const { configPath, settings, gated } = await gatedInstance('[merge]\norder = "ci-green"\n');
+  const gate = gated.hold();
+  const refreshing = settings.refresh();
+  expect((await saveTimeLimits(configPath, 45))?.status).toBe(200);
+  gate.resolve();
+  await refreshing;
+  expect(loadConfigFile(configPath).timeLimits?.implementationMinutes).toBe(45);
+});
+
+test("a failed refresh keeps the last settings", async () => {
+  const { configPath, settings, gated } = await gatedInstance('[merge]\norder = "ci-green"\n');
+  gated.fail(new Error("database unavailable"));
+  await expect(settings.refresh()).rejects.toThrow("database unavailable");
+  expect(readMergeSettings(loadConfigFile(configPath)).default.order).toBe("ci-green");
 });

@@ -234,7 +234,7 @@ export async function handleMergeSettingsRequest(
       );
   }
   try {
-    writeMergePolicy(
+    await writeMergePolicy(
       options.configPath,
       policy,
       {

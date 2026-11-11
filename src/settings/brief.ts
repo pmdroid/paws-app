@@ -96,7 +96,7 @@ async function putBrief(request: Request, options: BriefSettingsOptions): Promis
   else if (template === null) delete next.projects[scope];
   else next.projects[scope] = template;
   try {
-    writeBriefTemplates(options.configPath, next);
+    await writeBriefTemplates(options.configPath, next);
   } catch (error) {
     journalCaught(error, "brief.handleBriefSettingsRequest.write", null);
     const problem = error instanceof Error ? error.message : "";

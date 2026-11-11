@@ -49,7 +49,7 @@ export async function handleTimeLimitSettingsRequest(
     journalCaught(error, "time-limits.handleTimeLimitSettingsRequest.parse", null);
     return json({ error: error instanceof Error ? error.message : "Invalid time limits" }, 400);
   }
-  writeTimeLimits(options.configPath, settings);
+  await writeTimeLimits(options.configPath, settings);
   options.audit(
     "settings.time_limits",
     `Set time limits: implementation ${settings.implementationMinutes} min, fixes ${settings.fixesMinutes} min, Closeout ${settings.closeoutMinutes} min, ${Object.keys(settings.projects).length} project overrides`,
