@@ -10,8 +10,10 @@ import {
   listJobs,
   migrate,
   openDatabase,
-  recordRebaseReturn,
+  recordRebaseReturnSteps,
   fixRounds,
+  sqliteDb,
+  syncSteps,
   saveHumanRetryWindow,
   humanRetryBaseline,
 } from "../db";
@@ -27,25 +29,25 @@ function queued() {
   return db;
 }
 
-function sendBack(db: ReturnType<typeof queued>, limit = 3) {
+async function sendBack(db: ReturnType<typeof queued>, limit = 3) {
   const announced: string[] = [];
-  const sent = returnToAgent(db, {
+  const sent = await returnToAgent(sqliteDb(db), {
     itemId: "eng-1",
     reason: "rebase-conflict",
-    admit: (returns) => returns < limit,
+    admit: (_q, returns) => syncSteps(() => returns < limit),
     handoff: "rebase",
     now: 2,
-    record: (jobId) =>
-      recordRebaseReturn(db, { itemId: "eng-1", jobId, candidate: "h", reason: "merge" }),
+    record: (q, jobId) =>
+      recordRebaseReturnSteps(q, { itemId: "eng-1", jobId, candidate: "h", reason: "merge" }),
     announce: (_, attempt, key) => announced.push(`${attempt}:${key}`),
   });
   return { sent, announced };
 }
 
 describe("merge returns", () => {
-  test("a return sends the item back to the agent with a resume job and counts it", () => {
+  test("a return sends the item back to the agent with a resume job and counts it", async () => {
     const db = queued();
-    const { sent, announced } = sendBack(db);
+    const { sent, announced } = await sendBack(db);
     expect(sent).toBe(true);
     expect(getWorkItem(db, "eng-1")?.state).toBe("queued");
     expect(getWorkItem(db, "eng-1")?.checkpoint?.phase).toBe("running");
@@ -66,17 +68,17 @@ describe("merge returns", () => {
     expect(ciFixes(db, "eng-1")).toBe(0);
   });
 
-  test("a spent budget or an item that left the merge queue is not sent back", () => {
+  test("a spent budget or an item that left the merge queue is not sent back", async () => {
     const db = queued();
-    expect(sendBack(db, 0).sent).toBe(false);
-    expect(sendBack(db).sent).toBe(true);
-    expect(sendBack(db).sent).toBe(false);
+    expect((await sendBack(db, 0)).sent).toBe(false);
+    expect((await sendBack(db)).sent).toBe(true);
+    expect((await sendBack(db)).sent).toBe(false);
     expect(listJobs(db)).toHaveLength(1);
   });
 
-  test("a Linear user turn resets the budget", () => {
+  test("a Linear user turn resets the budget", async () => {
     const db = queued();
-    sendBack(db, 1);
+    await sendBack(db, 1);
     enqueueJob(db, {
       queue: JOB_KIND.resume,
       jobKey: "linear-turn:s-1:1",
@@ -86,9 +88,9 @@ describe("merge returns", () => {
     expect(rebaseReturns(db, "eng-1")).toBe(0);
   });
 
-  test("a guidance-answer restart resets the return budget", () => {
+  test("a guidance-answer restart resets the return budget", async () => {
     const db = queued();
-    sendBack(db, 1);
+    await sendBack(db, 1);
     expect(rebaseReturns(db, "eng-1")).toBe(1);
     enqueueJob(db, {
       queue: JOB_KIND.resume,

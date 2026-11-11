@@ -20,8 +20,8 @@ import {
   mergeCallInFlightSteps,
   recordCarriedAcceptSteps,
   recordConfirmedRemoteMergeSteps,
-  recordRebaseReturn,
-  type CiRound,
+  recordRebaseReturnSteps,
+  syncSteps,
   type ConfirmedRemoteMerge,
   type Db,
   type TaskMergeSettings,
@@ -52,8 +52,8 @@ import {
   REBASE_CONFLICT_INSTRUCTION,
   REBASE_CONFLICT_THOUGHT,
   askHelp,
-  ciRound,
   ciRoundAsync,
+  ciRoundSteps,
   feedbackHold,
   mergeHeld,
   mergeQueueTurn,
@@ -67,7 +67,7 @@ import {
 } from "./orders";
 import type { RebaseConflict } from "./budget";
 import { mainMovedAsync as checkQueueBehind } from "./queue-conflicts";
-import { rebaseBudgetFor, rebaseBudgetForSteps } from "./returns";
+import { rebaseBudgetForSteps } from "./returns";
 import {
   laneTurn,
   serialMergeStep,
@@ -454,7 +454,7 @@ export async function advanceMerge(
   }
   if (step.kind === "ask_conflict") {
     if (
-      askHelp(
+      await askHelp(
         merge,
         `${step.message} Reply with guidance to continue, or stop the task.`,
         "rebase_budget_spent",
@@ -468,16 +468,18 @@ export async function advanceMerge(
   if (
     step.kind === "return" &&
     step.reason === "rebase-conflict" &&
-    sendBack(
+    (await sendBack(
       merge,
       "rebase-conflict",
-      () => rebaseBudgetFor(db, item.id, conflict, caps.now()).allowed,
+      function* (q) {
+        return (yield* rebaseBudgetForSteps(q, item.id, conflict, caps.now())).allowed;
+      },
       REBASE_CONFLICT_INSTRUCTION,
       {
         thought: () => REBASE_CONFLICT_THOUGHT,
         conflict: { pullNumber: pull.number, head: result?.head ?? published.head },
-        record: (jobId) =>
-          recordRebaseReturn(db, {
+        record: (q, jobId) =>
+          recordRebaseReturnSteps(q, {
             itemId: item.id,
             jobId,
             candidate: result?.head ?? null,
@@ -486,31 +488,30 @@ export async function advanceMerge(
             recordedAt: caps.now(),
           }),
       },
-    )
+    ))
   )
     return { kind: "returned" };
   if (turn.kind === "blocked" && turn.block === "ci_failed") {
     const { readiness, head } = turn.pull;
     const checks = readiness.failedChecks ?? [];
-    const round = (next: CiRound["next"], fix: number | null = null) =>
-      ciRound(merge, head, readiness.checks, next, ciFixLimit, fix);
     if (
       step.kind === "return" &&
-      sendBack(
+      (await sendBack(
         merge,
         "ci-failed",
-        (fixes) => fixes < ciFixLimit,
+        (_q, fixes) => syncSteps(() => fixes < ciFixLimit),
         ciFixHandoff(checks, readiness.waitingChecks),
         {
           thought: (attempt) => ciFixRoundLine(checks, attempt, ciFixLimit),
-          record: (_, attempt) => round("agent", attempt),
+          record: (q, _, attempt) =>
+            ciRoundSteps(q, merge, head, readiness.checks, "agent", ciFixLimit, attempt),
           failedChecks: checks,
           pullNumber: pull.number,
         },
-      )
+      ))
     )
       return { kind: "returned" };
-    if (askHelp(merge, ciFixQuestion(checks, ciFixLimit, pull.url), "budget_spent")) {
+    if (await askHelp(merge, ciFixQuestion(checks, ciFixLimit, pull.url), "budget_spent")) {
       await ciRoundAsync(merge, head, readiness.checks, "asked", ciFixLimit, null);
       await voice.flush();
       return { kind: "asked" };
@@ -528,7 +529,7 @@ export async function advanceMerge(
     result.status !== 403 &&
     result.head !== undefined &&
     (await denials(result.head)) + 1 < MERGE_DENIAL_LIMIT &&
-    askHelp(
+    (await askHelp(
       merge,
       mergeDeniedQuestion({
         status: result.status,
@@ -538,7 +539,7 @@ export async function advanceMerge(
       }),
       MERGE_DENIED_REASON,
       [RETRY_MERGE],
-    )
+    ))
   ) {
     await voice.flush();
     return { kind: "asked" };
@@ -632,15 +633,21 @@ async function returnForPolicy(
   const message = mergedPolicyMessage(error);
   const handoff = `${message}. Paws did not merge it. Update the branch onto origin/main and fix .agents/closeout.yaml or the files it references so the policy loads on top of main.\n\n${reference}`;
   if (
-    sendBack(merge, "policy-invalid", (fixes) => fixes < limit, handoff, {
-      thought: () => `${message}. Sent it back to the agent.`,
-      record: () => {},
-    })
+    await sendBack(
+      merge,
+      "policy-invalid",
+      (_q, fixes) => syncSteps(() => fixes < limit),
+      handoff,
+      {
+        thought: () => `${message}. Sent it back to the agent.`,
+        record: () => syncSteps(() => {}),
+      },
+    )
   ) {
     await merge.caps.voice.flush();
     return { kind: "returned" };
   }
-  if (askHelp(merge, `${message}. Reply with guidance to continue, or stop the task.`)) {
+  if (await askHelp(merge, `${message}. Reply with guidance to continue, or stop the task.`)) {
     await merge.caps.voice.flush();
     return { kind: "asked" };
   }
