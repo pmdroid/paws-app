@@ -1,3 +1,4 @@
+import { sqliteDb } from "../src/db";
 import { describe, expect, test } from "bun:test";
 import { createInboxStore, createIntakePollSource, startCatchUpPoller } from "../src/linear";
 import type { LinearClient } from "../src/linear";
@@ -8,7 +9,7 @@ const NOW = 1_700_000_000_000;
 describe("Linear session pagination", () => {
   test("discovers a session beyond the first 50 within one pass and then advances the cursor", async () => {
     const db = tempDb();
-    const store = createInboxStore(db);
+    const store = createInboxStore(sqliteDb(db));
     const seen: string[] = [];
     let calls = 0;
     const client: LinearClient = {
@@ -46,10 +47,10 @@ describe("Linear session pagination", () => {
       now: () => NOW,
     });
     try {
-      await until(() => store.getCursor("linear") !== null);
+      await until(async () => (await store.getCursor("linear")) !== null);
       expect(calls).toBe(2);
       expect(seen).toEqual(["ours"]);
-      expect(store.getCursor("linear")).toBe(NOW);
+      expect(await store.getCursor("linear")).toBe(NOW);
     } finally {
       await poller.stop();
       db.close();
@@ -201,9 +202,9 @@ function session(id: string, issue: string, created: number) {
   };
 }
 
-async function until(ready: () => boolean) {
+async function until(ready: () => boolean | Promise<boolean>) {
   for (let attempt = 0; attempt < 100; attempt++) {
-    if (ready()) {
+    if (await ready()) {
       await Bun.sleep(1);
       return;
     }

@@ -10,6 +10,7 @@ import {
   registerInstance,
   startLoops,
   type InstanceRole,
+  sqliteDb,
 } from "../src/db";
 import { createInboxStore, createIntakePollSource, startCatchUpPoller } from "../src/linear";
 import { tempHome } from "./helpers";
@@ -228,7 +229,7 @@ describe("roles", () => {
     const [web, worker] = [first, second].map((db) =>
       startCatchUpPoller({
         source,
-        store: createInboxStore(db),
+        store: createInboxStore(sqliteDb(db)),
         onEvent: () => {},
         timer: false,
         now: () => clock,

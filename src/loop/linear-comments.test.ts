@@ -944,7 +944,7 @@ describe("review findings", () => {
     const delivered: string[] = [];
     const abort = new AbortController();
     const { onEvent } = createLinearIntake({
-      store: createInboxStore(db),
+      store: createInboxStore(sqliteDb(db)),
       tracker: null,
       beforeEvent: async () => false,
       followUp: async (event) => {

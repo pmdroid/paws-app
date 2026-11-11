@@ -1,3 +1,4 @@
+import { sqliteDb } from "../src/db";
 import { createHmac } from "node:crypto";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -115,7 +116,7 @@ describe("Linear webhook acknowledgement", () => {
 
   test("a repeated Linear-Delivery is processed once", async () => {
     const db = tempDb();
-    const store = createInboxStore(db);
+    const store = createInboxStore(sqliteDb(db));
     const arrived: string[] = [];
     const followed: string[] = [];
     const release = Promise.withResolvers<void>();
@@ -166,7 +167,7 @@ describe("Linear webhook acknowledgement", () => {
     ]);
     expect(arrived).toEqual(["session:session:created"]);
     expect(followed).toHaveLength(1);
-    expect(store.get(followed[0]!)?.deliveryId).toBe(deliveries[1]!.id);
+    expect((await store.get(followed[0]!))?.deliveryId).toBe(deliveries[1]!.id);
     db.close();
   });
 });

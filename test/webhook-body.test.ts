@@ -1,3 +1,4 @@
+import { sqliteDb } from "../src/db";
 import { expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import { handleGitHubWebhook } from "../src/github";
@@ -59,7 +60,9 @@ for (const name of ["github", "linear", "slack"]) {
   async function withEndpoint(run: (endpoint: Endpoint) => Promise<void>) {
     const db = tempDb();
     try {
-      await run(endpoints(createInboxStore(db)).find((endpoint) => endpoint.name === name)!);
+      await run(
+        endpoints(createInboxStore(sqliteDb(db))).find((endpoint) => endpoint.name === name)!,
+      );
     } finally {
       db.close();
     }

@@ -252,12 +252,12 @@ test.each(["unavailable", "issue", "app", "id", "generation", "authorization"])(
     };
     const linear = f.runtime();
     const event = created("new");
-    const store = createInboxStore(f.db);
-    store.commit(event);
+    const store = createInboxStore(sqliteDb(f.db));
+    await store.commit(event);
     try {
       await expect(linear.webhook.onEvent!(event)).rejects.toThrow("retry automatically");
       expect(getWorkItem(f.db, f.oldId)?.state).toBe("awaiting_input");
-      expect(store.listUnhandled()).toHaveLength(1);
+      expect(await store.listUnhandled()).toHaveLength(1);
       expect(
         f.fake.progress.filter((update) => update.sessionId === "new").map((update) => update.kind),
       ).toEqual(["thought", "thought"]);

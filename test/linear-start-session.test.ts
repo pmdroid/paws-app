@@ -1,3 +1,4 @@
+import { sqliteDb } from "../src/db";
 import { expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -36,7 +37,7 @@ function session() {
 
 function setup(options: { fail?: boolean; returned?: unknown } = {}) {
   const db = tempDb();
-  const store = createInboxStore(db);
+  const store = createInboxStore(sqliteDb(db));
   const calls: { query: string; variables: unknown; signal: AbortSignal | undefined }[] = [];
   const seen: AcceptedLinearEvent[] = [];
   const client: LinearClient = {
@@ -53,8 +54,8 @@ function setup(options: { fail?: boolean; returned?: unknown } = {}) {
     store,
     appUserId: "app",
     async onEvent(event) {
-      expect(store.get(event.dedupeKey)).toEqual(event);
       seen.push(event);
+      expect(await store.get(event.dedupeKey)).toEqual(event);
       if (options.fail) throw new Error("interrupted intake");
     },
   });
@@ -101,7 +102,7 @@ test("comment creation keeps selected thread text and assets and interrupted int
   expect(env.calls[0]?.query).toContain("$input: AgentSessionCreateOnComment!");
   expect(env.calls[0]?.variables).toMatchObject({ input: { commentId } });
   await Promise.resolve();
-  const replay = createInboxStore(env.db).listUnhandled();
+  const replay = await createInboxStore(sqliteDb(env.db)).listUnhandled();
   expect(replay).toHaveLength(1);
   expect(JSON.parse(replay[0]!.payload).promptContext).toContain(
     "uploads.linear.app/org/image.png",
@@ -120,7 +121,7 @@ test("wrong app, mismatched thread and unsuccessful mutation never enter intake"
     await expect(
       env.start({ kind: "comment", id: commentId }, "http://localhost/dashboard/"),
     ).rejects.toThrow();
-    expect(env.store.listUnhandled()).toHaveLength(0);
+    expect(await env.store.listUnhandled()).toHaveLength(0);
     expect(env.seen).toHaveLength(0);
     env.db.close();
   }
@@ -152,8 +153,8 @@ test("production explicit session intake stays pending when follow-up fails and 
   await first.startSession!({ kind: "issue", id: "ENG-1" }, "http://127.0.0.1/dashboard/");
   for (let attempt = 0; attempt < 50 && attempts.length === 0; attempt++) await Bun.sleep(1);
   await Bun.sleep(5);
-  const reopened = createInboxStore(db);
-  expect(reopened.listUnhandled()).toHaveLength(1);
+  const reopened = createInboxStore(sqliteDb(db));
+  expect(await reopened.listUnhandled()).toHaveLength(1);
   const second = openLinear({
     db,
     secretsDir,
@@ -165,10 +166,10 @@ test("production explicit session intake stays pending when follow-up fails and 
   });
   const running = second.start();
   await running.catchUp();
-  for (let attempt = 0; attempt < 50 && reopened.listUnhandled().length > 0; attempt++)
+  for (let attempt = 0; attempt < 50 && (await reopened.listUnhandled()).length > 0; attempt++)
     await Bun.sleep(1);
   running.stop();
-  expect(reopened.listUnhandled()).toHaveLength(0);
+  expect(await reopened.listUnhandled()).toHaveLength(0);
   expect(attempts).toEqual(["failed", "recovered"]);
   db.close();
 });

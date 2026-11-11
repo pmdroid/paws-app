@@ -69,6 +69,8 @@ export function createIntakeQueue(options: {
   let pausedUntil = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
+  let pumping: Promise<void> | null = null;
+  let pumpAgain = false;
 
   const lease = () => ({ owner, now: now(), leaseMs });
 
@@ -77,7 +79,7 @@ export function createIntakeQueue(options: {
     timer = setTimeout(
       () => {
         timer = null;
-        guarded("intake-queue.createIntakeQueue.poll", pump);
+        pump();
       },
       Math.max(0, delayMs),
     );
@@ -86,17 +88,17 @@ export function createIntakeQueue(options: {
 
   const held = (dedupeKey: string, work: () => Promise<void>, into: Set<Promise<void>>) => {
     const renewal = setInterval(() => {
-      guarded("intake-queue.createIntakeQueue.renew", () => {
-        if (!store.renew(dedupeKey, lease()))
+      void guarded("intake-queue.createIntakeQueue.renew", async () => {
+        if (!(await store.renew(dedupeKey, lease())))
           log(`linear intake ${dedupeKey} lost its lease to another instance`);
       });
     }, leaseMs / 4);
     renewal.unref?.();
-    const running: Promise<void> = work().finally(() => {
+    const running: Promise<void> = work().finally(async () => {
       clearInterval(renewal);
       into.delete(running);
-      guarded("intake-queue.createIntakeQueue.release", () => {
-        store.release(dedupeKey, owner);
+      await guarded("intake-queue.createIntakeQueue.release", async () => {
+        await store.release(dedupeKey, owner);
         pump();
       });
     });
@@ -104,17 +106,30 @@ export function createIntakeQueue(options: {
   };
 
   const pump = () => {
+    if (pumping !== null) {
+      pumpAgain = true;
+      return;
+    }
+    pumping = guarded("intake-queue.createIntakeQueue.pump", drain).finally(() => {
+      pumping = null;
+      if (!pumpAgain) return;
+      pumpAgain = false;
+      pump();
+    });
+  };
+
+  const drain = async () => {
     if (stopped) return;
     if (timer !== null) clearTimeout(timer);
     timer = null;
     const at = now();
     if (pausedUntil > at) return arm(pausedUntil - at);
     while (intakes.size < concurrency) {
-      const queued = store.claimNext({ owner, now: at, leaseMs });
+      const queued = await store.claimNext({ owner, now: at, leaseMs });
       if (queued === null) break;
       const hold = options.ledger?.admit("intake", "normal") ?? null;
       if (hold !== null) {
-        store.release(queued.event.dedupeKey, owner);
+        await store.release(queued.event.dedupeKey, owner);
         pausedUntil = at + hold.retryAfterMs;
         return arm(hold.retryAfterMs);
       }
@@ -129,21 +144,21 @@ export function createIntakeQueue(options: {
       event.dedupeKey,
       async () => {
         try {
-          await options.deliver(store.get(event.dedupeKey) ?? event, queued.attempts);
-          store.markHandled(event.dedupeKey);
+          await options.deliver((await store.get(event.dedupeKey)) ?? event, queued.attempts);
+          await store.markHandled(event.dedupeKey);
         } catch (error) {
           journalCaught(error, "intake-queue.createIntakeQueue.deliver", null);
           if (stopped) return;
           if (error instanceof LinearEntityNotFoundError && error.entity === "AgentSession") {
             log(`linear session ${event.sessionId ?? "unknown"} no longer exists; skipped`);
-            store.markHandled(event.dedupeKey);
+            await store.markHandled(event.dedupeKey);
             return;
           }
           const at = now();
           const message = error instanceof Error ? error.message : "intake failed";
           if (error instanceof LinearRateLimitError) {
             pausedUntil = Math.max(pausedUntil, at + error.retryAfterMs);
-            store.markFailed(event.dedupeKey, {
+            await store.markFailed(event.dedupeKey, {
               error: message,
               nextAttemptAt: at + Math.max(error.retryAfterMs, INTAKE_RETRY_MS[0]),
               counted: false,
@@ -152,7 +167,7 @@ export function createIntakeQueue(options: {
           }
           const attempts = queued.attempts + 1;
           const waitMs = intakeRetryMs(attempts);
-          store.markFailed(event.dedupeKey, {
+          await store.markFailed(event.dedupeKey, {
             error: message,
             nextAttemptAt: at + waitMs,
             counted: true,
@@ -167,29 +182,36 @@ export function createIntakeQueue(options: {
   };
 
   const idle = async () => {
-    while (arrivals.size > 0 || intakes.size > 0)
-      await Promise.allSettled([...arrivals, ...intakes]);
+    for (;;) {
+      const busy = [...arrivals, ...intakes, ...(pumping === null ? [] : [pumping])];
+      if (busy.length === 0) return;
+      await Promise.allSettled(busy);
+    }
   };
 
   return {
     accepts: isQueuedIntake,
     arrive(event) {
-      if (stopped || store.claim(event.dedupeKey, lease()) === null) return;
-      held(
-        event.dedupeKey,
-        () =>
-          options
-            .arrive(event)
-            .then((accepted) => {
-              if (accepted === false) store.markHandled(event.dedupeKey);
-            })
-            .catch((error: unknown) => {
-              journalCaught(error, "intake-queue.arrive.then", null);
-              const message = error instanceof Error ? error.message : "first activity failed";
-              log(`linear first activity for ${event.dedupeKey} failed: ${message}`);
-            }),
-        arrivals,
-      );
+      if (stopped) return;
+      const claiming: Promise<void> = guarded("intake-queue.arrive.claim", async () => {
+        if ((await store.claim(event.dedupeKey, lease())) === null) return;
+        held(
+          event.dedupeKey,
+          () =>
+            options
+              .arrive(event)
+              .then(async (accepted) => {
+                if (accepted === false) await store.markHandled(event.dedupeKey);
+              })
+              .catch((error: unknown) => {
+                journalCaught(error, "intake-queue.arrive.then", null);
+                const message = error instanceof Error ? error.message : "first activity failed";
+                log(`linear first activity for ${event.dedupeKey} failed: ${message}`);
+              }),
+          arrivals,
+        );
+      }).finally(() => arrivals.delete(claiming));
+      arrivals.add(claiming);
     },
     wake: pump,
     idle,
@@ -221,7 +243,7 @@ export function createLinearIntake(options: {
   beforeEvent?: (event: AcceptedLinearEvent, request?: TrackerRequestOptions) => Promise<boolean>;
   progressReporter?: (event: AcceptedLinearEvent) => TrackerAdapter["postProgress"];
   /** The session already has an item in flight, so a failed follow-up retries quietly. */
-  sessionBusy?: (sessionId: string) => boolean;
+  sessionBusy?: (sessionId: string) => Promise<boolean>;
   signal: AbortSignal;
   ledger?: LinearLedger;
   concurrency?: number;
@@ -321,9 +343,9 @@ export function createLinearIntake(options: {
   return { onEvent, queue };
 }
 
-function guarded(site: string, run: () => void): void {
+async function guarded(site: string, run: () => Promise<unknown>): Promise<void> {
   try {
-    run();
+    await run();
   } catch (error) {
     journalCaught(error, site, null);
   }

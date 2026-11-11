@@ -384,7 +384,7 @@ export async function probeExecutionRuntime(input: {
     actorId: "owner",
   });
   applyWorkItemEvent(db, terminal.id, "cancel");
-  const store = createInboxStore(db);
+  const store = createInboxStore(sqliteDb(db));
   const replayKeys = [];
   for (const [nextSession, body] of [
     [sessionId, "stop"],
@@ -393,7 +393,7 @@ export async function probeExecutionRuntime(input: {
   ] as const) {
     const dedupeKey = `runtime-replay:${nextSession}`;
     replayKeys.push(dedupeKey);
-    store.commit({
+    await store.commit({
       dedupeKey,
       deliveryId: null,
       source: "poll",

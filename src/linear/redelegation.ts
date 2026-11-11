@@ -1,5 +1,11 @@
 import type { Database } from "bun:sqlite";
-import { issueHasItemOutside, latestOpenIssueSession, sessionHasWorkItem } from "../db";
+import {
+  issueHasItemOutside,
+  latestOpenIssueSession,
+  sessionHasWorkItem,
+  sqliteDb,
+  type Db,
+} from "../db";
 import type { AcceptedLinearEvent } from "./events";
 import type { InboxStore } from "./inbox";
 import type { LinearIssueOwnership } from "./issue-lifecycle";
@@ -18,29 +24,30 @@ export async function checkRedelegation(
   },
   target: { issueId: string; delegatedAtMs: number },
 ): Promise<boolean> {
-  const { db, store } = options;
-  if (store.getCursor(`delegated:${target.issueId}`) !== target.delegatedAtMs) return false;
-  const event = reusedSessionEvent(db, target);
-  if (event === null || store.get(event.dedupeKey) !== null) return false;
+  const { store } = options;
+  const db = sqliteDb(options.db);
+  if ((await store.getCursor(`delegated:${target.issueId}`)) !== target.delegatedAtMs) return false;
+  const event = await reusedSessionEvent(db, target);
+  if (event === null || (await store.get(event.dedupeKey)) !== null) return false;
   const issue = await options.inspect(target.issueId);
   if (options.appUserId === null || issue.delegateId !== options.appUserId) return false;
-  const current = reusedSessionEvent(db, target);
-  if (current === null || store.get(current.dedupeKey) !== null) return false;
-  store.commit(current);
+  const current = await reusedSessionEvent(db, target);
+  if (current === null || (await store.get(current.dedupeKey)) !== null) return false;
+  await store.commit(current);
   await options.onEvent(current);
-  store.markHandled(current.dedupeKey);
+  await store.markHandled(current.dedupeKey);
   return true;
 }
 
-function reusedSessionEvent(
-  db: Database,
+async function reusedSessionEvent(
+  db: Db,
   target: { issueId: string; delegatedAtMs: number },
-): AcceptedLinearEvent | null {
-  if (issueHasItemOutside(db, target.issueId, CLOSED_STATES)) return null;
-  const session = latestOpenIssueSession(db, target.issueId);
+): Promise<AcceptedLinearEvent | null> {
+  if (await issueHasItemOutside(db, target.issueId, CLOSED_STATES)) return null;
+  const session = await latestOpenIssueSession(db, target.issueId);
   if (session === null || session.createdAt > target.delegatedAtMs - NEW_SESSION_MARGIN_MS)
     return null;
-  if (sessionHasWorkItem(db, session.sessionId)) return null;
+  if (await sessionHasWorkItem(db, session.sessionId)) return null;
   return {
     dedupeKey: `session:${session.sessionId}:created:${target.delegatedAtMs}`,
     deliveryId: null,

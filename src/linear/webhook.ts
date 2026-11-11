@@ -52,13 +52,13 @@ export const WEBHOOK_FAILURES_CURSOR = "linear:webhook-failures";
 export const WEBHOOK_MISSED_CURSOR = "linear:webhook-missed";
 
 /** When the last signed, well-formed delivery reached this inbox. Null before the first one. */
-export function lastVerifiedWebhookMs(store: InboxStore): number | null {
+export function lastVerifiedWebhookMs(store: InboxStore): Promise<number | null> {
   return store.getCursor(WEBHOOK_CURSOR);
 }
 
 /** Signed deliveries rejected since the last verified one. */
-export function webhookVerificationFailures(store: InboxStore): number {
-  return store.getCursor(WEBHOOK_FAILURES_CURSOR) ?? 0;
+export async function webhookVerificationFailures(store: InboxStore): Promise<number> {
+  return (await store.getCursor(WEBHOOK_FAILURES_CURSOR)) ?? 0;
 }
 
 /**
@@ -115,18 +115,18 @@ export async function handleLinearWebhook(
     return reject("missing_signature");
   }
   if (secret === null || secret.length === 0) {
-    noteFailure(deps?.store);
+    await noteFailure(deps?.store);
     return reject("missing_secret");
   }
   if (!/^[0-9a-f]{64}$/i.test(signature)) {
-    noteFailure(deps?.store);
+    await noteFailure(deps?.store);
     return reject("bad_signature");
   }
   const bytes = await readWebhookBody(request, 1024 * 1024);
   if (bytes instanceof Response) return bytes;
   const verified = checkLinearHmac({ signature, secret, rawBody: bytes });
   if (!verified.ok) {
-    noteFailure(deps?.store);
+    await noteFailure(deps?.store);
     return reject(verified.reason);
   }
   const deliveryId = request.headers.get("linear-delivery");
@@ -134,7 +134,7 @@ export async function handleLinearWebhook(
   const timestampMs = readTimestamp(rawBody, request.headers.get("linear-timestamp"));
   const check = checkLinearTimestamp(timestampMs, deps?.now?.() ?? Date.now());
   if (!check.ok) {
-    noteFailure(deps?.store);
+    await noteFailure(deps?.store);
     return reject(check.reason);
   }
   if (deliveryId === null || deliveryId.length === 0) return reject("missing_delivery");
@@ -143,9 +143,9 @@ export async function handleLinearWebhook(
   if (deps?.store === undefined) {
     return Response.json({ ok: false, reason: "not_persisted" }, { status: 500 });
   }
-  deps.store.setCursor(WEBHOOK_CURSOR, deps.now?.() ?? Date.now());
-  deps.store.clearCursor(WEBHOOK_FAILURES_CURSOR);
-  const committed = deps.store.commit(event);
+  await deps.store.setCursor(WEBHOOK_CURSOR, deps.now?.() ?? Date.now());
+  await deps.store.clearCursor(WEBHOOK_FAILURES_CURSOR);
+  const committed = await deps.store.commit(event);
   if (deps.intake?.accepts(event)) {
     if (committed.inserted) deps.intake.arrive(event);
     else if (!committed.handled) deps.intake.wake();
@@ -160,9 +160,7 @@ function schedule(deps: LinearWebhookDeps, event: AcceptedLinearEvent): void {
   pending.add(event.dedupeKey);
   void Promise.resolve()
     .then(() => deps.onEvent!(event))
-    .then(() => {
-      deps.store.markHandled(event.dedupeKey);
-    })
+    .then(() => deps.store.markHandled(event.dedupeKey))
     .catch((error: unknown) => {
       journalCaught(error, "webhook.schedule.then", null);
     })
@@ -171,8 +169,8 @@ function schedule(deps: LinearWebhookDeps, event: AcceptedLinearEvent): void {
     });
 }
 
-function noteFailure(store: InboxStore | undefined): void {
-  store?.countCursor(WEBHOOK_FAILURES_CURSOR);
+async function noteFailure(store: InboxStore | undefined): Promise<void> {
+  await store?.countCursor(WEBHOOK_FAILURES_CURSOR);
 }
 
 function reject(reason: string): Response {

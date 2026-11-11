@@ -189,9 +189,9 @@ test("a delegated task spends at most five Linear requests before the agent's fi
     followUp: (event) => orchestrator!.onLinearEvent(event),
     progressReporter: (event) => orchestrator!.sessionProgressReporter(event),
   });
-  const requests = () =>
+  const requests = async () =>
     Object.fromEntries(
-      Object.entries(linear.usage().callers)
+      Object.entries((await linear.usage()).callers)
         .filter(([, usage]) => usage.requests > 0)
         .map(([caller, usage]) => [caller, usage.requests]),
     );

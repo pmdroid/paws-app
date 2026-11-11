@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, inArray, isNull, lt, lte, ne, notExists, or, sql, type SQL } from "drizzle-orm";
 import { alias, type AnyPgColumn } from "drizzle-orm/pg-core";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Db, type Q } from "./db";
 import type { inboxEvent } from "./schema";
 
 export type ClaimedInboxRow = typeof inboxEvent.$inferSelect;
@@ -83,8 +82,11 @@ export function* claimNextInboxEventSteps(q: Q, claim: Claim) {
   return claimed(q, row);
 }
 
-export function claimNextInboxEvent(db: Database, claim: Claim): ClaimedInboxRow | null {
-  return settled(sqliteDb(db).run((q) => claimNextInboxEventSteps(q, claim)));
+export async function claimNextInboxEvent(
+  store: Db,
+  claim: Claim,
+): Promise<ClaimedInboxRow | null> {
+  return store.run((q) => claimNextInboxEventSteps(q, claim));
 }
 
 export function* claimInboxEventSteps(q: Q, dedupeKey: string, claim: Claim) {
@@ -105,12 +107,12 @@ export function* claimInboxEventSteps(q: Q, dedupeKey: string, claim: Claim) {
   return claimed(q, row);
 }
 
-export function claimInboxEvent(
-  db: Database,
+export async function claimInboxEvent(
+  store: Db,
   dedupeKey: string,
   claim: Claim,
-): ClaimedInboxRow | null {
-  return settled(sqliteDb(db).run((q) => claimInboxEventSteps(q, dedupeKey, claim)));
+): Promise<ClaimedInboxRow | null> {
+  return store.run((q) => claimInboxEventSteps(q, dedupeKey, claim));
 }
 
 export function* renewInboxClaimSteps(q: Q, dedupeKey: string, claim: Claim) {
@@ -125,8 +127,12 @@ export function* renewInboxClaimSteps(q: Q, dedupeKey: string, claim: Claim) {
   return rows.length > 0;
 }
 
-export function renewInboxClaim(db: Database, dedupeKey: string, claim: Claim): boolean {
-  return settled(sqliteDb(db).run((q) => renewInboxClaimSteps(q, dedupeKey, claim)));
+export async function renewInboxClaim(
+  store: Db,
+  dedupeKey: string,
+  claim: Claim,
+): Promise<boolean> {
+  return store.run((q) => renewInboxClaimSteps(q, dedupeKey, claim));
 }
 
 export function* releaseInboxClaimSteps(q: Q, dedupeKey: string, owner: string) {
@@ -139,8 +145,12 @@ export function* releaseInboxClaimSteps(q: Q, dedupeKey: string, owner: string) 
   );
 }
 
-export function releaseInboxClaim(db: Database, dedupeKey: string, owner: string): void {
-  settled(sqliteDb(db).run((q) => releaseInboxClaimSteps(q, dedupeKey, owner)));
+export async function releaseInboxClaim(
+  store: Db,
+  dedupeKey: string,
+  owner: string,
+): Promise<void> {
+  return store.run((q) => releaseInboxClaimSteps(q, dedupeKey, owner));
 }
 
 export function* incrementSyncCounterSteps(q: Q, name: string) {
@@ -158,14 +168,14 @@ export function* incrementSyncCounterSteps(q: Q, name: string) {
   return row!.count;
 }
 
-export function incrementSyncCounter(db: Database, name: string): number {
-  return settled(sqliteDb(db).run((q) => incrementSyncCounterSteps(q, name)));
+export async function incrementSyncCounter(store: Db, name: string): Promise<number> {
+  return store.run((q) => incrementSyncCounterSteps(q, name));
 }
 
 export function* clearSyncCursorSteps(q: Q, name: string) {
   yield* q.exec(q.orm.delete(q.t.syncCursor).where(eq(q.t.syncCursor.name, name)));
 }
 
-export function clearSyncCursor(db: Database, name: string): void {
-  settled(sqliteDb(db).run((q) => clearSyncCursorSteps(q, name)));
+export async function clearSyncCursor(store: Db, name: string): Promise<void> {
+  return store.run((q) => clearSyncCursorSteps(q, name));
 }

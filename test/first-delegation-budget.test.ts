@@ -556,7 +556,7 @@ async function firstDelegation(
         waitingForRunner,
         run: server.total - resumed - waitingForRunner,
       },
-      usage: linear.usage().items,
+      usage: (await linear.usage()).items,
       pullRequest: github.opened.length,
     };
   } finally {

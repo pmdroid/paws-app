@@ -165,14 +165,18 @@ test("one session cleanup failure still interrupts every session and remains ret
   expect((await f.post(event, "cleanup-revocation")).status).toBe(200);
   for (let i = 0; i < 100 && f.interrupted.length < 2; i++) await Bun.sleep(5);
   expect(f.interrupted).toEqual(["session", "session-two"]);
-  expect(createInboxStore(f.db).listUnhandled()).toHaveLength(1);
+  expect(await createInboxStore(sqliteDb(f.db)).listUnhandled()).toHaveLength(1);
   expect(getLinearSessionAccess(f.db, "session-two")).toBe("revoked");
   expect(getLinearSession(f.db, "session-two")?.generation).toBe(1);
   f.cleanupFailure.sessionId = null;
   expect((await f.post(event, "cleanup-revocation")).status).toBe(200);
-  for (let i = 0; i < 100 && createInboxStore(f.db).listUnhandled().length > 0; i++)
+  for (
+    let i = 0;
+    i < 100 && (await createInboxStore(sqliteDb(f.db)).listUnhandled()).length > 0;
+    i++
+  )
     await Bun.sleep(5);
-  expect(createInboxStore(f.db).listUnhandled()).toEqual([]);
+  expect(await createInboxStore(sqliteDb(f.db)).listUnhandled()).toEqual([]);
   expect(f.interrupted).toEqual(["session", "session-two", "session", "session-two"]);
   expect(getLinearSession(f.db, "session-two")?.generation).toBe(1);
 });
@@ -188,7 +192,7 @@ test("a rejected second-child cancellation rolls back signed revocation before n
   const original = f.task.items.map((item) => getWorkItem(f.db, item.id)?.state);
   const event = revoked();
   expect((await f.post(event, "atomic-revocation")).status).toBe(200);
-  expect(createInboxStore(f.db).listUnhandled()).toHaveLength(1);
+  expect(await createInboxStore(sqliteDb(f.db)).listUnhandled()).toHaveLength(1);
   expect(f.task.items.map((item) => getWorkItem(f.db, item.id)?.state)).toEqual(original);
   expect(getLinearSession(f.db, "session")?.generation).toBe(0);
   expect(getLinearSession(f.db, "session")?.stoppedAt).toBeNull();
@@ -205,9 +209,13 @@ test("a rejected second-child cancellation rolls back signed revocation before n
   expect(f.owned.signal.aborted).toBe(false);
   f.db.run("DROP TRIGGER reject_second_cancel");
   expect((await f.post(event, "atomic-revocation")).status).toBe(200);
-  for (let i = 0; i < 100 && createInboxStore(f.db).listUnhandled().length > 0; i++)
+  for (
+    let i = 0;
+    i < 100 && (await createInboxStore(sqliteDb(f.db)).listUnhandled()).length > 0;
+    i++
+  )
     await Bun.sleep(5);
-  expect(createInboxStore(f.db).listUnhandled()).toEqual([]);
+  expect(await createInboxStore(sqliteDb(f.db)).listUnhandled()).toEqual([]);
   expect(f.task.items.map((item) => getWorkItem(f.db, item.id)?.state)).toEqual([
     "cancelled",
     "cancelled",

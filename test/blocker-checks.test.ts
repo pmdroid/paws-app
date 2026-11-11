@@ -87,7 +87,7 @@ async function blockedFixture(options: { blocked?: boolean; lowBudget?: boolean 
   const polls = createRelationsPolls({
     db,
     reconciler,
-    lowBudget: () => options.lowBudget ?? false,
+    lowBudget: async () => options.lowBudget ?? false,
     reconcileExecution: () => executionReconciles++,
     now: () => clock,
   });
