@@ -99,14 +99,9 @@ import {
   workspaceMemberUsable,
   enqueueCommand,
   enqueueJobOnce,
-  getLinearSession,
   getWorkItem,
   getItemRunCommitPolicy,
-  workspaceLinearMember,
-  workspaceForOrganization,
-  listWorkspaceMembers,
   listRepositoryCandidates,
-  getLinearSessionInstallation,
   isLinearAppRevoked,
   journal,
   delegatedLinearUserId,
@@ -156,10 +151,8 @@ import {
   workspaceMember,
   sqliteDb,
   enabledRunnerIds,
-  latestCloseoutProgressMarker,
   listWorkspaceIds,
   missingSnapshotTargets,
-  workspaceUserLinearId,
   applyLinearIssueProjectSteps,
   applyLinearUserChangeSteps,
   commandInstance,
@@ -177,7 +170,14 @@ import {
   workItemForSessionSteps,
   workspaceForOrganizationSteps,
   workspaceLinearMemberSteps,
+  getWorkItemRepositoryChoiceSteps,
+  latestCloseoutProgressMarkerSteps,
+  listWorkspaceMembersSteps,
+  syncSteps,
+  workspaceUserLinearIdSteps,
   type Db,
+  type Q,
+  type Steps,
 } from "./db";
 import { doctorChecks, formatDoctor, realProbe } from "./doctor";
 import { installHostMain } from "./install-host";
@@ -1700,40 +1700,45 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             );
             return repositoryDenial ? deny(repositoryDenial) : true;
           },
-          currentIntegrationItem: (item) => {
+          *currentIntegrationItem(q, item) {
             if (!workspace) return true;
             const session = item.sessionKey
-              ? getLinearSessionInstallation(db, item.sessionKey)
+              ? yield* getLinearSessionInstallationSteps(q, item.sessionKey)
               : null;
             const currentWorkspace = session?.organizationId
-              ? workspaceForOrganization(db, session.organizationId)
+              ? yield* workspaceForOrganizationSteps(q, session.organizationId)
               : null;
-            const actorId = delegatedLinearUserId(db, item.id);
+            const actorId = yield* delegatedLinearUserIdSteps(q, item.id);
             if (!currentWorkspace || !actorId || !session?.teamId) return false;
-            const member = workspaceLinearMember(db, currentWorkspace.id, actorId);
+            const member = yield* workspaceLinearMemberSteps(q, currentWorkspace.id, actorId);
             return (
               canAct({ id: actorId, member, teamId: session.teamId }, "github").allowed ||
               teamMemberDenial(db, item)
             );
           },
-          integrationIdentity: (item) =>
-            JSON.stringify([
-              delegatedLinearUserId(db, item.id),
-              getWorkItemRepository(db, item.id) ?? getWorkItemRepositoryChoice(db, item.id),
-              latestCloseoutProgressMarker(db, item.id),
-            ]),
-          administratorsForItem: (item) => {
-            const session = item.sessionKey ? getLinearSession(db, item.sessionKey) : null;
+          *integrationIdentity(q, item) {
+            return JSON.stringify([
+              yield* delegatedLinearUserIdSteps(q, item.id),
+              (yield* getWorkItemRepositorySteps(q, item.id)) ??
+                (yield* getWorkItemRepositoryChoiceSteps(q, item.id)),
+              yield* latestCloseoutProgressMarkerSteps(q, item.id),
+            ]);
+          },
+          *administratorsForItem(q, item) {
+            const session = item.sessionKey
+              ? yield* getLinearSessionSteps(q, item.sessionKey)
+              : null;
             const currentWorkspace = session?.organizationId
-              ? workspaceForOrganization(db, session.organizationId)
+              ? yield* workspaceForOrganizationSteps(q, session.organizationId)
               : null;
             if (!currentWorkspace) return [];
-            return listWorkspaceMembers(db, currentWorkspace.id)
-              .filter((member) => workspaceMemberUsable(member) && isWorkspaceAdmin(member.role))
-              .flatMap((member) => {
-                const linked = workspaceUserLinearId(db, member.id);
-                return linked ? [linked] : [];
-              });
+            const administrators: string[] = [];
+            for (const member of yield* listWorkspaceMembersSteps(q, currentWorkspace.id)) {
+              if (!workspaceMemberUsable(member) || !isWorkspaceAdmin(member.role)) continue;
+              const linked = yield* workspaceUserLinearIdSteps(q, member.id);
+              if (linked) administrators.push(linked);
+            }
+            return administrators;
           },
         }),
         commitPolicyForItem,
@@ -2392,9 +2397,9 @@ export function createGitHubIntegration(input: {
     signal: AbortSignal,
     repository: RepositoryBinding,
   ) => Promise<boolean | GitHubDenial>;
-  integrationIdentity?: (item: WorkItemRecord) => string;
-  currentIntegrationItem?: (item: WorkItemRecord) => boolean | GitHubDenial;
-  administratorsForItem?: (item: WorkItemRecord) => readonly string[];
+  integrationIdentity?: (q: Q, item: WorkItemRecord) => Steps<string>;
+  currentIntegrationItem?: (q: Q, item: WorkItemRecord) => Steps<boolean | GitHubDenial>;
+  administratorsForItem?: (q: Q, item: WorkItemRecord) => Steps<readonly string[]>;
   accessForItem?: (item: WorkItemRecord) => "read" | "write";
 }): GitHubIntegration {
   const installation = createGitHubInstallationCheck({
@@ -2407,12 +2412,13 @@ export function createGitHubIntegration(input: {
       input.runtime.publicUrl ?? "http://127.0.0.1:8787",
       "/settings/integrations",
     ),
-    administrators: input.administratorsForItem ?? (() => []),
-    current: input.currentIntegrationItem ?? (() => true),
+    administrators: input.administratorsForItem ?? (() => syncSteps(() => [])),
+    current: input.currentIntegrationItem ?? (() => syncSteps(() => true)),
     unavailableRetryMs: [2_000, 5_000, 10_000, 20_000, 30_000],
     identity:
       input.integrationIdentity ??
-      ((item) => JSON.stringify([input.actorForItem(item), input.repositoryForItem(item)])),
+      ((_q, item) =>
+        syncSteps(() => JSON.stringify([input.actorForItem(item), input.repositoryForItem(item)]))),
     authorize: async (item: WorkItemRecord, signal: AbortSignal) => {
       const selected = input.repositoryForItem(item);
       if (selected === null) return false;
