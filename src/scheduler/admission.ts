@@ -16,6 +16,7 @@ export type ItemAdmission = {
   steps: {
     canDispatchDelegation: (q: Q, delegationId: string) => Steps<boolean>;
     canStart: (q: Q, itemId: string) => Steps<Admission>;
+    canMerge: (q: Q, itemId: string) => Steps<Admission>;
   };
 };
 
@@ -42,6 +43,9 @@ export function createAdmission(input: {
   function* canDispatchDelegation(q: Q, delegationId: string): Steps<boolean> {
     return (yield* delegationHeld(q, delegationId)) === null;
   }
+  function* canMerge(q: Q, itemId: string): Steps<Admission> {
+    return yield* decide(q, itemId, "merge");
+  }
   function* canStart(q: Q, itemId: string): Steps<Admission> {
     return input.workspace === false
       ? { ok: false, held: "workspace" }
@@ -51,7 +55,7 @@ export function createAdmission(input: {
     canDispatchDelegation: (delegationId) =>
       store.run((q) => canDispatchDelegation(q, delegationId)),
     canStart: (itemId) => store.run((q) => canStart(q, itemId)),
-    canMerge: (itemId) => store.run((q) => decide(q, itemId, "merge")),
-    steps: { canDispatchDelegation, canStart },
+    canMerge: (itemId) => store.run((q) => canMerge(q, itemId)),
+    steps: { canDispatchDelegation, canStart, canMerge },
   };
 }

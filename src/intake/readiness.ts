@@ -5,7 +5,6 @@ import {
   delegationHasReconciliationWorkSteps,
   delegationWorkspaceIdSteps,
   readItemDelegationSteps,
-  settled,
   sqliteDb,
   type Q,
   type Steps,
@@ -54,10 +53,6 @@ export function* itemReadinessSteps(
  * Identifiers of the issues that keep `itemId` held as "blocked". Empty only when readiness holds
  * it for something other than a blocker, which is an inconsistency for the caller to report.
  */
-export function blockingIssues(db: Database, itemId: string): string[] {
-  return settled(sqliteDb(db).run((q) => blockingIssuesSteps(q, itemId)));
-}
-
 export function* blockingIssuesSteps(q: Q, itemId: string): Steps<string[]> {
   const delegationId = (yield* readItemDelegationSteps(q, itemId))?.delegationId;
   const workspaceId =

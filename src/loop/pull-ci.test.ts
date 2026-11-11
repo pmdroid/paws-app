@@ -165,7 +165,7 @@ async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 
         tokenProvider,
       }),
     readPull: async () => null,
-    dependencyHold: () => null,
+    dependencyHold: () => syncSteps(() => null),
     mergeLane: () => "",
     voice: {
       thought: () => syncSteps(() => {}),

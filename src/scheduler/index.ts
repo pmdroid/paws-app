@@ -1,7 +1,6 @@
 export {
   dispatch,
   hintedPaths,
-  openBlockers,
   projectLeadId,
   registerScheduler,
   saveSchedulingContext,

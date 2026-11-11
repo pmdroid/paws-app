@@ -18,7 +18,6 @@ export {
 } from "./dependencies";
 export type { DependencyReadiness, DependencyReads } from "./dependencies";
 export {
-  blockingIssues,
   blockingIssuesSteps,
   delegationReadinessSteps,
   itemReadiness,

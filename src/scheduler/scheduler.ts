@@ -57,7 +57,7 @@ import {
   type Steps,
   repositoryKey,
 } from "../db";
-import { blockingIssues, blockingIssuesSteps, readyItemsSteps } from "../intake";
+import { blockingIssuesSteps, readyItemsSteps } from "../intake";
 import { createAdmission, type Admission as StartAdmission, type ItemAdmission } from "./admission";
 import {
   itemWaitsSteps,
@@ -201,14 +201,6 @@ function* overlapGate(q: Q, now: number, waiters: readonly Item[]) {
       ? { blocker: oldest.other.identifier ?? oldest.other.id, files: oldest.files, start: true }
       : null;
   };
-}
-
-/**
- * Identifiers of the Linear issues that hold `itemId` as blocked, by the rules readiness uses.
- * Empty means readiness and the blockers disagree; the scheduler journals that as an inconsistency.
- */
-export function openBlockers(db: Database, itemId: string): string[] {
-  return blockingIssues(db, itemId);
 }
 
 export function schedulerPaths(paths: readonly string[]): string[] {

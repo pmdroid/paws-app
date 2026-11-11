@@ -68,6 +68,7 @@ export function workspaceAdmission(db: Database, options: AdmissionOptions = {})
     steps: {
       canDispatchDelegation: joinedSteps((id) => id)(admission.steps.canDispatchDelegation),
       canStart: joinedSteps(ofItem)(admission.steps.canStart),
+      canMerge: joinedSteps(ofItem)(admission.steps.canMerge),
     },
   };
 }

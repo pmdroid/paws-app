@@ -126,6 +126,7 @@ test("a blocked hold without an open blocker is journaled as an inconsistency", 
       steps: {
         canDispatchDelegation: () => syncSteps(() => true),
         canStart: () => syncSteps(() => ({ ok: false, held: "blocked" })),
+        canMerge: () => syncSteps(() => ({ ok: false, held: "blocked" })),
       },
     };
     const { lines, log } = journal();

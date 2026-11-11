@@ -14,6 +14,7 @@ import {
   openDatabase,
   recordConfirmedRemoteMerge,
   sqliteDb,
+  syncSteps,
 } from "../db";
 import { advanceMerge, type MergeCapabilities } from "./advance";
 
@@ -48,7 +49,7 @@ function capabilities(overrides: Partial<MergeCapabilities> = {}) {
     feedbackWait: () => DEFAULT_PULL_FEEDBACK_WAIT,
     readPullCi: unused("readPullCi"),
     readPull: unused("readPull"),
-    dependencyHold: () => null,
+    dependencyHold: () => syncSteps(() => null),
     mergeLane: () => "",
     mergedOutsideLane: async () => null,
     completed: () => calls.push("completed"),

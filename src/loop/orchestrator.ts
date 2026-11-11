@@ -466,6 +466,7 @@ import {
 } from "../github";
 import {
   asksForFreshStart,
+  blockingIssuesSteps,
   intakeDelegatedIssue,
   stopAdoptedParent,
   type EarlierAttempt,
@@ -479,7 +480,6 @@ import {
   type ItemAdmission,
   type ItemWait,
   overlapLine,
-  openBlockers,
   type SchedulerOptions,
 } from "../scheduler";
 import type {
@@ -6328,6 +6328,7 @@ export class Orchestrator {
   }
 
   private orderCapabilities(itemId: string): OrderCapabilities {
+    const admission = this.admission.steps;
     return {
       ask: askSteps,
       now: () => this.now(),
@@ -6353,12 +6354,11 @@ export class Orchestrator {
       readPull: (item, pullNumber) =>
         this.readItemPull(item, pullNumber, this.signalForItem(item.id)),
       restart: (q, item, handoff) => this.restartWithStoredFeedbackSteps(q, item, handoff),
-      dependencyHold: (id) => {
+      dependencyHold: function* (q, id) {
         // Only unmet dependencies; a pending reconciliation keeps its own retry in mergeAttempt.
-        // Stays sync: the merge queue calls this as a predicate inside listMergeQueuesSteps.
-        const admitted = settled(this.admission.canMerge(id));
+        const admitted = yield* admission.canMerge(q, id);
         if (admitted.ok || admitted.held !== "blocked") return null;
-        return openBlockers(this.db, id);
+        return yield* blockingIssuesSteps(q, id);
       },
       mergeLane: (item) =>
         mergeLaneKey(getWorkItemLinearProjectId(this.db, item.id), this.readMergePolicy()),

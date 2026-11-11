@@ -813,7 +813,7 @@ async function dependencyWait(
   item: WorkItemRecord,
   caps: MergeCapabilities,
 ): Promise<MergeStep | null> {
-  const blockers = caps.dependencyHold(item.id);
+  const blockers = await store.run((q) => caps.dependencyHold(q, item.id));
   if (blockers === null) return null;
   const what = blockers.length ? blockers.join(", ") : "a blocking issue";
   const message = `${item.linearIdentifier}: waiting for ${what}`;

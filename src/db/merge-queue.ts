@@ -192,7 +192,9 @@ export function markMergeQueueNotified(db: Database, itemId: string, position: n
   settled(sqliteDb(db).run((q) => markMergeQueueNotifiedSteps(q, itemId, position)));
 }
 
-export function* listMergeQueuesSteps(q: Q, held: (itemId: string) => boolean = () => false) {
+type MergeHeld = (q: Q, itemId: string) => Steps<boolean>;
+
+export function* listMergeQueuesSteps(q: Q, held?: MergeHeld) {
   const { mergeQueueEntry, workItem } = q.t;
   const rows = yield* q.all(
     q.orm
@@ -218,7 +220,8 @@ export function* listMergeQueuesSteps(q: Q, held: (itemId: string) => boolean = 
       ),
   );
   const byLane = new Map<string, typeof rows>();
-  for (const row of rows.filter((entry) => !held(entry.itemId))) {
+  for (const row of rows) {
+    if (held && (yield* held(q, row.itemId))) continue;
     const key = `${row.repository}\0${row.lane}`;
     byLane.set(key, [...(byLane.get(key) ?? []), row]);
   }
@@ -244,27 +247,20 @@ export function* listMergeQueuesSteps(q: Q, held: (itemId: string) => boolean = 
  * its Linear dependencies, keeps its row and its `ready_at` but takes no place, so it blocks
  * nobody and returns to its place once released.
  */
-export function listMergeQueues(
-  db: Database,
-  held: (itemId: string) => boolean = () => false,
-): MergeQueuePosition[] {
-  return settled(sqliteDb(db).run((q) => listMergeQueuesSteps(q, held)));
+export function listMergeQueues(db: Database): MergeQueuePosition[] {
+  return settled(sqliteDb(db).run((q) => listMergeQueuesSteps(q)));
 }
 
 export function* mergeQueuePositionSteps(
   q: Q,
   itemId: string,
-  held?: (itemId: string) => boolean,
+  held?: MergeHeld,
 ): Steps<MergeQueuePosition | null> {
   return (yield* listMergeQueuesSteps(q, held)).find((entry) => entry.itemId === itemId) ?? null;
 }
 
-export function mergeQueuePosition(
-  db: Database,
-  itemId: string,
-  held?: (itemId: string) => boolean,
-): MergeQueuePosition | null {
-  return listMergeQueues(db, held).find((entry) => entry.itemId === itemId) ?? null;
+export function mergeQueuePosition(db: Database, itemId: string): MergeQueuePosition | null {
+  return listMergeQueues(db).find((entry) => entry.itemId === itemId) ?? null;
 }
 
 export function* wakeMergesBehindSteps(q: Q, now: number) {
