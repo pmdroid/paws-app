@@ -101,17 +101,19 @@ test("migration 061 drops the old session link table and columns", () => {
   }
 });
 
-test("a stop command resolves the session through session_key alone", () => {
+test("a stop command resolves the session through session_key alone", async () => {
   const db = legacyTempDb();
   try {
     const item = insertQueuedItem(db, { id: "stop-item", sessionKey: "stop-session", now: 1 });
     expect(
-      applyLinearCommand(db, {
-        type: "stop",
-        source: "linear",
-        itemId: item.id,
-        requestedAt: 5,
-      }).applied,
+      (
+        await applyLinearCommand(sqliteDb(db), {
+          type: "stop",
+          source: "linear",
+          itemId: item.id,
+          requestedAt: 5,
+        })
+      ).applied,
     ).toBe(true);
     expect(
       db

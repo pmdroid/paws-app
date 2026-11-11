@@ -158,7 +158,7 @@ test("a member's overview, merge queue and issue list hold only their teams' dia
           expect(text).not.toContain(hidden);
       }
     }
-    expect(workspaceSessionIds(db, "workspace", "admin", "fixture")).toEqual([
+    expect(await workspaceSessionIds(sqliteDb(db), "workspace", "admin", "fixture")).toEqual([
       "session-a",
       "session-b",
       "session-c",

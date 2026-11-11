@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { JOB_KIND, isTerminalWorkItemState } from "../src/core";
-import { applyLinearCommand, claimNextJob, completeJob, getWorkItem } from "../src/db";
+import { applyLinearCommand, claimNextJob, completeJob, getWorkItem, sqliteDb } from "../src/db";
 import { questionEffects } from "../src/loop";
 import { answer } from "./questions";
 import {
@@ -140,7 +140,7 @@ async function apply(w: World, sequence: Sequence, action: Action): Promise<void
       return;
     }
     case "stop":
-      applyLinearCommand(w.db, {
+      await applyLinearCommand(sqliteDb(w.db), {
         type: "stop",
         itemId: id(action.item),
         source: "linear",

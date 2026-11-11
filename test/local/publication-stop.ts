@@ -22,6 +22,8 @@ import {
   applyWorkItemEvent,
   immediate,
   sqliteDb,
+  settled,
+  applyLinearCommandSteps,
 } from "../../src/db";
 import { closeStoppedPull, createFetchGitHubClient } from "../../src/github";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../../src/linear";
@@ -158,12 +160,16 @@ export async function probePublicationStop(
     });
     assert.throws(() =>
       immediate(db, () => {
-        applyLinearCommand(db, {
-          type: "stop",
-          source: "dashboard",
-          itemId: "item",
-          requestedAt: clock.now(),
-        });
+        settled(
+          sqliteDb(db).transaction((q) =>
+            applyLinearCommandSteps(q, {
+              type: "stop",
+              source: "dashboard",
+              itemId: "item",
+              requestedAt: clock.now(),
+            }),
+          ),
+        );
         throw new Error("Rollback Stop");
       }),
     );
@@ -201,8 +207,8 @@ export async function probePublicationStop(
         calls.length === 0,
       { calls, joined },
     );
-    applyLinearCommand(
-      db,
+    await applyLinearCommand(
+      sqliteDb(db),
       { type: "stop", source: "dashboard", itemId: "item", requestedAt: clock.now() },
       clock.now(),
       undefined,

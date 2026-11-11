@@ -14,6 +14,8 @@ import {
   prepareShutdown,
   recoverOnStartup,
   sqliteDb,
+  settled,
+  applyLinearCommandSteps,
 } from "../db";
 import { mergeHarness, pendingCi, type MergeHarness } from "./advance-harness";
 
@@ -250,12 +252,14 @@ test("a stop after the last squash guard defers until the remote merge completes
     await Bun.sleep(10);
   }
   expect(
-    applyLinearCommand(h.db, {
-      type: "stop",
-      source: "linear",
-      itemId: item.id,
-      requestedAt: h.clock.now(),
-    }).deferred,
+    (
+      await applyLinearCommand(sqliteDb(h.db), {
+        type: "stop",
+        source: "linear",
+        itemId: item.id,
+        requestedAt: h.clock.now(),
+      })
+    ).deferred,
   ).toBe(true);
   expect(getWorkItem(h.db, item.id)?.state).toBe("merge_queue");
   release();
@@ -264,13 +268,13 @@ test("a stop after the last squash guard defers until the remote merge completes
   expect(mergeCallInFlight(h.db, item.id)).toBe(true);
   // A retry in the gap between the remote response and local completion still waits.
   h.clock.advance(1_000);
-  drainCommands(h.db, new CommandBus(), h.clock.now());
+  await drainCommands(sqliteDb(h.db), new CommandBus(), h.clock.now());
   expect(getWorkItem(h.db, item.id)?.state).toBe("merge_queue");
   expect(
     (await completeMergedItem(sqliteDb(h.db), { itemId: item.id, now: h.clock.now() }))?.state,
   ).toBe("merged");
   h.clock.advance(1_000);
-  drainCommands(h.db, new CommandBus(), h.clock.now());
+  await drainCommands(sqliteDb(h.db), new CommandBus(), h.clock.now());
   expect(getWorkItem(h.db, item.id)?.state).toBe("merged");
   expect(
     listOutbox(h.db).filter((row) =>
@@ -291,12 +295,16 @@ test("a stop during the final squash reads still prevents the GitHub call", asyn
   h.state.pullHead = (head) => {
     if (squashing && !stopped) {
       stopped = true;
-      applyLinearCommand(h.db, {
-        type: "stop",
-        source: "linear",
-        itemId: item.id,
-        requestedAt: h.clock.now(),
-      });
+      settled(
+        sqliteDb(h.db).transaction((q) =>
+          applyLinearCommandSteps(q, {
+            type: "stop",
+            source: "linear",
+            itemId: item.id,
+            requestedAt: h.clock.now(),
+          }),
+        ),
+      );
     }
     return head;
   };
@@ -304,6 +312,6 @@ test("a stop during the final squash reads still prevents the GitHub call", asyn
   expect(stopped).toBe(true);
   expect(h.github.merged).toEqual([]);
   h.clock.advance(1_000);
-  drainCommands(h.db, new CommandBus(), h.clock.now());
+  await drainCommands(sqliteDb(h.db), new CommandBus(), h.clock.now());
   expect(getWorkItem(h.db, item.id)?.state).toBe("paused");
 });

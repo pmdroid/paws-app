@@ -724,7 +724,7 @@ describe("linear commands", () => {
       queues: ["github.merge"],
     });
 
-    const result = submitCommand(db, bus, {
+    const result = await submitCommand(sqliteDb(db), bus, {
       type: "stop",
       source: "linear",
       itemId: "eng-2",
@@ -748,7 +748,7 @@ describe("linear commands", () => {
     expect((await getItemPullRequest(sqliteDb(db), "eng-2"))?.pullNumber).toBe(7);
     expect(listJobs(db).some((job) => job.queue === JOB_KIND.closeStoppedPull)).toBe(false);
 
-    submitCommand(db, bus, {
+    await submitCommand(sqliteDb(db), bus, {
       type: "stop",
       source: "linear",
       itemId: "eng-2",
@@ -757,17 +757,19 @@ describe("linear commands", () => {
     expect(listOutbox(db).map((row) => row.op)).toEqual(["activity"]);
 
     expect(
-      submitCommand(db, bus, {
-        type: "stop",
-        source: "dashboard",
-        itemId: "eng-2",
-        requestedAt: clock.now() + 2,
-      }).applied,
+      (
+        await submitCommand(sqliteDb(db), bus, {
+          type: "stop",
+          source: "dashboard",
+          itemId: "eng-2",
+          requestedAt: clock.now() + 2,
+        })
+      ).applied,
     ).toBe(true);
     expect(getWorkItem(db, "eng-2")).toMatchObject({ state: "cancelled", cancelRequested: true });
   });
 
-  test("a Linear stop in the merge queue pauses the item and holds its merge", () => {
+  test("a Linear stop in the merge queue pauses the item and holds its merge", async () => {
     const { db, clock } = harness();
     insertQueuedItem(db, { id: "eng-3", sessionKey: "ses", now: clock.now() });
     beginImplementRun(db, "eng-3", clock.now());
@@ -775,7 +777,7 @@ describe("linear commands", () => {
     applyWorkItemEvent(db, "eng-3", "closeout_accepted");
     enqueueJob(db, { queue: "github.merge", payload: { itemId: "eng-3" }, now: clock.now() });
 
-    submitCommand(db, new CommandBus(), {
+    await submitCommand(sqliteDb(db), new CommandBus(), {
       type: "stop",
       source: "linear",
       itemId: "eng-3",
@@ -806,7 +808,7 @@ describe("linear commands", () => {
       pullUrl: null,
       openedAt: 1,
     });
-    submitCommand(db, new CommandBus(), {
+    await submitCommand(sqliteDb(db), new CommandBus(), {
       type: "stop",
       source: "dashboard",
       itemId: "eng-5",
@@ -826,7 +828,7 @@ describe("linear commands", () => {
     db.close();
   });
 
-  test("a stop without a pull request says none was opened and cancels the remaining plan", () => {
+  test("a stop without a pull request says none was opened and cancels the remaining plan", async () => {
     const { db, clock } = harness();
     insertQueuedItem(db, { id: "eng-6", sessionKey: "ses", now: clock.now() });
     const identifier = getWorkItem(db, "eng-6")!.linearIdentifier;
@@ -847,7 +849,7 @@ describe("linear commands", () => {
         }),
       ],
     );
-    submitCommand(db, new CommandBus(), {
+    await submitCommand(sqliteDb(db), new CommandBus(), {
       type: "stop",
       source: "dashboard",
       itemId: "eng-6",
@@ -869,7 +871,7 @@ describe("linear commands", () => {
     db.close();
   });
 
-  test("a cancel with an outside reason names the branch only when work is left on it", () => {
+  test("a cancel with an outside reason names the branch only when work is left on it", async () => {
     const { db, clock } = harness();
     insertQueuedItem(db, { id: "eng-7", sessionKey: "ses-7", now: clock.now() });
     insertQueuedItem(db, { id: "eng-8", sessionKey: "ses-8", now: clock.now() });
@@ -883,8 +885,8 @@ describe("linear commands", () => {
       recordedAt: clock.now(),
     });
     for (const itemId of ["eng-7", "eng-8"])
-      applyLinearCommand(
-        db,
+      await applyLinearCommand(
+        sqliteDb(db),
         { type: "cancel", source: "linear", itemId, requestedAt: clock.now() },
         clock.now(),
         "Closed: the issue was canceled in Linear.",
@@ -922,12 +924,12 @@ describe("linear commands", () => {
     db.close();
   });
 
-  test("a shared session receives one final stop acknowledgement", () => {
+  test("a shared session receives one final stop acknowledgement", async () => {
     const { db, clock } = harness();
     const bus = new CommandBus();
     for (const id of ["first", "second"]) {
       insertQueuedItem(db, { id, sessionKey: "ses", now: clock.now() });
-      submitCommand(db, bus, {
+      await submitCommand(sqliteDb(db), bus, {
         type: "stop",
         source: "linear",
         itemId: id,
@@ -940,7 +942,7 @@ describe("linear commands", () => {
     db.close();
   });
 
-  test("a listener error stays on the command and the item stays cancelled", () => {
+  test("a listener error stays on the command and the item stays cancelled", async () => {
     const { db, clock } = harness();
     const bus = new CommandBus();
     bus.subscribe(() => {
@@ -948,7 +950,7 @@ describe("linear commands", () => {
     });
     insertQueuedItem(db, { id: "eng-4", now: clock.now() });
     beginImplementRun(db, "eng-4", clock.now());
-    submitCommand(db, bus, {
+    await submitCommand(sqliteDb(db), bus, {
       type: "cancel",
       source: "linear",
       itemId: "eng-4",

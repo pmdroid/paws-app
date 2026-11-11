@@ -353,8 +353,8 @@ export async function probeExecutionControls(root: string) {
       body: JSON.stringify({ itemId: "controlled", action: "stop" }),
     });
     const verified = requestWorkspaceSession(db, stopRequest)!;
-    const allowed = workspaceSessionIds(
-      db,
+    const allowed = await workspaceSessionIds(
+      sqliteDb(db),
       verified.principal.workspaceId,
       verified.principal.userId,
       "client",

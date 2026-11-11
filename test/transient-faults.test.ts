@@ -563,7 +563,7 @@ async function runWithFault(fault: {
             id: string;
           }
         ).id;
-        applyLinearCommand(db, {
+        await applyLinearCommand(sqliteDb(db), {
           type: "stop",
           itemId,
           source: "linear",

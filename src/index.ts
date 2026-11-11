@@ -152,7 +152,8 @@ import {
   getWorkspaceSteps,
   listSkillsSteps,
   openDelegationWorkspaceIdSteps,
-  submitCommandAsync,
+  submitCommandSteps,
+  settled,
   workItemForSessionSteps,
   workspaceForOrganizationSteps,
   workspaceLinearMemberSteps,
@@ -491,7 +492,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       pid: process.pid,
     }),
   );
-  bindInstance(db, instance.id);
+  bindInstance(store, instance.id);
   const savedSettings = await useSettingsStore(paths.configFile, {
     read: () => store.run((q) => readSettingSteps(q, CONFIG_SETTINGS_KEY)),
     update: (change) =>
@@ -629,7 +630,18 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       enqueueCommand(db, command);
       return;
     }
-    submitCommand(db, orchestrator.bus, command);
+    const bus = orchestrator.bus;
+    settled(
+      store.run((q) =>
+        submitCommandSteps(
+          q,
+          command,
+          (c) => bus.emit(c),
+          () => emitJobReady(store),
+          commandInstance(store),
+        ),
+      ),
+    );
   };
   const submitAsync = async (command: LinearCommand): Promise<void> => {
     if (orchestrator === null) {
@@ -637,7 +649,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       if (inserted) emitJobReady(store);
       return;
     }
-    await submitCommandAsync(store, orchestrator.bus, command, commandInstance(db));
+    await submitCommand(store, orchestrator.bus, command);
   };
 
   let linearTaskAccess: LinearTaskAccess | null = null;
@@ -1508,12 +1520,12 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         exeDev: options?.memberVm?.exeDev ?? memberVmExeDev,
         stopTask: async (itemId) => {
           if (orchestrator === null) throw new Error("Paws is still starting. Retry the delete.");
-          await submitCommandAsync(
-            store,
-            orchestrator.bus,
-            { type: "stop", source: "dashboard", itemId, requestedAt: Date.now() },
-            commandInstance(db),
-          );
+          await submitCommand(store, orchestrator.bus, {
+            type: "stop",
+            source: "dashboard",
+            itemId,
+            requestedAt: Date.now(),
+          });
           await Promise.race([
             orchestrator.interruptItem(itemId).catch((caughtError7) => {
               journalCaught(caughtError7, "index.stopTask.interruptItem", itemId);

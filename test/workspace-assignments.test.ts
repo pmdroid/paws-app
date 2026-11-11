@@ -1923,7 +1923,7 @@ test("revoked members cannot sign in or delegate while Linear still considers th
   const f = await fixture();
   try {
     linkMember(f);
-    changeWorkspaceRevocation(f.db, {
+    await changeWorkspaceRevocation(sqliteDb(f.db), {
       workspaceId: "workspace",
       actorId: "owner",
       userId: "member",
@@ -1956,7 +1956,7 @@ test("revoked members cannot sign in or delegate while Linear still considers th
       ["response", WORKSPACE_REVOKED_RESPONSE],
     ]);
     expect(workspaceLinearMember(f.db, "workspace", "member")?.revokedAt).not.toBeNull();
-    changeWorkspaceRevocation(f.db, {
+    await changeWorkspaceRevocation(sqliteDb(f.db), {
       workspaceId: "workspace",
       actorId: "owner",
       userId: "member",
@@ -1975,7 +1975,7 @@ test("a held delegation revoked during continuation retains its final response",
     await f.assignments.authorize(f.event);
     expect((await f.callback(await f.begin())).status).toBe(303);
     f.beforeContinuationIntake(async (event) => {
-      changeWorkspaceRevocation(f.db, {
+      await changeWorkspaceRevocation(sqliteDb(f.db), {
         workspaceId: "workspace",
         actorId: "owner",
         userId: workspaceLinearMember(f.db, "workspace", "member")!.userId,

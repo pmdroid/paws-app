@@ -116,11 +116,13 @@ test("the stopped and closed responses carry the open findings of the last publi
         now: 2,
       });
       expect(
-        applyLinearCommand(
-          db,
-          { type: "stop", source: "dashboard", itemId: id, requestedAt: 5 },
-          5,
-          response,
+        (
+          await applyLinearCommand(
+            sqliteDb(db),
+            { type: "stop", source: "dashboard", itemId: id, requestedAt: 5 },
+            5,
+            response,
+          )
         ).applied,
       ).toBe(true);
       const body = listOutbox(db)

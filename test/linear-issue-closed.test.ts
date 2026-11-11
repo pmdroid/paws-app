@@ -402,7 +402,7 @@ for (const exit of ["closed", "undelegated"] as const) {
       listJobs(f.db).filter((job) => job.queue === JOB_KIND.command && job.status === "pending"),
     ).toHaveLength(1);
     await endMergeCall(sqliteDb(f.db), f.item.id);
-    drainCommands(f.db, new CommandBus(), now + 2_000);
+    await drainCommands(sqliteDb(f.db), new CommandBus(), now + 2_000);
     expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
   });
 }

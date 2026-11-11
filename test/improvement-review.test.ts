@@ -491,7 +491,7 @@ describe("improvement decisions", () => {
   test("an admin-revoked member loses reads and decisions", async () => {
     const w = world();
     const id = w.retro.a;
-    changeWorkspaceRevocation(w.db, {
+    await changeWorkspaceRevocation(sqliteDb(w.db), {
       workspaceId: "ws",
       actorId: "user-admin",
       userId: "user-bea",

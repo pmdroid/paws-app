@@ -49,7 +49,7 @@ for (const exit of ["cancel", "ask", "fail"] as const) {
         now: 1,
         runAt: 300_000,
       });
-    if (exit === "cancel") applyLinearCommand(db, command, 10);
+    if (exit === "cancel") await applyLinearCommand(sqliteDb(db), command, 10);
     if (exit === "ask")
       await sqliteDb(db).transaction((q) =>
         askSteps(
@@ -85,10 +85,10 @@ test("a stop during a successful squash waits for completion and answers already
   const emitted: unknown[] = [];
   bus.subscribe((c) => emitted.push(c));
   beginMergeCall(db, "holder", "head", 5);
-  expect(submitCommand(db, bus, command)).toEqual({ applied: false });
+  expect(await submitCommand(sqliteDb(db), bus, command)).toEqual({ applied: false });
   expect(getWorkItem(db, "holder")).toMatchObject({ state: "merge_queue", cancelRequested: false });
   expect(await mergeStopRequested(sqliteDb(db), "holder")).toBe(true);
-  expect(drainCommands(db, bus, 1_010)).toBe(1);
+  expect(await drainCommands(sqliteDb(db), bus, 1_010)).toBe(1);
   recordConfirmedRemoteMerge(db, {
     itemId: "holder",
     repositoryOwner: "acme",
@@ -103,8 +103,8 @@ test("a stop during a successful squash waits for completion and answers already
   );
   expect(await completeMergedItem(sqliteDb(db), { itemId: "holder", now: 1_021 })).toBeNull();
   expect(mergeCallInFlight(db, "holder")).toBe(false);
-  drainCommands(db, bus, 2_010);
-  drainCommands(db, bus, 3_010);
+  await drainCommands(sqliteDb(db), bus, 2_010);
+  await drainCommands(sqliteDb(db), bus, 3_010);
   expect(emitted).toEqual([]);
   expect(getWorkItem(db, "holder")?.state).toBe("merged");
   const bodies = listOutbox(db).map((row) => String((row.payload as { body?: string }).body));
@@ -122,10 +122,14 @@ test("a deferred stop cancels when the squash did not succeed", async () => {
   const bus = new CommandBus();
   beginMergeCall(db, "holder", "head", 5);
   expect(
-    applyLinearCommand(db, command, 10, "Stopped by test.", { keepPullRequest: true }).deferred,
+    (
+      await applyLinearCommand(sqliteDb(db), command, 10, "Stopped by test.", {
+        keepPullRequest: true,
+      })
+    ).deferred,
   ).toBe(true);
   await endMergeCall(sqliteDb(db), "holder");
-  drainCommands(db, bus, 1_010);
+  await drainCommands(sqliteDb(db), bus, 1_010);
   expect(getWorkItem(db, "holder")?.state).toBe("cancelled");
   expect(listJobs(db).some((j) => j.queue === JOB_KIND.closeStoppedPull)).toBe(false);
   expect(
