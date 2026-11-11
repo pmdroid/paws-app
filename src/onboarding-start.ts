@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { initializeRunnerCoordinator } from "./runner-coordinator";
 import type { PawsProcess } from "./index";
 import { ensureLayout, loadRunnerControl, pawsPaths, type RuntimeConfig } from "./config";
-import { migrate, openDatabase, sqliteDb } from "./db";
+import type { PawsStore } from "./db";
 import type { PublicTls } from "./deployment";
 import { createBrowserOnboarding } from "./onboarding";
 import { startServer } from "./server";
@@ -14,21 +14,22 @@ export function startBrowserOnboarding(
   tls: PublicTls,
   start: (server: Bun.Server<undefined>) => Promise<PawsProcess>,
   source: Record<string, string | undefined>,
+  database: PawsStore,
   reconnect = false,
 ): PawsProcess {
   const paths = pawsPaths(runtime.env.home);
   ensureLayout(paths);
-  const db = openDatabase(paths.db);
-  migrate(db);
+  const db = database.store;
   let active: PawsProcess | undefined;
   let stopping = false;
   let switching: Promise<void> | undefined;
   let closed = false;
   let failed = false;
   const requests = new Set<Promise<Response>>();
-  function closeDatabase() {
-    if (!closed) db.close();
+  async function closeDatabase() {
+    if (closed) return;
     closed = true;
+    await database.close();
   }
   const handle = createBrowserOnboarding({
     db,
@@ -48,7 +49,7 @@ export function startBrowserOnboarding(
         switching = (async () => {
           await Promise.allSettled([...requests]);
           if (stopping) return;
-          closeDatabase();
+          await closeDatabase();
           active = await start(server);
           await active.ready;
         })().catch((caughtError1) => {
@@ -78,11 +79,8 @@ export function startBrowserOnboarding(
     env: runtime.env,
     paths,
     server,
-    get db() {
-      return active?.db ?? db;
-    },
     get store() {
-      return active?.store ?? sqliteDb(db);
+      return active?.store ?? db;
     },
     ready: Promise.resolve(),
     catchUp: async () => {
@@ -94,7 +92,7 @@ export function startBrowserOnboarding(
       if (active) await active.stop();
       else await server.stop(true);
       await Promise.allSettled([...requests]);
-      closeDatabase();
+      await closeDatabase();
     },
   };
 }

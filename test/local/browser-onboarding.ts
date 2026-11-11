@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, chmodSync, existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { startPaws } from "../../src/index";
-import { recordLinearInstallation, revokeLinearInstallation, sqliteDb } from "../../src/db";
+import { recordLinearInstallation, revokeLinearInstallation } from "../../src/db";
 
 const root = resolve(process.argv[2]!);
 mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -154,13 +154,13 @@ process.on("SIGUSR1", async () => {
     oauthClientId: source.LINEAR_CLIENT_ID,
     appUserId: viewer.id,
   };
-  await recordLinearInstallation(sqliteDb(paws.db), {
+  await recordLinearInstallation(paws.store, {
     ...scope,
     sessionId: "fixture-session",
     teamId: "fixture-team",
     observedAtMs: Date.now() - 2,
   });
-  await revokeLinearInstallation(sqliteDb(paws.db), {
+  await revokeLinearInstallation(paws.store, {
     ...scope,
     eventKey: `fixture-revoked-${Date.now()}`,
     createdAtMs: Date.now() - 1,

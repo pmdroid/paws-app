@@ -1,28 +1,20 @@
 import "../quiet-journal";
-import { storeLinearToken } from "../helpers";
-import { join } from "node:path";
-import {
-  migrate,
-  openDatabase,
-  recordLinearInstallation,
-  revokeLinearInstallation,
-  sqliteDb,
-} from "../../src/db";
+import { storeHomeLinearToken, withHomeStore } from "../helpers";
+import { recordLinearInstallation, revokeLinearInstallation } from "../../src/db";
 import { startPaws } from "../../src/index";
 
 const home = process.argv[2]!;
-const db = openDatabase(join(home, "paws.db"));
-migrate(db);
 const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
-await recordLinearInstallation(sqliteDb(db), {
-  ...scope,
-  sessionId: "session",
-  teamId: "team",
-  observedAtMs: 1,
+await withHomeStore(home, async (store) => {
+  await recordLinearInstallation(store, {
+    ...scope,
+    sessionId: "session",
+    teamId: "team",
+    observedAtMs: 1,
+  });
+  await revokeLinearInstallation(store, { ...scope, eventKey: "revoked", createdAtMs: 2 });
 });
-await revokeLinearInstallation(sqliteDb(db), { ...scope, eventKey: "revoked", createdAtMs: 2 });
-db.close();
-await storeLinearToken(home, {
+await storeHomeLinearToken(home, {
   accessToken: "fake-access",
   refreshToken: "fake-refresh",
   expiresAtMs: 0,

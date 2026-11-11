@@ -1,17 +1,16 @@
 import "../quiet-journal";
-import { storeLinearToken } from "../helpers";
+import { eq } from "drizzle-orm";
+import { storeHomeLinearToken, withHomeStore } from "../helpers";
 import { createHmac } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   bindLinearSessionTask,
   getLinearSessionContext,
-  migrate,
-  openDatabase,
+  getWorkItem,
   recordLinearInstallation,
   requireLinearTaskDelegation,
   setJournalSink,
-  sqliteDb,
 } from "../../src/db";
 import { startPaws } from "../../src/index";
 import { intakeDelegatedIssue } from "../../src/intake";
@@ -37,41 +36,45 @@ if (mode === "github-auth") {
 }
 let teamReads = 0;
 let contextReads = 0;
-const db = openDatabase(join(home, "paws.db"));
-migrate(db);
-const task = await intakeDelegatedIssue(
-  sqliteDb(db),
-  createFakeTracker([
-    {
-      linearIssueId: "issue",
-      identifier: "ENG-1",
-      title: "Task",
-      description: null,
-      subIssues: [],
-    },
-  ]),
-  { linearIssueId: "issue" },
-);
-if (!task.ok) throw new Error("Unexpected cycle");
-const itemId = task.items[0]!.id;
-db.run("UPDATE work_item SET state = 'awaiting_input' WHERE id = ?", [itemId]);
 const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
-await recordLinearInstallation(sqliteDb(db), {
-  ...scope,
-  sessionId: "session",
-  teamId: "team",
-  observedAtMs: 1,
+const itemId = await withHomeStore(home, async (store) => {
+  const task = await intakeDelegatedIssue(
+    store,
+    createFakeTracker([
+      {
+        linearIssueId: "issue",
+        identifier: "ENG-1",
+        title: "Task",
+        description: null,
+        subIssues: [],
+      },
+    ]),
+    { linearIssueId: "issue" },
+  );
+  if (!task.ok) throw new Error("Unexpected cycle");
+  const id = task.items[0]!.id;
+  await store.run((q) =>
+    q.exec(
+      q.orm.update(q.t.workItem).set({ state: "awaiting_input" }).where(eq(q.t.workItem.id, id)),
+    ),
+  );
+  await recordLinearInstallation(store, {
+    ...scope,
+    sessionId: "session",
+    teamId: "team",
+    observedAtMs: 1,
+  });
+  await bindLinearSessionTask(store, "session", task.delegation.id, { actorId: "human" });
+  await requireLinearTaskDelegation(store, {
+    itemId: id,
+    issueId: "issue",
+    teamId: "team",
+    appUserId: "app",
+    humanActorId: "human",
+  });
+  return id;
 });
-await bindLinearSessionTask(sqliteDb(db), "session", task.delegation.id, { actorId: "human" });
-await requireLinearTaskDelegation(sqliteDb(db), {
-  itemId,
-  issueId: "issue",
-  teamId: "team",
-  appUserId: "app",
-  humanActorId: "human",
-});
-db.close();
-await storeLinearToken(home, {
+await storeHomeLinearToken(home, {
   accessToken: "fake-access",
   refreshToken: "fake-refresh",
   expiresAtMs: Date.now() + 600_000,
@@ -231,21 +234,19 @@ for (const delivery of deliveries) {
   );
   for (
     let attempt = 0;
-    (await createInboxStore(sqliteDb(paws.db)).listUnhandled()).length > 0 && attempt < 100;
+    (await createInboxStore(paws.store).listUnhandled()).length > 0 && attempt < 100;
     attempt++
   )
     await Bun.sleep(5);
 }
-const state = paws.db
-  .query<{ state: string }, [string]>("SELECT state FROM work_item WHERE id = ?")
-  .get(itemId)?.state;
+const state = (await getWorkItem(paws.store, itemId))?.state;
 await paws.catchUp();
-const pending = (await createInboxStore(sqliteDb(paws.db)).listUnhandled()).length;
-const context = await getLinearSessionContext(sqliteDb(paws.db), "session");
+const pending = (await createInboxStore(paws.store).listUnhandled()).length;
+const context = await getLinearSessionContext(paws.store, "session");
 await paws.stop();
-const reopened = openDatabase(join(home, "paws.db"));
-const restoredContext = await getLinearSessionContext(sqliteDb(reopened), "session");
-reopened.close();
+const restoredContext = await withHomeStore(home, (store) =>
+  getLinearSessionContext(store, "session"),
+);
 console.log(
   JSON.stringify({
     statuses,

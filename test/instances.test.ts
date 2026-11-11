@@ -14,12 +14,14 @@ import {
   sqliteDb,
 } from "../src/db";
 import { tempHome } from "./helpers";
+import { pgliteServer } from "./pglite";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 
-function spawnPaws(home: string) {
+function spawnPaws(home: string, url: string) {
   const env: Record<string, string | undefined> = {
     ...process.env,
+    PAWS_DATABASE_URL: url,
     PAWS_HOME: home,
     PAWS_PORT: "0",
     PAWS_HOST: "127.0.0.1",
@@ -56,9 +58,10 @@ type HealthBody = {
 describe("instances", () => {
   test("two processes on one database register, list each other, stop and expire", async () => {
     const home = tempHome();
-    const first = spawnPaws(home);
+    const server = await pgliteServer();
+    const first = spawnPaws(home, server.url);
     const firstUrl = await readyUrl(first);
-    const second = spawnPaws(home);
+    const second = spawnPaws(home, server.url);
     try {
       const secondUrl = await readyUrl(second);
       const firstHealth = (await (await fetch(`${firstUrl}/health`)).json()) as HealthBody;
@@ -76,13 +79,19 @@ describe("instances", () => {
       second.kill("SIGKILL");
       await second.exited;
 
-      const db = openDatabase(join(home, "paws.db"));
-      try {
-        const rows = db
-          .query<{ id: string; heartbeat_at: number; stopped_at: number | null }, []>(
-            "SELECT id, heartbeat_at, stopped_at FROM instance",
-          )
-          .all();
+      const db = server.store;
+      {
+        const rows = await db.run((q) =>
+          q.all(
+            q.orm
+              .select({
+                id: q.t.instance.id,
+                heartbeat_at: q.t.instance.heartbeatAt,
+                stopped_at: q.t.instance.stoppedAt,
+              })
+              .from(q.t.instance),
+          ),
+        );
         // A clean stop keeps the row and its last heartbeat for the lease downtime credit.
         const stopped = rows.find((row) => row.id === firstHealth.instance)!;
         expect(stopped.stopped_at).toBe(stopped.heartbeat_at);
@@ -90,15 +99,14 @@ describe("instances", () => {
         expect(killed.stopped_at).toBeNull();
         const killedAt = killed.heartbeat_at;
         expect(
-          (await liveInstances(sqliteDb(db), killedAt + INSTANCE_DEAD_MS - 1)).map((row) => row.id),
+          (await liveInstances(db, killedAt + INSTANCE_DEAD_MS - 1)).map((row) => row.id),
         ).toEqual([secondHealth.instance]);
-        expect(await liveInstances(sqliteDb(db), killedAt + INSTANCE_DEAD_MS)).toEqual([]);
-      } finally {
-        db.close();
+        expect(await liveInstances(db, killedAt + INSTANCE_DEAD_MS)).toEqual([]);
       }
     } finally {
       first.kill("SIGKILL");
       second.kill("SIGKILL");
+      await server.close();
     }
   }, 40_000);
 

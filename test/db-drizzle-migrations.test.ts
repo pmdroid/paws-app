@@ -8,9 +8,7 @@ import {
   openDatabase,
   setAsideLegacyDatabase,
 } from "../src/db";
-import { startPaws, useSavedSettings } from "../src/index";
 import { setJournalSink } from "../src/journal";
-import { shutdownPaws } from "../src/shutdown";
 import { migrateDryRun } from "../scripts/migrate-dry-run";
 import { tempHome } from "./helpers";
 
@@ -29,15 +27,6 @@ function legacyDatabase(home: string) {
   db.run("INSERT INTO sync_cursor (name, cursor_ms) VALUES ('legacy', 1)");
   expect(existsSync(`${path}-shm`)).toBe(true);
   return { path, db, file: readFileSync(path), wal: readFileSync(`${path}-wal`) };
-}
-
-function closedLegacyDatabase(home: string) {
-  const path = join(home, "paws.db");
-  const db = openDatabase(path);
-  legacyMigrate(db);
-  db.run("PRAGMA wal_checkpoint(TRUNCATE)");
-  db.close();
-  return path;
 }
 
 function refusal(path: string) {
@@ -149,42 +138,12 @@ describe("a database from the legacy migrations", () => {
     expect(readdirSync(home).filter((name) => name.includes("pre-drizzle"))).toHaveLength(3);
   });
 
-  test("stops startup without the opt-in and changes nothing on disk", async () => {
-    const home = tempHome();
-    const path = closedLegacyDatabase(home);
-    writeFileSync(join(home, "config.toml"), "");
-    const before = readFileSync(path);
-    const release = useSavedSettings();
-    try {
-      for (const flag of [undefined, "", "0", "true"])
-        await expect(
-          startPaws({ PAWS_HOME: home, PAWS_PORT: "0", PAWS_RESET_LEGACY_DATABASE: flag }),
-        ).rejects.toThrow(refusal(path));
-    } finally {
-      release();
-    }
-    expect(readdirSync(home).sort()).toEqual(["config.toml", "paws.db"]);
-    expect(readFileSync(path)).toEqual(before);
-  });
-
   test("refuses one with a live WAL and leaves its files as they were", () => {
     const legacy = legacyDatabase(tempHome());
     expect(() => setAsideLegacyDatabase(legacy.path, {}, NOW)).toThrow(refusal(legacy.path));
     expect(readFileSync(legacy.path)).toEqual(legacy.file);
     expect(readFileSync(`${legacy.path}-wal`)).toEqual(legacy.wal);
     legacy.db.close();
-  });
-
-  test("is renamed at startup with the opt-in", async () => {
-    const home = tempHome();
-    const path = closedLegacyDatabase(home);
-    const before = readFileSync(path);
-    const paws = await startPaws({ PAWS_HOME: home, PAWS_PORT: "0", ...RESET });
-    await shutdownPaws(paws, 0, () => {});
-    const renamed = readdirSync(home).filter((name) => /pre-drizzle-\d+T\d+Z$/.test(name));
-    expect(renamed).toHaveLength(1);
-    expect(readFileSync(join(home, renamed[0]!))).toEqual(before);
-    expect(existsSync(path)).toBe(true);
   });
 
   for (const [optIn, source] of [

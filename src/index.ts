@@ -36,7 +36,6 @@ import {
   type ProbesCommand,
 } from "./probe-collector";
 import { envelopeSubkey, importCredentialFile, loadSecretKey, readSecretFile } from "./credentials";
-import type { Database } from "bun:sqlite";
 import {
   ArtifactRejectedError,
   commitCheckpointSync,
@@ -61,7 +60,6 @@ import {
 import {
   closeoutPolicyRoot,
   describeDatabaseUrl,
-  POSTGRES_NOT_YET,
   redactDatabaseUrl,
   DEFAULT_COMMENT_WAIT,
   DEFAULT_IGNORED_COMMENT_BOTS,
@@ -104,7 +102,6 @@ import {
   listReviewEscapesSteps,
   countLinearRequest,
   linearBudgetStore,
-  migrate,
   openDatabase,
   checkPostgres,
   checkSqlite,
@@ -114,7 +111,8 @@ import {
   readSettingSteps,
   updateSettingSteps,
   CONFIG_SETTINGS_KEY,
-  setAsideLegacyDatabase,
+  setAsideSqliteDatabase,
+  openPawsStore,
   prepareShutdown,
   COMMAND_DELIVERY_MS,
   bindInstance,
@@ -124,7 +122,6 @@ import {
   RUN_TAKEOVER_JOB,
   RUN_TAKEOVER_MS,
   listRepositoryCatalogSteps,
-  incrementalVacuum,
   refreshRepositoryCatalog,
   startLoops,
   submitCommand,
@@ -375,8 +372,6 @@ const MEMBERS_ONLY: IntakeDecision = {
 export type PawsProcess = {
   env: PawsEnv;
   paths: PawsPaths;
-  db: Database;
-  /** The async `Db` over `db`, the one handle every holder of `db` gets beside it. */
   store: Db;
   server: Bun.Server<undefined>;
   catchUp: () => Promise<void>;
@@ -409,9 +404,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   if (execution === "local") throw new Error("Paws places work on a remote runner.");
   if (execution !== undefined && execution !== "remote")
     throw new Error("PAWS_EXECUTION must be remote.");
-  const runtime = loadRuntime(envSource);
+  let runtime = loadRuntime(envSource);
   if (runtime.configError !== null) throw new Error(runtime.configError);
-  if (runtime.databaseUrl !== null) throw new Error(POSTGRES_NOT_YET);
   const publicDashboard = envSource.PAWS_PUBLIC_DASHBOARD === "1";
   const tls = publicDashboard ? validatePublicTls(envSource) : loadPublicTls(envSource);
   const runnerConfig = loadRunnerControl(envSource, runtime.env);
@@ -443,14 +437,13 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const transcriptObjects = transcriptStorage?.objects;
   const env = { ...runtime.env, host: publicDashboard ? runtime.env.host : LOOPBACK };
   const paths = pawsPaths(env.home);
-  setAsideLegacyDatabase(paths.db, envSource);
+  setAsideSqliteDatabase(paths.db);
   ensureLayout(paths);
   sweepTmpDir(paths);
   useGitTempDirectory(paths.tmpDir);
   usePublicationRepositories(paths.publicationDir);
-  const db = openDatabase(paths.db);
-  const store = sqliteDb(db);
-  migrate(db);
+  const database = await openPawsStore({ url: runtime.databaseUrl, pgliteDir: paths.pgliteDir });
+  const store = database.store;
   await importLinearTokenFile(store, paths.secretsDir, runtime.linearTokenFile);
   await importCredentialFile(
     store,
@@ -473,17 +466,17 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         (await readStoredToken(store, paths.secretsDir)) === null))
   ) {
     const reconnect = await linearRevoked();
-    db.close();
     return startBrowserOnboarding(
       runtime,
       tls!,
       (server) => startPaws(envSource, { ...options, server }),
       envSource,
+      database,
       reconnect,
     );
   }
   if (publicDashboard && runtime.linearClientId === null) {
-    db.close();
+    await database.close();
     throw new Error("Public dashboard requires the Linear app OAuth client.");
   }
   const instance = await store.run((q) =>
@@ -501,6 +494,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     update: (change) =>
       store.transaction((q) => updateSettingSteps(q, CONFIG_SETTINGS_KEY, change)),
   });
+  runtime = loadRuntime(envSource);
   const settingsTimer = setInterval(() => {
     void savedSettings
       .refresh()
@@ -515,7 +509,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   if (overriddenSections.length > 0) journal(describeOverriddenSections(overriddenSections));
   const reconnectLinear = publicDashboard
     ? createBrowserOnboarding({
-        db,
+        db: store,
         home: paths.home,
         origin: runtime.publicUrl!,
         clientId: runtime.linearClientId,
@@ -676,12 +670,11 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   }
 
   const linear = await openLinear({
-    db,
+    db: store,
     store,
     signal: abort.signal,
-    countItemRequest: async (itemId, caller) =>
-      await countLinearRequest(sqliteDb(db), itemId, caller),
-    budget: linearBudgetStore(sqliteDb(db), runtime.linearClientId ?? "linear"),
+    countItemRequest: async (itemId, caller) => await countLinearRequest(store, itemId, caller),
+    budget: linearBudgetStore(store, runtime.linearClientId ?? "linear"),
     secretsDir: paths.secretsDir,
     isAuthorized: async () => !(await linearRevoked()),
     beforeEvent: async (event, request) => {
@@ -836,7 +829,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     if (linear?.memberships === null || linear?.memberships === undefined) {
       releaseSettings();
       await store.run((q) => stopInstanceSteps(q, instance.id, Date.now()));
-      db.close();
+      await database.close();
       throw new Error("Public dashboard requires a connected Linear app installation.");
     }
     try {
@@ -875,7 +868,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             return undefined;
           }
         })(),
-        slackIdentities: await createSlackIdentityReads({ home: paths.home, db }),
+        slackIdentities: await createSlackIdentityReads({ home: paths.home, db: store }),
         store,
         publicUrl: runtime.publicUrl!,
         clientId: runtime.linearClientId!,
@@ -890,7 +883,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       abort.abort();
       releaseSettings();
       await store.run((q) => stopInstanceSteps(q, instance.id, Date.now()));
-      db.close();
+      await database.close();
       throw error;
     }
     periodic.push({
@@ -986,7 +979,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     runnerConfig === null
       ? Promise.resolve(undefined)
       : openRunnerCoordinator({
-          db,
+          db: store,
           hostWarnings: runnerHostRefusals.lines,
           discoverModels: false,
           checkSignIn: false,
@@ -1320,7 +1313,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         envSource.SLACK_SIGNING_SECRET ?? readSlackApp(paths.home)?.signingSecret ?? null,
       linearWebhook: linear?.webhook ?? (webhooks ? { store: inbox } : undefined),
       webhooks: webhooks || env.githubWebhookSecret !== null,
-      db,
+      db: store,
       store,
       jobLoop: roleRunsJobs(runtime.role) ? () => jobLoop?.liveness() ?? null : undefined,
       instanceId: instance.id,
@@ -1347,7 +1340,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           submit: async (input) => (orchestrator ? orchestrator.answerFromPaws(input) : "rejected"),
         }),
       findingIssues: createFindingIssueRoute({
-        db,
+        db: store,
         reviews: (itemId) => itemReviews(store, itemId, paths.home, envSource),
         // Linear is called only when someone files an issue, never when the page loads.
         file: linear?.tracker?.fileFindingIssue
@@ -1424,9 +1417,9 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     releaseSettings();
     await store.run((q) => stopInstanceSteps(q, instance.id, Date.now()));
     if (runnerConfig !== null)
-      void Promise.all([workspace?.stop(), stopRunner()]).then(() => db.close());
-    else if (workspace === undefined) db.close();
-    else void workspace.stop().then(() => db.close());
+      void Promise.all([workspace?.stop(), stopRunner()]).then(() => database.close());
+    else if (workspace === undefined) await database.close();
+    else void workspace.stop().then(() => database.close());
     throw error;
   }
 
@@ -1491,7 +1484,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     });
   }
   const loops = await startLoops({
-    db,
+    db: store,
     store,
     instanceId: instance.id,
     role: runtime.role,
@@ -1871,7 +1864,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       });
       orchestrator = attached;
       executionControls = createExecutionControls({
-        db,
+        db: store,
         bus: attached.bus,
         getPort: () => attached,
       });
@@ -1970,7 +1963,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       if (findingGrouping)
         await registerFindingGrouping(created.jobs, {
           groupingTime: runtime.file.findingsGroupingTime ?? "06:00",
-          workspaces: () => listWorkspaceIds(sqliteDb(db)),
+          workspaces: () => listWorkspaceIds(store),
           run: (workspaceId, signal) =>
             findingGrouping.run(workspaceId, AbortSignal.any([signal, abort.signal])),
         });
@@ -2047,7 +2040,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       );
       created.jobs.register(RUNNER_EVENT_ENCRYPT_JOB, (_job, context) =>
         encryptRunnerEvents({
-          db,
+          db: store,
           key: loadRunnerEventKey(join(paths.secretsDir, RUNNER_EVENT_KEY_FILE)),
           signal: AbortSignal.any([context.signal, abort.signal]),
         }).then(({ sealed }) => journal(`runner events encrypted: ${sealed} events sealed`)),
@@ -2056,7 +2049,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         pruneRunnerEvents({ store, signal: AbortSignal.any([context.signal, abort.signal]) }).then(
           ({ deleted }) => {
             if (!deleted) return;
-            incrementalVacuum(db);
             journal(`runner events pruned: ${deleted} events deleted`);
           },
         ),
@@ -2166,7 +2158,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   return {
     env,
     paths,
-    db,
     store,
     server,
     ready,
@@ -2219,7 +2210,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           try {
             await store.run((q) => stopInstanceSteps(q, instance.id, Date.now()));
           } finally {
-            db.close();
+            await database.close();
           }
         },
       });
@@ -2611,18 +2602,28 @@ async function reviewScoreMain(args: string[]): Promise<number> {
       return 1;
     }
   }
-  const paths = pawsPaths(loadEnv(process.env).home);
-  setAsideLegacyDatabase(paths.db, process.env);
-  ensureLayout(paths);
-  const db = openDatabase(paths.db);
-  try {
-    migrate(db);
-    const escapes = await sqliteDb(db).run((q) => listReviewEscapesSteps(q, since));
+  return withCommandStore("review-score", async (store) => {
+    const escapes = await store.run((q) => listReviewEscapesSteps(q, since));
     const score = scoreReview(escapes, readReviewEscapesFile(escapesFile));
     console.log(formatReviewScore(score));
     return 0;
+  });
+}
+
+async function withCommandStore<T>(command: string, work: (store: Db) => Promise<T>): Promise<T> {
+  const runtime = loadRuntime(process.env);
+  if (runtime.databaseUrl === null)
+    throw new Error(
+      `paws ${command} needs [database] url: only the running Paws opens its embedded PGlite database.`,
+    );
+  const database = await openPawsStore({
+    url: runtime.databaseUrl,
+    pgliteDir: pawsPaths(runtime.env.home).pgliteDir,
+  });
+  try {
+    return await work(database.store);
   } finally {
-    db.close();
+    await database.close();
   }
 }
 
@@ -2759,20 +2760,18 @@ if (import.meta.main) {
   if (command === "login" && argv[1] === "slack") {
     try {
       if (argv.length !== 2) throw new Error("usage: paws login slack");
-      const runtime = loadRuntime(process.env);
-      const paths = pawsPaths(runtime.env.home);
-      setAsideLegacyDatabase(paths.db, process.env);
-      ensureLayout(paths);
-      const db = openDatabase(paths.db);
-      migrate(db);
-      await loginSlack({
-        db,
-        home: runtime.env.home,
-        env: process.env,
-        onAuthorize(url) {
-          console.log(`Authorize Paws: ${url}`);
-        },
-      });
+      const home = loadEnv(process.env).home;
+      ensureLayout(pawsPaths(home));
+      await withCommandStore("login slack", (store) =>
+        loginSlack({
+          db: store,
+          home,
+          env: process.env,
+          onAuthorize(url) {
+            console.log(`Authorize Paws: ${url}`);
+          },
+        }),
+      );
       console.log("Slack connected.");
       process.exit(0);
     } catch (error) {

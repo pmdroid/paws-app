@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
-import { readFileSync, rmSync } from "node:fs";
+import { readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { checkGitHubSignature, handleGitHubWebhook } from "../src/github";
-import { listGitHubDeliveries, sqliteDb } from "../src/db";
+import { listGitHubDeliveries } from "../src/db";
 import { startPaws } from "../src/index";
 import { tempHome } from "./helpers";
 
@@ -86,14 +86,19 @@ test("the running GitHub endpoint persists verified deliveries and deduplicates 
       });
     };
     expect((await send()).status).toBe(200);
-    expect(await listGitHubDeliveries(sqliteDb(paws.db))).toHaveLength(1);
+    expect(await listGitHubDeliveries(paws.store)).toHaveLength(1);
     await paws.stop();
     paws = await startPaws(env);
     expect((await send()).status).toBe(200);
-    expect(await listGitHubDeliveries(sqliteDb(paws.db))).toMatchObject([
+    expect(await listGitHubDeliveries(paws.store)).toMatchObject([
       { deliveryId: "delivery-1", event: "ping", payload },
     ]);
-    expect(readFileSync(join(home, "paws.db")).toString()).not.toContain(secret);
+    await paws.stop();
+    const stored = readdirSync(paws.paths.pgliteDir, { recursive: true, withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => readFileSync(join(entry.parentPath, entry.name)).toString("latin1"));
+    expect(stored.length).toBeGreaterThan(0);
+    expect(stored.some((text) => text.includes(secret))).toBe(false);
   } finally {
     await paws.stop();
     rmSync(home, { recursive: true, force: true });

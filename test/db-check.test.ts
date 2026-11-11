@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { migrate as pgliteMigrate } from "drizzle-orm/pglite/migrator";
-import { loadRuntime, POSTGRES_NOT_YET } from "../src/config";
+import { loadRuntime } from "../src/config";
 import {
   migrate,
   migrationTags,
@@ -10,7 +10,7 @@ import {
   PG_MIGRATIONS_FOLDER,
   type PostgresConnection,
 } from "../src/db";
-import { dbCheckMain, startPaws } from "../src/index";
+import { dbCheckMain } from "../src/index";
 import { tempHome } from "./helpers";
 import { pgliteDb } from "./pglite";
 
@@ -57,12 +57,6 @@ describe("[database] url", () => {
     );
     const fromEnv = loadRuntime({ PAWS_HOME: tempHome(), PAWS_DATABASE_URL: "hunter2" });
     expect(fromEnv.configError).toBe("PAWS_DATABASE_URL is not a URL");
-  });
-
-  test("starting the service with a URL set refuses", async () => {
-    await expect(
-      startPaws({ PAWS_HOME: tempHome(), PAWS_PORT: "0", PAWS_DATABASE_URL: URL_WITH_PASSWORD }),
-    ).rejects.toThrow(POSTGRES_NOT_YET);
   });
 });
 

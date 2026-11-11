@@ -22,8 +22,11 @@ import {
   runOwner,
   takeOverGoneRuns,
   sqliteDb,
+  storeOf,
+  type Db,
 } from "../src/db";
 import { tempHome } from "./helpers";
+import { pgliteServer } from "./pglite";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 const checkpoint: Checkpoint = { phase: "running", wipCommit: "wip", turn: 1, baseSha: "base" };
@@ -36,15 +39,20 @@ function sharedDatabase(): { path: string; open: () => Database } {
   return { path, open: () => openDatabase(path) };
 }
 
-async function runningItem(db: Database, id: string, owner: string, now: number): Promise<string> {
+async function runningItem(
+  db: Database | Db,
+  id: string,
+  owner: string,
+  now: number,
+): Promise<string> {
   await insertQueuedItem(db, { id, sessionKey: `${id}-session`, now });
-  const { run } = await beginImplementRun(sqliteDb(db), id, now, checkpoint);
-  await claimRun(sqliteDb(db), run.id, owner);
+  const { run } = await beginImplementRun(storeOf(db), id, now, checkpoint);
+  await claimRun(storeOf(db), run.id, owner);
   return run.id;
 }
 
-async function resumeJobs(db: Database, itemId: string) {
-  return (await listJobs(sqliteDb(db))).filter(
+async function resumeJobs(db: Database | Db, itemId: string) {
+  return (await listJobs(storeOf(db))).filter(
     (job) =>
       job.queue === JOB_KIND.resume && (job.payload as { itemId?: string }).itemId === itemId,
   );
@@ -239,9 +247,10 @@ describe("run ownership", () => {
   });
 });
 
-function spawnPaws(home: string) {
+function spawnPaws(home: string, url: string) {
   const env: Record<string, string | undefined> = {
     ...process.env,
+    PAWS_DATABASE_URL: url,
     PAWS_HOME: home,
     PAWS_PORT: "0",
     PAWS_HOST: "127.0.0.1",
@@ -274,35 +283,36 @@ async function readyInstance(proc: ReturnType<typeof spawnPaws>): Promise<string
 describe("run ownership across two Paws processes", () => {
   test("B leaves A's run alone at start, and A's clean stop releases only A's run", async () => {
     const home = tempHome();
-    const first = spawnPaws(home);
+    const server = await pgliteServer();
+    const first = spawnPaws(home, server.url);
     let second: ReturnType<typeof spawnPaws> | null = null;
-    const db = openDatabase(join(home, "paws.db"));
+    const db = server.store;
     try {
       const a = await readyInstance(first);
       const aRun = await runningItem(db, "acme-1", a, Date.now());
 
-      second = spawnPaws(home);
+      second = spawnPaws(home, server.url);
       const b = await readyInstance(second);
-      expect(await getWorkItem(sqliteDb(db), "acme-1")).toMatchObject({
+      expect(await getWorkItem(db, "acme-1")).toMatchObject({
         state: "running",
         recoveryAttempts: 0,
       });
       expect(await resumeJobs(db, "acme-1")).toEqual([]);
-      expect(await runOwner(sqliteDb(db), aRun)).toBe(a);
+      expect(await runOwner(db, aRun)).toBe(a);
       const bRun = await runningItem(db, "acme-2", b, Date.now());
 
       first.kill("SIGTERM");
       expect(await first.exited).toBe(0);
 
-      expect((await getRun(sqliteDb(db), aRun))?.status).toBe("lost");
-      expect((await getWorkItem(sqliteDb(db), "acme-1"))?.state).toBe("recovering");
-      expect((await getRun(sqliteDb(db), bRun))?.status).toBe("active");
-      expect((await getWorkItem(sqliteDb(db), "acme-2"))?.state).toBe("running");
+      expect((await getRun(db, aRun))?.status).toBe("lost");
+      expect((await getWorkItem(db, "acme-1"))?.state).toBe("recovering");
+      expect((await getRun(db, bRun))?.status).toBe("active");
+      expect((await getWorkItem(db, "acme-2"))?.state).toBe("running");
     } finally {
       first.kill("SIGKILL");
       second?.kill("SIGKILL");
-      await second?.exited;
-      db.close();
+      await Promise.all([first.exited, second?.exited]);
+      await server.close();
     }
   }, 40_000);
 });
