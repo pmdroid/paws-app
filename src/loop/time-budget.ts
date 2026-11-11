@@ -1,11 +1,15 @@
 import type { Database } from "bun:sqlite";
 import { DEFAULT_MAX_AWAKE_MS, stageLimits, type StageLimits, type TimeStage } from "../core";
 import {
-  configureWorkItem,
-  enqueueOutboxOnce,
-  getWorkItem,
-  resetAwakeTime,
-  resetStageTime,
+  configureWorkItemSteps,
+  enqueueOutboxOnceSteps,
+  getWorkItemSteps,
+  resetAwakeTimeSteps,
+  resetStageTimeSteps,
+  settled,
+  sqliteDb,
+  type Q,
+  type Steps,
 } from "../db";
 
 const STAGE_LIMIT_NAME: Record<TimeStage, string> = {
@@ -22,29 +26,28 @@ export function freshBudgetLine(limitMs: number, stage?: TimeStage): string {
   return `Starting on your request with a fresh ${limit}${stage ? ` ${STAGE_LIMIT_NAME[stage]}` : ""} time limit.`;
 }
 
-export function startFreshBudget(
-  db: Database,
-  input: {
-    itemId: string;
-    sessionId: string | null;
-    key: string;
-    maxAwakeMs?: number;
-    limits?: StageLimits | undefined;
-    stage?: TimeStage | undefined;
-    now: number;
-  },
-): void {
+type FreshBudget = {
+  itemId: string;
+  sessionId: string | null;
+  key: string;
+  maxAwakeMs?: number;
+  limits?: StageLimits | undefined;
+  stage?: TimeStage | undefined;
+  now: number;
+};
+
+export function* startFreshBudgetSteps(q: Q, input: FreshBudget): Steps<void> {
   const limits: Partial<StageLimits> = input.limits ?? {
     implementation: input.maxAwakeMs ?? DEFAULT_MAX_AWAKE_MS,
   };
-  if (input.stage === undefined) resetAwakeTime(db, input.itemId);
-  else resetStageTime(db, input.itemId, input.stage);
-  configureWorkItem(db, input.itemId, { limits });
+  if (input.stage === undefined) yield* resetAwakeTimeSteps(q, input.itemId);
+  else yield* resetStageTimeSteps(q, input.itemId, input.stage);
+  yield* configureWorkItemSteps(q, input.itemId, { limits });
   if (input.sessionId === null) return;
-  const item = getWorkItem(db, input.itemId);
+  const item = yield* getWorkItemSteps(q, input.itemId);
   const shown = input.stage ?? "implementation";
   const limitMs = item === null ? (limits[shown] ?? 0) : stageLimits(item)[shown];
-  enqueueOutboxOnce(db, {
+  yield* enqueueOutboxOnceSteps(q, {
     target: "linear",
     op: "activity",
     orderingKey: input.sessionId,
@@ -56,4 +59,8 @@ export function startFreshBudget(
     },
     now: input.now,
   });
+}
+
+export function startFreshBudget(db: Database, input: FreshBudget): void {
+  settled(sqliteDb(db).transaction((q) => startFreshBudgetSteps(q, input)));
 }

@@ -1,14 +1,17 @@
 import type { Database } from "bun:sqlite";
 import {
-  applyWorkItemEvent,
-  getWorkItem,
-  immediate,
-  saveCheckpoint,
+  applyWorkItemEventSteps,
+  getWorkItemSteps,
+  saveCheckpointSteps,
+  settled,
+  sqliteDb,
+  type Q,
+  type Steps,
   type WorkItemRecord,
   restart as restartItem,
 } from "../db";
 import {
-  ask as openQuestion,
+  askSteps as openQuestionSteps,
   type Asked,
   type QuestionAsker,
   type StoredQuestion,
@@ -23,32 +26,50 @@ export { halt, restartSteps, type RestartHandoff } from "../db";
  * {@link awaitQuestion} once they are done. `workspace` asks about the workspace,
  * not the item: the question goes to the item's session and the item keeps its state.
  */
-export function ask(
-  db: Database,
-  asker: QuestionAsker & { pending?: boolean; workspace?: boolean },
-  ...args: Parameters<typeof openQuestion> extends [unknown, unknown, ...infer Rest] ? Rest : never
-): Asked {
-  return immediate(db, () => {
-    const { pending, workspace, ...owner } = asker;
-    const item = getWorkItem(db, owner.itemId);
-    if (
-      !item ||
-      item.cancelRequested ||
-      owner.sessionId !== item.sessionKey ||
-      (owner.runId !== null && owner.runId !== item.currentRunId) ||
-      (owner.version !== undefined && owner.version !== item.version) ||
-      (pending && item.state !== "verifying")
-    )
-      throw new Error("Question owner is stale");
-    const result = openQuestion(db, owner, ...args);
-    if (!pending && !workspace)
-      awaitQuestion(db, item, result.question, args[2]?.now ?? Date.now());
-    return result;
-  });
+type Asker = QuestionAsker & { pending?: boolean; workspace?: boolean };
+type AskArgs =
+  Parameters<typeof openQuestionSteps> extends [unknown, unknown, ...infer Rest] ? Rest : never;
+
+export function* askSteps(q: Q, asker: Asker, ...args: AskArgs): Steps<Asked> {
+  const { pending, workspace, ...owner } = asker;
+  const item = yield* getWorkItemSteps(q, owner.itemId);
+  if (
+    !item ||
+    item.cancelRequested ||
+    owner.sessionId !== item.sessionKey ||
+    (owner.runId !== null && owner.runId !== item.currentRunId) ||
+    (owner.version !== undefined && owner.version !== item.version) ||
+    (pending && item.state !== "verifying")
+  )
+    throw new Error("Question owner is stale");
+  const result = yield* openQuestionSteps(q, owner, ...args);
+  if (!pending && !workspace)
+    yield* awaitQuestionSteps(q, item, result.question, args[2]?.now ?? Date.now());
+  return result;
+}
+
+export function ask(db: Database, asker: Asker, ...args: AskArgs): Asked {
+  return settled(sqliteDb(db).transaction((q) => askSteps(q, asker, ...args)));
 }
 
 export function restart(...args: Parameters<typeof restartItem>): ReturnType<typeof restartItem> {
   return restartItem(...args);
+}
+
+export function* awaitQuestionSteps(
+  q: Q,
+  item: WorkItemRecord,
+  question: StoredQuestion,
+  now: number,
+): Steps<void> {
+  yield* applyWorkItemEventSteps(q, item.id, "blocking_question", {
+    kind: "ask",
+    reason: question.reason,
+    payloadDigest: question.id,
+    now,
+  });
+  if (item.checkpoint)
+    yield* saveCheckpointSteps(q, item.id, { ...item.checkpoint, phase: "awaiting_input" });
 }
 
 /** Adopt an already stored question when recovering older in-flight work. */
@@ -58,11 +79,5 @@ export function awaitQuestion(
   question: StoredQuestion,
   now: number,
 ): void {
-  applyWorkItemEvent(db, item.id, "blocking_question", {
-    kind: "ask",
-    reason: question.reason,
-    payloadDigest: question.id,
-    now,
-  });
-  if (item.checkpoint) saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "awaiting_input" });
+  settled(sqliteDb(db).transaction((q) => awaitQuestionSteps(q, item, question, now)));
 }

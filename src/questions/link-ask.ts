@@ -1,15 +1,19 @@
 import type { Database } from "bun:sqlite";
 import {
-  enqueueOutboxOnce,
-  getLinkAsk,
+  enqueueOutboxOnceSteps,
+  getLinkAskSteps,
   insertLinkAsk,
+  settled,
+  sqliteDb,
+  type Q,
+  type Steps,
   type LinkAsk,
   type LinkAskDecision,
   type LinkAskKind,
   type LinkAskRounds,
 } from "../db";
 import { ask as askQuestion, type QuestionAsker } from "./lifecycle";
-import { getQuestion, type StoredQuestion } from "./store";
+import { getQuestionSteps, type StoredQuestion } from "./store";
 
 /** The button on the overview's Needs you list and the session link label. */
 export const LINK_ASK_ACTIONS: Record<LinkAskKind, string> = {
@@ -244,10 +248,10 @@ export function openLinkAsk(
 }
 
 /** Adds the ask's link to the session while it is open. */
-export function addLinkAskUrl(db: Database, question: StoredQuestion, now: number): void {
+export function* addLinkAskUrlSteps(q: Q, question: StoredQuestion, now: number): Steps<void> {
   const shown = linkAskShown(question);
   if (shown === null) return;
-  enqueueOutboxOnce(db, {
+  yield* enqueueOutboxOnceSteps(q, {
     target: "linear",
     op: "linear.session.links",
     orderingKey: question.sessionId,
@@ -259,11 +263,11 @@ export function addLinkAskUrl(db: Database, question: StoredQuestion, now: numbe
 }
 
 /** Takes the link off the session once the ask closed. */
-export function removeLinkAskUrl(db: Database, questionId: string, now: number): void {
-  const ask = getLinkAsk(db, questionId);
-  const sessionId = getQuestion(db, questionId)?.sessionId;
+export function* removeLinkAskUrlSteps(q: Q, questionId: string, now: number): Steps<void> {
+  const ask = yield* getLinkAskSteps(q, questionId);
+  const sessionId = (yield* getQuestionSteps(q, questionId))?.sessionId;
   if (ask === null || sessionId === undefined) return;
-  enqueueOutboxOnce(db, {
+  yield* enqueueOutboxOnceSteps(q, {
     target: "linear",
     op: "linear.session.links",
     orderingKey: sessionId,
@@ -272,6 +276,10 @@ export function removeLinkAskUrl(db: Database, questionId: string, now: number):
     payload: { sessionId, removedExternalUrls: [ask.link] },
     now,
   });
+}
+
+export function removeLinkAskUrl(db: Database, questionId: string, now: number): void {
+  settled(sqliteDb(db).run((q) => removeLinkAskUrlSteps(q, questionId, now)));
 }
 
 function linkAskShown(question: StoredQuestion): { label: string; url: string } | null {

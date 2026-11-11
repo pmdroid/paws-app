@@ -91,7 +91,7 @@ import {
 } from "./activity-policy";
 import { reaskDeadQuestion } from "./dead-question";
 import { createHash, randomUUID } from "node:crypto";
-import { ask, restart, restartSteps, awaitQuestion } from "./operations";
+import { ask, askSteps, restart, restartSteps, awaitQuestion } from "./operations";
 import {
   RUNNER_REPOSITORY_REASON,
   RUNNER_REPOSITORY_RETRY,
@@ -101,7 +101,7 @@ import {
 import { acceptedResumeNeedsTurn, mergeAcceptedWork, settleRejectedPush } from "./accepted-work";
 import { restartForPushConflict } from "./push-conflict";
 import {
-  saveHumanRetryWindow,
+  saveHumanRetryWindowSteps,
   fixRounds,
   restartLimit,
   type RestartHandoff,
@@ -290,7 +290,6 @@ import {
   getLinearTaskDelegation,
   getLinearSessionGeneration,
   getLinearSession,
-  listPendingLinearTurns,
   saveTaskMode,
   selectTaskModeForTurn,
   completeAnswerTask,
@@ -298,7 +297,6 @@ import {
   getTaskClassification,
   accrueAwake,
   enqueueJobOnce,
-  recordRebaseReturn,
   enqueueOutboxOnce,
   lastOutboxSequence,
   getOutbox,
@@ -366,14 +364,10 @@ import {
   setRunningCloseoutStepDetail,
   markRun,
   releaseRunCapacity,
-  getItemPullRequest,
-  getItemBranchState,
   saveVisualReviewMarks,
   type VisualReviewMark,
   listRunsSteps,
-  bindLinearSessionTask,
   type StoredLinearSession,
-  activateLinearItem,
   getLinearSessionContext,
   listLinearActivitySnapshots,
   type Job,
@@ -403,7 +397,6 @@ import {
   assignUnownedItemSteps,
   bumpItemVersionSteps,
   cancelItemPendingJobsSteps,
-  clearItemRecovery,
   clearItemRecoverySteps,
   hasOpenItemJob,
   itemOwnerUserIdSteps,
@@ -438,7 +431,7 @@ import {
   suggestedFindingsSteps,
   type Q,
   type Steps,
-  moveDelegationSession,
+  moveDelegationSessionSteps,
   openTaskDependentsSteps,
   workspaceUserIdForLinearUserSteps,
 } from "../db";
@@ -526,6 +519,7 @@ import {
   answerer,
   canAnswer,
   cancelItemQuestions,
+  cancelItemQuestionsSteps,
   cancelQuestion,
   findAskedQuestion,
   findOpenQuestion,
@@ -727,7 +721,7 @@ import {
 } from "./open-findings";
 import type { RuntimeList } from "../runtimes";
 import { createRuntimeLists } from "./runtime-lists";
-import { startFreshBudget } from "./time-budget";
+import { startFreshBudgetSteps } from "./time-budget";
 import { HOST_DISK_FULL_THOUGHT, hostDiskFullThoughtKey } from "./disk-full";
 import { questionEffects } from "./question-effects";
 import { GitHubInstallationCheck, type GitHubIntegration } from "./github-integration";
@@ -7958,15 +7952,16 @@ export class Orchestrator {
         return false;
       }
       this.assertJobCurrent(item.id);
-      saved.profileQuestion = immediate(this.db, () => {
-        const { question: asked } = ask(
-          this.db,
+      const now = this.now();
+      saved.profileQuestion = await this.store.transaction(function* (q) {
+        const { question: asked } = yield* askSteps(
+          q,
           { itemId: item.id, runId, sessionId },
           "agent",
           body,
-          { options: [USE_THE_DEFAULT, "I fixed the label"], now: this.now() },
+          { options: [USE_THE_DEFAULT, "I fixed the label"], now },
         );
-        closeActiveRun(this.db, runId, this.now());
+        yield* closeActiveRunSteps(q, runId, now);
         return asked.id;
       });
       writeFileSync(snapshot, JSON.stringify(saved), { mode: 0o600 });
@@ -8495,25 +8490,37 @@ export class Orchestrator {
     );
     if (!paused) return false;
     await this.interruptLinearSession(paused.sessionKey);
-    const resumed = immediate(this.db, () => {
-      const item = getWorkItem(this.db, paused.id);
-      if (item?.state !== "paused" || item.sessionKey !== paused.sessionKey || !isCurrent())
+    const now = this.now();
+    const shuttingDown = () => this.shuttingDown;
+    const authorize = this.options.authorizeLinearIntake;
+    const resumed = await this.store.transaction(function* (q) {
+      const item = yield* getWorkItemSteps(q, paused.id);
+      const current = yield* getLinearSessionSteps(q, session.sessionId);
+      if (
+        item?.state !== "paused" ||
+        item.sessionKey !== paused.sessionKey ||
+        shuttingDown() ||
+        current?.generation !== session.generation ||
+        current.stoppedAt !== null ||
+        authorize?.(session.sessionId, snapshot) === false
+      )
         return false;
-      moveDelegationSession(this.db, {
+      yield* moveDelegationSessionSteps(q, {
         delegationId: paused.delegationId,
         from: paused.sessionKey,
         to: session.sessionId,
       });
-      bindLinearSessionTask(this.db, session.sessionId, paused.delegationId);
-      activateLinearItem(this.db, session.sessionId, item.id);
-      cancelItemQuestions(this.db, item.id, this.now());
-      restart(this.db, getWorkItem(this.db, item.id)!, {
+      yield* bindLinearSessionTaskSteps(q, session.sessionId, paused.delegationId);
+      yield* activateLinearItemSteps(q, session.sessionId, item.id);
+      yield* cancelItemQuestionsSteps(q, item.id, now);
+      yield* restartSteps(q, (yield* getWorkItemSteps(q, item.id))!, {
         reason: "follow_up",
         body: "The issue was delegated again in Linear. Continue the task from its branch.",
-        now: this.now(),
+        now,
       });
       return true;
     });
+    if (resumed) emitJobReady(this.store);
     if (resumed) await this.reconcileExecution();
     await this.flush();
     return resumed;
@@ -8627,21 +8634,25 @@ export class Orchestrator {
     await this.pullCloseoutEvidence(item);
     const retryBaseline = await snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
 
-    immediate(this.db, () => {
-      const current = getWorkItem(this.db, item!.id);
+    const target = item;
+    const now = this.now();
+    const caps = this.options.caps;
+    const timeLimitsSteps = (q: Q, itemId: string) => this.timeLimitsSteps(q, itemId);
+    const restarted = await this.store.transaction(function* (q) {
+      const current = yield* getWorkItemSteps(q, target.id);
       if (
         !current ||
         current.state === "cancelled" ||
-        getLinearSessionGeneration(this.db, sessionId) !== generation ||
+        (yield* getLinearSessionGenerationSteps(q, sessionId)) !== generation ||
         (current.cancelRequested && !before?.cancelRequested)
       )
-        return;
-      const pending = listPendingLinearTurns(this.db, sessionId);
-      if (!pending.length) return;
+        return false;
+      const pending = yield* listPendingLinearTurnsSteps(q, sessionId);
+      if (!pending.length) return false;
       const moved =
         current.version !== before?.version ||
-        (getItemBranchState(this.db, item!.id)?.head ?? null) !== branchHead;
-      const pull = getItemPullRequest(this.db, item!.id);
+        ((yield* getItemBranchStateSteps(q, target.id))?.head ?? null) !== branchHead;
+      const pull = yield* getItemPullRequestSteps(q, target.id);
       const context =
         ci === null || pull === null
           ? null
@@ -8655,33 +8666,37 @@ export class Orchestrator {
       const handoff = [...pending.map((turn) => turn.body), ...(context ? [context] : [])].join(
         "\n\n",
       );
-      if (current.state === "paused") cancelItemQuestions(this.db, current.id, this.now());
-      if (item!.cancelRequested || item!.state === "failed") clearItemRecovery(this.db, item!.id);
-      startFreshBudget(this.db, {
-        itemId: item!.id,
+      if (current.state === "paused") yield* cancelItemQuestionsSteps(q, current.id, now);
+      if (target.cancelRequested || target.state === "failed")
+        yield* clearItemRecoverySteps(q, target.id);
+      yield* startFreshBudgetSteps(q, {
+        itemId: target.id,
         sessionId,
         key: jobKey,
-        maxAwakeMs: this.options.caps?.maxAwakeMs,
-        limits: this.timeLimits(item!.id),
-        now: this.now(),
+        maxAwakeMs: caps?.maxAwakeMs,
+        limits: yield* timeLimitsSteps(q, target.id),
+        now,
       });
-      const jobId = restart(this.db, getWorkItem(this.db, item!.id)!, {
+      const restartedJob = yield* restartSteps(q, (yield* getWorkItemSteps(q, target.id))!, {
         reason: rebase ? "conflict" : "follow_up",
         body: rebase ? `${REBASE_CONFLICT_INSTRUCTION}\n\n${handoff}` : handoff,
         jobKey,
-        now: this.now(),
+        now,
       });
-      if (jobId !== null) saveHumanRetryWindow(this.db, item!.id, jobId, retryBaseline);
+      const jobId = restartedJob?.id ?? null;
+      if (jobId !== null) yield* saveHumanRetryWindowSteps(q, target.id, jobId, retryBaseline);
       if (rebase && jobId !== null)
-        recordRebaseReturn(this.db, {
-          itemId: item!.id,
+        yield* recordRebaseReturnSteps(q, {
+          itemId: target.id,
           jobId,
           candidate: null,
           reason: "linear",
           ...conflict,
-          recordedAt: this.now(),
+          recordedAt: now,
         });
+      return restartedJob?.armed === true;
     });
+    if (restarted) emitJobReady(this.store);
     await this.flush();
   }
 

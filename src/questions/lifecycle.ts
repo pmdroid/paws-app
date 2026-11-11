@@ -1,33 +1,36 @@
 import type { Database } from "bun:sqlite";
 import {
-  activeItemQuestions,
-  amendQuestionRow,
-  cancelQueuedQuestions,
-  closeLinkAsk,
-  dropQuestionElicitations,
-  enqueueOutboxOnce,
-  getLinkAsk,
-  getWorkItem,
-  immediate,
+  activeItemQuestionsSteps,
+  amendQuestionRowSteps,
+  cancelQueuedQuestionsSteps,
+  closeLinkAskSteps,
+  dropQuestionElicitationsSteps,
+  enqueueOutboxOnceSteps,
+  getLinkAskSteps,
+  getWorkItemSteps,
   journal,
-  latestCloseoutIdentity,
-  listCloseoutRecoveries,
-  markQuestionAnswered,
-  promoteQuestionRow,
-  setQuestionCancelled,
+  latestCloseoutIdentitySteps,
+  listCloseoutRecoveriesSteps,
+  markQuestionAnsweredSteps,
+  promoteQuestionRowSteps,
+  setQuestionCancelledSteps,
+  settled,
+  sqliteDb,
+  type Q,
+  type Steps,
   type WorkItemRecord,
   type LinkAskKind,
 } from "../db";
 import type { QuestionOption } from "./channel";
-import { addLinkAskUrl, removeLinkAskUrl } from "./link-ask";
+import { addLinkAskUrlSteps, removeLinkAskUrlSteps } from "./link-ask";
 import { elicitationBody } from "./note";
 import type { VisualReviewShown } from "./visual-review";
 import {
-  findOpenQuestion,
-  getQuestion,
-  insertQuestion,
-  nextQueuedQuestion,
-  questionReplyConsumed,
+  findOpenQuestionSteps,
+  getQuestionSteps,
+  insertQuestionSteps,
+  nextQueuedQuestionSteps,
+  questionReplyConsumedSteps,
   type QuestionKind,
   type StoredQuestion,
 } from "./store";
@@ -75,47 +78,81 @@ const SUPERSEDES: Record<QuestionKind, "session" | "item" | null> = {
 
 const ENDED_STATES = new Set(["cancelled", "merged", "failed", "completed"]);
 
+type AskInput = {
+  reason?: string;
+  options?: readonly QuestionOption[];
+  context?: string;
+  now?: number;
+  amend?: (question: StoredQuestion) => { context: string; options: QuestionOption[] } | null;
+};
+
+export function* askSteps(
+  q: Q,
+  asker: QuestionAsker,
+  kind: QuestionKind,
+  body: string,
+  input: AskInput = {},
+): Steps<Asked> {
+  const now = input.now ?? Date.now();
+  const waits = (yield* findOpenQuestionSteps(q, asker.sessionId)) !== null;
+  const scope = SUPERSEDES[kind];
+  if (waits && scope !== null)
+    yield* cancelQueuedQuestionsSteps(
+      q,
+      scope === "item" ? { itemId: asker.itemId } : { sessionId: asker.sessionId },
+      kind,
+      now,
+    );
+  const inserted = yield* insertQuestionSteps(q, {
+    ...asker,
+    kind,
+    reason: input.reason ?? kind,
+    body,
+    ...(input.options === undefined ? {} : { options: input.options }),
+    ...(input.context === undefined ? {} : { context: input.context }),
+    status: waits ? "queued" : "open",
+    now,
+  });
+  const amended = input.amend?.(inserted) ?? null;
+  if (amended !== null) yield* amendQuestionRowSteps(q, inserted.id, amended);
+  const question = amended === null ? inserted : (yield* getQuestionSteps(q, inserted.id))!;
+  if (waits) return { status: "queued", question };
+  yield* deliverSteps(q, question, now);
+  return { status: "asked", question };
+}
+
 export function ask(
   db: Database,
   asker: QuestionAsker,
   kind: QuestionKind,
   body: string,
-  input: {
-    reason?: string;
-    options?: readonly QuestionOption[];
-    context?: string;
-    now?: number;
-    amend?: (question: StoredQuestion) => { context: string; options: QuestionOption[] } | null;
-  } = {},
+  input: AskInput = {},
 ): Asked {
-  return immediate(db, () => {
-    const now = input.now ?? Date.now();
-    const waits = findOpenQuestion(db, asker.sessionId) !== null;
-    const scope = SUPERSEDES[kind];
-    if (waits && scope !== null)
-      cancelQueuedQuestions(
-        db,
-        scope === "item" ? { itemId: asker.itemId } : { sessionId: asker.sessionId },
-        kind,
-        now,
-      );
-    const inserted = insertQuestion(db, {
-      ...asker,
-      kind,
-      reason: input.reason ?? kind,
-      body,
-      ...(input.options === undefined ? {} : { options: input.options }),
-      ...(input.context === undefined ? {} : { context: input.context }),
-      status: waits ? "queued" : "open",
-      now,
-    });
-    const amended = input.amend?.(inserted) ?? null;
-    if (amended !== null) amendQuestionRow(db, inserted.id, amended);
-    const question = amended === null ? inserted : getQuestion(db, inserted.id)!;
-    if (waits) return { status: "queued", question };
-    deliver(db, question, now);
-    return { status: "asked", question };
+  return settled(sqliteDb(db).transaction((q) => askSteps(q, asker, kind, body, input)));
+}
+
+export function* answerSteps(
+  q: Q,
+  reply: QuestionReply,
+  effects: AnswerEffects = {},
+): Steps<AnswerOutcome> {
+  if (yield* questionReplyConsumedSteps(q, reply.sessionId, reply.deliveryId))
+    return { status: "duplicate" };
+  const open = yield* findOpenQuestionSteps(q, reply.sessionId);
+  if (open === null) return { status: "unasked" };
+  const answered = yield* answerQuestionSteps(q, open.id, {
+    answer: reply.body,
+    answeredBy: reply.answeredBy,
+    eventKey: reply.deliveryId,
+    ...(reply.now === undefined ? {} : { now: reply.now }),
   });
+  if (answered === null) return { status: "unasked" };
+  effects[answered.kind]?.(answered);
+  return {
+    status: "answered",
+    question: answered,
+    next: yield* findOpenQuestionSteps(q, reply.sessionId),
+  };
 }
 
 export function answer(
@@ -123,52 +160,48 @@ export function answer(
   reply: QuestionReply,
   effects: AnswerEffects = {},
 ): AnswerOutcome {
-  return immediate(db, () => {
-    if (questionReplyConsumed(db, reply.sessionId, reply.deliveryId))
-      return { status: "duplicate" };
-    const open = findOpenQuestion(db, reply.sessionId);
-    if (open === null) return { status: "unasked" };
-    const answered = answerQuestion(db, open.id, {
-      answer: reply.body,
-      answeredBy: reply.answeredBy,
-      eventKey: reply.deliveryId,
-      ...(reply.now === undefined ? {} : { now: reply.now }),
-    });
-    if (answered === null) return { status: "unasked" };
-    effects[answered.kind]?.(answered);
-    return { status: "answered", question: answered, next: findOpenQuestion(db, reply.sessionId) };
+  return settled(sqliteDb(db).transaction((q) => answerSteps(q, reply, effects)));
+}
+
+type AnswerInput = { answer: string; answeredBy: string; eventKey?: string; now?: number };
+
+export function* answerQuestionSteps(
+  q: Q,
+  id: string,
+  input: AnswerInput,
+): Steps<StoredQuestion | null> {
+  const now = input.now ?? Date.now();
+  const updated = yield* markQuestionAnsweredSteps(q, id, {
+    answer: input.answer,
+    answeredBy: input.answeredBy,
+    answeredAt: now,
+    answerEventKey: input.eventKey ?? null,
   });
+  if (!updated) return null;
+  yield* dropQuestionElicitationsSteps(q, id, "Question already answered.");
+  const answered = yield* getQuestionSteps(q, id);
+  if (answered !== null) yield* promoteNextSteps(q, answered.sessionId, now);
+  return answered;
 }
 
 /** Mark the open question answered. A second delivery does not overwrite it. */
 export function answerQuestion(
   db: Database,
   id: string,
-  input: { answer: string; answeredBy: string; eventKey?: string; now?: number },
+  input: AnswerInput,
 ): StoredQuestion | null {
-  return immediate(db, () => {
-    const now = input.now ?? Date.now();
-    const updated = markQuestionAnswered(db, id, {
-      answer: input.answer,
-      answeredBy: input.answeredBy,
-      answeredAt: now,
-      answerEventKey: input.eventKey ?? null,
-    });
-    if (!updated) return null;
-    dropQuestionElicitations(db, id, "Question already answered.");
-    const answered = getQuestion(db, id);
-    if (answered !== null) promoteNext(db, answered.sessionId, now);
-    return answered;
-  });
+  return settled(sqliteDb(db).transaction((q) => answerQuestionSteps(q, id, input)));
+}
+
+export function* cancelQuestionSteps(q: Q, id: string, now = Date.now()): Steps<void> {
+  const question = yield* getQuestionSteps(q, id);
+  if (question?.status !== "open" && question?.status !== "queued") return;
+  yield* setQuestionCancelledSteps(q, id, now);
+  yield* promoteNextSteps(q, question.sessionId, now);
 }
 
 export function cancelQuestion(db: Database, id: string, now = Date.now()): void {
-  immediate(db, () => {
-    const question = getQuestion(db, id);
-    if (question?.status !== "open" && question?.status !== "queued") return;
-    setQuestionCancelled(db, id, now);
-    promoteNext(db, question.sessionId, now);
-  });
+  settled(sqliteDb(db).transaction((q) => cancelQuestionSteps(q, id, now)));
 }
 
 // Opaque agent questions and infrastructure/human holds are not known to be obsolete.
@@ -199,84 +232,98 @@ const CRITERIA_LINK_ASKS: Record<LinkAskKind, boolean> = {
 };
 
 /** The criteria scope retires candidate/plan decisions and preserves unrelated holds. */
+export function* cancelItemQuestionsSteps(
+  q: Q,
+  itemId: string,
+  now = Date.now(),
+  scope: "all" | "criteria" = "all",
+): Steps<void> {
+  const questions = [];
+  for (const row of yield* activeItemQuestionsSteps(q, itemId)) {
+    const question = { ...row, kind: row.kind as QuestionKind };
+    if (scope === "all" || CRITERIA_QUESTIONS[question.kind]) {
+      questions.push(question);
+      continue;
+    }
+    const link = question.kind === "link" ? yield* getLinkAskSteps(q, question.id) : null;
+    if (link !== null && CRITERIA_LINK_ASKS[link.kind]) questions.push(question);
+  }
+  for (const question of questions) {
+    yield* setQuestionCancelledSteps(q, question.id, now);
+    yield* dropQuestionElicitationsSteps(q, question.id, "Question cancelled.");
+    if (
+      question.kind === "link" &&
+      (yield* closeLinkAskSteps(q, question.id, { reason: "cancelled", now }))
+    )
+      yield* removeLinkAskUrlSteps(q, question.id, now);
+  }
+  for (const sessionId of new Set(questions.map((question) => question.sessionId)))
+    yield* promoteNextSteps(q, sessionId, now);
+}
+
 export function cancelItemQuestions(
   db: Database,
   itemId: string,
   now = Date.now(),
   scope: "all" | "criteria" = "all",
 ): void {
-  immediate(db, () => {
-    const questions = activeItemQuestions(db, itemId)
-      .map((question) => ({ ...question, kind: question.kind as QuestionKind }))
-      .filter((question) => {
-        if (scope === "all" || CRITERIA_QUESTIONS[question.kind]) return true;
-        const link = question.kind === "link" ? getLinkAsk(db, question.id) : null;
-        return link !== null && CRITERIA_LINK_ASKS[link.kind];
-      });
-    for (const question of questions) {
-      setQuestionCancelled(db, question.id, now);
-      dropQuestionElicitations(db, question.id, "Question cancelled.");
-      if (question.kind === "link" && closeLinkAsk(db, question.id, { reason: "cancelled", now }))
-        removeLinkAskUrl(db, question.id, now);
-    }
-    for (const sessionId of new Set(questions.map((question) => question.sessionId)))
-      promoteNext(db, sessionId, now);
-  });
+  settled(sqliteDb(db).transaction((q) => cancelItemQuestionsSteps(q, itemId, now, scope)));
 }
 
-function promoteNext(db: Database, sessionId: string, now: number): void {
-  if (findOpenQuestion(db, sessionId) !== null) return;
-  let next = nextQueuedQuestion(db, sessionId);
+function* promoteNextSteps(q: Q, sessionId: string, now: number): Steps<void> {
+  if ((yield* findOpenQuestionSteps(q, sessionId)) !== null) return;
+  let next = yield* nextQueuedQuestionSteps(q, sessionId);
   while (next !== null) {
-    const stale = staleReason(db, next);
+    const stale = yield* staleReasonSteps(q, next);
     if (stale === null) {
-      promoteQuestionRow(db, next.id, now);
-      deliver(db, next, now);
+      yield* promoteQuestionRowSteps(q, next.id, now);
+      yield* deliverSteps(q, next, now);
       return;
     }
-    setQuestionCancelled(db, next.id, now);
+    yield* setQuestionCancelledSteps(q, next.id, now);
     journal(`question ${next.id} dropped from the queue: ${stale}`);
-    next = nextQueuedQuestion(db, sessionId);
+    next = yield* nextQueuedQuestionSteps(q, sessionId);
   }
 }
 
-function staleReason(db: Database, question: StoredQuestion): string | null {
-  const item = getWorkItem(db, question.itemId);
+function* staleReasonSteps(q: Q, question: StoredQuestion): Steps<string | null> {
+  const item = yield* getWorkItemSteps(q, question.itemId);
   if (item === null) return "its task is gone";
   if (item.cancelRequested || ENDED_STATES.has(item.state)) return `its task is ${item.state}`;
   if (question.runId !== null && item.currentRunId !== question.runId)
     return "its run is no longer current";
   if (item.sessionKey !== question.sessionId && item.linearIssueId !== question.sessionId)
     return "its session moved";
-  if (question.kind === "closeout-help") return closeoutCandidateMoved(db, question, item);
+  if (question.kind === "closeout-help")
+    return yield* closeoutCandidateMovedSteps(q, question, item);
   if (question.kind === "link") {
-    const head = getLinkAsk(db, question.id)?.headCommit;
+    const head = (yield* getLinkAskSteps(q, question.id))?.headCommit;
     if (head !== undefined && item.checkpoint?.wipCommit && item.checkpoint.wipCommit !== head)
       return "its commit moved";
   }
   return null;
 }
 
-function closeoutCandidateMoved(
-  db: Database,
+function* closeoutCandidateMovedSteps(
+  q: Q,
   question: StoredQuestion,
   item: WorkItemRecord,
-): string | null {
-  const recovery = listCloseoutRecoveries(db, item.id).find(
+): Steps<string | null> {
+  const recovery = (yield* listCloseoutRecoveriesSteps(q, item.id)).find(
     (entry) => entry.questionId === question.id,
   );
   if (recovery === undefined || recovery.head === "") return null;
   if (item.checkpoint?.wipCommit !== recovery.head) return "its candidate moved";
-  const latest = latestCloseoutIdentity(db, item.id);
+  const latest = yield* latestCloseoutIdentitySteps(q, item.id);
   if (latest?.head === recovery.head && latest.policyDigest !== recovery.policyDigest)
     return "its Closeout policy changed";
   return null;
 }
 
-function deliver(db: Database, question: StoredQuestion, now: number): void {
+function* deliverSteps(q: Q, question: StoredQuestion, now: number): Steps<void> {
   if (question.kind === "github-auth") return;
-  if (question.kind === "link") addLinkAskUrl(db, question, now);
-  enqueueOutboxOnce(db, {
+  if (question.kind === "link") yield* addLinkAskUrlSteps(q, question, now);
+  yield* enqueueOutboxOnceSteps(q, {
     target: "linear",
     op: "elicitation",
     orderingKey: question.sessionId,
