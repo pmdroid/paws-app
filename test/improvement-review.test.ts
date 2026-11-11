@@ -639,7 +639,7 @@ describe("individual finding issues share the inbox claim", () => {
     const filed: string[] = [];
     const handle = createFindingIssueRoute({
       db: w.db,
-      reviews: () => [
+      reviews: async () => [
         {
           id: "independent-review",
           rounds: [

@@ -207,7 +207,7 @@ const MAX_CLOSEOUT_ATTEMPTS = 3;
 const MERGE_STEPS = ["Rebase onto main", "Re-run Closeout", "Squash merge"] as const;
 
 export type LiveStatusOptions = {
-  riskApproval?: (itemId: string) => { head: string; detail: string } | null;
+  riskApproval?: (itemId: string) => Promise<{ head: string; detail: string } | null>;
   sessionIds?: readonly string[];
   now?: () => Date;
   pawsHome?: string;
@@ -620,14 +620,15 @@ async function readItemDetail(
   const pawsHome = options.pawsHome ?? env.PAWS_HOME;
   if (!pawsHome || detail.verdicts.length === 0) return { ...detail, id, blocks, risk };
   const progress = await sqliteDb(db).run(listCloseoutProgressSteps);
+  const verdicts: typeof detail.verdicts = [];
+  for (const verdict of detail.verdicts) {
+    const record = records.find((entry) => publicId(entry) === verdict.itemId);
+    const reviews = record ? await itemReviews(db, record.id, pawsHome, env, progress) : [];
+    verdicts.push(reviews.length === 0 ? verdict : { ...verdict, reviews });
+  }
   return {
     ...detail,
-    verdicts: detail.verdicts.map((verdict) => {
-      const record = records.find((entry) => publicId(entry) === verdict.itemId);
-      if (!record) return verdict;
-      const reviews = itemReviews(db, record.id, pawsHome, env, progress);
-      return reviews.length === 0 ? verdict : { ...verdict, reviews };
-    }),
+    verdicts,
     id,
     blocks,
     risk,
@@ -648,7 +649,7 @@ async function itemRisk(
   options: LiveStatusOptions,
 ): Promise<StatusItemRisk | null> {
   const store = sqliteDb(db);
-  const display = options.riskApproval?.(current.record.id);
+  const display = await options.riskApproval?.(current.record.id);
   const stored = display
     ? await store.run((q) => getCandidateRiskSteps(q, current.record.id, display.head))
     : await store.run((q) => latestCandidateRiskSteps(q, current.record.id));

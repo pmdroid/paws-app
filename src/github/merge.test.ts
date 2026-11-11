@@ -442,7 +442,7 @@ describe("merge lane: read facts, rebase, squash with the expected head", () => 
         return null;
       });
       const result = await squashPull(
-        { ...lane(repo, client, 8), isCancelled: () => true },
+        { ...lane(repo, client, 8), isCancelled: async () => true },
         { head: await revParse(repo.work, "HEAD"), base: await remoteBranch(repo.bare, "main") },
         "accepted",
       );

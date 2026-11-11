@@ -662,7 +662,7 @@ test("stops polling when cancelled while review threads remain open", async () =
   });
   const result = await waitForMergeReadiness({
     ...f.input,
-    isCancelled: () => cancelled,
+    isCancelled: async () => cancelled,
     sleep: async () => {
       cancelled = true;
     },

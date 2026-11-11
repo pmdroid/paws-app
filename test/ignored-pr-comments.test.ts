@@ -231,7 +231,7 @@ describe("Settings › Merging › Ignored PR comments", () => {
       );
     const recorded = () => pendingPullComments(db, "eng-1").map((row) => row.commentId);
     try {
-      comment(1, "github-actions[bot]", "<!-- deploy-security-proof -->\nResult: **PASS**");
+      await comment(1, "github-actions[bot]", "<!-- deploy-security-proof -->\nResult: **PASS**");
       expect(recorded()).toEqual([1]);
 
       const saved = await handleMergeSettingsRequest(
@@ -248,9 +248,9 @@ describe("Settings › Merging › Ignored PR comments", () => {
         options,
       );
       expect(saved?.status).toBe(200);
-      comment(2, "github-actions[bot]", "<!-- deploy-security-proof -->\nResult: **PASS**");
-      comment(3, "deploy-bot", "Deployed to staging.");
-      comment(4, "github-actions[bot]", "Result: **FAIL**");
+      await comment(2, "github-actions[bot]", "<!-- deploy-security-proof -->\nResult: **PASS**");
+      await comment(3, "deploy-bot", "Deployed to staging.");
+      await comment(4, "github-actions[bot]", "Result: **FAIL**");
       expect(recorded()).toEqual([1, 4]);
     } finally {
       db.close();

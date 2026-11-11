@@ -18,7 +18,9 @@ import {
   type RetroArtifactKind,
   type RetroCoverageGap,
   sqliteDb,
+  syncSteps,
   type Q,
+  type Steps,
 } from "../db";
 import { improvementFollowThroughSteps, memberRepositoriesSteps } from "../improvements";
 import { journalCaught } from "../journal";
@@ -33,14 +35,18 @@ import { readRetroSettings, saveRetroSettings } from "./settings";
 export const RETRO_SETTINGS_PATH = "/api/retros/settings";
 const BODY_LIMIT = 64 * 1024;
 
-export type RetroCatalog = (principal: WorkspacePrincipal) => readonly AgentModelCatalog[] | null;
+export type RetroCatalog = (
+  q: Q,
+  principal: WorkspacePrincipal,
+) => Steps<readonly AgentModelCatalog[] | null>;
 
 export function createFakeRetroCatalog(catalogs: readonly AgentModelCatalog[] | null) {
   const calls: { workspaceId: string; userId: string }[] = [];
-  const read: RetroCatalog = (principal) => {
-    calls.push({ workspaceId: principal.workspaceId, userId: principal.userId });
-    return catalogs;
-  };
+  const read: RetroCatalog = (_q, principal) =>
+    syncSteps(() => {
+      calls.push({ workspaceId: principal.workspaceId, userId: principal.userId });
+      return catalogs;
+    });
   return { read, calls };
 }
 
@@ -91,7 +97,7 @@ export function createRetroSettingsHttp(options: {
       return json({ error: "Send expectedRevision, the revision this draft started from." }, 400);
     let catalogs: readonly AgentModelCatalog[] | null;
     try {
-      catalogs = options.catalog(principal);
+      catalogs = await sqliteDb(db).run((q) => options.catalog(q, principal));
     } catch (error) {
       journalCaught(error, "retros.settings.catalog", null);
       catalogs = null;

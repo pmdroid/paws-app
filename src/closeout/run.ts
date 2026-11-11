@@ -74,7 +74,7 @@ export type EvaluateInput = {
   bypasses?: readonly CloseoutBypass[];
   reviewRetryDelaysMs?: readonly number[];
   /** The task's videos and screenshots, read again for each evaluation. */
-  published?: () => readonly PublishedEvidence[];
+  published?: () => Promise<readonly PublishedEvidence[]>;
   /** Visual reviews of those files, read again for each evaluation. */
   approvals?: () => readonly EvidenceApproval[] | Promise<readonly EvidenceApproval[]>;
   /** Command checks taken from green CI at `head` instead of running. */
@@ -118,7 +118,7 @@ export type GateInput = {
   retryBaseline?: readonly string[];
   bypasses?: readonly CloseoutBypass[];
   reviewRetryDelaysMs?: readonly number[];
-  published?: () => readonly PublishedEvidence[];
+  published?: () => Promise<readonly PublishedEvidence[]>;
   approvals?: () => readonly EvidenceApproval[] | Promise<readonly EvidenceApproval[]>;
   /** Command checks taken from green CI at the first head. A fixed head runs them again. */
   fromCi?: readonly CiResult[];
@@ -655,7 +655,7 @@ async function publishedOf(input: EvaluateInput): Promise<{
   published?: readonly PublishedEvidence[];
   approvals?: readonly EvidenceApproval[];
 }> {
-  const published = input.published?.();
+  const published = await input.published?.();
   const approvals = await input.approvals?.();
   return { ...(published ? { published } : {}), ...(approvals ? { approvals } : {}) };
 }

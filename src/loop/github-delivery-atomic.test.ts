@@ -114,20 +114,22 @@ const failures = [
   ]),
 ];
 for (const [name, point, kind] of failures) {
-  test(`delivery retries atomically after failure at ${name}`, () => {
+  test(`delivery retries atomically after failure at ${name}`, async () => {
     const { db, delivery } = setup();
     try {
       const before = listJobs(db);
       db.run(
         `CREATE TEMP TRIGGER fail_delivery ${point} BEGIN SELECT RAISE(ABORT, 'injected failure'); END`,
       );
-      expect(() => acceptGitHubDelivery(db, delivery(kind!), 1_000)).toThrow("injected failure");
+      await expect(acceptGitHubDelivery(db, delivery(kind!), 1_000)).rejects.toThrow(
+        "injected failure",
+      );
       expect(listGitHubDeliveries(db)).toEqual([]);
       expect(pendingChangeRequests(db, "first").map((r) => r.reviewId)).toEqual([40]);
       expect(pendingPullComments(db, "first")).toEqual([]);
       expect(listJobs(db)).toEqual(before);
       db.run("DROP TRIGGER fail_delivery");
-      expect(acceptGitHubDelivery(db, delivery(kind!), 1_000)).toBe(true);
+      expect(await acceptGitHubDelivery(db, delivery(kind!), 1_000)).toBe(true);
       expect(listGitHubDeliveries(db)).toHaveLength(1);
       expect(pendingChangeRequests(db, "first")).toHaveLength(kind === "review" ? 2 : 1);
       expect(pendingPullComments(db, "first")).toHaveLength(kind === "comment" ? 1 : 0);
@@ -144,14 +146,14 @@ for (const [name, point, kind] of failures) {
           .map((j) => j.runAt),
       ).toEqual(kind === "push" ? [90_000, 90_000] : [1_000, 1_000]);
       const committed = listJobs(db);
-      expect(acceptGitHubDelivery(db, delivery(kind!), 2_000)).toBe(false);
+      expect(await acceptGitHubDelivery(db, delivery(kind!), 2_000)).toBe(false);
       expect(listJobs(db)).toEqual(committed);
     } finally {
       db.close();
     }
   });
 }
-test("failure after receipt insertion leaves the delivery retryable", () => {
+test("failure after receipt insertion leaves the delivery retryable", async () => {
   const { db, delivery } = setup();
   try {
     db.run(
@@ -160,17 +162,19 @@ test("failure after receipt insertion leaves the delivery retryable", () => {
     db.run(
       "CREATE TEMP TRIGGER fail_prune BEFORE DELETE ON github_delivery BEGIN SELECT RAISE(ABORT, 'after receipt'); END",
     );
-    expect(() => acceptGitHubDelivery(db, delivery("review"), 1_000)).toThrow("after receipt");
+    await expect(acceptGitHubDelivery(db, delivery("review"), 1_000)).rejects.toThrow(
+      "after receipt",
+    );
     expect(listGitHubDeliveries(db).map((row) => row.deliveryId)).toEqual(["expired"]);
     db.run("DROP TRIGGER fail_prune");
-    expect(acceptGitHubDelivery(db, delivery("review"), 1_000)).toBe(true);
+    expect(await acceptGitHubDelivery(db, delivery("review"), 1_000)).toBe(true);
     expect(pendingChangeRequests(db, "first")).toHaveLength(2);
   } finally {
     db.close();
   }
 });
 for (const kind of ["review", "comment", "main"]) {
-  test(`process death during ${kind} rolls back receipt and effects on reopen`, () => {
+  test(`process death during ${kind} rolls back receipt and effects on reopen`, async () => {
     const root = mkdtempSync(join(tmpdir(), "paws-delivery-crash-"));
     const file = join(root, "paws.db");
     try {
@@ -197,7 +201,7 @@ for (const kind of ["review", "comment", "main"]) {
           };
           return statement;
         };
-        acceptGitHubDelivery(db, ${JSON.stringify(input)}, 1000);
+        await acceptGitHubDelivery(db, ${JSON.stringify(input)}, 1000);
         process.exit(99);
       `,
       ]);
@@ -208,8 +212,8 @@ for (const kind of ["review", "comment", "main"]) {
         expect(listJobs(reopened)).toEqual(before);
         expect(pendingChangeRequests(reopened, "first").map((r) => r.reviewId)).toEqual([40]);
         expect(pendingPullComments(reopened, "first")).toEqual([]);
-        expect(acceptGitHubDelivery(reopened, input, 1_000)).toBe(true);
-        expect(acceptGitHubDelivery(reopened, input, 2_000)).toBe(false);
+        expect(await acceptGitHubDelivery(reopened, input, 1_000)).toBe(true);
+        expect(await acceptGitHubDelivery(reopened, input, 2_000)).toBe(false);
       } finally {
         reopened.close();
       }
@@ -218,7 +222,7 @@ for (const kind of ["review", "comment", "main"]) {
     }
   });
 }
-test("filter and identity refresh callbacks run outside the write transaction, never for duplicates", () => {
+test("filter and identity refresh callbacks run outside the write transaction, never for duplicates", async () => {
   const { db, delivery } = setup();
   const calls: string[] = [];
   const check = (name: string) => {
@@ -248,11 +252,11 @@ test("filter and identity refresh callbacks run outside the write transaction, n
     },
   };
   try {
-    expect(acceptGitHubDelivery(db, delivery("comment"), 1_000, filter)).toBe(true);
+    expect(await acceptGitHubDelivery(db, delivery("comment"), 1_000, filter)).toBe(true);
     expect(calls).toContain("identity refresh");
     expect(listJobs(db).find((j) => j.queue === JOB_KIND.pullComments)?.runAt).toBe(1_020);
     const before = [...calls];
-    expect(acceptGitHubDelivery(db, delivery("comment"), 2_000, filter)).toBe(false);
+    expect(await acceptGitHubDelivery(db, delivery("comment"), 2_000, filter)).toBe(false);
     expect(calls).toEqual(before);
   } finally {
     db.close();

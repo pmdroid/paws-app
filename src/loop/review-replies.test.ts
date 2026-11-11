@@ -218,16 +218,16 @@ const handoffText = (db: ReturnType<typeof setup>["db"]) =>
   (jobs(db, JOB_KIND.resume)[0]?.payload as { handoff: string } | undefined)?.handoff ?? "";
 
 describe("a review and the comments after it reach the agent together", () => {
-  test("a changes-requested review waits a quiet minute, and a later comment moves both jobs", () => {
+  test("a changes-requested review waits a quiet minute, and a later comment moves both jobs", async () => {
     const { db, review, inline, tick } = setup();
-    inline({
+    await inline({
       id: 9001,
       review: 601,
       author: "pascal",
       body: "This sorts the wrong way round.",
       path: "src/rank.ts",
     });
-    review({
+    await review({
       id: 601,
       author: "pascal",
       state: "changes_requested",
@@ -237,7 +237,7 @@ describe("a review and the comments after it reach the agent together", () => {
     expect(reviewJob().runAt).toBe(1_000 + PULL_COMMENT_SETTLE_MS);
 
     tick(40_000);
-    inline({
+    await inline({
       id: 9101,
       review: 701,
       author: "cursor[bot]",
@@ -248,10 +248,10 @@ describe("a review and the comments after it reach the agent together", () => {
     expect(jobs(db, JOB_KIND.pullComments)[0]!.runAt).toBe(41_000 + PULL_COMMENT_SETTLE_MS);
   });
 
-  test("the wait from Settings › Merging replaces the default quiet minute and five-minute cap", () => {
+  test("the wait from Settings › Merging replaces the default quiet minute and five-minute cap", async () => {
     const { db, review, inline, tick, setWait } = setup();
     setWait({ quietMs: 10_000, maxMs: 25_000 });
-    review({
+    await review({
       id: 601,
       author: "pascal",
       state: "changes_requested",
@@ -260,7 +260,7 @@ describe("a review and the comments after it reach the agent together", () => {
     const reviewJob = () => jobs(db, JOB_KIND.pullReview)[0]!;
     expect(reviewJob().runAt).toBe(11_000);
     tick(8_000);
-    inline({
+    await inline({
       id: 9101,
       review: 701,
       author: "cursor[bot]",
@@ -269,7 +269,7 @@ describe("a review and the comments after it reach the agent together", () => {
     });
     expect(reviewJob().runAt).toBe(19_000);
     tick(8_000);
-    inline({
+    await inline({
       id: 9102,
       review: 702,
       author: "cursor[bot]",
@@ -282,20 +282,20 @@ describe("a review and the comments after it reach the agent together", () => {
 
   test("the review restart carries the bot comment, and the comment job then has nothing left", async () => {
     const { db, caps, review, inline } = setup();
-    inline({
+    await inline({
       id: 9001,
       review: 601,
       author: "pascal",
       body: "This sorts the wrong way round.",
       path: "src/rank.ts",
     });
-    review({
+    await review({
       id: 601,
       author: "pascal",
       state: "changes_requested",
       body: "Please fix the ranking.",
     });
-    inline({
+    await inline({
       id: 9101,
       review: 701,
       author: "cursor[bot]",
@@ -317,20 +317,20 @@ describe("a review and the comments after it reach the agent together", () => {
 describe("Paws replies to every handed-off comment", () => {
   test("the handoff lists each thread, review body and conversation comment to reply to", async () => {
     const { db, caps, review, inline, conversation } = setup();
-    inline({
+    await inline({
       id: 9001,
       review: 601,
       author: "pascal",
       body: "This sorts the wrong way round.",
       path: "src/rank.ts",
     });
-    review({
+    await review({
       id: 601,
       author: "pascal",
       state: "changes_requested",
       body: "Please fix the ranking.",
     });
-    conversation({ id: 3001, author: "pascal", body: "Why does this skip the cache?" });
+    await conversation({ id: 3001, author: "pascal", body: "Why does this skip the cache?" });
     expect(await handlePullReview(db, 601, caps)).toBe("restarted");
     const text = handoffText(db);
     expect(text).toContain("End your final message with a `Review replies` section");
@@ -352,22 +352,22 @@ describe("Paws replies to every handed-off comment", () => {
 
   test("replies are posted once after the fix is published; only fixed threads are resolved", async () => {
     const { db, caps, github, replies, review, inline, conversation } = setup();
-    inline({
+    await inline({
       id: 9001,
       review: 601,
       author: "pascal",
       body: "This sorts the wrong way round.",
       path: "src/rank.ts",
     });
-    inline({
+    await inline({
       id: 9101,
       review: 601,
       author: "pascal",
       body: "And the cache key ignores the tenant.",
       path: "src/cache.ts",
     });
-    review({ id: 601, author: "pascal", state: "changes_requested", body: "" });
-    conversation({ id: 3001, author: "pascal", body: "Why does this skip the cache?" });
+    await review({ id: 601, author: "pascal", state: "changes_requested", body: "" });
+    await conversation({ id: 3001, author: "pascal", body: "Why does this skip the cache?" });
     expect(await handlePullReview(db, 601, caps)).toBe("restarted");
 
     const final = [
@@ -521,9 +521,9 @@ describe("Paws replies to every handed-off comment", () => {
   test.each([
     ["paws-test[bot]", "A reply without a marker."],
     ["pascal", `**Fixed** in abcdef1.\n\n${REVIEW_REPLY_MARKER}`],
-  ])("Paws replies from %s never come back as new comments", (author, body) => {
+  ])("Paws replies from %s never come back as new comments", async (author, body) => {
     const { db, conversation } = setup();
-    conversation({ id: 3002, author, body });
+    await conversation({ id: 3002, author, body });
     expect(getPullComment(db, "conversation", 3002)).toBeNull();
   });
 });
@@ -532,9 +532,20 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
   async function handedOff() {
     const context = setup();
     const { db, caps, review, inline, conversation } = context;
-    inline({ id: 9001, review: 601, author: "pascal", body: "Wrong order.", path: "src/rank.ts" });
-    review({ id: 601, author: "pascal", state: "changes_requested", body: "Fix the ranking." });
-    conversation({ id: 3001, author: "pascal", body: "Why skip the cache?" });
+    await inline({
+      id: 9001,
+      review: 601,
+      author: "pascal",
+      body: "Wrong order.",
+      path: "src/rank.ts",
+    });
+    await review({
+      id: 601,
+      author: "pascal",
+      state: "changes_requested",
+      body: "Fix the ranking.",
+    });
+    await conversation({ id: 3001, author: "pascal", body: "Why skip the cache?" });
     expect(await handlePullReview(db, 601, caps)).toBe("restarted");
     return context;
   }

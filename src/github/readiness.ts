@@ -172,7 +172,7 @@ type ReadinessInput = {
   /** Paws publication time for the exact requested head, in milliseconds. */
   publishedAt?: (head: string) => number | null | Promise<number | null>;
   sleep?: (ms: number) => Promise<void>;
-  isCancelled?: () => boolean;
+  isCancelled?: () => Promise<boolean>;
   onWait?: (message: string) => Promise<void>;
   releaseWhilePending?: boolean;
 };
@@ -183,7 +183,7 @@ export async function waitForMergeReadiness(input: ReadinessInput): Promise<Read
   let previous = "";
   let failedReads = 0;
   for (let attempt = 0; attempt < 270; attempt++) {
-    if (input.isCancelled?.()) return { outcome: "blocked", message: "merge cancelled" };
+    if (await input.isCancelled?.()) return { outcome: "blocked", message: "merge cancelled" };
     const result = await readMergeReadiness(input);
     if (
       result.outcome === "blocked" &&

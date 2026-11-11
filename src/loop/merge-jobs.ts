@@ -16,7 +16,6 @@ import {
   recordGitHubDeliverySteps,
   retryLeasedJobSteps,
   returnToMergeQueueSteps,
-  settled,
   sqliteDb,
   type Job,
   type Q,
@@ -87,46 +86,44 @@ export async function retryMergeLater(
   );
 }
 
-export function acceptGitHubDelivery(
+export async function acceptGitHubDelivery(
   db: Database,
   delivery: { deliveryId: string; event: string; payload: string },
   now: number,
   comments?: PullCommentFilter,
-): boolean {
+): Promise<boolean> {
   // Avoid provider callbacks for successful duplicates. The transactional insert remains
   // authoritative when another connection accepts this delivery after the read.
   const store = sqliteDb(db);
-  if (settled(store.run((q) => githubDeliveryRecordedSteps(q, delivery.deliveryId)))) return false;
+  if (await store.run((q) => githubDeliveryRecordedSteps(q, delivery.deliveryId))) return false;
   const body: unknown = JSON.parse(delivery.payload);
   // Callbacks can resolve credentials and start an identity-cache refresh. Run them
   // before taking the write lock; only synchronous database effects belong below.
   const wait = comments?.commentWait?.();
   const recordComment = prepareCommentDelivery(delivery.event, body, now, comments);
-  const accepted = settled(
-    store.transaction(function* (q) {
-      if (!(yield* recordGitHubDeliverySteps(q, delivery, now))) return null;
-      const review = yield* recordReviewDeliverySteps(q, delivery.event, body, now, wait);
-      const comment = recordComment ? yield* q.transaction(recordComment) : null;
-      const moved = mainMove(delivery.event, body);
-      const swept = moved ? yield* mainMovedSteps(q, { ...moved, now }) : false;
-      const facts = deliveryFacts(delivery.event, body);
-      for (const job of yield* openMergeJobsSteps(q)) {
-        const payload = payloadRecord(JSON.parse(job.payload));
-        if (!(yield* jobVersionCurrentSteps(q, job))) continue;
-        const item =
-          typeof payload.itemId === "string" ? yield* getWorkItemSteps(q, payload.itemId) : null;
-        const matches =
-          delivery.event === "merge_group"
-            ? githubQueueWatch(payload)?.queued === true
-            : [payload.head, payload.ciWaitHead].some(
-                (sha) => typeof sha === "string" && facts.shas.has(sha),
-              ) ||
-              (item !== null && facts.branches.has(worktreeBranch(item)));
-        if (matches) yield* nudgeJobRunAtSteps(q, job.id, now);
-      }
-      return review.enqueued || comment?.enqueued === true || swept;
-    }),
-  );
+  const accepted = await store.transaction(function* (q) {
+    if (!(yield* recordGitHubDeliverySteps(q, delivery, now))) return null;
+    const review = yield* recordReviewDeliverySteps(q, delivery.event, body, now, wait);
+    const comment = recordComment ? yield* q.transaction(recordComment) : null;
+    const moved = mainMove(delivery.event, body);
+    const swept = moved ? yield* mainMovedSteps(q, { ...moved, now }) : false;
+    const facts = deliveryFacts(delivery.event, body);
+    for (const job of yield* openMergeJobsSteps(q)) {
+      const payload = payloadRecord(JSON.parse(job.payload));
+      if (!(yield* jobVersionCurrentSteps(q, job))) continue;
+      const item =
+        typeof payload.itemId === "string" ? yield* getWorkItemSteps(q, payload.itemId) : null;
+      const matches =
+        delivery.event === "merge_group"
+          ? githubQueueWatch(payload)?.queued === true
+          : [payload.head, payload.ciWaitHead].some(
+              (sha) => typeof sha === "string" && facts.shas.has(sha),
+            ) ||
+            (item !== null && facts.branches.has(worktreeBranch(item)));
+      if (matches) yield* nudgeJobRunAtSteps(q, job.id, now);
+    }
+    return review.enqueued || comment?.enqueued === true || swept;
+  });
   if (accepted === null) return false;
   if (accepted) emitJobReady(store);
   return true;

@@ -51,7 +51,7 @@ describe("closeout gate", () => {
         pawsHome: repo.pawsHome,
         policyRoot: root,
         reviewer: throwingReviewer(),
-        published: () => published,
+        published: async () => published,
         fixer: {
           async applyFix(request) {
             summaries.push(request.summary);

@@ -100,7 +100,7 @@ function setup(role: WorkspaceRole | null = "member") {
     });
   const handle = createFindingIssueRoute({
     db,
-    reviews: () => [review()],
+    reviews: async () => [review()],
     file: (request, options) => tracker.fileFindingIssue(request, options),
     now: () => NOW + 5,
   });
@@ -282,7 +282,7 @@ test("only a pre-existing finding of a visible item can be filed", async () => {
 test("signed out is 401, and other paths are not this route's", async () => {
   const handle = createFindingIssueRoute({
     db: openDatabase(":memory:"),
-    reviews: () => [],
+    reviews: async () => [],
     file: undefined,
   });
   expect(

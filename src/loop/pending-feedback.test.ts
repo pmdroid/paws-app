@@ -98,8 +98,8 @@ function setup(state: "running" | "verifying" | "merge_queue") {
     number: 7,
     head: { ref: worktreeBranch(getWorkItem(db, "eng-1")!), sha: "h", repo: { id: 11 } },
   });
-  const inline = (id: number, author: string, body: string) => {
-    send("pull_request_review_comment", {
+  const inline = async (id: number, author: string, body: string) => {
+    await send("pull_request_review_comment", {
       action: "created",
       comment: {
         id,
@@ -111,7 +111,7 @@ function setup(state: "running" | "verifying" | "merge_queue") {
       },
       pull_request: pull(),
     });
-    send("pull_request_review", {
+    await send("pull_request_review", {
       action: "submitted",
       review: { id: id + 1, state: "commented", body: null, user: { login: author } },
       pull_request: pull(),
@@ -175,7 +175,7 @@ function backToMergeQueue(db: Db) {
 describe("a send-back carries the feedback waiting on the item", () => {
   test("a re-check conflict restarts once with the rebase, then the comment and its reply", async () => {
     const h = setup("verifying");
-    h.inline(9001, "cursor[bot]", BOT_FINDING);
+    await h.inline(9001, "cursor[bot]", BOT_FINDING);
 
     expect(await h.sendBack("conflict", REBASE_CONFLICT_INSTRUCTION)).not.toBeNull();
     expect(handoffs(h.db)).toHaveLength(1);
@@ -204,7 +204,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
 
   test("a Closeout findings restart carries the comment", async () => {
     const h = setup("verifying");
-    h.conversation(9101, "pascal", "Please also rename the comparator.");
+    await h.conversation(9101, "pascal", "Please also rename the comparator.");
     await h.sendBack("findings", FINDINGS);
     const [restarted] = handoffs(h.db);
     expect(handoffs(h.db)).toHaveLength(1);
@@ -218,7 +218,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
 
   test("a CI restart carries the failed checks and the comment, in one fix round", async () => {
     const h = setup("verifying");
-    h.inline(9201, "cursor[bot]", BOT_FINDING);
+    await h.inline(9201, "cursor[bot]", BOT_FINDING);
     await h.sendBack("ci", ciFixHandoff(CHECKS));
     const [restarted] = handoffs(h.db);
     expect(handoffs(h.db)).toHaveLength(1);
@@ -233,7 +233,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
   test("with the fix rounds spent, the conflict goes back alone and the comment asks", async () => {
     const h = setup("verifying");
     h.setLimit(0);
-    h.inline(9301, "cursor[bot]", BOT_FINDING);
+    await h.inline(9301, "cursor[bot]", BOT_FINDING);
     await h.sendBack("conflict", REBASE_CONFLICT_INSTRUCTION);
     expect(handoffs(h.db)).toEqual([
       expect.objectContaining({ reason: "conflict", handoff: REBASE_CONFLICT_INSTRUCTION }),
@@ -251,7 +251,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
   test("a comment during a turn waits, then rides the next restart", async () => {
     const h = setup("running");
     h.setBusy(true);
-    h.inline(9401, "cursor[bot]", BOT_FINDING);
+    await h.inline(9401, "cursor[bot]", BOT_FINDING);
     expect(await handlePullComments(h.db, "eng-1", h.caps)).toBe("wait");
     expect(handoffs(h.db)).toHaveLength(0);
     expect(getWorkItem(h.db, "eng-1")?.state).toBe("running");
@@ -264,7 +264,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
 
   test("an ignored bot's comment is not carried", async () => {
     const h = setup("verifying");
-    h.conversation(9501, "codecov[bot]", "Coverage: 91%.");
+    await h.conversation(9501, "codecov[bot]", "Coverage: 91%.");
     await h.sendBack("conflict", REBASE_CONFLICT_INSTRUCTION);
     expect(handoffs(h.db)[0]?.handoff).toBe(REBASE_CONFLICT_INSTRUCTION);
     expect(fixRounds(h.db, "eng-1")).toBe(0);
@@ -276,7 +276,7 @@ describe("a comment restart on a conflicting pull request", () => {
   test("adds the rebase instruction and records one rebase return", async () => {
     const h = setup("merge_queue");
     h.setConflict({ head: "h", base: "main-2" });
-    h.inline(9601, "cursor[bot]", BOT_FINDING);
+    await h.inline(9601, "cursor[bot]", BOT_FINDING);
     expect(await handlePullComments(h.db, "eng-1", h.caps)).toBe("restarted");
     const [restarted] = handoffs(h.db);
     expect(handoffs(h.db)).toHaveLength(1);
@@ -292,7 +292,7 @@ describe("a comment restart on a conflicting pull request", () => {
 
   test("without a conflict has no rebase instruction", async () => {
     const h = setup("merge_queue");
-    h.inline(9701, "cursor[bot]", BOT_FINDING);
+    await h.inline(9701, "cursor[bot]", BOT_FINDING);
     expect(await handlePullComments(h.db, "eng-1", h.caps)).toBe("restarted");
     expect(handoffs(h.db)[0]?.handoff).not.toContain(REBASE_CONFLICT_INSTRUCTION);
     expect(listRebaseReturns(h.db, "eng-1", 0)).toEqual([]);
@@ -302,7 +302,7 @@ describe("a comment restart on a conflicting pull request", () => {
 test("the merge lane's rebase return carries the stored comment", async () => {
   const h = setup("merge_queue");
   h.setBusy(true);
-  h.inline(9801, "cursor[bot]", BOT_FINDING);
+  await h.inline(9801, "cursor[bot]", BOT_FINDING);
   const returned = await returnToAgent(sqliteDb(h.db), {
     itemId: "eng-1",
     reason: "rebase-conflict",

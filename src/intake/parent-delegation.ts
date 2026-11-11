@@ -33,7 +33,6 @@ import {
   workspaceForOrganizationSteps,
   workspaceLinearMemberSteps,
   workspaceMemberSteps,
-  settled,
   type JobLoop,
   type Q,
   type Steps,
@@ -315,15 +314,13 @@ export function createParentDelegations(input: {
         { kind: "issue", id: sub.issueId },
         dashboardUrl(input.origin),
         context.signal,
-        (event) => {
+        async (event) => {
           if (!context.isCurrent()) throw new Error("The parent delegation claim changed.");
           if (event.issueId !== sub.issueId || !event.sessionId)
             throw new Error("Linear returned another sub-issue.");
           const sessionId = event.sessionId;
-          const changed = settled(
-            store.run((q) =>
-              claimParentSubIssueSessionSteps(q, parent.delegationId, sub.issueId, sessionId),
-            ),
+          const changed = await store.run((q) =>
+            claimParentSubIssueSessionSteps(q, parent.delegationId, sub.issueId, sessionId),
           );
           if (changed !== 1) throw new Error("This sub-issue already has a session.");
         },
