@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   activeItemQuestionsSteps,
   amendQuestionRowSteps,
@@ -14,8 +13,6 @@ import {
   markQuestionAnsweredSteps,
   promoteQuestionRowSteps,
   setQuestionCancelledSteps,
-  settled,
-  sqliteDb,
   type Q,
   type Steps,
   type WorkItemRecord,
