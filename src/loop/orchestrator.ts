@@ -282,6 +282,7 @@ import {
 } from "../core";
 import {
   listWaitingProfileRuns,
+  applyLinearCommand,
   getLinearSessionAccessSteps,
   type ConfirmedRemoteMerge,
   completeAnswerTaskSteps,
@@ -293,7 +294,6 @@ import {
   sqliteDb,
   activeRunnerIdsSteps,
   announceLinearTurnSteps,
-  applyLinearCommandAsync,
   artifactPublicationReadySteps,
   assertLinearSessionCleanupSteps,
   attachSessionUpdatesSteps,
@@ -1930,13 +1930,12 @@ export class Orchestrator {
       const command = parseLinearCommand(job.payload);
       if (!command) return;
       const saved = job.payload as { response?: string; options?: { keepPullRequest?: boolean } };
-      const result = await applyLinearCommandAsync(
+      const result = await applyLinearCommand(
         this.store,
         command,
         this.now(),
         saved.response,
         saved.options,
-        commandInstance(this.db),
       );
       if (result.deferred) {
         await this.store.run((q) =>
@@ -7103,7 +7102,7 @@ export class Orchestrator {
     const commands: LinearCommand[] = [];
     let deferred = false;
     const notifications = { ready: false };
-    const db = this.db;
+    const self = commandInstance(this.store);
     const itemsForSessionSteps = (q: Q, id: string) => this.itemsForSessionSteps(q, id);
     const accepted = await this.store.transaction(function* (q) {
       if ((yield* acceptLinearStopSteps(q, sessionId, eventKey, requestedAt)) === null)
@@ -7140,7 +7139,7 @@ export class Orchestrator {
           undefined,
           undefined,
           options,
-          commandInstance(db),
+          self,
           notifications,
         );
         if (result.deferred) {
@@ -7244,7 +7243,7 @@ export class Orchestrator {
             this.now(),
             undefined,
             {},
-            commandInstance(this.db),
+            commandInstance(this.store),
             { ready: false },
           );
           const dependents = yield* openTaskDependentsSteps(
