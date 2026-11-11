@@ -1050,7 +1050,7 @@ export async function collectRetroDigest(
     start: cursor.startCursor,
     end: Math.max(cursor.startCursor, cut),
   }));
-  const snapshot = readRetroActivity(db, {
+  const snapshot = await readRetroActivity(sqliteDb(db), {
     workspaceId: retro.workspaceId,
     repositories: retro.repositories,
     before: Math.max(cut, ...windows.map((window) => window.end)),

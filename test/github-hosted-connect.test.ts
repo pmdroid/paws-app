@@ -267,13 +267,16 @@ test("hosted App OAuth survives restart, verifies real scripted HTTP, encrypts a
     f.restart();
     const callback = await f.handler()(f.request("admin", flow.callback.href));
     expect(callback?.status).toBe(303);
-    const active = createWorkspaceGitHubActivation(f.db, f.home, f.env).resolve("acme/widgets");
+    const active = await createWorkspaceGitHubActivation(sqliteDb(f.db), f.home, f.env).resolve(
+      "acme/widgets",
+    );
     expect(active.installationId).toBe("22");
     expect(active.generation).toBe(1);
     f.db.run("UPDATE workspace_repository SET repository='Acme/Widgets'");
     f.db.run("UPDATE workspace_github_connection SET repositories='[\"Acme/Widgets\"]'");
     expect(
-      createWorkspaceGitHubActivation(f.db, f.home, f.env).resolve("acme/widgets").generation,
+      (await createWorkspaceGitHubActivation(sqliteDb(f.db), f.home, f.env).resolve("acme/widgets"))
+        .generation,
     ).toBe(1);
     expect((await f.handler()(f.request("admin", flow.callback.href)))?.status).toBe(403);
     const row = f.db
@@ -653,7 +656,8 @@ test("GitHub sign-in precedes repository approval and activates selected matches
       f.db.query("SELECT repository,team_id AS teamId FROM workspace_repository").all(),
     ).toEqual([{ repository: "acme/widgets", teamId: "team" }]);
     expect(
-      createWorkspaceGitHubActivation(f.db, f.home, f.env).resolve("acme/widgets").installationId,
+      (await createWorkspaceGitHubActivation(sqliteDb(f.db), f.home, f.env).resolve("acme/widgets"))
+        .installationId,
     ).toBe("22");
     expect(
       (await f.setup()(f.request("owner", "https://paws.example/api/workspaces/github-setup")))

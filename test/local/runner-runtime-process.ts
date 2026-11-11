@@ -71,7 +71,7 @@ const transcripts = {
 };
 const repositoryAccess = {
   github: createFakeGitHub(),
-  installationForRepository: () => "fixture-installation",
+  installationForRepository: async () => "fixture-installation",
 };
 if (mode === "prepare") {
   mkdirSync(server, { recursive: true, mode: 0o700 });
@@ -203,7 +203,7 @@ if (mode === "prepare") {
         remoteUrl: "https://github.com/fixture/repository.git",
         baseSha: base,
       };
-      bindWorkItemRepository(db, item.id, repository);
+      await bindWorkItemRepository(sqliteDb(db), item.id, repository);
       const command: WorkCommand = {
         type: type as "run" | "review",
         id: workspaceId(),

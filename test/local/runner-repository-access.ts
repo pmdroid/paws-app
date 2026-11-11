@@ -134,7 +134,7 @@ export async function probeRunnerRepositoryAccess(
     work,
     github,
     now: () => now,
-    installationForRepository(repository) {
+    async installationForRepository(repository: string) {
       assert.equal(repository, "fixture/repository");
       return installation;
     },
@@ -162,7 +162,7 @@ export async function probeRunnerRepositoryAccess(
       remoteUrl: "https://github.com/fixture/repository.git",
       baseSha: "a".repeat(40),
     };
-    bindWorkItemRepository(db, item.id, repository);
+    await bindWorkItemRepository(sqliteDb(db), item.id, repository);
     const command: Extract<RunnerCommand, { type: "run" | "review" }> = {
       id: workspaceId(),
       runnerId: targetRunner,

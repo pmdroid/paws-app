@@ -80,7 +80,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       remoteUrl: "https://github.com/fixture/repository.git",
       baseSha: "a".repeat(40),
     };
-    bindWorkItemRepository(db, item.id, repository);
+    await bindWorkItemRepository(sqliteDb(db), item.id, repository);
     const command: Extract<RunnerCommand, { type: "run" }> = {
       id: "work-1",
       type: "run",
@@ -243,7 +243,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       observedAtMs: now,
     });
     bindLinearSessionTask(db, "session-2", other.delegationId, { actorId: "owner" });
-    bindWorkItemRepository(db, other.id, repository);
+    await bindWorkItemRepository(sqliteDb(db), other.id, repository);
     const undelivered = {
       ...command,
       id: "work-3",

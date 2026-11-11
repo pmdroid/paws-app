@@ -62,7 +62,7 @@ describe("run ownership", () => {
       beginImplementRun(a, "acme-2", 0, checkpoint);
 
       const other = registerInstance(b, { role: "all", host: "acme-b", version: null, now: 1_000 });
-      expect(recoverOnStartup(b, 1_000, undefined, other.id)).toEqual([
+      expect(await recoverOnStartup(sqliteDb(b), 1_000, undefined, other.id)).toEqual([
         { type: "resume", freshSession: true, checkpoint },
       ]);
       expect(getWorkItem(b, "acme-1")).toMatchObject({ state: "running", recoveryAttempts: 0 });
@@ -98,8 +98,8 @@ describe("run ownership", () => {
       const decisions: { by: string; decision: StartupDecision }[] = [];
       const loops = live.map(({ db, id }) => {
         const loop = new JobLoop(db, clock, { workerId: id });
-        loop.register(RUN_TAKEOVER_JOB, () => {
-          for (const decision of takeOverGoneRuns(db, id, clock.now()))
+        loop.register(RUN_TAKEOVER_JOB, async () => {
+          for (const decision of await takeOverGoneRuns(sqliteDb(db), id, clock.now()))
             decisions.push({ by: id, decision });
         });
         enqueueJobOnce(db, {
@@ -155,7 +155,7 @@ describe("run ownership", () => {
         now: 1_000,
         pid: process.pid,
       });
-      expect(recoverOnStartup(db, 1_000, undefined, restarted.id)).toEqual([
+      expect(await recoverOnStartup(sqliteDb(db), 1_000, undefined, restarted.id)).toEqual([
         { type: "resume", freshSession: true, checkpoint },
       ]);
       expect(runOwner(db, runId)).toBe(restarted.id);
@@ -174,7 +174,7 @@ describe("run ownership", () => {
       const mine = await runningItem(a, "acme-1", acme.id, 0);
       const theirs = await runningItem(b, "acme-2", other.id, 0);
 
-      prepareShutdown(a, 1_000, undefined, acme.id);
+      await prepareShutdown(sqliteDb(a), 1_000, undefined, acme.id);
 
       expect(getRun(a, mine)?.status).toBe("lost");
       expect(getWorkItem(a, "acme-1")?.state).toBe("recovering");

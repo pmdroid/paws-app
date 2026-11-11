@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, exists, isNotNull, or, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import type { Db, Q, Steps } from "./db";
 
 export function* activeGithubConnectionsSteps(q: Q) {
   const c = q.t.workspaceGithubConnection;
@@ -13,8 +12,10 @@ export function* activeGithubConnectionsSteps(q: Q) {
   return rows.map((row) => ({ secret_id: row.secret_id!, generation: row.generation }));
 }
 
-export function activeGithubConnections(db: Database): { secret_id: string; generation: number }[] {
-  return settled(sqliteDb(db).run((q) => activeGithubConnectionsSteps(q)));
+export function activeGithubConnections(
+  db: Db,
+): Promise<{ secret_id: string; generation: number }[]> {
+  return db.run((q) => activeGithubConnectionsSteps(q));
 }
 
 export function* anyWorkspaceSteps(q: Q): Steps<boolean> {
@@ -27,8 +28,8 @@ export function* anyWorkspaceSteps(q: Q): Steps<boolean> {
   return row !== undefined;
 }
 
-export function anyWorkspace(db: Database): boolean {
-  return settled(sqliteDb(db).run((q) => anyWorkspaceSteps(q)));
+export function anyWorkspace(db: Db): Promise<boolean> {
+  return db.run((q) => anyWorkspaceSteps(q));
 }
 
 export function* repositoryCataloguedSteps(q: Q, repository: string): Steps<boolean> {
@@ -42,8 +43,8 @@ export function* repositoryCataloguedSteps(q: Q, repository: string): Steps<bool
   return row !== undefined;
 }
 
-export function repositoryCatalogued(db: Database, repository: string): boolean {
-  return settled(sqliteDb(db).run((q) => repositoryCataloguedSteps(q, repository)));
+export function repositoryCatalogued(db: Db, repository: string): Promise<boolean> {
+  return db.run((q) => repositoryCataloguedSteps(q, repository));
 }
 
 export function* repositoryGithubConnectionsSteps(q: Q, repository: string) {
@@ -77,8 +78,8 @@ export function* repositoryGithubConnectionsSteps(q: Q, repository: string) {
 }
 
 export function repositoryGithubConnections(
-  db: Database,
+  db: Db,
   repository: string,
-): { secret_id: string | null; generation: number; repositories: string }[] {
-  return settled(sqliteDb(db).run((q) => repositoryGithubConnectionsSteps(q, repository)));
+): Promise<{ secret_id: string | null; generation: number; repositories: string }[]> {
+  return db.run((q) => repositoryGithubConnectionsSteps(q, repository));
 }

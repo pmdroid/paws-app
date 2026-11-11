@@ -49,7 +49,7 @@ test("three ready items in one project and repository are all admitted", async (
     const ids = ["a", "b", "c"];
     for (const [index, id] of ids.entries()) {
       insertQueuedItem(db, { id, now: index });
-      bindWorkItemRepository(db, id, repository);
+      await bindWorkItemRepository(sqliteDb(db), id, repository);
       await sqliteDb(db).run((q) =>
         saveSchedulingContextSteps(q, { itemId: id, projectId: "project", paths: ["src/same.ts"] }),
       );
@@ -97,7 +97,7 @@ test("two ready items with overlapping path hints are both admitted", async () =
   try {
     for (const [index, id] of ["left", "right"].entries()) {
       insertQueuedItem(db, { id, now: index });
-      bindWorkItemRepository(db, id, repository);
+      await bindWorkItemRepository(sqliteDb(db), id, repository);
       db.run("UPDATE work_item SET brief=? WHERE id=?", [
         brief(index === 0 ? "paths: src/shared/**" : "paths: src/shared/file.ts"),
         id,
@@ -187,7 +187,7 @@ test("a longer task_block chain is admitted before an unrelated ready item", asy
   try {
     for (const [index, id] of ["d", "c", "b", "a"].entries()) {
       insertQueuedItem(db, { id, now: index });
-      bindWorkItemRepository(db, id, repository);
+      await bindWorkItemRepository(sqliteDb(db), id, repository);
     }
     db.run(
       "INSERT INTO task_block(blocker_linear_issue_id, blocked_linear_issue_id) VALUES('lin-item-a', 'lin-item-b')",
@@ -210,7 +210,7 @@ test("task_block depth stays on the active item when a merged row shares its iss
   try {
     for (const [index, id] of ["old", "d", "b", "a"].entries()) {
       insertQueuedItem(db, { id, now: index });
-      bindWorkItemRepository(db, id, repository);
+      await bindWorkItemRepository(sqliteDb(db), id, repository);
     }
     db.run("UPDATE work_item SET state='merged', linear_issue_id='lin-item-a' WHERE id='old'");
     db.run(
@@ -348,7 +348,7 @@ test("work back in flight without an admission is re-admitted, so its jobs run i
   try {
     for (const id of ["a", "b"]) {
       insertQueuedItem(db, { id, now: 0 });
-      bindWorkItemRepository(db, id, repository);
+      await bindWorkItemRepository(sqliteDb(db), id, repository);
       applyWorkItemEvent(db, id, "dispatched");
       applyWorkItemEvent(db, id, "turn_ended");
       enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId: id }, now: 0 });
@@ -368,7 +368,7 @@ test("work stuck in flight with no job is queued again and doesn't block other s
   const db = tempDb();
   try {
     insertQueuedItem(db, { id: "stuck", now: 0, sessionKey: "stuck-session" });
-    bindWorkItemRepository(db, "stuck", repository);
+    await bindWorkItemRepository(sqliteDb(db), "stuck", repository);
     applyWorkItemEvent(db, "stuck", "dispatched");
     applyWorkItemEvent(db, "stuck", "turn_ended");
     const finished = enqueueJob(db, {
@@ -378,7 +378,7 @@ test("work stuck in flight with no job is queued again and doesn't block other s
     });
     db.run("UPDATE job SET status='done', finished_at=0 WHERE id=?", [finished]);
     insertQueuedItem(db, { id: "next", now: 1 });
-    bindWorkItemRepository(db, "next", repository);
+    await bindWorkItemRepository(sqliteDb(db), "next", repository);
     const now = 10 * 60_000;
     assert.deepEqual(await workspaceDispatch(db, { now }), ["next"]);
     const claimed = [claimNextJob(db, { now }), claimNextJob(db, { now })].map(
@@ -394,9 +394,9 @@ test("work stuck in flight with no job is queued again and doesn't block other s
   }
 });
 
-function mergeQueueItem(db: ReturnType<typeof tempDb>, id: string): void {
+async function mergeQueueItem(db: ReturnType<typeof tempDb>, id: string): Promise<void> {
   insertQueuedItem(db, { id, now: 0, sessionKey: `${id}-session` });
-  bindWorkItemRepository(db, id, repository);
+  await bindWorkItemRepository(sqliteDb(db), id, repository);
   applyWorkItemEvent(db, id, "dispatched");
   applyWorkItemEvent(db, id, "turn_ended");
   applyWorkItemEvent(db, id, "closeout_accepted");
@@ -405,7 +405,7 @@ function mergeQueueItem(db: ReturnType<typeof tempDb>, id: string): void {
 test("an item in merge_queue whose merge job is gone fails closed into a re-verify", async () => {
   const db = tempDb();
   try {
-    mergeQueueItem(db, "merging");
+    await mergeQueueItem(db, "merging");
     const finished = enqueueJob(db, {
       queue: JOB_KIND.merge,
       payload: { itemId: "merging", head: "h", summary: "s" },
@@ -435,7 +435,7 @@ test("an item in merge_queue whose merge job is gone fails closed into a re-veri
 test("an item in merge_queue with a parked merge job is left in the queue", async () => {
   const db = tempDb();
   try {
-    mergeQueueItem(db, "waiting");
+    await mergeQueueItem(db, "waiting");
     enqueueJob(db, {
       queue: JOB_KIND.merge,
       payload: { itemId: "waiting", head: "h", summary: "s" },

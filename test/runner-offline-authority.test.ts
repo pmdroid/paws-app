@@ -117,7 +117,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
     observedAtMs: pawsNow(),
   });
   bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
-  bindWorkItemRepository(db, item.id, repository);
+  await bindWorkItemRepository(sqliteDb(db), item.id, repository);
   const start = () =>
     registerInstance(db, { role: "all", host: "acme", version: null, now: pawsNow() });
   let instance = start();
@@ -324,7 +324,8 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
   const replaced: number[] = [];
   const pawsStep = async () => {
     await heartbeatInstance(sqliteDb(db), instance.id, clock.at);
-    if (closeExpiredRunnerLeases(db, clock.at).includes(run.id)) replaced.push(clock.at);
+    if ((await closeExpiredRunnerLeases(sqliteDb(db), clock.at)).includes(run.id))
+      replaced.push(clock.at);
   };
   const executing = () => stops === 0 && !finished;
   const overlaps: number[] = [];
@@ -397,7 +398,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
     },
     async pawsOutage(ms: number) {
       link = "paws-down";
-      prepareShutdown(db, clock.at, undefined, instance.id);
+      await prepareShutdown(sqliteDb(db), clock.at, undefined, instance.id);
       stopInstance(db, instance.id, clock.at);
       db.close();
       await this.advance(ms, false);
@@ -405,7 +406,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
       instance = start();
       paws = open();
       link = "up";
-      return recoverOnStartup(db, clock.at, RUNNER_OFFLINE_BUDGET_MS, instance.id);
+      return await recoverOnStartup(sqliteDb(db), clock.at, RUNNER_OFFLINE_BUDGET_MS, instance.id);
     },
     nextGeneration: () => paws.work.assign(command(2)),
     async cleanup() {

@@ -1,7 +1,6 @@
 import { eq } from "drizzle-orm";
 import {
   certificateRunnerRevokedSteps,
-  expiredRunnerCertificates,
   expiredRunnerCertificatesSteps,
   workspaceMemberUsable,
   agentCatalogSummarySteps,
@@ -38,7 +37,7 @@ import {
 import { journalCaught } from "../journal";
 import { realpathSync } from "node:fs";
 import type { Database } from "bun:sqlite";
-import { agentCatalogPackages } from "../agent-catalog";
+import { agentCatalogPackagesSteps } from "../agent-catalog";
 import { validateRunnerRequest, type RunnerAuthority, type RunnerPeer } from "../runner-identity";
 import { releaseVersionFromPath } from "../runner-protocol";
 
@@ -133,11 +132,7 @@ export function createRunnerControl(options: {
         authority: options.authority.certificate,
       };
     },
-    expireConnections() {
-      const fingerprints = expiredRunnerCertificates(db, now());
-      for (const fingerprint of fingerprints) options.disconnect(fingerprint);
-    },
-    async expireConnectionsAsync() {
+    async expireConnections() {
       const at = now();
       for (const fingerprint of await store.run((q) => expiredRunnerCertificatesSteps(q, at)))
         options.disconnect(fingerprint);
@@ -226,7 +221,7 @@ export function createRunnerControl(options: {
           userId: principal.userId,
           now: at,
           id: workspaceId(at),
-          catalogPackages: (name, nativeVersion) => agentCatalogPackages(db, name, nativeVersion),
+          catalogPackages: agentCatalogPackagesSteps,
         });
       });
     },
@@ -240,7 +235,7 @@ export function createRunnerControl(options: {
           userId: principal.userId,
           now: at,
           id: () => workspaceId(at),
-          catalogPackages: (name, nativeVersion) => agentCatalogPackages(db, name, nativeVersion),
+          catalogPackages: agentCatalogPackagesSteps,
         });
       });
     },

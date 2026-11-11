@@ -10,6 +10,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { createFakeGitHub } from "../src/github";
 import { verifyRunnerCommand } from "../src/runner-protocol";
@@ -33,7 +34,7 @@ const repository = {
   remoteUrl: "https://github.com/fixture/repository.git",
 };
 
-function fixture(file = ":memory:") {
+async function fixture(file = ":memory:") {
   const db = openDatabase(file);
   migrate(db);
   let now = Date.now();
@@ -65,7 +66,7 @@ function fixture(file = ":memory:") {
     );
   }
   const item = insertQueuedItem(db, { id: "item-1", now, branchName: "paws/item-1" });
-  bindWorkItemRepository(db, item.id, repository);
+  await bindWorkItemRepository(sqliteDb(db), item.id, repository);
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
     db,
@@ -85,7 +86,7 @@ function fixture(file = ":memory:") {
   const access = createRepositoryCommandAccess({
     db,
     github,
-    installationForRepository: () => "installation",
+    installationForRepository: async () => "installation",
     checkpointBot: async () => bot,
     now: () => now,
   });
@@ -163,7 +164,7 @@ function fixture(file = ":memory:") {
 }
 
 test("an enqueued repository command is delivered once, signed, to its runner", async () => {
-  const f = fixture();
+  const f = await fixture();
   const id = await f.enqueue();
   expect(await f.poll("runner-b")).toEqual([]);
   const delivered = await f.poll("runner-a");
@@ -176,7 +177,7 @@ test("an enqueued repository command is delivered once, signed, to its runner", 
 });
 
 test("the pull request title goes only to a runner that accepts it", async () => {
-  const f = fixture();
+  const f = await fixture();
   f.db.run("UPDATE runner_host_status SET runner_version='0.1.75'");
   await f.enqueue(120_000, "Add widgets");
   expect((await f.poll("runner-a"))[0]).not.toHaveProperty("title");
@@ -194,7 +195,7 @@ test("a rebase title is one trimmed well-formed line of at most 256 units, or no
 });
 
 test("a grant and a credential go only to the delivered runner while the command is current", async () => {
-  const f = fixture();
+  const f = await fixture();
   const id = await f.enqueue();
   expect((await f.grant(id)).status).toBe(403);
   await f.poll("runner-a");
@@ -220,7 +221,7 @@ test("a grant and a credential go only to the delivered runner while the command
 });
 
 test("a posted result completes waitForRepositoryCommand and replays only unchanged", async () => {
-  const f = fixture();
+  const f = await fixture();
   const id = await f.enqueue();
   const waiting = waitForRepositoryCommand(f.db, id);
   const early = await f.post(`/v1/repository-commands/${id}/result`, "runner-a", {
@@ -247,7 +248,7 @@ test("a posted result completes waitForRepositoryCommand and replays only unchan
 });
 
 test("a command past expiresAt is expired and its credential route refuses", async () => {
-  const f = fixture();
+  const f = await fixture();
   const id = await f.enqueue(60_000);
   await f.poll("runner-a");
   const issued = await f.grant(id);
@@ -265,7 +266,7 @@ test("a command past expiresAt is expired and its credential route refuses", asy
 });
 
 test("an undelivered command past expiresAt is never delivered", async () => {
-  const f = fixture();
+  const f = await fixture();
   const id = await f.enqueue(60_000);
   f.advance(60_000);
   expect(await f.poll("runner-a")).toEqual([]);
@@ -273,7 +274,7 @@ test("an undelivered command past expiresAt is never delivered", async () => {
 });
 
 test("a branch outside paws/ or an old runner is refused at enqueue", async () => {
-  const f = fixture();
+  const f = await fixture();
   f.db.run("UPDATE runner_host_status SET runner_version='0.1.62'");
   await expect(f.enqueue()).rejects.toThrow(/runner 0\.1\.63/);
   f.db.run("UPDATE runner_host_status SET runner_version='0.1.63'");
@@ -282,7 +283,7 @@ test("a branch outside paws/ or an old runner is refused at enqueue", async () =
 });
 
 test("a runner rebase resolves with the runner's result, and as failed on a timeout or refusal", async () => {
-  const f = fixture();
+  const f = await fixture();
   const rebase = (runnerId = "runner-a", signal?: AbortSignal) =>
     rebaseOnRunner(
       f.db,
@@ -343,7 +344,7 @@ test("a runner rebase resolves with the runner's result, and as failed on a time
 test("a rebase whose result arrives on another instance resolves within a second", async () => {
   const dir = mkdtempSync(join(tmpdir(), "paws-repository-commands-"));
   try {
-    const f = fixture(join(dir, "paws.sqlite"));
+    const f = await fixture(join(dir, "paws.sqlite"));
     const other = openDatabase(join(dir, "paws.sqlite"));
     const otherHttp = createRepositoryCommandsHttp({ db: other, now: f.now });
     const rebased = rebaseOnRunner(f.db, {

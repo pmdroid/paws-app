@@ -119,7 +119,7 @@ export async function handleWorkspaceAdministration(
       const workspace = await store.run((q) => getWorkspaceSteps(q, workspaceId));
       if (member === null || workspace === null) throw new Error("Choose a workspace member.");
       if (typeof body["revoked"] === "boolean") {
-        const stopped = changeWorkspaceRevocation(options.db, {
+        const stopped = await changeWorkspaceRevocation(store, {
           workspaceId: principal.workspaceId,
           actorId: principal.userId,
           userId: member.userId,

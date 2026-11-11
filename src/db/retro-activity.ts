@@ -1,13 +1,12 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import type { Db, Q, Steps } from "./db";
 import {
   listImprovementProposalsSteps,
   listImprovementsSteps,
   type ImprovementSource,
 } from "./improvements";
 import { jsonText } from "./json-text";
-import { appliedMigrations } from "./migrate";
+import { MIGRATIONS_FOLDER, migrationTags, PG_MIGRATIONS_FOLDER } from "./migrate";
 import { teamRepositoryAllowedSql } from "./repository-catalog";
 
 export type RetroActivityItem = {
@@ -505,7 +504,34 @@ function truthy(value: unknown): boolean {
   return value === true || value === 1 || value === "1";
 }
 
-export function readRetroActivity(db: Database, input: RetroActivityInput): RetroActivitySnapshot {
-  const schema = appliedMigrations(db);
-  return settled(sqliteDb(db).transaction((q) => readRetroActivitySteps(q, input, schema)));
+function* appliedMigrationsSteps(q: Q): Steps<RetroActivitySnapshot["schema"]> {
+  const sqlite = q.dialect === "sqlite";
+  const recorded = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(sqlite ? sql`sqlite_master` : sql`information_schema.tables`)
+      .where(
+        sqlite
+          ? sql`type = 'table' AND name = '__drizzle_migrations'`
+          : sql`table_schema = 'drizzle' AND table_name = '__drizzle_migrations'`,
+      ),
+  );
+  const counted = recorded
+    ? yield* q.one(
+        q.orm
+          .select({ n: sql<number>`count(*)` })
+          .from(sqlite ? sql`__drizzle_migrations` : sql`drizzle.__drizzle_migrations`),
+      )
+    : undefined;
+  const applied = Number(counted?.n ?? 0);
+  const tags = migrationTags(sqlite ? MIGRATIONS_FOLDER : PG_MIGRATIONS_FOLDER);
+  return { latest: applied === 0 ? null : (tags[applied - 1] ?? null), applied };
+}
+
+export async function readRetroActivity(
+  store: Db,
+  input: RetroActivityInput,
+): Promise<RetroActivitySnapshot> {
+  const schema = await store.run(appliedMigrationsSteps);
+  return store.transaction((q) => readRetroActivitySteps(q, input, schema));
 }

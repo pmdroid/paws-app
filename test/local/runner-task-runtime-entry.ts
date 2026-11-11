@@ -79,7 +79,10 @@ async function coordinator(port: number) {
     hostname: "127.0.0.1",
     port,
     transcripts: { objects, key: Buffer.alloc(32, 7) },
-    repositoryAccess: { github: createFakeGitHub(), installationForRepository: () => "fixture" },
+    repositoryAccess: {
+      github: createFakeGitHub(),
+      installationForRepository: async () => "fixture",
+    },
     onError: () => {},
   });
   return { db, service };
@@ -229,7 +232,7 @@ if (mode === "agent") {
         remoteUrl: "https://github.com/fixture/repository.git",
         baseSha,
       };
-      if (repository) bindWorkItemRepository(db, item.id, binding);
+      if (repository) await bindWorkItemRepository(sqliteDb(db), item.id, binding);
       const scope = await service.work.scopeTask(run.id, workspace.id);
       const command: Task = {
         type: "task",

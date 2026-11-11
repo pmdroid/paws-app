@@ -27,7 +27,7 @@ listener = await startRunnerListener({
     return runner ? Response.json(runner) : new Response(null, { status: 403 });
   },
 });
-const timer = setInterval(() => control.expireConnections(), 1000);
+const timer = setInterval(() => void control.expireConnections(), 1000);
 console.log(JSON.stringify({ port: listener.port }));
 async function stop() {
   clearInterval(timer);

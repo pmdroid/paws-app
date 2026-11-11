@@ -288,7 +288,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
     const installation = createGitHubInstallationCheck({
       home: root,
       env: {},
-      resolve: app,
+      resolve: async () => app(),
       fetch: githubFetch,
     });
     const botProvider = createGitHubTokenProvider({

@@ -31,7 +31,7 @@ import { workspaceAdmission } from "./fake-workspace";
 const START = 1_000;
 const RUNNERS_URL = "https://paws.example/dashboard/runners";
 
-function workspace(db: Database) {
+async function workspace(db: Database) {
   db.run("INSERT INTO workspace VALUES('ws','org','Workspace',0)");
   putWorkspaceUser(db, {
     id: "me",
@@ -66,7 +66,7 @@ function workspace(db: Database) {
     observedAtMs: 0,
   });
   bindLinearSessionTask(db, "session", item.delegationId);
-  bindWorkItemRepository(db, "cli", {
+  await bindWorkItemRepository(sqliteDb(db), "cli", {
     owner: "acme",
     repo: "cli",
     remoteUrl: "https://github.com/acme/cli.git",
@@ -147,7 +147,7 @@ async function withPaws(
   const jobs = new JobLoop(db, clock);
   const paws = orchestrator(db, clock, jobs);
   try {
-    workspace(db);
+    await workspace(db);
     await run({ db, clock, jobs, paws });
   } finally {
     await paws.shutdown();
@@ -203,7 +203,7 @@ test("the runner page's list refuses: the question names the runner page", async
 test("a runner that allows the repository is only offline: no question, and the wait says it is offline", async () => {
   const db = tempDb();
   try {
-    workspace(db);
+    await workspace(db);
     await recordRunnerRepositories(sqliteDb(db), "runner-1", ["acme/monorepo"], START);
     addRunner(db, "runner-2", 0);
     await recordRunnerRepositories(sqliteDb(db), "runner-2", ["acme/cli"], 0);

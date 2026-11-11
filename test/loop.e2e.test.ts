@@ -760,7 +760,8 @@ test("a bound two-item delegation asks, verifies and merges in its repository af
 
   try {
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "parent"));
-    for (const item of listWorkItems(db)) bindWorkItemRepository(db, item.id, repository);
+    for (const item of listWorkItems(db))
+      await bindWorkItemRepository(sqliteDb(db), item.id, repository);
     const deadline = Date.now() + 80_000;
     let idle = 0;
     while (Date.now() < deadline && !delegationMerged(db)) {
@@ -2462,7 +2463,7 @@ for (const movedHead of [false, true]) {
       expect(github.merged).toHaveLength(0);
       db.close();
       db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-      recoverOnStartup(db);
+      await recoverOnStartup(sqliteDb(db));
       db.run("CREATE TEMP TABLE title_write (summary TEXT)");
       for (const event of ["INSERT", "UPDATE OF payload"])
         db.run(`CREATE TEMP TRIGGER "title_${event}" AFTER ${event} ON outbox

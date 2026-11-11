@@ -477,7 +477,7 @@ test("Stop ends the hold", async () => {
     const { db, itemId } = fixture;
     expect(await getRunnerSetupHold(sqliteDb(db), itemId)).not.toBeNull();
     const stop: LinearCommand = { type: "stop", itemId, source: "linear", requestedAt: Date.now() };
-    expect(applyLinearCommand(db, stop).applied).toBe(true);
+    expect((await applyLinearCommand(sqliteDb(db), stop)).applied).toBe(true);
     expect(await getRunnerSetupHold(sqliteDb(db), itemId)).toBeNull();
     expect(getWorkItem(db, itemId)!.state).toBe("paused");
   } finally {

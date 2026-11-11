@@ -162,7 +162,10 @@ describe("combined recovery scenarios", () => {
         source: "linear" as const,
         requestedAt: w.now,
       };
-      expect(applyLinearCommand(w.db, stop)).toEqual({ applied: false, deferred: true });
+      expect(await applyLinearCommand(sqliteDb(w.db), stop)).toEqual({
+        applied: false,
+        deferred: true,
+      });
       for (const entry of ["crash", "stop", "crash"] as const) {
         if (entry === "crash") w.crash();
         else w.stop();
@@ -192,7 +195,9 @@ describe("combined recovery scenarios", () => {
 
       w.crash();
       w.start();
-      expect(applyLinearCommand(w.db, { ...stop, requestedAt: w.now }).applied).toBe(false);
+      expect(
+        (await applyLinearCommand(sqliteDb(w.db), { ...stop, requestedAt: w.now })).applied,
+      ).toBe(false);
       expect(() =>
         restart(w.db, getWorkItem(w.db, id)!, { reason: "ci", body: "late", now: w.now }),
       ).toThrow("illegal_transition");
@@ -374,7 +379,7 @@ async function runnerWorld() {
     remoteUrl: "https://github.com/fixture/repository.git",
     baseSha: "a".repeat(40),
   };
-  bindWorkItemRepository(w.db, item.id, repository);
+  await bindWorkItemRepository(sqliteDb(w.db), item.id, repository);
   const command: Extract<RunnerCommand, { type: "run" }> = {
     id: "work-1",
     type: "run",
@@ -413,12 +418,14 @@ describe("runner control across Paws restarts", () => {
     const { w, controller, run, command, host, workspaceId } = await runnerWorld();
     try {
       expect(
-        applyLinearCommand(w.db, {
-          type: "stop",
-          itemId: "item",
-          source: "linear",
-          requestedAt: w.now,
-        }).applied,
+        (
+          await applyLinearCommand(sqliteDb(w.db), {
+            type: "stop",
+            itemId: "item",
+            source: "linear",
+            requestedAt: w.now,
+          })
+        ).applied,
       ).toBe(true);
       w.advance(1);
       const cancel = {

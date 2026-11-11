@@ -177,11 +177,11 @@ describe("a clock gap during a parked wait", () => {
           await host.tick();
           const before = snapshot(db);
 
-          prepareShutdown(db, clock.now());
+          await prepareShutdown(sqliteDb(db), clock.now());
           host.stop();
           clock.sleep(TWO_HOURS + 1);
           clock.advance(1_000);
-          expect(recoverOnStartup(db, clock.now())).toEqual([]);
+          expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([]);
           const next = new HostSupervisor(db, clock, new WakeDetector(clock), 250);
           await observe(db, next, clock.now());
           next.stop();
@@ -251,7 +251,7 @@ describe("ownership a clock gap does not invent", () => {
     test(`a ${how} transient retry does not stop startup from resuming abandoned work once`, async () => {
       const { clock, db, host, owner } = await abandoned(how);
       try {
-        expect(recoverOnStartup(db, clock.now())).toEqual([
+        expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([
           { type: "resume", freshSession: true, checkpoint: null },
         ]);
         const resumes = executions(db).filter((job) => job.id !== owner);
@@ -261,7 +261,9 @@ describe("ownership a clock gap does not invent", () => {
           state: "recovering",
           recoveryAttempts: 1,
         });
-        expect(recoverOnStartup(db, clock.now())).toEqual([{ type: "ask_restart" }]);
+        expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([
+          { type: "ask_restart" },
+        ]);
       } finally {
         host.stop();
         db.close();
@@ -294,7 +296,7 @@ describe("ownership a clock gap does not invent", () => {
       await park(db, clock.now(), "first-start capacity wait", true);
       db.run("UPDATE work_item SET version=version+1 WHERE id='eng-9'");
       clock.sleep(TWO_HOURS + 1);
-      expect(recoverOnStartup(db, clock.now())).toEqual([
+      expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([
         { type: "resume", freshSession: true, checkpoint },
       ]);
     } finally {

@@ -21,7 +21,7 @@ test("reconciliation runs while every execution worker holds a handler open", as
   const ids = ["a", "b", "c", "d", "e"];
   for (const [index, id] of ids.entries()) {
     insertQueuedItem(db, { id, now: index });
-    bindWorkItemRepository(db, id, repository);
+    await bindWorkItemRepository(sqliteDb(db), id, repository);
     await sqliteDb(db).run((q) =>
       saveSchedulingContextSteps(q, { itemId: id, projectId: "project", paths: [`src/${id}.ts`] }),
     );

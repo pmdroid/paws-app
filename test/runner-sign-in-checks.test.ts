@@ -306,7 +306,7 @@ test("a helper that expired unserved, or a conversation in its own lane, holds n
   const f = fixture();
   const runnerId = f.runner();
   f.db.run("UPDATE runner_host_status SET runner_version='0.1.77' WHERE runner_id=?", [runnerId]);
-  recordRunnerCapacity(f.db, runnerId, 1, 1, 2);
+  await recordRunnerCapacity(sqliteDb(f.db), runnerId, 1, 1, 2);
   await f.health.refresh();
   await f.helper(runnerId, "conversation");
   expect((await f.delivered(runnerId)).map(({ type }) => type)).toEqual(["login_check"]);

@@ -52,11 +52,11 @@ const THREADS: FakeReviewThread[] = [
   { path: "README.md", line: 3, comments: [{ author: "rev", body: "Typo here.", reviewId: 777 }] },
 ];
 
-function setup(threads = THREADS, options: { commentsPerPage?: number } = {}) {
+async function setup(threads = THREADS, options: { commentsPerPage?: number } = {}) {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
-  bindWorkItemRepository(db, "eng-1", {
+  await bindWorkItemRepository(sqliteDb(db), "eng-1", {
     owner: "acme",
     repo: "one",
     remoteUrl: "https://github.com/acme/one.git",
@@ -147,11 +147,11 @@ function setup(threads = THREADS, options: { commentsPerPage?: number } = {}) {
   };
 }
 
-const reviewJobs = (db: ReturnType<typeof setup>["db"]) =>
+const reviewJobs = (db: Awaited<ReturnType<typeof setup>>["db"]) =>
   listJobs(db).filter((job) => job.queue === JOB_KIND.pullReview);
-const resumeJobs = (db: ReturnType<typeof setup>["db"]) =>
+const resumeJobs = (db: Awaited<ReturnType<typeof setup>>["db"]) =>
   listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
-const feedbackActivities = (db: ReturnType<typeof setup>["db"]) =>
+const feedbackActivities = (db: Awaited<ReturnType<typeof setup>>["db"]) =>
   listOutbox(db)
     .filter((row) => row.op === "activity" && row.idempotencyKey.startsWith("pull-feedback:"))
     .map((row) => {
@@ -161,7 +161,7 @@ const feedbackActivities = (db: ReturnType<typeof setup>["db"]) =>
 
 describe("changes-requested reviews", () => {
   test("restart the item once per review id with the review and its unresolved threads", async () => {
-    const { db, caps, deliver, github } = setup();
+    const { db, caps, deliver, github } = await setup();
     await deliver({ id: 501, state: "changes_requested", body: "Please fix the ranking." });
     await deliver({ id: 501, state: "changes_requested", body: "Please fix the ranking." });
     expect(reviewJobs(db).map((job) => [job.jobKey, job.payload])).toEqual([
@@ -203,7 +203,7 @@ describe("changes-requested reviews", () => {
   });
 
   test("a review thread on a file an open Closeout finding names is quoted beside it", async () => {
-    const { db, caps, deliver, setFindings } = setup();
+    const { db, caps, deliver, setFindings } = await setup();
     setFindings([
       {
         reviewId: "independent-review",
@@ -227,7 +227,7 @@ describe("changes-requested reviews", () => {
   });
 
   test("a review fix on an accepted head is one candidate review escape, even redelivered", async () => {
-    const { db, caps, deliver } = setup();
+    const { db, caps, deliver } = await setup();
     await markCloseoutAccepted(sqliteDb(db), "eng-1", "h");
     await deliver({ id: 501, state: "changes_requested", body: "The ranking is reversed." });
     await deliver({ id: 501, state: "changes_requested", body: "The ranking is reversed." });
@@ -247,7 +247,7 @@ describe("changes-requested reviews", () => {
   });
 
   test("wait for a running turn or evaluation, and hold the merge until the restart", async () => {
-    const { db, caps, deliver, setBusy } = setup();
+    const { db, caps, deliver, setBusy } = await setup();
     db.run("UPDATE work_item SET state='verifying' WHERE id='eng-1'");
     await deliver({ id: 501, state: "changes_requested" });
     expect(await handlePullReview(db, 501, caps)).toBe("wait");
@@ -270,7 +270,7 @@ describe("changes-requested reviews", () => {
   });
 
   test("take the pull request out of GitHub's merge queue before anything else", async () => {
-    const { db, caps, deliver, queue, setBusy } = setup();
+    const { db, caps, deliver, queue, setBusy } = await setup();
     // GitHub's queue holds the reviewed head, and a merge attempt is running.
     queue.move(7, 1, "AWAITING_CHECKS");
     queue.calls.length = 0;
@@ -295,7 +295,7 @@ describe("changes-requested reviews", () => {
   });
 
   test("a pull request GitHub already merged drops the review", async () => {
-    const { db, caps, deliver, queue } = setup();
+    const { db, caps, deliver, queue } = await setup();
     queue.merge(7);
     await deliver({ id: 501, state: "changes_requested" });
     expect(await handlePullReview(db, 501, caps)).toBe("dropped");
@@ -303,7 +303,7 @@ describe("changes-requested reviews", () => {
   });
 
   test("a spent fix budget asks the team instead of restarting", async () => {
-    const { db, caps, deliver, setLimit } = setup();
+    const { db, caps, deliver, setLimit } = await setup();
     setLimit(0);
     await deliver({ id: 501, state: "changes_requested", body: "Rename it." });
     expect(await handlePullReview(db, 501, caps)).toBe("asked");
@@ -318,7 +318,7 @@ describe("changes-requested reviews", () => {
   });
 
   test("a review of an ended item is dropped", async () => {
-    const { db, caps, deliver } = setup();
+    const { db, caps, deliver } = await setup();
     await deliver({ id: 501, state: "changes_requested" });
     db.run("UPDATE work_item SET state='cancelled' WHERE id='eng-1'");
     expect(await handlePullReview(db, 501, caps)).toBe("dropped");
@@ -328,7 +328,7 @@ describe("changes-requested reviews", () => {
 
 describe("other reviews", () => {
   test("a comment-only review is a comment, not a change request", async () => {
-    const { db, deliver } = setup();
+    const { db, deliver } = await setup();
     await deliver({ id: 777, state: "commented" });
     expect(await getPullReview(sqliteDb(db), 777)).toBeNull();
     expect(reviewJobs(db)).toHaveLength(0);
@@ -338,7 +338,7 @@ describe("other reviews", () => {
   });
 
   test("approvals, edits and other branches record nothing", async () => {
-    const { db, deliver } = setup();
+    const { db, deliver } = await setup();
     await deliver({ id: 1, state: "approved" });
     await deliver({ id: 2, state: "changes_requested", action: "edited" });
     await deliver({ id: 3, state: "changes_requested", branch: "someone/else" });
@@ -346,7 +346,7 @@ describe("other reviews", () => {
   });
 
   test("a fork's pull request with the same branch name, or another pull request, is ignored", async () => {
-    const { db, deliver } = setup();
+    const { db, deliver } = await setup();
     await deliver({ id: 4, state: "changes_requested", headRepository: 99 });
     await deliver({ id: 5, state: "changes_requested", headRepository: null });
     await recordItemPullRequest(sqliteDb(db), {

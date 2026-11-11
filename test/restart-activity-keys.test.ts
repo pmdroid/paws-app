@@ -18,6 +18,7 @@ import {
   openDatabase,
   prepareShutdown,
   recoverOnStartup,
+  sqliteDb,
 } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
@@ -126,10 +127,10 @@ test("updates from a run that Paws resumes after a restart all land in the outbo
     const runId = listWorkItems(db)[0]!.currentRunId!;
 
     await paws.orchestrator.shutdown();
-    prepareShutdown(db);
+    await prepareShutdown(sqliteDb(db));
     db.close();
     db = openDatabase(file);
-    recoverOnStartup(db, Date.now() - 60_000);
+    await recoverOnStartup(sqliteDb(db), Date.now() - 60_000);
     paws = open(db);
     // The runner sends the event that was in flight again, then goes on.
     turn = [

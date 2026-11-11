@@ -87,7 +87,7 @@ export async function probeRunnerResults(root: string, observe: Observe) {
       remoteUrl: "https://github.com/fixture/repository.git",
       baseSha: "a".repeat(40),
     };
-    bindWorkItemRepository(db, item.id, repository);
+    await bindWorkItemRepository(sqliteDb(db), item.id, repository);
     db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
       workspace.id,
       "fixture/repository",

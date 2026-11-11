@@ -28,10 +28,10 @@ import { rebaseReturns, latestUserTurn } from "../src/merge";
 import { tempDb } from "./helpers";
 import { workspaceDispatch } from "./fake-workspace";
 
-function fixture() {
+async function fixture() {
   const db = tempDb();
   insertQueuedItem(db, { id: "item", now: 0 });
-  bindWorkItemRepository(db, "item", {
+  await bindWorkItemRepository(sqliteDb(db), "item", {
     owner: "owner",
     repo: "repo",
     remoteUrl: "https://example.invalid/repo.git",
@@ -41,7 +41,7 @@ function fixture() {
 }
 
 test("a cancelled resume handler stays fenced while its revived row runs a new handler", async () => {
-  const db = fixture();
+  const db = await fixture();
   const clock = new FakeClock(2);
   const id = enqueueJob(db, {
     queue: JOB_KIND.resume,
@@ -93,7 +93,7 @@ test("a cancelled resume handler stays fenced while its revived row runs a new h
 test.each(["done", "cancelled", "dead"] as const)(
   "reviving a %s merge row never refreshes the old handler's fence",
   async (status) => {
-    const db = fixture();
+    const db = await fixture();
     applyWorkItemEvent(db, "item", "turn_ended");
     applyWorkItemEvent(db, "item", "closeout_accepted");
     const input = { itemId: "item", head: "head", summary: "accepted", now: 2 };
@@ -116,7 +116,7 @@ test.each(["done", "cancelled", "dead"] as const)(
 test.each(["linear", "answer"] as const)(
   "revived %s human turns reset both budgets and preserve per-activation retry baselines and returns",
   async (kind) => {
-    const db = fixture();
+    const db = await fixture();
     let now = 2;
     const admit = (key: string, reason: "ci" | "follow_up" | "answer") =>
       restart(db, getWorkItem(db, "item")!, { reason, body: key, jobKey: key, now: now++ })!;
@@ -186,7 +186,7 @@ test.each(["linear", "answer"] as const)(
 );
 
 test("repeated non-human rebase returns count once per activation", async () => {
-  const db = fixture();
+  const db = await fixture();
   for (const now of [2, 3]) {
     const id = restart(db, getWorkItem(db, "item")!, {
       reason: "conflict",
@@ -207,7 +207,7 @@ test("repeated non-human rebase returns count once per activation", async () => 
 });
 
 test("queue collisions roll back revival and fresh queue settings replace terminal settings", async () => {
-  const db = fixture();
+  const db = await fixture();
   const id = enqueueJob(db, { queue: "other", jobKey: "collision", payload: { itemId: "item" } });
   db.run("UPDATE job SET status='done' WHERE id=?", [id]);
   const before = getJob(db, id);
@@ -303,7 +303,7 @@ test.each(["linear", "push"] as const)(
 );
 
 test("a revived older human row captures a new baseline once and outranks later row IDs", async () => {
-  const db = fixture();
+  const db = await fixture();
   const first = enqueueJob(db, {
     queue: JOB_KIND.resume,
     jobKey: "resume:answer:first",

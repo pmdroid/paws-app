@@ -96,7 +96,7 @@ async function fixture() {
     observedAtMs: now(),
   });
   bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
-  bindWorkItemRepository(db, item.id, repository);
+  await bindWorkItemRepository(sqliteDb(db), item.id, repository);
   const keys = generateKeyPairSync("ed25519");
   const open = () => {
     const work = createRunnerWork({
@@ -188,12 +188,12 @@ test("an accepted result survives a reopen and lease expiry, and recovery reatta
     expect(await f.results.read(f.run.id, 1, command.id)).toEqual(result);
     await expect(submit()).rejects.toThrow();
     expect((await f.work.heartbeat(f.runnerId)).fenced).toEqual([]);
-    prepareShutdown(f.db, f.clock.at);
-    const decisions = recoverOnStartup(f.db, f.clock.at);
+    await prepareShutdown(sqliteDb(f.db), f.clock.at);
+    const decisions = await recoverOnStartup(sqliteDb(f.db), f.clock.at);
     expect(decisions).toEqual([
       { type: "resume", freshSession: true, checkpoint: null, reattach: true },
     ]);
-    recoverOnStartup(f.db, f.clock.at);
+    await recoverOnStartup(sqliteDb(f.db), f.clock.at);
     expect(resumes(f.db)).toHaveLength(1);
     expect(resumes(f.db)[0]?.payload).not.toHaveProperty("handoff");
     expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "running", recoveryAttempts: 0 });
@@ -215,7 +215,7 @@ test("an expired execution without an accepted result follows the existing recov
     expect((await f.work.heartbeat(f.runnerId)).fenced).toEqual([
       { runId: f.run.id, generation: 1 },
     ]);
-    expect(recoverOnStartup(f.db, f.clock.at)).toEqual([
+    expect(await recoverOnStartup(sqliteDb(f.db), f.clock.at)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
     expect(getWorkItem(f.db, f.item.id)).toMatchObject({
@@ -235,7 +235,7 @@ test("a cancelled item does not consume its accepted result after expiry", async
     f.clock.at += 60_001 + RUNNER_LEASE_GRACE_MS;
     f.db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [f.item.id]);
     await expect(f.results.read(f.run.id, 1, command.id)).rejects.toThrow();
-    expect(recoverOnStartup(f.db, f.clock.at)).toEqual([
+    expect(await recoverOnStartup(sqliteDb(f.db), f.clock.at)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
   } finally {
@@ -254,7 +254,7 @@ test("a superseding generation fences the earlier accepted result", async () => 
     await expect(f.results.read(f.run.id, 2, first.command.id)).rejects.toThrow();
     expect(await f.results.read(f.run.id, 2, second.command.id)).toBeNull();
     f.clock.at += 60_001 + RUNNER_LEASE_GRACE_MS;
-    expect(recoverOnStartup(f.db, f.clock.at)).toEqual([
+    expect(await recoverOnStartup(sqliteDb(f.db), f.clock.at)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
   } finally {

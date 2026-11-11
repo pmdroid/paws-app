@@ -470,11 +470,11 @@ describe("host suspension and clock gaps", () => {
     expect(listJobs(db).filter((job) => job.queue === "linear.catchup")).toHaveLength(1);
   });
 
-  test("SIGTERM commits WIP on the item branch before the run is left recoverable", () => {
+  test("SIGTERM commits WIP on the item branch before the run is left recoverable", async () => {
     const { db, clock } = boot();
     const { run } = startRun(db, clock);
     const commits: { branchName: string; sha: string }[] = [];
-    prepareShutdown(db, clock.now(), (item) => {
+    await prepareShutdown(sqliteDb(db), clock.now(), (item) => {
       expect(getWorkItem(db, item.id)?.state).toBe("running");
       commits.push({ branchName: item.branchName, sha: "wip-sha" });
     });
@@ -491,7 +491,7 @@ describe("host suspension and clock gaps", () => {
     clock.advance(100);
     await host.tick();
     expect(getWorkItem(db, "eng-9")?.awakeMs).toBe(0);
-    prepareShutdown(db, clock.now());
+    await prepareShutdown(sqliteDb(db), clock.now());
     expect(getWorkItem(db, "eng-9")?.state).toBe("recovering");
     await host.tick();
   });

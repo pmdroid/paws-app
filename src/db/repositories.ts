@@ -3,9 +3,6 @@ import { and, eq, isNotNull, sql } from "drizzle-orm";
 import type { RepositoryBinding } from "../core";
 import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { jsonValue } from "./json-text";
-import { orm } from "./orm";
-import { workItemRepository } from "./schema";
-import { immediate } from "./tx";
 
 export function* getWorkItemRepositorySteps(q: Q, itemId: string): Steps<RepositoryBinding | null> {
   const { workItemRepository: repositories } = q.t;
@@ -27,40 +24,11 @@ export function getWorkItemRepository(db: Database, itemId: string): RepositoryB
 }
 
 export function bindWorkItemRepository(
-  db: Database,
+  store: Db,
   itemId: string,
   repository: RepositoryBinding,
-): RepositoryBinding {
-  if (
-    !/^[a-z0-9_.-]+$/i.test(repository.owner) ||
-    !/^[a-z0-9_.-]+$/i.test(repository.repo) ||
-    [repository.owner, repository.repo].some((value) => value === "." || value === "..") ||
-    repository.remoteUrl.trim().length === 0
-  ) {
-    throw new Error("A work item repository requires an owner, repository name and remote URL");
-  }
-  return immediate(db, () => {
-    orm(db)
-      .insert(workItemRepository)
-      .values({
-        itemId,
-        owner: repository.owner,
-        repo: repository.repo,
-        remoteUrl: repository.remoteUrl,
-      })
-      .onConflictDoNothing()
-      .run();
-    const saved = getWorkItemRepository(db, itemId);
-    if (
-      saved === null ||
-      saved.owner !== repository.owner ||
-      saved.repo !== repository.repo ||
-      saved.remoteUrl !== repository.remoteUrl
-    ) {
-      throw new Error("A work item's repository cannot change after it has been bound");
-    }
-    return saved;
-  });
+): Promise<RepositoryBinding> {
+  return store.transaction((q) => bindWorkItemRepositorySteps(q, itemId, repository));
 }
 
 export function* bindWorkItemRepositorySteps(

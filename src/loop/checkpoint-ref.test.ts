@@ -14,11 +14,11 @@ import { deleteEndedCheckpointRef, sweepCheckpointRefs } from "./checkpoint-ref"
 
 const REPOSITORY = { owner: "acme", repo: "repo", remoteUrl: "https://github.com/acme/repo.git" };
 
-function setup() {
+async function setup() {
   const db = openDatabase(":memory:");
   migrate(db);
   const item = insertQueuedItem(db, { id: "item", branchName: "paws/item", now: 1 });
-  bindWorkItemRepository(db, item.id, REPOSITORY);
+  await bindWorkItemRepository(sqliteDb(db), item.id, REPOSITORY);
   const removed: { repository: RepositoryBinding; ref: string }[] = [];
   const remove = async (repository: RepositoryBinding, ref: string) => {
     removed.push({ repository, ref });
@@ -34,7 +34,7 @@ function setup() {
 
 for (const state of ["completed", "merged", "cancelled"] as const)
   test(`an item that ends ${state} has its hidden checkpoint ref deleted by the next sweep`, async () => {
-    const { db, item, removed, remove, ended } = setup();
+    const { db, item, removed, remove, ended } = await setup();
     db.run("UPDATE work_item SET state='running', version=version+1 WHERE id=?", [item.id]);
     expect(ended()).toEqual([]);
     db.run("UPDATE work_item SET state=?, version=version+1 WHERE id=?", [state, item.id]);
@@ -47,15 +47,15 @@ for (const state of ["completed", "merged", "cancelled"] as const)
     expect(listJobs(db)).toEqual([]);
   });
 
-test("a Stop records the deletion without closeStoppedPull", () => {
-  const { db, item, ended } = setup();
+test("a Stop records the deletion without closeStoppedPull", async () => {
+  const { db, item, ended } = await setup();
   applyWorkItemEvent(db, item.id, "cancel", { now: 2 });
   expect(listJobs(db).some((job) => job.queue === JOB_KIND.closeStoppedPull)).toBe(false);
   expect(ended()).toEqual([item.id]);
 });
 
 test("a delete that fails stays for the next sweep", async () => {
-  const { db, item, remove, removed, ended } = setup();
+  const { db, item, remove, removed, ended } = await setup();
   db.run("UPDATE work_item SET state='merged', version=version+1 WHERE id=?", [item.id]);
   await sweepCheckpointRefs({
     store: sqliteDb(db),
@@ -70,7 +70,7 @@ test("a delete that fails stays for the next sweep", async () => {
 });
 
 test("an item resumed before the sweep keeps its checkpoint", async () => {
-  const { db, item, removed, remove } = setup();
+  const { db, item, removed, remove } = await setup();
   db.run("UPDATE work_item SET state='cancelled', version=version+1 WHERE id=?", [item.id]);
   db.run("UPDATE work_item SET state='queued', version=version+1 WHERE id=?", [item.id]);
   expect(await deleteEndedCheckpointRef({ store: sqliteDb(db), itemId: item.id, remove })).toBe(
@@ -80,7 +80,7 @@ test("an item resumed before the sweep keeps its checkpoint", async () => {
 });
 
 test("a continuing item that took over the branch owns the checkpoint, until it ends too", async () => {
-  const { db, item, removed, remove } = setup();
+  const { db, item, removed, remove } = await setup();
   db.run("UPDATE work_item SET state='cancelled', version=version+1 WHERE id=?", [item.id]);
   const next = insertQueuedItem(db, { id: "next", branchName: "paws/item", now: 3 });
   db.run("INSERT INTO item_continuation(item_id,previous_item_id,branch) VALUES(?,?,?)", [
@@ -99,7 +99,7 @@ test("a continuing item that took over the branch owns the checkpoint, until it 
 });
 
 test("a ref that is already gone is fine", async () => {
-  const { db, item } = setup();
+  const { db, item } = await setup();
   db.run("UPDATE work_item SET state='merged', version=version+1 WHERE id=?", [item.id]);
   expect(
     await deleteEndedCheckpointRef({
@@ -111,7 +111,7 @@ test("a ref that is already gone is fine", async () => {
 });
 
 test("a continuation two steps on that still runs keeps the shared checkpoint", async () => {
-  const { db, item, removed, remove, ended } = setup();
+  const { db, item, removed, remove, ended } = await setup();
   const second = insertQueuedItem(db, { id: "second", branchName: "paws/item", now: 2 });
   const third = insertQueuedItem(db, { id: "third", branchName: "paws/item", now: 3 });
   for (const [next, previous] of [
@@ -130,7 +130,7 @@ test("a continuation two steps on that still runs keeps the shared checkpoint", 
 });
 
 test("a stop whose runner is still publishing its checkpoint waits for the next sweep", async () => {
-  const { db, item, removed, remove, ended } = setup();
+  const { db, item, removed, remove, ended } = await setup();
   const { run } = beginImplementRun(db, item.id, 2);
   db.run("PRAGMA foreign_keys=OFF");
   db.run(
@@ -152,7 +152,7 @@ test("a stop whose runner is still publishing its checkpoint waits for the next 
 });
 
 test("a repository without a GitHub binding keeps its cleanup request for a later sweep", async () => {
-  const { db, item, ended } = setup();
+  const { db, item, ended } = await setup();
   db.run("UPDATE work_item SET state='merged', version=version+1 WHERE id=?", [item.id]);
   await sweepCheckpointRefs({
     store: sqliteDb(db),

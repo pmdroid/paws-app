@@ -464,7 +464,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       if (path === "/api/workspaces/github-integration") {
         const env = secrets.statusEnv ?? process.env;
         const runtime = loadRuntime(env);
-        const activation = createWorkspaceGitHubActivation(secrets.db, runtime.env.home, env);
+        const activation = createWorkspaceGitHubActivation(store, runtime.env.home, env);
         const check = createGitHubInstallationCheck({
           home: runtime.env.home,
           env,

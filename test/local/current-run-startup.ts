@@ -48,7 +48,8 @@ export async function probeCurrentRunStartup(root: string) {
       repo: "repository",
       remoteUrl: "/unused-fixture-repository",
     };
-    if (mode !== "clarified-artifact") bindWorkItemRepository(db, item.id, repository);
+    if (mode !== "clarified-artifact")
+      await bindWorkItemRepository(sqliteDb(db), item.id, repository);
     let probes = 0;
     let launches = 0;
     const host = {

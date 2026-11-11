@@ -7,6 +7,7 @@ import {
   putWorkspaceUser,
   syncWorkspaceMember,
   type WorkspaceRole,
+  sqliteDb,
 } from "../db";
 import { createFakeTracker, REVIEW_FINDING_LABEL } from "../linear";
 import type { StatusReview, StatusReviewFinding } from "../dashboard";
@@ -54,12 +55,12 @@ function review(id = "independent-review"): StatusReview {
 }
 
 /** `null` leaves the signed-in user out of the workspace, the way a Linear guest never becomes a member. */
-function setup(role: WorkspaceRole | null = "member") {
+async function setup(role: WorkspaceRole | null = "member") {
   const db = openDatabase(":memory:");
   migrate(db);
   for (const id of ["PAS-633", "PAS-700"]) {
     insertQueuedItem(db, { id, sessionKey: `ses_${id}` });
-    bindWorkItemRepository(db, id, {
+    await bindWorkItemRepository(sqliteDb(db), id, {
       owner: "acme",
       repo: "widgets",
       remoteUrl: "https://github.com/acme/widgets.git",
@@ -136,7 +137,7 @@ const fileOld = (itemId = "PAS-633") => ({
 });
 
 test("filing creates one issue in the item's team and project, in Triage, labelled and related", async () => {
-  const { tracker, post, stored } = setup();
+  const { tracker, post, stored } = await setup();
   const response = await post(fileOld());
   expect(response?.status).toBe(200);
   expect(await response!.json()).toEqual({
@@ -188,7 +189,7 @@ test("filing creates one issue in the item's team and project, in Triage, labell
 });
 
 test("a team without Triage files into Backlog", async () => {
-  const { tracker, post } = setup();
+  const { tracker, post } = await setup();
   tracker.findingIssueTargets.set("lin-item-PAS-633", {
     teamId: "team-pas",
     projectId: null,
@@ -202,7 +203,7 @@ test("a team without Triage files into Backlog", async () => {
 });
 
 test("a second click, or the same finding on another item, returns the issue and files nothing", async () => {
-  const { tracker, post, stored } = setup();
+  const { tracker, post, stored } = await setup();
   await post(fileOld());
   const again = await post(fileOld());
   expect(await again!.json()).toEqual({
@@ -217,7 +218,7 @@ test("a second click, or the same finding on another item, returns the issue and
 });
 
 test("two clicks at once file one issue", async () => {
-  const { tracker, post } = setup();
+  const { tracker, post } = await setup();
   const [first, second] = await Promise.all([post(fileOld()), post(fileOld())]);
   expect(await first!.json()).toMatchObject({ identifier: "FAKE-1" });
   expect(await second!.json()).toMatchObject({ identifier: "FAKE-1" });
@@ -226,7 +227,7 @@ test("two clicks at once file one issue", async () => {
 
 // A Linear guest never gets a workspace session, so the route only has to refuse a revoked member.
 test("a revoked member gets 403 and nothing is filed", async () => {
-  const revoked = setup();
+  const revoked = await setup();
   syncWorkspaceMember(revoked.db, {
     workspaceId: "ws",
     userId: "user-1",
@@ -245,7 +246,7 @@ test("a revoked member gets 403 and nothing is filed", async () => {
 });
 
 test("a missing CSRF token or another origin is refused", async () => {
-  const { tracker, post, stored } = setup();
+  const { tracker, post, stored } = await setup();
   expect((await post(fileOld(), { "x-paws-csrf": "" }))?.status).toBe(403);
   expect((await post(fileOld(), { origin: "https://evil.example" }))?.status).toBe(403);
   expect(tracker.findingIssueRequests).toEqual([]);
@@ -253,7 +254,7 @@ test("a missing CSRF token or another origin is refused", async () => {
 });
 
 test("a Linear error shows its message and stores nothing", async () => {
-  const { tracker, post, stored } = setup();
+  const { tracker, post, stored } = await setup();
   tracker.findingIssueFailures.push(new Error("Linear rate limit reached"));
   const response = await post(fileOld());
   expect(response?.status).toBe(502);
@@ -265,7 +266,7 @@ test("a Linear error shows its message and stores nothing", async () => {
 });
 
 test("only a pre-existing finding of a visible item can be filed", async () => {
-  const { tracker, post } = setup();
+  const { tracker, post } = await setup();
   const blocking = await post({
     ...fileOld(),
     location: BLOCKING.location,

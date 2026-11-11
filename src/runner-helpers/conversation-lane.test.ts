@@ -57,7 +57,7 @@ async function fixture(version: string | null, conversations?: number) {
       teamId: "team",
       observedAtMs: now,
     });
-  recordRunnerCapacity(db, "runner", 1, 1, conversations);
+  await recordRunnerCapacity(sqliteDb(db), "runner", 1, 1, conversations);
   if (version)
     await recordRunnerHostStatus(sqliteDb(db), "runner", { runnerVersion: version }, now);
   const helpers = createRunnerHelpers({

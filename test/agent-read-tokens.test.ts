@@ -30,7 +30,7 @@ function fixture(options: { fail?: boolean; revokeFails?: boolean; stored?: stri
   };
   const tokens = createAgentReadTokens({
     github,
-    installationForRepository: (repository) => (repository === "acme/monorepo" ? "7" : null),
+    installationForRepository: async (repository) => (repository === "acme/monorepo" ? "7" : null),
     async revoke(token) {
       revoked.push(token);
       if (options.revokeFails) throw new Error("installation token revoke failed with status 500");

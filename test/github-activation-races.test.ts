@@ -23,7 +23,7 @@ for (const operation of ["token", "botIdentity", "runner", "installation"] as co
       installationId: "10",
       generation: 1,
     };
-    const resolve = () => ({ ...active });
+    const resolve = async () => ({ ...active });
     const held = Promise.withResolvers<void>();
     const entered = Promise.withResolvers<void>();
     let pause = true;

@@ -56,7 +56,7 @@ export function createHostedGitHubConnect(options: {
   const origin = new URL(options.origin).origin;
   if (new URL(origin).protocol !== "https:")
     throw new Error("Hosted GitHub connect requires HTTPS.");
-  const activation = createWorkspaceGitHubActivation(db, options.home, options.env);
+  const activation = createWorkspaceGitHubActivation(store, options.home, options.env);
   return async (request: Request): Promise<Response | null> => {
     const url = new URL(request.url);
     if (![START, CALLBACK].includes(url.pathname)) return null;

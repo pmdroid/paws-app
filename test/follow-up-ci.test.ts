@@ -147,7 +147,7 @@ async function waitingTask(
   });
   await orchestrator.onLinearEvent(linearEvent("created", null));
   itemId = getLinearSession(db, "session")!.activeItemId!;
-  bindWorkItemRepository(db, itemId, {
+  await bindWorkItemRepository(sqliteDb(db), itemId, {
     owner: "acme",
     repo: "one",
     remoteUrl: "https://github.com/acme/one.git",

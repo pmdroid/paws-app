@@ -1,3 +1,4 @@
+import type { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { JOB_KIND } from "../src/core";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -185,25 +186,25 @@ test("revoke and restore require admin, origin and CSRF; self and last admin sta
     expect(await invalid.json()).toEqual({
       error: "Choose a workspace member and set revoked to true or false.",
     });
-    expect(() =>
-      changeWorkspaceRevocation(f.db, {
+    await expect(
+      changeWorkspaceRevocation(sqliteDb(f.db), {
         workspaceId: "workspace",
         actorId: "admin",
         userId: "admin",
         revoked: true,
         now: Date.now(),
       }),
-    ).toThrow("You cannot revoke your own access.");
+    ).rejects.toThrow("You cannot revoke your own access.");
     expect(workspaceMemberUsable(workspaceMember(f.db, "workspace", "admin"))).toBe(true);
-    expect(() =>
-      changeWorkspaceRevocation(f.db, {
+    await expect(
+      changeWorkspaceRevocation(sqliteDb(f.db), {
         workspaceId: "workspace",
         actorId: "member",
         userId: "admin",
         revoked: true,
         now: Date.now(),
       }),
-    ).toThrow("Workspace administration is required.");
+    ).rejects.toThrow("Workspace administration is required.");
   });
 });
 
@@ -213,15 +214,15 @@ test("a failed Stop rolls back the whole revocation", async () => {
     f.db.run(
       "CREATE TRIGGER fail_stop BEFORE UPDATE ON work_item BEGIN SELECT RAISE(ABORT,'fixture Stop failure'); END",
     );
-    expect(() =>
-      changeWorkspaceRevocation(f.db, {
+    await expect(
+      changeWorkspaceRevocation(sqliteDb(f.db), {
         workspaceId: "workspace",
         actorId: "admin",
         userId: "member",
         revoked: true,
         now: Date.now(),
       }),
-    ).toThrow("Work changed before access could be revoked.");
+    ).rejects.toThrow("Work changed before access could be revoked.");
     expect(workspaceMember(f.db, "workspace", "member")?.revokedAt).toBeNull();
     expect(
       f.db.query("SELECT 1 FROM workspace_session WHERE user_id='member'").get(),
@@ -267,7 +268,7 @@ test("revocation uses resolved delegator ownership, not the session creator", as
         id,
       ]);
     }
-    const stopped = changeWorkspaceRevocation(db, {
+    const stopped = await changeWorkspaceRevocation(sqliteDb(db), {
       workspaceId: "workspace",
       actorId: "admin",
       userId: "member",
@@ -298,7 +299,7 @@ test("revocation stops accepted work without closing its pull request", async ()
       pullUrl: "https://example.invalid/pull/87",
       openedAt: Date.now(),
     });
-    changeWorkspaceRevocation(db, {
+    await changeWorkspaceRevocation(sqliteDb(db), {
       workspaceId: "workspace",
       actorId: "admin",
       userId: "member",
@@ -437,7 +438,7 @@ test("revocation stops explicit owners and delegators without session metadata",
         });
       if (running) beginImplementRun(db, id, now);
     }
-    const stopped = changeWorkspaceRevocation(db, {
+    const stopped = await changeWorkspaceRevocation(sqliteDb(db), {
       workspaceId: "workspace",
       actorId: "admin",
       userId: "member",
@@ -460,7 +461,7 @@ test("revocation stops explicit owners and delegators without session metadata",
 test("revoking an idle member detaches their VM runner and notifies the connection owner after commit", async () => {
   let calls = 0;
   let committed = false;
-  let database: Parameters<typeof changeWorkspaceRevocation>[0];
+  let database!: Database;
   await fixtureTest(
     async (f) => {
       database = f.db;

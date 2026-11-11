@@ -39,7 +39,10 @@ afterEach(() => {
 });
 
 async function fixture(
-  placement?: (db: Awaited<ReturnType<typeof openDatabase>>, now: () => number) => RunnerPlacement,
+  placement?: (
+    db: Awaited<ReturnType<typeof openDatabase>>,
+    now: () => number,
+  ) => RunnerPlacement | Promise<RunnerPlacement>,
 ) {
   const root = mkdtempSync(join(tmpdir(), "paws-helper-backend-"));
   const db = openDatabase(join(root, "paws.db"));
@@ -83,7 +86,7 @@ async function fixture(
     helpers,
     now: () => now,
     pollIntervalMs: 1,
-    placement: placement?.(db, () => now),
+    placement: await placement?.(db, () => now),
     journal: (line) => journaled.push(line),
   });
   const input: RunAgentOptions = {
@@ -1083,13 +1086,14 @@ const HELPER_LANE_BUSY = "Queued: the runner's helper lane is busy. Paws retries
 
 /** The answer task's own placement over two runners: agentbox and goldbox, two slots each. */
 async function answerTask() {
-  const f = await fixture((db, now) => {
+  const f = await fixture(async (db, now) => {
     db.run("UPDATE linear_session SET issue_id='issue',creator_id='owner'");
     db.run(
       "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) SELECT 'goldbox',workspace_id,owner_user_id,'goldbox','active',created_at,last_seen_at FROM runner WHERE id='runner'",
     );
     db.run("UPDATE runner SET name='agentbox' WHERE id='runner'");
-    for (const runnerId of ["runner", "goldbox"]) recordRunnerCapacity(db, runnerId, 2, 2, 2);
+    for (const runnerId of ["runner", "goldbox"])
+      await recordRunnerCapacity(sqliteDb(db), runnerId, 2, 2, 2);
     return createRunnerPlacement({ store: sqliteDb(db), now });
   });
   const fill = (runnerId: string) => {

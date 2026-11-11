@@ -100,7 +100,7 @@ export async function acceptGitHubDelivery(
   // Callbacks can resolve credentials and start an identity-cache refresh. Run them
   // before taking the write lock; only synchronous database effects belong below.
   const wait = comments?.commentWait?.();
-  const recordComment = prepareCommentDelivery(delivery.event, body, now, comments);
+  const recordComment = await prepareCommentDelivery(delivery.event, body, now, comments);
   const accepted = await store.transaction(function* (q) {
     if (!(yield* recordGitHubDeliverySteps(q, delivery, now))) return null;
     const review = yield* recordReviewDeliverySteps(q, delivery.event, body, now, wait);

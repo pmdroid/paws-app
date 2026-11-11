@@ -107,7 +107,7 @@ export async function createExecutionControlsFixture(
     VALUES('other',?,'other','other','Unrelated item','queued','paws/other',1,?,?)`,
     [item.delegationId, now, item.sessionKey],
   );
-  bindWorkItemRepository(db, "unmapped", {
+  await bindWorkItemRepository(sqliteDb(db), "unmapped", {
     owner: "fixture",
     repo: "unmapped",
     remoteUrl: "https://example.invalid/fixture/unmapped",
@@ -353,8 +353,8 @@ export async function probeExecutionControls(root: string) {
       body: JSON.stringify({ itemId: "controlled", action: "stop" }),
     });
     const verified = requestWorkspaceSession(db, stopRequest)!;
-    const allowed = workspaceSessionIds(
-      db,
+    const allowed = await workspaceSessionIds(
+      sqliteDb(db),
       verified.principal.workspaceId,
       verified.principal.userId,
       "client",

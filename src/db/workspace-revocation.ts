@@ -1,11 +1,10 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, count, eq, inArray, isNull, max, notInArray, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { TERMINAL_WORK_ITEM_STATES } from "../core";
 import { applyLinearCommandSteps } from "./commands";
 import { commandInstance } from "./command-delivery";
 import { emitJobReady } from "./jobs";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import type { Q, Steps, Db } from "./db";
 import { delegatedLinearUserIdSql } from "./linear-sessions";
 import {
   auditWorkspaceAccessSteps,
@@ -72,14 +71,15 @@ export function* changeWorkspaceRevocationSteps(
   return stopped;
 }
 
-export function changeWorkspaceRevocation(db: Database, input: RevocationChange): string[] {
+export async function changeWorkspaceRevocation(
+  store: Db,
+  input: RevocationChange,
+): Promise<string[]> {
   const notifications = { ready: false };
-  const stopped = settled(
-    sqliteDb(db).transaction((q) =>
-      changeWorkspaceRevocationSteps(q, input, commandInstance(db), notifications),
-    ),
+  const stopped = await store.transaction((q) =>
+    changeWorkspaceRevocationSteps(q, input, commandInstance(store), notifications),
   );
-  if (notifications.ready) emitJobReady(db);
+  if (notifications.ready) emitJobReady(store);
   return stopped;
 }
 

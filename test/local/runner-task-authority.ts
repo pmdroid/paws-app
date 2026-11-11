@@ -134,7 +134,7 @@ export async function probeRunnerTaskAuthority(
           };
         },
       },
-      installationForRepository: () => "fixture-installation",
+      installationForRepository: async () => "fixture-installation",
     },
     onError(error) {
       throw error;
@@ -280,7 +280,7 @@ export async function probeRunnerTaskAuthority(
         });
         bindLinearSessionTask(db, sessionId, item.delegationId, { actorId: "task-owner" });
         saveTaskMode(db, item.id, purpose, 0, withRepository);
-        if (withRepository) bindWorkItemRepository(db, item.id, repository);
+        if (withRepository) await bindWorkItemRepository(sqliteDb(db), item.id, repository);
         const scope = await coordinator.work.scopeTask(run.id, workspace.id);
         const command: Extract<RunnerCommand, { type: "task" }> = {
           id: workspaceId(),

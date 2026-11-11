@@ -43,15 +43,15 @@ export async function workspaceWithRunners(db: Database) {
     );
     db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [id]);
     db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [id]);
-    recordRunnerCapacity(db, id, slots, undefined, undefined, NOW);
+    await recordRunnerCapacity(sqliteDb(db), id, slots, undefined, undefined, NOW);
     await recordRunnerRepositories(sqliteDb(db), id, repositories, NOW);
     return id;
   };
-  const queue = (id: string) => {
+  const queue = async (id: string) => {
     const [owner, repo] = REPOSITORY.split("/") as [string, string];
     const sessionKey = `session-${id}`;
     insertQueuedItem(db, { id, now: NOW, sessionKey });
-    bindWorkItemRepository(db, id, {
+    await bindWorkItemRepository(sqliteDb(db), id, {
       owner,
       repo,
       remoteUrl: `https://github.com/${REPOSITORY}.git`,

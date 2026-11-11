@@ -289,15 +289,17 @@ export async function probePublicationReadiness(root: string) {
         now: () => f.clock.now(),
       });
       f.setEffects(
-        (changes) => {
+        async (changes) => {
           if (changes.specChangedItemIds.includes(f.itemId))
             assert(
-              applyLinearCommand(f.db, {
-                type: "cancel",
-                itemId: f.itemId,
-                source: "linear",
-                requestedAt: f.clock.now(),
-              }).applied,
+              (
+                await applyLinearCommand(sqliteDb(f.db), {
+                  type: "cancel",
+                  itemId: f.itemId,
+                  source: "linear",
+                  requestedAt: f.clock.now(),
+                })
+              ).applied,
             );
         },
         async (changes) => {

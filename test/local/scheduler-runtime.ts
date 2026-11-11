@@ -44,7 +44,7 @@ export async function probeSchedulerRuntime(
       "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES(?,'epic',?,?,?, ?,?,?,1000,'session')",
       [id, id, id, id, state, `paws/${id}`, position],
     );
-    bindWorkItemRepository(db, id, repository);
+    await bindWorkItemRepository(sqliteDb(db), id, repository);
     await sqliteDb(db).run((q) =>
       saveSchedulingContextSteps(q, { itemId: id, projectId: "project", paths: ["src/shared"] }),
     );
@@ -141,7 +141,7 @@ export async function probeSchedulerRuntime(
   migrate(defaults);
   try {
     insertQueuedItem(defaults, { id: "default", now: clock.now() });
-    bindWorkItemRepository(defaults, "default", repository);
+    await bindWorkItemRepository(sqliteDb(defaults), "default", repository);
     await sqliteDb(defaults).run((q) =>
       saveSchedulingContextSteps(q, {
         itemId: "default",

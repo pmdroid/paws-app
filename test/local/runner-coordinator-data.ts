@@ -161,7 +161,7 @@ export async function probeRunnerCoordinatorData(
         client: createFetchGitHubClient(fetch, `http://127.0.0.1:${githubApi.port}`),
         now: () => new Date(now),
       }),
-      installationForRepository: (repository: string) => {
+      installationForRepository: async (repository: string) => {
         assert.equal(repository, "fixture/repository");
         return installation;
       },
@@ -217,7 +217,7 @@ export async function probeRunnerCoordinatorData(
       remoteUrl: "https://github.com/fixture/repository.git",
       baseSha: "a".repeat(40),
     };
-    bindWorkItemRepository(db, item.id, repository);
+    await bindWorkItemRepository(sqliteDb(db), item.id, repository);
     db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
       workspace.id,
       "fixture/repository",

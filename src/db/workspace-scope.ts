@@ -1,9 +1,8 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, exists, inArray, isNotNull, not, sql, type SQL } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import type { Q, Steps, Db } from "./db";
 import { workspaceMemberUsable, workspaceMemberSteps } from "./workspace";
 import { teamRepositoryAllowedSql } from "./repository-catalog";
-import { getLinearSessionAccess, getLinearSessionAccessSteps } from "./linear-access";
+import { getLinearSessionAccessSteps } from "./linear-access";
 
 export function sessionRepositoryAllowed(repository: SQL): SQL {
   const parts = teamRepositoryAllowedSql("workspace.id", "linear_session.team_id", "\0").split(
@@ -76,14 +75,12 @@ export function* workspaceSessionIdsSteps(
 }
 
 export function workspaceSessionIds(
-  db: Database,
+  store: Db,
   workspaceId: string,
   userId: string,
   clientId: string,
-): string[] {
-  return settled(
-    sqliteDb(db).run((q) => workspaceSessionCandidatesSteps(q, workspaceId, userId, clientId)),
-  ).filter((id) => getLinearSessionAccess(db, id) === "allowed");
+): Promise<string[]> {
+  return store.run((q) => workspaceSessionIdsSteps(q, workspaceId, userId, clientId));
 }
 
 export function* sessionRepositoriesAllowedSteps(

@@ -49,7 +49,7 @@ import {
 
 export type RunnerRepositoryAccessOptions = {
   github: GitHubApp;
-  installationForRepository(repository: string): string | null;
+  installationForRepository(repository: string): Promise<string | null>;
   checkpointBot?: (repository: string) => Promise<{ appId: string; login: string; id: number }>;
   revokeToken?: (token: string) => Promise<void>;
 };
@@ -247,7 +247,7 @@ export async function openRunnerCoordinator(options: {
     },
   });
   const timer = setInterval(() => {
-    control.expireConnectionsAsync().catch((error: unknown) => {
+    control.expireConnections().catch((error: unknown) => {
       journalCaught(error, "runner-coordinator.openRunnerCoordinator.expireConnections", null);
       options.onError(error);
       void listener

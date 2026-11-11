@@ -211,11 +211,11 @@ test("a raised capacity and a resumed runner wake parked items; an unchanged rep
   const runAt = () => getJob(db, jobId)!.runAt;
   const parkedUntil = NOW + 60_000;
 
-  recordRunnerCapacity(db, agentbox, 1, undefined, undefined, NOW + 1);
+  await recordRunnerCapacity(sqliteDb(db), agentbox, 1, undefined, undefined, NOW + 1);
   await recordRunnerRepositories(sqliteDb(db), agentbox, [REPOSITORY], NOW + 1);
   expect(runAt()).toBe(parkedUntil);
 
-  recordRunnerCapacity(db, agentbox, 2, undefined, undefined, NOW + 2);
+  await recordRunnerCapacity(sqliteDb(db), agentbox, 2, undefined, undefined, NOW + 2);
   expect(runAt()).toBe(NOW + 2);
 
   db.run("UPDATE job SET run_at=? WHERE id=?", [parkedUntil, jobId]);

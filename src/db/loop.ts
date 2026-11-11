@@ -44,7 +44,7 @@ type Sleeper = (ms: number, signal?: AbortSignal) => Promise<void>;
 export type JobContext = {
   signal: AbortSignal;
   isCurrent(): boolean;
-  extendLease: (leaseMs?: number) => boolean;
+  extendLease: (leaseMs?: number) => Promise<boolean>;
 };
 
 export type JobHandler = (job: Job, context: JobContext) => Promise<void> | void;
@@ -102,7 +102,7 @@ export class JobLoop {
    * process was busy (event-loop lag) let the next claim take the running job again, and that
    * second activation ended the first one's claim (PAS-1491).
    */
-  private readonly renewals = new Map<number, () => boolean>();
+  private readonly renewals = new Map<number, () => Promise<boolean>>();
   private readonly wakers = new Set<() => void>();
   private anyInFlight = 0;
   private controlInFlight = 0;
@@ -258,7 +258,7 @@ export class JobLoop {
     // Renewed after `now`, so a claim at `now` cannot see a job of this loop as expired.
     for (const [id, renew] of [...this.renewals])
       try {
-        renew();
+        await renew();
       } catch (error) {
         journalCaught(error, "loop.tick.renewLease", null, `job ${id}`);
       }
@@ -320,9 +320,9 @@ export class JobLoop {
     const context: JobContext = {
       signal: controller.signal,
       isCurrent: current,
-      extendLease: (duration = leaseMs) => {
-        if (!current()) return false;
-        if (extendJobLease(this.db, job, this.clock.now(), duration)) return true;
+      extendLease: async (duration = leaseMs) => {
+        if (!(await stillCurrent())) return false;
+        if (await extendJobLease(this.store, job, this.clock.now(), duration)) return true;
         controller.abort(new Error("Job claim renewal failed"));
         return false;
       },
@@ -330,7 +330,9 @@ export class JobLoop {
     const renewal = setInterval(
       () => {
         this.noteTick();
-        context.extendLease();
+        context.extendLease().catch((error: unknown) => {
+          journalCaught(error, "loop.tick.renewLease", null, `job ${job.id}`);
+        });
       },
       Math.max(1, Math.min(10_000, leaseMs / 3)),
     );

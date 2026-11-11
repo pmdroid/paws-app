@@ -61,10 +61,12 @@ describe("the runner lease grace", () => {
   });
 
   for (const [label, away] of INSIDE) {
-    test(`recovery keeps the run ${label}`, () => {
+    test(`recovery keeps the run ${label}`, async () => {
       const { clock, db, item, run } = leased();
       clock.advance(away);
-      expect(recoverOnStartup(db, clock.now())).toMatchObject([{ type: "resume", reattach: true }]);
+      expect(await recoverOnStartup(sqliteDb(db), clock.now())).toMatchObject([
+        { type: "resume", reattach: true },
+      ]);
       expect(getWorkItem(db, item.id)).toMatchObject({ state: "running", recoveryAttempts: 0 });
       expect(getRun(db, run.id)?.status).toBe("active");
     });
@@ -85,16 +87,16 @@ describe("the runner lease grace", () => {
     });
   }
 
-  test("recovery fences the run past the grace", () => {
+  test("recovery fences the run past the grace", async () => {
     const { clock, db, item } = leased();
     clock.advance(PAST);
-    expect(recoverOnStartup(db, clock.now())).toEqual([
+    expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([
       { type: "resume", freshSession: true, checkpoint },
     ]);
     expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
   });
 
-  test("capacity frees the lease past the grace and closes the run that never ended", () => {
+  test("capacity frees the lease past the grace and closes the run that never ended", async () => {
     const { clock, db, run, item } = leased();
     clock.advance(PAST);
     expect(runnerOccupancy(db, "runner", clock.now())).toEqual({ capacity: 1, occupied: 0 });
@@ -102,7 +104,7 @@ describe("the runner lease grace", () => {
     // Counting is read-only, including the caller's excluded run.
     expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now(), run.id)).toBe(0);
     expect(getRun(db, run.id)?.status).toBe("active");
-    expect(closeExpiredRunnerLeases(db, clock.now())).toEqual([run.id]);
+    expect(await closeExpiredRunnerLeases(sqliteDb(db), clock.now())).toEqual([run.id]);
     expect(getRun(db, run.id)?.status).toBe("lost");
     expect(getWorkItem(db, item.id)?.state).toBe("recovering");
     expect(
@@ -114,7 +116,7 @@ describe("the runner lease grace", () => {
     ).toBe(clock.now());
   });
 
-  test("the sweep leaves expired work to its live placement owner", () => {
+  test("the sweep leaves expired work to its live placement owner", async () => {
     const { db, clock, run } = leased();
     const item = getRun(db, run.id)!;
     enqueueJob(db, { queue: "run.resume", payload: { itemId: item.itemId }, now: clock.now() });
@@ -125,7 +127,7 @@ describe("the runner lease grace", () => {
     })!;
     expect(job).not.toBeNull();
     clock.advance(PAST);
-    expect(closeExpiredRunnerLeases(db, clock.now())).toEqual([]);
+    expect(await closeExpiredRunnerLeases(sqliteDb(db), clock.now())).toEqual([]);
     expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now(), run.id)).toBe(0);
     expect(getRun(db, run.id)?.status).toBe("active");
     expect(db.query("SELECT ended_at FROM runner_work WHERE run_id=?").get(run.id)).toEqual({
@@ -135,18 +137,18 @@ describe("the runner lease grace", () => {
   });
 
   for (const state of ["verifying", "merge_queue"] as const) {
-    test(`expired abandoned ${state} work transitions with its lost run`, () => {
+    test(`expired abandoned ${state} work transitions with its lost run`, async () => {
       const { db, clock, run, item } = leased();
       applyWorkItemEvent(db, item.id, "turn_ended");
       if (state === "merge_queue") applyWorkItemEvent(db, item.id, "closeout_accepted");
       clock.advance(PAST);
-      expect(closeExpiredRunnerLeases(db, clock.now())).toEqual([run.id]);
+      expect(await closeExpiredRunnerLeases(sqliteDb(db), clock.now())).toEqual([run.id]);
       expect(getRun(db, run.id)?.status).toBe("lost");
       expect(getWorkItem(db, item.id)?.state).toBe(
         state === "merge_queue" ? "verifying" : "recovering",
       );
       expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now())).toBe(0);
-      expect(closeExpiredRunnerLeases(db, clock.now())).toEqual([]);
+      expect(await closeExpiredRunnerLeases(sqliteDb(db), clock.now())).toEqual([]);
       db.close();
     });
   }
@@ -201,11 +203,13 @@ describe("the runner lease grace", () => {
     db.run("UPDATE runner_result SET command_id='command' WHERE run_id=?", [run.id]);
     expect(await runnerHoldsRunWork(sqliteDb(db), run.id, clock.now())).toBe(true);
     expect(await runnerWorkHasResult(sqliteDb(db), run.id)).toBe(true);
-    expect(closeExpiredRunnerLeases(db, clock.now())).toEqual([]);
+    expect(await closeExpiredRunnerLeases(sqliteDb(db), clock.now())).toEqual([]);
     expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now())).toBe(1);
     expect(getRun(db, run.id)?.status).toBe("active");
     expect(await runnerHoldsRunWork(sqliteDb(db), run.id, clock.now(), true)).toBe(false);
-    expect(recoverOnStartup(db, clock.now())).toMatchObject([{ type: "resume", reattach: true }]);
+    expect(await recoverOnStartup(sqliteDb(db), clock.now())).toMatchObject([
+      { type: "resume", reattach: true },
+    ]);
     expect(getWorkItem(db, item.id)?.state).toBe("running");
     expect(getRun(db, run.id)?.status).toBe("active");
     db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [clock.now(), run.id]);

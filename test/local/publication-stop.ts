@@ -22,6 +22,8 @@ import {
   applyWorkItemEvent,
   immediate,
   sqliteDb,
+  settled,
+  applyLinearCommandSteps,
 } from "../../src/db";
 import { closeStoppedPull, createFetchGitHubClient } from "../../src/github";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../../src/linear";
@@ -148,7 +150,7 @@ export async function probePublicationStop(
     );
     ensureLinearSession(db, { sessionId: "session", issueId: "issue", now: clock.now() });
     bindLinearSessionTask(db, "session", "epic");
-    bindWorkItemRepository(db, "item", repository);
+    await bindWorkItemRepository(sqliteDb(db), "item", repository);
     branch = getWorkItem(db, "item")!.branchName;
     enqueueJob(db, {
       queue: JOB_KIND.merge,
@@ -158,12 +160,16 @@ export async function probePublicationStop(
     });
     assert.throws(() =>
       immediate(db, () => {
-        applyLinearCommand(db, {
-          type: "stop",
-          source: "dashboard",
-          itemId: "item",
-          requestedAt: clock.now(),
-        });
+        settled(
+          sqliteDb(db).transaction((q) =>
+            applyLinearCommandSteps(q, {
+              type: "stop",
+              source: "dashboard",
+              itemId: "item",
+              requestedAt: clock.now(),
+            }),
+          ),
+        );
         throw new Error("Rollback Stop");
       }),
     );
@@ -201,8 +207,8 @@ export async function probePublicationStop(
         calls.length === 0,
       { calls, joined },
     );
-    applyLinearCommand(
-      db,
+    await applyLinearCommand(
+      sqliteDb(db),
       { type: "stop", source: "dashboard", itemId: "item", requestedAt: clock.now() },
       clock.now(),
       undefined,
@@ -321,7 +327,7 @@ export async function probePublicationStop(
     );
     ensureLinearSession(db, { sessionId: "pending-session", issueId: "pending" });
     bindLinearSessionTask(db, "pending-session", "pending");
-    bindWorkItemRepository(db, "pending-item", repository);
+    await bindWorkItemRepository(sqliteDb(db), "pending-item", repository);
     pendingEpics.add("pending");
     const pendingJob = enqueueJob(db, {
       queue: JOB_KIND.merge,
@@ -546,7 +552,7 @@ export async function probePublicationStop(
     );
     ensureLinearSession(db, { sessionId: "owned-refresh-session", issueId: "owned-refresh" });
     bindLinearSessionTask(db, "owned-refresh-session", "owned-refresh");
-    bindWorkItemRepository(db, "owned-refresh-item", repository);
+    await bindWorkItemRepository(sqliteDb(db), "owned-refresh-item", repository);
     const ownedRun = insertRun(db, {
       itemId: "owned-refresh-item",
       kind: "implement",

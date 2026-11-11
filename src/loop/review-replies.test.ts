@@ -79,7 +79,7 @@ const THREADS: FakeReviewThread[] = [
 ];
 
 const FILTER: PullCommentFilter = {
-  appId: () => "42",
+  appId: async () => "42",
   appLogin: () => "paws-test[bot]",
   ignoredBots: () => [],
   ignoredMarkers: () => [],
@@ -89,7 +89,7 @@ async function setup() {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
-  bindWorkItemRepository(db, "eng-1", {
+  await bindWorkItemRepository(sqliteDb(db), "eng-1", {
     owner: "acme",
     repo: "one",
     remoteUrl: "https://github.com/acme/one.git",
