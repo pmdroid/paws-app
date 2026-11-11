@@ -1,7 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { PGlite } from "@electric-sql/pglite";
-import { citext } from "@electric-sql/pglite/contrib/citext";
-import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pawsPaths } from "../src/config";
@@ -15,6 +12,7 @@ import {
 } from "../src/db";
 import { setJournalSink } from "../src/journal";
 import { tempHome } from "./helpers";
+import { pgliteServer } from "./pglite";
 
 const NOW = new Date("2026-11-11T03:04:05.678Z");
 
@@ -45,24 +43,20 @@ describe("openPawsStore", () => {
   }, 30_000);
 
   test("with a url migrates the Postgres there and runs on it", async () => {
-    const pg = await PGlite.create({ extensions: { citext } });
-    const server = new PGLiteSocketServer({ db: pg, host: "127.0.0.1", port: 0 });
-    await server.start();
+    const server = await pgliteServer();
     try {
-      const url = `postgres://postgres@${server.getServerConn()}/postgres`;
-      const { store, close } = await openPawsStore({ url, pgliteDir: join(tempHome(), "unused") });
+      const { store, close } = await openPawsStore({
+        url: server.url,
+        pgliteDir: join(tempHome(), "unused"),
+      });
       try {
         expect(await roundTrip(store, "server")).toBe(42);
       } finally {
         await close();
       }
-      const migrations = await pg.query<{ n: number }>(
-        "SELECT count(*)::int AS n FROM drizzle.__drizzle_migrations",
-      );
-      expect(migrations.rows[0]!.n).toBeGreaterThan(0);
+      expect(await server.store.run((q) => syncCursorSteps(q, "server"))).toBe(42);
     } finally {
-      await server.stop();
-      await pg.close();
+      await server.close();
     }
   });
 
