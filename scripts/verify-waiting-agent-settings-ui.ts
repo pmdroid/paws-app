@@ -28,7 +28,7 @@ const root = mkdtempSync(join(tmpdir(), "paws-waiting-settings-"));
 const db = openDatabase(join(root, "paws.sqlite"));
 migrate(db);
 const orchestrator = new Orchestrator({
-  db,
+  store: sqliteDb(db),
   pawsRoot: root,
   jobs: new JobLoop(db, systemClock),
   outbox: new OutboxDispatcher(db, systemClock),
