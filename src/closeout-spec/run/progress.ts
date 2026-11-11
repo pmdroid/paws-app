@@ -53,14 +53,14 @@ export type CloseoutProgressStep = {
 };
 
 export interface CloseoutProgress {
-  begin(identity: CloseoutProgressIdentity): void;
-  step(identity: CloseoutProgressIdentity, step: CloseoutProgressStep): void;
+  begin(identity: CloseoutProgressIdentity): Promise<void>;
+  step(identity: CloseoutProgressIdentity, step: CloseoutProgressStep): Promise<void>;
   output(
     identity: CloseoutProgressIdentity,
     stepId: string,
     stream: CloseoutOutputStream,
     text: string,
     truncated: boolean,
-  ): void;
-  finish(identity: CloseoutProgressIdentity, decision: string): void;
+  ): Promise<void>;
+  finish(identity: CloseoutProgressIdentity, decision: string): Promise<void>;
 }

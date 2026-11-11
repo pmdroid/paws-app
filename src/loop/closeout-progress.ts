@@ -9,11 +9,11 @@ import {
   type Db,
 } from "../db";
 
-type StoredCloseoutProgress = {
-  [K in keyof CloseoutProgress]: (...args: Parameters<CloseoutProgress[K]>) => unknown;
-};
-
-export function createDbCloseoutProgress(store: Db, itemId: string, now: () => number = Date.now) {
+export function createDbCloseoutProgress(
+  store: Db,
+  itemId: string,
+  now: () => number = Date.now,
+): CloseoutProgress {
   return {
     begin: (identity) =>
       store.transaction(function* (q) {
@@ -36,19 +36,19 @@ export function createDbCloseoutProgress(store: Db, itemId: string, now: () => n
       ),
     finish: (identity, decision) =>
       store.transaction((q) => finishCloseoutProgressSteps(q, itemId, identity, decision, now())),
-  } satisfies StoredCloseoutProgress;
+  };
 }
 
 const PUBLISH_ATTEMPTS = 3;
 const UNSTORED = "Paws could not store this check's evidence in the object store.";
 
 export function publishingCloseoutProgress(
-  inner: StoredCloseoutProgress,
+  inner: CloseoutProgress,
   publish: () => Promise<void>,
 ): CloseoutProgress & { settled(): Promise<void> } {
   let chain: Promise<void> = Promise.resolve();
   let failure: { error: unknown } | null = null;
-  const queue = (action: () => unknown) => {
+  const queue = (action: () => unknown): Promise<void> => {
     chain = chain
       .then(async () => {
         await action();
@@ -56,6 +56,7 @@ export function publishingCloseoutProgress(
       .catch((error: unknown) => {
         failure ??= { error };
       });
+    return chain;
   };
   const stored = async (): Promise<boolean> => {
     let last: unknown;
