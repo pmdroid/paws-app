@@ -29,7 +29,12 @@ async function fixture() {
   } as unknown as RunnerWork;
   const objects = createFakeRunFileObjects();
   const instance = (root = mkdtempSync(join(tmpdir(), "paws-acme-instance-"))) => {
-    const files = createSealedRunnerFiles({ db, objects, key: KEY, now: () => clock });
+    const files = createSealedRunnerFiles({
+      store: sqliteDb(db),
+      objects,
+      key: KEY,
+      now: () => clock,
+    });
     return {
       root,
       files,
@@ -330,7 +335,7 @@ describe("runner inputs and artifacts in the shared store", () => {
     const artifacts = createRunnerArtifactStore({
       root: join(root, "artifacts"),
       work,
-      remote: { files: createSealedRunnerFiles({ db, objects, key: KEY }), db },
+      remote: { files: createSealedRunnerFiles({ store: sqliteDb(db), objects, key: KEY }), db },
     });
     const bytes = Buffer.from("acme evidence");
     const artifact: RunnerArtifact = {

@@ -13,7 +13,6 @@ import {
   retryMemberVmDeleteSteps,
   retryMemberVmStepSteps,
   returnMemberVmToEnrollSteps,
-  sqliteDb,
   workspaceMemberSteps,
   workspaceMemberUsable,
   workspaceMemberVmsSteps,
@@ -24,7 +23,6 @@ import {
   type Steps,
 } from "../db";
 import { isWorkspaceAdmin, workspaceId as mintId } from "../workspace";
-import type { Database } from "bun:sqlite";
 import { isExeDevVmName } from "../provisioning";
 
 export const MEMBER_VM_QUEUE = "member_vm.provision";
@@ -37,12 +35,12 @@ export type { MemberVm, MemberVmDeleteStep, MemberVmStep } from "../db";
 
 export type MemberRef = { workspaceId: string; userId: string };
 
-export function getMemberVm(db: Database, id: string): Promise<MemberVm | null> {
-  return sqliteDb(db).run((q) => memberVmByIdSteps(q, id));
+export function getMemberVm(store: Db, id: string): Promise<MemberVm | null> {
+  return store.run((q) => memberVmByIdSteps(q, id));
 }
 
-export async function findMemberVm(db: Database, member: MemberRef): Promise<MemberVm | null> {
-  return await memberVmForMember(sqliteDb(db), member.workspaceId, member.userId);
+export async function findMemberVm(store: Db, member: MemberRef): Promise<MemberVm | null> {
+  return await memberVmForMember(store, member.workspaceId, member.userId);
 }
 
 /** `pool` applies to a new VM only; an existing one keeps where it is. */

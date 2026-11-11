@@ -11,7 +11,7 @@ import {
   RUNNER_TRANSCRIPT_ENCRYPT_JOB,
   runnerTranscriptsEncrypted,
 } from "../src/runner-transcripts";
-import { legacyMigrate } from "../src/db";
+import { legacyMigrate, sqliteDb } from "../src/db";
 import { legacyTempDb, tempHome } from "./helpers";
 
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -87,7 +87,7 @@ describe("encrypting runner transcripts stored before encryption", () => {
   };
   async function read(runId: string) {
     const files = createRunFileChunks({
-      db,
+      store: sqliteDb(db),
       kind: "transcript",
       objects: fallback,
       key,
@@ -199,7 +199,7 @@ describe("encrypting runner transcripts stored before encryption", () => {
 
   test("a read that began before its chunk was sealed still returns the transcript", async () => {
     const files = createRunFileChunks({
-      db,
+      store: sqliteDb(db),
       kind: "transcript",
       objects: local,
       key,

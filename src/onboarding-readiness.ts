@@ -46,7 +46,7 @@ export function createOnboardingReadiness(db: Database): OnboardingReadinessRead
       if (runner?.eligible) return "connected";
       return runner?.reason === "auth-expired" ? "expired" : "waiting";
     };
-    const vm = await findMemberVm(db, { workspaceId, userId });
+    const vm = await findMemberVm(sqliteDb(db), { workspaceId, userId });
     const memberVm = vm !== null;
     const runners = await check("claude", "prepare");
     // With several usable runners, show the one with the most agents signed in, the member's own

@@ -111,7 +111,7 @@ async function fixture(options: { size?: ExeDevVmSize } = {}) {
   });
   let available = true;
   const http = createMemberVmHttp({
-    db,
+    store: sqliteDb(db),
     available: () => available,
     exeDev,
     ...(options.size === undefined ? {} : { size: () => options.size! }),
@@ -137,7 +137,7 @@ async function fixture(options: { size?: ExeDevVmSize } = {}) {
   };
   const drive = async (until: (row: MemberVm) => boolean) => {
     for (let index = 0; index < 500; index++) {
-      const row = (await findMemberVm(db, member))!;
+      const row = (await findMemberVm(sqliteDb(db), member))!;
       if (until(row)) return row;
       if ((await loop.tick()) === null) clock.advance(MEMBER_VM_POLL_MS);
     }
@@ -167,7 +167,7 @@ describe("member VM routes", () => {
     f.setAvailable(false);
     expect(await f.call(f.member, "GET")).toEqual({ status: 200, body: { available: false } });
     expect(await f.call(f.member, "POST")).toEqual({ status: 200, body: { available: false } });
-    expect(await findMemberVm(f.db, f.member)).toBeNull();
+    expect(await findMemberVm(sqliteDb(f.db), f.member)).toBeNull();
   });
 
   test("inactive members are refused on every route", async () => {
@@ -178,12 +178,12 @@ describe("member VM routes", () => {
       ["POST", "/api/runners/vm/retry"],
     ] as const)
       expect((await f.call(f.inactive, method, path)).status).toBe(403);
-    expect(await findMemberVm(f.db, f.inactive)).toBeNull();
+    expect(await findMemberVm(sqliteDb(f.db), f.inactive)).toBeNull();
   });
 
   test("other paths fall through and wrong methods answer 405", async () => {
     const f = await fixture();
-    const http = createMemberVmHttp({ db: f.db, available: () => true });
+    const http = createMemberVmHttp({ store: sqliteDb(f.db), available: () => true });
     expect(await http(new Request("https://paws.test/api/runners"), f.member)).toBeNull();
     expect((await f.call(f.member, "DELETE")).status).toBe(405);
     expect((await f.call(f.member, "GET", "/api/runners/vm/retry")).status).toBe(405);
@@ -192,7 +192,11 @@ describe("member VM routes", () => {
   test("GET names the [member_vm] size Create VM will ask for, and hides it when config.toml fails", async () => {
     const f = await fixture();
     let size: () => { cpu?: number; memoryGb?: number } = () => ({ cpu: 8, memoryGb: 16 });
-    const http = createMemberVmHttp({ db: f.db, available: () => true, size: () => size() });
+    const http = createMemberVmHttp({
+      store: sqliteDb(f.db),
+      available: () => true,
+      size: () => size(),
+    });
     const get = async () =>
       (await (await http(new Request("https://paws.test/api/runners/vm"), f.member))!.json()) as {
         size?: unknown;
@@ -243,7 +247,7 @@ describe("member VM routes", () => {
       },
     });
     expect((await f.call(f.member, "POST", "/api/runners/vm", { pool: "a b" })).status).toBe(400);
-    expect(await findMemberVm(f.db, f.member)).toBeNull();
+    expect(await findMemberVm(sqliteDb(f.db), f.member)).toBeNull();
     const started = vmOf((await f.call(f.member, "POST", "/api/runners/vm", { pool: "gpu" })).body);
     expect(started.pool).toBe("gpu");
     await f.drive((row) => row.step !== "create");

@@ -1101,7 +1101,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const accountManagement = createAccountManagement();
   const sessionMovesStop = new AbortController();
   const memberVmHttp = createMemberVmHttp({
-    db,
     store,
     available: createVmAvailable,
     size: memberVmSize,

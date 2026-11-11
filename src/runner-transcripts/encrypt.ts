@@ -22,7 +22,7 @@ export async function encryptRunnerTranscripts(options: {
   const { db, stores, signal } = options;
   if (!stores.length) throw new Error("Runner transcript storage is unavailable");
   const files = createRunFileChunks({
-    db,
+    store: sqliteDb(db),
     kind: "transcript",
     objects: stores[0]!,
     key: options.key,

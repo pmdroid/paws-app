@@ -121,7 +121,11 @@ export async function openRunnerCoordinator(options: {
   });
   const workHttp = createRunnerWorkHttp(work, { skillsRoot: options.skillsRoot });
   const runnerFiles = options.runnerFiles
-    ? createSealedRunnerFiles({ db: options.db, now: options.now, ...options.runnerFiles })
+    ? createSealedRunnerFiles({
+        store: sqliteDb(options.db),
+        now: options.now,
+        ...options.runnerFiles,
+      })
     : undefined;
   const inputs = createRunnerInputStore({
     root: join(options.root, "inputs"),

@@ -59,7 +59,7 @@ export function createRunnerTranscripts(options: {
   const { db, work } = options;
   const store = sqliteDb(db);
   const files = createRunFileChunks({
-    db,
+    store: sqliteDb(db),
     kind: "transcript",
     objects: options.objects,
     key: options.key,
