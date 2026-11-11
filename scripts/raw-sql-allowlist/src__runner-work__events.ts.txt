@@ -1,4 +1,0 @@
-src/runner-work/events.ts | const mode = db.query<{ secure_delete: number }, []>("PRAGMA secure_delete").get()?.secure_delete; | not yet converted to Drizzle
-src/runner-work/events.ts | db.run("PRAGMA secure_delete=ON"); | not yet converted to Drizzle
-src/runner-work/events.ts | const [checkpoint] = db.query<{ busy: number }, []>("PRAGMA wal_checkpoint(TRUNCATE)").all(); | not yet converted to Drizzle
-src/runner-work/events.ts | db.run(`PRAGMA secure_delete=${secureDelete}`); | not yet converted to Drizzle

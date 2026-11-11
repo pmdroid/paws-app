@@ -49,8 +49,8 @@ export function createRetroScheduleHttp(options: {
         now: now(),
       }),
     );
-  const view = (principal: WorkspacePrincipal) => ({
-    ...scheduler.status(principal.workspaceId),
+  const view = async (principal: WorkspacePrincipal) => ({
+    ...(await scheduler.status(principal.workspaceId)),
     canEdit: isWorkspaceAdmin(principal.role),
     canRun: true,
   });
@@ -108,7 +108,7 @@ export function createRetroScheduleHttp(options: {
     });
     if (result.ok) {
       await audit(principal, "settings.retros.schedule.saved", `revision ${result.view.revision}`);
-      return json(view(principal));
+      return json(await view(principal));
     }
     if (result.reason === "conflict")
       return json(
@@ -116,7 +116,7 @@ export function createRetroScheduleHttp(options: {
           error:
             "Someone saved retro settings after you started editing. Your change is unchanged.",
           reason: result.reason,
-          current: view(principal),
+          current: await view(principal),
         },
         409,
       );
@@ -131,11 +131,11 @@ export function createRetroScheduleHttp(options: {
   }
 
   async function run(principal: WorkspacePrincipal) {
-    const requested = scheduler.request(principal.workspaceId, principal.userId);
+    const requested = await scheduler.request(principal.workspaceId, principal.userId);
     if (!requested.ok) {
       await audit(principal, "retros.run.refused", requested.reason);
       return json(
-        { error: requested.message, reason: requested.reason, status: view(principal) },
+        { error: requested.message, reason: requested.reason, status: await view(principal) },
         REQUEST_STATUS[requested.reason],
       );
     }
@@ -145,7 +145,7 @@ export function createRetroScheduleHttp(options: {
       requested.retro.id,
     );
     return json(
-      { retroId: requested.retro.id, created: requested.created, status: view(principal) },
+      { retroId: requested.retro.id, created: requested.created, status: await view(principal) },
       requested.created ? 202 : 200,
     );
   }
@@ -162,7 +162,7 @@ export function createRetroScheduleHttp(options: {
       if (request.method !== "POST") return json({ error: "Use POST." }, 405);
       return run(principal);
     }
-    if (request.method === "GET") return json(view(principal));
+    if (request.method === "GET") return json(await view(principal));
     if (request.method === "PUT") return saveSchedule(request, principal);
     return json({ error: "Use GET or PUT." }, 405);
   };

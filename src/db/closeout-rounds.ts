@@ -14,21 +14,9 @@ export type CloseoutRound = {
   startedAt: number;
 };
 
-type RoundRow = {
-  item_id: string;
-  head: string;
-  retry_baseline: string;
-  started_at: number;
-};
-
 /** Records the round once per head. Returns false when the head already has one. */
 export function startCloseoutRound(db: Database, input: CloseoutRound): boolean {
-  return (
-    db.run(
-      `INSERT OR IGNORE INTO closeout_round (item_id, head, retry_baseline, started_at) VALUES (?, ?, ?, ?)`,
-      [input.itemId, input.head, JSON.stringify(input.retryBaseline), input.startedAt],
-    ).changes > 0
-  );
+  return settled(sqliteDb(db).run((q) => startCloseoutRoundSteps(q, input)));
 }
 
 export function* startCloseoutRoundSteps(q: Q, input: CloseoutRound): Steps<boolean> {
@@ -50,20 +38,7 @@ export function* startCloseoutRoundSteps(q: Q, input: CloseoutRound): Steps<bool
 
 /** Rounds after the first, oldest first. */
 export function listCloseoutRounds(db: Database, itemId?: string): CloseoutRound[] {
-  const rows =
-    itemId === undefined
-      ? db.query<RoundRow, []>(`SELECT * FROM closeout_round ORDER BY started_at, rowid`).all()
-      : db
-          .query<RoundRow, [string]>(
-            `SELECT * FROM closeout_round WHERE item_id = ? ORDER BY started_at, rowid`,
-          )
-          .all(itemId);
-  return rows.map((row) => ({
-    itemId: row.item_id,
-    head: row.head,
-    retryBaseline: JSON.parse(row.retry_baseline) as string[],
-    startedAt: row.started_at,
-  }));
+  return settled(sqliteDb(db).run((q) => listCloseoutRoundsSteps(q, itemId)));
 }
 
 export function* listCloseoutRoundsSteps(q: Q, itemId?: string): Steps<CloseoutRound[]> {
@@ -133,10 +108,5 @@ export function* humanRetryBaselineSteps(q: Q, itemId: string) {
 }
 
 export function humanRetryBaseline(db: Database, itemId: string): string[] {
-  const row = db
-    .query<{ baseline: string }, [string]>(
-      "SELECT retry_baseline AS baseline FROM closeout_retry_window WHERE item_id=? ORDER BY activation_id DESC LIMIT 1",
-    )
-    .get(itemId);
-  return row ? (JSON.parse(row.baseline) as string[]) : [];
+  return settled(sqliteDb(db).run((q) => humanRetryBaselineSteps(q, itemId)));
 }
