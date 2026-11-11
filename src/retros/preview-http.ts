@@ -83,7 +83,7 @@ export function createRetroPreviewHttp(options: {
     retroId: string,
   ) {
     const path = `/api/retros/reports/${retroId}/settings`;
-    const access = retroReaderAccess(db, root, principal, sessionIds, retroId);
+    const access = await retroReaderAccess(db, root, principal, sessionIds, retroId);
     if (!access)
       return json({ error: "This retro is not available to you.", reason: "not_found" }, 404);
     if (!access.full) {

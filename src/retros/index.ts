@@ -1,6 +1,6 @@
 export {
   checkRetroProfile,
-  freezeRetroRun,
+  freezeRetroRunSteps,
   parseRetroSettingsDraft,
   proposedRetroSettings,
   readRetroSettings,
