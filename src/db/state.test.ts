@@ -338,7 +338,7 @@ describe("restart recovery", () => {
     });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
     await enterMergeQueue(sqliteDb(db), item.id, checkpoint);
-    markRun(db, run.id, "ended", clock.now());
+    await markRun(sqliteDb(db), run.id, "ended", clock.now());
     const merge = enqueueJob(db, {
       queue: "github.merge",
       payload: { itemId: item.id },
@@ -375,7 +375,7 @@ describe("restart recovery", () => {
               });
               const { run } = await beginImplementRun(sqliteDb(db), id, clock.now(), checkpoint);
               await enterMergeQueue(sqliteDb(db), id, checkpoint);
-              if (id === "keep") markRun(db, run.id, "ended", clock.now());
+              if (id === "keep") await markRun(sqliteDb(db), run.id, "ended", clock.now());
               clock.advance(1);
             }
             const mergeId = enqueueJob(db, {
@@ -456,7 +456,7 @@ describe("restart recovery", () => {
     const item = insertQueuedItem(db, { id: "eng-2", now: clock.now() });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
     await enterMergeQueue(sqliteDb(db), item.id, checkpoint);
-    markRun(db, run.id, "ended", clock.now());
+    await markRun(sqliteDb(db), run.id, "ended", clock.now());
     enqueueJob(db, {
       queue: "github.merge",
       payload: { itemId: item.id, head: "abc", summary: "Closeout accepted." },
@@ -487,7 +487,7 @@ describe("restart recovery", () => {
     const item = insertQueuedItem(db, { id: "eng-twice", now: clock.now() });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
     await enterMergeQueue(sqliteDb(db), item.id, checkpoint);
-    markRun(db, run.id, "ended", clock.now());
+    await markRun(sqliteDb(db), run.id, "ended", clock.now());
     applyWorkItemEvent(db, item.id, "reverify_requested");
 
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([{ type: "reverify" }]);
@@ -523,7 +523,7 @@ describe("restart recovery", () => {
     const item = insertQueuedItem(db, { id: "answered", sessionKey: "ses", now: clock.now() });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
     applyWorkItemEvent(db, item.id, "blocking_question");
-    markRun(db, run.id, "ended", clock.now());
+    await markRun(sqliteDb(db), run.id, "ended", clock.now());
     applyWorkItemEvent(db, item.id, "answer_received");
     enqueueJobOnce(db, {
       queue: JOB_KIND.resume,

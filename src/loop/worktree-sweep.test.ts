@@ -38,7 +38,7 @@ test("removes finished worktrees after seven idle days and keeps recent or waiti
   await fixture.item("ENG-4", "awaiting_input", old);
   await fixture.item("ENG-5", "merged", now - 60_000);
   await fixture.item("ENG-6", "merged", old);
-  insertRun(fixture.db, { itemId: "ENG-2", now: now - 60_000, status: "lost" });
+  await insertRun(sqliteDb(fixture.db), { itemId: "ENG-2", now: now - 60_000, status: "lost" });
 
   await sweepWorktrees(fixture.sweep());
 
@@ -233,7 +233,7 @@ async function setup() {
       ids.push(id);
       const item = insertQueuedItem(db, { id });
       db.run("UPDATE work_item SET state = ? WHERE id = ?", [state, id]);
-      insertRun(db, { itemId: id, now: touched, status: "ended" });
+      await insertRun(sqliteDb(db), { itemId: id, now: touched, status: "ended" });
       const tree = await createWorktree({ ...repository, itemId: id, pawsRoot });
       await utimes(tree.path, touched / 1000, touched / 1000);
       return { ...item, state };

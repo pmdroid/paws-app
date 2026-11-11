@@ -284,7 +284,11 @@ test("a continuing task lands on the runner of its last session, or elsewhere af
     expect(await placed.ids()).toEqual(["own", "second"]);
     expect(await placed.ids(session)).toEqual(["second", "own"]);
 
-    const run = insertRun(placed.db, { itemId: "item", now: Date.now(), status: "active" });
+    const run = await insertRun(sqliteDb(placed.db), {
+      itemId: "item",
+      now: Date.now(),
+      status: "active",
+    });
     placed.db.run(
       "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES(?,'second',?,1,0,'busy',?,0)",
       [run.id, placed.workspaceId, Date.now() + 60 * 60_000],
@@ -315,9 +319,17 @@ test("session affinity waits for other runs' held slots and unassigned reservati
   try {
     const { db } = placed;
     db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES('second',2)");
-    const own = insertRun(db, { itemId: "item", now: placed.now(), status: "active" });
+    const own = await insertRun(sqliteDb(db), {
+      itemId: "item",
+      now: placed.now(),
+      status: "active",
+    });
     db.run("UPDATE work_item SET current_run_id=? WHERE id='item'", [own.id]);
-    const other = insertRun(db, { itemId: "item", now: placed.now(), status: "active" });
+    const other = await insertRun(sqliteDb(db), {
+      itemId: "item",
+      now: placed.now(),
+      status: "active",
+    });
     for (const [runId, ended] of [
       [own.id, null],
       [other.id, placed.now()],
@@ -362,7 +374,11 @@ test("a continuing task that checks back only after the grace period is offered 
   const placed = await placeItem();
   try {
     const session = { session: { runnerId: "second" } };
-    const run = insertRun(placed.db, { itemId: "item", now: Date.now(), status: "active" });
+    const run = await insertRun(sqliteDb(placed.db), {
+      itemId: "item",
+      now: Date.now(),
+      status: "active",
+    });
     placed.db.run(
       "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES(?,'second',?,1,0,'busy',?,0)",
       [run.id, placed.workspaceId, Date.now() + 60 * 60_000],
@@ -403,7 +419,11 @@ test("a task waiting ten minutes for its busy session runner never calls Linear"
   const placed = await placeItem();
   try {
     const session = { session: { runnerId: "second" } };
-    const run = insertRun(placed.db, { itemId: "item", now: Date.now(), status: "active" });
+    const run = await insertRun(sqliteDb(placed.db), {
+      itemId: "item",
+      now: Date.now(),
+      status: "active",
+    });
     placed.db.run(
       "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES(?,'second',?,1,0,'busy',?,0)",
       [run.id, placed.workspaceId, Date.now() + 60 * 60_000],
@@ -449,7 +469,11 @@ async function ownerPool(capacities: Record<string, number> = { a: 2, b: 2, c: 2
     ...placed,
     /** Leases one slot on the runner for the next hour. */
     async occupy(runnerId: string) {
-      const run = insertRun(db, { itemId: "item", now: placed.now(), status: "active" });
+      const run = await insertRun(sqliteDb(db), {
+        itemId: "item",
+        now: placed.now(),
+        status: "active",
+      });
       db.run(
         "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES(?,?,?,1,0,?,?,0)",
         [run.id, runnerId, placed.workspaceId, `work-${++commands}`, placed.now() + 60 * 60_000],
@@ -684,7 +708,11 @@ test("run pins apply to every role and never expire while the host is online", a
   const placed = await placeItem();
   try {
     const pinnedRunnerId = "second";
-    const run = insertRun(placed.db, { itemId: "item", now: placed.now(), status: "active" });
+    const run = await insertRun(sqliteDb(placed.db), {
+      itemId: "item",
+      now: placed.now(),
+      status: "active",
+    });
     placed.db.run(
       "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence,ended_at) VALUES(?,'second',?,1,0,'held',?,0,?)",
       [run.id, placed.workspaceId, placed.now(), placed.now()],
@@ -715,7 +743,11 @@ for (const revoked of [false, true]) {
     const placed = await placeItem();
     try {
       const at = placed.now();
-      const run = insertRun(placed.db, { itemId: "item", now: at, status: "active" });
+      const run = await insertRun(sqliteDb(placed.db), {
+        itemId: "item",
+        now: at,
+        status: "active",
+      });
       // Implementation on own, review on second, with the run still pointing at its last host.
       placed.db.run(
         "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence,ended_at) VALUES(?,'second',?,2,0,'review',?,0,?)",
@@ -794,7 +826,11 @@ async function movingRun() {
     [placed.workspaceId, placed.owner],
   );
   placed.db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('gone','codex',1)");
-  const run = insertRun(placed.db, { itemId: "item", now: placed.now(), status: "active" });
+  const run = await insertRun(sqliteDb(placed.db), {
+    itemId: "item",
+    now: placed.now(),
+    status: "active",
+  });
   placed.db.run("UPDATE work_item SET current_run_id=? WHERE id='item'", [run.id]);
   const asked: string[] = [];
   /** A fake restore check: the listed runners may restore, `same` with the snapshot's version. */
@@ -882,7 +918,11 @@ test("a moved run whose restoring runner is busy goes to another runner at once"
   const placed = await movingRun();
   try {
     const { pinnedRunnerId } = placed;
-    const other = insertRun(placed.db, { itemId: "item", now: placed.now(), status: "active" });
+    const other = await insertRun(sqliteDb(placed.db), {
+      itemId: "item",
+      now: placed.now(),
+      status: "active",
+    });
     placed.db.run(
       "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES(?,'second',?,1,0,'busy',?,0)",
       [other.id, placed.workspaceId, placed.now() + 60 * 60_000],
@@ -932,7 +972,11 @@ test("new runs, runs on their online pin and reviews rank as before a session re
 test("fresh admission previews share the session grace period with execution", async () => {
   const placed = await placeItem();
   try {
-    const run = insertRun(placed.db, { itemId: "item", now: placed.now(), status: "active" });
+    const run = await insertRun(sqliteDb(placed.db), {
+      itemId: "item",
+      now: placed.now(),
+      status: "active",
+    });
     placed.db.run(
       "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES(?,'second',?,1,0,'busy',?,0)",
       [run.id, placed.workspaceId, placed.now() + 60 * 60_000],

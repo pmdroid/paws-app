@@ -318,7 +318,7 @@ export async function probeScheduler(
       const start = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] })!;
       assert(completeJob(db, start, 1001));
       db.run("UPDATE work_item SET state='merge_queue' WHERE id=?", [ids[0]!]);
-      const run = insertRun(db, { itemId: ids[0]!, now: 1001, status });
+      const run = await insertRun(sqliteDb(db), { itemId: ids[0]!, now: 1001, status });
       assert.deepEqual(await workspaceDispatch(db, { now: 1002 }), [ids[1]!]);
       db.run("UPDATE run SET status='ended' WHERE id=?", [run.id]);
       assert.deepEqual(await workspaceDispatch(db, { now: 1003 }), []);
@@ -561,7 +561,7 @@ export async function probeScheduler(
   {
     const { db, ids } = await setup("draining", 2);
     await workspaceDispatch(db, { now: 1000 });
-    insertRun(db, { itemId: ids[0]!, now: 1000, status: "active" });
+    await insertRun(sqliteDb(db), { itemId: ids[0]!, now: 1000, status: "active" });
     const claimed = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] });
     assert(claimed);
     assert.equal((claimed.payload as { itemId: string }).itemId, ids[1]);

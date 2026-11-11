@@ -125,7 +125,7 @@ export async function probeExecutionLifecycle(
     db.run(
       "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('handoff-0','handoff-1')",
     );
-    const run = insertRun(db, {
+    const run = await insertRun(sqliteDb(db), {
       itemId: "handoff-0",
       now: clock.now(),
       status: "ended",

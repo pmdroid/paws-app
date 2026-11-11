@@ -79,7 +79,7 @@ test("a reserved start is claimed without the legacy gate", async () => {
   try {
     await queued(db, "legacy");
     applyWorkItemEvent(db, "legacy", "dispatched");
-    insertRun(db, { itemId: "legacy", now: 0, status: "active" });
+    await insertRun(sqliteDb(db), { itemId: "legacy", now: 0, status: "active" });
     await queued(db, "next", 1);
     assert.deepEqual(await workspaceDispatch(db, { now: 1000 }), ["next"]);
     const start = db

@@ -218,7 +218,7 @@ describe("follow-up after an expired runner lease", () => {
       at = job!.runAt;
       const claimed = claimNextJob(db, { now: at, leaseMs: 1_000, queues: [JOB_KIND.resume] })!;
       applyWorkItemEvent(db, item.id, "recovered");
-      markRun(db, run.id, "active", at);
+      await markRun(sqliteDb(db), run.id, "active", at);
       lease(db, run.id, generation + 1, at + LEASE_MS);
       completeJob(db, claimed, at);
       at += PAST;

@@ -246,8 +246,8 @@ async function runnerWithSlots(db: ReturnType<typeof tempDb>, capacity: number):
   db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES('runner',?)", [capacity]);
 }
 
-function placeOnRunner(db: ReturnType<typeof tempDb>, itemId: string): void {
-  const run = insertRun(db, { itemId, now: 0, status: "active" });
+async function placeOnRunner(db: ReturnType<typeof tempDb>, itemId: string): Promise<void> {
+  const run = await insertRun(sqliteDb(db), { itemId, now: 0, status: "active" });
   db.run(
     `INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until)
     SELECT ?,id,workspace_id,1,0,?,? FROM runner WHERE id='runner'`,
@@ -270,7 +270,7 @@ test("a waiting item's place in line moves up as items ahead start or leave", as
     for (const id of ["busy-1", "busy-2"]) {
       insertQueuedItem(db, { id, now: 0 });
       applyWorkItemEvent(db, id, "dispatched");
-      placeOnRunner(db, id);
+      await placeOnRunner(db, id);
     }
     const ready = ["a", "b", "c", "d"];
     for (const [index, id] of ready.entries()) insertQueuedItem(db, { id, now: index + 1 });
@@ -332,7 +332,7 @@ test("queued items wait for a free runner slot, and work in flight keeps its slo
     await runnerWithSlots(db, 2);
     insertQueuedItem(db, { id: "busy", now: 0 });
     applyWorkItemEvent(db, "busy", "dispatched");
-    placeOnRunner(db, "busy");
+    await placeOnRunner(db, "busy");
     for (const [index, id] of ["a", "b", "c"].entries())
       insertQueuedItem(db, { id, now: index + 1 });
     assert.deepEqual(await workspaceDispatch(db, { now: 1000 }), ["a"]);

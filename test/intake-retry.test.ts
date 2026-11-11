@@ -126,7 +126,7 @@ test.each(["run", "checkpoint", "job", "conversation", "cleanup", "parent", "sib
   "a failed attempt with %s ownership cannot be replaced",
   async (held) => {
     const { db, id, admit } = await failedAttempt();
-    if (held === "run") insertRun(db, { itemId: id, now: 1, status: "ended" });
+    if (held === "run") await insertRun(sqliteDb(db), { itemId: id, now: 1, status: "ended" });
     if (held === "checkpoint")
       db.run("UPDATE work_item SET checkpoint = ? WHERE id = ?", ['{"phase":"running"}', id]);
     if (held === "job") enqueueJob(db, { queue: "item.start", payload: { itemId: id } });
@@ -171,7 +171,7 @@ test.each(["queued", "running", "awaiting_input", "paused"])(
 
 test("session conflicts report one actionable error without suggesting another retry", async () => {
   const { db, id, tracker, admit } = await failedAttempt();
-  insertRun(db, { itemId: id, now: 1, status: "ended" });
+  await insertRun(sqliteDb(db), { itemId: id, now: 1, status: "ended" });
   await expect(
     acknowledgeNewSession(
       tracker,

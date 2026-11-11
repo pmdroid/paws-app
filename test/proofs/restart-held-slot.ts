@@ -13,7 +13,7 @@ export default {
     const pinned = await pair("pinned", 1, [REPOSITORY]);
     await queue("a-unrelated");
     await queue("b-resume");
-    const run = insertRun(db, { itemId: "b-resume", now: NOW, status: "active" });
+    const run = await insertRun(sqliteDb(db), { itemId: "b-resume", now: NOW, status: "active" });
     db.run("UPDATE work_item SET current_run_id=? WHERE id=?", [run.id, "b-resume"]);
     db.run(
       "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at,teardown_confirmed_at) VALUES(?,?,?,1,0,'ended',?,?,?)",

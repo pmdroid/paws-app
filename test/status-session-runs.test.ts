@@ -32,15 +32,15 @@ test("one Linear session shows as one run with every attempt in its timeline", a
     });
     db.run("UPDATE work_item SET linear_identifier = ? WHERE id = ?", ["ENG-7", item.id]);
     const { run: first } = await beginImplementRun(sqliteDb(db), item.id, NOW);
-    markRun(db, first.id, "ended", NOW + 1_000);
-    const review = insertRun(db, {
+    await markRun(sqliteDb(db), first.id, "ended", NOW + 1_000);
+    const review = await insertRun(sqliteDb(db), {
       itemId: item.id,
       kind: "review",
       agent: "grok",
       status: "ended",
       now: NOW + 2_000,
     });
-    const reply = insertRun(db, {
+    const reply = await insertRun(sqliteDb(db), {
       itemId: item.id,
       kind: "implement",
       agent: "claude",
@@ -181,8 +181,8 @@ test("a Closeout re-check shows as a re-check, not as a review by the reviewer a
     const item = insertQueuedItem(db, { id: "01RECHECKITEM", sessionKey: "ses_8", now: NOW });
     db.run("UPDATE work_item SET linear_identifier = ? WHERE id = ?", ["ENG-8", item.id]);
     const { run: first } = await beginImplementRun(sqliteDb(db), item.id, NOW);
-    markRun(db, first.id, "ended", NOW + 1_000);
-    const recheck = insertRun(db, {
+    await markRun(sqliteDb(db), first.id, "ended", NOW + 1_000);
+    const recheck = await insertRun(sqliteDb(db), {
       itemId: item.id,
       kind: "recheck",
       agent: "claude",

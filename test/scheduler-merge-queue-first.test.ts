@@ -54,7 +54,7 @@ async function fixture() {
     const itemId = `busy-${runnerId}`;
     insertQueuedItem(db, { id: itemId, now: 0 });
     applyWorkItemEvent(db, itemId, "dispatched");
-    const runId = insertRun(db, { itemId, now: 0, status: "active" }).id;
+    const runId = (await insertRun(sqliteDb(db), { itemId, now: 0, status: "active" })).id;
     work(runId, runnerId, null);
     busy.set(runnerId, runId);
   }
@@ -67,7 +67,7 @@ async function fixture() {
     insertQueuedItem(db, { id, now: 2 });
     await sqliteDb(db).run((q) => saveSchedulingContextSteps(q, { itemId: id, priority: 4 }));
     applyWorkItemEvent(db, id, "dispatched");
-    const runId = insertRun(db, { itemId: id, now: 2, status: "ended" }).id;
+    const runId = (await insertRun(sqliteDb(db), { itemId: id, now: 2, status: "ended" })).id;
     db.run("UPDATE work_item SET current_run_id=? WHERE id=?", [runId, id]);
     work(runId, "A", NOW - 1);
     applyWorkItemEvent(db, id, "turn_ended");

@@ -560,7 +560,7 @@ export async function probePublicationStop(
     });
     await bindLinearSessionTask(sqliteDb(db), "owned-refresh-session", "owned-refresh");
     await bindWorkItemRepository(sqliteDb(db), "owned-refresh-item", repository);
-    const ownedRun = insertRun(db, {
+    const ownedRun = await insertRun(sqliteDb(db), {
       itemId: "owned-refresh-item",
       kind: "implement",
       agent: "codex",
@@ -718,7 +718,7 @@ export async function probePublicationStop(
         );
         if (state === "merged") {
           await confirmFakeMerge(db, itemId);
-          const producer = insertRun(db, {
+          const producer = await insertRun(sqliteDb(db), {
             itemId,
             kind: "implement",
             agent: "codex",

@@ -181,7 +181,7 @@ export async function probeLinearActivityBudget(
     observe("Keepalives remain deliverable alongside complete public history", true, {
       keepaliveSent: true,
     });
-    const nextRun = insertRun(db, {
+    const nextRun = await insertRun(sqliteDb(db), {
       itemId: item.id,
       status: "active",
       kind: "implement",

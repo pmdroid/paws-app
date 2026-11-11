@@ -51,13 +51,13 @@ async function fixture() {
 
   insertQueuedItem(db, { id: "busy", now: 0 });
   applyWorkItemEvent(db, "busy", "dispatched");
-  const busy = insertRun(db, { itemId: "busy", now: 0, status: "active" }).id;
+  const busy = (await insertRun(sqliteDb(db), { itemId: "busy", now: 0, status: "active" })).id;
   work(busy, null);
 
   insertQueuedItem(db, { id: "X", now: 1 });
   await sqliteDb(db).run((q) => saveSchedulingContextSteps(q, { itemId: "X", priority: 1 }));
   applyWorkItemEvent(db, "X", "dispatched");
-  const lost = insertRun(db, { itemId: "X", now: 1, status: "lost" }).id;
+  const lost = (await insertRun(sqliteDb(db), { itemId: "X", now: 1, status: "lost" })).id;
   db.run("UPDATE work_item SET current_run_id=? WHERE id='X'", [lost]);
   work(lost, NOW - 1);
   applyWorkItemEvent(db, "X", "lease_expired");

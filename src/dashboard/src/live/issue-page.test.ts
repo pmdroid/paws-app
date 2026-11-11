@@ -74,8 +74,8 @@ async function threeRuns(db: Database): Promise<string[]> {
   });
   identify(db, ITEM, "PAS-367");
   const first = (await beginImplementRun(sqliteDb(db), ITEM, T0 + 1_000)).run;
-  const second = insertRun(db, { itemId: ITEM, now: T0 + 60_000, agent: "claude" });
-  const third = insertRun(db, { itemId: ITEM, now: T0 + 120_000, agent: "claude" });
+  const second = await insertRun(sqliteDb(db), { itemId: ITEM, now: T0 + 60_000, agent: "claude" });
+  const third = await insertRun(sqliteDb(db), { itemId: ITEM, now: T0 + 120_000, agent: "claude" });
   setCurrentRun(db, ITEM, third.id);
   activity(db, first.id, SESSION, "First turn read the issue.", T0 + 2_000);
   activity(db, second.id, SESSION, "Second turn after the restart.", T0 + 61_000);

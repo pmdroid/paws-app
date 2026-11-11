@@ -26,7 +26,12 @@ async function verifying(db: Database, state = "verifying") {
   insertQueuedItem(db, { id: "item", now: 1 });
   db.run("UPDATE work_item SET state = ? WHERE id = 'item'", [state]);
   await joinMergeQueue(sqliteDb(db), { itemId: "item", repository: "acme/platform", now: 1 });
-  const run = insertRun(db, { itemId: "item", kind: "recheck", status: "active", now: 1 });
+  const run = await insertRun(sqliteDb(db), {
+    itemId: "item",
+    kind: "recheck",
+    status: "active",
+    now: 1,
+  });
   setCurrentRun(db, "item", run.id);
   const item = getWorkItem(db, "item")!;
   return { version: item.version, runId: run.id };
@@ -97,7 +102,11 @@ test.each([
   [
     "a superseding run",
     async (db: Database) =>
-      setCurrentRun(db, "item", insertRun(db, { itemId: "item", status: "active", now: 2 }).id),
+      setCurrentRun(
+        db,
+        "item",
+        (await insertRun(sqliteDb(db), { itemId: "item", status: "active", now: 2 })).id,
+      ),
   ],
   [
     "a state the acceptance no longer applies to",

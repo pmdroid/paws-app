@@ -255,7 +255,7 @@ test("run attribution snapshot persists across reopen and cannot switch repair i
   db = openDatabase(path);
   try {
     expect(getRun(db, run.id)?.checkpoint?.commitPolicy).toEqual(policy);
-    insertRun(db, { itemId: item.id, now: 2 });
+    await insertRun(sqliteDb(db), { itemId: item.id, now: 2 });
     expect(getItemRunCommitPolicy(db, item.id)).toEqual(policy);
     await expect(
       saveRunCommitPolicy(sqliteDb(db), run.id, { ...policy, credit: { ...credit, id: 9 } }),

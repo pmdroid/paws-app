@@ -197,12 +197,14 @@ export async function probeRunnerOrchestration(
       const blocked = new Promise<void>((r) => (releaseReplacement = r));
       other.register(owned.queue, async () => {
         const item = listWorkItems(db)[0]!;
-        replacementRunId = insertRun(db, {
-          itemId: item.id,
-          kind: initialLease ? "implement" : "review",
-          status: "active",
-          now: clock.now(),
-        }).id;
+        replacementRunId = (
+          await insertRun(sqliteDb(db), {
+            itemId: item.id,
+            kind: initialLease ? "implement" : "review",
+            status: "active",
+            now: clock.now(),
+          })
+        ).id;
         setCurrentRun(db, item.id, replacementRunId);
         entered();
         await blocked;
@@ -668,7 +670,7 @@ export async function probeRunnerOrchestration(
                   changed = true;
                   if (scenario === "cancelled") applyWorkItemEvent(db, item.id, "cancel");
                   if (scenario === "reassigned") {
-                    const replacement = insertRun(db, {
+                    const replacement = await insertRun(sqliteDb(db), {
                       itemId: item.id,
                       kind: "review",
                       status: "active",
@@ -906,18 +908,20 @@ export async function probeRunnerOrchestration(
         let foreignRunId = originalRunId;
         if (crashed) {
           if (scenario === "crashed-review") {
-            foreignRunId = insertRun(db, {
-              itemId: item.id,
-              kind: "review",
-              status: "active",
-              now: clock.now(),
-            }).id;
+            foreignRunId = (
+              await insertRun(sqliteDb(db), {
+                itemId: item.id,
+                kind: "review",
+                status: "active",
+                now: clock.now(),
+              })
+            ).id;
             mkdirSync(join(home, "runs", foreignRunId), { mode: 0o700 });
             writeFileSync(join(home, "runs", foreignRunId, "agent-profile.json"), originalProfile, {
               mode: 0o600,
             });
             setCurrentRun(db, item.id, foreignRunId);
-          } else markRun(db, originalRunId, "active", Date.now());
+          } else await markRun(sqliteDb(db), originalRunId, "active", Date.now());
           assert.deepEqual(await recoverOnStartup(sqliteDb(db)), [{ type: "reverify" }]);
           assert.equal(getWorkItem(db, item.id)?.state, "verifying");
           assert.equal(getRun(db, foreignRunId)?.status, "active");

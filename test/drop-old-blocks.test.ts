@@ -82,7 +82,7 @@ test("migration 059 drops the old block tables and task_block holds each depende
     expect(await orchestrator.dependencyHandoff("hold-1")).toBeUndefined();
     await confirmFakeMerge(db, "hold-0");
     db.run("UPDATE work_item SET state = 'merged' WHERE id = 'hold-0'");
-    const run = insertRun(db, {
+    const run = await insertRun(sqliteDb(db), {
       itemId: "hold-0",
       now: clock.now(),
       status: "ended",

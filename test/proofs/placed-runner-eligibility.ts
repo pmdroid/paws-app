@@ -26,10 +26,10 @@ export default {
     const full = await pair("full", 1, [REPOSITORY]);
     const newly = await pair("newly", 1, ["other/repo"]);
     await queue("busy");
-    const busy = insertRun(db, { itemId: "busy", now: NOW, status: "active" });
+    const busy = await insertRun(sqliteDb(db), { itemId: "busy", now: NOW, status: "active" });
     await queue("parked");
     applyWorkItemEvent(db, "parked", "dispatched");
-    const run = insertRun(db, { itemId: "parked", now: NOW, status: "active" });
+    const run = await insertRun(sqliteDb(db), { itemId: "parked", now: NOW, status: "active" });
     db.run("UPDATE work_item SET current_run_id=? WHERE id='parked'", [run.id]);
     db.run(
       "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,1,0,'busy',?)",

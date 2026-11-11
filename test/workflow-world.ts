@@ -171,7 +171,7 @@ export async function seedFixture(
     applyWorkItemEvent(db, id, "closeout_accepted", { now });
     saveCheckpoint(db, id, MERGING);
     await joinMergeQueue(sqliteDb(db), { itemId: id, repository: "owner/repo", now });
-    if (runEnded) markRun(db, run.id, "ended", now);
+    if (runEnded) await markRun(sqliteDb(db), run.id, "ended", now);
     enqueueJob(db, {
       queue: JOB_KIND.merge,
       jobKey: `merge:${id}:head:accepted`,
@@ -211,7 +211,7 @@ export async function seedFixture(
       return;
     case "recovering":
       applyWorkItemEvent(db, id, "lease_expired", { now });
-      markRun(db, run.id, "lost", now);
+      await markRun(sqliteDb(db), run.id, "lost", now);
       enqueueJob(db, {
         queue: JOB_KIND.resume,
         jobKey: `orphan:${id}:${now}`,
@@ -285,11 +285,11 @@ export async function seedFixture(
       return;
     case "failed":
       applyWorkItemEvent(db, id, "run_failed", { now });
-      markRun(db, run.id, "ended", now);
+      await markRun(sqliteDb(db), run.id, "ended", now);
       return;
     case "completed":
       applyWorkItemEvent(db, id, "answer_completed", { now });
-      markRun(db, run.id, "ended", now);
+      await markRun(sqliteDb(db), run.id, "ended", now);
       return;
     case "merged":
       await toMergeQueue();
@@ -299,7 +299,7 @@ export async function seedFixture(
     case "cancelled":
       applyWorkItemEvent(db, id, "cancel", { now });
       db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [id]);
-      markRun(db, run.id, "lost", now);
+      await markRun(sqliteDb(db), run.id, "lost", now);
       return;
     default: {
       const exhaustive: never = fixture;

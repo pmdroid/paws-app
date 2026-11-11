@@ -85,7 +85,7 @@ test("a delayed failure cannot fail the run that superseded it", async () => {
   const { item, run } = await runningTask(db);
   applyWorkItemEvent(db, item.id, "restart");
   applyWorkItemEvent(db, item.id, "dispatched");
-  const next = insertRun(db, { itemId: item.id, now: 3 });
+  const next = await insertRun(sqliteDb(db), { itemId: item.id, now: 3 });
   setCurrentRun(db, item.id, next.id);
   expect(failWorkItem(db, item, "run_error", "The old agent crashed.", 4)).toBe(false);
   expect(getWorkItem(db, item.id)).toMatchObject({ state: "running", currentRunId: next.id });
@@ -215,7 +215,7 @@ test("an answer from a superseded run cannot complete the task", async () => {
   databases.push(db);
   const { item, run, jobId } = await runningTask(db);
   await saveTaskMode(sqliteDb(db), item.id, "answer");
-  const next = insertRun(db, { itemId: item.id, now: 2 });
+  const next = await insertRun(sqliteDb(db), { itemId: item.id, now: 2 });
   setCurrentRun(db, item.id, next.id);
   await expect(
     completeAnswerTask(sqliteDb(db), item.id, "Stale answer.", 3, { runId: run.id }),

@@ -255,7 +255,7 @@ async function seedRunner(db: Database, now: number) {
     async fill(at: number) {
       for (let slot = 0; slot < SLOTS; slot++) {
         const item = insertQueuedItem(db, { id: `other-${slot}`, now: at });
-        const run = insertRun(db, { itemId: item.id, now: at, status: "active" });
+        const run = await insertRun(sqliteDb(db), { itemId: item.id, now: at, status: "active" });
         db.run(
           "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,'runner','ws-1',1,0,?,?)",
           [run.id, `other-${slot}`, at + 10 * HOUR_MS],

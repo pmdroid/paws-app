@@ -132,7 +132,7 @@ export async function probeExecutionChanges(
       jobKey: "start:criteria-4:0",
       now: clock.now(),
     });
-    const run = insertRun(db, {
+    const run = await insertRun(sqliteDb(db), {
       itemId: "criteria-0",
       kind: "implement",
       agent: "codex",

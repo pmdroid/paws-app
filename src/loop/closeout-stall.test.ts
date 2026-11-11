@@ -83,8 +83,8 @@ test("quiet verification retries once across restart, then asks a person", async
     expect(lines).toEqual(["closeout stalled for 31 min, re-running once"]);
     // The real re-verify closes the quiet run and opens a new one on the same head.
     const prior = getWorkItem(db, "stalled")!.currentRunId!;
-    markRun(db, prior, "lost", clock.now());
-    const rerun = insertRun(db, {
+    await markRun(sqliteDb(db), prior, "lost", clock.now());
+    const rerun = await insertRun(sqliteDb(db), {
       itemId: "stalled",
       kind: "recheck",
       agent: "cursor",

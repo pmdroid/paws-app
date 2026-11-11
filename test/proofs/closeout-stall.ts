@@ -51,8 +51,8 @@ export default {
         });
         if (attempt === 0) {
           // The real re-verify closes the quiet run and opens a new one on the same head.
-          markRun(db, getWorkItem(db, "quiet")!.currentRunId!, "lost", clock.now());
-          const rerun = insertRun(db, {
+          await markRun(sqliteDb(db), getWorkItem(db, "quiet")!.currentRunId!, "lost", clock.now());
+          const rerun = await insertRun(sqliteDb(db), {
             itemId: "quiet",
             kind: "recheck",
             agent: "cursor",

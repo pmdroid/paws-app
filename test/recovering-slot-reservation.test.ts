@@ -377,7 +377,7 @@ async function runRecovering(input: {
           projectId: "project",
         }),
       });
-      recover(db, item.id, input.clock.now(), input.maxAttempts ?? 10);
+      await recover(db, item.id, input.clock.now(), input.maxAttempts ?? 10);
     }
     db.run("UPDATE job SET status='cancelled', finished_at=? WHERE queue=? AND status='pending'", [
       input.clock.now(),
@@ -420,14 +420,14 @@ async function runRecovering(input: {
   }
 }
 
-function recover(
+async function recover(
   db: ReturnType<typeof migratedDatabase>,
   itemId: string,
   now: number,
   maxAttempts: number,
 ) {
   applyWorkItemEvent(db, itemId, "dispatched");
-  const run = insertRun(db, { itemId, now, status: "active" });
+  const run = await insertRun(sqliteDb(db), { itemId, now, status: "active" });
   setCurrentRun(db, itemId, run.id);
   applyWorkItemEvent(db, itemId, "lease_expired");
   enqueueJob(db, {

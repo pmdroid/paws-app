@@ -23,6 +23,12 @@ import {
   saveTaskMode,
   setCurrentRun,
   sqliteDb,
+  applyWorkItemEventSteps,
+  saveCheckpointSteps,
+  setCurrentRunSteps,
+  markRunSteps,
+  type Q,
+  type Steps,
 } from "../../src/db";
 import {
   createItemReconciler,
@@ -99,13 +105,13 @@ export async function probePublicationReadiness(root: string) {
     });
     const itemId = intake.items.find((item) => item.linearIssueId === "issue")!.id;
     const target = { delegationId: intake.delegation.id, workspaceId: "workspace" };
-    let onChanges = (_changes: ItemChanges) => {};
+    let onChanges = (_q: Q, _changes: ItemChanges): Steps<void> => syncSteps(() => {});
     let afterChanges = async (_changes: ItemChanges) => {};
     const reconciler = createItemReconciler({
       db,
       tracker,
       lifecycle,
-      onChanges: (_q, changes) => syncSteps(() => onChanges(changes)),
+      onChanges: (q, changes) => onChanges(q, changes),
       afterChanges: (changes) => afterChanges(changes),
       now: () => clock.now(),
     });
@@ -113,7 +119,7 @@ export async function probePublicationReadiness(root: string) {
     applyWorkItemEvent(db, itemId, "dispatched");
     applyWorkItemEvent(db, itemId, "turn_ended");
     applyWorkItemEvent(db, itemId, "closeout_accepted");
-    const run = insertRun(db, {
+    const run = await insertRun(sqliteDb(db), {
       itemId,
       agent: "scripted-producer",
       kind: "implement",
@@ -242,12 +248,12 @@ export async function probePublicationReadiness(root: string) {
     const f = await fixture("missed-webhook");
     try {
       f.claim();
-      f.setEffects((changes) => {
+      f.setEffects(function* (q, changes) {
         if (!changes.specChangedItemIds.includes(f.itemId)) return;
-        applyWorkItemEvent(f.db, f.itemId, "restart");
-        saveCheckpoint(f.db, f.itemId, null);
-        setCurrentRun(f.db, f.itemId, null);
-        markRun(f.db, f.run.id, "lost", f.clock.now());
+        yield* applyWorkItemEventSteps(q, f.itemId, "restart");
+        yield* saveCheckpointSteps(q, f.itemId, null);
+        yield* setCurrentRunSteps(q, f.itemId, null);
+        yield* markRunSteps(q, f.run.id, "lost", f.clock.now());
       });
       const guard = createPublicationReadiness({
         db: f.db,
@@ -291,19 +297,16 @@ export async function probePublicationReadiness(root: string) {
         now: () => f.clock.now(),
       });
       f.setEffects(
-        async (changes) => {
-          if (changes.specChangedItemIds.includes(f.itemId))
-            assert(
-              (
-                await applyLinearCommand(sqliteDb(f.db), {
-                  type: "cancel",
-                  itemId: f.itemId,
-                  source: "linear",
-                  requestedAt: f.clock.now(),
-                })
-              ).applied,
-            );
-        },
+        (_q, changes) =>
+          syncSteps(() => {
+            if (!changes.specChangedItemIds.includes(f.itemId)) return;
+            void applyLinearCommand(sqliteDb(f.db), {
+              type: "cancel",
+              itemId: f.itemId,
+              source: "linear",
+              requestedAt: f.clock.now(),
+            }).then(({ applied }) => assert(applied));
+          }),
         async (changes) => {
           if (!changes.specChangedItemIds.includes(f.itemId)) return;
           await ownedJob;

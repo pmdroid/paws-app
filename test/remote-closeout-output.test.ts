@@ -75,7 +75,7 @@ test("remote session output survives result transport, persistence and the live 
       baseSha: head,
       wipCommit: head,
     });
-    markRun(db, started.run.id, "ended", 2);
+    await markRun(sqliteDb(db), started.run.id, "ended", 2);
     applyWorkItemEvent(db, "item", "turn_ended");
     saveCheckpoint(db, "item", { phase: "verifying", baseSha: head, wipCommit: head });
     const identity = {

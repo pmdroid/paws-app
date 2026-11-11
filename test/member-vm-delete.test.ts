@@ -220,7 +220,7 @@ async function fixture() {
         clock.now(),
       ],
     );
-    const run = insertRun(db, { itemId, now: clock.now(), status: "active" });
+    const run = await insertRun(sqliteDb(db), { itemId, now: clock.now(), status: "active" });
     db.run(
       `INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence)
       VALUES(?,?,?,1,0,?,?,0)`,
