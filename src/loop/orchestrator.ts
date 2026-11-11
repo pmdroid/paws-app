@@ -773,15 +773,16 @@ export type OrchestratorOptions = {
   linearComments?: LinearCommentPolicy;
   conversations?: () => Promise<LinearConversations | null>;
   outboxWaitMs?: number;
-  authorizeLinearIntake?: (sessionId: string, snapshot: EpicSnapshot) => boolean;
-  linearIntakeScope?: (sessionId: string, snapshot: EpicSnapshot) => EpicSnapshot;
-  linearIntakeActor?: (sessionId: string) => string | undefined;
-  onLinearIntake?: (sessionId: string, result: IntakeResult) => void;
+  authorizeLinearIntake?: (q: Q, sessionId: string, snapshot: EpicSnapshot) => Steps<boolean>;
+  linearIntakeScope?: (q: Q, sessionId: string, snapshot: EpicSnapshot) => Steps<EpicSnapshot>;
+  linearIntakeActor?: (q: Q, sessionId: string) => Steps<string | undefined>;
+  onLinearIntake?: (q: Q, sessionId: string, result: IntakeResult) => Steps<void>;
   adoptLinearParent?: (
+    q: Q,
     sessionId: string,
     snapshot: EpicSnapshot,
     edges: readonly DependencyEdge[],
-  ) => boolean;
+  ) => Steps<boolean>;
   /** The workspace GitHub App installation. Repository reads and pull requests wait for it. */
   githubInstallation?: GitHubIntegration;
   files?: LinearFileTransfer | null;
@@ -1629,13 +1630,18 @@ export class Orchestrator {
       edges.push(...found);
       return found;
     };
-    const authorizeSnapshot = (snapshot: EpicSnapshot) => {
+    const { authorizeLinearIntake: authorize, linearIntakeScope: scope } = this.options;
+    const authorizeSnapshot = async (snapshot: EpicSnapshot) => {
       loadedSnapshot = snapshot;
-      if (sessionId && this.options.authorizeLinearIntake?.(sessionId, snapshot) === false)
+      if (
+        sessionId &&
+        authorize &&
+        !(await this.store.run((q) => authorize(q, sessionId, snapshot)))
+      )
         throw new Error("The Linear assignment changed before intake.");
       authorizedSnapshot = snapshot;
-      return sessionId
-        ? (this.options.linearIntakeScope?.(sessionId, snapshot) ?? snapshot)
+      return sessionId && scope
+        ? await this.store.run((q) => scope(q, sessionId, snapshot))
         : snapshot;
     };
     let intakeTracker = {
@@ -1646,7 +1652,7 @@ export class Orchestrator {
     const deferred = !savedRequest && (await this.options.remoteExecution?.slotFree?.()) === false;
     const snapshot =
       this.options.linearTaskModes && sessionId && taskKey && !deferred
-        ? authorizeSnapshot(await tracker.loadEpic(issueId))
+        ? await authorizeSnapshot(await tracker.loadEpic(issueId))
         : null;
     if (snapshot) intakeTracker = { ...progressTracker, listDeps, loadEpic: async () => snapshot };
     const openSubIssues = snapshot?.subIssues.some(
@@ -1698,11 +1704,16 @@ export class Orchestrator {
     const assignSessionSteps = (q: Q, delegationId: string, session: string) =>
       this.assignSessionSteps(q, delegationId, session);
     const timeLimitsSteps = (q: Q, itemId: string) => this.timeLimitsSteps(q, itemId);
-    const intakeCurrent = () =>
-      isCurrent() &&
-      (!sessionId ||
-        authorizedSnapshot === null ||
-        this.options.authorizeLinearIntake?.(sessionId, authorizedSnapshot) !== false);
+    const intakeCurrent = async () => {
+      if (!isCurrent()) return false;
+      const authorized: EpicSnapshot | null = authorizedSnapshot;
+      return (
+        !sessionId ||
+        authorized === null ||
+        !authorize ||
+        (await this.store.run((q) => authorize(q, sessionId, authorized)))
+      );
+    };
     const result = await intakeDelegatedIssue(this.db, intakeTracker, {
       linearIssueId: issueId,
       sessionId,
@@ -1727,13 +1738,15 @@ export class Orchestrator {
           }
         if (sessionId !== null) {
           const actorId =
-            settings.linearIntakeActor?.(sessionId) ??
+            (settings.linearIntakeActor
+              ? yield* settings.linearIntakeActor(q, sessionId)
+              : undefined) ??
             (yield* getLinearSessionSteps(q, sessionId))?.creatorId ??
             null;
           if (initialSession)
             yield* bindLinearSessionTaskSteps(q, sessionId, accepted.delegation.id, { actorId });
           yield* assignSessionSteps(q, accepted.delegation.id, sessionId);
-          settings.onLinearIntake?.(sessionId, accepted);
+          if (settings.onLinearIntake) yield* settings.onLinearIntake(q, sessionId, accepted);
           if (accepted.ok) yield* assignUnownedItemsSteps(q, actorId, accepted.items);
         }
         const caps = settings.caps;
@@ -1812,7 +1825,7 @@ export class Orchestrator {
   private async reconcilePreviousSessions(
     issueIds: readonly string[],
     incomingSessionId: string,
-    isCurrent: () => boolean,
+    isCurrent: () => Promise<boolean>,
     /** The new delegation may continue the stopped session's branch, so its pull request stays. */
     stop: { keepPullRequest: boolean },
   ): Promise<void> {
@@ -1834,7 +1847,7 @@ export class Orchestrator {
               ]),
             });
             if (
-              !isCurrent() ||
+              !(await isCurrent()) ||
               (await this.store.run((q) => getLinearSessionSteps(q, sessionId)))?.generation !==
                 previous.generation ||
               !(await candidates(issueId)).includes(sessionId)
@@ -1861,7 +1874,7 @@ export class Orchestrator {
           } else {
             await this.interruptLinearSession(sessionId);
           }
-          if (!isCurrent()) throw new Error("Linear intake changed during cleanup");
+          if (!(await isCurrent())) throw new Error("Linear intake changed during cleanup");
           await this.store.run((q) => assertLinearSessionCleanupSteps(q, sessionId));
         }
       }
@@ -8557,13 +8570,14 @@ export class Orchestrator {
     );
     if (!elsewhere || !this.tracker) return false;
     const snapshot = await this.tracker.loadEpic(issueId);
-    const isCurrent = () => {
+    const authorize = this.options.authorizeLinearIntake;
+    const isCurrent = async () => {
       const current = getLinearSession(this.db, session.sessionId);
       return (
         !this.shuttingDown &&
         current?.generation === session.generation &&
         current.stoppedAt === null &&
-        this.options.authorizeLinearIntake?.(session.sessionId, snapshot) !== false
+        (!authorize || (await this.store.run((q) => authorize(q, session.sessionId, snapshot))))
       );
     };
     await this.reconcilePreviousSessions([issueId], session.sessionId, isCurrent, {
@@ -8576,7 +8590,6 @@ export class Orchestrator {
     await this.interruptLinearSession(paused.sessionKey);
     const now = this.now();
     const shuttingDown = () => this.shuttingDown;
-    const authorize = this.options.authorizeLinearIntake;
     const resumed = await this.store.transaction(function* (q) {
       const item = yield* getWorkItemSteps(q, paused.id);
       const current = yield* getLinearSessionSteps(q, session.sessionId);
@@ -8586,7 +8599,7 @@ export class Orchestrator {
         shuttingDown() ||
         current?.generation !== session.generation ||
         current.stoppedAt !== null ||
-        authorize?.(session.sessionId, snapshot) === false
+        (authorize && !(yield* authorize(q, session.sessionId, snapshot)))
       )
         return false;
       yield* moveDelegationSessionSteps(q, {

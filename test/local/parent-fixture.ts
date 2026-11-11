@@ -121,11 +121,11 @@ export function createParentFixture(
     pawsRoot: "/nonexistent-project-proof",
     tracker,
     scheduling: async () => ({}),
-    authorizeLinearIntake: parents.authorizeIntake,
-    linearIntakeScope: parents.scope,
-    linearIntakeActor: parents.actor,
-    onLinearIntake: parents.accepted,
-    adoptLinearParent: parents.adoptParent,
+    authorizeLinearIntake: parents.authorizeIntakeSteps,
+    linearIntakeScope: parents.scopeSteps,
+    linearIntakeActor: parents.actorSteps,
+    onLinearIntake: parents.acceptedSteps,
+    adoptLinearParent: parents.adoptParentSteps,
     ...(authorizeEvents
       ? {
           authorizeLinearEvent: async (event: AcceptedLinearEvent) =>

@@ -274,7 +274,8 @@ function fixture({
         (await currentAccess.authorizeLinearEvent(incoming))
           ? await assignments.authorize(incoming)
           : { outcome: "refused", reason: "denied" },
-      authorizeLinearIntake: (sessionId, spec) => assignments.authorizeIntake(sessionId, spec),
+      authorizeLinearIntake: (q, sessionId, spec) =>
+        assignments.authorizeIntakeSteps(q, sessionId, spec),
       ...(agent
         ? { repositories: [agent.repository], launch: agent.launch }
         : {

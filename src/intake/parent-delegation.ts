@@ -166,6 +166,29 @@ export function createParentDelegations(input: {
       throw new Error("This session belongs to another sub-issue of the delegated parent.");
     return { ...snapshot, subIssues: [] };
   }
+  function* authorizeIntakeSteps(q: Q, sessionId: string, snapshot: EpicSnapshot): Steps<boolean> {
+    try {
+      yield* scopeSteps(q, sessionId, snapshot);
+      return true;
+    } catch (caughtError1) {
+      journalCaught(caughtError1, "parent-delegation.authorizeIntake.scope", null);
+      return false;
+    }
+  }
+  function* actorSteps(q: Q, sessionId: string): Steps<string | undefined> {
+    const sub = yield* parentSubIssueForSessionSteps(q, sessionId);
+    const parent = sub ? yield* readParentSteps(q, sub.parentDelegationId) : null;
+    return parent ? yield* ownerLinearUserIdSteps(q, parent) : undefined;
+  }
+  function* acceptedSteps(q: Q, sessionId: string, result: IntakeResult): Steps<void> {
+    const sub = yield* parentSubIssueForSessionSteps(q, sessionId);
+    if (!sub) return;
+    const parent = (yield* readParentSteps(q, sub.parentDelegationId))!;
+    if (!result.ok || result.items.length !== 1 || result.items[0]?.linearIssueId !== sub.issueId)
+      throw new Error("Intake did not keep the sub-issue to itself.");
+    yield* setItemOwnerSteps(q, result.items[0].id, parent.ownerUserId);
+    yield* setParentSubIssueDelegationSteps(q, sessionId, result.delegation.id);
+  }
   function scope(sessionId: string, snapshot: EpicSnapshot): EpicSnapshot {
     return settled(store.run((q) => scopeSteps(q, sessionId, snapshot)));
   }
@@ -433,6 +456,7 @@ export function createParentDelegations(input: {
     ): boolean {
       return settled(store.transaction((q) => adoptParentSteps(q, sessionId, snapshot, edges)));
     },
+    adoptParentSteps,
     /** The sub-issues of a delegated parent, in blocks order, and what each waits for. */
     progress(parentDelegationId: string): Promise<ParentSubIssueProgress[]> {
       return store.run(function* (q): Steps<ParentSubIssueProgress[]> {
@@ -448,42 +472,20 @@ export function createParentDelegations(input: {
       });
     },
     scope,
+    scopeSteps,
     authorizeIntake(sessionId: string, snapshot: EpicSnapshot): boolean {
-      try {
-        scope(sessionId, snapshot);
-        return true;
-      } catch (caughtError1) {
-        journalCaught(caughtError1, "parent-delegation.authorizeIntake.scope", null);
-        return false;
-      }
+      return settled(store.run((q) => authorizeIntakeSteps(q, sessionId, snapshot)));
     },
+    authorizeIntakeSteps,
     /** A sub-issue's session acts for the person who delegated its parent. */
     actor(sessionId: string): string | undefined {
-      return settled(
-        store.run(function* (q): Steps<string | undefined> {
-          const sub = yield* parentSubIssueForSessionSteps(q, sessionId);
-          const parent = sub ? yield* readParentSteps(q, sub.parentDelegationId) : null;
-          return parent ? yield* ownerLinearUserIdSteps(q, parent) : undefined;
-        }),
-      );
+      return settled(store.run((q) => actorSteps(q, sessionId)));
     },
+    actorSteps,
     accepted(sessionId: string, result: IntakeResult): void {
-      settled(
-        store.transaction(function* (q) {
-          const sub = yield* parentSubIssueForSessionSteps(q, sessionId);
-          if (!sub) return;
-          const parent = (yield* readParentSteps(q, sub.parentDelegationId))!;
-          if (
-            !result.ok ||
-            result.items.length !== 1 ||
-            result.items[0]?.linearIssueId !== sub.issueId
-          )
-            throw new Error("Intake did not keep the sub-issue to itself.");
-          yield* setItemOwnerSteps(q, result.items[0].id, parent.ownerUserId);
-          yield* setParentSubIssueDelegationSteps(q, sessionId, result.delegation.id);
-        }),
-      );
+      settled(store.transaction((q) => acceptedSteps(q, sessionId, result)));
     },
+    acceptedSteps,
     async authorizeEvent(event: AcceptedLinearEvent): Promise<IntakeDecision | undefined> {
       const decided = await store.run((q) => authorizeEventSteps(q, event));
       if (decided === undefined || "outcome" in decided) return decided;

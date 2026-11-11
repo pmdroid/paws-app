@@ -16,6 +16,7 @@ import {
   recordLinearInstallation,
   saveConversation,
   sqliteDb,
+  syncSteps,
 } from "../src/db";
 import {
   createFakeTracker,
@@ -83,7 +84,7 @@ async function fixture() {
       pawsRoot: home,
       jobs: new JobLoop(db, systemClock),
       outbox: new OutboxDispatcher(db, systemClock),
-      authorizeLinearIntake: () => authorized,
+      authorizeLinearIntake: () => syncSteps(() => authorized),
       remoteExecution: {
         cancelItem: (id) => cancel(id),
         agentForItem: () => {

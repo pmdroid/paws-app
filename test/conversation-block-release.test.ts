@@ -17,6 +17,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
+  syncSteps,
 } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
@@ -90,7 +91,7 @@ async function blockedAfterCleanupFailure() {
     pawsRoot: home,
     jobs: new JobLoop(db, systemClock),
     outbox: new OutboxDispatcher(db, systemClock),
-    authorizeLinearIntake: () => true,
+    authorizeLinearIntake: () => syncSteps(() => true),
     remoteExecution: {
       agentForItem: () => {
         throw new Error("Unexpected agent");
