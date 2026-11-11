@@ -1,17 +1,15 @@
 import {
-  acceptDecisionSuggestion,
+  acceptDecisionSuggestionSteps,
   answeredDecisionQuestionSteps,
   auditWorkspaceAccessSteps,
   correctDecisionMemorySteps,
-  decisionRow,
   decisionRowSteps,
-  decisionScope as scope,
   decisionScopeSteps,
   getLinearSessionAccessSteps,
   insertDecisionMemorySteps,
   itemPathHintsSteps,
   listDecisionRowsSteps,
-  openDecisionSuggestion,
+  openDecisionSuggestionSteps,
   recordDecisionSuggestionSteps,
   replaceDecisionSearchSteps,
   retireDecisionMemorySteps,
@@ -19,14 +17,14 @@ import {
   settled,
   sqliteDb,
   unsavedDecisionAnswersSteps,
-  workspaceLinearMember,
+  workspaceLinearMemberSteps,
   workspaceMemberSteps,
   workspaceMemberUsable,
-  workspaceSessionIds,
   workspaceSessionIdsSteps,
   type DecisionRow as Row,
   type DecisionScope as Scope,
   type Q,
+  type Steps,
 } from "../db";
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
@@ -47,16 +45,6 @@ export type Decision = {
   accepted: number;
 };
 type Actor = { workspaceId: string; userId: string; clientId: string };
-function accessible(db: Database, actor: Actor, source: Scope | null): source is Scope {
-  return (
-    source !== null &&
-    source.workspaceId === actor.workspaceId &&
-    source.clientId === actor.clientId &&
-    workspaceSessionIds(db, actor.workspaceId, actor.userId, actor.clientId).includes(
-      source.sessionId,
-    )
-  );
-}
 function* accessibleSteps(q: Q, actor: Actor, source: Scope | null) {
   return (
     source !== null &&
@@ -279,36 +267,48 @@ export function confirmDecision(
   linearUserId: string,
   now: number,
 ): string | null {
+  return settled(
+    sqliteDb(db).transaction((q) =>
+      confirmDecisionSteps(q, questionId, command, linearUserId, now),
+    ),
+  );
+}
+export function* confirmDecisionSteps(
+  q: Q,
+  questionId: string,
+  command: string,
+  linearUserId: string,
+  now: number,
+): Steps<string | null> {
   const match = /^\/paws decision ([a-f0-9-]{36})$/.exec(command);
   if (!match) return null;
-  return db
-    .transaction(() => {
-      const target = scope(db, questionId);
-      if (!target) throw new Error("This question is no longer accessible.");
-      const member = workspaceLinearMember(db, target.workspaceId, linearUserId);
-      const actor = {
-        workspaceId: target.workspaceId,
-        userId: member?.userId ?? "",
-        clientId: target.clientId,
-      };
-      const saved = openDecisionSuggestion(db, match[1]!, questionId);
-      const decision = saved ? decisionRow(db, saved.decisionId, { activeOnly: true }) : null;
-      const source = decision ? scope(db, decision.questionId) : null;
-      if (
-        !workspaceMemberUsable(member) ||
-        !saved ||
-        !decision ||
-        saved.revision !== decision.revision ||
-        !accessible(db, actor, target) ||
-        !accessible(db, actor, source) ||
-        source.repository !== target.repository ||
-        source.teamId !== target.teamId
-      )
-        throw new Error(
-          "This suggestion changed or is no longer accessible. Answer the question in your own words.",
-        );
-      acceptDecisionSuggestion(db, match[1]!, linearUserId, now);
-      return saved.statement;
-    })
-    .immediate();
+  const target = yield* decisionScopeSteps(q, questionId);
+  if (!target) throw new Error("This question is no longer accessible.");
+  const member = yield* workspaceLinearMemberSteps(q, target.workspaceId, linearUserId);
+  const actor = {
+    workspaceId: target.workspaceId,
+    userId: member?.userId ?? "",
+    clientId: target.clientId,
+  };
+  const saved = yield* openDecisionSuggestionSteps(q, match[1]!, questionId);
+  const decision = saved
+    ? yield* decisionRowSteps(q, saved.decisionId, { activeOnly: true })
+    : null;
+  const source = decision ? yield* decisionScopeSteps(q, decision.questionId) : null;
+  if (
+    !workspaceMemberUsable(member) ||
+    !saved ||
+    !decision ||
+    saved.revision !== decision.revision ||
+    !(yield* accessibleSteps(q, actor, target)) ||
+    !source ||
+    !(yield* accessibleSteps(q, actor, source)) ||
+    source.repository !== target.repository ||
+    source.teamId !== target.teamId
+  )
+    throw new Error(
+      "This suggestion changed or is no longer accessible. Answer the question in your own words.",
+    );
+  yield* acceptDecisionSuggestionSteps(q, match[1]!, linearUserId, now);
+  return saved.statement;
 }
