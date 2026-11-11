@@ -64,7 +64,7 @@ for (const state of [
     const before = (await git(["-C", tree, "rev-parse", "HEAD"], { env })).trim();
     const clock = new FakeClock(Date.now());
     const options: StartOptions = { hostClock: clock };
-    const paws = startPaws(
+    const paws = await startPaws(
       { PAWS_HOME: pawsHome, PAWS_PORT: "0", PAWS_HOST: "127.0.0.1" },
       options,
     );

@@ -74,7 +74,7 @@ test("GitHub webhook does not acknowledge a verified event until its inbox accep
 test("the running GitHub endpoint persists verified deliveries and deduplicates them across restart", async () => {
   const home = tempHome();
   const env = { PAWS_HOME: home, PAWS_PORT: "0", GITHUB_WEBHOOK_SECRET: secret };
-  let paws = startPaws(env);
+  let paws = await startPaws(env);
   const payload = JSON.stringify({ action: "opened", pull_request: { number: 1 } });
   try {
     const send = () => {
@@ -88,7 +88,7 @@ test("the running GitHub endpoint persists verified deliveries and deduplicates 
     expect((await send()).status).toBe(200);
     expect(listGitHubDeliveries(paws.db)).toHaveLength(1);
     await paws.stop();
-    paws = startPaws(env);
+    paws = await startPaws(env);
     expect((await send()).status).toBe(200);
     expect(listGitHubDeliveries(paws.db)).toMatchObject([
       { deliveryId: "delivery-1", event: "ping", payload },

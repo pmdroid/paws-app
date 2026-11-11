@@ -7,7 +7,7 @@ import { tempHome } from "./helpers";
 describe("process", () => {
   test("startPaws migrates and serves health", async () => {
     const home = tempHome();
-    const paws = startPaws({ PAWS_HOME: home, PAWS_PORT: "0", PAWS_HOST: "127.0.0.1" });
+    const paws = await startPaws({ PAWS_HOME: home, PAWS_PORT: "0", PAWS_HOST: "127.0.0.1" });
     try {
       const health = await fetch(`http://${paws.server.hostname}:${paws.server.port}/health`);
       expect(health.status).toBe(200);
@@ -72,7 +72,7 @@ describe("process", () => {
       maxAwakeMs: 45 * 60 * 1000,
       implementer: "claude",
     });
-    const paws = startPaws({
+    const paws = await startPaws({
       PAWS_HOME: home,
       PAWS_PORT: "0",
       PAWS_HOST: "0.0.0.0",

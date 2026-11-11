@@ -12,7 +12,7 @@ test("startup without a Linear workspace says why and admits nothing", async () 
   seed.close();
   const lines: string[] = [];
   const restore = setJournalSink((line) => lines.push(line));
-  const paws = startPaws({
+  const paws = await startPaws({
     PAWS_HOME: home,
     PAWS_PORT: "0",
     PAWS_HOST: "127.0.0.1",

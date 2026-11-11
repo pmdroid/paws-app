@@ -34,7 +34,7 @@ const source: Record<string, string | undefined> = {
 if (mode === "no-tls") {
   let error: unknown;
   try {
-    startPaws(source);
+    await startPaws(source);
   } catch (caught) {
     error = caught;
   }
@@ -75,7 +75,7 @@ if (mode === "public")
       botUserId: "U123",
     }),
   );
-const paws = startPaws(source);
+const paws = await startPaws(source);
 const tls = source.PAWS_PUBLIC_DASHBOARD === "1";
 const origin = `${tls ? "https" : "http"}://127.0.0.1:${paws.server.port}`;
 const observations: { name: string; passed: boolean; observed: unknown }[] = [];

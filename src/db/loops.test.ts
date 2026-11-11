@@ -11,7 +11,7 @@ test("a running job survives a 45-second pause of the process", async () => {
   let started = () => {};
   let release = () => {};
   const claimed = new Promise<void>((resolve) => (started = resolve));
-  const loops = startLoops({
+  const loops = await startLoops({
     db,
     instanceId: "01JINSTANCEACME0000000000",
     signal: controller.signal,

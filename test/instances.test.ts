@@ -138,7 +138,7 @@ describe("instances", () => {
     });
     const claims: { job?: string | null; outbox?: string | null } = {};
     const controller = new AbortController();
-    const loops = startLoops({
+    const loops = await startLoops({
       db,
       instanceId: instance.id,
       signal: controller.signal,

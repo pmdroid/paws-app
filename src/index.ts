@@ -410,7 +410,7 @@ const LOOPBACK = "127.0.0.1";
 const SKILL_UPDATES_KEY = "skills.updates";
 
 /** Open ~/.paws, migrate, recover in-flight work, and listen on 127.0.0.1. */
-export function startPaws(source?: EnvSource, options?: StartOptions): PawsProcess {
+export async function startPaws(source?: EnvSource, options?: StartOptions): Promise<PawsProcess> {
   const envSource = source ?? process.env;
   const execution = envSource.PAWS_EXECUTION;
   if (execution === "local") throw new Error("Paws places work on a remote runner.");
@@ -1425,13 +1425,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           : null,
     });
   }
-  const loops = startLoops({
+  const loops = await startLoops({
     db,
     store,
     instanceId: instance.id,
     role: runtime.role,
     signal: abort.signal,
-    prepare(created) {
+    async prepare(created) {
       // A crashed instance's runs move to a live one without waiting for a restart.
       created.jobs.register(RUN_TAKEOVER_JOB, () => {
         takeOverGoneRuns(db, instance.id, Date.now());
@@ -2701,7 +2701,7 @@ if (import.meta.main) {
     console.error(`Unknown option ${unknown}.`);
     process.exit(1);
   }
-  const paws = startPaws(process.env, {
+  const starting = startPaws(process.env, {
     refreshRepositories: true,
     refreshAgentCatalog: true,
   });
@@ -2709,7 +2709,10 @@ if (import.meta.main) {
   const shutdown = (exitCode = 0) => {
     if (exiting) return;
     exiting = true;
-    void shutdownPaws(paws, exitCode);
+    void starting.then(
+      (started) => shutdownPaws(started, exitCode),
+      () => undefined,
+    );
   };
   process.on("SIGINT", () => shutdown());
   process.on("SIGTERM", () => shutdown());
@@ -2725,6 +2728,7 @@ if (import.meta.main) {
       }
       shutdown(PUBLIC_TLS_RESTART_EXIT);
     });
+  const paws = await starting;
   try {
     await paws.ready;
   } catch (caughtError5) {
