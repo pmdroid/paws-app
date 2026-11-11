@@ -456,7 +456,12 @@ export async function probeRunnerTaskAuthority(
           },
           grant.token,
         );
-        coordinator.results.answer({ runId: run.id, generation: 1, sequence: 1, answer: "Text" });
+        await coordinator.results.answer({
+          runId: run.id,
+          generation: 1,
+          sequence: 1,
+          answer: "Text",
+        });
         assert.deepEqual(await daemon.answers(run.id, 1, 0, grant.token), {
           answers: [{ sequence: 1, answer: "Text" }],
         });

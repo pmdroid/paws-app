@@ -1889,7 +1889,7 @@ export function createRemoteAgentRunner(options: {
               );
             }
             if (questionError) throw questionError;
-            complete = results.read(assigned.runId, assigned.generation, assigned.id);
+            complete = await results.read(assigned.runId, assigned.generation, assigned.id);
             if (complete && !disposition)
               disposition = await store.transaction(function* (q) {
                 return (
@@ -1916,7 +1916,7 @@ export function createRemoteAgentRunner(options: {
                 false,
                 failedBinding(selected.account, complete),
               );
-            const pendingEvents = results.events(assigned.runId, assigned.generation, cursor);
+            const pendingEvents = await results.events(assigned.runId, assigned.generation, cursor);
             for (const row of pendingEvents) {
               const event = scrub(row.event);
               const origin = {
@@ -2036,7 +2036,8 @@ export function createRemoteAgentRunner(options: {
                 (event.type === "artifact" ||
                   event.type === "closeout_policy" ||
                   event.type === "ci_rerun") &&
-                results.answered(assigned.runId, assigned.generation, row.sequence) !== null;
+                (await results.answered(assigned.runId, assigned.generation, row.sequence)) !==
+                  null;
               if (answered && event.type === "artifact" && event.dropped === undefined)
                 publishedEffects = true;
               if (event.type === "closeout_policy" && !answered) {
@@ -2053,7 +2054,7 @@ export function createRemoteAgentRunner(options: {
                       message: "Paws has no trusted Closeout policy for this run",
                     };
                 signal.throwIfAborted();
-                results.answer({
+                await results.answer({
                   runId: assigned.runId,
                   generation: assigned.generation,
                   sequence: row.sequence,
@@ -2074,7 +2075,7 @@ export function createRemoteAgentRunner(options: {
                     )
                   : { error: "rerun_ci is unavailable for this run" };
                 signal.throwIfAborted();
-                results.answer({
+                await results.answer({
                   runId: assigned.runId,
                   generation: assigned.generation,
                   sequence: row.sequence,
@@ -2086,7 +2087,7 @@ export function createRemoteAgentRunner(options: {
                   `item ${itemId} runner dropped artifact ${JSON.stringify(event.artifact.path)}: ${event.dropped}`,
                 );
                 signal.throwIfAborted();
-                results.answer({
+                await results.answer({
                   runId: assigned.runId,
                   generation: assigned.generation,
                   sequence: row.sequence,
@@ -2128,7 +2129,7 @@ export function createRemoteAgentRunner(options: {
                   });
                 publishedEffects = true;
                 // Store the outcome before a shutdown stops the read, so a replay does not publish again.
-                results.answer({
+                await results.answer({
                   runId: assigned.runId,
                   generation: assigned.generation,
                   sequence: row.sequence,
@@ -2164,13 +2165,13 @@ export function createRemoteAgentRunner(options: {
                 );
               if (
                 event.type === "question" &&
-                results.answered(assigned.runId, assigned.generation, row.sequence) === null
+                (await results.answered(assigned.runId, assigned.generation, row.sequence)) === null
               ) {
                 if (question) {
                   if (questionText !== event.text)
                     throw new Error("Remote runner sent overlapping questions");
                   if (questionAnswer !== undefined)
-                    results.answer({
+                    await results.answer({
                       runId: assigned.runId,
                       generation: assigned.generation,
                       sequence: row.sequence,
@@ -2237,7 +2238,7 @@ export function createRemoteAgentRunner(options: {
                   for (const pending of unanswered) {
                     const replay = scrub(work.openEvent(pending));
                     if (replay.type !== "question" || replay.text !== event.text) continue;
-                    results.answer({
+                    await results.answer({
                       runId: currentCommand.runId,
                       generation: currentCommand.generation,
                       sequence: pending.sequence,
@@ -2268,7 +2269,7 @@ export function createRemoteAgentRunner(options: {
             if (pendingEvents.length) heardAt = now();
             if (complete && pendingEvents.length < 64) break;
             if (pendingEvents.length === 64) continue;
-            if (!complete && results.read(assigned.runId, assigned.generation, assigned.id))
+            if (!complete && (await results.read(assigned.runId, assigned.generation, assigned.id)))
               continue;
             // A long silence is checked against the runner. A question waits on a person, so its
             // wait is not silence. A runner that still names the command in its heartbeat keeps a

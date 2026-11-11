@@ -250,7 +250,7 @@ if (mode === "prepare") {
   const answered = new Set<string>();
   const timer = setInterval(async () => {
     for (const command of config.commands.slice(0, 2)) {
-      for (const { sequence, event } of coordinator.results.events(command.runId, 1, 0)) {
+      for (const { sequence, event } of await coordinator.results.events(command.runId, 1, 0)) {
         const key = `${command.id}:${sequence}`;
         if (answered.has(key) || (event.type !== "question" && event.type !== "artifact")) continue;
         if (event.type === "artifact") {
@@ -263,7 +263,7 @@ if (mode === "prepare") {
             "assigned base\n",
           );
         }
-        coordinator.results.answer({
+        await coordinator.results.answer({
           runId: command.runId,
           generation: 1,
           sequence,

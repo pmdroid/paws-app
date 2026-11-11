@@ -184,7 +184,7 @@ test("an accepted result survives a reopen and lease expiry, and recovery reatta
     expect(await submit()).toEqual({ duplicate: false });
     f.reopen();
     f.clock.at += 60_001;
-    expect(f.results.read(f.run.id, 1, command.id)).toEqual(result);
+    expect(await f.results.read(f.run.id, 1, command.id)).toEqual(result);
     await expect(submit()).rejects.toThrow();
     expect((await f.work.heartbeat(f.runnerId)).fenced).toEqual([]);
     prepareShutdown(f.db, f.clock.at);
@@ -197,7 +197,7 @@ test("an accepted result survives a reopen and lease expiry, and recovery reatta
     expect(resumes(f.db)[0]?.payload).not.toHaveProperty("handoff");
     expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "running", recoveryAttempts: 0 });
     await f.work.finish(f.run.id, 1);
-    expect(() => f.results.read(f.run.id, 1, command.id)).toThrow();
+    await expect(f.results.read(f.run.id, 1, command.id)).rejects.toThrow();
   } finally {
     f.close();
   }
@@ -208,7 +208,7 @@ test("an expired execution without an accepted result follows the existing recov
   try {
     const { command } = await f.admit(1);
     f.clock.at += 60_001 + RUNNER_LEASE_GRACE_MS;
-    expect(() => f.results.read(f.run.id, 1, command.id)).toThrow(
+    await expect(f.results.read(f.run.id, 1, command.id)).rejects.toThrow(
       "Runner work is fenced or its lease expired.",
     );
     expect((await f.work.heartbeat(f.runnerId)).fenced).toEqual([
@@ -233,7 +233,7 @@ test("a cancelled item does not consume its accepted result after expiry", async
     await submit();
     f.clock.at += 60_001 + RUNNER_LEASE_GRACE_MS;
     f.db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [f.item.id]);
-    expect(() => f.results.read(f.run.id, 1, command.id)).toThrow();
+    await expect(f.results.read(f.run.id, 1, command.id)).rejects.toThrow();
     expect(recoverOnStartup(f.db, f.clock.at)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
@@ -249,9 +249,9 @@ test("a superseding generation fences the earlier accepted result", async () => 
     await first.submit();
     f.clock.at += 60_001;
     const second = await f.admit(2);
-    expect(() => f.results.read(f.run.id, 1, first.command.id)).toThrow();
-    expect(() => f.results.read(f.run.id, 2, first.command.id)).toThrow();
-    expect(f.results.read(f.run.id, 2, second.command.id)).toBeNull();
+    await expect(f.results.read(f.run.id, 1, first.command.id)).rejects.toThrow();
+    await expect(f.results.read(f.run.id, 2, first.command.id)).rejects.toThrow();
+    expect(await f.results.read(f.run.id, 2, second.command.id)).toBeNull();
     f.clock.at += 60_001 + RUNNER_LEASE_GRACE_MS;
     expect(recoverOnStartup(f.db, f.clock.at)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
