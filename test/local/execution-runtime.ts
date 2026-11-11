@@ -18,7 +18,7 @@ import {
 import {
   hasPendingDelegationChanges,
   intakeDelegatedIssue,
-  readyItems,
+  readyItemsSteps,
   SWEEP_FULL_REFRESH_MS,
 } from "../../src/intake";
 import { createFakeTracker, createInboxStore } from "../../src/linear";
@@ -260,7 +260,10 @@ export async function probeExecutionRuntime(input: {
       Date.now(),
     ]);
     await until(() => timers().find((row) => row.queue === "scheduler.tick")!.fires > before);
-    assert.deepEqual(readyItems(db, itemTarget).readyItemIds, []);
+    assert.deepEqual(
+      (await sqliteDb(db).run((q) => readyItemsSteps(q, itemTarget))).readyItemIds,
+      [],
+    );
     assert.equal(
       db
         .query<{ n: number }, [string]>(
@@ -290,7 +293,10 @@ export async function probeExecutionRuntime(input: {
       .status,
     "ended",
   );
-  assert.deepEqual(readyItems(db, itemTarget).readyItemIds, []);
+  assert.deepEqual(
+    (await sqliteDb(db).run((q) => readyItemsSteps(q, itemTarget))).readyItemIds,
+    [],
+  );
   observe(
     "Signed live criteria changes hold the actual scheduler during reads then fence old candidate, run and merge before blocked redispatch",
     {
@@ -311,7 +317,10 @@ export async function probeExecutionRuntime(input: {
       !(await hasPendingDelegationChanges(db, target.delegationId)),
   );
   assert.equal(spec()!.revision, 2);
-  assert.deepEqual(readyItems(db, itemTarget).readyItemIds, []);
+  assert.deepEqual(
+    (await sqliteDb(db).run((q) => readyItemsSteps(q, itemTarget))).readyItemIds,
+    [],
+  );
   observe(
     "The actual durable runtime sweep refreshes active epics without changing unchanged criteria or bypassing blockers",
     {

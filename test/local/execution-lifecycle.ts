@@ -17,7 +17,7 @@ import {
   sqliteDb,
 } from "../../src/db";
 import { Orchestrator } from "../../src/loop";
-import { readyItems, syncItemDependencies } from "../../src/intake";
+import { readyItemsSteps, syncItemDependencies } from "../../src/intake";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../../src/linear";
 import { confirmFakeMerge, workspaceAdmission } from "../fake-workspace";
 
@@ -194,10 +194,14 @@ export async function probeExecutionLifecycle(
     await syncItemDependencies(db, {
       itemId: "external-0",
       workspaceId: "external-workspace",
-      expectedGeneration: readyItems(db, {
-        itemId: "external-0",
-        workspaceId: "external-workspace",
-      }).generation,
+      expectedGeneration: (
+        await sqliteDb(db).run((q) =>
+          readyItemsSteps(q, {
+            itemId: "external-0",
+            workspaceId: "external-workspace",
+          }),
+        )
+      ).generation,
       tracker,
       lifecycle,
     });

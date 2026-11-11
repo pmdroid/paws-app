@@ -22,13 +22,14 @@ import {
   saveCheckpoint,
   saveTaskMode,
   setCurrentRun,
+  sqliteDb,
 } from "../../src/db";
 import {
   createItemReconciler,
   createPublicationReadiness,
   hasPendingDelegationChanges,
   intakeDelegatedIssue,
-  readyItems,
+  readyItemsSteps,
   type ItemChanges,
 } from "../../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../../src/linear";
@@ -181,15 +182,23 @@ export async function probePublicationReadiness(root: string) {
         canMerge: mergeAdmission(f.db),
         now: () => f.clock.now(),
       });
-      const beforeGeneration = readyItems(f.db, {
-        itemId: f.itemId,
-        workspaceId: "workspace",
-      }).generation;
+      const beforeGeneration = (
+        await sqliteDb(f.db).run((q) =>
+          readyItemsSteps(q, {
+            itemId: f.itemId,
+            workspaceId: "workspace",
+          }),
+        )
+      ).generation;
       assert(await guard.publicationReady(f.itemId, "publish", undefined, f.candidate));
-      const publishGeneration = readyItems(f.db, {
-        itemId: f.itemId,
-        workspaceId: "workspace",
-      }).generation;
+      const publishGeneration = (
+        await sqliteDb(f.db).run((q) =>
+          readyItemsSteps(q, {
+            itemId: f.itemId,
+            workspaceId: "workspace",
+          }),
+        )
+      ).generation;
       assert.equal(publishGeneration, beforeGeneration + 1);
       assert.equal(f.loads(), 1);
       assert(await guard.publicationReady(f.itemId, "publish", undefined, f.candidate));
@@ -204,8 +213,11 @@ export async function probePublicationReadiness(root: string) {
           loads: f.loads(),
           beforeGeneration,
           publishGeneration,
-          mergeGeneration: readyItems(f.db, { itemId: f.itemId, workspaceId: "workspace" })
-            .generation,
+          mergeGeneration: (
+            await sqliteDb(f.db).run((q) =>
+              readyItemsSteps(q, { itemId: f.itemId, workspaceId: "workspace" }),
+            )
+          ).generation,
           state: getWorkItem(f.db, f.itemId)!.state,
         },
       );
@@ -404,7 +416,11 @@ export async function probePublicationReadiness(root: string) {
       assert.equal(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate), false);
       assert.equal(getWorkItem(f.db, f.itemId)!.state, "merge_queue");
       assert.deepEqual(
-        readyItems(f.db, { itemId: independent, workspaceId: "workspace" }).readyItemIds,
+        (
+          await sqliteDb(f.db).run((q) =>
+            readyItemsSteps(q, { itemId: independent, workspaceId: "workspace" }),
+          )
+        ).readyItemIds,
         [independent],
       );
       f.lifecycle.issues.get("outside")!.stateType = "completed";
@@ -426,7 +442,11 @@ export async function probePublicationReadiness(root: string) {
       ]);
       assert.equal(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate), false);
       assert.deepEqual(
-        readyItems(f.db, { itemId: independent, workspaceId: "workspace" }).readyItemIds,
+        (
+          await sqliteDb(f.db).run((q) =>
+            readyItemsSteps(q, { itemId: independent, workspaceId: "workspace" }),
+          )
+        ).readyItemIds,
         [independent],
       );
       observe(
@@ -434,8 +454,11 @@ export async function probePublicationReadiness(root: string) {
         {
           loads: f.loads(),
           state: getWorkItem(f.db, f.itemId)!.state,
-          independentReady: readyItems(f.db, { itemId: independent, workspaceId: "workspace" })
-            .readyItemIds,
+          independentReady: (
+            await sqliteDb(f.db).run((q) =>
+              readyItemsSteps(q, { itemId: independent, workspaceId: "workspace" }),
+            )
+          ).readyItemIds,
         },
       );
     } finally {

@@ -27,7 +27,7 @@ import {
   workspaceLinearMember,
   sqliteDb,
 } from "../src/db";
-import { readyItems, syncItemDependencies } from "../src/intake";
+import { readyItemsSteps, syncItemDependencies } from "../src/intake";
 import { attachOrchestrator, deliverLinearOutbox } from "../src/loop";
 import { FakeClock } from "../src/core";
 import {
@@ -238,8 +238,11 @@ function fixture({
           await syncItemDependencies(db, {
             itemId: item.id,
             workspaceId: "workspace",
-            expectedGeneration: readyItems(db, { itemId: item.id, workspaceId: "workspace" })
-              .generation,
+            expectedGeneration: (
+              await sqliteDb(db).run((q) =>
+                readyItemsSteps(q, { itemId: item.id, workspaceId: "workspace" }),
+              )
+            ).generation,
             tracker,
             lifecycle: {
               async inspect() {
