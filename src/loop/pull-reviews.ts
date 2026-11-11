@@ -25,6 +25,7 @@ import {
 } from "../db";
 import type { StoredReviewFinding } from "../closeout";
 import type { LeaveMergeQueueResult, ReviewThread } from "../github";
+import { feedbackSeenSteps } from "./feedback-seen";
 import { askSteps, restartSteps } from "./operations";
 import { commentDigest } from "./pull-comments";
 import {
@@ -92,7 +93,7 @@ export function* recordReviewDeliverySteps(
   if (item === null) return none;
   const opened = yield* getItemPullRequestSteps(q, item.id);
   if (opened !== null && opened.pullNumber !== pullNumber) return none;
-  return yield* recordPullReviewSteps(
+  const receipt = yield* recordPullReviewSteps(
     q,
     {
       reviewId,
@@ -107,6 +108,8 @@ export function* recordReviewDeliverySteps(
     },
     wait,
   );
+  if (receipt.recorded) yield* feedbackSeenSteps(q, item.id, now);
+  return receipt;
 }
 
 /** The ongoing item whose branch in `owner/repo` is `branch`. */
