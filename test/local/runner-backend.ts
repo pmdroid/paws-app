@@ -552,7 +552,7 @@ export async function probeRunnerBackend(
       sequence: 6,
       event: { type: "reply", text: "Yes, the old route still answers with 410." },
     });
-    results.submit({
+    await results.submit({
       runnerId,
       runId: assigned.runId,
       generation: assigned.generation,
@@ -644,7 +644,7 @@ export async function probeRunnerBackend(
       sequence: 1,
       event: { type: "checkpoint", reason: "stop", sha: head },
     });
-    results.submit({
+    await results.submit({
       runnerId,
       runId: earlyCommand.runId,
       generation: earlyCommand.generation,
@@ -676,7 +676,7 @@ export async function probeRunnerBackend(
       sequence: 1,
       event: { type: "checkpoint", reason: "stop" },
     });
-    results.submit({
+    await results.submit({
       runnerId,
       runId: resumed.runId,
       generation: resumed.generation,
@@ -689,7 +689,9 @@ export async function probeRunnerBackend(
     assert.equal(fetched, fetchedBefore);
     fetched = fetchedBefore;
     // The limit is per agent turn: the next turn, even through the same closure, gets its own.
-    const interrupt = (command: Extract<Awaited<ReturnType<typeof next>>, { type: "run" }>) => {
+    const interrupt = async (
+      command: Extract<Awaited<ReturnType<typeof next>>, { type: "run" }>,
+    ) => {
       const token = work.issueGrant({
         runnerId,
         runId: command.runId,
@@ -698,7 +700,7 @@ export async function probeRunnerBackend(
       }).token;
       const sent = { runnerId, runId: command.runId, generation: command.generation, token };
       work.event({ ...sent, sequence: 1, event: { type: "checkpoint", reason: "stop" } });
-      results.submit({
+      await results.submit({
         ...sent,
         result: { ...result(command), stopReason: "cancelled", cancelled: true, interrupted: true },
       });
@@ -710,8 +712,8 @@ export async function probeRunnerBackend(
       return command;
     };
     const laterTurn = stoppedAgent(input(stopped));
-    interrupt(await runCommand());
-    interrupt(await runCommand());
+    await interrupt(await runCommand());
+    await interrupt(await runCommand());
     assert.equal((await laterTurn).stopReason, "cancelled");
     observe("an unsolicited interruption saves WIP and restarts only once", true, {
       wipCommit: head,
@@ -754,7 +756,7 @@ export async function probeRunnerBackend(
             ...(publication === "failed" ? { dropped: "The runner could not save" } : {}),
           },
         });
-      results.submit({
+      await results.submit({
         runnerId,
         runId: command.runId,
         generation: command.generation,
@@ -781,7 +783,7 @@ export async function probeRunnerBackend(
         commandId: command.id,
         generation: command.generation,
       });
-      results.submit({
+      await results.submit({
         runnerId,
         runId: command.runId,
         generation: command.generation,
@@ -998,7 +1000,7 @@ export async function probeRunnerBackend(
       event: { type: "progress", text: "After restart" },
     });
     for (let attempt = 0; attempt < 500 && afterEvents.length === 0; attempt++) await delay(2);
-    results.submit({
+    await results.submit({
       runnerId,
       runId: detachedCommand.runId,
       generation: detachedCommand.generation,
@@ -1103,7 +1105,7 @@ export async function probeRunnerBackend(
     db.run("UPDATE runner_work SET consumed_sequence=0 WHERE run_id=?", [replayCommand.runId]);
     const afterReplay = backend.forItem(replayed.id)(replayInput());
     for (let attempt = 0; attempt < 500 && origins.length < 2; attempt++) await delay(2);
-    results.submit({
+    await results.submit({
       runnerId,
       runId: replayCommand.runId,
       generation: replayCommand.generation,
@@ -1148,7 +1150,7 @@ export async function probeRunnerBackend(
     void beforeExpiry.catch(() => undefined);
     const acceptedCommand = await next();
     if (acceptedCommand.type !== "run") throw new Error("Expected an implementation run");
-    results.submit({
+    await results.submit({
       runnerId,
       runId: acceptedCommand.runId,
       generation: acceptedCommand.generation,
@@ -1216,7 +1218,7 @@ export async function probeRunnerBackend(
       commandId: review.id,
       generation: review.generation,
     });
-    assert.throws(() =>
+    await assert.rejects(
       results.submit({
         runnerId,
         runId: review.runId,
@@ -1233,7 +1235,7 @@ export async function probeRunnerBackend(
       sequence: 1,
       event: { type: "progress", text: "[]" },
     });
-    results.submit({
+    await results.submit({
       runnerId,
       runId: review.runId,
       generation: review.generation,
@@ -1308,7 +1310,7 @@ export async function probeRunnerBackend(
       commandId: commandReview.id,
       generation: commandReview.generation,
     });
-    results.submit({
+    await results.submit({
       runnerId,
       runId: commandReview.runId,
       generation: commandReview.generation,
@@ -1511,7 +1513,7 @@ export async function probeRunnerBackend(
           });
         }
         for (let i = 0; i < 500; i++) {
-          const answers = results.answers({
+          const answers = await results.answers({
             runnerId,
             runId: command.runId,
             generation: command.generation,
@@ -1580,7 +1582,7 @@ export async function probeRunnerBackend(
           );
         const receipt = result(command);
         await seal(command, taskGrant.token, receipt.executionId, raw);
-        results.submit({
+        await results.submit({
           runnerId,
           runId: command.runId,
           generation: command.generation,
@@ -1791,7 +1793,7 @@ export async function probeRunnerBackend(
           }) + "\n",
         ),
       );
-      results.submit({
+      await results.submit({
         runnerId,
         runId: dispatched.runId,
         generation: dispatched.generation,
@@ -1942,7 +1944,7 @@ export async function probeRunnerBackend(
           event: { type: "progress", text: `turn-${turn}-event-${eventSequence}` },
         });
       }
-      results.submit({
+      await results.submit({
         runnerId,
         runId: command.runId,
         generation: command.generation,
@@ -1994,7 +1996,7 @@ export async function probeRunnerBackend(
           Buffer.from("{}\n"),
         );
       cancelDuringDownload = failure === "cancelled";
-      results.submit({
+      await results.submit({
         runnerId,
         runId: command.runId,
         generation: command.generation,
@@ -2105,7 +2107,7 @@ export async function probeRunnerBackend(
     });
     let answered = false;
     for (let i = 0; i < 500; i++) {
-      const answers = results.answers({
+      const answers = await results.answers({
         runnerId,
         runId: questionCommand.runId,
         generation: questionCommand.generation,
@@ -2136,20 +2138,22 @@ export async function probeRunnerBackend(
     let contextAnswered = false;
     for (let i = 0; i < 500 && !contextAnswered; i++) {
       contextAnswered =
-        results.answers({
-          runnerId,
-          runId: questionCommand.runId,
-          generation: questionCommand.generation,
-          token: questionGrant.token,
-          after: 1,
-        }).length > 0;
+        (
+          await results.answers({
+            runnerId,
+            runId: questionCommand.runId,
+            generation: questionCommand.generation,
+            token: questionGrant.token,
+            after: 1,
+          })
+        ).length > 0;
       if (!contextAnswered) await delay(1);
     }
     assert(contextAnswered);
     const shown = contextBody ?? "";
     assert(shown.includes("Rows 1-16 are listed in report.md."));
     assert(shown.includes("Which rows count as archived?"));
-    results.submit({
+    await results.submit({
       runnerId,
       runId: questionCommand.runId,
       generation: questionCommand.generation,
@@ -2195,7 +2199,7 @@ export async function probeRunnerBackend(
     });
     const pushError =
       "GitHub git operation failed: fatal: unable to access 'https://github.com/fixture/repository.git/': The requested URL returned error: 502";
-    results.submit({
+    await results.submit({
       runnerId,
       runId: pushCommand.runId,
       generation: pushCommand.generation,
@@ -2230,7 +2234,7 @@ export async function probeRunnerBackend(
       commandId: mismatchCommand.id,
       generation: mismatchCommand.generation,
     });
-    results.submit({
+    await results.submit({
       runnerId,
       runId: mismatchCommand.runId,
       generation: mismatchCommand.generation,
@@ -2257,7 +2261,7 @@ export async function probeRunnerBackend(
       commandId: absentCommand.id,
       generation: absentCommand.generation,
     });
-    results.submit({
+    await results.submit({
       runnerId,
       runId: absentCommand.runId,
       generation: absentCommand.generation,
@@ -2288,7 +2292,7 @@ export async function probeRunnerBackend(
       commandId: unauthorizedCommand.id,
       generation: unauthorizedCommand.generation,
     });
-    results.submit({
+    await results.submit({
       runnerId,
       runId: unauthorizedCommand.runId,
       generation: unauthorizedCommand.generation,
@@ -2454,7 +2458,7 @@ export async function probeRunnerBackend(
             commandId: command.id,
             generation: command.generation,
           });
-          results.submit({
+          await results.submit({
             runnerId: host,
             runId: command.runId,
             generation: command.generation,
@@ -2597,7 +2601,7 @@ export async function probeRunnerBackend(
               }) + "\n",
             ),
           );
-          results.submit({
+          await results.submit({
             runnerId: host,
             runId: command.runId,
             generation: command.generation,
@@ -2711,15 +2715,14 @@ export async function probeRunnerBackend(
     assert.equal(secondAttempt.generation, firstAttempt.generation + 1);
     assert.match(secondAttempt.prompt, /fresh agent session/);
     assert.match(secondAttempt.prompt, /Retained work before heartbeat loss/);
-    assert.throws(
-      () =>
-        results.submit({
-          runnerId: hostIds[0]!,
-          runId: firstAttempt.runId,
-          generation: firstAttempt.generation,
-          token: firstToken.token,
-          result: { ...result(firstAttempt), candidateSha: head },
-        }),
+    await assert.rejects(
+      results.submit({
+        runnerId: hostIds[0]!,
+        runId: firstAttempt.runId,
+        generation: firstAttempt.generation,
+        token: firstToken.token,
+        result: { ...result(firstAttempt), candidateSha: head },
+      }),
       /fenced|expired|unavailable/i,
     );
     const secondToken = work.issueGrant({
@@ -2728,7 +2731,7 @@ export async function probeRunnerBackend(
       commandId: secondAttempt.id,
       generation: secondAttempt.generation,
     });
-    results.submit({
+    await results.submit({
       runnerId: hostIds[1]!,
       runId: secondAttempt.runId,
       generation: secondAttempt.generation,
@@ -2785,7 +2788,7 @@ export async function probeRunnerBackend(
           },
         },
       });
-    results.submit({
+    await results.submit({
       runnerId: hostIds[1]!,
       runId: thirdAttempt.runId,
       generation: thirdAttempt.generation,
@@ -2914,7 +2917,7 @@ export async function probeRunnerBackend(
       sequence: 1,
       event: { type: "artifact", artifact: retainedArtifact },
     });
-    results.submit({
+    await results.submit({
       runnerId: hostIds[0]!,
       runId: artifactCommand.runId,
       generation: artifactCommand.generation,
@@ -2964,7 +2967,7 @@ export async function probeRunnerBackend(
       commandId: approvedCommand.id,
       generation: approvedCommand.generation,
     });
-    results.submit({
+    await results.submit({
       runnerId: continuationHost,
       runId: approvedCommand.runId,
       generation: approvedCommand.generation,
@@ -3022,7 +3025,7 @@ export async function probeRunnerBackend(
         sequence: 1,
         event: { type: "progress", text: "Conflicting review must remain unpublished" },
       });
-      results.submit({
+      await results.submit({
         runnerId: continuationHost,
         runId: conflicting.runId,
         generation: conflicting.generation,
@@ -3064,7 +3067,7 @@ export async function probeRunnerBackend(
         commandId: independent.id,
         generation: independent.generation,
       });
-      results.submit({
+      await results.submit({
         runnerId: independentHost,
         runId: independent.runId,
         generation: independent.generation,
@@ -3138,7 +3141,7 @@ export async function probeRunnerBackend(
           commandId: conflictingReview.id,
           generation: conflictingReview.generation,
         });
-        results.submit({
+        await results.submit({
           runnerId: pinnedReviewHost,
           runId: conflictingReview.runId,
           generation: conflictingReview.generation,

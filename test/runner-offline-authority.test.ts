@@ -152,13 +152,13 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
   paws.work.assign(first);
 
   let link: "up" | "partitioned" | "revoked" | "paws-down" = "up";
-  const remote = <T>(route: string, call: () => T): T => {
+  const remote = async <T>(route: string, call: () => T | Promise<T>): Promise<T> => {
     if (link === "partitioned") throw new Error(`connect ECONNREFUSED ${route}`);
     if (link === "paws-down") throw new RunnerRequestError(503, "POST", route, 1);
     if (link === "revoked")
       throw new RunnerRequestError(403, "POST", route, 1, "Runner is revoked; its work is fenced.");
     try {
-      return call();
+      return await call();
     } catch (error) {
       throw new RunnerRequestError(
         runnerFailureStatus(error),
@@ -263,7 +263,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
       },
       pendingCommands: () => commands,
       async acknowledgeCommand(id) {
-        remote("/v1/commands/ack", () => paws.work.acknowledge(runnerId, id));
+        await remote("/v1/commands/ack", () => paws.work.acknowledge(runnerId, id));
         commands = commands.filter((entry) => entry.id !== id);
       },
       async issueRunGrant(runId, request) {
@@ -284,7 +284,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
       },
       async postResult(runId, generation, result, token) {
         try {
-          const receipt = remote("/result", () =>
+          const receipt = await remote("/result", () =>
             paws.results.submit({ runnerId, runId, generation, token, result }),
           );
           posted.push(result);

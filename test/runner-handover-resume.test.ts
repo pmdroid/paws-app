@@ -197,12 +197,12 @@ async function setup() {
       }),
     );
   }
-  function submit(
+  async function submit(
     command: RunCommand,
     runnerId: string,
     extra: { handedOver?: true; candidateSha?: string },
   ) {
-    results.submit({
+    await results.submit({
       runnerId,
       runId: command.runId,
       generation: command.generation,
@@ -252,7 +252,7 @@ async function setup() {
       turn: command.generation,
     });
     events(command, runners.a, [{ type: "handover", handedOver: true }]);
-    submit(command, runners.a, { handedOver: true, candidateSha: wip });
+    await submit(command, runners.a, { handedOver: true, candidateSha: wip });
     return wip;
   }
   // A handed-over run waits for a runner until it stops, so every test stops its runs.
@@ -473,7 +473,7 @@ test("a handed-over session continues on the second runner from its WIP commit, 
   expect(onB.prompt).toContain("The parser handles headers; rows are next.");
   expect(onB.prompt).toContain("Paws moved this session to another runner");
   context.events(onB, runners.b, [{ type: "session_restore", restored: true }]);
-  context.submit(onB, runners.b, { candidateSha: wip });
+  await context.submit(onB, runners.b, { candidateSha: wip });
   const result = await running;
   expect(result).toMatchObject({ stopReason: "end_turn", candidateSha: wip });
   expect(getWorkItem(context.db, record.id)?.checkpoint?.wipCommit).toBe(wip);
@@ -489,7 +489,7 @@ test("a reviewer after a moved session never carries the implementer's native se
   const onB = (await context.next(runners.b)) as RunCommand;
   expect(onB.restoreSession).toBeDefined();
   context.events(onB, runners.b, [{ type: "session_restore", restored: true }]);
-  context.submit(onB, runners.b, { candidateSha: wip });
+  await context.submit(onB, runners.b, { candidateSha: wip });
   await running;
   const stop = new AbortController();
   const reviewing = context.backend
@@ -532,7 +532,7 @@ test("with no eligible runner the session waits, says why once, and moves when o
   const onB = (await context.next(runners.b)) as RunCommand;
   expect(onB.runId).toBe(onA.runId);
   expect(onB.repository.baseSha).toBe(wip);
-  context.submit(onB, runners.b, { candidateSha: wip });
+  await context.submit(onB, runners.b, { candidateSha: wip });
   expect(await running).toMatchObject({ stopReason: "end_turn", candidateSha: wip });
   expect(notices.filter((notice) => notice.startsWith("Waiting"))).toHaveLength(1);
 });
@@ -563,7 +563,7 @@ test("a session whose question was answered still moves to another runner", asyn
   const onB = (await context.next(runners.b)) as RunCommand;
   expect(onB.runId).toBe(onA.runId);
   expect(onB.repository.baseSha).toBe(wip);
-  context.submit(onB, runners.b, { candidateSha: wip });
+  await context.submit(onB, runners.b, { candidateSha: wip });
   expect(await running).toMatchObject({ stopReason: "end_turn", candidateSha: wip });
 });
 
@@ -589,7 +589,7 @@ test("only a runner that ends the turn at a question is told to; an older one ke
     const { running } = context.turn(record, [], "open");
     const onA = (await context.next(runners.a)) as RunCommand;
     expect(onA.questionEndsTurn).toBe(told);
-    context.submit(onA, runners.a, { candidateSha: context.base });
+    await context.submit(onA, runners.a, { candidateSha: context.base });
     expect(await running).toMatchObject({ stopReason: "end_turn" });
   }
 });
@@ -662,7 +662,7 @@ test("after a restart the handed-over run still avoids the runner it left and wa
   const onB = (await context.next(runners.b)) as RunCommand;
   expect(onB.runId).toBe(onA.runId);
   expect(onB.repository.baseSha).toBe(wip);
-  context.submit(onB, runners.b, { candidateSha: wip });
+  await context.submit(onB, runners.b, { candidateSha: wip });
   expect(await resumed.running).toMatchObject({ stopReason: "end_turn", candidateSha: wip });
 });
 
@@ -698,7 +698,7 @@ async function runningOnA(notices: string[] = []) {
 /** A ends the turn at the base commit, so the next test starts with A free. */
 async function finish(onA: RunCommand, running: Promise<unknown>) {
   const base = context.base;
-  context.submit(onA, context.runners.a, { candidateSha: base });
+  await context.submit(onA, context.runners.a, { candidateSha: base });
   expect(await running).toMatchObject({ stopReason: "end_turn", candidateSha: base });
 }
 
@@ -744,7 +744,7 @@ test("an admin moves a session from its runner card, and it continues on the sec
   expect(await card(runners.b)).toMatchObject([{ runId: record.runId, movable: true, move: null }]);
   expect(await context.next(runners.a, 10)).toBeNull();
 
-  context.submit(onB, runners.b, { candidateSha: wip });
+  await context.submit(onB, runners.b, { candidateSha: wip });
   expect(await running).toMatchObject({ stopReason: "end_turn", candidateSha: wip });
 });
 
@@ -910,7 +910,7 @@ test("Move running work on a draining runner moves both sessions to the second r
   // B finishes both turns from their WIP commits.
   for (const [index, { onA, running }] of turns.entries()) {
     const onB = landed.find((command) => command.runId === onA.runId)!;
-    context.submit(onB, runners.b, { candidateSha: wips[index]! });
+    await context.submit(onB, runners.b, { candidateSha: wips[index]! });
     expect(await running).toMatchObject({ stopReason: "end_turn" });
   }
 });
@@ -993,7 +993,7 @@ test("the work turn after start_work waits for a slot on the session's runner, t
   db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
   const first = context.turn(record, []);
   const earlier = (await context.next(runners.a)) as RunCommand;
-  context.submit(earlier, runners.a, { candidateSha: context.base });
+  await context.submit(earlier, runners.a, { candidateSha: context.base });
   expect(await first.running).toMatchObject({ stopReason: "end_turn" });
   // restart() ends the conversation's run; the work turn starts the item's next run.
   db.run("UPDATE run SET status='ended' WHERE id=?", [record.runId]);
@@ -1015,7 +1015,7 @@ test("the work turn after start_work waits for a slot on the session's runner, t
   expect(await context.next(runners.a, 50)).toBeNull();
   expect(await context.next(runners.b, 50)).toBeNull();
 
-  context.submit(busyOnA, runners.a, { candidateSha: context.base });
+  await context.submit(busyOnA, runners.a, { candidateSha: context.base });
   await other.running;
   db.run("UPDATE run SET status='ended' WHERE id=?", [busy.runId]);
   const work = context.turn(next, []);
@@ -1026,7 +1026,7 @@ test("the work turn after start_work waits for a slot on the session's runner, t
     resumeSessionId: "claude-session",
   });
   expect(onA.checkpoint).not.toBe(false);
-  context.submit(onA, runners.a, { candidateSha: context.base });
+  await context.submit(onA, runners.a, { candidateSha: context.base });
   expect(await work.running).toMatchObject({ stopReason: "end_turn" });
 });
 
@@ -1072,10 +1072,10 @@ test("replayed questions attach to the open answer without asking or cancelling 
   expect(
     db.query("SELECT * FROM runner_question_answer WHERE run_id=?").all(record.runId),
   ).toHaveLength(3);
-  expect(context.answers(command).map(({ sequence, answer }) => ({ sequence, answer }))).toEqual(
-    [1, 2, 3].map((sequence) => ({ sequence, answer: "Use commas." })),
-  );
-  expect(context.answers(command, 3)).toEqual([]);
+  expect(
+    (await context.answers(command)).map(({ sequence, answer }) => ({ sequence, answer })),
+  ).toEqual([1, 2, 3].map((sequence) => ({ sequence, answer: "Use commas." })));
+  expect(await context.answers(command, 3)).toEqual([]);
   // A later answered request must not be held behind an unanswered duplicate.
   context.events(command, runners.a, [{ type: "question", text: "Which encoding?", options: [] }]);
   context.results.answer({
@@ -1084,10 +1084,10 @@ test("replayed questions attach to the open answer without asking or cancelling 
     sequence: 4,
     answer: "UTF-8",
   });
-  expect(context.answers(command, 3)).toEqual([{ sequence: 4, answer: "UTF-8" }]);
+  expect(await context.answers(command, 3)).toEqual([{ sequence: 4, answer: "UTF-8" }]);
   expect(await context.next(runners.a, 50)).toBeNull();
   expect(asks).toBe(1);
-  context.submit(command, runners.a, { candidateSha: context.base });
+  await context.submit(command, runners.a, { candidateSha: context.base });
   expect(await first.running).toMatchObject({ stopReason: "end_turn" });
 });
 
@@ -1151,11 +1151,11 @@ test("a replay attaches to a question already stored by an earlier attachment", 
     db.query("SELECT * FROM runner_question_answer WHERE run_id=?").all(record.runId),
   ).toHaveLength(2);
   expect(await context.next(runners.a, 50)).toBeNull();
-  context.submit(command, runners.a, { candidateSha: context.base });
-  expect(context.answers(command).map(({ sequence, answer }) => ({ sequence, answer }))).toEqual(
-    [1, 2].map((sequence) => ({ sequence, answer: "Use commas." })),
-  );
-  expect(context.answers(command, 2)).toEqual([]);
+  await context.submit(command, runners.a, { candidateSha: context.base });
+  expect(
+    (await context.answers(command)).map(({ sequence, answer }) => ({ sequence, answer })),
+  ).toEqual([1, 2].map((sequence) => ({ sequence, answer: "Use commas." })));
+  expect(await context.answers(command, 2)).toEqual([]);
   expect(await resumed.running).toMatchObject({ stopReason: "end_turn" });
 });
 

@@ -277,7 +277,7 @@ async function setup() {
       }),
     );
   }
-  function submit(
+  async function submit(
     command: RunCommand,
     extra: {
       handedOver?: true;
@@ -285,7 +285,7 @@ async function setup() {
       handoverFailure?: "commit" | "snapshot" | "publication";
     },
   ) {
-    results.submit({
+    await results.submit({
       runnerId,
       runId: command.runId,
       generation: command.generation,
@@ -339,7 +339,7 @@ async function setup() {
     });
     // The runner commits to the handover before it publishes the result.
     events(command, [{ type: "handover", handedOver: true }]);
-    submit(command, { handedOver: true, candidateSha: wip });
+    await submit(command, { handedOver: true, candidateSha: wip });
     return wip;
   }
   return {
@@ -472,7 +472,7 @@ test("a handover that fails after the interrupt while Paws posts a question keep
         { type: "handover_interrupted" },
         { type: "handover", handedOver: false, reason: "snapshot" },
       ]);
-      context.submit(command, { handoverFailure: "snapshot" });
+      await context.submit(command, { handoverFailure: "snapshot" });
       await delay(20);
       posted();
       expect(await handing).toEqual({ status: "failed", reason: "snapshot" });
@@ -503,7 +503,7 @@ test("a handover the runner cannot finish within 2 minutes is reported and the s
     // The session went on and finished its turn on the same runner.
     writeFileSync(join(context.runner, "result.txt"), "finished");
     context.git(["-C", context.runner, "commit", "-q", "-am", "Finish"]);
-    context.submit(command, {
+    await context.submit(command, {
       candidateSha: context.git(["-C", context.runner, "rev-parse", "HEAD"]),
     });
   });
@@ -526,7 +526,7 @@ test("a handover that fails after the interrupt is reported with its reason, and
       { type: "handover", handedOver: false, reason: "snapshot" },
     ]);
     outcome = await handing;
-    context.submit(command, { handoverFailure: "snapshot" });
+    await context.submit(command, { handoverFailure: "snapshot" });
   });
   expect(outcome).toEqual({ status: "failed", reason: "snapshot" });
   expect(result.handedOver).toBeUndefined();
@@ -553,7 +553,7 @@ test("a runner release that cannot hand over is never sent the command", async (
           .query("SELECT 1 FROM runner_command WHERE run_id=? AND kind='handover'")
           .get(command.runId),
       ).toBeNull();
-      context.submit(command, { candidateSha: context.base });
+      await context.submit(command, { candidateSha: context.base });
     });
     expect(result.stopReason).toBe("end_turn");
   } finally {
@@ -639,7 +639,7 @@ test("a run stopped for the time cap saves its runner's work first, and the rest
     db.run("UPDATE run SET status='active' WHERE id=?", [record.runId]);
     const restarted = await context.turn(record, async (command) => {
       expect(command.repository.baseSha).toBe(snapshot);
-      context.submit(command, { candidateSha: snapshot });
+      await context.submit(command, { candidateSha: snapshot });
     });
     expect(restarted.result.stopReason).toBe("end_turn");
     const ref = context.head(record.id);

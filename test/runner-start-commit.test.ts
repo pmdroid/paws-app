@@ -585,7 +585,7 @@ async function startScenario(input: {
           commandId: command.id,
           generation: command.generation,
         });
-        results.submit({
+        await results.submit({
           runnerId,
           runId: command.runId,
           generation: command.generation,

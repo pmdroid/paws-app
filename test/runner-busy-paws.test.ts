@@ -180,7 +180,7 @@ test("a heartbeat 70 s late for a run the runner reports, on a full runner, rene
     ]);
     expect(f.grants()).toBe(1);
     expect(
-      f.results().answers({
+      await f.results().answers({
         runnerId: f.runnerId,
         runId: f.run.id,
         generation: 1,

@@ -445,7 +445,7 @@ test("work with a result or an acknowledged cancel is not extended", async () =>
   const withResult = await fixture();
   try {
     const { submit } = withResult.admit();
-    submit();
+    await submit();
     const before = withResult.leaseUntil();
     withResult.down(20 * MINUTE);
     recoverOnStartup(withResult.db, withResult.clock.at, BUDGET, withResult.instance.id);

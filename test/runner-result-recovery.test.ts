@@ -179,11 +179,11 @@ test("an accepted result survives a reopen and lease expiry, and recovery reatta
   const f = await fixture();
   try {
     const { command, result, submit } = f.admit(1);
-    expect(submit()).toEqual({ duplicate: false });
+    expect(await submit()).toEqual({ duplicate: false });
     f.reopen();
     f.clock.at += 60_001;
     expect(f.results.read(f.run.id, 1, command.id)).toEqual(result);
-    expect(() => submit()).toThrow();
+    await expect(submit()).rejects.toThrow();
     expect(f.work.heartbeat(f.runnerId).fenced).toEqual([]);
     prepareShutdown(f.db, f.clock.at);
     const decisions = recoverOnStartup(f.db, f.clock.at);
@@ -226,7 +226,7 @@ test("a cancelled item does not consume its accepted result after expiry", async
   const f = await fixture();
   try {
     const { command, submit } = f.admit(1);
-    submit();
+    await submit();
     f.clock.at += 60_001 + RUNNER_LEASE_GRACE_MS;
     f.db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [f.item.id]);
     expect(() => f.results.read(f.run.id, 1, command.id)).toThrow();
@@ -242,7 +242,7 @@ test("a superseding generation fences the earlier accepted result", async () => 
   const f = await fixture();
   try {
     const first = f.admit(1);
-    first.submit();
+    await first.submit();
     f.clock.at += 60_001;
     const second = f.admit(2);
     expect(() => f.results.read(f.run.id, 1, first.command.id)).toThrow();

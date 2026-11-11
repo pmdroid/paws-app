@@ -314,7 +314,7 @@ test("an answer task mid-turn keeps running through a Paws restart and finishes 
     f.events.length = 0;
     const resumed = f.services.backend.forItem(f.item.id)(f.options(new AbortController().signal));
     f.say(command, 2, "After the restart.");
-    expect(f.finish(command)).toEqual({ duplicate: false });
+    expect(await f.finish(command)).toEqual({ duplicate: false });
     const result = await resumed;
 
     expect(result).toMatchObject({ stopReason: "end_turn", agentExited: true });
