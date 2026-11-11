@@ -151,7 +151,7 @@ test("a job that ends without a Closeout result re-verifies the same head after 
       `job ${f.jobId} ${JOB_KIND.start} left item ${item.id} (ENG-7) in verifying: the job ended without a Closeout result`,
     ]);
     expect(getWorkItem(f.db, item.id)?.state).toBe("verifying");
-    expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+    expect(await findOpenQuestion(sqliteDb(f.db), "ses_1")).toBeNull();
     expect(await listCloseoutRecoveries(sqliteDb(f.db), item.id)).toHaveLength(0);
     const [retry, ...rest] = await closeoutFaultJobs(f.db);
     expect(rest).toEqual([]);
@@ -203,7 +203,7 @@ test("repeated Closeout faults on one head back off further and the fourth asks 
         (pending.payload as { closeoutFaults: { reasons: string[] } }).closeoutFaults.reasons,
       ).toHaveLength(fault);
       delays.push(pending.runAt - pending.createdAt);
-      expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+      expect(await findOpenQuestion(sqliteDb(f.db), "ses_1")).toBeNull();
       f.db.run("UPDATE job SET run_at = 0 WHERE id = ?", [pending.id]);
       await f.tickReverify();
       await f.flush();
@@ -211,7 +211,7 @@ test("repeated Closeout faults on one head back off further and the fourth asks 
     expect(delays).toEqual([60_000, 5 * 60_000, 15 * 60_000]);
     expect(await closeoutFaultJobs(f.db)).toHaveLength(3);
     expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
-    expect(findOpenQuestion(f.db, "ses_1")?.kind).toBe("closeout-help");
+    expect((await findOpenQuestion(sqliteDb(f.db), "ses_1"))?.kind).toBe("closeout-help");
     const asks = f.tracker.questions.filter((question) =>
       question.body.includes("Verification stopped without moving the task on"),
     );
@@ -241,7 +241,7 @@ test("a successful re-verify after one Closeout fault reaches the merge queue an
       "done",
     );
     expect(getWorkItem(f.db, item.id)?.state).toBe("merge_queue");
-    expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+    expect(await findOpenQuestion(sqliteDb(f.db), "ses_1")).toBeNull();
     expect(
       (await listJobs(sqliteDb(f.db))).filter(
         (job) => job.status === "pending" && "closeoutFaults" in (job.payload as object),
@@ -276,7 +276,7 @@ test("a reverify waits beside the turn's own Closeout and survives its state cha
     expect(f.gate.runs).toHaveLength(1);
     expect(getWorkItem(f.db, item.id)).toMatchObject({ state: "verifying", currentRunId: runId });
     expect(f.stalls()).toEqual([]);
-    expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+    expect(await findOpenQuestion(sqliteDb(f.db), "ses_1")).toBeNull();
 
     f.release();
     await f.turn;
@@ -394,7 +394,7 @@ for (const hold of ["sibling", "live-decide"] as const)
       });
       expect(f.gate.runs).toHaveLength(1);
       expect(f.gate.decisions).toHaveLength(0);
-      expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+      expect(await findOpenQuestion(sqliteDb(f.db), "ses_1")).toBeNull();
       if (hold === "sibling") contexts.delete(item.id);
       else {
         f.release();
@@ -585,7 +585,7 @@ test("a prolonged sibling ownership hold cannot interrupt its healthy owner", as
       lastError: null,
     });
     expect(getWorkItem(f.db, item.id)?.state).toBe("merge_queue");
-    expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+    expect(await findOpenQuestion(sqliteDb(f.db), "ses_1")).toBeNull();
     expect(f.gate.runs).toHaveLength(1);
   } finally {
     f.release();
@@ -606,7 +606,7 @@ test("a long live Closeout finishes without a waiter opening a blocked question"
     f.db.run("UPDATE job SET queue='held-test-turn' WHERE id=?", [f.jobId]);
     await f.tickReverify();
     expect(getWorkItem(f.db, item.id)?.state).toBe("verifying");
-    expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+    expect(await findOpenQuestion(sqliteDb(f.db), "ses_1")).toBeNull();
     expect((await listJobs(sqliteDb(f.db))).find((j) => j.id === jobId)?.status).toBe("pending");
     f.release();
     await f.turn;
@@ -650,7 +650,7 @@ test("ownership acquired during preparation preserves the original wait timer", 
       attempts: 0,
     });
     expect(f.gate.runs).toHaveLength(1);
-    expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+    expect(await findOpenQuestion(sqliteDb(f.db), "ses_1")).toBeNull();
   } finally {
     f.release();
     await f.turn;
@@ -696,7 +696,7 @@ for (const state of [
       await f.tickReverify();
       contexts.delete(item.id);
       expect((await listJobs(sqliteDb(f.db))).find((job) => job.id === jobId)?.status).toBe("done");
-      expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+      expect(await findOpenQuestion(sqliteDb(f.db), "ses_1")).toBeNull();
       expect(getWorkItem(f.db, item.id)?.state).toBe(
         state === "cancel-requested" ? "verifying" : state,
       );
@@ -747,7 +747,7 @@ test("an ownership timer is cleared before work and a later hold starts a fresh 
     expect(
       (waiting.payload as { verificationWaitSince: number }).verificationWaitSince,
     ).toBeGreaterThan(Date.now() - 10_000);
-    expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+    expect(await findOpenQuestion(sqliteDb(f.db), "ses_1")).toBeNull();
   } finally {
     f.release();
     await f.turn;
@@ -882,7 +882,7 @@ for (const state of ["verifying", "merge_queue"] as const)
             status: "ended",
           });
         }
-        expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+        expect(await findOpenQuestion(sqliteDb(f.db), "ses_1")).toBeNull();
         expect(f.stalls()).toEqual([]);
         expect(
           f.db
@@ -937,7 +937,7 @@ test("running out of review attempts asks on the item page instead of failing", 
     await f.flush();
 
     expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
-    const question = findOpenQuestion(f.db, "ses_1")!;
+    const question = (await findOpenQuestion(sqliteDb(f.db), "ses_1"))!;
     expect(question.kind).toBe("link");
     expect(await getLinkAsk(sqliteDb(f.db), question.id)).toMatchObject({
       kind: "rounds",
@@ -968,7 +968,7 @@ test("a Paws without a public link asks in Linear when review attempts run out",
     await f.flush();
 
     expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
-    expect(findOpenQuestion(f.db, "ses_1")?.kind).toBe("closeout-help");
+    expect((await findOpenQuestion(sqliteDb(f.db), "ses_1"))?.kind).toBe("closeout-help");
   } finally {
     await f.close();
   }
@@ -1025,7 +1025,7 @@ test("a broken approve rule waits for a person on the item page and uses no fix 
 
     expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
     expect(restartReasons(f.db, item.id)).toEqual([]);
-    const question = findOpenQuestion(f.db, "ses_1")!;
+    const question = (await findOpenQuestion(sqliteDb(f.db), "ses_1"))!;
     expect(await getLinkAsk(sqliteDb(f.db), question.id)).toMatchObject({
       kind: "rule",
       link: "https://paws.example/dashboard/issues/ENG-7#rule",
@@ -1293,7 +1293,7 @@ test("Retry Closeout on a policy that did not load verifies the same head into t
     f.release();
     await f.turn;
     await f.flush();
-    const question = findOpenQuestion(f.db, "ses_1")!;
+    const question = (await findOpenQuestion(sqliteDb(f.db), "ses_1"))!;
     expect(question).toMatchObject({ kind: "closeout-help", options: ["Retry Closeout"] });
 
     f.gate.next = { decision: "accepted", exhausted: false, summary: "Closeout: accepted" };

@@ -1520,7 +1520,7 @@ for (const recovery of [
       expect(stateOf(db, "ENG-8"), await debug(layout, db)).toBe("awaiting_input");
       expect(launches).toEqual(["implement", "fix"]);
       expect(github.merged).toHaveLength(0);
-      const question = findOpenQuestion(db, "ses_1")!;
+      const question = (await findOpenQuestion(sqliteDb(db), "ses_1"))!;
       const context = (await listCloseoutRecoveries(sqliteDb(db), question.itemId))[0]!;
       expect(context.failedChecks).toEqual(["test"]);
       expect(context.retryBaseline).toHaveLength(2);
@@ -1533,7 +1533,7 @@ for (const recovery of [
       db.close();
       db = openDatabase(dbPath);
       runtime = attach();
-      expect(findOpenQuestion(db, "ses_1")?.id).toBe(question.id);
+      expect((await findOpenQuestion(sqliteDb(db), "ses_1"))?.id).toBe(question.id);
       if (recovery === "stale bypass") {
         const worktree = worktreePath(layout.pawsRoot, taskPath(db, "ENG-8"));
         await gitIdentity(worktree);
@@ -1624,7 +1624,7 @@ for (const recovery of [
       if (recovery === "stale bypass") {
         expect(stateOf(db, "ENG-8"), await debug(layout, db)).toBe("awaiting_input");
         expect(github.merged).toHaveLength(0);
-        expect(findOpenQuestion(db, "ses_1")?.id).not.toBe(question.id);
+        expect((await findOpenQuestion(sqliteDb(db), "ses_1"))?.id).not.toBe(question.id);
       } else {
         expect(stateOf(db, "ENG-8"), await debug(layout, db)).toBe("merged");
         expect(github.merged).toHaveLength(1);
@@ -2274,7 +2274,7 @@ for (const savedState of ["verifying", "merge_queue"] as const) {
       expect(tracker.questions[0]?.body).toContain("no recorded ACP session model");
       expect(github.opened).toHaveLength(0);
       expect(github.merged).toHaveLength(0);
-      const question = findOpenQuestion(db, "ses_1")!;
+      const question = (await findOpenQuestion(sqliteDb(db), "ses_1"))!;
       expect(question.body).toContain("no recorded ACP session model");
       expect(question.body).not.toContain("Checks you can bypass");
       expect(question.options).toEqual(["Restart implementation"]);
@@ -2389,7 +2389,7 @@ test("a verifying candidate with no commit and no session model restarts impleme
 
     await emptyCandidate();
     expect(stateOf(db, "ENG-32"), await debug(layout, db)).toBe("awaiting_input");
-    const question = findOpenQuestion(db, "ses_1")!;
+    const question = (await findOpenQuestion(sqliteDb(db), "ses_1"))!;
     expect(question.body).toContain("no recorded ACP session model");
     expect(question.options).toEqual(["Restart implementation"]);
     expect(question.body).not.toContain("Retry Closeout");
@@ -3138,7 +3138,7 @@ test.each([false, true])(
       await orchestrator.onLinearEvent(linearEvent("created", null, null, "ci-fail"));
       const deadline = Date.now() + 90_000;
       while (Date.now() < deadline && !["merged", "failed"].includes(stateOf(db, "ENG-91") ?? "")) {
-        if (findOpenQuestion(db, "ses_1")) {
+        if (await findOpenQuestion(sqliteDb(db), "ses_1")) {
           expect(tracker.questions.at(-1)?.body).toContain("Which CI fix should I use?");
           expect(tracker.progress.filter((update) => update.kind === "response")).toHaveLength(1);
           await orchestrator.onLinearEvent(
@@ -3755,7 +3755,7 @@ async function runCiFix(options: {
     while (Date.now() < deadline) {
       const state = stateOf(db, "ENG-94") ?? "";
       if (["merged", "failed"].includes(state)) break;
-      if (state === "awaiting_input" && findOpenQuestion(db, "ses_1")) {
+      if (state === "awaiting_input" && (await findOpenQuestion(sqliteDb(db), "ses_1"))) {
         while ((await outbox.tick()).length > 0) await outbox.idle();
         if (options.answer === undefined || answered) break;
         answered = true;
@@ -4957,8 +4957,11 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
     });
   };
   let orchestrator = createOrchestrator();
-  const event = (key: string, body: string | null): AcceptedLinearEvent => {
-    const createdAt = Math.max(Date.now(), (findOpenQuestion(db, "ses_1")?.createdAt ?? 0) + 1);
+  const event = async (key: string, body: string | null): Promise<AcceptedLinearEvent> => {
+    const createdAt = Math.max(
+      Date.now(),
+      ((await findOpenQuestion(sqliteDb(db), "ses_1"))?.createdAt ?? 0) + 1,
+    );
     return parseAgentEvent(
       JSON.stringify({
         type: "AgentSessionEvent",
@@ -4985,7 +4988,7 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
     )!;
   };
   const sendEvent = async (key: string, body: string | null) => {
-    const incoming = event(key, body);
+    const incoming = await event(key, body);
     expect(await gate.accept(incoming)).toBe(true);
     await orchestrator.onLinearEvent(incoming);
   };
@@ -4996,7 +4999,7 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
   tracker.askQuestion = async (question, options) => {
     await askQuestion(question, options);
     if (tracker.questions.length === 1) {
-      earlyQuestionId = findOpenQuestion(db, "ses_1")!.id;
+      earlyQuestionId = (await findOpenQuestion(sqliteDb(db), "ses_1"))!.id;
       earlyAnswer = sendEvent("color-answer", "blue");
       for (
         let attempt = 0;
@@ -5048,17 +5051,17 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
     jobs = new JobLoop(db, systemClock);
     outbox = new OutboxDispatcher(db, systemClock);
     orchestrator = createOrchestrator();
-    expect(findOpenQuestion(db, "ses_1")?.options).toEqual([
+    expect((await findOpenQuestion(sqliteDb(db), "ses_1"))?.options).toEqual([
       { label: "Original labels", value: "original" },
       { label: "Compact labels", value: "compact" },
     ]);
-    const recoveredQuestionId = findOpenQuestion(db, "ses_1")!.id;
+    const recoveredQuestionId = (await findOpenQuestion(sqliteDb(db), "ses_1"))!.id;
     expect(await getQuestion(sqliteDb(db), earlyQuestionId!)).toMatchObject({
       answer: "blue",
       answeredBy: "pascal",
     });
     await sendEvent("color-answer", "blue");
-    expect(findOpenQuestion(db, "ses_1")?.id).toBe(recoveredQuestionId);
+    expect((await findOpenQuestion(sqliteDb(db), "ses_1"))?.id).toBe(recoveredQuestionId);
     await sendEvent("label-answer", "Use larger labels and keep the blue color.");
     expect(await getQuestion(sqliteDb(db), recoveredQuestionId)).toMatchObject({
       answer: "Use larger labels and keep the blue color.",
@@ -5120,7 +5123,7 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
       status: "answered",
       answer: "blue",
     });
-    expect(findOpenQuestion(db, "ses_1")).toBeNull();
+    expect(await findOpenQuestion(sqliteDb(db), "ses_1")).toBeNull();
     const recovered = JSON.parse(await readFile(implementationTraces[2]!, "utf8"));
     expect(JSON.stringify(recovered.prompts)).toContain(
       "Use larger labels and keep the blue color.",

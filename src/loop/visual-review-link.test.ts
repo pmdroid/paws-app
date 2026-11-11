@@ -101,7 +101,7 @@ async function reviewing() {
     }),
   );
   expect(asked).toBe(true);
-  return { db, itemId: item.id, question: findOpenQuestion(db, "ses_1")! };
+  return { db, itemId: item.id, question: (await findOpenQuestion(sqliteDb(db), "ses_1"))! };
 }
 
 test("the visual review is a link ask without options, reminded once from the shared link ask", async () => {
@@ -287,7 +287,7 @@ test("a new head closes the open ask unless it has the same patch", async () => 
   expect((await getLinkAsk(sqliteDb(db), question.id))?.closedAt).toBeNull();
   expect(await closeLinkAsksOnHead(db, itemId, "different", NOW + 20)).toBe(1);
   expect((await getLinkAsk(sqliteDb(db), question.id))?.closedReason).toBe("head_moved");
-  expect(findOpenQuestion(db, "ses_1")).toBeNull();
+  expect(await findOpenQuestion(sqliteDb(db), "ses_1")).toBeNull();
 });
 
 let repo: string | null = null;

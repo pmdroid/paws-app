@@ -134,7 +134,7 @@ test("a Closeout stall asked while another question is open is delivered after i
 
   await answer(db, reply("Keep waiting"), questionEffects(db, { now: NOW + 100 }));
 
-  expect(findOpenQuestion(db, "ses_1")?.id).toBe(queued.questionId);
+  expect((await findOpenQuestion(sqliteDb(db), "ses_1"))?.id).toBe(queued.questionId);
   expect((await delivered(db)).at(-1)?.body).toContain("Closeout needs your help.");
 });
 

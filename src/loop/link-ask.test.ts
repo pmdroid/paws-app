@@ -252,7 +252,7 @@ test("a new head closes the open ask", async () => {
     decision: null,
   });
   expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("cancelled");
-  expect(findOpenQuestion(db, "ses_1")).toBeNull();
+  expect(await findOpenQuestion(sqliteDb(db), "ses_1")).toBeNull();
   expect(await remindLinkAsk(db, question.id, NOW + LINK_ASK_REMINDER_MS)).toBe(false);
   expect(
     await decideLinkAsk(db, {

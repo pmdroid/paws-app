@@ -76,7 +76,7 @@ describe("a question whose elicitation died twice", () => {
       kind: "agent",
     });
     expect((await getQuestion(sqliteDb(db), question.id))?.cancelledAt).toBe(3_000);
-    expect(findOpenQuestion(db, "ses-q")?.id).toBe(again!);
+    expect((await findOpenQuestion(sqliteDb(db), "ses-q"))?.id).toBe(again!);
     expect(getWorkItem(db, "item-q")?.state).toBe("awaiting_input");
     expect(
       (await listOutbox(sqliteDb(db), "ses-q")).map((row) => [row.idempotencyKey, row.status]),
@@ -104,7 +104,7 @@ describe("a question whose elicitation died twice", () => {
 
     expect(again).toBe(question.id);
     expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
-    expect(findOpenQuestion(db, "ses-q")?.id).toBe(question.id);
+    expect((await findOpenQuestion(sqliteDb(db), "ses-q"))?.id).toBe(question.id);
     expect(await getVisualReview(sqliteDb(db), question.id)).not.toBeNull();
     expect(
       (await listOutbox(sqliteDb(db), "ses-q")).map((row) => [row.idempotencyKey, row.status]),

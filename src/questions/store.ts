@@ -7,7 +7,6 @@ import {
   openQuestionRowSteps,
   questionEventConsumedSteps,
   questionRowByIdSteps,
-  settled,
   sqliteDb,
   type Q,
   type QuestionRow,
@@ -115,8 +114,8 @@ export function* findOpenQuestionSteps(q: Q, sessionId: string): Steps<StoredQue
 }
 
 /** Latest unanswered question on this Linear agent session. */
-export function findOpenQuestion(db: Database, sessionId: string): StoredQuestion | null {
-  return settled(sqliteDb(db).run((q) => findOpenQuestionSteps(q, sessionId)));
+export function findOpenQuestion(store: Db, sessionId: string): Promise<StoredQuestion | null> {
+  return store.run((q) => findOpenQuestionSteps(q, sessionId));
 }
 
 /** The question this run still waits on for one kind, open or queued. */

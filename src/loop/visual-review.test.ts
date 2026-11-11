@@ -55,7 +55,7 @@ test("a Paws without an https dashboard link asks nothing in Linear and says why
   expect(
     await store.transaction((q) => askForVisualReviewSteps(q, { ...input, now: NOW + 1 })),
   ).toBe(false);
-  expect(findOpenQuestion(db, "ses_1")).toBeNull();
+  expect(await findOpenQuestion(sqliteDb(db), "ses_1")).toBeNull();
   expect((await listOutbox(sqliteDb(db))).filter((row) => row.op === "elicitation")).toEqual([]);
   const notes = (await listOutbox(sqliteDb(db))).filter((row) => row.op === "activity");
   expect(notes.map((row) => (row.payload as { body: string }).body)).toEqual([
@@ -142,7 +142,7 @@ test("the round-limit question waits behind a sibling's queued question", async 
   );
 
   expect((await getVisualReview(sqliteDb(db), question.id))?.outcome).toBe("changes_requested");
-  expect(findOpenQuestion(db, "ses_1")?.id).toBe(ci.question.id);
+  expect((await findOpenQuestion(sqliteDb(db), "ses_1"))?.id).toBe(ci.question.id);
   const queued = db
     .query<{ id: string }, [string]>(
       "SELECT question_id AS id FROM visual_review WHERE item_id = ? AND kind = 'continue'",

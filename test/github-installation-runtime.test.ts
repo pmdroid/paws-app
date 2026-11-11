@@ -108,7 +108,7 @@ test("a missing installation holds the item before Git and a reply cannot releas
   const f = await fixture();
   try {
     await f.jobs.tick();
-    const question = findOpenQuestion(f.db, "session")!;
+    const question = (await findOpenQuestion(sqliteDb(f.db), "session"))!;
     expect(question.kind).toBe("github-auth");
     expect(question.body).toContain("Waiting for a workspace admin");
     expect(getWorkItem(f.db, f.item.id)?.state).toBe("awaiting_input");
@@ -140,7 +140,7 @@ test("the item resumes once by itself when the installation returns", async () =
   const f = await fixture();
   try {
     await f.jobs.tick();
-    const question = findOpenQuestion(f.db, "session")!;
+    const question = (await findOpenQuestion(sqliteDb(f.db), "session"))!;
     await f.orchestrator.recoverGitHubAuth();
     expect(getWorkItem(f.db, f.item.id)?.state).toBe("awaiting_input");
     f.host.installed = true;
@@ -164,7 +164,7 @@ test("Stop prevents a returning installation from resuming the item", async () =
   const f = await fixture();
   try {
     await f.jobs.tick();
-    const question = findOpenQuestion(f.db, "session")!;
+    const question = (await findOpenQuestion(sqliteDb(f.db), "session"))!;
     await f.orchestrator.onLinearEvent({ ...prompt("linear-owner", "stop"), signal: "stop" });
     f.host.installed = true;
     await f.orchestrator.recoverGitHubAuth();

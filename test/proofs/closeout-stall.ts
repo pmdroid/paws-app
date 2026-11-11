@@ -77,7 +77,7 @@ export default {
       proof.expect(
         "second stall asks a person",
         getWorkItem(db, "quiet")?.state === "awaiting_input",
-        findOpenQuestion(db, "quiet-session"),
+        await findOpenQuestion(sqliteDb(db), "quiet-session"),
       );
       await answer(
         db,

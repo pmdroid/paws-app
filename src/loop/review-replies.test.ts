@@ -610,7 +610,7 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
     expect(await turnEnds(db, "All comments are addressed.")).toBe("asked");
     expect(getWorkItem(db, "eng-1")!.state).toBe("awaiting_input");
     expect(getRun(db, getWorkItem(db, "eng-1")!.currentRunId!)!.status).toBe("ended");
-    const question = findOpenQuestion(db, "s-1")!;
+    const question = (await findOpenQuestion(sqliteDb(db), "s-1"))!;
     expect(question.body).toContain("R2. Review by @pascal: Fix the ranking.");
     expect(question.body).not.toContain("R1.");
     expect(

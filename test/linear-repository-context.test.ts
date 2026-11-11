@@ -272,7 +272,7 @@ test.each(
       }
       if (repositoryChoice) {
         await f.jobs.tick();
-        expect(findOpenQuestion(db, "session")?.options).toHaveLength(2);
+        expect((await findOpenQuestion(sqliteDb(db), "session"))?.options).toHaveLength(2);
         expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
       }
       db.close();

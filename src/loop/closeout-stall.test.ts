@@ -102,7 +102,7 @@ test("quiet verification retries once across restart, then asks a person", async
     clock.advance(31 * 60_000);
     await check();
     await check();
-    expect(findOpenQuestion(db, "ses")?.options).toEqual([
+    expect((await findOpenQuestion(sqliteDb(db), "ses"))?.options).toEqual([
       "Retry Closeout",
       "Send back to the agent",
     ]);

@@ -169,11 +169,11 @@ describe("a closeout-help question blocked by an unreadable policy on main", () 
         checks: [],
       },
     );
-    const next = findOpenQuestion(db, "ses-ENG-1")!;
+    const next = (await findOpenQuestion(sqliteDb(db), "ses-ENG-1"))!;
     expect(next.id).not.toBe(asked.id);
     expect(next.body).not.toContain("Paws retries by itself");
     expect(await retry(db, LOADS)).toEqual([]);
-    expect(findOpenQuestion(db, "ses-ENG-1")?.id).toBe(next.id);
+    expect((await findOpenQuestion(sqliteDb(db), "ses-ENG-1"))?.id).toBe(next.id);
     expect((await getQuestion(sqliteDb(db), asked.id))?.answeredAt).toBe(NOW + 100);
     expect(await reverifies(db)).toEqual([`retry-closeout:${asked.id}`]);
   });

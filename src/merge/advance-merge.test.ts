@@ -311,7 +311,7 @@ describe("advanceMerge on a rebase conflict", () => {
     }
     expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
     expect(getWorkItem(h.db, "ENG-1")?.state).toBe("awaiting_input");
-    expect(findOpenQuestion(h.db, "ses-ENG-1")).toMatchObject({
+    expect(await findOpenQuestion(sqliteDb(h.db), "ses-ENG-1")).toMatchObject({
       reason: "rebase_budget_spent",
       body: expect.stringContaining(
         `Main commits: ${main.slice(0, 7)}. Conflicting files: ok.txt.`,
