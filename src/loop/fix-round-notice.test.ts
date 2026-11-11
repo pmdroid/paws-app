@@ -11,6 +11,7 @@ import {
   migrate,
   openDatabase,
   pendingPullComments,
+  settlePullComments,
   recordItemPullRequest,
   sqliteDb,
 } from "../db";
@@ -20,7 +21,9 @@ import {
   reactToComment,
   type GitHubClient,
 } from "../github";
+import { createFakeTracker } from "../linear";
 import { REBASE_CONFLICT_INSTRUCTION } from "../merge";
+import { deliverLinearOutbox } from "./dispatch";
 import { deliverGitHubOutbox, fixRoundNoticeSteps } from "./fix-round-notice";
 import { acceptGitHubDelivery } from "./merge-jobs";
 import { restart } from "./operations";
@@ -60,11 +63,15 @@ async function setup() {
     tokenProvider: { mode: "app" as const, tokenFor: async () => "token" },
   };
   const outbox = new OutboxDispatcher(db, clock);
+  const tracker = createFakeTracker();
   outbox.setHandler((row) =>
-    deliverGitHubOutbox(row, {
-      commentOnPullRequest: (prNumber, body) => commentOnPullRequest({ ...access, prNumber, body }),
-      reactToComment: (commentId, on) => reactToComment({ ...access, commentId, on }),
-    }),
+    row.target === "linear"
+      ? deliverLinearOutbox(row, tracker, async () => {}, undefined, sqliteDb(db))
+      : deliverGitHubOutbox(row, {
+          commentOnPullRequest: (prNumber, body) =>
+            commentOnPullRequest({ ...access, prNumber, body }),
+          reactToComment: (commentId, on) => reactToComment({ ...access, commentId, on }),
+        }),
   );
   const startRestart = async (reason: RestartReason, body: string, jobKey: string) => {
     await restart(sqliteDb(db), (await getWorkItem(sqliteDb(db), "eng-1"))!, {
@@ -82,7 +89,7 @@ async function setup() {
   const drain = async () => {
     while ((await outbox.tick()).length > 0) await outbox.idle();
   };
-  return { db, github, clock, startRestart, turnStarts, drain };
+  return { db, github, tracker, clock, startRestart, turnStarts, drain };
 }
 
 const target = (number: number, kind: "thread" | "conversation", commentId: number) => ({
@@ -233,8 +240,8 @@ test("an inline comment gets 👀 when it arrives, and the fix round adds no sec
   expect(github.reactions).toHaveLength(1);
 });
 
-test("comments Paws ignores get no 👀", async () => {
-  const { db, github, clock, drain } = await setup();
+test("comments Paws ignores get no 👀 and no Linear thought", async () => {
+  const { db, github, tracker, clock, drain } = await setup();
   await inlineComment(db, clock.now(), { id: 1, author: "someone", body: "Mine.", app: 42 });
   await inlineComment(db, clock.now(), { id: 2, author: "paws-test[bot]", body: "Mine." });
   await inlineComment(db, clock.now(), { id: 3, author: "linter[bot]", body: "Lint." });
@@ -243,4 +250,41 @@ test("comments Paws ignores get no 👀", async () => {
 
   expect(await pendingPullComments(sqliteDb(db), "eng-1")).toEqual([]);
   expect(github.reactions).toEqual([]);
+  expect(tracker.progress).toEqual([]);
+});
+
+const SEEN =
+  "Received review feedback on the pull request (1 comment from @pascal); Paws will address it when the current step finishes.";
+
+test("an inline comment tells the Linear session before the fix round starts", async () => {
+  const { db, tracker, clock, drain } = await setup();
+  await inlineComment(db, clock.now(), { id: 9001, author: "pascal", body: "Fix." });
+  await drain();
+
+  expect(tracker.progress).toMatchObject([{ sessionId: "s-1", kind: "thought", body: SEEN }]);
+  expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
+});
+
+test("three comments in one collection window post one thought, the next window another", async () => {
+  const { db, tracker, clock, startRestart, drain } = await setup();
+  for (const id of [1, 2, 3]) {
+    await inlineComment(db, clock.now(), { id, author: "pascal", body: `Fix ${id}.` });
+    clock.advance(10_000);
+    await drain();
+  }
+  expect(tracker.progress.map((update) => update.body)).toEqual([SEEN]);
+
+  await startRestart("review", "Fix the review.", "review:eng-1:601");
+  await settlePullComments(
+    sqliteDb(db),
+    await pendingPullComments(sqliteDb(db), "eng-1"),
+    "restarted",
+    clock.now(),
+  );
+  await inlineComment(db, clock.now(), { id: 4, author: "kyoto", body: "One more." });
+  await drain();
+  expect(tracker.progress.map((update) => update.body)).toEqual([
+    SEEN,
+    SEEN.replace("@pascal", "@kyoto"),
+  ]);
 });
