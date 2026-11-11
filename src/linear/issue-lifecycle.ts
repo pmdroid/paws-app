@@ -27,7 +27,7 @@ export type StartLinearCodeIssue = {
 
 export type StartLinearCodeIssueOptions = TrackerRequestOptions & {
   issue?: LinearIssueOwnership;
-  beforeStart?: (issue: LinearIssueOwnership) => void;
+  beforeStart?: (issue: LinearIssueOwnership) => Promise<void>;
 };
 
 export interface LinearIssueLifecycle {
@@ -182,7 +182,7 @@ function createUnlabelledLifecycle(
         }
       }
       options?.signal?.throwIfAborted();
-      options?.beforeStart?.(issue);
+      await options?.beforeStart?.(issue);
       options?.signal?.throwIfAborted();
       const change: { stateId?: string; delegateId?: string } = {};
       if (issue.stateType !== "started" && stateId !== null) change.stateId = stateId;

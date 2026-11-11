@@ -32,7 +32,7 @@ export function createFakeLinearIssueLifecycle(initial: LinearIssueOwnership) {
       const issue = input.issueId === fake.issue.id ? fake.issue : issues.get(input.issueId);
       if (issue === undefined) throw new Error("The fake Linear issue was not configured.");
       const eligible = fake.eligible && input.actorId !== null;
-      if (eligible) options?.beforeStart?.({ ...issue });
+      if (eligible) await options?.beforeStart?.({ ...issue });
       options?.signal?.throwIfAborted();
       started.push(input);
       if (eligible) {
