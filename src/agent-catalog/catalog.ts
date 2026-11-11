@@ -116,7 +116,7 @@ export function createAgentCatalog(options: {
   }
 
   async function read(name: string, at: number, signal?: AbortSignal): Promise<Versions | null> {
-    const stored = readNpmPackage(db, name);
+    const stored = await readNpmPackage(sqliteDb(db), name);
     try {
       const result = await registry.fetchPackage(name, stored?.etag ?? null, signal);
       if (result.status === "not-modified" && stored) {
@@ -142,18 +142,18 @@ export function createAgentCatalog(options: {
   }
 
   /** The checks every package version passes: on npm, unchanged integrity, not deprecated, 48 hours old. */
-  function check(
+  async function check(
     name: string,
     version: string,
     versions: Versions | null,
     stable: boolean,
     at: number,
-  ): Verdict {
+  ): Promise<Verdict> {
     const label = `${name}@${version}`;
     if (staleReads.has(name)) usedStale = true;
     if (versions === null)
       return { status: "ineligible", reason: `Paws could not read ${name} from npm.` };
-    const record = readNpmIntegrity(db, name, version);
+    const record = await readNpmIntegrity(sqliteDb(db), name, version);
     if (record?.changedIntegrity)
       return {
         status: "refused",
@@ -192,7 +192,7 @@ export function createAgentCatalog(options: {
     at: number,
   ): Promise<Verdict> {
     const versions = await load(name);
-    const verdicts = [check(name, version, versions, true, at)];
+    const verdicts = [await check(name, version, versions, true, at)];
     const metadata = versions?.[version];
     for (const [alias, pin] of Object.entries(metadata?.optionalDependencies ?? {})) {
       const target = platformPin(alias, pin);
@@ -203,7 +203,7 @@ export function createAgentCatalog(options: {
         });
         continue;
       }
-      verdicts.push(check(target.name, target.version, await load(target.name), false, at));
+      verdicts.push(await check(target.name, target.version, await load(target.name), false, at));
     }
     return worst(verdicts);
   }
@@ -218,7 +218,7 @@ export function createAgentCatalog(options: {
     const rows: AgentVersionRow[] = [];
     for (const [version, metadata] of Object.entries(versions)) {
       usedStale = false;
-      const own = check(spec.package, version, versions, true, at);
+      const own = await check(spec.package, version, versions, true, at);
       const native = await resolveNative(spec, version, metadata, load, at);
       let verdict = worst([own, native.verdict]);
       let nativeVersion = native.version;
@@ -234,7 +234,7 @@ export function createAgentCatalog(options: {
           { own, load, at },
           { verdict, nativeVersion },
         ));
-      const record = readNpmIntegrity(db, spec.package, version);
+      const record = await readNpmIntegrity(sqliteDb(db), spec.package, version);
       const integrity = record?.integrity ?? metadata.integrity;
       if (integrity === null) continue;
       rows.push({

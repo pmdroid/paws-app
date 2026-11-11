@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
 import { jsonText } from "./json-text";
 
 /** What Paws keeps from one version in an npm registry document. */
@@ -65,8 +64,8 @@ export function* readNpmPackageSteps(q: Q, name: string) {
   return stored;
 }
 
-export function readNpmPackage(db: Database, name: string): StoredNpmPackage | null {
-  return settled(sqliteDb(db).run((q) => readNpmPackageSteps(q, name)));
+export async function readNpmPackage(store: Db, name: string): Promise<StoredNpmPackage | null> {
+  return store.run((q) => readNpmPackageSteps(q, name));
 }
 
 export function* saveNpmPackageSteps(
@@ -146,12 +145,12 @@ export function* readNpmIntegritySteps(q: Q, name: string, version: string) {
   return row ?? null;
 }
 
-export function readNpmIntegrity(
-  db: Database,
+export async function readNpmIntegrity(
+  store: Db,
   name: string,
   version: string,
-): NpmIntegrityRecord | null {
-  return settled(sqliteDb(db).run((q) => readNpmIntegritySteps(q, name, version)));
+): Promise<NpmIntegrityRecord | null> {
+  return store.run((q) => readNpmIntegritySteps(q, name, version));
 }
 
 export function* saveAgentVersionsSteps(q: Q, rows: readonly AgentVersionRow[]) {
