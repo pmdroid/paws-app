@@ -48,7 +48,6 @@ export function createRunnerModels(options: {
 }) {
   const { db, work } = options;
   const store = sqliteDb(db);
-  const transaction = <T>(body: (q: Q) => Steps<T>) => settled(store.transaction(body));
   const run = <T>(body: (q: Q) => Steps<T>) => settled(store.run(body));
   const now = options.now ?? Date.now;
   function* sourcesSteps(q: Q, at = now()) {
@@ -60,11 +59,11 @@ export function createRunnerModels(options: {
   function* cachedSteps(q: Q, source: Source) {
     return (yield* cachedAgentModelsSteps(q, source)).map((row) => ({ ...source, ...row }));
   }
-  function receive() {
-    const pending = run(pendingAgentModelProbesSteps);
+  async function receive() {
+    const pending = await store.run(pendingAgentModelProbesSteps);
     for (const probe of pending) {
       if (!probe.resultJson && probe.expiresAt > now()) continue;
-      transaction(function* (q) {
+      await store.transaction(function* (q) {
         if (probe.resultJson) {
           const result = RunnerHealthResultSchema.parse(JSON.parse(probe.resultJson));
           if (
@@ -91,36 +90,42 @@ export function createRunnerModels(options: {
       });
     }
   }
-  function refresh() {
-    receive();
-    const available = run((q) => sourcesSteps(q)).sort((a, b) => lastRequest(a) - lastRequest(b));
+  async function refresh() {
+    await receive();
+    const available = await store.run(function* (q) {
+      const ranked = [];
+      for (const source of yield* sourcesSteps(q))
+        ranked.push({ source, last: yield* lastAgentModelProbeAtSteps(q, source) });
+      return ranked.sort((a, b) => a.last - b.last).map(({ source }) => source);
+    });
     for (const source of available) {
       const { runnerId, userId, agent } = source;
-      const standing = run((q) => runnerStandingSteps(q, runnerId));
+      const standing = await store.run((q) => runnerStandingSteps(q, runnerId));
       if (
         standing?.status !== "active" ||
         standing.lastSeenAt === null ||
         standing.lastSeenAt <= now() - 60_000
       )
         continue;
-      if (run((q) => runnerHasOpenWorkSteps(q, runnerId, now()))) continue;
-      if (run((q) => runnerHealthCommandOutstandingSteps(q, runnerId, now()))) continue;
-      const rows = run((q) => cachedSteps(q, source));
+      if (await store.run((q) => runnerHasOpenWorkSteps(q, runnerId, now()))) continue;
+      if (await store.run((q) => runnerHealthCommandOutstandingSteps(q, runnerId, now()))) continue;
+      const rows = await store.run((q) => cachedSteps(q, source));
       const header = rows.find((row) => row.model === "");
       const catalog = header ? RunnerHealthResultSchema.parse(JSON.parse(header.resultJson)) : null;
-      const due = ["", ...(catalog?.models ?? []).map((model) => model.id).filter(concrete)].find(
-        (model) => {
-          const row =
-            rows.find((entry) => entry.model === model) ??
-            (model && catalog?.identity?.model === model ? header : undefined);
-          return (
-            (!row || row.updatedAt <= now() - refreshMs) &&
-            (!lastRequest(source, model) || lastRequest(source, model) <= now() - retryMs)
-          );
-        },
-      );
+      let due: string | undefined;
+      for (const model of ["", ...(catalog?.models ?? []).map(({ id }) => id).filter(concrete)]) {
+        const row =
+          rows.find((entry) => entry.model === model) ??
+          (model && catalog?.identity?.model === model ? header : undefined);
+        if (row && row.updatedAt > now() - refreshMs) continue;
+        const last = await store.run((q) => lastAgentModelProbeAtSteps(q, source, model));
+        if (!last || last <= now() - retryMs) {
+          due = model;
+          break;
+        }
+      }
       if (due === undefined) continue;
-      transaction(function* (q) {
+      await store.transaction(function* (q) {
         const commandId = randomUUID();
         yield* work.enqueueSteps(q, {
           id: commandId,
@@ -143,23 +148,23 @@ export function createRunnerModels(options: {
       return;
     }
   }
-  function lastRequest(source: Source, model?: string): number {
-    return run((q) => lastAgentModelProbeAtSteps(q, source, model));
-  }
-  function read(principal: { workspaceId: string; userId: string }): AgentModelCatalog[] {
-    const rows = run(function* (q) {
-      if (
-        !workspaceMemberUsable(
-          yield* workspaceMemberSteps(q, principal.workspaceId, principal.userId),
-        )
+  function* ownedSteps(q: Q, principal: { workspaceId: string; userId: string }) {
+    if (
+      !workspaceMemberUsable(
+        yield* workspaceMemberSteps(q, principal.workspaceId, principal.userId),
       )
-        throw new Error("Workspace access is unavailable.");
-      const owned = [];
-      for (const source of yield* sourcesSteps(q, Number.MAX_SAFE_INTEGER))
-        if (source.workspaceId === principal.workspaceId && source.userId === principal.userId)
-          owned.push(...(yield* cachedSteps(q, source)));
-      return owned;
-    }).sort((a, b) => b.updatedAt - a.updatedAt);
+    )
+      throw new Error("Workspace access is unavailable.");
+    const owned = [];
+    for (const source of yield* sourcesSteps(q, Number.MAX_SAFE_INTEGER))
+      if (source.workspaceId === principal.workspaceId && source.userId === principal.userId)
+        owned.push(...(yield* cachedSteps(q, source)));
+    return owned;
+  }
+  function catalogsOf(
+    owned: { agent: string; model: string; resultJson: string; updatedAt: number }[],
+  ): AgentModelCatalog[] {
+    const rows = owned.sort((a, b) => b.updatedAt - a.updatedAt);
     const catalogs: AgentModelCatalog[] = [];
     for (const agent of ["claude", "codex", "grok", "opencode"] as const) {
       const header = rows.find((row) => row.agent === agent && row.model === "");
@@ -191,13 +196,14 @@ export function createRunnerModels(options: {
   }
   return {
     refresh,
-    read,
+    read: (principal: { workspaceId: string; userId: string }) =>
+      catalogsOf(run((q) => ownedSteps(q, principal))),
     async browser(request: Request, principal: { workspaceId: string; userId: string }) {
       if (new URL(request.url).pathname !== "/api/runners/models") return null;
       if (request.method !== "GET") return Response.json({ error: "Use GET." }, { status: 405 });
       try {
         return Response.json(
-          { catalogs: read(principal) },
+          { catalogs: catalogsOf(await store.run((q) => ownedSteps(q, principal))) },
           { headers: { "cache-control": "no-store" } },
         );
       } catch (caughtError1) {
