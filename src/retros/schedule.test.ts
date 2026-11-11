@@ -245,7 +245,7 @@ describe("weekly schedule", () => {
     clock.now = MONDAY + 3 * WEEK;
     await scheduler.tick();
     expect((await listRetros(sqliteDb(db), "ws")).map((retro) => retro.id)).toEqual([running.id]);
-    expect(getRetro(db, running.id)!.state).toBe("queued");
+    expect((await getRetro(sqliteDb(db), running.id))!.state).toBe("queued");
     const paused = await scheduler.status("ws");
     expect(paused.nextRun).toBeNull();
     expect((await retroScheduleRuntime(sqliteDb(db), "ws"))?.nextDueAt).toBeNull();
@@ -343,7 +343,7 @@ describe("failure keeps its window", () => {
     expect(status.retry?.at).toBeGreaterThan(clock.now);
     const requested = await scheduler.request("ws", "member");
     expect(requested).toMatchObject({ ok: true, created: false, retro: { id: retro.id } });
-    expect(getRetro(db, retro.id)!.digestSha256).toBe(retro.digestSha256);
+    expect((await getRetro(sqliteDb(db), retro.id))!.digestSha256).toBe(retro.digestSha256);
   });
 
   test("spent retries stay visible as failed until a new retro over the same activity publishes", async () => {

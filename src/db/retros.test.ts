@@ -123,7 +123,7 @@ function frozen(
 }
 
 describe("retro windows", () => {
-  test("a workspace window has one retro whether scheduled or manual", () => {
+  test("a workspace window has one retro whether scheduled or manual", async () => {
     const { db } = harness();
     const { revision } = settings(db);
     const first = createRetro(db, {
@@ -147,7 +147,7 @@ describe("retro windows", () => {
     });
     expect(first.created).toBe(true);
     expect(second).toEqual({ retro: first.retro, created: false });
-    expect(getRetro(db, "r2")).toBeNull();
+    expect(await getRetro(sqliteDb(db), "r2")).toBeNull();
   });
 
   test("a retro freezes a resolved profile and a narrower repository scope", () => {
@@ -227,12 +227,12 @@ describe("retro generation", () => {
       }),
     ).toBe(true);
     expect(await retroWatermarks(sqliteDb(db), "ws")).toEqual([]);
-    expect(getRetro(db, "r1")!.result).toBeNull();
+    expect((await getRetro(sqliteDb(db), "r1"))!.result).toBeNull();
 
     expect(startRetroAttempt(db, { retroId: "r1", owner: "b", now: 30, leaseMs: 100 })).toEqual({
       attempt: 2,
     });
-    const retro = getRetro(db, "r1")!;
+    const retro = (await getRetro(sqliteDb(db), "r1"))!;
     expect(retro.prompt).toBe("Review {{digest}}");
     expect(retro.settingsRevision).toBe(1);
     expect((await listRetroAttempts(sqliteDb(db), "r1")).map((attempt) => attempt.outcome)).toEqual(
@@ -301,7 +301,7 @@ describe("retro generation", () => {
     expect(
       publishRetro(db, { retroId: "r1", attempt: 1, owner: "a", result: {}, items: [], now: 20 }),
     ).toEqual({ ok: false, reason: "coverage_gap" });
-    expect(getRetro(db, "r1")!.state).toBe("generating");
+    expect((await getRetro(sqliteDb(db), "r1"))!.state).toBe("generating");
     expect(await retroWatermarks(sqliteDb(db), "ws")).toEqual([]);
   });
 
@@ -366,7 +366,7 @@ describe("retro collection", () => {
     expect(
       publishRetro(db, { retroId: "r1", attempt: 1, owner: "a", result: {}, items: [], now: 20 }),
     ).toEqual({ ok: false, reason: "watermark_moved" });
-    expect(getRetro(db, "r1")!.state).toBe("generating");
+    expect((await getRetro(sqliteDb(db), "r1"))!.state).toBe("generating");
     expect((await retroWatermarks(sqliteDb(db), "ws"))[0]!.cursor).toBe(3);
   });
 
@@ -499,7 +499,7 @@ describe("restart persistence", () => {
 
     const db = openDatabase(path);
     migrate(db);
-    expect(getRetro(db, "r1")!.result).toEqual({ ok: 1 });
+    expect((await getRetro(sqliteDb(db), "r1"))!.result).toEqual({ ok: 1 });
     expect(listRetroItems(db, "r1").map((row) => row.itemId)).toEqual(["git-recovery"]);
     expect((await retroWatermarks(sqliteDb(db), "ws"))[0]!.cursor).toBe(9);
     expect(await retroScheduleRuntime(sqliteDb(db), "ws")).toEqual({

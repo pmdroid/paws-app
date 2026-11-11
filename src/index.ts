@@ -304,7 +304,7 @@ import {
   createRetroScheduleHttp,
   createRetroScheduler,
   createRetroSettingsHttp,
-  retroReaderAccess,
+  retroReaderAccessSteps,
   RETRO_DISPATCH_JOB,
   RETRO_DISPATCH_TIMING,
   RETRO_SCHEDULE_JOB,
@@ -1207,9 +1207,17 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         ...(linear?.improvementDelivery ? { linear: linear.improvementDelivery } : {}),
         ...(linear?.startSession ? { startSession: linear.startSession } : {}),
         dashboardUrl: dashboardUrl(runtime.publicUrl ?? "http://127.0.0.1:8787"),
-        retroEvidence: (principal, sessionIds, retroId) =>
-          retroReaderAccess(db, join(paths.home, "retros"), principal, sessionIds, retroId)
-            ?.readable ?? null,
+        retroEvidence: function* (q, principal, sessionIds, retroId) {
+          return (
+            (yield* retroReaderAccessSteps(
+              q,
+              join(paths.home, "retros"),
+              principal,
+              sessionIds,
+              retroId,
+            ))?.readable ?? null
+          );
+        },
       }),
       executionControls: async (...args) =>
         executionControls?.handle(...args) ??

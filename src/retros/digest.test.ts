@@ -176,7 +176,7 @@ function settings(db: Database, repositories: string[], workspaceId = "ws") {
   }).revision;
 }
 
-function collect(
+async function collect(
   db: Database,
   root: string,
   input: { id: string; start: number; end: number; repositories?: string[]; secrets?: string[] },
@@ -190,7 +190,7 @@ function collect(
     settingsRevision: settings(db, input.repositories ?? [REPO]),
     now: input.end,
   });
-  const result = collectRetroDigest(db, {
+  const result = await collectRetroDigest(db, {
     retroId: input.id,
     artifactRoot: root,
     now: input.end,
@@ -221,7 +221,7 @@ describe("incremental retro windows", () => {
     const { db, root } = world();
     const old = item(db, "PAS-100", { createdAt: at(1) });
     const first = question(db, old, { createdAt: at(1, 5), answeredAt: at(2) });
-    const first_digest = collect(db, root, { id: "r1", start: at(0), end: at(3) });
+    const first_digest = await collect(db, root, { id: "r1", start: at(0), end: at(3) });
     expect(first_digest.windows).toEqual([{ repository: REPO, start: at(0), end: at(3) }]);
     expect(first_digest.counts.answeredQuestions.evidenceIds).toEqual([`question:${first}`]);
     expect(first_digest.counts.sessions.newWorkItems).toBe(1);
@@ -229,7 +229,7 @@ describe("incremental retro windows", () => {
 
     const second = question(db, old, { createdAt: at(4), answeredAt: at(5) });
     const fresh = item(db, "PAS-101", { createdAt: at(4) });
-    const digest = collect(db, root, { id: "r2", start: at(3), end: at(6) });
+    const digest = await collect(db, root, { id: "r2", start: at(3), end: at(6) });
     expect(digest.windows[0]!.start).toBe(at(3));
     expect(digest.counts.sessions.workItems).toBe(2);
     expect(digest.counts.sessions.existingWorkItems).toBe(1);
@@ -239,33 +239,33 @@ describe("incremental retro windows", () => {
     expect(session.contextEvidenceIds).toEqual([`work_item:${old}`, `question:${first}`]);
     expect(counted(digest)).not.toContain(`question:${first}`);
     expect(digest.sessions.map((entry) => entry.itemId).sort()).toEqual([old, fresh].sort());
-    expect(getRetro(db, "r2")!.state).toBe("queued");
+    expect((await getRetro(sqliteDb(db), "r2"))!.state).toBe("queued");
     expect(await retroRepositories(sqliteDb(db), "r2")).toEqual([
       { repository: REPO, startCursor: at(3), endCursor: at(6) },
     ]);
   });
 
-  test("a record at the window start counts and one at the cutoff does not", () => {
+  test("a record at the window start counts and one at the cutoff does not", async () => {
     const { db, root } = world();
     const id = item(db, "PAS-1", { createdAt: at(0) });
-    collect(db, root, { id: "r1", start: at(0), end: at(2) });
+    await collect(db, root, { id: "r1", start: at(0), end: at(2) });
     publish(db, "r1", at(2));
     const atStart = question(db, id, { createdAt: at(2), answeredAt: at(2) });
     const beforeCut = question(db, id, { createdAt: at(2), answeredAt: at(4) - 1 });
     const atCut = question(db, id, { createdAt: at(3), answeredAt: at(4) });
-    const digest = collect(db, root, { id: "r2", start: at(2), end: at(4) });
+    const digest = await collect(db, root, { id: "r2", start: at(2), end: at(4) });
     expect(digest.counts.answeredQuestions.evidenceIds).toEqual(
       [`question:${atStart}`, `question:${beforeCut}`].sort(),
     );
     expect(digest.records.map((record) => record.evidenceId)).not.toContain(`question:${atCut}`);
   });
 
-  test("consecutive retros never count the same record twice and an overlapping one waits", () => {
+  test("consecutive retros never count the same record twice and an overlapping one waits", async () => {
     const { db, root } = world();
     const id = item(db, "PAS-1", { createdAt: at(0) });
     for (let day = 0; day < 6; day += 1)
       transition(db, id, { at: at(day, 1), from: "queued", to: "running" });
-    collect(db, root, { id: "r1", start: at(0), end: at(3) });
+    await collect(db, root, { id: "r1", start: at(0), end: at(3) });
     createRetro(db, {
       id: "r-overlap",
       workspaceId: "ws",
@@ -276,11 +276,11 @@ describe("incremental retro windows", () => {
       now: at(4),
     });
     expect(
-      collectRetroDigest(db, { retroId: "r-overlap", artifactRoot: root, now: at(4) }),
+      await collectRetroDigest(db, { retroId: "r-overlap", artifactRoot: root, now: at(4) }),
     ).toEqual({ ok: false, reason: "busy", busy: [{ repository: REPO, retroId: "r1" }] });
     publish(db, "r1", at(3));
     const first = listRetroEvidence(db, "r1").map((entry) => entry.evidenceId);
-    const digest = collect(db, root, { id: "r2", start: at(3), end: at(7) });
+    const digest = await collect(db, root, { id: "r2", start: at(3), end: at(7) });
     const both = new Set([
       ...first.filter((e) => e.startsWith("work_item_event")),
       ...counted(digest),
@@ -291,9 +291,9 @@ describe("incremental retro windows", () => {
     expect([...both].filter((e) => e.startsWith("work_item_event")).length).toBe(6);
   });
 
-  test("an empty window still freezes a digest and a manifest", () => {
+  test("an empty window still freezes a digest and a manifest", async () => {
     const { db, root } = world();
-    const digest = collect(db, root, { id: "r1", start: at(0), end: at(1) });
+    const digest = await collect(db, root, { id: "r1", start: at(0), end: at(1) });
     expect(digest.sessions).toEqual([]);
     expect(digest.counts.sessions.workItems).toBe(0);
     expect(digest.rates.every((entry) => entry.value === null && entry.denominator === 0)).toBe(
@@ -304,10 +304,10 @@ describe("incremental retro windows", () => {
     expect(
       manifest.ok && JSON.parse(new TextDecoder().decode(manifest.bytes)).prompt.sessionsIncluded,
     ).toBe(0);
-    expect(getRetro(db, "r1")!.state).toBe("queued");
+    expect((await getRetro(sqliteDb(db), "r1"))!.state).toBe("queued");
   });
 
-  test("collection stays inside the workspace and the teams that may read the repository", () => {
+  test("collection stays inside the workspace and the teams that may read the repository", async () => {
     const { db, root } = world();
     workspace(db, "ws2", "org2", "team2");
     const mine = item(db, "PAS-1", { createdAt: at(1) });
@@ -317,20 +317,20 @@ describe("incremental retro windows", () => {
       "INSERT INTO workspace_repository VALUES ('ws', 'other/repo', 'team-without-repositories')",
     );
     item(db, "PAS-3", { createdAt: at(1), repository: OTHER });
-    const digest = collect(db, root, { id: "r1", start: at(0), end: at(2) });
+    const digest = await collect(db, root, { id: "r1", start: at(0), end: at(2) });
     expect(digest.sessions.map((entry) => entry.itemId)).toEqual([mine]);
     expect(digest.coverage.unauthorizedItems).toBe(1);
     expect(JSON.stringify(digest)).not.toContain("ACME-1");
   });
 
-  test("re-enabling a repository resumes its watermark and a new one starts at the retro window", () => {
+  test("re-enabling a repository resumes its watermark and a new one starts at the retro window", async () => {
     const { db, root } = world();
     item(db, "PAS-1", { createdAt: at(0) });
-    collect(db, root, { id: "r1", start: at(0), end: at(2), repositories: [REPO, OTHER] });
+    await collect(db, root, { id: "r1", start: at(0), end: at(2), repositories: [REPO, OTHER] });
     publish(db, "r1", at(2));
-    collect(db, root, { id: "r2", start: at(2), end: at(4), repositories: [REPO] });
+    await collect(db, root, { id: "r2", start: at(2), end: at(4), repositories: [REPO] });
     publish(db, "r2", at(4));
-    const digest = collect(db, root, {
+    const digest = await collect(db, root, {
       id: "r3",
       start: at(4),
       end: at(6),
@@ -342,7 +342,7 @@ describe("incremental retro windows", () => {
     ]);
     db.run("INSERT INTO workspace_repository VALUES ('ws', 'pmdroid/new', 'team')");
     publish(db, "r3", at(6));
-    const added = collect(db, root, {
+    const added = await collect(db, root, {
       id: "r4",
       start: at(6),
       end: at(8),
@@ -353,14 +353,14 @@ describe("incremental retro windows", () => {
 });
 
 describe("evidence quality", () => {
-  test("an answer mirrored into linear_turn counts once and duplicate messages collapse", () => {
+  test("an answer mirrored into linear_turn counts once and duplicate messages collapse", async () => {
     const { db, root } = world();
     const id = item(db, "PAS-1", { createdAt: at(0) });
     question(db, id, { createdAt: at(0, 1), answeredAt: at(0, 2), eventKey: "delivery-1" });
     message(db, id, { eventKey: "delivery-1", at: at(0, 2), body: "Fetch the branch and rebase." });
     message(db, id, { eventKey: "delivery-2", activityId: "a2", at: at(0, 3), body: "Ship it" });
     message(db, id, { eventKey: "delivery-3", activityId: "a3", at: at(0, 3), body: "Ship it " });
-    const digest = collect(db, root, { id: "r1", start: at(0), end: at(1) });
+    const digest = await collect(db, root, { id: "r1", start: at(0), end: at(1) });
     expect(digest.counts.answeredQuestions.events).toBe(1);
     expect(digest.counts.humanMessages.evidenceIds).toEqual(["linear_turn:delivery-2"]);
     expect(digest.coverage.mirroredAnswers).toEqual(["linear_turn:delivery-1"]);
@@ -374,7 +374,7 @@ describe("evidence quality", () => {
     ).toEqual([...ids].sort());
   });
 
-  test("a failed Closeout step under a long progress id keeps its evidence id within 200 characters", () => {
+  test("a failed Closeout step under a long progress id keeps its evidence id within 200 characters", async () => {
     const { db, root } = world();
     const id = item(db, "PAS-1", { createdAt: at(0) });
     const longProgress = `${id}\nPAS-1-${id}\n${"a".repeat(40)}\n${"b".repeat(64)}\n${"c".repeat(40)}`;
@@ -389,7 +389,7 @@ describe("evidence quality", () => {
               (?, 'build-status', 'command', 'failed', 'bun run build', 1, 1, 1, ?)`,
       [longProgress, at(0, 3), other, at(0, 4)],
     );
-    const digest = collect(db, root, { id: "r1", start: at(0), end: at(1) });
+    const digest = await collect(db, root, { id: "r1", start: at(0), end: at(1) });
     const ids = digest.counts.failedChecks.groups.flatMap((group) => group.evidenceIds);
     expect(ids).toHaveLength(2);
     expect(new Set(ids).size).toBe(2);
@@ -400,7 +400,7 @@ describe("evidence quality", () => {
     }
   });
 
-  test("restarts, failures, checks, findings, escapes, rebase returns and CI rounds stay separate", () => {
+  test("restarts, failures, checks, findings, escapes, rebase returns and CI rounds stay separate", async () => {
     const { db, root } = world();
     const id = item(db, "PAS-1", { createdAt: at(0) });
     db.run("INSERT INTO item_pull_request VALUES (?, 42, 'https://pr', ?)", [id, at(0, 5)]);
@@ -457,7 +457,7 @@ describe("evidence quality", () => {
       ]),
       at(0, 5),
     ]);
-    const digest = collect(db, root, { id: "r1", start: at(0), end: at(1) });
+    const digest = await collect(db, root, { id: "r1", start: at(0), end: at(1) });
     const c = digest.counts;
     expect(c.sessions.workItems).toBe(1);
     expect(c.attempts.events).toBe(2);
@@ -491,7 +491,7 @@ describe("evidence quality", () => {
     expect(digest.sessions[0]!.pullNumber).toBe(42);
   });
 
-  test("cutoff state is reconstructed from transitions and timing separates lifetime from interval", () => {
+  test("cutoff state is reconstructed from transitions and timing separates lifetime from interval", async () => {
     const { db, root } = world();
     const id = item(db, "PAS-1", { createdAt: at(0) });
     transition(db, id, { at: at(0, 100), from: "queued", to: "running" });
@@ -506,7 +506,7 @@ describe("evidence quality", () => {
     const gap = item(db, "PAS-2", { createdAt: at(0) });
     transition(db, gap, { at: at(0, 50), from: "queued", to: "running", version: 3 });
     const quiet = item(db, "PAS-3", { createdAt: at(0, 10), state: "queued" });
-    const digest = collect(db, root, { id: "r1", start: at(0), end: at(1) });
+    const digest = await collect(db, root, { id: "r1", start: at(0), end: at(1) });
     const session = digest.sessions.find((entry) => entry.itemId === id)!;
     expect(session.stateAtCutoff).toEqual({
       state: "awaiting_input",
@@ -534,7 +534,7 @@ describe("evidence quality", () => {
     expect(digest.counts.asks.groups.map((g) => g.key)).toEqual(["help"]);
   });
 
-  test("identity fields and known secrets never reach the stored digest or evidence", () => {
+  test("identity fields and known secrets never reach the stored digest or evidence", async () => {
     const { db, root } = world();
     const id = item(db, "PAS-1", { createdAt: at(0) });
     const token = `ghp_${"a".repeat(36)}`;
@@ -543,7 +543,7 @@ describe("evidence quality", () => {
       answeredAt: at(0, 2),
       answer: `Use ${token} and lin_api_${"b".repeat(32)}, ask @pascal or jane@example.com; also s3cret-value-123`,
     });
-    const digest = collect(db, root, {
+    const digest = await collect(db, root, {
       id: "r1",
       start: at(0),
       end: at(1),
@@ -572,7 +572,7 @@ describe("evidence quality", () => {
 });
 
 describe("bounded prompt view", () => {
-  test("truncation is deterministic per session and never changes the counts", () => {
+  test("truncation is deterministic per session and never changes the counts", async () => {
     const { db, root } = world();
     for (let index = 0; index < 12; index += 1) {
       const id = item(db, `PAS-${100 + index}`, { createdAt: at(0, index) });
@@ -583,7 +583,7 @@ describe("bounded prompt view", () => {
           body: "x".repeat(400),
         });
     }
-    const digest = collect(db, root, { id: "r1", start: at(0), end: at(1) });
+    const digest = await collect(db, root, { id: "r1", start: at(0), end: at(1) });
     const view = boundRetroDigest(digest, 9_000);
     expect(boundRetroDigest(digest, 9_000)).toEqual(view);
     expect(view.text.length).toBeLessThanOrEqual(9_000);
@@ -611,7 +611,7 @@ describe("October retro fixture", () => {
     ["PAS-860", 1],
   ];
 
-  test("seven issues account for the 19 answered push-recovery questions", () => {
+  test("seven issues account for the 19 answered push-recovery questions", async () => {
     const { db, root } = world();
     PUSH_RECOVERY.forEach(([identifier, answers], index) => {
       const id = item(db, identifier, { createdAt: at(22, index) });
@@ -630,7 +630,7 @@ describe("October retro fixture", () => {
         reason: "screenshots",
       });
     });
-    const digest = collect(db, root, { id: "october", start: at(22), end: at(28) });
+    const digest = await collect(db, root, { id: "october", start: at(22), end: at(28) });
     const push = digest.counts.answeredQuestions.groups.find(
       (g) => g.key === "agent/push_rejected",
     )!;
