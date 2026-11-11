@@ -60,7 +60,7 @@ export default {
             freshSession: true,
             now: clock.now(),
           });
-          setCurrentRun(db, "quiet", rerun.id);
+          await setCurrentRun(sqliteDb(db), "quiet", rerun.id);
         }
       }
       proof.expect(

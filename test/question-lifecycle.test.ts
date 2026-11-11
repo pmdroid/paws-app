@@ -202,7 +202,7 @@ test("a queued question for a run that is no longer current is dropped with a jo
   const { db, asker } = await setup();
   await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
   const stale = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW + 1 });
-  setCurrentRun(db, asker.itemId, null);
+  await setCurrentRun(sqliteDb(db), asker.itemId, null);
   const lines: string[] = [];
   const restore = setJournalSink((line) => lines.push(line));
   try {

@@ -205,7 +205,7 @@ export async function probeRunnerOrchestration(
             now: clock.now(),
           })
         ).id;
-        setCurrentRun(db, item.id, replacementRunId);
+        await setCurrentRun(sqliteDb(db), item.id, replacementRunId);
         entered();
         await blocked;
       });
@@ -621,14 +621,14 @@ export async function probeRunnerOrchestration(
                 assert(appChecks.length > before);
                 for (const check of appChecks.slice(before))
                   assert.deepEqual(check, { currentRunId: item.currentRunId, checkpoint });
-                setCurrentRun(db, item.id, null);
+                await setCurrentRun(sqliteDb(db), item.id, null);
                 try {
                   await assert.rejects(
                     options.networkGit(["-C", options.worktreePath, "fetch", origin, baseSha]),
                     /obsolete task/,
                   );
                 } finally {
-                  setCurrentRun(db, item.id, item.currentRunId);
+                  await setCurrentRun(sqliteDb(db), item.id, item.currentRunId);
                 }
                 observe(
                   "candidate import revalidates the current checkpoint with the workspace App",
@@ -677,7 +677,7 @@ export async function probeRunnerOrchestration(
                       status: "active",
                       now: clock.now(),
                     });
-                    setCurrentRun(db, item.id, replacement.id);
+                    await setCurrentRun(sqliteDb(db), item.id, replacement.id);
                   }
                   if (scenario === "stale") {
                     const path = join(home, "runs", reviewRunId, "agent-profile.json");
@@ -926,7 +926,7 @@ export async function probeRunnerOrchestration(
             writeFileSync(join(home, "runs", foreignRunId, "agent-profile.json"), originalProfile, {
               mode: 0o600,
             });
-            setCurrentRun(db, item.id, foreignRunId);
+            await setCurrentRun(sqliteDb(db), item.id, foreignRunId);
           } else await markRun(sqliteDb(db), originalRunId, "active", Date.now());
           assert.deepEqual(await recoverOnStartup(sqliteDb(db)), [{ type: "reverify" }]);
           assert.equal(getWorkItem(db, item.id)?.state, "verifying");

@@ -46,7 +46,7 @@ test("a retried task that hits the same cap again posts a second error", async (
   await accrueAwake(sqliteDb(db), id, 0, 1, undefined, true);
   expect((await accrueAwake(sqliteDb(db), id, 10, 2, undefined, true)).capped).toBe(true);
   applyWorkItemEvent(db, id, "restart");
-  configureWorkItem(db, id, { maxAwakeMs: 20 });
+  await configureWorkItem(sqliteDb(db), id, { maxAwakeMs: 20 });
   applyWorkItemEvent(db, id, "dispatched");
   await accrueAwake(sqliteDb(db), id, 100, 3, undefined, true);
   expect((await accrueAwake(sqliteDb(db), id, 110, 4, undefined, true)).capped).toBe(true);

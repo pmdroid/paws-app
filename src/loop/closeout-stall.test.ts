@@ -96,7 +96,7 @@ test("quiet verification retries once across restart, then asks a person", async
       freshSession: true,
       now: clock.now(),
     });
-    setCurrentRun(db, "stalled", rerun.id);
+    await setCurrentRun(sqliteDb(db), "stalled", rerun.id);
     db.close();
     db = openDatabase(path);
     clock.advance(31 * 60_000);

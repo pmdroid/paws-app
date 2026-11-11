@@ -214,8 +214,8 @@ export function listWorkItemsByStates(
   return settled(sqliteDb(db).run((q) => listWorkItemsByStatesSteps(q, states)));
 }
 
-export function listInFlightItems(db: Database): WorkItemRecord[] {
-  return settled(sqliteDb(db).run((q) => listInFlightItemsSteps(q)));
+export async function listInFlightItems(store: Db): Promise<WorkItemRecord[]> {
+  return store.run((q) => listInFlightItemsSteps(q));
 }
 
 export function* listInFlightItemsSteps(q: Q): Steps<WorkItemRecord[]> {
@@ -391,12 +391,12 @@ export function* configureWorkItemSteps(
   }
 }
 
-export function configureWorkItem(
-  db: Database,
+export async function configureWorkItem(
+  store: Db,
   id: string,
   patch: { sessionKey?: string; maxAwakeMs?: number; limits?: Partial<StageLimits> },
-): void {
-  settled(sqliteDb(db).run((q) => configureWorkItemSteps(q, id, patch)));
+): Promise<void> {
+  await store.run((q) => configureWorkItemSteps(q, id, patch));
 }
 
 type ItemColumn = keyof PgWorkItem;
@@ -464,8 +464,8 @@ export function* setCurrentRunSteps(q: Q, id: string, runId: string | null) {
   yield* setItemSteps(q, id, { currentRunId: runId });
 }
 
-export function setCurrentRun(db: Database, id: string, runId: string | null): void {
-  settled(sqliteDb(db).run((q) => setCurrentRunSteps(q, id, runId)));
+export async function setCurrentRun(store: Db, id: string, runId: string | null): Promise<void> {
+  await store.run((q) => setCurrentRunSteps(q, id, runId));
 }
 
 export function* syncClockSteps(q: Q, id: string, mono: number) {

@@ -125,7 +125,7 @@ export async function probePublicationReadiness(root: string) {
       status: "ended",
       now: clock.now(),
     });
-    setCurrentRun(db, itemId, run.id);
+    await setCurrentRun(sqliteDb(db), itemId, run.id);
     const candidate = { sha: "a".repeat(40), baseSha: "b".repeat(40) };
     saveCheckpoint(db, itemId, {
       phase: "merge_queue",

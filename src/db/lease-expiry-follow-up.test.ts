@@ -194,7 +194,7 @@ describe("follow-up after an expired runner lease", () => {
 
   test("a stale run is closed without resuming the item", async () => {
     const { db, item, run } = await leased();
-    setCurrentRun(db, item.id, "newer-run");
+    await setCurrentRun(sqliteDb(db), item.id, "newer-run");
     expect(await closeExpiredRunnerLeases(sqliteDb(db), START + PAST)).toEqual([run.id]);
     expect(getRun(db, run.id)?.status).toBe("lost");
     expect(getWorkItem(db, item.id)?.state).toBe("running");

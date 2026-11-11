@@ -134,7 +134,7 @@ export async function probeExecutionLifecycle(
       freshSession: true,
     });
     await saveRunResult(sqliteDb(db), run.id, "Published the exact API schema.", clock.now());
-    setCurrentRun(db, "handoff-0", run.id);
+    await setCurrentRun(sqliteDb(db), "handoff-0", run.id);
     assert.equal(
       await orchestrator.dependencyHandoff("handoff-1"),
       "Completed dependencies:\nhandoff-0: Published the exact API schema.",

@@ -47,7 +47,7 @@ test("one Linear session shows as one run with every attempt in its timeline", a
       status: "active",
       now: NOW + 3_000,
     });
-    setCurrentRun(db, item.id, reply.id);
+    await setCurrentRun(sqliteDb(db), item.id, reply.id);
     for (const [runId, at, body] of [
       [first.id, NOW + 500, "Wrote the filters."],
       [review.id, NOW + 2_500, "Review found one issue."],
@@ -189,7 +189,7 @@ test("a Closeout re-check shows as a re-check, not as a review by the reviewer a
       status: "active",
       now: NOW + 2_000,
     });
-    setCurrentRun(db, item.id, recheck.id);
+    await setCurrentRun(sqliteDb(db), item.id, recheck.id);
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
       db,
       env: {},

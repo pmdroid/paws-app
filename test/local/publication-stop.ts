@@ -568,7 +568,7 @@ export async function probePublicationStop(
       freshSession: true,
       now: clock.now(),
     });
-    setCurrentRun(db, "owned-refresh-item", ownedRun.id);
+    await setCurrentRun(sqliteDb(db), "owned-refresh-item", ownedRun.id);
     saveCheckpoint(db, "owned-refresh-item", {
       phase: "merge_queue",
       wipCommit: "a".repeat(40),
@@ -732,7 +732,7 @@ export async function probePublicationStop(
             suffix === "old" ? "Obsolete schema" : "Current schema",
             clock.now(),
           );
-          setCurrentRun(db, itemId, producer.id);
+          await setCurrentRun(sqliteDb(db), itemId, producer.id);
         }
       }
       db.run(

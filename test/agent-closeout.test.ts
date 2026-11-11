@@ -259,7 +259,7 @@ test("a check still running when its run ended stops at the run's end and points
   );
   await releaseRunCapacity(sqliteDb(db), run.id, 575_000);
   const next = await insertRun(sqliteDb(db), { itemId: "ENG-10", now: 600_000 });
-  setCurrentRun(db, "ENG-10", next.id);
+  await setCurrentRun(sqliteDb(db), "ENG-10", next.id);
   await recordAgentCloseout(
     sqliteDb(db),
     next.id,

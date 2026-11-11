@@ -188,7 +188,7 @@ export async function probeLinearActivityBudget(
       agent: "cursor",
       now: clock.now(),
     });
-    setCurrentRun(db, item.id, nextRun.id);
+    await setCurrentRun(sqliteDb(db), item.id, nextRun.id);
     const nextId = await activity("next-run-session", "thought", item.id);
     await outbox.tick();
     await outbox.idle();

@@ -265,7 +265,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
 
   test("past the cap, accepted work keeps publishing, merging and re-verifying", async () => {
     const { clock, db, item } = await acceptedItem(3 * 60 * MINUTE);
-    configureWorkItem(db, item.id, { maxAwakeMs: MINUTE });
+    await configureWorkItem(sqliteDb(db), item.id, { maxAwakeMs: MINUTE });
     clock.advance(4 * 60 * MINUTE);
     expect((await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now())).capped).toBe(
       false,
@@ -756,7 +756,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     db.run("UPDATE work_item SET session_key = NULL WHERE id = ?", [item.id]);
     applyWorkItemEvent(db, item.id, "restart", { kind: "restart", reason: "follow_up" });
     applyWorkItemEvent(db, item.id, "dispatched");
-    setCurrentRun(db, item.id, run.id);
+    await setCurrentRun(sqliteDb(db), item.id, run.id);
     saveCheckpoint(db, item.id, { phase: "running", baseSha: "base", wipCommit: "accepted" });
     await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
     clock.advance(20 * MINUTE);

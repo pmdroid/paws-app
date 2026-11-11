@@ -91,7 +91,7 @@ test("migration 059 drops the old block tables and task_block holds each depende
       freshSession: true,
     });
     await saveRunResult(sqliteDb(db), run.id, "Published the schema.", clock.now());
-    setCurrentRun(db, "hold-0", run.id);
+    await setCurrentRun(sqliteDb(db), "hold-0", run.id);
     expect(await orchestrator.dependencyHandoff("hold-1")).toBe(
       "Completed dependencies:\nhold-0: Published the schema.",
     );

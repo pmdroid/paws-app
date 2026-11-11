@@ -140,7 +140,7 @@ export async function probeExecutionChanges(
       freshSession: true,
       now: clock.now(),
     });
-    setCurrentRun(db, "criteria-0", run.id);
+    await setCurrentRun(sqliteDb(db), "criteria-0", run.id);
     saveCheckpoint(db, "criteria-0", { phase: "merge_queue", wipCommit: "old-verified-candidate" });
     const oldJob = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
