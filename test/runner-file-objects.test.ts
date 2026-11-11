@@ -17,7 +17,11 @@ async function fixture() {
   const db = openDatabase(":memory:");
   migrate(db);
   let clock = Date.parse("2026-11-07T06:00:00Z");
-  const item = insertQueuedItem(db, { id: "acme-item", now: clock, sessionKey: "acme-session" });
+  const item = await insertQueuedItem(db, {
+    id: "acme-item",
+    now: clock,
+    sessionKey: "acme-session",
+  });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, clock);
   const command = { type: "run", id: "acme-command", runId: run.id } as Extract<
     RunnerCommand,

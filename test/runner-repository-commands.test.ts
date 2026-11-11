@@ -65,7 +65,7 @@ async function fixture(file = ":memory:") {
       [runnerId, now],
     );
   }
-  const item = insertQueuedItem(db, { id: "item-1", now, branchName: "paws/item-1" });
+  const item = await insertQueuedItem(db, { id: "item-1", now, branchName: "paws/item-1" });
   await bindWorkItemRepository(sqliteDb(db), item.id, repository);
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const work = createRunnerWork({

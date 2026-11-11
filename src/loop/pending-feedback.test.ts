@@ -52,7 +52,7 @@ const CHECKS = [{ name: "test (0/2)", url: "https://ci.example/acme/one/1" }];
 async function setup(state: "running" | "verifying" | "merge_queue") {
   const db = openDatabase(":memory:");
   migrate(db);
-  insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
+  await insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
   await bindWorkItemRepository(sqliteDb(db), "eng-1", {
     owner: "acme",
     repo: "one",

@@ -10,7 +10,7 @@ import { createLiveStatusProvider, handleStatusRequest } from "../../src/dashboa
 const root = mkdtempSync(join(tmpdir(), "paws-hook-failure-transcript-"));
 const db = openDatabase(join(root, "paws.db"));
 migrate(db);
-const item = insertQueuedItem(db, { id: "PAS-449", sessionKey: "hook-session" });
+const item = await insertQueuedItem(db, { id: "PAS-449", sessionKey: "hook-session" });
 const { run } = await beginImplementRun(sqliteDb(db), item.id, Date.now());
 mkdirSync(join(root, "runs", run.id), { recursive: true, mode: 0o700 });
 const at = (offset: number) => new Date(Date.now() - 60_000 + offset * 1_000).toISOString();

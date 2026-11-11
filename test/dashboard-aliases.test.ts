@@ -46,9 +46,9 @@ test("run, session and verdict links resolve through stored records the signed-i
       [session!, team!],
     );
   const old = Date.now() - 30 * DAY;
-  insertQueuedItem(db, { id: "PAS-1", sessionKey: "session-mine", now: old });
-  insertQueuedItem(db, { id: "PAS-5", sessionKey: "session-mine", now: old + 1 });
-  insertQueuedItem(db, { id: "PAS-2", sessionKey: "session-other", now: old });
+  await insertQueuedItem(db, { id: "PAS-1", sessionKey: "session-mine", now: old });
+  await insertQueuedItem(db, { id: "PAS-5", sessionKey: "session-mine", now: old + 1 });
+  await insertQueuedItem(db, { id: "PAS-2", sessionKey: "session-other", now: old });
   const runs = [];
   for (const at of [0, 1])
     runs.push((await insertRun(sqliteDb(db), { itemId: "PAS-1", now: old + at })).id);

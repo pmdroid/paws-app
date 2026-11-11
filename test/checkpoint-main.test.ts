@@ -26,7 +26,7 @@ test("a runner checkpoint records the main its run was given, and only for that 
   const root = mkdtempSync(join(tmpdir(), "paws-checkpoint-main-"));
   roots.push(root);
   const db = migratedDatabase(join(root, "paws.db"));
-  const item = insertQueuedItem(db, { id: "item", now: 1, branchName: "paws/item" });
+  const item = await insertQueuedItem(db, { id: "item", now: 1, branchName: "paws/item" });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, 1);
   await saveCheckpoint(sqliteDb(db), item.id, { phase: "running", baseSha: BASE, wipCommit: BASE });
   const record = (sha: string, mainSha?: string) =>

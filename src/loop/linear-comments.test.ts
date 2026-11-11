@@ -168,7 +168,7 @@ async function setup(options: { members?: string[]; agents?: string[] } = {}) {
     recheck: (_q, actor) => syncSteps(() => (checkerReady ? members.has(actor.id) : null)),
     wait: () => ({ quietMs: 60_000, maxMs: 300_000 }),
   };
-  insertQueuedItem(db, { id: "eng-1", now: T0, sessionKey: SESSION });
+  await insertQueuedItem(db, { id: "eng-1", now: T0, sessionKey: SESSION });
   await recordLinearInstallation(sqliteDb(db), {
     organizationId: ORG,
     oauthClientId: "client-1",
@@ -614,7 +614,7 @@ describe("routing to the right work", () => {
     try {
       const brief = JSON.stringify({ epic: { issueId: "parent-issue" } });
       f.db.run("UPDATE work_item SET brief = ? WHERE id = 'eng-1'", [brief]);
-      insertQueuedItem(f.db, { id: "eng-2", now: T0, sessionKey: "ses-2" });
+      await insertQueuedItem(f.db, { id: "eng-2", now: T0, sessionKey: "ses-2" });
       f.db.run("UPDATE work_item SET brief = ? WHERE id = 'eng-2'", [brief]);
       f.db.run(
         "INSERT INTO linear_session (session_id, issue_id, created_at) VALUES ('ses-parent', 'parent-issue', ?)",

@@ -327,7 +327,7 @@ try {
   expect(starts).toHaveLength(1);
 
   const issueId = (await listImprovementDeliveries(sqliteDb(w.db), retro))[0]!.remoteId!;
-  insertQueuedItem(w.db, { id: "work-x", sessionKey: "session-a", now: END + 2_500 });
+  await insertQueuedItem(w.db, { id: "work-x", sessionKey: "session-a", now: END + 2_500 });
   w.db.run("UPDATE work_item SET linear_issue_id = ?, state = 'running' WHERE id = 'work-x'", [
     issueId,
   ]);

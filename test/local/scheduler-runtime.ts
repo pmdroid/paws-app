@@ -149,7 +149,7 @@ export async function probeSchedulerRuntime(
   const defaults = openDatabase(join(root, "default.sqlite"));
   migrate(defaults);
   try {
-    insertQueuedItem(defaults, { id: "default", now: clock.now() });
+    await insertQueuedItem(defaults, { id: "default", now: clock.now() });
     await bindWorkItemRepository(sqliteDb(defaults), "default", repository);
     await sqliteDb(defaults).run((q) =>
       saveSchedulingContextSteps(q, {

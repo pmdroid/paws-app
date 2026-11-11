@@ -75,7 +75,7 @@ async function assignedPreview(runnerVersion: string) {
       runnerVersion,
       now(),
     ]);
-    const item = insertQueuedItem(db, { id: "item", now: now(), sessionKey: "session" });
+    const item = await insertQueuedItem(db, { id: "item", now: now(), sessionKey: "session" });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, now());
     await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",

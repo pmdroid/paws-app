@@ -30,7 +30,7 @@ async function itemWithReport(report: Record<string, unknown>) {
   databases.push(db);
   const { item } = await beginImplementRun(
     sqliteDb(db),
-    insertQueuedItem(db, { id: "ACME-1" }).id,
+    (await insertQueuedItem(db, { id: "ACME-1" })).id,
     1,
   );
   await enqueueJob(sqliteDb(db), { queue: JOB_KIND.resume, payload: { itemId: item.id }, now: 1 });

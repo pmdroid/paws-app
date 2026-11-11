@@ -19,7 +19,7 @@ test("dispatch reports a delegation's dependency cycle and skips readiness reads
       ["acme-c", "acme-plain"],
       ["acme-d", "acme-plain"],
     ] as const) {
-      insertQueuedItem(db, { id, now: 1, sessionKey: `session-${delegationId}` });
+      await insertQueuedItem(db, { id, now: 1, sessionKey: `session-${delegationId}` });
       db.run("UPDATE work_item SET delegation_id=? WHERE id=?", [delegationId, id]);
     }
     db.run(

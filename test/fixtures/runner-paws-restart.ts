@@ -478,7 +478,7 @@ async function until(label: string, done: () => boolean | Promise<boolean>) {
 }
 async function addItem(id: string, answer = false) {
   const sessionKey = `session-${id}`;
-  const item = insertQueuedItem(paws.db, { id, sessionKey, now: Date.now() });
+  const item = await insertQueuedItem(paws.db, { id, sessionKey, now: Date.now() });
   await recordLinearInstallation(sqliteDb(paws.db), {
     organizationId: "org",
     oauthClientId: "app",

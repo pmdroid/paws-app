@@ -34,7 +34,7 @@ function sized(head: Buffer, bytes: number): Buffer {
   return buffer;
 }
 
-function setup() {
+async function setup() {
   const home = tempHome();
   homes.push(home);
   const workspace = join(home, "workspace");
@@ -65,7 +65,7 @@ function setup() {
   }).stdout.trim();
   const db = openDatabase(join(home, "paws.db"));
   migrate(db);
-  insertQueuedItem(db, { id: "item", sessionKey: "session" });
+  await insertQueuedItem(db, { id: "item", sessionKey: "session" });
   const linearUploads: string[] = [];
   const files = createLinearFileTransfer({
     client: {
@@ -154,7 +154,7 @@ function git(cwd: string, args: string[]): void {
 }
 
 test("a video with a check id lands in the evidence store and the agent gets the Paws link", async () => {
-  const f = setup();
+  const f = await setup();
   try {
     f.write("proof.webm", sized(WEBM, 15 * 1024 * 1024));
     const artifact = await f.run([
@@ -183,7 +183,7 @@ test("a video with a check id lands in the evidence store and the agent gets the
 });
 
 test("a screenshot with a check id is evidence for the first attempt", async () => {
-  const f = setup();
+  const f = await setup();
   try {
     f.write("shot.png", sized(PNG, 64));
     const artifact = await f.run([
@@ -202,7 +202,7 @@ test("a screenshot with a check id is evidence for the first attempt", async () 
 });
 
 test("artifacts without a check id and other file types still upload to Linear", async () => {
-  const f = setup();
+  const f = await setup();
   try {
     f.write("shot.png", sized(PNG, 64));
     f.write("notes.txt", "notes");
@@ -218,7 +218,7 @@ test("artifacts without a check id and other file types still upload to Linear",
 });
 
 test("the 10 MB cap still applies without a check id", async () => {
-  const f = setup();
+  const f = await setup();
   try {
     f.write("big.png", sized(PNG, 11 * 1024 * 1024));
     const artifact = await f.run([{ type: "publish_artifact", path: "big.png" }]);
@@ -231,7 +231,7 @@ test("the 10 MB cap still applies without a check id", async () => {
 });
 
 test("a screenshot over the evidence cap is refused and the agent gets the error", async () => {
-  const f = setup();
+  const f = await setup();
   try {
     f.write("huge.png", sized(PNG, 20 * 1024 * 1024 + 1));
     const artifact = await f.run([
@@ -247,7 +247,7 @@ test("a screenshot over the evidence cap is refused and the agent gets the error
 });
 
 test("evidence store refusals and unknown checks reach the agent", async () => {
-  const f = setup();
+  const f = await setup();
   try {
     f.write("fake.webm", "not a video");
     const wrongType = await f.run([

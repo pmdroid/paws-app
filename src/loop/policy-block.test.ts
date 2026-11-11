@@ -49,7 +49,7 @@ function database() {
 }
 
 async function parked(db: Database, id: string) {
-  insertQueuedItem(db, { id, sessionKey: `ses-${id}`, now: NOW });
+  await insertQueuedItem(db, { id, sessionKey: `ses-${id}`, now: NOW });
   await beginImplementRun(sqliteDb(db), id, NOW);
   await applyWorkItemEvent(sqliteDb(db), id, "blocking_question");
   await saveCheckpoint(sqliteDb(db), id, {

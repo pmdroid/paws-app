@@ -19,7 +19,7 @@ test("an answer restarts the task with a fresh transient-retry count", async () 
   const clock = new FakeClock(20_000);
   const db = openDatabase(":memory:");
   migrate(db);
-  const item = insertQueuedItem(db, { id: "acme-7", sessionKey: "ses", now: clock.now() });
+  const item = await insertQueuedItem(db, { id: "acme-7", sessionKey: "ses", now: clock.now() });
   await beginImplementRun(sqliteDb(db), item.id, clock.now());
   await deferWorkItem(sqliteDb(db), (await getWorkItem(sqliteDb(db), item.id))!, {
     retry: MAX_TRANSIENT_RETRIES,

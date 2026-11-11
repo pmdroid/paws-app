@@ -124,7 +124,7 @@ afterAll(() => rmSync(repo, { recursive: true, force: true }));
 async function held(head = heads.s, base = heads.base) {
   const db = openDatabase(":memory:");
   migrate(db);
-  const item = insertQueuedItem(db, {
+  const item = await insertQueuedItem(db, {
     id: "ENG-106",
     sessionKey: "ses_1",
     title: "Token rotation",
@@ -1010,7 +1010,7 @@ for (const severity of ["P2", "P3"] as const) {
     const f = await cleanRiskFixture();
     f.step("security-review", "Original report", [severity]);
     await f.report("security-review", severity, "Same finding");
-    insertQueuedItem(f.db, { id: "other-item", sessionKey: "other-session", title: "Other" });
+    await insertQueuedItem(f.db, { id: "other-item", sessionKey: "other-session", title: "Other" });
     await recordReviewFindings(sqliteDb(f.db), {
       itemId: "other-item",
       repository: "acme/repo",

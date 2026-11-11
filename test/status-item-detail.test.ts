@@ -43,8 +43,8 @@ test("the issue endpoint needs a Paws session and shows only the member's sessio
   expect(await workspaceSessionIds(sqliteDb(db), "workspace", "member", "fixture")).toEqual([
     "session-mine",
   ]);
-  insertQueuedItem(db, { id: "PAS-1", sessionKey: "session-mine" });
-  insertQueuedItem(db, { id: "PAS-2", sessionKey: "session-other" });
+  await insertQueuedItem(db, { id: "PAS-1", sessionKey: "session-mine" });
+  await insertQueuedItem(db, { id: "PAS-2", sessionKey: "session-other" });
   const reservation = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
   const port = reservation.port!;
   await reservation.stop(true);

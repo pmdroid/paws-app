@@ -34,7 +34,7 @@ async function leased() {
   const clock = new FakeClock(1_000_000);
   const db = openDatabase(":memory:");
   migrate(db);
-  const item = insertQueuedItem(db, { now: clock.now() });
+  const item = await insertQueuedItem(db, { now: clock.now() });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
   db.run("PRAGMA foreign_keys=OFF");
   const leaseUntil = clock.now() + RENEWAL_MS;
@@ -260,7 +260,7 @@ describe("slots held between commands", () => {
     db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES('runner',2)");
     const runs = [];
     for (const index of [1, 2, 3, 4]) {
-      const item = insertQueuedItem(db, { id: `item-${index}`, now: clock.now() });
+      const item = await insertQueuedItem(db, { id: `item-${index}`, now: clock.now() });
       const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
       db.run(
         "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at,teardown_confirmed_at) VALUES(?,?,?,?,?,?,?,?,?)",
@@ -315,7 +315,7 @@ describe("slots held between commands", () => {
         (
           await beginImplementRun(
             sqliteDb(db),
-            insertQueuedItem(db, { id, now: clock.now() }).id,
+            (await insertQueuedItem(db, { id, now: clock.now() })).id,
             clock.now(),
             checkpoint,
           )

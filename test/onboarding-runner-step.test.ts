@@ -233,7 +233,11 @@ async function fixture({
   };
   /** A queued item Ada delegated, which the scheduler starts once she has an eligible runner. */
   const heldItem = async () => {
-    const item = insertQueuedItem(db, { id: "held", now: clock.now(), sessionKey: "session" });
+    const item = await insertQueuedItem(db, {
+      id: "held",
+      now: clock.now(),
+      sessionKey: "session",
+    });
     db.run("UPDATE work_item SET owner_user_id=? WHERE id='held'", [userId]);
     await ensureLinearSession(sqliteDb(db), {
       sessionId: "session",

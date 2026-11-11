@@ -10,7 +10,7 @@ import { createRemoteAgentRunner } from "../src/runner-backend";
 test("unavailable placement names the saved agent and why no runner can take it", async () => {
   const db = tempDb();
   try {
-    const queued = insertQueuedItem(db, { id: "unavailable-agent" });
+    const queued = await insertQueuedItem(db, { id: "unavailable-agent" });
     const { item, run } = await beginImplementRun(sqliteDb(db), queued.id, Date.now());
     const work = createRunnerWork({
       db,

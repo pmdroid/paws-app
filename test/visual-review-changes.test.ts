@@ -35,7 +35,7 @@ afterEach(() => {
 async function harness(active = true) {
   const db = openDatabase(":memory:");
   migrate(db);
-  insertQueuedItem(db, { id: "item", sessionKey: "ses_1" });
+  await insertQueuedItem(db, { id: "item", sessionKey: "ses_1" });
   const home = mkdtempSync(join(tmpdir(), "paws-review-marks-"));
   roots.push(home);
   const root = join(home, "evidence");

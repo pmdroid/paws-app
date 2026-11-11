@@ -38,7 +38,7 @@ function message(text: string) {
 test("full transcript reads unfinished ACP output, tools and classification while the status view links to it", async () => {
   const db = tempDb();
   const home = tempHome();
-  const item = insertQueuedItem(db, { id: "transcript-item", sessionKey: "visible" });
+  const item = await insertQueuedItem(db, { id: "transcript-item", sessionKey: "visible" });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, 1000);
   const directory = join(home, "runs", run.id);
   mkdirSync(directory, { recursive: true });
@@ -128,7 +128,7 @@ test("transcript reader refuses outside directories, symlink files and incomplet
 test("the transcript route answers JSON entries when the page asks for them", async () => {
   const db = tempDb();
   const home = tempHome();
-  const item = insertQueuedItem(db, { id: "json-item", sessionKey: "visible" });
+  const item = await insertQueuedItem(db, { id: "json-item", sessionKey: "visible" });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, 1000);
   mkdirSync(join(home, "runs", run.id), { recursive: true });
   writeFileSync(

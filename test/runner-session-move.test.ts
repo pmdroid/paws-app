@@ -184,7 +184,7 @@ async function setup() {
     const id = `item-${++sequence}`;
     run(["--git-dir", mirror, "update-ref", candidateRef(`display-${id}`), base]);
     const sessionKey = `session-${sequence}`;
-    const record = insertQueuedItem(db, { id, now, sessionKey });
+    const record = await insertQueuedItem(db, { id, now, sessionKey });
     const { run: started } = await beginImplementRun(sqliteDb(db), id, now);
     await recordLinearInstallation(sqliteDb(db), {
       organizationId: "fixture-work",
@@ -681,7 +681,7 @@ async function mergeQueueItemOnFullRunner() {
     "fixture/repository",
     context.now,
   ]);
-  const other = insertQueuedItem(db, { id: `busy-${record.id}`, now: context.now });
+  const other = await insertQueuedItem(db, { id: `busy-${record.id}`, now: context.now });
   const busy = (await beginImplementRun(sqliteDb(db), other.id, context.now)).run.id;
   db.run(
     "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) SELECT ?,?,workspace_id,1,0,?,? FROM runner WHERE id=?",

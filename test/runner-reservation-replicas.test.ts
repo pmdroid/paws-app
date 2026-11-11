@@ -115,7 +115,7 @@ async function replicas() {
   const item = async () => {
     const id = `acme-${++sequence}`;
     const sessionId = `acme-session-${sequence}`;
-    const record = insertQueuedItem(db, { id, now: clock, sessionKey: sessionId });
+    const record = await insertQueuedItem(db, { id, now: clock, sessionKey: sessionId });
     const { run } = await beginImplementRun(sqliteDb(db), id, clock);
     await recordLinearInstallation(sqliteDb(db), {
       organizationId: "acme",

@@ -39,7 +39,7 @@ async function fixture() {
       client: { request: () => response() },
     }),
   });
-  insertQueuedItem(db, { id: "item", now: clock.now() });
+  await insertQueuedItem(db, { id: "item", now: clock.now() });
   await bindWorkItemRepository(sqliteDb(db), "item", {
     owner: "acme",
     repo: "app",

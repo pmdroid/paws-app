@@ -30,7 +30,7 @@ const epoch = Date.parse("2026-10-28T06:00:00Z");
 async function seed() {
   const db = tempDb();
   db.run("INSERT INTO workspace VALUES('ws','org','Workspace',1)");
-  insertQueuedItem(db, { id: "item", sessionKey: "session", title: "Task", now: 1 });
+  await insertQueuedItem(db, { id: "item", sessionKey: "session", title: "Task", now: 1 });
   await recordReviewFindings(sqliteDb(db), {
     itemId: "item",
     repository: "acme/app",
@@ -741,7 +741,7 @@ test("admin grouping covers findings reported by teams outside that admin's memb
         teamId: teamId!,
         observedAtMs: 3,
       });
-    insertQueuedItem(f.db, {
+    await insertQueuedItem(f.db, {
       id: "team-y-item",
       sessionKey: "session-y",
       title: "Other team finding",

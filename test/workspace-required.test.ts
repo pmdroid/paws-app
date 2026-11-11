@@ -8,7 +8,7 @@ test("startup without a Linear workspace says why and admits nothing", async () 
   const home = tempHome();
   const seed = openDatabase(join(home, "paws.db"));
   migrate(seed);
-  insertQueuedItem(seed, { id: "waiting", now: Date.now() });
+  await insertQueuedItem(seed, { id: "waiting", now: Date.now() });
   seed.close();
   const lines: string[] = [];
   const restore = setJournalSink((line) => lines.push(line));

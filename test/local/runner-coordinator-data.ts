@@ -200,7 +200,7 @@ export async function probeRunnerCoordinatorData(
     if (enrolled.phase !== "paired") throw new Error("Runner enrollment failed");
     const { runnerId } = enrolled;
     db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
-    const item = insertQueuedItem(db, { id: "relay-item", now, sessionKey: "relay-session" });
+    const item = await insertQueuedItem(db, { id: "relay-item", now, sessionKey: "relay-session" });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
     await recordLinearInstallation(sqliteDb(db), {
       organizationId: "relay-org",

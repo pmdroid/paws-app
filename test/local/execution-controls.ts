@@ -94,7 +94,7 @@ export async function createExecutionControlsFixture(
     ["foreign", "foreign"],
     ["unmapped", "org"],
   ]) {
-    const item = insertQueuedItem(db, {
+    const item = await insertQueuedItem(db, {
       id,
       sessionKey: `session-${id}`,
       title: `Control ${id}`,

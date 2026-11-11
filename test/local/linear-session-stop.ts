@@ -50,10 +50,13 @@ export async function probeLinearSessionStop(root: string) {
   const observations = [];
   try {
     for (const field of ["dismissedAt", "archivedAt", "stopping"] as const) {
-      const old = insertQueuedItem(db, { id: `old-${field}`, sessionKey: `old-${field}` });
+      const old = await insertQueuedItem(db, { id: `old-${field}`, sessionKey: `old-${field}` });
       await beginImplementRun(sqliteDb(db), old.id, clock.now());
       await applyWorkItemEvent(sqliteDb(db), old.id, "blocking_question");
-      const replacement = insertQueuedItem(db, { id: `new-${field}`, sessionKey: `new-${field}` });
+      const replacement = await insertQueuedItem(db, {
+        id: `new-${field}`,
+        sessionKey: `new-${field}`,
+      });
       await ensureLinearSession(sqliteDb(db), {
         sessionId: old.sessionKey!,
         issueId: old.linearIssueId,
@@ -144,7 +147,7 @@ export async function probeLinearSessionStop(root: string) {
         passed: true,
       });
     }
-    const queued = insertQueuedItem(db, { id: "queued-stop" });
+    const queued = await insertQueuedItem(db, { id: "queued-stop" });
     await enqueueCommand(sqliteDb(db), {
       type: "stop",
       source: "linear",
@@ -156,7 +159,10 @@ export async function probeLinearSessionStop(root: string) {
     observations.push({ case: "claimed-stop-job", passed: true });
     assert.equal(joined, 3);
     for (const field of ["stop", "archivedAt", "dismissedAt", "stopping"] as const) {
-      const old = insertQueuedItem(db, { id: `webhook-${field}`, sessionKey: `webhook-${field}` });
+      const old = await insertQueuedItem(db, {
+        id: `webhook-${field}`,
+        sessionKey: `webhook-${field}`,
+      });
       // The item waits in the merge queue with an open pull request.
       for (const step of ["dispatched", "turn_ended", "closeout_accepted"] as const)
         await applyWorkItemEvent(sqliteDb(db), old.id, step);
@@ -171,7 +177,7 @@ export async function probeLinearSessionStop(root: string) {
         payload: { itemId: old.id },
         now: clock.now(),
       });
-      const replacement = insertQueuedItem(db, {
+      const replacement = await insertQueuedItem(db, {
         id: `webhook-new-${field}`,
         sessionKey: `webhook-new-${field}`,
       });

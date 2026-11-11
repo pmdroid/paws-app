@@ -272,7 +272,7 @@ test.each(["all", "criteria"] as const)(
   async (scope) => {
     const db = tempDb();
     try {
-      const item = insertQueuedItem(db, {
+      const item = await insertQueuedItem(db, {
         id: "EDIT-1",
         title: "Manual edit",
         sessionKey: "session",

@@ -83,7 +83,7 @@ async function runtimesFor(
       : {}),
   });
   try {
-    insertQueuedItem(db, { id: "task", sessionKey: "session", now: 1_000 });
+    await insertQueuedItem(db, { id: "task", sessionKey: "session", now: 1_000 });
     await bindWorkItemRepository(sqliteDb(db), "task", fixture.repository);
     await saveTaskMode(sqliteDb(db), "task", options.mode);
     const inputs = await (

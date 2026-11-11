@@ -43,11 +43,11 @@ const context: PublishArtifactContext = {
   signal: new AbortController().signal,
 };
 
-function setup(
+async function setup(
   options: { failAfterUpload?: boolean; fail?: boolean; expired?: boolean } = {},
   db: Database = tempDb(),
 ) {
-  insertQueuedItem(db, { id: "item", sessionKey: "session" });
+  await insertQueuedItem(db, { id: "item", sessionKey: "session" });
   const secretsDir = join(tempHome(), "secrets");
   let prepares = 0;
   let uploads = 0;
@@ -101,7 +101,7 @@ function setup(
 }
 
 test("artifact publication persists immutable bytes privately and a durable inline image", async () => {
-  const env = setup();
+  const env = await setup();
   expect(await (await env.publisher()).publish(artifact, context)).toEqual({
     url: URL,
     displayName: "proof.png",
@@ -126,7 +126,7 @@ test("artifact publication persists immutable bytes privately and a durable inli
 });
 
 test("dashboard artifact reads return the private snapshot rather than mutable workspace bytes or signed manifests", async () => {
-  const env = setup();
+  const env = await setup();
   await (await env.publisher()).publish(artifact, context);
   const row = (await listArtifacts(sqliteDb(env.db), "item"))[0]!;
   const read = createLinearArtifactReader(env);
@@ -148,7 +148,7 @@ test("dashboard artifact reads return the private snapshot rather than mutable w
 });
 
 test("dashboard can read a prepared artifact while publication retries without exposing upload credentials", async () => {
-  const env = setup({ fail: true });
+  const env = await setup({ fail: true });
   await expect((await env.publisher()).publish(artifact, context)).rejects.toThrow();
   const row = (await listArtifacts(sqliteDb(env.db), "item"))[0]!;
   expect(row.state).toBe("failed");
@@ -164,7 +164,7 @@ test("restart reconciles an uploaded asset after losing the PUT response", async
   const databasePath = join(tempHome(), "paws.db");
   const db = openDatabase(databasePath);
   migrate(db);
-  const env = setup({ failAfterUpload: true }, db);
+  const env = await setup({ failAfterUpload: true }, db);
   await expect((await env.publisher()).publish(artifact, context)).rejects.toThrow(
     "upload request failed",
   );
@@ -187,7 +187,7 @@ test("restart reconciles an uploaded asset after losing the PUT response", async
 });
 
 test("concurrent identical publications share one upload and durable result", async () => {
-  const env = setup();
+  const env = await setup();
   const publisher = await env.publisher();
   const results = await Promise.all([
     publisher.publish(artifact, context),
@@ -199,7 +199,7 @@ test("concurrent identical publications share one upload and durable result", as
 });
 
 test("failed uploads remain incomplete and never publish a link", async () => {
-  const env = setup({ fail: true });
+  const env = await setup({ fail: true });
   await expect((await env.publisher()).publish(artifact, context)).rejects.toThrow("HTTP 503");
   expect(await artifactPublicationReady(sqliteDb(env.db), "item")).toBe(false);
   expect(await listOutbox(sqliteDb(env.db), "session")).toHaveLength(0);
@@ -207,7 +207,7 @@ test("failed uploads remain incomplete and never publish a link", async () => {
 });
 
 test("Stop fences a captured artifact callback from posting a late success", async () => {
-  const env = setup();
+  const env = await setup();
   const publisher = await env.publisher();
   await stopOutboxSession(sqliteDb(env.db), "linear", "session", 1);
   await publisher.publish(artifact, context);
@@ -216,7 +216,7 @@ test("Stop fences a captured artifact callback from posting a late success", asy
 });
 
 test("recovery refuses tampered snapshot bytes before a second upload", async () => {
-  const env = setup({ fail: true });
+  const env = await setup({ fail: true });
   await expect((await env.publisher()).publish(artifact, context)).rejects.toThrow();
   const row = (await listArtifacts(sqliteDb(env.db), "item"))[0]!;
   await writeFile(join(env.secretsDir, "linear-artifacts", `${row.id}.bytes`), "tampered");
@@ -226,7 +226,7 @@ test("recovery refuses tampered snapshot bytes before a second upload", async ()
 });
 
 test("expired restored destinations refresh after confirming the old asset is absent", async () => {
-  const env = setup({ expired: true });
+  const env = await setup({ expired: true });
   await expect((await env.publisher()).publish(artifact, context)).rejects.toThrow("HTTP 403");
   expect(await (await env.publisher()).publish(artifact, context)).toMatchObject({ url: URL });
   expect(env.prepares()).toBe(2);
@@ -236,7 +236,7 @@ test("expired restored destinations refresh after confirming the old asset is ab
 
 test("a successful replacement resolves a failed artifact at the same path", async () => {
   const options = { fail: true };
-  const env = setup(options);
+  const env = await setup(options);
   await expect((await env.publisher()).publish(artifact, context)).rejects.toThrow("HTTP 503");
   const replacementBytes = new TextEncoder().encode("replacement bytes");
   const replacement = {
@@ -253,7 +253,7 @@ test("a successful replacement resolves a failed artifact at the same path", asy
 });
 
 test("a pending artifact link survives final response and is delivered first", async () => {
-  const env = setup();
+  const env = await setup();
   await (await env.publisher()).publish(artifact, context);
   await enqueueOutbox(sqliteDb(env.db), {
     target: "linear",
@@ -273,7 +273,7 @@ test("a pending artifact link survives final response and is delivered first", a
 test.each([false, true])(
   "exhausted artifact delivery cannot trap completion, final already queued: %s",
   async (finalAlreadyQueued) => {
-    const env = setup();
+    const env = await setup();
     try {
       await (await env.publisher()).publish(artifact, context);
       env.db.run("UPDATE outbox SET max_attempts = 1");
@@ -314,7 +314,7 @@ test.each([false, true])(
 );
 
 test("an uploaded replacement still resolves a legacy failed artifact by its exact path", async () => {
-  const env = setup();
+  const env = await setup();
   await saveArtifact(
     sqliteDb(env.db),
     {

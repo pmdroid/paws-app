@@ -30,7 +30,7 @@ import { tempDb, tempHome } from "./helpers";
 
 async function fixture() {
   const db = tempDb();
-  const item = insertQueuedItem(db);
+  const item = await insertQueuedItem(db);
   const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
   await ensureLinearSession(sqliteDb(db), { sessionId: "session", issueId: item.linearIssueId });
   await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "human" });

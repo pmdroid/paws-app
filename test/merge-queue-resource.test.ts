@@ -49,7 +49,7 @@ test("the merge queue needs a Paws session, shows only the member's sessions and
     ["PAS-1", "session-mine"],
     ["PAS-2", "session-other"],
   ] as const) {
-    insertQueuedItem(db, { id, sessionKey });
+    await insertQueuedItem(db, { id, sessionKey });
     await beginImplementRun(sqliteDb(db), id, Date.now());
     await enterMergeQueue(sqliteDb(db), id, {
       phase: "merge_queue",

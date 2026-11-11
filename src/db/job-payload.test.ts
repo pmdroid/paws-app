@@ -18,7 +18,7 @@ test("clearing a leased job's wait bookkeeping preserves its item-version fence 
   const db = openDatabase(":memory:");
   try {
     migrate(db);
-    const item = insertQueuedItem(db, { now: 1_000 });
+    const item = await insertQueuedItem(db, { now: 1_000 });
     const id = await enqueueJob(sqliteDb(db), {
       queue: "run.reverify",
       payload: { itemId: item.id, verificationWaitSince: 10 },
@@ -56,7 +56,7 @@ test("a parked verification version refresh is limited to its original eligible 
   const db = openDatabase(":memory:");
   try {
     migrate(db);
-    const item = insertQueuedItem(db, { now: 1000 });
+    const item = await insertQueuedItem(db, { now: 1000 });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, 1000);
     await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
     const id = await enqueueJob(sqliteDb(db), {

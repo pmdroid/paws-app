@@ -17,7 +17,7 @@ import {
 import { tempDb } from "./helpers";
 
 async function ready(db: ReturnType<typeof tempDb>, id: string, repository: string, now: number) {
-  insertQueuedItem(db, { id, now });
+  await insertQueuedItem(db, { id, now });
   db.run("UPDATE work_item SET state='merge_queue' WHERE id=?", [id]);
   await joinMergeQueue(sqliteDb(db), { itemId: id, repository, now });
 }
@@ -95,7 +95,7 @@ test("a fix sent back from the merge queue or its re-verify counts as merge-queu
   const db = tempDb();
   try {
     const accepted = async (id: string) => {
-      insertQueuedItem(db, { id, now: 1 });
+      await insertQueuedItem(db, { id, now: 1 });
       await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
       await applyWorkItemEvent(sqliteDb(db), id, "turn_ended");
     };

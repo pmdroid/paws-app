@@ -111,7 +111,7 @@ test("answer mode and full prepared response survive reopen as a terminal comple
   const file = join(tempHome(), "paws.db");
   const db = openDatabase(file);
   migrate(db);
-  const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
+  const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
   await beginImplementRun(sqliteDb(db), item.id, 1);
   await saveTaskMode(sqliteDb(db), item.id, "answer");
   const response = "Full public answer. ".repeat(1_000);
@@ -143,7 +143,7 @@ test.each(["code", "artifact"] as const)(
   async (mode) => {
     const db = tempDb();
     try {
-      const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
+      const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
       await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
       await saveTaskMode(sqliteDb(db), item.id, mode);
       await expect(completeAnswerTask(sqliteDb(db), item.id, "Done")).rejects.toThrow(
@@ -163,7 +163,7 @@ test.each(["code", "artifact"] as const)(
 test("Stop and empty responses cannot complete an answer task", async () => {
   const db = tempDb();
   try {
-    const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
+    const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
     await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
     await saveTaskMode(sqliteDb(db), item.id, "answer");
     await expect(completeAnswerTask(sqliteDb(db), item.id, " ")).rejects.toThrow(

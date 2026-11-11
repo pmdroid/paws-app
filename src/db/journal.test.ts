@@ -44,7 +44,7 @@ async function claim(db: ReturnType<typeof database>, queue: string) {
 describe("journal", () => {
   test("writes one line per work item transition", async () => {
     const db = database();
-    insertQueuedItem(db, { id: "PAS-1" });
+    await insertQueuedItem(db, { id: "PAS-1" });
     await beginImplementRun(sqliteDb(db), "PAS-1", 1_000);
     await enterMergeQueue(sqliteDb(db), "PAS-1", { phase: "merge_queue" });
     await applyWorkItemEvent(sqliteDb(db), "PAS-1", "merge_accepted");
@@ -58,7 +58,7 @@ describe("journal", () => {
 
   test("writes the reason when a work item fails", async () => {
     const db = database();
-    insertQueuedItem(db, { id: "PAS-2", sessionKey: "s" });
+    await insertQueuedItem(db, { id: "PAS-2", sessionKey: "s" });
     await beginImplementRun(sqliteDb(db), "PAS-2", 1_000);
     const item = await getWorkItem(sqliteDb(db), "PAS-2");
     if (item === null) throw new Error("missing item");
@@ -70,7 +70,7 @@ describe("journal", () => {
 
   test("writes one line when a work item hits its time cap", async () => {
     const db = database();
-    insertQueuedItem(db, { id: "PAS-3", maxAwakeMs: 1_000 });
+    await insertQueuedItem(db, { id: "PAS-3", maxAwakeMs: 1_000 });
     db.run("UPDATE work_item SET session_key = NULL WHERE id = 'PAS-3'");
     await beginImplementRun(sqliteDb(db), "PAS-3", 1_000);
     await accrueAwake(sqliteDb(db), "PAS-3", 0, 1_000, undefined, true);

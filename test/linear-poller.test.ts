@@ -247,7 +247,7 @@ describe("linear intake poll", () => {
     async (withTask) => {
       const db = tempDb();
       const store = createInboxStore(sqliteDb(db));
-      if (withTask) insertQueuedItem(db, { sessionKey: "session-reused" });
+      if (withTask) await insertQueuedItem(db, { sessionKey: "session-reused" });
       const created: string[] = [];
       let polls = 0;
       const { client } = scripted(() => {
@@ -291,7 +291,7 @@ describe("linear intake poll", () => {
     async (withTask) => {
       const db = tempDb();
       const store = createInboxStore(sqliteDb(db));
-      if (withTask) insertQueuedItem(db, { sessionKey: "session-again" });
+      if (withTask) await insertQueuedItem(db, { sessionKey: "session-again" });
       const created: string[] = [];
       const { client } = scripted(() => ({
         ...page([]),

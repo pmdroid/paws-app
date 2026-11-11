@@ -379,7 +379,7 @@ export async function mergeHarness(
     await git(worktree, "push", "-q", "origin", `HEAD:paws/${id}`);
     const head = await git(worktree, "rev-parse", "HEAD");
     const base = await git(worktree, "rev-parse", "origin/main");
-    insertQueuedItem(db, { id, now: clock.now(), sessionKey: `ses-${id}` });
+    await insertQueuedItem(db, { id, now: clock.now(), sessionKey: `ses-${id}` });
     const { run } = await beginImplementRun(sqliteDb(db), id, clock.now());
     await enterMergeQueue(sqliteDb(db), id, {
       phase: "merge_queue",

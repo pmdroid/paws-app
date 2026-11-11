@@ -157,11 +157,11 @@ describe("task blocks", () => {
         )
         .get()?.name,
     ).toBe("work_item_active_issue");
-    const extra = insertQueuedItem(db, { id: "extra", now: 3 });
+    const extra = await insertQueuedItem(db, { id: "extra", now: 3 });
     expect(() =>
       db.run("UPDATE work_item SET linear_issue_id = ? WHERE id = ?", ["shared-issue", extra.id]),
     ).toThrow(/UNIQUE/);
-    const done = insertQueuedItem(db, { id: "done", now: 4 });
+    const done = await insertQueuedItem(db, { id: "done", now: 4 });
     db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [done.id]);
     db.run("UPDATE work_item SET linear_issue_id = ? WHERE id = ?", ["shared-issue", done.id]);
     expect(await getWorkItem(sqliteDb(db), "done")).toMatchObject({

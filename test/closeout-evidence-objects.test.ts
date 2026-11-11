@@ -78,7 +78,7 @@ async function closeoutRun(db: Database, home: string, item = ITEM): Promise<str
 
 async function setup() {
   const db = tempDb();
-  insertQueuedItem(db, { id: ITEM, sessionKey: "session-acme", now: 1 });
+  await insertQueuedItem(db, { id: ITEM, sessionKey: "session-acme", now: 1 });
   const s3 = createFakeRunFileObjects();
   const objects = () => withSealedRunFileObjects(s3, Buffer.alloc(32, 9));
   const homeA = tempHome();
@@ -253,8 +253,8 @@ test("restored records keep their modification times, and a newer stored copy re
 
 test("every visible item with the issue's identifier has its Closeout records restored", async () => {
   const { db, homeA, storageA, storageB } = await setup();
-  insertQueuedItem(db, { id: "item-acme-2", sessionKey: "session-acme", now: 1 });
-  insertQueuedItem(db, { id: "item-acme-3", sessionKey: "session-other", now: 1 });
+  await insertQueuedItem(db, { id: "item-acme-2", sessionKey: "session-acme", now: 1 });
+  await insertQueuedItem(db, { id: "item-acme-3", sessionKey: "session-other", now: 1 });
   db.run("UPDATE work_item SET linear_identifier = 'ACME-1'");
   await closeoutRun(db, homeA, "item-acme-2");
   await closeoutRun(db, homeA, "item-acme-3");

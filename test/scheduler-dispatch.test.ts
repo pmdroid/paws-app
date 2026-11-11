@@ -27,8 +27,8 @@ function sameDelegation(db: ReturnType<typeof tempDb>, ids: readonly string[]): 
 test("dispatch asks readiness itself instead of trusting a handed-in ready list", async () => {
   const db = tempDb();
   try {
-    insertQueuedItem(db, { id: "blocker", now: 1 });
-    insertQueuedItem(db, { id: "blocked", now: 2 });
+    await insertQueuedItem(db, { id: "blocker", now: 1 });
+    await insertQueuedItem(db, { id: "blocked", now: 2 });
     sameDelegation(db, ["blocker", "blocked"]);
     db.run(
       "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('lin-item-blocker','lin-item-blocked')",
@@ -45,12 +45,12 @@ test("dispatch asks readiness itself instead of trusting a handed-in ready list"
 test("dispatch admits ready Items while another one is in flight", async () => {
   const db = tempDb();
   try {
-    insertQueuedItem(db, { id: "first", now: 1 });
+    await insertQueuedItem(db, { id: "first", now: 1 });
     expect(await workspaceDispatch(db, { now: 1000 })).toEqual(["first"]);
     db.run("UPDATE work_item SET state='running' WHERE id='first'");
     db.run("UPDATE job SET status='done' WHERE json_extract(payload,'$.itemId')='first'");
-    insertQueuedItem(db, { id: "second", now: 2 });
-    insertQueuedItem(db, { id: "third", now: 3 });
+    await insertQueuedItem(db, { id: "second", now: 2 });
+    await insertQueuedItem(db, { id: "third", now: 3 });
     expect(await workspaceDispatch(db, { now: 1001 })).toEqual(["second", "third"]);
   } finally {
     db.close();
@@ -87,7 +87,7 @@ test("the orchestrator dispatches after the transition's transaction has resolve
       outbox: new OutboxDispatcher(db, clock),
       pawsRoot: root,
     });
-    insertQueuedItem(db, { id: "item", now: 1 });
+    await insertQueuedItem(db, { id: "item", now: 1 });
     await beginImplementRun(sqlite, "item", clock.now());
     const item = (await getWorkItem(sqlite, "item"))!;
     await orchestrator["fail"](item, "broken", "The run broke.");
@@ -102,8 +102,8 @@ test("the orchestrator dispatches after the transition's transaction has resolve
 test("dispatch yields an idle merge session to a ready sibling", async () => {
   const db = tempDb();
   try {
-    insertQueuedItem(db, { id: "merging", now: 1, sessionKey: "session" });
-    insertQueuedItem(db, { id: "next", now: 2, sessionKey: "session" });
+    await insertQueuedItem(db, { id: "merging", now: 1, sessionKey: "session" });
+    await insertQueuedItem(db, { id: "next", now: 2, sessionKey: "session" });
     sameDelegation(db, ["merging", "next"]);
     db.run("UPDATE work_item SET state='merge_queue' WHERE id='merging'");
     await ensureLinearSession(sqliteDb(db), {
@@ -128,8 +128,8 @@ test("dispatch yields an idle merge session to a ready sibling", async () => {
 test("dispatch reports the ready items it left waiting", async () => {
   const db = tempDb();
   try {
-    insertQueuedItem(db, { id: "first", now: 1 });
-    insertQueuedItem(db, { id: "second", now: 2 });
+    await insertQueuedItem(db, { id: "first", now: 1 });
+    await insertQueuedItem(db, { id: "second", now: 2 });
     const waiting: string[] = [];
     const options: SchedulerOptions & { onWaiting: (ids: readonly string[]) => void } = {
       now: 1000,

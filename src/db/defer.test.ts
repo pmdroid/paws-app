@@ -19,7 +19,7 @@ import {
 test("deferring a running item loses its run, moves it to recovering, and schedules a resume", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
-  insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: 1_000 });
+  await insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: 1_000 });
   const { item, run } = await beginImplementRun(sqliteDb(db), "item-1", 1_000);
   const lines: string[] = [];
   const restore = setJournalSink((line) => lines.push(line));
@@ -61,7 +61,7 @@ test("deferring a running item loses its run, moves it to recovering, and schedu
 test("deferring the same item version twice schedules one resume", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
-  insertQueuedItem(db, { id: "item-1", now: 1_000 });
+  await insertQueuedItem(db, { id: "item-1", now: 1_000 });
   const { item } = await beginImplementRun(sqliteDb(db), "item-1", 1_000);
   const input = { retry: 1, delayMs: 10, handoff: null, message: "Retrying.", now: 2_000 };
   await deferWorkItem(sqliteDb(db), item, input);
@@ -78,7 +78,7 @@ test("deferring the same item version twice schedules one resume", async () => {
 test("deferring verification of a recorded candidate keeps it verifying and re-verifies that head", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
-  insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: 1_000 });
+  await insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: 1_000 });
   const { run } = await beginImplementRun(sqliteDb(db), "item-1", 1_000);
   await applyWorkItemEvent(sqliteDb(db), "item-1", "turn_ended");
   await saveCheckpoint(sqliteDb(db), "item-1", {
@@ -127,7 +127,7 @@ test("deferring verification of a recorded candidate keeps it verifying and re-v
 test("deferring verification without a recorded candidate falls back to a resume", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
-  insertQueuedItem(db, { id: "item-1", now: 1_000 });
+  await insertQueuedItem(db, { id: "item-1", now: 1_000 });
   await beginImplementRun(sqliteDb(db), "item-1", 1_000);
   await applyWorkItemEvent(sqliteDb(db), "item-1", "turn_ended");
   await deferWorkItem(sqliteDb(db), (await getWorkItem(sqliteDb(db), "item-1"))!, {
@@ -144,7 +144,7 @@ test("deferring verification without a recorded candidate falls back to a resume
 test("a Closeout fault re-verifies the same version once per faulted job and carries the faults", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
-  insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: 1_000 });
+  await insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: 1_000 });
   await beginImplementRun(sqliteDb(db), "item-1", 1_000);
   await applyWorkItemEvent(sqliteDb(db), "item-1", "turn_ended");
   await saveCheckpoint(sqliteDb(db), "item-1", {

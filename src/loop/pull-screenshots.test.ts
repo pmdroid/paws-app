@@ -34,7 +34,11 @@ async function setup() {
   roots.push(root);
   const db = openDatabase(":memory:");
   migrate(db);
-  const item = insertQueuedItem(db, { id: "ENG-1129", sessionKey: "ses_1", title: "Screens" });
+  const item = await insertQueuedItem(db, {
+    id: "ENG-1129",
+    sessionKey: "ses_1",
+    title: "Screens",
+  });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
   let created = 0;
   const add = async (

@@ -24,7 +24,7 @@ import { askMergeHelp, ciFixes, rebaseReturns, returnToAgent } from "./returns";
 async function queued() {
   const db = openDatabase(":memory:");
   migrate(db);
-  insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
+  await insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
   await beginImplementRun(sqliteDb(db), "eng-1", 1);
   await enterMergeQueue(sqliteDb(db), "eng-1", {
     phase: "merge_queue",
@@ -164,7 +164,7 @@ describe("merge returns", () => {
 
   test("CI help asked while another task's question is open waits its turn", async () => {
     const db = await queued();
-    insertQueuedItem(db, { id: "eng-2", now: 1, sessionKey: "s-1" });
+    await insertQueuedItem(db, { id: "eng-2", now: 1, sessionKey: "s-1" });
     const open = await sqliteDb(db).transaction((q) =>
       askSteps(q, { itemId: "eng-2", runId: null, sessionId: "s-1" }, "agent", "Which?"),
     );

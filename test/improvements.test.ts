@@ -48,7 +48,7 @@ async function seed() {
     `INSERT INTO linear_session (session_id, organization_id, oauth_client_id, app_user_id, team_id,
       installation_observed_at, created_at) VALUES ('session', 'org', 'fixture', 'app', 'team', 1, 0)`,
   );
-  insertQueuedItem(db, { id: "item", sessionKey: "session", title: "Task", now: 1 });
+  await insertQueuedItem(db, { id: "item", sessionKey: "session", title: "Task", now: 1 });
   await recordReviewFindings(sqliteDb(db), {
     itemId: "item",
     repository: REPO,

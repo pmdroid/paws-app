@@ -245,7 +245,7 @@ test("no active runner fails closed and a deadline cannot retain capacity", asyn
 });
 
 async function fillRunner(f: Awaited<ReturnType<typeof fixture>>) {
-  insertQueuedItem(f.db, { id: "busy", now: Date.now(), sessionKey: "busy-session" });
+  await insertQueuedItem(f.db, { id: "busy", now: Date.now(), sessionKey: "busy-session" });
   const { run } = await beginImplementRun(sqliteDb(f.db), "busy", Date.now());
   f.db.run(
     "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) SELECT ?,id,workspace_id,1,0,'busy',? FROM runner WHERE id='runner'",
@@ -685,7 +685,7 @@ test("a session item waits in a usage pause and places the helper once the coold
   const f = await fixture(coolingRunner());
   const resetsAt = Date.now() + 30 * 60_000;
   coolDown(f, resetsAt);
-  insertQueuedItem(f.db, { id: "item", now: Date.now(), sessionKey: "session" });
+  await insertQueuedItem(f.db, { id: "item", now: Date.now(), sessionKey: "session" });
   const { run } = await beginImplementRun(sqliteDb(f.db), "item", Date.now());
   let settled = false;
   const pending = f.backend.forSession("session", "classify")(f.input);
@@ -1098,7 +1098,7 @@ async function answerTask() {
   });
   const fill = async (runnerId: string) => {
     for (const id of [`${runnerId}-1`, `${runnerId}-2`]) {
-      insertQueuedItem(f.db, { id, now: Date.now(), sessionKey: `${id}-session` });
+      await insertQueuedItem(f.db, { id, now: Date.now(), sessionKey: `${id}-session` });
       const { run } = await beginImplementRun(sqliteDb(f.db), id, Date.now());
       f.db.run(
         "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) SELECT ?,id,workspace_id,1,0,?,? FROM runner WHERE id=?",

@@ -241,7 +241,7 @@ describe("improvement delivery", () => {
 
   test("a daily finding files as a review finding and its source findings carry the issue", async () => {
     const w = await world();
-    insertQueuedItem(w.db, { id: "item-a", sessionKey: "s", now: 1 });
+    await insertQueuedItem(w.db, { id: "item-a", sessionKey: "s", now: 1 });
     await recordReviewFindings(sqliteDb(w.db), {
       itemId: "item-a",
       repository: REPO,

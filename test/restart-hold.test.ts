@@ -33,7 +33,7 @@ const LATER = 2 * 60 * 60_000;
 const ORPHAN_LATER = 60 * 60_000;
 
 async function seed(db: Database): Promise<void> {
-  insertQueuedItem(db, { id: "item", sessionKey: "session", now: 0 });
+  await insertQueuedItem(db, { id: "item", sessionKey: "session", now: 0 });
   await bindWorkItemRepository(sqliteDb(db), "item", {
     owner: "owner",
     repo: "repo",

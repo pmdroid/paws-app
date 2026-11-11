@@ -28,7 +28,7 @@ test("repository binding survives restart and rejects a different binding", asyn
   let db = openDatabase(filename);
   try {
     migrate(db);
-    const item = insertQueuedItem(db);
+    const item = await insertQueuedItem(db);
     expect(await getWorkItemRepository(sqliteDb(db), item.id)).toBeNull();
     expect(await bindWorkItemRepository(sqliteDb(db), item.id, repository)).toEqual(repository);
     expect(await bindWorkItemRepository(sqliteDb(db), item.id, repository)).toEqual(repository);
@@ -63,7 +63,7 @@ test("an interpreted offered repository survives restart without changing the an
   let db = openDatabase(filename);
   try {
     migrate(db);
-    const item = insertQueuedItem(db);
+    const item = await insertQueuedItem(db);
     const question = await openQuestion(db, {
       itemId: item.id,
       sessionId: "session",

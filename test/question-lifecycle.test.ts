@@ -23,7 +23,11 @@ const NOW = 1_700_000_000_000;
 
 async function setup() {
   const db = tempDb();
-  const item = insertQueuedItem(db, { id: "ENG-7", sessionKey: "ses_1", title: "Export rows" });
+  const item = await insertQueuedItem(db, {
+    id: "ENG-7",
+    sessionKey: "ses_1",
+    title: "Export rows",
+  });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
   return { db, asker: { itemId: item.id, runId: run.id, sessionId: "ses_1" } };
 }
@@ -86,7 +90,11 @@ test("a newer runner wait replaces a queued one of the same kind", async () => {
 
 test("a newer CI help replaces only its own task's queued CI help", async () => {
   const { db, asker } = await setup();
-  const sibling = insertQueuedItem(db, { id: "ENG-8", sessionKey: "ses_1", title: "Import rows" });
+  const sibling = await insertQueuedItem(db, {
+    id: "ENG-8",
+    sessionKey: "ses_1",
+    title: "Import rows",
+  });
   await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
   const older = await ask(db, asker, "ci-help", "CI failed.", { now: NOW + 1 });
   const other = await ask(

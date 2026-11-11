@@ -55,7 +55,7 @@ async function workspace(db: Database) {
     });
   }
   addRunner(db, "theirs", users.other!, START, 1);
-  const item = insertQueuedItem(db, { id: "mine", now: START, sessionKey: "session" });
+  const item = await insertQueuedItem(db, { id: "mine", now: START, sessionKey: "session" });
   db.run("UPDATE work_item SET linear_identifier='PAS-1',owner_user_id=? WHERE id='mine'", [
     users.me!,
   ]);

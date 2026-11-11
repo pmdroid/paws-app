@@ -53,7 +53,7 @@ async function park(
   wait: Wait,
   withCheckpoint: boolean,
 ): Promise<number> {
-  insertQueuedItem(db, { id: "eng-9", sessionKey: "linear-session", now });
+  await insertQueuedItem(db, { id: "eng-9", sessionKey: "linear-session", now });
   const saved = withCheckpoint ? checkpoint : undefined;
   const { item } = await beginImplementRun(sqliteDb(db), "eng-9", now, saved);
   if (wait === "transient backoff") {
@@ -255,7 +255,7 @@ describe("ownership a clock gap does not invent", () => {
     if (how === "cancelled")
       db.run("UPDATE job SET status='cancelled', finished_at=? WHERE id=?", [clock.now(), owner]);
     if (how === "another item's job") {
-      insertQueuedItem(db, { id: "eng-10", now: clock.now() });
+      await insertQueuedItem(db, { id: "eng-10", now: clock.now() });
       db.run("UPDATE job SET payload=json_set(payload,'$.itemId','eng-10') WHERE id=?", [owner]);
     }
     await host.tick();
@@ -333,7 +333,7 @@ describe("repeated clock gaps with holds and parked waits side by side", () => {
     const { db, host } = boot(clock);
     try {
       await park(db, clock.now(), "transient backoff", true);
-      insertQueuedItem(db, { id: "eng-10", sessionKey: "session-10", now: clock.now() });
+      await insertQueuedItem(db, { id: "eng-10", sessionKey: "session-10", now: clock.now() });
       await beginImplementRun(sqliteDb(db), "eng-10", clock.now());
       await enqueueJob(sqliteDb(db), {
         queue: JOB_KIND.start,
@@ -344,14 +344,14 @@ describe("repeated clock gaps with holds and parked waits side by side", () => {
         },
         now: clock.now(),
       });
-      insertQueuedItem(db, { id: "eng-11", sessionKey: "session-11", now: clock.now() });
+      await insertQueuedItem(db, { id: "eng-11", sessionKey: "session-11", now: clock.now() });
       await holdForRunnerSetup(sqliteDb(db), {
         itemId: "eng-11",
         ownerUserId: null,
         reason: "no-runner",
         now: clock.now(),
       });
-      insertQueuedItem(db, { id: "eng-12", sessionKey: "session-12", now: clock.now() });
+      await insertQueuedItem(db, { id: "eng-12", sessionKey: "session-12", now: clock.now() });
       await beginImplementRun(sqliteDb(db), "eng-12", clock.now(), checkpoint);
       await applyWorkItemEvent(sqliteDb(db), "eng-12", "blocking_question");
       db.run("UPDATE work_item SET recovery_attempts=1 WHERE id IN ('eng-9','eng-10')");

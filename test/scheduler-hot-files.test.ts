@@ -23,7 +23,7 @@ async function item(
   paths: readonly string[] | null,
   now = 1,
 ): Promise<void> {
-  insertQueuedItem(db, { id, now });
+  await insertQueuedItem(db, { id, now });
   db.run(
     "INSERT INTO work_item_repository(item_id,owner,repo,remote_url) VALUES(?,'owner','repo','https://github.com/owner/repo.git')",
     [id],

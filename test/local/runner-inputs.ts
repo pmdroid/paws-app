@@ -105,7 +105,7 @@ export async function probeRunnerInputs(
     eventKey: Buffer.alloc(32, 7),
     now: () => now,
   });
-  const item = insertQueuedItem(db, {
+  const item = await insertQueuedItem(db, {
     id: "transcript-item",
     now,
     sessionKey: "transcript-session",

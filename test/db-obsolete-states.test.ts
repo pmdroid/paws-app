@@ -14,11 +14,11 @@ test("removing obsolete states preserves work items, references, indexes and set
   const db = openDatabase(":memory:");
   try {
     legacyMigrate(db, { until: PREVIOUS });
-    insertQueuedItem(db, { id: "spent" });
+    await insertQueuedItem(db, { id: "spent" });
     const { run } = await beginImplementRun(sqliteDb(db), "spent", 100);
     db.run(`UPDATE work_item SET state='exhausted', task_key='task', accepted_head='head',
       linear_project_id='project', agent_ms=123, checkpoint='{"phase":"verifying"}' WHERE id='spent'`);
-    insertQueuedItem(db, { id: "held" });
+    await insertQueuedItem(db, { id: "held" });
     db.run("INSERT INTO runner_setup_hold(item_id,reason,since) VALUES('held','no-runner',10)");
     db.run("INSERT INTO runner_setup_resume(item_id,run_id,released_at) VALUES('held',?,20)", [
       run.id,
@@ -77,11 +77,11 @@ test("removing obsolete states preserves work items, references, indexes and set
   }
 });
 
-test("an unexpected signoff row stops migration without losing data", () => {
+test("an unexpected signoff row stops migration without losing data", async () => {
   const db = openDatabase(":memory:");
   try {
     legacyMigrate(db, { until: PREVIOUS });
-    insertQueuedItem(db, { id: "unexpected" });
+    await insertQueuedItem(db, { id: "unexpected" });
     db.run("UPDATE work_item SET state='awaiting_signoff' WHERE id='unexpected'");
     expect(() => legacyMigrate(db)).toThrow("unexpectedly awaiting sign-off");
     expect(db.query("SELECT state FROM work_item").get()).toEqual({ state: "awaiting_signoff" });

@@ -8,7 +8,7 @@ test("normalizing old queue rows preserves order, kept places and notification m
     ["first", "Acme/APP"],
     ["second", "acme/app"],
   ]) {
-    insertQueuedItem(db, { id: id!, now: 1 });
+    await insertQueuedItem(db, { id: id!, now: 1 });
     db.run("UPDATE work_item SET state='merge_queue' WHERE id=?", [id!]);
     db.run(
       "INSERT INTO merge_queue_entry(item_id,repository,ready_at,kept,notified_position) VALUES (?,?,1,1,2)",

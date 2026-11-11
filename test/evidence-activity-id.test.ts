@@ -24,12 +24,12 @@ afterEach(() => {
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
 });
 
-function setup() {
+async function setup() {
   const home = tempHome();
   homes.push(home);
   const db = openDatabase(join(home, "paws.db"));
   legacyMigrate(db);
-  insertQueuedItem(db, { id: "item", sessionKey: "session" });
+  await insertQueuedItem(db, { id: "item", sessionKey: "session" });
   return { db };
 }
 
@@ -47,7 +47,7 @@ async function deliverAll(db: Database, tracker: ReturnType<typeof createFakeTra
 }
 
 test("a dead evidence row is repaired on start and the rows behind it deliver in order", async () => {
-  const f = setup();
+  const f = await setup();
   try {
     const stuck = async (body: string, key: string, id?: string) =>
       await enqueueOutbox(sqliteDb(f.db), {
@@ -98,7 +98,7 @@ test("a dead evidence row is repaired on start and the rows behind it deliver in
 });
 
 test("a pending evidence row with a ULID id is repaired before it is sent", async () => {
-  const f = setup();
+  const f = await setup();
   try {
     const queued = await enqueueOutbox(sqliteDb(f.db), {
       target: "linear",

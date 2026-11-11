@@ -407,7 +407,7 @@ describe("improvement inbox", () => {
     expect(t.root.querySelector('[data-improvement-action="delegate"]')).toBeNull();
 
     const issueId = (await listImprovementDeliveries(sqliteDb(t.w.db), id))[0]!.remoteId!;
-    insertQueuedItem(t.w.db, { id: "work-x", sessionKey: "session-a", now: END + 2_500 });
+    await insertQueuedItem(t.w.db, { id: "work-x", sessionKey: "session-a", now: END + 2_500 });
     t.w.db.run("UPDATE work_item SET linear_issue_id = ?, state = 'running' WHERE id = 'work-x'", [
       issueId,
     ]);
@@ -753,7 +753,11 @@ async function filedWork(t: Awaited<ReturnType<typeof harness>>, state: string) 
   expect((await t.w.api("ada", `/api/improvements/${id}/decision`, accept())).status).toBe(200);
   await t.deliver();
   const issueId = (await listImprovementDeliveries(sqliteDb(t.w.db), id))[0]!.remoteId!;
-  insertQueuedItem(t.w.db, { id: "work-x", sessionKey: "session-a", now: END + 2 * 3_600_000 });
+  await insertQueuedItem(t.w.db, {
+    id: "work-x",
+    sessionKey: "session-a",
+    now: END + 2 * 3_600_000,
+  });
   t.w.db.run("UPDATE work_item SET linear_issue_id = ?, state = ? WHERE id = 'work-x'", [
     issueId,
     state,

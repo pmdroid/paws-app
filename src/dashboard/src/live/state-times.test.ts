@@ -53,7 +53,7 @@ function minutesByState(states: { state: string; ms: number }[]): Record<string,
 describe("state times", () => {
   test("an item with a crash, a question, a rejected Closeout and a restart: its states add up to its age", async () => {
     const db = database();
-    insertQueuedItem(db, { id: "PAS-1", now: T0 });
+    await insertQueuedItem(db, { id: "PAS-1", now: T0 });
     await walk(db, "PAS-1", T0, [
       [10, "dispatched"],
       [30, "lease_expired"],
@@ -88,7 +88,7 @@ describe("state times", () => {
 
   test("the current state counts up to now and a merged item stops at its merge", async () => {
     const db = database();
-    insertQueuedItem(db, { id: "PAS-2", now: T0 });
+    await insertQueuedItem(db, { id: "PAS-2", now: T0 });
     await walk(db, "PAS-2", T0, [[5, "dispatched"]]);
     const at = async (now: number) =>
       (await issueList(db, now)).issues.find((entry) => entry.id === "PAS-2")!.stateTimes!;
@@ -124,7 +124,7 @@ describe("state times", () => {
       const id = `PAS-${100 + k}`;
       const start = T0 + k * HOUR;
       const age = 10 * k;
-      insertQueuedItem(db, { id, now: start });
+      await insertQueuedItem(db, { id, now: start });
       await walk(db, id, start, [
         [5, "dispatched"],
         [age - 3, "turn_ended"],
@@ -133,7 +133,7 @@ describe("state times", () => {
       ]);
     }
     // Merged 25 hours ago, outside the window.
-    insertQueuedItem(db, { id: "PAS-90", now: now - 30 * HOUR });
+    await insertQueuedItem(db, { id: "PAS-90", now: now - 30 * HOUR });
     await walk(db, "PAS-90", now - 30 * HOUR, [
       [5, "dispatched"],
       [100, "turn_ended"],
@@ -141,7 +141,7 @@ describe("state times", () => {
       [300, "merge_accepted"],
     ]);
     // Still open.
-    insertQueuedItem(db, { id: "PAS-91", now: T0 });
+    await insertQueuedItem(db, { id: "PAS-91", now: T0 });
     await walk(db, "PAS-91", T0, [[5, "dispatched"]]);
 
     const times = (await issueList(db, now)).mergedTimes!;
@@ -161,7 +161,7 @@ describe("state times", () => {
 
   test("no merged times while nothing merged in the last 24 hours", async () => {
     const db = database();
-    insertQueuedItem(db, { id: "PAS-3", now: T0 });
+    await insertQueuedItem(db, { id: "PAS-3", now: T0 });
     expect((await issueList(db, T0 + HOUR)).mergedTimes).toBeNull();
   });
 });

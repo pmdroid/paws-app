@@ -213,7 +213,10 @@ test("host credentials reach real host clone and fetch without reaching reposito
     expect(JSON.parse(await readFile(leaked, "utf8"))).toEqual({ leaked: false });
     const db = tempDb();
     const orchestratedRoot = join(home, "orchestrated-paws");
-    const item = insertQueuedItem(db, { id: "repository-answer", sessionKey: "host-git-session" });
+    const item = await insertQueuedItem(db, {
+      id: "repository-answer",
+      sessionKey: "host-git-session",
+    });
     await ensureLinearSession(sqliteDb(db), {
       sessionId: item.sessionKey!,
       issueId: item.linearIssueId,

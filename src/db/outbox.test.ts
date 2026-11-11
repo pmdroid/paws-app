@@ -26,7 +26,7 @@ function harness(batchSize = 32) {
 describe("transactional outbox", () => {
   test("a state change and its activity commit or roll back together", async () => {
     const { db } = harness();
-    const item = insertQueuedItem(db, { sessionKey: "ses" });
+    const item = await insertQueuedItem(db, { sessionKey: "ses" });
     await expect(
       sqliteDb(db).transaction(function* (q) {
         yield* applyWorkItemEventSteps(q, item.id, "dispatched");

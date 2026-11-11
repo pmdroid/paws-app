@@ -152,7 +152,7 @@ export async function seedFixture(
   now: number,
   id = fixture,
 ): Promise<void> {
-  insertQueuedItem(db, { id, sessionKey: `session-${id}`, now });
+  await insertQueuedItem(db, { id, sessionKey: `session-${id}`, now });
   settled(
     sqliteDb(db).transaction((q) =>
       bindWorkItemRepositorySteps(q, id, {

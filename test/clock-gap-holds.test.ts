@@ -39,7 +39,7 @@ const MERGING: Checkpoint = { phase: "merge_queue", baseSha: "main", wipCommit: 
 const EXECUTION: readonly string[] = [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify];
 
 async function seed(db: Database, now: number): Promise<void> {
-  insertQueuedItem(db, { id: "item", sessionKey: "session", now });
+  await insertQueuedItem(db, { id: "item", sessionKey: "session", now });
   await bindWorkItemRepository(sqliteDb(db), "item", {
     owner: "owner",
     repo: "repo",

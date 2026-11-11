@@ -33,8 +33,13 @@ const HIDDEN = "01JA0000000000000000000004";
 async function seeded() {
   const db = openDatabase(":memory:");
   migrate(db);
-  insertQueuedItem(db, { id: "item", title: "Checkout flow", sessionKey: "visible", now: 1 });
-  insertQueuedItem(db, { id: "secret", title: "Secret project", sessionKey: "hidden", now: 2 });
+  await insertQueuedItem(db, { id: "item", title: "Checkout flow", sessionKey: "visible", now: 1 });
+  await insertQueuedItem(db, {
+    id: "secret",
+    title: "Secret project",
+    sessionKey: "hidden",
+    now: 2,
+  });
   const run = await insertRun(sqliteDb(db), { itemId: "item", now: 10, agent: "claude" });
   const later = await insertRun(sqliteDb(db), { itemId: "item", now: 20, agent: "codex" });
   const hidden = await insertRun(sqliteDb(db), { itemId: "secret", now: 30, agent: "claude" });
@@ -151,7 +156,12 @@ describe("live evidence", () => {
     );
     expect(filterEvidence(gallery.evidence, "video").map((entry) => entry.id)).toEqual([VIDEO]);
     expect(await runPage(db, later.id)).toContain("evidence-gallery");
-    insertQueuedItem(db, { id: "bare-item", title: "No evidence", sessionKey: "visible", now: 3 });
+    await insertQueuedItem(db, {
+      id: "bare-item",
+      title: "No evidence",
+      sessionKey: "visible",
+      now: 3,
+    });
     const bare = await insertRun(sqliteDb(db), { itemId: "bare-item", now: 40, agent: "claude" });
     expect(await runPage(db, bare.id)).not.toContain("evidence-gallery");
   });

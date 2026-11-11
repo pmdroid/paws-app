@@ -64,7 +64,7 @@ async function fixture(mergeable: boolean | null) {
     }),
   });
   orchestrator["fetchUpstreamMain"] = async () => MAIN;
-  insertQueuedItem(db, { id: "DEP-661", sessionKey: "ses-1", now: clock.now() });
+  await insertQueuedItem(db, { id: "DEP-661", sessionKey: "ses-1", now: clock.now() });
   await bindWorkItemRepository(sqliteDb(db), "DEP-661", {
     owner: "acme",
     repo: "monorepo",

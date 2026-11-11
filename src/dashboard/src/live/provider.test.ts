@@ -95,10 +95,10 @@ describe("live status provider", () => {
     const db = openDatabase(":memory:");
     open.push(db);
     legacyMigrate(db, { until: "147_job_item_version_and_question_reason" });
-    insertQueuedItem(db, { id: "legacy-budget" });
+    await insertQueuedItem(db, { id: "legacy-budget" });
     db.run("UPDATE work_item SET state='exhausted' WHERE id='legacy-budget'");
     migrated(db);
-    insertQueuedItem(db, { id: "budget-question" });
+    await insertQueuedItem(db, { id: "budget-question" });
     await beginImplementRun(sqliteDb(db), "budget-question", 1);
     await applyWorkItemEvent(sqliteDb(db), "budget-question", "blocking_question");
     seedQuestion(db, "budget-question", "session");
@@ -131,7 +131,7 @@ describe("live status provider", () => {
 
   test("HTTP questions hand off to their own persisted Linear session", async () => {
     const db = database();
-    const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "new-session" });
+    const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "new-session" });
     seedQuestion(db, item.id, "question-session");
     const source = "https://linear.app/paws/issue/ENG-1/demo#agent-session-question";
     for (const [session, url] of [
@@ -165,7 +165,7 @@ describe("live status provider", () => {
     ["github-auth", false],
   ] as const)("an open %s question is answerable in Paws: %p", async (kind, answerable) => {
     const db = database();
-    const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
+    const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
     seedQuestion(db, item.id, "session");
     db.run("UPDATE question SET kind = ? WHERE id = 'question'", [kind]);
     expect((await createLiveStatusProvider(db).questions()).questions[0]?.answerable).toBe(
@@ -181,7 +181,7 @@ describe("live status provider", () => {
     "https://linear.app:444/question",
   ])("question handoff falls back safely from an unsafe source %s", async (url) => {
     const db = database();
-    const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
+    const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
     seedQuestion(db, item.id, "session");
     db.run(
       "INSERT INTO inbox_event (dedupe_key, source, action, session_id, updated_at_ms, payload, received_at) VALUES ('event', 'webhook', 'created', 'session', 1, ?, 1)",
@@ -194,7 +194,7 @@ describe("live status provider", () => {
 
   test("a Linear question without session metadata uses its readable issue key", async () => {
     const db = database();
-    const item = insertQueuedItem(db, { id: "ENG-123", sessionKey: "session" });
+    const item = await insertQueuedItem(db, { id: "ENG-123", sessionKey: "session" });
     db.run("UPDATE work_item SET linear_issue_id = ? WHERE id = ?", [
       "9cfb482a-81e3-4154-b5b9-2c805e70a02d",
       item.id,
@@ -207,7 +207,7 @@ describe("live status provider", () => {
 
   test("visual review rounds carry the reviewer's name, feedback and the screenshots' commit", async () => {
     const db = database();
-    const item = insertQueuedItem(db, { id: "ENG-9", sessionKey: "session", now: 1_000 });
+    const item = await insertQueuedItem(db, { id: "ENG-9", sessionKey: "session", now: 1_000 });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, 1_000);
     await putWorkspaceUser(sqliteDb(db), {
       id: "user-ada",
@@ -271,7 +271,7 @@ describe("live status provider", () => {
 
   test("a carried-over review names the approval and approver each screen came from", async () => {
     const db = database();
-    const item = insertQueuedItem(db, { id: "ENG-9", sessionKey: "session", now: 1_000 });
+    const item = await insertQueuedItem(db, { id: "ENG-9", sessionKey: "session", now: 1_000 });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, 1_000);
     await putWorkspaceUser(sqliteDb(db), {
       id: "user-ada",
@@ -328,7 +328,7 @@ describe("live status provider", () => {
     const profiles = ["grok", "claude", "codex"] as const;
     const ids: string[] = [];
     for (const [index, reviewer] of profiles.entries()) {
-      const item = insertQueuedItem(db, { id: `ENG-${index + 1}`, title: "Review", now: 1 });
+      const item = await insertQueuedItem(db, { id: `ENG-${index + 1}`, title: "Review", now: 1 });
       const { run } = await beginImplementRun(sqliteDb(db), item.id, 2);
       db.run("UPDATE run SET agent = ? WHERE id = ?", ["codex", run.id]);
       const dir = join(home, "runs", run.id);
@@ -380,7 +380,7 @@ describe("live status provider", () => {
     const db = database();
     const home = mkdtempSync(join(tmpdir(), "paws-status-reviewer-"));
     homes.push(home);
-    const item = insertQueuedItem(db, { id: "ENG-1", title: "Review", now: 1 });
+    const item = await insertQueuedItem(db, { id: "ENG-1", title: "Review", now: 1 });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, 2);
     const dir = join(home, "runs", run.id);
     mkdirSync(dir, { recursive: true });
@@ -432,14 +432,14 @@ describe("live status provider", () => {
     const now = 1_700_000_000_000;
     const base = "a".repeat(40);
     const head = "b".repeat(40);
-    const waiting = insertQueuedItem(db, {
+    const waiting = await insertQueuedItem(db, {
       id: "ENG-2",
       title: "Export rows",
       sessionKey: "ses_1",
       branchName: "paws/ENG-2",
       now,
     });
-    const merging = insertQueuedItem(db, {
+    const merging = await insertQueuedItem(db, {
       id: "ENG-3",
       title: "Export the header",
       sessionKey: "ses_1",
@@ -580,7 +580,7 @@ describe("live status provider", () => {
   test("a waiting task without a question row shows its question:<id> elicitation", async () => {
     const db = database();
     const now = 1_700_000_000_000;
-    const item = insertQueuedItem(db, { id: "ENG-2", sessionKey: "ses_1", now });
+    const item = await insertQueuedItem(db, { id: "ENG-2", sessionKey: "ses_1", now });
     await beginImplementRun(sqliteDb(db), item.id, now);
     await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
     await enqueueOutbox(sqliteDb(db), {
@@ -604,7 +604,7 @@ describe("live status provider", () => {
     const db = database();
     const now = 1_700_000_000_000;
     const head = "7f65200aa1b2c3d4";
-    const item = insertQueuedItem(db, { id: "ENG-3", sessionKey: "ses_1", now });
+    const item = await insertQueuedItem(db, { id: "ENG-3", sessionKey: "ses_1", now });
     await beginImplementRun(sqliteDb(db), item.id, now);
     await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
     db.run(
@@ -651,7 +651,7 @@ describe("live status provider", () => {
     const db = database();
     const now = 1_700_000_000_000;
     const head = "7f65200aa1b2c3d4";
-    const item = insertQueuedItem(db, { id: "ENG-6", sessionKey: "ses_1", now });
+    const item = await insertQueuedItem(db, { id: "ENG-6", sessionKey: "ses_1", now });
     await beginImplementRun(sqliteDb(db), item.id, now);
     await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
     db.run(
@@ -696,7 +696,7 @@ describe("live status provider", () => {
     const db = database();
     const now = 1_700_000_000_000;
     const head = "9c1d2e3ff0a1b2c3";
-    const item = insertQueuedItem(db, { id: "ENG-6", sessionKey: "ses_1", now });
+    const item = await insertQueuedItem(db, { id: "ENG-6", sessionKey: "ses_1", now });
     await beginImplementRun(sqliteDb(db), item.id, now);
     await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
     db.run(
@@ -745,7 +745,7 @@ describe("live status provider", () => {
   test("an item whose latest head kept the approval carries it, with the approved head", async () => {
     const db = database();
     const now = 1_700_000_000_000;
-    const item = insertQueuedItem(db, { id: "ENG-7", sessionKey: "ses_1", now });
+    const item = await insertQueuedItem(db, { id: "ENG-7", sessionKey: "ses_1", now });
     const risk = async (head: string, at: number) =>
       await saveCandidateRisk(sqliteDb(db), {
         itemId: item.id,
@@ -786,7 +786,7 @@ describe("live status provider", () => {
     const now = 1_700_000_000_000;
     const head = "c".repeat(40);
     const merging = async (id: string, repository: string, ready: number | null, at: number) => {
-      const item = insertQueuedItem(db, { id, title: id, sessionKey: "ses_q", now: at });
+      const item = await insertQueuedItem(db, { id, title: id, sessionKey: "ses_q", now: at });
       await beginImplementRun(sqliteDb(db), item.id, at);
       await enterMergeQueue(sqliteDb(db), item.id, {
         phase: "merge_queue",
@@ -897,7 +897,12 @@ describe("live status provider", () => {
     const db = database();
     const head = "c".repeat(40);
     for (const [index, id] of ["ENG-21", "ENG-22", "ENG-23"].entries()) {
-      const item = insertQueuedItem(db, { id, title: id, sessionKey: "ses_r", now: index + 1 });
+      const item = await insertQueuedItem(db, {
+        id,
+        title: id,
+        sessionKey: "ses_r",
+        now: index + 1,
+      });
       await beginImplementRun(sqliteDb(db), item.id, index + 1);
       await enterMergeQueue(sqliteDb(db), item.id, {
         phase: "merge_queue",
@@ -938,7 +943,12 @@ describe("live status provider", () => {
   test("an item whose last job failed on a full disk names the disk on the issue and the merge queue", async () => {
     const db = database();
     const head = "d".repeat(40);
-    const item = insertQueuedItem(db, { id: "ENG-31", title: "Disk", sessionKey: "ses_d", now: 1 });
+    const item = await insertQueuedItem(db, {
+      id: "ENG-31",
+      title: "Disk",
+      sessionKey: "ses_d",
+      now: 1,
+    });
     await beginImplementRun(sqliteDb(db), item.id, 1);
     await enterMergeQueue(sqliteDb(db), item.id, {
       phase: "merge_queue",
@@ -971,7 +981,12 @@ describe("live status provider", () => {
 
   test("an item backing off after a full disk keeps the notice until its retry runs", async () => {
     const db = database();
-    const item = insertQueuedItem(db, { id: "ENG-32", title: "Disk", sessionKey: "ses_e", now: 1 });
+    const item = await insertQueuedItem(db, {
+      id: "ENG-32",
+      title: "Disk",
+      sessionKey: "ses_e",
+      now: 1,
+    });
     const failed = await enqueueJob(sqliteDb(db), {
       queue: "run.resume",
       payload: { itemId: item.id },
@@ -996,7 +1011,7 @@ describe("live status provider", () => {
     const now = 1_700_000_000_000;
     const head = "c".repeat(40);
     const bound = async (id: string, at: number) => {
-      const item = insertQueuedItem(db, { id, title: id, sessionKey: "ses_b", now: at });
+      const item = await insertQueuedItem(db, { id, title: id, sessionKey: "ses_b", now: at });
       await bindWorkItemRepository(sqliteDb(db), item.id, {
         owner: "pmdroid",
         repo: "paws-app",
@@ -1043,7 +1058,7 @@ describe("live status provider", () => {
     const db = database();
     const now = 1_700_000_000_000;
     const head = "c".repeat(40);
-    const item = insertQueuedItem(db, {
+    const item = await insertQueuedItem(db, {
       id: "ENG-5",
       title: "Docs only",
       sessionKey: "ses_5",
@@ -1094,11 +1109,11 @@ describe("live status provider", () => {
     const db = database();
     const now = 1_700_000_000_000;
     const finish = async (id: string, at: number) => {
-      insertQueuedItem(db, { id, title: id, now: at - 1_000 });
+      await insertQueuedItem(db, { id, title: id, now: at - 1_000 });
       await applyWorkItemEvent(sqliteDb(db), id, "cancel", { now: at });
     };
     // Open for a week: open items stay whatever their age.
-    insertQueuedItem(db, { id: "ENG-OPEN", title: "Open", now: now - 7 * STATUS_RECENT_MS });
+    await insertQueuedItem(db, { id: "ENG-OPEN", title: "Open", now: now - 7 * STATUS_RECENT_MS });
     await finish("ENG-OLD", now - STATUS_RECENT_MS - 60_000);
     await finish("ENG-RECENT", now - 60_000);
     const provider = createLiveStatusProvider(db, { now: () => new Date(now) });
@@ -1133,7 +1148,7 @@ describe("live status provider", () => {
     const base = "d".repeat(40);
     const pawsHome = mkdtempSync(join(tmpdir(), "paws-reviews-"));
     homes.push(pawsHome);
-    const item = insertQueuedItem(db, {
+    const item = await insertQueuedItem(db, {
       id: "ENG-11",
       title: "Reviews",
       sessionKey: "ses_11",
@@ -1283,9 +1298,14 @@ describe("live status provider", () => {
     const db = database();
     const now = 1_700_000_000_000;
     const base = "d".repeat(40);
-    const item = insertQueuedItem(db, { id: "ENG-8", title: "Detail", sessionKey: "ses_8", now });
-    const blocked = insertQueuedItem(db, { id: "ENG-9", sessionKey: "ses_8", now: now + 1 });
-    insertQueuedItem(db, { id: "ENG-10", sessionKey: "ses_other", now });
+    const item = await insertQueuedItem(db, {
+      id: "ENG-8",
+      title: "Detail",
+      sessionKey: "ses_8",
+      now,
+    });
+    const blocked = await insertQueuedItem(db, { id: "ENG-9", sessionKey: "ses_8", now: now + 1 });
+    await insertQueuedItem(db, { id: "ENG-10", sessionKey: "ses_other", now });
     await saveTaskBlocks(
       sqliteDb(db),
       [blocked.linearIssueId],
@@ -1394,8 +1414,13 @@ describe("live status provider", () => {
     const now = 1_700_000_000_000;
     const base = "d".repeat(40);
     const head = "c".repeat(40);
-    const item = insertQueuedItem(db, { id: "ENG-11", title: "Risk", sessionKey: "ses_11", now });
-    const docs = insertQueuedItem(db, { id: "ENG-12", sessionKey: "ses_11", now });
+    const item = await insertQueuedItem(db, {
+      id: "ENG-11",
+      title: "Risk",
+      sessionKey: "ses_11",
+      now,
+    });
+    const docs = await insertQueuedItem(db, { id: "ENG-12", sessionKey: "ses_11", now });
     const provider = createLiveStatusProvider(db, { now: () => new Date(now + 5000) });
     expect((await provider.issue("ENG-11"))?.risk).toBeNull();
     const identity = (taskId: string) => ({
@@ -1483,7 +1508,7 @@ describe("live status provider", () => {
     const now = 1_700_000_000_000;
     const base = "d".repeat(40);
     const seed = async (id: string, session: string, check: string, output: string) => {
-      const item = insertQueuedItem(db, { id, sessionKey: session, now });
+      const item = await insertQueuedItem(db, { id, sessionKey: session, now });
       await beginImplementRun(sqliteDb(db), item.id, now);
       await enterMergeQueue(sqliteDb(db), item.id, {
         phase: "merge_queue",
@@ -1592,7 +1617,12 @@ describe("live status provider", () => {
   test("a review keeps its measured duration and tokens when a later evaluation reads it again", async () => {
     const db = database();
     const now = 1_700_000_000_000;
-    const item = insertQueuedItem(db, { id: "ENG-7", title: "Review", sessionKey: "ses_7", now });
+    const item = await insertQueuedItem(db, {
+      id: "ENG-7",
+      title: "Review",
+      sessionKey: "ses_7",
+      now,
+    });
     await beginImplementRun(sqliteDb(db), item.id, now);
     await enterMergeQueue(sqliteDb(db), item.id, {
       phase: "merge_queue",
@@ -1658,7 +1688,12 @@ describe("live status provider", () => {
     const db = database();
     const now = 1_700_000_000_000;
     const base = "d".repeat(40);
-    const item = insertQueuedItem(db, { id: "ENG-6", title: "Rebased", sessionKey: "ses_6", now });
+    const item = await insertQueuedItem(db, {
+      id: "ENG-6",
+      title: "Rebased",
+      sessionKey: "ses_6",
+      now,
+    });
     await beginImplementRun(sqliteDb(db), item.id, now);
     await enterMergeQueue(sqliteDb(db), item.id, {
       phase: "merge_queue",
@@ -1731,7 +1766,7 @@ describe("live status provider", () => {
   test("CI rounds carry every check on the head and the failing checks' log tails", async () => {
     const db = database();
     const now = 1_700_000_000_000;
-    const item = insertQueuedItem(db, { id: "ENG-7", title: "CI", sessionKey: "ses_7", now });
+    const item = await insertQueuedItem(db, { id: "ENG-7", title: "CI", sessionKey: "ses_7", now });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
     const check = (
       name: string,
@@ -1815,8 +1850,8 @@ describe("live status provider", () => {
     "blocker %s in %s mode with merge SHA %s is named: %s",
     async (state, mode, mergeSha, named) => {
       const db = database();
-      const blocker = insertQueuedItem(db, { id: "PAS-709", now: 10 });
-      const blocked = insertQueuedItem(db, { id: "PAS-710", now: 20 });
+      const blocker = await insertQueuedItem(db, { id: "PAS-709", now: 10 });
+      const blocked = await insertQueuedItem(db, { id: "PAS-710", now: 20 });
       db.run("UPDATE work_item SET state=? WHERE id=?", [state, blocker.id]);
       await saveTaskMode(sqliteDb(db), blocker.id, mode);
       if (mergeSha)
@@ -1848,9 +1883,9 @@ describe("live status provider", () => {
 
   test("task blocks use the latest item on a Linear issue and skip issues with no item", async () => {
     const db = database();
-    const older = insertQueuedItem(db, { id: "older", title: "Old", now: 10 });
-    const newer = insertQueuedItem(db, { id: "newer", title: "New", now: 20 });
-    const blocked = insertQueuedItem(db, { id: "blocked", title: "Blocked", now: 30 });
+    const older = await insertQueuedItem(db, { id: "older", title: "Old", now: 10 });
+    const newer = await insertQueuedItem(db, { id: "newer", title: "New", now: 20 });
+    const blocked = await insertQueuedItem(db, { id: "blocked", title: "Blocked", now: 30 });
     db.run("UPDATE work_item SET state = 'completed', linear_identifier = 'ENG-OLD' WHERE id = ?", [
       older.id,
     ]);
@@ -1881,7 +1916,7 @@ describe("live status provider", () => {
 
   test("the serving database is the single source despite retired overrides", async () => {
     const db = database();
-    insertQueuedItem(db, { id: "ENG-9", title: "Hang", now: 1 });
+    await insertQueuedItem(db, { id: "ENG-9", title: "Hang", now: 1 });
     const live = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
       db,
       env: {},

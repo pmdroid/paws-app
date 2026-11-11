@@ -245,7 +245,7 @@ export async function probeRunnerSessionHelpers(
     const selected = await coordinator.helpers.dispatch({ ...input, purpose: "select_repository" });
     assert.equal(selected.command.sessionGeneration, 1);
     assert.equal(selected.command.purpose, "select_repository");
-    const item = insertQueuedItem(db, { id: "task", sessionKey: "session", now });
+    const item = await insertQueuedItem(db, { id: "task", sessionKey: "session", now });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
     await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
     const repository = {

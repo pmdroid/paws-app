@@ -24,7 +24,7 @@ const ITEM = "ACME-12";
 async function itemIn(state: WorkItemState) {
   const db = openDatabase(join(tempHome(), "paws.db"));
   migrate(db);
-  insertQueuedItem(db, { id: ITEM, sessionKey: "session", now: 0 });
+  await insertQueuedItem(db, { id: ITEM, sessionKey: "session", now: 0 });
   const { run } = await beginImplementRun(sqliteDb(db), ITEM, 0);
   if (state !== "running") await applyWorkItemEvent(sqliteDb(db), ITEM, "turn_ended");
   if (state === "awaiting_input") await applyWorkItemEvent(sqliteDb(db), ITEM, "blocking_question");

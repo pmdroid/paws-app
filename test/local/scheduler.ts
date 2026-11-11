@@ -131,7 +131,7 @@ export async function probeScheduler(
     migrate(db);
     const ids = Array.from({ length: count }, (_, index) => `${name}-${index}`);
     for (const [index, id] of ids.entries()) {
-      insertQueuedItem(db, { id, now: index });
+      await insertQueuedItem(db, { id, now: index });
       await bindWorkItemRepository(sqliteDb(db), id, repository);
       await sqliteDb(db).run((q) =>
         saveSchedulingContextSteps(q, { itemId: id, projectId: "project", paths: paths(index) }),

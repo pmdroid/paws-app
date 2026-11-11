@@ -34,7 +34,7 @@ async function disagreements(run: () => unknown): Promise<string[]> {
 }
 
 async function queued(db: Database, id: string, now = 0): Promise<void> {
-  insertQueuedItem(db, { id, now });
+  await insertQueuedItem(db, { id, now });
   await bindWorkItemRepository(sqliteDb(db), id, repository);
 }
 

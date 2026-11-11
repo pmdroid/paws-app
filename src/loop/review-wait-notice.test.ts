@@ -38,7 +38,7 @@ async function fixture() {
     outbox: new OutboxDispatcher(db, clock),
     pawsRoot: root,
   });
-  insertQueuedItem(db, { id: "ENG-7", sessionKey: "ses_1", now: clock.now() });
+  await insertQueuedItem(db, { id: "ENG-7", sessionKey: "ses_1", now: clock.now() });
   await beginImplementRun(sqliteDb(db), "ENG-7", clock.now());
   await applyWorkItemEvent(sqliteDb(db), "ENG-7", "turn_ended");
   await applyWorkItemEvent(sqliteDb(db), "ENG-7", "closeout_accepted");

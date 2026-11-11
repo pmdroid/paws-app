@@ -70,7 +70,11 @@ test("migration 061 keeps the task actor that has no workspace user", async () =
 test("binding a session keeps an actor that has no workspace user", async () => {
   const db = legacyTempDb();
   try {
-    const item = insertQueuedItem(db, { id: "bound-item", sessionKey: "bound-session", now: 1 });
+    const item = await insertQueuedItem(db, {
+      id: "bound-item",
+      sessionKey: "bound-session",
+      now: 1,
+    });
     await ensureLinearSession(sqliteDb(db), {
       sessionId: "bound-session",
       creatorId: "linear-creator",
@@ -110,7 +114,11 @@ test("migration 061 drops the old session link table and columns", () => {
 test("a stop command resolves the session through session_key alone", async () => {
   const db = legacyTempDb();
   try {
-    const item = insertQueuedItem(db, { id: "stop-item", sessionKey: "stop-session", now: 1 });
+    const item = await insertQueuedItem(db, {
+      id: "stop-item",
+      sessionKey: "stop-session",
+      now: 1,
+    });
     expect(
       (
         await applyLinearCommand(sqliteDb(db), {
@@ -135,7 +143,7 @@ test("a stop command resolves the session through session_key alone", async () =
 test("a transcript lookup resolves the session through session_key alone", async () => {
   const db = legacyTempDb();
   try {
-    const item = insertQueuedItem(db, {
+    const item = await insertQueuedItem(db, {
       id: "transcript-item",
       sessionKey: "transcript-session",
       now: 1,
@@ -159,7 +167,11 @@ test("a transcript lookup resolves the session through session_key alone", async
 test("the scheduler resolves a session item through session_key alone", async () => {
   const db = legacyTempDb();
   try {
-    const item = insertQueuedItem(db, { id: "sched-item", sessionKey: "sched-session", now: 1 });
+    const item = await insertQueuedItem(db, {
+      id: "sched-item",
+      sessionKey: "sched-session",
+      now: 1,
+    });
     await ensureLinearSession(sqliteDb(db), {
       sessionId: "sched-session",
       issueId: item.linearIssueId,

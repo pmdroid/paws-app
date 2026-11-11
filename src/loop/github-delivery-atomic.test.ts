@@ -28,7 +28,7 @@ async function setup(file = ":memory:") {
   const db = openDatabase(file);
   migrate(db);
   for (const id of ["first", "second"]) {
-    insertQueuedItem(db, { id, now: 1 });
+    await insertQueuedItem(db, { id, now: 1 });
     await bindWorkItemRepository(sqliteDb(db), id, {
       owner: "acme",
       repo: "one",

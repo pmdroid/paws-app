@@ -49,7 +49,7 @@ async function fixture() {
     "fixture/repository",
     "team",
   ]);
-  const item = insertQueuedItem(db, { id: "item", now: clock.now, sessionKey: "session" });
+  const item = await insertQueuedItem(db, { id: "item", now: clock.now, sessionKey: "session" });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now);
   await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",

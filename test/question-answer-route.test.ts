@@ -30,7 +30,7 @@ const principal = { workspaceId: "ws", userId: "user-1" };
 
 async function setup(active = true) {
   const db = tempDb();
-  const item = insertQueuedItem(db, { id: "PAS-1003", sessionKey: "ses_1", title: "Policy" });
+  const item = await insertQueuedItem(db, { id: "PAS-1003", sessionKey: "ses_1", title: "Policy" });
   await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
   await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
   const question = await openQuestion(db, {

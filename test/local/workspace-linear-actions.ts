@@ -132,7 +132,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
   async function task(actor: string | null, signal: string | null = null) {
     const id = `item-${++serial}`,
       sessionId = `session-${serial}`;
-    const item = insertQueuedItem(db, { id, sessionKey: sessionId, title: "Export rows" });
+    const item = await insertQueuedItem(db, { id, sessionKey: sessionId, title: "Export rows" });
     await ensureLinearSession(sqliteDb(db), { sessionId, issueId: id, now });
     await recordLinearInstallation(sqliteDb(db), {
       sessionId,
@@ -587,7 +587,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
   async function task(actor: string, signal: string | null = null) {
     const id = `native-${++sequence}`,
       at = Date.now();
-    const item = insertQueuedItem(db, { id, sessionKey: id, title: "Export rows" });
+    const item = await insertQueuedItem(db, { id, sessionKey: id, title: "Export rows" });
     await ensureLinearSession(sqliteDb(db), { sessionId: id, issueId: id, now: at });
     await recordLinearInstallation(sqliteDb(db), {
       sessionId: id,

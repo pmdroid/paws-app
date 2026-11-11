@@ -89,15 +89,15 @@ async function linked(options: { delegated?: boolean; stateType?: string } = {})
   const version = async () => (await getImprovement(sqliteDb(w.db), id))!.version;
   const setIssue = (change: Record<string, unknown>) =>
     linear.issues.set(ISSUE, { ...linear.issues.get(ISSUE)!, ...change });
-  const work = (state: string) => {
+  const work = async (state: string) => {
     if (!w.db.query("SELECT 1 FROM work_item WHERE id = 'work-x'").get()) {
-      insertQueuedItem(w.db, { id: "work-x", sessionKey: "session-a", now: END + 2_500 });
+      await insertQueuedItem(w.db, { id: "work-x", sessionKey: "session-a", now: END + 2_500 });
       w.db.run("UPDATE work_item SET linear_issue_id = ? WHERE id = 'work-x'", [ISSUE]);
     }
     w.db.run("UPDATE work_item SET state = ? WHERE id = 'work-x'", [state]);
   };
-  const merge = () => {
-    work("merged");
+  const merge = async () => {
+    await work("merged");
     w.db.run("INSERT INTO item_pull_request VALUES ('work-x', 42, 'https://gh/pull/42', ?)", [END]);
     w.db.run(
       "INSERT INTO remote_merge_fact VALUES ('work-x', 'acme', 'a', 42, 'https://gh/pull/42', ?, ?)",
@@ -133,7 +133,7 @@ describe("follow-through from create to verified", () => {
     expect(again.body.status).toBe("unchanged");
     expect(t.starter.calls).toEqual([ISSUE]);
 
-    t.work("running");
+    await t.work("running");
     await t.sync();
     expect(await t.follow()).toMatchObject({
       attention: "working",
@@ -141,7 +141,7 @@ describe("follow-through from create to verified", () => {
       work: { itemId: "work-x", state: "running" },
     });
 
-    t.merge();
+    await t.merge();
     t.setIssue({ state: "closed", stateType: "completed" });
     await t.sync();
     await t.sync();
@@ -206,7 +206,7 @@ describe("follow-through from create to verified", () => {
     expect(response.body.item.attention).toBe("working");
 
     const owned = await linked();
-    owned.work("queued");
+    await owned.work("queued");
     const shown = await owned.post("delegate", { expectedVersion: await owned.version() });
     expect(shown.body).toMatchObject({ status: "existing", item: { work: { itemId: "work-x" } } });
     expect(owned.starter.calls).toEqual([]);
@@ -249,7 +249,7 @@ describe("lost, duplicate and out-of-order events", () => {
     expect((await t.post("delegate", { expectedVersion: await t.version() })).body.status).toBe(
       "in_progress",
     );
-    t.work("queued");
+    await t.work("queued");
     await t.sync();
     expect((await t.follow()).delegation).toMatchObject({ state: "existing", attempts: 1 });
     expect(t.starter.calls).toEqual([]);
@@ -293,7 +293,7 @@ describe("lost, duplicate and out-of-order events", () => {
 
   test("a closed pull request on cancelled work is not fixed", async () => {
     const t = await linked();
-    t.work("cancelled");
+    await t.work("cancelled");
     t.w.db.run("INSERT INTO item_pull_request VALUES ('work-x', 43, null, ?)", [END]);
     await t.sync();
     const view = await t.follow();
@@ -412,7 +412,7 @@ describe("daily findings", () => {
 describe("evidence must match the criterion", () => {
   test("a Closeout check qualifies only when the criterion names it", async () => {
     const t = await linked();
-    t.merge();
+    await t.merge();
     await t.sync();
     t.w.db.run(
       `INSERT INTO closeout_progress (id, item_id, task_id, base, head, policy_digest, started_at,
@@ -474,7 +474,7 @@ describe("review fixes", () => {
 
   test("reopening the Linear issue after a verified merge makes verification stale", async () => {
     const t = await linked();
-    t.merge();
+    await t.merge();
     t.setIssue({ state: "closed", stateType: "completed" });
     await t.sync();
     const done = await t.post("verification", verify(await t.version(), { revision: MERGE }));
@@ -489,7 +489,7 @@ describe("review fixes", () => {
 
   test("acknowledging failed work stays closed after reconciliation", async () => {
     const t = await linked();
-    t.work("failed");
+    await t.work("failed");
     await t.sync();
     expect((await t.follow()).attention).toBe("blocked");
     const done = await t.post("recovery", {
@@ -556,7 +556,7 @@ describe("review fixes", () => {
     expect(back.body.item).toMatchObject({ attention: "needs_review", issue: null });
 
     const busy = await linked();
-    busy.work("running");
+    await busy.work("running");
     await busy.sync();
     expect((await busy.follow()).recovery).toEqual([]);
   });
@@ -578,8 +578,8 @@ describe("second review fixes", () => {
 
   test("a redelegated issue follows its replacement work item, not the cancelled one", async () => {
     const t = await linked();
-    t.work("cancelled");
-    insertQueuedItem(t.w.db, { id: "work-y", sessionKey: "session-a", now: END + 2_600 });
+    await t.work("cancelled");
+    await insertQueuedItem(t.w.db, { id: "work-y", sessionKey: "session-a", now: END + 2_600 });
     t.w.db.run("UPDATE work_item SET linear_issue_id = ?, state = 'running' WHERE id = 'work-y'", [
       ISSUE,
     ]);
@@ -638,8 +638,8 @@ describe("second review fixes", () => {
 });
 
 describe("one bound work item", () => {
-  const second = (t: Awaited<ReturnType<typeof linked>>, state: string, repo?: string) => {
-    insertQueuedItem(t.w.db, { id: "work-y", sessionKey: "session-a", now: END + 2_600 });
+  const second = async (t: Awaited<ReturnType<typeof linked>>, state: string, repo?: string) => {
+    await insertQueuedItem(t.w.db, { id: "work-y", sessionKey: "session-a", now: END + 2_600 });
     t.w.db.run("UPDATE work_item SET linear_issue_id = ?, state = ? WHERE id = 'work-y'", [
       ISSUE,
       state,
@@ -650,10 +650,10 @@ describe("one bound work item", () => {
 
   test("a newer run on the issue replaces verified merged work and makes verification stale", async () => {
     const t = await linked();
-    t.merge();
+    await t.merge();
     await t.sync();
     await t.post("verification", verify(await t.version(), { revision: MERGE }));
-    second(t, "running");
+    await second(t, "running");
     await t.sync();
     expect(await t.follow()).toMatchObject({
       attention: "verification_stale",
@@ -664,7 +664,7 @@ describe("one bound work item", () => {
 
   test("work that finished before the issue was linked is not this improvement's work", async () => {
     const t = await linked();
-    insertQueuedItem(t.w.db, { id: "work-old", sessionKey: "session-a", now: END });
+    await insertQueuedItem(t.w.db, { id: "work-old", sessionKey: "session-a", now: END });
     t.w.db.run("UPDATE work_item SET linear_issue_id = ?, state = 'merged' WHERE id = 'work-old'", [
       ISSUE,
     ]);
@@ -726,7 +726,7 @@ describe("one bound work item", () => {
       stateType: "completed",
       delegated: false,
     });
-    insertQueuedItem(w.db, { id: "work-x", sessionKey: "session-a", now: END + 2_500 });
+    await insertQueuedItem(w.db, { id: "work-x", sessionKey: "session-a", now: END + 2_500 });
     w.db.run("UPDATE work_item SET linear_issue_id = ?, state = 'merged' WHERE id = 'work-x'", [
       ISSUE,
     ]);
@@ -771,7 +771,7 @@ describe("one bound work item", () => {
 
   test("an older run still active at link time is shown instead of a second run", async () => {
     const t = await linked();
-    insertQueuedItem(t.w.db, { id: "work-old", sessionKey: "session-a", now: END });
+    await insertQueuedItem(t.w.db, { id: "work-old", sessionKey: "session-a", now: END });
     t.w.db.run(
       "UPDATE work_item SET linear_issue_id = ?, state = 'running' WHERE id = 'work-old'",
       [ISSUE],
@@ -786,10 +786,10 @@ describe("one bound work item", () => {
 
   test("replacement work is adopted once, audited, and stales an open form", async () => {
     const t = await linked();
-    t.work("cancelled");
+    await t.work("cancelled");
     await t.sync();
     const form = await t.version();
-    second(t, "merged");
+    await second(t, "merged");
     await t.sync();
     await t.sync();
     expect(await t.follow()).toMatchObject({ work: { itemId: "work-y" } });
@@ -806,14 +806,14 @@ describe("one bound work item", () => {
 
   test("work for the same issue in another repository is never followed", async () => {
     const t = await linked();
-    second(t, "merged", "b");
+    await second(t, "merged", "b");
     await t.sync();
     expect(await t.follow()).toMatchObject({ work: null, attention: "ready_to_delegate" });
   });
 
   test("an expired redelegation is not settled by the work it replaced", async () => {
     const t = await linked();
-    t.work("cancelled");
+    await t.work("cancelled");
     await t.sync();
     await claimImprovementDelegation(sqliteDb(t.w.db), {
       improvementId: t.id,
@@ -832,14 +832,14 @@ describe("one bound work item", () => {
 
   test("failed work offers no redelegation that intake would refuse", async () => {
     const t = await linked();
-    t.work("failed");
+    await t.work("failed");
     await t.sync();
     expect((await t.follow()).recovery).toEqual(["acknowledge", "return_to_review"]);
   });
 
   test("an acknowledged item stays closed after a later criterion", async () => {
     const t = await linked();
-    t.work("failed");
+    await t.work("failed");
     await t.sync();
     await t.post("recovery", {
       expectedVersion: await t.version(),
@@ -857,7 +857,7 @@ describe("one bound work item", () => {
 
   test("a Closeout step only matches the criterion as a whole word", async () => {
     const t = await linked();
-    t.merge();
+    await t.merge();
     t.w.db.run("UPDATE work_item SET accepted_head = ? WHERE id = 'work-x'", [MERGE]);
     await t.sync();
     t.w.db.run(
@@ -919,7 +919,7 @@ describe("settled before every mutation", () => {
     expect((await t.post("delegate", { expectedVersion: await t.version() })).body.status).toBe(
       "delegated",
     );
-    t.work("cancelled");
+    await t.work("cancelled");
     await t.sync();
     const view = (await t.w.api("admin", `/api/improvements/${other}/follow-through`)).body
       .followThrough;

@@ -298,7 +298,7 @@ test("a repository command goes to the item's last runner while it is eligible a
       "INSERT INTO linear_session(session_id,organization_id,team_id,created_at) VALUES('ses','org','team',?)",
       [now],
     );
-    insertQueuedItem(db, { id: "item", now, sessionKey: "ses" });
+    await insertQueuedItem(db, { id: "item", now, sessionKey: "ses" });
     db.run("UPDATE work_item SET owner_user_id=? WHERE id='item'", [w.users.me!]);
     for (const id of ["first", "last"])
       db.run(

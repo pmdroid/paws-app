@@ -174,7 +174,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     else await work.heartbeat(memberRunner, 1);
   }
   if (delegatorRunner === "busy") {
-    const other = insertQueuedItem(db, { id: "other", now });
+    const other = await insertQueuedItem(db, { id: "other", now });
     const otherRun = await insertRun(sqliteDb(db), { itemId: other.id, now, status: "active" });
     db.run(
       "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,1,0,'other',?)",

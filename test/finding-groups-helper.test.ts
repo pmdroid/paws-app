@@ -3,6 +3,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { createRunnerHelpers } from "../src/runner-helpers";
 import { createFindingGroupHelper } from "../src/runner-backend";
 import {
+  insertQueuedItem,
   recordLinearInstallation,
   putWorkspaceUser,
   syncWorkspaceMember,
@@ -580,10 +581,9 @@ test("grouping runs on a later admin's runner when the earlier admin has none", 
 });
 
 test("grouping does not dispatch a session the runner owner cannot authorize", async () => {
-  const { insertQueuedItem } = await import("../src/db");
   const f = await seed();
   try {
-    insertQueuedItem(f.db, { id: "outside", sessionKey: "reporting-session", now: f.now });
+    await insertQueuedItem(f.db, { id: "outside", sessionKey: "reporting-session", now: f.now });
     f.db.run(
       "INSERT INTO work_item_repository(item_id,owner,repo,remote_url) VALUES('outside','other','secret','https://github.com/other/secret.git')",
     );

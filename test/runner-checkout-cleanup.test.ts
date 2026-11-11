@@ -52,7 +52,7 @@ async function tornDownRun(state: string, runnerVersion = CURRENT) {
       "fixture/repository",
       "team",
     ]);
-    const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
+    const item = await insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
     await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",

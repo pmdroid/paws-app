@@ -26,7 +26,7 @@ async function waitingItem(kind: "agent" | "visual-review" = "agent") {
   const db = openDatabase(":memory:");
   migrate(db);
   open.push(db);
-  insertQueuedItem(db, { id: "item-q", sessionKey: "ses-q", now: 0 });
+  await insertQueuedItem(db, { id: "item-q", sessionKey: "ses-q", now: 0 });
   await beginImplementRun(sqliteDb(db), "item-q", 1_000);
   const item = (await getWorkItem(sqliteDb(db), "item-q"))!;
   const asked = await sqliteDb(db).transaction((q) =>

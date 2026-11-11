@@ -38,7 +38,7 @@ for (const [body, existing] of [
   test(`Stop fences a deferred ${body} before the final activity, existing task: ${existing}`, async () => {
     const db = tempDb();
     const home = tempHome();
-    if (existing) insertQueuedItem(db, { id: "existing", sessionKey: "session" });
+    if (existing) await insertQueuedItem(db, { id: "existing", sessionKey: "session" });
     const tracker = createFakeTracker([
       {
         linearIssueId: "issue",
@@ -330,7 +330,7 @@ test("item Stop delivery retains one UUID through failure, reopen and duplicate 
   });
   let orchestrator = attachOrchestrator(options());
   try {
-    insertQueuedItem(db, { id: "stopped", sessionKey: "session" });
+    await insertQueuedItem(db, { id: "stopped", sessionKey: "session" });
     const stop = {
       ...created(),
       dedupeKey: "stop-retry",
@@ -370,7 +370,7 @@ test("item Stop delivery retains one UUID through failure, reopen and duplicate 
 test("a merged item settles its delegation without a delegation summary", async () => {
   const db = openDatabase(join(tempHome(), "completion.db"));
   migrate(db);
-  const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
+  const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
   db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [item.id]);
   const tracker = createFakeTracker([
     {

@@ -44,7 +44,7 @@ export async function probeRunnerPlacement(
     tokenHash: workspaceTokenHash(token),
     now,
   });
-  const item = insertQueuedItem(db, { id: "placement", now, sessionKey: "session" });
+  const item = await insertQueuedItem(db, { id: "placement", now, sessionKey: "session" });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
   await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",

@@ -180,7 +180,7 @@ export async function probeRunnerCoordinator(
         renewalHasSamePublicKey: true,
       },
     );
-    const item = insertQueuedItem(db, {
+    const item = await insertQueuedItem(db, {
       id: "coordinator-item",
       now,
       sessionKey: "coordinator-session",

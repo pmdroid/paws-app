@@ -42,7 +42,7 @@ import { tempDb, tempHome } from "./helpers";
 
 async function fixture() {
   const db = tempDb();
-  insertQueuedItem(db, { id: "item", sessionKey: "session", now: 0 });
+  await insertQueuedItem(db, { id: "item", sessionKey: "session", now: 0 });
   await bindWorkItemRepository(sqliteDb(db), "item", {
     owner: "owner",
     repo: "repo",

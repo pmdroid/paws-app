@@ -25,7 +25,7 @@ test("a session progress row sent by a plain outbox tick counts under its task",
     tracker,
   });
   try {
-    const item = insertQueuedItem(db, { id: "task", now: 1_000, sessionKey: "session" });
+    const item = await insertQueuedItem(db, { id: "task", now: 1_000, sessionKey: "session" });
     const progress = await createLinearSessionProgress(
       sqliteDb(db),
       "session",

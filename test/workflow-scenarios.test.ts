@@ -374,7 +374,7 @@ async function runnerWorld() {
     "fixture/repository",
     "team",
   ]);
-  const item = insertQueuedItem(w.db, { id: "item", now: w.now, sessionKey: "session" });
+  const item = await insertQueuedItem(w.db, { id: "item", now: w.now, sessionKey: "session" });
   const { run } = await beginImplementRun(sqliteDb(w.db), item.id, w.now);
   await recordLinearInstallation(sqliteDb(w.db), {
     organizationId: "org",

@@ -73,7 +73,7 @@ if (!text.includes("fixed")) {
   const head = git(workspace, ["rev-parse", "HEAD"]);
 
   const db = tempDb();
-  insertQueuedItem(db, { id: "ENG-7", title: "Escape quotes", now: 1 });
+  await insertQueuedItem(db, { id: "ENG-7", title: "Escape quotes", now: 1 });
   const { run } = await beginImplementRun(sqliteDb(db), "ENG-7", 2);
   const main = join(workspace, "src", "main.ts");
   const steps: FakeScript["steps"] = [
@@ -171,7 +171,7 @@ if (!text.includes("fixed")) {
 
 test("a running check reports how long it has run and a later stale report sends it back to pending", async () => {
   const db = tempDb();
-  insertQueuedItem(db, { id: "ENG-8", title: "Stale", now: 1 });
+  await insertQueuedItem(db, { id: "ENG-8", title: "Stale", now: 1 });
   const { run } = await beginImplementRun(sqliteDb(db), "ENG-8", 2);
   const head = "a".repeat(40);
   const attempt = {
@@ -240,7 +240,7 @@ test("a running check reports how long it has run and a later stale report sends
 
 test("a check still running when its run ended stops at the run's end and points to the task's newer run", async () => {
   const db = tempDb();
-  insertQueuedItem(db, { id: "ENG-10", title: "Restart", now: 1 });
+  await insertQueuedItem(db, { id: "ENG-10", title: "Restart", now: 1 });
   const { run } = await beginImplementRun(sqliteDb(db), "ENG-10", 2);
   await recordAgentCloseout(
     sqliteDb(db),
@@ -303,7 +303,7 @@ test("a check still running when its run ended stops at the run's end and points
 
 test("an evidence check takes its state from the report and lets the round finish", async () => {
   const db = tempDb();
-  insertQueuedItem(db, { id: "ENG-9", title: "Proof", now: 1 });
+  await insertQueuedItem(db, { id: "ENG-9", title: "Proof", now: 1 });
   const { run } = await beginImplementRun(sqliteDb(db), "ENG-9", 2);
   const head = "c".repeat(40);
   const proof = {

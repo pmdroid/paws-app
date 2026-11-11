@@ -40,7 +40,7 @@ async function fixture() {
     pawsRoot: root,
     journal: (line) => journal.push(line),
   });
-  insertQueuedItem(db, { id: "ENG-7", sessionKey: "ses_1", now: clock.now() });
+  await insertQueuedItem(db, { id: "ENG-7", sessionKey: "ses_1", now: clock.now() });
   await beginImplementRun(sqliteDb(db), "ENG-7", clock.now());
   const item = (await getWorkItem(sqliteDb(db), "ENG-7"))!;
   const post = (key: string) => orchestrator["post"](item, "response", `Body ${key}.`, key);

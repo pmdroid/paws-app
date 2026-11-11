@@ -52,7 +52,7 @@ async function oneBusyRunnerSlot(db: ReturnType<typeof tempDb>): Promise<void> {
     [userId, 100 * DAY],
   );
   db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES('runner',1)");
-  insertQueuedItem(db, { id: "busy", now: -1, sessionKey: "busy-session" });
+  await insertQueuedItem(db, { id: "busy", now: -1, sessionKey: "busy-session" });
 }
 
 test("a ready item waiting for a runner slot is queued once in Linear and fails after a day", async () => {
@@ -69,7 +69,7 @@ test("a ready item waiting for a runner slot is queued once in Linear and fails 
   });
   try {
     await oneBusyRunnerSlot(db);
-    const item = insertQueuedItem(db, { id: "waiting", now: 1_000, sessionKey: "session" });
+    const item = await insertQueuedItem(db, { id: "waiting", now: 1_000, sessionKey: "session" });
     await ensureLinearSession(sqliteDb(db), {
       sessionId: "session",
       issueId: item.linearIssueId,
@@ -116,8 +116,8 @@ test("the queued thought shows the place in line, and the start timeout comes fr
   });
   try {
     await oneBusyRunnerSlot(db);
-    insertQueuedItem(db, { id: "ahead", now: 0 });
-    const item = insertQueuedItem(db, { id: "waiting", now: 1_000, sessionKey: "session" });
+    await insertQueuedItem(db, { id: "ahead", now: 0 });
+    const item = await insertQueuedItem(db, { id: "waiting", now: 1_000, sessionKey: "session" });
     db.run("UPDATE work_item SET linear_identifier='PAS-1' WHERE id='waiting'");
     await ensureLinearSession(sqliteDb(db), {
       sessionId: "session",
@@ -174,8 +174,8 @@ test("queue lines use ordinals and singular slots", () => {
 test("the status API shows a queued item's place in line until it starts", async () => {
   const db = tempDb();
   try {
-    insertQueuedItem(db, { id: "ahead", now: 0 });
-    insertQueuedItem(db, { id: "waiting", now: 1 });
+    await insertQueuedItem(db, { id: "ahead", now: 0 });
+    await insertQueuedItem(db, { id: "waiting", now: 1 });
     settled(saveQueuePositions(sqliteDb(db), ["ahead", "waiting"], { busy: 4, total: 4 }, 2));
     const queueOf = async (id: string) =>
       (await createLiveStatusProvider(db).issues()).issues.find((item) => item.id === id)?.queue;
@@ -219,8 +219,8 @@ test("a runner-queued item names its place in the title and plan, and a restart 
   });
   try {
     await oneBusyRunnerSlot(db);
-    insertQueuedItem(db, { id: "ahead", now: 0, sessionKey: "ahead-session" });
-    const item = insertQueuedItem(db, { id: "waiting", now: 1_000, sessionKey: "session" });
+    await insertQueuedItem(db, { id: "ahead", now: 0, sessionKey: "ahead-session" });
+    const item = await insertQueuedItem(db, { id: "waiting", now: 1_000, sessionKey: "session" });
     db.run("UPDATE work_item SET linear_identifier='PAS-1' WHERE id='waiting'");
     await ensureLinearSession(sqliteDb(db), {
       sessionId: "session",
@@ -292,7 +292,7 @@ test("paused and recovering items get a waiting title and no ephemeral", async (
     scheduling: async () => ({}),
   });
   try {
-    const item = insertQueuedItem(db, { id: "paused", now: 1_000, sessionKey: "session" });
+    const item = await insertQueuedItem(db, { id: "paused", now: 1_000, sessionKey: "session" });
     db.run("UPDATE work_item SET linear_identifier='PAS-2' WHERE id='paused'");
     await ensureLinearSession(sqliteDb(db), {
       sessionId: "session",
@@ -377,10 +377,10 @@ forEachDialect((open) => {
   });
 });
 
-test("on SQLite the functions settle before they return, and settled() refuses a pending promise", () => {
+test("on SQLite the functions settle before they return, and settled() refuses a pending promise", async () => {
   const db = tempDb();
   try {
-    insertQueuedItem(db, { id: "a", now: 0 });
+    await insertQueuedItem(db, { id: "a", now: 0 });
     const since = queueWaitSince(sqliteDb(db), "a", 1, 5);
     expect(Bun.peek.status(since)).toBe("fulfilled");
     expect(settled(since)).toBe(5);

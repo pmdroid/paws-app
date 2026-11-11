@@ -47,8 +47,8 @@ async function workspace(db: Database) {
   }
   addRunner(db, "theirs", users.other!, START);
   // An item with no delegator. It takes the only slot.
-  insertQueuedItem(db, { id: "busy", now: -1, sessionKey: "busy-session" });
-  const item = insertQueuedItem(db, { id: "mine", now: START, sessionKey: "session" });
+  await insertQueuedItem(db, { id: "busy", now: -1, sessionKey: "busy-session" });
+  const item = await insertQueuedItem(db, { id: "mine", now: START, sessionKey: "session" });
   db.run("UPDATE work_item SET linear_identifier='PAS-1',owner_user_id=? WHERE id='mine'", [
     users.me!,
   ]);

@@ -80,10 +80,10 @@ async function fixture() {
         installation_observed_at, created_at) VALUES (?, 'org', 'fixture', 'app', ?, 1, 0)`,
       [session!, team!],
     );
-  insertQueuedItem(db, { id: "PAS-1", sessionKey: "session-mine", now: Date.now() });
-  insertQueuedItem(db, { id: "PAS-OLD", sessionKey: "session-mine" });
+  await insertQueuedItem(db, { id: "PAS-1", sessionKey: "session-mine", now: Date.now() });
+  await insertQueuedItem(db, { id: "PAS-OLD", sessionKey: "session-mine" });
   db.run("UPDATE work_item SET state = 'merged' WHERE id = 'PAS-OLD'");
-  insertQueuedItem(db, { id: "PAS-2", sessionKey: "session-other", now: Date.now() });
+  await insertQueuedItem(db, { id: "PAS-2", sessionKey: "session-other", now: Date.now() });
 
   const home = mkdtempSync(join(tmpdir(), "paws-evidence-resources-"));
   homes.push(home);

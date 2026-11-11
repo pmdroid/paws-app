@@ -74,7 +74,7 @@ function fixture() {
   });
   let n = 0;
   const seed = async (state: string, snapshot = true) => {
-    const queued = insertQueuedItem(db, { id: `item-${++n}`, now: 1000 });
+    const queued = await insertQueuedItem(db, { id: `item-${++n}`, now: 1000 });
     const { item, run } = await beginImplementRun(sqliteDb(db), queued.id, 1000);
     db.run("UPDATE work_item SET state=? WHERE id=?", [state, item.id]);
     const file = join(runDir(root, run.id), "agent-profile.json");
@@ -134,7 +134,7 @@ test("only unfinished runs without live work leases change; queued items still r
   const untouched = [executing];
   for (const s of ["completed", "merged", "cancelled", "queued"]) untouched.push(await f.seed(s));
   const original = untouched.map((entry) => readFileSync(entry.file, "utf8"));
-  const queued = insertQueuedItem(f.db, { id: "not-started" });
+  const queued = await insertQueuedItem(f.db, { id: "not-started" });
   const noSnapshot = await f.seed("recovering", false);
   const response = await f.save(true);
   expect(await response!.json()).toMatchObject({ waitingRuns: 7 });

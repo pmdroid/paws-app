@@ -122,7 +122,11 @@ export async function probeRunnerWork(
       undefined,
       [{ runId: command.runId, generation: command.generation, commandId: command.id }],
     );
-  const item = insertQueuedItem(db, { id: "fixture-item", now, sessionKey: "fixture-session" });
+  const item = await insertQueuedItem(db, {
+    id: "fixture-item",
+    now,
+    sessionKey: "fixture-session",
+  });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
   await recordLinearInstallation(sqliteDb(db), {
     organizationId: "fixture-work",
@@ -560,7 +564,7 @@ export async function probeRunnerWork(
     assert.equal((await work.currentAsync(run.id, 4)).command.id, replacement.id);
     await work.finish(run.id, 4);
     for (let index = 0; index < 64; index++) {
-      const blocked = insertQueuedItem(db, {
+      const blocked = await insertQueuedItem(db, {
         id: `blocked-${index}`,
         now,
         sessionKey: "fixture-session",
@@ -600,7 +604,7 @@ export async function probeRunnerWork(
     );
     const contenders = [];
     for (let index = 0; index < 2; index++) {
-      const queued = insertQueuedItem(db, {
+      const queued = await insertQueuedItem(db, {
         id: `capacity-${index}`,
         now,
         sessionKey: "fixture-session",

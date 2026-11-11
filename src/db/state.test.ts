@@ -54,7 +54,7 @@ const checkpoint: Checkpoint = { phase: "running", wipCommit: "wip", turn: 2, ba
 describe("restart recovery", () => {
   test("the first start resumes from the checkpoint and the next one asks in Linear", async () => {
     const { db, clock } = harness();
-    const item = insertQueuedItem(db, { id: "eng-1", sessionKey: "ses", now: clock.now() });
+    const item = await insertQueuedItem(db, { id: "eng-1", sessionKey: "ses", now: clock.now() });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
 
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([
@@ -91,7 +91,7 @@ describe("restart recovery", () => {
 
   test("a second restart without a Linear session fails the item", async () => {
     const { db, clock } = harness();
-    const item = insertQueuedItem(db, { now: clock.now() });
+    const item = await insertQueuedItem(db, { now: clock.now() });
     db.run("UPDATE work_item SET session_key = NULL WHERE id = ?", [item.id]);
     await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
     await recoverOnStartup(sqliteDb(db), clock.now());
@@ -105,7 +105,7 @@ describe("restart recovery", () => {
 
   test("a code task with no checkpoint starts again from its branch", async () => {
     const { db, clock } = harness();
-    const item = insertQueuedItem(db, {
+    const item = await insertQueuedItem(db, {
       id: "eng-2",
       sessionKey: "ses",
       branchName: "paws/eng-2",
@@ -137,7 +137,11 @@ describe("restart recovery", () => {
 
   test("a restart long after the earlier resume resumes the task again", async () => {
     const { db, clock } = harness();
-    const item = insertQueuedItem(db, { id: "eng-later", sessionKey: "ses", now: clock.now() });
+    const item = await insertQueuedItem(db, {
+      id: "eng-later",
+      sessionKey: "ses",
+      now: clock.now(),
+    });
     await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
     await recoverOnStartup(sqliteDb(db), clock.now());
     clock.advance(45 * 60_000);
@@ -157,7 +161,7 @@ describe("restart recovery", () => {
     for (const graceful of [true, false]) {
       test(`a parked ${queue} survives repeated ${graceful ? "graceful" : "crash"} restarts without recovery`, async () => {
         const { db, clock } = harness();
-        const item = insertQueuedItem(db, { now: clock.now() });
+        const item = await insertQueuedItem(db, { now: clock.now() });
         const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
         if (queue === JOB_KIND.reverify)
           await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
@@ -202,7 +206,7 @@ describe("restart recovery", () => {
 
   test("restarts keep a task running while its runner still holds the work", async () => {
     const { db, clock } = harness();
-    const item = insertQueuedItem(db, { now: clock.now() });
+    const item = await insertQueuedItem(db, { now: clock.now() });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
     db.run("PRAGMA foreign_keys=OFF");
     db.run(
@@ -221,7 +225,7 @@ describe("restart recovery", () => {
 
   test("each restart that reattaches a running task queues a job to follow it", async () => {
     const { db, clock } = harness();
-    const item = insertQueuedItem(db, { now: clock.now() });
+    const item = await insertQueuedItem(db, { now: clock.now() });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
     db.run("PRAGMA foreign_keys=OFF");
     db.run(
@@ -243,7 +247,7 @@ describe("restart recovery", () => {
 
   test("a second restart while the reattach follower is pending queues no other one", async () => {
     const { db, clock } = harness();
-    const item = insertQueuedItem(db, { now: clock.now() });
+    const item = await insertQueuedItem(db, { now: clock.now() });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
     db.run("PRAGMA foreign_keys=OFF");
     db.run(
@@ -263,7 +267,7 @@ describe("restart recovery", () => {
   describe("a pending transient retry", () => {
     async function deferred() {
       const { db, clock } = harness();
-      const item = insertQueuedItem(db, { sessionKey: "ses", now: clock.now() });
+      const item = await insertQueuedItem(db, { sessionKey: "ses", now: clock.now() });
       const { item: running } = await beginImplementRun(
         sqliteDb(db),
         item.id,
@@ -322,7 +326,7 @@ describe("restart recovery", () => {
 
   test("a verifying task whose runner holds Closeout work stays verifying and re-verifies", async () => {
     const { db, clock } = harness();
-    const item = insertQueuedItem(db, { now: clock.now() });
+    const item = await insertQueuedItem(db, { now: clock.now() });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
     await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
     db.run("PRAGMA foreign_keys=OFF");
@@ -345,7 +349,7 @@ describe("restart recovery", () => {
 
   test("shutdown leaves the run recoverable and the next start can resume it once", async () => {
     const { db, clock } = harness();
-    const item = insertQueuedItem(db, { sessionKey: "ses", now: clock.now() });
+    const item = await insertQueuedItem(db, { sessionKey: "ses", now: clock.now() });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
     await prepareShutdown(sqliteDb(db), clock.now());
     expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
@@ -373,7 +377,7 @@ describe("restart recovery", () => {
 
   test("a task waiting in the merge queue keeps its state and its merge job across a restart", async () => {
     const { db, clock } = harness();
-    const item = insertQueuedItem(db, {
+    const item = await insertQueuedItem(db, {
       id: "eng-1",
       branchName: "paws/eng-1",
       now: clock.now(),
@@ -409,7 +413,7 @@ describe("restart recovery", () => {
             const { db, clock } = harness();
             const ids = order === "keep-first" ? ["keep", "reverify"] : ["reverify", "keep"];
             for (const id of ids) {
-              insertQueuedItem(db, { id, now: clock.now() });
+              await insertQueuedItem(db, { id, now: clock.now() });
               await bindWorkItemRepository(sqliteDb(db), id, {
                 owner: "owner",
                 repo: sameRepository ? "shared" : id,
@@ -488,7 +492,7 @@ describe("restart recovery", () => {
 
   test("a queued task whose run is still active at shutdown re-verifies", async () => {
     const { db, clock } = harness();
-    const item = insertQueuedItem(db, { id: "eng-busy", now: clock.now() });
+    const item = await insertQueuedItem(db, { id: "eng-busy", now: clock.now() });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
     await enterMergeQueue(sqliteDb(db), item.id, checkpoint);
 
@@ -500,7 +504,7 @@ describe("restart recovery", () => {
 
   test("a merge job the shutdown ended is queued again, and asks GitHub after a merge call", async () => {
     const { db, clock } = harness();
-    const item = insertQueuedItem(db, { id: "eng-2", now: clock.now() });
+    const item = await insertQueuedItem(db, { id: "eng-2", now: clock.now() });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
     await enterMergeQueue(sqliteDb(db), item.id, checkpoint);
     await markRun(sqliteDb(db), run.id, "ended", clock.now());
@@ -531,7 +535,7 @@ describe("restart recovery", () => {
 
   test("a restart during the re-verify of a queued task re-verifies it again", async () => {
     const { db, clock } = harness();
-    const item = insertQueuedItem(db, { id: "eng-twice", now: clock.now() });
+    const item = await insertQueuedItem(db, { id: "eng-twice", now: clock.now() });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
     await enterMergeQueue(sqliteDb(db), item.id, checkpoint);
     await markRun(sqliteDb(db), run.id, "ended", clock.now());
@@ -556,7 +560,7 @@ describe("restart recovery", () => {
 
   test("a question that is waiting for Linear survives a restart", async () => {
     const { db, clock } = harness();
-    const item = insertQueuedItem(db, { now: clock.now() });
+    const item = await insertQueuedItem(db, { now: clock.now() });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now());
     await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
     await saveCheckpoint(sqliteDb(db), item.id, { ...checkpoint, phase: "awaiting_input" });
@@ -569,7 +573,11 @@ describe("restart recovery", () => {
 
   test("a restart leaves an answered item to its pending answer resume", async () => {
     const { db, clock } = harness();
-    const item = insertQueuedItem(db, { id: "answered", sessionKey: "ses", now: clock.now() });
+    const item = await insertQueuedItem(db, {
+      id: "answered",
+      sessionKey: "ses",
+      now: clock.now(),
+    });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
     await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
     await markRun(sqliteDb(db), run.id, "ended", clock.now());
@@ -590,7 +598,7 @@ describe("restart recovery", () => {
 
   test("illegal transitions do not change the row", async () => {
     const { db, clock } = harness();
-    const item = insertQueuedItem(db, { now: clock.now() });
+    const item = await insertQueuedItem(db, { now: clock.now() });
     await expect(applyWorkItemEvent(sqliteDb(db), item.id, "merge_accepted")).rejects.toThrow(
       TransitionRejectedError,
     );
@@ -605,7 +613,7 @@ describe("restart recovery", () => {
     // loaded disk. The first process works in memory and leaves one file.
     const first = openDatabase(":memory:");
     migrate(first);
-    insertQueuedItem(first, { id: "eng-1", sessionKey: "ses", now: clock.now() });
+    await insertQueuedItem(first, { id: "eng-1", sessionKey: "ses", now: clock.now() });
     const { run } = await beginImplementRun(sqliteDb(first), "eng-1", clock.now(), checkpoint);
     await saveRunResult(sqliteDb(first), run.id, "Implemented and checked locally.", clock.now());
     first.run("VACUUM INTO ?", [path]);
@@ -634,7 +642,7 @@ describe("restart recovery", () => {
 describe("hard caps", () => {
   test("stored turn columns from older installs do not cap work", async () => {
     const { db, clock } = harness();
-    const item = insertQueuedItem(db, { maxAwakeMs: 1_000, now: clock.now() });
+    const item = await insertQueuedItem(db, { maxAwakeMs: 1_000, now: clock.now() });
     await beginImplementRun(sqliteDb(db), item.id, clock.now());
     db.run("UPDATE work_item SET turn_count = 100, max_turns = 1 WHERE id = ?", [item.id]);
     await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
@@ -648,7 +656,7 @@ describe("hard caps", () => {
 
   test("awake time counts monotonic time and ignores a wall-clock sleep", async () => {
     const { clock, db } = harness();
-    const item = insertQueuedItem(db, { maxAwakeMs: 1_000, now: clock.now() });
+    const item = await insertQueuedItem(db, { maxAwakeMs: 1_000, now: clock.now() });
     db.run("UPDATE work_item SET session_key = NULL WHERE id = ?", [item.id]);
     await beginImplementRun(sqliteDb(db), item.id, clock.now());
     await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
@@ -673,7 +681,7 @@ describe("hard caps", () => {
 
   test("time parked for a Linear answer is not awake time", async () => {
     const { clock, db } = harness();
-    const item = insertQueuedItem(db, { maxAwakeMs: 50_000, now: clock.now() });
+    const item = await insertQueuedItem(db, { maxAwakeMs: 50_000, now: clock.now() });
     await beginImplementRun(sqliteDb(db), item.id, clock.now());
     await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
     await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
@@ -689,7 +697,7 @@ describe("hard caps", () => {
 
   test("time waiting in the merge queue is not awake time", async () => {
     const { clock, db } = harness();
-    const item = insertQueuedItem(db, { maxAwakeMs: 1_000, now: clock.now() });
+    const item = await insertQueuedItem(db, { maxAwakeMs: 1_000, now: clock.now() });
     await beginImplementRun(sqliteDb(db), item.id, clock.now());
     await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
     await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
@@ -710,7 +718,7 @@ describe("hard caps", () => {
 
   test("re-checking a candidate Closeout accepted is not awake time", async () => {
     const { clock, db } = harness();
-    const item = insertQueuedItem(db, { maxAwakeMs: 1_000, now: clock.now() });
+    const item = await insertQueuedItem(db, { maxAwakeMs: 1_000, now: clock.now() });
     await beginImplementRun(sqliteDb(db), item.id, clock.now());
     await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
     await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
@@ -737,7 +745,7 @@ describe("hard caps", () => {
 
   test("an accepted task sent back to the agent counts awake time again", async () => {
     const { clock, db } = harness();
-    const item = insertQueuedItem(db, { limits: { fixes: 1_000 }, now: clock.now() });
+    const item = await insertQueuedItem(db, { limits: { fixes: 1_000 }, now: clock.now() });
     await beginImplementRun(sqliteDb(db), item.id, clock.now());
     await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
     await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
@@ -769,7 +777,7 @@ describe("linear commands", () => {
     bus.subscribe((command) => {
       seen.push(command.type);
     });
-    insertQueuedItem(db, { id: "eng-2", sessionKey: "ses", now: clock.now() });
+    await insertQueuedItem(db, { id: "eng-2", sessionKey: "ses", now: clock.now() });
     const { run } = await beginImplementRun(sqliteDb(db), "eng-2", clock.now());
     await recordItemBranchState(sqliteDb(db), {
       itemId: "eng-2",
@@ -851,7 +859,7 @@ describe("linear commands", () => {
 
   test("a Linear stop in the merge queue pauses the item and holds its merge", async () => {
     const { db, clock } = harness();
-    insertQueuedItem(db, { id: "eng-3", sessionKey: "ses", now: clock.now() });
+    await insertQueuedItem(db, { id: "eng-3", sessionKey: "ses", now: clock.now() });
     await beginImplementRun(sqliteDb(db), "eng-3", clock.now());
     await applyWorkItemEvent(sqliteDb(db), "eng-3", "turn_ended");
     await applyWorkItemEvent(sqliteDb(db), "eng-3", "closeout_accepted");
@@ -880,7 +888,7 @@ describe("linear commands", () => {
 
   test("a stop names the commits left on the branch and the open pull request", async () => {
     const { db, clock } = harness();
-    insertQueuedItem(db, { id: "eng-5", sessionKey: "ses", now: clock.now() });
+    await insertQueuedItem(db, { id: "eng-5", sessionKey: "ses", now: clock.now() });
     const { run } = await beginImplementRun(sqliteDb(db), "eng-5", clock.now());
     await recordItemBranchState(sqliteDb(db), {
       itemId: "eng-5",
@@ -918,7 +926,7 @@ describe("linear commands", () => {
 
   test("a stop without a pull request says none was opened and cancels the remaining plan", async () => {
     const { db, clock } = harness();
-    insertQueuedItem(db, { id: "eng-6", sessionKey: "ses", now: clock.now() });
+    await insertQueuedItem(db, { id: "eng-6", sessionKey: "ses", now: clock.now() });
     const identifier = (await getWorkItem(sqliteDb(db), "eng-6"))!.linearIdentifier;
     await beginImplementRun(sqliteDb(db), "eng-6", clock.now());
     db.run(
@@ -961,8 +969,8 @@ describe("linear commands", () => {
 
   test("a cancel with an outside reason names the branch only when work is left on it", async () => {
     const { db, clock } = harness();
-    insertQueuedItem(db, { id: "eng-7", sessionKey: "ses-7", now: clock.now() });
-    insertQueuedItem(db, { id: "eng-8", sessionKey: "ses-8", now: clock.now() });
+    await insertQueuedItem(db, { id: "eng-7", sessionKey: "ses-7", now: clock.now() });
+    await insertQueuedItem(db, { id: "eng-8", sessionKey: "ses-8", now: clock.now() });
     const { run } = await beginImplementRun(sqliteDb(db), "eng-8", clock.now());
     await recordItemBranchState(sqliteDb(db), {
       itemId: "eng-8",
@@ -992,7 +1000,7 @@ describe("linear commands", () => {
 
   test("a take over ends the session with who took it and the manual title", async () => {
     const { db, clock } = harness();
-    insertQueuedItem(db, { id: "eng-9", sessionKey: "ses", now: clock.now() });
+    await insertQueuedItem(db, { id: "eng-9", sessionKey: "ses", now: clock.now() });
     const identifier = (await getWorkItem(sqliteDb(db), "eng-9"))!.linearIdentifier;
     await beginImplementRun(sqliteDb(db), "eng-9", clock.now());
     expect((await takeOverItem(sqliteDb(db), "eng-9", "Ada", clock.now())).applied).toBe(false);
@@ -1016,7 +1024,7 @@ describe("linear commands", () => {
     const { db, clock } = harness();
     const bus = new CommandBus();
     for (const id of ["first", "second"]) {
-      insertQueuedItem(db, { id, sessionKey: "ses", now: clock.now() });
+      await insertQueuedItem(db, { id, sessionKey: "ses", now: clock.now() });
       await submitCommand(sqliteDb(db), bus, {
         type: "stop",
         source: "linear",
@@ -1036,7 +1044,7 @@ describe("linear commands", () => {
     bus.subscribe(() => {
       throw new Error("listener blew up");
     });
-    insertQueuedItem(db, { id: "eng-4", now: clock.now() });
+    await insertQueuedItem(db, { id: "eng-4", now: clock.now() });
     await beginImplementRun(sqliteDb(db), "eng-4", clock.now());
     await submitCommand(sqliteDb(db), bus, {
       type: "cancel",

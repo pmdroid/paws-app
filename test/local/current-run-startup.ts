@@ -29,7 +29,7 @@ export async function probeCurrentRunStartup(root: string) {
     const db = migratedDatabase(join(home, "paws.db"));
     const clock = new FakeClock(1000);
     const jobs = new JobLoop(db, clock);
-    const item = insertQueuedItem(db, { id: `item-${mode}`, sessionKey: `session-${mode}` });
+    const item = await insertQueuedItem(db, { id: `item-${mode}`, sessionKey: `session-${mode}` });
     if (mode === "clarified-artifact") {
       const taskKey = "clarification-task";
       db.run("UPDATE work_item SET task_key=? WHERE id=?", [

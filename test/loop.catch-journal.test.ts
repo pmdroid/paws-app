@@ -49,7 +49,7 @@ async function fixture() {
     tracker,
     journal: (line) => lines.push(line),
   });
-  const item = insertQueuedItem(db, { id: "item-715", sessionKey: "" });
+  const item = await insertQueuedItem(db, { id: "item-715", sessionKey: "" });
   return {
     root,
     db,
@@ -147,7 +147,9 @@ test("a Settings › Merging save reaches the next item without a restart; confi
     };
     const next = async (id: string) =>
       (
-        (await f.operations.mergeSettingsFor(insertQueuedItem(f.db, { id, sessionKey: "" }))) as {
+        (await f.operations.mergeSettingsFor(
+          await insertQueuedItem(f.db, { id, sessionKey: "" }),
+        )) as {
           mainMoved: string;
         }
       ).mainMoved;

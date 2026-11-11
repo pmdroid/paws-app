@@ -253,7 +253,7 @@ test("revocation uses resolved delegator ownership, not the session creator", as
       ["other-organization", "member", null, "linear-member", false],
     ] as const;
     for (const [id, owner, delegated, creator] of cases) {
-      insertQueuedItem(db, { id, sessionKey: `ownership-${id}`, now });
+      await insertQueuedItem(db, { id, sessionKey: `ownership-${id}`, now });
       await recordLinearInstallation(sqliteDb(db), {
         sessionId: `ownership-${id}`,
         organizationId: id === "other-organization" ? "foreign" : "org",
@@ -424,7 +424,7 @@ test("revocation stops explicit owners and delegators without session metadata",
     ] as const;
     const now = Date.now();
     for (const [id, owner, delegator, session, , running] of cases) {
-      insertQueuedItem(db, { id, now });
+      await insertQueuedItem(db, { id, now });
       db.run("UPDATE work_item SET owner_user_id=?,delegated_by=?,session_key=? WHERE id=?", [
         owner,
         delegator,

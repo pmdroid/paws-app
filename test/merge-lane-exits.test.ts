@@ -25,7 +25,7 @@ import {
 async function setup() {
   const db = openDatabase(":memory:");
   migrate(db);
-  insertQueuedItem(db, { id: "holder", sessionKey: "session", now: 1 });
+  await insertQueuedItem(db, { id: "holder", sessionKey: "session", now: 1 });
   await applyWorkItemEvent(sqliteDb(db), "holder", "dispatched", { now: 1 });
   await applyWorkItemEvent(sqliteDb(db), "holder", "turn_ended", { now: 1 });
   await applyWorkItemEvent(sqliteDb(db), "holder", "closeout_accepted", { now: 1 });

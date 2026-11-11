@@ -32,7 +32,7 @@ async function seed(active = true): Promise<Database> {
     ["item-a", "platform"],
     ["item-b", "web"],
   ] as const) {
-    insertQueuedItem(db, { id, sessionKey: `session-${id}`, now: 1, title: `Title ${id}` });
+    await insertQueuedItem(db, { id, sessionKey: `session-${id}`, now: 1, title: `Title ${id}` });
     await bindWorkItemRepository(sqliteDb(db), id, {
       owner: "acme",
       repo,

@@ -30,7 +30,7 @@ import { workspaceDispatch } from "./fake-workspace";
 
 async function fixture() {
   const db = tempDb();
-  insertQueuedItem(db, { id: "item", now: 0 });
+  await insertQueuedItem(db, { id: "item", now: 0 });
   await bindWorkItemRepository(sqliteDb(db), "item", {
     owner: "owner",
     repo: "repo",
@@ -261,7 +261,7 @@ test.each(["linear", "push"] as const)(
           ? "20261101T0640_push_conflict_returns"
           : "20261031T1931_risk_auto_context",
     });
-    insertQueuedItem(db, { id: "legacy", now: 1 });
+    await insertQueuedItem(db, { id: "legacy", now: 1 });
     // A row as the pre-activation schema stored it; enqueueJob() names every current column.
     const { id } = db
       .query<{ id: number }, [string]>(

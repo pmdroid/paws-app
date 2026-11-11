@@ -99,7 +99,7 @@ async function fixture() {
     "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.53',?)",
     [runnerId, now()],
   );
-  const item = insertQueuedItem(db, { id: "item", now: now(), sessionKey: "session" });
+  const item = await insertQueuedItem(db, { id: "item", now: now(), sessionKey: "session" });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, now());
   const start = async () =>
     await registerInstance(sqliteDb(db), { role: "all", host: "acme", version: null, now: now() });

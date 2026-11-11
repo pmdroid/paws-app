@@ -109,7 +109,11 @@ async function fixture(root: string) {
     eventKey: Buffer.alloc(32, 7),
   });
   async function startRun(name: string) {
-    const item = insertQueuedItem(db, { id: `${name}-item`, now, sessionKey: `${name}-session` });
+    const item = await insertQueuedItem(db, {
+      id: `${name}-item`,
+      now,
+      sessionKey: `${name}-session`,
+    });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
     await recordLinearInstallation(sqliteDb(db), {
       organizationId: "session-org",

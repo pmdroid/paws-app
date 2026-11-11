@@ -31,7 +31,7 @@ const NOW = 1_700_000_000_000;
 async function verifying() {
   const db = openDatabase(":memory:");
   migrate(db);
-  const item = insertQueuedItem(db, { id: "ENG-3", sessionKey: "ses_1", title: "Hint" });
+  const item = await insertQueuedItem(db, { id: "ENG-3", sessionKey: "ses_1", title: "Hint" });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
   await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
   return { db, itemId: item.id, runId: run.id };
@@ -133,7 +133,7 @@ test("the round-limit question waits behind a sibling's queued question", async 
        VALUES (?, ?, 'visual-proof', '[]', ?, 'changes_requested')`,
       [`old-${round}`, itemId, NOW - round],
     );
-  const sibling = insertQueuedItem(db, { id: "ENG-4", sessionKey: "ses_1", title: "Other" });
+  const sibling = await insertQueuedItem(db, { id: "ENG-4", sessionKey: "ses_1", title: "Other" });
   const ci = await sqliteDb(db).transaction((q) =>
     askQuestionSteps(q, { itemId: sibling.id, runId: null, sessionId: "ses_1" }, "ci-help", "CI?", {
       now: NOW + 1,

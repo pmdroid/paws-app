@@ -46,7 +46,7 @@ async function fixture() {
     db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,?)", [id, capacity]);
   }
   async function running(id: string) {
-    insertQueuedItem(db, { id, now: 0 });
+    await insertQueuedItem(db, { id, now: 0 });
     await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
     const run = await insertRun(sqliteDb(db), { itemId: id, now: 0, status: "active" });
     const job = await enqueueJob(sqliteDb(db), {
@@ -69,7 +69,7 @@ async function fixture() {
   const second = await placed("placed-2");
   const stuck = [];
   for (const id of ["stuck-1", "stuck-2", "stuck-3"]) stuck.push((await running(id)).job);
-  for (const [index, id] of READY.entries()) insertQueuedItem(db, { id, now: index + 1 });
+  for (const [index, id] of READY.entries()) await insertQueuedItem(db, { id, now: index + 1 });
   return { db, second, stuck };
 }
 
@@ -191,7 +191,7 @@ test("twelve items ready at once on ten slots start ten and leave two queued", a
       db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,?)", [id, capacity]);
     }
     const ids = Array.from({ length: 12 }, (_, index) => `burst-${index + 10}`);
-    ids.forEach((id, index) => insertQueuedItem(db, { id, now: index + 1 }));
+    for (const [index, id] of ids.entries()) await insertQueuedItem(db, { id, now: index + 1 });
     const admitted = await workspaceDispatch(db, { now: NOW });
     expect(admitted).toEqual(ids.slice(0, 10));
     // A second pass before anything is placed finds no slot either.

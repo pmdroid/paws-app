@@ -91,7 +91,7 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
     ["PRIVATE-42", "team-b", "private-team-b", "Confidential acquisition plan"],
     ["ORPHAN-7", null, null, "Orphaned task"],
   ] as const) {
-    insertQueuedItem(db, { id, title, ...(teamId ? { sessionKey: `session-${id}` } : {}) });
+    await insertQueuedItem(db, { id, title, ...(teamId ? { sessionKey: `session-${id}` } : {}) });
     if (teamId && repo) {
       await recordLinearInstallation(sqliteDb(db), {
         sessionId: `session-${id}`,
