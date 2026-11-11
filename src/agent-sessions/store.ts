@@ -1,12 +1,14 @@
 import type { Database } from "bun:sqlite";
 import {
-  agentSessionSnapshot,
-  deleteAgentSessionChunks,
-  discardStaleAgentSessions,
-  discardedAgentSessionChunks,
-  immediate,
-  insertAgentSessionSnapshot,
-  sealAgentSessionSnapshot,
+  agentSessionSnapshotSteps,
+  deleteAgentSessionChunksSteps,
+  discardStaleAgentSessionsSteps,
+  discardedAgentSessionChunksSteps,
+  insertAgentSessionSnapshotSteps,
+  sealAgentSessionSnapshotSteps,
+  sqliteDb,
+  type Q,
+  type Steps,
 } from "../db";
 import { journalCaught } from "../journal";
 import type { RunnerWork } from "../runner-work";
@@ -61,6 +63,7 @@ export function createAgentSessions(options: {
   maxBytes?: number;
 }) {
   const { db, work, objects } = options;
+  const store = sqliteDb(db);
   const files = createRunFileChunks({
     db,
     kind: "agent_session",
@@ -71,13 +74,16 @@ export function createAgentSessions(options: {
   const now = options.now ?? Date.now;
   const maxBytes = Math.min(options.maxBytes ?? AGENT_SESSION_MAX_BYTES, AGENT_SESSION_MAX_BYTES);
 
-  function authorize(access: Access, generation: number) {
-    const { command } = work.authorize({ ...access, generation });
+  function* authorizeSteps(q: Q, access: Access, generation: number) {
+    const { command } = yield* work.authorizeSteps(q, { ...access, generation });
     if (command.type !== "run") refused();
     return command;
   }
+  function* snapshotSteps(q: Q, runId: string, generation: number) {
+    return (yield* agentSessionSnapshotSteps(q, runId, generation)) as AgentSessionSnapshot | null;
+  }
   function snapshot(runId: string, generation: number) {
-    return agentSessionSnapshot(db, runId, generation) as AgentSessionSnapshot | null;
+    return store.run((q) => snapshotSteps(q, runId, generation));
   }
   function file(row: Pick<AgentSessionSnapshot, "workspaceId" | "runId" | "generation">) {
     return {
@@ -87,11 +93,11 @@ export function createAgentSessions(options: {
     };
   }
   /** The writer's row for its own generation, created on first contact. */
-  function rowFor(access: Access, generation: number) {
-    const command = authorize(access, generation);
-    let row = snapshot(access.runId, generation);
+  function* rowForSteps(q: Q, access: Access, generation: number): Steps<AgentSessionSnapshot> {
+    const command = yield* authorizeSteps(q, access, generation);
+    let row = yield* snapshotSteps(q, access.runId, generation);
     if (!row) {
-      insertAgentSessionSnapshot(db, {
+      yield* insertAgentSessionSnapshotSteps(q, {
         runId: access.runId,
         generation,
         itemId: command.itemId,
@@ -99,7 +105,7 @@ export function createAgentSessions(options: {
         runnerId: access.runnerId,
         createdAt: now(),
       });
-      row = snapshot(access.runId, generation)!;
+      row = (yield* snapshotSteps(q, access.runId, generation))!;
     }
     if (
       row.runnerId !== access.runnerId ||
@@ -127,16 +133,18 @@ export function createAgentSessions(options: {
   }
   /** The run's current runner, owned by the member who produced the snapshot. */
   function readable(access: Access & { generation: number }, generation: number) {
-    authorize(access, access.generation);
-    const row = snapshot(access.runId, generation);
-    if (
-      !row ||
-      row.status !== "sealed" ||
-      generation > access.generation ||
-      work.identity(access.runnerId).userId !== row.ownerUserId
-    )
-      refused();
-    return row;
+    return store.run(function* (q) {
+      yield* authorizeSteps(q, access, access.generation);
+      const row = yield* snapshotSteps(q, access.runId, generation);
+      if (
+        !row ||
+        row.status !== "sealed" ||
+        generation > access.generation ||
+        (yield* work.identitySteps(q, access.runnerId)).userId !== row.ownerUserId
+      )
+        refused();
+      return row;
+    });
   }
 
   /**
@@ -149,12 +157,12 @@ export function createAgentSessions(options: {
   let pruning: Promise<void> | undefined;
   let pruneAgain = false;
   async function prunePass() {
-    discardStaleAgentSessions(db);
+    await store.transaction(discardStaleAgentSessionsSteps);
     for (;;) {
-      const chunks = discardedAgentSessionChunks(db, PRUNE_BATCH);
+      const chunks = await store.run((q) => discardedAgentSessionChunksSteps(q, PRUNE_BATCH));
       if (!chunks.length) return;
       for (const chunk of chunks) await objects.delete(files.objectKey(file(chunk).prefix, chunk));
-      deleteAgentSessionChunks(db, chunks);
+      await store.transaction((q) => deleteAgentSessionChunksSteps(q, chunks));
     }
   }
   async function prune(): Promise<void> {
@@ -183,34 +191,34 @@ export function createAgentSessions(options: {
         access.runId,
         chunk,
         maxBytes,
-        () => {
-          const row = rowFor(access, chunk.generation);
+        function* (q) {
+          const row = yield* rowForSteps(q, access, chunk.generation);
           return { ...file(row), sizeBytes: row.sizeBytes, open: row.status === "uploading" };
         },
         // A prune discarded the snapshot while the chunk was being written; nothing references it.
-        () => snapshot(access.runId, chunk.generation)?.status === "discarded",
+        async () => (await snapshot(access.runId, chunk.generation))?.status === "discarded",
       );
     },
     async finish(access: Access, raw: AgentSessionFinish) {
       const finish = AgentSessionFinishSchema.parse(raw);
       if (finish.sizeBytes > maxBytes) refused();
-      const check = () => {
-        const row = rowFor(access, finish.generation);
+      const check = function* (q: Q) {
+        const row = yield* rowForSteps(q, access, finish.generation);
         if (row.status === "sealed") {
           if (!sameFinish(row, finish)) refused();
         } else if (row.sizeBytes !== finish.sizeBytes) refused();
         return row;
       };
-      const initial = immediate(db, check);
+      const initial = await store.transaction(check);
       if (initial.status === "sealed") return receipt(initial);
       await files.verify(file(initial), finish.sizeBytes, finish.sha256);
-      const sealed = immediate(db, () => {
-        const row = check();
+      const sealed = await store.transaction(function* (q) {
+        const row = yield* check(q);
         if (row.status === "sealed") return receipt(row);
-        sealAgentSessionSnapshot(db, {
+        yield* sealAgentSessionSnapshotSteps(q, {
           runId: access.runId,
           generation: finish.generation,
-          ownerUserId: work.identity(access.runnerId).userId,
+          ownerUserId: (yield* work.identitySteps(q, access.runnerId)).userId,
           agent: finish.agent,
           agentVersion: finish.agentVersion,
           sessionId: finish.sessionId,
@@ -221,7 +229,7 @@ export function createAgentSessions(options: {
           sha256: finish.sha256,
           sealedAt: now(),
         });
-        return receipt(snapshot(access.runId, finish.generation)!);
+        return receipt((yield* snapshotSteps(q, access.runId, finish.generation))!);
       });
       // The seal stands even if the prune fails; the coordinator's sweep retries it.
       await prune().catch((error: unknown) =>
@@ -234,11 +242,14 @@ export function createAgentSessions(options: {
      * Decrypted chunks of a sealed snapshot for the runner that holds the run's current grant
      * (`access.generation`). Access is checked before the first chunk and again before each one.
      */
-    read(access: Access & { generation: number }, generation: number): AsyncGenerator<Uint8Array> {
-      const row = readable(access, generation);
-      return files.read(file(row), row.sealedSize!, row.sha256!, () =>
-        readable(access, generation),
-      );
+    async read(
+      access: Access & { generation: number },
+      generation: number,
+    ): Promise<AsyncGenerator<Uint8Array>> {
+      const row = await readable(access, generation);
+      return files.read(file(row), row.sealedSize!, row.sha256!, async () => {
+        await readable(access, generation);
+      });
     },
   };
 }

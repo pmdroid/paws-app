@@ -5,7 +5,6 @@ import {
   runnerTranscriptSteps,
   sealRunnerTranscriptSteps,
   setRunnerTranscriptUriSteps,
-  settled,
   sqliteDb,
   type Q,
   type RunnerTranscriptRow,
@@ -102,10 +101,8 @@ export function createRunnerTranscripts(options: {
   return {
     async upload(access: Access, raw: RunnerTranscriptChunk) {
       const chunk = RunnerTranscriptChunkSchema.parse(raw);
-      return files.upload(access.runId, chunk, RUNNER_TRANSCRIPT_MAX_BYTES, () => {
-        const row = settled(
-          store.run((q) => rowForSteps(q, access, chunk.generation, chunk.executionId)),
-        );
+      return files.upload(access.runId, chunk, RUNNER_TRANSCRIPT_MAX_BYTES, function* (q) {
+        const row = yield* rowForSteps(q, access, chunk.generation, chunk.executionId);
         return {
           ...file(access.runId, chunk.generation, row),
           sizeBytes: row.sizeBytes,

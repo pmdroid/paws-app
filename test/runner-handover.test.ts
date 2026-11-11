@@ -412,7 +412,7 @@ test("a fake runner handover leaves its WIP commit on the Paws side as the check
   const generation = context.db
     .query<{ generation: number }, [string]>("SELECT generation FROM runner_work WHERE run_id=?")
     .get(record.runId)!.generation;
-  expect(context.sessions.snapshot(record.runId, generation)).toMatchObject({
+  expect(await context.sessions.snapshot(record.runId, generation)).toMatchObject({
     status: "sealed",
     sessionId: "claude-session",
     commitSha: wip,
