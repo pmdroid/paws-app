@@ -62,7 +62,7 @@ test("a busy helper lane leaves the start attempts alone and a failing helper sp
       throw new Error("Remote execution must not launch a local agent");
     },
     remoteExecution: {
-      slotFree: () => !intake,
+      slotFree: async () => !intake,
       agentForSession: (_sessionId, purpose) => failing(purpose),
       agentForItem: () => failing("work"),
     },

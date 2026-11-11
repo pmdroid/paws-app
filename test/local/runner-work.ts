@@ -17,6 +17,7 @@ import {
   recordRunnerSkills,
   runAgentSetup,
   saveSkill,
+  sqliteDb,
 } from "../../src/db";
 import { createRunnerControl } from "../../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../../src/runner-identity";
@@ -272,7 +273,7 @@ export async function probeRunnerWork(
     const beforeStall = now;
     now = command.expiresAt + 1000;
     const stallMs = now - beforeStall;
-    recoverRunnerWorkStall(db, beforeStall, stallMs);
+    await recoverRunnerWorkStall(sqliteDb(db), beforeStall, stallMs);
     const extended = db
       .query<{ expires_at: number }, []>("SELECT expires_at FROM runner_work_grant")
       .get()!;

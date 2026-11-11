@@ -5,6 +5,7 @@ export {
   projectLeadId,
   registerScheduler,
   saveSchedulingContext,
+  saveSchedulingContextSteps,
   schedulerPaths,
   type SchedulerOptions,
 } from "./scheduler";

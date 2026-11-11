@@ -170,7 +170,7 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
     home: root,
     tracker,
     repositories: [{ owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL }],
-    scheduling: () => ({}),
+    scheduling: async () => ({}),
     // Waits for a runner are re-placed in milliseconds rather than seconds.
     placementPollMs: 1,
     launch() {

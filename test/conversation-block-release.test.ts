@@ -20,7 +20,7 @@ import {
 } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
-import { remoteCommandsGone } from "../src/runner-backend";
+import { remoteCommandsGoneSteps } from "../src/runner-backend";
 import { RUNNER_LIVE_GRACE_MS, createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceTokenHash } from "../src/workspace";
 import { tempHome } from "./helpers";
@@ -98,7 +98,7 @@ async function blockedAfterCleanupFailure() {
       agentForSession: () => {
         throw new Error("Unexpected agent");
       },
-      commandsGone: (itemId, since) => remoteCommandsGone(db, itemId, since),
+      commandsGone: (q, itemId, since) => remoteCommandsGoneSteps(q, itemId, since),
     },
   });
   await orchestrator.onLinearEvent(linearEvent("created", null));

@@ -134,7 +134,7 @@ const source = {
   PAWS_GITHUB_CLIENT_SECRET: "fixture-github-secret",
   GITHUB_APP_PRIVATE_KEY_PATH: key,
 };
-const paws = startPaws(source);
+const paws = await startPaws(source);
 await paws.ready;
 writeFileSync(instancePath, JSON.stringify({ origin, home: source.PAWS_HOME, pid: process.pid }));
 console.log(JSON.stringify({ origin, home: source.PAWS_HOME }));

@@ -399,7 +399,7 @@ export async function probeRunnerOrchestration(
       linearTaskModes: mergeDependencyYield,
       ...(mergeDependencyYield
         ? {
-            scheduling: () => ({}),
+            scheduling: async () => ({}),
             publicationReady(itemId: string) {
               assert.equal(getLinearSession(db, "session")?.activeItemId, itemId);
               assert.equal(getWorkItem(db, "new-blocker")?.state, "completed");

@@ -193,7 +193,7 @@ const start = () =>
     { PAWS_HOME: home, PAWS_PORT: "0" },
     { refreshAgentCatalog: false, refreshRepositories: false },
   );
-let paws = start();
+let paws = await start();
 await paws.ready;
 const userId = putWorkspaceUser(paws.db, {
   id: workspaceId(),
@@ -578,7 +578,7 @@ async function restartMidTurn(command: RunnerCommand) {
   finish(command);
   await runtime.tick();
   assert(!accepted.some((r) => r.commandId === command.id));
-  paws = start();
+  paws = await start();
   await paws.ready;
   down = false;
   assert.equal(getWorkItem(paws.db, command.itemId)?.recoveryAttempts, 0);

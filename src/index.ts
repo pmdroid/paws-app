@@ -98,26 +98,26 @@ import {
 import {
   workspaceMemberUsable,
   enqueueCommand,
-  enqueueJobOnce,
+  enqueueCommandSteps,
   getLinearSession,
-  getWorkItem,
+  getWorkItemSteps,
   getItemRunCommitPolicy,
   workspaceLinearMember,
   workspaceForOrganization,
   listWorkspaceMembers,
-  listRepositoryCandidates,
+  listRepositoryCandidatesSteps,
   getLinearSessionInstallation,
   isLinearAppRevoked,
   journal,
   delegatedLinearUserId,
   getWorkItemRepository,
   getWorkItemRepositoryChoice,
-  getWorkItemRepositoryAnswer,
-  getTaskMode,
-  taskRequiresRepository,
+  getWorkItemRepositoryChoiceSteps,
+  getWorkItemRepositoryAnswerSteps,
+  getTaskModeSteps,
+  taskRequiresRepositorySteps,
   listWorkItems,
   listReviewEscapesSteps,
-  clearUsagePauses,
   countLinearRequest,
   linearBudgetStore,
   migrate,
@@ -128,37 +128,34 @@ import {
   type PostgresConnection,
   readSavedSettings,
   readSetting,
+  readSettingSteps,
   updateSetting,
+  updateSettingSteps,
   CONFIG_SETTINGS_KEY,
   setAsideLegacyDatabase,
   prepareShutdown,
   stopInstance,
-  heartbeatInstance,
   COMMAND_DELIVERY_MS,
   bindInstance,
   INSTANCE_HEARTBEAT_MS,
-  jobInstanceElsewhere,
   MEMBERSHIP_BACKSTOP_MS,
-  registerInstance,
   roleRunsJobs,
-  runPendingJobNow,
-  recoverOnStartup,
   RUN_TAKEOVER_JOB,
   RUN_TAKEOVER_MS,
-  takeOverGoneRuns,
-  listRepositoryCatalog,
+  listRepositoryCatalogSteps,
   refreshRepositoryCatalog,
   startLoops,
   submitCommand,
   type JobLoop,
   type WorkItemRecord,
-  runnerHasCapacity,
-  workspaceMember,
+  type Q,
+  runnerHasCapacitySteps,
+  workspaceMemberSteps,
   sqliteDb,
-  enabledRunnerIds,
+  enabledRunnerIdsSteps,
   latestCloseoutProgressMarker,
   listWorkspaceIds,
-  missingSnapshotTargets,
+  missingSnapshotTargetsSteps,
   workspaceUserLinearId,
   applyLinearIssueProjectSteps,
   applyLinearUserChangeSteps,
@@ -178,6 +175,16 @@ import {
   workspaceForOrganizationSteps,
   workspaceLinearMemberSteps,
   type Db,
+  clearUsagePausesSteps,
+  emitJobReady,
+  heartbeatInstanceSteps,
+  isLinearAppRevokedSteps,
+  jobInstanceElsewhereSteps,
+  recoverOnStartupSteps,
+  registerInstanceSteps,
+  runPendingJobNowSteps,
+  stopInstanceSteps,
+  takeOverGoneRunsSteps,
 } from "./db";
 import { doctorChecks, formatDoctor, realProbe } from "./doctor";
 import { installHostMain } from "./install-host";
@@ -281,17 +288,17 @@ import {
   RELATIONS_POLL_MS,
 } from "./intake";
 import { createExecutionControls } from "./execution-controls";
-import { createAdmission, registerScheduler, saveSchedulingContext } from "./scheduler";
+import { createAdmission, registerScheduler, saveSchedulingContextSteps } from "./scheduler";
 import {
   createRunnerPlacement,
   createRunnerPlacementBrowser,
-  itemOwnerEligibleRunner,
-  itemOwnerHasEligibleRunner,
+  itemOwnerEligibleRunnerSteps,
+  itemOwnerHasEligibleRunnerSteps,
   itemRunnerVerdicts,
   createRunnerHostRefusals,
-  itemOwnerRunnerSetupNeed,
-  itemRepositoryAllowedOn,
-  itemRepositoryRefusals,
+  itemOwnerRunnerSetupNeedSteps,
+  itemRepositoryAllowedOnSteps,
+  itemRepositoryRefusalsSteps,
   itemRepositoryRunner,
 } from "./runner-placement";
 import { releaseVersionFromPath } from "./runner-protocol";
@@ -371,7 +378,7 @@ import {
   createRemoteSessionAgentRunner,
   createFindingGroupHelper,
   fetchRunnerCandidate,
-  remoteCommandsGone,
+  remoteCommandsGoneSteps,
 } from "./runner-backend";
 
 const ACCEPTED: IntakeDecision = { outcome: "accepted" };
@@ -410,7 +417,7 @@ const LOOPBACK = "127.0.0.1";
 const SKILL_UPDATES_KEY = "skills.updates";
 
 /** Open ~/.paws, migrate, recover in-flight work, and listen on 127.0.0.1. */
-export function startPaws(source?: EnvSource, options?: StartOptions): PawsProcess {
+export async function startPaws(source?: EnvSource, options?: StartOptions): Promise<PawsProcess> {
   const envSource = source ?? process.env;
   const execution = envSource.PAWS_EXECUTION;
   if (execution === "local") throw new Error("Paws places work on a remote runner.");
@@ -460,18 +467,20 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   migrate(db);
   importLinearTokenFile(db, paths.secretsDir, runtime.linearTokenFile);
   importCredentialFile(db, paths.secretsDir, "slack", join(paths.secretsDir, "slack-oauth.json"));
-  clearUsagePauses(db);
+  await store.run(clearUsagePausesSteps);
   const linearRevoked = () =>
-    isLinearAppRevoked(db, {
-      oauthClientId: runtime.linearClientId,
-      appUserId: runtime.linearViewerId,
-    });
+    store.run((q) =>
+      isLinearAppRevokedSteps(q, {
+        oauthClientId: runtime.linearClientId,
+        appUserId: runtime.linearViewerId,
+      }),
+    );
   if (
     publicDashboard &&
-    (linearRevoked() ||
+    ((await linearRevoked()) ||
       (runtime.linearAccessToken === null && readStoredToken(db, paths.secretsDir) === null))
   ) {
-    const reconnect = linearRevoked();
+    const reconnect = await linearRevoked();
     db.close();
     return startBrowserOnboarding(
       runtime,
@@ -485,13 +494,15 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     db.close();
     throw new Error("Public dashboard requires the Linear app OAuth client.");
   }
-  const instance = registerInstance(db, {
-    role: runtime.role,
-    host: hostname(),
-    version: installedPawsVersion(),
-    now: Date.now(),
-    pid: process.pid,
-  });
+  const instance = await store.run((q) =>
+    registerInstanceSteps(q, {
+      role: runtime.role,
+      host: hostname(),
+      version: installedPawsVersion(),
+      now: Date.now(),
+      pid: process.pid,
+    }),
+  );
   bindInstance(db, instance.id);
   const releaseSettings = useSettingsStore(paths.configFile, {
     read: () => readSetting(db, CONFIG_SETTINGS_KEY),
@@ -515,7 +526,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const resolveApp = (repository: string) => appActivation.resolve(repository);
   repositoryAccess ??= runnerRepositoryAccess(runtime, resolveApp);
   const commentFilter = pullCommentFilter(runtime, paths.configFile, resolveApp);
-  recoverOnStartup(db, Date.now(), undefined, instance.id);
+  const recoveryWake = { armed: false };
+  const recoveredAt = Date.now();
+  await store.transaction((q) =>
+    recoverOnStartupSteps(q, recoveredAt, undefined, instance.id, recoveryWake),
+  );
+  if (recoveryWake.armed) emitJobReady(store);
   const abort = new AbortController();
   let orchestrator: Orchestrator | null = null;
   let reconciler: ReturnType<typeof createItemReconciler> | null = null;
@@ -566,8 +582,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   }
   const skillUpdates = createSkillUpdates({
     store: {
-      read: () => JSON.parse(readSetting(db, SKILL_UPDATES_KEY) ?? "{}") as Record<string, string>,
-      write: (commits) => updateSetting(db, SKILL_UPDATES_KEY, () => JSON.stringify(commits)),
+      read: async () =>
+        JSON.parse(
+          (await store.run((q) => readSettingSteps(q, SKILL_UPDATES_KEY))) ?? "{}",
+        ) as Record<string, string>,
+      write: (commits) =>
+        store.transaction((q) =>
+          updateSettingSteps(q, SKILL_UPDATES_KEY, () => JSON.stringify(commits)),
+        ),
     },
   });
   periodic.push({
@@ -609,6 +631,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       return;
     }
     submitCommand(db, orchestrator.bus, command);
+  };
+  const submitAsync = async (command: LinearCommand): Promise<void> => {
+    if (orchestrator === null) {
+      const { inserted } = await store.run((q) => enqueueCommandSteps(q, command));
+      if (inserted) emitJobReady(store);
+      return;
+    }
+    await submitCommandAsync(store, orchestrator.bus, command, commandInstance(db));
   };
 
   let linearTaskAccess: LinearTaskAccess | null = null;
@@ -762,7 +792,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       if (orchestrator === null) throw new Error("loop is not attached");
       return orchestrator.sessionProgressReporter(event);
     },
-    submitCommand: submit,
+    submitCommand: submitAsync,
   });
 
   if (linear !== null)
@@ -786,7 +816,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   if (publicDashboard) {
     if (linear?.memberships === null || linear?.memberships === undefined) {
       releaseSettings();
-      stopInstance(db, instance.id, Date.now());
+      await store.run((q) => stopInstanceSteps(q, instance.id, Date.now()));
       db.close();
       throw new Error("Public dashboard requires a connected Linear app installation.");
     }
@@ -840,7 +870,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     } catch (error) {
       abort.abort();
       releaseSettings();
-      stopInstance(db, instance.id, Date.now());
+      await store.run((q) => stopInstanceSteps(q, instance.id, Date.now()));
       db.close();
       throw error;
     }
@@ -905,6 +935,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   void uploadLocalCloseoutEvidence(db, closeoutEvidence).catch((error: unknown) =>
     journalCaught(error, "index.startPaws.uploadLocalCloseoutEvidence", null),
   );
+  const catalogRepositories = async () =>
+    (await store.run(listRepositoryCatalogSteps)).map((entry) => `${entry.owner}/${entry.repo}`);
   let runner: RunnerCoordinator | undefined;
   if (runnerConfig !== null)
     periodic.push(
@@ -958,8 +990,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             : undefined,
           skillsRoot: paths.skillsDir,
           publicUrl: runtime.publicUrl,
-          repositories: () =>
-            listRepositoryCatalog(db).map((entry) => `${entry.owner}/${entry.repo}`),
+          repositories: catalogRepositories,
           onError: () => console.error("Paws runner connection failed."),
           retros: () => retroDispatcher?.fetch,
         }).then(async (value) => {
@@ -1005,7 +1036,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       }
     },
     publicUrl: runtime.publicUrl,
-    repositories: () => listRepositoryCatalog(db).map((entry) => `${entry.owner}/${entry.repo}`),
+    repositories: catalogRepositories,
     latestRelease: () => latestRunnerRelease(),
     runnerControl: async () => {
       const coordinator = await runnerReady;
@@ -1013,12 +1044,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       return {
         port: coordinator.port,
         serverVersion: coordinator.control.serverVersion(),
-        mintEnrollment: (member, input) =>
+        mintEnrollment: async (member, input) =>
           coordinator.control.createEnrollment(
             {
               workspaceId: member.workspaceId,
               userId: member.userId,
-              role: workspaceMember(db, member.workspaceId, member.userId)?.role ?? "member",
+              role:
+                (await store.run((q) => workspaceMemberSteps(q, member.workspaceId, member.userId)))
+                  ?.role ?? "member",
               authenticatedAt: Date.now(),
               teamIds: [],
             },
@@ -1111,10 +1144,15 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           const backend = await remote;
           await backend.agents.cancelItem(itemId);
         },
-        commandsGone: (itemId, since) => remoteCommandsGone(db, itemId, since),
+        commandsGone: (q, itemId, since) => remoteCommandsGoneSteps(q, itemId, since),
         runInProgress: async (runId) => (await remote).agents.runInProgress(runId),
         slotFree: () =>
-          enabledRunnerIds(db).some((host) => runnerHasCapacity(db, host.id, Date.now())),
+          store.run(function* (q) {
+            const now = Date.now();
+            for (const host of yield* enabledRunnerIdsSteps(q))
+              if (yield* runnerHasCapacitySteps(q, host.id, now)) return true;
+            return false;
+          }),
         agentForItem: (itemId) => async (input) => {
           input.signal?.throwIfAborted();
           await ready;
@@ -1174,7 +1212,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       onboarding: async (request, client) =>
         reconnectLinear &&
         !new URL(request.url).pathname.startsWith("/webhooks/") &&
-        linearRevoked()
+        (await linearRevoked())
           ? reconnectLinear(request, client)
           : null,
       ...(linear?.findingIssues ? { findingGroups: { issues: linear.findingIssues } } : {}),
@@ -1365,7 +1403,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   } catch (error) {
     abort.abort();
     releaseSettings();
-    stopInstance(db, instance.id, Date.now());
+    await store.run((q) => stopInstanceSteps(q, instance.id, Date.now()));
     if (runnerConfig !== null)
       void Promise.all([workspace?.stop(), stopRunner()]).then(() => db.close());
     else if (workspace === undefined) db.close();
@@ -1387,10 +1425,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const managed = Boolean(workspace && linear?.tracker && linear.issueLifecycle);
   if (!managed) journal(LINEAR_WORKSPACE_REQUIRED);
   const admission = createAdmission({ db, workspace: managed });
-  const enqueueMissingSnapshots = () => {
-    const targets = missingSnapshotTargets(db);
+  const enqueueMissingSnapshots = async () => {
+    const targets = await store.run(missingSnapshotTargetsSteps);
     for (const target of targets)
-      enqueueJobOnce(db, {
+      await enqueueJobOnceAsync(store, {
         queue: "linear.item.reconcile",
         jobKey: `linear.item.reconcile:${target.itemId}`,
         payload: target,
@@ -1433,18 +1471,21 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           : null,
     });
   }
-  const loops = startLoops({
+  const loops = await startLoops({
     db,
     store,
     instanceId: instance.id,
     role: runtime.role,
     signal: abort.signal,
-    prepare(created) {
+    async prepare(created) {
       // A crashed instance's runs move to a live one without waiting for a restart.
-      created.jobs.register(RUN_TAKEOVER_JOB, () => {
-        takeOverGoneRuns(db, instance.id, Date.now());
+      created.jobs.register(RUN_TAKEOVER_JOB, async () => {
+        const wake = { armed: false };
+        const now = Date.now();
+        await store.transaction((q) => takeOverGoneRunsSteps(q, instance.id, now, wake));
+        if (wake.armed) emitJobReady(store);
       });
-      enqueueJobOnce(db, {
+      await enqueueJobOnceAsync(store, {
         queue: RUN_TAKEOVER_JOB,
         jobKey: RUN_TAKEOVER_JOB,
         recurringEveryMs: RUN_TAKEOVER_MS,
@@ -1506,8 +1547,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                   ? createConversationTurns({ db, helpers: coordinator.helpers })
                   : null;
               },
-              ownerHasRunner: (itemId: string, agent: string, now: number) =>
-                itemOwnerHasEligibleRunner(db, { itemId, agent, now }),
+              ownerHasRunner: (q: Q, itemId: string, agent: string, now: number) =>
+                itemOwnerHasEligibleRunnerSteps(q, { itemId, agent, now }),
               itemRunners: (
                 itemId: string,
                 profile: { agent: string; model?: string | null },
@@ -1515,13 +1556,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               ) => itemRunnerVerdicts(db, { itemId, ...profile, now }),
               onRunnerHostRefusals: runnerHostRefusals.report,
               runnerSetupNeed: (itemId: string, agent: string, now: number) =>
-                itemOwnerRunnerSetupNeed(db, { itemId, agent, now }),
+                store.run((q) => itemOwnerRunnerSetupNeedSteps(q, { itemId, agent, now })),
               eligibleRunner: (itemId: string, agent: string, now: number) =>
-                itemOwnerEligibleRunner(db, { itemId, agent, now }),
+                store.run((q) => itemOwnerEligibleRunnerSteps(q, { itemId, agent, now })),
               repositoryRefusals: (itemId: string, now: number) =>
-                itemRepositoryRefusals(db, { itemId, now }),
+                store.run((q) => itemRepositoryRefusalsSteps(q, { itemId, now })),
               repositoryAllowedOn: (itemId: string, runnerId: string, now: number) =>
-                itemRepositoryAllowedOn(db, { itemId, runnerId, now }),
+                store.run((q) => itemRepositoryAllowedOnSteps(q, { itemId, runnerId, now })),
               runnerRebase: async (
                 item: WorkItemRecord,
                 heads: { head: string; main: string },
@@ -1607,8 +1648,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             ? (await (await workspace.access).recheckLinearEvent(event)) &&
               (parents?.recheckEvent(event) ?? (await assignments?.recheck(event)) ?? true)
             : true,
-        scheduling: () => {
-          enqueueMissingSnapshots();
+        scheduling: async () => {
+          await enqueueMissingSnapshots();
           return { ownerCap: ownerCap(paths.configFile) };
         },
         publicationReady: (
@@ -1618,30 +1659,37 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           runtime,
           env: envSource,
           resolveApp,
-          repositoryForItem: (item) => {
-            const bound = getWorkItemRepository(db, item.id);
-            if (bound) return bound;
-            const answer = getWorkItemRepositoryAnswer(db, item.id);
-            const selected =
-              getWorkItemRepositoryChoice(db, item.id) ??
-              (answer ? repositoryAnswer(answer.answer, answer.candidates) : null);
-            const configured = listRepositoryCandidates(db, item.sessionKey, repositories);
-            return selected
-              ? (configured.find(
-                  (candidate) =>
-                    candidate.owner === selected.owner &&
-                    candidate.repo === selected.repo &&
-                    candidate.remoteUrl === selected.remoteUrl,
-                ) ?? null)
-              : configured.length === 1
-                ? configured[0]!
-                : null;
-          },
+          repositoryForItem: (item) =>
+            store.run(function* (q) {
+              const bound = yield* getWorkItemRepositorySteps(q, item.id);
+              if (bound) return bound;
+              const answer = yield* getWorkItemRepositoryAnswerSteps(q, item.id);
+              const selected =
+                (yield* getWorkItemRepositoryChoiceSteps(q, item.id)) ??
+                (answer ? repositoryAnswer(answer.answer, answer.candidates) : null);
+              const configured = yield* listRepositoryCandidatesSteps(
+                q,
+                item.sessionKey,
+                repositories,
+              );
+              return selected
+                ? (configured.find(
+                    (candidate) =>
+                      candidate.owner === selected.owner &&
+                      candidate.repo === selected.repo &&
+                      candidate.remoteUrl === selected.remoteUrl,
+                  ) ?? null)
+                : configured.length === 1
+                  ? configured[0]!
+                  : null;
+            }),
           accessForItem: (item) =>
-            getTaskMode(db, item.id) !== "code" && taskRequiresRepository(db, item.id)
-              ? "read"
-              : "write",
-          actorForItem: (item) => delegatedLinearUserId(db, item.id),
+            store.run(function* (q) {
+              return (yield* getTaskModeSteps(q, item.id)) !== "code" &&
+                (yield* taskRequiresRepositorySteps(q, item.id))
+                ? "read"
+                : "write";
+            }),
           authorizeItem: async (item, signal, selectedRepository) => {
             const deny = <T>(result: T): T => {
               members?.forget();
@@ -1802,7 +1850,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           ...(parents ? { scopeSnapshot: parents.scopeSnapshot } : {}),
           onChanges: function* (q, changes) {
             for (const { itemId, issue } of changes.issues)
-              saveSchedulingContext(db, {
+              yield* saveSchedulingContextSteps(q, {
                 itemId,
                 ...("projectId" in issue ? { projectId: issue.projectId } : {}),
                 ...("projectLeadId" in issue ? { projectLeadId: issue.projectLeadId } : {}),
@@ -1834,16 +1882,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             ),
           );
         });
-        const forItem = <T>(itemId: string, run: () => T): T => {
-          const item = getWorkItem(db, itemId);
-          return item ? linearItem(item.linearIdentifier, run, item.id) : run();
-        };
         created.jobs.register("linear.item.reconcile", async (job) => {
           const target = job.payload as { itemId: string; workspaceId: string };
+          const item = await store.run((q) => getWorkItemSteps(q, target.itemId));
+          const reconcile = () => reconciler?.reconcile({ ...target, signal: abort.signal });
           await linearCaller("item-reconcile", () =>
-            forItem(target.itemId, () =>
-              reconciler?.reconcile({ ...target, signal: abort.signal }),
-            ),
+            item ? linearItem(item.linearIdentifier, reconcile, item.id) : reconcile(),
           );
           await attached.reconcileExecution();
         });
@@ -1851,7 +1895,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           await linearCaller("epics-sweep", () => reconciler?.sweep({ signal: abort.signal }));
           await attached.reconcileExecution();
         });
-        enqueueJobOnce(db, {
+        await enqueueJobOnceAsync(store, {
           queue: "linear.epics.reconcile",
           jobKey: "linear.epics.reconcile",
           recurringEveryMs: 1_800_000,
@@ -1873,7 +1917,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         created.jobs.register("linear.relations.poll", async () => {
           await relations.all(abort.signal);
         });
-        enqueueJobOnce(db, {
+        await enqueueJobOnceAsync(store, {
           queue: "linear.relations.poll",
           jobKey: "linear.relations.poll",
           recurringEveryMs: RELATIONS_POLL_MS,
@@ -1882,7 +1926,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         created.jobs.register("linear.relations.poll.blocked", async () => {
           await relations.blocked(abort.signal);
         });
-        enqueueJobOnce(db, {
+        await enqueueJobOnceAsync(store, {
           queue: "linear.relations.poll.blocked",
           jobKey: "linear.relations.poll.blocked",
           recurringEveryMs: BLOCKED_RELATIONS_POLL_MS,
@@ -1900,7 +1944,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       // A conversation blocked on an unverified cleanup continues once its runner reports the
       // old command gone.
       created.jobs.register("conversation.block.release", () => attached.releaseCleanupBlocks());
-      enqueueJobOnce(db, {
+      await enqueueJobOnceAsync(store, {
         queue: "conversation.block.release",
         jobKey: "conversation.block.release",
         recurringEveryMs: 30_000,
@@ -1918,24 +1962,27 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         created.jobs.register(FAILED_ISSUE_SWEEP_JOB, async (_job, context) => {
           await sweepFailed(context.signal);
         });
-        const sweep = enqueueJobOnce(db, {
+        const sweep = await enqueueJobOnceAsync(store, {
           queue: FAILED_ISSUE_SWEEP_JOB,
           jobKey: FAILED_ISSUE_SWEEP_JOB,
           recurringEveryMs: FAILED_ISSUE_SWEEP_MS,
           now: Date.now(),
         });
-        if (roleRunsJobs(runtime.role) && !jobInstanceElsewhere(db, instance.id, Date.now()))
-          runPendingJobNow(db, sweep, Date.now());
+        if (
+          roleRunsJobs(runtime.role) &&
+          !(await store.run((q) => jobInstanceElsewhereSteps(q, instance.id, Date.now())))
+        )
+          await store.run((q) => runPendingJobNowSteps(q, sweep, Date.now()));
       }
       created.jobs.register(POLICY_BLOCK_CHECK_JOB, () => attached.checkPolicyBlocks());
-      enqueueJobOnce(db, {
+      await enqueueJobOnceAsync(store, {
         queue: POLICY_BLOCK_CHECK_JOB,
         jobKey: POLICY_BLOCK_CHECK_JOB,
         recurringEveryMs: POLICY_BLOCK_CHECK_MS,
         now: Date.now(),
       });
       created.jobs.register("closeout.stall", () => attached.recoverStalledCloseout());
-      enqueueJobOnce(db, {
+      await enqueueJobOnceAsync(store, {
         queue: "closeout.stall",
         jobKey: "closeout.stall",
         recurringEveryMs: 60_000,
@@ -1944,7 +1991,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       created.jobs.register("worktree.sweep", (_job, context) =>
         attached.sweepWorktrees(context.signal),
       );
-      enqueueJobOnce(db, {
+      await enqueueJobOnceAsync(store, {
         queue: "worktree.sweep",
         jobKey: "worktree.sweep",
         recurringEveryMs: 3_600_000,
@@ -1978,7 +2025,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           },
         ),
       );
-      enqueueJobOnce(db, {
+      await enqueueJobOnceAsync(store, {
         queue: RUNNER_EVENT_PRUNE_JOB,
         jobKey: RUNNER_EVENT_PRUNE_JOB,
         recurringEveryMs: RUNNER_EVENT_PRUNE_EVERY_MS,
@@ -1996,7 +2043,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       created.jobs.register(RETRO_SCHEDULE_JOB, async () => {
         await retroScheduler.tick();
       });
-      enqueueJobOnce(db, {
+      await enqueueJobOnceAsync(store, {
         queue: RETRO_SCHEDULE_JOB,
         jobKey: RETRO_SCHEDULE_JOB,
         recurringEveryMs: RETRO_SCHEDULE_TICK_MS,
@@ -2006,18 +2053,20 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         await runnerReady;
         await retroDispatcher?.tick();
       });
-      enqueueJobOnce(db, {
+      await enqueueJobOnceAsync(store, {
         queue: RETRO_DISPATCH_JOB,
         jobKey: RETRO_DISPATCH_JOB,
         recurringEveryMs: RETRO_DISPATCH_TIMING.tickMs,
         now: Date.now(),
       });
-      const alone = !jobInstanceElsewhere(db, instance.id, Date.now());
+      const alone = !(await store.run((q) =>
+        jobInstanceElsewhereSteps(q, instance.id, Date.now()),
+      ));
       for (const work of periodic) {
         created.jobs.register(work.queue, async (_job, context) => {
           await work.run(context.signal);
         });
-        const id = enqueueJobOnce(db, {
+        const id = await enqueueJobOnceAsync(store, {
           queue: work.queue,
           jobKey: work.queue,
           recurringEveryMs: work.everyMs,
@@ -2026,11 +2075,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         });
         if (work.atStartup && alone && roleRunsJobs(runtime.role)) {
           work.startup?.();
-          runPendingJobNow(db, id, Date.now());
+          await store.run((q) => runPendingJobNowSteps(q, id, Date.now()));
         }
       }
       created.jobs.register("github.auth.recover", () => attached.recoverGitHubAuth());
-      enqueueJobOnce(db, {
+      await enqueueJobOnceAsync(store, {
         queue: "github.auth.recover",
         jobKey: "github.auth.recover",
         recurringEveryMs: 30_000,
@@ -2043,7 +2092,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
 
   const lagTimer = setInterval(
     createLagWatchdog({
-      recover: (lag, startedAt) => recoverRunnerWorkStall(db, startedAt, lag),
+      recover: (lag, startedAt) => recoverRunnerWorkStall(store, startedAt, lag),
     }),
     1000,
   );
@@ -2062,11 +2111,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   });
 
   const instanceTimer = setInterval(() => {
-    try {
-      heartbeatInstance(db, instance.id, Date.now());
-    } catch (error) {
-      journalCaught(error, "index.startPaws.heartbeatInstance", null);
-    }
+    const now = Date.now();
+    void store
+      .run((q) => heartbeatInstanceSteps(q, instance.id, now))
+      .catch((error: unknown) => journalCaught(error, "index.startPaws.heartbeatInstance", null));
   }, INSTANCE_HEARTBEAT_MS);
   instanceTimer.unref?.();
   const commandTimer = setInterval(() => {
@@ -2384,18 +2432,17 @@ export function createGitHubIntegration(input: {
   runtime: RuntimeConfig;
   env: EnvSource;
   resolveApp?: (repository: string) => ActiveGitHubApp;
-  repositoryForItem: (item: WorkItemRecord) => RepositoryBinding | null;
-  actorForItem: (item: WorkItemRecord) => string | null;
+  repositoryForItem: (item: WorkItemRecord) => Promise<RepositoryBinding | null>;
   /** False, or a `GitHubDenial` with the reason the session ends with, cancels the item. */
   authorizeItem?: (
     item: WorkItemRecord,
     signal: AbortSignal,
     repository: RepositoryBinding,
   ) => Promise<boolean | GitHubDenial>;
-  integrationIdentity?: (item: WorkItemRecord) => string;
+  integrationIdentity: (item: WorkItemRecord) => string;
   currentIntegrationItem?: (item: WorkItemRecord) => boolean | GitHubDenial;
   administratorsForItem?: (item: WorkItemRecord) => readonly string[];
-  accessForItem?: (item: WorkItemRecord) => "read" | "write";
+  accessForItem?: (item: WorkItemRecord) => Promise<"read" | "write">;
 }): GitHubIntegration {
   const installation = createGitHubInstallationCheck({
     home: input.runtime.env.home,
@@ -2410,21 +2457,19 @@ export function createGitHubIntegration(input: {
     administrators: input.administratorsForItem ?? (() => []),
     current: input.currentIntegrationItem ?? (() => true),
     unavailableRetryMs: [2_000, 5_000, 10_000, 20_000, 30_000],
-    identity:
-      input.integrationIdentity ??
-      ((item) => JSON.stringify([input.actorForItem(item), input.repositoryForItem(item)])),
+    identity: input.integrationIdentity,
     authorize: async (item: WorkItemRecord, signal: AbortSignal) => {
-      const selected = input.repositoryForItem(item);
+      const selected = await input.repositoryForItem(item);
       if (selected === null) return false;
       return input.authorizeItem ? input.authorizeItem(item, signal, selected) : true;
     },
     async check(item: WorkItemRecord, signal: AbortSignal) {
-      const selected = input.repositoryForItem(item);
+      const selected = await input.repositoryForItem(item);
       return (
         selected !== null &&
         (await installation(
           `${selected.owner}/${selected.repo}`,
-          input.accessForItem?.(item) ?? "write",
+          (await input.accessForItem?.(item)) ?? "write",
           signal,
         ))
       );
@@ -2709,7 +2754,7 @@ if (import.meta.main) {
     console.error(`Unknown option ${unknown}.`);
     process.exit(1);
   }
-  const paws = startPaws(process.env, {
+  const starting = startPaws(process.env, {
     refreshRepositories: true,
     refreshAgentCatalog: true,
   });
@@ -2717,7 +2762,10 @@ if (import.meta.main) {
   const shutdown = (exitCode = 0) => {
     if (exiting) return;
     exiting = true;
-    void shutdownPaws(paws, exitCode);
+    void starting.then(
+      (started) => shutdownPaws(started, exitCode),
+      () => undefined,
+    );
   };
   process.on("SIGINT", () => shutdown());
   process.on("SIGTERM", () => shutdown());
@@ -2733,6 +2781,7 @@ if (import.meta.main) {
       }
       shutdown(PUBLIC_TLS_RESTART_EXIT);
     });
+  const paws = await starting;
   try {
     await paws.ready;
   } catch (caughtError5) {

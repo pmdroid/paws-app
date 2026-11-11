@@ -107,7 +107,7 @@ test("a burst of 20 sessions while every runner slot is busy and Linear rate-lim
       throw new Error("Remote execution must not launch a local agent");
     },
     remoteExecution: {
-      slotFree: () => false,
+      slotFree: async () => false,
       agentForSession: remote,
       agentForItem: remote,
     },

@@ -67,7 +67,7 @@ export async function handleSkillSettingsRequest(
     return json({
       skills,
       rollouts: await store.run((q) => skillRolloutsSteps(q, skills)),
-      ...(options.updates ? { updates: options.updates.available(skills) } : {}),
+      ...(options.updates ? { updates: await options.updates.available(skills) } : {}),
       agents: SKILL_AGENTS,
       limitBytes: options.limit ?? SKILL_BUNDLE_LIMIT,
       ...(notice ? { notice } : {}),

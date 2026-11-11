@@ -14,7 +14,7 @@ import {
   syncWorkspaceMember,
 } from "../src/db";
 import { Orchestrator } from "../src/loop";
-import { itemOwnerHasEligibleRunner } from "../src/runner-placement";
+import { itemOwnerHasEligibleRunnerSteps } from "../src/runner-placement";
 import { tempDb, tempHome } from "./helpers";
 import { workspaceAdmission } from "./fake-workspace";
 
@@ -88,8 +88,9 @@ function orchestrator(db: Database, clock: FakeClock) {
     outbox: new OutboxDispatcher(db, clock),
     clock,
     pawsRoot: tempHome(),
-    scheduling: () => ({}),
-    ownerHasRunner: (itemId, agent, now) => itemOwnerHasEligibleRunner(db, { itemId, agent, now }),
+    scheduling: async () => ({}),
+    ownerHasRunner: (q, itemId, agent, now) =>
+      itemOwnerHasEligibleRunnerSteps(q, { itemId, agent, now }),
   });
 }
 

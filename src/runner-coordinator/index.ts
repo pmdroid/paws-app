@@ -97,7 +97,7 @@ export async function openRunnerCoordinator(options: {
   /** The dashboard's public HTTPS origin, written into a new host's config on Add a host. */
   publicUrl?: string | null;
   /** The repositories a new host may run, written into its config on Add a host. */
-  repositories?: () => readonly string[];
+  repositories?: () => Promise<readonly string[]>;
   retros?: () => ((request: Request, runnerId: string) => Promise<Response | null>) | undefined;
   hostWarnings?: (runnerId: string) => readonly string[];
 }) {
@@ -150,14 +150,14 @@ export async function openRunnerCoordinator(options: {
   const http = createRunnerHttp(control, {
     agents: (principal, runnerId) => health.agents(principal, runnerId),
     ...(options.hostWarnings ? { hostWarnings: options.hostWarnings } : {}),
-    hostConfig: () => {
+    hostConfig: async () => {
       if (!options.publicUrl || !listener) return null;
       const runnerApi = new URL(options.publicUrl);
       runnerApi.port = String(listener.port);
       return {
         controlPlaneUrl: new URL(options.publicUrl).origin,
         runnerApiUrl: runnerApi.origin,
-        allowedRepositories: (options.repositories?.() ?? []).slice(0, 256),
+        allowedRepositories: ((await options.repositories?.()) ?? []).slice(0, 256),
       };
     },
   });

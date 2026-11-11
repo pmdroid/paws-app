@@ -20,7 +20,7 @@ test("Paws runs more task starts at once than the four workers it used to have",
   let release!: () => void;
   const released = new Promise<void>((resolve) => (release = resolve));
   const held: string[] = [];
-  const loops = startLoops({
+  const loops = await startLoops({
     db,
     instanceId: "01JINSTANCEACME0000000000",
     signal: controller.signal,

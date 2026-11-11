@@ -519,7 +519,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     },
     { preconnect: () => undefined },
   );
-  const paws = startPaws({
+  const paws = await startPaws({
     PAWS_HOME: root,
     PAWS_HOST: "127.0.0.1",
     PAWS_PORT: String(port),

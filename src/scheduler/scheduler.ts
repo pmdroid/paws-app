@@ -32,7 +32,7 @@ import {
   runnerSlotsHeldBetweenCommandsSteps,
   unassignedRunnerReservationsSteps,
   schedulerRunnerSlotsSteps,
-  saveItemScheduling,
+  saveItemSchedulingSteps,
   saveSchedulerAdmissionSteps,
   schedulerItemsSteps,
   schedulingProjectLead,
@@ -253,17 +253,20 @@ export function schedulerPaths(paths: readonly string[]): string[] {
   ].sort();
 }
 
-export function saveSchedulingContext(
-  db: Database,
-  input: {
-    itemId: string;
-    projectId?: string | null;
-    /** Linear user id of the project lead. Unknown keeps the saved lead. */
-    projectLeadId?: string | null;
-    priority?: number;
-    paths?: readonly string[] | null;
-  },
-): void {
+type SchedulingContext = {
+  itemId: string;
+  projectId?: string | null;
+  /** Linear user id of the project lead. Unknown keeps the saved lead. */
+  projectLeadId?: string | null;
+  priority?: number;
+  paths?: readonly string[] | null;
+};
+
+export function saveSchedulingContext(db: Database, input: SchedulingContext): void {
+  settled(sqliteDb(db).run((q) => saveSchedulingContextSteps(q, input)));
+}
+
+export function* saveSchedulingContextSteps(q: Q, input: SchedulingContext): Steps<void> {
   if (input.projectId != null && !input.projectId.trim()) throw new Error("Invalid Linear project");
   if (input.projectLeadId != null && !input.projectLeadId.trim())
     throw new Error("Invalid Linear project lead");
@@ -271,7 +274,7 @@ export function saveSchedulingContext(
   if (!Number.isInteger(priority) || priority < 0 || priority > 4)
     throw new Error("Invalid Linear priority");
   const paths = input.paths == null ? null : schedulerPaths(input.paths);
-  saveItemScheduling(db, {
+  yield* saveItemSchedulingSteps(q, {
     itemId: input.itemId,
     projectId: input.projectId ?? null,
     projectKnown: Number(input.projectId !== undefined),

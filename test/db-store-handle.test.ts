@@ -28,7 +28,7 @@ function database() {
 }
 
 test("startup holds one store, sqliteDb() of its database", async () => {
-  const paws = startPaws({ PAWS_HOME: tempHome(), PAWS_PORT: "0", PAWS_HOST: "127.0.0.1" });
+  const paws = await startPaws({ PAWS_HOME: tempHome(), PAWS_PORT: "0", PAWS_HOST: "127.0.0.1" });
   try {
     expect(paws.store).toBe(sqliteDb(paws.db));
   } finally {
@@ -36,12 +36,18 @@ test("startup holds one store, sqliteDb() of its database", async () => {
   }
 });
 
-test("the job loop and the outbox dispatcher hold the store they are given", () => {
+test("the job loop and the outbox dispatcher hold the store they are given", async () => {
   const { db } = database();
   const store = sqliteDb(db);
   const abort = new AbortController();
   abort.abort();
-  const loops = startLoops({ db, store, instanceId: "store", role: "web", signal: abort.signal });
+  const loops = await startLoops({
+    db,
+    store,
+    instanceId: "store",
+    role: "web",
+    signal: abort.signal,
+  });
   expect(loops.jobs.store).toBe(store);
   expect(loops.outbox.store).toBe(store);
   expect(new JobLoop(db, systemClock).store).toBe(store);

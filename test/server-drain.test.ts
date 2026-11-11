@@ -86,7 +86,7 @@ test("Paws shutdown joins an accepted HTTP operation before closing SQLite", asy
     },
     { preconnect: () => undefined },
   );
-  const paws = startPaws({
+  const paws = await startPaws({
     PAWS_HOME: home,
     PAWS_PORT: "0",
     LINEAR_ACCESS_TOKEN: "offline-token",

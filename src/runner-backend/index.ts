@@ -2758,7 +2758,7 @@ export { fastForwardToBranchTip, fetchRunnerCandidate } from "./candidate";
 export { recordRunnerCheckpoint } from "./checkpoint";
 export { ensureStartOnRemote, RemoteStartUnverified } from "./start-commit";
 
-export { remoteCommandsGone } from "./released";
+export { remoteCommandsGoneSteps } from "./released";
 
 export { createRemoteCheckpoint } from "./checkpoint";
 

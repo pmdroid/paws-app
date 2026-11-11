@@ -261,12 +261,12 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
   });
 
   const missing = join(root, "startup-missing");
-  assert.throws(
+  await assert.rejects(
     () => startPaws({ PAWS_HOME: missing, PAWS_PORT: "0", PAWS_EXECUTION: "remote" }),
     /Remote execution requires runner HTTPS/,
   );
   assert(!existsSync(missing));
-  const started = startPaws({
+  const started = await startPaws({
     PAWS_HOME: join(root, "startup-control"),
     PAWS_PORT: "0",
   });
@@ -276,7 +276,7 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
   } finally {
     await started.stop();
   }
-  assert.throws(
+  await assert.rejects(
     () =>
       startPaws(
         {

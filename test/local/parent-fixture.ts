@@ -120,7 +120,7 @@ export function createParentFixture(
     outbox,
     pawsRoot: "/nonexistent-project-proof",
     tracker,
-    scheduling: () => ({}),
+    scheduling: async () => ({}),
     authorizeLinearIntake: parents.authorizeIntake,
     linearIntakeScope: parents.scope,
     linearIntakeActor: parents.actor,

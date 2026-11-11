@@ -10,7 +10,9 @@ test("a ten second stall journals once with the operation and recovers once", ()
   const sample = createLagWatchdog({
     clock,
     log: (line) => lines.push(line),
-    recover: (...args) => recovered.push(args),
+    recover: async (...args) => {
+      recovered.push(args);
+    },
   });
   trackHostOperation(
     "job:linear.delivery",
@@ -43,7 +45,11 @@ test("wall clock changes and ordinary timer jitter do not recover authority", ()
 test("awaiting and completed jobs are excluded from stall attribution", async () => {
   const clock = new FakeClock();
   const lines: string[] = [];
-  const sample = createLagWatchdog({ clock, log: (line) => lines.push(line), recover: () => {} });
+  const sample = createLagWatchdog({
+    clock,
+    log: (line) => lines.push(line),
+    recover: async () => {},
+  });
   let resolve!: () => void;
   const pending = trackHostOperation(
     "job:waiting",
@@ -69,7 +75,11 @@ test("awaiting and completed jobs are excluded from stall attribution", async ()
 test("synchronous work after an await retains its operation without attributing the await", async () => {
   const clock = new FakeClock();
   const lines: string[] = [];
-  const sample = createLagWatchdog({ clock, log: (line) => lines.push(line), recover: () => {} });
+  const sample = createLagWatchdog({
+    clock,
+    log: (line) => lines.push(line),
+    recover: async () => {},
+  });
   let resume!: () => void;
   const gate = new Promise<void>((resolve) => {
     resume = resolve;

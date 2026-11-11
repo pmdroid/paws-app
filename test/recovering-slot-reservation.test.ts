@@ -266,7 +266,7 @@ async function runRecovering(input: {
     home: root,
     tracker,
     repositories: [{ owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL }],
-    scheduling: () => ({}),
+    scheduling: async () => ({}),
     reviewRequirements: () => ({
       ok: true,
       items: [

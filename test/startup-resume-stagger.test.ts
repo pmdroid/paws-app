@@ -87,7 +87,7 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
       repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
       linearTaskModes: true,
       linearAccess: gate,
-      scheduling: () => ({}),
+      scheduling: async () => ({}),
       launch(input) {
         if (input.purpose === "implement") implementations.push(input.itemId);
         const steps: FakeScript["steps"] =

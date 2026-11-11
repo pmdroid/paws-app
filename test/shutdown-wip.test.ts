@@ -30,7 +30,7 @@ describe("shutdown WIP", () => {
     const home = tempHome();
     await seedWorktree(home, "ENG-21");
     await writeFile(join(worktreePath(home, "ENG-21"), "notes.txt"), "dirty\n");
-    const paws = startPaws({
+    const paws = await startPaws({
       PAWS_HOME: home,
       PAWS_PORT: "0",
       PAWS_HOST: "127.0.0.1",
@@ -163,7 +163,7 @@ describe("shutdown WIP", () => {
       },
       { preconnect: () => undefined },
     );
-    const paws = startPaws({
+    const paws = await startPaws({
       PAWS_HOME: home,
       PAWS_PORT: "0",
       PAWS_HOST: "127.0.0.1",

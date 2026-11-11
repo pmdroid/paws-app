@@ -1,5 +1,5 @@
 import {
-  extendStalledRunnerWork,
+  extendStalledRunnerWorkSteps,
   acknowledgeRunnerCommandSteps,
   assignRunnerWorkSteps,
   availableRunnerIdentitySteps,
@@ -65,6 +65,7 @@ import {
   workspaceInLinearOrganizationSteps,
   workspaceSessionIdsSteps,
   workspaceSessionRepositoryAllowedSteps,
+  type Db,
   type Q,
   type Steps,
   type RunnerAssignment as Assignment,
@@ -917,6 +918,6 @@ export function createRunnerWork(options: {
 export type RunnerWork = ReturnType<typeof createRunnerWork>;
 
 // Use the same monotonic lease extension as heartbeat renewal.
-export function recoverRunnerWorkStall(db: Database, startedAt: number, lagMs: number): void {
-  extendStalledRunnerWork(db, startedAt, lagMs);
+export function recoverRunnerWorkStall(store: Db, startedAt: number, lagMs: number): Promise<void> {
+  return store.transaction((q) => extendStalledRunnerWorkSteps(q, startedAt, lagMs));
 }

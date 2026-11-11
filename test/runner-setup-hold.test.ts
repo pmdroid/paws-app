@@ -231,9 +231,10 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     home: root,
     tracker,
     repositories: [{ owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL }],
-    scheduling: () => ({}),
+    scheduling: async () => ({}),
     runnersUrl: RUNNERS_URL,
-    eligibleRunner: (itemId, agent, at) => itemOwnerEligibleRunner(db, { itemId, agent, now: at }),
+    eligibleRunner: async (itemId, agent, at) =>
+      itemOwnerEligibleRunner(db, { itemId, agent, now: at }),
     launch() {
       return { command: "/forbidden-local-agent", args: [] };
     },
