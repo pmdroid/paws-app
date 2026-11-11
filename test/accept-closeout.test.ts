@@ -165,7 +165,7 @@ test("re-acceptance revives a done merge job with the current item fence", async
   const item = getWorkItem(db, "item")!;
   expect(await accept(db, { version: item.version, runId: item.currentRunId })).toBe(id);
   expect(getJob(db, id)).toMatchObject({ status: "pending", attempts: 0 });
-  expect(jobVersionCurrent(db, getJob(db, id)!)).toBe(true);
+  expect(await jobVersionCurrent(sqliteDb(db), getJob(db, id)!)).toBe(true);
   db.run("UPDATE job SET status='done' WHERE id=?", [id]);
   db.run("UPDATE work_item SET cancel_requested=1 WHERE id='item'");
   const cancelled = getWorkItem(db, "item")!;

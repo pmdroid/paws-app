@@ -156,7 +156,7 @@ describe("a clock gap during a parked wait", () => {
             }
             const claimed = claimNextJob(db, { now: clock.now(), queues: [...EXECUTION] });
             expect(claimed?.id).toBe(owner);
-            expect(jobVersionCurrent(db, claimed!)).toBe(true);
+            expect(await jobVersionCurrent(sqliteDb(db), claimed!)).toBe(true);
             expect(claimNextJob(db, { now: clock.now(), queues: [...EXECUTION] })).toBeNull();
             expect(await dispatch(db, { now: clock.now() })).toEqual([]);
             expect(executions(db).map((job) => job.id)).toEqual([owner]);
@@ -256,7 +256,7 @@ describe("ownership a clock gap does not invent", () => {
         ]);
         const resumes = executions(db).filter((job) => job.id !== owner);
         expect(resumes).toHaveLength(1);
-        expect(jobVersionCurrent(db, resumes[0]!)).toBe(true);
+        expect(await jobVersionCurrent(sqliteDb(db), resumes[0]!)).toBe(true);
         expect(getWorkItem(db, "eng-9")).toMatchObject({
           state: "recovering",
           recoveryAttempts: 1,
@@ -279,7 +279,7 @@ describe("ownership a clock gap does not invent", () => {
         expect(resumes).toMatchObject([
           { queue: JOB_KIND.resume, payload: { reason: "orphaned" } },
         ]);
-        expect(jobVersionCurrent(db, resumes[0]!)).toBe(true);
+        expect(await jobVersionCurrent(sqliteDb(db), resumes[0]!)).toBe(true);
       } finally {
         host.stop();
         db.close();

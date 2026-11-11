@@ -48,11 +48,11 @@ test("the merge-work SQL classifies every job as isMergeWork does", () => {
   }
 });
 
-test("cancelling the merge lane cancels a merge job", () => {
+test("cancelling the merge lane cancels a merge job", async () => {
   const db = legacyTempDb();
   try {
     enqueueJob(db, { queue: JOB_KIND.merge, payload: {}, now: 1 });
-    expect(cancelOpenJobs(db, { reason: "stop", mergeLane: true, now: 2 })).toBe(1);
+    expect(await cancelOpenJobs(sqliteDb(db), { reason: "stop", mergeLane: true, now: 2 })).toBe(1);
   } finally {
     db.close();
   }

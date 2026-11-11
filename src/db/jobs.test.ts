@@ -80,7 +80,7 @@ async function holdMergeQueuePlace(
 }
 
 describe("job queue", () => {
-  test("item cancellation stays local while explicit merge-lane cancellation unions scopes", () => {
+  test("item cancellation stays local while explicit merge-lane cancellation unions scopes", async () => {
     const { db, clock } = queue();
     const own = enqueueMerge(db, clock, "own");
     const other = enqueueMerge(db, clock, "other");
@@ -94,7 +94,9 @@ describe("job queue", () => {
       payload: { itemId: "own" },
       now: clock.now(),
     });
-    expect(cancelOpenJobs(db, { itemId: "own", reason: "local", now: clock.now() })).toBe(1);
+    expect(
+      await cancelOpenJobs(sqliteDb(db), { itemId: "own", reason: "local", now: clock.now() }),
+    ).toBe(1);
     expect(getJob(db, own)?.status).toBe("cancelled");
     expect(getJob(db, other)?.status).toBe("pending");
     expect(getJob(db, otherResume)?.status).toBe("pending");
@@ -105,7 +107,12 @@ describe("job queue", () => {
       now: clock.now(),
     });
     expect(
-      cancelOpenJobs(db, { itemId: "own", mergeLane: true, reason: "global", now: clock.now() }),
+      await cancelOpenJobs(sqliteDb(db), {
+        itemId: "own",
+        mergeLane: true,
+        reason: "global",
+        now: clock.now(),
+      }),
     ).toBe(2);
     expect(getJob(db, ownResume)?.status).toBe("cancelled");
     expect(getJob(db, other)?.status).toBe("cancelled");
@@ -593,7 +600,7 @@ describe("leased job writes", () => {
 
 test.each(["done", "cancelled", "dead"] as const)(
   "explicit revival refreshes a %s row while lifetime dedupe retains it",
-  (status) => {
+  async (status) => {
     const { db } = queue();
     insertQueuedItem(db, { id: "revive", now: 1 });
     const original = {
@@ -620,7 +627,7 @@ test.each(["done", "cancelled", "dead"] as const)(
       lastError: null,
       payload: fresh.payload,
     });
-    expect(jobVersionCurrent(db, getJob(db, id)!)).toBe(true);
+    expect(await jobVersionCurrent(sqliteDb(db), getJob(db, id)!)).toBe(true);
     expect(reenqueueJob(db, { ...fresh, now: 4, payload: {} })).toEqual({ id, pending: true });
     expect(getJob(db, id)?.payload).toEqual(fresh.payload);
     const leased = claimNextJob(db, { now: 4, queues: ["test"] })!;

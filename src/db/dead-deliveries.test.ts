@@ -300,7 +300,7 @@ describe("dead outbox rows and jobs", () => {
       true,
     );
     expect(getJob(db, job!.id)?.status).toBe("pending");
-    expect(jobVersionCurrent(db, job!)).toBe(true);
+    expect(await jobVersionCurrent(sqliteDb(db), job!)).toBe(true);
     expect(
       await retryDeadDelivery(sqliteDb(db), "item-q", { kind: "outbox", id: 1 }, clock.now()),
     ).toBe(true);
@@ -328,7 +328,7 @@ describe("dead outbox rows and jobs", () => {
       false,
     );
     expect(getJob(db, job!.id)?.status).toBe("dead");
-    expect(jobVersionCurrent(db, job!)).toBe(false);
+    expect(await jobVersionCurrent(sqliteDb(db), job!)).toBe(false);
   });
 
   test("every question id column in the schema is a known question link", () => {

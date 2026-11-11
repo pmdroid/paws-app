@@ -131,7 +131,7 @@ describe("restart and ask", () => {
     },
   );
 
-  test("same-head CI recurs with fresh handoff and accounting, while stale replays do nothing", () => {
+  test("same-head CI recurs with fresh handoff and accounting, while stale replays do nothing", async () => {
     const { db, item } = fixture();
     const jobKey = "ci-failed:item:recheck:head";
     const first = restart(db, item, { reason: "ci", body: "first failure", jobKey, now: 2 })!;
@@ -154,7 +154,7 @@ describe("restart and ask", () => {
       finishedAt: null,
       payload: { handoff: "second failure", reason: "ci" },
     });
-    expect(jobVersionCurrent(db, getJob(db, second)!)).toBe(true);
+    expect(await jobVersionCurrent(sqliteDb(db), getJob(db, second)!)).toBe(true);
     expect(fixRounds(db, item.id)).toBe(2);
     expect(
       restart(db, secondItem, { reason: "ci", body: "second failure", jobKey, now: 5 }),
@@ -266,7 +266,7 @@ describe("restart and ask", () => {
     });
     const old = claimNextJob(db, { now: 1 })!;
     restart(db, verifying, { reason: "findings", body: "fix", now: 2 });
-    expect(jobVersionCurrent(db, old)).toBe(false);
+    expect(await jobVersionCurrent(sqliteDb(db), old)).toBe(false);
     const before = {
       events: listWorkItemEventRows(db, item.id),
       outbox: listOutbox(db),

@@ -280,7 +280,7 @@ describe("restart recovery", () => {
     test("does not run after the item is cancelled", async () => {
       const { db, clock, item } = await deferred();
       recoverOnStartup(db, clock.now());
-      cancelOpenJobs(db, { itemId: item.id, reason: "stop", now: clock.now() });
+      await cancelOpenJobs(sqliteDb(db), { itemId: item.id, reason: "stop", now: clock.now() });
       clock.advance(700_000);
       expect(claimNextJob(db, { now: clock.now() })).toBeNull();
     });

@@ -59,11 +59,11 @@ test("a cancelled resume handler stays fenced while its revived row runs a new h
   loop.register(JOB_KIND.resume, async (job, context) => {
     if ((job.payload as { handoff: string }).handoff === "old") {
       await gate;
-      staleChecks = [context.isCurrent(), jobVersionCurrent(db, job)];
+      staleChecks = [context.isCurrent(), await jobVersionCurrent(sqliteDb(db), job)];
       if (staleChecks.some(Boolean)) writes.push("stale");
     } else {
       expect(context.isCurrent()).toBe(true);
-      expect(jobVersionCurrent(db, job)).toBe(true);
+      expect(await jobVersionCurrent(sqliteDb(db), job)).toBe(true);
       writes.push("new");
     }
   });
@@ -78,7 +78,7 @@ test("a cancelled resume handler stays fenced while its revived row runs a new h
       now: 3,
     }),
   ).toBe(id);
-  expect(jobVersionCurrent(db, old)).toBe(false);
+  expect(await jobVersionCurrent(sqliteDb(db), old)).toBe(false);
   clock.advance(2);
   await workspaceDispatch(db, { now: clock.now() });
   await loop.tick([JOB_KIND.resume]);
@@ -101,12 +101,12 @@ test.each(["done", "cancelled", "dead"] as const)(
     const old = claimNextJob(db, { now: 2, queues: [JOB_KIND.merge] })!;
     db.run("UPDATE job SET status=? WHERE id=?", [status, id]);
     expect(await enqueueVerifiedMerge(db, { ...input, now: 3 })).toBe(id);
-    expect(jobVersionCurrent(db, old)).toBe(false);
+    expect(await jobVersionCurrent(sqliteDb(db), old)).toBe(false);
     const current = claimNextJob(db, { now: 3, queues: [JOB_KIND.merge] })!;
     expect(current.id).toBe(old.id);
     expect(current.activationId).toBeGreaterThan(old.activationId);
-    expect(jobVersionCurrent(db, old)).toBe(false);
-    expect(jobVersionCurrent(db, current)).toBe(true);
+    expect(await jobVersionCurrent(sqliteDb(db), old)).toBe(false);
+    expect(await jobVersionCurrent(sqliteDb(db), current)).toBe(true);
     expect(completeJob(db, old, 4)).toBe(false);
     expect(getJob(db, id)).toEqual(current);
     db.close();

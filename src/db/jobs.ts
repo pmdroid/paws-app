@@ -788,8 +788,8 @@ export function* cancelOpenJobsSteps(q: Q, input: CancelOpenJobsInput) {
  * Cancelling a job does not resolve a remote merge outcome or clear its durable marker.
  * `core.command` rows are left for the drain that is applying the command.
  */
-export function cancelOpenJobs(db: Database, input: CancelOpenJobsInput): number {
-  return run(db, (q) => cancelOpenJobsSteps(q, input));
+export async function cancelOpenJobs(store: Db, input: CancelOpenJobsInput): Promise<number> {
+  return store.run((q) => cancelOpenJobsSteps(q, input));
 }
 
 /** Item jobs journal every outcome. Any job that goes dead journals, so none dies unseen. */
@@ -866,8 +866,11 @@ export function* jobVersionCurrentSteps(q: Q, job: Pick<Job, "id" | "activationI
 }
 
 /** The item's version when this job was created, checked before starting side effects. */
-export function jobVersionCurrent(db: Database, job: Pick<Job, "id" | "activationId">): boolean {
-  return run(db, (q) => jobVersionCurrentSteps(q, job));
+export async function jobVersionCurrent(
+  store: Db,
+  job: Pick<Job, "id" | "activationId">,
+): Promise<boolean> {
+  return store.run((q) => jobVersionCurrentSteps(q, job));
 }
 
 export function* latestItemJobIdSteps(

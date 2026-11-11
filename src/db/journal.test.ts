@@ -95,7 +95,7 @@ describe("journal", () => {
       now: 1_000,
     });
     enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "c" }, now: 0 });
-    cancelOpenJobs(db, { itemId: "c", reason: "stopped", now: 1_000 });
+    await cancelOpenJobs(sqliteDb(db), { itemId: "c", reason: "stopped", now: 1_000 });
     expect(lines.filter((line) => line.startsWith("job "))).toEqual([
       "job 1 run.resume done item=a attempts=1/10",
       "job 2 github.merge dead item=b attempts=1/1 error=merge conflict",

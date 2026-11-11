@@ -12,6 +12,7 @@ import {
   migrate,
   openDatabase,
   setJournalSink,
+  sqliteDb,
 } from "./index";
 
 /** The next claim statement throws once. Later claims use the real database. */
@@ -178,7 +179,8 @@ for (const scenario of ["reclaimed", "cancelled"] as const) {
       expect(
         claimNextJob(db, { workerId: "job-loop", queues: ["work"], now: clock.now() })?.id,
       ).toBe(id);
-    } else cancelOpenJobs(db, { itemId: "item", reason: "cancelled", now: clock.now() });
+    } else
+      await cancelOpenJobs(sqliteDb(db), { itemId: "item", reason: "cancelled", now: clock.now() });
     const replacement = getJob(db, id);
     expect(context.isCurrent()).toBe(false);
     expect(context.signal.aborted).toBe(true);

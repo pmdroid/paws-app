@@ -32,12 +32,12 @@ test("clearing a leased job's wait bookkeeping preserves its item-version fence 
       attempts: 1,
       payload: { itemId: item.id },
     });
-    expect(jobVersionCurrent(db, job)).toBe(true);
+    expect(await jobVersionCurrent(sqliteDb(db), job)).toBe(true);
     db.run("UPDATE work_item SET version=version+1 WHERE id=?", [item.id]);
     expect(
       await replaceLeasedJobPayload(sqliteDb(db), job, { itemId: item.id, decide: true }, 1_002),
     ).toBe(true);
-    expect(jobVersionCurrent(db, job)).toBe(false);
+    expect(await jobVersionCurrent(sqliteDb(db), job)).toBe(false);
     db.run("UPDATE job SET locked_by='replacement' WHERE id=?", [id]);
     expect(await replaceLeasedJobPayload(sqliteDb(db), job, { itemId: item.id }, 1_003)).toBe(
       false,
@@ -58,9 +58,9 @@ test("a parked verification version refresh is limited to its original eligible 
     const id = enqueueJob(db, { queue: "run.reverify", payload: { itemId: item.id }, now: 1000 });
     const job = claimNextJob(db, { queues: ["run.reverify"], now: 1000, leaseMs: 5000 })!;
     db.run("UPDATE work_item SET version=version+1,state='merge_queue' WHERE id=?", [item.id]);
-    expect(jobVersionCurrent(db, job)).toBe(false);
+    expect(await jobVersionCurrent(sqliteDb(db), job)).toBe(false);
     expect(await refreshVerificationJobVersion(sqliteDb(db), job, run.id, 1001)).toBe(true);
-    expect(jobVersionCurrent(db, job)).toBe(true);
+    expect(await jobVersionCurrent(sqliteDb(db), job)).toBe(true);
     db.run("UPDATE work_item SET version=version+1 WHERE id=?", [item.id]);
     expect(await refreshVerificationJobVersion(sqliteDb(db), job, "different-run", 1002)).toBe(
       false,
