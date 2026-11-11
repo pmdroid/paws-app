@@ -12,6 +12,7 @@ import {
   type Db,
 } from "../db";
 import { readWorkspaceJson } from "./administration";
+import { createGitHubUserGrants } from "./github-user-grant";
 import {
   cookieValue,
   requestWorkspaceSession,
@@ -23,6 +24,7 @@ import {
 const PATH = "/api/workspaces/github-attribution";
 const CALLBACK = "/auth/github-attribution/callback";
 const COOKIE = "__Host-paws-attribution";
+const AS_MEMBER = ".pr";
 const NOT_CONFIGURED =
   "Ask the Paws operator to configure the GitHub App on the server, then restart Paws.";
 
@@ -31,6 +33,7 @@ export function createGitHubAttributionLink(options: {
   origin: string;
   client?: { clientId: string; clientSecret: string };
   refresh: (workspaceId: string, userId: string) => Promise<void>;
+  secretsDir?: string;
   fetch?: typeof fetch;
   now?: () => number;
 }) {
@@ -39,11 +42,17 @@ export function createGitHubAttributionLink(options: {
   const origin = new URL(options.origin).origin;
   if (options.client && (!options.client.clientId || !options.client.clientSecret))
     throw new Error("Configured GitHub App client metadata is required.");
+  const { client: appClient, secretsDir } = options;
+  const grants =
+    appClient && secretsDir !== undefined
+      ? createGitHubUserGrants({ ...options, client: appClient, secretsDir, fetch: http, now })
+      : undefined;
   /** Records one pending link and builds GitHub's authorize address for it. */
   async function begin(
     client: { clientId: string; clientSecret: string },
     binding: AttributionBinding,
     returnPath?: string,
+    pullRequestsAsMember = false,
   ) {
     const state = workspaceSecret();
     const browser = workspaceSecret();
@@ -64,12 +73,14 @@ export function createGitHubAttributionLink(options: {
     }).toString();
     return {
       authorizeUrl: target.href,
-      cookie: `${COOKIE}=${browser}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=600`,
+      cookie: `${COOKIE}=${browser}${pullRequestsAsMember ? AS_MEMBER : ""}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=600`,
     };
   }
   return {
     /** The page offers the link only when the server has GitHub App client metadata. */
     configured: options.client !== undefined,
+    githubUserToken: (workspaceId: string, userId: string) =>
+      grants?.token(workspaceId, userId) ?? Promise.resolve(null),
     /**
      * Starts a consented link from a server-rendered page form (the onboarding page). The caller
      * decides `returnPath` from the route it verified; nothing in the request names it. The form
@@ -180,16 +191,31 @@ export function createGitHubAttributionLink(options: {
           return reply({
             configured: options.client !== undefined,
             identity: await githubAttribution(options.store, binding.workspaceId, binding.userId),
+            pullRequestsAsMember: {
+              available: grants !== undefined,
+              enabled: (await grants?.enabled(binding.workspaceId, binding.userId)) ?? false,
+            },
           });
         await requireAttributionSession(options.store, binding, now());
         if (url.pathname === PATH) {
           if (request.method === "DELETE") {
             await revokeGitHubAttribution(options.store, binding, now());
+            await grants?.clear(binding.workspaceId, binding.userId);
             return reply({ ok: true });
           }
           if (!options.client) return reply({ error: NOT_CONFIGURED }, 503);
           const body = await readWorkspaceJson(request);
-          if (!record(body) || Object.keys(body).length !== 1 || body["consent"] !== true)
+          const asMember = record(body) ? body["pullRequestsAsMember"] : undefined;
+          if (asMember === false && Object.keys(body as object).length === 1) {
+            await grants?.clear(binding.workspaceId, binding.userId);
+            return reply({ ok: true });
+          }
+          if (
+            !record(body) ||
+            Object.keys(body).length !== (asMember === undefined ? 1 : 2) ||
+            body["consent"] !== true ||
+            (asMember !== undefined && typeof asMember !== "boolean")
+          )
             return reply(
               {
                 error:
@@ -197,13 +223,17 @@ export function createGitHubAttributionLink(options: {
               },
               400,
             );
-          const started = await begin(options.client, binding);
+          if (asMember === true && grants === undefined)
+            return reply({ error: NOT_CONFIGURED }, 503);
+          const started = await begin(options.client, binding, undefined, asMember === true);
           return reply({ authorizeUrl: started.authorizeUrl }, 200, {
             "set-cookie": started.cookie,
           });
         }
         const state = url.searchParams.get("state");
-        const browser = cookieValue(request, COOKIE);
+        const cookie = cookieValue(request, COOKIE);
+        const asMember = cookie?.endsWith(AS_MEMBER) === true;
+        const browser = asMember ? cookie!.slice(0, -AS_MEMBER.length) : cookie;
         if (
           !state ||
           !browser ||
@@ -280,13 +310,17 @@ export function createGitHubAttributionLink(options: {
             .slice(0, 200)
             .trim() || login;
         await options.refresh(binding.workspaceId, binding.userId);
-        await saveGitHubAttribution(
-          options.store,
-          binding,
-          { id, login, name, email: `${id}+${login}@users.noreply.github.com` },
-          revision,
-          now(),
-        );
+        const saveIdentity = () =>
+          saveGitHubAttribution(
+            options.store,
+            binding,
+            { id, login, name, email: `${id}+${login}@users.noreply.github.com` },
+            revision,
+            now(),
+          );
+        await (asMember && grants
+          ? grants.link(binding.workspaceId, binding.userId, id, grant, saveIdentity)
+          : saveIdentity());
         return new Response(null, {
           status: 303,
           headers: {
