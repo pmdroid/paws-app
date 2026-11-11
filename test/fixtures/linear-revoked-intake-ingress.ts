@@ -77,7 +77,7 @@ const revoked = await post(
   { type: "OAuthApp", action: "revoked", createdAt: new Date().toISOString() },
   "revoked",
 );
-const reconnect = createLinearReconnect({
+const reconnect = await createLinearReconnect({
   now: () => Date.now() + 1000,
   fetch: async () =>
     Response.json({ data: { viewer: { id: "app", app: true, organization: { id: "org" } } } }),

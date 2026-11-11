@@ -8,7 +8,7 @@ export {
   recordRepositoryCommandResult,
   REPOSITORY_COMMAND_GRANT_MS,
   RepositoryCommandDeniedError,
-  repositoryCommandDeliveredTo,
+  repositoryCommandDeliveredToSteps,
   repositoryCommandState,
   waitForRepositoryCommand,
   type RepositoryCommandInput,

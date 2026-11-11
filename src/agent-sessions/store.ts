@@ -1,5 +1,13 @@
 import type { Database } from "bun:sqlite";
-import { immediate } from "../db";
+import {
+  agentSessionSnapshot,
+  deleteAgentSessionChunks,
+  discardStaleAgentSessions,
+  discardedAgentSessionChunks,
+  immediate,
+  insertAgentSessionSnapshot,
+  sealAgentSessionSnapshot,
+} from "../db";
 import { journalCaught } from "../journal";
 import type { RunnerWork } from "../runner-work";
 import { createRunFileChunks, type RunFileObjects } from "../run-files";
@@ -69,15 +77,7 @@ export function createAgentSessions(options: {
     return command;
   }
   function snapshot(runId: string, generation: number) {
-    return db
-      .query<AgentSessionSnapshot, [string, number]>(
-        `SELECT run_id AS runId,generation,item_id AS itemId,workspace_id AS workspaceId,
-        runner_id AS runnerId,owner_user_id AS ownerUserId,agent,agent_version AS agentVersion,
-        session_id AS sessionId,workspace_path AS workspacePath,commit_sha AS commitSha,turn,
-        size_bytes AS sizeBytes,sealed_size AS sealedSize,sha256,status,created_at AS createdAt,
-        sealed_at AS sealedAt FROM agent_session_snapshot WHERE run_id=? AND generation=?`,
-      )
-      .get(runId, generation);
+    return agentSessionSnapshot(db, runId, generation) as AgentSessionSnapshot | null;
   }
   function file(row: Pick<AgentSessionSnapshot, "workspaceId" | "runId" | "generation">) {
     return {
@@ -91,11 +91,14 @@ export function createAgentSessions(options: {
     const command = authorize(access, generation);
     let row = snapshot(access.runId, generation);
     if (!row) {
-      db.run(
-        `INSERT INTO agent_session_snapshot(run_id,generation,item_id,workspace_id,runner_id,created_at)
-        VALUES(?,?,?,?,?,?)`,
-        [access.runId, generation, command.itemId, command.workspaceId, access.runnerId, now()],
-      );
+      insertAgentSessionSnapshot(db, {
+        runId: access.runId,
+        generation,
+        itemId: command.itemId,
+        workspaceId: command.workspaceId,
+        runnerId: access.runnerId,
+        createdAt: now(),
+      });
       row = snapshot(access.runId, generation)!;
     }
     if (
@@ -146,46 +149,12 @@ export function createAgentSessions(options: {
   let pruning: Promise<void> | undefined;
   let pruneAgain = false;
   async function prunePass() {
-    immediate(db, () =>
-      db.run(
-        `UPDATE agent_session_snapshot SET status='discarded' WHERE status<>'discarded' AND (
-          EXISTS(SELECT 1 FROM agent_session_snapshot newer
-            WHERE newer.run_id=agent_session_snapshot.run_id
-              AND newer.generation>agent_session_snapshot.generation AND newer.status='sealed')
-          OR EXISTS(SELECT 1 FROM run r WHERE r.id=agent_session_snapshot.run_id AND (
-            r.status='lost' OR (r.status='ended' AND NOT EXISTS(
-              SELECT 1 FROM work_item w WHERE w.id=r.item_id AND w.current_run_id=r.id))))
-          OR EXISTS(SELECT 1 FROM work_item w WHERE w.id=agent_session_snapshot.item_id
-            AND w.state IN ('completed','merged','cancelled','failed')))`,
-      ),
-    );
+    discardStaleAgentSessions(db);
     for (;;) {
-      const chunks = db
-        .query<
-          {
-            runId: string;
-            generation: number;
-            workspaceId: string;
-            offset: number;
-            sha256: string;
-          },
-          [number]
-        >(
-          `SELECT c.run_id AS runId,c.generation,s.workspace_id AS workspaceId,c.offset,c.sha256
-          FROM agent_session_snapshot_chunk c JOIN agent_session_snapshot s
-            ON s.run_id=c.run_id AND s.generation=c.generation
-          WHERE s.status='discarded' LIMIT ?`,
-        )
-        .all(PRUNE_BATCH);
+      const chunks = discardedAgentSessionChunks(db, PRUNE_BATCH);
       if (!chunks.length) return;
       for (const chunk of chunks) await objects.delete(files.objectKey(file(chunk).prefix, chunk));
-      immediate(db, () => {
-        for (const chunk of chunks)
-          db.run(
-            "DELETE FROM agent_session_snapshot_chunk WHERE run_id=? AND generation=? AND offset=?",
-            [chunk.runId, chunk.generation, chunk.offset],
-          );
-      });
+      deleteAgentSessionChunks(db, chunks);
     }
   }
   async function prune(): Promise<void> {
@@ -238,25 +207,20 @@ export function createAgentSessions(options: {
       const sealed = immediate(db, () => {
         const row = check();
         if (row.status === "sealed") return receipt(row);
-        db.run(
-          `UPDATE agent_session_snapshot SET owner_user_id=?,agent=?,agent_version=?,session_id=?,
-          workspace_path=?,commit_sha=?,turn=?,sealed_size=?,sha256=?,status='sealed',sealed_at=?
-          WHERE run_id=? AND generation=? AND status='uploading'`,
-          [
-            work.identity(access.runnerId).userId,
-            finish.agent,
-            finish.agentVersion,
-            finish.sessionId,
-            finish.workspacePath,
-            finish.commitSha,
-            finish.turn,
-            finish.sizeBytes,
-            finish.sha256,
-            now(),
-            access.runId,
-            finish.generation,
-          ],
-        );
+        sealAgentSessionSnapshot(db, {
+          runId: access.runId,
+          generation: finish.generation,
+          ownerUserId: work.identity(access.runnerId).userId,
+          agent: finish.agent,
+          agentVersion: finish.agentVersion,
+          sessionId: finish.sessionId,
+          workspacePath: finish.workspacePath,
+          commitSha: finish.commitSha,
+          turn: finish.turn,
+          sealedSize: finish.sizeBytes,
+          sha256: finish.sha256,
+          sealedAt: now(),
+        });
         return receipt(snapshot(access.runId, finish.generation)!);
       });
       // The seal stands even if the prune fails; the coordinator's sweep retries it.

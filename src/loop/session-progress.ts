@@ -2,7 +2,13 @@ import { hasPublishedPullRequest } from "./activity-policy";
 import type { Database } from "bun:sqlite";
 import type { TaskMode } from "../core";
 import { randomUUID } from "node:crypto";
-import { enqueueOutboxOnce, immediate, listOutbox } from "../db";
+import {
+  enqueueOutboxOnce,
+  listOutbox,
+  publishSessionMetadata,
+  sessionFenceGeneration,
+  sessionLinkQueued,
+} from "../db";
 import type { SessionPlanStep, SessionUpdate } from "../linear";
 
 type Phase =
@@ -38,12 +44,7 @@ export function createLinearSessionProgress(
   itemId?: string,
 ) {
   const owner = itemId === undefined ? {} : { itemId };
-  const generation =
-    db
-      .query<{ generation: number }, [string]>(
-        "SELECT generation FROM outbox_session_fence WHERE target = 'linear' AND ordering_key = ?",
-      )
-      .get(sessionId)?.generation ?? 0;
+  const generation = sessionFenceGeneration(db, sessionId);
   const hostSteps = mode === "code" ? HOST_STEPS : [];
   const latestPlan = () =>
     listOutbox(db, sessionId).findLast(
@@ -109,74 +110,22 @@ export function createLinearSessionProgress(
   // Plan and summary are latest-wins: a pending row takes the new payload, and a new row
   // waits until METADATA_INTERVAL_MS after the last one went out. A final update is due now.
   function publish(op: string, update: SessionUpdate, final = false) {
-    immediate(db, () => {
-      const at = now();
-      const metadata =
-        op === "linear.session.plan"
-          ? { agentSteps: steps, hostPlan: milestones, phase, restartVersion, waits }
-          : {};
-      const payload = JSON.stringify({ ...update, ...metadata, identifier, mode, ...owner });
-      const pending = db
-        .query<{ id: number }, [string, number, string, number]>(
-          `SELECT id FROM outbox WHERE target = 'linear' AND ordering_key = ? AND delivery_generation = ?
-            AND op = ? AND status = 'pending' AND (locked_until IS NULL OR locked_until <= ?)
-          ORDER BY id DESC LIMIT 1`,
-        )
-        .get(sessionId, generation, op, at);
-      const delivered = db
-        .query<{ payload: string }, [string, number, string, number]>(
-          `SELECT payload FROM outbox WHERE target = 'linear' AND ordering_key = ? AND delivery_generation = ?
-            AND op = ? AND (status = 'sent' OR (status = 'pending' AND locked_until > ?))
-          ORDER BY id DESC LIMIT 1`,
-        )
-        .get(sessionId, generation, op, at)?.payload;
-      const field = op === "linear.session.plan" ? "plan" : "summary";
-      if (
-        delivered !== undefined &&
-        JSON.stringify((JSON.parse(delivered) as SessionUpdate)[field]) ===
-          JSON.stringify(update[field])
-      ) {
-        if (pending)
-          db.run(
-            `UPDATE outbox SET status = 'dropped', error = 'Matches the session metadata already sent.'
-            WHERE id = ?`,
-            [pending.id],
-          );
-        return;
-      }
-      if (pending) {
-        db.run(
-          `UPDATE outbox SET payload = ?, not_before = CASE WHEN ? THEN 0 ELSE not_before END
-          WHERE id = ?`,
-          [payload, final ? 1 : 0, pending.id],
-        );
-        return;
-      }
-      const last = db
-        .query<{ at: number | null }, [number, string, number, number]>(
-          `SELECT MAX(CASE WHEN status = 'sent' THEN sent_at ELSE ? END) AS at FROM outbox
-          WHERE target = 'linear' AND ordering_key = ? AND delivery_generation = ?
-            AND op LIKE 'linear.session.%'
-            AND (status = 'sent' OR (status = 'pending' AND locked_until > ?))`,
-        )
-        .get(at, sessionId, generation, at)?.at;
-      const id = enqueueOutboxOnce(db, {
-        target: "linear",
-        op,
-        orderingKey: sessionId,
-        priority: 6,
-        generation,
-        idempotencyKey: `${op}:${sessionId}:${randomUUID()}`,
-        payload: { ...update, ...metadata, identifier, mode, ...owner },
-        notBefore: final || last == null ? 0 : last + METADATA_INTERVAL_MS,
-        now: at,
-      });
-      db.run(
-        `UPDATE outbox SET status = 'dropped', error = 'Superseded by a newer session metadata version.'
-        WHERE target = 'linear' AND ordering_key = ? AND delivery_generation = ? AND op = ? AND id < ?
-          AND status = 'dead'`,
-        [sessionId, generation, op, id],
-      );
+    const metadata =
+      op === "linear.session.plan"
+        ? { agentSteps: steps, hostPlan: milestones, phase, restartVersion, waits }
+        : {};
+    const field = op === "linear.session.plan" ? "plan" : "summary";
+    publishSessionMetadata(db, {
+      sessionId,
+      generation,
+      op,
+      field,
+      value: update[field],
+      payload: { ...update, ...metadata, identifier, mode, ...owner },
+      final,
+      idempotencyKey: `${op}:${sessionId}:${randomUUID()}`,
+      intervalMs: METADATA_INTERVAL_MS,
+      at: now(),
     });
   }
 
@@ -369,14 +318,7 @@ export function createLinearSessionProgress(
     },
     link(label: string, url: string) {
       // Links are not throttled, so they sort ahead of a plan or summary that is still waiting.
-      const added = db
-        .query<{ id: number }, [string, number, string]>(
-          `SELECT id FROM outbox WHERE target = 'linear' AND op = 'linear.session.links'
-            AND ordering_key = ? AND delivery_generation = ? AND status IN ('pending', 'sent')
-            AND json_extract(payload, '$.addedExternalUrls[0].url') = ? LIMIT 1`,
-        )
-        .get(sessionId, generation, url);
-      if (added !== null) return;
+      if (sessionLinkQueued(db, sessionId, generation, url)) return;
       enqueueOutboxOnce(db, {
         target: "linear",
         op: "linear.session.links",
