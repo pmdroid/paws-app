@@ -104,7 +104,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     organizationId: "org",
     name: "Fixture",
     userId: ownerId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
     now,
   });
   const memberId = await putWorkspaceUser(sqliteDb(db), {
@@ -124,7 +124,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, "acme/fixture", "team"]);
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -159,7 +159,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     return runnerId;
   };
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -182,10 +182,10 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     );
   }
 
-  const results = createRunnerResults({ db, work });
-  const health = createRunnerHealth({ db, work });
+  const results = createRunnerResults({ store: sqliteDb(db), work });
+  const health = createRunnerHealth({ store: sqliteDb(db), work });
   const backend = createRemoteAgentRunner({
-    db,
+    store: sqliteDb(db),
     work,
     results,
     health,
@@ -282,7 +282,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
   });
   await bindLinearSessionTask(sqliteDb(db), "session-1", item.delegationId, { actorId: "member" });
   db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [memberId, item.id]);
-  await syncItemDependencies(db, {
+  await syncItemDependencies(sqliteDb(db), {
     itemId: item.id,
     workspaceId: workspace.id,
     expectedGeneration: 0,
@@ -490,7 +490,7 @@ test("undelegation cancels a held item and ends its hold", async () => {
     const { db, itemId } = fixture;
     expect(await getRunnerSetupHold(sqliteDb(db), itemId)).not.toBeNull();
     await stopUndelegatedIssue(
-      db,
+      sqliteDb(db),
       { organizationId: "org", appUserId: "app-user", issueId: "issue-1", createdAtMs: Date.now() },
       { notify() {} },
     );

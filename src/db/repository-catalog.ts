@@ -1,8 +1,7 @@
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import { and, eq, sql } from "drizzle-orm";
 import type { RepositoryBinding } from "../core";
-import { sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 
 export type CatalogEntry = {
   owner: string;
@@ -63,7 +62,7 @@ export function* replaceRepositoryCatalogSteps(
 }
 
 export async function refreshRepositoryCatalog(
-  db: Database,
+  store: Db,
   list: () => Promise<readonly CatalogEntry[]>,
   now = Date.now(),
 ): Promise<boolean> {
@@ -75,7 +74,7 @@ export async function refreshRepositoryCatalog(
 
     return false;
   }
-  await sqliteDb(db).transaction((q) => replaceRepositoryCatalogSteps(q, entries, now));
+  await store.transaction((q) => replaceRepositoryCatalogSteps(q, entries, now));
   return true;
 }
 

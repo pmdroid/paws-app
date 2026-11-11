@@ -60,7 +60,7 @@ export async function probeRunnerInputs(
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(db, "transcript-org", now);
+  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "transcript-org", now);
   const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "transcript-org",
@@ -73,7 +73,7 @@ export async function probeRunnerInputs(
   const authority = await initializeAuthority(authorityRoot);
   now = Date.now();
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority,
     certificateRoot: authorityRoot,
     disconnect() {},
@@ -99,7 +99,7 @@ export async function probeRunnerInputs(
   if (identity.status !== "approved") throw new Error("Enrollment must be approved");
   const keys = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: keys.privateKey,
     eventKey: Buffer.alloc(32, 7),

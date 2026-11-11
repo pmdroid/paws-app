@@ -265,7 +265,7 @@ test("the server refuses evidence without a session and hides it from members wi
   await reservation.stop(true);
   const origin = `http://127.0.0.1:${port}`;
   const access = createWorkspaceAccess({
-    db: f.db,
+    store: sqliteDb(f.db),
     publicUrl: origin,
     clientId: "fixture",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -288,7 +288,7 @@ test("the server refuses evidence without a session and hides it from members wi
     workspaceAccess: access,
     evidenceDir,
   });
-  const session = await issueWorkspaceSession(f.db, { ...f.actor, now: Date.now() });
+  const session = await issueWorkspaceSession(sqliteDb(f.db), { ...f.actor, now: Date.now() });
   const url = (id: string) => `http://127.0.0.1:${server.port}/api/evidence/${id}`;
   try {
     expect((await fetch(url(saved.id))).status).toBe(401);

@@ -15,7 +15,7 @@ function fixture(delegateId: string | null = "paws-app") {
     await store.setCursor(`delegated:${issueId}`, delegatedAtMs);
     return checkRedelegation(
       {
-        db,
+        db: sqliteDb(db),
         store,
         appUserId: "paws-app",
         inspect: async (id) => ({
@@ -89,7 +89,7 @@ test("a check superseded by a later delegation leaves it to the later check", as
   expect(
     await checkRedelegation(
       {
-        db: f.db,
+        db: sqliteDb(f.db),
         store: f.store,
         appUserId: "paws-app",
         inspect: async () => {

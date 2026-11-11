@@ -2,11 +2,10 @@ import { isBlockerSatisfied } from "../core";
 import {
   listDelegationExternalEvidenceSteps,
   listManagedBlockerItemsSteps,
-  sqliteDb,
   type Q,
   type Steps,
+  type Db,
 } from "../db";
-import type { Database } from "bun:sqlite";
 
 type Target = { workspaceId: string; itemId: string };
 export type MergeEvidence = {
@@ -38,10 +37,10 @@ export type BlockerEvidence = {
 };
 
 export async function readExternalBlockerEvidence(
-  db: Database,
+  store: Db,
   target: { workspaceId: string; delegationId: string },
 ): Promise<Record<string, BlockerEvidence>> {
-  const saved = await sqliteDb(db).run((q) =>
+  const saved = await store.run((q) =>
     listDelegationExternalEvidenceSteps(q, target.workspaceId, target.delegationId),
   );
   const evidence: Record<string, BlockerEvidence> = {};

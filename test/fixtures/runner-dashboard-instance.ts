@@ -96,7 +96,7 @@ const workspace = await consumeWorkspaceBootstrap(sqliteDb(paws.db), {
   organizationId: "org",
   name: "Runner proof",
   userId: owner,
-  tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(paws.db, "org", now)),
+  tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(paws.db), "org", now)),
   now,
 });
 const member = await putWorkspaceUser(sqliteDb(paws.db), {
@@ -119,7 +119,7 @@ for (const [name, userId, authenticatedAt] of [
   ["member", member, now],
   ["stale", owner, now - 2 * 24 * 60 * 60_000],
 ] as const) {
-  const issued = await issueWorkspaceSession(paws.db, {
+  const issued = await issueWorkspaceSession(sqliteDb(paws.db), {
     userId,
     workspaceId: workspace.id,
     now: authenticatedAt,

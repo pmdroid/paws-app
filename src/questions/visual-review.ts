@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
   approvedVisualReviewRowsSteps,
@@ -8,7 +7,6 @@ import {
   markVisualReviewRowStale,
   markVisualReviewRowStaleSteps,
   recordVisualReviewAnswerRowSteps,
-  sqliteDb,
   visualReviewRoundCountsSteps,
   visualReviewRowSteps,
   type Q,
@@ -330,8 +328,8 @@ export function* markVisualReviewStaleSteps(q: Q, questionId: string) {
   yield* markVisualReviewRowStaleSteps(q, questionId);
 }
 
-export async function markVisualReviewStale(db: Database, questionId: string): Promise<void> {
-  await markVisualReviewRowStale(sqliteDb(db), questionId);
+export async function markVisualReviewStale(store: Db, questionId: string): Promise<void> {
+  await markVisualReviewRowStale(store, questionId);
 }
 
 export function* acceptedVisualReviewsSteps(q: Q, itemId: string) {

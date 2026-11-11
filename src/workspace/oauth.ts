@@ -1,6 +1,5 @@
 import { createHash, createHmac } from "node:crypto";
-import type { Database } from "bun:sqlite";
-import { consumeWorkspaceOAuthRequestSteps, saveWorkspaceOAuthRequestSteps, sqliteDb } from "../db";
+import { consumeWorkspaceOAuthRequestSteps, saveWorkspaceOAuthRequestSteps, type Db } from "../db";
 import { cookieValue, workspaceSecret, workspaceTokenHash } from "./session";
 
 const LOGIN_COOKIE = "__Host-paws-login";
@@ -17,7 +16,7 @@ export type LinearBrowserIdentity = {
 };
 
 export async function beginWorkspaceOAuth(
-  db: Database,
+  store: Db,
   options: {
     clientId: string;
     origin: string;
@@ -36,7 +35,7 @@ export async function beginWorkspaceOAuth(
     expiresAt: options.now + 10 * 60_000,
     assignmentHash: options.assignmentHash,
   };
-  if (!(await sqliteDb(db).transaction((q) => saveWorkspaceOAuthRequestSteps(q, row))))
+  if (!(await store.transaction((q) => saveWorkspaceOAuthRequestSteps(q, row))))
     return Response.json(
       { error: "Too many sign-in attempts. Try again later." },
       { status: 429, headers: { "cache-control": "no-store", "retry-after": "60" } },
@@ -64,7 +63,7 @@ export async function beginWorkspaceOAuth(
 }
 
 export async function completeWorkspaceOAuth(
-  db: Database,
+  store: Db,
   request: Request,
   options: { clientId: string; origin: string; now: number; fetch: typeof fetch },
 ): Promise<{
@@ -84,7 +83,7 @@ export async function completeWorkspaceOAuth(
     throw new Error("The Linear sign-in request is invalid or expired.");
   const stateHash = workspaceTokenHash(state);
   const browserHash = workspaceTokenHash(browser);
-  const pending = await sqliteDb(db).run((q) =>
+  const pending = await store.run((q) =>
     consumeWorkspaceOAuthRequestSteps(q, stateHash, browserHash, options.now),
   );
   if (pending === null) throw new Error("The Linear sign-in request is invalid or expired.");

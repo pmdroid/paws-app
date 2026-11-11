@@ -1,5 +1,4 @@
-import type { Database } from "bun:sqlite";
-import { linearSessionInWorkspace, sqliteDb } from "../db";
+import { linearSessionInWorkspace, type Db } from "../db";
 import type { RunnerHelpers } from "../runner-helpers";
 import type { AgentProfile } from "../config";
 import { createRunnerPlacement, type RunnerPlacement } from "../runner-placement";
@@ -8,18 +7,18 @@ import { createRemoteSessionAgentRunner } from "./helpers";
 
 /** One issued turn per day; shared helper lifecycle records usage and auth/quota outcomes. */
 export function createFindingGroupHelper(options: {
-  db: Database;
+  store: Db;
   helpers: () => Promise<RunnerHelpers>;
   profile: () => AgentProfile;
   placement?: RunnerPlacement;
 }): GroupingHelper {
-  const placement = options.placement ?? createRunnerPlacement({ store: sqliteDb(options.db) });
+  const placement = options.placement ?? createRunnerPlacement({ store: options.store });
   return async (input) => {
-    if (!(await linearSessionInWorkspace(sqliteDb(options.db), input.sessionId, input.workspaceId)))
+    if (!(await linearSessionInWorkspace(options.store, input.sessionId, input.workspaceId)))
       throw new Error("Finding grouping session is outside the workspace.");
     let text = "";
     const helper = createRemoteSessionAgentRunner({
-      db: options.db,
+      store: options.store,
       helpers: await options.helpers(),
       placement,
     });

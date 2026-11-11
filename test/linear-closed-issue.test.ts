@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, syncSteps } from "../src/db";
+import { JobLoop, OutboxDispatcher, syncSteps, sqliteDb } from "../src/db";
 import {
   acknowledgeNewSession,
   createFakeLinearAccessReads,
@@ -40,7 +40,7 @@ test.each([
     sessions: [{ ...scope, sessionId: "session", issueId: "issue", teamId: "team" }],
     teams: ["team"],
   });
-  const gate = new LinearTaskAccess(db, {
+  const gate = new LinearTaskAccess(sqliteDb(db), {
     access: access.adapter,
     lifecycle,
     oauthClientId: "client",

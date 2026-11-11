@@ -78,21 +78,19 @@ test("the runner backend holds the store it is given", () => {
   const { db } = database();
   const store = sqliteDb(db);
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
   const options = {
-    db,
     work,
-    results: createRunnerResults({ db, work }),
-    health: createRunnerHealth({ db, work }),
+    results: createRunnerResults({ store: sqliteDb(db), work }),
+    health: createRunnerHealth({ store: sqliteDb(db), work }),
     async fetchCandidate() {
       throw new Error("This fixture does not return a candidate");
     },
   };
   expect(createRemoteAgentRunner({ ...options, store }).store).toBe(store);
-  expect(createRemoteAgentRunner(options).store).toBe(store);
   db.close();
 });

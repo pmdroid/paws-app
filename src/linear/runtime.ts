@@ -7,7 +7,7 @@ import {
 import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { IN_FLIGHT_ITEM_STATES, type LinearCommand } from "../core";
-import { sessionHasItemInStates, sqliteDb, type Db } from "../db";
+import { sessionHasItemInStates, type Db } from "../db";
 import type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
 import { createIntakePollSource } from "./catchup";
 import type { AcceptedLinearEvent } from "./events";
@@ -72,6 +72,7 @@ export function linearTokenPath(secretsDir: string): string {
  */
 export function openLinear(options: {
   db: Database;
+  store: Db;
   secretsDir: string;
   env: EnvSource;
   signal?: AbortSignal;
@@ -93,7 +94,7 @@ export function openLinear(options: {
     ? AbortSignal.any([options.signal, stopping.signal])
     : stopping.signal;
   const settings = readLinearEnv(options.env);
-  const store = createInboxStore(sqliteDb(options.db));
+  const store = createInboxStore(options.store);
   const accessAllowed = options.isAuthorized ?? (async () => true);
   const auth = createLinearAuth({
     db: options.db,
@@ -133,7 +134,7 @@ export function openLinear(options: {
           followUp: options.followUp,
           beforeEvent: options.beforeEvent,
           progressReporter: options.progressReporter,
-          sessionBusy: (sessionId) => sessionHasItemInFlight(sqliteDb(options.db), sessionId),
+          sessionBusy: (sessionId) => sessionHasItemInFlight(options.store, sessionId),
           signal,
           ledger,
         });
@@ -189,12 +190,12 @@ export function openLinear(options: {
           store,
           fetchImpl: options.fetch,
           ledger,
-          db: options.db,
+          db: options.store,
           teamId: settings.teamId,
           appUserId: settings.appUserId,
           submitCommand:
             options.submitCommand ??
-            (async (command) => await persistStopCommand(options.db, command)),
+            (async (command) => await persistStopCommand(options.store, command)),
         })
       : null;
     if (poller !== null) intake?.queue.wake();
@@ -225,7 +226,7 @@ function startPoller(options: {
   store: ReturnType<typeof createInboxStore>;
   fetchImpl: FetchLike | undefined;
   ledger: LinearLedger;
-  db: Database;
+  db: Db;
   teamId: string | null;
   appUserId: string | null;
   submitCommand: (command: LinearCommand) => Promise<void>;

@@ -1,7 +1,6 @@
 import { journal as writeJournal, journalCaught } from "../journal";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
-import type { Database } from "bun:sqlite";
 import { runDir, type RunAgentOptions, type RunAgentResult, type AcpEvent } from "../acp";
 import { RunnerHelperBusyError, type RunnerHelpers } from "../runner-helpers";
 import type { PlacementAccount, PlacementCandidate, RunnerPlacement } from "../runner-placement";
@@ -15,7 +14,6 @@ import {
   runnerHostVersionSteps,
   runnerOwnerSteps,
   sessionActiveRuns,
-  sqliteDb,
   workspaceSessionIdsSteps,
   type Db,
 } from "../db";
@@ -54,8 +52,7 @@ function noRunnerMessage(agent: string, reasons: ReadonlyMap<string, ReadonlySet
 }
 
 export function createRemoteSessionAgentRunner(options: {
-  db: Database;
-  store?: Db;
+  store: Db;
   helpers: RunnerHelpers;
   now?: () => number;
   mono?: () => number;
@@ -63,7 +60,7 @@ export function createRemoteSessionAgentRunner(options: {
   placement?: RunnerPlacement;
   journal?: (line: string) => void;
 }) {
-  const store = options.store ?? sqliteDb(options.db);
+  const { store } = options;
   const now = options.now ?? Date.now;
   const mono = options.mono ?? systemClock.mono;
   const heldJournaled = new Map<string, number>();
@@ -406,7 +403,7 @@ export function createRemoteSessionAgentRunner(options: {
             journalCaught(error, "helpers.forSession.accountingCleanup", null);
           }
           try {
-            if (others === 0) options.helpers.finish(command.id);
+            if (others === 0) await options.helpers.finish(command.id);
           } catch (error) {
             journalCaught(error, "helpers.forSession.finishCleanup", null);
           }

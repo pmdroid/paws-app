@@ -9,10 +9,10 @@ test.each(["done", "cancelled", "dead"] as const)(
     const db = tempDb();
     try {
       const input = { itemId: "item", head: "a".repeat(40), summary: "accepted", now: 1_000 };
-      const first = await enqueueVerifiedMerge(db, input);
+      const first = await enqueueVerifiedMerge(sqliteDb(db), input);
       await cancelOpenJobs(sqliteDb(db), { itemId: "item", reason: "merge", now: 2_000 });
       db.run("UPDATE job SET status=?, attempts=5 WHERE id=?", [status, first]);
-      const again = await enqueueVerifiedMerge(db, {
+      const again = await enqueueVerifiedMerge(sqliteDb(db), {
         ...input,
         summary: "accepted again",
         now: 3_000,

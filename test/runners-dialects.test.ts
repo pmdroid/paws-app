@@ -485,7 +485,6 @@ forEachDialect((connect) => {
     });
     let requests = 0;
     const control = createRunnerControl({
-      db: sqlite,
       store: db,
       certificateRoot: "unused",
       disconnect() {},

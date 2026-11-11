@@ -24,6 +24,7 @@ import {
   type DecisionScope as Scope,
   type Q,
   type Steps,
+  type Db,
 } from "../db";
 import { randomUUID } from "node:crypto";
 import { hintedPaths } from "../scheduler";

@@ -1,5 +1,4 @@
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, lstat, mkdir, open, rename, unlink } from "node:fs/promises";
@@ -23,7 +22,6 @@ import {
   listEvidenceSteps,
   markArtifactSteps,
   saveArtifactSteps,
-  sqliteDb,
   type Db,
   type Q,
   type Steps,
@@ -34,8 +32,8 @@ import type { PublishedEvidence } from "../closeout";
 import { pawsIssueUrl } from "./open-findings";
 import { rejectedEvidenceIdsSteps } from "../questions";
 
-export function createLinearArtifactReader(options: { db: Database; secretsDir: string }) {
-  const store = sqliteDb(options.db);
+export function createLinearArtifactReader(options: { store: Db; secretsDir: string }) {
+  const { store } = options;
   return async (
     id: string,
     signal?: AbortSignal,

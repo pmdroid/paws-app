@@ -50,7 +50,7 @@ async function replicas() {
     organizationId: "acme",
     name: "Acme",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "acme", clock)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "acme", clock)),
     now: clock,
   });
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
@@ -60,7 +60,7 @@ async function replicas() {
   ]);
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -86,17 +86,17 @@ async function replicas() {
   const instance = (instanceId: string) => {
     const own = openDatabase(path);
     const work = createRunnerWork({
-      db: own,
+      store: sqliteDb(own),
       keyId: "acme",
       privateKey,
       eventKey: Buffer.alloc(32, 7),
       now: () => clock,
     });
     const backend = createRemoteAgentRunner({
-      db: own,
+      store: sqliteDb(own),
       work,
-      results: createRunnerResults({ db: own, work }),
-      health: createRunnerHealth({ db: own, work }),
+      results: createRunnerResults({ store: sqliteDb(own), work }),
+      health: createRunnerHealth({ store: sqliteDb(own), work }),
       now: () => clock,
       pollIntervalMs: 5,
       instanceId,

@@ -40,7 +40,11 @@ async function fixture() {
       teamIds: ["team"],
       now,
     });
-    const session = await issueWorkspaceSession(db, { workspaceId: "workspace", userId: id, now });
+    const session = await issueWorkspaceSession(sqliteDb(db), {
+      workspaceId: "workspace",
+      userId: id,
+      now,
+    });
     const binding = {
       workspaceId: "workspace",
       userId: id,
@@ -81,7 +85,7 @@ async function fixture() {
 test("credit is the delegating member's linked GitHub identity, never the project lead", async () => {
   const f = await fixture();
   try {
-    expect(await delegatorCommitCredit(f.db, f.item.id)).toEqual({
+    expect(await delegatorCommitCredit(sqliteDb(f.db), f.item.id)).toEqual({
       id: 2,
       login: "steerer",
       name: "steerer",
@@ -98,12 +102,12 @@ test("a delegator who did not link GitHub gets no credit", async () => {
   const f = await fixture();
   try {
     await revokeGitHubAttribution(sqliteDb(f.db), f.bindings.get("steerer")!, f.now);
-    expect(await delegatorCommitCredit(f.db, f.item.id)).toBeNull();
+    expect(await delegatorCommitCredit(sqliteDb(f.db), f.item.id)).toBeNull();
     f.db.run(
       "INSERT INTO workspace_identity_link(workspace_id,user_id,provider,external_id,installation_id,method,status,checked_at) VALUES('workspace','steerer','github','steerer',NULL,'manual','linked',?)",
       [f.now],
     );
-    expect(await delegatorCommitCredit(f.db, f.item.id)).toBeNull();
+    expect(await delegatorCommitCredit(sqliteDb(f.db), f.item.id)).toBeNull();
     expect(fetchSpy).not.toHaveBeenCalled();
   } finally {
     f.db.close();
@@ -122,7 +126,7 @@ for (const scenario of ["no-actor", "unknown-actor", "inactive", "no-workspace"]
         f.db.run("UPDATE workspace_member SET active=0 WHERE user_id='steerer'");
       if (scenario === "no-workspace")
         f.db.run("UPDATE linear_session SET organization_id='other'");
-      expect(await delegatorCommitCredit(f.db, f.item.id)).toBeNull();
+      expect(await delegatorCommitCredit(sqliteDb(f.db), f.item.id)).toBeNull();
     } finally {
       f.db.close();
     }

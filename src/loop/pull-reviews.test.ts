@@ -114,7 +114,7 @@ async function setup(threads = THREADS, options: { commentsPerPage?: number } = 
     pull?: number;
   }) =>
     acceptGitHubDelivery(
-      db,
+      sqliteDb(db),
       {
         deliveryId: `d-${(delivery += 1)}`,
         event: "pull_request_review",

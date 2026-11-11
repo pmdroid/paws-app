@@ -9,16 +9,15 @@ import {
   runnerHealthCommandOutstandingSteps,
   runnerStandingSteps,
   saveAgentModelCatalogSteps,
-  sqliteDb,
   workspaceMemberSteps,
   workspaceMemberUsable,
   type AgentModelSource,
   type Q,
   type Steps,
+  type Db,
 } from "../db";
 import { journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
-import type { Database } from "bun:sqlite";
 import type { RunnerWork } from "../runner-work";
 import { RunnerHealthResultSchema, labelModels } from "../runner-protocol";
 
@@ -40,13 +39,8 @@ const retryMs = 10 * 60_000;
 const concrete = (id: string) =>
   !["default", "auto", "claude", "codex", "grok", "opencode"].includes(id.toLowerCase());
 
-export function createRunnerModels(options: {
-  db: Database;
-  work: RunnerWork;
-  now?: () => number;
-}) {
-  const { db, work } = options;
-  const store = sqliteDb(db);
+export function createRunnerModels(options: { store: Db; work: RunnerWork; now?: () => number }) {
+  const { store, work } = options;
   const now = options.now ?? Date.now;
   function* sourcesSteps(q: Q, at: number): Steps<Source[]> {
     const usable: Source[] = [];

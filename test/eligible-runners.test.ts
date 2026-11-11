@@ -55,7 +55,7 @@ async function workspace(runners: Record<string, Runner>) {
     organizationId: "org",
     name: "Test",
     userId: founder,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
     now,
   });
   const users: Record<string, string> = {};

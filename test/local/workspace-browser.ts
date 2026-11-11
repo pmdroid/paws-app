@@ -86,7 +86,7 @@ export async function probeWorkspaceBrowser(
   });
   const origin = `http://127.0.0.1:${server.port}`;
   const accessOptions: WorkspaceAccessOptions = {
-    db,
+    store: sqliteDb(db),
     publicUrl: origin,
     clientId: "fixture-client",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -163,7 +163,7 @@ export async function probeWorkspaceBrowser(
       { status: withoutBootstrap.response.status },
     );
     membershipDelayMs = 1000;
-    const owner = await login("owner", await issueWorkspaceBootstrap(db, "org", now));
+    const owner = await login("owner", await issueWorkspaceBootstrap(sqliteDb(db), "org", now));
     const member = await login("member");
     const outsider = await login("outsider");
     const ownerSession = (await (

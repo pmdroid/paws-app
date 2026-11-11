@@ -167,7 +167,7 @@ test("migration 059 drops the old block tables and task_block holds each depende
     );
     tracker.deps.set("parent", [{ blockerLinearIssueId: "outside", blockedLinearIssueId: "b" }]);
     const reconciler = createItemReconciler({
-      db,
+      store: sqliteDb(db),
       tracker,
       lifecycle,
       onChanges: () => syncSteps(() => {}),

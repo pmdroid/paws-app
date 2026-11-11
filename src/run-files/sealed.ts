@@ -1,13 +1,12 @@
 import { createCipheriv, createDecipheriv, createHmac, randomBytes } from "node:crypto";
-import type { Database } from "bun:sqlite";
 import {
   forgetRunnerFileObjectSteps,
   prunableRunnerFileObjectsSteps,
   recordRunnerFileObjectSteps,
-  sqliteDb,
   type Q,
   type RunnerFileObject,
   type Steps,
+  type Db,
 } from "../db";
 import { journalCaught } from "../journal";
 import { RUN_FILE_CHUNK_BYTES } from "./kinds";
@@ -24,13 +23,13 @@ function additionalData(key: string, digest: string) {
 }
 
 export function createSealedRunnerFiles(options: {
-  db: Database;
+  store: Db;
   objects: RunFileObjects;
   key: Buffer;
   now?: () => number;
 }) {
   const { objects, key } = options;
-  const store = sqliteDb(options.db);
+  const { store } = options;
   const now = options.now ?? Date.now;
   if (key.length !== 32) throw new Error("Runner file key is invalid.");
   return {

@@ -68,7 +68,7 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
   await consumeWorkspaceBootstrap(sqliteDb(db), {
     ...workspace,
     userId: users["owner"]!,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
     now,
   });
   for (const name of ["member", "administrator", "nobody"])
@@ -127,7 +127,7 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
     });
   await mapping(true);
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority: await initializeRunnerAuthority(join(root, "issuer")),
     certificateRoot: join(root, "issuer"),
     disconnect() {},
@@ -148,7 +148,7 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
   const origin = `http://127.0.0.1:${server.port}`;
   ready.resolve(
     createWorkspaceAccess({
-      db,
+      store: sqliteDb(db),
       publicUrl: origin,
       clientId: "client",
       installedOrganization: { id: "org", name: "Workspace" },
@@ -175,7 +175,7 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
     }),
   );
   const cookie = async (name: string) => ({
-    cookie: `${WORKSPACE_COOKIE}=${(await issueWorkspaceSession(db, { workspaceId: workspace.id, userId: users[name]!, now })).token}`,
+    cookie: `${WORKSPACE_COOKIE}=${(await issueWorkspaceSession(sqliteDb(db), { workspaceId: workspace.id, userId: users[name]!, now })).token}`,
   });
   const sessions: Record<string, { cookie: string }> = {};
   for (const name of ["member", "administrator", "nobody"]) sessions[name] = await cookie(name);

@@ -1,7 +1,6 @@
 import { journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import type { Database } from "bun:sqlite";
 import {
   enqueueOutboxOnceSteps,
   getLinearSessionGenerationSteps,
@@ -13,7 +12,6 @@ import {
   runnerHandoverSentSteps,
   runnerResultPayloadSteps,
   saveCheckpointSteps,
-  sqliteDb,
   type Db,
 } from "../db";
 import { OUTBOX_ACTIVITY } from "../core";
@@ -89,14 +87,12 @@ export async function recordRunnerCheckpoint(
  * the runner cannot checkpoint, or it did not answer in time. The stop goes ahead either way.
  */
 export function createRemoteCheckpoint(options: {
-  db: Database;
-  store?: Db;
+  store: Db;
   work: RunnerWork;
   now?: () => number;
   pollIntervalMs?: number;
 }) {
-  const { db, work } = options;
-  const store = options.store ?? sqliteDb(db);
+  const { store, work } = options;
   const now = options.now ?? Date.now;
   const pending = new Map<string, Promise<string | null>>();
   /** Sends the checkpoint command, or returns null when the run cannot answer one. */

@@ -4,7 +4,7 @@ import path from "node:path";
 import { expect, test } from "bun:test";
 import type { FakeScript } from "../src/acp/testing/script";
 import { systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, migrate, openDatabase, syncSteps } from "../src/db";
+import { JobLoop, OutboxDispatcher, migrate, openDatabase, syncSteps, sqliteDb } from "../src/db";
 import { createFakeGitHub } from "../src/github";
 import { handleLinearWebhook, linearCallerFor, openLinear } from "../src/linear";
 import { attachOrchestrator, LinearTaskAccess, type AgentLaunch } from "../src/loop";
@@ -182,6 +182,7 @@ test("a delegated task spends at most five Linear requests before the agent's fi
   const firstPrompt = Promise.withResolvers<Record<string, number>>();
   const linear = openLinear({
     db,
+    store: sqliteDb(db),
     secretsDir: path.join(layout.pawsRoot, "secrets"),
     env: { LINEAR_ACCESS_TOKEN: "fixture-token", LINEAR_CLIENT_ID: "client" },
     fetch: server.fetch,
@@ -195,7 +196,7 @@ test("a delegated task spends at most five Linear requests before the agent's fi
         .filter(([, usage]) => usage.requests > 0)
         .map(([caller, usage]) => [caller, usage.requests]),
     );
-  gate = new LinearTaskAccess(db, {
+  gate = new LinearTaskAccess(sqliteDb(db), {
     access: linearCallerFor(linear.access!, "task-access"),
     lifecycle: linearCallerFor(linear.issueLifecycle!, "task-access"),
     oauthClientId: "client",

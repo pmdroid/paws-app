@@ -85,7 +85,7 @@ async function dependencyEpic() {
   };
   const refresh = async () => {
     for (const item of intake.items)
-      await syncItemDependencies(db, {
+      await syncItemDependencies(sqliteDb(db), {
         itemId: item.id,
         workspaceId,
         expectedGeneration: (
@@ -187,7 +187,7 @@ test("an item with a satisfied and an unsatisfied external blocker stays held", 
       { blockerLinearIssueId: "open", blockedLinearIssueId: "item" },
     ]);
     const refresh = async () =>
-      syncItemDependencies(db, {
+      syncItemDependencies(sqliteDb(db), {
         ...target,
         expectedGeneration: (await sqliteDb(db).run((q) => readyItemsSteps(q, target))).generation,
         tracker,
@@ -221,7 +221,7 @@ test("a stale dependency sync is rejected", async () => {
     const target = { itemId, workspaceId };
     const generation = (await sqliteDb(db).run((q) => readyItemsSteps(q, target))).generation;
     await expect(
-      syncItemDependencies(db, {
+      syncItemDependencies(sqliteDb(db), {
         ...target,
         expectedGeneration: generation - 1,
         tracker,
@@ -277,7 +277,7 @@ test("a held item tells Linear which blockers it waits for, once", async () => {
       { blockerLinearIssueId: "open", blockedLinearIssueId: "item" },
     ]);
     const refresh = async () =>
-      syncItemDependencies(db, {
+      syncItemDependencies(sqliteDb(db), {
         ...target,
         expectedGeneration: (await sqliteDb(db).run((q) => readyItemsSteps(q, target))).generation,
         tracker,

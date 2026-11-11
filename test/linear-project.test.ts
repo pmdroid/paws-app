@@ -133,7 +133,7 @@ test("a reconcile after the issue moved in Linear stores the new project", async
     delegateId: "app",
   });
   const reconciler = createItemReconciler({
-    db,
+    store: sqliteDb(db),
     tracker,
     lifecycle,
     onChanges: () => syncSteps(() => {}),

@@ -61,7 +61,7 @@ async function fixture() {
   });
   const tracker = createFakeTracker([]);
   const outbox = new OutboxDispatcher(db, systemClock);
-  const gate = new LinearTaskAccess(db, {
+  const gate = new LinearTaskAccess(sqliteDb(db), {
     access: access.adapter,
     lifecycle,
     oauthClientId: "client",

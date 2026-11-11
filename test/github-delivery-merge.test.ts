@@ -121,7 +121,7 @@ test("a green check_suite delivery for the pull request's head merges it before 
     const head = (parked!.payload as { ciWaitHead: string }).ciWaitHead;
     green = true;
     await acceptGitHubDelivery(
-      db,
+      sqliteDb(db),
       {
         deliveryId: "delivery-1",
         event: "check_suite",

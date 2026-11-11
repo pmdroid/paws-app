@@ -33,7 +33,7 @@ async function fixture() {
     organizationId: "org",
     name: "Workspace",
     userId: "owner",
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
     now,
   });
   for (const role of ["admin", "member"] as const) {
@@ -70,7 +70,7 @@ async function fixture() {
         check?: () => Promise<boolean>;
       } = {},
     ) {
-      const issued = await issueWorkspaceSession(db, {
+      const issued = await issueWorkspaceSession(sqliteDb(db), {
         workspaceId: "workspace",
         userId: role,
         now: options.stale ? now - 16 * 60000 : now,
@@ -90,7 +90,7 @@ async function fixture() {
           },
         }),
         {
-          db,
+          store: sqliteDb(db),
           principal,
           session: issued.session,
           origin: "https://paws.example",

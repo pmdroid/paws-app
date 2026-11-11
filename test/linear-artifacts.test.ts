@@ -129,7 +129,7 @@ test("dashboard artifact reads return the private snapshot rather than mutable w
   const env = setup();
   await (await env.publisher()).publish(artifact, context);
   const row = (await listArtifacts(sqliteDb(env.db), "item"))[0]!;
-  const read = createLinearArtifactReader(env);
+  const read = createLinearArtifactReader({ ...env, store: sqliteDb(env.db) });
   expect(await read(row.id)).toEqual({ bytes, displayName: "proof.png", mimeType: "image/png" });
   expect(await read("../../secrets")).toBeNull();
   expect(await read(crypto.randomUUID())).toBeNull();
@@ -152,7 +152,7 @@ test("dashboard can read a prepared artifact while publication retries without e
   await expect((await env.publisher()).publish(artifact, context)).rejects.toThrow();
   const row = (await listArtifacts(sqliteDb(env.db), "item"))[0]!;
   expect(row.state).toBe("failed");
-  expect(await createLinearArtifactReader(env)(row.id)).toEqual({
+  expect(await createLinearArtifactReader({ ...env, store: sqliteDb(env.db) })(row.id)).toEqual({
     bytes,
     displayName: "proof.png",
     mimeType: "image/png",

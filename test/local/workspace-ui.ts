@@ -43,7 +43,7 @@ const server = startServer({
 const origin = `http://127.0.0.1:${server.port}`;
 ready.resolve(
   createWorkspaceAccess({
-    db,
+    store: sqliteDb(db),
     githubAttributionClient: {
       clientId: "fixture-github",
       clientSecret: "synthetic-browser-secret",

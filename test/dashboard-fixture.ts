@@ -110,7 +110,7 @@ export async function startDashboardFixture(
   await reservation.stop(true);
   const origin = `http://127.0.0.1:${port}`;
   const access = createWorkspaceAccess({
-    db,
+    store: sqliteDb(db),
     publicUrl: origin,
     clientId: "fixture",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -134,14 +134,14 @@ export async function startDashboardFixture(
     evidenceDir,
     questionAnswers: (request, principal, sessionIds) =>
       handleQuestionAnswer(request, {
-        db,
+        store: sqliteDb(db),
         principal,
         sessionIds,
         submit: async (input) => (answers.push(input), "answered"),
       }),
     ...options,
   });
-  const session = await issueWorkspaceSession(db, {
+  const session = await issueWorkspaceSession(sqliteDb(db), {
     workspaceId: "workspace",
     userId: "member",
     now: Date.now(),

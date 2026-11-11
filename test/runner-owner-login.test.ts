@@ -78,13 +78,13 @@ async function fixture() {
   ]);
   const signing = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "login",
     privateKey: signing.privateKey,
     eventKey: Buffer.alloc(32, 7),
     now: () => at,
   });
-  const login = createRunnerLogin({ db, work, now: () => at });
+  const login = createRunnerLogin({ store: sqliteDb(db), work, now: () => at });
   const waiting = {
     state: "waiting" as const,
     terminal: "",

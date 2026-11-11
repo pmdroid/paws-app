@@ -97,10 +97,10 @@ test.each(["done", "cancelled", "dead"] as const)(
     await applyWorkItemEvent(sqliteDb(db), "item", "turn_ended");
     await applyWorkItemEvent(sqliteDb(db), "item", "closeout_accepted");
     const input = { itemId: "item", head: "head", summary: "accepted", now: 2 };
-    const id = await enqueueVerifiedMerge(db, input);
+    const id = await enqueueVerifiedMerge(sqliteDb(db), input);
     const old = (await claimNextJob(sqliteDb(db), { now: 2, queues: [JOB_KIND.merge] }))!;
     db.run("UPDATE job SET status=? WHERE id=?", [status, id]);
-    expect(await enqueueVerifiedMerge(db, { ...input, now: 3 })).toBe(id);
+    expect(await enqueueVerifiedMerge(sqliteDb(db), { ...input, now: 3 })).toBe(id);
     expect(await jobVersionCurrent(sqliteDb(db), old)).toBe(false);
     const current = (await claimNextJob(sqliteDb(db), { now: 3, queues: [JOB_KIND.merge] }))!;
     expect(current.id).toBe(old.id);
@@ -152,7 +152,7 @@ test.each(["linear", "answer"] as const)(
     const owner = (await getWorkItem(sqliteDb(db), "item"))!;
     expect(await admit(key(1), reason)).toBe(first);
     expect(fixRounds(db, "item")).toBe(0);
-    expect(await rebaseReturns(db, "item")).toBe(0);
+    expect(await rebaseReturns(sqliteDb(db), "item")).toBe(0);
     expect((await getJob(sqliteDb(db), first))!.activationId).toBeGreaterThan(
       (await getJob(sqliteDb(db), second))!.activationId,
     );
@@ -172,7 +172,7 @@ test.each(["linear", "answer"] as const)(
       candidate: "replay",
       reason: "linear",
     });
-    expect(await rebaseReturns(db, "item")).toBe(1);
+    expect(await rebaseReturns(sqliteDb(db), "item")).toBe(1);
     expect(listRebaseReturns(db, "item", 0)).toHaveLength(3);
     expect(
       db
@@ -185,7 +185,7 @@ test.each(["linear", "answer"] as const)(
       { activation_id: (await getJob(sqliteDb(db), first))!.activationId },
     ]);
     expect(restart(db, owner, { reason, body: "replay", jobKey: key(1), now })).toBeNull();
-    expect(await rebaseReturns(db, "item")).toBe(1);
+    expect(await rebaseReturns(sqliteDb(db), "item")).toBe(1);
     await admit("same-head-ci", "ci");
     expect(fixRounds(db, "item")).toBe(1);
     db.close();
@@ -208,7 +208,7 @@ test("repeated non-human rebase returns count once per activation", async () => 
         candidate: "head",
         reason: "merge",
       });
-    expect(await rebaseReturns(db, "item")).toBe(now - 1);
+    expect(await rebaseReturns(sqliteDb(db), "item")).toBe(now - 1);
   }
   db.close();
 });
@@ -278,7 +278,7 @@ test.each(["linear", "push"] as const)(
     expect((await getJob(sqliteDb(db), id))?.activationId).toBe(id);
     expect(latestUserTurn(db, "legacy")).toBe(id);
     expect(await humanRetryBaseline(sqliteDb(db), "legacy")).toEqual(["old"]);
-    expect(await rebaseReturns(db, "legacy")).toBe(1);
+    expect(await rebaseReturns(sqliteDb(db), "legacy")).toBe(1);
     expect(listRebaseReturns(db, "legacy", 0)).toEqual([
       {
         jobId: id,
@@ -296,7 +296,7 @@ test.each(["linear", "push"] as const)(
       now: 2,
     });
     expect((await getJob(sqliteDb(db), id))!.activationId).toBeGreaterThan(id);
-    expect(await rebaseReturns(db, "legacy")).toBe(0);
+    expect(await rebaseReturns(sqliteDb(db), "legacy")).toBe(0);
     for (let replay = 0; replay < 2; replay++)
       await recordRebaseReturn(sqliteDb(db), {
         itemId: "legacy",
@@ -304,7 +304,7 @@ test.each(["linear", "push"] as const)(
         candidate: "fixed",
         reason,
       });
-    expect(await rebaseReturns(db, "legacy")).toBe(1);
+    expect(await rebaseReturns(sqliteDb(db), "legacy")).toBe(1);
     expect(listRebaseReturns(db, "legacy", 0)).toHaveLength(2);
     await saveHumanRetryWindow(sqliteDb(db), "legacy", id, ["new"]);
     expect(await humanRetryBaseline(sqliteDb(db), "legacy")).toEqual(["new"]);

@@ -145,11 +145,11 @@ test("the catalog is replaced on refresh and kept when a refresh fails", async (
       remoteUrl: "https://github.com/pmdroid/paws-app.git",
       defaultBranch: "main",
     };
-    expect(await refreshRepositoryCatalog(db, async () => [paws], 1)).toBe(true);
+    expect(await refreshRepositoryCatalog(sqliteDb(db), async () => [paws], 1)).toBe(true);
     expect(await listRepositoryCatalog(sqliteDb(db))).toEqual([paws]);
     expect(
       await refreshRepositoryCatalog(
-        db,
+        sqliteDb(db),
         async () => {
           throw new Error("GitHub is down");
         },
@@ -157,7 +157,7 @@ test("the catalog is replaced on refresh and kept when a refresh fails", async (
       ),
     ).toBe(false);
     expect(await listRepositoryCatalog(sqliteDb(db))).toEqual([paws]);
-    expect(await refreshRepositoryCatalog(db, async () => [], 3)).toBe(true);
+    expect(await refreshRepositoryCatalog(sqliteDb(db), async () => [], 3)).toBe(true);
     expect(await listRepositoryCatalog(sqliteDb(db))).toEqual([]);
   } finally {
     db.close();
@@ -217,7 +217,7 @@ test("fresh workspace repository choices are available before catalog refresh an
     expect(await listRepositoryCandidates(sqliteDb(db), "session", [])).toEqual([one, two]);
     expect(await listRepositoryCandidates(sqliteDb(db), "unrelated-session", [])).toEqual([]);
     expect(await listRepositoryCandidates(sqliteDb(db), null, [])).toEqual([]);
-    await refreshRepositoryCatalog(db, async () => [
+    await refreshRepositoryCatalog(sqliteDb(db), async () => [
       { ...one, defaultBranch: "main" },
       {
         owner: "acme",
@@ -240,7 +240,7 @@ test("repository candidates preserve configured clone URLs and deduplicate catal
   const db = tempDb();
   try {
     const configured = { owner: "Acme", repo: "One", remoteUrl: "/synthetic-paws-remotes/one.git" };
-    await refreshRepositoryCatalog(db, async () => [
+    await refreshRepositoryCatalog(sqliteDb(db), async () => [
       {
         owner: "acme",
         repo: "one",

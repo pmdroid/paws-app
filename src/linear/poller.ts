@@ -1,5 +1,4 @@
 import { journal, journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import type { LinearCommand } from "../core";
 import {
   issueHasItemOutside,
@@ -7,7 +6,7 @@ import {
   openStopTargets,
   persistStopJob,
   sessionHasWorkItem,
-  sqliteDb,
+  type Db,
 } from "../db";
 import { CLOSED_ISSUE_EVENT } from "./administration";
 import { budgetHoldMs, LinearRateLimitError, type LinearRateBudget } from "./budget";
@@ -160,7 +159,7 @@ export function startCatchUpPoller(options: {
   /** Takes `created` and `prompted` events. The poller records them and wakes it. */
   intake?: IntakeQueue;
   submitCommand?: (command: LinearCommand) => Promise<void>;
-  db?: Database;
+  db?: Db;
   sleeper?: Sleeper;
   timer?: boolean;
   now?: () => number;
@@ -221,7 +220,7 @@ export function startCatchUpPoller(options: {
   async function rereadQuestionThreads(): Promise<void> {
     const read = options.source.questionReplies;
     if (read === undefined || options.db === undefined) return;
-    const threads = await openQuestionThreads(sqliteDb(options.db));
+    const threads = await openQuestionThreads(options.db);
     for (const thread of threads) {
       if (control.stopped) return;
       let replies: readonly PolledActivity[];
@@ -253,7 +252,7 @@ export function startCatchUpPoller(options: {
     for (const session of sighting.sessions)
       if (!session.stoppedAtMs && !session.endedAtMs)
         sessionByIssue.set(session.issueId, session.id);
-    const db = options.db === undefined ? undefined : sqliteDb(options.db);
+    const { db } = options;
     const sessionHasTask = async (sessionId: string) =>
       db !== undefined && (await sessionHasWorkItem(db, sessionId));
     const issueEvents: AcceptedLinearEvent[] = [];
@@ -477,8 +476,8 @@ async function sessionEvent(
 }
 
 /** Queue a stop in the same shape `submitCommand` drains, without applying it here. */
-export async function persistStopCommand(db: Database, command: LinearCommand): Promise<void> {
-  await persistStopJob(sqliteDb(db), command);
+export async function persistStopCommand(store: Db, command: LinearCommand): Promise<void> {
+  await persistStopJob(store, command);
 }
 
 const REDELEGATION_MARGIN_MS = 60_000;
@@ -653,14 +652,14 @@ function rank(eventRow: AcceptedLinearEvent): number {
 }
 
 async function stopTargets(
-  db: Database | undefined,
+  db: Db | undefined,
   linearIssueId: string | null,
   sessionId: string | null,
 ): Promise<string[]> {
   if (db === undefined) return linearIssueId === null ? [] : [linearIssueId];
   const ids: string[] = [];
   try {
-    ids.push(...(await openStopTargets(sqliteDb(db), linearIssueId, sessionId)));
+    ids.push(...(await openStopTargets(db, linearIssueId, sessionId)));
   } catch (caughtError2) {
     journalCaught(caughtError2, "poller.stopTargets.all", null);
     return linearIssueId === null || sessionId !== null ? [] : [linearIssueId];

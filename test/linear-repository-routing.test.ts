@@ -675,7 +675,7 @@ test("close Linear suggestions ask with the top three repositories", async () =>
       { hostname: "github.com", repositoryFullName: "acme/two", confidence: 0.85 },
       { hostname: "github.com", repositoryFullName: "acme/one", confidence: 0.8 },
     ]);
-    await refreshRepositoryCatalog(f.db, async () => [
+    await refreshRepositoryCatalog(sqliteDb(f.db), async () => [
       {
         owner: "acme",
         repo: "four",
@@ -704,7 +704,7 @@ test("close Linear suggestions ask with the top three repositories", async () =>
 test("a repository the app can access is chosen from Linear's suggestion without configuring it", async () => {
   const f = fixture();
   try {
-    await refreshRepositoryCatalog(f.db, async () => [
+    await refreshRepositoryCatalog(sqliteDb(f.db), async () => [
       {
         owner: "acme",
         repo: "four",
@@ -773,7 +773,7 @@ function teamRepositoryIntegration(db: ReturnType<typeof tempDb>) {
         (await getWorkItemRepositoryChoice(sqliteDb(db), item.id));
       const decision =
         scope && repository
-          ? ((await teamRepositoryDenial(db, item, scope, repository)) ?? true)
+          ? ((await teamRepositoryDenial(sqliteDb(db), item, scope, repository)) ?? true)
           : false;
       decisions.push(decision);
       return decision;
@@ -793,7 +793,7 @@ for (const source of ["a repo label", "a confident Linear suggestion"] as const)
     });
     integration = teamRepositoryIntegration(f.db);
     try {
-      await refreshRepositoryCatalog(f.db, async () => [
+      await refreshRepositoryCatalog(sqliteDb(f.db), async () => [
         {
           owner: "acme",
           repo: "four",
@@ -844,7 +844,7 @@ test("a bound repository outside the team's new links is explained once, not can
   integration = teamRepositoryIntegration(f.db);
   const check = new GitHubInstallationCheck(sqliteDb(f.db), integration, () => f.clock.now());
   try {
-    await refreshRepositoryCatalog(f.db, async () => [
+    await refreshRepositoryCatalog(sqliteDb(f.db), async () => [
       {
         owner: "acme",
         repo: "four",

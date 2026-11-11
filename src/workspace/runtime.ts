@@ -1,6 +1,5 @@
 import { journalCaught, journalRejection } from "../journal";
-import type { Database } from "bun:sqlite";
-import { MEMBERSHIP_BACKSTOP_MS } from "../db";
+import { MEMBERSHIP_BACKSTOP_MS, type Db } from "../db";
 import type { WorkspaceAssignments } from "./assignments";
 import type { OnboardingReadinessReader } from "./onboarding-page";
 import type { LinearMembershipReads } from "../linear";
@@ -8,7 +7,7 @@ import type { SlackIdentityReads } from "../slack";
 import { createWorkspaceAccess, type WorkspaceClient } from "./access";
 
 export async function createWorkspaceAccessFromLinear(options: {
-  db: Database;
+  store: Db;
   assignments?: WorkspaceAssignments;
   onboardingReadiness?: OnboardingReadinessReader;
   createVmAvailable?: () => Promise<boolean>;

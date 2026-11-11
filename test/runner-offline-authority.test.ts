@@ -69,7 +69,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", pawsNow())),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", pawsNow())),
     now: pawsNow(),
   });
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
@@ -79,7 +79,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
   ]);
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -130,13 +130,13 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
   const keys = generateKeyPairSync("ed25519");
   const open = () => {
     const work = createRunnerWork({
-      db,
+      store: sqliteDb(db),
       keyId: "fixture",
       privateKey: keys.privateKey,
       eventKey: Buffer.alloc(32, 7),
       now: pawsNow,
     });
-    return { work, results: createRunnerResults({ db, work, now: pawsNow }) };
+    return { work, results: createRunnerResults({ store: sqliteDb(db), work, now: pawsNow }) };
   };
   let paws = open();
   const command = (generation: number): Extract<RunnerCommand, { type: "run" }> => ({

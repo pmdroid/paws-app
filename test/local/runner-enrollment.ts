@@ -82,7 +82,7 @@ export async function probeRunnerEnrollment(
     name: "Fixture owner",
     email: "enroll-owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(db, "enroll-org", now);
+  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "enroll-org", now);
   const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "enroll-org",
@@ -118,7 +118,7 @@ export async function probeRunnerEnrollment(
   const member = await person("member");
   const inactive = await person("inactive", false);
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority,
     certificateRoot: authorityRoot,
     disconnect: () => {},

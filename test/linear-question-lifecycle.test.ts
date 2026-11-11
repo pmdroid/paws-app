@@ -45,7 +45,7 @@ async function setup(tracker: TrackerAdapter | null = null) {
   const item = insertQueuedItem(db, { id: "ENG-2", sessionKey: "ses_1", title: "Export rows" });
   await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
   await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
-  const question = await openQuestion(db, {
+  const question = await openQuestion(sqliteDb(db), {
     itemId: item.id,
     sessionId: "ses_1",
     body: "Include archived rows?",
@@ -216,7 +216,7 @@ test("a consumed activity cannot answer the next question in its session", async
     await orchestrator.onLinearEvent(event);
     await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
     await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
-    const next = await openQuestion(db, {
+    const next = await openQuestion(sqliteDb(db), {
       itemId: item.id,
       sessionId: "ses_1",
       body: "Use CSV?",
@@ -234,7 +234,7 @@ test("only one blocking question may be open on a session", async () => {
   const { db, item, question } = await setup();
   try {
     await expect(
-      openQuestion(db, {
+      openQuestion(sqliteDb(db), {
         itemId: item.id,
         sessionId: "ses_1",
         body: "Use CSV?",

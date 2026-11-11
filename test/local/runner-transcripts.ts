@@ -43,7 +43,7 @@ export async function probeRunnerTranscripts(
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(db, "transcript-org", now);
+  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "transcript-org", now);
   const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "transcript-org",
@@ -55,7 +55,7 @@ export async function probeRunnerTranscripts(
   const authorityRoot = join(root, "issuer");
   const authority = await initializeRunnerAuthority(authorityRoot);
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority,
     certificateRoot: authorityRoot,
     disconnect() {},
@@ -77,7 +77,7 @@ export async function probeRunnerTranscripts(
   db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   const keys = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: keys.privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -150,7 +150,12 @@ export async function probeRunnerTranscripts(
     },
   };
   const key = randomBytes(32);
-  let transcripts = createRunnerTranscripts({ db, work, objects: faultObjects, key });
+  let transcripts = createRunnerTranscripts({
+    store: sqliteDb(db),
+    work,
+    objects: faultObjects,
+    key,
+  });
   const execution = { id: workspaceId(now) };
   const marker = "RAW_TRANSCRIPT_ONLY_1ab8f9";
   const line = Buffer.from(
@@ -186,7 +191,12 @@ export async function probeRunnerTranscripts(
         sha256: createHash("sha256").update("changed").digest("hex"),
       }),
     );
-    transcripts = createRunnerTranscripts({ db, work, objects: faultObjects, key });
+    transcripts = createRunnerTranscripts({
+      store: sqliteDb(db),
+      work,
+      objects: faultObjects,
+      key,
+    });
     const finish = {
       generation: 1,
       executionId: execution.id,
@@ -361,7 +371,7 @@ export async function probeRunnerTranscripts(
       entered = resolve;
     });
     const interrupted = createRunnerTranscripts({
-      db,
+      store: sqliteDb(db),
       work,
       key,
       objects: {

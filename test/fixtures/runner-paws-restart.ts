@@ -130,16 +130,16 @@ const attach = loop.attachOrchestrator;
 spyOn(loop, "attachOrchestrator").mockImplementation((options) => {
   const { db, jobs, outbox } = options;
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: signing.privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
-  const results = createRunnerResults({ db, work });
-  const health = createRunnerHealth({ db, work });
+  const results = createRunnerResults({ store: sqliteDb(db), work });
+  const health = createRunnerHealth({ store: sqliteDb(db), work });
   services = { work, results, health };
   const backend = createRemoteAgentRunner({
-    db,
+    store: sqliteDb(db),
     work,
     results,
     health,
@@ -207,7 +207,9 @@ const workspace = await consumeWorkspaceBootstrap(sqliteDb(paws.db), {
   organizationId: "org",
   name: "Fixture",
   userId,
-  tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(paws.db, "org", Date.now())),
+  tokenHash: workspaceTokenHash(
+    await issueWorkspaceBootstrap(sqliteDb(paws.db), "org", Date.now()),
+  ),
   now: Date.now(),
 });
 paws.db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
@@ -217,7 +219,7 @@ paws.db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
 ]);
 const issuer = join(root, "issuer");
 const control = createRunnerControl({
-  db: paws.db,
+  store: sqliteDb(paws.db),
   authority: await initializeRunnerAuthority(issuer),
   certificateRoot: issuer,
   disconnect() {},

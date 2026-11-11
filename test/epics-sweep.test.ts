@@ -49,7 +49,7 @@ async function sweepFixture() {
   let reads = 0;
   let failNext = false;
   const reconciler = createItemReconciler({
-    db,
+    store: sqliteDb(db),
     tracker: {
       ...tracker,
       listDeps: tracker.listDeps.bind(tracker),

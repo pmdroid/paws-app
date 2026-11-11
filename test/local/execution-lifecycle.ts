@@ -191,7 +191,7 @@ export async function probeExecutionLifecycle(
       assigneeId: "external-human",
       delegateId: "external-app",
     });
-    await syncItemDependencies(db, {
+    await syncItemDependencies(sqliteDb(db), {
       itemId: "external-0",
       workspaceId: "external-workspace",
       expectedGeneration: (

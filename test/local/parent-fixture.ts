@@ -60,7 +60,7 @@ export async function createParentFixture(
   const started: string[] = [];
   const intake = { delayed: false };
   const parents = createParentDelegations({
-    db,
+    store: sqliteDb(db),
     tracker,
     lifecycle: {
       inspect: async (id) =>

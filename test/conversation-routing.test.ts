@@ -65,7 +65,7 @@ async function setup(options: { version?: string; conversations?: number } = {})
     organizationId: "org-acme",
     name: "Acme",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org-acme", T0)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org-acme", T0)),
     now: T0,
   });
   db.run(
@@ -80,7 +80,7 @@ async function setup(options: { version?: string; conversations?: number } = {})
     T0,
   );
   const helpers = createRunnerHelpers({
-    db,
+    store: sqliteDb(db),
     keyId: "acme",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     now: () => clock.now(),
@@ -98,7 +98,8 @@ async function setup(options: { version?: string; conversations?: number } = {})
     outbox: new OutboxDispatcher(db, clock),
     pawsRoot: "/nonexistent-paws-root",
     linearComments: policy,
-    conversations: async () => createConversationTurns({ db, helpers, now: () => clock.now() }),
+    conversations: async () =>
+      createConversationTurns({ store: sqliteDb(db), helpers, now: () => clock.now() }),
   });
   cleanup.push(async () => {
     await orchestrator.shutdown();

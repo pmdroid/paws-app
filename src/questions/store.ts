@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import type { Database } from "bun:sqlite";
 import {
   askedQuestionRowSteps,
   insertQuestionRowSteps,
@@ -7,7 +6,6 @@ import {
   openQuestionRowSteps,
   questionEventConsumedSteps,
   questionRowByIdSteps,
-  sqliteDb,
   type Q,
   type QuestionRow,
   type Steps,
@@ -68,8 +66,8 @@ export function* openQuestionSteps(q: Q, input: NewQuestion): Steps<StoredQuesti
   return yield* insertQuestionSteps(q, { ...input, kind: "agent", status: "open" });
 }
 
-export function openQuestion(db: Database, input: NewQuestion): Promise<StoredQuestion> {
-  return sqliteDb(db).run((q) => openQuestionSteps(q, input));
+export function openQuestion(store: Db, input: NewQuestion): Promise<StoredQuestion> {
+  return store.run((q) => openQuestionSteps(q, input));
 }
 
 type QuestionInsert = NewQuestion & {

@@ -28,7 +28,7 @@ const owner = await putWorkspaceUser(sqliteDb(db), {
   name: "Owner",
   email: "owner@example.invalid",
 });
-const token = await issueWorkspaceBootstrap(db, "org", now);
+const token = await issueWorkspaceBootstrap(sqliteDb(db), "org", now);
 const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
   id: workspaceId(),
   organizationId: "org",
@@ -70,7 +70,7 @@ for (const runner of runners) {
     [workspaceId(), runner.id, runner.ownerUserId, now - 60000, now - 1000],
   );
 }
-const browser = createRunnerPlacementBrowser({ db });
+const browser = createRunnerPlacementBrowser({ store: sqliteDb(db) });
 const built = await Bun.build({
   entrypoints: [new URL("../../src/dashboard/src/client/runners.ts", import.meta.url).pathname],
   target: "browser",

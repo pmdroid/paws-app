@@ -240,7 +240,8 @@ export async function probeExecutionRuntime(input: {
   assert.equal(generation(), 0);
   assert.equal((await post(issueEvent(), "runtime-initial")).status, 200);
   await until(
-    async () => generation() > 0 && !(await hasPendingDelegationChanges(db, target.delegationId)),
+    async () =>
+      generation() > 0 && !(await hasPendingDelegationChanges(sqliteDb(db), target.delegationId)),
   );
   assert.equal(spec()!.revision, 1);
   const first = { ...spec()! };
@@ -255,7 +256,8 @@ export async function probeExecutionRuntime(input: {
   try {
     assert.equal((await post(issueEvent(), "runtime-criteria-edit")).status, 200);
     await until(
-      async () => fetching && (await hasPendingDelegationChanges(db, target.delegationId)),
+      async () =>
+        fetching && (await hasPendingDelegationChanges(sqliteDb(db), target.delegationId)),
     );
     const before = timers().find((row) => row.queue === "scheduler.tick")!.fires;
     db.run("UPDATE job SET run_at=? WHERE queue='scheduler.tick' AND status='pending'", [
@@ -279,7 +281,8 @@ export async function probeExecutionRuntime(input: {
   }
   await until(
     async () =>
-      spec()?.revision === 2 && !(await hasPendingDelegationChanges(db, target.delegationId)),
+      spec()?.revision === 2 &&
+      !(await hasPendingDelegationChanges(sqliteDb(db), target.delegationId)),
   );
   assert.notEqual(spec()!.hash, first.hash);
   assert.equal((await getWorkItem(sqliteDb(db), itemId))!.currentRunId, oldRun);
@@ -316,7 +319,7 @@ export async function probeExecutionRuntime(input: {
     async () =>
       timers().find((row) => row.queue === "linear.epics.reconcile")!.fires > beforeSweep &&
       generation() > beforeGeneration &&
-      !(await hasPendingDelegationChanges(db, target.delegationId)),
+      !(await hasPendingDelegationChanges(sqliteDb(db), target.delegationId)),
   );
   assert.equal(spec()!.revision, 2);
   assert.deepEqual(

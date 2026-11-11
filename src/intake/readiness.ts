@@ -1,13 +1,12 @@
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import {
   delegationHasItemWithoutSnapshotSteps,
   delegationHasReconciliationWorkSteps,
   delegationWorkspaceIdSteps,
   readItemDelegationSteps,
-  sqliteDb,
   type Q,
   type Steps,
+  type Db,
 } from "../db";
 import { canAdvanceItemSteps, itemBlockersSteps, readyItemsSteps } from "./dependencies";
 
@@ -20,11 +19,11 @@ export function* delegationReadinessSteps(q: Q, delegationId: string): Steps<Rea
 }
 
 export function itemReadiness(
-  db: Database,
+  store: Db,
   itemId: string,
   phase: ReadinessPhase,
 ): Promise<ReadinessHold | null> {
-  return sqliteDb(db).run((q) => itemReadinessSteps(q, itemId, phase));
+  return store.run((q) => itemReadinessSteps(q, itemId, phase));
 }
 
 export function* itemReadinessSteps(

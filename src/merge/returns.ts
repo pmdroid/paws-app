@@ -9,7 +9,6 @@ import {
   latestHumanTurnSteps,
   fixRounds,
   fixRoundsSteps,
-  countRebaseReturns,
   countRebaseReturnsSteps,
   listRebaseReturns,
   listRebaseReturnsSteps,
@@ -21,7 +20,6 @@ import {
   type RestartHandoff,
   type Steps,
   type WorkItemRecord,
-  sqliteDb,
 } from "../db";
 import type { askSteps } from "../questions";
 import { rebaseBudget, type RebaseBudget, type RebaseConflict } from "./budget";
@@ -39,8 +37,10 @@ export function latestUserTurn(db: Database, itemId: string): number {
   return latestHumanTurn(db, itemId);
 }
 
-export async function rebaseReturns(db: Database, itemId: string): Promise<number> {
-  return await countRebaseReturns(sqliteDb(db), itemId, latestUserTurn(db, itemId));
+export function rebaseReturns(store: Db, itemId: string): Promise<number> {
+  return store.run(function* (q) {
+    return yield* countRebaseReturnsSteps(q, itemId, yield* latestHumanTurnSteps(q, itemId));
+  });
 }
 
 /** Whether a conflict on this main may go back to the agent; see {@link rebaseBudget}. */

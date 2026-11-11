@@ -70,6 +70,7 @@ for (const [body, existing] of [
     };
     const linear = openLinear({
       db,
+      store: sqliteDb(db),
       secretsDir: join(home, "secrets"),
       env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
       fetch: async () => {
@@ -185,6 +186,7 @@ test("an old prompted intake failure cannot terminate a newer session generation
   const release = Promise.withResolvers<void>();
   const linear = openLinear({
     db,
+    store: sqliteDb(db),
     secretsDir: join(home, "secrets"),
     env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
     progressReporter: (event) => orchestrator.sessionProgressReporter(event),
@@ -259,6 +261,7 @@ test.each([false, true])(
     };
     const linear = openLinear({
       db,
+      store: sqliteDb(db),
       secretsDir: join(home, "secrets"),
       env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
       progressReporter: (event) => orchestrator.sessionProgressReporter(event),

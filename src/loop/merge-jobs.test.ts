@@ -84,8 +84,8 @@ test("unknown merge outcomes back off without expiring or spending job attempts"
         pull_request: { merged: true, head: { sha: "h" } },
       }),
     };
-    expect(await acceptGitHubDelivery(db, delivery, clock.now())).toBe(true);
-    expect(await acceptGitHubDelivery(db, delivery, clock.now())).toBe(false);
+    expect(await acceptGitHubDelivery(sqliteDb(db), delivery, clock.now())).toBe(true);
+    expect(await acceptGitHubDelivery(sqliteDb(db), delivery, clock.now())).toBe(false);
     expect(await mergeCallInFlight(sqliteDb(db), "eng-1")).toBe(true);
     reason = "ci";
     await loop.tick();
@@ -397,7 +397,11 @@ describe("GitHub deliveries", () => {
     payload: unknown,
     deliveryId = `d-${event}`,
   ) {
-    return acceptGitHubDelivery(db, { deliveryId, event, payload: JSON.stringify(payload) }, now);
+    return acceptGitHubDelivery(
+      sqliteDb(db),
+      { deliveryId, event, payload: JSON.stringify(payload) },
+      now,
+    );
   }
 
   test("a check_suite delivery for the head wakes its merge job at once", async () => {
@@ -536,17 +540,17 @@ describe("main moving", () => {
     const { db, clock } = await twoQueued();
     const push = { ref: "refs/heads/main", after: main, repository };
     await acceptGitHubDelivery(
-      db,
+      sqliteDb(db),
       { deliveryId: "p-1", event: "push", payload: JSON.stringify(push) },
       clock.now(),
     );
     await acceptGitHubDelivery(
-      db,
+      sqliteDb(db),
       { deliveryId: "p-2", event: "push", payload: JSON.stringify(push) },
       clock.now(),
     );
     await acceptGitHubDelivery(
-      db,
+      sqliteDb(db),
       {
         deliveryId: "pr-1",
         event: "pull_request",
@@ -569,7 +573,7 @@ describe("main moving", () => {
   test("a push to another branch or a closed unmerged pull request checks nothing", async () => {
     const { db, clock } = await twoQueued();
     await acceptGitHubDelivery(
-      db,
+      sqliteDb(db),
       {
         deliveryId: "p-1",
         event: "push",
@@ -578,7 +582,7 @@ describe("main moving", () => {
       clock.now(),
     );
     await acceptGitHubDelivery(
-      db,
+      sqliteDb(db),
       {
         deliveryId: "pr-1",
         event: "pull_request",
@@ -613,7 +617,7 @@ describe("merge poll backstop", () => {
   }
 
   async function ping(db: ReturnType<typeof queue>["db"], now: number, deliveryId = "ping") {
-    await acceptGitHubDelivery(db, { deliveryId, event: "ping", payload: "{}" }, now);
+    await acceptGitHubDelivery(sqliteDb(db), { deliveryId, event: "ping", payload: "{}" }, now);
   }
 
   test("with deliveries flowing, a 20-minute CI wait makes at most 5 GitHub status reads", async () => {

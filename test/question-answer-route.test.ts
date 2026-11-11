@@ -33,7 +33,7 @@ async function setup(active = true) {
   const item = insertQueuedItem(db, { id: "PAS-1003", sessionKey: "ses_1", title: "Policy" });
   await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
   await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
-  const question = await openQuestion(db, {
+  const question = await openQuestion(sqliteDb(db), {
     itemId: item.id,
     sessionId: "ses_1",
     body: "Which way?",
@@ -77,7 +77,7 @@ async function setup(active = true) {
         body: JSON.stringify(body),
       }),
       {
-        db,
+        store: sqliteDb(db),
         principal: sessionIds === null ? undefined : principal,
         sessionIds: sessionIds ?? undefined,
         submit: (input) => orchestrator.answerFromPaws(input),
@@ -159,7 +159,7 @@ test("a link ask is answered on the issue page", async () => {
   const { db, question, submit } = await setup();
   try {
     db.run("UPDATE question SET status = 'answered' WHERE id = ?", [question.id]);
-    const { question: link } = await openLinkAsk(db, {
+    const { question: link } = await openLinkAsk(sqliteDb(db), {
       asker: { itemId: "PAS-1003", runId: null, sessionId: "ses_1" },
       kind: "risk",
       head: "7f65200aa",

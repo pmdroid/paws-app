@@ -4961,7 +4961,7 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
     return { command: process.execPath, args: [fakeAgent, result, script], env: process.env };
   };
   const createOrchestrator = () => {
-    gate = new LinearTaskAccess(db, {
+    gate = new LinearTaskAccess(sqliteDb(db), {
       access: access.adapter,
       lifecycle,
       oauthClientId: scope.oauthClientId,

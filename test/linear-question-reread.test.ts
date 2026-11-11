@@ -92,7 +92,7 @@ async function askedSession() {
   const item = insertQueuedItem(db, { id: "ENG-2", sessionKey: "ses_1", title: "Export rows" });
   await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
   await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
-  const question = await openQuestion(db, {
+  const question = await openQuestion(sqliteDb(db), {
     itemId: item.id,
     sessionId: "ses_1",
     body: "Include archived rows?",
@@ -126,7 +126,7 @@ function setup(
   const poller = startCatchUpPoller({
     source: options.reread === false ? { poll: (since) => source.poll(since) } : source,
     store,
-    db,
+    db: sqliteDb(db),
     now: () => now,
     sleeper: {
       wait: () =>

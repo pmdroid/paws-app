@@ -1,6 +1,5 @@
 import {
   sessionIssueTeamNameSteps,
-  sqliteDb,
   teamRepositoryAllowedSteps,
   workspaceMemberUsable,
   listWorkspaceMembersSteps,
@@ -11,7 +10,6 @@ import {
   type WorkItemRecord,
 } from "../db";
 import { isWorkspaceAdmin } from "../workspace";
-import type { Database } from "bun:sqlite";
 import {
   noRepositoryDenial,
   notTeamMemberDenial,
@@ -27,12 +25,11 @@ export type TeamScope = { workspaceId: string; teamId: string };
  * Returns null when allowed, otherwise the reason. Reads the database only.
  */
 export async function teamRepositoryDenial(
-  db: Database,
+  store: Db,
   item: WorkItemRecord,
   scope: TeamScope,
   repository: { owner: string; repo: string },
 ): Promise<GitHubDenial | null> {
-  const store = sqliteDb(db);
   const name = `${repository.owner}/${repository.repo}`;
   if (
     await store.run((q) =>

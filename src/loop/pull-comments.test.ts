@@ -174,7 +174,7 @@ async function setup(threads = THREADS) {
   let delivery = 0;
   const send = (event: string, payload: Record<string, unknown>) =>
     acceptGitHubDelivery(
-      db,
+      sqliteDb(db),
       {
         deliveryId: `d-${(delivery += 1)}`,
         event,

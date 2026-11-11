@@ -61,13 +61,13 @@ async function fixture() {
     authenticatedAt: at,
   };
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "sign-in",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
     now: () => at,
   });
-  const health = createRunnerHealth({ db, work, now: () => at });
+  const health = createRunnerHealth({ store: sqliteDb(db), work, now: () => at });
   const runner = (
     status: "active" | "paused" | "draining" | "revoked" = "active",
     lastSeenAt: number | null = at,
@@ -138,7 +138,7 @@ async function fixture() {
       [runnerId, agent, usedAt],
     );
   const helpers = createRunnerHelpers({
-    db,
+    store: sqliteDb(db),
     keyId: "sign-in",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     now: () => at,
@@ -544,7 +544,7 @@ test("a completed sign-in queues one login check for that agent", async () => {
   const f = await fixture();
   const runnerId = f.runner();
   const login = createRunnerLogin({
-    db: f.db,
+    store: sqliteDb(f.db),
     work: f.work,
     now: f.now,
     onSignedIn: (signedIn) => f.health.afterSignIn(signedIn.runnerId, signedIn.agent),
@@ -574,7 +574,7 @@ test("a completed sign-in queues one login check for that agent", async () => {
 test("a sign-in goes to the runner before sign-in checks queued ahead of it", async () => {
   const f = await fixture();
   const runnerId = f.runner();
-  const login = createRunnerLogin({ db: f.db, work: f.work, now: f.now });
+  const login = createRunnerLogin({ store: sqliteDb(f.db), work: f.work, now: f.now });
   for (const agent of ["codex", "grok"] as const)
     await f.work.enqueue({
       id: crypto.randomUUID(),

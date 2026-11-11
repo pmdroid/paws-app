@@ -1,16 +1,15 @@
 import { journalCaught } from "../journal";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import type { Database } from "bun:sqlite";
 import {
   attributionReturnPath,
-  beginGitHubAttribution,
+  beginGitHubAttributionSteps,
   consumeGitHubAttributionRequest,
   githubAttribution,
   requireAttributionSession,
   revokeGitHubAttribution,
   saveGitHubAttribution,
   type AttributionBinding,
-  sqliteDb,
+  type Db,
 } from "../db";
 import { readWorkspaceJson } from "./administration";
 import {
@@ -28,7 +27,7 @@ const NOT_CONFIGURED =
   "Ask the Paws operator to configure the GitHub App on the server, then restart Paws.";
 
 export function createGitHubAttributionLink(options: {
-  db: Database;
+  store: Db;
   origin: string;
   client?: { clientId: string; clientSecret: string };
   refresh: (workspaceId: string, userId: string) => Promise<void>;
@@ -41,19 +40,20 @@ export function createGitHubAttributionLink(options: {
   if (options.client && (!options.client.clientId || !options.client.clientSecret))
     throw new Error("Configured GitHub App client metadata is required.");
   /** Records one pending link and builds GitHub's authorize address for it. */
-  function begin(
+  async function begin(
     client: { clientId: string; clientSecret: string },
     binding: AttributionBinding,
     returnPath?: string,
   ) {
     const state = workspaceSecret();
     const browser = workspaceSecret();
-    beginGitHubAttribution(options.db, binding, {
+    const input = {
       stateHash: workspaceTokenHash(state),
       browserHash: workspaceTokenHash(browser),
       now: now(),
       ...(returnPath === undefined ? {} : { returnPath }),
-    });
+    };
+    await options.store.transaction((q) => beginGitHubAttributionSteps(q, binding, input));
     const target = new URL("https://github.com/login/oauth/authorize");
     target.search = new URLSearchParams({
       client_id: client.clientId,
@@ -87,7 +87,7 @@ export function createGitHubAttributionLink(options: {
           request.headers.get("host")?.toLowerCase() !== url.host.toLowerCase())
       )
         return reply({ error: "Use the configured Paws origin." }, 403);
-      let access = await requestWorkspaceSession(sqliteDb(options.db), request, now());
+      let access = await requestWorkspaceSession(options.store, request, now());
       if (!access) return reply({ error: "Sign in to Paws." }, 401);
       const form = await readForm(request).catch((caughtError1) => {
         journalCaught(caughtError1, "github-attribution.startFromPage.readForm", null);
@@ -108,15 +108,15 @@ export function createGitHubAttributionLink(options: {
       };
       try {
         await options.refresh(binding.workspaceId, binding.userId);
-        access = await requestWorkspaceSession(sqliteDb(options.db), request, now());
+        access = await requestWorkspaceSession(options.store, request, now());
         if (
           !access ||
           access.session.tokenHash !== binding.sessionHash ||
           access.principal.workspaceId !== binding.workspaceId
         )
           throw new Error("Session changed.");
-        await requireAttributionSession(sqliteDb(options.db), binding, now());
-        const started = begin(options.client, binding, returnPath);
+        await requireAttributionSession(options.store, binding, now());
+        const started = await begin(options.client, binding, returnPath);
         return new Response(null, {
           status: 303,
           headers: {
@@ -150,7 +150,7 @@ export function createGitHubAttributionLink(options: {
         (url.pathname === PATH && !["GET", "POST", "DELETE"].includes(request.method))
       )
         return reply({ error: "Method not allowed" }, 405);
-      let access = await requestWorkspaceSession(sqliteDb(options.db), request, now());
+      let access = await requestWorkspaceSession(options.store, request, now());
       if (!access) return reply({ error: "Sign in to Paws." }, 401);
       const selected =
         url.searchParams.get("workspaceId") ?? request.headers.get("x-paws-workspace");
@@ -169,7 +169,7 @@ export function createGitHubAttributionLink(options: {
         return reply({ error: "CSRF token required." }, 403);
       try {
         await options.refresh(binding.workspaceId, binding.userId);
-        access = await requestWorkspaceSession(sqliteDb(options.db), request, now());
+        access = await requestWorkspaceSession(options.store, request, now());
         if (
           !access ||
           access.session.tokenHash !== binding.sessionHash ||
@@ -179,16 +179,12 @@ export function createGitHubAttributionLink(options: {
         if (url.pathname === PATH && request.method === "GET")
           return reply({
             configured: options.client !== undefined,
-            identity: await githubAttribution(
-              sqliteDb(options.db),
-              binding.workspaceId,
-              binding.userId,
-            ),
+            identity: await githubAttribution(options.store, binding.workspaceId, binding.userId),
           });
-        await requireAttributionSession(sqliteDb(options.db), binding, now());
+        await requireAttributionSession(options.store, binding, now());
         if (url.pathname === PATH) {
           if (request.method === "DELETE") {
-            await revokeGitHubAttribution(sqliteDb(options.db), binding, now());
+            await revokeGitHubAttribution(options.store, binding, now());
             return reply({ ok: true });
           }
           if (!options.client) return reply({ error: NOT_CONFIGURED }, 503);
@@ -201,7 +197,7 @@ export function createGitHubAttributionLink(options: {
               },
               400,
             );
-          const started = begin(options.client, binding);
+          const started = await begin(options.client, binding);
           return reply({ authorizeUrl: started.authorizeUrl }, 200, {
             "set-cookie": started.cookie,
           });
@@ -216,7 +212,7 @@ export function createGitHubAttributionLink(options: {
         )
           throw new Error("Invalid request.");
         const { revision, returnPath } = await consumeGitHubAttributionRequest(
-          sqliteDb(options.db),
+          options.store,
           binding,
           {
             stateHash: workspaceTokenHash(state),
@@ -285,7 +281,7 @@ export function createGitHubAttributionLink(options: {
             .trim() || login;
         await options.refresh(binding.workspaceId, binding.userId);
         await saveGitHubAttribution(
-          sqliteDb(options.db),
+          options.store,
           binding,
           { id, login, name, email: `${id}+${login}@users.noreply.github.com` },
           revision,

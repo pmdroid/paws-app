@@ -160,7 +160,7 @@ test("a task_block dependency is admitted only after its blocker item is merged"
       actorId: "owner",
     });
     for (const item of intake.items)
-      await syncItemDependencies(db, {
+      await syncItemDependencies(sqliteDb(db), {
         itemId: item.id,
         workspaceId: "workspace",
         expectedGeneration: (
@@ -239,7 +239,7 @@ async function runnerWithSlots(db: ReturnType<typeof tempDb>, capacity: number):
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", 0)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", 0)),
     now: 0,
   });
   db.run(

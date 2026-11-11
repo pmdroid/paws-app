@@ -59,7 +59,7 @@ test.each(["session", null])(
         wake: () => release?.(),
       };
       const poller = startCatchUpPoller({
-        db,
+        db: sqliteDb(db),
         store,
         sleeper,
         source: {

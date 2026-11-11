@@ -81,11 +81,12 @@ async function fixture(token = true, children = false) {
   const active = Promise.withResolvers<void>();
   const opened = openLinear({
     db,
+    store: sqliteDb(db),
     secretsDir: join(home, "secrets"),
     env: { LINEAR_CLIENT_ID: "client", LINEAR_APP_USER_ID: "app" },
     isAuthorized: async () => !isLinearAppRevoked(db, scope),
     beforeEvent: async (event) =>
-      !(await handleLinearAdministration(db, event, {
+      !(await handleLinearAdministration(sqliteDb(db), event, {
         ...scope,
         revalidate: async () => {},
         notify: (command) => bus.emit(command),
@@ -351,7 +352,7 @@ test("undelegation cancels every queued task of the issue and stops its session 
   };
   const event = parseAgentEvent(JSON.stringify(payload), "undelegation", Date.now())!;
   const reconciled: string[] = [];
-  await handleLinearAdministration(f.db, event, {
+  await handleLinearAdministration(sqliteDb(f.db), event, {
     ...scope,
     notify: (command) => f.notifications.push(command.itemId),
     interrupt: async (sessionId) => {
@@ -398,7 +399,7 @@ test("notification dedupe follows successful reconciliation and serializes overl
       throw new Error("Retry reconciliation");
     },
   };
-  await expect(handleLinearAdministration(f.db, first, failed)).rejects.toThrow(
+  await expect(handleLinearAdministration(sqliteDb(f.db), first, failed)).rejects.toThrow(
     "Retry reconciliation",
   );
   expect(
@@ -417,11 +418,11 @@ test("notification dedupe follows successful reconciliation and serializes overl
       await released.promise;
     },
   };
-  const a = handleLinearAdministration(f.db, first, options);
-  const b = handleLinearAdministration(f.db, second, options);
+  const a = handleLinearAdministration(sqliteDb(f.db), first, options);
+  const b = handleLinearAdministration(sqliteDb(f.db), second, options);
   released.resolve();
   await Promise.all([a, b]);
-  await handleLinearAdministration(f.db, second, options);
+  await handleLinearAdministration(sqliteDb(f.db), second, options);
   expect(calls).toBe(2);
   expect(isLinearAppRevoked(f.db, scope)).toBe(false);
   expect((await getWorkItem(sqliteDb(f.db), f.task.items[0]!.id))?.state).toBe("queued");

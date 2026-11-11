@@ -81,7 +81,7 @@ export async function probeDependencySnapshots(
     await saveTaskMode(sqliteDb(db), ids.get("a")!, "code");
     const refresh = async () => {
       for (const itemId of ids.values())
-        await syncItemDependencies(db, {
+        await syncItemDependencies(sqliteDb(db), {
           itemId,
           workspaceId,
           expectedGeneration: (
@@ -198,7 +198,7 @@ export async function probeDependencySnapshots(
     const entered = new Promise<void>((resolve) => (enter = resolve));
     const gate = new Promise<void>((resolve) => (release = resolve));
     let held = false;
-    const late = syncItemDependencies(db, {
+    const late = syncItemDependencies(sqliteDb(db), {
       ...target,
       expectedGeneration: generation,
       lifecycle,
@@ -226,7 +226,12 @@ export async function probeDependencySnapshots(
     assert.equal(rowCount("task_block"), 0);
     assert.equal((await readyIds()).length, 4);
     await assert.rejects(
-      syncItemDependencies(db, { ...target, expectedGeneration: generation, tracker, lifecycle }),
+      syncItemDependencies(sqliteDb(db), {
+        ...target,
+        expectedGeneration: generation,
+        tracker,
+        lifecycle,
+      }),
       /snapshot changed/,
     );
     observed(
@@ -274,7 +279,7 @@ export async function probeDependencySnapshots(
     const controller = new AbortController();
     const beforeAbort = (await sqliteDb(db).run((q) => readyItemsSteps(q, target))).generation;
     await assert.rejects(
-      syncItemDependencies(db, {
+      syncItemDependencies(sqliteDb(db), {
         ...target,
         expectedGeneration: beforeAbort,
         tracker,
@@ -294,7 +299,7 @@ export async function probeDependencySnapshots(
       beforeAbort,
     );
     await assert.rejects(
-      syncItemDependencies(db, {
+      syncItemDependencies(sqliteDb(db), {
         ...target,
         expectedGeneration: beforeAbort,
         tracker,
@@ -335,7 +340,7 @@ export async function probeDependencySnapshots(
       let changed = false;
       try {
         await assert.rejects(
-          syncItemDependencies(db, {
+          syncItemDependencies(sqliteDb(db), {
             ...target,
             expectedGeneration: beforeAbort,
             lifecycle,
@@ -361,7 +366,7 @@ export async function probeDependencySnapshots(
       );
     }
     await assert.rejects(
-      syncItemDependencies(db, {
+      syncItemDependencies(sqliteDb(db), {
         ...target,
         expectedGeneration: beforeAbort,
         lifecycle,

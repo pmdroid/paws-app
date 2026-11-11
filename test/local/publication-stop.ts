@@ -429,7 +429,7 @@ export async function probePublicationStop(
     const lifecycle = createFakeLinearIssueLifecycle({ id: "a", ...ownership });
     lifecycle.issues.set("b", { id: "b", ...ownership });
     for (const itemId of ["cycle-a", "cycle-b", "cycle-free"])
-      await syncItemDependencies(db, {
+      await syncItemDependencies(sqliteDb(db), {
         itemId,
         workspaceId: "cycle-workspace",
         expectedGeneration: (

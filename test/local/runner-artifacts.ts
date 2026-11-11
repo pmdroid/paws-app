@@ -50,7 +50,7 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
       name: "Owner",
       email: "owner@example.invalid",
     });
-    const bootstrap = await issueWorkspaceBootstrap(db, "fixture-org", now);
+    const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "fixture-org", now);
     const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
       id: workspaceId(),
       organizationId: "fixture-org",
@@ -62,7 +62,7 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
     const authorityRoot = join(root, "issuer");
     const authority = await initializeRunnerAuthority(authorityRoot);
     const control = createRunnerControl({
-      db,
+      store: sqliteDb(db),
       authority,
       certificateRoot: authorityRoot,
       disconnect() {},
@@ -108,7 +108,7 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
     ]);
     const keys = generateKeyPairSync("ed25519");
     const work = createRunnerWork({
-      db,
+      store: sqliteDb(db),
       keyId: "fixture",
       privateKey: keys.privateKey,
       eventKey: Buffer.alloc(32, 7),

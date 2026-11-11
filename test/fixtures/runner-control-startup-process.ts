@@ -288,10 +288,14 @@ try {
       organizationId: "org",
       name: "Fixture",
       userId,
-      tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(paws.db, "org", now)),
+      tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(paws.db), "org", now)),
       now,
     });
-    const issued = await issueWorkspaceSession(paws.db, { userId, workspaceId: workspace.id, now });
+    const issued = await issueWorkspaceSession(sqliteDb(paws.db), {
+      userId,
+      workspaceId: workspace.id,
+      now,
+    });
     const headers = {
       cookie: `${WORKSPACE_COOKIE}=${issued.token}`,
       origin: source.PAWS_PUBLIC_URL!,
@@ -315,7 +319,7 @@ try {
       assert.equal((await call(browserPort, "/api/runners")).status, 401);
       const key = await createRunnerKey(join(root, "client"));
       const enrollPath = "/api/runners/enrollments";
-      await refreshRepositoryCatalog(paws.db, async () => [
+      await refreshRepositoryCatalog(sqliteDb(paws.db), async () => [
         {
           owner: "fixture",
           repo: "repository",
@@ -390,7 +394,7 @@ try {
         teamIds: [],
         now,
       });
-      const memberSession = await issueWorkspaceSession(paws.db, {
+      const memberSession = await issueWorkspaceSession(sqliteDb(paws.db), {
         userId: memberId,
         workspaceId: workspace.id,
         now,

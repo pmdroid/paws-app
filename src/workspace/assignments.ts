@@ -1,7 +1,6 @@
 import { canAct, LINEAR_GUEST_REFUSAL } from "./eligibility";
 import { journalCaught, journalRejection } from "../journal";
 import { randomBytes } from "node:crypto";
-import type { Database } from "bun:sqlite";
 import {
   advanceLinearSessionGenerationSteps,
   auditWorkspaceAccessSteps,
@@ -21,7 +20,6 @@ import {
   moveWorkspaceAssignmentSteps,
   pendingWorkspaceAssignmentTokensSteps,
   recordLinearTurnSteps,
-  sqliteDb,
   syncWorkspaceMemberSteps,
   workspaceAssignmentByTokenSteps,
   workspaceAssignmentTokenForLinkSteps,
@@ -31,6 +29,7 @@ import {
   type Q,
   type Steps,
   type WorkspaceAssignmentHold,
+  type Db,
 } from "../db";
 import {
   linearItem,
@@ -179,7 +178,7 @@ function creatorName(hold: Pick<Hold, "event" | "actorId">): string {
 }
 
 export function createWorkspaceAssignments(options: {
-  db: Database;
+  store: Db;
   origin: string;
   clientId: string;
   memberships: LinearMembershipReads;
@@ -194,7 +193,7 @@ export function createWorkspaceAssignments(options: {
   continue: (event: AcceptedLinearEvent) => Promise<void | boolean>;
   now?: () => number;
 }) {
-  const store = sqliteDb(options.db);
+  const { store } = options;
   const origin = new URL(options.origin);
   if (origin.protocol !== "https:" || origin.username || origin.password)
     throw new Error("Assignment sign-in requires verified HTTPS.");

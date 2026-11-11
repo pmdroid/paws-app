@@ -176,7 +176,7 @@ test("a parked item is placed on a runner as soon as it reports the repository a
   );
   const clock = { now: NOW + 1_000 };
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -300,7 +300,7 @@ test("a reconnect with unchanged reports wakes parked work once, without waking 
   const { jobId } = await parkedRun(db, "parked", [id], [id]);
   const now = NOW + 60_000;
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -336,13 +336,13 @@ test("a successful background sign-in check wakes parked work", async () => {
   const { jobId } = await parkedRun(db, "parked", [id], [id]);
   const at = NOW + 1;
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
     now: () => at,
   });
-  const health = createRunnerHealth({ db, work, now: () => at });
+  const health = createRunnerHealth({ store: sqliteDb(db), work, now: () => at });
   expect(await health.afterSignIn(id, "claude")).toBe(true);
   const envelope = (await work.commands(id))[0]!;
   const command = JSON.parse(Buffer.from(envelope.payload, "base64url").toString()) as {

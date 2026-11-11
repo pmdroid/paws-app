@@ -69,6 +69,7 @@ describe("Linear webhook acknowledgement", () => {
     const stalled: string[] = [];
     const linear = openLinear({
       db,
+      store: sqliteDb(db),
       secretsDir: join(home, "secrets"),
       env: { LINEAR_ACCESS_TOKEN: "fixture-token", LINEAR_CLIENT_ID: "client" },
       followUp: async () => {

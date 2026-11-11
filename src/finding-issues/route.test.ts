@@ -87,7 +87,7 @@ async function setup(role: WorkspaceRole | null = "member") {
       teamIds: [],
       now: NOW,
     });
-  const { session } = await issueWorkspaceSession(db, {
+  const { session } = await issueWorkspaceSession(sqliteDb(db), {
     workspaceId: "ws",
     userId: "user-1",
     now: NOW,

@@ -1,5 +1,4 @@
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import type { IssueBrief, WorkBrief } from "../core";
 import type {
   DependencyEdge,
@@ -36,9 +35,9 @@ import {
   saveItemSpecificationSteps,
   saveWorkItemLinearProjectSteps,
   updateReconciledWorkItemSteps,
-  sqliteDb,
   type Q,
   type Steps,
+  type Db,
 } from "../db";
 
 export const SWEEP_FULL_REFRESH_MS = 6 * 60 * 60_000;
@@ -100,7 +99,7 @@ function specHash(value: WorkBrief): string {
 }
 
 export function createItemReconciler(input: {
-  db: Database;
+  store: Db;
   tracker: Pick<TrackerAdapter, "loadEpic" | "listDeps" | "listBlockers">;
   lifecycle: Pick<LinearIssueLifecycle, "inspect">;
   onChanges: (q: Q, changes: ItemChanges) => Steps<void>;
@@ -112,7 +111,7 @@ export function createItemReconciler(input: {
   ) => Promise<EpicSnapshot>;
   now?: () => number;
 }) {
-  const store = sqliteDb(input.db);
+  const { store } = input;
   const flights = new Map<string, { dirty: boolean; promise: Promise<void> }>();
   let sweepFlight: Promise<void> | null = null;
   const relationsFlights = new Map<string, Promise<Target[]>>();
@@ -272,7 +271,7 @@ export function createItemReconciler(input: {
         listPresentDelegationItemsSteps(q, initial.delegationId),
       );
       for (const { id: itemId } of items)
-        await syncItemDependencies(input.db, {
+        await syncItemDependencies(input.store, {
           itemId,
           workspaceId: target.workspaceId,
           expectedGeneration: (

@@ -265,7 +265,7 @@ test("host credentials reach real host clone and fetch without reaching reposito
       home,
       linearTaskModes: true,
       repositories: [{ owner: "acme", repo: "private", remoteUrl }],
-      linearAccess: new LinearTaskAccess(db, {
+      linearAccess: new LinearTaskAccess(sqliteDb(db), {
         access: access.adapter,
         lifecycle,
         ...installation,

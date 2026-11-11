@@ -50,7 +50,7 @@ async function fixture() {
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-host", now);
+  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "fixture-host", now);
   const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "fixture-host",
@@ -68,7 +68,7 @@ async function fixture() {
   };
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -83,7 +83,7 @@ async function fixture() {
   });
   db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),

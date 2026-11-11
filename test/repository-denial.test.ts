@@ -47,7 +47,7 @@ async function seed() {
   db.run(
     "INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES('ws','acme/linked','mapped')",
   );
-  await refreshRepositoryCatalog(db, async () =>
+  await refreshRepositoryCatalog(sqliteDb(db), async () =>
     ["linked", "catalog"].map((repo) => ({
       owner: "acme",
       repo,
@@ -91,13 +91,13 @@ test("a mapped team may use only its linked repositories, and is told which one 
   try {
     const current = await item();
     expect(
-      await teamRepositoryDenial(db, current, MAPPED, { owner: "acme", repo: "linked" }),
+      await teamRepositoryDenial(sqliteDb(db), current, MAPPED, { owner: "acme", repo: "linked" }),
     ).toBeNull();
     expect(
-      await teamRepositoryDenial(db, current, MAPPED, { owner: "ACME", repo: "Linked" }),
+      await teamRepositoryDenial(sqliteDb(db), current, MAPPED, { owner: "ACME", repo: "Linked" }),
     ).toBeNull();
     expect(
-      await teamRepositoryDenial(db, current, MAPPED, { owner: "acme", repo: "catalog" }),
+      await teamRepositoryDenial(sqliteDb(db), current, MAPPED, { owner: "acme", repo: "catalog" }),
     ).toEqual({
       denied: true,
       reason: "acme/catalog isn't mapped to Pascal in Paws.",
@@ -112,9 +112,14 @@ test("an unmapped team may use any catalog repository, as placement does", async
   try {
     const current = await item();
     for (const repo of ["catalog", "linked"])
-      expect(await teamRepositoryDenial(db, current, UNMAPPED, { owner: "acme", repo })).toBeNull();
+      expect(
+        await teamRepositoryDenial(sqliteDb(db), current, UNMAPPED, { owner: "acme", repo }),
+      ).toBeNull();
     expect(
-      await teamRepositoryDenial(db, current, UNMAPPED, { owner: "acme", repo: "elsewhere" }),
+      await teamRepositoryDenial(sqliteDb(db), current, UNMAPPED, {
+        owner: "acme",
+        repo: "elsewhere",
+      }),
     ).toEqual({ denied: true, reason: NO_REPOSITORY });
   } finally {
     db.close();
@@ -126,8 +131,12 @@ test("a workspace without active admins names the role instead of a person", asy
   try {
     db.run("UPDATE workspace_member SET active=0 WHERE role='admin'");
     expect(
-      (await teamRepositoryDenial(db, await item(), UNMAPPED, { owner: "acme", repo: "elsewhere" }))
-        ?.reason,
+      (
+        await teamRepositoryDenial(sqliteDb(db), await item(), UNMAPPED, {
+          owner: "acme",
+          repo: "elsewhere",
+        })
+      )?.reason,
     ).toBe(
       "Pascal has no repository in Paws yet. Ask a Paws admin to map one in Integrations, then delegate again.",
     );
@@ -158,13 +167,16 @@ for (const [name, decide, response] of [
   [
     "an unmapped team's repository outside the catalog",
     async (db: ReturnType<typeof tempDb>, item: WorkItemRecord) =>
-      (await teamRepositoryDenial(db, item, UNMAPPED, { owner: "acme", repo: "elsewhere" }))!,
+      (await teamRepositoryDenial(sqliteDb(db), item, UNMAPPED, {
+        owner: "acme",
+        repo: "elsewhere",
+      }))!,
     NO_REPOSITORY,
   ],
   [
     "a repository outside the team's links",
     async (db: ReturnType<typeof tempDb>, item: WorkItemRecord) =>
-      (await teamRepositoryDenial(db, item, MAPPED, { owner: "acme", repo: "catalog" }))!,
+      (await teamRepositoryDenial(sqliteDb(db), item, MAPPED, { owner: "acme", repo: "catalog" }))!,
     "acme/catalog isn't mapped to Pascal in Paws.",
   ],
   [

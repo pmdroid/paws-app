@@ -4,21 +4,20 @@ import {
   emitJobReady,
   enqueueJobSteps,
   listWorkspaceRepositoriesSteps,
-  sqliteDb,
   workspaceMemberSteps,
   type Q,
   type Steps,
   type WorkspaceSession,
+  type Db,
 } from "../db";
 import { isWorkspaceAdmin } from "./eligibility";
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import { validWorkspaceCsrf, type WorkspacePrincipal } from "./session";
 
 export async function handleWorkspaceGitHubIntegration(
   request: Request,
   options: {
-    db: Database;
+    store: Db;
     principal: WorkspacePrincipal;
     session: WorkspaceSession;
     origin: string;
@@ -28,7 +27,7 @@ export async function handleWorkspaceGitHubIntegration(
 ): Promise<Response | null> {
   if (new URL(request.url).pathname !== "/api/workspaces/github-integration") return null;
   const principal = options.principal;
-  const store = sqliteDb(options.db);
+  const { store } = options;
   function* permittedSteps(q: Q) {
     const member = yield* workspaceMemberSteps(q, principal.workspaceId, principal.userId);
     return workspaceMemberUsable(member) && isWorkspaceAdmin(member.role);

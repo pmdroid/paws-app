@@ -1,15 +1,14 @@
-import type { Database } from "bun:sqlite";
 import {
   enqueueOutboxOnceSteps,
   getLinkAskSteps,
   insertLinkAskSteps,
-  sqliteDb,
   type Q,
   type Steps,
   type LinkAsk,
   type LinkAskDecision,
   type LinkAskKind,
   type LinkAskRounds,
+  type Db,
 } from "../db";
 import { askSteps as askQuestionSteps, type QuestionAsker } from "./lifecycle";
 import { getQuestionSteps, type StoredQuestion } from "./store";
@@ -252,10 +251,10 @@ export function* openLinkAskSteps(
 }
 
 export function openLinkAsk(
-  db: Database,
+  store: Db,
   input: OpenLinkAsk & { ask?: LinkAskSteps },
 ): Promise<{ question: StoredQuestion; linkAsk: LinkAsk }> {
-  return sqliteDb(db).transaction((q) => openLinkAskSteps(q, input));
+  return store.transaction((q) => openLinkAskSteps(q, input));
 }
 
 /** Adds the ask's link to the session while it is open. */

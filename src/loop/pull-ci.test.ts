@@ -204,7 +204,7 @@ async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 
     mergedOutsideLane: async () => null,
     completed: unused("completed"),
   };
-  const mergeJob = await enqueueVerifiedMerge(db, {
+  const mergeJob = await enqueueVerifiedMerge(sqliteDb(db), {
     itemId: "eng-1",
     head: HEAD,
     summary: "Closeout accepted.",
@@ -244,7 +244,7 @@ async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 
   let delivery = 0;
   const send = (event: string, payload: Record<string, unknown>, id?: string) =>
     acceptGitHubDelivery(
-      db,
+      sqliteDb(db),
       {
         deliveryId: id ?? `d-${(delivery += 1)}`,
         event,

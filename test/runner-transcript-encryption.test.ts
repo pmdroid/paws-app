@@ -11,7 +11,7 @@ import {
   RUNNER_TRANSCRIPT_ENCRYPT_JOB,
   runnerTranscriptsEncrypted,
 } from "../src/runner-transcripts";
-import { legacyMigrate } from "../src/db";
+import { legacyMigrate, sqliteDb } from "../src/db";
 import { legacyTempDb, tempHome } from "./helpers";
 
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -87,14 +87,14 @@ describe("encrypting runner transcripts stored before encryption", () => {
   };
   async function read(runId: string) {
     const files = createRunFileChunks({
-      db,
+      store: sqliteDb(db),
       kind: "transcript",
       objects: fallback,
       key,
       refused: () => {
         throw new Refused();
       },
-      plaintext: async () => !(await runnerTranscriptsEncrypted(db)),
+      plaintext: async () => !(await runnerTranscriptsEncrypted(sqliteDb(db))),
     });
     const parts: Uint8Array[] = [];
     for await (const part of files.read(
@@ -129,10 +129,10 @@ describe("encrypting runner transcripts stored before encryption", () => {
 
   test("the migration enqueues the job once, and plaintext reads until it is done", async () => {
     expect(jobs(db)).toEqual([{ queue: RUNNER_TRANSCRIPT_ENCRYPT_JOB, status: "pending" }]);
-    expect(await runnerTranscriptsEncrypted(db)).toBe(false);
+    expect(await runnerTranscriptsEncrypted(sqliteDb(db))).toBe(false);
     expect(await read("run-a")).toEqual(whole);
     finish();
-    expect(await runnerTranscriptsEncrypted(db)).toBe(true);
+    expect(await runnerTranscriptsEncrypted(sqliteDb(db))).toBe(true);
     await expect(read("run-a")).rejects.toThrow("Runner transcript storage is unavailable");
   });
 
@@ -140,7 +140,7 @@ describe("encrypting runner transcripts stored before encryption", () => {
     const fresh = legacyTempDb();
     try {
       expect(jobs(fresh)).toEqual([]);
-      expect(await runnerTranscriptsEncrypted(fresh)).toBe(true);
+      expect(await runnerTranscriptsEncrypted(sqliteDb(fresh))).toBe(true);
     } finally {
       fresh.close();
     }
@@ -148,7 +148,11 @@ describe("encrypting runner transcripts stored before encryption", () => {
 
   test("plaintext chunks are converted, local and S3, and no plaintext is left on disk", async () => {
     expect(plaintextOnDisk()).toHaveLength(4);
-    const result = await encryptRunnerTranscripts({ db, stores: [local, remote], key });
+    const result = await encryptRunnerTranscripts({
+      store: sqliteDb(db),
+      stores: [local, remote],
+      key,
+    });
     expect(result).toEqual({ converted: 6, skipped: 0 });
     expect(unconverted()).toBe(0);
     expect(plaintextOnDisk()).toEqual([]);
@@ -174,9 +178,9 @@ describe("encrypting runner transcripts stored before encryption", () => {
         if (++writes === 3) throw new Error("Paws stopped");
       },
     };
-    await expect(encryptRunnerTranscripts({ db, stores: [stopping, remote], key })).rejects.toThrow(
-      "Paws stopped",
-    );
+    await expect(
+      encryptRunnerTranscripts({ store: sqliteDb(db), stores: [stopping, remote], key }),
+    ).rejects.toThrow("Paws stopped");
     expect(unconverted()).toBe(4);
     for (const runId of RUNS) expect(await read(runId)).toEqual(whole);
 
@@ -184,11 +188,20 @@ describe("encrypting runner transcripts stored before encryption", () => {
     const abort = new AbortController();
     abort.abort();
     await expect(
-      encryptRunnerTranscripts({ db, stores: [local, remote], key, signal: abort.signal }),
+      encryptRunnerTranscripts({
+        store: sqliteDb(db),
+        stores: [local, remote],
+        key,
+        signal: abort.signal,
+      }),
     ).rejects.toThrow();
     expect(unconverted()).toBe(4);
 
-    const result = await encryptRunnerTranscripts({ db, stores: [local, remote], key });
+    const result = await encryptRunnerTranscripts({
+      store: sqliteDb(db),
+      stores: [local, remote],
+      key,
+    });
     expect(result).toEqual({ converted: 4, skipped: 0 });
     expect(unconverted()).toBe(0);
     expect(plaintextOnDisk()).toEqual([]);
@@ -199,14 +212,14 @@ describe("encrypting runner transcripts stored before encryption", () => {
 
   test("a read that began before its chunk was sealed still returns the transcript", async () => {
     const files = createRunFileChunks({
-      db,
+      store: sqliteDb(db),
       kind: "transcript",
       objects: local,
       key,
       refused: () => {
         throw new Refused();
       },
-      plaintext: async () => !(await runnerTranscriptsEncrypted(db)),
+      plaintext: async () => !(await runnerTranscriptsEncrypted(sqliteDb(db))),
     });
     const reading = files.read(
       { runId: "run-a", generation: 1, prefix: prefix("run-a") },
@@ -215,14 +228,14 @@ describe("encrypting runner transcripts stored before encryption", () => {
     );
     // The reader has its chunk rows, without key IDs, when the job seals the objects.
     const parts = [(await reading.next()).value!];
-    await encryptRunnerTranscripts({ db, stores: [local], key });
+    await encryptRunnerTranscripts({ store: sqliteDb(db), stores: [local], key });
     expect(unconverted()).toBe(2);
     for await (const part of reading) parts.push(part);
     expect(Buffer.concat(parts)).toEqual(whole);
   });
 
   test("after the job is done, a chunk without a key ID is refused", async () => {
-    await encryptRunnerTranscripts({ db, stores: [local, remote], key });
+    await encryptRunnerTranscripts({ store: sqliteDb(db), stores: [local, remote], key });
     finish();
     db.run("UPDATE runner_transcript_chunk SET key_id=NULL WHERE run_id='run-a'");
     await local.write(objectName("run-a", 0, first), first);
@@ -231,7 +244,11 @@ describe("encrypting runner transcripts stored before encryption", () => {
 
   test("a chunk with no readable copy is left for reads to refuse, and the job still ends", async () => {
     await local.delete(objectName("run-b", RUN_FILE_CHUNK_BYTES, second));
-    const result = await encryptRunnerTranscripts({ db, stores: [local, remote], key });
+    const result = await encryptRunnerTranscripts({
+      store: sqliteDb(db),
+      stores: [local, remote],
+      key,
+    });
     expect(result).toEqual({ converted: 5, skipped: 1 });
     expect(unconverted()).toBe(1);
   });

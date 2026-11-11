@@ -3,7 +3,7 @@ import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { migrate, openDatabase } from "../src/db";
+import { migrate, openDatabase, sqliteDb } from "../src/db";
 import {
   createRunnerWork,
   encryptRunnerEvents,
@@ -18,7 +18,7 @@ function setup(path = ":memory:") {
   db.run("PRAGMA foreign_keys=OFF");
   const key = randomBytes(32);
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: key,
@@ -101,7 +101,7 @@ test("a sealed payload moved to another sequence fails to open", async () => {
   );
   await expect(work.openEvent(row(2))).rejects.toThrow();
   const other = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: randomBytes(32),
