@@ -10,9 +10,10 @@ import {
   listOutbox,
   saveCheckpoint,
   saveCloseoutRecovery,
+  sqliteDb,
 } from "../src/db";
 import { formatEvidenceSummary } from "../src/closeout";
-import { askCloseoutHelp, questionEffects, verifyAgain } from "../src/loop";
+import { askCloseoutHelp, questionEffects, verifyAgainSteps } from "../src/loop";
 import { recoveryOptions } from "../src/loop/closeout-recovery";
 import { answer, ask, findOpenQuestion, getQuestion, handoffNote } from "../src/questions";
 import { tempDb } from "./helpers";
@@ -282,7 +283,10 @@ test("the exported re-verify path settles an unanswered question without the age
     "Retry Closeout",
     question.id,
   ]);
-  verifyAgain(db, getQuestion(db, question.id)!, { now: NOW + 100, key: "policy-loaded" });
+  const answered = getQuestion(db, question.id)!;
+  await sqliteDb(db).transaction((q) =>
+    verifyAgainSteps(q, answered, { now: NOW + 100, key: "policy-loaded" }),
+  );
   expect(getWorkItem(db, asker.itemId)?.state).toBe("verifying");
   expect(jobs(db).map((job) => job.jobKey)).toEqual([`policy-loaded:${question.id}`]);
   expect(runs(db)).toBe(1);

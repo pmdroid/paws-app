@@ -48,7 +48,7 @@ export {
 } from "./orchestrator";
 export { itemPathId, worktreeBranch } from "./sources";
 export { askCloseoutHelp, type CloseoutHelp, type CloseoutHelpCheck } from "./closeout-help";
-export { questionEffects, verifyAgain } from "./question-effects";
+export { questionEffects, verifyAgainSteps } from "./question-effects";
 export { POLICY_BLOCK_CHECK_JOB, POLICY_BLOCK_CHECK_MS } from "./policy-block";
 
 export {
@@ -88,7 +88,6 @@ export { LinearAccessRemovedError } from "./linear-task-access";
 export { authorizeLinearTask } from "./linear-task-access";
 export { restart, halt, ask } from "./operations";
 export {
-  askWithLink,
   closeLinkAsksOnHead,
   decideLinkAsk,
   guideLinkAsk,

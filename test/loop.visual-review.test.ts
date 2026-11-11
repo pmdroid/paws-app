@@ -28,6 +28,7 @@ import {
   runnerHasCapacity,
   saveCheckpoint,
   saveCloseoutRecovery,
+  sqliteDb,
   syncWorkspaceMember,
 } from "../src/db";
 import {
@@ -53,7 +54,7 @@ import {
   getQuestion,
   getVisualReview,
   openQuestion,
-  rejectedEvidenceIds,
+  rejectedEvidenceIdsSteps,
   visualReviewContinueQuestion,
   VISUAL_REVIEW_ANSWERERS,
   VISUAL_REVIEW_ROUNDS,
@@ -324,7 +325,8 @@ test("a reply in Linear requests changes, and new screenshots ask again", async 
       feedback: "Make the hint under Model shorter",
     });
     const before = listEvidence(f.db, item.id).map((row) => row.id);
-    expect([...rejectedEvidenceIds(f.db, item.id)].sort()).toEqual(before.sort());
+    const rejectedBefore = await sqliteDb(f.db).run((q) => rejectedEvidenceIdsSteps(q, item.id));
+    expect([...rejectedBefore].sort()).toEqual(before.sort());
 
     await f.driveUntil(() => f.tracker.questions.length === 2);
     expect(f.prompts[1]).toContain("Make the hint under Model shorter");
@@ -334,7 +336,7 @@ test("a reply in Linear requests changes, and new screenshots ask again", async 
     expect(second.body).toContain("shot-4.png");
     expect(second.body).not.toContain("shot-1.png");
     expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
-    const rejected = rejectedEvidenceIds(f.db, item.id);
+    const rejected = await sqliteDb(f.db).run((q) => rejectedEvidenceIdsSteps(q, item.id));
     expect(
       listEvidence(f.db, item.id)
         .filter((row) => !rejected.has(row.id))

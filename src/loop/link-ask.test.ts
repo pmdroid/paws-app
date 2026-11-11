@@ -10,11 +10,12 @@ import {
   listOutbox,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../db";
 import { findOpenQuestion, getQuestion, LINK_ASK_REMINDER_MS } from "../questions";
 import { saveSchedulingContext } from "../scheduler";
 import {
-  askWithLink,
+  askWithLinkSteps,
   closeLinkAsksOnHead,
   decideLinkAsk,
   guideLinkAsk,
@@ -25,7 +26,7 @@ import {
 const NOW = 1_700_000_000_000;
 const HEAD = "7f65200aa1b2c3d4e5f6";
 
-function asked(
+async function asked(
   publicUrl: string | null = "https://paws.example/",
   kind: "bypass" | "risk" = "bypass",
 ) {
@@ -48,22 +49,24 @@ function asked(
     "Lea",
     "lea@example.com",
   ]);
-  const opened = askWithLink(db, {
-    item: getWorkItem(db, item.id)!,
-    runId: run.id,
-    kind,
-    head: HEAD,
-    detail: "independent-review failed (P1, docs/smoke-test.md). 7 other checks passed.",
-    publicUrl,
-    now: NOW,
-  });
+  const opened = await sqliteDb(db).transaction((q) =>
+    askWithLinkSteps(q, {
+      item: getWorkItem(db, item.id)!,
+      runId: run.id,
+      kind,
+      head: HEAD,
+      detail: "independent-review failed (P1, docs/smoke-test.md). 7 other checks passed.",
+      publicUrl,
+      now: NOW,
+    }),
+  );
   return { db, itemId: item.id, ...opened };
 }
 
 const actor = { workspaceId: "ws", userId: "user-lead", name: "Lea" };
 
-test("a link ask opens one elicitation without options and puts the link on the session", () => {
-  const { db, itemId, question, linkAsk } = asked();
+test("a link ask opens one elicitation without options and puts the link on the session", async () => {
+  const { db, itemId, question, linkAsk } = await asked();
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
   expect(linkAsk).toMatchObject({
     kind: "bypass",
@@ -95,13 +98,13 @@ test("a link ask opens one elicitation without options and puts the link on the 
   ]);
 });
 
-test("a Paws without a public HTTPS link refuses to ask with a link", () => {
-  expect(() => asked(null)).toThrow(LINK_ASK_NEEDS_PUBLIC_URL);
-  expect(() => asked("http://127.0.0.1:8787")).toThrow(LINK_ASK_NEEDS_PUBLIC_URL);
+test("a Paws without a public HTTPS link refuses to ask with a link", async () => {
+  await expect(asked(null)).rejects.toThrow(LINK_ASK_NEEDS_PUBLIC_URL);
+  await expect(asked("http://127.0.0.1:8787")).rejects.toThrow(LINK_ASK_NEEDS_PUBLIC_URL);
 });
 
 test("an answer from someone who did not delegate and does not lead the project is refused", async () => {
-  const { db, itemId, question } = asked();
+  const { db, itemId, question } = await asked();
   expect(
     await decideLinkAsk(db, {
       questionId: question.id,
@@ -118,7 +121,7 @@ test("an answer from someone who did not delegate and does not lead the project 
 });
 
 test("the project lead decides on the item page: audit row, decided note, back to the merge queue", async () => {
-  const { db, itemId, question } = asked("https://paws.example/", "risk");
+  const { db, itemId, question } = await asked("https://paws.example/", "risk");
   expect(
     await decideLinkAsk(db, {
       questionId: question.id,
@@ -174,7 +177,7 @@ test("the project lead decides on the item page: audit row, decided note, back t
 });
 
 test("a Linear reply never resolves an approval kind, whatever it says", async () => {
-  const { db, itemId, question } = asked();
+  const { db, itemId, question } = await asked();
   expect(
     await guideLinkAsk(db, {
       questionId: question.id,
@@ -206,7 +209,7 @@ test("a Linear reply never resolves an approval kind, whatever it says", async (
 });
 
 test("the reminder fires once after 24 hours", async () => {
-  const { db, question } = asked();
+  const { db, question } = await asked();
   const job = listJobs(db).find((entry) => entry.queue === JOB_KIND.linkAskReminder)!;
   expect(job.runAt).toBe(NOW + LINK_ASK_REMINDER_MS);
   expect(await remindLinkAsk(db, question.id, NOW + LINK_ASK_REMINDER_MS)).toBe(true);
@@ -222,7 +225,7 @@ test("the reminder fires once after 24 hours", async () => {
 });
 
 test("no reminder once the ask is decided", async () => {
-  const { db, question } = asked();
+  const { db, question } = await asked();
   await decideLinkAsk(db, {
     questionId: question.id,
     decision: "changes",
@@ -235,7 +238,7 @@ test("no reminder once the ask is decided", async () => {
 });
 
 test("a new head closes the open ask", async () => {
-  const { db, question } = asked();
+  const { db, question } = await asked();
   expect(await closeLinkAsksOnHead(db, "PAS-633", HEAD, NOW + 50)).toBe(0);
   expect(await closeLinkAsksOnHead(db, "PAS-633", "4b317d5ffff", NOW + 100)).toBe(1);
   expect(getLinkAsk(db, question.id)).toMatchObject({ closedReason: "head_moved", decision: null });

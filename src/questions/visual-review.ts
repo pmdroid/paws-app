@@ -2,14 +2,11 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
   approvedVisualReviewRowsSteps,
-  insertVisualReviewRow,
   insertVisualReviewRowSteps,
   itemVisualReviewRowsSteps,
-  lastVisualReviewFeedbackRow,
   lastVisualReviewFeedbackRowSteps,
   markVisualReviewRowStale,
   markVisualReviewRowStaleSteps,
-  recordVisualReviewAnswerRow,
   recordVisualReviewAnswerRowSteps,
   settled,
   sqliteDb,
@@ -18,7 +15,7 @@ import {
   type Q,
   type Steps,
 } from "../db";
-import { ask, askSteps } from "./lifecycle";
+import { askSteps } from "./lifecycle";
 import type { StoredQuestion } from "./store";
 
 /** The question Paws asks when an `approval: human` check has its files. */
@@ -148,25 +145,6 @@ export function* openVisualReviewSteps(
   };
 }
 
-/** Opens the review question and records the files it shows. Call inside a transaction. */
-export function openVisualReview(
-  db: Database,
-  input: OpenInput & { ask?: typeof ask },
-): { question: StoredQuestion; review: StoredVisualReview } {
-  const { question } = (input.ask ?? ask)(
-    db,
-    { itemId: input.itemId, runId: input.runId, sessionId: input.sessionId },
-    "visual-review",
-    VISUAL_REVIEW_QUESTION,
-    {
-      options: [...VISUAL_REVIEW_OPTIONS],
-      ...(input.shown ? { context: JSON.stringify(input.shown) } : {}),
-      now: input.now,
-    },
-  );
-  return { question, review: insertVisualReview(db, { ...input, questionId: question.id }) };
-}
-
 type InsertInput = {
   questionId: string;
   itemId: string;
@@ -188,15 +166,6 @@ export function* insertVisualReviewSteps(q: Q, input: InsertInput): Steps<Stored
     ...(input.carried?.length ? { carried: input.carried } : {}),
   });
   return (yield* getVisualReviewSteps(q, input.questionId))!;
-}
-
-/**
- * Records the files a review question asks about, bound to `headCommit`. The
- * question is a link ask answered on the item page, or an older Linear
- * question with options. Call inside a transaction.
- */
-export function insertVisualReview(db: Database, input: InsertInput): StoredVisualReview {
-  return settled(sqliteDb(db).run((q) => insertVisualReviewSteps(q, input)));
 }
 
 /**
@@ -253,10 +222,6 @@ export function* recordCarriedVisualReviewSteps(
  * Records an accepted review without a question: every file carried an
  * earlier approval. It names the latest original approver. Call inside a transaction.
  */
-export function recordCarriedVisualReview(db: Database, input: CarriedInput): StoredVisualReview {
-  return settled(sqliteDb(db).run((q) => recordCarriedVisualReviewSteps(q, input)));
-}
-
 /** Every file of the review carried over, so nobody was asked. */
 export function carriedInFull(review: {
   evidenceIds: readonly string[];
@@ -307,14 +272,6 @@ export function* humanApprovedScreensSteps(
  * screens are always compared with what a person accepted. A review that went
  * stale still counts: the person accepted those screens.
  */
-export function humanApprovedScreens(
-  db: Database,
-  itemId: string,
-  checkId: string,
-): ApprovedScreen[] {
-  return settled(sqliteDb(db).run((q) => humanApprovedScreensSteps(q, itemId, checkId)));
-}
-
 export function* getVisualReviewSteps(q: Q, questionId: string): Steps<StoredVisualReview | null> {
   const row = (yield* visualReviewRowSteps(q, questionId)) as VisualReviewRow | undefined;
   return row === undefined ? null : mapVisualReview(row);
@@ -354,28 +311,6 @@ export function* openVisualReviewContinueSteps(
   return question;
 }
 
-export function openVisualReviewContinue(
-  db: Database,
-  input: ContinueInput & { ask?: typeof ask },
-): StoredQuestion {
-  const { question } = (input.ask ?? ask)(
-    db,
-    { itemId: input.itemId, runId: input.runId, sessionId: input.sessionId },
-    "visual-review",
-    visualReviewContinueQuestion(VISUAL_REVIEW_ROUNDS),
-    { options: [...VISUAL_REVIEW_CONTINUE_OPTIONS], now: input.now },
-  );
-  insertVisualReviewRow(db, {
-    questionId: question.id,
-    itemId: input.itemId,
-    checkId: input.checkId,
-    evidenceIds: [],
-    createdAt: input.now,
-    kind: "continue",
-  });
-  return question;
-}
-
 type ReviewAnswer = {
   outcome: VisualReviewOutcome;
   answeredBy: string;
@@ -386,14 +321,6 @@ type ReviewAnswer = {
 
 export function* recordVisualReviewAnswerSteps(q: Q, questionId: string, input: ReviewAnswer) {
   yield* recordVisualReviewAnswerRowSteps(q, questionId, input);
-}
-
-export function recordVisualReviewAnswer(
-  db: Database,
-  questionId: string,
-  input: ReviewAnswer,
-): void {
-  recordVisualReviewAnswerRow(db, questionId, input);
 }
 
 export function* markVisualReviewStaleSteps(q: Q, questionId: string) {
@@ -424,29 +351,13 @@ export function* rejectedEvidenceIdsSteps(q: Q, itemId: string): Steps<Set<strin
   return new Set(rows.flatMap((row) => mapVisualReview(row).evidenceIds));
 }
 
-export function rejectedEvidenceIds(db: Database, itemId: string): Set<string> {
-  return settled(sqliteDb(db).run((q) => rejectedEvidenceIdsSteps(q, itemId)));
-}
-
 export function* visualReviewRoundsSteps(q: Q, itemId: string, checkId: string): Steps<number> {
   const row = yield* visualReviewRoundCountsSteps(q, itemId, checkId);
   return row.changes - VISUAL_REVIEW_ROUNDS * row.continued;
 }
 
-export function visualReviewRounds(db: Database, itemId: string, checkId: string): number {
-  return settled(sqliteDb(db).run((q) => visualReviewRoundsSteps(q, itemId, checkId)));
-}
-
 export function* lastVisualReviewFeedbackSteps(q: Q, itemId: string, checkId: string) {
   return yield* lastVisualReviewFeedbackRowSteps(q, itemId, checkId);
-}
-
-export function lastVisualReviewFeedback(
-  db: Database,
-  itemId: string,
-  checkId: string,
-): { questionId: string; feedback: string | null } | null {
-  return lastVisualReviewFeedbackRow(db, itemId, checkId);
 }
 
 export type VisualReviewAnswer =
