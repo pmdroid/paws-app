@@ -63,7 +63,11 @@ const server = Bun.serve({
         limitBytes: 20000000,
       });
     if (path === "/api/settings/hooks")
-      return handleHookSettingsRequest(request, { db, csrfToken: "fixture", audit: () => {} });
+      return handleHookSettingsRequest(request, {
+        store: sqliteDb(db),
+        csrfToken: "fixture",
+        audit: () => {},
+      });
     if (path === "/api/runners/models") return Response.json({ catalogs: [] });
     return (
       (await handleAgentSettingsRequest(request, {

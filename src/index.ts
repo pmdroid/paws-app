@@ -1358,7 +1358,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       },
       agentSettings: {
         applyToWaiting: async () => (await orchestrator?.applyAgentSettingsToWaiting()) ?? 0,
-        runnerReadiness: (agent) => activeRunnerReadiness(db, agent),
+        runnerReadiness: (agent) => activeRunnerReadiness(store, agent),
         ...(linear?.tracker?.readBriefIssue
           ? {
               readIssue: (identifier: string, signal: AbortSignal) =>
@@ -2129,7 +2129,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   lagTimer.unref();
   abort.signal.addEventListener("abort", () => clearInterval(lagTimer), { once: true });
   const host = startHost({
-    db,
+    store,
     clock: options?.hostClock,
     signal: abort.signal,
     stopAgent: (itemId) => {

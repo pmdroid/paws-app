@@ -603,7 +603,7 @@ describe("live closeout ui", () => {
       home: { evidenceRoot?: string; closeoutHome?: string } = { closeoutHome: root },
     ) =>
       handleStatusRequest(new Request(`http://127.0.0.1/api/closeout-artifact?${query}`), {
-        db,
+        store: sqliteDb(db),
         env,
         staticDir: null,
         ...home,

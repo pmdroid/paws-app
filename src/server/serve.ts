@@ -68,7 +68,7 @@ import {
   firstWorkspaceIdSteps,
   getArtifactSteps,
   getWorkItemSteps,
-  hotFiles,
+  hotFilesSteps,
   listWorkspaceRepositoryNamesSteps,
   sqliteDb,
   workspaceSessionIdsSteps,
@@ -380,8 +380,8 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   if (workspace !== undefined) {
     const auth = await workspace.handle(request, { ip: secrets.ip ?? null });
     if (auth !== null) return auth;
-    if (isDashboardPath(path) && secrets.db !== undefined) {
-      const access = await (secrets.store ?? sqliteDb(secrets.db)).run((q) =>
+    if (isDashboardPath(path) && secrets.store !== undefined) {
+      const access = await secrets.store.run((q) =>
         requestWorkspaceSessionSteps(q, request, Date.now()),
       );
       if (access !== null) csrfToken = access.session.csrfToken;
@@ -390,7 +390,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       (path === "/api/workspaces/github-connect" ||
         path === "/api/workspaces/github-setup" ||
         path === "/auth/github-app/callback") &&
-      secrets.db
+      secrets.store
     ) {
       try {
         await workspace.authenticate(request);
@@ -401,7 +401,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       const env = secrets.statusEnv ?? process.env;
       const runtime = loadRuntime(env);
       const setup = await createGitHubRepositorySetup({
-        db: secrets.db,
+        store: secrets.store,
         home: runtime.env.home,
         env,
         origin: workspace.origin,
@@ -409,7 +409,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       })(request);
       if (setup) return setup;
       return (await createHostedGitHubConnect({
-        db: secrets.db,
+        store: secrets.store,
         home: runtime.env.home,
         env,
         origin: workspace.origin,
@@ -423,9 +423,9 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         journalCaught(caughtError2, "serve.route.authenticate", null);
         return Response.json({ error: "Workspace access could not be verified." }, { status: 503 });
       }
-      if (access === null || secrets.db === undefined)
+      if (access === null || secrets.store === undefined)
         return Response.json({ error: "Sign in to Paws." }, { status: 401 });
-      const store = secrets.store ?? sqliteDb(secrets.db);
+      const { store } = secrets;
       const selected =
         new URL(request.url).searchParams.get("workspaceId") ??
         request.headers.get("x-paws-workspace");
@@ -463,7 +463,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
           { status: 403 },
         );
       }
-      if (path === "/api/workspaces/github-integration") {
+      if (path === "/api/workspaces/github-integration" && secrets.db) {
         const env = secrets.statusEnv ?? process.env;
         const runtime = loadRuntime(env);
         const activation = createWorkspaceGitHubActivation(store, runtime.env.home, env);
@@ -542,20 +542,18 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     }))!;
   }
   if (path === FINDING_GROUPS_API_PATH) {
-    if (!secrets.db) return Response.json({ error: "Not found." }, { status: 404 });
+    if (!secrets.store) return Response.json({ error: "Not found." }, { status: 404 });
     return (await handleFindingGroupsRequest(request, {
-      db: secrets.db,
-      ...(secrets.store ? { store: secrets.store } : {}),
+      store: secrets.store,
       ...(principal ? { principal } : {}),
       ...(sessionIds ? { sessionIds } : {}),
       ...(secrets.findingGroups ? { services: secrets.findingGroups } : {}),
     }))!;
   }
   if (path === FINDINGS_API_PATH) {
-    if (secrets.db === undefined) return Response.json({ error: "Not found." }, { status: 404 });
+    if (secrets.store === undefined) return Response.json({ error: "Not found." }, { status: 404 });
     return (await handleFindingsRequest(request, {
-      db: secrets.db,
-      ...(secrets.store ? { store: secrets.store } : {}),
+      store: secrets.store,
       ...(principal === undefined ? {} : { principal }),
       ...(sessionIds === undefined ? {} : { sessionIds }),
     }))!;
@@ -576,15 +574,15 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       setupRequired: true,
       workspaceReady: workspace !== undefined,
     });
-  if (path === SKILL_SETTINGS_PATH && secrets.skillSettings && secrets.db) {
-    const db = secrets.db;
+  if (path === SKILL_SETTINGS_PATH && secrets.skillSettings && secrets.store) {
+    const store = secrets.store;
     return (await handleSkillSettingsRequest(request, {
       ...secrets.skillSettings,
-      db,
+      store,
       csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
-        auditWorkspaceAccess(secrets.store ?? sqliteDb(db), {
+        auditWorkspaceAccess(store, {
           workspaceId: principal?.workspaceId ?? null,
           userId: principal?.userId ?? null,
           action,
@@ -594,14 +592,12 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
     }))!;
   }
-  if (path === FINDING_SETTINGS_PATH && secrets.db) {
-    const db = secrets.db;
-    const store = secrets.store ?? sqliteDb(db);
+  if (path === FINDING_SETTINGS_PATH && secrets.store) {
+    const store = secrets.store;
     const workspaceId = principal?.workspaceId ?? (await store.run(firstWorkspaceIdSteps));
     if (!workspaceId) return Response.json({ error: "Connect Linear first." }, { status: 404 });
     const configPath = secrets.agentSettings?.configPath;
     return (await handleFindingSettingsRequest(request, {
-      db,
       store,
       csrfToken,
       workspaceId,
@@ -618,14 +614,14 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
     }))!;
   }
-  if (path === TIME_LIMIT_SETTINGS_PATH && secrets.agentSettings && secrets.db) {
-    const db = secrets.db;
+  if (path === TIME_LIMIT_SETTINGS_PATH && secrets.agentSettings && secrets.store) {
+    const store = secrets.store;
     return (await handleTimeLimitSettingsRequest(request, {
       configPath: secrets.agentSettings.configPath,
       csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
-        auditWorkspaceAccess(secrets.store ?? sqliteDb(db), {
+        auditWorkspaceAccess(store, {
           workspaceId: principal?.workspaceId ?? null,
           userId: principal?.userId ?? null,
           action,
@@ -635,15 +631,15 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
     }))!;
   }
-  if (path === HOOK_SETTINGS_PATH && secrets.db) {
-    const db = secrets.db;
+  if (path === HOOK_SETTINGS_PATH && secrets.store) {
+    const store = secrets.store;
     return (await handleHookSettingsRequest(request, {
       ...secrets.skillSettings,
-      db,
+      store,
       csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
-        auditWorkspaceAccess(secrets.store ?? sqliteDb(db), {
+        auditWorkspaceAccess(store, {
           workspaceId: principal?.workspaceId ?? null,
           userId: principal?.userId ?? null,
           action,
@@ -663,18 +659,16 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       highRiskFile,
       ...agentSettings
     } = secrets.agentSettings;
-    const repositoryNames = (db: Database) =>
-      (secrets.store ?? sqliteDb(db)).run((q) =>
-        listWorkspaceRepositoryNamesSteps(q, principal?.workspaceId),
-      );
+    const repositoryNames = (store: Db) =>
+      store.run((q) => listWorkspaceRepositoryNamesSteps(q, principal?.workspaceId));
     const shared = {
       ...agentSettings,
       csrfToken,
-      ...(principal === undefined || secrets.db === undefined
+      ...(principal === undefined || secrets.store === undefined
         ? {}
         : {
             audit: (action: string, subject: string) =>
-              auditWorkspaceAccess(secrets.store ?? sqliteDb(secrets.db!), {
+              auditWorkspaceAccess(secrets.store!, {
                 workspaceId: principal!.workspaceId,
                 userId: principal!.userId,
                 action,
@@ -688,18 +682,18 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       (await handleAgentSettingsRequest(request, shared)) ??
       (await handleBriefSettingsRequest(request, {
         ...shared,
-        ...(path === BRIEF_SETTINGS_PATH && secrets.db
+        ...(path === BRIEF_SETTINGS_PATH && secrets.store
           ? {
-              repos: [...(shared.repos ?? []), ...(await repositoryNames(secrets.db))],
+              repos: [...(shared.repos ?? []), ...(await repositoryNames(secrets.store))],
             }
           : {}),
       })) ??
       (await handleCheckoutSettingsRequest(request, {
         ...shared,
-        ...(path === CHECKOUT_SETTINGS_PATH && secrets.db
+        ...(path === CHECKOUT_SETTINGS_PATH && secrets.store
           ? {
               // The stored GitHub connection and team mappings, not a GitHub call.
-              repos: [...(shared.repos ?? []), ...(await repositoryNames(secrets.db))],
+              repos: [...(shared.repos ?? []), ...(await repositoryNames(secrets.store))],
             }
           : {}),
         ...(checkoutFacts ? { inspect: checkoutFacts } : {}),
@@ -707,14 +701,16 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       (await handleMergeSettingsRequest(request, {
         ...shared,
         ...(secrets.riskSettingsChanged ? { changed: secrets.riskSettingsChanged } : {}),
-        ...(path === MERGE_SETTINGS_PATH && secrets.db
+        ...(path === MERGE_SETTINGS_PATH && secrets.store
           ? {
               // The stored GitHub connection and team mappings, not a GitHub call.
-              repos: [...(shared.repos ?? []), ...(await repositoryNames(secrets.db))],
+              repos: [...(shared.repos ?? []), ...(await repositoryNames(secrets.store))],
             }
           : {}),
         ...(highRiskFile ? { highRiskFile } : {}),
-        ...(secrets.db ? { hotFiles: () => hotFiles(secrets.db!, Date.now()) } : {}),
+        ...(secrets.store
+          ? { hotFiles: () => secrets.store!.run((q) => hotFilesSteps(q, Date.now())) }
+          : {}),
         ...(mergeChoices ? { choices: mergeChoices } : {}),
         ...(githubQueues ? { githubQueues } : {}),
         ...(upToDateRules ? { upToDateRules } : {}),
@@ -731,7 +727,6 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       sessionIds,
     ).catch((error: unknown) => journalCaught(error, "serve.hydrateItemCloseoutEvidence", null));
   const status = await handleStatusRequest(request, {
-    ...(secrets.store ? { store: secrets.store } : {}),
     csrfToken,
     resourceCache: dashboardResources,
     ...(sessionIds === undefined ? {} : { sessionIds }),
@@ -740,7 +735,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       ? {
           readLinearArtifact: async (id: string, signal?: AbortSignal) => {
             if (sessionIds !== undefined) {
-              const store = secrets.store ?? sqliteDb(secrets.db!);
+              const store = secrets.store!;
               const artifact = await store.run((q) => getArtifactSteps(q, id));
               const item =
                 artifact === null
@@ -753,9 +748,9 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         }
       : {}),
     ...(secrets.startLinearSession ? { startLinearSession: secrets.startLinearSession } : {}),
-    ...(secrets.db
+    ...(secrets.store
       ? {
-          db: secrets.db,
+          store: secrets.store,
           ...(secrets.linearUsage ? { linearUsage: secrets.linearUsage } : {}),
           ...(secrets.riskApproval ? { riskApproval: secrets.riskApproval } : {}),
           ...(secrets.statusEnv ? { env: secrets.statusEnv } : {}),

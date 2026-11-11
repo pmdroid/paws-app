@@ -282,7 +282,7 @@ async function post(f: Awaited<ReturnType<typeof seed>>, body: unknown, sessionI
       body: JSON.stringify(body),
     }),
     {
-      db: f.db,
+      store: sqliteDb(f.db),
       principal: { workspaceId: "ws", userId: "ada" },
       services: { issues: f.issues },
       now: () => epoch,
@@ -446,7 +446,7 @@ test("a lost Linear reply keeps the action retryable and protects its members du
           reason: "Changed my mind",
         }),
       }),
-      { db: f.db, principal: { workspaceId: "ws", userId: "ada" } },
+      { store: sqliteDb(f.db), principal: { workspaceId: "ws", userId: "ada" } },
     );
     expect(dismiss!.status).toBe(409);
     f.db.run("UPDATE review_finding SET severity='P3'");
@@ -618,7 +618,7 @@ test("untouched groups follow individual dismissals immediately and locks are wo
           method: "POST",
           body: JSON.stringify({ action: "dismiss", id, reason: "Handle individually" }),
         }),
-        { db: f.db, principal: { workspaceId, userId: "ada" } },
+        { store: sqliteDb(f.db), principal: { workspaceId, userId: "ada" } },
       );
     expect((await dismiss(f.ids[0]!))!.status).toBe(200);
     expect((await listFindingGroups(sqliteDb(f.db), "ws"))[0]!.memberIds).toEqual([f.ids[1]!]);
@@ -1096,7 +1096,7 @@ test("a workspace with grouping off spends no turn and cannot run now", async ()
     expect((await post(f, { action: "run" })).status).toBe(409);
     const listing = await handleFindingGroupsRequest(
       new Request("http://localhost/api/finding-groups"),
-      { db: f.db, principal: { workspaceId: "ws", userId: "ada" } },
+      { store: sqliteDb(f.db), principal: { workspaceId: "ws", userId: "ada" } },
     );
     expect(await listing!.json()).toMatchObject({ canRun: false, enabled: false });
     await setFindingGrouping(sqliteDb(f.db), "ws", true);

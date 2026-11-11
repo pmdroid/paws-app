@@ -142,7 +142,7 @@ function orchestrate(db: Database, clock: FakeClock) {
 }
 
 async function observeGaps(db: Database, clock: FakeClock, gapMs: number): Promise<void> {
-  const host = new HostSupervisor(db, clock, new WakeDetector(clock), 250);
+  const host = new HostSupervisor(sqliteDb(db), clock, new WakeDetector(clock), 250);
   const jobs = orchestrate(db, clock);
   const since = clock.now();
   try {

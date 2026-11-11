@@ -106,7 +106,7 @@ test("Closeout records written by instance A are shown by instance B's dashboard
     new Request(
       `http://acme.test/api/closeout-artifact?item=${ITEM}&check=independent-review&kind=evidence&head=${HEAD}&policy=${DIGEST}`,
     ),
-    { db, closeoutHome: homeB },
+    { store: sqliteDb(db), closeoutHome: homeB },
   );
   expect(artifact!.status).toBe(200);
   expect(await artifact!.text()).toContain("acme breaks");

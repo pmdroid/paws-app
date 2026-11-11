@@ -22,7 +22,6 @@ import {
   type ReviewFindingItem,
   type ReviewFindingRecord,
   type Steps,
-  sqliteDb,
 } from "../../../db";
 import { journalCaught } from "../journal";
 import { findingView, type FindingsOptions } from "./findings";
@@ -90,7 +89,7 @@ export async function handleFindingGroupsRequest(
 ): Promise<Response | null> {
   if (new URL(request.url).pathname !== FINDING_GROUPS_API_PATH) return null;
   const { principal } = options;
-  const store = options.store ?? sqliteDb(options.db);
+  const { store } = options;
   const workspaceId = principal?.workspaceId ?? (await firstWorkspaceId(store)) ?? undefined;
   const member = principal
     ? await store.run((q) => workspaceMemberSteps(q, principal.workspaceId, principal.userId))

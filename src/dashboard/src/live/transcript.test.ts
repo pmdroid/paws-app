@@ -143,7 +143,7 @@ test("the transcript route answers JSON entries when the page asks for them", as
       .join(""),
   );
   const url = `http://127.0.0.1/api/runs/transcript?run=${run.id}`;
-  const options = { db, closeoutHome: home, sessionIds: ["visible"] };
+  const options = { store: sqliteDb(db), closeoutHome: home, sessionIds: ["visible"] };
   const asked = (await handleStatusRequest(
     new Request(url, { headers: { Accept: "application/json" } }),
     options,

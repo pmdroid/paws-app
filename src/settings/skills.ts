@@ -1,11 +1,10 @@
 import { isWorkspaceAdmin } from "../workspace";
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import {
   listSkillsSteps,
   SKILL_AGENTS,
   skillRolloutsSteps,
-  sqliteDb,
+  type Db,
   type SkillPin,
   type SkillSource,
 } from "../db";
@@ -33,7 +32,7 @@ import { readSkillUpload } from "./upload";
 export const SKILL_SETTINGS_PATH = "/api/settings/skills";
 
 export type SkillSettingsOptions = {
-  db: Database;
+  store: Db;
   /** `~/.paws/skills`. */
   root: string;
   resolver: SkillResolver;
@@ -61,7 +60,7 @@ export async function handleSkillSettingsRequest(
     return json({ error: "Skill settings are only available on the local Paws origin" }, 403);
   if (options.role !== undefined && !isWorkspaceAdmin(options.role))
     return json({ error: "Only workspace admins can change skills." }, 403);
-  const store = sqliteDb(options.db);
+  const { store } = options;
   const listing = async (notice?: string, found?: FoundSkill[]) => {
     const skills = await store.run(listSkillsSteps);
     return json({
@@ -82,7 +81,7 @@ export async function handleSkillSettingsRequest(
   if (!sameToken(request.headers.get("x-paws-csrf"), options.csrfToken))
     return json({ error: "CSRF token missing" }, 403);
   const registry = {
-    db: options.db,
+    store: options.store,
     root: options.root,
     resolver: options.resolver,
     now: (options.now ?? Date.now)(),

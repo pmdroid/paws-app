@@ -14,19 +14,18 @@ import {
   replaceDecisionSearchSteps,
   retireDecisionMemorySteps,
   searchDecisionRowsSteps,
-  sqliteDb,
   unsavedDecisionAnswersSteps,
   workspaceLinearMemberSteps,
   workspaceMemberSteps,
   workspaceMemberUsable,
   workspaceSessionIdsSteps,
+  type Db,
   type DecisionRow as Row,
   type DecisionScope as Scope,
   type Q,
   type Steps,
 } from "../db";
 import { randomUUID } from "node:crypto";
-import type { Database } from "bun:sqlite";
 import { hintedPaths } from "../scheduler";
 
 export type Decision = {
@@ -74,9 +73,9 @@ function terms(text: string): string | null {
   const words = [...new Set(text.toLowerCase().match(/[\p{L}\p{N}_]{3,}/gu) ?? [])].slice(0, 24);
   return words.length ? words.map((word) => `"${word}"`).join(" OR ") : null;
 }
-export async function listDecisions(db: Database, actor: Actor, search = ""): Promise<Decision[]> {
+export async function listDecisions(store: Db, actor: Actor, search = ""): Promise<Decision[]> {
   const query = terms(search);
-  return sqliteDb(db).run(function* (q) {
+  return store.run(function* (q) {
     const rows = search.trim()
       ? query
         ? yield* searchDecisionRowsSteps(q, { workspaceId: actor.workspaceId, query, limit: 200 })
@@ -90,8 +89,8 @@ export async function listDecisions(db: Database, actor: Actor, search = ""): Pr
     return decisions;
   });
 }
-export async function decisionAnswers(db: Database, actor: Actor) {
-  return sqliteDb(db).run(function* (q) {
+export async function decisionAnswers(store: Db, actor: Actor) {
+  return store.run(function* (q) {
     const sessions = yield* workspaceSessionIdsSteps(
       q,
       actor.workspaceId,
@@ -137,7 +136,7 @@ function settings(input: { statement?: unknown; scopeGlobs?: unknown; tags?: unk
   };
 }
 export async function changeDecision(
-  db: Database,
+  store: Db,
   actor: Actor,
   input: {
     questionId?: string;
@@ -150,7 +149,7 @@ export async function changeDecision(
   },
   now: number,
 ): Promise<string> {
-  return sqliteDb(db).transaction(function* (q) {
+  return store.transaction(function* (q) {
     const member = yield* workspaceMemberSteps(q, actor.workspaceId, actor.userId);
     if (!workspaceMemberUsable(member))
       throw new Error("Current workspace membership is required.");

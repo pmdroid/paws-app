@@ -2,8 +2,7 @@ import { journalCaught } from "../journal";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join, posix, sep } from "node:path";
-import type { Database } from "bun:sqlite";
-import { sqliteDb } from "../../../db";
+import type { Db } from "../../../db";
 import {
   CHECK_LOG_TAIL_BYTES,
   EVIDENCE_RESOURCE_PATH,
@@ -79,13 +78,12 @@ export interface StatusServerOptions {
   trustedOrigin?: string;
   /**
    * Live reader for the dashboard resources.
-   * Omit it and pass `db` to read the engine database. Omit both for empty
+   * Omit it and pass `store` to read the engine database. Omit both for empty
    * live resources (`source: "live"`, no items).
    */
   provider?: StatusProvider;
   /** Opened engine database. Ignored when `provider` is set. */
-  db?: Database;
-  store?: import("../../../db").Db;
+  store?: Db;
   /**
    * Directory from `bun run build:dashboard` (`index.html`, `assets/`).
    * Omit it to use `src/dashboard/dist` when that build exists. Pass `null` to skip files.
@@ -217,7 +215,7 @@ export function startStatusServer(options?: {
   port?: number;
   hostname?: string;
   provider?: StatusProvider;
-  db?: Database;
+  store?: Db;
   staticDir?: string | null;
   env?: Record<string, string | undefined>;
   closeoutHome?: string;
@@ -234,7 +232,7 @@ export function startStatusServer(options?: {
     async fetch(request) {
       const response = await handleStatusRequest(request, {
         provider,
-        ...(options?.db ? { db: options.db } : {}),
+        ...(options?.store ? { store: options.store } : {}),
         staticDir: staticDir ?? null,
         ...(env ? { env } : {}),
         ...(options?.closeoutHome ? { closeoutHome: options.closeoutHome } : {}),
@@ -254,15 +252,15 @@ export function providerFor(options: StatusServerOptions): StatusProvider {
 function liveProvider(options?: {
   sessionIds?: readonly string[];
   provider?: StatusProvider;
-  db?: Database;
+  store?: Db;
   env?: Record<string, string | undefined>;
   closeoutHome?: string;
   linearUsage?: LiveStatusOptions["linearUsage"];
   riskApproval?: LiveStatusOptions["riskApproval"];
 }): StatusProvider {
   if (options?.provider) return options.provider;
-  if (options?.db) {
-    return createLiveStatusProvider(sqliteDb(options.db), {
+  if (options?.store) {
+    return createLiveStatusProvider(options.store, {
       ...(options.sessionIds === undefined ? {} : { sessionIds: options.sessionIds }),
       ...(options.env ? { env: options.env } : {}),
       ...(options.closeoutHome ? { pawsHome: options.closeoutHome } : {}),
@@ -289,11 +287,11 @@ async function artifactResponse(request: Request, options: StatusServerOptions):
     return new Response(null, { status: 204, headers: { ...CORS } });
   if (request.method !== "GET" && request.method !== "HEAD") return text("Method not allowed", 405);
   const home = artifactHome(options);
-  if (options.db === undefined || home === null) return text("Not found", 404);
+  if (options.store === undefined || home === null) return text("Not found", 404);
   const url = new URL(request.url);
   const read = await readCloseoutArtifact({
     ...(options.sessionIds === undefined ? {} : { sessionIds: options.sessionIds }),
-    store: options.store ?? sqliteDb(options.db),
+    store: options.store,
     itemId: url.searchParams.get("item") ?? "",
     checkId: url.searchParams.get("check") ?? "",
     kind: url.searchParams.get("kind") ?? "",
@@ -387,10 +385,10 @@ function cacheKey(resource: string, parameters: string, options: StatusServerOpt
 
 async function diagnosticCacheKey(resource: string, options: StatusServerOptions): Promise<string> {
   const visible =
-    options.provider === undefined && options.db !== undefined && options.sessionIds !== undefined
-      ? await visibleDiagnosticRepositories(sqliteDb(options.db), {
-          sessionIds: options.sessionIds,
-        })
+    options.provider === undefined &&
+    options.store !== undefined &&
+    options.sessionIds !== undefined
+      ? await visibleDiagnosticRepositories(options.store, { sessionIds: options.sessionIds })
       : null;
   return JSON.stringify([cacheKey(resource, "", options), visible]);
 }
@@ -406,7 +404,7 @@ async function issuesResponse(
   if (request.method !== "GET" && request.method !== "HEAD")
     return json({ error: "Method not allowed" }, 405);
   const provider = providerFor(options);
-  const source = options.provider ?? options.db ?? EMPTY_SOURCE;
+  const source = options.provider ?? options.store ?? EMPTY_SOURCE;
   const rest = new URL(request.url).pathname.slice(ISSUES_API_PATH.length + 1);
   try {
     if (rest === "") {
@@ -462,7 +460,7 @@ async function overviewResponse(
   const read = provider.overview.bind(provider);
   try {
     const built = await cache.get<OverviewResponse>(
-      options.provider ?? options.db ?? EMPTY_SOURCE,
+      options.provider ?? options.store ?? EMPTY_SOURCE,
       await diagnosticCacheKey("overview", options),
       async () => {
         const parsed = parseOverviewResponse(await read());
@@ -492,7 +490,7 @@ async function mergeQueueResponse(
   const read = provider.mergeQueue.bind(provider);
   try {
     const built = await cache.get<MergeQueueResponse>(
-      options.provider ?? options.db ?? EMPTY_SOURCE,
+      options.provider ?? options.store ?? EMPTY_SOURCE,
       await diagnosticCacheKey("merge-queue", options),
       async () => {
         const parsed = parseMergeQueueResponse(await read());
@@ -518,7 +516,7 @@ async function questionsResponse(
   if (request.method !== "GET" && request.method !== "HEAD")
     return json({ error: "Method not allowed" }, 405);
   const provider = providerFor(options);
-  const source = options.provider ?? options.db ?? EMPTY_SOURCE;
+  const source = options.provider ?? options.store ?? EMPTY_SOURCE;
   const rest = new URL(request.url).pathname.slice(QUESTIONS_API_PATH.length + 1);
   try {
     if (rest === "") {
@@ -570,7 +568,7 @@ async function evidenceResponse(
   if (request.method !== "GET" && request.method !== "HEAD")
     return json({ error: "Method not allowed" }, 405);
   const provider = providerFor(options);
-  const source = options.provider ?? options.db ?? EMPTY_SOURCE;
+  const source = options.provider ?? options.store ?? EMPTY_SOURCE;
   const rest = new URL(request.url).pathname.slice(EVIDENCE_RESOURCE_PATH.length);
   try {
     if (rest === "") {

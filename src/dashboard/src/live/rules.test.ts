@@ -163,7 +163,7 @@ describe("rule results in the issue resources", () => {
   test("the list summarizes each rule as a check of kind rule", async () => {
     const { db, home } = await seed();
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-      db,
+      store: sqliteDb(db),
       env: {},
       closeoutHome: home,
     });
@@ -180,7 +180,7 @@ describe("rule results in the issue resources", () => {
   test("the item detail carries each rule's probe hash, exit code, duration and decision", async () => {
     const { db, home } = await seed();
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues/ENG-7"), {
-      db,
+      store: sqliteDb(db),
       env: {},
       closeoutHome: home,
     });

@@ -436,7 +436,7 @@ async function runWithFault(fault: {
   });
   const clock = fault.clock ?? systemClock;
   const jobs = new JobLoop(db, clock);
-  const host = new HostSupervisor(db, clock, new WakeDetector(clock));
+  const host = new HostSupervisor(sqliteDb(db), clock, new WakeDetector(clock));
   const outbox = new OutboxDispatcher(db, clock);
   const waits: { delayMs: number; runningJobs: number }[] = [];
   let implementations = 0;

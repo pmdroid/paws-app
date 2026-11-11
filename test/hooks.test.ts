@@ -26,7 +26,7 @@ afterEach(() => {
 
 function options(role?: string): HookSettingsOptions {
   return {
-    db,
+    store: sqliteDb(db),
     csrfToken: "csrf",
     ...(role ? { role } : {}),
     audit: async (action, subject) => {

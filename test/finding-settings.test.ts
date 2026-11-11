@@ -17,7 +17,7 @@ afterEach(() => db.close());
 
 function options(role?: string): FindingSettingsOptions {
   return {
-    db,
+    store: sqliteDb(db),
     csrfToken: "csrf",
     workspaceId: "ws",
     groupingTime: "07:30",

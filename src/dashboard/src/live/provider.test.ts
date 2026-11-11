@@ -103,7 +103,7 @@ describe("live status provider", () => {
     await applyWorkItemEvent(sqliteDb(db), "budget-question", "blocking_question");
     seedQuestion(db, "budget-question", "session");
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-      db,
+      store: sqliteDb(db),
       env: {},
     });
     expect(response?.status).toBe(200);
@@ -117,7 +117,7 @@ describe("live status provider", () => {
       "awaiting_input",
     );
     const asked = await handleStatusRequest(new Request("http://127.0.0.1/api/questions"), {
-      db,
+      store: sqliteDb(db),
       env: {},
     });
     const questions = parseQuestionListResponse(await asked!.json());
@@ -144,7 +144,7 @@ describe("live status provider", () => {
       );
     }
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/questions"), {
-      db,
+      store: sqliteDb(db),
       env: {},
     });
     const parsed = parseQuestionListResponse(await response!.json());
@@ -347,7 +347,7 @@ describe("live status provider", () => {
     writeFileSync(join(home, "config.toml"), '[agents.defaults.reviewer]\nagent = "codex"\n');
     const server = startStatusServer({
       port: 0,
-      db,
+      store: sqliteDb(db),
       closeoutHome: home,
       env: { PAWS_HOME: join(home, "wrong") },
     });
@@ -365,7 +365,7 @@ describe("live status provider", () => {
       expect(parsed.response.runs.every((run) => run.agent === "Codex")).toBe(true);
       const responseFromEnv = await handleStatusRequest(
         new Request("http://127.0.0.1/api/issues"),
-        { db, env: { PAWS_HOME: home } },
+        { store: sqliteDb(db), env: { PAWS_HOME: home } },
       );
       const fromEnv = parseIssueListResponse(await responseFromEnv!.json());
       expect(fromEnv.ok).toBe(true);
@@ -393,7 +393,7 @@ describe("live status provider", () => {
     ]) {
       if (snapshot !== undefined) writeFileSync(join(dir, "agent-profile.json"), snapshot);
       const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-        db,
+        store: sqliteDb(db),
         closeoutHome: home,
         env: {},
       });
@@ -408,7 +408,7 @@ describe("live status provider", () => {
   test("an empty database is a live issue list with no items", async () => {
     const db = database();
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-      db,
+      store: sqliteDb(db),
       env: {},
     });
     expect(response?.status).toBe(200);
@@ -1385,7 +1385,7 @@ describe("live status provider", () => {
 
     const get = (id: string) =>
       handleStatusRequest(new Request(`http://127.0.0.1/api/issues/${id}`), {
-        db,
+        store: sqliteDb(db),
         sessionIds: ["ses_8"],
       });
     const response = (await get("ENG-8"))!;
@@ -1577,7 +1577,7 @@ describe("live status provider", () => {
 
     const get = (path: string) =>
       handleStatusRequest(new Request(`http://127.0.0.1/api/issues/${path}/log`), {
-        db,
+        store: sqliteDb(db),
         sessionIds: ["ses_11"],
       });
     const mine = (await get("ENG-11/attempts/1/checks/unit"))!;
@@ -1892,7 +1892,7 @@ describe("live status provider", () => {
     const db = database();
     insertQueuedItem(db, { id: "ENG-9", title: "Hang", now: 1 });
     const live = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-      db,
+      store: sqliteDb(db),
       env: {},
     });
     const liveBody = (await live?.json()) as { source: string; issues: Array<{ id: string }> };
@@ -1901,14 +1901,14 @@ describe("live status provider", () => {
 
     const query = await handleStatusRequest(
       new Request("http://127.0.0.1/api/issues?engine=demo"),
-      { db, env: {} },
+      { store: sqliteDb(db), env: {} },
     );
     const queryBody = (await query?.json()) as { source: string; issues: Array<{ id: string }> };
     expect(queryBody.source).toBe("live");
     expect(queryBody.issues.map((item) => item.id)).toEqual(["ENG-9"]);
 
     const flagged = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-      db,
+      store: sqliteDb(db),
       env: { PAWS_STATUS_DEMO: "1" },
     });
     const flaggedBody = (await flagged?.json()) as { source: string };
@@ -1940,7 +1940,7 @@ describe("live status provider", () => {
       holdUntilMs: 300_000,
     });
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/overview"), {
-      db,
+      store: sqliteDb(db),
       env: {},
       linearUsage: usage,
     });

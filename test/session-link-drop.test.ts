@@ -143,12 +143,12 @@ test("a transcript lookup resolves the session through session_key alone", async
     const { run } = await beginImplementRun(sqliteDb(db), item.id, 2);
     const response = await handleStatusRequest(
       new Request(`http://127.0.0.1/api/runs/transcript?run=${run.id}`, { method: "HEAD" }),
-      { db, sessionIds: ["transcript-session"] },
+      { store: sqliteDb(db), sessionIds: ["transcript-session"] },
     );
     expect(response?.status).toBe(200);
     const denied = await handleStatusRequest(
       new Request(`http://127.0.0.1/api/runs/transcript?run=${run.id}`, { method: "HEAD" }),
-      { db, sessionIds: ["other-session"] },
+      { store: sqliteDb(db), sessionIds: ["other-session"] },
     );
     expect(denied?.status).toBe(404);
   } finally {

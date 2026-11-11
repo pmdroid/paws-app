@@ -60,7 +60,7 @@ const server = Bun.serve({
     return (
       (await handleStatusRequest(request, {
         provider,
-        db,
+        store: sqliteDb(db),
         closeoutHome: root,
         sessionIds: ["hook-session"],
       })) ?? new Response("Not found", { status: 404 })

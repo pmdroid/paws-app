@@ -118,7 +118,7 @@ describe("status payload budget", () => {
 
     const get = async (path: string) => {
       const response = (await handleStatusRequest(new Request(`http://127.0.0.1${path}`), {
-        db,
+        store: sqliteDb(db),
         env: {},
         responseSizes: { record() {}, flush() {} },
       }))!;

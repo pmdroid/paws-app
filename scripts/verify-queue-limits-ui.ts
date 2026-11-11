@@ -2,7 +2,7 @@ import { chromium, expect } from "@playwright/test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openDatabase, migrate } from "../src/db";
+import { openDatabase, migrate, sqliteDb } from "../src/db";
 import {
   handleAgentSettingsRequest,
   handleCheckoutSettingsRequest,
@@ -44,7 +44,11 @@ const server = Bun.serve({
         limitBytes: 1,
       });
     if (path === "/api/settings/hooks")
-      return handleHookSettingsRequest(request, { db, csrfToken: "fixture", audit: () => {} });
+      return handleHookSettingsRequest(request, {
+        store: sqliteDb(db),
+        csrfToken: "fixture",
+        audit: () => {},
+      });
     return (
       (await handleCheckoutSettingsRequest(request, { configPath, csrfToken: "fixture" })) ??
       (await handleAgentSettingsRequest(request, { configPath, csrfToken: "fixture" })) ??

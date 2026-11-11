@@ -1,5 +1,5 @@
 import { journalCaught } from "../journal";
-import { getRunSteps, getWorkItemSteps, sqliteDb } from "../../../db";
+import { getRunSteps, getWorkItemSteps } from "../../../db";
 import { fullAgentTranscript } from "../live/transcript";
 import { dashboardOrigin } from "./request-origin";
 import type { StatusServerOptions } from "./handler";
@@ -21,9 +21,9 @@ export async function handleAgentTranscriptRequest(
   if (request.method !== "GET" && request.method !== "HEAD")
     return new Response("Method not allowed", { status: 405, headers });
   const runId = url.searchParams.get("run") ?? "";
-  if (!options.db || !/^[A-Za-z0-9_-]{1,128}$/.test(runId))
+  if (!options.store || !/^[A-Za-z0-9_-]{1,128}$/.test(runId))
     return new Response("Not found", { status: 404, headers });
-  const store = options.store ?? sqliteDb(options.db);
+  const { store } = options;
   const run = await store.run((q) => getRunSteps(q, runId));
   const item = run ? await store.run((q) => getWorkItemSteps(q, run.itemId)) : null;
   const session = item?.sessionKey ?? null;

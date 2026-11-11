@@ -48,7 +48,7 @@ test("the timeline shows the agent's CI re-run with its reason and run id", asyn
   });
   await applyWorkItemEvent(sqliteDb(db), "item", "turn_ended");
   const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-    db,
+    store: sqliteDb(db),
     env: {},
   });
   const body = parseIssueListResponse(await response!.json());

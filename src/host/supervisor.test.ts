@@ -87,7 +87,7 @@ function boot() {
   const clock = new FakeClock(1_000_000);
   const db = openDatabase(":memory:");
   migrate(db);
-  const host = new HostSupervisor(db, clock, new WakeDetector(clock), 250);
+  const host = new HostSupervisor(sqliteDb(db), clock, new WakeDetector(clock), 250);
   return { clock, db, host };
 }
 
@@ -265,7 +265,7 @@ describe("host suspension and clock gaps", () => {
       throw new Error("The host must not spawn a sleep inhibitor");
     });
     const controller = new AbortController();
-    const host = startHost({ db, clock, signal: controller.signal });
+    const host = startHost({ store: sqliteDb(db), clock, signal: controller.signal });
     try {
       expect(spawn).not.toHaveBeenCalled();
     } finally {
@@ -375,7 +375,7 @@ describe("host suspension and clock gaps", () => {
     const clock: Clock = { now: () => wall.now, mono: () => wall.mono };
     const db = openDatabase(":memory:");
     migrate(db);
-    const host = new HostSupervisor(db, clock, new WakeDetector(clock), 250);
+    const host = new HostSupervisor(sqliteDb(db), clock, new WakeDetector(clock), 250);
     try {
       const { run } = await startRun(db, new FakeClock(wall.now));
       await host.tick();
@@ -406,7 +406,7 @@ describe("host suspension and clock gaps", () => {
       host.stop();
       const before = await snapshot(db, run.id);
       clock.sleep(TWO_HOURS + 1);
-      const next = new HostSupervisor(db, clock, new WakeDetector(clock), 250);
+      const next = new HostSupervisor(sqliteDb(db), clock, new WakeDetector(clock), 250);
       await next.tick();
       clock.advance(250);
       await next.tick();
@@ -568,7 +568,7 @@ test("the supervisor stops the live agent when the time limit asks instead of fa
   const db = openDatabase(":memory:");
   migrate(db);
   const stopped: string[] = [];
-  const host = new HostSupervisor(db, clock, new WakeDetector(clock), 250, (itemId) =>
+  const host = new HostSupervisor(sqliteDb(db), clock, new WakeDetector(clock), 250, (itemId) =>
     stopped.push(itemId),
   );
   insertQueuedItem(db, { id: "eng-9", sessionKey: "linear-session", maxAwakeMs: 1_000, now: 0 });
