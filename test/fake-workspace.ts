@@ -6,7 +6,6 @@ import {
   getConfirmedRemoteMerge,
   recordConfirmedRemoteMerge,
   recordLinearInstallation,
-  settled,
   sqliteDb,
   type Q,
   type Steps,
@@ -70,11 +69,7 @@ export function workspaceAdmission(db: Database, options: AdmissionOptions = {})
   return {
     canDispatchDelegation: joined((id) => id)(admission.canDispatchDelegation),
     canStart: joined(ofItem)(admission.canStart),
-    canMerge: (id: string) => {
-      const delegationId = ofItem(id);
-      if (delegationId !== undefined) settled(joinFakeWorkspace(db, delegationId));
-      return admission.canMerge(id);
-    },
+    canMerge: joined(ofItem)(admission.canMerge),
     steps: {
       canDispatchDelegation: joinedSteps((id) => id)(admission.steps.canDispatchDelegation),
       canStart: joinedSteps(ofItem)(admission.steps.canStart),
