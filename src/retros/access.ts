@@ -2,7 +2,6 @@ import type { Database } from "bun:sqlite";
 import {
   getRetroSteps,
   readRetroArtifactSteps,
-  settled,
   sqliteDb,
   workItemSessionKeysSteps,
   type Q,
@@ -123,8 +122,6 @@ export function retroReaderAccess(
   principal: WorkspacePrincipal,
   sessionIds: readonly string[],
   retroId: string,
-): RetroReaderAccess | null {
-  return settled(
-    sqliteDb(db).run((q) => retroReaderAccessSteps(q, root, principal, sessionIds, retroId)),
-  );
+): Promise<RetroReaderAccess | null> {
+  return sqliteDb(db).run((q) => retroReaderAccessSteps(q, root, principal, sessionIds, retroId));
 }

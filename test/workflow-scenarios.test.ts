@@ -380,7 +380,7 @@ async function runnerWorld() {
   };
   const host = { runnerVersion: CONFIRMED_TEARDOWN_RUNNER_VERSION.join(".") };
   const work = controller();
-  work.assign(command);
+  await work.assign(command);
   await work.acknowledge("box", command.id);
   await work.heartbeat(
     "box",
@@ -471,7 +471,7 @@ describe("runner control across Paws restarts", () => {
   test("a runner reconnecting after its lease expired cannot act for the fenced generation", async () => {
     const { w, controller, run } = await runnerWorld();
     try {
-      expect(controller().current(run.id, 1).command.id).toBe("work-1");
+      expect((await controller().currentAsync(run.id, 1)).command.id).toBe("work-1");
       w.advance(10 * MINUTE + RUNNER_LEASE_GRACE_MS);
       w.sweep();
       expect(getRun(w.db, run.id)?.status).toBe("lost");
@@ -480,11 +480,11 @@ describe("runner control across Paws restarts", () => {
         if (restartWith === "crash") w.crash();
         else w.stop();
         w.start();
-        expect(() => controller().current(run.id, 1)).toThrow(RunnerWorkFencedError);
+        await expect(controller().currentAsync(run.id, 1)).rejects.toThrow(RunnerWorkFencedError);
         await controller().heartbeat("box", 1, {}, undefined, undefined, undefined, undefined, [
           { runId: run.id, generation: 1 },
         ]);
-        expect(() => controller().current(run.id, 1)).toThrow(RunnerWorkFencedError);
+        await expect(controller().currentAsync(run.id, 1)).rejects.toThrow(RunnerWorkFencedError);
       }
       w.settle();
       expect(factsOf(w.db, "item")).toMatchObject({

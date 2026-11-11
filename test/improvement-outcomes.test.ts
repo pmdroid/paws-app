@@ -224,7 +224,7 @@ describe("lost, duplicate and out-of-order events", () => {
     expect(await write("canceled", at)).toBe(true);
     expect(await write("unstarted", at - 1)).toBe(false);
     expect(await write("canceled", at)).toBe(false);
-    const view = improvementFollowThrough(t.w.db, { workspaceId: "ws" }, t.id, at)!;
+    const view = (await improvementFollowThrough(t.w.db, { workspaceId: "ws" }, t.id, at))!;
     expect(view.followThrough).toMatchObject({
       attention: "canceled",
       implementation: { state: "canceled", source: "linear" },
@@ -1031,7 +1031,7 @@ describe("access", () => {
     const t = await linked();
     await t.sync();
     const later = END + 2 * IMPROVEMENT_OUTCOME_LIMITS.staleSyncMs;
-    const view = improvementFollowThrough(t.w.db, { workspaceId: "ws" }, t.id, later)!;
+    const view = (await improvementFollowThrough(t.w.db, { workspaceId: "ws" }, t.id, later))!;
     expect(view.followThrough).toMatchObject({ attention: "stale_sync", issue: { fresh: false } });
   });
 });

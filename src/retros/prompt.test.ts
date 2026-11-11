@@ -20,7 +20,7 @@ import type { WorkspacePrincipal } from "../workspace";
 import {
   DEFAULT_RETRO_PROMPT,
   freezeRenderedRetroPrompt,
-  freezeRetroRun,
+  freezeRetroRunSteps,
   previewRetroPrompt,
   proposedRetroSettings,
   readRetroRenderedPrompt,
@@ -165,16 +165,18 @@ async function queuedRetro(
   input: { id: string; start?: number; digest?: RetroDigest; maxChars?: number } = { id: "r1" },
 ) {
   const start = input.start ?? START;
-  const frozen = freezeRetroRun(db, {
-    id: input.id,
-    workspaceId: "ws",
-    windowStart: start,
-    windowEnd: start + 5 * DAY,
-    origin: "manual",
-    catalogs: CATALOGS,
-    accessibleRepositories: [APP, LANDING],
-    now: start + 5 * DAY,
-  });
+  const frozen = await sqliteDb(db).transaction((q) =>
+    freezeRetroRunSteps(q, {
+      id: input.id,
+      workspaceId: "ws",
+      windowStart: start,
+      windowEnd: start + 5 * DAY,
+      origin: "manual",
+      catalogs: CATALOGS,
+      accessibleRepositories: [APP, LANDING],
+      now: start + 5 * DAY,
+    }),
+  );
   if (!frozen.ok) throw new Error(frozen.message);
   expect(beginRetroCollection(db, { retroId: input.id, now: 1 }).ok).toBe(true);
   const digest = input.digest ?? digestFor(frozen.retro.repositories[0]!);

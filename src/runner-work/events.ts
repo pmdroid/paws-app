@@ -7,7 +7,6 @@ import {
   jobStatusByKeySteps,
   plaintextRunnerEventsSteps,
   sealRunnerEventSteps,
-  settled,
   sqliteDb,
   truncateWal,
   withSecureDelete,
@@ -30,10 +29,6 @@ export function runnerEventKeyId(key: Buffer) {
 export function* runnerEventsEncryptedSteps(q: Q): Steps<boolean> {
   const status = yield* jobStatusByKeySteps(q, RUNNER_EVENT_ENCRYPT_JOB);
   return status === null || status === "done";
-}
-
-export function runnerEventsEncrypted(db: Database) {
-  return settled(sqliteDb(db).run(runnerEventsEncryptedSteps));
 }
 
 export type StoredRunnerEvent = {

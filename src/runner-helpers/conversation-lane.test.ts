@@ -66,8 +66,9 @@ async function fixture(version: string | null, conversations?: number) {
     privateKey: generateKeyPairSync("ed25519").privateKey,
     now: () => now,
   });
-  const dispatch = (sessionId: string, purpose: "classify" | "conversation") =>
-    helpers.dispatch({
+  const dispatch = async (sessionId: string, purpose: "classify" | "conversation") =>
+    (
+      await helpers.dispatch({
       runnerId: "runner",
       sessionId,
       purpose,
@@ -82,7 +83,8 @@ async function fixture(version: string | null, conversations?: number) {
             },
           }
         : {}),
-    }).command;
+      })
+    ).command;
   cleanup.push(() => {
     db.close();
     rmSync(root, { recursive: true, force: true });
@@ -92,11 +94,11 @@ async function fixture(version: string | null, conversations?: number) {
 
 test("a conversation starts with every work slot busy and fills no work slot", async () => {
   const { db, now, workspace, dispatch } = await fixture("0.1.77", 2);
-  dispatch("session-1", "classify");
+  await dispatch("session-1", "classify");
   expect(runnerOccupancy(db, "runner", now)).toEqual({ capacity: 1, occupied: 1 });
   expect(runnerHelperAvailability(db, "runner", now, true).available).toBe(false);
 
-  const command = dispatch("session-2", "conversation");
+  const command = await dispatch("session-2", "conversation");
   expect(command.expiresAt - command.issuedAt).toBe(RUNNER_CONVERSATION_MS);
   expect(runnerOccupancy(db, "runner", now)).toEqual({ capacity: 1, occupied: 1 });
   const [runner] = await listRunnerOverview(sqliteDb(db), workspace, now);
@@ -106,12 +108,12 @@ test("a conversation starts with every work slot busy and fills no work slot", a
 
 test("a third conversation waits for a conversation slot, not a work slot", async () => {
   const { db, now, dispatch } = await fixture("0.1.77", 2);
-  dispatch("session-1", "conversation");
-  dispatch("session-2", "conversation");
-  expect(() => dispatch("session-3", "conversation")).toThrow("Runner is busy");
+  await dispatch("session-1", "conversation");
+  await dispatch("session-2", "conversation");
+  await expect(dispatch("session-3", "conversation")).rejects.toThrow("Runner is busy");
   expect(runnerHelperAvailability(db, "runner", now, true, true).available).toBe(false);
   expect(runnerOccupancy(db, "runner", now)).toEqual({ capacity: 1, occupied: 0 });
-  expect(dispatch("session-4", "classify").purpose).toBe("classify");
+  expect((await dispatch("session-4", "classify")).purpose).toBe("classify");
 });
 
 for (const [name, version, conversations] of [
@@ -124,5 +126,5 @@ for (const [name, version, conversations] of [
   test(`${name} admits no conversation`, async () => {
     const { db, now, dispatch } = await fixture(version, conversations);
     expect(runnerHelperAvailability(db, "runner", now, true, true).available).toBe(false);
-    expect(() => dispatch("session-1", "conversation")).toThrow("Runner is busy");
+    await expect(dispatch("session-1", "conversation")).rejects.toThrow("Runner is busy");
   });

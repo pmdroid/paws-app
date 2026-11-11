@@ -107,7 +107,7 @@ async function fixture() {
     profile: { agent: "codex", model: "scripted" },
     prompt: "Fixture",
   };
-  work.assign(command);
+  await work.assign(command);
   await work.acknowledge(runnerId, command.id);
   const grant = await work.issueGrant({
     runnerId,

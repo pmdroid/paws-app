@@ -3,7 +3,7 @@ import type { Database } from "bun:sqlite";
 import {
   auditWorkspaceAccessSteps,
   sqliteDb,
-  workspaceMember,
+  workspaceMemberSteps,
   workspaceMemberUsable,
   type Q,
   type Steps,
@@ -16,7 +16,7 @@ import {
   improvementDetail,
   IMPROVEMENT_REVIEW_LIMITS,
   listImprovementPage,
-  memberRepositories,
+  memberRepositoriesSteps,
   repairInboxDestination,
   retryInboxDelivery,
   type ImprovementReviewer,
@@ -180,32 +180,32 @@ export function createImprovementsHttp(options: {
     const url = new URL(request.url);
     const path = url.pathname;
     if (path !== IMPROVEMENTS_PATH && !path.startsWith(`${IMPROVEMENTS_PATH}/`)) return null;
-    const reviewerFor = (): ImprovementReviewer | null => {
-      const member = workspaceMember(db, principal.workspaceId, principal.userId);
+    function* reviewerForSteps(q: Q): Steps<ImprovementReviewer | null> {
+      const member = yield* workspaceMemberSteps(q, principal.workspaceId, principal.userId);
       if (!workspaceMemberUsable(member)) return null;
       const evidence = new Map<string, ReadonlySet<string> | null>();
       return {
         workspaceId: principal.workspaceId,
-        repositories: memberRepositories(db, principal.workspaceId, principal.userId),
+        repositories: yield* memberRepositoriesSteps(q, principal.workspaceId, principal.userId),
         sessionIds,
         userId: principal.userId,
         role: member.role,
         teamIds: member.teamIds,
         ...(options.retroEvidence
           ? {
-              retroEvidence: function* (q: Q, retroId: string) {
+              retroEvidence: function* (reader: Q, retroId: string) {
                 if (!evidence.has(retroId))
                   evidence.set(
                     retroId,
-                    yield* options.retroEvidence!(q, principal, sessionIds, retroId),
+                    yield* options.retroEvidence!(reader, principal, sessionIds, retroId),
                   );
                 return evidence.get(retroId)!;
               },
             }
           : {}),
       };
-    };
-    const reviewer = reviewerFor();
+    }
+    const reviewer = await store.run(reviewerForSteps);
     if (!reviewer) {
       await audit(principal, "access.denied", path);
       return json({ error: "Workspace access is unavailable." }, 403);
@@ -224,7 +224,7 @@ export function createImprovementsHttp(options: {
     const followed = FOLLOW_THROUGH.exec(path);
     if (followed) {
       if (request.method !== "GET") return json({ error: "Use GET." }, 405);
-      const detail = improvementFollowThrough(db, reviewer, followed[1]!, now());
+      const detail = await improvementFollowThrough(db, reviewer, followed[1]!, now());
       return detail
         ? json(detail)
         : json({ error: "This improvement is not in your inbox.", reason: "not_found" }, 404);
@@ -242,7 +242,7 @@ export function createImprovementsHttp(options: {
         journalCaught(error, "improvements.http.readFollowThrough", null);
         return json({ error: "Expected a JSON body." }, 400);
       }
-      const actor = reviewerFor();
+      const actor = await store.run(reviewerForSteps);
       if (!actor) {
         await audit(principal, "access.denied", path);
         return json({ error: "Workspace access is unavailable." }, 403);
@@ -258,7 +258,7 @@ export function createImprovementsHttp(options: {
       const delegate = (expectedVersion: number, again: boolean) =>
         delegateImprovement(db, {
           reviewer: actor,
-          reauthorize: reviewerFor,
+          reauthorize: reviewerForSteps,
           improvementId,
           expectedVersion,
           ...(options.linear ? { linear: options.linear } : {}),
@@ -401,7 +401,7 @@ export function createImprovementsHttp(options: {
       );
     const outcome = await decideInboxItem(db, {
       reviewer,
-      reauthorize: reviewerFor,
+      reauthorize: reviewerForSteps,
       improvementId: decision![1]!,
       expectedVersion: parsed.data.expectedVersion,
       request: parsed.data.decision,

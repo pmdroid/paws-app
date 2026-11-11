@@ -91,7 +91,7 @@ async function tornDownRun(state: string, runnerVersion = CURRENT) {
       eventKey: Buffer.alloc(32, 7),
       now: () => now,
     });
-    work.assign(command);
+    await work.assign(command);
     await work.acknowledge("box", command.id);
     db.run("UPDATE work_item SET state=? WHERE id=?", [state, item.id]);
     const reply = await work.heartbeat(

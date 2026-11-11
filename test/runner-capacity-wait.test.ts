@@ -148,7 +148,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     now: () => workNow(),
   });
   workNow = () => now - 120_000;
-  work.enqueue({
+  await work.enqueue({
     id: "cancel-other",
     type: "cancel",
     runId: otherRun.id,

@@ -128,7 +128,7 @@ export async function probeRunnerResults(root: string, observe: Observe) {
         profile: { agent: "codex", model: "scripted" },
         prompt: "Result fixture",
       };
-      const assignment = work.assign(command);
+      const assignment = await work.assign(command);
       assert.equal(verify(assignment.envelope).type, type);
       const access = {
         runnerId,
@@ -175,7 +175,7 @@ export async function probeRunnerResults(root: string, observe: Observe) {
       assert.deepEqual(await first!.json(), { duplicate: false });
       const replay = await results.fetch(request({ generation, result }), runnerId);
       assert.deepEqual(await replay!.json(), { duplicate: true });
-      assert.deepEqual(results.read(run.id, generation, command.id), result);
+      assert.deepEqual(await results.read(run.id, generation, command.id), result);
       assert.equal(
         (await results.fetch(
           request({ generation, result: { ...result, sessionId: "changed" } }),
@@ -207,7 +207,7 @@ export async function probeRunnerResults(root: string, observe: Observe) {
         sequence: 2,
         event: { type: "question", text: "Which fixture?", options: ["A", "B"] },
       });
-      assert.equal(results.events(run.id, generation, 1).length, 1);
+      assert.equal((await results.events(run.id, generation, 1)).length, 1);
       const stored = db
         .query<{ payload: string; type: string }, [string, number]>(
           "SELECT payload,type FROM runner_event WHERE run_id=? AND generation=? ORDER BY sequence",
@@ -219,7 +219,7 @@ export async function probeRunnerResults(root: string, observe: Observe) {
       );
       assert(!stored.some((row) => /Working|Which fixture/.test(row.payload)));
       assert.deepEqual(
-        results.events(run.id, generation, 0).map((row) => row.event),
+        (await results.events(run.id, generation, 0)).map((row) => row.event),
         [
           { type: "progress", text: "Working" },
           { type: "question", text: "Which fixture?", options: ["A", "B"] },
@@ -233,14 +233,14 @@ export async function probeRunnerResults(root: string, observe: Observe) {
         work.event({ ...access, sequence: 1, event: { type: "progress", text: "Changed" } }),
         /changed its payload/,
       );
-      assert.throws(
-        () => results.answer({ runId: run.id, generation, sequence: 1, answer: "A" }),
+      await assert.rejects(
+        results.answer({ runId: run.id, generation, sequence: 1, answer: "A" }),
         /unavailable/,
       );
-      results.answer({ runId: run.id, generation, sequence: 2, answer: "A" });
-      results.answer({ runId: run.id, generation, sequence: 2, answer: "A" });
-      assert.throws(
-        () => results.answer({ runId: run.id, generation, sequence: 2, answer: "B" }),
+      await results.answer({ runId: run.id, generation, sequence: 2, answer: "A" });
+      await results.answer({ runId: run.id, generation, sequence: 2, answer: "A" });
+      await assert.rejects(
+        results.answer({ runId: run.id, generation, sequence: 2, answer: "B" }),
         /immutable/,
       );
       const answers = await results.fetch(
@@ -264,9 +264,9 @@ export async function probeRunnerResults(root: string, observe: Observe) {
         sequence: 4,
         event: { type: "question", text: "Newer question", options: ["B"] },
       });
-      results.answer({ runId: run.id, generation, sequence: 4, answer: "B" });
+      await results.answer({ runId: run.id, generation, sequence: 4, answer: "B" });
       assert.deepEqual(await results.answers({ ...access, after: 2 }), []);
-      results.answer({ runId: run.id, generation, sequence: 3, answer: "A" });
+      await results.answer({ runId: run.id, generation, sequence: 3, answer: "A" });
       assert.deepEqual(await results.answers({ ...access, after: 2 }), [
         { sequence: 3, answer: "A" },
         { sequence: 4, answer: "B" },

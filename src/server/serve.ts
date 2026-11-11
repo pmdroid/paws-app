@@ -543,6 +543,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     if (!secrets.db) return Response.json({ error: "Not found." }, { status: 404 });
     return (await handleFindingGroupsRequest(request, {
       db: secrets.db,
+      ...(secrets.store ? { store: secrets.store } : {}),
       ...(principal ? { principal } : {}),
       ...(sessionIds ? { sessionIds } : {}),
       ...(secrets.findingGroups ? { services: secrets.findingGroups } : {}),
@@ -552,6 +553,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     if (secrets.db === undefined) return Response.json({ error: "Not found." }, { status: 404 });
     return (await handleFindingsRequest(request, {
       db: secrets.db,
+      ...(secrets.store ? { store: secrets.store } : {}),
       ...(principal === undefined ? {} : { principal }),
       ...(sessionIds === undefined ? {} : { sessionIds }),
     }))!;

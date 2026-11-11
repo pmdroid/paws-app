@@ -169,7 +169,7 @@ export async function probeRunnerInputs(
   await assert.rejects(async () => inputs.stage(command.id, supplied));
   assert.equal(RunnerCommandSchema.parse(command).type, "run");
   assert.equal(RunnerCommandSchema.parse({ ...command, type: "review" }).type, "review");
-  work.assign(command);
+  await work.assign(command);
   const grant = async () =>
     (await work.issueGrant({ runnerId, runId: run.id, commandId: command.id, generation: 1 }))
       .token;

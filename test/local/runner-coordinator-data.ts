@@ -236,7 +236,7 @@ export async function probeRunnerCoordinatorData(
       profile: { agent: "codex", model: "scripted" },
       prompt: "Relay fixture evidence",
     };
-    coordinator.work.assign(command);
+    await coordinator.work.assign(command);
     const grant = await daemon.issueRunGrant(run.id, { commandId: command.id, generation: 1 });
     assert.equal((await daemon.pollCommands()).rejected.length, 0);
     assert.equal(daemon.pendingCommands()[0]?.id, command.id);
