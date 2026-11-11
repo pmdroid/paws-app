@@ -159,7 +159,8 @@ test("a spec change on the item's issue is reconciled through the item", async (
       db,
       tracker,
       lifecycle,
-      onChanges(changes) {
+      *onChanges(_q, changes) {
+        yield* [];
         changed.push(changes.specChangedItemIds);
       },
     });
@@ -229,7 +230,9 @@ test("a reconcile handed the intake's reads writes the scheduler rows without re
       db,
       tracker: { loadEpic: unread, listDeps: unread },
       lifecycle: { inspect: unread },
-      onChanges() {},
+      *onChanges() {
+        yield* [];
+      },
     });
     await reconciler.reconcile({
       itemId,

@@ -1,3 +1,4 @@
+import { syncSteps } from "../src/runner-backend";
 import { expect, test } from "bun:test";
 import {
   bindLinearSessionTask,
@@ -59,7 +60,7 @@ async function relationsFixture(options: { batched?: boolean } = {}) {
       },
     },
     lifecycle,
-    onChanges() {},
+    onChanges: () => syncSteps(() => {}),
     now: () => 10_000,
   });
   await reconciler.sweep({ now: 10_000 });

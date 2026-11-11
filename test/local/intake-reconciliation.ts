@@ -91,7 +91,8 @@ export async function probeEpicReconciliation(root: string) {
       db,
       tracker,
       lifecycle,
-      onChanges(changes) {
+      *onChanges(_q, changes) {
+        yield* [];
         assert(db.inTransaction);
         if (fail) throw new Error("Injected canonical effect failure");
         for (const id of changes.addedItemIds) saveTaskMode(db, id, "code", 0, true);
@@ -158,7 +159,8 @@ export async function probeEpicReconciliation(root: string) {
       db,
       tracker,
       lifecycle,
-      onChanges(changes) {
+      *onChanges(_q, changes) {
+        yield* [];
         interruptedEffects = structuredClone(changes);
       },
       async afterChanges() {
@@ -178,7 +180,8 @@ export async function probeEpicReconciliation(root: string) {
         db: recoveredDb,
         tracker,
         lifecycle,
-        onChanges(changes) {
+        *onChanges(_q, changes) {
+          yield* [];
           recoveredEffects = structuredClone(changes);
         },
         async afterChanges(changes) {
@@ -277,7 +280,8 @@ export async function probeEpicReconciliation(root: string) {
           return value;
         },
       },
-      onChanges() {
+      *onChanges() {
+        yield* [];
         assert(db.inTransaction);
         publications++;
       },
@@ -322,7 +326,8 @@ export async function probeEpicReconciliation(root: string) {
           return value;
         },
       },
-      onChanges() {
+      *onChanges() {
+        yield* [];
         throw new Error("Stale publication reached callback");
       },
     });
@@ -373,7 +378,8 @@ export async function probeEpicReconciliation(root: string) {
       db,
       tracker,
       lifecycle,
-      onChanges(changes) {
+      *onChanges(_q, changes) {
+        yield* [];
         for (const id of changes.removedItemIds) applyWorkItemEvent(db, id, "cancel");
       },
       async afterChanges() {
@@ -442,7 +448,8 @@ export async function probeEpicReconciliation(root: string) {
           return value;
         },
       },
-      onChanges() {
+      *onChanges() {
+        yield* [];
         throw new Error("Stopped publication reached database");
       },
     });

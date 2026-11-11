@@ -1,3 +1,4 @@
+import { syncSteps } from "../src/runner-backend";
 import { generateKeyPairSync } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
@@ -99,7 +100,7 @@ async function delegate(failures: number) {
       assigneeId: "acme-human",
       delegateId: "app",
     }),
-    onChanges: () => {},
+    onChanges: () => syncSteps(() => {}),
   });
   const publication = createPublicationReadiness({
     db,

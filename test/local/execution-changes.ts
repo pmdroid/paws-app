@@ -243,7 +243,7 @@ export async function probeExecutionChanges(
           .get()?.n === 1,
       getWorkItem(db, "blocker-1"),
     );
-    assert.throws(
+    await assert.rejects(
       () =>
         orchestrator.applyDelegationChanges(changes("cancel", { specChangedItemIds: ["added-0"] })),
       /ownership/,

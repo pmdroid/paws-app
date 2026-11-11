@@ -2884,3 +2884,4 @@ async function hiddenCheckpoint(
     await git(["--git-dir", mirror, "update-ref", "-d", ref]).catch(() => undefined);
   }
 }
+export { syncSteps } from "./sync-steps";
