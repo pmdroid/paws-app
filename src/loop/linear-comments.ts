@@ -79,7 +79,7 @@ export type LinearConversationTurn = {
 
 export type LinearConversations = {
   lane(itemId: string): Promise<"closed" | "full" | "free">;
-  start(itemId: string, sessionId: string, prompt: string): boolean;
+  startSteps(q: Q, itemId: string, sessionId: string, prompt: string): Steps<boolean>;
   open(itemId: string): Promise<LinearConversationTurn[]>;
   finish(commandId: string): void;
 };
@@ -488,7 +488,7 @@ async function startConversation(
   const prompt = clip(parts.join("\n\n"), CONVERSATION_PROMPT_CHARS);
   if (prompt.trim() === "") return;
   await store.transaction(function* (q) {
-    if (!talk.start(item.id, item.sessionKey!, prompt)) return;
+    if (!(yield* talk.startSteps(q, item.id, item.sessionKey!, prompt))) return;
     yield* markLinearCommentsDeliveredSteps(
       q,
       batch.map((comment) => comment.commentId),
