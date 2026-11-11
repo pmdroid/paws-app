@@ -755,7 +755,7 @@ export function createRunnerPlacement(options: {
     };
   }
   return {
-    preview: (input) => settled(store.run((q) => selectSteps(q, input, true))),
+    previewSteps: (q, input) => selectSteps(q, input, true),
     candidates: (input) => store.run((q) => selectSteps(q, input)),
     setupNeed: (input) =>
       store.run(function* (q) {

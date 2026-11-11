@@ -143,7 +143,7 @@ export type PlacementDisposition = {
 };
 export type RunnerPlacement = {
   candidates(input: PlacementRequest): Promise<readonly PlacementCandidate[]>;
-  preview?(input: PlacementRequest): readonly PlacementCandidate[];
+  previewSteps?(q: Q, input: PlacementRequest): Steps<readonly PlacementCandidate[]>;
   /**
    * Why the person who owns the work has no runner Paws may use, or null when one is eligible
    * (busy or not) or one of theirs is only offline or paused.

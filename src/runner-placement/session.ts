@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   getWorkItemSteps,
   itemSessionResultsSteps,
@@ -6,8 +5,6 @@ import {
   legacyAgentBindingId,
   inMergeQueueSteps,
   restartedFromMergeQueueSteps,
-  settled,
-  sqliteDb,
   type Q,
   type Steps,
 } from "../db";
@@ -103,11 +100,7 @@ export function* runRunnerSteps(
   return { pinnedRunnerId: backToSession ? input.sessionRunnerId : row.runnerId };
 }
 
-export function itemWorkPlacement(db: Database, itemId: string, agent: string) {
-  return settled(sqliteDb(db).run((q) => itemWorkPlacementSteps(q, itemId, agent)));
-}
-
-function* itemWorkPlacementSteps(q: Q, itemId: string, agent: string) {
+export function* itemWorkPlacementSteps(q: Q, itemId: string, agent: string) {
   const holder = yield* sessionHolderSteps(q, itemId);
   const session =
     holder?.agent === agent
