@@ -405,7 +405,7 @@ export type RetroRunFreeze =
       message: string;
     };
 
-type RetroRunFreezeInput = {
+type FreezeInput = {
   id: string;
   workspaceId: string;
   windowStart: number;
@@ -417,11 +417,7 @@ type RetroRunFreezeInput = {
   now: number;
 };
 
-export function freezeRetroRun(db: Database, input: RetroRunFreezeInput): RetroRunFreeze {
-  return settled(sqliteDb(db).transaction((q) => freezeRetroRunSteps(q, input)));
-}
-
-export function* freezeRetroRunSteps(q: Q, input: RetroRunFreezeInput): Steps<RetroRunFreeze> {
+export function* freezeRetroRunSteps(q: Q, input: FreezeInput): Steps<RetroRunFreeze> {
   const existing = yield* retroIdForWindowSteps(
     q,
     input.workspaceId,
@@ -456,6 +452,10 @@ export function* freezeRetroRunSteps(q: Q, input: RetroRunFreezeInput): Steps<Re
     now: input.now,
   });
   return { ok: true, ...frozen };
+}
+
+export function freezeRetroRun(db: Database, input: FreezeInput): RetroRunFreeze {
+  return settled(sqliteDb(db).transaction((q) => freezeRetroRunSteps(q, input)));
 }
 
 export function retroRunRepositories(

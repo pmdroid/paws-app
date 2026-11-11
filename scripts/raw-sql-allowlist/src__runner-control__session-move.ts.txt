@@ -1,2 +1,0 @@
-src/runner-control/session-move.ts | return db .query< | not yet converted to Drizzle
-src/runner-control/session-move.ts | const runner = db .query<{ status: string }, [string, string]>( | not yet converted to Drizzle

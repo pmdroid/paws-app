@@ -14,6 +14,9 @@ import {
   failRetroAttemptSteps,
   getRetroDispatchSteps,
   getRetroSteps,
+  latestRetroDispatchSteps,
+  retroGenerationSteps,
+  settled as settledValue,
   listRetroAttemptsSteps,
   listWorkspaceMembersSteps,
   liveAccountBindingSteps,
@@ -36,10 +39,7 @@ import {
   runnerOccupancySteps,
   runnerSlotsHeldBetweenCommandsSteps,
   settleRetroDispatchSteps,
-  settled,
   sqliteDb,
-  retroGenerationSteps,
-  latestRetroDispatchSteps,
   startRetroAttemptSteps,
   workspaceMemberSteps,
   previousRetroResultDispatchSteps,
@@ -176,10 +176,6 @@ function* retryAtSteps(q: Q, retro: Retro) {
   );
 }
 
-export function retroGenerationView(db: Database, retroId: string): RetroGenerationView | null {
-  return settled(sqliteDb(db).run((q) => retroGenerationViewSteps(q, retroId)));
-}
-
 export function* retroGenerationViewSteps(
   q: Q,
   retroId: string,
@@ -225,6 +221,10 @@ export function* retroGenerationViewSteps(
     digestSha256: retro.digestSha256,
     error: retro.error,
   };
+}
+
+export function retroGenerationView(db: Database, retroId: string): RetroGenerationView | null {
+  return settledValue(sqliteDb(db).run((q) => retroGenerationViewSteps(q, retroId)));
 }
 
 type Candidate = EligibleRunner & { occupied: number; capacity: number; free: boolean };
@@ -421,31 +421,31 @@ export function createRetroDispatcher(options: {
       if (identity === null || !(yield* runnerHasWorkspaceAuthoritySteps(q, identity)))
         yield* fail("The runner's owner lost workspace authority before the result arrived.");
       else if (result.outcome === "completed") {
-        const outcome = yield* settleRetroAttemptSteps(q, root, {
+        const settled = yield* settleRetroAttemptSteps(q, root, {
           retroId: dispatch.retroId,
           attempt: dispatch.attempt,
           owner: owner(dispatch.commandId),
           output: result.output ?? null,
           now: at,
         });
-        if (outcome.ok)
+        if (settled.ok)
           yield* noteSteps(q, dispatch.retroId, "ready", "The retro report is published.");
-        else if (outcome.reason === "coverage_gap")
+        else if (settled.reason === "coverage_gap")
           yield* closeRetroSteps(q, {
             retroId: dispatch.retroId,
             state: "coverage_failed",
             error: "The retro has a coverage gap and cannot be published.",
             now: at,
           });
-        else if (outcome.reason === "watermark_moved")
+        else if (settled.reason === "watermark_moved")
           yield* closeRetroSteps(q, {
             retroId: dispatch.retroId,
             state: "abandoned",
             error: "Another retro already published activity from this window.",
             now: at,
           });
-        else if (outcome.reason === "unknown_evidence" || outcome.reason === "duplicate_item")
-          yield* fail(`The result did not match its evidence: ${outcome.reason}.`);
+        else if (settled.reason === "unknown_evidence" || settled.reason === "duplicate_item")
+          yield* fail(`The result did not match its evidence: ${settled.reason}.`);
       } else {
         const message = result.errorMessage ?? `The retro turn ended with ${result.outcome}.`;
         yield* fail(`${result.outcome}: ${message}`);
@@ -560,14 +560,14 @@ export function createRetroDispatcher(options: {
           : null;
       });
       if (started === null) return;
-      const outcome = await settleRetroAttempt(db, root, {
+      const settled = await settleRetroAttempt(db, root, {
         retroId: retro.id,
         attempt: started,
         owner: LOCAL_OWNER,
         output: null,
         now: at,
       });
-      if (outcome.ok) await note(retro.id, "ready", "No session activity in this window.");
+      if (settled.ok) await note(retro.id, "ready", "No session activity in this window.");
       else await store.transaction((q) => afterFailureSteps(q, retro.id));
       return;
     }

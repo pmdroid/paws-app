@@ -2,30 +2,33 @@ import type { Database } from "bun:sqlite";
 import {
   findingGroupingEnabledSteps,
   lastFindingGroupRunSteps,
-  listFindingGroups,
-  listImprovementProposals,
-  listImprovements,
+  listFindingGroupsSteps,
+  listImprovementProposalsSteps,
+  listImprovementsSteps,
   listRetroCoverageGapsSteps,
-  listRetroEvidence,
+  listRetroEvidenceSteps,
   listRetrosSteps,
   retroScheduleRuntimeSteps,
-  reviewFindingIssueClaims,
-  reviewFindingItems,
+  reviewFindingIssueClaimsSteps,
+  reviewFindingItemsSteps,
+  settled,
   sqliteDb,
   type FindingGroupRun,
   type Improvement,
   type ImprovementProposal,
   type ImprovementSourceKind,
   type ImprovementVerificationState,
+  type Q,
   type RetroState,
+  type Steps,
 } from "../db";
-import { improvementFindings, legacyActions, type LegacyAction } from "./daily";
+import { improvementFindingsSteps, legacyActions, type LegacyAction } from "./daily";
 
 export type ImprovementAccess = {
   workspaceId: string;
   repositories?: readonly string[];
   sessionIds?: readonly string[];
-  retroEvidence?: (retroId: string) => ReadonlySet<string> | null;
+  retroEvidence?: (q: Q, retroId: string) => Steps<ReadonlySet<string> | null>;
 };
 
 export type InboxLifecycle = "needs_review" | "pending" | "linked" | "rejected";
@@ -95,32 +98,35 @@ function issueOf(improvement: Improvement, legacy: readonly LegacyAction[]): Kno
   return filed ? { id: null, identifier: filed.issue, url: null, origin: "legacy" } : null;
 }
 
-export function listInboxItems(db: Database, access: ImprovementAccess): InboxItem[] {
-  const groups = listFindingGroups(db, access.workspaceId);
+export function* listInboxItemsSteps(q: Q, access: ImprovementAccess): Steps<InboxItem[]> {
+  const groups = yield* listFindingGroupsSteps(q, access.workspaceId);
   const evidence = new Map<string, Map<string, string>>();
-  const retroEvidence = (retroId: string) => {
+  function* retroEvidenceSteps(retroId: string) {
     if (!evidence.has(retroId))
       evidence.set(
         retroId,
-        new Map(listRetroEvidence(db, retroId).map((e) => [e.evidenceId, e.repository])),
+        new Map(
+          (yield* listRetroEvidenceSteps(q, retroId)).map((e) => [e.evidenceId, e.repository]),
+        ),
       );
     return evidence.get(retroId)!;
-  };
-  return listImprovements(db, access.workspaceId).flatMap((improvement) => {
-    if (!allowedRepository(access, improvement.repository)) return [];
-    const proposals = listImprovementProposals(db, improvement.id);
+  }
+  const result: InboxItem[] = [];
+  for (const improvement of yield* listImprovementsSteps(q, access.workspaceId)) {
+    if (!allowedRepository(access, improvement.repository)) continue;
+    const proposals = yield* listImprovementProposalsSteps(q, improvement.id);
     const proposal = proposals.at(-1);
-    if (!proposal) return [];
+    if (!proposal) continue;
     const sourceKind = proposal.source.kind;
     const sourceKeys = [...new Set(proposals.map((p) => p.source.key))];
     let members: DailyMember[] = [];
     let legacy: LegacyAction[] = [];
     let undecided: number[] = [];
     if (sourceKind === "daily_finding") {
-      const findings = improvementFindings(db, improvement.id);
-      if (findings.length !== sourceKeys.length) return [];
-      const items = reviewFindingItems(
-        db,
+      const findings = yield* improvementFindingsSteps(q, improvement.id);
+      if (findings.length !== sourceKeys.length) continue;
+      const items = yield* reviewFindingItemsSteps(
+        q,
         findings.map((f) => f.id),
       );
       const visible = findings.every(
@@ -131,14 +137,14 @@ export function listInboxItems(db: Database, access: ImprovementAccess): InboxIt
               (i) => i.sessionKey !== null && access.sessionIds!.includes(i.sessionKey),
             )),
       );
-      if (!visible) return [];
+      if (!visible) continue;
       legacy = legacyActions(findings, groups);
       const covered = new Set(
         legacy
           .filter((action) => action.kind !== "dismissed")
           .flatMap((action) => action.findingIds),
       );
-      const claims = reviewFindingIssueClaims(db, findings);
+      const claims = yield* reviewFindingIssueClaimsSteps(q, findings);
       for (const f of findings) {
         const claim = claims.get(f.key);
         if (covered.has(f.id) || claim === undefined) continue;
@@ -164,36 +170,38 @@ export function listInboxItems(db: Database, access: ImprovementAccess): InboxIt
         lastSeenAt: f.last.at,
       }));
     } else {
-      const visible =
-        proposal.evidence.length > 0 &&
-        proposal.evidence.every((ref) => {
-          const [, retroId, evidenceId] = ref.split(":");
-          const repository = retroEvidence(retroId ?? "").get(evidenceId ?? "");
-          return (
-            repository !== undefined &&
-            allowedRepository(access, repository) &&
-            (access.retroEvidence === undefined ||
-              access.retroEvidence(retroId!)?.has(evidenceId!) === true)
-          );
-        });
-      if (!visible) return [];
+      let visible = proposal.evidence.length > 0;
+      for (const ref of proposal.evidence) {
+        if (!visible) break;
+        const [, retroId, evidenceId] = ref.split(":");
+        const repository = (yield* retroEvidenceSteps(retroId ?? "")).get(evidenceId ?? "");
+        visible =
+          repository !== undefined &&
+          allowedRepository(access, repository) &&
+          (access.retroEvidence === undefined ||
+            (yield* access.retroEvidence(q, retroId!))?.has(evidenceId!) === true);
+      }
+      if (!visible) continue;
     }
-    return [
-      {
-        improvement,
-        sourceKind,
-        sourceKeys,
-        proposal,
-        criterion: proposal.verificationCriterion.trim() || null,
-        lifecycle: lifecycleOf(improvement, legacy, undecided),
-        issue: issueOf(improvement, legacy),
-        legacy,
-        undecided,
-        verification: improvement.verificationState,
-        members,
-      },
-    ];
-  });
+    result.push({
+      improvement,
+      sourceKind,
+      sourceKeys,
+      proposal,
+      criterion: proposal.verificationCriterion.trim() || null,
+      lifecycle: lifecycleOf(improvement, legacy, undecided),
+      issue: issueOf(improvement, legacy),
+      legacy,
+      undecided,
+      verification: improvement.verificationState,
+      members,
+    });
+  }
+  return result;
+}
+
+export function listInboxItems(db: Database, access: ImprovementAccess): InboxItem[] {
+  return settled(sqliteDb(db).run((q) => listInboxItemsSteps(q, access)));
 }
 
 export type InboxCounts = {

@@ -3,7 +3,6 @@ import type { Database } from "bun:sqlite";
 import {
   annotateImprovementCriterionSteps,
   bindImprovementWorkSteps,
-  boundImprovementWork,
   boundImprovementWorkSteps,
   bumpImprovementVersionSteps,
   claimImprovementDelegationSteps,
@@ -11,28 +10,22 @@ import {
   expiredImprovementDelegationsSteps,
   followThroughCandidatesSteps,
   getImprovementSteps,
-  improvementDelegation,
   improvementDelegationSteps,
-  improvementIssueSync,
   improvementIssueSyncSteps,
   improvementWorkBindingSteps,
-  listImprovementActions,
   listImprovementActionsSteps,
-  listImprovementCriteria,
   listImprovementCriteriaSteps,
-  listImprovementDeliveries,
   listImprovementDeliveriesSteps,
-  listImprovementOutcomes,
   listImprovementOutcomesSteps,
   markImprovementCheckedSteps,
   newestIssueWorkSteps,
-  otherDelegationForIssue,
   otherDelegationForIssueSteps,
   recordImprovementActionSteps,
   recordImprovementIssueSyncSteps,
   recordImprovementOutcomeSteps,
   returnImprovementToReviewSteps,
   settleImprovementDelegationSteps,
+  settled as settledValue,
   sqliteDb,
   type ImprovementAction,
   type ImprovementDelegation,
@@ -45,8 +38,8 @@ import {
   type Steps,
 } from "../db";
 import { journalCaught } from "../journal";
-import { listInboxItems, type ImprovementAccess, type InboxItem } from "./inbox";
-import { findInboxItem, improvementDestinations, type ImprovementReviewer } from "./review";
+import { listInboxItemsSteps, type ImprovementAccess, type InboxItem } from "./inbox";
+import { findInboxItemSteps, improvementDestinations, type ImprovementReviewer } from "./review";
 
 export const IMPROVEMENT_OUTCOME_LIMITS = {
   staleSyncMs: 6 * 60 * 60_000,
@@ -232,16 +225,15 @@ function* followWorkSteps(q: Q, item: InboxItem, now: number): Steps<void> {
 }
 
 function* settleSteps(
-  db: Database,
   q: Q,
   access: ImprovementAccess,
   improvementId: string,
   now: number,
 ): Steps<InboxItem | null> {
-  const found = findInboxItem(db, access, improvementId);
+  const found = yield* findInboxItemSteps(q, access, improvementId);
   if (!found) return null;
   yield* followWorkSteps(q, found, now);
-  const item = findInboxItem(db, access, improvementId);
+  const item = yield* findInboxItemSteps(q, access, improvementId);
   if (!item?.improvement.issue) return item;
   const view = yield* followThroughSteps(q, item, now);
   if (view.attention === "closed") return item;
@@ -291,7 +283,7 @@ function* settleSteps(
     });
     yield* bumpImprovementVersionSteps(q, improvementId);
   }
-  return findInboxItem(db, access, improvementId);
+  return yield* findInboxItemSteps(q, access, improvementId);
 }
 
 type Facts = {
@@ -332,34 +324,12 @@ function* factsSteps(q: Q, item: InboxItem, now: number): Steps<Facts> {
   return { deliveries, sync, work, delegation, actions, shared, allDeliveries, criterion };
 }
 
-function factsOf(db: Database, item: InboxItem, now: number): Facts {
-  const { improvement } = item;
-  const issue = improvement.issue;
-  const deliveries = listImprovementDeliveries(db, improvement.id);
-  const sync = issue ? improvementIssueSync(db, improvement.id) : null;
-  const work = issue
-    ? boundImprovementWork(db, {
-        id: improvement.id,
-        issueId: issue.id,
-        repository: improvement.repository,
-      })
-    : null;
-  const delegation = issue ? improvementDelegation(db, improvement.id) : null;
-  const actions = listImprovementActions(db, improvement.id);
-  const shared =
-    issue !== null &&
-    otherDelegationForIssue(db, { improvementId: improvement.id, issueId: issue.id, now }) !== null;
-  const allDeliveries = listImprovementDeliveries(db, improvement.id);
-  const criterion = listImprovementCriteria(db, improvement.id).at(-1)?.criterion ?? item.criterion;
-  return { deliveries, sync, work, delegation, actions, shared, allDeliveries, criterion };
-}
-
 function* followThroughSteps(q: Q, item: InboxItem, now: number): Steps<FollowThrough> {
   return viewOf(item, yield* factsSteps(q, item, now), now);
 }
 
 export function followThrough(db: Database, item: InboxItem, now: number): FollowThrough {
-  return viewOf(item, factsOf(db, item, now), now);
+  return settledValue(sqliteDb(db).run((q) => followThroughSteps(q, item, now)));
 }
 
 function viewOf(item: InboxItem, facts: Facts, now: number): FollowThrough {
@@ -492,23 +462,34 @@ function viewOf(item: InboxItem, facts: Facts, now: number): FollowThrough {
   };
 }
 
+export function* improvementFollowThroughSteps(
+  q: Q,
+  access: ImprovementAccess,
+  improvementId: string,
+  now: number,
+) {
+  const item = yield* findInboxItemSteps(q, access, improvementId);
+  if (!item) return null;
+  return {
+    followThrough: yield* followThroughSteps(q, item, now),
+    outcomes: (yield* listImprovementOutcomesSteps(q, improvementId)).map(
+      ({ improvementId: _id, ...outcome }) => outcome,
+    ),
+    actions: (yield* listImprovementActionsSteps(q, improvementId)).map(
+      ({ improvementId: _id, ...action }) => action,
+    ),
+  };
+}
+
 export function improvementFollowThrough(
   db: Database,
   access: ImprovementAccess,
   improvementId: string,
   now: number,
 ) {
-  const item = findInboxItem(db, access, improvementId);
-  if (!item) return null;
-  return {
-    followThrough: followThrough(db, item, now),
-    outcomes: listImprovementOutcomes(db, improvementId).map(
-      ({ improvementId: _id, ...outcome }) => outcome,
-    ),
-    actions: listImprovementActions(db, improvementId).map(
-      ({ improvementId: _id, ...action }) => action,
-    ),
-  };
+  return settledValue(
+    sqliteDb(db).run((q) => improvementFollowThroughSteps(q, access, improvementId, now)),
+  );
 }
 
 const ATTENTION_KIND: Partial<
@@ -562,8 +543,9 @@ const median = (values: number[]) => {
 };
 
 export async function improvementAttention(db: Database, access: ImprovementAccess, now: number) {
-  const items = listInboxItems(db, access);
-  return sqliteDb(db).run((q) => attentionSteps(q, items, now));
+  return sqliteDb(db).run(function* (q) {
+    return yield* attentionSteps(q, yield* listInboxItemsSteps(q, access), now);
+  });
 }
 
 function* attentionSteps(q: Q, items: InboxItem[], now: number) {
@@ -771,11 +753,11 @@ export async function delegateImprovement(
   const store = sqliteDb(db);
   const settledAt = input.now();
   const first = await store.transaction((q) =>
-    settleSteps(db, q, input.reviewer, input.improvementId, settledAt),
+    settleSteps(q, input.reviewer, input.improvementId, settledAt),
   );
   if (!first) return NOT_FOUND;
   function* freshSteps(q: Q, access: ImprovementAccess) {
-    const item = findInboxItem(db, access, input.improvementId);
+    const item = yield* findInboxItemSteps(q, access, input.improvementId);
     return item ? yield* followThroughSteps(q, item, input.now()) : undefined;
   }
   function* answerSteps(
@@ -852,9 +834,7 @@ export async function delegateImprovement(
     const current = input.reauthorize ? input.reauthorize() : input.reviewer;
     const item =
       current &&
-      (yield* q.transaction((tx) =>
-        settleSteps(db, tx, current, input.improvementId, input.now()),
-      ));
+      (yield* q.transaction((tx) => settleSteps(tx, current, input.improvementId, input.now())));
     if (!current || !item) return NOT_FOUND;
     const latest = yield* followThroughSteps(q, item, input.now());
     if (!improvementDestinations(db, current, item.improvement.repository).includes(freshTeam))
@@ -987,7 +967,7 @@ export function recordVerification(
   const { request } = input;
   return sqliteDb(db).transaction(function* (q): Steps<FollowThroughOutcome> {
     const item = yield* q.transaction((tx) =>
-      settleSteps(db, tx, input.access, input.improvementId, input.now),
+      settleSteps(tx, input.access, input.improvementId, input.now),
     );
     if (!item) return NOT_FOUND;
     const view = yield* followThroughSteps(q, item, input.now);
@@ -1071,7 +1051,7 @@ export function recordVerification(
       status: "recorded",
       item: yield* followThroughSteps(
         q,
-        findInboxItem(db, input.access, item.improvement.id)!,
+        (yield* findInboxItemSteps(q, input.access, item.improvement.id))!,
         input.now,
       ),
     };
@@ -1090,7 +1070,7 @@ export function recordCriterion(
 ): Promise<FollowThroughOutcome> {
   return sqliteDb(db).transaction(function* (q): Steps<FollowThroughOutcome> {
     const item = yield* q.transaction((tx) =>
-      settleSteps(db, tx, input.access, input.improvementId, input.now),
+      settleSteps(tx, input.access, input.improvementId, input.now),
     );
     if (!item) return NOT_FOUND;
     const view = yield* followThroughSteps(q, item, input.now);
@@ -1120,7 +1100,7 @@ export function recordCriterion(
       status: "recorded",
       item: yield* followThroughSteps(
         q,
-        findInboxItem(db, input.access, item.improvement.id)!,
+        (yield* findInboxItemSteps(q, input.access, item.improvement.id))!,
         input.now,
       ),
     };
@@ -1140,7 +1120,7 @@ export function recoverImprovement(
 ): Promise<FollowThroughOutcome> {
   return sqliteDb(db).transaction(function* (q): Steps<FollowThroughOutcome> {
     const item = yield* q.transaction((tx) =>
-      settleSteps(db, tx, input.access, input.improvementId, input.now),
+      settleSteps(tx, input.access, input.improvementId, input.now),
     );
     if (!item) return NOT_FOUND;
     const view = yield* followThroughSteps(q, item, input.now);
@@ -1201,7 +1181,7 @@ export function recoverImprovement(
       status: "recorded",
       item: yield* followThroughSteps(
         q,
-        findInboxItem(db, input.access, item.improvement.id)!,
+        (yield* findInboxItemSteps(q, input.access, item.improvement.id))!,
         input.now,
       ),
     };
@@ -1214,7 +1194,7 @@ export async function reconcileImprovement(
   workspaceId: string,
   now: number,
 ): Promise<void> {
-  await sqliteDb(db).transaction((q) => settleSteps(db, q, { workspaceId }, improvementId, now));
+  await sqliteDb(db).transaction((q) => settleSteps(q, { workspaceId }, improvementId, now));
 }
 
 export async function syncImprovementOutcomes(options: {
