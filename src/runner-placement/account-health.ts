@@ -1,14 +1,16 @@
 import type { Database } from "bun:sqlite";
 import {
-  accountAttemptsInFlight,
-  accountSlotsInUse,
-  bindingAccountHealth,
+  accountAttemptsInFlightSteps,
+  accountSlotsInUseSteps,
+  bindingAccountHealthSteps,
   bindingReadinessRowSteps,
-  runnerHasCapacity,
+  runnerHasCapacitySteps,
   settled,
   sqliteDb,
   RUNNER_FULL,
   type AccountHealth,
+  type Q,
+  type Steps,
 } from "../db";
 import type { RunnerHelperResult, RunnerResult } from "../runner-protocol";
 import { RUNNER_ONLINE_MS } from "./eligible";
@@ -73,12 +75,12 @@ const BLOCKS: Partial<Record<AccountHealth["state"], BindingUnavailableReason>> 
   unsupported_model: "unsupported-model",
 };
 
-function healthBlock(
-  db: Database,
+function* healthBlockSteps(
+  q: Q,
   bindingId: string,
   rows: readonly AccountHealth[],
   now: number,
-): HealthBlock {
+): Steps<HealthBlock> {
   for (const row of rows) {
     const reason = BLOCKS[row.state];
     if (!reason) continue;
@@ -87,18 +89,18 @@ function healthBlock(
     const scope = row.scope === "account" ? "account" : "binding";
     if (
       row.kind !== "provider" &&
-      accountAttemptsInFlight(db, bindingId, row.observedAt, scope) > 0
+      (yield* accountAttemptsInFlightSteps(q, bindingId, row.observedAt, scope)) > 0
     )
       return { reason, until: null };
   }
   return null;
 }
 
-export function bindingReadiness(
-  db: Database,
+function* bindingReadinessSteps(
+  q: Q,
   input: { bindingId: string; model?: string | null; now: number },
-): BindingReadiness {
-  const binding = settled(sqliteDb(db).run((q) => bindingReadinessRowSteps(q, input.bindingId)));
+): Steps<BindingReadiness> {
+  const binding = yield* bindingReadinessRowSteps(q, input.bindingId);
   const unavailable = (reason: BindingUnavailableReason, until: number | null = null) =>
     ({ ready: false, reason, until }) as const;
   if (!binding) return unavailable("removed");
@@ -108,14 +110,14 @@ export function bindingReadiness(
   if (binding.enabled !== 1) return unavailable("disabled");
   if ((binding.lastSeenAt ?? 0) <= input.now - RUNNER_ONLINE_MS) return unavailable("offline");
   if (binding.legacy === 1 && binding.authExpired === 1) return unavailable("auth-required");
-  const rows = bindingAccountHealth(db, input.bindingId, input.model);
-  const blocked = healthBlock(db, input.bindingId, rows, input.now);
+  const rows = yield* bindingAccountHealthSteps(q, input.bindingId, input.model);
+  const blocked = yield* healthBlockSteps(q, input.bindingId, rows, input.now);
   if (blocked) return unavailable(blocked.reason, blocked.until);
   if (binding.status !== "active") return unavailable("paused");
-  if (!runnerHasCapacity(db, binding.runnerId, input.now)) return unavailable("busy");
+  if (!(yield* runnerHasCapacitySteps(q, binding.runnerId, input.now))) return unavailable("busy");
   if (
     binding.concurrency !== null &&
-    accountSlotsInUse(db, binding.accountId, input.now) >= binding.concurrency
+    (yield* accountSlotsInUseSteps(q, binding.accountId, input.now)) >= binding.concurrency
   )
     return unavailable("busy");
   return {
@@ -125,15 +127,22 @@ export function bindingReadiness(
   };
 }
 
-export function accountHealthBlock(
+export function bindingReadiness(
   db: Database,
+  input: { bindingId: string; model?: string | null; now: number },
+): BindingReadiness {
+  return settled(sqliteDb(db).run((q) => bindingReadinessSteps(q, input)));
+}
+
+export function* accountHealthBlockSteps(
+  q: Q,
   bindingId: string,
   rows: readonly AccountHealth[],
   now: number,
   purpose: "prepare" | "work" | "helper",
-): HealthBlock {
-  return healthBlock(
-    db,
+): Steps<HealthBlock> {
+  return yield* healthBlockSteps(
+    q,
     bindingId,
     purpose === "prepare" ? rows.filter((row) => row.kind !== "auth") : rows,
     now,
