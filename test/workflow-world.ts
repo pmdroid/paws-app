@@ -32,7 +32,6 @@ import {
   requeueOrphanedWorkSteps,
   restartHold,
   saveCheckpoint,
-  settled,
   type Job,
   type WorkItemRecord,
   sqliteDb,
@@ -153,14 +152,12 @@ export async function seedFixture(
   id = fixture,
 ): Promise<void> {
   await insertQueuedItem(db, { id, sessionKey: `session-${id}`, now });
-  settled(
-    sqliteDb(db).transaction((q) =>
-      bindWorkItemRepositorySteps(q, id, {
-        owner: "owner",
-        repo: "repo",
-        remoteUrl: "https://example.invalid/repo.git",
-      }),
-    ),
+  await sqliteDb(db).transaction((q) =>
+    bindWorkItemRepositorySteps(q, id, {
+      owner: "owner",
+      repo: "repo",
+      remoteUrl: "https://example.invalid/repo.git",
+    }),
   );
   if (fixture === "queued") return;
   const { run } = await beginImplementRun(sqliteDb(db), id, now, RUNNING);

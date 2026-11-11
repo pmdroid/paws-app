@@ -16,7 +16,6 @@ import {
   listQueuePositions,
   putWorkspaceUser,
   recordLinearInstallation,
-  settled,
   sqliteDb,
 } from "../src/db";
 import { intakeDelegatedIssue, readyItemsSteps, syncItemDependencies } from "../src/intake";
@@ -277,8 +276,8 @@ test("a waiting item's place in line moves up as items ahead start or leave", as
     }
     const ready = ["a", "b", "c", "d"];
     for (const [index, id] of ready.entries()) await insertQueuedItem(db, { id, now: index + 1 });
-    const line = () =>
-      settled(listQueuePositions(sqliteDb(db))).map(
+    const line = async () =>
+      (await listQueuePositions(sqliteDb(db))).map(
         ({ itemId, position, busySlots, totalSlots }) => [
           itemId,
           position,
@@ -287,13 +286,13 @@ test("a waiting item's place in line moves up as items ahead start or leave", as
       );
 
     assert.deepEqual(await workspaceDispatch(db, { now: 1000 }), []);
-    assert.deepEqual(line(), [
+    assert.deepEqual(await line(), [
       ["a", 1, "2/2"],
       ["b", 2, "2/2"],
       ["c", 3, "2/2"],
       ["d", 4, "2/2"],
     ]);
-    assert.deepEqual(settled(getQueuePosition(sqliteDb(db), "c")), {
+    assert.deepEqual(await getQueuePosition(sqliteDb(db), "c"), {
       itemId: "c",
       position: 3,
       busySlots: 2,
@@ -305,7 +304,7 @@ test("a waiting item's place in line moves up as items ahead start or leave", as
     await applyWorkItemEvent(sqliteDb(db), "busy-1", "blocking_question");
     leaveRunner(db, "busy-1");
     assert.deepEqual(await workspaceDispatch(db, { now: 1001 }), ["a"]);
-    assert.deepEqual(line(), [
+    assert.deepEqual(await line(), [
       ["b", 1, "2/2"],
       ["c", 2, "2/2"],
       ["d", 3, "2/2"],
@@ -314,16 +313,16 @@ test("a waiting item's place in line moves up as items ahead start or leave", as
     // An item ahead leaves the queue.
     db.run("UPDATE work_item SET cancel_requested=1 WHERE id='b'");
     await workspaceDispatch(db, { now: 1002 });
-    assert.deepEqual(line(), [
+    assert.deepEqual(await line(), [
       ["c", 1, "2/2"],
       ["d", 2, "2/2"],
     ]);
-    assert.equal(settled(getQueuePosition(sqliteDb(db), "b")), null);
+    assert.equal(await getQueuePosition(sqliteDb(db), "b"), null);
 
     // With no runner online, admission is unlimited as in local execution, and there is no line.
     db.run("UPDATE runner SET last_seen_at=0");
     await workspaceDispatch(db, { now: 120_000 });
-    assert.deepEqual(line(), []);
+    assert.deepEqual(await line(), []);
   } finally {
     db.close();
   }

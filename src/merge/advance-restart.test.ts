@@ -14,7 +14,6 @@ import {
   prepareShutdown,
   recoverOnStartup,
   sqliteDb,
-  settled,
   applyLinearCommandSteps,
 } from "../db";
 import { mergeHarness, pendingCi, type MergeHarness } from "./advance-harness";
@@ -294,6 +293,7 @@ test("a stop during the final squash reads still prevents the GitHub call", asyn
   const item = await h.addItem("ENG-231");
   let stopped = false;
   let squashing = false;
+  const stops: Promise<unknown>[] = [];
   // The squash acquires its merge token before its final fetch and readiness reads.
   h.state.beforeMergeToken = (purpose) => {
     if (purpose === "merge") squashing = true;
@@ -301,7 +301,7 @@ test("a stop during the final squash reads still prevents the GitHub call", asyn
   h.state.pullHead = (head) => {
     if (squashing && !stopped) {
       stopped = true;
-      settled(
+      stops.push(
         sqliteDb(h.db).transaction((q) =>
           applyLinearCommandSteps(q, {
             type: "stop",
@@ -315,6 +315,7 @@ test("a stop during the final squash reads still prevents the GitHub call", asyn
     return head;
   };
   expect(await h.pass(item.id)).toEqual({ kind: "obsolete" });
+  await Promise.all(stops);
   expect(stopped).toBe(true);
   expect(h.github.merged).toEqual([]);
   h.clock.advance(1_000);

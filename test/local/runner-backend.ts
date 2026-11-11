@@ -28,7 +28,6 @@ import {
   enqueueOutbox,
   listOutbox,
   sqliteDb,
-  settled,
 } from "../../src/db";
 import { createLiveStatusProvider } from "../../src/dashboard/src/live/provider";
 import { workspaceId, issueWorkspaceBootstrap, workspaceTokenHash } from "../../src/workspace";
@@ -317,14 +316,12 @@ export async function probeRunnerBackend(
     });
     await bindLinearSessionTask(sqliteDb(db), sessionId, record.delegationId, { actorId: "owner" });
     db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
-    settled(
-      sqliteDb(db).transaction((q) =>
-        bindWorkItemRepositorySteps(q, id, {
-          owner: "fixture",
-          repo: "repository",
-          remoteUrl: "https://github.com/fixture/repository.git",
-        }),
-      ),
+    await sqliteDb(db).transaction((q) =>
+      bindWorkItemRepositorySteps(q, id, {
+        owner: "fixture",
+        repo: "repository",
+        remoteUrl: "https://github.com/fixture/repository.git",
+      }),
     );
     return { id, run };
   }

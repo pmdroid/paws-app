@@ -4,7 +4,6 @@ import {
   insertQueuedItem,
   putWorkspaceUser,
   syncWorkspaceMember,
-  settled,
   sqliteDb,
 } from "../src/db";
 import { tempDb } from "./helpers";
@@ -48,7 +47,7 @@ test("a second person's single task starts in the first round beside a large bat
     for (let index = 1; index <= 20; index += 1) await queue(`ada-${index}`, "ada", index);
     await queue("ben-1", "ben", 100);
     expect(await workspaceDispatch(db, { now: NOW })).toEqual(["ada-1", "ben-1"]);
-    expect(settled(getQueuePosition(sqliteDb(db), "ada-2"))).toMatchObject({
+    expect(await getQueuePosition(sqliteDb(db), "ada-2")).toMatchObject({
       position: 1,
       ownerCap: null,
     });
@@ -82,7 +81,7 @@ test("with a cap of 3 one owner never runs more than 3 tasks while others wait",
       "ada-3",
     ]);
     expect(await workspaceDispatch(db, { now: NOW + 1, ownerCap: 3 })).toEqual([]);
-    expect(settled(getQueuePosition(sqliteDb(db), "ada-4"))).toMatchObject({
+    expect(await getQueuePosition(sqliteDb(db), "ada-4")).toMatchObject({
       position: 1,
       ownerCap: 3,
     });

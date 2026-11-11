@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, isNotNull, sql } from "drizzle-orm";
 import type { RepositoryBinding } from "../core";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { jsonValue } from "./json-text";
 
 export function* getWorkItemRepositorySteps(q: Q, itemId: string): Steps<RepositoryBinding | null> {

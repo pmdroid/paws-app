@@ -7,7 +7,6 @@ import {
   enqueueJob,
   ensureLinearSession,
   getWorkItem,
-  immediate,
   insertRun,
   JobLoop,
   migrate,
@@ -161,10 +160,12 @@ export async function probeExecutionChanges(
       specChangedItemIds: ["criteria-0", "criteria-1", "criteria-2", "criteria-3", "criteria-4"],
     });
     assert.throws(() =>
-      immediate(db, () => {
-        orchestrator.applyDelegationChanges(changed);
-        throw new Error("Force atomic publication rollback");
-      }),
+      db
+        .transaction(() => {
+          void orchestrator.applyDelegationChanges(changed);
+          throw new Error("Force atomic publication rollback");
+        })
+        .immediate(),
     );
     observe(
       "criteria effects roll back with their brief publication",

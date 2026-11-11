@@ -20,9 +20,7 @@ import {
   saveRunResult,
   applyLinearCommand,
   applyWorkItemEvent,
-  immediate,
   sqliteDb,
-  settled,
   applyLinearCommandSteps,
 } from "../../src/db";
 import { closeStoppedPull, createFetchGitHubClient } from "../../src/github";
@@ -162,18 +160,14 @@ export async function probePublicationStop(
       jobKey: "old-merge",
       now: clock.now(),
     });
-    assert.throws(() =>
-      immediate(db, () => {
-        settled(
-          sqliteDb(db).transaction((q) =>
-            applyLinearCommandSteps(q, {
-              type: "stop",
-              source: "dashboard",
-              itemId: "item",
-              requestedAt: clock.now(),
-            }),
-          ),
-        );
+    await assert.rejects(
+      sqliteDb(db).transaction(function* (q) {
+        yield* applyLinearCommandSteps(q, {
+          type: "stop",
+          source: "dashboard",
+          itemId: "item",
+          requestedAt: clock.now(),
+        });
         throw new Error("Rollback Stop");
       }),
     );

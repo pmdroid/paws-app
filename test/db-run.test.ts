@@ -3,16 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { count, sql } from "drizzle-orm";
-import {
-  immediate,
-  openPglite,
-  pgSchema,
-  postgresDb,
-  schema,
-  settled,
-  sqliteDb,
-  type Q,
-} from "../src/db";
+import { openPglite, pgSchema, postgresDb, schema, sqliteDb, type Q } from "../src/db";
 import { forEachDialect, insertWorkItem, insertWorkItemSteps } from "./dialects";
 import { tempDb } from "./helpers";
 
@@ -90,43 +81,13 @@ forEachDialect((open) => {
   });
 });
 
-test("on SQLite db.run() settles before it returns", () => {
+test("on SQLite db.run() settles before it returns", async () => {
   const database = tempDb();
   try {
     const db = sqliteDb(database);
     const done = insertWorkItem(db, "a");
     expect(Bun.peek.status(done)).toBe("fulfilled");
-    expect(settled(db.run(itemCount))).toBe(1);
-  } finally {
-    database.close();
-  }
-});
-
-test("on SQLite a transaction inside a synchronous immediate() is a savepoint that commits with it", () => {
-  const database = tempDb();
-  try {
-    const db = sqliteDb(database);
-    immediate(database, () => {
-      settled(db.transaction((q) => insertWorkItemSteps(q, "a")));
-      expect(() =>
-        settled(
-          db.transaction(function* (q) {
-            yield* insertWorkItemSteps(q, "b");
-            throw new Error("inner");
-          }),
-        ),
-      ).toThrow("inner");
-      expect(database.inTransaction).toBe(true);
-      expect(settled(db.run(itemCount))).toBe(1);
-    });
-    expect(settled(db.run(itemCount))).toBe(1);
-    expect(() =>
-      immediate(database, () => {
-        settled(db.transaction((q) => insertWorkItemSteps(q, "c")));
-        throw new Error("outer");
-      }),
-    ).toThrow("outer");
-    expect(settled(db.run(itemCount))).toBe(1);
+    expect(await db.run(itemCount)).toBe(1);
   } finally {
     database.close();
   }

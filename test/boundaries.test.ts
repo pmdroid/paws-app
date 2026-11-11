@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 
 const SRC = new URL("../src/", import.meta.url).pathname;
@@ -396,6 +396,33 @@ describe("module boundaries", () => {
         }
       }
     }
+    expect(violations).toEqual([]);
+  });
+  test("src never unwraps a database promise synchronously", () => {
+    const bridge = /\b(settled|immediate)\b/;
+    const violations: string[] = [];
+    for (const file of walk(SRC)) {
+      if (!file.endsWith(".ts") || file.endsWith(".test.ts")) continue;
+      const text = readFileSync(file, "utf8");
+      for (const match of text.matchAll(
+        /import\s+(?:type\s+)?\{([^}]*)\}\s+from\s+["']([^"']+)["']/g,
+      )) {
+        const spec = match[2]!;
+        if (!spec.startsWith(".")) continue;
+        const target = relative(SRC, resolve(dirname(file), spec));
+        if ((target === "db" || target.startsWith("db/")) && bridge.test(match[1]!))
+          violations.push(`${relative(SRC, file)} imports ${match[1]!.trim()} from ${spec}`);
+      }
+    }
+    for (const name of ["db/index.ts", "db/db.ts"]) {
+      const text = readFileSync(join(SRC, name), "utf8");
+      if (/export\s+(?:async\s+)?function\*?\s+(settled|immediate)\b/.test(text))
+        violations.push(`${name} declares the sync bridge`);
+      for (const match of text.matchAll(/export\s*\{([^}]*)\}/g))
+        if (bridge.test(match[1]!)) violations.push(`${name} exports the sync bridge`);
+      if (/export \* from "\.\/tx"/.test(text)) violations.push(`${name} re-exports ./tx`);
+    }
+    expect(existsSync(join(SRC, "db", "tx.ts"))).toBe(false);
     expect(violations).toEqual([]);
   });
   test("return and question callers use the shared operations", () => {

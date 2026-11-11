@@ -11,7 +11,6 @@ import {
   getOutboxSteps,
   insertQueuedItem,
   insertRun,
-  immediate,
   migrate,
   openDatabase,
   setCurrentRun,
@@ -121,11 +120,11 @@ export async function probeLinearActivityBudget(
         now: clock.now(),
       });
     });
-    immediate(db, () => {
+    db.transaction(() => {
       for (let n = 0; n < eventCount; n++) {
         reporter.onEvent({ type: "progress", text: `Checked ${n}.` });
       }
-    });
+    }).immediate();
     const final = await activity("chatty", "response", item.id);
     for (let n = 0; n < 61; n++) {
       await outbox.tick();

@@ -4,7 +4,7 @@ Paws keeps its state in one SQLite file opened by `openDatabase()` in `src/db/op
 
 ## Drizzle
 
-`orm(db)` returns a Drizzle handle (`drizzle-orm/bun-sqlite`) for a `bun:sqlite` database, one per database. It shares the connection, so a Drizzle query inside `immediate()` or `db.transaction()` sees that transaction's uncommitted rows.
+`orm(db)` returns a Drizzle handle (`drizzle-orm/bun-sqlite`) for a `bun:sqlite` database, one per database. It shares the connection, so a Drizzle query inside `db.transaction()` sees that transaction's uncommitted rows.
 
 The typed schema lives in `src/db/schema/`, one file per area, exported through `src/db/schema/index.ts`. What Drizzle cannot express is in `src/db/schema/raw.ts`: `STRICT` and `WITHOUT ROWID` tables, `COLLATE` columns, and the exact SQL of virtual tables and triggers.
 
@@ -87,7 +87,7 @@ export function clearQueueWait(db: Db, itemId: string): Promise<void> {
 - `q.dialect` picks a different `sql` fragment where the SQL differs (JSON and date functions, `MIN`/`LEAST`). It is the only per-dialect code.
 - To count changed rows, add `.returning()` and take the length; don't read `changes` or `rowCount`.
 - On SQLite, `db.run()` runs each yielded query at once and returns an already-settled promise. On Postgres it awaits each one.
-- `db.transaction(function* (q) { … })` is `BEGIN IMMEDIATE … COMMIT` on SQLite, run synchronously so no other code runs inside it, and a Postgres transaction otherwise. When the body throws, all of its writes roll back. `yield* q.transaction(function* (q) { … })` inside a body is a savepoint, and so is `db.transaction()` called inside a synchronous `immediate()` on SQLite: it commits with the outer transaction.
+- `db.transaction(function* (q) { … })` is `BEGIN IMMEDIATE … COMMIT` on SQLite, run synchronously so no other code runs inside it, and a Postgres transaction otherwise. When the body throws, all of its writes roll back. `yield* q.transaction(function* (q) { … })` inside a body is a savepoint: it commits with the outer transaction.
 - A function whose generator another generator calls inside a transaction exports it as `<name>Steps(q, …)`, and the caller runs `yield* fooSteps(q, …)`. Add one only when such a caller exists.
 
 `src/db/queue-wait.ts` is the worked example. `src/db/linear-budget.ts` still writes each query once per dialect through `db.orm` and `db.sync()`; its conversion issue moves it to `db.run()` and removes `sync()`.
@@ -99,7 +99,7 @@ Startup (`startPaws()` in `src/index.ts`) opens the database and creates one `Db
 ### Converting a module
 
 1. Change `database: Database` to `db: Db`, return `Promise<T>`, and move the body into `db.run(function* (q) { … })`, or `db.transaction()` when it writes more than one statement. Build each query on `q.orm` and `q.t` and `yield*` it through `q.all`, `q.one` or `q.exec`.
-2. An async caller awaits the function. A caller that is still synchronous, such as `dispatch()` inside its `immediate()` transaction, unwraps it with `settled(f(sqliteDb(database), …))`. `settled()` throws if the promise has not settled, which happens only off SQLite. When that caller becomes async, replace `settled(…)` with `await`.
+2. Every caller awaits the function, or yields its Steps form inside a transaction. A synchronous caller becomes async, or takes a Steps callback; there is no way to unwrap a database promise synchronously.
 3. Run the module's tests on both dialects.
 4. Remove the module's lines from its own allowlist file, `scripts/raw-sql-allowlist/<path with / as __>.txt` (`src__db__jobs.ts.txt` for `src/db/jobs.ts`), and delete the file once it is empty. `bun run raw-sql` names the file of each stale entry.
 

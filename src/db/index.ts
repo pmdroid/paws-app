@@ -73,7 +73,6 @@ export { closingParen, createTableParts, splitTopLevel, unquoteName } from "./dd
 export { orm, type Orm } from "./orm";
 export {
   postgresDb,
-  settled,
   sqliteDb,
   type Db,
   type PgDb,
@@ -95,7 +94,6 @@ export * from "./seed";
 export * from "./runs";
 export * from "./reads";
 export * from "./linear-project";
-export * from "./tx";
 export * from "./runner-session-moves";
 export * from "./runners";
 export * from "./closeout-progress";
