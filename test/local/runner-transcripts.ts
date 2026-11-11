@@ -201,7 +201,7 @@ export async function probeRunnerTranscripts(
       readFault = fault;
       const failed = await storageHttp(storageRequest(), runnerId);
       assert.equal(failed!.status, 503);
-      assert.equal(transcripts.read(run.id, 1)!.uri, null);
+      assert.equal((await transcripts.read(run.id, 1))!.uri, null);
       faultStatuses.push({ fault, status: failed!.status });
     }
     readFault = undefined;
@@ -380,8 +380,8 @@ export async function probeRunnerTranscripts(
     await control.setStatus(principal, runnerId, "revoked");
     release();
     await deniedWrite;
-    assert.equal(interrupted.read(run.id, 3)!.sizeBytes, 0);
-    assert.equal(interrupted.read(run.id, 3)!.uri, null);
+    assert.equal((await interrupted.read(run.id, 3))!.sizeBytes, 0);
+    assert.equal((await interrupted.read(run.id, 3))!.uri, null);
     observe(
       "revocation during object storage I/O prevents durable acceptance after the write returns",
       true,
