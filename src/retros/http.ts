@@ -15,6 +15,7 @@ import {
   workspaceMember,
   type RetroArtifactKind,
   type RetroCoverageGap,
+  sqliteDb,
 } from "../db";
 import { improvementFollowThrough, memberRepositories } from "../improvements";
 import { journalCaught } from "../journal";
@@ -411,7 +412,7 @@ export function createRetroReviewHttp(options: {
       if (cursor === undefined || !Number.isInteger(limit) || limit < 1)
         return json({ error: "Check the history page parameters." }, 400);
       const size = Math.min(limit, HISTORY_PAGE.max);
-      const visible = listRetros(db, principal.workspaceId).flatMap((retro) => {
+      const visible = (await listRetros(sqliteDb(db), principal.workspaceId)).flatMap((retro) => {
         const access = retroReaderAccess(db, root, principal, sessionIds, retro.id);
         return access &&
           (access.full ||

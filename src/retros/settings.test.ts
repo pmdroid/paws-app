@@ -14,6 +14,7 @@ import {
   retroRepositories,
   startRetroAttempt,
   writeRetroArtifact,
+  sqliteDb,
 } from "../db";
 import type { AgentModelCatalog } from "../runner-models";
 import {
@@ -372,7 +373,13 @@ describe("frozen retro runs", () => {
       leaseMs: 1000,
       maxAttempts: limits.maxAttempts,
     })!;
-    failRetroAttempt(db, { retroId: "r1", ...attempt, owner: "runner-a", error: "lost", now: 5 });
+    await failRetroAttempt(sqliteDb(db), {
+      retroId: "r1",
+      ...attempt,
+      owner: "runner-a",
+      error: "lost",
+      now: 5,
+    });
     expect(
       startRetroAttempt(db, { retroId: "r1", owner: "runner-b", now: 6, leaseMs: 1000, ...limits }),
     ).toEqual({ attempt: 2 });
@@ -426,7 +433,7 @@ describe("repository selection", () => {
     await save(db, { expectedRevision: 1, draft: draft({ repositories: [LANDING] }) });
     expect(freeze(db, { id: "r2", start: 7 * DAY }).ok).toBe(true);
     expect(beginRetroCollection(db, { retroId: "r2", now: 3 }).ok).toBe(true);
-    expect(retroRepositories(db, "r2")).toEqual([
+    expect(await retroRepositories(sqliteDb(db), "r2")).toEqual([
       { repository: LANDING, startCursor: 0, endCursor: null },
     ]);
   });
@@ -442,7 +449,7 @@ describe("repository selection", () => {
     await save(db, { expectedRevision: 2, draft: draft({ repositories: [APP] }) });
     freeze(db, { id: "r2", start: 21 * DAY });
     expect(beginRetroCollection(db, { retroId: "r2", now: 3 }).ok).toBe(true);
-    expect(retroRepositories(db, "r2")).toEqual([
+    expect(await retroRepositories(sqliteDb(db), "r2")).toEqual([
       { repository: APP, startCursor: 10, endCursor: null },
     ]);
   });

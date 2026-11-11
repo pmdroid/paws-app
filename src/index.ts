@@ -1986,7 +1986,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         ),
       );
       created.jobs.register(RETRO_SCHEDULE_JOB, async () => {
-        retroScheduler.tick();
+        await retroScheduler.tick();
       });
       enqueueJobOnce(db, {
         queue: RETRO_SCHEDULE_JOB,

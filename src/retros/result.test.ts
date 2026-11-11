@@ -12,6 +12,7 @@ import {
   openDatabase,
   saveRetroSettingsRevision,
   startRetroAttempt,
+  sqliteDb,
 } from "../db";
 import {
   collectRetroDigest,
@@ -411,7 +412,7 @@ describe("settling an attempt", () => {
       recorded: true,
       retryable: true,
     });
-    expect(listRetroAttempts(db, "r1")[0]!.error).toBe(
+    expect((await listRetroAttempts(sqliteDb(db), "r1"))[0]!.error).toBe(
       `invalid_json against digest ${sha.slice(0, 12)}: result invalid_json`,
     );
     expect(getRetro(db, "r1")!.state).toBe("failed");
