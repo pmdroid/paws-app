@@ -29,9 +29,10 @@ import { tempDb, tempHome } from "./helpers";
 import { workspaceAdmission } from "./fake-workspace";
 
 const TASKS = 100;
-const STARTED = 60;
 const QUESTIONS = 10;
 const SLOTS = 16;
+// One runner's worth of tasks waits; the rest run first.
+const STARTED = TASKS - SLOTS;
 const STEP_MS = 30_000;
 const WAIT_STEP_MS = 5 * 60_000;
 const HOUR_MS = 60 * 60_000;
@@ -169,9 +170,13 @@ test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes wh
     for (let steps = 0; steps < 200 && !done(); steps++) await step();
   };
   try {
-    for (let index = 0; index < STARTED; index++)
-      await orchestrator.onLinearEvent(event(index, "created"));
-    await settle(() => count("completed") + count("awaiting_input") === STARTED);
+    // Tasks arrive a runner's worth at a time: every dispatch scans the whole queue.
+    for (let start = 0; start < STARTED; start += SLOTS) {
+      const end = Math.min(start + SLOTS, STARTED);
+      for (let index = start; index < end; index++)
+        await orchestrator.onLinearEvent(event(index, "created"));
+      await settle(() => count("completed") + count("awaiting_input") === end);
+    }
     runner.fill(clock.now());
     for (let index = STARTED; index < TASKS; index++)
       await orchestrator.onLinearEvent(event(index, "created"));
