@@ -3,6 +3,7 @@ import {
   enqueueOutboxOnceSteps,
   getLinkAskSteps,
   insertLinkAsk,
+  insertLinkAskSteps,
   settled,
   sqliteDb,
   type Q,
@@ -12,7 +13,7 @@ import {
   type LinkAskKind,
   type LinkAskRounds,
 } from "../db";
-import { ask as askQuestion, type QuestionAsker } from "./lifecycle";
+import { ask as askQuestion, askSteps as askQuestionSteps, type QuestionAsker } from "./lifecycle";
 import { getQuestionSteps, type StoredQuestion } from "./store";
 
 /** The button on the overview's Needs you list and the session link label. */
@@ -193,6 +194,63 @@ export function reviewRoundsDetail(rounds: LinkAskRounds): string {
 
 export function shortCommit(head: string): string {
   return head.slice(0, 7);
+}
+
+type OpenLinkAsk = {
+  asker: QuestionAsker;
+  kind: LinkAskKind;
+  head: string;
+  link: string;
+  title?: string;
+  detail: string;
+  answerers: readonly string[];
+  rounds?: LinkAskRounds;
+  findings?: string;
+  now: number;
+};
+
+type LinkAskSteps = (
+  q: Q,
+  asker: QuestionAsker,
+  kind: "link",
+  body: string,
+  input: { reason: string; context: string; now: number },
+) => Steps<{ question: StoredQuestion }>;
+
+export function* openLinkAskSteps(
+  q: Q,
+  input: OpenLinkAsk & { ask?: LinkAskSteps },
+): Steps<{ question: StoredQuestion; linkAsk: LinkAsk }> {
+  const title = input.title ?? linkAskTitle(input.kind, input.head);
+  const { question } = yield* (input.ask ?? askQuestionSteps)(
+    q,
+    input.asker,
+    "link",
+    linkAskBody({
+      kind: input.kind,
+      title,
+      detail: [input.detail, input.findings].filter(Boolean).join("\n"),
+      link: input.link,
+    }),
+    {
+      reason: `link:${input.kind}`,
+      context: JSON.stringify({ link: input.link, label: LINK_ASK_ACTIONS[input.kind] }),
+      now: input.now,
+    },
+  );
+  const linkAsk = yield* insertLinkAskSteps(q, {
+    questionId: question.id,
+    itemId: input.asker.itemId,
+    kind: input.kind,
+    headCommit: input.head,
+    link: input.link,
+    title,
+    detail: input.detail,
+    answerers: [...new Set(input.answerers.filter((id) => id.trim() !== ""))],
+    createdAt: input.now,
+    ...(input.rounds === undefined ? {} : { rounds: input.rounds }),
+  });
+  return { question, linkAsk };
 }
 
 /**
