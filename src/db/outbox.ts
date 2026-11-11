@@ -268,8 +268,8 @@ export function* claimOutboxHeadsSteps(q: Q, options: OutboxClaimOptions) {
   return rows.map((row) => mapOutbox(q, row));
 }
 
-export function isOutboxCurrent(db: Database, row: OutboxRow): boolean {
-  return settled(sqliteDb(db).run((q) => isOutboxCurrentSteps(q, row)));
+export async function isOutboxCurrent(store: Db, row: OutboxRow): Promise<boolean> {
+  return store.run((q) => isOutboxCurrentSteps(q, row));
 }
 
 export function* isOutboxCurrentSteps(q: Q, row: OutboxRow) {

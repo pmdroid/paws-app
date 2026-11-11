@@ -112,7 +112,7 @@ export function createLinearSessionMethods(client: LinearClient) {
       }
     }
     request.signal.throwIfAborted();
-    if (options?.isCurrent && !options.isCurrent())
+    if (options?.isCurrent && !(await options.isCurrent()))
       throw new Error("The Linear activity was superseded before publication");
     const { sessionId, ...sessionInput } = session ?? {};
     const data = session

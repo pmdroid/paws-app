@@ -316,7 +316,7 @@ describe("persisted Stop fences", () => {
     await enqueue("progress");
     dispatcher.setHandler(async (row, context) => {
       if (row.idempotencyKey === "progress") await gate.promise;
-      if (context.isCurrent()) calls.push(row.idempotencyKey);
+      if (await context.isCurrent()) calls.push(row.idempotencyKey);
     });
     await dispatcher.tick();
     const completed = await enqueue("completed-status", {

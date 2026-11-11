@@ -341,7 +341,10 @@ test("a task that runs 50 git operations reads Linear task access once", async (
   for (let i = 0; i < 50; i++) {
     f.clock.now += 60_000;
     await f.gate.assert(f.item, signal);
-    await f.gate.assertDelivery("session", signal, { itemId: f.item.id, isCurrent: () => true });
+    await f.gate.assertDelivery("session", signal, {
+      itemId: f.item.id,
+      isCurrent: async () => true,
+    });
   }
   expect(linearReads(f)).toBe(once);
   expect(f.lifecycle.started.map((input) => input.issueId)).toEqual(["child", "parent"]);

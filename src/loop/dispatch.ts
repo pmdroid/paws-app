@@ -58,7 +58,7 @@ export async function deliverLinearOutbox(
 ): Promise<void> {
   const store = db && sqliteDb(db);
   context?.signal.throwIfAborted();
-  if (context && !context.isCurrent())
+  if (context && !(await context.isCurrent()))
     throw new Error("Linear delivery superseded by a session fence.");
   if (store && tracker.supportsActivityReconciliation) {
     const unprepared = message;

@@ -20,7 +20,7 @@ export type LinearClient = {
   query(
     query: string,
     variables?: Record<string, unknown>,
-    options?: { signal?: AbortSignal; isCurrent?: () => boolean },
+    options?: { signal?: AbortSignal; isCurrent?: () => Promise<boolean> },
   ): Promise<unknown>;
 };
 
@@ -33,17 +33,17 @@ export function createLinearClient(options: {
   const ledger = options.ledger ?? createLinearLedger();
   const client: LinearClient = {
     async query(query, variables, { signal, isCurrent } = {}) {
-      const current = () => {
+      const current = async () => {
         signal?.throwIfAborted();
-        if (isCurrent && !isCurrent()) throw new Error("Linear request was superseded.");
+        if (isCurrent && !(await isCurrent())) throw new Error("Linear request was superseded.");
       };
-      current();
+      await current();
       const { caller, priority, item, itemId } = currentLinearCaller();
       const held =
         ledger.admit(caller, priority, query) ?? (await ledger.reserve(caller, priority));
       if (held !== null) throw held;
       const run = async (token: string) => {
-        current();
+        await current();
         await options.auth.assertAuthorized?.();
         return fetchImpl(GRAPHQL_URL, {
           method: "POST",
@@ -75,7 +75,7 @@ export function createLinearClient(options: {
         journalCaught(error, "graphql.query.abortable", itemId, "cancellation may interrupt work");
         return null;
       });
-      current();
+      await current();
       const limited = rateLimitFrom(response, json, budget, ledger.now());
       if (limited !== null) throw await ledger.limited(caller, limited);
       const errors = isRecord(json) ? json["errors"] : undefined;

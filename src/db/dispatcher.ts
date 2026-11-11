@@ -6,14 +6,13 @@ import {
   claimOutboxHeadsSteps,
   coalesceOutbox,
   completeOutboxSteps,
-  isOutboxCurrent,
   isOutboxCurrentSteps,
   retryOutbox,
   releaseOutboxLeaseSteps,
   type OutboxRow,
 } from "./outbox";
 
-export type OutboxDeliveryContext = { signal: AbortSignal; isCurrent(): boolean };
+export type OutboxDeliveryContext = { signal: AbortSignal; isCurrent(): Promise<boolean> };
 export type OutboxHandler = (
   message: OutboxRow,
   context: OutboxDeliveryContext,
@@ -129,8 +128,7 @@ export class OutboxDispatcher {
       const delivered = message;
       await handler(delivered, {
         signal: controller.signal,
-        // Handlers ask this synchronously; it stays on the SQLite wrapper until they await it.
-        isCurrent: () => isOutboxCurrent(this.db, delivered),
+        isCurrent: () => this.store.run((q) => isOutboxCurrentSteps(q, delivered)),
       });
       const now = this.clock.now();
       await this.store.transaction((q) => completeOutboxSteps(q, delivered, now));
