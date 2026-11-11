@@ -425,8 +425,8 @@ export function* agentTurnStageSteps(q: Q, id: string) {
   return agentStage(row?.reason ?? null);
 }
 
-export function agentTurnStage(db: Database, id: string): "implementation" | "fixes" {
-  return settled(sqliteDb(db).run((q) => agentTurnStageSteps(q, id)));
+export async function agentTurnStage(store: Db, id: string): Promise<"implementation" | "fixes"> {
+  return store.run((q) => agentTurnStageSteps(q, id));
 }
 
 function* setItemSteps(q: Q, id: string, values: Partial<PgWorkItem>) {
@@ -986,16 +986,16 @@ export function* resetAwakeTimeSteps(q: Q, id: string) {
   });
 }
 
-export function resetAwakeTime(db: Database, id: string): void {
-  settled(sqliteDb(db).run((q) => resetAwakeTimeSteps(q, id)));
+export async function resetAwakeTime(store: Db, id: string): Promise<void> {
+  await store.run((q) => resetAwakeTimeSteps(q, id));
 }
 
 export function* resetStageTimeSteps(q: Q, id: string, stage: TimeStage) {
   yield* setItemSteps(q, id, { [STAGE_COLUMN[stage]]: 0 });
 }
 
-export function resetStageTime(db: Database, id: string, stage: TimeStage): void {
-  settled(sqliteDb(db).run((q) => resetStageTimeSteps(q, id, stage)));
+export async function resetStageTime(store: Db, id: string, stage: TimeStage): Promise<void> {
+  await store.run((q) => resetStageTimeSteps(q, id, stage));
 }
 
 /**
@@ -1057,8 +1057,8 @@ export function* heldHandoffsSteps(q: Q, itemId: string) {
   );
 }
 
-export function heldHandoffs(db: Database, itemId: string): HeldHandoff[] {
-  return settled(sqliteDb(db).run((q) => heldHandoffsSteps(q, itemId)));
+export async function heldHandoffs(store: Db, itemId: string): Promise<HeldHandoff[]> {
+  return store.run((q) => heldHandoffsSteps(q, itemId));
 }
 
 /** Marks held handoffs as carried by a later restart, so none reaches the agent twice. */
@@ -1070,8 +1070,8 @@ export function* markHandoffsCarriedSteps(q: Q, held: readonly HeldHandoff[]) {
     );
 }
 
-export function markHandoffsCarried(db: Database, held: readonly HeldHandoff[]): void {
-  settled(sqliteDb(db).run((q) => markHandoffsCarriedSteps(q, held)));
+export async function markHandoffsCarried(store: Db, held: readonly HeldHandoff[]): Promise<void> {
+  await store.run((q) => markHandoffsCarriedSteps(q, held));
 }
 
 /**
@@ -1283,13 +1283,13 @@ export function* cancelAdvancingJobsSteps(q: Q, itemId: string, reason: string, 
   );
 }
 
-export function cancelAdvancingJobs(
-  db: Database,
+export async function cancelAdvancingJobs(
+  store: Db,
   itemId: string,
   reason: string,
   now: number,
-): void {
-  settled(sqliteDb(db).run((q) => cancelAdvancingJobsSteps(q, itemId, reason, now)));
+): Promise<void> {
+  await store.run((q) => cancelAdvancingJobsSteps(q, itemId, reason, now));
 }
 
 function advancingQueue(q: Q) {
@@ -1715,11 +1715,11 @@ export async function lastItemEvent(
 }
 
 /** The Linear session key of each of these work items that exists. */
-export function workItemSessionKeys(
-  db: Database,
+export async function workItemSessionKeys(
+  store: Db,
   ids: readonly string[],
-): { id: string; sessionKey: string | null }[] {
-  return settled(sqliteDb(db).run((q) => workItemSessionKeysSteps(q, ids)));
+): Promise<{ id: string; sessionKey: string | null }[]> {
+  return store.run((q) => workItemSessionKeysSteps(q, ids));
 }
 
 export function* workItemSessionKeysSteps(q: Q, ids: readonly string[]) {

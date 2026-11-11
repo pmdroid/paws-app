@@ -230,7 +230,7 @@ describe("retro dispatch, composed with a fake runner", () => {
     const retro = (await getRetro(sqliteDb(reopened), "r1"))!;
     expect(retro.state).toBe("published");
     expect((retro.result as { items: unknown[] }).items).toHaveLength(1);
-    expect(listRetroItems(reopened, "r1")).toHaveLength(1);
+    expect(await listRetroItems(sqliteDb(reopened), "r1")).toHaveLength(1);
     expect(
       (await listRetroAttempts(sqliteDb(reopened), "r1")).map((entry) => entry.outcome),
     ).toEqual(["succeeded"]);
@@ -671,7 +671,7 @@ describe("recovery", () => {
     expect(runnerOccupancy(db, "R1", clock.now).occupied).toBe(0);
     expect(await getRetro(sqliteDb(db), "r1")).toMatchObject({ state: "failed" });
     expect((await getRetro(sqliteDb(db), "r1"))!.error).toContain("lost workspace authority");
-    expect(listRetroItems(db, "r1")).toEqual([]);
+    expect(await listRetroItems(sqliteDb(db), "r1")).toEqual([]);
   });
 
   test("an unfetched command is released when the owner loses workspace authority", async () => {
@@ -705,7 +705,7 @@ describe("recovery", () => {
       diagnostic: "ready",
       activeMs: 42_000,
     });
-    expect(listRetroItems(db, "r1")).toHaveLength(1);
+    expect(await listRetroItems(sqliteDb(db), "r1")).toHaveLength(1);
   });
 });
 

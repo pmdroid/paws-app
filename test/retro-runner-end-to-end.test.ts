@@ -261,7 +261,7 @@ test.skipIf(!nonRootLinux)(
 
     const reopened = openDatabase(w.path);
     expect((await getRetro(sqliteDb(reopened), "r1"))?.state).toBe("published");
-    const items = listRetroItems(reopened, "r1").length;
+    const items = (await listRetroItems(sqliteDb(reopened), "r1")).length;
     expect(items).toBeGreaterThan(0);
     expect(await control.dispatcher.generation("r1")).toMatchObject({ state: "ready" });
 
@@ -271,7 +271,7 @@ test.skipIf(!nonRootLinux)(
     expect(await daemon.postRetroResult(result)).toEqual({ duplicate: true });
     await runtime.tick();
     expect(host.starts).toHaveLength(1);
-    expect(listRetroItems(reopened, "r1")).toHaveLength(items);
+    expect(await listRetroItems(sqliteDb(reopened), "r1")).toHaveLength(items);
     expect(await control.dispatcher.generation("r1")).toMatchObject({ state: "ready" });
     await runtime.stop();
   },

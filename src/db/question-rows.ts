@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, asc, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
 
 export type QuestionRow = {
@@ -66,8 +66,8 @@ export function* insertQuestionRowSteps(q: Q, row: NewQuestionRow) {
   );
 }
 
-export function insertQuestionRow(db: Database, row: NewQuestionRow): void {
-  settled(sqliteDb(db).run((q) => insertQuestionRowSteps(q, row)));
+export async function insertQuestionRow(store: Db, row: NewQuestionRow): Promise<void> {
+  await store.run((q) => insertQuestionRowSteps(q, row));
 }
 
 export function* questionRowByIdSteps(q: Q, id: string): Steps<QuestionRow | null> {
@@ -78,8 +78,8 @@ export function* questionRowByIdSteps(q: Q, id: string): Steps<QuestionRow | nul
   return row ?? null;
 }
 
-export function questionRowById(db: Database, id: string): QuestionRow | null {
-  return settled(sqliteDb(db).run((q) => questionRowByIdSteps(q, id)));
+export async function questionRowById(store: Db, id: string): Promise<QuestionRow | null> {
+  return store.run((q) => questionRowByIdSteps(q, id));
 }
 
 export function* openQuestionRowSteps(q: Q, sessionId: string): Steps<QuestionRow | null> {
@@ -101,8 +101,8 @@ export function* openQuestionRowSteps(q: Q, sessionId: string): Steps<QuestionRo
   return row ?? null;
 }
 
-export function openQuestionRow(db: Database, sessionId: string): QuestionRow | null {
-  return settled(sqliteDb(db).run((q) => openQuestionRowSteps(q, sessionId)));
+export async function openQuestionRow(store: Db, sessionId: string): Promise<QuestionRow | null> {
+  return store.run((q) => openQuestionRowSteps(q, sessionId));
 }
 
 export function* askedQuestionRowSteps(
@@ -152,8 +152,11 @@ export function* nextQueuedQuestionRowSteps(q: Q, sessionId: string): Steps<Ques
   return row ?? null;
 }
 
-export function nextQueuedQuestionRow(db: Database, sessionId: string): QuestionRow | null {
-  return settled(sqliteDb(db).run((q) => nextQueuedQuestionRowSteps(q, sessionId)));
+export async function nextQueuedQuestionRow(
+  store: Db,
+  sessionId: string,
+): Promise<QuestionRow | null> {
+  return store.run((q) => nextQueuedQuestionRowSteps(q, sessionId));
 }
 
 export function* questionEventConsumedSteps(q: Q, sessionId: string, eventKey: string) {
@@ -167,8 +170,12 @@ export function* questionEventConsumedSteps(q: Q, sessionId: string, eventKey: s
   return row !== undefined;
 }
 
-export function questionEventConsumed(db: Database, sessionId: string, eventKey: string): boolean {
-  return settled(sqliteDb(db).run((q) => questionEventConsumedSteps(q, sessionId, eventKey)));
+export async function questionEventConsumed(
+  store: Db,
+  sessionId: string,
+  eventKey: string,
+): Promise<boolean> {
+  return store.run((q) => questionEventConsumedSteps(q, sessionId, eventKey));
 }
 
 type QueuedScope = { itemId: string } | { sessionId: string };
@@ -192,13 +199,13 @@ export function* cancelQueuedQuestionsSteps(q: Q, scope: QueuedScope, kind: stri
   );
 }
 
-export function cancelQueuedQuestions(
-  db: Database,
+export async function cancelQueuedQuestions(
+  store: Db,
   scope: QueuedScope,
   kind: string,
   now: number,
-): void {
-  settled(sqliteDb(db).run((q) => cancelQueuedQuestionsSteps(q, scope, kind, now)));
+): Promise<void> {
+  await store.run((q) => cancelQueuedQuestionsSteps(q, scope, kind, now));
 }
 
 export function* amendQuestionRowSteps(
@@ -215,12 +222,12 @@ export function* amendQuestionRowSteps(
   );
 }
 
-export function amendQuestionRow(
-  db: Database,
+export async function amendQuestionRow(
+  store: Db,
   id: string,
   amended: { context: string; options: readonly unknown[] },
-): void {
-  settled(sqliteDb(db).run((q) => amendQuestionRowSteps(q, id, amended)));
+): Promise<void> {
+  await store.run((q) => amendQuestionRowSteps(q, id, amended));
 }
 
 type QuestionAnswerRow = {
@@ -242,8 +249,12 @@ export function* markQuestionAnsweredSteps(q: Q, id: string, answer: QuestionAns
   return updated.length > 0;
 }
 
-export function markQuestionAnswered(db: Database, id: string, answer: QuestionAnswerRow): boolean {
-  return settled(sqliteDb(db).run((q) => markQuestionAnsweredSteps(q, id, answer)));
+export async function markQuestionAnswered(
+  store: Db,
+  id: string,
+  answer: QuestionAnswerRow,
+): Promise<boolean> {
+  return store.run((q) => markQuestionAnsweredSteps(q, id, answer));
 }
 
 export function* setQuestionCancelledSteps(q: Q, id: string, now: number) {
@@ -251,8 +262,8 @@ export function* setQuestionCancelledSteps(q: Q, id: string, now: number) {
   yield* q.exec(q.orm.update(question).set({ cancelledAt: now }).where(eq(question.id, id)));
 }
 
-export function setQuestionCancelled(db: Database, id: string, now: number): void {
-  settled(sqliteDb(db).run((q) => setQuestionCancelledSteps(q, id, now)));
+export async function setQuestionCancelled(store: Db, id: string, now: number): Promise<void> {
+  await store.run((q) => setQuestionCancelledSteps(q, id, now));
 }
 
 export function* promoteQuestionRowSteps(q: Q, id: string, now: number) {
@@ -262,8 +273,8 @@ export function* promoteQuestionRowSteps(q: Q, id: string, now: number) {
   );
 }
 
-export function promoteQuestionRow(db: Database, id: string, now: number): void {
-  settled(sqliteDb(db).run((q) => promoteQuestionRowSteps(q, id, now)));
+export async function promoteQuestionRow(store: Db, id: string, now: number): Promise<void> {
+  await store.run((q) => promoteQuestionRowSteps(q, id, now));
 }
 
 export type ActiveItemQuestion = { id: string; kind: string; sessionId: string };
@@ -284,6 +295,9 @@ export function* activeItemQuestionsSteps(q: Q, itemId: string): Steps<ActiveIte
   );
 }
 
-export function activeItemQuestions(db: Database, itemId: string): ActiveItemQuestion[] {
-  return settled(sqliteDb(db).run((q) => activeItemQuestionsSteps(q, itemId)));
+export async function activeItemQuestions(
+  store: Db,
+  itemId: string,
+): Promise<ActiveItemQuestion[]> {
+  return store.run((q) => activeItemQuestionsSteps(q, itemId));
 }

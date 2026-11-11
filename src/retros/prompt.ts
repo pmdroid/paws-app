@@ -460,7 +460,9 @@ async function readableEvidence(
       ...source.digest.records.map((record) => record.itemId),
     ]),
   ];
-  const sessions = new Map(workItemSessionKeys(db, itemIds).map((row) => [row.id, row.sessionKey]));
+  const sessions = new Map(
+    (await workItemSessionKeys(sqliteDb(db), itemIds)).map((row) => [row.id, row.sessionKey]),
+  );
   const readable = new Set(sessionIds);
   const authorized = itemIds.every((id) => {
     const sessionKey = sessions.get(id);

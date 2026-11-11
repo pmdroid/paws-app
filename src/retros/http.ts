@@ -516,14 +516,16 @@ export function createRetroReviewHttp(options: {
       );
     }
     if (itemId !== undefined) {
-      const item = listRetroItems(db, retroId!).find((entry) => entry.itemId === itemId);
+      const item = (await listRetroItems(sqliteDb(db), retroId!)).find(
+        (entry) => entry.itemId === itemId,
+      );
       if (!item || (!access.full && !visibleItem(access, item.evidenceIds)))
         return json(
           { error: "This retro item is not available to you.", reason: "not_found" },
           404,
         );
       const saved = new Map(
-        listRetroEvidence(db, retroId!).map((entry) => [entry.evidenceId, entry]),
+        (await listRetroEvidence(sqliteDb(db), retroId!)).map((entry) => [entry.evidenceId, entry]),
       );
       return json({
         retroId,
