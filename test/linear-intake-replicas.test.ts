@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { join } from "node:path";
-import { migrate, openDatabase } from "../src/db";
+import { migrate, openDatabase, sqliteDb } from "../src/db";
 import {
   INTAKE_LEASE_MS,
   POLL_INTERVAL_FAILING_MS,
@@ -69,7 +69,7 @@ function instance(
 
 test("two instances receiving the same events handle each one once, in session order", async () => {
   const [first, second] = replicas();
-  const stores = [createInboxStore(first), createInboxStore(second)] as const;
+  const stores = [createInboxStore(sqliteDb(first)), createInboxStore(sqliteDb(second))] as const;
   const delivered: string[] = [];
   const queues = [
     instance("acme-a", stores[0], Date.now, delivered),
@@ -84,7 +84,7 @@ test("two instances receiving the same events handle each one once, in session o
   try {
     for (const each of events) {
       for (const [n, store] of stores.entries()) {
-        const committed = store.commit(each);
+        const committed = await store.commit(each);
         if (committed.inserted) queues[n]!.arrive(each);
         else queues[n]!.wake();
       }
@@ -126,7 +126,7 @@ test("an instance that dies mid-intake loses its lease, and the other takes the 
   let die: (reason: Error) => void = () => {};
   const dying = instance(
     "acme-a",
-    createInboxStore(first),
+    createInboxStore(sqliteDb(first)),
     () => clock,
     delivered,
     () =>
@@ -134,9 +134,9 @@ test("an instance that dies mid-intake loses its lease, and the other takes the 
         die = reject;
       }),
   );
-  const surviving = instance("acme-b", createInboxStore(second), () => clock, delivered);
+  const surviving = instance("acme-b", createInboxStore(sqliteDb(second)), () => clock, delivered);
   try {
-    createInboxStore(first).commit(linearEvent("acme-s1", "created"));
+    await createInboxStore(sqliteDb(first)).commit(linearEvent("acme-s1", "created"));
     dying.wake();
     while (delivered.length === 0) await Bun.sleep(1);
     clock += INTAKE_LEASE_MS - 1;
@@ -170,9 +170,9 @@ test("an instance that dies mid-intake loses its lease, and the other takes the 
 
 test("the poller on one instance reads verification failures another instance's webhook counted", async () => {
   const [first, second] = replicas();
-  const receiving = createInboxStore(first);
-  const polling = createInboxStore(second);
-  receiving.setCursor("linear:webhook", 1_000);
+  const receiving = createInboxStore(sqliteDb(first));
+  const polling = createInboxStore(sqliteDb(second));
+  await receiving.setCursor("linear:webhook", 1_000);
   const reject = () =>
     handleLinearWebhook(
       new Request("http://acme.test/webhooks/linear", {
@@ -183,19 +183,19 @@ test("the poller on one instance reads verification failures another instance's 
       "acme-secret",
       { store: receiving },
     );
-  const cadence = () =>
+  const cadence = async () =>
     pollIntervalMs({
       now: 2_000,
       lastWebhookMs: 1_000,
-      webhookFailures: webhookVerificationFailures(polling),
+      webhookFailures: await webhookVerificationFailures(polling),
     });
   try {
-    const before = cadence();
+    const before = await cadence();
     for (let n = 0; n < 3; n++) expect((await reject()).status).toBe(401);
     expect({
       before,
-      failures: webhookVerificationFailures(polling),
-      after: cadence(),
+      failures: await webhookVerificationFailures(polling),
+      after: await cadence(),
     }).toEqual({
       before: POLL_INTERVAL_WEBHOOK_MS,
       failures: 3,

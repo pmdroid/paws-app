@@ -123,10 +123,11 @@ export function createSessionStarter(options: {
       }),
     };
     await acceptSession?.(event);
-    const stored = options.store.commit(event);
+    const stored = await options.store.commit(event);
     if (!stored.handled || acceptSession !== undefined) {
+      const saved = await options.store.get(event.dedupeKey);
       void options
-        .onEvent(options.store.get(event.dedupeKey) ?? event)
+        .onEvent(saved ?? event)
         .then(() => options.store.markHandled(event.dedupeKey))
         .catch((caughtError2) => {
           journalCaught(caughtError2, "start-session.createSessionStarter.then", null);

@@ -380,10 +380,10 @@ test.each([null, "", " \n "])(
     const sleeping = Promise.withResolvers<void>();
     let running: Promise<unknown> | undefined;
     let poller: ReturnType<typeof startCatchUpPoller> | undefined;
-    const waitFor = async (condition: () => boolean) => {
+    const waitFor = async (condition: () => boolean | Promise<boolean>) => {
       const deadline = Date.now() + 10_000;
-      while (Date.now() < deadline && !condition()) await Bun.sleep(5);
-      expect(condition()).toBe(true);
+      while (Date.now() < deadline && !(await condition())) await Bun.sleep(5);
+      expect(await condition()).toBe(true);
     };
     try {
       await f.orchestrator.onLinearEvent(event());
@@ -397,8 +397,8 @@ test.each([null, "", " \n "])(
       await ready.promise;
       expect(f.orchestrator.agentAlive(getWorkItem(f.db, itemId)!.currentRunId!)).toBe(true);
       expect(findOpenQuestion(f.db, "session")).toBeNull();
-      const store = createInboxStore(f.db);
-      store.commit({
+      const store = createInboxStore(sqliteDb(f.db));
+      await store.commit({
         ...event(),
         source: "poll",
         action: "prompted",
@@ -427,7 +427,7 @@ test.each([null, "", " \n "])(
         onEvent: (incoming) => f.orchestrator.onLinearEvent(incoming),
         sleeper: { wait: () => sleeping.promise, wake: () => sleeping.resolve() },
       });
-      await waitFor(() => store.listUnhandled().length === 0);
+      await waitFor(async () => (await store.listUnhandled()).length === 0);
       expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM linear_turn").get()?.n).toBe(
         0,
       );
@@ -456,7 +456,7 @@ test.each([null, "", " \n "])(
       await answering;
       await running;
       expect((await getQuestion(sqliteDb(f.db), question.id))?.answer).toBe(reply.body);
-      expect(store.listUnhandled()).toHaveLength(0);
+      expect(await store.listUnhandled()).toHaveLength(0);
       await f.jobs.tick();
       expect(getWorkItem(f.db, itemId)?.state).toBe("completed");
       expect(f.tracker.progress.filter((update) => update.kind === "response")).toHaveLength(1);

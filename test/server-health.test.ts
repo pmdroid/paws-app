@@ -109,7 +109,7 @@ describe("server health", () => {
         hostname: "127.0.0.1",
         webhooks: false,
         healthNow: () => NOW,
-        linearUsage: () => (calls++, USAGE),
+        linearUsage: async () => (calls++, USAGE),
         workspaceAccess: new Promise(() => {}),
       });
       const base = `http://127.0.0.1:${server.port}`;
@@ -143,7 +143,7 @@ describe("server health", () => {
 
   test("the signed-in overview keeps the aggregate Linear budget that health leaves out", async () => {
     let calls = 0;
-    const fixture = await startDashboardFixture({ linearUsage: () => (calls++, USAGE) });
+    const fixture = await startDashboardFixture({ linearUsage: async () => (calls++, USAGE) });
     try {
       const health = await fetch(`${fixture.origin}/health`);
       expect(await health.json()).not.toHaveProperty("linear");

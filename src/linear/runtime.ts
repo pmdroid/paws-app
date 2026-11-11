@@ -7,7 +7,7 @@ import {
 import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { IN_FLIGHT_ITEM_STATES, type LinearCommand } from "../core";
-import { sessionHasItemInStates } from "../db";
+import { sessionHasItemInStates, sqliteDb, type Db } from "../db";
 import type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
 import { createIntakePollSource } from "./catchup";
 import type { AcceptedLinearEvent } from "./events";
@@ -59,7 +59,7 @@ export type OpenLinear = {
   files: LinearFileTransfer | null;
   access: LinearAccessReads | null;
   issueLifecycle: LinearIssueLifecycle | null;
-  usage(): LinearUsage;
+  usage(): Promise<LinearUsage>;
   start(): LinearRunning;
 };
 
@@ -93,7 +93,7 @@ export function openLinear(options: {
     ? AbortSignal.any([options.signal, stopping.signal])
     : stopping.signal;
   const settings = readLinearEnv(options.env);
-  const store = createInboxStore(options.db);
+  const store = createInboxStore(sqliteDb(options.db));
   const accessAllowed = options.isAuthorized ?? (() => true);
   const auth = createLinearAuth({
     db: options.db,
@@ -133,7 +133,7 @@ export function openLinear(options: {
           followUp: options.followUp,
           beforeEvent: options.beforeEvent,
           progressReporter: options.progressReporter,
-          sessionBusy: (sessionId) => sessionHasItemInFlight(options.db, sessionId),
+          sessionBusy: (sessionId) => sessionHasItemInFlight(sqliteDb(options.db), sessionId),
           signal,
           ledger,
         });
@@ -170,7 +170,10 @@ export function openLinear(options: {
         ? null
         : createLinearAccessReads(callerClient(client, "task-access"), settings.clientId),
     issueLifecycle: client === null ? null : createLinearIssueLifecycle(client, starts),
-    usage: () => ({ ...ledger.usage(), lastCatchUpMs: store.getCursor(CATCH_UP_CURSOR) }),
+    usage: async () => ({
+      ...ledger.usage(),
+      lastCatchUpMs: await store.getCursor(CATCH_UP_CURSOR),
+    }),
     start() {
       if (running !== null) return running;
       const poller = accessAllowed()
@@ -245,6 +248,6 @@ function startPoller(options: {
 }
 
 /** The session already has an item running, verifying, waiting for an answer or merging. */
-export function sessionHasItemInFlight(db: Database, sessionId: string): boolean {
+export function sessionHasItemInFlight(db: Db, sessionId: string): Promise<boolean> {
   return sessionHasItemInStates(db, sessionId, IN_FLIGHT_ITEM_STATES);
 }

@@ -86,11 +86,11 @@ function prompt(createdAt = NOW + 1, id = "answer-1", userId: string | null = "h
 test("Linear answers preserve their human author through persisted inbox replay", async () => {
   const { db, question, orchestrator } = await setup();
   try {
-    const inbox = createInboxStore(db);
+    const inbox = createInboxStore(sqliteDb(db));
     const event = prompt();
     expect(event.actorId).toBe("human-1");
-    inbox.commit(event);
-    const replayed = createInboxStore(db).listUnhandled()[0]!;
+    await inbox.commit(event);
+    const replayed = (await createInboxStore(sqliteDb(db)).listUnhandled())[0]!;
     expect(replayed.actorId).toBe("human-1");
     expect(replayed.activityCreatedAtMs).toBe(NOW + 1);
     await orchestrator.onLinearEvent(replayed);
@@ -322,7 +322,7 @@ test("polling keeps activity creation and human identity distinct from viewer an
 
 test("a polled prompt reaches answer delivery with normalized actor and creation time", async () => {
   const { db, question, orchestrator } = await setup();
-  const inbox = createInboxStore(db);
+  const inbox = createInboxStore(sqliteDb(db));
   const delivered = Promise.withResolvers<void>();
   let wake = () => {};
   const poller = startCatchUpPoller({

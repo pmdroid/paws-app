@@ -1,3 +1,4 @@
+import { sqliteDb } from "../../src/db";
 import "../quiet-journal";
 import { storeLinearToken } from "../helpers";
 import { createHmac } from "node:crypto";
@@ -89,7 +90,7 @@ const restored = await reconnect.complete({
 released.resolve(Response.json({ data: { team: { id: "team" } } }));
 for (
   let attempt = 0;
-  createInboxStore(paws.db).listUnhandled().length > 0 && attempt < 100;
+  (await createInboxStore(sqliteDb(paws.db)).listUnhandled()).length > 0 && attempt < 100;
   attempt++
 )
   await Bun.sleep(5);
@@ -101,7 +102,7 @@ const session = paws.db
 const items = paws.db
   .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM work_item")
   .get()!.count;
-const pending = createInboxStore(paws.db).listUnhandled().length;
+const pending = (await createInboxStore(sqliteDb(paws.db)).listUnhandled()).length;
 await paws.catchUp();
 paws.stop();
 console.log(

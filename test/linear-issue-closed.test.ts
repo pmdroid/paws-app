@@ -294,7 +294,7 @@ test("a task created after the issue closed is a later delegation and stays", as
 test("the catch-up poll closes the tasks of an issue whose webhook was missed", async () => {
   const f = await fixture();
   applyWorkItemEvent(f.db, f.item.id, "start_timed_out");
-  const store = createInboxStore(f.db);
+  const store = createInboxStore(sqliteDb(f.db));
   const closedAtMs = Date.now() + 1_000;
   const sighting: IntakeSighting = {
     sessions: [],
@@ -339,8 +339,10 @@ test("the catch-up poll closes the tasks of an issue whose webhook was missed", 
   await poller.pollNow();
   expect(seen.map((event) => event.issueId)).toEqual(["issue"]);
   expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
-  expect(store.get(seen[0]!.dedupeKey)).not.toBeNull();
-  expect(store.listUnhandled().map((event) => event.dedupeKey)).not.toContain(seen[0]!.dedupeKey);
+  expect(await store.get(seen[0]!.dedupeKey)).not.toBeNull();
+  expect((await store.listUnhandled()).map((event) => event.dedupeKey)).not.toContain(
+    seen[0]!.dedupeKey,
+  );
 });
 
 describe("parseLinearIssueClosed", () => {

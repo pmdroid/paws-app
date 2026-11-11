@@ -1858,7 +1858,7 @@ describe("live status provider", () => {
     db.run(
       "INSERT INTO inbox_event (dedupe_key, source, action, session_id, signal, updated_at_ms, payload, received_at) VALUES ('stop', 'webhook', 'prompted', 's1', 'stop', 1, '{}', 600)",
     );
-    const usage = () => ({
+    const usage = async () => ({
       budget: { requestsRemaining: 0, requestsLimit: 1500, requestsResetMs: 3_600_000 },
       holdUntilMs: 300_000,
     });

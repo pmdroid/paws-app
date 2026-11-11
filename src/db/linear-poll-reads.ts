@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, desc, eq, inArray, isNull, min, notInArray, or, sql } from "drizzle-orm";
 import { JOB_KIND, parentIssueIdSql } from "../core";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { jsonValue } from "./json-text";
 
 const DONE_STATES = ["completed", "merged", "cancelled"];
@@ -47,8 +46,8 @@ export function* sessionHasWorkItemSteps(q: Q, sessionId: string) {
   return yield* anyItemSteps(q, eq(q.t.workItem.sessionKey, sessionId));
 }
 
-export function sessionHasWorkItem(db: Database, sessionId: string): boolean {
-  return settled(sqliteDb(db).run((q) => sessionHasWorkItemSteps(q, sessionId)));
+export async function sessionHasWorkItem(store: Db, sessionId: string): Promise<boolean> {
+  return store.run((q) => sessionHasWorkItemSteps(q, sessionId));
 }
 
 export function* issueHasItemOutsideSteps(q: Q, issueId: string, closedStates: readonly string[]) {
@@ -59,12 +58,12 @@ export function* issueHasItemOutsideSteps(q: Q, issueId: string, closedStates: r
   );
 }
 
-export function issueHasItemOutside(
-  db: Database,
+export async function issueHasItemOutside(
+  store: Db,
   issueId: string,
   closedStates: readonly string[] = DONE_STATES,
-): boolean {
-  return settled(sqliteDb(db).run((q) => issueHasItemOutsideSteps(q, issueId, closedStates)));
+): Promise<boolean> {
+  return store.run((q) => issueHasItemOutsideSteps(q, issueId, closedStates));
 }
 
 export function* sessionHasItemInStatesSteps(q: Q, sessionId: string, states: readonly string[]) {
@@ -72,12 +71,12 @@ export function* sessionHasItemInStatesSteps(q: Q, sessionId: string, states: re
   return yield* anyItemSteps(q, and(eq(w.sessionKey, sessionId), inArray(w.state, [...states])));
 }
 
-export function sessionHasItemInStates(
-  db: Database,
+export async function sessionHasItemInStates(
+  store: Db,
   sessionId: string,
   states: readonly string[],
-): boolean {
-  return settled(sqliteDb(db).run((q) => sessionHasItemInStatesSteps(q, sessionId, states)));
+): Promise<boolean> {
+  return store.run((q) => sessionHasItemInStatesSteps(q, sessionId, states));
 }
 
 export function* openStopTargetsSteps(
@@ -112,12 +111,12 @@ export function* openStopTargetsSteps(
   return ids;
 }
 
-export function openStopTargets(
-  db: Database,
+export async function openStopTargets(
+  store: Db,
   linearIssueId: string | null,
   sessionId: string | null,
-): string[] {
-  return settled(sqliteDb(db).run((q) => openStopTargetsSteps(q, linearIssueId, sessionId)));
+): Promise<string[]> {
+  return store.run((q) => openStopTargetsSteps(q, linearIssueId, sessionId));
 }
 
 export function* latestOpenIssueSessionSteps(q: Q, issueId: string) {
@@ -133,11 +132,11 @@ export function* latestOpenIssueSessionSteps(q: Q, issueId: string) {
   return row ?? null;
 }
 
-export function latestOpenIssueSession(
-  db: Database,
+export async function latestOpenIssueSession(
+  store: Db,
   issueId: string,
-): { sessionId: string; createdAt: number } | null {
-  return settled(sqliteDb(db).run((q) => latestOpenIssueSessionSteps(q, issueId)));
+): Promise<{ sessionId: string; createdAt: number } | null> {
+  return store.run((q) => latestOpenIssueSessionSteps(q, issueId));
 }
 
 export function* persistStopJobSteps(

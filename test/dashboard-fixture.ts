@@ -22,7 +22,9 @@ const PNG = screenshotPng(320, 200, [{ x: 40, y: 40, width: 240, height: 120, rg
 
 export type DashboardFixture = Awaited<ReturnType<typeof startDashboardFixture>>;
 
-export async function startDashboardFixture(options: { linearUsage?: () => LinearUsage } = {}) {
+export async function startDashboardFixture(
+  options: { linearUsage?: () => Promise<LinearUsage> } = {},
+) {
   const home = mkdtempSync(join(tmpdir(), "paws-dashboard-fixture-"));
   const db = openDatabase(join(home, "paws.sqlite"));
   migrate(db);

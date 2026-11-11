@@ -226,7 +226,7 @@ for (const delivery of deliveries) {
   );
   for (
     let attempt = 0;
-    createInboxStore(paws.db).listUnhandled().length > 0 && attempt < 100;
+    (await createInboxStore(sqliteDb(paws.db)).listUnhandled()).length > 0 && attempt < 100;
     attempt++
   )
     await Bun.sleep(5);
@@ -235,7 +235,7 @@ const state = paws.db
   .query<{ state: string }, [string]>("SELECT state FROM work_item WHERE id = ?")
   .get(itemId)?.state;
 await paws.catchUp();
-const pending = createInboxStore(paws.db).listUnhandled().length;
+const pending = (await createInboxStore(sqliteDb(paws.db)).listUnhandled()).length;
 const context = getLinearSessionContext(paws.db, "session");
 await paws.stop();
 const reopened = openDatabase(join(home, "paws.db"));

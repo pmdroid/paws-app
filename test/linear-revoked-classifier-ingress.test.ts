@@ -4,7 +4,13 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { systemClock } from "../src/core";
 import { createInboxStore, createFakeTracker, openLinear, writeStoredToken } from "../src/linear";
-import { getLinearSession, isLinearAppRevoked, JobLoop, OutboxDispatcher } from "../src/db";
+import {
+  getLinearSession,
+  isLinearAppRevoked,
+  JobLoop,
+  OutboxDispatcher,
+  sqliteDb,
+} from "../src/db";
 import { attachOrchestrator, handleLinearAdministration, LinearTaskAccess } from "../src/loop";
 import { startServer } from "../src/server";
 import { tempDb, tempHome } from "./helpers";
@@ -218,7 +224,7 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
           await Bun.sleep(5);
         }
         expect(failedRead).toBe(true);
-        expect(createInboxStore(db).listUnhandled()).not.toEqual([]);
+        expect(await createInboxStore(sqliteDb(db)).listUnhandled()).not.toEqual([]);
         expect((await post(administration, "administration")).status).toBe(200);
       }
       for (let i = 0; i < 1_000; i++) {
@@ -233,9 +239,13 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
       else expect(requests.slice(before).every((query) => !query.includes("mutation"))).toBe(true);
       expect(launches).toBe(1);
       expect(tracker.progress).toEqual([]);
-      for (let i = 0; i < 100 && createInboxStore(db).listUnhandled().length > 0; i++)
+      for (
+        let i = 0;
+        i < 100 && (await createInboxStore(sqliteDb(db)).listUnhandled()).length > 0;
+        i++
+      )
         await Bun.sleep(5);
-      expect(createInboxStore(db).listUnhandled()).toEqual([]);
+      expect(await createInboxStore(sqliteDb(db)).listUnhandled()).toEqual([]);
       expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(0);
     } finally {
       await orchestrator.shutdown();

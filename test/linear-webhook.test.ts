@@ -1,3 +1,4 @@
+import { sqliteDb } from "../src/db";
 import { createHmac } from "node:crypto";
 import { describe, expect, test } from "bun:test";
 import { startPaws } from "../src/index";
@@ -16,7 +17,7 @@ const SECRET = "webhook-secret";
 describe("linear webhooks", () => {
   test("rejects a bad signature and a stale timestamp before writing a row", async () => {
     const db = tempDb();
-    const store = createInboxStore(db);
+    const store = createInboxStore(sqliteDb(db));
     const now = 1_700_000_000_000;
     const body = JSON.stringify({
       webhookTimestamp: now,
@@ -36,7 +37,7 @@ describe("linear webhooks", () => {
       { store, now: () => now },
     );
     expect(forged.status).toBe(401);
-    expect(store.listUnhandled()).toHaveLength(0);
+    expect(await store.listUnhandled()).toHaveLength(0);
     expect(
       checkLinearSignature({ signature: null, secret: SECRET, rawBody: body, timestampMs: now }),
     ).toEqual({
@@ -48,7 +49,7 @@ describe("linear webhooks", () => {
 
   test("commits a delivery before acknowledging and does not wait on the follow-up", async () => {
     const db = tempDb();
-    const store = createInboxStore(db);
+    const store = createInboxStore(sqliteDb(db));
     const now = 1_700_000_000_000;
     const body = agentBody(now, "ses_1", "iss_1");
     let release = () => {};
@@ -68,7 +69,7 @@ describe("linear webhooks", () => {
     expect(Date.now() - started).toBeLessThan(1_000);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true, duplicate: false });
-    expect(store.listUnhandled().map((event) => event.dedupeKey)).toEqual([
+    expect((await store.listUnhandled()).map((event) => event.dedupeKey)).toEqual([
       sessionCreatedKey("ses_1"),
     ]);
     expect(calls).toEqual([sessionCreatedKey("ses_1")]);
@@ -89,13 +90,13 @@ describe("linear webhooks", () => {
     await gate;
     await Promise.resolve();
     await Promise.resolve();
-    expect(store.listUnhandled()).toHaveLength(0);
+    expect(await store.listUnhandled()).toHaveLength(0);
     db.close();
   });
 
   test("a prompted /paws stop reply arrives as a stop signal, like the poller reads it", async () => {
     const db = tempDb();
-    const store = createInboxStore(db);
+    const store = createInboxStore(sqliteDb(db));
     const now = 1_700_000_000_000;
     const prompted = (id: string, body: string) =>
       JSON.stringify({

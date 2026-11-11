@@ -559,7 +559,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     queue: string;
     everyMs: number;
     atStartup?: boolean;
-    startup?: () => void;
+    startup?: () => Promise<void>;
     run: (signal: AbortSignal) => Promise<unknown>;
   }[] = [];
   if (options?.refreshRepositories)
@@ -597,7 +597,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     run: async () => skillUpdates.check(await store.run(listSkillsSteps)),
   });
   const webhooks = runtime.webhooks;
-  const inbox = createInboxStore(db);
+  const inbox = createInboxStore(store);
 
   const followUp = async (event: AcceptedLinearEvent): Promise<void | boolean> => {
     if (orchestrator === null) throw new Error("loop is not attached");
@@ -733,7 +733,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           reconcile: (notification) =>
             linearCaller("notifications", async () => {
               if (notification.action === "issueAssignedToYou") {
-                inbox.setCursor(`delegated:${notification.issueId}`, notification.createdAtMs);
+                await inbox.setCursor(
+                  `delegated:${notification.issueId}`,
+                  notification.createdAtMs,
+                );
                 await enqueueJobOnceAsync(store, {
                   queue: "linear.redelegation",
                   jobKey: `linear.redelegation:${notification.issueId}:${notification.createdAtMs}`,
@@ -1070,7 +1073,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             ? { startSession: linear.startSession }
             : {}),
           resumeSession: async (sessionId) => {
-            const event = linear.webhook.store.get(sessionCreatedKey(sessionId));
+            const event = await linear.webhook.store.get(sessionCreatedKey(sessionId));
             if (!event || !linear.webhook.onEvent)
               throw new Error("Wait for Linear to refresh this sub-issue session.");
             if ((await linear.webhook.onEvent(event)) === false)
@@ -1921,7 +1924,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         const relations = createRelationsPolls({
           db,
           reconciler,
-          lowBudget: () => linearBudgetIsLow(linear?.usage().budget ?? null, Date.now()),
+          lowBudget: async () =>
+            linearBudgetIsLow((await linear?.usage())?.budget ?? null, Date.now()),
           reconcileExecution: () => attached.reconcileExecution(),
           read: (run) => linearCaller("relations-poll", run),
         });
@@ -2091,7 +2095,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           now: Date.now(),
         });
         if (work.atStartup && alone && roleRunsJobs(runtime.role)) {
-          work.startup?.();
+          await work.startup?.();
           await store.run((q) => runPendingJobNowSteps(q, id, Date.now()));
         }
       }

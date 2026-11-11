@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, listOutbox, migrate, openDatabase } from "../src/db";
+import { JobLoop, OutboxDispatcher, listOutbox, migrate, openDatabase, sqliteDb } from "../src/db";
 import { attachOrchestrator } from "../src/loop";
 import {
   createFakeTracker,
@@ -82,8 +82,8 @@ for (const shutdown of ["application", "linear"] as const) {
         },
       });
       const running = linear.start();
-      let store = createInboxStore(db);
-      store.commit(event);
+      let store = createInboxStore(sqliteDb(db));
+      await store.commit(event);
       const delivery = Promise.resolve(linear.webhook.onEvent!(event)).then(() =>
         store.markHandled(event.dedupeKey),
       );
@@ -99,7 +99,7 @@ for (const shutdown of ["application", "linear"] as const) {
       await stopping;
       await running.stop();
       await orchestrator.shutdown();
-      expect(store.listUnhandled()).toHaveLength(1);
+      expect(await store.listUnhandled()).toHaveLength(1);
       expect(tracker.progress).toEqual([]);
       expect(
         listOutbox(db).filter(
@@ -113,7 +113,7 @@ for (const shutdown of ["application", "linear"] as const) {
       ).toBe(false);
       db.close();
       db = openDatabase(path);
-      store = createInboxStore(db);
+      store = createInboxStore(sqliteDb(db));
       jobs = new JobLoop(db, systemClock);
       orchestrator = makeOrchestrator();
       const recovered = openLinear({
@@ -128,14 +128,14 @@ for (const shutdown of ["application", "linear"] as const) {
         followUp: (accepted) => orchestrator.onLinearEvent(accepted),
       });
       try {
-        await recovered.webhook.onEvent!(store.listUnhandled()[0]!);
-        store.markHandled(event.dedupeKey);
+        await recovered.webhook.onEvent!((await store.listUnhandled())[0]!);
+        await store.markHandled(event.dedupeKey);
         await recovered.webhook.onEvent!(event);
         await jobs.tick();
         await jobs.tick();
         expect(tracker.questions).toHaveLength(1);
         expect(tracker.questions[0]?.body).toContain("Which repository");
-        expect(store.listUnhandled()).toHaveLength(0);
+        expect(await store.listUnhandled()).toHaveLength(0);
         expect(db.query("SELECT id FROM work_item").all()).toHaveLength(1);
         expect(
           tracker.progress.filter((update) => update.body.startsWith("Picked up")),

@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   claimInboxEvent,
   claimNextInboxEvent,
@@ -15,6 +14,7 @@ import {
   syncCursor,
   unhandledInboxEvents,
   type ClaimedInboxRow,
+  type Db,
 } from "../db";
 import { promptMetadata, type AcceptedLinearEvent } from "./events";
 
@@ -34,23 +34,23 @@ export type QueuedLinearEvent = {
 export type InboxClaim = { owner: string; now: number; leaseMs: number };
 
 export type InboxStore = {
-  commit(event: AcceptedLinearEvent): CommitResult;
-  markHandled(dedupeKey: string): void;
-  listUnhandled(): AcceptedLinearEvent[];
-  claimNext(claim: InboxClaim): QueuedLinearEvent | null;
-  claim(dedupeKey: string, claim: InboxClaim): QueuedLinearEvent | null;
-  renew(dedupeKey: string, claim: InboxClaim): boolean;
-  release(dedupeKey: string, owner: string): void;
+  commit(event: AcceptedLinearEvent): Promise<CommitResult>;
+  markHandled(dedupeKey: string): Promise<void>;
+  listUnhandled(): Promise<AcceptedLinearEvent[]>;
+  claimNext(claim: InboxClaim): Promise<QueuedLinearEvent | null>;
+  claim(dedupeKey: string, claim: InboxClaim): Promise<QueuedLinearEvent | null>;
+  renew(dedupeKey: string, claim: InboxClaim): Promise<boolean>;
+  release(dedupeKey: string, owner: string): Promise<void>;
   /** Records a failed attempt. `counted: false` reschedules without spending an attempt. */
   markFailed(
     dedupeKey: string,
     failure: { error: string; nextAttemptAt: number; counted: boolean },
-  ): void;
-  getCursor(name: string): number | null;
-  setCursor(name: string, cursorMs: number): void;
-  countCursor(name: string): number;
-  clearCursor(name: string): void;
-  get(dedupeKey: string): AcceptedLinearEvent | null;
+  ): Promise<void>;
+  getCursor(name: string): Promise<number | null>;
+  setCursor(name: string, cursorMs: number): Promise<void>;
+  countCursor(name: string): Promise<number>;
+  clearCursor(name: string): Promise<void>;
+  get(dedupeKey: string): Promise<AcceptedLinearEvent | null>;
 };
 
 type InboxRow = {
@@ -68,11 +68,11 @@ type InboxRow = {
   handled: number;
 };
 
-/** SQLite inbox. `commit` returns only after the row is committed. */
-export function createInboxStore(db: Database): InboxStore {
+/** The inbox. `commit` resolves only after the row is committed. */
+export function createInboxStore(db: Db): InboxStore {
   return {
-    commit(event) {
-      const inserted = insertInboxEvent(db, {
+    async commit(event) {
+      const inserted = await insertInboxEvent(db, {
         dedupeKey: event.dedupeKey,
         deliveryId: event.deliveryId,
         source: event.source,
@@ -87,54 +87,38 @@ export function createInboxStore(db: Database): InboxStore {
         receivedAt: Date.now(),
       });
       if (inserted) return { inserted: true, handled: false };
-      const existing = findExisting(db, event);
+      const existing = await findExisting(db, event);
       return { inserted: false, handled: existing?.handled === 1 };
     },
-    markHandled(dedupeKey) {
-      markInboxEventHandled(db, dedupeKey);
+    markHandled: (dedupeKey) => markInboxEventHandled(db, dedupeKey),
+    async listUnhandled() {
+      return ((await unhandledInboxEvents(db)) as InboxRow[]).map(mapRow);
     },
-    listUnhandled() {
-      return (unhandledInboxEvents(db) as InboxRow[]).map(mapRow);
+    async claimNext(claim) {
+      return queuedRow(await claimNextInboxEvent(db, claim));
     },
-    claimNext(claim) {
-      return queuedRow(claimNextInboxEvent(db, claim));
+    async claim(dedupeKey, claim) {
+      return queuedRow(await claimInboxEvent(db, dedupeKey, claim));
     },
-    claim(dedupeKey, claim) {
-      return queuedRow(claimInboxEvent(db, dedupeKey, claim));
-    },
-    renew(dedupeKey, claim) {
-      return renewInboxClaim(db, dedupeKey, claim);
-    },
-    release(dedupeKey, owner) {
-      releaseInboxClaim(db, dedupeKey, owner);
-    },
-    markFailed(dedupeKey, failure) {
-      markInboxEventFailed(db, dedupeKey, failure);
-    },
-    getCursor(name) {
-      return syncCursor(db, name);
-    },
-    setCursor(name, cursorMs) {
-      setSyncCursor(db, name, cursorMs);
-    },
-    countCursor(name) {
-      return incrementSyncCounter(db, name);
-    },
-    clearCursor(name) {
-      clearSyncCursor(db, name);
-    },
-    get(dedupeKey) {
-      const row = inboxEventByKey(db, dedupeKey) as InboxRow | null;
+    renew: (dedupeKey, claim) => renewInboxClaim(db, dedupeKey, claim),
+    release: (dedupeKey, owner) => releaseInboxClaim(db, dedupeKey, owner),
+    markFailed: (dedupeKey, failure) => markInboxEventFailed(db, dedupeKey, failure),
+    getCursor: (name) => syncCursor(db, name),
+    setCursor: (name, cursorMs) => setSyncCursor(db, name, cursorMs),
+    countCursor: (name) => incrementSyncCounter(db, name),
+    clearCursor: (name) => clearSyncCursor(db, name),
+    async get(dedupeKey) {
+      const row = (await inboxEventByKey(db, dedupeKey)) as InboxRow | null;
       return row === null ? null : mapRow(row);
     },
   };
 }
 
-function findExisting(db: Database, event: AcceptedLinearEvent): InboxRow | null {
-  const byKey = inboxEventByKey(db, event.dedupeKey) as InboxRow | null;
+async function findExisting(db: Db, event: AcceptedLinearEvent): Promise<InboxRow | null> {
+  const byKey = (await inboxEventByKey(db, event.dedupeKey)) as InboxRow | null;
   if (byKey !== null) return byKey;
   if (event.deliveryId === null) return null;
-  return inboxEventByDelivery(db, event.deliveryId) as InboxRow | null;
+  return (await inboxEventByDelivery(db, event.deliveryId)) as InboxRow | null;
 }
 
 function queuedRow(row: ClaimedInboxRow | null): QueuedLinearEvent | null {

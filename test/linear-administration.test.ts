@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, test } from "bun:test";
-import { migrate, openDatabase } from "../src/db";
+import { migrate, openDatabase, sqliteDb } from "../src/db";
 import {
   createInboxStore,
   handleLinearWebhook,
@@ -199,7 +199,7 @@ describe("Linear administration event normalization", () => {
           }),
           "fake-webhook-secret",
           {
-            store: createInboxStore(db),
+            store: createInboxStore(sqliteDb(db)),
             now: () => at,
             onEvent(input) {
               received = true;
@@ -225,13 +225,13 @@ describe("Linear administration event normalization", () => {
       migrate(db);
       const raw = JSON.stringify(payload);
       const accepted: AcceptedLinearEvent[] = [];
-      const store = createInboxStore(db);
+      const store = createInboxStore(sqliteDb(db));
       const deps = {
         store,
         now: () => at,
-        onEvent: (input: AcceptedLinearEvent) => {
-          expect(store.get(input.dedupeKey)).not.toBeNull();
+        onEvent: async (input: AcceptedLinearEvent) => {
           accepted.push(input);
+          expect(await store.get(input.dedupeKey)).not.toBeNull();
         },
       };
       const request = (signature: string) =>

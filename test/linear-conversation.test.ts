@@ -603,7 +603,7 @@ test("an unhandled Stop replay after reopen preserves a newer explicit task", as
   try {
     await f.orchestrator.onLinearEvent(event("created", null, 1));
     const stop = { ...event("durable-stop", null, 3, "stop"), activityId: "stop-activity" };
-    createInboxStore(f.db).commit(stop);
+    await createInboxStore(sqliteDb(f.db)).commit(stop);
     await f.orchestrator.onLinearEvent(stop);
     await f.orchestrator.onLinearEvent(event("later-request", "NEW_REQUEST", 4));
     const current = f.item();
@@ -611,21 +611,21 @@ test("an unhandled Stop replay after reopen preserves a newer explicit task", as
     const outbox = listOutbox(f.db);
     expect(current.state).toBe("queued");
     f.reopen();
-    const store = createInboxStore(f.db);
-    store.commit({ ...stop, source: "poll", dedupeKey: "activity:stop-activity:stop" });
-    const pending = store.listUnhandled();
+    const store = createInboxStore(sqliteDb(f.db));
+    await store.commit({ ...stop, source: "poll", dedupeKey: "activity:stop-activity:stop" });
+    const pending = await store.listUnhandled();
     expect(pending.map((row) => row.dedupeKey).sort()).toEqual([
       "activity:stop-activity:stop",
       "durable-stop",
     ]);
     for (const row of pending) {
       await f.orchestrator.onLinearEvent(row);
-      store.markHandled(row.dedupeKey);
+      await store.markHandled(row.dedupeKey);
     }
     expect(f.item()).toEqual(current);
     expect(getLinearSession(f.db, "session")).toEqual(session);
     expect(listOutbox(f.db)).toEqual(outbox);
-    expect(store.listUnhandled()).toEqual([]);
+    expect(await store.listUnhandled()).toEqual([]);
   } finally {
     await f.close();
   }

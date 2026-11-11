@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { RunnerSlotsBusyError, systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, migrate, openDatabase } from "../src/db";
+import { JobLoop, OutboxDispatcher, migrate, openDatabase, sqliteDb } from "../src/db";
 import {
   INTAKE_RETRY_MS,
   createFakeTracker,
@@ -112,7 +112,7 @@ test("a burst of 20 sessions while every runner slot is busy and Linear rate-lim
       agentForItem: remote,
     },
   });
-  const store = createInboxStore(db);
+  const store = createInboxStore(sqliteDb(db));
   let active = 0;
   let mostActive = 0;
   const { onEvent, queue } = createLinearIntake({
@@ -136,7 +136,7 @@ test("a burst of 20 sessions while every runner slot is busy and Linear rate-lim
   try {
     for (let n = 0; n < 20; n++) {
       const event = created(n, clock + n * 40);
-      store.commit(event);
+      await store.commit(event);
       queue.arrive(event);
     }
     for (let round = 0; round < 20 && unhandled(db) > 0; round++) {
@@ -177,7 +177,7 @@ test("a burst of 20 sessions while every runner slot is busy and Linear rate-lim
 
 test("a session that keeps failing retries on its own schedule while later sessions are admitted", async () => {
   const db = tempDb();
-  const store = createInboxStore(db);
+  const store = createInboxStore(sqliteDb(db));
   let clock = 1_000_000;
   const delivered: string[] = [];
   const queue = createIntakeQueue({
@@ -197,8 +197,8 @@ test("a session that keeps failing retries on its own schedule while later sessi
       )
       .get()!;
   try {
-    store.commit(created(0));
-    store.commit(created(1));
+    await store.commit(created(0));
+    await store.commit(created(1));
     queue.wake();
     await queue.idle();
     const waits: number[] = [];
@@ -207,7 +207,7 @@ test("a session that keeps failing retries on its own schedule while later sessi
       waits.push(due - clock);
       // Not due yet: a wake admits the newer session and leaves the failing one alone.
       clock = due - 1;
-      store.commit(created(n));
+      await store.commit(created(n));
       queue.wake();
       await queue.idle();
       clock = due;
@@ -253,7 +253,7 @@ test("a session that keeps failing retries on its own schedule while later sessi
 
 test("the queue starts nothing during a Linear rate-limit hold and resumes after it", async () => {
   const db = tempDb();
-  const store = createInboxStore(db);
+  const store = createInboxStore(sqliteDb(db));
   let clock = 1_000_000;
   const ledger = createLinearLedger({ now: () => clock, random: () => 0, log: () => {} });
   const delivered: string[] = [];
@@ -280,7 +280,7 @@ test("the queue starts nothing during a Linear rate-limit hold and resumes after
         complexity: null,
       }),
     );
-    store.commit(created(0));
+    await store.commit(created(0));
     queue.wake();
     await queue.idle();
     const held = [...delivered];
@@ -296,7 +296,7 @@ test("the queue starts nothing during a Linear rate-limit hold and resumes after
 
 test("a rate limit that asks for no wait still does not restart the intake at once", async () => {
   const db = tempDb();
-  const store = createInboxStore(db);
+  const store = createInboxStore(sqliteDb(db));
   const clock = 1_000_000;
   let attempts = 0;
   const queue = createIntakeQueue({
@@ -319,7 +319,7 @@ test("a rate limit that asks for no wait still does not restart the intake at on
     },
   });
   try {
-    store.commit(created(0));
+    await store.commit(created(0));
     queue.wake();
     await queue.idle();
     const row = db
@@ -340,7 +340,7 @@ test("a rate limit that asks for no wait still does not restart the intake at on
 
 test("every arrival posts its first activity at once while both intake slots are busy", async () => {
   const db = tempDb();
-  const store = createInboxStore(db);
+  const store = createInboxStore(sqliteDb(db));
   const fake = createFakeTracker([]);
   let release = () => {};
   const blocked = new Promise<void>((resolve) => {
@@ -360,7 +360,7 @@ test("every arrival posts its first activity at once while both intake slots are
   try {
     for (let n = 0; n < 5; n++) {
       const event = created(n);
-      store.commit(event);
+      await store.commit(event);
       queue.arrive(event);
     }
     while (started.length < 2) await Bun.sleep(1);
