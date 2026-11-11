@@ -211,7 +211,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     home: root,
     tracker,
     repositories: [{ owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL }],
-    scheduling: () => ({}),
+    scheduling: async () => ({}),
     launch() {
       return { command: "/forbidden-local-agent", args: [] };
     },

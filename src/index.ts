@@ -98,7 +98,6 @@ import {
 import {
   workspaceMemberUsable,
   enqueueCommand,
-  enqueueJobOnce,
   getLinearSession,
   getWorkItem,
   getItemRunCommitPolicy,
@@ -145,13 +144,14 @@ import {
   submitCommand,
   type JobLoop,
   type WorkItemRecord,
-  runnerHasCapacity,
+  type Q,
+  runnerHasCapacitySteps,
   workspaceMember,
   sqliteDb,
-  enabledRunnerIds,
+  enabledRunnerIdsSteps,
   latestCloseoutProgressMarker,
   listWorkspaceIds,
-  missingSnapshotTargets,
+  missingSnapshotTargetsSteps,
   workspaceUserLinearId,
   applyLinearIssueProjectSteps,
   applyLinearUserChangeSteps,
@@ -288,13 +288,13 @@ import { createAdmission, registerScheduler, saveSchedulingContext } from "./sch
 import {
   createRunnerPlacement,
   createRunnerPlacementBrowser,
-  itemOwnerEligibleRunner,
-  itemOwnerHasEligibleRunner,
+  itemOwnerEligibleRunnerSteps,
+  itemOwnerHasEligibleRunnerSteps,
   itemRunnerVerdicts,
   createRunnerHostRefusals,
-  itemOwnerRunnerSetupNeed,
-  itemRepositoryAllowedOn,
-  itemRepositoryRefusals,
+  itemOwnerRunnerSetupNeedSteps,
+  itemRepositoryAllowedOnSteps,
+  itemRepositoryRefusalsSteps,
   itemRepositoryRunner,
 } from "./runner-placement";
 import { releaseVersionFromPath } from "./runner-protocol";
@@ -374,7 +374,7 @@ import {
   createRemoteSessionAgentRunner,
   createFindingGroupHelper,
   fetchRunnerCandidate,
-  remoteCommandsGone,
+  remoteCommandsGoneSteps,
 } from "./runner-backend";
 
 const ACCEPTED: IntakeDecision = { outcome: "accepted" };
@@ -1123,10 +1123,15 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           const backend = await remote;
           await backend.agents.cancelItem(itemId);
         },
-        commandsGone: (itemId, since) => remoteCommandsGone(db, itemId, since),
+        commandsGone: (q, itemId, since) => remoteCommandsGoneSteps(q, itemId, since),
         runInProgress: async (runId) => (await remote).agents.runInProgress(runId),
         slotFree: () =>
-          enabledRunnerIds(db).some((host) => runnerHasCapacity(db, host.id, Date.now())),
+          store.run(function* (q) {
+            const now = Date.now();
+            for (const host of yield* enabledRunnerIdsSteps(q))
+              if (yield* runnerHasCapacitySteps(q, host.id, now)) return true;
+            return false;
+          }),
         agentForItem: (itemId) => async (input) => {
           input.signal?.throwIfAborted();
           await ready;
@@ -1391,10 +1396,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const managed = Boolean(workspace && linear?.tracker && linear.issueLifecycle);
   if (!managed) journal(LINEAR_WORKSPACE_REQUIRED);
   const admission = createAdmission({ db, workspace: managed });
-  const enqueueMissingSnapshots = () => {
-    const targets = missingSnapshotTargets(db);
+  const enqueueMissingSnapshots = async () => {
+    const targets = await store.run(missingSnapshotTargetsSteps);
     for (const target of targets)
-      enqueueJobOnce(db, {
+      await enqueueJobOnceAsync(store, {
         queue: "linear.item.reconcile",
         jobKey: `linear.item.reconcile:${target.itemId}`,
         payload: target,
@@ -1513,8 +1518,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
                   ? createConversationTurns({ db, helpers: coordinator.helpers })
                   : null;
               },
-              ownerHasRunner: (itemId: string, agent: string, now: number) =>
-                itemOwnerHasEligibleRunner(db, { itemId, agent, now }),
+              ownerHasRunner: (q: Q, itemId: string, agent: string, now: number) =>
+                itemOwnerHasEligibleRunnerSteps(q, { itemId, agent, now }),
               itemRunners: (
                 itemId: string,
                 profile: { agent: string; model?: string | null },
@@ -1522,13 +1527,13 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
               ) => itemRunnerVerdicts(db, { itemId, ...profile, now }),
               onRunnerHostRefusals: runnerHostRefusals.report,
               runnerSetupNeed: (itemId: string, agent: string, now: number) =>
-                itemOwnerRunnerSetupNeed(db, { itemId, agent, now }),
+                store.run((q) => itemOwnerRunnerSetupNeedSteps(q, { itemId, agent, now })),
               eligibleRunner: (itemId: string, agent: string, now: number) =>
-                itemOwnerEligibleRunner(db, { itemId, agent, now }),
+                store.run((q) => itemOwnerEligibleRunnerSteps(q, { itemId, agent, now })),
               repositoryRefusals: (itemId: string, now: number) =>
-                itemRepositoryRefusals(db, { itemId, now }),
+                store.run((q) => itemRepositoryRefusalsSteps(q, { itemId, now })),
               repositoryAllowedOn: (itemId: string, runnerId: string, now: number) =>
-                itemRepositoryAllowedOn(db, { itemId, runnerId, now }),
+                store.run((q) => itemRepositoryAllowedOnSteps(q, { itemId, runnerId, now })),
               runnerRebase: async (
                 item: WorkItemRecord,
                 heads: { head: string; main: string },
@@ -1614,8 +1619,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             ? (await (await workspace.access).recheckLinearEvent(event)) &&
               (parents?.recheckEvent(event) ?? (await assignments?.recheck(event)) ?? true)
             : true,
-        scheduling: () => {
-          enqueueMissingSnapshots();
+        scheduling: async () => {
+          await enqueueMissingSnapshots();
           return { ownerCap: ownerCap(paths.configFile) };
         },
         publicationReady: (

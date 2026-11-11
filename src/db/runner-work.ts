@@ -151,19 +151,6 @@ export function* itemRunnerWorkReportsSteps(q: Q, itemId: string) {
   );
 }
 
-export function itemRunnerWorkReports(
-  db: Database,
-  itemId: string,
-): {
-  endedAt: number | null;
-  confirmedAt: number | null;
-  reportedAt: number | null;
-  acknowledgedAt: number | null;
-  expiresAt: number | null;
-}[] {
-  return settled(sqliteDb(db).run((q) => itemRunnerWorkReportsSteps(q, itemId)));
-}
-
 export function* openRunnerWorkCommandSteps(q: Q, runId: string) {
   const { runner, runnerCommand, runnerHostStatus, runnerWork } = q.t;
   const row = yield* q.one(

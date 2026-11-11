@@ -29,7 +29,7 @@ export async function probeExecutionLifecycle(
   const clock = new FakeClock(1000);
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
-  const create = (scheduling?: () => object) =>
+  const create = (scheduling?: () => Promise<object>) =>
     new Orchestrator({
       db,
       admission: workspaceAdmission(db),
@@ -210,7 +210,7 @@ export async function probeExecutionLifecycle(
       { state: state("external"), notices: notices("external") },
     );
     await orchestrator.shutdown();
-    orchestrator = create(() => ({}));
+    orchestrator = create(async () => ({}));
     seed("unrelated-active", ["running"]);
     await orchestrator.reconcileExecution();
     observe(

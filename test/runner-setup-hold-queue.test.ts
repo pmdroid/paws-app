@@ -21,7 +21,7 @@ import { createFakeTracker, type FakeTracker } from "../src/linear";
 import { Orchestrator } from "../src/loop";
 import {
   itemOwnerEligibleRunner,
-  itemOwnerHasEligibleRunner,
+  itemOwnerHasEligibleRunnerSteps,
   itemOwnerRunnerSetupNeed,
 } from "../src/runner-placement";
 import { tempDb, tempHome } from "./helpers";
@@ -106,11 +106,14 @@ function orchestrator(
     outbox: new OutboxDispatcher(db, clock),
     clock,
     pawsRoot: tempHome(),
-    scheduling: () => ({}),
+    scheduling: async () => ({}),
     runnersUrl: RUNNERS_URL,
-    ownerHasRunner: (itemId, agent, now) => itemOwnerHasEligibleRunner(db, { itemId, agent, now }),
-    runnerSetupNeed: (itemId, agent, now) => itemOwnerRunnerSetupNeed(db, { itemId, agent, now }),
-    eligibleRunner: (itemId, agent, now) => itemOwnerEligibleRunner(db, { itemId, agent, now }),
+    ownerHasRunner: (q, itemId, agent, now) =>
+      itemOwnerHasEligibleRunnerSteps(q, { itemId, agent, now }),
+    runnerSetupNeed: async (itemId, agent, now) =>
+      itemOwnerRunnerSetupNeed(db, { itemId, agent, now }),
+    eligibleRunner: async (itemId, agent, now) =>
+      itemOwnerEligibleRunner(db, { itemId, agent, now }),
     ...extra,
   });
 }

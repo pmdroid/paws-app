@@ -88,7 +88,7 @@ export async function probeSchedulerRuntime(
     clock,
     outbox: new OutboxDispatcher(db, clock),
     pawsRoot: root,
-    scheduling: () => ({}),
+    scheduling: async () => ({}),
   });
   try {
     registerScheduler(

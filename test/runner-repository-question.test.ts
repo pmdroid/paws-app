@@ -20,7 +20,7 @@ import {
 import { Orchestrator } from "../src/loop";
 import {
   itemOwnerEligibleRunner,
-  itemOwnerHasEligibleRunner,
+  itemOwnerHasEligibleRunnerSteps,
   itemOwnerRunnerSetupNeed,
   itemRepositoryAllowedOn,
   itemRepositoryRefusals,
@@ -91,13 +91,16 @@ function orchestrator(db: Database, clock: FakeClock, jobs: JobLoop) {
     outbox: new OutboxDispatcher(db, clock),
     clock,
     pawsRoot: tempHome(),
-    scheduling: () => ({}),
+    scheduling: async () => ({}),
     runnersUrl: RUNNERS_URL,
-    ownerHasRunner: (itemId, agent, now) => itemOwnerHasEligibleRunner(db, { itemId, agent, now }),
-    runnerSetupNeed: (itemId, agent, now) => itemOwnerRunnerSetupNeed(db, { itemId, agent, now }),
-    eligibleRunner: (itemId, agent, now) => itemOwnerEligibleRunner(db, { itemId, agent, now }),
-    repositoryRefusals: (itemId, now) => itemRepositoryRefusals(db, { itemId, now }),
-    repositoryAllowedOn: (itemId, runnerId, now) =>
+    ownerHasRunner: (q, itemId, agent, now) =>
+      itemOwnerHasEligibleRunnerSteps(q, { itemId, agent, now }),
+    runnerSetupNeed: async (itemId, agent, now) =>
+      itemOwnerRunnerSetupNeed(db, { itemId, agent, now }),
+    eligibleRunner: async (itemId, agent, now) =>
+      itemOwnerEligibleRunner(db, { itemId, agent, now }),
+    repositoryRefusals: async (itemId, now) => itemRepositoryRefusals(db, { itemId, now }),
+    repositoryAllowedOn: async (itemId, runnerId, now) =>
       itemRepositoryAllowedOn(db, { itemId, runnerId, now }),
   });
 }
