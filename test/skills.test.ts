@@ -989,7 +989,7 @@ describe("skill settings API", () => {
 
     expect(added.error).toBeUndefined();
     expect(added.notice).toMatch(/^Added impeccable [0-9a-f]{7} and 2 hooks\.$/);
-    expect(listHooks(db).map(({ id: _id, ...hook }) => hook)).toEqual([
+    expect((await listHooks(sqliteDb(db))).map(({ id: _id, ...hook }) => hook)).toEqual([
       {
         event: "session_start",
         matcher: null,
@@ -1034,8 +1034,8 @@ describe("skill settings API", () => {
     );
 
     for (let index = 0; index < 18; index += 1)
-      saveHook(
-        db,
+      await saveHook(
+        sqliteDb(db),
         {
           id: `hook_${index}`,
           event: "stop",
@@ -1053,7 +1053,7 @@ describe("skill settings API", () => {
       "Paws runs at most 20 hooks. Remove some, or add fewer of this skill's hooks.",
     );
     expect(await getSkill(sqliteDb(db), "impeccable")).toBeNull();
-    expect(listHooks(db)).toHaveLength(18);
+    expect(await listHooks(sqliteDb(db))).toHaveLength(18);
     expect(audit).toEqual([]);
   });
 

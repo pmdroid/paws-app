@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { eq, sql } from "drizzle-orm";
 import type { HookAgent, HookEvent, WorkspaceHook } from "../core";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 import { jsonValue, parsedJson } from "./json-text";
 
 export function* listHooksSteps(q: Q) {
@@ -42,15 +41,15 @@ export function* deleteHookSteps(q: Q, id: string) {
 }
 
 /** Every registered hook, oldest first, so each agent runs them in the order they were added. */
-export function listHooks(db: Database): WorkspaceHook[] {
-  return settled(sqliteDb(db).run((q) => listHooksSteps(q)));
+export async function listHooks(store: Db): Promise<WorkspaceHook[]> {
+  return store.run((q) => listHooksSteps(q));
 }
 
-export function saveHook(db: Database, hook: WorkspaceHook, now: number): void {
-  settled(sqliteDb(db).run((q) => saveHookSteps(q, hook, now)));
+export async function saveHook(store: Db, hook: WorkspaceHook, now: number): Promise<void> {
+  await store.run((q) => saveHookSteps(q, hook, now));
 }
 
 /** Removes the hook. Runs that already started keep it until they end. */
-export function deleteHook(db: Database, id: string): WorkspaceHook | null {
-  return settled(sqliteDb(db).run((q) => deleteHookSteps(q, id)));
+export async function deleteHook(store: Db, id: string): Promise<WorkspaceHook | null> {
+  return store.run((q) => deleteHookSteps(q, id));
 }

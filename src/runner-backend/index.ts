@@ -364,7 +364,7 @@ export function createRemoteAgentRunner(options: {
   }
   /** Workspace hooks for the run's agent, signed into the command with everything else. */
   async function runHooks(agent: string, runnerId: string): Promise<{ hooks?: WorkspaceHook[] }> {
-    const hooks = listHooks(db).filter((hook) =>
+    const hooks = (await listHooks(sqliteDb(db))).filter((hook) =>
       (hook.agents as readonly string[]).includes(agent),
     );
     if (hooks.some((hook) => hook.skill !== null)) {

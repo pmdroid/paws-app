@@ -908,8 +908,8 @@ export async function probeRunnerBackend(
         ),
       { runtimeCommands, runtimeLines },
     );
-    saveHook(
-      db,
+    await saveHook(
+      sqliteDb(db),
       {
         id: "uploaded-guard",
         event: "after_edit",
@@ -944,7 +944,7 @@ export async function probeRunnerBackend(
     hookStop.abort();
     await hooked.catch(() => undefined);
     while ((await work.commands(runnerId)).length) await next();
-    deleteHook(db, "uploaded-guard");
+    await deleteHook(sqliteDb(db), "uploaded-guard");
     db.run("DELETE FROM runner_host_status WHERE runner_id=?", [runnerId]);
     await git(["-C", source, "reset", "--hard", base]);
     const detached = await item();
