@@ -199,7 +199,7 @@ export function validateGroups(
   });
 }
 
-export function createFindingGrouping(options: {
+export async function createFindingGrouping(options: {
   db: Database;
   /** The async `Db` over `db`. Defaults to `sqliteDb(db)`. */
   store?: Db;
@@ -212,7 +212,7 @@ export function createFindingGrouping(options: {
   const store = options.store ?? sqliteDb(db);
   const now = options.now ?? Date.now;
   // A previous process cannot still own a helper after the maximum command lifetime.
-  recoverFindingGroupRuns(db, now());
+  await recoverFindingGroupRuns(store, now());
   return {
     async run(workspaceId: string, signal: AbortSignal): Promise<void> {
       if (!(await store.run((q) => findingGroupingEnabledSteps(q, workspaceId)))) return;

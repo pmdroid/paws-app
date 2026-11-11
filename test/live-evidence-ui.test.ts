@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { insertQueuedItem, insertRun, migrate, openDatabase, saveEvidence } from "../src/db";
+import {
+  insertQueuedItem,
+  insertRun,
+  migrate,
+  openDatabase,
+  saveEvidence,
+  sqliteDb,
+} from "../src/db";
 import type { EvidenceMediaType } from "../src/db";
 import { handleStatusRequest } from "../src/dashboard";
 import {
@@ -23,7 +30,7 @@ const IMAGE = "01JA0000000000000000000002";
 const OTHER_RUN = "01JA0000000000000000000003";
 const HIDDEN = "01JA0000000000000000000004";
 
-function seeded() {
+async function seeded() {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "item", title: "Checkout flow", sessionKey: "visible", now: 1 });
@@ -31,7 +38,7 @@ function seeded() {
   const run = insertRun(db, { itemId: "item", now: 10, agent: "claude" });
   const later = insertRun(db, { itemId: "item", now: 20, agent: "codex" });
   const hidden = insertRun(db, { itemId: "secret", now: 30, agent: "claude" });
-  const save = (
+  const save = async (
     id: string,
     itemId: string,
     runId: string,
@@ -39,7 +46,7 @@ function seeded() {
     displayName: string,
     createdAt: number,
   ) =>
-    saveEvidence(db, {
+    await saveEvidence(sqliteDb(db), {
       id,
       itemId,
       runId,
@@ -52,14 +59,16 @@ function seeded() {
       headCommit: HEAD,
       createdAt,
     });
-  save(VIDEO, "item", run.id, "video/webm", "checkout.webm", 1_700_000_000_000);
-  save(IMAGE, "item", run.id, "image/png", "Cart <total>.png", 1_700_000_001_000);
-  save(OTHER_RUN, "item", later.id, "image/png", "later.png", 1_700_000_002_000);
-  save(HIDDEN, "secret", hidden.id, "image/png", "secret-file.png", 1_700_000_003_000);
+  await save(VIDEO, "item", run.id, "video/webm", "checkout.webm", 1_700_000_000_000);
+  await save(IMAGE, "item", run.id, "image/png", "Cart <total>.png", 1_700_000_001_000);
+  await save(OTHER_RUN, "item", later.id, "image/png", "later.png", 1_700_000_002_000);
+  await save(HIDDEN, "secret", hidden.id, "image/png", "secret-file.png", 1_700_000_003_000);
   return { db, run, later, hidden };
 }
 
-async function galleryFor(db: ReturnType<typeof seeded>["db"]): Promise<EvidenceListResponse> {
+async function galleryFor(
+  db: Awaited<ReturnType<typeof seeded>>["db"],
+): Promise<EvidenceListResponse> {
   const raw = await createLiveStatusProvider(db, {
     sessionIds: ["visible"],
     now: () => new Date(1_700_000_010_000),
@@ -70,7 +79,10 @@ async function galleryFor(db: ReturnType<typeof seeded>["db"]): Promise<Evidence
 }
 
 /** A run's issue page, rendered from that issue's detail as the dashboard loads it. */
-async function runPage(db: ReturnType<typeof seeded>["db"], runId: string): Promise<string> {
+async function runPage(
+  db: Awaited<ReturnType<typeof seeded>>["db"],
+  runId: string,
+): Promise<string> {
   const provider = createLiveStatusProvider(db, {
     sessionIds: ["visible"],
     now: () => new Date(1_700_000_010_000),
@@ -81,7 +93,10 @@ async function runPage(db: ReturnType<typeof seeded>["db"], runId: string): Prom
   return page({ view: "issues", id: itemId }, await provider.issue(itemId));
 }
 
-async function evidencePage(db: ReturnType<typeof seeded>["db"], id: string): Promise<string> {
+async function evidencePage(
+  db: Awaited<ReturnType<typeof seeded>>["db"],
+  id: string,
+): Promise<string> {
   const response = await createLiveStatusProvider(db, {
     sessionIds: ["visible"],
     now: () => new Date(1_700_000_010_000),
@@ -115,7 +130,7 @@ function page(
 
 describe("live evidence", () => {
   test("the gallery lists only the evidence of items the reader can see", async () => {
-    const { db, run, later } = seeded();
+    const { db, run, later } = await seeded();
     const gallery = await galleryFor(db);
     expect(gallery.evidence.map((entry) => [entry.id, entry.kind, entry.runId])).toEqual([
       [VIDEO, "video", run.id],
@@ -129,7 +144,7 @@ describe("live evidence", () => {
   });
 
   test("the run page has an Evidence slot only when the run has evidence", async () => {
-    const { db, run, later } = seeded();
+    const { db, run, later } = await seeded();
     const gallery = await galleryFor(db);
     expect(await runPage(db, run.id)).toContain(
       `<div id="evidence-gallery" data-run="${run.id}"></div>`,
@@ -142,7 +157,7 @@ describe("live evidence", () => {
   });
 
   test("the evidence page shows the file details and the rest of the run", async () => {
-    const { db } = seeded();
+    const { db } = await seeded();
     const html = await evidencePage(db, VIDEO);
     const item = (await galleryFor(db)).evidence[0]!.itemId;
     for (const text of [
@@ -171,7 +186,7 @@ describe("live evidence", () => {
   });
 
   test("evidence the reader cannot see shows the no-access state and nothing about it", async () => {
-    const { db } = seeded();
+    const { db } = await seeded();
     for (const id of [HIDDEN, "01JAZZZZZZZZZZZZZZZZZZZZZZ"]) {
       const html = await evidencePage(db, id);
       expect(html).toContain("You don't have access to this evidence");
@@ -205,7 +220,7 @@ describe("live evidence", () => {
   });
 
   test("the contract rejects malformed evidence", async () => {
-    const { db } = seeded();
+    const { db } = await seeded();
     const raw = JSON.parse(JSON.stringify(await galleryFor(db)));
     raw.evidence[0].kind = "audio";
     expect(parseEvidenceListResponse(raw).ok).toBe(false);

@@ -180,15 +180,15 @@ async function queuedRetro(
   if (!frozen.ok) throw new Error(frozen.message);
   expect((await beginRetroCollection(sqliteDb(db), { retroId: input.id, now: 1 })).ok).toBe(true);
   const digest = input.digest ?? digestFor(frozen.retro.repositories[0]!);
-  const write = (kind: "digest" | "manifest", value: unknown) =>
-    writeRetroArtifact(db, root, {
+  const write = async (kind: "digest" | "manifest", value: unknown) =>
+    await writeRetroArtifact(sqliteDb(db), root, {
       retroId: input.id,
       kind,
       bytes: new TextEncoder().encode(JSON.stringify(value)),
       now: 1,
     });
-  write("digest", digest);
-  write("manifest", { prompt: { maxChars: input.maxChars ?? RETRO_PROMPT_DIGEST_CHARS } });
+  await write("digest", digest);
+  await write("manifest", { prompt: { maxChars: input.maxChars ?? RETRO_PROMPT_DIGEST_CHARS } });
   await freezeRetroInput(sqliteDb(db), {
     retroId: input.id,
     endCursors: Object.fromEntries(

@@ -154,7 +154,7 @@ async function collectAndQueue(
     },
   ]);
   for (const kind of ["digest", "manifest"] as const)
-    writeRetroArtifact(db, root, {
+    await writeRetroArtifact(sqliteDb(db), root, {
       retroId,
       kind,
       bytes: new TextEncoder().encode(`${kind} ${retroId}`),

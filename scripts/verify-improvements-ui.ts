@@ -1,7 +1,7 @@
 import { chromium, expect, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { createRetro, insertQueuedItem, listImprovementDeliveries } from "../src/db";
+import { createRetro, insertQueuedItem, listImprovementDeliveries, sqliteDb } from "../src/db";
 import {
   deliverImprovements,
   syncImprovementOutcomes,
@@ -27,7 +27,7 @@ const startSession: StartIssueSession = async (target) => {
 const w = await world({ linear, startSession, dashboardUrl: "http://127.0.0.1/" });
 await seedDaily(w.db);
 const retro = w.retro.a;
-createRetro(w.db, {
+await createRetro(sqliteDb(w.db), {
   id: "r0",
   workspaceId: "ws",
   windowStart: START - 7 * 86_400_000,
@@ -296,7 +296,7 @@ try {
   await expect(desk.getByRole("button", { name: "File the issue" })).toBeVisible();
   await desk.locator('[data-improvement-form="create"] button[type=submit]').dblclick();
   await expect(desk.locator("#improvements-page")).toContainText("Accepted. Paws files the issue");
-  expect(listImprovementDeliveries(w.db, retro)).toHaveLength(1);
+  expect(await listImprovementDeliveries(sqliteDb(w.db), retro)).toHaveLength(1);
 
   linear.fail("createIssue", "lose");
   const deliver = (at: number) =>
@@ -326,7 +326,7 @@ try {
   await expect(desk.locator("#improvements-page")).toContainText("Delegated.");
   expect(starts).toHaveLength(1);
 
-  const issueId = listImprovementDeliveries(w.db, retro)[0]!.remoteId!;
+  const issueId = (await listImprovementDeliveries(sqliteDb(w.db), retro))[0]!.remoteId!;
   insertQueuedItem(w.db, { id: "work-x", sessionKey: "session-a", now: END + 2_500 });
   w.db.run("UPDATE work_item SET linear_issue_id = ?, state = 'running' WHERE id = 'work-x'", [
     issueId,

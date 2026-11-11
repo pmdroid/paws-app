@@ -142,7 +142,7 @@ async function publishTwoRepositoryRetro(db: ReturnType<typeof openDatabase>, ro
     createdBy: "user-admin",
     now: 1,
   });
-  createRetro(db, {
+  await createRetro(sqliteDb(db), {
     id: "r1",
     workspaceId: "ws",
     windowStart: START,
@@ -182,14 +182,19 @@ async function publishTwoRepositoryRetro(db: ReturnType<typeof openDatabase>, ro
     })),
   };
   const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
-  const digestRecord = writeRetroArtifact(db, root, {
+  const digestRecord = await writeRetroArtifact(sqliteDb(db), root, {
     retroId: "r1",
     kind: "digest",
     bytes: encode(digest),
     now: END,
   });
-  writeRetroArtifact(db, root, { retroId: "r1", kind: "manifest", bytes: encode({}), now: END });
-  writeRetroArtifact(db, root, {
+  await writeRetroArtifact(sqliteDb(db), root, {
+    retroId: "r1",
+    kind: "manifest",
+    bytes: encode({}),
+    now: END,
+  });
+  await writeRetroArtifact(sqliteDb(db), root, {
     retroId: "r1",
     kind: "prompt",
     bytes: new TextEncoder().encode(`Review.\n${JSON.stringify(digest)}`),
@@ -279,7 +284,7 @@ async function publishTwoRepositoryRetro(db: ReturnType<typeof openDatabase>, ro
 }
 
 export async function seedDaily(db: ReturnType<typeof openDatabase>) {
-  recordReviewFindings(db, {
+  await recordReviewFindings(sqliteDb(db), {
     itemId: "item-a",
     repository: A,
     head: "a".repeat(40),
@@ -294,7 +299,7 @@ export async function seedDaily(db: ReturnType<typeof openDatabase>) {
       why: "pre-existing" as const,
     })),
   });
-  const findings = listReviewFindings(db).sort((x, y) => x.id - y.id);
+  const findings = (await listReviewFindings(sqliteDb(db))).sort((x, y) => x.id - y.id);
   const run = randomUUID();
   db.run(
     "INSERT INTO finding_group_run(id,workspace_id,day,started_at,fingerprint,status) VALUES(?,?,?,?,?,'completed')",

@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { jsonField } from "./json-text";
 import { least } from "./pull-comments";
 
@@ -35,8 +34,8 @@ export function* getPushOutageSteps(q: Q, repository: string): Steps<PushOutage 
   );
 }
 
-export function getPushOutage(db: Database, repository: string): PushOutage | null {
-  return settled(sqliteDb(db).run((q) => getPushOutageSteps(q, repository)));
+export async function getPushOutage(store: Db, repository: string): Promise<PushOutage | null> {
+  return store.run((q) => getPushOutageSteps(q, repository));
 }
 
 export function* listPushOutagesSteps(q: Q): Steps<PushOutage[]> {

@@ -41,7 +41,7 @@ import { tempDb } from "./helpers";
 
 const REPO = "acme/app";
 
-function seed() {
+async function seed() {
   const db = tempDb();
   db.run("INSERT INTO workspace VALUES('ws','org','Workspace',1)");
   db.run(
@@ -49,7 +49,7 @@ function seed() {
       installation_observed_at, created_at) VALUES ('session', 'org', 'fixture', 'app', 'team', 1, 0)`,
   );
   insertQueuedItem(db, { id: "item", sessionKey: "session", title: "Task", now: 1 });
-  recordReviewFindings(db, {
+  await recordReviewFindings(sqliteDb(db), {
     itemId: "item",
     repository: REPO,
     head: "a".repeat(40),
@@ -64,7 +64,7 @@ function seed() {
       why: "pre-existing" as const,
     })),
   });
-  const findings = listReviewFindings(db).sort((a, b) => a.id - b.id);
+  const findings = (await listReviewFindings(sqliteDb(db))).sort((a, b) => a.id - b.id);
   return { db, f: findings };
 }
 
@@ -116,7 +116,7 @@ const owner = async (db: Database, f: ReviewFindingRecord) =>
 
 describe("daily finding sources", () => {
   test("a regrouped finding keeps its improvement when the group UUID changes", async () => {
-    const { db, f } = seed();
+    const { db, f } = await seed();
     group(db, [f[0]!, f[1]!]);
     const first = await ingestDailyFindings(db, "ws", { now: 1 });
     expect(first.created).toBe(3);
@@ -133,12 +133,12 @@ describe("daily finding sources", () => {
       changed: 1,
     });
     expect(await owner(db, f[0]!)).toBe(id);
-    expect(listImprovementProposals(db, id!).at(-1)!.title).toBe("Renamed fix");
+    expect((await listImprovementProposals(sqliteDb(db), id!)).at(-1)!.title).toBe("Renamed fix");
     expect(await listImprovements(sqliteDb(db), "ws")).toHaveLength(3);
   });
 
   test("partial and overlapping groups never put one finding in two improvements", async () => {
-    const { db, f } = seed();
+    const { db, f } = await seed();
     group(db, [f[0]!, f[1]!]);
     await ingestDailyFindings(db, "ws", { now: 1 });
     const id = await owner(db, f[0]!);
@@ -150,9 +150,9 @@ describe("daily finding sources", () => {
     expect(result.split).toBeGreaterThan(0);
     expect(await owner(db, f[0]!)).toBe(id);
     expect(await owner(db, f[1]!)).toBe(id);
-    const sources = (await listImprovements(sqliteDb(db), "ws")).flatMap((i) =>
-      improvementFindings(db, i.id).map((m) => m.id),
-    );
+    const sources: number[] = [];
+    for (const i of await listImprovements(sqliteDb(db), "ws"))
+      sources.push(...(await improvementFindings(db, i.id)).map((m) => m.id));
     expect(sources.sort()).toEqual(f.map((x) => x.id).sort());
     expect(await ingestDailyFindings(db, "ws", { now: 3 })).toMatchObject({
       created: 0,
@@ -161,11 +161,11 @@ describe("daily finding sources", () => {
   });
 
   test("an accepted proposal keeps its text and new findings get their own improvement", async () => {
-    const { db, f } = seed();
+    const { db, f } = await seed();
     group(db, [f[0]!]);
     await ingestDailyFindings(db, "ws", { now: 1 });
     const id = (await owner(db, f[0]!))!;
-    const accepted = decideImprovement(db, {
+    const accepted = await decideImprovement(sqliteDb(db), {
       improvementId: id,
       expectedVersion: 1,
       review: { kind: "accept", proposalVersion: 1, intent: { kind: "create" } },
@@ -176,17 +176,21 @@ describe("daily finding sources", () => {
     regroup(db);
     group(db, [f[0]!, f[3]!], { title: "Rewritten" });
     await ingestDailyFindings(db, "ws", { now: 3 });
-    expect(listImprovementProposals(db, id).map((p) => p.title)).toEqual(["Shared fix"]);
+    expect((await listImprovementProposals(sqliteDb(db), id)).map((p) => p.title)).toEqual([
+      "Shared fix",
+    ]);
     const other = (await owner(db, f[3]!))!;
     expect(other).not.toBe(id);
-    expect(listImprovementProposals(db, other).at(-1)!.evidence).toEqual([
+    expect((await listImprovementProposals(sqliteDb(db), other)).at(-1)!.evidence).toEqual([
       `review_finding:${f[3]!.key}`,
     ]);
-    expect(listImprovementProposals(db, other).at(-1)!.problem).not.toContain(f[0]!.text);
+    expect((await listImprovementProposals(sqliteDb(db), other)).at(-1)!.problem).not.toContain(
+      f[0]!.text,
+    );
   });
 
   test("backfill maps filed and dismissed records without decisions, deliveries or verification", async () => {
-    const { db, f } = seed();
+    const { db, f } = await seed();
     const filed = group(db, [f[0]!, f[1]!], { status: "filed", issue: "PAS-20" });
     for (const x of [f[0]!, f[1]!])
       await markReviewFindingFiled(sqliteDb(db), {
@@ -231,7 +235,7 @@ describe("daily finding sources", () => {
     expect(linked.improvement.reviewState).toBe("needs_review");
     expect(linked.improvement.reviewedBy).toBeNull();
     expect(await listImprovementDecisions(sqliteDb(db), linked.improvement.id)).toEqual([]);
-    expect(listImprovementDeliveries(db, linked.improvement.id)).toEqual([]);
+    expect(await listImprovementDeliveries(sqliteDb(db), linked.improvement.id)).toEqual([]);
     const dismissed = items.find((i) => i.members.some((m) => m.findingId === f[2]!.id))!;
     expect(dismissed.lifecycle).toBe("rejected");
     expect(dismissed.legacy[0]).toMatchObject({ kind: "dismissed", reason: "Noise", by: "Ada" });
@@ -242,7 +246,7 @@ describe("daily finding sources", () => {
   });
 
   test("a regroup into subsets keeps every owned finding in the proposal", async () => {
-    const { db, f } = seed();
+    const { db, f } = await seed();
     group(db, [f[0]!, f[1]!]);
     await ingestDailyFindings(db, "ws", { now: 1 });
     const id = (await owner(db, f[0]!))!;
@@ -250,7 +254,7 @@ describe("daily finding sources", () => {
     group(db, [f[0]!], { title: "Only A" });
     group(db, [f[1]!], { title: "Only B" });
     await ingestDailyFindings(db, "ws", { now: 2 });
-    expect(listImprovementProposals(db, id).at(-1)!.evidence).toEqual([
+    expect((await listImprovementProposals(sqliteDb(db), id)).at(-1)!.evidence).toEqual([
       `review_finding:${f[0]!.key}`,
       `review_finding:${f[1]!.key}`,
     ]);
@@ -261,23 +265,23 @@ describe("daily finding sources", () => {
   });
 
   test("restoring an earlier grouping records it again and reports one change", async () => {
-    const { db, f } = seed();
+    const { db, f } = await seed();
     group(db, [f[0]!, f[1]!]);
     await ingestDailyFindings(db, "ws", { now: 1 });
     const id = (await owner(db, f[0]!))!;
     regroup(db);
     group(db, [f[1]!], { title: "Only B" });
     expect(await ingestDailyFindings(db, "ws", { now: 2 })).toMatchObject({ changed: 1 });
-    expect(listImprovementProposals(db, id).at(-1)!.title).toBe("Only B");
+    expect((await listImprovementProposals(sqliteDb(db), id)).at(-1)!.title).toBe("Only B");
     regroup(db);
     group(db, [f[0]!, f[1]!]);
     expect(await ingestDailyFindings(db, "ws", { now: 3 })).toMatchObject({ changed: 1 });
-    expect(listImprovementProposals(db, id).at(-1)!.title).toBe("Shared fix");
+    expect((await listImprovementProposals(sqliteDb(db), id)).at(-1)!.title).toBe("Shared fix");
     expect(await ingestDailyFindings(db, "ws", { now: 4 })).toMatchObject({ changed: 0 });
   });
 
   test("a legacy decision on some members keeps the rest in review", async () => {
-    const { db, f } = seed();
+    const { db, f } = await seed();
     group(db, [f[0]!, f[1]!]);
     await ingestDailyFindings(db, "ws", { now: 1 });
     const id = (await owner(db, f[0]!))!;
@@ -313,7 +317,7 @@ describe("daily finding sources", () => {
   });
 
   test("a claimed legacy action stays pending", async () => {
-    const { db, f } = seed();
+    const { db, f } = await seed();
     group(db, [f[0]!]);
     await ingestDailyFindings(db, "ws", { now: 1 });
     const id = (await owner(db, f[0]!))!;
@@ -323,12 +327,12 @@ describe("daily finding sources", () => {
     );
     expect(item!.lifecycle).toBe("pending");
     expect(
-      legacyActions(improvementFindings(db, id), await listFindingGroups(sqliteDb(db), "ws")),
+      legacyActions(await improvementFindings(db, id), await listFindingGroups(sqliteDb(db), "ws")),
     ).toEqual([expect.objectContaining({ kind: "claimed", findingIds: [f[0]!.id] })]);
   });
 
   test("permission loss hides items before counts", async () => {
-    const { db, f } = seed();
+    const { db, f } = await seed();
     group(db, [f[0]!, f[1]!]);
     await ingestDailyFindings(db, "ws", { now: 1 });
     expect(await listInboxItems(db, { workspaceId: "ws", sessionIds: ["session"] })).toHaveLength(
@@ -344,7 +348,7 @@ describe("daily finding sources", () => {
 
 describe("daily findings and retros share one inbox", () => {
   test("both sources reuse one known issue and keep separate evidence", async () => {
-    const { db, f } = seed();
+    const { db, f } = await seed();
     group(db, [f[0]!], { status: "filed", issue: "PAS-20" });
     await markReviewFindingFiled(sqliteDb(db), {
       key: f[0]!.key,
@@ -364,7 +368,7 @@ describe("daily findings and retros share one inbox", () => {
       createdBy: "ada",
       now: 1,
     });
-    createRetro(db, {
+    await createRetro(sqliteDb(db), {
       id: "r1",
       workspaceId: "ws",
       windowStart: 0,
@@ -384,7 +388,7 @@ describe("daily findings and retros share one inbox", () => {
         excerpt: "Same repair",
       },
     ]);
-    const retro = recordImprovementProposal(db, {
+    const retro = await recordImprovementProposal(sqliteDb(db), {
       workspaceId: "ws",
       repository: REPO,
       source: { kind: "retro_item", key: "r1/git" },
@@ -398,14 +402,14 @@ describe("daily findings and retros share one inbox", () => {
       },
       now: 7,
     });
-    decideImprovement(db, {
+    await decideImprovement(sqliteDb(db), {
       improvementId: retro.improvementId,
       expectedVersion: 1,
       review: { kind: "accept", proposalVersion: 1, intent: { kind: "link", issueId: "issue-20" } },
       actor: "ada",
       now: 8,
     });
-    const delivery = listImprovementDeliveries(db, retro.improvementId)[0]!;
+    const delivery = (await listImprovementDeliveries(sqliteDb(db), retro.improvementId))[0]!;
     await claimImprovementDelivery(sqliteDb(db), {
       deliveryId: delivery.id,
       owner: "w",
@@ -429,7 +433,9 @@ describe("daily findings and retros share one inbox", () => {
     const retroItem = shared.find((i) => i.sourceKind === "retro_item")!;
     expect(retroItem.criterion).toBe("No repair questions");
     expect(reuseChoice(retroItem, "open")).toMatchObject({ kind: "reuse" });
-    expect(getImprovement(db, retroItem.improvement.id)!.issue!.id).toBe("issue-20");
+    expect((await getImprovement(sqliteDb(db), retroItem.improvement.id))!.issue!.id).toBe(
+      "issue-20",
+    );
     expect(await listInboxItems(db, { workspaceId: "ws", repositories: ["acme/other"] })).toEqual(
       [],
     );

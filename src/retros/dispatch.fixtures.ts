@@ -134,7 +134,7 @@ export async function world(options: { activity?: boolean; retries?: number } = 
     createdBy: "admin",
     now: 1,
   });
-  createRetro(db, {
+  await createRetro(sqliteDb(db), {
     id: "r1",
     workspaceId: "ws",
     windowStart: FIXTURE_START,

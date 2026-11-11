@@ -56,12 +56,22 @@ describe("run ownership", () => {
     const a = shared.open();
     const b = shared.open();
     try {
-      const acme = registerInstance(a, { role: "all", host: "acme-a", version: null, now: 0 });
+      const acme = await registerInstance(sqliteDb(a), {
+        role: "all",
+        host: "acme-a",
+        version: null,
+        now: 0,
+      });
       const ownedRun = await runningItem(a, "acme-1", acme.id, 0);
       insertQueuedItem(a, { id: "acme-2", sessionKey: "acme-2-session", now: 0 });
       beginImplementRun(a, "acme-2", 0, checkpoint);
 
-      const other = registerInstance(b, { role: "all", host: "acme-b", version: null, now: 1_000 });
+      const other = await registerInstance(sqliteDb(b), {
+        role: "all",
+        host: "acme-b",
+        version: null,
+        now: 1_000,
+      });
       expect(recoverOnStartup(b, 1_000, undefined, other.id)).toEqual([
         { type: "resume", freshSession: true, checkpoint },
       ]);
@@ -83,16 +93,35 @@ describe("run ownership", () => {
     const c = shared.open();
     const clock = new FakeClock(0);
     try {
-      const acme = registerInstance(a, { role: "all", host: "acme-a", version: null, now: 0 });
+      const acme = await registerInstance(sqliteDb(a), {
+        role: "all",
+        host: "acme-a",
+        version: null,
+        now: 0,
+      });
       const runId = await runningItem(a, "acme-1", acme.id, 0);
       const live = [
         {
           db: b,
-          id: registerInstance(b, { role: "all", host: "acme-b", version: null, now: 0 }).id,
+          id: (
+            await registerInstance(sqliteDb(b), {
+              role: "all",
+              host: "acme-b",
+              version: null,
+              now: 0,
+            })
+          ).id,
         },
         {
           db: c,
-          id: registerInstance(c, { role: "all", host: "acme-c", version: null, now: 0 }).id,
+          id: (
+            await registerInstance(sqliteDb(c), {
+              role: "all",
+              host: "acme-c",
+              version: null,
+              now: 0,
+            })
+          ).id,
         },
       ];
       const decisions: { by: string; decision: StartupDecision }[] = [];
@@ -140,7 +169,7 @@ describe("run ownership", () => {
     const db = shared.open();
     try {
       const exited = Bun.spawnSync(["true"]).pid;
-      const crashed = registerInstance(db, {
+      const crashed = await registerInstance(sqliteDb(db), {
         role: "all",
         host: "acme",
         version: null,
@@ -148,7 +177,7 @@ describe("run ownership", () => {
         pid: exited,
       });
       const runId = await runningItem(db, "acme-1", crashed.id, 0);
-      const restarted = registerInstance(db, {
+      const restarted = await registerInstance(sqliteDb(db), {
         role: "all",
         host: "acme",
         version: null,
@@ -169,8 +198,18 @@ describe("run ownership", () => {
     const a = shared.open();
     const b = shared.open();
     try {
-      const acme = registerInstance(a, { role: "all", host: "acme-a", version: null, now: 0 });
-      const other = registerInstance(b, { role: "all", host: "acme-b", version: null, now: 0 });
+      const acme = await registerInstance(sqliteDb(a), {
+        role: "all",
+        host: "acme-a",
+        version: null,
+        now: 0,
+      });
+      const other = await registerInstance(sqliteDb(b), {
+        role: "all",
+        host: "acme-b",
+        version: null,
+        now: 0,
+      });
       const mine = await runningItem(a, "acme-1", acme.id, 0);
       const theirs = await runningItem(b, "acme-2", other.id, 0);
 

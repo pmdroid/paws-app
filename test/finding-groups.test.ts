@@ -11,6 +11,7 @@ import {
   syncWorkspaceMember,
   JobLoop,
   sqliteDb,
+  recoverFindingGroupRuns,
 } from "../src/db";
 import {
   createFindingGrouping,
@@ -24,11 +25,11 @@ import { handleFindingGroupsRequest } from "../src/dashboard";
 import { tempDb } from "./helpers";
 
 const epoch = Date.parse("2026-10-28T06:00:00Z");
-function seed() {
+async function seed() {
   const db = tempDb();
   db.run("INSERT INTO workspace VALUES('ws','org','Workspace',1)");
   insertQueuedItem(db, { id: "item", sessionKey: "session", title: "Task", now: 1 });
-  recordReviewFindings(db, {
+  await recordReviewFindings(sqliteDb(db), {
     itemId: "item",
     repository: "acme/app",
     head: "a".repeat(40),
@@ -67,9 +68,13 @@ function seed() {
     teamIds: [],
     now: 1,
   });
-  const sources = (): GroupingInput[] =>
-    listReviewFindings(db).map((f) => ({ ...f, teamId: "team", sessionId: "session" }));
-  const ids = sources().map((f) => f.id);
+  const sources = async (): Promise<GroupingInput[]> =>
+    (await listReviewFindings(sqliteDb(db))).map((f) => ({
+      ...f,
+      teamId: "team",
+      sessionId: "session",
+    }));
+  const ids = (await listReviewFindings(sqliteDb(db))).map((f) => f.id);
   const text = JSON.stringify({
     groups: [
       {
@@ -93,7 +98,7 @@ function seed() {
     { identifier: "PAS-20", title: "Fix timing comparisons", teamId: "team" },
   ]);
   let now = epoch;
-  const grouping = createFindingGrouping({
+  const grouping = await createFindingGrouping({
     db,
     sources: () => sources(),
     helper: helper.run,
@@ -114,7 +119,7 @@ function seed() {
 }
 
 test("daily grouping validates ids, deduplicates membership and limits suggestions to supplied titles", async () => {
-  const f = seed();
+  const f = await seed();
   try {
     await Promise.all([
       f.grouping.run("ws", new AbortController().signal),
@@ -159,14 +164,14 @@ test("daily grouping validates ids, deduplicates membership and limits suggestio
 });
 
 test("filed groups survive replacement and are not regrouped", async () => {
-  const f = seed();
+  const f = await seed();
   try {
     await f.grouping.run("ws", new AbortController().signal);
     const group = (await listFindingGroups(sqliteDb(f.db), "ws"))[0]!;
     f.db.run("UPDATE finding_group SET status='filed' WHERE id=?", [group.id]);
     for (const id of group.memberIds)
       await markReviewFindingFiled(sqliteDb(f.db), {
-        key: f.sources().find((r) => r.id === id)!.key,
+        key: (await f.sources()).find((r) => r.id === id)!.key,
         issue: "PAS-1",
         by: "Ada",
         now: epoch,
@@ -188,9 +193,9 @@ test("filed groups survive replacement and are not regrouped", async () => {
 });
 
 test("empty findings and failed helpers never spend extra turns on the same UTC day", async () => {
-  const f = seed();
+  const f = await seed();
   try {
-    const empty = createFindingGrouping({
+    const empty = await createFindingGrouping({
       db: f.db,
       sources: () => [],
       issues: f.issues,
@@ -200,9 +205,9 @@ test("empty findings and failed helpers never spend extra turns on the same UTC 
     await empty.run("ws", new AbortController().signal);
     expect(f.helper.calls).toHaveLength(0);
     expect(f.issues.reads).toHaveLength(0);
-    const failed = createFindingGrouping({
+    const failed = await createFindingGrouping({
       db: f.db,
-      sources: () => f.sources(),
+      sources: f.sources,
       issues: f.issues,
       helper: async () => {
         throw new Error("offline");
@@ -218,10 +223,10 @@ test("empty findings and failed helpers never spend extra turns on the same UTC 
   }
 });
 
-test("output schema rejects malformed groups and suggestions from another team", () => {
-  const f = seed();
+test("output schema rejects malformed groups and suggestions from another team", async () => {
+  const f = await seed();
   try {
-    expect(validateGroups('{"groups":[{"title":42}]}', f.sources(), [])).toEqual([]);
+    expect(validateGroups('{"groups":[{"title":42}]}', await f.sources(), [])).toEqual([]);
     const groups = validateGroups(
       JSON.stringify({
         groups: [
@@ -234,7 +239,7 @@ test("output schema rejects malformed groups and suggestions from another team",
           },
         ],
       }),
-      f.sources(),
+      await f.sources(),
       [{ identifier: "OTHER-1", title: "Secrets", teamId: "other" }],
     );
     expect(groups[0]!.suggestedIssue).toBeNull();
@@ -244,7 +249,7 @@ test("output schema rejects malformed groups and suggestions from another team",
 });
 
 test("scheduler honors HH:MM UTC and manual grouping can run before that time", async () => {
-  const f = seed();
+  const f = await seed();
   try {
     let now = epoch - 60000;
     const jobs = new JobLoop(f.db, { now: () => now, mono: () => now });
@@ -268,7 +273,7 @@ test("scheduler honors HH:MM UTC and manual grouping can run before that time", 
   }
 });
 
-async function post(f: ReturnType<typeof seed>, body: unknown, sessionIds?: string[]) {
+async function post(f: Awaited<ReturnType<typeof seed>>, body: unknown, sessionIds?: string[]) {
   return (await handleFindingGroupsRequest(
     new Request("http://localhost/api/finding-groups", {
       method: "POST",
@@ -285,7 +290,7 @@ async function post(f: ReturnType<typeof seed>, body: unknown, sessionIds?: stri
 }
 for (const action of ["file", "add"] as const)
   test(`group ${action} writes once to Linear and files all members`, async () => {
-    const f = seed();
+    const f = await seed();
     try {
       await f.grouping.run("ws", new AbortController().signal);
       const group = (await listFindingGroups(sqliteDb(f.db), "ws")).find((g) => g.suggestedIssue)!;
@@ -299,7 +304,7 @@ for (const action of ["file", "add"] as const)
       const body = action === "file" ? f.issues.files[0]!.description : f.issues.comments[0]!.body;
       expect(body).toContain(group.summary);
       expect(body).toContain("src/linear.ts:12");
-      for (const finding of f.sources().filter((r) => group.memberIds.includes(r.id)))
+      for (const finding of (await f.sources()).filter((r) => group.memberIds.includes(r.id)))
         expect(finding).toMatchObject({
           status: "filed",
           filedIssue: action === "file" ? "PAS-1" : "PAS-20",
@@ -310,7 +315,7 @@ for (const action of ["file", "add"] as const)
   });
 
 test("dismissal requires a reason, observers are denied and only admins can run now", async () => {
-  const f = seed();
+  const f = await seed();
   try {
     await f.grouping.run("ws", new AbortController().signal);
     const group = (await listFindingGroups(sqliteDb(f.db), "ws"))[0]!;
@@ -339,7 +344,7 @@ test("group actions require the workspace CSRF token and same origin", async () 
   const { startServer } = await import("../src/server");
   const { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } =
     await import("../src/workspace");
-  const f = seed();
+  const f = await seed();
   const reservation = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
   const port = reservation.port!;
   await reservation.stop(true);
@@ -413,7 +418,7 @@ test("group actions require the workspace CSRF token and same origin", async () 
 });
 
 test("a lost Linear reply keeps the action retryable and protects its members during regrouping", async () => {
-  const f = seed();
+  const f = await seed();
   try {
     await f.grouping.run("ws", new AbortController().signal);
     const group = (await listFindingGroups(sqliteDb(f.db), "ws")).find((g) => g.suggestedIssue)!;
@@ -461,9 +466,9 @@ test("a lost Linear reply keeps the action retryable and protects its members du
 
 test("large inputs fit the helper schema and rotate overflow without another finding change", async () => {
   const { groupingBatch, groupingPrompt } = await import("../src/finding-groups");
-  const f = seed();
+  const f = await seed();
   try {
-    const source = f.sources()[0]!;
+    const source = (await f.sources())[0]!;
     const findings = Array.from({ length: 300 }, (_, i) => ({
       ...source,
       id: i + 1,
@@ -482,7 +487,7 @@ test("large inputs fit the helper schema and rotate overflow without another fin
     expect(next.open.map((row) => row.id)).not.toEqual(first.open.map((row) => row.id));
     const helper = createFakeGroupingHelper('{"groups":[]}');
     let now = epoch;
-    const grouping = createFindingGrouping({
+    const grouping = await createFindingGrouping({
       db: f.db,
       sources: () => findings,
       issues: f.issues,
@@ -499,15 +504,14 @@ test("large inputs fit the helper schema and rotate overflow without another fin
 });
 
 test("fenced model JSON parses and interrupted runs recover without spending another daily turn", async () => {
-  const { recoverFindingGroupRuns } = await import("../src/db");
-  const f = seed();
+  const f = await seed();
   try {
-    expect(validateGroups('```json\n{"groups":[]}\n```', f.sources(), [])).toEqual([]);
+    expect(validateGroups('```json\n{"groups":[]}\n```', await f.sources(), [])).toEqual([]);
     f.db.run(
       "INSERT INTO finding_group_run(id,workspace_id,day,started_at,fingerprint,status) VALUES('crashed','ws','2026-10-28',?,'old','running')",
       [epoch],
     );
-    recoverFindingGroupRuns(f.db, epoch + 12 * 60000);
+    await recoverFindingGroupRuns(sqliteDb(f.db), epoch + 12 * 60000);
     expect(await lastFindingGroupRun(sqliteDb(f.db), "ws")).toMatchObject({
       status: "failed",
       finishedAt: epoch + 12 * 60000,
@@ -520,7 +524,7 @@ test("fenced model JSON parses and interrupted runs recover without spending ano
 });
 
 test("a definitive Linear refusal releases the group so a member can dismiss it", async () => {
-  const f = seed();
+  const f = await seed();
   try {
     await f.grouping.run("ws", new AbortController().signal);
     const group = (await listFindingGroups(sqliteDb(f.db), "ws"))[0]!;
@@ -540,7 +544,7 @@ test("a definitive Linear refusal releases the group so a member can dismiss it"
 });
 
 test("reopened findings can join new groups while acted-on group history survives", async () => {
-  const f = seed();
+  const f = await seed();
   try {
     await f.grouping.run("ws", new AbortController().signal);
     const group = (await listFindingGroups(sqliteDb(f.db), "ws"))[0]!;
@@ -560,7 +564,7 @@ test("reopened findings can join new groups while acted-on group history survive
 
 test("claimed Linear actions reconcile even after a review marks members gone", async () => {
   for (const action of ["file", "add"] as const) {
-    const f = seed();
+    const f = await seed();
     try {
       await f.grouping.run("ws", new AbortController().signal);
       const group = (await listFindingGroups(sqliteDb(f.db), "ws")).find((g) => g.suggestedIssue)!;
@@ -590,8 +594,7 @@ test("claimed Linear actions reconcile even after a review marks members gone", 
       expect((await post(f, { action, id: group.id })).status).toBe(200);
       expect(f.issues.files.length + f.issues.comments.length).toBe(1);
       expect(
-        f
-          .sources()
+        (await f.sources())
           .filter((row) => group.memberIds.includes(row.id))
           .every((row) => row.status === "filed"),
       ).toBe(true);
@@ -603,7 +606,7 @@ test("claimed Linear actions reconcile even after a review marks members gone", 
 
 test("untouched groups follow individual dismissals immediately and locks are workspace-scoped", async () => {
   const { handleFindingsRequest } = await import("../src/dashboard");
-  const f = seed();
+  const f = await seed();
   try {
     await f.grouping.run("ws", new AbortController().signal);
     const group = (await listFindingGroups(sqliteDb(f.db), "ws"))[0]!;
@@ -638,12 +641,12 @@ test("untouched groups follow individual dismissals immediately and locks are wo
   }
 });
 
-test("schema accepts harmless additional keys, omitted issue suggestions and JSON prose", () => {
-  const f = seed();
+test("schema accepts harmless additional keys, omitted issue suggestions and JSON prose", async () => {
+  const f = await seed();
   try {
     const groups = validateGroups(
       `Here are the groups:\n${JSON.stringify({ groups: [{ title: "Fix", summary: "Shared fix", scope: "src", findingIds: f.ids, reason: "Related comparisons" }] })}\nDone.`,
-      f.sources(),
+      await f.sources(),
       [],
     );
     expect(groups).toHaveLength(1);
@@ -654,9 +657,9 @@ test("schema accepts harmless additional keys, omitted issue suggestions and JSO
 });
 
 test("overflow advances by a full batch and keeps groups outside the current batch", async () => {
-  const f = seed();
+  const f = await seed();
   try {
-    const source = f.sources()[0]!;
+    const source = (await f.sources())[0]!;
     const rows = Array.from({ length: 80 }, (_, i) => ({
       ...source,
       id: i + 1,
@@ -664,7 +667,7 @@ test("overflow advances by a full batch and keeps groups outside the current bat
     }));
     const batches: number[][] = [];
     let now = epoch;
-    const grouping = createFindingGrouping({
+    const grouping = await createFindingGrouping({
       db: f.db,
       sources: () => rows,
       issues: f.issues,
@@ -699,7 +702,7 @@ test("overflow advances by a full batch and keeps groups outside the current bat
 });
 
 test("unchanged runs record why they skipped without reading Linear or spending a turn", async () => {
-  const f = seed();
+  const f = await seed();
   try {
     await f.grouping.run("ws", new AbortController().signal);
     f.nextDay();
@@ -717,7 +720,7 @@ test("unchanged runs record why they skipped without reading Linear or spending 
 test("admin grouping covers findings reported by teams outside that admin's membership list", async () => {
   const { recordLinearInstallation } = await import("../src/db");
   const { workspaceGroupingSources } = await import("../src/finding-groups");
-  const f = seed();
+  const f = await seed();
   try {
     syncWorkspaceMember(f.db, {
       workspaceId: "ws",
@@ -745,7 +748,7 @@ test("admin grouping covers findings reported by teams outside that admin's memb
       title: "Other team finding",
       now: 3,
     });
-    recordReviewFindings(f.db, {
+    await recordReviewFindings(sqliteDb(f.db), {
       itemId: "team-y-item",
       repository: "acme/app",
       head: "a".repeat(40),
@@ -773,7 +776,7 @@ test("admin grouping covers findings reported by teams outside that admin's memb
 test("grouping authority is an admin who owns a runner, not an earlier admin without one", async () => {
   const { recordLinearInstallation } = await import("../src/db");
   const { groupingAuthorityUser, workspaceGroupingSources } = await import("../src/finding-groups");
-  const f = seed();
+  const f = await seed();
   try {
     putWorkspaceUser(f.db, {
       id: "aaa",
@@ -808,9 +811,9 @@ test("grouping authority is an admin who owns a runner, not an earlier admin wit
 });
 
 test("a partial grouping cycle processes each finding and then skips unchanged snapshots", async () => {
-  const f = seed();
+  const f = await seed();
   try {
-    const source = f.sources()[0]!;
+    const source = (await f.sources())[0]!;
     const rows = Array.from({ length: 25 }, (_, i) => ({
       ...source,
       id: i + 1,
@@ -819,7 +822,7 @@ test("a partial grouping cycle processes each finding and then skips unchanged s
     const covered = new Set<number>();
     let calls = 0;
     let now = epoch;
-    const grouping = createFindingGrouping({
+    const grouping = await createFindingGrouping({
       db: f.db,
       sources: () => rows,
       issues: f.issues,
@@ -850,9 +853,9 @@ test("a partial grouping cycle processes each finding and then skips unchanged s
 });
 
 test("daily finding updates do not reset the overflow cursor", async () => {
-  const f = seed();
+  const f = await seed();
   try {
-    const source = f.sources()[0]!;
+    const source = (await f.sources())[0]!;
     const rows = Array.from({ length: 40 }, (_, i) => ({
       ...source,
       id: i + 1,
@@ -860,7 +863,7 @@ test("daily finding updates do not reset the overflow cursor", async () => {
     }));
     const covered = new Set<number>();
     let now = epoch;
-    const grouping = createFindingGrouping({
+    const grouping = await createFindingGrouping({
       db: f.db,
       sources: () => rows,
       issues: f.issues,
@@ -884,13 +887,13 @@ test("daily finding updates do not reset the overflow cursor", async () => {
   }
 });
 
-test("invalid model groups do not discard valid groups", () => {
-  const f = seed();
+test("invalid model groups do not discard valid groups", async () => {
+  const f = await seed();
   try {
     const valid = { title: "Fix", summary: "Shared fix", scope: "src", findingIds: f.ids };
     const groups = validateGroups(
       JSON.stringify({ groups: [{ title: 42 }, { ...valid, title: "x".repeat(230) }, valid] }),
-      f.sources(),
+      await f.sources(),
       [],
     );
     expect(groups).toHaveLength(1);
@@ -902,7 +905,7 @@ test("invalid model groups do not discard valid groups", () => {
 });
 
 test("dismissal conflicts roll back group completion and release the claim", async () => {
-  const f = seed();
+  const f = await seed();
   try {
     await f.grouping.run("ws", new AbortController().signal);
     const group = (await listFindingGroups(sqliteDb(f.db), "ws"))[0]!;
@@ -920,7 +923,7 @@ test("dismissal conflicts roll back group completion and release the claim", asy
       action: null,
       statusReason: null,
     });
-    expect(f.sources().find((row) => row.id === member)?.status).toBe("filed");
+    expect((await f.sources()).find((row) => row.id === member)?.status).toBe("filed");
   } finally {
     f.db.close();
   }
@@ -928,9 +931,9 @@ test("dismissal conflicts roll back group completion and release the claim", asy
 
 test("overflow resumes after a stable ID when earlier findings close and wraps into the head", async () => {
   const { groupingBatch } = await import("../src/finding-groups");
-  const f = seed();
+  const f = await seed();
   try {
-    const source = f.sources()[0]!;
+    const source = (await f.sources())[0]!;
     const rows = Array.from({ length: 25 }, (_, i) => ({
       ...source,
       id: (i + 1) * 10,
@@ -951,9 +954,9 @@ test("overflow resumes after a stable ID when earlier findings close and wraps i
 });
 
 test("persisted overflow IDs survive closures between daily runs", async () => {
-  const f = seed();
+  const f = await seed();
   try {
-    const source = f.sources()[0]!;
+    const source = (await f.sources())[0]!;
     let rows = Array.from({ length: 25 }, (_, i) => ({
       ...source,
       id: (i + 1) * 10,
@@ -961,7 +964,7 @@ test("persisted overflow IDs survive closures between daily runs", async () => {
     }));
     let now = epoch;
     const batches: number[][] = [];
-    const grouping = createFindingGrouping({
+    const grouping = await createFindingGrouping({
       db: f.db,
       issues: f.issues,
       sources: () => rows,
@@ -986,20 +989,20 @@ test("persisted overflow IDs survive closures between daily runs", async () => {
 });
 
 test("recovered runs cannot publish groups or overwrite interrupted history", async () => {
-  const { recoverFindingGroupRuns } = await import("../src/db");
-  const f = seed();
+  const f = await seed();
   try {
     await f.grouping.run("ws", new AbortController().signal);
     const before = await listFindingGroups(sqliteDb(f.db), "ws");
     let now = epoch + 86400000;
-    const grouping = createFindingGrouping({
+    const grouping = await createFindingGrouping({
       db: f.db,
       issues: f.issues,
-      sources: () => f.sources().map((row) => ({ ...row, text: row.text + " changed" })),
+      sources: async () =>
+        (await f.sources()).map((row) => ({ ...row, text: row.text + " changed" })),
       now: () => now,
       helper: async () => {
         now += 12 * 60000;
-        recoverFindingGroupRuns(f.db, now);
+        await recoverFindingGroupRuns(sqliteDb(f.db), now);
         return {
           text: JSON.stringify({
             groups: [{ title: "Fix", summary: "Shared fix", scope: "src", findingIds: f.ids }],
@@ -1022,11 +1025,11 @@ test("recovered runs cannot publish groups or overwrite interrupted history", as
 });
 
 test("a preempted turn consumes the daily allowance and retries on the next UTC day", async () => {
-  const f = seed();
+  const f = await seed();
   try {
     let now = epoch;
     let attempts = 0;
-    const grouping = createFindingGrouping({
+    const grouping = await createFindingGrouping({
       db: f.db,
       issues: f.issues,
       sources: f.sources,
@@ -1053,20 +1056,20 @@ test("a preempted turn consumes the daily allowance and retries on the next UTC 
 });
 
 test("legacy position cursors start a fresh ID-based pass", async () => {
-  const f = seed();
+  const f = await seed();
   try {
     f.db.run(
       "INSERT INTO finding_group_run(id,workspace_id,day,started_at,finished_at,fingerprint,status,finding_cursor) VALUES('legacy','ws','2026-10-27',?,?,'legacy-snapshot','completed',100)",
       [epoch - 86400000, epoch - 86400000],
     );
-    const source = f.sources()[0]!;
+    const source = (await f.sources())[0]!;
     let firstId = 0;
     const rows = Array.from({ length: 25 }, (_, i) => ({
       ...source,
       id: (i + 1) * 10,
       text: "x".repeat(4000),
     }));
-    const grouping = createFindingGrouping({
+    const grouping = await createFindingGrouping({
       db: f.db,
       issues: f.issues,
       sources: () => rows,
@@ -1085,7 +1088,7 @@ test("legacy position cursors start a fresh ID-based pass", async () => {
 });
 
 test("a workspace with grouping off spends no turn and cannot run now", async () => {
-  const f = seed();
+  const f = await seed();
   try {
     await setFindingGrouping(sqliteDb(f.db), "ws", false);
     await f.grouping.run("ws", new AbortController().signal);

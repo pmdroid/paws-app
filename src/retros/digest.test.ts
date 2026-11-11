@@ -183,7 +183,7 @@ async function collect(
   root: string,
   input: { id: string; start: number; end: number; repositories?: string[]; secrets?: string[] },
 ) {
-  createRetro(db, {
+  await createRetro(sqliteDb(db), {
     id: input.id,
     workspaceId: "ws",
     windowStart: input.start,
@@ -273,7 +273,7 @@ describe("incremental retro windows", () => {
     for (let day = 0; day < 6; day += 1)
       transition(db, id, { at: at(day, 1), from: "queued", to: "running" });
     await collect(db, root, { id: "r1", start: at(0), end: at(3) });
-    createRetro(db, {
+    await createRetro(sqliteDb(db), {
       id: "r-overlap",
       workspaceId: "ws",
       windowStart: at(1),

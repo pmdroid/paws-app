@@ -219,7 +219,7 @@ describe("live status provider", () => {
       ["shot-1", "a".repeat(40)],
       ["shot-2", "b".repeat(40)],
     ] as const)
-      saveEvidence(db, {
+      await saveEvidence(sqliteDb(db), {
         id,
         itemId: item.id,
         runId: run.id,
@@ -280,7 +280,7 @@ describe("live status provider", () => {
       email: "ada@example.invalid",
     });
     for (const id of ["shot-1", "shot-2"])
-      saveEvidence(db, {
+      await saveEvidence(sqliteDb(db), {
         id,
         itemId: item.id,
         runId: run.id,

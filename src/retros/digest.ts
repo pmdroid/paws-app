@@ -1087,13 +1087,13 @@ export async function collectRetroDigest(
     coverage: digest.coverage,
     prompt: view.manifest,
   };
-  writeRetroArtifact(db, input.artifactRoot, {
+  await writeRetroArtifact(sqliteDb(db), input.artifactRoot, {
     retroId: retro.id,
     kind: "digest",
     bytes: digestBytes,
     now: input.now,
   });
-  const manifestRecord = writeRetroArtifact(db, input.artifactRoot, {
+  const manifestRecord = await writeRetroArtifact(sqliteDb(db), input.artifactRoot, {
     retroId: retro.id,
     kind: "manifest",
     bytes: new TextEncoder().encode(JSON.stringify(manifest)),

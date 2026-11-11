@@ -118,9 +118,14 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
   });
   bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
   bindWorkItemRepository(db, item.id, repository);
-  const start = () =>
-    registerInstance(db, { role: "all", host: "acme", version: null, now: pawsNow() });
-  let instance = start();
+  const start = async () =>
+    await registerInstance(sqliteDb(db), {
+      role: "all",
+      host: "acme",
+      version: null,
+      now: pawsNow(),
+    });
+  let instance = await start();
   await claimRun(sqliteDb(db), run.id, instance.id);
   const keys = generateKeyPairSync("ed25519");
   const open = () => {
@@ -402,7 +407,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
       db.close();
       await this.advance(ms, false);
       db = openDatabase(path);
-      instance = start();
+      instance = await start();
       paws = open();
       link = "up";
       return recoverOnStartup(db, clock.at, RUNNER_OFFLINE_BUDGET_MS, instance.id);

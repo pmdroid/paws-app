@@ -28,9 +28,9 @@ type LiveTurn = { controller: AbortController; finish(): void };
 
 const clock: Clock = { now: () => Date.now(), mono: () => performance.now() };
 
-function paws(path: string, root: string, name: string, poll = true) {
+async function paws(path: string, root: string, name: string, poll = true) {
   const db = openDatabase(path);
-  const self = registerInstance(db, {
+  const self = await registerInstance(sqliteDb(db), {
     role: "all",
     host: `acme-${name}`,
     version: null,
@@ -70,13 +70,13 @@ function paws(path: string, root: string, name: string, poll = true) {
   };
 }
 
-function twoInstances(poll = true) {
+async function twoInstances(poll = true) {
   const root = tempHome();
   const path = join(root, "paws.db");
   const setup = openDatabase(path);
   migrate(setup);
   setup.close();
-  return { a: paws(path, root, "a", poll), b: paws(path, root, "b", poll) };
+  return { a: await paws(path, root, "a", poll), b: await paws(path, root, "b", poll) };
 }
 
 async function runningItem(db: Database, id: string, owner: string): Promise<void> {
@@ -100,7 +100,7 @@ function stop(
 }
 
 test("a stop received by instance B aborts the turn on instance A, which owns the run, within 2 s", async () => {
-  const { a, b } = twoInstances();
+  const { a, b } = await twoInstances();
   try {
     await runningItem(a.db, "acme-1", a.id);
     const turn = await a.startTurn("acme-1");
@@ -124,7 +124,7 @@ test("a stop received by instance B aborts the turn on instance A, which owns th
 });
 
 test("a stop for a run on the receiving instance aborts its turn at once and addresses no one else", async () => {
-  const { a, b } = twoInstances();
+  const { a, b } = await twoInstances();
   try {
     await runningItem(a.db, "acme-2", a.id);
     const turn = await a.startTurn("acme-2");
@@ -144,7 +144,7 @@ test("a stop for a run on the receiving instance aborts its turn at once and add
 });
 
 test("the owner's delivery row commits with the stop itself, before any bus emits", async () => {
-  const { a, b } = twoInstances(false);
+  const { a, b } = await twoInstances(false);
   try {
     await runningItem(a.db, "acme-3", a.id);
     const command = {
@@ -167,7 +167,7 @@ test("the owner's delivery row commits with the stop itself, before any bus emit
 });
 
 test("a delayed stop aborts the turn it stopped and leaves a turn started after a resume", async () => {
-  const { a, b } = twoInstances(false);
+  const { a, b } = await twoInstances(false);
   try {
     await runningItem(a.db, "acme-4", a.id);
     const stopped = await a.startTurn("acme-4", "acme-4-old");

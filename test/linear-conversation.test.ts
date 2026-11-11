@@ -689,7 +689,7 @@ test.each(["shutdown", "interrupt"] as const)(
     const f = fixture(null);
     try {
       await f.orchestrator.onLinearEvent(event("created", null, 1));
-      saveConversation(f.db, f.item().id, "[]", null, true);
+      await saveConversation(sqliteDb(f.db), f.item().id, "[]", null, true);
       f.reopen();
       const stopping =
         operation === "shutdown"

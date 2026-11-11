@@ -326,7 +326,7 @@ describe("placement", () => {
       now: clock.now,
     });
     db.run("DELETE FROM retro_collection_lock WHERE retro_id = 'r1'");
-    createRetro(db, {
+    await createRetro(sqliteDb(db), {
       id: "r2",
       workspaceId: "ws",
       windowStart: FIXTURE_START,
@@ -344,7 +344,7 @@ describe("placement", () => {
       ["digest", padded],
       ["manifest", manifest],
     ] as const)
-      writeRetroArtifact(db, root, { retroId: "r2", kind, bytes, now: clock.now });
+      await writeRetroArtifact(sqliteDb(db), root, { retroId: "r2", kind, bytes, now: clock.now });
     await freezeRetroInput(sqliteDb(db), {
       retroId: "r2",
       endCursors: { [FIXTURE_REPO]: FIXTURE_END },
@@ -803,7 +803,7 @@ describe("agent account admission", () => {
       resetsAt: clock.now,
     });
     db.run("UPDATE agent_account_health SET next_check_at=? WHERE kind='quota'", [clock.now]);
-    createRetro(db, {
+    await createRetro(sqliteDb(db), {
       id: "r0",
       workspaceId: "ws",
       windowStart: FIXTURE_START - 7 * 86_400_000,
@@ -846,7 +846,7 @@ describe("agent account admission", () => {
     const accountId = legacyAgentAccountId("ws", "codex");
     const binding = await ensureLegacyAgentBinding(sqliteDb(db), "R1", "codex", clock.now);
     db.run("UPDATE agent_account SET concurrency=1 WHERE id=?", [accountId]);
-    createRetro(db, {
+    await createRetro(sqliteDb(db), {
       id: "r0",
       workspaceId: "ws",
       windowStart: FIXTURE_START - 7 * 86_400_000,

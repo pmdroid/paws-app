@@ -87,9 +87,12 @@ function ownFindings(keys: ReadonlySet<string>, findings: ReviewFindingRecord[])
     .sort((a, b) => a.id - b.id);
 }
 
-export function improvementFindings(db: Database, improvementId: string): ReviewFindingRecord[] {
-  const { keys, ids } = findingKeys(listImprovementProposals(db, improvementId));
-  return ownFindings(keys, reviewFindingsByIds(db, ids));
+export async function improvementFindings(
+  db: Database,
+  improvementId: string,
+): Promise<ReviewFindingRecord[]> {
+  const { keys, ids } = findingKeys(await listImprovementProposals(sqliteDb(db), improvementId));
+  return ownFindings(keys, await reviewFindingsByIds(sqliteDb(db), ids));
 }
 
 export function* improvementFindingsSteps(

@@ -11,6 +11,7 @@ import {
   listJobs,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../src/db";
 import { createFakeGitHub, defaultGitExec, GitCommandError, type GitExec } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
@@ -32,7 +33,9 @@ const WORKFLOWS =
 test("a push GitHub denies to the App holds the candidate push and merges once pushes work", async () => {
   const run = await delegate(DENIED);
   try {
-    await run.until(() => getPushOutage(run.db, "pmdroid/paws-demo") !== null);
+    await run.until(
+      async () => (await getPushOutage(sqliteDb(run.db), "pmdroid/paws-demo")) !== null,
+    );
     // Further passes over the held merge job neither fail the item nor ask anyone.
     await run.until(
       () => run.refusals >= 3,
@@ -45,7 +48,7 @@ test("a push GitHub denies to the App holds the candidate push and merges once p
     expect(merge.status, run.detail()).toBe("pending");
     expect(merge.attempts, run.detail()).toBe(0);
     expect(merge.payload).toMatchObject({ mergeWait: { reason: "push_outage" } });
-    expect(getPushOutage(run.db, "pmdroid/paws-demo")).toMatchObject({
+    expect(await getPushOutage(sqliteDb(run.db), "pmdroid/paws-demo")).toMatchObject({
       lastError: DENIED,
       installationUrl: "https://github.com/settings/installations/2",
     });
@@ -53,7 +56,7 @@ test("a push GitHub denies to the App holds the candidate push and merges once p
     run.refuse(null);
     run.probeNow();
     await run.until(() => stateOf(run.db, "ENG-9") === "merged");
-    expect(getPushOutage(run.db, "pmdroid/paws-demo")).toBeNull();
+    expect(await getPushOutage(sqliteDb(run.db), "pmdroid/paws-demo")).toBeNull();
     expect(run.progress("elicitation"), run.detail()).toEqual([]);
     expect(run.progress("error"), run.detail()).toEqual([]);
   } finally {
@@ -71,7 +74,7 @@ test("a refusal for the workflows permission is no push outage and fails the ite
           JOB_KIND.merge,
         ]),
     );
-    expect(getPushOutage(run.db, "pmdroid/paws-demo")).toBeNull();
+    expect(await getPushOutage(sqliteDb(run.db), "pmdroid/paws-demo")).toBeNull();
     expect(run.progress("elicitation"), run.detail()).toEqual([]);
     expect(run.progress("error").join("\n"), run.detail()).toContain(
       'it lacks the "workflows" permission needed to push a change to .github/workflows/ci.yml',
@@ -157,9 +160,9 @@ async function delegate(refusal: string) {
       db.run("UPDATE job SET run_at = 0 WHERE queue = ? AND status = 'pending'", [JOB_KIND.merge]);
     },
     progress,
-    async until(done: () => boolean, each?: () => void) {
+    async until(done: () => boolean | Promise<boolean>, each?: () => void) {
       const deadline = Date.now() + 90_000;
-      while (Date.now() < deadline && !done()) {
+      while (Date.now() < deadline && !(await done())) {
         each?.();
         if ((await jobs.tick()) === null) {
           await outbox.tick();
@@ -167,7 +170,7 @@ async function delegate(refusal: string) {
         }
       }
       while ((await outbox.tick()).length > 0) await outbox.idle();
-      expect(done(), this.detail()).toBe(true);
+      expect(await done(), this.detail()).toBe(true);
     },
     detail: () =>
       JSON.stringify({

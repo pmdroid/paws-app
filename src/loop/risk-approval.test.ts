@@ -725,13 +725,13 @@ async function cleanRiskFixture() {
       },
       ...overrides,
     });
-  const report = (
+  const report = async (
     review: string,
     severity: "P0" | "P1" | "P2" | "P3",
     text = "Review detail",
     at = NOW,
   ) => {
-    recordReviewFindings(db, {
+    await recordReviewFindings(sqliteDb(db), {
       itemId,
       repository: "acme/repo",
       head: heads.s,
@@ -795,7 +795,7 @@ for (const review of ["security-review", "independent-review"]) {
   test(`a P2 finding in ${review} asks even when Closeout passed it`, async () => {
     const f = await cleanRiskFixture();
     f.step(review, "Display text is not a severity source", ["P2"]);
-    f.report(review, "P2");
+    await f.report(review, "P2");
     expect(await automaticMerge(f)).toEqual({ ok: false, block: "risk_approval" });
     f.db.close();
   });
@@ -877,7 +877,7 @@ test("P3 snapshots pass before the shared finding import, regardless of display 
   f.step("security-review", "P3 session.ts:12: Notes\nP1 and P10 are terms in the explanation", [
     "P3",
   ]);
-  expect(listReviewFindings(f.db)).toEqual([]);
+  expect(await listReviewFindings(sqliteDb(f.db))).toEqual([]);
   expect(await f.read()).toBe("approved");
   f.step("security-review", "A completely different display format", ["P3"]);
   expect(await f.read()).toBe("approved");
@@ -989,9 +989,9 @@ for (const severity of ["P2", "P3"] as const) {
   test(`shared reports can veto but cannot authorize this head's ${severity} review`, async () => {
     const f = await cleanRiskFixture();
     f.step("security-review", "Original report", [severity]);
-    f.report("security-review", severity, "Same finding");
+    await f.report("security-review", severity, "Same finding");
     insertQueuedItem(f.db, { id: "other-item", sessionKey: "other-session", title: "Other" });
-    recordReviewFindings(f.db, {
+    await recordReviewFindings(sqliteDb(f.db), {
       itemId: "other-item",
       repository: "acme/repo",
       head: heads.changed,
@@ -1008,7 +1008,9 @@ for (const severity of ["P2", "P3"] as const) {
       ],
       reviewed: [],
     });
-    expect(listReviewFindings(f.db)[0]?.severity).toBe(severity === "P2" ? "P3" : "P2");
+    expect((await listReviewFindings(sqliteDb(f.db)))[0]?.severity).toBe(
+      severity === "P2" ? "P3" : "P2",
+    );
     expect(await f.read()).toBe("missing");
     f.db.close();
   });
@@ -1018,9 +1020,9 @@ for (const severity of ["P0", "P1", "P2"] as const) {
   test(`structured ${severity} in a passed review blocks regardless of display format or dismissal`, async () => {
     const f = await cleanRiskFixture();
     f.step("independent-review", "P3 misleading display text", [severity]);
-    f.report("independent-review", severity);
+    await f.report("independent-review", severity);
     expect(await f.read()).toBe("missing");
-    const finding = listReviewFindings(f.db)[0]!;
+    const finding = (await listReviewFindings(sqliteDb(f.db)))[0]!;
     await setReviewFindingStatus(sqliteDb(f.db), {
       id: finding.id,
       status: "dismissed",
@@ -1111,9 +1113,9 @@ test("the exact-head progress reader selects the latest run and preserves the un
 test("a new or reopened finding at S revokes automatic eligibility", async () => {
   const f = await cleanRiskFixture();
   expect(await f.read()).toBe("approved");
-  f.report("security-review", "P2", "Unsafe reuse");
+  await f.report("security-review", "P2", "Unsafe reuse");
   expect(await f.read()).toBe("missing");
-  const finding = listReviewFindings(f.db)[0]!;
+  const finding = (await listReviewFindings(sqliteDb(f.db)))[0]!;
   await setReviewFindingStatus(sqliteDb(f.db), {
     id: finding.id,
     status: "dismissed",

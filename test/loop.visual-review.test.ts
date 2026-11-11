@@ -108,7 +108,7 @@ test("two screenshots published 10 s apart end the turn with one link ask that n
     expect(item.checkpoint?.phase).toBe("awaiting_input");
     expect(getRun(f.db, item.currentRunId!)?.status).toBe("ended");
     expect(await runnerHasCapacity(sqliteDb(f.db), f.runnerId, Date.now())).toBe(true);
-    const [first, second] = listEvidence(f.db, item.id);
+    const [first, second] = await listEvidence(sqliteDb(f.db), item.id);
     expect(second!.createdAt - first!.createdAt).toBeGreaterThanOrEqual(10_000);
     expect(f.lastPublication()).toMatch(
       /^\[shot-2\.png\]\(<https:\/\/paws\.example\/evidence\/[^>]+>\)$/,
@@ -273,7 +273,7 @@ test("Approve on the page records the approval, passes the check and opens the p
       outcome: "accepted",
       answeredBy: "delegator-1",
       headCommit: wip,
-      evidenceIds: listEvidence(f.db, item.id).map((row) => row.id),
+      evidenceIds: (await listEvidence(sqliteDb(f.db), item.id)).map((row) => row.id),
     });
     expect((await getVisualReview(sqliteDb(f.db), open.id))?.answeredAt).toBeNumber();
 
@@ -324,7 +324,7 @@ test("a reply in Linear requests changes, and new screenshots ask again", async 
       outcome: "changes_requested",
       feedback: "Make the hint under Model shorter",
     });
-    const before = listEvidence(f.db, item.id).map((row) => row.id);
+    const before = (await listEvidence(sqliteDb(f.db), item.id)).map((row) => row.id);
     const rejectedBefore = await sqliteDb(f.db).run((q) => rejectedEvidenceIdsSteps(q, item.id));
     expect([...rejectedBefore].sort()).toEqual(before.sort());
 
@@ -338,7 +338,7 @@ test("a reply in Linear requests changes, and new screenshots ask again", async 
     expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
     const rejected = await sqliteDb(f.db).run((q) => rejectedEvidenceIdsSteps(q, item.id));
     expect(
-      listEvidence(f.db, item.id)
+      (await listEvidence(sqliteDb(f.db), item.id))
         .filter((row) => !rejected.has(row.id))
         .map((row) => row.displayName),
     ).toEqual(["shot-3.png", "shot-4.png"]);
@@ -360,7 +360,7 @@ test("Request changes from the run page hands the marked screenshot and note to 
   try {
     const open = findOpenQuestion(f.db, "ses_1")!;
     const item = listWorkItems(f.db)[0]!;
-    const shot = listEvidence(f.db, item.id)[1]!;
+    const shot = (await listEvidence(sqliteDb(f.db), item.id))[1]!;
     const marked = Buffer.concat([PNG, Buffer.from("red circle")]);
     const mark = {
       id: "01JAAAAAAAAAAAAAAAAAAAAAAA",
@@ -500,7 +500,7 @@ test("a review accepted for some of the files asks again about the rest instead 
   try {
     const first = findOpenQuestion(f.db, "ses_1")!;
     const item = listWorkItems(f.db)[0]!;
-    coverOnlyFirstShot(f.db, item.id, first.id);
+    await coverOnlyFirstShot(f.db, item.id, first.id);
 
     expect(await f.approve()).toBe("answered");
     await f.driveUntil(() => f.tracker.questions.length === 2);
@@ -524,7 +524,7 @@ test("retry on a task Closeout blocked for an uncovered file asks a new review r
   try {
     const first = findOpenQuestion(f.db, "ses_1")!;
     const item = listWorkItems(f.db)[0]!;
-    coverOnlyFirstShot(f.db, item.id, first.id);
+    await coverOnlyFirstShot(f.db, item.id, first.id);
     expect(await f.approve()).toBe("answered");
     f.db.run("DELETE FROM job WHERE queue = ? AND finished_at IS NULL", [JOB_KIND.resume]);
     const blocked = await openQuestion(f.db, {
@@ -602,7 +602,7 @@ test("4 screens published 3 times ask one review of the 4 latest files, and Acce
   });
   try {
     const item = listWorkItems(f.db)[0]!;
-    const rows = listEvidence(f.db, item.id);
+    const rows = await listEvidence(sqliteDb(f.db), item.id);
     expect(rows).toHaveLength(12);
     const latest = rows.slice(8).map((row) => row.id);
     const open = findOpenQuestion(f.db, "ses_1")!;
@@ -684,7 +684,7 @@ test("republished screenshots with identical bytes pass visual-proof with no que
     await f.driveUntil(() => f.github.opened.length > 0);
     expect(f.tracker.questions).toHaveLength(1);
     const item = listWorkItems(f.db)[0]!;
-    const republished = listEvidence(f.db, item.id).slice(2);
+    const republished = (await listEvidence(sqliteDb(f.db), item.id)).slice(2);
     const carried = f.db
       .query<{ question_id: string }, [string]>(
         "SELECT question_id FROM visual_review WHERE item_id = ? AND question_id LIKE 'carry_%'",
@@ -698,10 +698,11 @@ test("republished screenshots with identical bytes pass visual-proof with no que
       evidenceIds: republished.map((row) => row.id),
     });
     const approvedAt = (await getVisualReview(sqliteDb(f.db), first.id))!.answeredAt!;
+    const earlier = await listEvidence(sqliteDb(f.db), item.id);
     expect(review.carried).toEqual(
       republished.map((row, index) => ({
         evidenceId: row.id,
-        fromEvidenceId: listEvidence(f.db, item.id)[index]!.id,
+        fromEvidenceId: earlier[index]!.id,
         approvalId: first.id,
         approvedBy: "delegator-1",
         approvedAt,
@@ -743,14 +744,14 @@ test("a screen within tolerance carries over, and a visibly changed one is asked
       "1 changed screen for visual-proof: Settings 390. Unchanged since your approval, so not asked again: Settings desktop.",
     );
     const item = listWorkItems(f.db)[0]!;
-    const [desktop, narrow] = listEvidence(f.db, item.id).slice(2);
+    const [desktop, narrow] = (await listEvidence(sqliteDb(f.db), item.id)).slice(2);
     const open = findOpenQuestion(f.db, "ses_1")!;
     const review = (await getVisualReview(sqliteDb(f.db), open.id))!;
     expect(review.evidenceIds).toEqual([desktop!.id, narrow!.id]);
     expect(review.carried).toEqual([
       {
         evidenceId: desktop!.id,
-        fromEvidenceId: listEvidence(f.db, item.id)[0]!.id,
+        fromEvidenceId: (await listEvidence(sqliteDb(f.db), item.id))[0]!.id,
         approvalId: first.id,
         approvedBy: "delegator-1",
         approvedAt: (await getVisualReview(sqliteDb(f.db), first.id))!.answeredAt!,
@@ -1089,8 +1090,8 @@ test("a new head with a different patch-id cancels the pending visual review and
   }
 }, 120_000);
 
-function coverOnlyFirstShot(db: Database, itemId: string, questionId: string): void {
-  const [shot] = listEvidence(db, itemId);
+async function coverOnlyFirstShot(db: Database, itemId: string, questionId: string): Promise<void> {
+  const [shot] = await listEvidence(sqliteDb(db), itemId);
   db.run("UPDATE visual_review SET evidence_ids = ? WHERE question_id = ?", [
     JSON.stringify([shot!.id]),
     questionId,
@@ -1252,7 +1253,9 @@ async function pausedForReview(
   if (!options.gate?.held) {
     await running;
     await outboxIdle(outbox);
-    expect(listEvidence(db, listWorkItems(db)[0]!.id).length).toBeGreaterThanOrEqual(2);
+    expect(
+      (await listEvidence(sqliteDb(db), listWorkItems(db)[0]!.id)).length,
+    ).toBeGreaterThanOrEqual(2);
   }
   return {
     db,

@@ -41,8 +41,13 @@ const proposal: ImprovementProposalInput = {
   evidence: ["retro:r1:e1"],
 };
 
-function propose(db: Database, source: ImprovementSource, input = proposal, attachTo?: string) {
-  return recordImprovementProposal(db, {
+async function propose(
+  db: Database,
+  source: ImprovementSource,
+  input = proposal,
+  attachTo?: string,
+) {
+  return await recordImprovementProposal(sqliteDb(db), {
     workspaceId: "ws",
     repository: REPO,
     source,
@@ -52,14 +57,14 @@ function propose(db: Database, source: ImprovementSource, input = proposal, atta
   });
 }
 
-function accept(
+async function accept(
   db: Database,
   id: string,
   intent: Parameters<typeof decideImprovement>[1]["review"],
 ) {
-  return decideImprovement(db, {
+  return await decideImprovement(sqliteDb(db), {
     improvementId: id,
-    expectedVersion: getImprovement(db, id)!.version,
+    expectedVersion: (await getImprovement(sqliteDb(db), id))!.version,
     review: intent,
     actor: "user-1",
     now: 5,
@@ -67,36 +72,35 @@ function accept(
 }
 
 describe("improvement sources", () => {
-  test("a source reference has one improvement and keeps every proposal version", () => {
+  test("a source reference has one improvement and keeps every proposal version", async () => {
     const db = harness();
     const source = { kind: "daily_finding", key: "finding:42" } as const;
-    const first = propose(db, source);
-    expect(propose(db, source)).toEqual({ ...first, created: false, changed: false });
-    const revised = propose(db, source, { ...proposal, title: "Push repair recurs" });
+    const first = await propose(db, source);
+    expect(await propose(db, source)).toEqual({ ...first, created: false, changed: false });
+    const revised = await propose(db, source, { ...proposal, title: "Push repair recurs" });
     expect(revised).toEqual({
       improvementId: first.improvementId,
       version: 2,
       created: false,
       changed: true,
     });
-    expect(listImprovementProposals(db, first.improvementId).map((row) => row.title)).toEqual([
-      proposal.title,
-      "Push repair recurs",
-    ]);
+    expect(
+      (await listImprovementProposals(sqliteDb(db), first.improvementId)).map((row) => row.title),
+    ).toEqual([proposal.title, "Push repair recurs"]);
     expect(() => db.run("UPDATE improvement_proposal SET title = 'x'")).toThrow(/immutable/);
   });
 
-  test("similar text from another source stays a separate improvement", () => {
+  test("similar text from another source stays a separate improvement", async () => {
     const db = harness();
-    const daily = propose(db, { kind: "daily_finding", key: "finding:42" });
-    const retro = propose(db, { kind: "retro_item", key: "r1/git-recovery" });
+    const daily = await propose(db, { kind: "daily_finding", key: "finding:42" });
+    const retro = await propose(db, { kind: "retro_item", key: "r1/git-recovery" });
     expect(retro.improvementId).not.toBe(daily.improvementId);
   });
 
   test("an overlapping group can be attached explicitly without merging evidence", async () => {
     const db = harness();
-    const first = propose(db, { kind: "daily_finding", key: "finding:42" });
-    const overlap = propose(
+    const first = await propose(db, { kind: "daily_finding", key: "finding:42" });
+    const overlap = await propose(
       db,
       { kind: "daily_finding", key: "finding:43" },
       { ...proposal, evidence: ["finding:43"] },
@@ -113,7 +117,7 @@ describe("improvement sources", () => {
         .id,
     ).toBe(first.improvementId);
     expect(
-      listImprovementProposals(db, first.improvementId).map((row) => [
+      (await listImprovementProposals(sqliteDb(db), first.improvementId)).map((row) => [
         row.source.key,
         row.evidence,
       ]),
@@ -121,27 +125,27 @@ describe("improvement sources", () => {
       ["finding:42", ["retro:r1:e1"]],
       ["finding:43", ["finding:43"]],
     ]);
-    const other = propose(db, { kind: "daily_finding", key: "finding:44" });
-    expect(() =>
+    const other = await propose(db, { kind: "daily_finding", key: "finding:44" });
+    await expect(
       propose(db, { kind: "daily_finding", key: "finding:44" }, proposal, first.improvementId),
-    ).toThrow(/another improvement/);
+    ).rejects.toThrow(/another improvement/);
     expect(other.created).toBe(true);
   });
 });
 
 describe("improvement decisions", () => {
-  test("concurrent decisions use compare-and-set and record the actor", () => {
+  test("concurrent decisions use compare-and-set and record the actor", async () => {
     const db = harness();
-    const { improvementId } = propose(db, { kind: "retro_item", key: "r1/a" });
-    const expectedVersion = getImprovement(db, improvementId)!.version;
-    const first = decideImprovement(db, {
+    const { improvementId } = await propose(db, { kind: "retro_item", key: "r1/a" });
+    const expectedVersion = (await getImprovement(sqliteDb(db), improvementId))!.version;
+    const first = await decideImprovement(sqliteDb(db), {
       improvementId,
       expectedVersion,
       review: { kind: "reject", reason: "Already fixed" },
       actor: "user-1",
       now: 5,
     });
-    const second = decideImprovement(db, {
+    const second = await decideImprovement(sqliteDb(db), {
       improvementId,
       expectedVersion,
       review: { kind: "accept", proposalVersion: 1, intent: { kind: "create" } },
@@ -150,30 +154,34 @@ describe("improvement decisions", () => {
     });
     expect(first.ok).toBe(true);
     expect(second).toMatchObject({ ok: false, reason: "stale" });
-    expect(getImprovement(db, improvementId)).toMatchObject({
+    expect(await getImprovement(sqliteDb(db), improvementId)).toMatchObject({
       reviewState: "rejected",
       reviewedBy: "user-1",
       reviewedAt: 5,
       reviewReason: "Already fixed",
     });
-    expect(listImprovementDeliveries(db, improvementId)).toEqual([]);
+    expect(await listImprovementDeliveries(sqliteDb(db), improvementId)).toEqual([]);
   });
 
   test("an accepted item keeps its decision through failed and unknown delivery", async () => {
     const db = harness();
-    const { improvementId } = propose(db, { kind: "retro_item", key: "r1/a" });
+    const { improvementId } = await propose(db, { kind: "retro_item", key: "r1/a" });
     expect(
-      accept(db, improvementId, {
-        kind: "accept",
-        proposalVersion: 1,
-        intent: { kind: "create" },
-      }).ok,
+      (
+        await accept(db, improvementId, {
+          kind: "accept",
+          proposalVersion: 1,
+          intent: { kind: "create" },
+        })
+      ).ok,
     ).toBe(true);
-    expect(accept(db, improvementId, { kind: "reject", reason: "changed my mind" })).toMatchObject({
+    expect(
+      await accept(db, improvementId, { kind: "reject", reason: "changed my mind" }),
+    ).toMatchObject({
       ok: false,
       reason: "accepted",
     });
-    const [delivery] = listImprovementDeliveries(db, improvementId);
+    const [delivery] = await listImprovementDeliveries(sqliteDb(db), improvementId);
     expect(delivery!.id).toBe(improvementDeliveryId(improvementId, "create_issue"));
 
     const claim = { deliveryId: delivery!.id, owner: "w1", now: 10, leaseMs: 100 };
@@ -187,7 +195,7 @@ describe("improvement decisions", () => {
       error: "Linear unavailable",
       now: 11,
     });
-    expect(getImprovement(db, improvementId)!.reviewState).toBe("accepted");
+    expect((await getImprovement(sqliteDb(db), improvementId))!.reviewState).toBe("accepted");
 
     await claimImprovementDelivery(sqliteDb(db), { ...claim, owner: "w2", now: 20 });
     await settleImprovementDelivery(sqliteDb(db), {
@@ -212,10 +220,10 @@ describe("improvement decisions", () => {
         now: 31,
       }),
     ).toBe(true);
-    expect(listImprovementDeliveries(db, improvementId)).toMatchObject([
+    expect(await listImprovementDeliveries(sqliteDb(db), improvementId)).toMatchObject([
       { id: delivery!.id, state: "succeeded", attempts: 3, remoteId: "issue-1" },
     ]);
-    expect(getImprovement(db, improvementId)).toMatchObject({
+    expect(await getImprovement(sqliteDb(db), improvementId)).toMatchObject({
       reviewState: "accepted",
       issue: { id: "issue-1", identifier: "PAS-1100", confirmedAt: 31 },
     });
@@ -243,8 +251,12 @@ describe("improvement decisions", () => {
 
   test("an expired claim can be retaken and the old owner cannot settle it", async () => {
     const db = harness();
-    const { improvementId } = propose(db, { kind: "retro_item", key: "r1/a" });
-    accept(db, improvementId, { kind: "accept", proposalVersion: 1, intent: { kind: "create" } });
+    const { improvementId } = await propose(db, { kind: "retro_item", key: "r1/a" });
+    await accept(db, improvementId, {
+      kind: "accept",
+      proposalVersion: 1,
+      intent: { kind: "create" },
+    });
     const id = improvementDeliveryId(improvementId, "create_issue");
     await claimImprovementDelivery(sqliteDb(db), {
       deliveryId: id,
@@ -277,8 +289,12 @@ describe("improvement decisions", () => {
 
   test("a late response from an expired attempt cannot settle a retry by the same owner", async () => {
     const db = harness();
-    const { improvementId } = propose(db, { kind: "retro_item", key: "r1/a" });
-    accept(db, improvementId, { kind: "accept", proposalVersion: 1, intent: { kind: "create" } });
+    const { improvementId } = await propose(db, { kind: "retro_item", key: "r1/a" });
+    await accept(db, improvementId, {
+      kind: "accept",
+      proposalVersion: 1,
+      intent: { kind: "create" },
+    });
     const id = improvementDeliveryId(improvementId, "create_issue");
     await claimImprovementDelivery(sqliteDb(db), {
       deliveryId: id,
@@ -311,7 +327,7 @@ describe("improvement decisions", () => {
         remote: { id: "issue-1" },
       }),
     ).toBe(true);
-    expect(listImprovementDeliveries(db, improvementId)[0]).toMatchObject({
+    expect((await listImprovementDeliveries(sqliteDb(db), improvementId))[0]).toMatchObject({
       state: "succeeded",
       error: null,
     });
@@ -319,14 +335,14 @@ describe("improvement decisions", () => {
 
   test("two sources link to one issue and keep their own evidence", async () => {
     const db = harness();
-    const daily = propose(db, { kind: "daily_finding", key: "finding:42" });
-    const retro = propose(
+    const daily = await propose(db, { kind: "daily_finding", key: "finding:42" });
+    const retro = await propose(
       db,
       { kind: "retro_item", key: "r1/a" },
       { ...proposal, evidence: ["retro:r1:e9"] },
     );
     for (const { improvementId } of [daily, retro]) {
-      accept(db, improvementId, {
+      await accept(db, improvementId, {
         kind: "accept",
         proposalVersion: 1,
         intent: { kind: "link", issueId: "issue-7" },
@@ -350,39 +366,46 @@ describe("improvement decisions", () => {
     expect(
       (await improvementsForIssue(sqliteDb(db), "ws", "issue-7")).map((row) => row.id).sort(),
     ).toEqual([daily.improvementId, retro.improvementId].sort());
-    expect(listImprovementProposals(db, retro.improvementId)[0]!.evidence).toEqual(["retro:r1:e9"]);
-    expect(listImprovementDeliveries(db, daily.improvementId).map((row) => row.operation)).toEqual([
-      "link_issue",
-    ]);
+    expect(
+      (await listImprovementProposals(sqliteDb(db), retro.improvementId))[0]!.evidence,
+    ).toEqual(["retro:r1:e9"]);
+    expect(
+      (await listImprovementDeliveries(sqliteDb(db), daily.improvementId)).map(
+        (row) => row.operation,
+      ),
+    ).toEqual(["link_issue"]);
   });
 
-  test("an evidence comment is a separate delivery only when asked for", () => {
+  test("an evidence comment is a separate delivery only when asked for", async () => {
     const db = harness();
-    const { improvementId } = propose(db, { kind: "retro_item", key: "r1/a" });
-    accept(db, improvementId, {
+    const { improvementId } = await propose(db, { kind: "retro_item", key: "r1/a" });
+    await accept(db, improvementId, {
       kind: "accept",
       proposalVersion: 1,
       intent: { kind: "link", issueId: "issue-7", addEvidenceComment: true },
     });
     expect(
-      listImprovementDeliveries(db, improvementId).map((row) => [row.operation, row.targetIssueId]),
+      (await listImprovementDeliveries(sqliteDb(db), improvementId)).map((row) => [
+        row.operation,
+        row.targetIssueId,
+      ]),
     ).toEqual([
       ["evidence_comment", "issue-7"],
       ["link_issue", "issue-7"],
     ]);
-    expect(getImprovement(db, improvementId)!.evidenceComment).toBe(true);
+    expect((await getImprovement(sqliteDb(db), improvementId))!.evidenceComment).toBe(true);
   });
 });
 
 describe("improvement outcomes", () => {
   test("implementation and verification evolve independently and stay unknown by default", async () => {
     const db = harness();
-    const { improvementId } = propose(db, { kind: "retro_item", key: "r1/a" });
-    expect(getImprovement(db, improvementId)).toMatchObject({
+    const { improvementId } = await propose(db, { kind: "retro_item", key: "r1/a" });
+    expect(await getImprovement(sqliteDb(db), improvementId)).toMatchObject({
       implementationState: "unknown",
       verificationState: "unknown",
     });
-    recordImprovementOutcome(db, {
+    await recordImprovementOutcome(sqliteDb(db), {
       improvementId,
       track: "implementation",
       state: "merged",
@@ -390,12 +413,12 @@ describe("improvement outcomes", () => {
       actor: "paws",
       now: 10,
     });
-    expect(getImprovement(db, improvementId)).toMatchObject({
+    expect(await getImprovement(sqliteDb(db), improvementId)).toMatchObject({
       implementationState: "merged",
       verificationState: "unknown",
     });
-    expect(() =>
-      recordImprovementOutcome(db, {
+    await expect(
+      recordImprovementOutcome(sqliteDb(db), {
         improvementId,
         track: "verification",
         state: "verified",
@@ -403,8 +426,8 @@ describe("improvement outcomes", () => {
         actor: "user-1",
         now: 11,
       }),
-    ).toThrow(/evidence/);
-    recordImprovementOutcome(db, {
+    ).rejects.toThrow(/evidence/);
+    await recordImprovementOutcome(sqliteDb(db), {
       improvementId,
       track: "verification",
       state: "verified",
@@ -413,7 +436,7 @@ describe("improvement outcomes", () => {
       actor: "user-1",
       now: 12,
     });
-    recordImprovementOutcome(db, {
+    await recordImprovementOutcome(sqliteDb(db), {
       improvementId,
       track: "implementation",
       state: "in_progress",
@@ -421,7 +444,7 @@ describe("improvement outcomes", () => {
       actor: "paws",
       now: 13,
     });
-    expect(getImprovement(db, improvementId)).toMatchObject({
+    expect(await getImprovement(sqliteDb(db), improvementId)).toMatchObject({
       implementationState: "in_progress",
       verificationState: "verified",
       verificationAt: 12,

@@ -102,7 +102,7 @@ describe("a push outage", () => {
       held: true,
     });
 
-    expect(getPushOutage(db, REPOSITORY)).toMatchObject({
+    expect(await getPushOutage(sqliteDb(db), REPOSITORY)).toMatchObject({
       startedAt: 100,
       failedProbes: 0,
       nextProbeAt: 100 + MINUTE,
@@ -133,7 +133,7 @@ describe("a push outage", () => {
     const probes: number[] = [];
     let now: number;
     for (let index = 0; index < 5; index++) {
-      now = getPushOutage(db, REPOSITORY)!.nextProbeAt;
+      now = (await getPushOutage(sqliteDb(db), REPOSITORY))!.nextProbeAt;
       // Only the probe is due; the held jobs wait for the outage to end.
       expect(claim(db, now - 1)).toBeNull();
       const tried = await attempt(db, now, () => "refused");
@@ -141,7 +141,7 @@ describe("a push outage", () => {
       probes.push(now);
     }
     expect(probes).toEqual([1, 3, 8, 18, 28].map((minutes) => 100 + minutes * MINUTE));
-    expect(getPushOutage(db, REPOSITORY)?.failedProbes).toBe(5);
+    expect((await getPushOutage(sqliteDb(db), REPOSITORY))?.failedProbes).toBe(5);
   });
 
   test("the first push that works ends it and the held pushes run in queue order", async () => {
@@ -149,14 +149,14 @@ describe("a push outage", () => {
     await attempt(db, 100, () => "refused");
     await attempt(db, 101, () => "works");
     await attempt(db, 102, () => "works");
-    const probeAt = getPushOutage(db, REPOSITORY)!.nextProbeAt;
+    const probeAt = (await getPushOutage(sqliteDb(db), REPOSITORY))!.nextProbeAt;
     const ran: number[] = [];
     const pushed = (id: number) => {
       ran.push(id);
       return "works" as const;
     };
     expect(await attempt(db, probeAt, pushed)).toEqual({ id: jobs[0], pushed: true });
-    expect(getPushOutage(db, REPOSITORY)).toBeNull();
+    expect(await getPushOutage(sqliteDb(db), REPOSITORY)).toBeNull();
     expect(await attempt(db, probeAt + 1, pushed)).toEqual({ id: jobs[1], pushed: true });
     expect(await attempt(db, probeAt + 2, pushed)).toEqual({ id: jobs[2], pushed: true });
     expect(ran).toEqual(jobs);
@@ -169,7 +169,7 @@ describe("a push outage", () => {
     db.run("UPDATE job SET status = 'cancelled' WHERE id = ?", [jobs[0]]);
     db.run("UPDATE job SET run_at = 0 WHERE id = ?", [jobs[1]]);
     expect(await attempt(db, 105, () => "works")).toEqual({ id: jobs[1], pushed: true });
-    expect(getPushOutage(db, REPOSITORY)).toBeNull();
+    expect(await getPushOutage(sqliteDb(db), REPOSITORY)).toBeNull();
   });
 
   test("the workspace question opens after an hour and closes when pushes work again", async () => {

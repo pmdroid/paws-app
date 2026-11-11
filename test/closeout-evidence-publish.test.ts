@@ -162,7 +162,7 @@ test("a video with a check id lands in the evidence store and the agent gets the
       { type: "publish_artifact", path: "proof.webm", checkId: "browser-proof" },
     ]);
     expect(artifact.ok).toBe(true);
-    const [evidence, ...rest] = listEvidence(f.db, "item");
+    const [evidence, ...rest] = await listEvidence(sqliteDb(f.db), "item");
     expect(rest).toHaveLength(0);
     expect(evidence).toMatchObject({
       runId: "run-1",
@@ -190,7 +190,10 @@ test("a screenshot with a check id is evidence for the first attempt", async () 
       { type: "publish_artifact", path: "shot.png", checkId: "browser-proof" },
     ]);
     expect(artifact.ok).toBe(true);
-    expect(listEvidence(f.db, "item")[0]).toMatchObject({ attempt: 1, mediaType: "image/png" });
+    expect((await listEvidence(sqliteDb(f.db), "item"))[0]).toMatchObject({
+      attempt: 1,
+      mediaType: "image/png",
+    });
     expect(artifact.text?.startsWith("[shot.png](<https://paws.example/evidence/")).toBe(true);
     expect(f.linearUploads).toHaveLength(0);
   } finally {
@@ -208,7 +211,7 @@ test("artifacts without a check id and other file types still upload to Linear",
       (await f.run([{ type: "publish_artifact", path: "notes.txt", checkId: "browser-proof" }])).ok,
     ).toBe(true);
     expect(f.linearUploads).toEqual(["shot.png", "notes.txt"]);
-    expect(listEvidence(f.db, "item")).toHaveLength(0);
+    expect(await listEvidence(sqliteDb(f.db), "item")).toHaveLength(0);
   } finally {
     f.db.close();
   }
@@ -236,7 +239,7 @@ test("a screenshot over the evidence cap is refused and the agent gets the error
     ]);
     expect(artifact.ok).toBe(false);
     expect(artifact.error).toContain(`artifact exceeds ${20 * 1024 * 1024} bytes`);
-    expect(listEvidence(f.db, "item")).toHaveLength(0);
+    expect(await listEvidence(sqliteDb(f.db), "item")).toHaveLength(0);
     expect(f.linearUploads).toHaveLength(0);
   } finally {
     f.db.close();
@@ -258,7 +261,7 @@ test("evidence store refusals and unknown checks reach the agent", async () => {
     ]);
     expect(unknown.ok).toBe(false);
     expect(unknown.error).toContain("Closeout check no-such-check is not required");
-    expect(listEvidence(f.db, "item")).toHaveLength(0);
+    expect(await listEvidence(sqliteDb(f.db), "item")).toHaveLength(0);
     expect(f.linearUploads).toHaveLength(0);
   } finally {
     f.db.close();

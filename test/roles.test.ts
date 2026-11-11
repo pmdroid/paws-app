@@ -10,6 +10,7 @@ import {
   registerInstance,
   startLoops,
   type InstanceRole,
+  sqliteDb,
 } from "../src/db";
 import { createInboxStore, createIntakePollSource, startCatchUpPoller } from "../src/linear";
 import { tempHome } from "./helpers";
@@ -81,8 +82,13 @@ describe("roles", () => {
   test("a web and a worker instance run a recurring job once per interval", async () => {
     const { first, second } = sharedDatabase();
     const now = Date.now();
-    const web = registerInstance(first, { role: "web", host: "acme-web", version: null, now });
-    const worker = registerInstance(second, {
+    const web = await registerInstance(sqliteDb(first), {
+      role: "web",
+      host: "acme-web",
+      version: null,
+      now,
+    });
+    const worker = await registerInstance(sqliteDb(second), {
       role: "worker",
       host: "acme-worker",
       version: null,
@@ -125,7 +131,12 @@ describe("roles", () => {
   test("recurring jobs are pruned only when no other live instance runs jobs", async () => {
     const { first, second } = sharedDatabase();
     const now = Date.now();
-    const self = registerInstance(first, { role: "all", host: "acme-a", version: null, now });
+    const self = await registerInstance(sqliteDb(first), {
+      role: "all",
+      host: "acme-a",
+      version: null,
+      now,
+    });
     for (const queue of ["acme.kept", "acme.legacy"])
       enqueueJobOnce(first, { queue, jobKey: queue, recurringEveryMs: 600_000, now: now + 60_000 });
     const run = async (role: InstanceRole) => {
@@ -144,7 +155,12 @@ describe("roles", () => {
       await loops.stop();
     };
 
-    registerInstance(second, { role: "worker", host: "acme-b", version: null, now });
+    await registerInstance(sqliteDb(second), {
+      role: "worker",
+      host: "acme-b",
+      version: null,
+      now,
+    });
     await run("all");
     expect(recurringQueues(first)).toEqual(["acme.kept", "acme.legacy"]);
 

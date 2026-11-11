@@ -11,6 +11,7 @@ import {
   saveEvidence,
   openDatabase,
   upsertCloseoutStep,
+  sqliteDb,
 } from "../../../db";
 import { createLiveStatusProvider, handleStatusRequest } from "../engine";
 
@@ -177,7 +178,7 @@ describe("evidence gallery budget", () => {
       insertQueuedItem(db, { id: item, now: now - index });
       if (index >= 10) db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [item]);
       for (let file = 0; file < 8; file += 1)
-        saveEvidence(db, {
+        await saveEvidence(sqliteDb(db), {
           id: `01J${String(index).padStart(3, "0")}${file}`.padEnd(26, "Z"),
           itemId: item,
           runId: `run-${item}`,

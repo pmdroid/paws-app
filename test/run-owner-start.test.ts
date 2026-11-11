@@ -48,7 +48,7 @@ test("a run the orchestrator starts records the instance that started it", async
   await mkdir(pawsRoot, { recursive: true });
   const db = openDatabase(path.join(pawsRoot, "paws.db"));
   migrate(db);
-  const instance = registerInstance(db, {
+  const instance = await registerInstance(sqliteDb(db), {
     role: "all",
     host: "acme",
     version: null,

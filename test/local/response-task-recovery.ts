@@ -38,8 +38,8 @@ export async function probeResponseTaskRecovery(root: string) {
     const item = insertQueuedItem(db, { id: `item-${mode}`, sessionKey: `session-${mode}` });
     const { run } = beginImplementRun(db, item.id, clock.now());
     saveTaskMode(db, item.id, mode);
-    saveConversation(
-      db,
+    await saveConversation(
+      sqliteDb(db),
       item.id,
       JSON.stringify([{ kind: "request", body: "The user answered: use the Create VM page." }]),
       null,

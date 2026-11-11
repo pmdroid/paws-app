@@ -406,7 +406,7 @@ describe("improvement inbox", () => {
     expect(t.starts).toHaveLength(1);
     expect(t.root.querySelector('[data-improvement-action="delegate"]')).toBeNull();
 
-    const issueId = listImprovementDeliveries(t.w.db, id)[0]!.remoteId!;
+    const issueId = (await listImprovementDeliveries(sqliteDb(t.w.db), id))[0]!.remoteId!;
     insertQueuedItem(t.w.db, { id: "work-x", sessionKey: "session-a", now: END + 2_500 });
     t.w.db.run("UPDATE work_item SET linear_issue_id = ?, state = 'running' WHERE id = 'work-x'", [
       issueId,
@@ -478,9 +478,7 @@ describe("improvement inbox", () => {
     await t.submit('[data-improvement-form="link"]');
     expect(t.text()).toContain("Accepted. Paws confirms the link");
     expect(
-      listImprovementDeliveries(t.w.db, daily)
-        .map((d) => d.operation)
-        .sort(),
+      (await listImprovementDeliveries(sqliteDb(t.w.db), daily)).map((d) => d.operation).sort(),
     ).toEqual(["evidence_comment", "link_issue"]);
   });
 
@@ -494,7 +492,7 @@ describe("improvement inbox", () => {
     await t.submit('[data-improvement-form="reject"]');
     expect(t.text()).toContain("Rejected by");
     expect(t.text()).toContain("No issue was filed");
-    expect(listImprovementDeliveries(t.w.db, id)).toEqual([]);
+    expect(await listImprovementDeliveries(sqliteDb(t.w.db), id)).toEqual([]);
   });
 
   test("a decision from another tab answers stale and shows the current state", async () => {
@@ -509,7 +507,7 @@ describe("improvement inbox", () => {
     await t.submit('[data-improvement-form="create"]');
     expect(t.text()).toContain("Someone changed this improvement after you opened it");
     expect(t.text()).toContain("Covered by PAS-60");
-    expect(listImprovementDeliveries(t.w.db, id)).toEqual([]);
+    expect(await listImprovementDeliveries(sqliteDb(t.w.db), id)).toEqual([]);
   });
 
   test("late answers for an earlier selection, page or version are dropped", async () => {
@@ -754,7 +752,7 @@ async function filedWork(t: Awaited<ReturnType<typeof harness>>, state: string) 
   const id = t.w.retro.a;
   expect((await t.w.api("ada", `/api/improvements/${id}/decision`, accept())).status).toBe(200);
   await t.deliver();
-  const issueId = listImprovementDeliveries(t.w.db, id)[0]!.remoteId!;
+  const issueId = (await listImprovementDeliveries(sqliteDb(t.w.db), id))[0]!.remoteId!;
   insertQueuedItem(t.w.db, { id: "work-x", sessionKey: "session-a", now: END + 2 * 3_600_000 });
   t.w.db.run("UPDATE work_item SET linear_issue_id = ?, state = ? WHERE id = 'work-x'", [
     issueId,
@@ -830,7 +828,7 @@ describe("retro history", () => {
       ["r0", -1],
       ["r2", 1],
     ] as const)
-      createRetro(t.w.db, {
+      await createRetro(sqliteDb(t.w.db), {
         id,
         workspaceId: "ws",
         windowStart: START + weeks * 7 * DAY,
@@ -849,7 +847,7 @@ describe("retro history", () => {
       ).response.json();
     const first = await page(null);
     expect(first.retros.map((r: { id: string }) => r.id)).toEqual(["r2"]);
-    createRetro(t.w.db, {
+    await createRetro(sqliteDb(t.w.db), {
       id: "r3",
       workspaceId: "ws",
       windowStart: START + 14 * DAY,

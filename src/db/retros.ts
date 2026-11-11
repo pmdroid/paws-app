@@ -284,8 +284,11 @@ type NewRetro = {
   now: number;
 };
 
-export function createRetro(db: Database, input: NewRetro): { retro: Retro; created: boolean } {
-  return settled(sqliteDb(db).transaction((q) => createRetroSteps(q, input)));
+export async function createRetro(
+  store: Db,
+  input: NewRetro,
+): Promise<{ retro: Retro; created: boolean }> {
+  return store.transaction((q) => createRetroSteps(q, input));
 }
 
 export function* createRetroSteps(q: Q, input: NewRetro) {
@@ -560,12 +563,12 @@ export function* listRetroCoverageGapsSteps(q: Q, retroId: string) {
 
 type ArtifactWrite = { retroId: string; kind: RetroArtifactKind; bytes: Uint8Array; now: number };
 
-export function writeRetroArtifact(
-  db: Database,
+export async function writeRetroArtifact(
+  store: Db,
   root: string,
   input: ArtifactWrite,
-): RetroArtifactRecord {
-  return settled(sqliteDb(db).run((q) => writeRetroArtifactSteps(q, root, input)));
+): Promise<RetroArtifactRecord> {
+  return store.run((q) => writeRetroArtifactSteps(q, root, input));
 }
 
 export function* writeRetroArtifactSteps(q: Q, root: string, input: ArtifactWrite) {

@@ -1121,7 +1121,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     journalCaught(caughtError4, "index.startPaws", null);
   });
   const findingGrouping = linear?.findingIssues
-    ? createFindingGrouping({
+    ? await createFindingGrouping({
         db,
         store,
         issues: linear.findingIssues,

@@ -14,6 +14,7 @@ import {
   saveConversation,
   type Q,
   type Steps,
+  sqliteDb,
 } from "../src/db";
 import { intakeDelegatedIssue, type IntakeResult } from "../src/intake";
 import { acknowledgeNewSession, createFakeTracker } from "../src/linear";
@@ -129,7 +130,7 @@ test.each(["run", "checkpoint", "job", "conversation", "cleanup", "parent", "sib
     if (held === "checkpoint")
       db.run("UPDATE work_item SET checkpoint = ? WHERE id = ?", ['{"phase":"running"}', id]);
     if (held === "job") enqueueJob(db, { queue: "item.start", payload: { itemId: id } });
-    if (held === "conversation") saveConversation(db, id, "[]", null, true);
+    if (held === "conversation") await saveConversation(sqliteDb(db), id, "[]", null, true);
     if (held === "cleanup") blockLinearSessionCleanup(db, "old");
     if (held === "parent")
       db.run("UPDATE work_item SET brief = json_set(brief, '$.epic', json(?)) WHERE id = ?", [

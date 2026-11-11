@@ -53,7 +53,7 @@ async function linked(options: { delegated?: boolean; stateType?: string } = {})
   const id = w.retro.a;
   const decided = await w.api("ada", `/api/improvements/${id}/decision`, accept());
   expect(decided.body.status).toBe("decided");
-  const delivery = listImprovementDeliveries(w.db, id)[0]!;
+  const delivery = (await listImprovementDeliveries(sqliteDb(w.db), id))[0]!;
   await claimImprovementDelivery(sqliteDb(w.db), {
     deliveryId: delivery.id,
     owner: "outbox",
@@ -86,7 +86,7 @@ async function linked(options: { delegated?: boolean; stateType?: string } = {})
   };
   const post = (action: string, body: unknown, who = "ada") =>
     w.api(who, `/api/improvements/${id}/${action}`, body);
-  const version = () => getImprovement(w.db, id)!.version;
+  const version = async () => (await getImprovement(sqliteDb(w.db), id))!.version;
   const setIssue = (change: Record<string, unknown>) =>
     linear.issues.set(ISSUE, { ...linear.issues.get(ISSUE)!, ...change });
   const work = (state: string) => {
@@ -126,7 +126,7 @@ describe("follow-through from create to verified", () => {
     });
     expect(t.starter.calls).toEqual([]);
 
-    const delegated = await t.post("delegate", { expectedVersion: t.version() });
+    const delegated = await t.post("delegate", { expectedVersion: await t.version() });
     expect([delegated.status, delegated.body.status]).toEqual([201, "delegated"]);
     expect(t.starter.calls).toEqual([ISSUE]);
     const again = await t.post("delegate", { expectedVersion: 2 });
@@ -162,16 +162,16 @@ describe("follow-through from create to verified", () => {
       "verification:due",
     ]);
 
-    const noRevision = await t.post("verification", verify(t.version()));
+    const noRevision = await t.post("verification", verify(await t.version()));
     expect([noRevision.status, noRevision.body.reason]).toEqual([400, "revision_required"]);
-    const wrong = await t.post("verification", verify(t.version(), { revision: "deadbeef" }));
+    const wrong = await t.post("verification", verify(await t.version(), { revision: "deadbeef" }));
     expect(wrong.body.reason).toBe("revision_mismatch");
     const stale = await t.post("verification", verify(1, { revision: MERGE }));
     expect([stale.status, stale.body.reason]).toEqual([409, "stale"]);
 
     const done = await t.post(
       "verification",
-      verify(t.version(), { revision: MERGE.slice(0, 12) }),
+      verify(await t.version(), { revision: MERGE.slice(0, 12) }),
     );
     expect(done.body).toMatchObject({ status: "recorded", item: { attention: "verified" } });
     const recorded = (await listImprovementOutcomes(sqliteDb(t.w.db), t.id)).at(-1)!;
@@ -198,14 +198,16 @@ describe("follow-through from create to verified", () => {
 
   test("an existing delegate or work item is shown instead of a second run", async () => {
     const delegated = await linked({ delegated: true });
-    const response = await delegated.post("delegate", { expectedVersion: delegated.version() });
+    const response = await delegated.post("delegate", {
+      expectedVersion: await delegated.version(),
+    });
     expect(response.body.status).toBe("existing");
     expect(delegated.starter.calls).toEqual([]);
     expect(response.body.item.attention).toBe("working");
 
     const owned = await linked();
     owned.work("queued");
-    const shown = await owned.post("delegate", { expectedVersion: owned.version() });
+    const shown = await owned.post("delegate", { expectedVersion: await owned.version() });
     expect(shown.body).toMatchObject({ status: "existing", item: { work: { itemId: "work-x" } } });
     expect(owned.starter.calls).toEqual([]);
   });
@@ -244,7 +246,7 @@ describe("lost, duplicate and out-of-order events", () => {
       now: END,
       leaseMs: 1,
     });
-    expect((await t.post("delegate", { expectedVersion: t.version() })).body.status).toBe(
+    expect((await t.post("delegate", { expectedVersion: await t.version() })).body.status).toBe(
       "in_progress",
     );
     t.work("queued");
@@ -268,10 +270,10 @@ describe("lost, duplicate and out-of-order events", () => {
       delegation: { state: "failed" },
     });
     t.starter.fail(true);
-    const failed = await t.post("delegate", { expectedVersion: t.version() });
+    const failed = await t.post("delegate", { expectedVersion: await t.version() });
     expect([failed.status, failed.body.reason]).toEqual([502, "delegation_failed"]);
     t.starter.fail(false);
-    const retried = await t.post("delegate", { expectedVersion: t.version() });
+    const retried = await t.post("delegate", { expectedVersion: await t.version() });
     expect(retried.body.status).toBe("delegated");
     expect(t.starter.calls).toEqual([ISSUE, ISSUE]);
   });
@@ -302,7 +304,7 @@ describe("lost, duplicate and out-of-order events", () => {
   test("reopening a verified issue marks verification stale without launching work", async () => {
     const t = await linked({ stateType: "completed" });
     await t.sync();
-    const done = await t.post("verification", verify(t.version(), { deployment: "v1.4.2" }));
+    const done = await t.post("verification", verify(await t.version(), { deployment: "v1.4.2" }));
     expect(done.body.item.attention).toBe("verified");
     t.setIssue({ state: "open", stateType: "started" });
     await t.sync();
@@ -340,7 +342,7 @@ describe("daily findings", () => {
       ),
     );
     expect(decided.body.status).toBe("decided");
-    const delivery = listImprovementDeliveries(w.db, id)[0]!;
+    const delivery = (await listImprovementDeliveries(sqliteDb(w.db), id))[0]!;
     await claimImprovementDelivery(sqliteDb(w.db), {
       deliveryId: delivery.id,
       owner: "o",
@@ -372,7 +374,7 @@ describe("daily findings", () => {
     w.db.run("UPDATE review_finding SET status = 'gone'");
     await sync();
     expect((await follow()).attention).toBe("awaiting_verification");
-    const version = getImprovement(w.db, id)!.version;
+    const version = (await getImprovement(sqliteDb(w.db), id))!.version;
     expect(
       (
         await w.api(
@@ -382,7 +384,7 @@ describe("daily findings", () => {
         )
       ).body.status,
     ).toBe("recorded");
-    const form = getImprovement(w.db, id)!.version;
+    const form = (await getImprovement(sqliteDb(w.db), id))!.version;
     w.db.run("UPDATE review_finding SET status = 'open', last_seen_at = ? WHERE id = ?", [
       w.now() + 10_000,
       findings[0]!.id,
@@ -397,7 +399,7 @@ describe("daily findings", () => {
       verify(form, { deployment: "v6" }),
     );
     expect([replayed.status, replayed.body.reason]).toEqual([409, "stale"]);
-    expect(getImprovement(w.db, id)!.verificationState).toBe("contradicted");
+    expect((await getImprovement(sqliteDb(w.db), id))!.verificationState).toBe("contradicted");
     await sync();
     expect((await listImprovementOutcomes(sqliteDb(w.db), id)).at(-1)).toMatchObject({
       state: "contradicted",
@@ -422,15 +424,15 @@ describe("evidence must match the criterion", () => {
        VALUES ('p1', 'retro-recovery', 'command', 'passed', 'bun test test/retro.test.ts', 1, 0)`,
     );
     const evidence = { kind: "closeout_step", progressId: "p1", stepId: "retro-recovery" };
-    const unnamed = await t.post("verification", verify(t.version(), { evidence }));
+    const unnamed = await t.post("verification", verify(await t.version(), { evidence }));
     expect(unnamed.body.reason).toBe("not_applicable");
     const other = await t.post("verification", {
-      ...verify(t.version()),
+      ...verify(await t.version()),
       evidence: { kind: "closeout_step", progressId: "p1", stepId: "missing" },
     });
     expect(other.body.reason).toBe("evidence_not_found");
     const annotated = await t.post("criterion", {
-      expectedVersion: t.version(),
+      expectedVersion: await t.version(),
       criterion: "The retro-recovery check passes on the merged revision.",
     });
     expect(annotated.body.item.verification.criterion).toContain("retro-recovery");
@@ -445,18 +447,18 @@ describe("evidence must match the criterion", () => {
     );
     t.w.db.run("UPDATE work_item SET accepted_head = ? WHERE id = 'work-x'", [MERGE]);
     const older = await t.post("verification", {
-      ...verify(t.version()),
+      ...verify(await t.version()),
       evidence: { kind: "closeout_step", progressId: "p0", stepId: "retro-recovery" },
     });
     expect(older.body.reason).toBe("evidence_outdated");
-    const verified = await t.post("verification", verify(t.version(), { evidence }));
+    const verified = await t.post("verification", verify(await t.version(), { evidence }));
     expect(verified.body.item.attention).toBe("verified");
     expect((await listImprovementOutcomes(sqliteDb(t.w.db), t.id)).at(-1)!.revision).toBe(MERGE);
   });
 
   test("verification needs merged or completed work", async () => {
     const t = await linked();
-    const early = await t.post("verification", verify(t.version(), { revision: MERGE }));
+    const early = await t.post("verification", verify(await t.version(), { revision: MERGE }));
     expect(early.body.reason).toBe("not_implemented");
   });
 });
@@ -465,7 +467,7 @@ describe("review fixes", () => {
   test("delegation authorizes the issue's current team, not the one captured at link time", async () => {
     const t = await linked();
     t.setIssue({ teamId: "team-b" });
-    const moved = await t.post("delegate", { expectedVersion: t.version() });
+    const moved = await t.post("delegate", { expectedVersion: await t.version() });
     expect([moved.status, moved.body.reason]).toEqual([403, "destination"]);
     expect(t.starter.calls).toEqual([]);
   });
@@ -475,7 +477,7 @@ describe("review fixes", () => {
     t.merge();
     t.setIssue({ state: "closed", stateType: "completed" });
     await t.sync();
-    const done = await t.post("verification", verify(t.version(), { revision: MERGE }));
+    const done = await t.post("verification", verify(await t.version(), { revision: MERGE }));
     expect(done.body.item.attention).toBe("verified");
     t.setIssue({ state: "open", stateType: "started" });
     await t.sync();
@@ -491,7 +493,7 @@ describe("review fixes", () => {
     await t.sync();
     expect((await t.follow()).attention).toBe("blocked");
     const done = await t.post("recovery", {
-      expectedVersion: t.version(),
+      expectedVersion: await t.version(),
       choice: "acknowledge",
       reason: "Not worth pursuing",
     });
@@ -505,7 +507,7 @@ describe("review fixes", () => {
 
   test("access revoked while the request body streams refuses the mutation", async () => {
     const t = await linked();
-    const version = t.version();
+    const version = await t.version();
     let sent = false;
     const body = new ReadableStream<Uint8Array>({
       pull(controller) {
@@ -536,7 +538,7 @@ describe("review fixes", () => {
       ["session-a"],
     );
     expect(response!.status).toBe(403);
-    expect(getImprovement(t.w.db, t.id)!.version).toBe(version);
+    expect((await getImprovement(sqliteDb(t.w.db), t.id))!.version).toBe(version);
   });
 
   test("a wrong open issue can return to review; active Paws work cannot", async () => {
@@ -547,7 +549,7 @@ describe("review fixes", () => {
       recovery: ["return_to_review"],
     });
     const back = await t.post("recovery", {
-      expectedVersion: t.version(),
+      expectedVersion: await t.version(),
       choice: "return_to_review",
       reason: "Linked the wrong issue",
     });
@@ -564,14 +566,14 @@ describe("second review fixes", () => {
   test("a contradiction from the sweep makes an open verification form stale", async () => {
     const t = await linked({ stateType: "completed" });
     await t.sync();
-    await t.post("verification", verify(t.version(), { deployment: "v1" }));
-    const form = t.version();
+    await t.post("verification", verify(await t.version(), { deployment: "v1" }));
+    const form = await t.version();
     t.setIssue({ state: "open", stateType: "started" });
     await t.sync();
-    expect(t.version()).toBeGreaterThan(form);
+    expect(await t.version()).toBeGreaterThan(form);
     const replayed = await t.post("verification", verify(form, { deployment: "v1" }));
     expect([replayed.status, replayed.body.reason]).toEqual([409, "stale"]);
-    expect(getImprovement(t.w.db, t.id)!.verificationState).toBe("contradicted");
+    expect((await getImprovement(sqliteDb(t.w.db), t.id))!.verificationState).toBe("contradicted");
   });
 
   test("a redelegated issue follows its replacement work item, not the cancelled one", async () => {
@@ -598,7 +600,7 @@ describe("second review fixes", () => {
        WHERE id = ?`,
       [ISSUE, ISSUE, END, other],
     );
-    const first = await t.post("delegate", { expectedVersion: t.version() });
+    const first = await t.post("delegate", { expectedVersion: await t.version() });
     expect(first.body.status).toBe("delegated");
     const view = await t.w.api("admin", `/api/improvements/${other}/follow-through`);
     expect(view.body.followThrough).toMatchObject({
@@ -606,7 +608,7 @@ describe("second review fixes", () => {
       delegate: { offered: false },
     });
     const second = await t.w.api("admin", `/api/improvements/${other}/delegate`, {
-      expectedVersion: getImprovement(t.w.db, other)!.version,
+      expectedVersion: (await getImprovement(sqliteDb(t.w.db), other))!.version,
     });
     expect(second.body.status).toBe("existing");
     expect(t.starter.calls).toEqual([ISSUE]);
@@ -650,7 +652,7 @@ describe("one bound work item", () => {
     const t = await linked();
     t.merge();
     await t.sync();
-    await t.post("verification", verify(t.version(), { revision: MERGE }));
+    await t.post("verification", verify(await t.version(), { revision: MERGE }));
     second(t, "running");
     await t.sync();
     expect(await t.follow()).toMatchObject({
@@ -672,7 +674,7 @@ describe("one bound work item", () => {
       attention: "ready_to_delegate",
       delegate: { offered: true },
     });
-    const early = await t.post("verification", verify(t.version(), { revision: MERGE }));
+    const early = await t.post("verification", verify(await t.version(), { revision: MERGE }));
     expect(early.body.reason).toBe("not_implemented");
   });
 
@@ -690,7 +692,9 @@ describe("one bound work item", () => {
     });
     const id = w.retro.a;
     const settle = async (at: number) => {
-      const d = listImprovementDeliveries(w.db, id).find((x) => x.state !== "succeeded")!;
+      const d = (await listImprovementDeliveries(sqliteDb(w.db), id)).find(
+        (x) => x.state !== "succeeded",
+      )!;
       await claimImprovementDelivery(sqliteDb(w.db), {
         deliveryId: d.id,
         owner: "o",
@@ -706,7 +710,7 @@ describe("one bound work item", () => {
         now: at + 1,
       });
     };
-    const version = () => getImprovement(w.db, id)!.version;
+    const version = async () => (await getImprovement(sqliteDb(w.db), id))!.version;
     const post = (action: string, body: unknown) =>
       w.api("ada", `/api/improvements/${id}/${action}`, body);
     const sync = () =>
@@ -732,12 +736,13 @@ describe("one bound work item", () => {
     );
     await sync();
     expect(
-      (await post("verification", verify(version(), { revision: MERGE }))).body.item.attention,
+      (await post("verification", verify(await version(), { revision: MERGE }))).body.item
+        .attention,
     ).toBe("verified");
     linear.issues.set(ISSUE, { ...linear.issues.get(ISSUE)!, state: "open", stateType: "started" });
     await sync();
     const back = await post("recovery", {
-      expectedVersion: version(),
+      expectedVersion: await version(),
       choice: "return_to_review",
       reason: "The fix did not hold",
     });
@@ -745,7 +750,7 @@ describe("one bound work item", () => {
     const relinked = await w.api(
       "ada",
       `/api/improvements/${id}/decision`,
-      accept(version(), { kind: "link", issue: "PAS-70" }),
+      accept(await version(), { kind: "link", issue: "PAS-70" }),
     );
     expect(relinked.body.status).toBe("decided");
     await settle(END + 9_000);
@@ -756,9 +761,11 @@ describe("one bound work item", () => {
       attention: "ready_to_delegate",
       delegate: { offered: true },
     });
-    const reused = await post("verification", verify(version(), { revision: MERGE }));
+    const reused = await post("verification", verify(await version(), { revision: MERGE }));
     expect(reused.body.reason).toBe("not_implemented");
-    expect((await post("delegate", { expectedVersion: version() })).body.status).toBe("delegated");
+    expect((await post("delegate", { expectedVersion: await version() })).body.status).toBe(
+      "delegated",
+    );
     expect(starter.calls).toEqual([ISSUE]);
   });
 
@@ -769,7 +776,7 @@ describe("one bound work item", () => {
       "UPDATE work_item SET linear_issue_id = ?, state = 'running' WHERE id = 'work-old'",
       [ISSUE],
     );
-    const shown = await t.post("delegate", { expectedVersion: t.version() });
+    const shown = await t.post("delegate", { expectedVersion: await t.version() });
     expect(shown.body).toMatchObject({
       status: "existing",
       item: { work: { itemId: "work-old" } },
@@ -781,7 +788,7 @@ describe("one bound work item", () => {
     const t = await linked();
     t.work("cancelled");
     await t.sync();
-    const form = t.version();
+    const form = await t.version();
     second(t, "merged");
     await t.sync();
     await t.sync();
@@ -834,9 +841,13 @@ describe("one bound work item", () => {
     const t = await linked();
     t.work("failed");
     await t.sync();
-    await t.post("recovery", { expectedVersion: t.version(), choice: "acknowledge", reason: "No" });
+    await t.post("recovery", {
+      expectedVersion: await t.version(),
+      choice: "acknowledge",
+      reason: "No",
+    });
     const annotated = await t.post("criterion", {
-      expectedVersion: t.version(),
+      expectedVersion: await t.version(),
       criterion: "The retro-recovery check passes.",
     });
     expect(annotated.body.item.attention).toBe("closed");
@@ -859,12 +870,12 @@ describe("one bound work item", () => {
        VALUES ('p1', 'test', 'command', 'passed', 'bun run unit', 1, 0)`,
     );
     await t.post("criterion", {
-      expectedVersion: t.version(),
+      expectedVersion: await t.version(),
       criterion: "The latest weekly retro shows no push-recovery question.",
     });
     const loose = await t.post(
       "verification",
-      verify(t.version(), {
+      verify(await t.version(), {
         evidence: { kind: "closeout_step", progressId: "p1", stepId: "test" },
       }),
     );
@@ -888,13 +899,13 @@ describe("settled before every mutation", () => {
   test("a delegation answer carries the version the next mutation needs", async () => {
     const t = await linked();
     t.starter.fail(true);
-    const failed = await t.post("delegate", { expectedVersion: t.version() });
+    const failed = await t.post("delegate", { expectedVersion: await t.version() });
     expect(failed.body.reason).toBe("delegation_failed");
-    expect(failed.body.item.version).toBe(t.version());
+    expect(failed.body.item.version).toBe(await t.version());
     t.starter.fail(false);
     const delegated = await t.post("delegate", { expectedVersion: failed.body.item.version });
     expect(delegated.body.status).toBe("delegated");
-    expect(delegated.body.item.version).toBe(t.version());
+    expect(delegated.body.item.version).toBe(await t.version());
     const annotated = await t.post("criterion", {
       expectedVersion: delegated.body.item.version,
       criterion: "The retro-recovery check passes.",
@@ -905,7 +916,7 @@ describe("settled before every mutation", () => {
   test("another improvement's finished delegation does not block redelegating the issue", async () => {
     const t = await linked();
     const other = share(t);
-    expect((await t.post("delegate", { expectedVersion: t.version() })).body.status).toBe(
+    expect((await t.post("delegate", { expectedVersion: await t.version() })).body.status).toBe(
       "delegated",
     );
     t.work("cancelled");
@@ -959,7 +970,7 @@ describe("manual recovery", () => {
     await t.sync();
     expect((await t.follow()).recovery).toEqual(["acknowledge", "return_to_review"]);
     const acknowledged = await t.post("recovery", {
-      expectedVersion: t.version(),
+      expectedVersion: await t.version(),
       choice: "acknowledge",
       reason: "Superseded by another approach",
     });
@@ -967,14 +978,14 @@ describe("manual recovery", () => {
 
     const s = await linked({ stateType: "canceled" });
     await s.sync();
-    const v = s.version();
+    const v = await s.version();
     const [first, second] = await Promise.all([
       s.post("recovery", { expectedVersion: v, choice: "return_to_review", reason: "Wrong issue" }),
       s.post("verification", { ...verify(v, { deployment: "v2" }), outcome: "contradicted" }),
     ]);
     expect([first.body.status, second.status]).toEqual(["recorded", 409]);
     expect(first.body.item).toMatchObject({ attention: "needs_review", issue: null });
-    expect(listImprovementDeliveries(s.w.db, s.id)).toEqual([]);
+    expect(await listImprovementDeliveries(sqliteDb(s.w.db), s.id)).toEqual([]);
     const audit = (await listImprovementActions(sqliteDb(s.w.db), s.id)).at(-1)!;
     expect(audit).toMatchObject({
       action: "return_to_review",
@@ -984,7 +995,7 @@ describe("manual recovery", () => {
     const recreate = await s.w.api(
       "ada",
       `/api/improvements/${s.id}/decision`,
-      accept(s.version()),
+      accept(await s.version()),
     );
     expect([recreate.status, recreate.body.reason]).toEqual([409, "recovered_issue"]);
   });
@@ -1014,7 +1025,7 @@ describe("access", () => {
       teamIds: [],
       now: 5,
     });
-    const lost = await t.post("delegate", { expectedVersion: t.version() });
+    const lost = await t.post("delegate", { expectedVersion: await t.version() });
     expect(lost.status).toBe(404);
     syncWorkspaceMember(t.w.db, {
       workspaceId: "ws",
@@ -1024,8 +1035,8 @@ describe("access", () => {
       teamIds: ["team-a"],
       now: 6,
     });
-    expect((await t.post("delegate", { expectedVersion: t.version() })).status).toBe(403);
-    expect((await t.post("verification", verify(t.version()))).status).toBe(403);
+    expect((await t.post("delegate", { expectedVersion: await t.version() })).status).toBe(403);
+    expect((await t.post("verification", verify(await t.version()))).status).toBe(403);
     expect(t.starter.calls).toEqual([]);
     const other = await t.w.api("bea", `/api/improvements/${t.w.retro.b}/follow-through`);
     expect(other.status).toBe(404);
@@ -1066,7 +1077,7 @@ describe("attention and activity", () => {
     expect(repeated.activity.map((a: { key: string }) => a.key)).toEqual(
       ada.activity.map((a: { key: string }) => a.key),
     );
-    await t.post("verification", verify(t.version(), { deployment: "v3" }));
+    await t.post("verification", verify(await t.version(), { deployment: "v3" }));
     const after = await read("ada");
     expect(after.counts.verificationDue).toBe(0);
     expect(after.metrics.verified).toBe(1);
@@ -1076,7 +1087,7 @@ describe("attention and activity", () => {
     const w = await world();
     const id = w.retro.a;
     await w.api("ada", `/api/improvements/${id}/decision`, accept());
-    const delivery = listImprovementDeliveries(w.db, id)[0]!;
+    const delivery = (await listImprovementDeliveries(sqliteDb(w.db), id))[0]!;
     await claimImprovementDelivery(sqliteDb(w.db), {
       deliveryId: delivery.id,
       owner: "o",

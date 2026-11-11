@@ -363,7 +363,7 @@ describe("settling an attempt", () => {
       createdBy: "user-1",
       now: 1,
     });
-    createRetro(db, {
+    await createRetro(sqliteDb(db), {
       id: "r1",
       workspaceId: "ws",
       windowStart: FIXTURE_START,

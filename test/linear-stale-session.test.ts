@@ -315,7 +315,7 @@ test("failed cleanup remains fenced across SQLite reopen until teardown succeeds
 
 test("an unverified ACP cleanup cannot release the old issue", async () => {
   const f = await fixture();
-  saveConversation(f.db, f.oldId, "[]", null, true);
+  await saveConversation(sqliteDb(f.db), f.oldId, "[]", null, true);
   try {
     await expect(f.orchestrator.onLinearEvent(created("new"))).rejects.toThrow(
       "retry automatically",

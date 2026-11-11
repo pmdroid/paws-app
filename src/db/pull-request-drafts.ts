@@ -38,13 +38,13 @@ export function* savePullRequestDraftSteps(
   );
 }
 
-export function savePullRequestDraft(
-  db: Database,
+export async function savePullRequestDraft(
+  store: Db,
   itemId: string,
   draft: PullRequestDraft,
   now: number,
-): void {
-  settled(sqliteDb(db).run((q) => savePullRequestDraftSteps(q, itemId, draft, now)));
+): Promise<void> {
+  await store.run((q) => savePullRequestDraftSteps(q, itemId, draft, now));
 }
 
 export function* pullRequestDraftSavedAtSteps(q: Q, itemId: string) {

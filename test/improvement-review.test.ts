@@ -47,7 +47,7 @@ describe("improvement decisions", () => {
       reviewState: "accepted",
       decision: { by: "user-ada" },
     });
-    const [delivery] = listImprovementDeliveries(w.db, id);
+    const [delivery] = await listImprovementDeliveries(sqliteDb(w.db), id);
     expect(delivery).toMatchObject({ operation: "create_issue", targetTeamId: "team-a" });
     expect(delivery!.content).toMatchObject({
       proposalVersion: 1,
@@ -88,7 +88,7 @@ describe("improvement decisions", () => {
       reviewState: "rejected",
       decision: { reason: "Not recurring" },
     });
-    expect(listImprovementDeliveries(w.db, id)).toEqual([]);
+    expect(await listImprovementDeliveries(sqliteDb(w.db), id)).toEqual([]);
     const late = await w.api("ada", `/api/improvements/${id}/decision`, accept());
     expect(late.status).toBe(409);
     expect(late.body.item.reviewState).toBe("rejected");
@@ -103,7 +103,7 @@ describe("improvement decisions", () => {
     ]);
     expect([one.status, two.status]).toEqual([200, 200]);
     expect([one.body.status, two.body.status].sort()).toEqual(["decided", "unchanged"]);
-    expect(listImprovementDeliveries(w.db, id)).toHaveLength(1);
+    expect(await listImprovementDeliveries(sqliteDb(w.db), id)).toHaveLength(1);
     const again = await w.api("bea", `/api/improvements/${id}/decision`, reject(1));
     expect(again.status).toBe(409);
   });
@@ -112,7 +112,7 @@ describe("improvement decisions", () => {
     const w = await world();
     const id = w.retro.a;
     await w.api("ada", `/api/improvements/${id}/decision`, accept());
-    const [delivery] = listImprovementDeliveries(w.db, id);
+    const [delivery] = await listImprovementDeliveries(sqliteDb(w.db), id);
     await claimImprovementDelivery(sqliteDb(w.db), {
       deliveryId: delivery!.id,
       owner: "outbox",
@@ -132,7 +132,7 @@ describe("improvement decisions", () => {
     const w = await world();
     const id = w.retro.a;
     await w.api("ada", `/api/improvements/${id}/decision`, accept());
-    const [delivery] = listImprovementDeliveries(w.db, id);
+    const [delivery] = await listImprovementDeliveries(sqliteDb(w.db), id);
     await claimImprovementDelivery(sqliteDb(w.db), {
       deliveryId: delivery!.id,
       owner: "outbox",
@@ -158,7 +158,7 @@ describe("improvement decisions", () => {
     expect(retried.status).toBe(202);
     expect(retried.body.item.reviewState).toBe("accepted");
     expect((await w.api("bea", path, {})).body.status).toBe("in_progress");
-    const after = listImprovementDeliveries(w.db, id);
+    const after = await listImprovementDeliveries(sqliteDb(w.db), id);
     expect(after.map((d) => [d.id, d.state])).toEqual([[delivery!.id, "pending"]]);
 
     await claimImprovementDelivery(sqliteDb(w.db), {
@@ -183,7 +183,7 @@ describe("improvement decisions", () => {
     const w = await world();
     const id = w.retro.a;
     await w.api("ada", `/api/improvements/${id}/decision`, accept());
-    const [delivery] = listImprovementDeliveries(w.db, id);
+    const [delivery] = await listImprovementDeliveries(sqliteDb(w.db), id);
     const base = `/api/improvements/${id}/deliveries/${delivery!.id}`;
     w.db.run("INSERT INTO workspace_repository VALUES ('ws', ?, 'team-b')", [A]);
     w.db.run("DELETE FROM workspace_repository WHERE repository = ? AND team_id = 'team-a'", [A]);
@@ -243,7 +243,7 @@ describe("improvement decisions", () => {
     expect(frozen.body.reason).toBe("destination_frozen");
     const retried = await w.api("admin", `${base}/retry`, {});
     expect(retried.status).toBe(202);
-    expect(listImprovementDeliveries(w.db, id)[0]).toMatchObject({
+    expect((await listImprovementDeliveries(sqliteDb(w.db), id))[0]).toMatchObject({
       state: "unknown",
       blocked: null,
       targetTeamId: "team-b",
@@ -260,7 +260,9 @@ describe("improvement decisions", () => {
       outcome: "succeeded" | "failed",
       blocked?: "conflict",
     ) => {
-      const target = listImprovementDeliveries(w.db, id).find((d) => d.operation === operation)!;
+      const target = (await listImprovementDeliveries(sqliteDb(w.db), id)).find(
+        (d) => d.operation === operation,
+      )!;
       await claimImprovementDelivery(sqliteDb(w.db), {
         deliveryId: target.id,
         owner: "outbox",
@@ -322,7 +324,9 @@ describe("improvement decisions", () => {
       reviewState: "accepted",
       decision: { evidenceComment: false },
     });
-    expect(listImprovementDeliveries(w.db, id).map((d) => d.operation)).toEqual(["link_issue"]);
+    expect((await listImprovementDeliveries(sqliteDb(w.db), id)).map((d) => d.operation)).toEqual([
+      "link_issue",
+    ]);
     expect((await w.api("ada", cancel, {})).status).toBe(404);
   });
 
@@ -334,7 +338,7 @@ describe("improvement decisions", () => {
     w.lookup.setUnavailable(true);
     const down = await decide({ kind: "link", issue: "PAS-60" });
     expect(down.status).toBe(503);
-    expect(listImprovementDeliveries(w.db, id)).toEqual([]);
+    expect(await listImprovementDeliveries(sqliteDb(w.db), id)).toEqual([]);
     w.lookup.setUnavailable(false);
     expect((await decide({ kind: "link", issue: "PAS-404" })).body.reason).toBe("issue_not_found");
     const hidden = await decide({ kind: "link", issue: "OPS-7" });
@@ -354,7 +358,9 @@ describe("improvement decisions", () => {
       reviewState: "accepted",
       decision: { intent: "link", intentIssueId: "issue-open", evidenceComment: false },
     });
-    expect(listImprovementDeliveries(w.db, id).map((d) => d.operation)).toEqual(["link_issue"]);
+    expect((await listImprovementDeliveries(sqliteDb(w.db), id)).map((d) => d.operation)).toEqual([
+      "link_issue",
+    ]);
   });
 
   test("a proposal that changes while Linear is read is not accepted", async () => {
@@ -371,7 +377,7 @@ describe("improvement decisions", () => {
         intent: { kind: "link", issue: "PAS-60" },
       },
       lookup: async (issue) => {
-        recordImprovementProposal(w.db, {
+        await recordImprovementProposal(sqliteDb(w.db), {
           workspaceId: "ws",
           repository: A,
           source: { kind: "retro_item", key: "r1/p1" },
@@ -390,7 +396,7 @@ describe("improvement decisions", () => {
       now: w.now,
     });
     expect(outcome).toMatchObject({ status: "conflict", reason: "proposal_changed" });
-    expect(listImprovementDeliveries(w.db, id)).toEqual([]);
+    expect(await listImprovementDeliveries(sqliteDb(w.db), id)).toEqual([]);
   });
 
   test("link and add evidence freezes an explicit comment intent; closed needs explicit consent", async () => {
@@ -402,7 +408,7 @@ describe("improvement decisions", () => {
       accept(1, { kind: "link", issue: "PAS-61", allowClosed: true, addEvidenceComment: true }),
     );
     expect(linked.status).toBe(200);
-    const deliveries = listImprovementDeliveries(w.db, id);
+    const deliveries = await listImprovementDeliveries(sqliteDb(w.db), id);
     expect(deliveries.map((d) => d.operation).sort()).toEqual(["evidence_comment", "link_issue"]);
     expect(deliveries.every((d) => d.targetIssueId === "issue-closed")).toBe(true);
     expect(deliveries[0]!.content).toMatchObject({
@@ -457,11 +463,11 @@ describe("improvement decisions", () => {
       });
     const lostTeam = await decideWhile(() => member(true, []));
     expect([lostTeam.status, lostTeam.body.reason]).toEqual([404, "not_found"]);
-    expect(listImprovementDeliveries(w.db, id)).toEqual([]);
+    expect(await listImprovementDeliveries(sqliteDb(w.db), id)).toEqual([]);
     member(true, ["team-a"]);
     const revoked = await decideWhile(() => member(false, ["team-a"]));
     expect([revoked.status, revoked.body.reason]).toEqual([404, "not_found"]);
-    expect(listImprovementDeliveries(w.db, id)).toEqual([]);
+    expect(await listImprovementDeliveries(sqliteDb(w.db), id)).toEqual([]);
     member(true, ["team-a"]);
     const kept = await decideWhile(() => {});
     expect(kept.body.status).toBe("decided");
@@ -481,7 +487,7 @@ describe("improvement decisions", () => {
     expect((await w.api("bea", "/api/improvements")).status).toBe(403);
     expect((await w.api("bea", `/api/improvements/${id}/decision`, accept())).status).toBe(403);
     expect((await w.retroApi("bea", "/api/retros/history")).status).toBe(403);
-    expect(listImprovementDeliveries(w.db, id)).toEqual([]);
+    expect(await listImprovementDeliveries(sqliteDb(w.db), id)).toEqual([]);
     w.people["outsider"] = { ...w.people["ada"]!, workspaceId: "other" };
     expect((await w.api("outsider", "/api/improvements")).status).toBe(403);
     expect((await w.api("outsider", `/api/improvements/${id}`)).status).toBe(403);
@@ -501,7 +507,7 @@ describe("improvement decisions", () => {
     expect((await w.api("bea", "/api/improvements")).status).toBe(403);
     expect((await w.api("bea", `/api/improvements/${id}/decision`, accept())).status).toBe(403);
     expect((await w.retroApi("bea", "/api/retros/history")).status).toBe(403);
-    expect(listImprovementDeliveries(w.db, id)).toEqual([]);
+    expect(await listImprovementDeliveries(sqliteDb(w.db), id)).toEqual([]);
   });
 
   test("responses are no-store and missing ids are recoverable 404s", async () => {
@@ -544,7 +550,9 @@ describe("daily findings share legacy claims", () => {
       { revision: 1, actor: "user-ada" },
     ]);
     expect(
-      listImprovementProposals(w.db, daily.id).every((p) => p.verificationCriterion === ""),
+      (await listImprovementProposals(sqliteDb(w.db), daily.id)).every(
+        (p) => p.verificationCriterion === "",
+      ),
     ).toBe(true);
   });
 
@@ -629,7 +637,7 @@ describe("legacy dismissal after an inbox accept", () => {
       { db: w.db, principal: w.people["bea"]!, sessionIds: ONLY_A },
     );
     expect(single!.status).toBe(409);
-    expect(listReviewFindings(w.db).every((f) => f.status === "open")).toBe(true);
+    expect((await listReviewFindings(sqliteDb(w.db))).every((f) => f.status === "open")).toBe(true);
   });
 });
 
@@ -742,7 +750,7 @@ describe("individual finding issues share the inbox claim", () => {
       issue: { identifier: "PAS-77", origin: "legacy" },
       legacy: [{ kind: "filed", issue: "PAS-77" }],
     });
-    expect(listImprovementDeliveries(w.db, after.body.item.id)).toEqual([]);
+    expect(await listImprovementDeliveries(sqliteDb(w.db), after.body.item.id)).toEqual([]);
   });
 
   test("an individual filing after a dismissed group still blocks the inbox Create", async () => {
@@ -761,7 +769,7 @@ describe("individual finding issues share the inbox claim", () => {
     const after = await acceptDaily(w);
     expect([after.status, after.body.reason]).toEqual([409, "known_issue"]);
     expect(after.body.item.issue).toMatchObject({ identifier: "PAS-77", origin: "legacy" });
-    expect(listImprovementDeliveries(w.db, after.body.item.id)).toEqual([]);
+    expect(await listImprovementDeliveries(sqliteDb(w.db), after.body.item.id)).toEqual([]);
   });
 });
 

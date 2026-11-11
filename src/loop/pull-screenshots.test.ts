@@ -10,6 +10,7 @@ import {
   openDatabase,
   saveEvidence,
   type EvidenceMediaType,
+  sqliteDb,
 } from "../db";
 import {
   createFakeGitData,
@@ -36,7 +37,7 @@ function setup() {
   const item = insertQueuedItem(db, { id: "ENG-1129", sessionKey: "ses_1", title: "Screens" });
   const { run } = beginImplementRun(db, item.id, NOW - 10);
   let created = 0;
-  const add = (
+  const add = async (
     displayName: string,
     content: string,
     options: { mediaType?: EvidenceMediaType; sizeBytes?: number; id?: string } = {},
@@ -44,7 +45,7 @@ function setup() {
     const id = options.id ?? `ev-${++created}`;
     const bytes = new TextEncoder().encode(content);
     writeFileSync(path.join(root, id), bytes);
-    saveEvidence(db, {
+    await saveEvidence(sqliteDb(db), {
       id,
       itemId: item.id,
       runId: run.id,
@@ -91,8 +92,8 @@ function publish(
 
 test("two images commit once on top of the evidence ref and link in publication order", async () => {
   const s = setup();
-  const wide = s.add("Settings 1440px", "wide");
-  const narrow = s.add("Settings 390px", "narrow");
+  const wide = await s.add("Settings 1440px", "wide");
+  const narrow = await s.add("Settings 390px", "narrow");
   const git = createFakeGitData({ files: ["old.png"] });
   const tip = git.tip!;
   const body = await publish(s, git);
@@ -120,7 +121,7 @@ test("two images commit once on top of the evidence ref and link in publication 
 
 test("the same images again make no commit and link the commit that holds them", async () => {
   const s = setup();
-  const sha = s.add("Settings", "same bytes");
+  const sha = await s.add("Settings", "same bytes");
   const git = createFakeGitData();
   await publish(s, git);
   const holder = git.tip!;
@@ -133,7 +134,7 @@ test("the same images again make no commit and link the commit that holds them",
 
 test("the first publication creates the ref with a parentless commit", async () => {
   const s = setup();
-  s.add("Settings", "first");
+  await s.add("Settings", "first");
   const git = createFakeGitData();
   await publish(s, git);
   expect(git.commits.get(git.tip!)!.parents).toEqual([]);
@@ -144,7 +145,7 @@ test("the first publication creates the ref with a parentless commit", async () 
 
 test("a moved ref is re-read and retried, and three moves leave the section out", async () => {
   const s = setup();
-  s.add("Settings", "raced");
+  await s.add("Settings", "raced");
   const git = createFakeGitData({ files: [] });
   git.rejectRefWrites = 1;
   const body = await publish(s, git);
@@ -154,7 +155,7 @@ test("a moved ref is re-read and retried, and three moves leave the section out"
   expect(body).toContain("## Screenshots");
 
   const again = setup();
-  again.add("Other", "never stored");
+  await again.add("Other", "never stored");
   const busy = createFakeGitData({ files: [] });
   busy.rejectRefWrites = 3;
   const journal: string[] = [];
@@ -166,9 +167,9 @@ test("a moved ref is re-read and retried, and three moves leave the section out"
 
 test("videos, large images and rejected evidence are not uploaded, and only 20 images are", async () => {
   const s = setup();
-  s.add("Recording", "video", { mediaType: "video/webm" });
-  s.add("Huge", "huge", { sizeBytes: EVIDENCE_INLINE_LIMITS.image + 1 });
-  s.add("Rejected", "rejected", { id: "ev-rejected" });
+  await s.add("Recording", "video", { mediaType: "video/webm" });
+  await s.add("Huge", "huge", { sizeBytes: EVIDENCE_INLINE_LIMITS.image + 1 });
+  await s.add("Rejected", "rejected", { id: "ev-rejected" });
   s.db.run(
     "INSERT INTO visual_review (question_id, item_id, check_id, evidence_ids, created_at, kind, outcome) VALUES (?,?,?,?,?,?,?)",
     [
@@ -181,7 +182,7 @@ test("videos, large images and rejected evidence are not uploaded, and only 20 i
       "changes_requested",
     ],
   );
-  for (let index = 0; index < 22; index++) s.add(`Screen ${index}`, `screen ${index}`);
+  for (let index = 0; index < 22; index++) await s.add(`Screen ${index}`, `screen ${index}`);
   const git = createFakeGitData();
   const body = await publish(s, git);
   expect(git.blobs).toHaveLength(20);
@@ -193,7 +194,7 @@ test("videos, large images and rejected evidence are not uploaded, and only 20 i
 
 test("a GitHub error while storing leaves the section out with one journal line", async () => {
   const s = setup();
-  s.add("Settings", "error");
+  await s.add("Settings", "error");
   const git = createFakeGitData();
   git.failPath = "trees";
   const journal: string[] = [];
@@ -204,7 +205,7 @@ test("a GitHub error while storing leaves the section out with one journal line"
 
 test("an unreadable evidence file leaves the section out", async () => {
   const s = setup();
-  s.add("Settings", "gone");
+  await s.add("Settings", "gone");
   rmSync(path.join(s.root, "ev-1"));
   const journal: string[] = [];
   expect(await publish(s, createFakeGitData(), journal)).toBe("");
@@ -213,7 +214,7 @@ test("an unreadable evidence file leaves the section out", async () => {
 
 test("brackets in the display name are escaped", async () => {
   const s = setup();
-  s.add("Settings [dark] \\ wide", "brackets");
+  await s.add("Settings [dark] \\ wide", "brackets");
   const body = await publish(s, createFakeGitData());
   expect(body).toContain("![Settings \\[dark\\] \\\\ wide](");
 });
