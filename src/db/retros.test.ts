@@ -482,7 +482,7 @@ describe("retro artifacts", () => {
   test("artifacts are private and checked against their hash", async () => {
     const { db, root } = harness();
     await frozen(db, root, { id: "r1", start: 0, end: DAY, cursor: 9 });
-    const read = readRetroArtifact(db, root, "r1", "digest");
+    const read = await readRetroArtifact(sqliteDb(db), root, "r1", "digest");
     expect(read.ok && new TextDecoder().decode(read.bytes)).toBe("digest r1");
     if (!read.ok) return;
     const path = join(root, read.artifact.fileName);
@@ -498,16 +498,16 @@ describe("retro artifacts", () => {
     ).rejects.toThrow(/different digest/);
 
     writeFileSync(path, "tampered");
-    expect(readRetroArtifact(db, root, "r1", "digest")).toEqual({
+    expect(await readRetroArtifact(sqliteDb(db), root, "r1", "digest")).toEqual({
       ok: false,
       reason: "hash_mismatch",
     });
     unlinkSync(path);
-    expect(readRetroArtifact(db, root, "r1", "digest")).toEqual({
+    expect(await readRetroArtifact(sqliteDb(db), root, "r1", "digest")).toEqual({
       ok: false,
       reason: "missing_artifact",
     });
-    expect(readRetroArtifact(db, root, "r1", "report")).toEqual({
+    expect(await readRetroArtifact(sqliteDb(db), root, "r1", "report")).toEqual({
       ok: false,
       reason: "unrecorded",
     });

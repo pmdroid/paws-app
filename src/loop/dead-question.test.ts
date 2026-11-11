@@ -27,7 +27,7 @@ async function waitingItem(kind: "agent" | "visual-review" = "agent") {
   migrate(db);
   open.push(db);
   insertQueuedItem(db, { id: "item-q", sessionKey: "ses-q", now: 0 });
-  beginImplementRun(db, "item-q", 1_000);
+  await beginImplementRun(sqliteDb(db), "item-q", 1_000);
   const item = getWorkItem(db, "item-q")!;
   const asked = await sqliteDb(db).transaction((q) =>
     askSteps(
@@ -46,7 +46,7 @@ async function waitingItem(kind: "agent" | "visual-review" = "agent") {
     );
   // Both deliveries of the elicitation used their attempts.
   db.run("UPDATE outbox SET status = 'dead', error = 'Linear is down' WHERE op = 'elicitation'");
-  const job = enqueueJob(db, {
+  const job = await enqueueJob(sqliteDb(db), {
     queue: JOB_KIND.reaskQuestion,
     jobKey: `${JOB_KIND.reaskQuestion}:${asked.question.id}`,
     payload: { itemId: "item-q", questionId: asked.question.id },
@@ -78,13 +78,18 @@ describe("a question whose elicitation died twice", () => {
     expect((await getQuestion(sqliteDb(db), question.id))?.cancelledAt).toBe(3_000);
     expect(findOpenQuestion(db, "ses-q")?.id).toBe(again!);
     expect(getWorkItem(db, "item-q")?.state).toBe("awaiting_input");
-    expect(listOutbox(db, "ses-q").map((row) => [row.idempotencyKey, row.status])).toEqual([
+    expect(
+      (await listOutbox(sqliteDb(db), "ses-q")).map((row) => [row.idempotencyKey, row.status]),
+    ).toEqual([
       [`question:${question.id}`, "dropped"],
       [`question:${again}`, "pending"],
     ]);
     expect(await listDeadDeliveries(sqliteDb(db), "item-q")).toEqual([]);
     // The job remembers the question it produced, so that question shares this allowance.
-    expect(getJob(db, job)?.payload).toMatchObject({ questionId: question.id, reaskedAs: again });
+    expect((await getJob(sqliteDb(db), job))?.payload).toMatchObject({
+      questionId: question.id,
+      reaskedAs: again,
+    });
   });
 
   test("a visual review keeps its question and review, and is delivered again", async () => {
@@ -101,13 +106,17 @@ describe("a question whose elicitation died twice", () => {
     expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
     expect(findOpenQuestion(db, "ses-q")?.id).toBe(question.id);
     expect(await getVisualReview(sqliteDb(db), question.id)).not.toBeNull();
-    expect(listOutbox(db, "ses-q").map((row) => [row.idempotencyKey, row.status])).toEqual([
+    expect(
+      (await listOutbox(sqliteDb(db), "ses-q")).map((row) => [row.idempotencyKey, row.status]),
+    ).toEqual([
       [`question:${question.id}`, "dropped"],
       [`question:${question.id}:reask`, "pending"],
     ]);
-    expect(listOutbox(db, "ses-q")[1]?.payload).toEqual(listOutbox(db, "ses-q")[0]?.payload);
+    expect((await listOutbox(sqliteDb(db), "ses-q"))[1]?.payload).toEqual(
+      (await listOutbox(sqliteDb(db), "ses-q"))[0]?.payload,
+    );
     expect(await listDeadDeliveries(sqliteDb(db), "item-q")).toEqual([]);
-    expect(getJob(db, job)?.payload).toMatchObject({ reaskedAs: question.id });
+    expect((await getJob(sqliteDb(db), job))?.payload).toMatchObject({ reaskedAs: question.id });
   });
 
   test("changes nothing once the item stopped waiting or the question was answered", async () => {
@@ -133,8 +142,8 @@ describe("a question whose elicitation died twice", () => {
         now: 3_000,
       }),
     ).toBeNull();
-    expect(listOutbox(answered.db, "ses-q").filter((row) => row.op === "elicitation")).toHaveLength(
-      1,
-    );
+    expect(
+      (await listOutbox(sqliteDb(answered.db), "ses-q")).filter((row) => row.op === "elicitation"),
+    ).toHaveLength(1);
   });
 });

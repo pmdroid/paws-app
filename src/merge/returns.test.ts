@@ -21,16 +21,20 @@ import {
 import { askSteps, findOpenQuestion, getQuestion } from "../questions";
 import { askMergeHelp, ciFixes, rebaseReturns, returnToAgent } from "./returns";
 
-function queued() {
+async function queued() {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
-  beginImplementRun(db, "eng-1", 1);
-  enterMergeQueue(db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
+  await beginImplementRun(sqliteDb(db), "eng-1", 1);
+  await enterMergeQueue(sqliteDb(db), "eng-1", {
+    phase: "merge_queue",
+    baseSha: "b",
+    wipCommit: "h",
+  });
   return db;
 }
 
-async function sendBack(db: ReturnType<typeof queued>, limit = 3) {
+async function sendBack(db: Awaited<ReturnType<typeof queued>>, limit = 3) {
   const announced: string[] = [];
   const sent = await returnToAgent(sqliteDb(db), {
     itemId: "eng-1",
@@ -47,12 +51,14 @@ async function sendBack(db: ReturnType<typeof queued>, limit = 3) {
 
 describe("merge returns", () => {
   test("a return sends the item back to the agent with a resume job and counts it", async () => {
-    const db = queued();
+    const db = await queued();
     const { sent, announced } = await sendBack(db);
     expect(sent).toBe(true);
     expect(getWorkItem(db, "eng-1")?.state).toBe("queued");
     expect(getWorkItem(db, "eng-1")?.checkpoint?.phase).toBe("running");
-    expect(listJobs(db).map((job) => [job.queue, job.jobKey, job.payload])).toEqual([
+    expect(
+      (await listJobs(sqliteDb(db))).map((job) => [job.queue, job.jobKey, job.payload]),
+    ).toEqual([
       [
         JOB_KIND.resume,
         "rebase-conflict:eng-1:0:0",
@@ -70,17 +76,17 @@ describe("merge returns", () => {
   });
 
   test("a spent budget or an item that left the merge queue is not sent back", async () => {
-    const db = queued();
+    const db = await queued();
     expect((await sendBack(db, 0)).sent).toBe(false);
     expect((await sendBack(db)).sent).toBe(true);
     expect((await sendBack(db)).sent).toBe(false);
-    expect(listJobs(db)).toHaveLength(1);
+    expect(await listJobs(sqliteDb(db))).toHaveLength(1);
   });
 
   test("a Linear user turn resets the budget", async () => {
-    const db = queued();
+    const db = await queued();
     await sendBack(db, 1);
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.resume,
       jobKey: "linear-turn:s-1:1",
       payload: { itemId: "eng-1" },
@@ -90,10 +96,10 @@ describe("merge returns", () => {
   });
 
   test("a guidance-answer restart resets the return budget", async () => {
-    const db = queued();
+    const db = await queued();
     await sendBack(db, 1);
     expect(await rebaseReturns(db, "eng-1")).toBe(1);
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.resume,
       jobKey: "resume:answer:guidance",
       payload: { itemId: "eng-1", reason: "answer" },
@@ -103,20 +109,24 @@ describe("merge returns", () => {
   });
 
   test("findings, CI and review share one budget until a person replies", async () => {
-    const db = queued();
+    const db = await queued();
     try {
       for (const reason of ["findings", "ci", "review"]) {
-        enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "eng-1", reason }, now: 2 });
+        await enqueueJob(sqliteDb(db), {
+          queue: JOB_KIND.resume,
+          payload: { itemId: "eng-1", reason },
+          now: 2,
+        });
       }
       expect(fixRounds(db, "eng-1")).toBe(3);
       expect(ciFixes(db, "eng-1")).toBe(3);
-      enqueueJob(db, {
+      await enqueueJob(sqliteDb(db), {
         queue: JOB_KIND.resume,
         payload: { itemId: "eng-1", reason: "conflict" },
         now: 3,
       });
       expect(fixRounds(db, "eng-1")).toBe(3);
-      const reply = enqueueJob(db, {
+      const reply = await enqueueJob(sqliteDb(db), {
         queue: JOB_KIND.resume,
         jobKey: "linear-turn:s-1:2",
         payload: { itemId: "eng-1" },
@@ -126,7 +136,7 @@ describe("merge returns", () => {
       await saveHumanRetryWindow(sqliteDb(db), "eng-1", reply, ["redispatched-evidence"]);
       expect(await humanRetryBaseline(sqliteDb(db), "eng-1")).toEqual(["failed-evidence"]);
       expect(fixRounds(db, "eng-1")).toBe(0);
-      enqueueJob(db, {
+      await enqueueJob(sqliteDb(db), {
         queue: JOB_KIND.resume,
         payload: { itemId: "eng-1", reason: "ci" },
         now: 5,
@@ -138,7 +148,7 @@ describe("merge returns", () => {
   });
 
   test("asking for help opens a question through the lifecycle and waits for input", async () => {
-    const db = queued();
+    const db = await queued();
     expect(
       await askMergeHelp(sqliteDb(db), {
         ask,
@@ -153,7 +163,7 @@ describe("merge returns", () => {
   });
 
   test("CI help asked while another task's question is open waits its turn", async () => {
-    const db = queued();
+    const db = await queued();
     insertQueuedItem(db, { id: "eng-2", now: 1, sessionKey: "s-1" });
     const open = await sqliteDb(db).transaction((q) =>
       askSteps(q, { itemId: "eng-2", runId: null, sessionId: "s-1" }, "agent", "Which?"),
@@ -179,7 +189,7 @@ describe("merge returns", () => {
   });
 
   test("asking again while a question is open, or without a session, asks nothing", async () => {
-    const db = queued();
+    const db = await queued();
     expect(
       await askMergeHelp(sqliteDb(db), {
         ask,

@@ -319,7 +319,9 @@ function fixture() {
   const options: MergeSettingsOptions = {
     configPath,
     csrfToken: "test-token",
-    audit: (action, subject) => audits.push([action, subject]),
+    audit: async (action, subject) => {
+      audits.push([action, subject]);
+    },
     choices: async () => ({
       projects: [
         { id: PAWS, name: "Paws" },

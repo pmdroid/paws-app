@@ -45,7 +45,7 @@ export async function probeRunnerPlacement(
     now,
   });
   const item = insertQueuedItem(db, { id: "placement", now, sessionKey: "session" });
-  const { run } = beginImplementRun(db, item.id, now);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
   await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app-client",
@@ -429,7 +429,7 @@ export async function probeRunnerPlacement(
       createdAtMs: ++installationObservation,
     });
     await assert.rejects(ids(), /Runner (?:task|session authority) is unavailable/);
-    assert.equal(getLinearSessionAccess(db, "session"), "revoked");
+    assert.equal(await getLinearSessionAccess(sqliteDb(db), "session"), "revoked");
     observe("App revocation fences selection", true, {
       revoked: true,
     });

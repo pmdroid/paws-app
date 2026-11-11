@@ -16,6 +16,7 @@ import {
   listWorkItems,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator, type AgentLaunch } from "../src/loop";
@@ -109,7 +110,7 @@ for (const delivered of [true, false, "completed"] as const)
           op: "activity",
           orderingKey: "ses_1",
           delivery: "ordered",
-          idempotencyKey: `pull-request-ready:${item.id}:${getLinearSessionGeneration(db, "ses_1")}`,
+          idempotencyKey: `pull-request-ready:${item.id}:${await getLinearSessionGeneration(sqliteDb(db), "ses_1")}`,
           payload: { sessionId: "ses_1", kind: "response", body: "Opened pull request #1." },
         });
         while ((await outbox.tick()).length > 0) await outbox.idle();
@@ -119,7 +120,7 @@ for (const delivered of [true, false, "completed"] as const)
       expect(forwarded).toEqual(
         delivered === "completed" ? [] : [{ itemId: item.id, body: "Also cover the empty state" }],
       );
-      const resumes = listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
+      const resumes = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
       if (delivered === true) {
         expect(getRun(db, runId)?.status).toBe("active");
         expect(listWorkItems(db)[0]!.currentRunId).toBe(runId);

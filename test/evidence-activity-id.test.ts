@@ -4,6 +4,7 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { FakeClock } from "../src/core";
 import {
+  sqliteDb,
   enqueueOutbox,
   insertQueuedItem,
   listOutbox,
@@ -48,8 +49,8 @@ async function deliverAll(db: Database, tracker: ReturnType<typeof createFakeTra
 test("a dead evidence row is repaired on start and the rows behind it deliver in order", async () => {
   const f = setup();
   try {
-    const stuck = (body: string, key: string, id?: string) =>
-      enqueueOutbox(f.db, {
+    const stuck = async (body: string, key: string, id?: string) =>
+      await enqueueOutbox(sqliteDb(f.db), {
         target: "linear",
         op: "activity",
         delivery: "ordered",
@@ -58,23 +59,27 @@ test("a dead evidence row is repaired on start and the rows behind it deliver in
         idempotencyKey: key,
         payload: { ...(id ? { id } : {}), sessionId: "session", kind: "thought", body },
       });
-    stuck("before", "before");
-    const evidence = stuck(
+    await stuck("before", "before");
+    const evidence = await stuck(
       "evidence",
       "evidence:session:0:01K7ZZZZZZZZZZZZZZZZZZZZZZ",
       "01K7ZZZZZZZZZZZZZZZZZZZZZZ",
     );
-    stuck("closeout accepted", "after-1");
-    stuck("completed", "after-2");
+    await stuck("closeout accepted", "after-1");
+    await stuck("completed", "after-2");
     const tracker = createFakeTracker();
     await deliverAll(f.db, tracker);
-    expect(listOutbox(f.db, "session").find((row) => row.id === evidence)?.status).toBe("dead");
+    expect(
+      (await listOutbox(sqliteDb(f.db), "session")).find((row) => row.id === evidence)?.status,
+    ).toBe("dead");
     expect(tracker.progress.map((update) => update.body)).toEqual(["before"]);
 
     f.db.run("DELETE FROM schema_migration WHERE id = '076_evidence_activity_uuid'");
     legacyMigrate(f.db);
 
-    const repaired = listOutbox(f.db, "session").find((row) => row.id === evidence)!;
+    const repaired = (await listOutbox(sqliteDb(f.db), "session")).find(
+      (row) => row.id === evidence,
+    )!;
     expect(repaired).toMatchObject({ status: "pending", attempts: 0, error: null });
     expect((repaired.payload as { id: string }).id).toMatch(UUID_V4);
     await deliverAll(f.db, tracker);
@@ -84,7 +89,9 @@ test("a dead evidence row is repaired on start and the rows behind it deliver in
       "closeout accepted",
       "completed",
     ]);
-    expect(listOutbox(f.db, "session").every((row) => row.status === "sent")).toBe(true);
+    expect(
+      (await listOutbox(sqliteDb(f.db), "session")).every((row) => row.status === "sent"),
+    ).toBe(true);
   } finally {
     f.db.close();
   }
@@ -93,7 +100,7 @@ test("a dead evidence row is repaired on start and the rows behind it deliver in
 test("a pending evidence row with a ULID id is repaired before it is sent", async () => {
   const f = setup();
   try {
-    const queued = enqueueOutbox(f.db, {
+    const queued = await enqueueOutbox(sqliteDb(f.db), {
       target: "linear",
       op: "activity",
       delivery: "ordered",
@@ -111,7 +118,9 @@ test("a pending evidence row with a ULID id is repaired before it is sent", asyn
     f.db.run("DELETE FROM schema_migration WHERE id = '076_evidence_activity_uuid'");
     legacyMigrate(f.db);
 
-    const repaired = listOutbox(f.db, "session").find((row) => row.id === queued)!;
+    const repaired = (await listOutbox(sqliteDb(f.db), "session")).find(
+      (row) => row.id === queued,
+    )!;
     expect(repaired.status).toBe("pending");
     expect((repaired.payload as { id: string }).id).toMatch(UUID_V4);
     const tracker = createFakeTracker();

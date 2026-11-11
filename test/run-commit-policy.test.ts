@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeClock, type GitCommitPolicy } from "../src/core";
 import {
+  sqliteDb,
   JobLoop,
   OutboxDispatcher,
   beginImplementRun,
@@ -62,7 +63,7 @@ test("a task keeps the commit policy it started with when credit changes mid-fli
     ).commitPolicy(item);
   try {
     insertQueuedItem(db, { id: "task", sessionKey: "session", now: 1_000 });
-    beginImplementRun(db, "task", 1_000);
+    await beginImplementRun(sqliteDb(db), "task", 1_000);
     expect(await policyFor(getWorkItem(db, "task")!)).toEqual(BOT_ONLY);
     current = WITH_CREDIT;
     expect(await policyFor(getWorkItem(db, "task")!)).toEqual(BOT_ONLY);

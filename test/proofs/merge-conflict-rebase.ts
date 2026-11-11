@@ -60,8 +60,8 @@ export default {
     await proof.delegate();
     await proof.waitFor(
       "Closeout accepts and the item waits in the merge queue on CI",
-      () =>
-        proof.itemState() === "merge_queue" &&
+      async () =>
+        (await proof.itemState()) === "merge_queue" &&
         proof.github.calls.some((call) => call.path === "/graphql"),
     );
     await proof.pushToMain("widgets.txt", "99\n", "Set the acme widget count");

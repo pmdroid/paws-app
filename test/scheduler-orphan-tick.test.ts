@@ -26,7 +26,7 @@ test("one scheduler tick requeues an orphan and admits its resume in the same pa
     });
     insertQueuedItem(db, { id: "orphan", now: 1, sessionKey: "orphan-session" });
     db.run("UPDATE work_item SET state='running' WHERE id='orphan'");
-    const finished = enqueueJob(db, {
+    const finished = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.start,
       payload: { itemId: "orphan" },
       now: 1,

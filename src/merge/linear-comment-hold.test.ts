@@ -17,8 +17,12 @@ test("a queued Linear comment holds the merge until it is handed over or settled
   const store = sqliteDb(db);
   migrate(db);
   insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
-  beginImplementRun(db, "eng-1", 1);
-  enterMergeQueue(db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
+  await beginImplementRun(sqliteDb(db), "eng-1", 1);
+  await enterMergeQueue(sqliteDb(db), "eng-1", {
+    phase: "merge_queue",
+    baseSha: "b",
+    wipCommit: "h",
+  });
   expect(await reviewHold(store, "eng-1", 10, WAIT)).toBeNull();
   db.run(
     `INSERT INTO linear_comment (comment_id, issue_id, body, created_at_ms, updated_at_ms,

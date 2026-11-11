@@ -220,7 +220,7 @@ async function fixture() {
         clock.now(),
       ],
     );
-    const run = insertRun(db, { itemId, now: clock.now(), status: "active" });
+    const run = await insertRun(sqliteDb(db), { itemId, now: clock.now(), status: "active" });
     db.run(
       `INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence)
       VALUES(?,?,?,1,0,?,?,0)`,
@@ -262,8 +262,8 @@ const audits = (db: Database, action: string) =>
       "SELECT count(*) AS n FROM workspace_access_audit WHERE action=?",
     )
     .get(action)!.n;
-const openJobs = (db: Database, queue: string) =>
-  listJobs(db).filter(
+const openJobs = async (db: Database, queue: string) =>
+  (await listJobs(sqliteDb(db))).filter(
     (job) => job.queue === queue && (job.status === "pending" || job.status === "running"),
   );
 
@@ -391,7 +391,7 @@ describe("Delete VM", () => {
     expect(f.stopped).toEqual([itemId]);
     expect((await getMemberVm(f.db, vm.id))!.deleteStep).toBe("tailnet");
     f.db.run("UPDATE member_vm SET delete_step='drain' WHERE id=?", [vm.id]);
-    enqueueJob(f.db, {
+    await enqueueJob(sqliteDb(f.db), {
       queue: MEMBER_VM_DELETE_QUEUE,
       payload: { memberVmId: vm.id },
       now: f.clock.now(),
@@ -460,7 +460,7 @@ describe("Delete VM", () => {
       expect(refused.status).toBe(403);
     }
     expect((await getMemberVm(f.db, vm.id))!.deleteStep).toBeNull();
-    expect(openJobs(f.db, MEMBER_VM_DELETE_QUEUE)).toHaveLength(0);
+    expect(await openJobs(f.db, MEMBER_VM_DELETE_QUEUE)).toHaveLength(0);
     expect((await f.remove(f.member, "01NOSUCHVM0000000000000000")).status).toBe(404);
     expect((await f.call(f.member, "/api/runners/vm/delete", { id: 7 })).status).toBe(400);
 
@@ -480,7 +480,7 @@ describe("Delete VM", () => {
     const vm = await f.ready();
     await f.remove(f.member, vm.id);
     await f.remove(f.member, vm.id);
-    expect(openJobs(f.db, MEMBER_VM_DELETE_QUEUE)).toHaveLength(1);
+    expect(await openJobs(f.db, MEMBER_VM_DELETE_QUEUE)).toHaveLength(1);
 
     const steps = ["drain", "tailnet", "revoke", "destroy"] as const;
     for (const [index, step] of steps.entries()) {
@@ -488,7 +488,7 @@ describe("Delete VM", () => {
       const next = index === steps.length - 1 ? "clear" : steps[index + 1]!;
       expect((await getMemberVm(f.db, vm.id))!.deleteStep).toBe(next);
       f.db.run("UPDATE member_vm SET delete_step=? WHERE id=?", [step, vm.id]);
-      enqueueJob(f.db, {
+      await enqueueJob(sqliteDb(f.db), {
         queue: MEMBER_VM_DELETE_QUEUE,
         payload: { memberVmId: vm.id },
         now: f.clock.now(),
@@ -504,7 +504,7 @@ describe("Delete VM", () => {
 
     await f.settle();
     expect(await getMemberVm(f.db, vm.id)).toBeNull();
-    enqueueJob(f.db, {
+    await enqueueJob(sqliteDb(f.db), {
       queue: MEMBER_VM_DELETE_QUEUE,
       payload: { memberVmId: vm.id },
       now: f.clock.now(),
@@ -535,9 +535,9 @@ describe("Delete VM", () => {
     const f = await fixture();
     f.exeDev.addVm("ada-lovelace-paws");
     const row = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
-    expect(openJobs(f.db, MEMBER_VM_QUEUE)).toHaveLength(1);
+    expect(await openJobs(f.db, MEMBER_VM_QUEUE)).toHaveLength(1);
     await f.remove(f.member, row.id);
-    expect(openJobs(f.db, MEMBER_VM_QUEUE)).toHaveLength(0);
+    expect(await openJobs(f.db, MEMBER_VM_QUEUE)).toHaveLength(0);
     await f.settle();
     expect(await getMemberVm(f.db, row.id)).toBeNull();
     expect(f.exeDev.calls).toEqual([]);
@@ -552,7 +552,7 @@ describe("Delete VM", () => {
     const same = viewOf((await f.call(f.member, "/api/runners/vm", {})).body);
     expect(same.id).toBe(vm.id);
     expect(same.deleting!.step).toBe("drain");
-    expect(openJobs(f.db, MEMBER_VM_QUEUE)).toHaveLength(0);
+    expect(await openJobs(f.db, MEMBER_VM_QUEUE)).toHaveLength(0);
   });
 });
 
@@ -628,7 +628,7 @@ describe("Delete VM while a provisioning step is still running", () => {
     expect(await getMemberVm(f.db, row.id)).toBeNull();
     expect(f.exeDev.vms.has("ada-lovelace-paws")).toBe(false);
     expect(f.exeDev.calls.at(-1)).toEqual({ operation: "deleteVm", vm: "ada-lovelace-paws" });
-    expect(openJobs(f.db, MEMBER_VM_QUEUE)).toHaveLength(0);
+    expect(await openJobs(f.db, MEMBER_VM_QUEUE)).toHaveLength(0);
   });
 
   test("revokes a runner whose enrollment finishes after the delete was confirmed", async () => {

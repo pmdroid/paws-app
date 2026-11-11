@@ -1,16 +1,15 @@
 import { canAct } from "./eligibility";
 import type { Database } from "bun:sqlite";
 import {
-  auditWorkspaceAccess,
   auditWorkspaceAccessSteps,
   getLinearSessionAccessSteps,
   getLinearSessionInstallationSteps,
   sqliteDb,
   syncWorkspaceMemberSteps,
-  workspaceForOrganization,
   workspaceForOrganizationSteps,
-  workspaceLinearMember,
   workspaceLinearMemberSteps,
+  type Q,
+  type Steps,
 } from "../db";
 import {
   LinearEntityNotFoundError,
@@ -137,30 +136,24 @@ export function createWorkspaceLinearActions(options: {
     subject: `linear-comment:${actorId}`,
     now: options.now(),
   });
-  /** Synchronous for `recheckActor`, which a comment's Steps call. */
-  function deniedActorNow(workspaceId: string | null, actorId: string): false {
-    auditWorkspaceAccess(options.db, actorDenial(workspaceId, actorId));
-    return false;
-  }
   async function deniedActor(workspaceId: string | null, actorId: string): Promise<false> {
     const audit = actorDenial(workspaceId, actorId);
     await store.run((q) => auditWorkspaceAccessSteps(q, audit));
     return false;
   }
-  /** Synchronous: `linearCommentDropReasonSteps` calls it inside its Steps. */
-  function recheckActor(actor: { id: string; teamId: string | null }): boolean {
-    const workspace = workspaceForOrganization(options.db, options.organizationId);
+  function* recheckActorSteps(q: Q, actor: { id: string; teamId: string | null }): Steps<boolean> {
+    const workspace = yield* workspaceForOrganizationSteps(q, options.organizationId);
     if (workspace === null || !actor.id.trim()) return false;
-    const member = workspaceLinearMember(options.db, workspace.id, actor.id);
-    return (
-      canAct({ id: actor.id, member, teamId: actor.teamId ?? undefined }, "prompt").allowed ||
-      deniedActorNow(workspace.id, actor.id)
-    );
+    const member = yield* workspaceLinearMemberSteps(q, workspace.id, actor.id);
+    if (canAct({ id: actor.id, member, teamId: actor.teamId ?? undefined }, "prompt").allowed)
+      return true;
+    yield* auditWorkspaceAccessSteps(q, actorDenial(workspace.id, actor.id));
+    return false;
   }
   async function authorizeActor(actor: { id: string; teamId: string | null }): Promise<boolean> {
     const workspace = await workspaceOf();
     if (workspace === null || !actor.id.trim()) return deniedActor(null, actor.id);
-    if (!recheckActor(actor)) return false;
+    if (!(await store.run((q) => recheckActorSteps(q, actor)))) return false;
     const observedAt = options.now();
     let identity: Awaited<ReturnType<LinearMembershipReads["member"]>>;
     try {
@@ -197,5 +190,5 @@ export function createWorkspaceLinearActions(options: {
       ? true
       : deniedActor(workspace.id, actor.id);
   }
-  return { authorize, recheck, authorizeActor, recheckActor };
+  return { authorize, recheck, authorizeActor, recheckActorSteps };
 }

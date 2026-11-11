@@ -9,7 +9,7 @@ import {
   enqueueOutbox,
   enqueueOutboxOnce,
   getOutboxSteps,
-  immediate,
+  enqueueOutboxSteps,
   listOutbox,
   migrate,
   openDatabase,
@@ -24,8 +24,8 @@ function setup(path = ":memory:") {
   migrate(db);
   const clock = new FakeClock(5000);
   const dispatcher = new OutboxDispatcher(db, clock);
-  function enqueue(key: string, options: Partial<NewOutbox> = {}) {
-    return enqueueOutbox(db, {
+  async function enqueue(key: string, options: Partial<NewOutbox> = {}) {
+    return await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: "A",
@@ -55,7 +55,7 @@ describe("critical Linear delivery", () => {
     "a final reply supersedes a failed progress head with maxAttempts=%s",
     async (maxAttempts) => {
       const { db, dispatcher, enqueue } = setup();
-      const progress = enqueue("legacy", {
+      const progress = await enqueue("legacy", {
         maxAttempts,
         payload: { text: "untyped legacy progress" },
       });
@@ -68,8 +68,8 @@ describe("critical Linear delivery", () => {
       expect((await sqliteDb(db).run((q) => getOutboxSteps(q, progress)))?.status).toBe(
         maxAttempts === 1 ? "dead" : "pending",
       );
-      enqueue("other", { orderingKey: "B" });
-      const final = enqueue("final", {
+      await enqueue("other", { orderingKey: "B" });
+      const final = await enqueue("final", {
         payload: { sessionId: "A", kind: "response", body: "Done" },
       });
       await flush(dispatcher);
@@ -77,11 +77,11 @@ describe("critical Linear delivery", () => {
       expect((await sqliteDb(db).run((q) => getOutboxSteps(q, final)))?.status).toBe("sent");
       expect(delivered).toContain("final");
       expect(delivered).toContain("other");
-      const stale = enqueue("late-progress");
+      const stale = await enqueue("late-progress");
       await flush(dispatcher);
       expect((await sqliteDb(db).run((q) => getOutboxSteps(q, stale)))?.status).toBe("dropped");
       expect(delivered).not.toContain("late-progress");
-      const lateCritical = enqueue("late-ack", { delivery: "critical" });
+      const lateCritical = await enqueue("late-ack", { delivery: "critical" });
       expect((await sqliteDb(db).run((q) => getOutboxSteps(q, lateCritical)))?.status).toBe(
         "dropped",
       );
@@ -91,13 +91,15 @@ describe("critical Linear delivery", () => {
 
   test("an elicitation replaces retrying progress and terminal output replaces the obsolete question", async () => {
     const { db, dispatcher, enqueue } = setup();
-    const progress = enqueue("progress");
-    const question = enqueue("question", {
+    const progress = await enqueue("progress");
+    const question = await enqueue("question", {
       op: "elicitation",
       payload: { sessionId: "A", body: "Which?" },
     });
     expect((await sqliteDb(db).run((q) => getOutboxSteps(q, progress)))?.status).toBe("dropped");
-    const final = enqueue("final", { payload: { sessionId: "A", kind: "error", body: "Halted" } });
+    const final = await enqueue("final", {
+      payload: { sessionId: "A", kind: "error", body: "Halted" },
+    });
     dispatcher.setHandler(() => {});
     await flush(dispatcher);
     expect((await sqliteDb(db).run((q) => getOutboxSteps(q, question)))?.status).toBe("dropped");
@@ -107,21 +109,28 @@ describe("critical Linear delivery", () => {
 
   test("supersession rolls back with its critical enqueue", async () => {
     const { db, enqueue } = setup();
-    const progress = enqueue("progress");
-    expect(() =>
-      immediate(db, () => {
-        enqueue("final", { payload: { kind: "response", body: "Done" } });
+    const progress = await enqueue("progress");
+    await expect(
+      sqliteDb(db).transaction(function* (q) {
+        yield* enqueueOutboxSteps(q, {
+          target: "linear",
+          op: "activity",
+          orderingKey: "A",
+          idempotencyKey: "final",
+          payload: { kind: "response", body: "Done" },
+          now: 5000,
+        });
         throw new Error("rollback");
       }),
-    ).toThrow("rollback");
+    ).rejects.toThrow("rollback");
     expect((await sqliteDb(db).run((q) => getOutboxSteps(q, progress)))?.status).toBe("pending");
-    expect(listOutbox(db)).toHaveLength(1);
+    expect(await listOutbox(sqliteDb(db))).toHaveLength(1);
     db.close();
   });
 
   test("a failed meaningful final stays visible until an explicit newer generation supersedes it", async () => {
     const { db, dispatcher, enqueue } = setup();
-    const failed = enqueue("failed-final", {
+    const failed = await enqueue("failed-final", {
       payload: { kind: "response", body: "Previous result" },
       maxAttempts: 1,
     });
@@ -129,7 +138,9 @@ describe("critical Linear delivery", () => {
       throw new Error("transport failed");
     });
     await flush(dispatcher);
-    const later = enqueue("later-final", { payload: { kind: "response", body: "Another result" } });
+    const later = await enqueue("later-final", {
+      payload: { kind: "response", body: "Another result" },
+    });
     dispatcher.setHandler(() => {});
     expect(await dispatcher.tick()).toHaveLength(0);
     expect((await sqliteDb(db).run((q) => getOutboxSteps(q, failed)))?.status).toBe("dead");
@@ -142,7 +153,7 @@ describe("critical Linear delivery", () => {
       body: "Previous result",
     });
     expect((await sqliteDb(db).run((q) => getOutboxSteps(q, later)))?.status).toBe("dropped");
-    const next = enqueue("next-final", { payload: { kind: "response", body: "Next turn" } });
+    const next = await enqueue("next-final", { payload: { kind: "response", body: "Next turn" } });
     await flush(dispatcher);
     expect((await sqliteDb(db).run((q) => getOutboxSteps(q, next)))?.status).toBe("sent");
     db.close();
@@ -153,7 +164,7 @@ describe("critical Linear delivery", () => {
     let concurrent = 0;
     let maximum = 0;
     const events: string[] = [];
-    const progress = enqueue("progress");
+    const progress = await enqueue("progress");
     dispatcher.setHandler(async (row, context) => {
       if (row.orderingKey !== "A") {
         events.push(row.idempotencyKey);
@@ -179,8 +190,8 @@ describe("critical Linear delivery", () => {
       }
     });
     await dispatcher.tick();
-    enqueue("final", { payload: { kind: "response", body: "Done" } });
-    enqueue("other", { orderingKey: "B" });
+    await enqueue("final", { payload: { kind: "response", body: "Done" } });
+    await enqueue("other", { orderingKey: "B" });
     await dispatcher.tick();
     await dispatcher.idle();
     await flush(dispatcher);
@@ -197,13 +208,13 @@ describe("critical Linear delivery", () => {
     const { db, clock, dispatcher, enqueue } = setup();
     const gate = deferred();
     const delivered: string[] = [];
-    const progress = enqueue("progress");
+    const progress = await enqueue("progress");
     dispatcher.setHandler(async (row) => {
       delivered.push(row.idempotencyKey);
       if (row.idempotencyKey === "progress") await gate.promise;
     });
     await dispatcher.tick();
-    enqueue("final", { payload: { kind: "response", body: "Done" } });
+    await enqueue("final", { payload: { kind: "response", body: "Done" } });
     clock.advance(120000);
     expect(await dispatcher.tick()).toHaveLength(0);
     expect(delivered).toEqual(["progress"]);
@@ -225,17 +236,17 @@ describe("critical Linear delivery", () => {
 describe("ephemeral progress coalescing", () => {
   test("reconnect sends only the latest unsent transient update and keeps durable milestones", async () => {
     const { db, dispatcher, enqueue } = setup();
-    const first = enqueue("first", {
+    const first = await enqueue("first", {
       payload: { kind: "thought", body: "Starting", ephemeral: true },
     });
-    const milestone = enqueue("milestone", {
+    const milestone = await enqueue("milestone", {
       payload: { kind: "thought", body: "Implemented export" },
     });
-    const other = enqueue("other", {
+    const other = await enqueue("other", {
       orderingKey: "B",
       payload: { kind: "thought", body: "Other", ephemeral: true },
     });
-    const latest = enqueue("latest", {
+    const latest = await enqueue("latest", {
       payload: { kind: "action", body: "Testing", ephemeral: true },
     });
     const delivered: string[] = [];
@@ -253,24 +264,26 @@ describe("ephemeral progress coalescing", () => {
 
   test("a claimed update remains serialized and questions and results retain their fences", async () => {
     const { db, dispatcher, enqueue } = setup();
-    const first = enqueue("first", {
+    const first = await enqueue("first", {
       payload: { kind: "thought", body: "Starting", ephemeral: true },
     });
     const claimed = await claimOutboxHeads(sqliteDb(db), { now: 5000 });
     expect(claimed[0]?.id).toBe(first);
-    const later = enqueue("later", {
+    const later = await enqueue("later", {
       payload: { kind: "action", body: "Testing", ephemeral: true },
     });
     expect((await sqliteDb(db).run((q) => getOutboxSteps(q, first)))?.status).toBe("pending");
-    const question = enqueue("question", {
+    const question = await enqueue("question", {
       op: "elicitation",
       payload: { sessionId: "A", body: "Which?" },
     });
     expect((await sqliteDb(db).run((q) => getOutboxSteps(q, later)))?.status).toBe("dropped");
     expect((await sqliteDb(db).run((q) => getOutboxSteps(q, question)))?.status).toBe("pending");
-    const final = enqueue("final", { payload: { kind: "response", body: "Done" } });
+    const final = await enqueue("final", { payload: { kind: "response", body: "Done" } });
     expect((await sqliteDb(db).run((q) => getOutboxSteps(q, question)))?.status).toBe("dropped");
-    const stale = enqueue("stale", { payload: { kind: "thought", body: "Late", ephemeral: true } });
+    const stale = await enqueue("stale", {
+      payload: { kind: "thought", body: "Late", ephemeral: true },
+    });
     expect((await sqliteDb(db).run((q) => getOutboxSteps(q, stale)))?.status).toBe("dropped");
     dispatcher.setHandler(() => {});
     expect((await sqliteDb(db).run((q) => getOutboxSteps(q, final)))?.status).toBe("pending");
@@ -279,8 +292,8 @@ describe("ephemeral progress coalescing", () => {
 
   test("duplicate insertion cannot supersede a newer transient update", async () => {
     const { db, enqueue } = setup();
-    enqueue("first", { payload: { kind: "thought", body: "Starting", ephemeral: true } });
-    const latest = enqueue("latest", {
+    await enqueue("first", { payload: { kind: "thought", body: "Starting", ephemeral: true } });
+    const latest = await enqueue("latest", {
       payload: { kind: "thought", body: "Latest", ephemeral: true },
     });
     enqueueOutboxOnce(db, {
@@ -300,17 +313,17 @@ describe("persisted Stop fences", () => {
     const { db, clock, dispatcher, enqueue } = setup();
     const gate = deferred();
     const calls: string[] = [];
-    enqueue("progress");
+    await enqueue("progress");
     dispatcher.setHandler(async (row, context) => {
       if (row.idempotencyKey === "progress") await gate.promise;
       if (context.isCurrent()) calls.push(row.idempotencyKey);
     });
     await dispatcher.tick();
-    const completed = enqueue("completed-status", {
+    const completed = await enqueue("completed-status", {
       op: "status",
       payload: { linearIssueId: "done", stateType: "completed" },
     });
-    enqueue("question", { op: "elicitation" });
+    await enqueue("question", { op: "elicitation" });
     const generation = await stopOutboxSession(sqliteDb(db), "linear", "A", clock.now());
     expect(await stopOutboxSession(sqliteDb(db), "linear", "A", clock.now() + 1)).toBe(generation);
     for (let attempt = 0; attempt < 2; attempt += 1)
@@ -323,8 +336,8 @@ describe("persisted Stop fences", () => {
         idempotencyKey: `stop:A:${generation}`,
         payload: { kind: "response", body: "Stopped" },
       });
-    const stale = enqueue("stale-after-stop", { generation: generation - 1 });
-    enqueue("other", { orderingKey: "B" });
+    const stale = await enqueue("stale-after-stop", { generation: generation - 1 });
+    await enqueue("other", { orderingKey: "B" });
     await dispatcher.tick();
     gate.resolve();
     await dispatcher.idle();
@@ -344,7 +357,7 @@ describe("persisted Stop fences", () => {
     const path = join(directory, "paws.db");
     const first = setup(path);
     const generation = await stopOutboxSession(sqliteDb(first.db), "linear", "A");
-    first.enqueue("stop", {
+    await first.enqueue("stop", {
       delivery: "stop",
       generation,
       payload: { kind: "response", body: "Stopped" },
@@ -356,15 +369,15 @@ describe("persisted Stop fences", () => {
       second.dispatcher.setHandler((row) => {
         calls.push(row.idempotencyKey);
       });
-      const late = second.enqueue("late");
+      const late = await second.enqueue("late");
       await flush(second.dispatcher);
       expect((await sqliteDb(second.db).run((q) => getOutboxSteps(q, late)))?.status).toBe(
         "dropped",
       );
       expect(calls).toEqual(["stop"]);
       const next = await advanceOutboxSession(sqliteDb(second.db), "linear", "A");
-      const old = second.enqueue("old-callback", { generation });
-      const current = second.enqueue("current", { generation: next });
+      const old = await second.enqueue("old-callback", { generation });
+      const current = await second.enqueue("current", { generation: next });
       await flush(second.dispatcher);
       expect((await sqliteDb(second.db).run((q) => getOutboxSteps(q, old)))?.status).toBe(
         "dropped",

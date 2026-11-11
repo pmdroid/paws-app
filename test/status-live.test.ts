@@ -77,10 +77,14 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
       ],
     );
 
-    const parked = beginImplementRun(db, waiting.id, NOW);
-    applyWorkItemEvent(db, waiting.id, "blocking_question");
-    beginImplementRun(db, merging.id, NOW);
-    enterMergeQueue(db, merging.id, { phase: "merge_queue", baseSha: BASE, wipCommit: HEAD });
+    const parked = await beginImplementRun(sqliteDb(db), waiting.id, NOW);
+    await applyWorkItemEvent(sqliteDb(db), waiting.id, "blocking_question");
+    await beginImplementRun(sqliteDb(db), merging.id, NOW);
+    await enterMergeQueue(sqliteDb(db), merging.id, {
+      phase: "merge_queue",
+      baseSha: BASE,
+      wipCommit: HEAD,
+    });
     await joinMergeQueue(sqliteDb(db), {
       itemId: merging.id,
       repository: "pmdroid/paws-demo",
@@ -96,7 +100,7 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
       options: ["yes", "no"],
       now: NOW,
     });
-    enqueueOutbox(db, {
+    await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "elicitation",
       orderingKey: "ses_1",
@@ -108,7 +112,7 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
       },
       now: NOW,
     });
-    enqueueOutbox(db, {
+    await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: "ses_1",
@@ -150,7 +154,7 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
         warnings: [],
       },
     });
-    enqueueOutbox(db, {
+    await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: "ses_1",
@@ -158,13 +162,13 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
       payload: { sessionId: "ses_1", kind: "response", body: summary },
       now: NOW,
     });
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: "github.merge",
       jobKey: `merge:${merging.id}:${HEAD}`,
       payload: { itemId: merging.id, summary: `${summary}\nCaller attempt: 2`, head: HEAD },
       now: NOW,
     });
-    enqueueOutbox(db, {
+    await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: "ses_1",
@@ -300,15 +304,19 @@ test("a merge-queue item whose re-verify waits for a runner slot says it is next
     migrate(db);
     const merging = insertQueuedItem(db, { id: "01MERGINGITEM", sessionKey: "ses_1", now: NOW });
     db.run("UPDATE work_item SET linear_identifier = ? WHERE id = ?", ["ENG-3", merging.id]);
-    beginImplementRun(db, merging.id, NOW);
-    enterMergeQueue(db, merging.id, { phase: "merge_queue", baseSha: BASE, wipCommit: HEAD });
+    await beginImplementRun(sqliteDb(db), merging.id, NOW);
+    await enterMergeQueue(sqliteDb(db), merging.id, {
+      phase: "merge_queue",
+      baseSha: BASE,
+      wipCommit: HEAD,
+    });
     await joinMergeQueue(sqliteDb(db), {
       itemId: merging.id,
       repository: "pmdroid/paws-demo",
       now: 1,
     });
-    applyWorkItemEvent(db, merging.id, "reverify_requested");
-    enqueueJob(db, {
+    await applyWorkItemEvent(sqliteDb(db), merging.id, "reverify_requested");
+    await enqueueJob(sqliteDb(db), {
       queue: "run.reverify",
       payload: {
         itemId: merging.id,

@@ -61,7 +61,7 @@ export function createRetroSettingsHttp(options: {
   const { db } = options;
   const now = options.now ?? Date.now;
   const audit = (principal: WorkspacePrincipal, action: string, subject: string) =>
-    auditWorkspaceAccess(db, {
+    auditWorkspaceAccess(sqliteDb(db), {
       workspaceId: principal.workspaceId,
       userId: principal.userId,
       action,
@@ -70,7 +70,11 @@ export function createRetroSettingsHttp(options: {
     });
   return async (request: Request, principal: WorkspacePrincipal): Promise<Response | null> => {
     if (new URL(request.url).pathname !== RETRO_SETTINGS_PATH) return null;
-    if (!workspaceMemberUsable(workspaceMember(db, principal.workspaceId, principal.userId)))
+    if (
+      !workspaceMemberUsable(
+        await workspaceMember(sqliteDb(db), principal.workspaceId, principal.userId),
+      )
+    )
       return json({ error: "Workspace access is unavailable." }, 403);
     const accessibleRepositories = await listWorkspaceRepositoryNames(
       sqliteDb(db),
@@ -82,7 +86,7 @@ export function createRetroSettingsHttp(options: {
       return json({ ...(await view()), canEdit: isWorkspaceAdmin(principal.role) });
     if (request.method !== "PUT") return json({ error: "Use GET or PUT." }, 405);
     if (!isWorkspaceAdmin(principal.role)) {
-      audit(principal, "access.denied", RETRO_SETTINGS_PATH);
+      await audit(principal, "access.denied", RETRO_SETTINGS_PATH);
       return json({ error: "Only workspace admins can change retro settings." }, 403);
     }
     let body: unknown;
@@ -115,7 +119,7 @@ export function createRetroSettingsHttp(options: {
       now: now(),
     });
     if (result.ok) {
-      audit(principal, "settings.retros.saved", `revision ${result.view.revision}`);
+      await audit(principal, "settings.retros.saved", `revision ${result.view.revision}`);
       return json({ ...result.view, canEdit: true });
     }
     if (result.reason === "conflict")
@@ -395,7 +399,7 @@ export function createRetroReviewHttp(options: {
   const { db, artifactRoot: root } = options;
   const now = options.now ?? Date.now;
   const audit = (principal: WorkspacePrincipal, action: string, subject: string) =>
-    auditWorkspaceAccess(db, {
+    auditWorkspaceAccess(sqliteDb(db), {
       workspaceId: principal.workspaceId,
       userId: principal.userId,
       action,
@@ -420,8 +424,12 @@ export function createRetroReviewHttp(options: {
     const url = new URL(request.url);
     const report = REPORT.exec(url.pathname);
     if (url.pathname !== RETRO_HISTORY_PATH && !report) return null;
-    if (!workspaceMemberUsable(workspaceMember(db, principal.workspaceId, principal.userId))) {
-      audit(principal, "access.denied", url.pathname);
+    if (
+      !workspaceMemberUsable(
+        await workspaceMember(sqliteDb(db), principal.workspaceId, principal.userId),
+      )
+    ) {
+      await audit(principal, "access.denied", url.pathname);
       return json({ error: "Workspace access is unavailable." }, 403);
     }
     if (request.method !== "GET") return json({ error: "Use GET." }, 405);
@@ -481,7 +489,7 @@ export function createRetroReviewHttp(options: {
       return missing();
     if (file !== undefined) {
       if (!access.full) {
-        audit(principal, "access.denied", url.pathname);
+        await audit(principal, "access.denied", url.pathname);
         return json(
           {
             error: "Downloading the full retro needs access to every repository it includes.",
@@ -491,9 +499,9 @@ export function createRetroReviewHttp(options: {
         );
       }
       if (file === "digest") {
-        const stored = readRetroArtifact(db, root, retroId!, "digest");
+        const stored = await readRetroArtifact(sqliteDb(db), root, retroId!, "digest");
         if (!stored.ok) return missing();
-        audit(principal, "retros.digest.downloaded", retroId!);
+        await audit(principal, "retros.digest.downloaded", retroId!);
         return download(stored.bytes, "application/json", `retro-${retroId}-digest.json`);
       }
       if (file === "prompt") {
@@ -503,12 +511,12 @@ export function createRetroReviewHttp(options: {
           retroId: retroId!,
         });
         if (!prompt.ok) return missing();
-        audit(principal, "retros.prompt.downloaded", retroId!);
+        await audit(principal, "retros.prompt.downloaded", retroId!);
         return download(prompt.prompt, "text/plain; charset=utf-8", `retro-${retroId}-prompt.txt`);
       }
       const result = access.retro.result as RetroReport | null;
       if (result === null) return missing();
-      audit(principal, "retros.report.downloaded", retroId!);
+      await audit(principal, "retros.report.downloaded", retroId!);
       return download(
         renderRetroReport(result),
         "text/markdown; charset=utf-8",

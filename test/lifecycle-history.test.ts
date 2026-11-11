@@ -38,8 +38,8 @@ function database(): Database {
   return db;
 }
 
-function history(db: Database, itemId: string, fromVersion = 0): string[] {
-  return listWorkItemEventRows(db, itemId)
+async function history(db: Database, itemId: string, fromVersion = 0): Promise<string[]> {
+  return (await listWorkItemEventRows(sqliteDb(db), itemId))
     .filter((row) => row.version > fromVersion)
     .map((row) => `${row.fromState} -${row.event}-> ${row.toState}`);
 }
@@ -61,18 +61,23 @@ async function askedAtTimeLimit() {
     limits: { fixes: 30 * MINUTE },
     now: clock.now(),
   });
-  beginImplementRun(db, item.id, clock.now());
+  await beginImplementRun(sqliteDb(db), item.id, clock.now());
   const now = clock.now();
-  applyWorkItemEvent(db, item.id, "turn_ended", { now });
-  applyWorkItemEvent(db, item.id, "closeout_accepted", { now });
+  await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended", { now });
+  await applyWorkItemEvent(sqliteDb(db), item.id, "closeout_accepted", { now });
   await markCloseoutAccepted(sqliteDb(db), item.id, "accepted");
-  applyWorkItemEvent(db, item.id, "restart", { kind: "restart", reason: "review", now });
-  applyWorkItemEvent(db, item.id, "dispatched", { now });
+  await applyWorkItemEvent(sqliteDb(db), item.id, "restart", {
+    kind: "restart",
+    reason: "review",
+    now,
+  });
+  await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched", { now });
   saveCheckpoint(db, item.id, { phase: "running", baseSha: "base", wipCommit: "accepted" });
   await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
   clock.advance(31 * MINUTE);
   await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
-  const request = listJobs(db).find((job) => job.queue === "item.ask")!.payload as {
+  const request = (await listJobs(sqliteDb(db))).find((job) => job.queue === "item.ask")!
+    .payload as {
     body: string;
     options: string[];
   };
@@ -92,7 +97,9 @@ test("Merge at the time limit records one acceptance, no agent turn, and no runn
   const { clock, db, itemId, askedAt } = await askedAtTimeLimit();
   clock.advance(10 * MINUTE);
   expect((await reply(db, "Merge the accepted work", clock.now())).status).toBe("answered");
-  expect(history(db, itemId, askedAt)).toEqual(["awaiting_input -closeout_accepted-> merge_queue"]);
+  expect(await history(db, itemId, askedAt)).toEqual([
+    "awaiting_input -closeout_accepted-> merge_queue",
+  ]);
 
   clock.advance(5 * MINUTE);
   const provider = createLiveStatusProvider(db, { now: () => new Date(clock.now()), env: {} });
@@ -111,14 +118,14 @@ test("Merge at the time limit records one acceptance, no agent turn, and no runn
 test("Stop at the time limit records answer_stopped from the wait, not a run failure", async () => {
   const { clock, db, itemId, askedAt } = await askedAtTimeLimit();
   expect((await reply(db, "Stop", clock.now())).status).toBe("answered");
-  expect(history(db, itemId, askedAt)).toEqual(["awaiting_input -answer_stopped-> failed"]);
+  expect(await history(db, itemId, askedAt)).toEqual(["awaiting_input -answer_stopped-> failed"]);
 });
 
 test("an answered runner wait re-verifies without passing through running", async () => {
   const db = database();
   const item = insertQueuedItem(db, { id: "eng-8", sessionKey: "ses", now: 1_000 });
-  const { run } = beginImplementRun(db, item.id, 1_000);
-  applyWorkItemEvent(db, item.id, "turn_ended");
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, 1_000);
+  await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
   await loopAsk(
     db,
     { itemId: item.id, runId: run.id, sessionId: "ses" },
@@ -128,15 +135,17 @@ test("an answered runner wait re-verifies without passing through running", asyn
   );
   const askedAt = getWorkItem(db, item.id)!.version;
   expect((await reply(db, "Keep waiting", 3_000)).status).toBe("answered");
-  expect(history(db, item.id, askedAt)).toEqual(["awaiting_input -reverify_requested-> verifying"]);
-  expect(listJobs(db).some((job) => job.queue === "run.reverify")).toBe(true);
+  expect(await history(db, item.id, askedAt)).toEqual([
+    "awaiting_input -reverify_requested-> verifying",
+  ]);
+  expect((await listJobs(sqliteDb(db))).some((job) => job.queue === "run.reverify")).toBe(true);
 });
 
 test("Discarding a plan completes it from the wait with one answer_completed", async () => {
   const db = database();
   const item = insertQueuedItem(db, { id: "eng-9", sessionKey: "ses", now: 1_000 });
   await saveTaskMode(sqliteDb(db), item.id, "plan");
-  const { run } = beginImplementRun(db, item.id, 1_000);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, 1_000);
   const asked = await loopAsk(
     db,
     { itemId: item.id, runId: run.id, sessionId: "ses" },
@@ -156,15 +165,23 @@ test("Discarding a plan completes it from the wait with one answer_completed", a
   });
   const askedAt = getWorkItem(db, item.id)!.version;
   expect((await reply(db, "Discard", 3_000)).status).toBe("answered");
-  expect(history(db, item.id, askedAt)).toEqual(["awaiting_input -answer_completed-> completed"]);
+  expect(await history(db, item.id, askedAt)).toEqual([
+    "awaiting_input -answer_completed-> completed",
+  ]);
 });
 
-test("a failure in the merge queue records work_failed, not a lease expiry", () => {
+test("a failure in the merge queue records work_failed, not a lease expiry", async () => {
   const db = database();
   const item = insertQueuedItem(db, { id: "eng-10", sessionKey: "ses", now: 1_000 });
-  beginImplementRun(db, item.id, 1_000);
-  enterMergeQueue(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: "head" });
+  await beginImplementRun(sqliteDb(db), item.id, 1_000);
+  await enterMergeQueue(sqliteDb(db), item.id, {
+    phase: "merge_queue",
+    baseSha: "base",
+    wipCommit: "head",
+  });
   const queued = getWorkItem(db, item.id)!;
-  expect(failWorkItem(db, queued, "merge_error", "The merge failed.", 2_000)).toBe(true);
-  expect(history(db, item.id, queued.version)).toEqual(["merge_queue -work_failed-> failed"]);
+  expect(await failWorkItem(sqliteDb(db), queued, "merge_error", "The merge failed.", 2_000)).toBe(
+    true,
+  );
+  expect(await history(db, item.id, queued.version)).toEqual(["merge_queue -work_failed-> failed"]);
 });

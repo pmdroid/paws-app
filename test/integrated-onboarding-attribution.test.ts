@@ -195,10 +195,12 @@ test("onboarded authoritative creator resumes once with current App and no perso
     expect(
       await runtime.assignments.authorize({ ...event, deliveryId: "duplicate" }),
     ).toMatchObject({ outcome: "refused" });
-    expect(dbApi.workspaceLinearMember(db, "workspace", "creator")).toBeNull();
+    expect(await dbApi.workspaceLinearMember(sqliteDb(db), "workspace", "creator")).toBeNull();
     expect(dbApi.listWorkItems(db)).toHaveLength(0);
-    expect(dbApi.listOutbox(db)).toHaveLength(1);
-    const prompt = dbApi.listOutbox(db)[0]!.payload as { auth: { url: string; userId: string } };
+    expect(await dbApi.listOutbox(sqliteDb(db))).toHaveLength(1);
+    const prompt = (await dbApi.listOutbox(sqliteDb(db)))[0]!.payload as {
+      auth: { url: string; userId: string };
+    };
     expect(prompt.auth.userId).toBe("creator");
     const started = (await runtime.access.handle(new Request(prompt.auth.url)))!;
     expect(started.status).toBe(303);
@@ -225,8 +227,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
     await jobs.tick();
     await jobs.tick();
     expect(
-      dbApi
-        .listJobs(db)
+      (await dbApi.listJobs(sqliteDb(db)))
         .filter((job) => job.queue === "workspace.assignment")
         .map((job) => job.lastError),
     ).toEqual([null]);
@@ -238,7 +239,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
       db.query("SELECT 1 FROM workspace_access_audit WHERE action='assignment.resumed'").all(),
     ).toHaveLength(1);
     expect(await runtime.assignments.authorize(event)).toMatchObject({ outcome: "refused" });
-    dbApi.beginImplementRun(db, itemId, now());
+    await dbApi.beginImplementRun(sqliteDb(db), itemId, now());
     const current = () => dbApi.getWorkItem(db, itemId)!;
     const privateKeyPem = generateKeyPairSync("rsa", {
       modulusLength: 2048,
@@ -320,8 +321,10 @@ test("onboarded authoritative creator resumes once with current App and no perso
     await auth.recover();
     expect(current().state).toBe("running");
     expect(policyCoauthors(await policy())).toEqual([]);
-    expect(dbApi.listJobs(db).filter((job) => job.queue === "run.resume")).toHaveLength(1);
-    const member = dbApi.workspaceLinearMember(db, "workspace", "creator")!;
+    expect(
+      (await dbApi.listJobs(sqliteDb(db))).filter((job) => job.queue === "run.resume"),
+    ).toHaveLength(1);
+    const member = (await dbApi.workspaceLinearMember(sqliteDb(db), "workspace", "creator"))!;
     const login = await workspace.issueWorkspaceSession(db, {
       workspaceId: "workspace",
       userId: member.userId,
@@ -350,7 +353,9 @@ test("onboarded authoritative creator resumes once with current App and no perso
     await Promise.all([auth.recover(), auth.recover()]);
     await auth.recover();
     expect(current().state).toBe("running");
-    expect(dbApi.listJobs(db).filter((job) => job.queue === "run.resume")).toHaveLength(1);
+    expect(
+      (await dbApi.listJobs(sqliteDb(db))).filter((job) => job.queue === "run.resume"),
+    ).toHaveLength(1);
     const captured = await policy();
     expect(appBotCommitIdentity(captured.bot)).toEqual({
       name: "Paws",
@@ -377,7 +382,9 @@ test("onboarded authoritative creator resumes once with current App and no perso
     expect(await auth.ensure(current(), "publication", signal)).toBe(true);
     await auth.recover();
     expect(current().state).toBe("running");
-    expect(dbApi.listJobs(db).filter((job) => job.queue === "run.reverify")).toHaveLength(0);
+    expect(
+      (await dbApi.listJobs(sqliteDb(db))).filter((job) => job.queue === "run.reverify"),
+    ).toHaveLength(0);
     expect(requests).toContain("/app/installations/22/access_tokens");
     expect(requests).not.toContain("/user");
   } finally {

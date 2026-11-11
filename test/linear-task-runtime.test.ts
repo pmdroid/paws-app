@@ -226,7 +226,7 @@ test("a parent discussion classifies before fanout and completes without Git, is
     const item = getWorkItem(f.db, session.activeItemId!)!;
     expect(item.linearIssueId).toBe("parent");
     expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(1);
-    expect(getTaskMode(f.db, item.id)).toBe("answer");
+    expect(await getTaskMode(sqliteDb(f.db), item.id)).toBe("answer");
     expect(f.launches).toEqual(["classify"]);
     await f.jobs.tick();
     expect(getWorkItem(f.db, item.id)?.state).toBe("completed");
@@ -258,7 +258,7 @@ test("code classification persists before child work is dispatched", async () =>
     const session = (await getLinearSession(sqliteDb(f.db), "session"))!;
     const item = getWorkItem(f.db, session.activeItemId!)!;
     expect(item.linearIssueId).toBe("child");
-    expect(getTaskMode(f.db, item.id)).toBe("code");
+    expect(await getTaskMode(sqliteDb(f.db), item.id)).toBe("code");
     expect(f.launches).toEqual(["classify"]);
     expect(f.tracker.statuses).toEqual([]);
     expect(existsSync(join(f.root, "worktrees"))).toBe(false);
@@ -319,7 +319,7 @@ test("a clarification asked while the session waits on another question queues b
     expect((await questionOf(f.db, itemId)).status).toBe("open");
     const asked = await questionOf(f.db, itemId);
     expect(
-      listOutbox(f.db).filter(
+      (await listOutbox(sqliteDb(f.db))).filter(
         (row) => row.op === "elicitation" && row.idempotencyKey.endsWith(asked.id),
       ),
     ).toHaveLength(1);
@@ -519,19 +519,20 @@ test("clarified parent code requests recover the ordered child queue and every c
       )
       .all(session.delegationId!);
     expect(children.map((child) => child.linear_issue_id)).toEqual(["child", "second-child"]);
-    expect(
-      children.every((child) => child.state === "queued" && getTaskMode(db, child.id) === "code"),
-    ).toBe(true);
+    const modes = [];
+    for (const child of children) modes.push(await getTaskMode(sqliteDb(db), child.id));
+    expect(children.every((child) => child.state === "queued")).toBe(true);
+    expect(modes.every((mode) => mode === "code")).toBe(true);
     expect(f.tracker.progress.filter((update) => update.kind === "response")).toEqual([]);
     const originalKey = db
       .query<{ task_key: string }, [string]>(
         `SELECT ${parentTaskKeySql("work_item")} AS task_key FROM work_item WHERE delegation_id = ? ORDER BY position, id LIMIT 1`,
       )
       .get(previous.delegationId)!.task_key;
-    const resolved = getTaskClassification(db, originalKey)!;
+    const resolved = (await getTaskClassification(sqliteDb(db), originalKey))!;
     expect(resolved.mode).toBe("code");
     if (resolved.mode === "clarify") throw new Error("Clarification was not resolved");
-    expect(getTaskClassification(db, resolved.redirect!.taskKey)).toMatchObject({
+    expect(await getTaskClassification(sqliteDb(db), resolved.redirect!.taskKey)).toMatchObject({
       mode: "code",
       context: expect.stringContaining(answer),
     });
@@ -694,7 +695,7 @@ test.each(["ok", "fail", "omit"] as const)(
       await f.orchestrator.onLinearEvent(event());
       const session = (await getLinearSession(sqliteDb(f.db), "session"))!;
       const itemId = session.activeItemId!;
-      expect(getTaskMode(f.db, itemId)).toBe("artifact");
+      expect(await getTaskMode(sqliteDb(f.db), itemId)).toBe("artifact");
       await f.jobs.tick();
       expect(f.launches).toEqual(["classify", "artifact"]);
       expect(f.tracker.statuses).toEqual(
@@ -863,14 +864,14 @@ test("Stop fences pending answer plans and prevents completed session metadata",
     for (
       let i = 0;
       i < 1000 &&
-      !listOutbox(f.db, "session").some((row) =>
+      !(await listOutbox(sqliteDb(f.db), "session")).some((row) =>
         JSON.stringify(row.payload).includes("Read the reference"),
       );
       i++
     )
       await Bun.sleep(1);
     expect(
-      listOutbox(f.db, "session").some((row) =>
+      (await listOutbox(sqliteDb(f.db), "session")).some((row) =>
         JSON.stringify(row.payload).includes("Read the reference"),
       ),
     ).toBe(true);
@@ -881,7 +882,7 @@ test("Stop fences pending answer plans and prevents completed session metadata",
       signal: "stop",
     });
     await running;
-    const metadata = listOutbox(f.db, "session").filter((row) =>
+    const metadata = (await listOutbox(sqliteDb(f.db), "session")).filter((row) =>
       row.op.startsWith("linear.session."),
     );
     expect(

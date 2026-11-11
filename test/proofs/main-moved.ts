@@ -41,21 +41,22 @@ export default {
     await proof.delegate();
     const queued = await proof.waitFor(
       "Closeout accepts and the item waits in the merge queue on CI",
-      () =>
-        proof.itemState() === "merge_queue" &&
+      async () =>
+        (await proof.itemState()) === "merge_queue" &&
         proof.github.calls.some((call) => call.path === "/graphql"),
     );
     proof.expect(
       "Closeout accepts and the item waits to merge",
-      queued && proof.transitions().some((row) => row.event === "closeout_accepted"),
-      proof.transitions(),
+      queued && (await proof.transitions()).some((row) => row.event === "closeout_accepted"),
+      await proof.transitions(),
     );
     const accepted = /^Head: (\w+)$/m.exec(proof.github.opened[0]?.body ?? "")?.[1] ?? null;
     await proof.pushToMain("SHELVES.md", "# Shelves\n\nShelf a and shelf b.\n", THEIRS);
     proof.github.ci.pending = false;
     const merged = await proof.waitFor(
       "the item is merged",
-      () => ["merged", "failed", "manual", "cancelled"].includes(proof.itemState() ?? ""),
+      async () =>
+        ["merged", "failed", "manual", "cancelled"].includes((await proof.itemState()) ?? ""),
       120_000,
     );
     await proof.waitFor("queued Linear activity is delivered", () => false, 1_000);
@@ -86,8 +87,8 @@ export default {
     );
     proof.expect(
       "the item is merged, not failed",
-      merged && proof.itemState() === "merged",
-      proof.itemState(),
+      merged && (await proof.itemState()) === "merged",
+      await proof.itemState(),
     );
   },
 } satisfies Proof;

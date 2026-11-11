@@ -53,8 +53,8 @@ function waiting(db: Database, id: string, session: string): void {
   );
 }
 
-function elicit(db: Database, id: string, session: string): number {
-  return enqueueOutbox(db, {
+async function elicit(db: Database, id: string, session: string): Promise<number> {
+  return await enqueueOutbox(sqliteDb(db), {
     target: "linear",
     op: "elicitation",
     orderingKey: session,
@@ -81,7 +81,7 @@ describe("dead outbox rows and jobs", () => {
   test("a dead row writes one journal line with the item, the kind and the last error", async () => {
     const { clock, db, dispatcher } = harness();
     insertQueuedItem(db, { id: "item-a", sessionKey: "ses-a" });
-    enqueueOutbox(db, {
+    await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: "ses-a",
@@ -100,13 +100,17 @@ describe("dead outbox rows and jobs", () => {
 
   test("a dead job writes one journal line whatever its queue", async () => {
     const { db } = harness();
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.catchup,
       payload: { itemId: "item-a" },
       maxAttempts: 1,
       now: 0,
     });
-    const job = claimNextJob(db, { workerId: "w", now: 1_000, queues: [JOB_KIND.catchup] });
+    const job = await claimNextJob(sqliteDb(db), {
+      workerId: "w",
+      now: 1_000,
+      queues: [JOB_KIND.catchup],
+    });
     await failJob(sqliteDb(db), job!, new Error("gone"), { now: 1_000 });
     expect(lines.filter((line) => line.startsWith("job "))).toEqual([
       `job 1 ${JOB_KIND.catchup} dead item=item-a attempts=1/1 error=gone`,
@@ -116,7 +120,7 @@ describe("dead outbox rows and jobs", () => {
   test("a dead elicitation of a waiting item is re-enqueued once, then re-asked", async () => {
     const { clock, db, dispatcher } = harness();
     waiting(db, "item-q", "ses-q");
-    elicit(db, "item-q", "ses-q");
+    await elicit(db, "item-q", "ses-q");
     const posted: string[] = [];
     dispatcher.setHandler((row) => {
       posted.push(row.idempotencyKey);
@@ -124,7 +128,7 @@ describe("dead outbox rows and jobs", () => {
     });
     await deliverAll(dispatcher, clock, 10);
 
-    const rows = listOutbox(db, "ses-q");
+    const rows = await listOutbox(sqliteDb(db), "ses-q");
     expect(rows.map((row) => [row.idempotencyKey, row.status])).toEqual([
       ["question:q-item-q", "dropped"],
       ["question:q-item-q:redelivery", "dead"],
@@ -143,7 +147,9 @@ describe("dead outbox rows and jobs", () => {
     expect(
       (await listDeadDeliveries(sqliteDb(db), "item-q")).map((dead) => [dead.kind, dead.id]),
     ).toEqual([["outbox", 2]]);
-    const reask = listJobs(db).filter((job) => job.queue === JOB_KIND.reaskQuestion);
+    const reask = (await listJobs(sqliteDb(db))).filter(
+      (job) => job.queue === JOB_KIND.reaskQuestion,
+    );
     expect(reask.map((job) => [job.jobKey, job.payload])).toEqual([
       [`${JOB_KIND.reaskQuestion}:q-item-q`, { itemId: "item-q", questionId: "q-item-q" }],
     ]);
@@ -155,13 +161,13 @@ describe("dead outbox rows and jobs", () => {
     dispatcher.setHandler(() => {
       throw new Error("Linear is down");
     });
-    const question = (id: string) => {
+    const question = async (id: string) => {
       db.run(
         `INSERT INTO question (id, item_id, session_id, body, status, created_at)
          VALUES (?, 'item-q', 'ses-q', 'And the branch?', 'open', 0)`,
         [id],
       );
-      enqueueOutbox(db, {
+      await enqueueOutbox(sqliteDb(db), {
         target: "linear",
         op: "elicitation",
         orderingKey: "ses-q",
@@ -170,8 +176,8 @@ describe("dead outbox rows and jobs", () => {
         maxAttempts: 1,
       });
     };
-    const reasks = () =>
-      listJobs(db)
+    const reasks = async () =>
+      (await listJobs(sqliteDb(db)))
         .filter((job) => job.queue === JOB_KIND.reaskQuestion)
         .map((job) => job.jobKey);
     // A question that is answered drops its dead rows (answerQuestion does this in src/questions).
@@ -180,25 +186,27 @@ describe("dead outbox rows and jobs", () => {
       db.run("UPDATE outbox SET status = 'dropped' WHERE status = 'dead'");
     };
 
-    elicit(db, "item-q", "ses-q");
+    await elicit(db, "item-q", "ses-q");
     await deliverAll(dispatcher, clock, 10);
     settle("q-item-q");
     // A later, independent question in the same run still gets its own re-ask.
-    question("q2");
+    await question("q2");
     await deliverAll(dispatcher, clock, 10);
-    expect(reasks()).toEqual([
+    expect(await reasks()).toEqual([
       `${JOB_KIND.reaskQuestion}:q-item-q`,
       `${JOB_KIND.reaskQuestion}:q2`,
     ]);
 
     // The loop re-asked q2 as q3. When q3 dies twice too, it shares q2's allowance.
-    const q2Job = listJobs(db).find((job) => job.jobKey === `${JOB_KIND.reaskQuestion}:q2`)!;
+    const q2Job = (await listJobs(sqliteDb(db))).find(
+      (job) => job.jobKey === `${JOB_KIND.reaskQuestion}:q2`,
+    )!;
     await recordQuestionReask(sqliteDb(db), q2Job.id, "q3");
     settle("q2");
-    question("q3");
+    await question("q3");
     lines = [];
     await deliverAll(dispatcher, clock, 10);
-    expect(reasks()).toHaveLength(2);
+    expect(await reasks()).toHaveLength(2);
     expect(lines.filter((line) => line.startsWith("outbox ")).at(-1)).toMatch(
       /^outbox \d+ elicitation dead again item=item-q; retry it from the issue page$/,
     );
@@ -209,12 +217,12 @@ describe("dead outbox rows and jobs", () => {
       `INSERT INTO question (id, item_id, session_id, body, status, created_at)
        VALUES ('q4', 'item-q', 'ses-q', 'Accept?', 'open', 0)`,
     );
-    const reaskJob = enqueueJob(db, {
+    const reaskJob = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.reaskQuestion,
       jobKey: `${JOB_KIND.reaskQuestion}:q4`,
       payload: { itemId: "item-q", questionId: "q4", reaskedAs: "q4" },
     });
-    enqueueOutbox(db, {
+    await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "elicitation",
       orderingKey: "ses-q",
@@ -224,18 +232,18 @@ describe("dead outbox rows and jobs", () => {
     });
     await deliverAll(dispatcher, clock, 10);
     expect(
-      listOutbox(db, "ses-q")
+      (await listOutbox(sqliteDb(db), "ses-q"))
         .filter((row) => row.idempotencyKey.startsWith("question:q4"))
         .map((row) => [row.idempotencyKey, row.status]),
     ).toEqual([[`question:q4${ELICITATION_REASK_SUFFIX}`, "dead"]]);
-    expect(reasks()).toHaveLength(3);
-    expect(getJob(db, reaskJob)?.status).toBe("pending");
+    expect(await reasks()).toHaveLength(3);
+    expect((await getJob(sqliteDb(db), reaskJob))?.status).toBe("pending");
   });
 
   test("the re-enqueued elicitation is delivered when Linear recovers", async () => {
     const { clock, db, dispatcher } = harness();
     waiting(db, "item-q", "ses-q");
-    elicit(db, "item-q", "ses-q");
+    await elicit(db, "item-q", "ses-q");
     let fail = true;
     dispatcher.setHandler(() => {
       if (fail) {
@@ -244,44 +252,51 @@ describe("dead outbox rows and jobs", () => {
       }
     });
     await deliverAll(dispatcher, clock);
-    expect(listOutbox(db, "ses-q").map((row) => row.status)).toEqual(["dropped", "sent"]);
+    expect((await listOutbox(sqliteDb(db), "ses-q")).map((row) => row.status)).toEqual([
+      "dropped",
+      "sent",
+    ]);
   });
 
   test("an elicitation for an item that no longer waits stays dead", async () => {
     const { clock, db, dispatcher } = harness();
     waiting(db, "item-q", "ses-q");
     db.run("UPDATE work_item SET state = 'running' WHERE id = 'item-q'");
-    elicit(db, "item-q", "ses-q");
+    await elicit(db, "item-q", "ses-q");
     dispatcher.setHandler(() => {
       throw new Error("timeout");
     });
     await deliverAll(dispatcher, clock);
-    expect(listOutbox(db, "ses-q").map((row) => row.status)).toEqual(["dead"]);
+    expect((await listOutbox(sqliteDb(db), "ses-q")).map((row) => row.status)).toEqual(["dead"]);
   });
 
   test("an answered question's elicitation is not re-enqueued", async () => {
     const { clock, db, dispatcher } = harness();
     waiting(db, "item-q", "ses-q");
     db.run("UPDATE question SET status = 'answered' WHERE id = 'q-item-q'");
-    elicit(db, "item-q", "ses-q");
+    await elicit(db, "item-q", "ses-q");
     dispatcher.setHandler(() => {
       throw new Error("timeout");
     });
     await deliverAll(dispatcher, clock);
-    expect(listOutbox(db, "ses-q").map((row) => row.status)).toEqual(["dead"]);
+    expect((await listOutbox(sqliteDb(db), "ses-q")).map((row) => row.status)).toEqual(["dead"]);
   });
 
   test("retry puts a dead row or job of the item back to pending", async () => {
     const { clock, db, dispatcher } = harness();
     waiting(db, "item-q", "ses-q");
     db.run("UPDATE work_item SET state = 'running' WHERE id = 'item-q'");
-    elicit(db, "item-q", "ses-q");
+    await elicit(db, "item-q", "ses-q");
     dispatcher.setHandler(() => {
       throw new Error("timeout");
     });
     await deliverAll(dispatcher, clock);
-    enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "item-q" }, maxAttempts: 1 });
-    const job = claimNextJob(db, { workerId: "w", queues: [JOB_KIND.resume] });
+    await enqueueJob(sqliteDb(db), {
+      queue: JOB_KIND.resume,
+      payload: { itemId: "item-q" },
+      maxAttempts: 1,
+    });
+    const job = await claimNextJob(sqliteDb(db), { workerId: "w", queues: [JOB_KIND.resume] });
     await failJob(sqliteDb(db), job!, new Error("runner lost"));
     expect(
       (await listDeadDeliveries(sqliteDb(db), "item-q")).map((dead) => [dead.kind, dead.name]),
@@ -299,7 +314,7 @@ describe("dead outbox rows and jobs", () => {
     expect(await retryDeadDelivery(sqliteDb(db), "item-q", { kind: "job", id: job!.id })).toBe(
       true,
     );
-    expect(getJob(db, job!.id)?.status).toBe("pending");
+    expect((await getJob(sqliteDb(db), job!.id))?.status).toBe("pending");
     expect(await jobVersionCurrent(sqliteDb(db), job!)).toBe(true);
     expect(
       await retryDeadDelivery(sqliteDb(db), "item-q", { kind: "outbox", id: 1 }, clock.now()),
@@ -308,15 +323,19 @@ describe("dead outbox rows and jobs", () => {
 
     dispatcher.setHandler(() => {});
     await deliverAll(dispatcher, clock, 1);
-    expect(listOutbox(db, "ses-q").map((row) => row.status)).toEqual(["sent"]);
+    expect((await listOutbox(sqliteDb(db), "ses-q")).map((row) => row.status)).toEqual(["sent"]);
     expect(lines).toContain("outbox 1 retried item=item-q");
   });
 
   test("a dead job from an earlier item version is listed but never retried", async () => {
     const { db } = harness();
     waiting(db, "item-q", "ses-q");
-    enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "item-q" }, maxAttempts: 1 });
-    const job = claimNextJob(db, { workerId: "w", queues: [JOB_KIND.resume] });
+    await enqueueJob(sqliteDb(db), {
+      queue: JOB_KIND.resume,
+      payload: { itemId: "item-q" },
+      maxAttempts: 1,
+    });
+    const job = await claimNextJob(sqliteDb(db), { workerId: "w", queues: [JOB_KIND.resume] });
     await failJob(sqliteDb(db), job!, new Error("runner lost"));
     // A restart, answer or stop moved the item on; the job's payload is now obsolete.
     db.run("UPDATE work_item SET version = version + 1 WHERE id = 'item-q'");
@@ -327,7 +346,7 @@ describe("dead outbox rows and jobs", () => {
     expect(await retryDeadDelivery(sqliteDb(db), "item-q", { kind: "job", id: job!.id })).toBe(
       false,
     );
-    expect(getJob(db, job!.id)?.status).toBe("dead");
+    expect((await getJob(sqliteDb(db), job!.id))?.status).toBe("dead");
     expect(await jobVersionCurrent(sqliteDb(db), job!)).toBe(false);
   });
 
@@ -351,14 +370,14 @@ describe("dead outbox rows and jobs", () => {
     const { db } = harness();
     waiting(db, "item-q", "ses-q");
     // The PR response is a terminal activity; later critical elicitations are fenced off.
-    enqueueOutbox(db, {
+    await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: "ses-q",
       idempotencyKey: "pull-request-ready:item-q",
       payload: { itemId: "item-q", kind: "response", body: "Opened PR #9." },
     });
-    const dead = enqueueOutbox(db, {
+    const dead = await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "elicitation",
       orderingKey: "ses-q",
@@ -383,10 +402,10 @@ describe("dead outbox rows and jobs", () => {
   test("a redelivery the session fence rejects leaves the dead row listed for a retry", async () => {
     const { db } = harness();
     waiting(db, "item-q", "ses-q");
-    const dead = elicit(db, "item-q", "ses-q");
+    const dead = await elicit(db, "item-q", "ses-q");
     db.run("UPDATE outbox SET status = 'dead', error = 'Linear is down' WHERE id = ?", [dead]);
     // A terminal response arrived since; a critical elicitation can no longer follow it.
-    enqueueOutbox(db, {
+    await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: "ses-q",
@@ -412,8 +431,8 @@ describe("dead outbox rows and jobs", () => {
   test("only a dead final Stop delivery counts as one for a stopped session", async () => {
     const { db } = harness();
     waiting(db, "item-q", "ses-q");
-    const question = elicit(db, "item-q", "ses-q");
-    const stop = enqueueOutbox(db, {
+    const question = await elicit(db, "item-q", "ses-q");
+    const stop = await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: "ses-q",

@@ -143,7 +143,7 @@ test("updates from a run that Paws resumes after a restart all land in the outbo
     expect(sent).toBe(7);
     expect(listWorkItems(db)[0]!.currentRunId).toBe(runId);
 
-    const bodies = listOutbox(db)
+    const bodies = (await listOutbox(sqliteDb(db)))
       .filter((row) => row.idempotencyKey.startsWith(`${runId}:acp:`))
       .map((row) => (row.payload as { body: string }).body);
     expect(bodies).toEqual([

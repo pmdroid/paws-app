@@ -49,16 +49,16 @@ async function seed(db: Database, now: number): Promise<void> {
 
 async function hold(db: Database, now: number, kind: Hold, merging: boolean): Promise<void> {
   await seed(db, now);
-  const { run } = beginImplementRun(db, "item", now, RUNNING);
-  if (kind === "paused") applyWorkItemEvent(db, "item", "pause", { now });
+  const { run } = await beginImplementRun(sqliteDb(db), "item", now, RUNNING);
+  if (kind === "paused") await applyWorkItemEvent(sqliteDb(db), "item", "pause", { now });
   if (kind === "manual") {
-    applyWorkItemEvent(db, "item", "run_failed", { now });
-    applyWorkItemEvent(db, "item", "take_over", { now });
+    await applyWorkItemEvent(sqliteDb(db), "item", "run_failed", { now });
+    await applyWorkItemEvent(sqliteDb(db), "item", "take_over", { now });
   }
   if (kind === "awaiting_input") {
     if (merging) {
-      applyWorkItemEvent(db, "item", "turn_ended", { now });
-      applyWorkItemEvent(db, "item", "closeout_accepted", { now });
+      await applyWorkItemEvent(sqliteDb(db), "item", "turn_ended", { now });
+      await applyWorkItemEvent(sqliteDb(db), "item", "closeout_accepted", { now });
       await markCloseoutAccepted(sqliteDb(db), "item", "wip");
       await loopAsk(
         db,
@@ -88,8 +88,8 @@ async function hold(db: Database, now: number, kind: Hold, merging: boolean): Pr
   expect(getWorkItem(db, "item")?.state).toBe(kind);
 }
 
-function executions(db: Database) {
-  return listJobs(db).filter(
+async function executions(db: Database) {
+  return (await listJobs(sqliteDb(db))).filter(
     (job) =>
       EXECUTION.includes(job.queue) && (job.status === "pending" || job.status === "running"),
   );
@@ -103,7 +103,7 @@ function actionableQuestions(db: Database) {
     .all();
 }
 
-function snapshot(db: Database) {
+async function snapshot(db: Database) {
   const item = getWorkItem(db, "item")!;
   return {
     item: {
@@ -116,13 +116,15 @@ function snapshot(db: Database) {
       cancelRequested: item.cancelRequested,
     },
     run: item.currentRunId ? getRun(db, item.currentRunId)?.status : null,
-    jobs: listJobs(db)
+    jobs: (await listJobs(sqliteDb(db)))
       .filter((job) => job.queue !== JOB_KIND.catchup)
       .map((job) => ({ id: job.id, queue: job.queue, status: job.status, runAt: job.runAt })),
     questions: db
       .query("SELECT id, status, cancelled_at FROM question WHERE item_id='item' ORDER BY id")
       .all(),
-    activities: listOutbox(db).filter((message) => message.op !== "linear.catchup").length,
+    activities: (await listOutbox(sqliteDb(db))).filter(
+      (message) => message.op !== "linear.catchup",
+    ).length,
   };
 }
 
@@ -171,19 +173,19 @@ describe("clock gaps preserve human holds", () => {
           try {
             const clock = new FakeClock(1_000_000);
             await hold(db, clock.now(), kind, merging);
-            const before = snapshot(db);
+            const before = await snapshot(db);
 
             await observeGaps(db, clock, gapMs);
 
-            expect(snapshot(db)).toEqual(before);
-            expect(executions(db)).toEqual([]);
+            expect(await snapshot(db)).toEqual(before);
+            expect(await executions(db)).toEqual([]);
             expect(actionableQuestions(db)).toHaveLength(kind === "awaiting_input" ? 1 : 0);
             if (kind === "awaiting_input") expect(findOpenQuestion(db, "session")).not.toBeNull();
 
             await recoverOnStartup(sqliteDb(db), clock.now());
             expect(await requeueOrphanedWork(sqliteDb(db), clock.now() + TWO_HOURS)).toEqual([]);
             expect(getWorkItem(db, "item")).toMatchObject(before.item);
-            expect(executions(db)).toEqual([]);
+            expect(await executions(db)).toEqual([]);
             expect(actionableQuestions(db)).toHaveLength(kind === "awaiting_input" ? 1 : 0);
           } finally {
             db.close();
@@ -197,7 +199,7 @@ describe("clock gaps preserve human holds", () => {
         const clock = new FakeClock(1_000_000);
         await hold(db, clock.now(), "awaiting_input", merging);
         await observeGaps(db, clock, TWO_HOURS + 1);
-        expect(executions(db)).toEqual([]);
+        expect(await executions(db)).toEqual([]);
 
         const reply = {
           sessionId: "session",
@@ -210,7 +212,7 @@ describe("clock gaps preserve human holds", () => {
         expect((await answer(db, reply, effects())).status).toBe("answered");
         const released = getWorkItem(db, "item")!;
         expect(released.state).toBe("queued");
-        expect(executions(db).map((job) => job.jobKey)).toEqual([
+        expect((await executions(db)).map((job) => job.jobKey)).toEqual([
           expect.stringMatching(/^resume:answer:/),
         ]);
 
@@ -220,7 +222,7 @@ describe("clock gaps preserve human holds", () => {
         );
         await observeGaps(db, clock, TWO_HOURS + 1);
         expect(getWorkItem(db, "item")?.version).toBe(released.version);
-        expect(executions(db)).toHaveLength(1);
+        expect(await executions(db)).toHaveLength(1);
       } finally {
         db.close();
       }
@@ -233,13 +235,13 @@ describe("clock gaps preserve human holds", () => {
       await hold(db, clock.now(), "awaiting_input", true);
       await observeGaps(db, clock, TWO_HOURS);
       db.run("UPDATE question SET cancelled_at=? WHERE item_id='item'", [clock.now()]);
-      const before = snapshot(db);
+      const before = await snapshot(db);
       const reply = { sessionId: "session", deliveryId: "late", body: "Go", answeredBy: "lead" };
       expect((await answer(db, reply, questionEffects(db, { now: clock.now() }))).status).toBe(
         "unasked",
       );
-      expect(snapshot(db)).toEqual(before);
-      expect(executions(db)).toEqual([]);
+      expect(await snapshot(db)).toEqual(before);
+      expect(await executions(db)).toEqual([]);
     } finally {
       db.close();
     }

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import {
+  sqliteDb,
   applyWorkItemEvent,
   beginImplementRun,
   enterMergeQueue,
@@ -25,9 +26,9 @@ function database(): Database {
   return db;
 }
 
-function finish(db: Database, id: string, at: number): void {
+async function finish(db: Database, id: string, at: number): Promise<void> {
   insertQueuedItem(db, { id, title: id, now: at - 1_000 });
-  applyWorkItemEvent(db, id, "cancel", { now: at });
+  await applyWorkItemEvent(sqliteDb(db), id, "cancel", { now: at });
 }
 
 function provider(db: Database, sessionIds?: readonly string[]) {
@@ -42,9 +43,9 @@ describe("issue resources", () => {
   test("the list keeps every open issue and the 50 latest finished in a day; older issues open directly", async () => {
     const db = database();
     insertQueuedItem(db, { id: "ENG-OPEN", title: "Open", now: NOW - 7 * STATUS_RECENT_MS });
-    finish(db, "ENG-OLD", NOW - STATUS_RECENT_MS - 60_000);
+    await finish(db, "ENG-OLD", NOW - STATUS_RECENT_MS - 60_000);
     for (let index = 0; index < STATUS_RECENT_LIMIT + 5; index += 1)
-      finish(db, `ENG-${100 + index}`, NOW - 120_000 - index * 1_000);
+      await finish(db, `ENG-${100 + index}`, NOW - 120_000 - index * 1_000);
     const live = provider(db);
     const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(await live.issues())));
     if (!parsed.ok) throw new Error(parsed.error);
@@ -60,15 +61,15 @@ describe("issue resources", () => {
   test("the list carries the snapshot's issue rows, runs and summaries and nothing else", async () => {
     const db = database();
     insertQueuedItem(db, { id: "ENG-1", title: "Running", sessionKey: "s1", now: NOW - 9_000 });
-    beginImplementRun(db, "ENG-1", NOW - 8_000);
+    await beginImplementRun(sqliteDb(db), "ENG-1", NOW - 8_000);
     insertQueuedItem(db, { id: "ENG-2", title: "Merging", sessionKey: "s1", now: NOW - 7_000 });
-    beginImplementRun(db, "ENG-2", NOW - 6_000);
-    enterMergeQueue(db, "ENG-2", {
+    await beginImplementRun(sqliteDb(db), "ENG-2", NOW - 6_000);
+    await enterMergeQueue(sqliteDb(db), "ENG-2", {
       phase: "merge_queue",
       baseSha: "b".repeat(40),
       wipCommit: "c".repeat(40),
     });
-    finish(db, "ENG-3", NOW - 5_000);
+    await finish(db, "ENG-3", NOW - 5_000);
     const live = provider(db);
     const list = await live.issues();
     expect(Object.keys(list).sort()).toEqual([
@@ -93,7 +94,7 @@ describe("issue resources", () => {
       );
     insertQueuedItem(db, { id: "OLD", title: "Keep runs", sessionKey: "earlier", now: 0 });
     identify("OLD");
-    beginImplementRun(db, "OLD", NOW - 7_200_000);
+    await beginImplementRun(sqliteDb(db), "OLD", NOW - 7_200_000);
     db.run("UPDATE work_item SET state = 'cancelled' WHERE id = 'OLD'");
     db.run("UPDATE run SET status = 'ended', updated_at = ? WHERE item_id = 'OLD'", [
       NOW - 3_600_000,

@@ -34,10 +34,10 @@ function reviewer(outcome: RunAgentResult, text: string) {
     pawsRoot: "/tmp/unused",
     launch: () => ({}),
     brief: "Required output: `secret-brief`",
-    profiles: {
+    profiles: async () => ({
       implementer: { agent: "claude", model: "opus" },
       reviewer: { agent: "codex", model: "gpt-review" },
-    },
+    }),
     async agentRunner(options) {
       calls.push(options);
       await options.onEvent?.({

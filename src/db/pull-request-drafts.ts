@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { eq, sql } from "drizzle-orm";
 import { parseRemainingParts, type RemainingPart } from "../core";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
 
 export type PullRequestDraft = {
   title: string;
@@ -81,8 +80,11 @@ export function* getPullRequestDraftSteps(q: Q, itemId: string) {
     : { title: row.title, body: row.body };
 }
 
-export function getPullRequestDraft(db: Database, itemId: string): PullRequestDraft | null {
-  return settled(sqliteDb(db).run((q) => getPullRequestDraftSteps(q, itemId)));
+export async function getPullRequestDraft(
+  store: Db,
+  itemId: string,
+): Promise<PullRequestDraft | null> {
+  return store.run((q) => getPullRequestDraftSteps(q, itemId));
 }
 
 export type PullRequestText = { title: string; body: string; evidence: string };

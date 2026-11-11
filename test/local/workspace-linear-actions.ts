@@ -142,8 +142,8 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       teamId: "team",
       observedAtMs: now,
     });
-    beginImplementRun(db, item.id, now - 10);
-    applyWorkItemEvent(db, item.id, "blocking_question");
+    await beginImplementRun(sqliteDb(db), item.id, now - 10);
+    await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
     const question = await openQuestion(db, {
       itemId: item.id,
       sessionId,
@@ -183,7 +183,8 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     authorizeLinearEvent: decide(access.authorizeLinearEvent),
     recheckLinearEvent: access.recheckLinearEvent,
   });
-  const resumes = () => listJobs(db).filter((j) => j.queue === JOB_KIND.resume).length;
+  const resumes = async () =>
+    (await listJobs(sqliteDb(db))).filter((j) => j.queue === JOB_KIND.resume).length;
   const audits = () =>
     db
       .query<{ count: number }, []>(
@@ -198,11 +199,11 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       observe(
         `Linear actor ${actor ?? "missing"} cannot answer or resume`,
         (await getQuestion(sqliteDb(db), t.question.id))?.status === "open" &&
-          resumes() === 0 &&
+          (await resumes()) === 0 &&
           audits() === before + 1,
         {
           question: (await getQuestion(sqliteDb(db), t.question.id))?.status,
-          resumes: resumes(),
+          resumes: await resumes(),
           audits: audits() - before,
         },
       );
@@ -213,8 +214,8 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     observe(
       "workspace ownership cannot bypass mapped Linear team membership",
       (await getQuestion(sqliteDb(db), outsideOwner.question.id))?.status === "open" &&
-        resumes() === 0,
-      { role: workspaceMember(db, "workspace", "owner")?.role },
+        (await resumes()) === 0,
+      { role: (await workspaceMember(sqliteDb(db), "workspace", "owner"))?.role },
     );
     identities.get("owner")!.teamIds = ["team"];
     const positive = await task("new-member");
@@ -223,11 +224,11 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     observe(
       "verified in-team Linear actor answers once without a Paws browser identity",
       (await getQuestion(sqliteDb(db), positive.question.id))?.answeredBy === "new-member" &&
-        resumes() === 1 &&
-        workspaceMember(db, "workspace", "new-member") === null,
+        (await resumes()) === 1 &&
+        (await workspaceMember(sqliteDb(db), "workspace", "new-member")) === null,
       {
         answer: (await getQuestion(sqliteDb(db), positive.question.id))?.answeredBy,
-        resumes: resumes(),
+        resumes: await resumes(),
       },
     );
     const stop = await task("inactive", "stop"),
@@ -258,10 +259,11 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     await pending;
     observe(
       "membership demotion during verified actor lookup prevents answer",
-      (await getQuestion(sqliteDb(db), changed.question.id))?.status === "open" && resumes() === 1,
+      (await getQuestion(sqliteDb(db), changed.question.id))?.status === "open" &&
+        (await resumes()) === 1,
       {
         question: (await getQuestion(sqliteDb(db), changed.question.id))?.status,
-        role: workspaceMember(db, "workspace", "member")?.role,
+        role: (await workspaceMember(sqliteDb(db), "workspace", "member"))?.role,
       },
     );
     const unavailable = await task("new-member"),
@@ -285,8 +287,8 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     observe(
       "repaired membership lookup accepts exact retry once",
       (await getQuestion(sqliteDb(db), unavailable.question.id))?.status === "answered" &&
-        resumes() === 2,
-      { resumes: resumes() },
+        (await resumes()) === 2,
+      { resumes: await resumes() },
     );
     const removeOwnerTeam = async () => {
       now++;
@@ -330,12 +332,12 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       "queued execution rechecks stored membership after one Linear authorization",
       calls === 1 &&
         (await getQuestion(sqliteDb(db), queued.question.id))?.status === "open" &&
-        resumes() === 2 &&
+        (await resumes()) === 2 &&
         (await listPendingLinearTurns(sqliteDb(db), queued.event.sessionId!)).length === 0,
       {
         calls,
         question: (await getQuestion(sqliteDb(db), queued.question.id))?.status,
-        resumes: resumes(),
+        resumes: await resumes(),
       },
     );
     await queueLoop.shutdown();
@@ -595,8 +597,8 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
       teamId: "team",
       observedAtMs: at,
     });
-    beginImplementRun(db, id, at - 10);
-    applyWorkItemEvent(db, id, "blocking_question");
+    await beginImplementRun(sqliteDb(db), id, at - 10);
+    await applyWorkItemEvent(sqliteDb(db), id, "blocking_question");
     const question = await openQuestion(db, {
       itemId: id,
       sessionId: id,
@@ -666,9 +668,10 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
       .get()!.count;
   const startup = Date.now() + 3000;
   while (
-    ["scheduler.tick", "linear.epics.reconcile"].some(
-      (queue) => !listJobs(db).some((job) => job.queue === queue && job.fireCount >= 1),
-    )
+    ((jobs) =>
+      ["scheduler.tick", "linear.epics.reconcile"].some(
+        (queue) => !jobs.some((job) => job.queue === queue && job.fireCount >= 1),
+      ))(await listJobs(sqliteDb(db)))
   ) {
     if (Date.now() > startup) throw new Error("Startup reconcile did not settle");
     await new Promise((resolve) => setTimeout(resolve, 5));
@@ -694,7 +697,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
         `normal signed HTTPS denies ${actor} ${signal ?? "answer"} semantically without retrying delivery`,
         status === 200 &&
           (await getQuestion(sqliteDb(db), t.question.id))?.status === "open" &&
-          listJobs(db).filter((j) => j.queue === JOB_KIND.resume).length === 0,
+          (await listJobs(sqliteDb(db))).filter((j) => j.queue === JOB_KIND.resume).length === 0,
         {
           status,
           question: (await getQuestion(sqliteDb(db), t.question.id))?.status,
@@ -710,11 +713,11 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
       "normal catch-up denial cannot reach the poller stop fallback",
       denied() === before + 1 &&
         (await getQuestion(sqliteDb(db), stopped.question.id))?.status === "open" &&
-        listJobs(db).filter((j) => j.queue === JOB_KIND.command).length === 0,
+        (await listJobs(sqliteDb(db))).filter((j) => j.queue === JOB_KIND.command).length === 0,
       {
         question: (await getQuestion(sqliteDb(db), stopped.question.id))?.status,
         denials: denied() - before,
-        commands: listJobs(db).filter((j) => j.queue === JOB_KIND.command).length,
+        commands: (await listJobs(sqliteDb(db))).filter((j) => j.queue === JOB_KIND.command).length,
       },
     );
     const allowed = await task("new-member");
@@ -728,13 +731,15 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     observe(
       "normal catch-up permits a verified teammate without a browser identity exactly once",
       (await getQuestion(sqliteDb(db), allowed.question.id))?.answeredBy === "new-member" &&
-        listJobs(db).filter((j) => j.jobKey === `resume:answer:${allowed.question.id}`).length ===
-          1 &&
-        workspaceMember(db, "workspace", "new-member") === null,
+        (await listJobs(sqliteDb(db))).filter(
+          (j) => j.jobKey === `resume:answer:${allowed.question.id}`,
+        ).length === 1 &&
+        (await workspaceMember(sqliteDb(db), "workspace", "new-member")) === null,
       {
         answeredBy: (await getQuestion(sqliteDb(db), allowed.question.id))?.answeredBy,
-        resumes: listJobs(db).filter((j) => j.jobKey === `resume:answer:${allowed.question.id}`)
-          .length,
+        resumes: (await listJobs(sqliteDb(db))).filter(
+          (j) => j.jobKey === `resume:answer:${allowed.question.id}`,
+        ).length,
       },
     );
     await until(() => getWorkItem(db, allowed.item.id)?.state === "failed");

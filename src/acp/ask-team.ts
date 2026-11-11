@@ -305,7 +305,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
         ...(options.closeoutBasePath !== undefined ? { basePath: options.closeoutBasePath } : {}),
         ...(options.closeoutRulesFirst ? { rulesFirst: true } : {}),
         ...(options.closeoutFocus ? { focus: options.closeoutFocus } : {}),
-        pullRequest: () => finish.draft,
+        pullRequest: async () => finish.draft,
         allowCommand(argv) {
           authorizeCloseout(argv, worktreePath, options.commandGuard);
         },

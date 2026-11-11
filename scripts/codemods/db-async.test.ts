@@ -37,6 +37,7 @@ test.each([
   ["a Db argument is kept as is", "db-arg.ts"],
   ["propagation reaches the caller's caller", "propagation.ts"],
   ["a sync test callback becomes async", "sync-test.ts"],
+  ["a helper declared after its caller propagates", "helper.ts"],
   ["a test.each callback becomes async", "each.ts"],
   ["a typeof reference does not hold the wrapper back", "typeof.ts"],
   ["a test or script module awaits at top level", "test/top.ts"],
@@ -62,9 +63,9 @@ test("boundaries and exports without a Steps form are reported", () => {
   expect(first).toMatchObject({
     wrappers: 5,
     folded: 1,
-    calls: 12,
-    wrapped: 8,
-    asyncFunctions: 10,
+    calls: 14,
+    wrapped: 9,
+    asyncFunctions: 12,
   });
 });
 

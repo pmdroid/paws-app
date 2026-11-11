@@ -110,7 +110,7 @@ async function blockedAfterCleanupFailure() {
   });
   await orchestrator.onLinearEvent(linearEvent("created", null));
   const itemId = (await getLinearSession(sqliteDb(db), "session"))!.activeItemId!;
-  const { run } = beginImplementRun(db, itemId, now);
+  const { run } = await beginImplementRun(sqliteDb(db), itemId, now);
   db.run(
     "INSERT INTO runner_command(id,runner_id,run_id,generation,kind,envelope,expires_at,acknowledged_at) VALUES('command','agentbox',?,1,'run','{}',?,?)",
     [run.id, now + 600_000, now],
@@ -119,7 +119,7 @@ async function blockedAfterCleanupFailure() {
     "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,'agentbox',?,1,0,'command',?)",
     [run.id, workspace.id, now + 60_000],
   );
-  applyWorkItemEvent(db, itemId, "run_failed");
+  await applyWorkItemEvent(sqliteDb(db), itemId, "run_failed");
   blockConversation(db, itemId, now);
   const keys = generateKeyPairSync("ed25519");
   const work = createRunnerWork({

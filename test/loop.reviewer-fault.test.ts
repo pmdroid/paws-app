@@ -10,6 +10,7 @@ import { runDir } from "../src/acp";
 import { writeAgentSettings, type AgentProfiles } from "../src/config";
 import { JOB_KIND, type Clock } from "../src/core";
 import {
+  sqliteDb,
   JobLoop,
   OutboxDispatcher,
   listJobs,
@@ -115,8 +116,8 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
       if (claimed.length === 0) break;
     }
   };
-  const holds = () =>
-    listJobs(db).filter(
+  const holds = async () =>
+    (await listJobs(sqliteDb(db))).filter(
       (job) =>
         job.queue === JOB_KIND.reverify &&
         job.status === "pending" &&
@@ -130,12 +131,10 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
 
     const items = listWorkItems(db);
     expect(items.map((item) => item.state)).toEqual(["verifying", "verifying"]);
-    expect(
-      holds()
-        .map((job) => (job.payload as { itemId: string }).itemId)
-        .sort(),
-    ).toEqual(items.map((item) => item.id).sort());
-    for (const hold of holds()) expect(hold.runAt - hold.createdAt).toBe(60_000);
+    expect((await holds()).map((job) => (job.payload as { itemId: string }).itemId).sort()).toEqual(
+      items.map((item) => item.id).sort(),
+    );
+    for (const hold of await holds()) expect(hold.runAt - hold.createdAt).toBe(60_000);
     for (const session of ["ses_ENG-1", "ses_ENG-2"])
       expect(findOpenQuestion(db, session)).toBeNull();
     expect(tracker.questions).toEqual([]);
@@ -152,10 +151,14 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
     const first = items[0]!.id;
     const delays: number[] = [];
     for (let fault = 2; fault <= 5; fault++) {
-      const hold = holds().find((job) => (job.payload as { itemId: string }).itemId === first)!;
+      const hold = (await holds()).find(
+        (job) => (job.payload as { itemId: string }).itemId === first,
+      )!;
       db.run("UPDATE job SET run_at = 0 WHERE id = ?", [hold.id]);
       await jobs.tick([JOB_KIND.reverify]);
-      const next = holds().find((job) => (job.payload as { itemId: string }).itemId === first)!;
+      const next = (await holds()).find(
+        (job) => (job.payload as { itemId: string }).itemId === first,
+      )!;
       delays.push(next.runAt - next.createdAt);
     }
     expect(delays).toEqual([5 * 60_000, 15 * 60_000, 15 * 60_000, 15 * 60_000]);
@@ -176,8 +179,10 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
     });
     gate.next = { decision: "accepted", exhausted: false, summary: "fake accepted" };
     const changed = Date.now();
-    (orchestrator as unknown as { reconcileAgentSettings(): void }).reconcileAgentSettings();
-    const released = listJobs(db).filter(
+    await (
+      orchestrator as unknown as { reconcileAgentSettings(): Promise<void> }
+    ).reconcileAgentSettings();
+    const released = (await listJobs(sqliteDb(db))).filter(
       (job) => job.queue === JOB_KIND.reverify && job.status === "pending",
     );
     expect(released).toHaveLength(2);

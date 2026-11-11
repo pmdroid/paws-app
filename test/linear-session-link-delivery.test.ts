@@ -25,16 +25,15 @@ test("persisted session link replacement, incremental removal and clearing reach
     },
     { externalUrls: [] },
   ];
-  changes.forEach((change, index) =>
-    enqueueOutbox(db, {
+  for (const [index, change] of changes.entries())
+    await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "linear.session.links",
       orderingKey: "session",
       idempotencyKey: `links:${index}`,
       now: 1,
       payload: { sessionId: "session", identifier: "ENG-1", ...change },
-    }),
-  );
+    });
   db.close();
   db = openDatabase(path);
   const sent: unknown[] = [];
@@ -75,7 +74,7 @@ test.each([
     },
   });
   try {
-    const id = enqueueOutbox(db, {
+    const id = await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "linear.session.links",
       orderingKey: "session",

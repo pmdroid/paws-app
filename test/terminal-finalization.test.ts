@@ -3,6 +3,7 @@ import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { JOB_KIND } from "../src/core";
 import {
+  failWorkItemSteps,
   applyWorkItemEvent,
   beginImplementRun,
   completeAnswerTask,
@@ -14,7 +15,6 @@ import {
   getJob,
   getRun,
   getWorkItem,
-  immediate,
   insertQueuedItem,
   insertRun,
   listOutbox,
@@ -34,9 +34,17 @@ afterEach(() => {
   for (const db of databases.splice(0)) db.close();
 });
 
-function runningTask(db: Database) {
-  const { item, run } = beginImplementRun(db, insertQueuedItem(db, { id: "ENG-1" }).id, 1);
-  const jobId = enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: item.id }, now: 1 });
+async function runningTask(db: Database) {
+  const { item, run } = await beginImplementRun(
+    sqliteDb(db),
+    insertQueuedItem(db, { id: "ENG-1" }).id,
+    1,
+  );
+  const jobId = await enqueueJob(sqliteDb(db), {
+    queue: JOB_KIND.resume,
+    payload: { itemId: item.id },
+    now: 1,
+  });
   return { item, run, jobId };
 }
 
@@ -46,83 +54,91 @@ function breakOutbox(db: Database): void {
   );
 }
 
-test("a fault after the failed state is written rolls the whole failure back", () => {
+test("a fault after the failed state is written rolls the whole failure back", async () => {
   const db = tempDb();
   databases.push(db);
-  const { item, run, jobId } = runningTask(db);
+  const { item, run, jobId } = await runningTask(db);
   breakOutbox(db);
-  expect(() => failWorkItem(db, item, "run_error", "The agent crashed.", 2)).toThrow(
-    "injected fault",
-  );
+  await expect(
+    failWorkItem(sqliteDb(db), item, "run_error", "The agent crashed.", 2),
+  ).rejects.toThrow("injected fault");
   expect(getWorkItem(db, item.id)).toMatchObject({ state: "running", cancelRequested: false });
   expect(getRun(db, run.id)?.status).toBe("active");
-  expect(getJob(db, jobId)?.status).toBe("pending");
+  expect((await getJob(sqliteDb(db), jobId))?.status).toBe("pending");
 });
 
-test("a failure inside a caller's transaction rolls back with the caller", () => {
+test("a failure inside a caller's transaction rolls back with the caller", async () => {
   const db = tempDb();
   databases.push(db);
-  const { item, run, jobId } = runningTask(db);
-  expect(() =>
-    immediate(db, () => {
-      failWorkItem(db, item, "run_error", "The agent crashed.", 2);
+  const { item, run, jobId } = await runningTask(db);
+  await expect(
+    sqliteDb(db).transaction(function* (q) {
+      yield* failWorkItemSteps(q, item, "run_error", "The agent crashed.", 2);
       throw new Error("caller failed");
     }),
-  ).toThrow("caller failed");
+  ).rejects.toThrow("caller failed");
   expect(getWorkItem(db, item.id)?.state).toBe("running");
   expect(getRun(db, run.id)?.status).toBe("active");
-  expect(getJob(db, jobId)?.status).toBe("pending");
-  expect(listOutbox(db, "session")).toEqual([]);
+  expect((await getJob(sqliteDb(db), jobId))?.status).toBe("pending");
+  expect(await listOutbox(sqliteDb(db), "session")).toEqual([]);
 });
 
-test("a delayed failure cannot fail the run that superseded it", () => {
+test("a delayed failure cannot fail the run that superseded it", async () => {
   const db = tempDb();
   databases.push(db);
-  const { item, run } = runningTask(db);
-  applyWorkItemEvent(db, item.id, "restart");
-  applyWorkItemEvent(db, item.id, "dispatched");
-  const next = insertRun(db, { itemId: item.id, now: 3 });
-  setCurrentRun(db, item.id, next.id);
-  expect(failWorkItem(db, item, "run_error", "The old agent crashed.", 4)).toBe(false);
+  const { item, run } = await runningTask(db);
+  await applyWorkItemEvent(sqliteDb(db), item.id, "restart");
+  await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
+  const next = await insertRun(sqliteDb(db), { itemId: item.id, now: 3 });
+  await setCurrentRun(sqliteDb(db), item.id, next.id);
+  expect(await failWorkItem(sqliteDb(db), item, "run_error", "The old agent crashed.", 4)).toBe(
+    false,
+  );
   expect(getWorkItem(db, item.id)).toMatchObject({ state: "running", currentRunId: next.id });
   expect(getRun(db, run.id)?.status).toBe("active");
   expect(getRun(db, next.id)?.status).toBe("active");
-  expect(listOutbox(db, "session")).toEqual([]);
+  expect(await listOutbox(sqliteDb(db), "session")).toEqual([]);
 });
 
-test("a delayed failure leaves a cancelled task cancelled", () => {
+test("a delayed failure leaves a cancelled task cancelled", async () => {
   const db = tempDb();
   databases.push(db);
-  const { item } = runningTask(db);
-  applyWorkItemEvent(db, item.id, "cancel");
-  expect(failWorkItem(db, item, "run_error", "The agent crashed.", 2)).toBe(false);
+  const { item } = await runningTask(db);
+  await applyWorkItemEvent(sqliteDb(db), item.id, "cancel");
+  expect(await failWorkItem(sqliteDb(db), item, "run_error", "The agent crashed.", 2)).toBe(false);
   expect(getWorkItem(db, item.id)?.state).toBe("cancelled");
-  expect(listOutbox(db, "session")).toEqual([]);
+  expect(await listOutbox(sqliteDb(db), "session")).toEqual([]);
 });
 
-test("a committed failure survives a restart and is not repeated", () => {
+test("a committed failure survives a restart and is not repeated", async () => {
   const file = join(tempHome(), "paws.db");
   const db = migratedDatabase(file);
-  const { item, run, jobId } = runningTask(db);
-  expect(failWorkItem(db, item, "run_error", "The agent crashed.", 2)).toBe(true);
+  const { item, run, jobId } = await runningTask(db);
+  expect(await failWorkItem(sqliteDb(db), item, "run_error", "The agent crashed.", 2)).toBe(true);
   db.close();
   const restored = openDatabase(file);
   databases.push(restored);
   const failed = getWorkItem(restored, item.id)!;
   expect(failed).toMatchObject({ state: "failed", cancelRequested: true });
   expect(getRun(restored, run.id)?.status).toBe("lost");
-  expect(getJob(restored, jobId)?.status).toBe("cancelled");
-  expect(listOutbox(restored, "session").map((row) => row.payload)).toEqual([
+  expect((await getJob(sqliteDb(restored), jobId))?.status).toBe("cancelled");
+  expect((await listOutbox(sqliteDb(restored), "session")).map((row) => row.payload)).toEqual([
     { sessionId: "session", kind: "error", body: "The agent crashed." },
   ]);
-  expect(failWorkItem(restored, failed, "run_error", "The agent crashed.", 3)).toBe(false);
-  expect(listOutbox(restored, "session")).toHaveLength(1);
+  expect(await failWorkItem(sqliteDb(restored), failed, "run_error", "The agent crashed.", 3)).toBe(
+    false,
+  );
+  expect(await listOutbox(sqliteDb(restored), "session")).toHaveLength(1);
 });
 
 async function mergingTask(db: Database) {
-  const { item, run } = runningTask(db);
-  enterMergeQueue(db, item.id, { phase: "merge_queue" });
-  const jobId = enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId: item.id }, now: 2 });
+  const { item, run } = await runningTask(db);
+  await enterMergeQueue(sqliteDb(db), item.id, { phase: "merge_queue" });
+  const jobId = await enqueueJob(sqliteDb(db), {
+    queue: JOB_KIND.reverify,
+    payload: { itemId: item.id },
+    now: 2,
+  });
   await recordConfirmedRemoteMerge(sqliteDb(db), {
     itemId: item.id,
     repositoryOwner: "acme",
@@ -159,9 +175,9 @@ test("a confirmed merge commits its state, run, jobs and notice together and onl
   databases.push(restored);
   expect(getWorkItem(restored, item.id)?.state).toBe("merged");
   expect(getRun(restored, run.id)?.status).toBe("ended");
-  expect(getJob(restored, jobId)?.status).toBe("cancelled");
-  expect(listOutbox(restored, "session")).toHaveLength(1);
-  expect(listOutbox(restored, "session")[0]).toMatchObject({
+  expect((await getJob(sqliteDb(restored), jobId))?.status).toBe("cancelled");
+  expect(await listOutbox(sqliteDb(restored), "session")).toHaveLength(1);
+  expect((await listOutbox(sqliteDb(restored), "session"))[0]).toMatchObject({
     delivery: "ordered",
     idempotencyKey: `merged:${item.id}:0`,
     payload: { kind: "response", body: "Merged #7 into main at abc. ENG-1 is Done." },
@@ -170,7 +186,7 @@ test("a confirmed merge commits its state, run, jobs and notice together and onl
     await completeMergedItem(sqliteDb(restored), { itemId: item.id, now: 5, announce }),
   ).toBeNull();
   expect(announced).toEqual([item.id]);
-  expect(listOutbox(restored, "session")).toHaveLength(1);
+  expect(await listOutbox(sqliteDb(restored), "session")).toHaveLength(1);
 });
 
 test("a fault in the merge notice leaves the task in the merge queue", async () => {
@@ -184,7 +200,7 @@ test("a fault in the merge notice leaves the task in the merge queue", async () 
   ).rejects.toThrow("injected fault");
   expect(getWorkItem(db, item.id)?.state).toBe("merge_queue");
   expect(getRun(db, run.id)?.status).toBe("active");
-  expect(getJob(db, jobId)?.status).toBe("pending");
+  expect((await getJob(sqliteDb(db), jobId))?.status).toBe("pending");
 });
 
 test("a merge result for a cancelled, superseded or unconfirmed task changes nothing", async () => {
@@ -192,14 +208,14 @@ test("a merge result for a cancelled, superseded or unconfirmed task changes not
   databases.push(db);
   const { item } = await mergingTask(db);
   const { announced, announce } = announceMerge(db);
-  applyWorkItemEvent(db, item.id, "restart");
-  applyWorkItemEvent(db, item.id, "dispatched");
+  await applyWorkItemEvent(sqliteDb(db), item.id, "restart");
+  await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
   expect(await completeMergedItem(sqliteDb(db), { itemId: item.id, now: 4, announce })).toBeNull();
-  applyWorkItemEvent(db, item.id, "cancel");
+  await applyWorkItemEvent(sqliteDb(db), item.id, "cancel");
   expect(await completeMergedItem(sqliteDb(db), { itemId: item.id, now: 4, announce })).toBeNull();
   const other = insertQueuedItem(db, { id: "ENG-2" });
-  beginImplementRun(db, other.id, 5);
-  enterMergeQueue(db, other.id, { phase: "merge_queue" });
+  await beginImplementRun(sqliteDb(db), other.id, 5);
+  await enterMergeQueue(sqliteDb(db), other.id, { phase: "merge_queue" });
   expect(await completeMergedItem(sqliteDb(db), { itemId: other.id, now: 6, announce })).toBeNull();
   expect(getWorkItem(db, item.id)?.state).toBe("cancelled");
   expect(getWorkItem(db, other.id)?.state).toBe("merge_queue");
@@ -209,10 +225,10 @@ test("a merge result for a cancelled, superseded or unconfirmed task changes not
 test("an answer from a superseded run cannot complete the task", async () => {
   const db = tempDb();
   databases.push(db);
-  const { item, run, jobId } = runningTask(db);
+  const { item, run, jobId } = await runningTask(db);
   await saveTaskMode(sqliteDb(db), item.id, "answer");
-  const next = insertRun(db, { itemId: item.id, now: 2 });
-  setCurrentRun(db, item.id, next.id);
+  const next = await insertRun(sqliteDb(db), { itemId: item.id, now: 2 });
+  await setCurrentRun(sqliteDb(db), item.id, next.id);
   await expect(
     completeAnswerTask(sqliteDb(db), item.id, "Stale answer.", 3, { runId: run.id }),
   ).rejects.toThrow("no longer running");
@@ -227,14 +243,14 @@ test("an answer from a superseded run cannot complete the task", async () => {
   });
   expect(getWorkItem(db, item.id)?.state).toBe("completed");
   expect(getRun(db, next.id)?.status).toBe("ended");
-  expect(getJob(db, jobId)?.status).toBe("cancelled");
+  expect((await getJob(sqliteDb(db), jobId))?.status).toBe("cancelled");
   expect(announced).toBe(1);
 });
 
 test("a fault in the answer's session update rolls the completion back", async () => {
   const db = tempDb();
   databases.push(db);
-  const { item, run } = runningTask(db);
+  const { item, run } = await runningTask(db);
   await saveTaskMode(sqliteDb(db), item.id, "answer");
   await expect(
     completeAnswerTask(sqliteDb(db), item.id, "The total is 42.", 2, {
@@ -246,13 +262,13 @@ test("a fault in the answer's session update rolls the completion back", async (
   ).rejects.toThrow("session update failed");
   expect(getWorkItem(db, item.id)?.state).toBe("running");
   expect(getRun(db, run.id)?.status).toBe("active");
-  expect(listOutbox(db, "session")).toEqual([]);
+  expect(await listOutbox(sqliteDb(db), "session")).toEqual([]);
 });
 
-test("a terminal failure after PR publication commits one ordered closed response", () => {
+test("a terminal failure after PR publication commits one ordered closed response", async () => {
   const db = tempDb();
   databases.push(db);
-  const { item } = runningTask(db);
+  const { item } = await runningTask(db);
   enqueueOutboxOnce(db, {
     target: "linear",
     op: "activity",
@@ -261,10 +277,12 @@ test("a terminal failure after PR publication commits one ordered closed respons
     idempotencyKey: `pull-request-ready:${item.id}:0`,
     payload: { sessionId: "session", kind: "response", body: "Opened PR #7" },
   });
-  expect(failWorkItem(db, item, "merge", "GitHub is unavailable.", 2)).toBe(true);
-  expect(failWorkItem(db, item, "merge", "GitHub is unavailable.", 3)).toBe(false);
+  expect(await failWorkItem(sqliteDb(db), item, "merge", "GitHub is unavailable.", 2)).toBe(true);
+  expect(await failWorkItem(sqliteDb(db), item, "merge", "GitHub is unavailable.", 3)).toBe(false);
   expect(
-    listOutbox(db, "session").filter((row) => row.idempotencyKey.startsWith("closed:")),
+    (await listOutbox(sqliteDb(db), "session")).filter((row) =>
+      row.idempotencyKey.startsWith("closed:"),
+    ),
   ).toMatchObject([
     {
       idempotencyKey: `closed:${item.id}:0`,

@@ -10,7 +10,15 @@ import { worktreePath } from "../src/acp";
 import type { FakeScript } from "../src/acp/testing/script";
 import * as closeoutCommands from "../src/closeout-spec/run/exec";
 import { systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, getWorkItem, listJobs, migrate, openDatabase } from "../src/db";
+import {
+  sqliteDb,
+  JobLoop,
+  OutboxDispatcher,
+  getWorkItem,
+  listJobs,
+  migrate,
+  openDatabase,
+} from "../src/db";
 import {
   createFakeGitHub,
   fakeMergeReadiness,
@@ -188,7 +196,9 @@ test("a merge-queue re-check waits for CI, sends red CI to a fix, a conflict to 
     const detail = JSON.stringify({
       heads,
       ran,
-      jobs: listJobs(db).map((job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`),
+      jobs: (await listJobs(sqliteDb(db))).map(
+        (job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`,
+      ),
       progress: tracker.progress.map((update) => `${update.kind}: ${update.body}`),
     });
     expect(stateOf(db, "ENG-8"), detail).toBe("merged");
@@ -198,7 +208,7 @@ test("a merge-queue re-check waits for CI, sends red CI to a fix, a conflict to 
     expect(conflicted, detail).not.toBeNull();
     expect(heads, detail).not.toContain(conflicted);
     expect(turns, detail).toBe(4);
-    const returned = listJobs(db).find(
+    const returned = (await listJobs(sqliteDb(db))).find(
       (job) => job.jobKey?.startsWith("conflict:") && job.jobKey.endsWith(`:recheck:${conflicted}`),
     );
     expect(returned?.payload, detail).toMatchObject({ reason: "conflict" });

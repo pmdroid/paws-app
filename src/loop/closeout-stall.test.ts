@@ -33,8 +33,8 @@ test("quiet verification retries once across restart, then asks a person", async
     migrate(db);
     const clock = new FakeClock(Date.now() + 1000);
     insertQueuedItem(db, { id: "stalled", sessionKey: "ses", now: clock.now() });
-    beginImplementRun(db, "stalled", clock.now());
-    applyWorkItemEvent(db, "stalled", "turn_ended", { now: clock.now() });
+    await beginImplementRun(sqliteDb(db), "stalled", clock.now());
+    await applyWorkItemEvent(sqliteDb(db), "stalled", "turn_ended", { now: clock.now() });
     saveCheckpoint(db, "stalled", { phase: "verifying", baseSha: "base", wipCommit: "head" });
     const lines: string[] = [];
     const cancelled: string[] = [];
@@ -63,28 +63,32 @@ test("quiet verification retries once across restart, then asks a person", async
     await check();
     expect(lines).toHaveLength(0);
     expect(cancelled).toHaveLength(0);
-    expect(listJobs(db)).toHaveLength(0);
+    expect(await listJobs(sqliteDb(db))).toHaveLength(0);
     // Restart with no in-memory Closeout operation and retain the last event's clock.
     db.close();
     db = openDatabase(path);
-    const oldJob = enqueueJob(db, {
+    const oldJob = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.reverify,
       payload: { itemId: "stalled" },
       now: clock.now(),
     });
-    claimNextJob(db, { now: clock.now(), leaseMs: 60 * 60_000 });
+    await claimNextJob(sqliteDb(db), { now: clock.now(), leaseMs: 60 * 60_000 });
     clock.advance(31 * 60_000);
     await check();
-    expect(listJobs(db).find((job) => job.id === oldJob)?.status).toBe("cancelled");
+    expect((await listJobs(sqliteDb(db))).find((job) => job.id === oldJob)?.status).toBe(
+      "cancelled",
+    );
     await check();
     expect(
-      listJobs(db).filter((j) => j.queue === JOB_KIND.reverify && j.id !== oldJob),
+      (await listJobs(sqliteDb(db))).filter(
+        (j) => j.queue === JOB_KIND.reverify && j.id !== oldJob,
+      ),
     ).toHaveLength(1);
     expect(lines).toEqual(["closeout stalled for 31 min, re-running once"]);
     // The real re-verify closes the quiet run and opens a new one on the same head.
     const prior = getWorkItem(db, "stalled")!.currentRunId!;
-    markRun(db, prior, "lost", clock.now());
-    const rerun = insertRun(db, {
+    await markRun(sqliteDb(db), prior, "lost", clock.now());
+    const rerun = await insertRun(sqliteDb(db), {
       itemId: "stalled",
       kind: "recheck",
       agent: "cursor",
@@ -92,7 +96,7 @@ test("quiet verification retries once across restart, then asks a person", async
       freshSession: true,
       now: clock.now(),
     });
-    setCurrentRun(db, "stalled", rerun.id);
+    await setCurrentRun(sqliteDb(db), "stalled", rerun.id);
     db.close();
     db = openDatabase(path);
     clock.advance(31 * 60_000);
@@ -104,7 +108,9 @@ test("quiet verification retries once across restart, then asks a person", async
     ]);
     expect(cancelled).toHaveLength(2);
     expect(
-      listJobs(db).filter((j) => j.queue === JOB_KIND.reverify && j.id !== oldJob),
+      (await listJobs(sqliteDb(db))).filter(
+        (j) => j.queue === JOB_KIND.reverify && j.id !== oldJob,
+      ),
     ).toHaveLength(1);
     await sqliteDb(db).transaction((q) =>
       answerSteps(
@@ -127,10 +133,10 @@ test("quiet verification retries once across restart, then asks a person", async
   }
 });
 
-function verifyingItem(id: string, db: ReturnType<typeof openDatabase>, now: number) {
+async function verifyingItem(id: string, db: ReturnType<typeof openDatabase>, now: number) {
   insertQueuedItem(db, { id, sessionKey: `ses-${id}`, now });
-  beginImplementRun(db, id, now);
-  applyWorkItemEvent(db, id, "turn_ended", { now });
+  await beginImplementRun(sqliteDb(db), id, now);
+  await applyWorkItemEvent(sqliteDb(db), id, "turn_ended", { now });
   saveCheckpoint(db, id, { phase: "verifying", baseSha: "base", wipCommit: "head" });
 }
 
@@ -139,7 +145,7 @@ test("a usage pause is not a stall, and one failed cancel leaves the other items
   try {
     migrate(db);
     const clock = new FakeClock(Date.now() + 1000);
-    for (const id of ["paused", "broken", "quiet"]) verifyingItem(id, db, clock.now());
+    for (const id of ["paused", "broken", "quiet"]) await verifyingItem(id, db, clock.now());
     await startUsagePause(sqliteDb(db), {
       runId: getWorkItem(db, "paused")!.currentRunId!,
       itemId: "paused",
@@ -158,7 +164,9 @@ test("a usage pause is not a stall, and one failed cancel leaves the other items
       },
       journal: (line) => lines.push(line),
     });
-    const retried = listJobs(db).map((job) => (job.payload as { itemId: string }).itemId);
+    const retried = (await listJobs(sqliteDb(db))).map(
+      (job) => (job.payload as { itemId: string }).itemId,
+    );
     expect(retried).toEqual(["quiet"]);
   } finally {
     db.close();

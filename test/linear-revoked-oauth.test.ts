@@ -42,7 +42,14 @@ async function fixture() {
   writeStoredToken(db, secretsDir, token);
   const revoke = async () =>
     await revokeLinearInstallation(sqliteDb(db), { ...scope, eventKey: "revoked", createdAtMs: 2 });
-  return { db, home, secretsDir, token, revoke, allowed: () => !isLinearAppRevoked(db, scope) };
+  return {
+    db,
+    home,
+    secretsDir,
+    token,
+    revoke,
+    allowed: async () => !isLinearAppRevoked(db, scope),
+  };
 }
 
 test("known revocation blocks fresh credentials and refresh without a network request", async () => {
@@ -147,7 +154,7 @@ test("a revoked installation leaves webhook dispatch available but starts no cat
   });
   expect(opened.tracker).not.toBeNull();
   expect(opened.webhook.onEvent).toBeDefined();
-  const running = opened.start();
+  const running = await opened.start();
   cleanup.push(() => running.stop());
   await running.catchUp();
   expect(requests).toBe(0);
@@ -170,7 +177,7 @@ test("revocation for another client or app user does not block the configured in
     eventKey: "other-revoked",
     createdAtMs: 2,
   });
-  expect(f.allowed()).toBe(true);
+  expect(await f.allowed()).toBe(true);
   expect(isLinearAppRevoked(f.db, { oauthClientId: "other-client", appUserId: "app" })).toBe(true);
   expect(isLinearAppRevoked(f.db, { oauthClientId: "client", appUserId: "other-app" })).toBe(false);
   const auth = createLinearAuth({

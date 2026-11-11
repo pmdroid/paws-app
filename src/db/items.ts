@@ -207,15 +207,15 @@ export function* listWorkItemsByStatesSteps(q: Q, states: readonly WorkItemState
   return rows.map(mapItem);
 }
 
-export function listWorkItemsByStates(
-  db: Database,
+export async function listWorkItemsByStates(
+  store: Db,
   states: readonly WorkItemState[],
-): WorkItemRecord[] {
-  return settled(sqliteDb(db).run((q) => listWorkItemsByStatesSteps(q, states)));
+): Promise<WorkItemRecord[]> {
+  return store.run((q) => listWorkItemsByStatesSteps(q, states));
 }
 
-export function listInFlightItems(db: Database): WorkItemRecord[] {
-  return settled(sqliteDb(db).run((q) => listInFlightItemsSteps(q)));
+export async function listInFlightItems(store: Db): Promise<WorkItemRecord[]> {
+  return store.run((q) => listInFlightItemsSteps(q));
 }
 
 export function* listInFlightItemsSteps(q: Q): Steps<WorkItemRecord[]> {
@@ -306,13 +306,13 @@ export function* applyWorkItemEventSteps(
  * change and its `work_item_event` row commit in one immediate transaction, or a savepoint of
  * the caller's, so a rolled-back transition leaves no row.
  */
-export function applyWorkItemEvent(
-  db: Database,
+export async function applyWorkItemEvent(
+  store: Db,
   id: string,
   event: WorkItemEvent,
   record: WorkItemEventRecord = {},
-): WorkItemRecord {
-  return settled(sqliteDb(db).transaction((q) => applyWorkItemEventSteps(q, id, event, record)));
+): Promise<WorkItemRecord> {
+  return store.transaction((q) => applyWorkItemEventSteps(q, id, event, record));
 }
 
 /** One committed transition of a work item, from `work_item_event`. */
@@ -360,12 +360,12 @@ export function* listWorkItemEventRowsSteps(q: Q, itemId: string, limit = 200) {
   return rows.reverse() as WorkItemEventRow[];
 }
 
-export function listWorkItemEventRows(
-  db: Database,
+export async function listWorkItemEventRows(
+  store: Db,
   itemId: string,
   limit = 200,
-): WorkItemEventRow[] {
-  return settled(sqliteDb(db).run((q) => listWorkItemEventRowsSteps(q, itemId, limit)));
+): Promise<WorkItemEventRow[]> {
+  return store.run((q) => listWorkItemEventRowsSteps(q, itemId, limit));
 }
 
 export function* configureWorkItemSteps(
@@ -391,12 +391,12 @@ export function* configureWorkItemSteps(
   }
 }
 
-export function configureWorkItem(
-  db: Database,
+export async function configureWorkItem(
+  store: Db,
   id: string,
   patch: { sessionKey?: string; maxAwakeMs?: number; limits?: Partial<StageLimits> },
-): void {
-  settled(sqliteDb(db).run((q) => configureWorkItemSteps(q, id, patch)));
+): Promise<void> {
+  await store.run((q) => configureWorkItemSteps(q, id, patch));
 }
 
 type ItemColumn = keyof PgWorkItem;
@@ -464,8 +464,8 @@ export function* setCurrentRunSteps(q: Q, id: string, runId: string | null) {
   yield* setItemSteps(q, id, { currentRunId: runId });
 }
 
-export function setCurrentRun(db: Database, id: string, runId: string | null): void {
-  settled(sqliteDb(db).run((q) => setCurrentRunSteps(q, id, runId)));
+export async function setCurrentRun(store: Db, id: string, runId: string | null): Promise<void> {
+  await store.run((q) => setCurrentRunSteps(q, id, runId));
 }
 
 export function* syncClockSteps(q: Q, id: string, mono: number) {
@@ -1172,17 +1172,15 @@ export function* failWorkItemSteps(
   return true;
 }
 
-export function failWorkItem(
-  db: Database,
+export async function failWorkItem(
+  store: Db,
   item: WorkItemRecord,
   reason: string,
   text: string,
   now: number,
   options: { stoppedByAnswer?: boolean } = {},
-): boolean {
-  return settled(
-    sqliteDb(db).transaction((q) => failWorkItemSteps(q, item, reason, text, now, options)),
-  );
+): Promise<boolean> {
+  return store.transaction((q) => failWorkItemSteps(q, item, reason, text, now, options));
 }
 
 type CompleteMergedInput = {
@@ -1479,10 +1477,6 @@ export function* releaseReviewerFaultHoldsSteps(q: Q, itemId: string, now: numbe
       .returning({ id: job.id }),
   );
   return rows.length;
-}
-
-export function releaseReviewerFaultHolds(db: Database, itemId: string, now: number): number {
-  return settled(sqliteDb(db).run((q) => releaseReviewerFaultHoldsSteps(q, itemId, now)));
 }
 
 export type RunnerCapacityWaitState = {

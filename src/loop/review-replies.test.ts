@@ -95,8 +95,12 @@ async function setup() {
     repo: "one",
     remoteUrl: "https://github.com/acme/one.git",
   });
-  beginImplementRun(db, "eng-1", 1);
-  enterMergeQueue(db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
+  await beginImplementRun(sqliteDb(db), "eng-1", 1);
+  await enterMergeQueue(sqliteDb(db), "eng-1", {
+    phase: "merge_queue",
+    baseSha: "b",
+    wipCommit: "h",
+  });
   await recordItemPullRequest(sqliteDb(db), {
     itemId: "eng-1",
     pullNumber: 7,
@@ -204,8 +208,8 @@ async function setup() {
   };
 }
 
-const jobs = (db: Awaited<ReturnType<typeof setup>>["db"], queue: string) =>
-  listJobs(db).filter((job) => job.queue === queue);
+const jobs = async (db: Awaited<ReturnType<typeof setup>>["db"], queue: string) =>
+  (await listJobs(sqliteDb(db))).filter((job) => job.queue === queue);
 const report = (
   db: Awaited<ReturnType<typeof setup>>["db"],
   finalMessage: string,
@@ -220,8 +224,8 @@ const report = (
     now: 2_000,
   });
 };
-const handoffText = (db: Awaited<ReturnType<typeof setup>>["db"]) =>
-  (jobs(db, JOB_KIND.resume)[0]?.payload as { handoff: string } | undefined)?.handoff ?? "";
+const handoffText = async (db: Awaited<ReturnType<typeof setup>>["db"]) =>
+  ((await jobs(db, JOB_KIND.resume))[0]?.payload as { handoff: string } | undefined)?.handoff ?? "";
 
 describe("a review and the comments after it reach the agent together", () => {
   test("a changes-requested review waits a quiet minute, and a later comment moves both jobs", async () => {
@@ -239,8 +243,8 @@ describe("a review and the comments after it reach the agent together", () => {
       state: "changes_requested",
       body: "Please fix the ranking.",
     });
-    const reviewJob = () => jobs(db, JOB_KIND.pullReview)[0]!;
-    expect(reviewJob().runAt).toBe(1_000 + PULL_COMMENT_SETTLE_MS);
+    const reviewJob = async () => (await jobs(db, JOB_KIND.pullReview))[0]!;
+    expect((await reviewJob()).runAt).toBe(1_000 + PULL_COMMENT_SETTLE_MS);
 
     tick(40_000);
     await inline({
@@ -250,8 +254,8 @@ describe("a review and the comments after it reach the agent together", () => {
       body: "Bug: the cache key ignores the tenant.",
       path: "src/cache.ts",
     });
-    expect(reviewJob().runAt).toBe(41_000 + PULL_COMMENT_SETTLE_MS);
-    expect(jobs(db, JOB_KIND.pullComments)[0]!.runAt).toBe(41_000 + PULL_COMMENT_SETTLE_MS);
+    expect((await reviewJob()).runAt).toBe(41_000 + PULL_COMMENT_SETTLE_MS);
+    expect((await jobs(db, JOB_KIND.pullComments))[0]!.runAt).toBe(41_000 + PULL_COMMENT_SETTLE_MS);
   });
 
   test("the wait from Settings › Merging replaces the default quiet minute and five-minute cap", async () => {
@@ -263,8 +267,8 @@ describe("a review and the comments after it reach the agent together", () => {
       state: "changes_requested",
       body: "Please fix the ranking.",
     });
-    const reviewJob = () => jobs(db, JOB_KIND.pullReview)[0]!;
-    expect(reviewJob().runAt).toBe(11_000);
+    const reviewJob = async () => (await jobs(db, JOB_KIND.pullReview))[0]!;
+    expect((await reviewJob()).runAt).toBe(11_000);
     tick(8_000);
     await inline({
       id: 9101,
@@ -273,7 +277,7 @@ describe("a review and the comments after it reach the agent together", () => {
       body: "Bug: the tenant.",
       path: "src/cache.ts",
     });
-    expect(reviewJob().runAt).toBe(19_000);
+    expect((await reviewJob()).runAt).toBe(19_000);
     tick(8_000);
     await inline({
       id: 9102,
@@ -283,7 +287,7 @@ describe("a review and the comments after it reach the agent together", () => {
       path: "src/cache.ts",
     });
     // Capped at 25 seconds after the review job was created.
-    expect(reviewJob().runAt).toBe(26_000);
+    expect((await reviewJob()).runAt).toBe(26_000);
   });
 
   test("the review restart carries the bot comment, and the comment job then has nothing left", async () => {
@@ -311,10 +315,10 @@ describe("a review and the comments after it reach the agent together", () => {
     // The comment job runs first and leaves the comments to the waiting review.
     expect(await handlePullComments(db, "eng-1", caps)).toBe("wait");
     expect(await handlePullReview(db, 601, caps)).toBe("restarted");
-    const text = handoffText(db);
+    const text = await handoffText(db);
     expect(text).toContain("@pascal requested changes on pull request #7.");
     expect(text).toContain("Bug: the cache key ignores the tenant.");
-    expect(jobs(db, JOB_KIND.resume)).toHaveLength(1);
+    expect(await jobs(db, JOB_KIND.resume)).toHaveLength(1);
     expect((await getPullComment(sqliteDb(db), "inline", 9101))?.outcome).toBe("covered");
     expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
   });
@@ -338,7 +342,7 @@ describe("Paws replies to every handed-off comment", () => {
     });
     await conversation({ id: 3001, author: "pascal", body: "Why does this skip the cache?" });
     expect(await handlePullReview(db, 601, caps)).toBe("restarted");
-    const text = handoffText(db);
+    const text = await handoffText(db);
     expect(text).toContain("End your final message with a `Review replies` section");
     expect(text).toContain(
       "R1. Thread by @pascal: src/rank.ts:12: This sorts the wrong way round.",
@@ -559,12 +563,12 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
     return context;
   }
   // The turn the restart handed the reply list to ends with `finalMessage`.
-  function turnEnds(
+  async function turnEnds(
     db: Awaited<ReturnType<typeof setup>>["db"],
     finalMessage: string,
     now = 5_000,
   ) {
-    applyWorkItemEvent(db, "eng-1", "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), "eng-1", "dispatched");
     const item = getWorkItem(db, "eng-1")!;
     return checkReviewReplies(sqliteDb(db), {
       item,
@@ -574,8 +578,8 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
       now,
     });
   }
-  const latestHandoff = (db: Awaited<ReturnType<typeof setup>>["db"]) =>
-    jobs(db, JOB_KIND.resume).at(-1)!.payload as { handoff: string; reason: string };
+  const latestHandoff = async (db: Awaited<ReturnType<typeof setup>>["db"]) =>
+    (await jobs(db, JOB_KIND.resume)).at(-1)!.payload as { handoff: string; reason: string };
 
   test("a missing entry sends the turn straight back with that entry, spending no fix round", async () => {
     const { db } = await handedOff();
@@ -584,7 +588,7 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
     const runId = getWorkItem(db, "eng-1")!.currentRunId!;
     expect(await turnEnds(db, final)).toBe("sent_back");
     expect(getRun(db, runId)!.status).toBe("ended");
-    const sentBack = latestHandoff(db);
+    const sentBack = await latestHandoff(db);
     expect(sentBack.reason).toBe("follow_up");
     expect(sentBack.handoff).toContain("R2. Review by @pascal: Fix the ranking.");
     expect(sentBack.handoff).not.toContain("R1.");
@@ -618,7 +622,7 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
     const { db } = await handedOff();
     const final = "R1 fixed: Sorted.\nR2 fixed: **\nR3 not changed: Fresh read.";
     expect(await turnEnds(db, final)).toBe("sent_back");
-    expect(latestHandoff(db).handoff).toContain("R2. Review by @pascal");
+    expect((await latestHandoff(db)).handoff).toContain("R2. Review by @pascal");
     expect(
       (await unreportedReviewReplies(sqliteDb(db), "eng-1")).map((reply) => reply.number),
     ).toEqual([2]);
@@ -633,10 +637,10 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
 
   test("a turn end another writer overtook keeps nothing and sends nothing", async () => {
     const { db } = await handedOff();
-    applyWorkItemEvent(db, "eng-1", "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), "eng-1", "dispatched");
     const item = getWorkItem(db, "eng-1")!;
-    const resumes = jobs(db, JOB_KIND.resume).length;
-    applyWorkItemEvent(db, "eng-1", "turn_ended");
+    const resumes = (await jobs(db, JOB_KIND.resume)).length;
+    await applyWorkItemEvent(sqliteDb(db), "eng-1", "turn_ended");
     const final = "R1 fixed: Sorted.";
     expect(
       await checkReviewReplies(sqliteDb(db), {
@@ -647,7 +651,7 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
         now: 5_000,
       }),
     ).toBe("stale");
-    expect(jobs(db, JOB_KIND.resume)).toHaveLength(resumes);
+    expect(await jobs(db, JOB_KIND.resume)).toHaveLength(resumes);
     expect(
       (await unreportedReviewReplies(sqliteDb(db), "eng-1")).map((reply) => reply.number),
     ).toEqual([1, 2, 3]);
@@ -655,10 +659,10 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
 
   test("a complete section goes on to Closeout", async () => {
     const { db } = await handedOff();
-    const resumes = jobs(db, JOB_KIND.resume).length;
+    const resumes = (await jobs(db, JOB_KIND.resume)).length;
     const final = "R1 fixed: Sorted.\nR2 fixed: Ranked.\nR3 not changed: Fresh read.";
     expect(await turnEnds(db, final)).toBe("complete");
-    expect(jobs(db, JOB_KIND.resume)).toHaveLength(resumes);
+    expect(await jobs(db, JOB_KIND.resume)).toHaveLength(resumes);
     expect(getWorkItem(db, "eng-1")!.state).toBe("running");
     expect(await unreportedReviewReplies(sqliteDb(db), "eng-1")).toEqual([]);
   });

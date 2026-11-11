@@ -173,7 +173,8 @@ export default {
     await proof.delegate();
     const asked = await proof.waitFor(
       "the question is asked and the item waits for input",
-      () => proof.itemState() === "awaiting_input" && proof.heldWork().activeRuns === 0,
+      async () =>
+        (await proof.itemState()) === "awaiting_input" && proof.heldWork().activeRuns === 0,
     );
     proof.expect(
       "the implement turn asks the question in Linear",
@@ -184,9 +185,9 @@ export default {
     proof.expect(
       "the item goes to awaiting_input and its slot is freed",
       asked && held.activeRuns === 0 && held.reservations === 0 && held.runningJobs === 0,
-      { state: proof.itemState(), held },
+      { state: await proof.itemState(), held },
     );
-    const askingRun = proof.itemRunId();
+    const askingRun = await proof.itemRunId();
 
     await proof.pushToMain(
       "mise.toml",
@@ -229,7 +230,8 @@ export default {
     await proof.answerInLinear(ANSWER);
     const merged = await proof.waitFor(
       "the item is merged",
-      () => ["merged", "failed", "manual", "cancelled"].includes(proof.itemState() ?? ""),
+      async () =>
+        ["merged", "failed", "manual", "cancelled"].includes((await proof.itemState()) ?? ""),
       120_000,
     );
     await proof.waitFor("queued Linear activity is delivered", () => false, 1_000);
@@ -241,12 +243,14 @@ export default {
         resumed.length === 1 &&
         resumed[0]!.prompt.includes(QUESTION) &&
         askingRun !== null &&
-        proof.itemRunId() === askingRun &&
-        proof.transitions().some((row) => row.from === "awaiting_input" && row.event === "restart"),
+        (await proof.itemRunId()) === askingRun &&
+        (await proof.transitions()).some(
+          (row) => row.from === "awaiting_input" && row.event === "restart",
+        ),
       {
         purposes: proof.launches.map((launch) => launch.purpose),
         resumedWithAnswer: resumed.length,
-        runs: { asking: askingRun, final: proof.itemRunId() },
+        runs: { asking: askingRun, final: await proof.itemRunId() },
       },
     );
     proof.expect(
@@ -257,8 +261,8 @@ export default {
     proof.expect("the resumed turn's commit is merged into origin main", log.includes(COMMIT), log);
     proof.expect(
       "the item is merged, not failed",
-      merged && proof.itemState() === "merged",
-      proof.itemState(),
+      merged && (await proof.itemState()) === "merged",
+      await proof.itemState(),
     );
   },
 } satisfies Proof;

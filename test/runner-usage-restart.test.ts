@@ -262,7 +262,7 @@ async function usageLimitScenario(
     }
   }
   const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
-  const { run } = beginImplementRun(db, item.id, now);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
   await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app",
@@ -449,7 +449,7 @@ async function usageLimitScenario(
     worktreePath: worktree,
     pawsRoot: root,
     profile: { agent: "claude" as const, model: null },
-    resolveProfiles: () => ({ profile: { agent: selectedAgent, model: null } }),
+    resolveProfiles: async () => ({ profile: { agent: selectedAgent, model: null } }),
     onEvent: (event: { type: string; text?: string }) => {
       if (event.type === "progress" && event.text?.startsWith("Paused:")) {
         pauseEvents++;

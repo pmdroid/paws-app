@@ -337,7 +337,8 @@ export async function advanceMerge(
       const squashed = await squashPull(
         {
           ...lane,
-          beforeMergeCall: (expectedHead) => beginMergeCall(db, item.id, expectedHead, caps.now()),
+          beforeMergeCall: (expectedHead) =>
+            beginMergeCall(store, item.id, expectedHead, caps.now()),
         },
         { head, base: facts.base },
         published.summary,

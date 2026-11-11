@@ -109,7 +109,7 @@ export type CloseoutSessionOptions = {
   onProgress?: (event: CloseoutSessionEvent) => void;
   rulesFirst?: boolean;
   focus?: CloseoutFocus;
-  pullRequest?: () => PullRequestDraft | undefined;
+  pullRequest?: () => Promise<PullRequestDraft | undefined>;
 };
 
 export type CloseoutFocus = {
@@ -277,7 +277,7 @@ export function createCloseoutSession(
     }
     fingerprint = next;
     checkedHead = head;
-    const draft = pullRequestDraftKey(options.pullRequest?.());
+    const draft = pullRequestDraftKey(await options.pullRequest?.());
     if (draftKey !== undefined && draftKey !== draft) staleDraftChecks(policy, memory);
     draftKey = draft;
     const published = source.published
@@ -305,7 +305,7 @@ export function createCloseoutSession(
   const judgeRules = async (prepared: Prepared): Promise<void> => {
     if (prepared.kind !== "ready") return;
     if (!options.rulesFirst && !commandsPassed(prepared, memory)) return;
-    const probeKey = `${fingerprint}\n${pullRequestDraftKey(options.pullRequest?.())}`;
+    const probeKey = `${fingerprint}\n${pullRequestDraftKey(await options.pullRequest?.())}`;
     if (probedKey !== probeKey) {
       probed = new Map();
       probedKey = probeKey;
@@ -398,7 +398,10 @@ export function createCloseoutSession(
             policyChanged: changesPolicyInput(prepared.policy, current.paths),
           };
         }
-        if (draftKey !== undefined && pullRequestDraftKey(options.pullRequest?.()) !== draftKey) {
+        if (
+          draftKey !== undefined &&
+          pullRequestDraftKey(await options.pullRequest?.()) !== draftKey
+        ) {
           view = new Map([...view].map(([id, state]) => [id, { ...state }]));
           staleDraftChecks(policy, view);
         }
@@ -632,7 +635,7 @@ async function runProbes(
     const rule = prepared.policy.rules.find((entry) => entry.id === listed.id);
     const bytes = rule && prepared.policy.probeFiles.get(rule.probe);
     if (rule === undefined || bytes === undefined || options.signal?.aborted) continue;
-    const draft = options.pullRequest?.();
+    const draft = await options.pullRequest?.();
     const ran = await executeProbe({
       rule,
       bytes,
@@ -917,7 +920,7 @@ async function execute(
   const started = Date.now();
   const timeoutSeconds = item.timeoutSeconds ?? 30;
   const signals = [options.signal, stop].filter((signal) => signal !== undefined);
-  const result = await withPullRequestDraft({}, options.pullRequest?.(), (draft) =>
+  const result = await withPullRequestDraft({}, await options.pullRequest?.(), (draft) =>
     runCommand(
       workspace,
       argv,

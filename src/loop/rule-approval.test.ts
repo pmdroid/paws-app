@@ -37,8 +37,8 @@ async function held(publicUrl: string | null = "https://paws.example") {
   const db = openDatabase(":memory:");
   migrate(db);
   const item = insertQueuedItem(db, { id: "PAS-633", sessionKey: "ses_1", title: "Signed URLs" });
-  beginImplementRun(db, item.id, NOW - 10);
-  applyWorkItemEvent(db, item.id, "turn_ended");
+  await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
+  await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
   saveCheckpoint(db, item.id, { phase: "verifying", baseSha: "base", wipCommit: HEAD });
   db.run("UPDATE work_item SET delegated_by = 'delegator' WHERE id = ?", [item.id]);
   await sqliteDb(db).run((q) =>
@@ -121,7 +121,7 @@ test("a broken approve rule is a rule link ask with its summary and the link", a
   expect(await listCloseoutBypassChecks(sqliteDb(db), question.id)).toMatchObject([
     { checkId: "api-contract", kind: "rule", state: "failed", attempt: 1, message: FEEDBACK },
   ]);
-  expect(listJobs(db).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
+  expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
 });
 
 test("Approve records who and why and verifies the same head again", async () => {
@@ -144,11 +144,11 @@ test("Approve records who and why and verifies the same head again", async () =>
     state: "verifying",
     checkpoint: { phase: "verifying", baseSha: "base", wipCommit: HEAD },
   });
-  expect(listJobs(db).map((job) => [job.queue, job.jobKey])).toContainEqual([
+  expect((await listJobs(sqliteDb(db))).map((job) => [job.queue, job.jobKey])).toContainEqual([
     JOB_KIND.reverify,
     `closeout-bypass:${question.id}`,
   ]);
-  expect(listJobs(db).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
+  expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
   expect((await listCloseoutBypassChecks(sqliteDb(db), question.id))[0]).toMatchObject({
     reason: "The contract change is intended for v2.",
     approvedBy: "lead",
@@ -177,7 +177,9 @@ test("Approve records who and why and verifies the same head again", async () =>
       },
     ],
   );
-  const notes = listOutbox(db).filter((row) => row.idempotencyKey.startsWith("link-ask-decided:"));
+  const notes = (await listOutbox(sqliteDb(db))).filter((row) =>
+    row.idempotencyKey.startsWith("link-ask-decided:"),
+  );
   expect(notes.map((row) => (row.payload as { body: string }).body)).toEqual([
     "Lea Lead approved the rule break on 7f65200 in Paws: The contract change is intended for v2.",
   ]);
@@ -230,12 +232,14 @@ test("Send back restarts the agent with the finding", async () => {
   ).toBe("answered");
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
   const handoff = (
-    listJobs(db).find((job) => job.queue === JOB_KIND.resume)!.payload as { handoff: string }
+    (await listJobs(sqliteDb(db))).find((job) => job.queue === JOB_KIND.resume)!.payload as {
+      handoff: string;
+    }
   ).handoff;
   expect(handoff).toContain("Keep Task.title; add the new field beside it.");
   expect(handoff).toContain("removed field Task.title");
   expect(handoff).toContain("api-contract (rule): failed");
-  expect(listJobs(db).some((job) => job.queue === JOB_KIND.reverify)).toBe(false);
+  expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.reverify)).toBe(false);
   expect(await recoveryOptions(db, itemId)).toEqual({
     retryBaseline: ["api-contract:1"],
     bypasses: [],
@@ -258,15 +262,19 @@ test("a reply in Linear sends the finding back and approves nothing", async () =
     closedReason: "guidance",
   });
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
-  expect(listJobs(db).some((job) => job.queue === JOB_KIND.reverify)).toBe(false);
+  expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.reverify)).toBe(false);
   const handoff = (
-    listJobs(db).find((job) => job.queue === JOB_KIND.resume)!.payload as { handoff: string }
+    (await listJobs(sqliteDb(db))).find((job) => job.queue === JOB_KIND.resume)!.payload as {
+      handoff: string;
+    }
   ).handoff;
   expect(handoff).toContain("The reply is guidance and approves nothing");
   expect(handoff).toContain("removed field Task.title");
   expect((await listCloseoutBypassChecks(sqliteDb(db), question.id))[0]?.approvedAt).toBeNull();
   expect((await recoveryOptions(db, itemId)).bypasses).toEqual([]);
-  const notes = listOutbox(db).filter((row) => row.idempotencyKey.startsWith("link-ask-guidance:"));
+  const notes = (await listOutbox(sqliteDb(db))).filter((row) =>
+    row.idempotencyKey.startsWith("link-ask-guidance:"),
+  );
   expect(notes.map((row) => (row.payload as { body: string }).body)).toEqual([
     `${RULE_REPLY_NOTE} ${LINK}`,
   ]);

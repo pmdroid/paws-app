@@ -164,7 +164,7 @@ test("production explicit session intake stays pending when follow-up fails and 
       attempts.push("recovered");
     },
   });
-  const running = second.start();
+  const running = await second.start();
   await running.catchUp();
   for (let attempt = 0; attempt < 50 && (await reopened.listUnhandled()).length > 0; attempt++)
     await Bun.sleep(1);

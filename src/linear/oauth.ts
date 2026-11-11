@@ -43,7 +43,7 @@ export type StoredLinearToken = {
 
 export type LinearAuth = {
   hasToken(): boolean;
-  assertAuthorized?(): void;
+  assertAuthorized?(): Promise<void>;
   ensureFresh(): Promise<string>;
   forceRefresh(): Promise<string>;
 };
@@ -101,7 +101,7 @@ export function createLinearAuth(options: {
   clientSecret: string | null;
   bootstrapAccessToken?: string | null;
   bootstrapRefreshToken?: string | null;
-  isAuthorized?: () => boolean;
+  isAuthorized?: () => Promise<boolean>;
   fetch?: FetchLike;
   now?: () => number;
 }): LinearAuth {
@@ -122,14 +122,14 @@ export function createLinearAuth(options: {
       },
       true,
     );
-  const assertAuthorized = () => {
-    if (options.isAuthorized?.() === false)
+  const assertAuthorized = async () => {
+    if ((await options.isAuthorized?.()) === false)
       throw new Error("Linear app access was revoked. Reconnect Linear in Paws.");
   };
   let pending: Promise<string> | null = null;
 
   async function refresh(): Promise<string> {
-    assertAuthorized();
+    await assertAuthorized();
     if (pending !== null) return pending;
     pending = refreshOnce().finally(() => {
       pending = null;
@@ -138,7 +138,7 @@ export function createLinearAuth(options: {
   }
 
   async function refreshOnce(): Promise<string> {
-    assertAuthorized();
+    await assertAuthorized();
     if (readToken(db, secretsDir)?.refreshToken == null) {
       throw new Error("Linear access token expired and no refresh token is stored");
     }
@@ -146,7 +146,7 @@ export function createLinearAuth(options: {
       token: StoredLinearToken,
       signal: AbortSignal,
     ): Promise<StoredLinearToken> => {
-      assertAuthorized();
+      await assertAuthorized();
       const saved = await refreshLinearToken({
         refreshToken: token.refreshToken!,
         clientId: options.clientId,
@@ -154,7 +154,7 @@ export function createLinearAuth(options: {
         fetch: (url, init) => fetchImpl(url, { ...init, signal }),
         now: now(),
       });
-      assertAuthorized();
+      await assertAuthorized();
       if (saved.refreshToken === null)
         throw new Error("Linear refresh response has no refresh token");
       return saved;
@@ -163,13 +163,10 @@ export function createLinearAuth(options: {
       db,
       identity: "linear",
       read: () => readToken(db, secretsDir),
-      write: (token) => {
-        assertAuthorized();
-        writeToken(db, secretsDir, token);
-      },
+      write: (token) => writeToken(db, secretsDir, token),
       refresh: rotate,
     });
-    assertAuthorized();
+    await assertAuthorized();
     return saved.accessToken;
   }
 
@@ -179,7 +176,7 @@ export function createLinearAuth(options: {
       return readToken(db, secretsDir) !== null;
     },
     async ensureFresh() {
-      assertAuthorized();
+      await assertAuthorized();
       const current = readToken(db, secretsDir);
       if (current === null) throw new Error("Linear OAuth token is not configured");
       if (current.expiresAtMs - REFRESH_SKEW_MS > now()) return current.accessToken;

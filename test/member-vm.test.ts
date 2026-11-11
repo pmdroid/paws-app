@@ -151,8 +151,8 @@ async function drive(f: Fixture, loop: JobLoop, until: (row: MemberVm) => boolea
 
 const settled = (row: MemberVm) => row.step === "ready" || row.failure !== null;
 
-function openJobs(db: Database) {
-  return listJobs(db).filter(
+async function openJobs(db: Database) {
+  return (await listJobs(sqliteDb(db))).filter(
     (job) =>
       job.queue === MEMBER_VM_QUEUE && (job.status === "pending" || job.status === "running"),
   );
@@ -170,7 +170,7 @@ describe("member VM", () => {
     expect(first.vmName).toBe("ada-lovelace-paws");
     const again = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
     expect(again.id).toBe(first.id);
-    expect(openJobs(f.db)).toHaveLength(1);
+    expect(await openJobs(f.db)).toHaveLength(1);
     const inactive = await f.person("Watcher", "watch@example.invalid", false);
     await expect(startMemberVm(sqliteDb(f.db), inactive)).rejects.toThrow(
       /Active workspace membership/,
@@ -210,9 +210,9 @@ describe("member VM", () => {
     const ready = await drive(f, loop, settled);
     expect(ready.step).toBe("ready");
     expect(ready.failure).toBeNull();
-    expect(openJobs(f.db)).toHaveLength(0);
+    expect(await openJobs(f.db)).toHaveLength(0);
     expect((await startMemberVm(sqliteDb(f.db), f.member)).id).toBe(ready.id);
-    expect(openJobs(f.db)).toHaveLength(0);
+    expect(await openJobs(f.db)).toHaveLength(0);
   });
 
   test("a restart mid-step resumes the recorded step without a second VM", async () => {
@@ -376,9 +376,9 @@ describe("member VM", () => {
     expect(failed.failure).not.toContain(leaked);
     expect(failed.failure).not.toContain(EXE_DEV_TOKEN);
     expect(f.exeDev.vms.has(failed.vmName)).toBe(true);
-    expect(openJobs(f.db)).toHaveLength(0);
+    expect(await openJobs(f.db)).toHaveLength(0);
     expect((await startMemberVm(sqliteDb(f.db), f.member)).failure).not.toBeNull();
-    expect(openJobs(f.db)).toHaveLength(0);
+    expect(await openJobs(f.db)).toHaveLength(0);
 
     f.bootstrap.startInstall = original;
     const retried = await retryMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });

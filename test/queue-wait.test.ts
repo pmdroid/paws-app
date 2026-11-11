@@ -76,15 +76,15 @@ test("a ready item waiting for a runner slot is queued once in Linear and fails 
       now: 1_000,
     });
     await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId);
-    const bodies = (kind: string) =>
-      listOutbox(db)
+    const bodies = async (kind: string) =>
+      (await listOutbox(sqliteDb(db)))
         .map((row) => row.payload as { kind?: string; body?: string })
         .filter((payload) => payload.kind === kind)
         .map((payload) => payload.body ?? "");
 
     await orchestrator.reconcileExecution();
     await orchestrator.reconcileExecution();
-    expect(bodies("thought").filter((body) => body.startsWith("Queued"))).toHaveLength(1);
+    expect((await bodies("thought")).filter((body) => body.startsWith("Queued"))).toHaveLength(1);
 
     clock.advance(DAY - 1_000);
     await orchestrator.reconcileExecution();
@@ -93,7 +93,7 @@ test("a ready item waiting for a runner slot is queued once in Linear and fails 
     clock.advance(2_000);
     await orchestrator.reconcileExecution();
     expect(getWorkItem(db, "waiting")?.state).toBe("failed");
-    expect(bodies("error").some((body) => body.includes("within 24 hours"))).toBe(true);
+    expect((await bodies("error")).some((body) => body.includes("within 24 hours"))).toBe(true);
   } finally {
     await orchestrator.shutdown();
     db.close();
@@ -125,14 +125,14 @@ test("the queued thought shows the place in line, and the start timeout comes fr
       now: 1_000,
     });
     await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId);
-    const bodies = (kind: string) =>
-      listOutbox(db)
+    const bodies = async (kind: string) =>
+      (await listOutbox(sqliteDb(db)))
         .map((row) => row.payload as { kind?: string; body?: string })
         .filter((payload) => payload.kind === kind)
         .map((payload) => payload.body ?? "");
 
     await orchestrator.reconcileExecution();
-    expect(bodies("thought")).toContain(
+    expect(await bodies("thought")).toContain(
       "Queued, 2nd in line. 1 of 1 runner slot is busy. Paws starts PAS-1 when a slot frees.",
     );
 
@@ -143,7 +143,9 @@ test("the queued thought shows the place in line, and the start timeout comes fr
     clock.advance(2_000);
     await orchestrator.reconcileExecution();
     expect(getWorkItem(db, "waiting")?.state).toBe("failed");
-    expect(bodies("error").some((body) => body.includes("PAS-1 within 2 hours"))).toBe(true);
+    expect((await bodies("error")).some((body) => body.includes("PAS-1 within 2 hours"))).toBe(
+      true,
+    );
   } finally {
     await orchestrator.shutdown();
     db.close();
@@ -178,7 +180,7 @@ test("the status API shows a queued item's place in line until it starts", async
     const queueOf = async (id: string) =>
       (await createLiveStatusProvider(db).issues()).issues.find((item) => item.id === id)?.queue;
     expect(await queueOf("waiting")).toEqual({ position: 2, busySlots: 4, totalSlots: 4 });
-    applyWorkItemEvent(db, "ahead", "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), "ahead", "dispatched");
     settled(saveQueuePositions(sqliteDb(db), ["waiting"], { busy: 4, total: 4 }, 3));
     expect(await queueOf("ahead")).toBeUndefined();
     expect(await queueOf("waiting")).toEqual({ position: 1, busySlots: 4, totalSlots: 4 });
@@ -226,12 +228,15 @@ test("a runner-queued item names its place in the title and plan, and a restart 
       now: 1_000,
     });
     await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId);
-    const latest = (op: string) =>
-      listOutbox(db, "session").findLast((row) => row.op === op)?.payload as SessionUpdate;
+    const latest = async (op: string) =>
+      (await listOutbox(sqliteDb(db), "session")).findLast((row) => row.op === op)
+        ?.payload as SessionUpdate;
 
     await orchestrator.reconcileExecution();
-    expect(latest("linear.session.summary").summary).toBe("PAS-1: 2nd in line for a runner");
-    expect(latest("linear.session.plan").plan?.[0]).toEqual({
+    expect((await latest("linear.session.summary")).summary).toBe(
+      "PAS-1: 2nd in line for a runner",
+    );
+    expect((await latest("linear.session.plan")).plan?.[0]).toEqual({
       content: "Wait for a runner",
       status: "inProgress",
     });
@@ -239,7 +244,7 @@ test("a runner-queued item names its place in the title and plan, and a restart 
     clock.advance(25 * 60_000);
     await orchestrator.reconcileExecution();
     expect(
-      listOutbox(db, "session")
+      (await listOutbox(sqliteDb(db), "session"))
         .map((row) => row.payload as { body?: string; ephemeral?: boolean })
         .filter((payload) => payload.ephemeral),
     ).toEqual([expect.objectContaining({ body: "Still 2nd in line for a runner." })]);
@@ -254,10 +259,10 @@ test("a runner-queued item names its place in the title and plan, and a restart 
        VALUES('run.resume',json_object('itemId','waiting','reason','findings'),0,3,0)`,
     );
     await orchestrator.reconcileExecution();
-    expect(latest("linear.session.summary").summary).toBe(
+    expect((await latest("linear.session.summary")).summary).toBe(
       "PAS-1: waiting for a runner to fix Closeout findings (1 of 3)",
     );
-    const plan = latest("linear.session.plan").plan ?? [];
+    const plan = (await latest("linear.session.plan")).plan ?? [];
     expect(
       plan.find((step) => step.status === "inProgress" && step.content.startsWith("Fix")),
     ).toEqual({
@@ -295,8 +300,8 @@ test("paused and recovering items get a waiting title and no ephemeral", async (
       now: 1_000,
     });
     await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId);
-    applyWorkItemEvent(db, "paused", "dispatched");
-    applyWorkItemEvent(db, "paused", "pause");
+    await applyWorkItemEvent(sqliteDb(db), "paused", "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), "paused", "pause");
     await putWorkspaceUser(sqliteDb(db), {
       id: "pascal",
       linearUserId: "pascal",
@@ -306,21 +311,24 @@ test("paused and recovering items get a waiting title and no ephemeral", async (
     db.run(
       "INSERT INTO workspace_access_audit(workspace_id,user_id,action,subject,created_at) VALUES(NULL,'pascal','execution.pause','paused',0)",
     );
-    const summary = () =>
+    const summary = async () =>
       (
-        listOutbox(db, "session").findLast((row) => row.op === "linear.session.summary")
-          ?.payload as SessionUpdate | undefined
+        (await listOutbox(sqliteDb(db), "session")).findLast(
+          (row) => row.op === "linear.session.summary",
+        )?.payload as SessionUpdate | undefined
       )?.summary;
     await orchestrator.reconcileExecution();
-    expect(summary()).toBe("PAS-2: paused by Pascal");
+    expect(await summary()).toBe("PAS-2: paused by Pascal");
     clock.advance(60 * 60_000);
     await orchestrator.reconcileExecution();
-    expect(listOutbox(db, "session").filter((row) => row.op === "activity")).toEqual([]);
+    expect(
+      (await listOutbox(sqliteDb(db), "session")).filter((row) => row.op === "activity"),
+    ).toEqual([]);
 
     db.run("UPDATE work_item SET state='recovering' WHERE id='paused'");
     clock.advance(5 * 60_000);
     await orchestrator.reconcileExecution();
-    expect(summary()).toBe("PAS-2: recovering an interrupted turn");
+    expect(await summary()).toBe("PAS-2: recovering an interrupted turn");
   } finally {
     await orchestrator.shutdown();
     db.close();

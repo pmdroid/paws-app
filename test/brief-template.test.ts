@@ -155,7 +155,9 @@ describe("brief templates", () => {
         configPath: join(dir, "config.toml"),
         csrfToken: "token",
         repos: ["a/b"],
-        audit: (action: string, subject: string) => audit.push(`${action}: ${subject}`),
+        audit: async (action: string, subject: string) => {
+          audit.push(`${action}: ${subject}`);
+        },
       };
       const put = (body: unknown, token = "token", origin = "http://localhost") =>
         handleBriefSettingsRequest(

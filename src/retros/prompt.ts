@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
+  type Db,
   workspaceMemberUsable,
   getRetro,
   getRetroSteps,
@@ -171,13 +172,13 @@ type FrozenInput =
   | { ok: true; digest: RetroDigest; maxDigestChars: number }
   | { ok: false; reason: string };
 
-function frozenInput(db: Database, root: string, retro: Retro): FrozenInput {
+async function frozenInput(store: Db, root: string, retro: Retro): Promise<FrozenInput> {
   if (retro.digestSha256 === null)
     return { ok: false, reason: "The retro digest is not frozen yet." };
-  const digest = readRetroArtifact(db, root, retro.id, "digest");
+  const digest = await readRetroArtifact(store, root, retro.id, "digest");
   if (!digest.ok || digest.artifact.sha256 !== retro.digestSha256)
     return { ok: false, reason: "The frozen digest is unreadable." };
-  const manifest = readRetroArtifact(db, root, retro.id, "manifest");
+  const manifest = await readRetroArtifact(store, root, retro.id, "manifest");
   if (!manifest.ok) return { ok: false, reason: "The frozen manifest is unreadable." };
   try {
     const decode = (bytes: Uint8Array) => JSON.parse(new TextDecoder().decode(bytes)) as unknown;
@@ -215,7 +216,7 @@ export async function freezeRetroPrompt(
   root: string,
   input: {
     retroId: string;
-    render: (template: string, digest: Uint8Array, retro: Retro) => string;
+    render: (template: string, digest: Uint8Array, retro: Retro) => string | Promise<string>;
     now: number;
   },
 ): Promise<{ ok: true; prompt: string; sha256: string } | { ok: false; reason: string }> {
@@ -230,7 +231,7 @@ export async function freezeRetroPrompt(
         ok: false,
         reason: `The frozen digest is unreadable: ${digest.ok ? "hash_mismatch" : digest.reason}.`,
       };
-    const bytes = new TextEncoder().encode(input.render(retro.prompt, digest.bytes, retro));
+    const bytes = new TextEncoder().encode(await input.render(retro.prompt, digest.bytes, retro));
     await store.run((q) =>
       writeRetroArtifactSteps(q, root, {
         retroId: retro.id,
@@ -272,8 +273,8 @@ export async function freezeRenderedRetroPrompt(
     frozen = await freezeRetroPrompt(db, root, {
       retroId: retro.id,
       now: input.now,
-      render: (template, _digest, run) => {
-        const source = frozenInput(db, root, run);
+      render: async (template, _digest, run) => {
+        const source = await frozenInput(sqliteDb(db), root, run);
         if (!source.ok) throw new Error(source.reason);
         const rendered = renderForRetro(source, run, template, run.outputLimits);
         if (!rendered.ok) throw new Error(rendered.problem);
@@ -452,7 +453,7 @@ async function readableEvidence(
     ),
   );
   if (!retro.repositories.every((name) => accessible.has(name.toLowerCase()))) return null;
-  const source = frozenInput(db, root, retro);
+  const source = await frozenInput(sqliteDb(db), root, retro);
   if (!source.ok) return null;
   const itemIds = [
     ...new Set([
@@ -566,7 +567,11 @@ export async function readRetroRenderedPrompt(
   input: { principal: WorkspacePrincipal; sessionIds: readonly string[]; retroId: string },
 ): Promise<RetroRenderedPromptRead> {
   const { principal } = input;
-  if (!workspaceMemberUsable(workspaceMember(db, principal.workspaceId, principal.userId)))
+  if (
+    !workspaceMemberUsable(
+      await workspaceMember(sqliteDb(db), principal.workspaceId, principal.userId),
+    )
+  )
     return { ok: false, reason: "forbidden" };
   const readable = await readableEvidence(
     db,
@@ -577,7 +582,7 @@ export async function readRetroRenderedPrompt(
   );
   if (readable === null) return { ok: false, reason: "not_found" };
   const { retro } = readable;
-  const stored = readRetroArtifact(db, root, retro.id, "prompt");
+  const stored = await readRetroArtifact(sqliteDb(db), root, retro.id, "prompt");
   if (!stored.ok) return { ok: false, reason: "not_found" };
   return {
     ok: true,

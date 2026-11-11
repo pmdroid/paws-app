@@ -71,7 +71,7 @@ export function createMemberVmDeleteHandler(db: Database, options: MemberVmDelet
     try {
       outcome = await runDeleteStep(store, row, options, now);
     } catch (error) {
-      if (error instanceof StepMoved || !context.isCurrent()) return;
+      if (error instanceof StepMoved || !(await context.isCurrent())) return;
       const secrets = await Promise.resolve()
         .then(() => options.secrets?.())
         .then((list) => Promise.all(list ?? []))
@@ -85,7 +85,7 @@ export function createMemberVmDeleteHandler(db: Database, options: MemberVmDelet
       await store.run((q) => failMemberVmDeleteSteps(q, row.id, step, text, now()));
       return;
     }
-    if (outcome === "done" || !context.isCurrent()) return;
+    if (outcome === "done" || !(await context.isCurrent())) return;
     const at = now();
     await store.run((q) =>
       parkLeasedJobSteps(q, job, {

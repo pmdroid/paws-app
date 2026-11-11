@@ -369,10 +369,12 @@ describe("agent settings changed during a quota wait", () => {
   const codex = { agent: "codex" as const, model: "gpt-6-sol" };
 
   test("retries the same invocation using the changed profile without its stale quota", async () => {
-    let profiles: ReturnType<NonNullable<RunAgentOptions["resolveProfiles"]>> = { profile: claude };
+    let profiles: Awaited<ReturnType<NonNullable<RunAgentOptions["resolveProfiles"]>>> = {
+      profile: claude,
+    };
     const attempted: string[] = [];
     await runWithFailover(
-      { ...input(), ...profiles, resolveProfiles: () => profiles },
+      { ...input(), ...profiles, resolveProfiles: async () => profiles },
       async (options, excluded, limit) => {
         attempted.push(options.profile!.agent);
         if (attempted.length === 1) throw new UsageLimitPause("claude", RESET, RESET, null);
@@ -384,9 +386,9 @@ describe("agent settings changed during a quota wait", () => {
       {
         now: () => RESET - 60_000,
         async pause(_limit, changed) {
-          expect(changed?.()).toBe(false);
+          expect(await changed?.()).toBe(false);
           profiles = { profile: codex };
-          expect(changed?.()).toBe(true);
+          expect(await changed?.()).toBe(true);
         },
       },
     );
@@ -397,7 +399,7 @@ describe("agent settings changed during a quota wait", () => {
     const profiles = { profile: claude, fallbackProfile: codex };
     const attempted: string[] = [];
     await runWithFailover(
-      { ...input(), ...profiles, role: "reviewer", resolveProfiles: () => ({ ...profiles }) },
+      { ...input(), ...profiles, role: "reviewer", resolveProfiles: async () => ({ ...profiles }) },
       async (options) => {
         attempted.push(options.profile!.agent);
         if (attempted.length < 3)
@@ -408,7 +410,7 @@ describe("agent settings changed during a quota wait", () => {
       {
         now: () => RESET - 60_000,
         async pause(_limit, changed) {
-          expect(changed?.()).toBe(false);
+          expect(await changed?.()).toBe(false);
         },
       },
     );
@@ -421,7 +423,7 @@ describe("agent settings changed during a quota wait", () => {
     let waits = 0;
     await expect(
       runWithFailover(
-        { ...input(), ...profiles, resolveProfiles: () => profiles },
+        { ...input(), ...profiles, resolveProfiles: async () => profiles },
         async (options) => {
           attempts++;
           throw new UsageLimitPause(options.profile!.agent, RESET, RESET, null);
@@ -432,7 +434,7 @@ describe("agent settings changed during a quota wait", () => {
           async pause(_limit, changed) {
             waits++;
             profiles = { profile: profiles.profile!.agent === "claude" ? codex : claude };
-            expect(changed?.()).toBe(true);
+            expect(await changed?.()).toBe(true);
           },
         },
       ),
@@ -442,10 +444,12 @@ describe("agent settings changed during a quota wait", () => {
   });
 
   test("a fallback added while waiting is used", async () => {
-    let profiles: ReturnType<NonNullable<RunAgentOptions["resolveProfiles"]>> = { profile: claude };
+    let profiles: Awaited<ReturnType<NonNullable<RunAgentOptions["resolveProfiles"]>>> = {
+      profile: claude,
+    };
     const attempted: string[] = [];
     await runWithFailover(
-      { ...input(), ...profiles, role: "reviewer", resolveProfiles: () => profiles },
+      { ...input(), ...profiles, role: "reviewer", resolveProfiles: async () => profiles },
       async (options) => {
         attempted.push(options.profile!.agent);
         if (options.profile!.agent === "claude")
@@ -457,7 +461,7 @@ describe("agent settings changed during a quota wait", () => {
         now: () => RESET - 60_000,
         async pause(_limit, changed) {
           profiles = { profile: claude, fallbackProfile: codex };
-          expect(changed?.()).toBe(true);
+          expect(await changed?.()).toBe(true);
         },
       },
     );
@@ -731,12 +735,14 @@ test("switching to saved settings keeps that configuration's spent failures and 
       runnerId,
       excludedKey: runnerId,
     });
-  let profiles: ReturnType<NonNullable<RunAgentOptions["resolveProfiles"]>> = { profile: claude };
+  let profiles: Awaited<ReturnType<NonNullable<RunAgentOptions["resolveProfiles"]>>> = {
+    profile: claude,
+  };
   let now = RESET - 1;
   const attempted: [string, string[]][] = [];
   await expect(
     runWithFailover(
-      { ...input(), ...profiles, resolveProfiles: () => profiles },
+      { ...input(), ...profiles, resolveProfiles: async () => profiles },
       async (options, avoid) => {
         attempted.push([options.profile!.agent, [...avoid]]);
         if (attempted.length === 1) throw new UsageLimitPause("claude", RESET, RESET, null);

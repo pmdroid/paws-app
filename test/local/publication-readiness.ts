@@ -15,7 +15,6 @@ import {
   enqueueJob,
   getWorkItem,
   insertRun,
-  markRun,
   migrate,
   openDatabase,
   recordLinearInstallation,
@@ -23,6 +22,12 @@ import {
   saveTaskMode,
   setCurrentRun,
   sqliteDb,
+  applyWorkItemEventSteps,
+  saveCheckpointSteps,
+  setCurrentRunSteps,
+  markRunSteps,
+  type Q,
+  type Steps,
 } from "../../src/db";
 import {
   createItemReconciler,
@@ -99,28 +104,28 @@ export async function probePublicationReadiness(root: string) {
     });
     const itemId = intake.items.find((item) => item.linearIssueId === "issue")!.id;
     const target = { delegationId: intake.delegation.id, workspaceId: "workspace" };
-    let onChanges = (_changes: ItemChanges) => {};
+    let onChanges = (_q: Q, _changes: ItemChanges): Steps<void> => syncSteps(() => {});
     let afterChanges = async (_changes: ItemChanges) => {};
     const reconciler = createItemReconciler({
       db,
       tracker,
       lifecycle,
-      onChanges: (_q, changes) => syncSteps(() => onChanges(changes)),
+      onChanges: (q, changes) => onChanges(q, changes),
       afterChanges: (changes) => afterChanges(changes),
       now: () => clock.now(),
     });
     await reconciler.reconcile({ itemId, workspaceId: target.workspaceId });
-    applyWorkItemEvent(db, itemId, "dispatched");
-    applyWorkItemEvent(db, itemId, "turn_ended");
-    applyWorkItemEvent(db, itemId, "closeout_accepted");
-    const run = insertRun(db, {
+    await applyWorkItemEvent(sqliteDb(db), itemId, "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), itemId, "turn_ended");
+    await applyWorkItemEvent(sqliteDb(db), itemId, "closeout_accepted");
+    const run = await insertRun(sqliteDb(db), {
       itemId,
       agent: "scripted-producer",
       kind: "implement",
       status: "ended",
       now: clock.now(),
     });
-    setCurrentRun(db, itemId, run.id);
+    await setCurrentRun(sqliteDb(db), itemId, run.id);
     const candidate = { sha: "a".repeat(40), baseSha: "b".repeat(40) };
     saveCheckpoint(db, itemId, {
       phase: "merge_queue",
@@ -133,16 +138,16 @@ export async function probePublicationReadiness(root: string) {
       loads++;
       return load(id);
     };
-    function queue() {
-      return enqueueJob(db, {
+    async function queue() {
+      return await enqueueJob(sqliteDb(db), {
         queue: JOB_KIND.merge,
         payload: { itemId },
         now: clock.now(),
       });
     }
-    function claim() {
-      queue();
-      const job = claimNextJob(db, {
+    async function claim() {
+      await queue();
+      const job = await claimNextJob(sqliteDb(db), {
         workerId: "publication-proof",
         leaseMs: 10_000,
         now: clock.now(),
@@ -177,7 +182,7 @@ export async function probePublicationReadiness(root: string) {
   {
     const f = await fixture("unchanged");
     try {
-      const first = f.claim();
+      const first = await f.claim();
       const guard = createPublicationReadiness({
         db: f.db,
         reconciler: f.reconciler,
@@ -223,8 +228,8 @@ export async function probePublicationReadiness(root: string) {
           state: getWorkItem(f.db, f.itemId)!.state,
         },
       );
-      assert(completeJob(f.db, first, f.clock.now()));
-      f.claim();
+      assert(await completeJob(sqliteDb(f.db), first, f.clock.now()));
+      await f.claim();
       assert(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate));
       assert.equal(f.loads(), 3);
       const rebased = { sha: "c".repeat(40), baseSha: "d".repeat(40) };
@@ -241,13 +246,13 @@ export async function probePublicationReadiness(root: string) {
   {
     const f = await fixture("missed-webhook");
     try {
-      f.claim();
-      f.setEffects((changes) => {
+      await f.claim();
+      f.setEffects(function* (q, changes) {
         if (!changes.specChangedItemIds.includes(f.itemId)) return;
-        applyWorkItemEvent(f.db, f.itemId, "restart");
-        saveCheckpoint(f.db, f.itemId, null);
-        setCurrentRun(f.db, f.itemId, null);
-        markRun(f.db, f.run.id, "lost", f.clock.now());
+        yield* applyWorkItemEventSteps(q, f.itemId, "restart");
+        yield* saveCheckpointSteps(q, f.itemId, null);
+        yield* setCurrentRunSteps(q, f.itemId, null);
+        yield* markRunSteps(q, f.run.id, "lost", f.clock.now());
       });
       const guard = createPublicationReadiness({
         db: f.db,
@@ -291,19 +296,16 @@ export async function probePublicationReadiness(root: string) {
         now: () => f.clock.now(),
       });
       f.setEffects(
-        async (changes) => {
-          if (changes.specChangedItemIds.includes(f.itemId))
-            assert(
-              (
-                await applyLinearCommand(sqliteDb(f.db), {
-                  type: "cancel",
-                  itemId: f.itemId,
-                  source: "linear",
-                  requestedAt: f.clock.now(),
-                })
-              ).applied,
-            );
-        },
+        (_q, changes) =>
+          syncSteps(() => {
+            if (!changes.specChangedItemIds.includes(f.itemId)) return;
+            void applyLinearCommand(sqliteDb(f.db), {
+              type: "cancel",
+              itemId: f.itemId,
+              source: "linear",
+              requestedAt: f.clock.now(),
+            }).then(({ applied }) => assert(applied));
+          }),
         async (changes) => {
           if (!changes.specChangedItemIds.includes(f.itemId)) return;
           await ownedJob;
@@ -322,7 +324,7 @@ export async function probePublicationReadiness(root: string) {
           exited = true;
         }
       });
-      f.queue();
+      await f.queue();
       ownedJob = loop.tick();
       let watchdog: ReturnType<typeof setTimeout> | undefined;
       try {
@@ -366,7 +368,7 @@ export async function probePublicationReadiness(root: string) {
   {
     const f = await fixture("transport-repair");
     try {
-      f.claim();
+      await f.claim();
       const original = f.tracker.loadEpic;
       f.tracker.loadEpic = async () => {
         throw new Error("Scripted temporary Linear read failure");
@@ -396,16 +398,16 @@ export async function probePublicationReadiness(root: string) {
   {
     const f = await fixture("new-blocker", true);
     try {
-      let job = f.claim();
+      let job = await f.claim();
       const manual = f.db
         .query<{ id: string }, []>("SELECT id FROM work_item WHERE linear_issue_id='manual'")
         .get()!.id;
       const independent = f.db
         .query<{ id: string }, []>("SELECT id FROM work_item WHERE linear_issue_id='free'")
         .get()!.id;
-      applyWorkItemEvent(f.db, manual, "dispatched");
-      applyWorkItemEvent(f.db, manual, "run_failed");
-      applyWorkItemEvent(f.db, manual, "take_over");
+      await applyWorkItemEvent(sqliteDb(f.db), manual, "dispatched");
+      await applyWorkItemEvent(sqliteDb(f.db), manual, "run_failed");
+      await applyWorkItemEvent(sqliteDb(f.db), manual, "take_over");
       await saveTaskMode(sqliteDb(f.db), manual, "code");
       f.tracker.deps.set("parent", [
         { blockerLinearIssueId: "outside", blockedLinearIssueId: "issue" },
@@ -431,14 +433,14 @@ export async function probePublicationReadiness(root: string) {
       assert.equal(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate), false);
       f.lifecycle.issues.get("manual")!.stateType = "completed";
       assert(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate));
-      assert(completeJob(f.db, job, f.clock.now()));
-      job = f.claim();
+      assert(await completeJob(sqliteDb(f.db), job, f.clock.now()));
+      job = await f.claim();
       f.lifecycle.issues.get("manual")!.stateType = "started";
       assert.equal(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate), false);
       f.lifecycle.issues.get("manual")!.stateType = "canceled";
       assert(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate));
-      assert(completeJob(f.db, job, f.clock.now()));
-      job = f.claim();
+      assert(await completeJob(sqliteDb(f.db), job, f.clock.now()));
+      job = await f.claim();
       f.lifecycle.issues.get("manual")!.stateType = "completed";
       f.tracker.deps.set("parent", [
         ...f.tracker.deps.get("parent")!,
@@ -472,7 +474,7 @@ export async function probePublicationReadiness(root: string) {
   {
     const f = await fixture("authority");
     try {
-      f.claim();
+      await f.claim();
       const load = f.tracker.loadEpic;
       f.tracker.loadEpic = async (id) => {
         const value = await load(id);
@@ -498,7 +500,7 @@ export async function probePublicationReadiness(root: string) {
   {
     const f = await fixture("advance-policy");
     try {
-      f.claim();
+      await f.claim();
       let permitted = false;
       const guard = createPublicationReadiness({
         db: f.db,

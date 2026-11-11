@@ -17,18 +17,18 @@ export default {
     await proof.delegate();
     const opened = await proof.waitFor(
       "the pull request response is posted",
-      () =>
-        proof.itemState() === "merge_queue" &&
+      async () =>
+        (await proof.itemState()) === "merge_queue" &&
         proof.linear.progress.some((update) => update.kind === "response"),
     );
-    proof.expect("the pull request opens", opened, proof.itemState());
+    proof.expect("the pull request opens", opened, await proof.itemState());
     const prResponse = proof.linear.progress.findIndex((update) => update.kind === "response");
     const titlesBefore = proof.linear.sessionUpdates.length;
 
     await proof.answerInLinear("Also keep the shelf count in the README.");
     const followedUp = await proof.waitFor(
       "the follow-up turn publishes again",
-      () => proof.launches.length >= 2 && proof.itemState() === "merge_queue",
+      async () => proof.launches.length >= 2 && (await proof.itemState()) === "merge_queue",
       120_000,
     );
     proof.expect("the follow-up runs one turn", followedUp, proof.launches.length);
@@ -40,10 +40,10 @@ export default {
     proof.github.ci.failed = false;
     const merged = await proof.waitFor(
       "the fixed pull request merges",
-      () => proof.itemState() === "merged",
+      async () => (await proof.itemState()) === "merged",
       120_000,
     );
-    proof.expect("the item merges", merged, proof.itemState());
+    proof.expect("the item merges", merged, await proof.itemState());
 
     const after = proof.linear.progress.slice(prResponse + 1);
     const leaked = after.filter(

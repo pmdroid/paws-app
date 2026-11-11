@@ -69,11 +69,13 @@ test("thin polling context cannot erase richer webhook context and activity snap
       "API source thread and issue details",
     );
     expect(await hasLinearSessionSnapshotContext(sqliteDb(db), "session")).toBe(true);
-    expect(getLinearSessionContext(db, "session")).toBe(
+    expect(await getLinearSessionContext(sqliteDb(db), "session")).toBe(
       "rich mention\n\nAPI source thread and issue details",
     );
     await saveLinearSessionContext(sqliteDb(db), "session", "sparse webhook", 1);
-    expect(getLinearSessionContext(db, "session")).toContain("API source thread and issue details");
+    expect(await getLinearSessionContext(sqliteDb(db), "session")).toContain(
+      "API source thread and issue details",
+    );
     await saveLinearActivitySnapshot(sqliteDb(db), {
       id: "a",
       sessionId: "session",
@@ -86,7 +88,9 @@ test("thin polling context cannot erase richer webhook context and activity snap
       createdAt: date,
       snapshot: JSON.stringify(activity("a", "prompt", "Edited comment")),
     });
-    expect(JSON.parse(listLinearActivitySnapshots(db, "session")[0]!)).toEqual(activity("a"));
+    expect(JSON.parse((await listLinearActivitySnapshots(sqliteDb(db), "session"))[0]!)).toEqual(
+      activity("a"),
+    );
   } finally {
     db.close();
   }

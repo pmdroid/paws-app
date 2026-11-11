@@ -122,7 +122,11 @@ describe("task blocks", () => {
     db.run(
       "INSERT INTO run(id,item_id,kind,agent,status,created_at,updated_at) VALUES('older-run','m-older','work','claude','active',1,1)",
     );
-    const job = enqueueJob(db, { queue: "item.start", payload: { itemId: "m-older" }, now: 1 });
+    const job = await enqueueJob(sqliteDb(db), {
+      queue: "item.start",
+      payload: { itemId: "m-older" },
+      now: 1,
+    });
     legacyMigrate(db, { until: "129_parent_delegation" });
     expect(await listTaskBlockers(sqliteDb(db), "shared-issue")).toEqual([
       "inside-blocker",

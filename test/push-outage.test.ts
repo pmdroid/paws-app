@@ -41,12 +41,12 @@ test("a push GitHub denies to the App holds the candidate push and merges once p
       () => run.refusals >= 3,
       () => run.probeNow(),
     );
-    expect(stateOf(run.db, "ENG-9"), run.detail()).toBe("merge_queue");
-    expect(run.progress("elicitation"), run.detail()).toEqual([]);
-    expect(run.progress("error"), run.detail()).toEqual([]);
-    const merge = listJobs(run.db).find((job) => job.queue === JOB_KIND.merge)!;
-    expect(merge.status, run.detail()).toBe("pending");
-    expect(merge.attempts, run.detail()).toBe(0);
+    expect(stateOf(run.db, "ENG-9"), await run.detail()).toBe("merge_queue");
+    expect(run.progress("elicitation"), await run.detail()).toEqual([]);
+    expect(run.progress("error"), await run.detail()).toEqual([]);
+    const merge = (await listJobs(sqliteDb(run.db))).find((job) => job.queue === JOB_KIND.merge)!;
+    expect(merge.status, await run.detail()).toBe("pending");
+    expect(merge.attempts, await run.detail()).toBe(0);
     expect(merge.payload).toMatchObject({ mergeWait: { reason: "push_outage" } });
     expect(await getPushOutage(sqliteDb(run.db), "pmdroid/paws-demo")).toMatchObject({
       lastError: DENIED,
@@ -57,8 +57,8 @@ test("a push GitHub denies to the App holds the candidate push and merges once p
     run.probeNow();
     await run.until(() => stateOf(run.db, "ENG-9") === "merged");
     expect(await getPushOutage(sqliteDb(run.db), "pmdroid/paws-demo")).toBeNull();
-    expect(run.progress("elicitation"), run.detail()).toEqual([]);
-    expect(run.progress("error"), run.detail()).toEqual([]);
+    expect(run.progress("elicitation"), await run.detail()).toEqual([]);
+    expect(run.progress("error"), await run.detail()).toEqual([]);
   } finally {
     await run.cleanup();
   }
@@ -75,8 +75,8 @@ test("a refusal for the workflows permission is no push outage and fails the ite
         ]),
     );
     expect(await getPushOutage(sqliteDb(run.db), "pmdroid/paws-demo")).toBeNull();
-    expect(run.progress("elicitation"), run.detail()).toEqual([]);
-    expect(run.progress("error").join("\n"), run.detail()).toContain(
+    expect(run.progress("elicitation"), await run.detail()).toEqual([]);
+    expect(run.progress("error").join("\n"), await run.detail()).toContain(
       'it lacks the "workflows" permission needed to push a change to .github/workflows/ci.yml',
     );
   } finally {
@@ -170,12 +170,14 @@ async function delegate(refusal: string) {
         }
       }
       while ((await outbox.tick()).length > 0) await outbox.idle();
-      expect(await done(), this.detail()).toBe(true);
+      expect(await done(), await this.detail()).toBe(true);
     },
-    detail: () =>
+    detail: async () =>
       JSON.stringify({
         state: stateOf(db, "ENG-9"),
-        jobs: listJobs(db).map((job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`),
+        jobs: (await listJobs(sqliteDb(db))).map(
+          (job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`,
+        ),
         progress: tracker.progress.map((update) => `${update.kind}: ${update.body}`),
       }),
     async cleanup() {

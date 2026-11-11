@@ -22,13 +22,13 @@ import {
   sqliteDb,
 } from "../src/db";
 
-function setup() {
+async function setup() {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "holder", sessionKey: "session", now: 1 });
-  applyWorkItemEvent(db, "holder", "dispatched", { now: 1 });
-  applyWorkItemEvent(db, "holder", "turn_ended", { now: 1 });
-  applyWorkItemEvent(db, "holder", "closeout_accepted", { now: 1 });
+  await applyWorkItemEvent(sqliteDb(db), "holder", "dispatched", { now: 1 });
+  await applyWorkItemEvent(sqliteDb(db), "holder", "turn_ended", { now: 1 });
+  await applyWorkItemEvent(sqliteDb(db), "holder", "closeout_accepted", { now: 1 });
   return db;
 }
 const command = {
@@ -40,9 +40,9 @@ const command = {
 
 for (const exit of ["cancel", "ask", "fail"] as const) {
   test(`${exit} wakes parked followers immediately`, async () => {
-    const db = setup();
+    const db = await setup();
     for (const reason of ["ahead", "dependencies", "ci"])
-      enqueueJob(db, {
+      await enqueueJob(sqliteDb(db), {
         queue: JOB_KIND.merge,
         jobKey: reason,
         payload: { itemId: reason, mergeWait: { reason } },
@@ -63,11 +63,11 @@ for (const exit of ["cancel", "ask", "fail"] as const) {
         ),
       );
     if (exit === "fail") {
-      applyWorkItemEvent(db, "holder", "lease_expired", { now: 10 });
-      applyWorkItemEvent(db, "holder", "closeout_infra_failed", { now: 10 });
+      await applyWorkItemEvent(sqliteDb(db), "holder", "lease_expired", { now: 10 });
+      await applyWorkItemEvent(sqliteDb(db), "holder", "closeout_infra_failed", { now: 10 });
     }
     expect(
-      listJobs(db)
+      (await listJobs(sqliteDb(db)))
         .filter((j) => j.queue === JOB_KIND.merge)
         .map((j) => [j.jobKey, j.runAt]),
     ).toEqual([
@@ -80,11 +80,11 @@ for (const exit of ["cancel", "ask", "fail"] as const) {
 }
 
 test("a stop during a successful squash waits for completion and answers already merged once", async () => {
-  const db = setup();
+  const db = await setup();
   const bus = new CommandBus();
   const emitted: unknown[] = [];
   bus.subscribe((c) => emitted.push(c));
-  beginMergeCall(db, "holder", "head", 5);
+  await beginMergeCall(sqliteDb(db), "holder", "head", 5);
   expect(await submitCommand(sqliteDb(db), bus, command)).toEqual({ applied: false });
   expect(getWorkItem(db, "holder")).toMatchObject({ state: "merge_queue", cancelRequested: false });
   expect(await mergeStopRequested(sqliteDb(db), "holder")).toBe(true);
@@ -107,7 +107,9 @@ test("a stop during a successful squash waits for completion and answers already
   await drainCommands(sqliteDb(db), bus, 3_010);
   expect(emitted).toEqual([]);
   expect(getWorkItem(db, "holder")?.state).toBe("merged");
-  const bodies = listOutbox(db).map((row) => String((row.payload as { body?: string }).body));
+  const bodies = (await listOutbox(sqliteDb(db))).map((row) =>
+    String((row.payload as { body?: string }).body),
+  );
   expect(bodies.filter((b) => b.startsWith("Merged #1"))).toHaveLength(1);
   expect(bodies.filter((b) => b.includes("was already merged"))).toHaveLength(1);
   expect(bodies.some((b) => b.startsWith("Stopped"))).toBe(false);
@@ -118,9 +120,9 @@ test("a stop during a successful squash waits for completion and answers already
 });
 
 test("a deferred stop cancels when the squash did not succeed", async () => {
-  const db = setup();
+  const db = await setup();
   const bus = new CommandBus();
-  beginMergeCall(db, "holder", "head", 5);
+  await beginMergeCall(sqliteDb(db), "holder", "head", 5);
   expect(
     (
       await applyLinearCommand(sqliteDb(db), command, 10, "Stopped by test.", {
@@ -131,9 +133,11 @@ test("a deferred stop cancels when the squash did not succeed", async () => {
   await endMergeCall(sqliteDb(db), "holder");
   await drainCommands(sqliteDb(db), bus, 1_010);
   expect(getWorkItem(db, "holder")?.state).toBe("cancelled");
-  expect(listJobs(db).some((j) => j.queue === JOB_KIND.closeStoppedPull)).toBe(false);
+  expect((await listJobs(sqliteDb(db))).some((j) => j.queue === JOB_KIND.closeStoppedPull)).toBe(
+    false,
+  );
   expect(
-    listOutbox(db).some((row) =>
+    (await listOutbox(sqliteDb(db))).some((row) =>
       String((row.payload as { body?: string }).body).startsWith("Stopped by test."),
     ),
   ).toBe(true);

@@ -156,7 +156,7 @@ export async function probePublicationStop(
     await bindLinearSessionTask(sqliteDb(db), "session", "epic");
     await bindWorkItemRepository(sqliteDb(db), "item", repository);
     branch = getWorkItem(db, "item")!.branchName;
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "item" },
       jobKey: "old-merge",
@@ -219,7 +219,7 @@ export async function probePublicationStop(
       { keepPullRequest: true },
     );
     // Only an explicit request closes a stopped pull request now.
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.closeStoppedPull,
       payload: { itemId: "item" },
       jobKey: "explicit-close",
@@ -333,7 +333,7 @@ export async function probePublicationStop(
     await bindLinearSessionTask(sqliteDb(db), "pending-session", "pending");
     await bindWorkItemRepository(sqliteDb(db), "pending-item", repository);
     pendingEpics.add("pending");
-    const pendingJob = enqueueJob(db, {
+    const pendingJob = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "pending-item" },
       jobKey: "pending-refresh-merge",
@@ -560,7 +560,7 @@ export async function probePublicationStop(
     });
     await bindLinearSessionTask(sqliteDb(db), "owned-refresh-session", "owned-refresh");
     await bindWorkItemRepository(sqliteDb(db), "owned-refresh-item", repository);
-    const ownedRun = insertRun(db, {
+    const ownedRun = await insertRun(sqliteDb(db), {
       itemId: "owned-refresh-item",
       kind: "implement",
       agent: "codex",
@@ -568,7 +568,7 @@ export async function probePublicationStop(
       freshSession: true,
       now: clock.now(),
     });
-    setCurrentRun(db, "owned-refresh-item", ownedRun.id);
+    await setCurrentRun(sqliteDb(db), "owned-refresh-item", ownedRun.id);
     saveCheckpoint(db, "owned-refresh-item", {
       phase: "merge_queue",
       wipCommit: "a".repeat(40),
@@ -587,7 +587,7 @@ export async function probePublicationStop(
       onToken = undefined;
       pendingEpics.add("owned-refresh");
     };
-    const tokenRace = enqueueJob(db, {
+    const tokenRace = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "owned-refresh-item" },
       priority: -100,
@@ -606,11 +606,11 @@ export async function probePublicationStop(
         .all(tokenRace, `merge-reconciliation:${tokenRace}`),
     );
     pendingEpics.delete("owned-refresh");
-    freshness = () => {
-      applyWorkItemEvent(db, "owned-refresh-item", "reverify_requested");
+    freshness = async () => {
+      await applyWorkItemEvent(sqliteDb(db), "owned-refresh-item", "reverify_requested");
       return false;
     };
-    const verifyingRace = enqueueJob(db, {
+    const verifyingRace = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "owned-refresh-item" },
       priority: -100,
@@ -627,7 +627,7 @@ export async function probePublicationStop(
         .query("SELECT queue,status FROM job WHERE job_key=?")
         .get(`merge-reconciliation:${verifyingRace}`),
     );
-    applyWorkItemEvent(db, "owned-refresh-item", "closeout_accepted");
+    await applyWorkItemEvent(sqliteDb(db), "owned-refresh-item", "closeout_accepted");
     let shared: Promise<void> | undefined;
     let callerAborted = false;
     let joinedRefresh = false;
@@ -663,7 +663,7 @@ export async function probePublicationStop(
       });
       return waiter;
     };
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       priority: 0,
       payload: { itemId: "owned-refresh-item" },
@@ -718,7 +718,7 @@ export async function probePublicationStop(
         );
         if (state === "merged") {
           await confirmFakeMerge(db, itemId);
-          const producer = insertRun(db, {
+          const producer = await insertRun(sqliteDb(db), {
             itemId,
             kind: "implement",
             agent: "codex",
@@ -732,7 +732,7 @@ export async function probePublicationStop(
             suffix === "old" ? "Obsolete schema" : "Current schema",
             clock.now(),
           );
-          setCurrentRun(db, itemId, producer.id);
+          await setCurrentRun(sqliteDb(db), itemId, producer.id);
         }
       }
       db.run(

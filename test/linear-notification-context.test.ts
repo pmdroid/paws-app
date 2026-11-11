@@ -58,10 +58,10 @@ test("child notifications refresh only their installation sessions and retain co
     ...notification,
     organizationId: "other",
   });
-  expect(getLinearSessionContext(db, "session")).toBe("");
+  expect(await getLinearSessionContext(sqliteDb(db), "session")).toBe("");
   await refreshLinearNotificationContext(sqliteDb(db), tracker, notification);
-  expect(getLinearSessionContext(db, "session")).toContain("Child clarification");
-  expect(getLinearSessionContext(db, "session")).toContain("thumbsup");
+  expect(await getLinearSessionContext(sqliteDb(db), "session")).toContain("Child clarification");
+  expect(await getLinearSessionContext(sqliteDb(db), "session")).toContain("thumbsup");
   tracker.issueContexts.set("child", {
     id: "child",
     teamId: "team",
@@ -72,8 +72,8 @@ test("child notifications refresh only their installation sessions and retain co
     ...notification,
     createdAtMs: 9,
   });
-  expect(getLinearSessionContext(db, "session")).not.toContain("Stale event");
-  const original = getLinearSessionContext(db, "session");
+  expect(await getLinearSessionContext(sqliteDb(db), "session")).not.toContain("Stale event");
+  const original = await getLinearSessionContext(sqliteDb(db), "session");
   const pending = Promise.withResolvers<ReturnType<typeof tracker.issueContexts.get>>();
   tracker.getIssueContext = async () => (await pending.promise)!;
   const refresh = refreshLinearNotificationContext(sqliteDb(db), tracker, {
@@ -88,10 +88,10 @@ test("child notifications refresh only their installation sessions and retain co
     comments: [{ body: "Obsolete generation" }],
   });
   await refresh;
-  expect(getLinearSessionContext(db, "session")).toBe(original);
+  expect(await getLinearSessionContext(sqliteDb(db), "session")).toBe(original);
   db.close();
   const reopened = openDatabase(path);
-  expect(getLinearSessionContext(reopened, "session")).toBe(original);
+  expect(await getLinearSessionContext(sqliteDb(reopened), "session")).toBe(original);
   reopened.close();
 });
 

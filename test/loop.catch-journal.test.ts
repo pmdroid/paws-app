@@ -88,13 +88,13 @@ test("mergeSettingsFor journals the read failure once and leaves settings retrya
       throw new Error("Linear context unavailable");
     };
     await f.operations.mergeSettingsFor(f.item);
-    expect(getTaskMergeSettings(f.db, f.item.id)).toBeNull();
+    expect(await getTaskMergeSettings(sqliteDb(f.db), f.item.id)).toBeNull();
     expect(f.lines).toEqual([
       "catch item=item-715 operation=orchestrator.mergeSettingsFor.issueMergeContext error=Linear context unavailable",
     ]);
     f.tracker.issueMergeContext = async () => ({ projectId: null, labels: [] });
     await f.operations.mergeSettingsFor(f.item);
-    expect(getTaskMergeSettings(f.db, f.item.id)).not.toBeNull();
+    expect(await getTaskMergeSettings(sqliteDb(f.db), f.item.id)).not.toBeNull();
     expect(f.lines).toHaveLength(1);
   } finally {
     await f.close();
@@ -114,7 +114,7 @@ test("mergeSettingsFor names a refused value and continues on the workspace defa
       mainMoved: "overlap",
       resolved: { sources: { order: "default", mainMoved: "default" } },
     });
-    expect(getTaskMergeSettings(f.db, f.item.id)).toBeNull();
+    expect(await getTaskMergeSettings(sqliteDb(f.db), f.item.id)).toBeNull();
     expect(f.lines).toEqual([
       "catch item=item-715 operation=orchestrator.mergeSettingsFor.keep order=queue main_moved=overlap code=SQLITE_CONSTRAINT_TRIGGER error=CHECK constraint failed: main_moved",
     ]);
@@ -167,8 +167,8 @@ test("removeWorktree failure is journaled once after the confirmed merge", async
   const f = await fixture();
   try {
     const repository = { owner: "test", repo: "repo", remoteUrl: "unused" };
-    beginImplementRun(f.db, f.item.id, 1_000);
-    enterMergeQueue(f.db, f.item.id, { phase: "merge_queue" });
+    await beginImplementRun(sqliteDb(f.db), f.item.id, 1_000);
+    await enterMergeQueue(sqliteDb(f.db), f.item.id, { phase: "merge_queue" });
     await recordConfirmedRemoteMerge(sqliteDb(f.db), {
       itemId: f.item.id,
       repositoryOwner: repository.owner,

@@ -1,12 +1,15 @@
 import {
   workspaceMemberUsable,
-  auditWorkspaceAccess,
+  auditWorkspaceAccessSteps,
   WORKSPACE_REVOKED_SIGN_IN,
   createWorkspaceBootstrap,
-  deleteWorkspaceSession,
-  readWorkspaceSession,
+  deleteWorkspaceSessionSteps,
+  readWorkspaceSessionSteps,
   saveWorkspaceSession,
-  workspaceMember,
+  settled,
+  workspaceMemberSteps,
+  type Q,
+  type Steps,
   type WorkspaceRole,
   type WorkspaceSession,
   sqliteDb,
@@ -75,7 +78,8 @@ export async function issueWorkspaceSession(
   db: Database,
   input: { userId: string; workspaceId: string; now: number },
 ): Promise<{ token: string; session: WorkspaceSession }> {
-  const member = workspaceMember(db, input.workspaceId, input.userId);
+  const store = sqliteDb(db);
+  const member = await store.run((q) => workspaceMemberSteps(q, input.workspaceId, input.userId));
   if (member?.revokedAt != null) throw new WorkspaceAccessRevoked();
   if (!workspaceMemberUsable(member)) throw new Error("Workspace membership is required.");
   const token = workspaceSecret();
@@ -88,27 +92,33 @@ export async function issueWorkspaceSession(
     lastSeenAt: input.now,
     expiresAt: input.now + WORKSPACE_SESSION_MS,
   };
-  await saveWorkspaceSession(sqliteDb(db), session);
-  auditWorkspaceAccess(db, {
-    ...input,
-    action: "session.created",
-    subject: input.userId,
-  });
+  await saveWorkspaceSession(store, session);
+  await store.run((q) =>
+    auditWorkspaceAccessSteps(q, {
+      ...input,
+      action: "session.created",
+      subject: input.userId,
+    }),
+  );
   return { token, session };
 }
 
-export function requestWorkspaceSession(
-  db: Database,
+type RequestedWorkspaceSession = { principal: WorkspacePrincipal; session: WorkspaceSession };
+
+export function* requestWorkspaceSessionSteps(
+  q: Q,
   request: Request,
   now = Date.now(),
-): { principal: WorkspacePrincipal; session: WorkspaceSession } | null {
+): Steps<RequestedWorkspaceSession | null> {
   const token = cookieValue(request, WORKSPACE_COOKIE);
   if (token === null || !/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
-  const session = readWorkspaceSession(db, workspaceTokenHash(token), now, WORKSPACE_SESSION_MS);
+  const session = yield* q.transaction((tx) =>
+    readWorkspaceSessionSteps(tx, workspaceTokenHash(token), now, WORKSPACE_SESSION_MS),
+  );
   if (session === null) return null;
-  const member = workspaceMember(db, session.workspaceId, session.userId);
+  const member = yield* workspaceMemberSteps(q, session.workspaceId, session.userId);
   if (!workspaceMemberUsable(member)) {
-    deleteWorkspaceSession(db, session.tokenHash);
+    yield* deleteWorkspaceSessionSteps(q, session.tokenHash);
     return null;
   }
   return {
@@ -121,6 +131,14 @@ export function requestWorkspaceSession(
       authenticatedAt: session.authenticatedAt,
     },
   };
+}
+
+export function requestWorkspaceSession(
+  db: Database,
+  request: Request,
+  now = Date.now(),
+): RequestedWorkspaceSession | null {
+  return settled(sqliteDb(db).run((q) => requestWorkspaceSessionSteps(q, request, now)));
 }
 
 export function workspaceSessionCookie(token: string): string {

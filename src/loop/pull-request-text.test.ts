@@ -110,13 +110,13 @@ async function fixture(
       1,
     );
   if (options.savedDescription)
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId, summary: "## Closeout", head: "474f2d1b" },
       now: 1,
     });
   const apply = async (draft: { title: string; body: string }) => {
-    const previous = getPullRequestDraft(db, itemId);
+    const previous = await getPullRequestDraft(sqliteDb(db), itemId);
     await savePullRequestDraft(sqliteDb(db), itemId, draft, 2);
     return applyPullRequestDraft({
       store: sqliteDb(db),

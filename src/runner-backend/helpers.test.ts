@@ -244,9 +244,9 @@ test("no active runner fails closed and a deadline cannot retain capacity", asyn
   ).toBe(0);
 });
 
-function fillRunner(f: Awaited<ReturnType<typeof fixture>>) {
+async function fillRunner(f: Awaited<ReturnType<typeof fixture>>) {
   insertQueuedItem(f.db, { id: "busy", now: Date.now(), sessionKey: "busy-session" });
-  const { run } = beginImplementRun(f.db, "busy", Date.now());
+  const { run } = await beginImplementRun(sqliteDb(f.db), "busy", Date.now());
   f.db.run(
     "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) SELECT ?,id,workspace_id,1,0,'busy',? FROM runner WHERE id='runner'",
     [run.id, Date.now() + 3_600_000],
@@ -255,7 +255,7 @@ function fillRunner(f: Awaited<ReturnType<typeof fixture>>) {
 
 test("a helper waits while task work fills the runner and starts once a slot frees", async () => {
   const f = await fixture();
-  fillRunner(f);
+  await fillRunner(f);
   let settled = false;
   const pending = f.backend.forSession("session", "classify")(f.input);
   void pending.then(
@@ -280,7 +280,7 @@ test("a helper waits while task work fills the runner and starts once a slot fre
 
 test("a helper still blocked by task work at its deadline reports the runner slots as busy", async () => {
   const f = await fixture();
-  fillRunner(f);
+  await fillRunner(f);
   const pending = f.backend.forSession("session", "classify")(f.input);
   await Bun.sleep(10);
   // The runner stays online for the whole wait; only its slots are taken.
@@ -686,7 +686,7 @@ test("a session item waits in a usage pause and places the helper once the coold
   const resetsAt = Date.now() + 30 * 60_000;
   coolDown(f, resetsAt);
   insertQueuedItem(f.db, { id: "item", now: Date.now(), sessionKey: "session" });
-  const { run } = beginImplementRun(f.db, "item", Date.now());
+  const { run } = await beginImplementRun(sqliteDb(f.db), "item", Date.now());
   let settled = false;
   const pending = f.backend.forSession("session", "classify")(f.input);
   void pending.then(
@@ -1099,7 +1099,7 @@ async function answerTask() {
   const fill = async (runnerId: string) => {
     for (const id of [`${runnerId}-1`, `${runnerId}-2`]) {
       insertQueuedItem(f.db, { id, now: Date.now(), sessionKey: `${id}-session` });
-      const { run } = beginImplementRun(f.db, id, Date.now());
+      const { run } = await beginImplementRun(sqliteDb(f.db), id, Date.now());
       f.db.run(
         "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) SELECT ?,id,workspace_id,1,0,?,? FROM runner WHERE id=?",
         [run.id, id, Date.now() + 3_600_000, runnerId],

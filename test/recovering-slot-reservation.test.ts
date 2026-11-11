@@ -60,7 +60,7 @@ test("twenty recovering items fill six free slots in one tick and do not fail fo
       clock,
       lines,
       async assert(started, db) {
-        const pending = listJobs(db).filter(
+        const pending = (await listJobs(sqliteDb(db))).filter(
           (job) => job.queue === JOB_KIND.resume && job.status === "pending",
         );
         expect(pending).toHaveLength(14);
@@ -377,7 +377,7 @@ async function runRecovering(input: {
           projectId: "project",
         }),
       });
-      recover(db, item.id, input.clock.now(), input.maxAttempts ?? 10);
+      await recover(db, item.id, input.clock.now(), input.maxAttempts ?? 10);
     }
     db.run("UPDATE job SET status='cancelled', finished_at=? WHERE queue=? AND status='pending'", [
       input.clock.now(),
@@ -385,18 +385,21 @@ async function runRecovering(input: {
     ]);
     loop = jobs.run(controller.signal, (ms) => Bun.sleep(ms));
     const deadline = Date.now() + 45_000;
-    const parked = () =>
-      listJobs(db).filter((job) => job.queue === JOB_KIND.resume && job.status === "pending")
-        .length;
-    const settled = () =>
+    const parked = async () =>
+      (await listJobs(sqliteDb(db))).filter(
+        (job) => job.queue === JOB_KIND.resume && job.status === "pending",
+      ).length;
+    const settled = async () =>
       input.ready?.(started, db) ??
       (started.size >= Math.min(input.count, input.capacity) &&
-        (input.clock instanceof FakeClock ? parked() === input.count - input.capacity : true));
-    while (Date.now() < deadline && !settled()) await Bun.sleep(10);
+        (input.clock instanceof FakeClock
+          ? (await parked()) === input.count - input.capacity
+          : true));
+    while (Date.now() < deadline && !(await settled())) await Bun.sleep(10);
     const detail = JSON.stringify({
       started: [...started],
-      parked: parked(),
-      jobs: listJobs(db)
+      parked: await parked(),
+      jobs: (await listJobs(sqliteDb(db)))
         .filter((job) => job.queue === JOB_KIND.resume)
         .map((job) => resumeLine(db, job)),
       items: listWorkItems(db).map((item) => `${item.linearIdentifier}:${item.state}`),
@@ -404,7 +407,7 @@ async function runRecovering(input: {
     });
     expect(started.size, detail).toBe(Math.min(input.count, input.capacity));
     if (input.clock instanceof FakeClock) {
-      expect(parked(), detail).toBe(input.count - input.capacity);
+      expect(await parked(), detail).toBe(input.count - input.capacity);
     }
     for (const item of listWorkItems(db).filter((row) => started.has(row.linearIdentifier)))
       expect([...(prepared.get(item.id) ?? [])].sort()).toEqual(["implementer", "reviewer"]);
@@ -420,17 +423,17 @@ async function runRecovering(input: {
   }
 }
 
-function recover(
+async function recover(
   db: ReturnType<typeof migratedDatabase>,
   itemId: string,
   now: number,
   maxAttempts: number,
 ) {
-  applyWorkItemEvent(db, itemId, "dispatched");
-  const run = insertRun(db, { itemId, now, status: "active" });
-  setCurrentRun(db, itemId, run.id);
-  applyWorkItemEvent(db, itemId, "lease_expired");
-  enqueueJob(db, {
+  await applyWorkItemEvent(sqliteDb(db), itemId, "dispatched");
+  const run = await insertRun(sqliteDb(db), { itemId, now, status: "active" });
+  await setCurrentRun(sqliteDb(db), itemId, run.id);
+  await applyWorkItemEvent(sqliteDb(db), itemId, "lease_expired");
+  await enqueueJob(sqliteDb(db), {
     queue: JOB_KIND.resume,
     payload: { itemId, runId: run.id, reason: "transient_failure", retry: 0 },
     runAt: now,

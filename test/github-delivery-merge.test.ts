@@ -4,7 +4,7 @@ import path from "node:path";
 import { expect, test } from "bun:test";
 import type { FakeScript } from "../src/acp/testing/script";
 import { JOB_KIND, systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, listJobs, migrate, openDatabase } from "../src/db";
+import { sqliteDb, JobLoop, OutboxDispatcher, listJobs, migrate, openDatabase } from "../src/db";
 import { createFakeGitHub, fakeMergeReadiness, type GitHubResponse } from "../src/github";
 import { createFakeTracker } from "../src/linear";
 import { acceptGitHubDelivery, attachOrchestrator } from "../src/loop";
@@ -86,8 +86,8 @@ test("a green check_suite delivery for the pull request's head merges it before 
       return { command: process.execPath, args: [fakeAgent, "", scriptPath], env: process.env };
     },
   });
-  const parkedForCi = () =>
-    listJobs(db).find(
+  const parkedForCi = async () =>
+    (await listJobs(sqliteDb(db))).find(
       (job) =>
         job.queue === JOB_KIND.merge &&
         job.status === "pending" &&
@@ -110,13 +110,13 @@ test("a green check_suite delivery for the pull request's head merges it before 
       payload: "{}",
     });
     const deadline = Date.now() + 90_000;
-    while (Date.now() < deadline && !parkedForCi() && stateOf(db, "ENG-9") !== "failed") {
+    while (Date.now() < deadline && !(await parkedForCi()) && stateOf(db, "ENG-9") !== "failed") {
       if ((await jobs.tick()) === null) {
         await outbox.tick();
         await Bun.sleep(25);
       }
     }
-    const parked = parkedForCi();
+    const parked = await parkedForCi();
     expect(parked, stateOf(db, "ENG-9") ?? "").toBeDefined();
     const head = (parked!.payload as { ciWaitHead: string }).ciWaitHead;
     green = true;

@@ -20,7 +20,7 @@ test("an answer restarts the task with a fresh transient-retry count", async () 
   const db = openDatabase(":memory:");
   migrate(db);
   const item = insertQueuedItem(db, { id: "acme-7", sessionKey: "ses", now: clock.now() });
-  beginImplementRun(db, item.id, clock.now());
+  await beginImplementRun(sqliteDb(db), item.id, clock.now());
   await deferWorkItem(sqliteDb(db), getWorkItem(db, item.id)!, {
     retry: MAX_TRANSIENT_RETRIES,
     delayMs: 0,
@@ -28,10 +28,10 @@ test("an answer restarts the task with a fresh transient-retry count", async () 
     message: null,
     now: clock.now(),
   });
-  const deferred = listJobs(db).find((job) => job.queue === JOB_KIND.resume)!;
+  const deferred = (await listJobs(sqliteDb(db))).find((job) => job.queue === JOB_KIND.resume)!;
   expect(deferred.payload).toMatchObject({ retry: MAX_TRANSIENT_RETRIES });
   db.run("UPDATE job SET status='done' WHERE id=?", [deferred.id]);
-  applyWorkItemEvent(db, item.id, "recovered");
+  await applyWorkItemEvent(sqliteDb(db), item.id, "recovered");
   const running = getWorkItem(db, item.id)!;
   await sqliteDb(db).transaction((q) =>
     askSteps(
@@ -61,7 +61,7 @@ test("an answer restarts the task with a fresh transient-retry count", async () 
     ).status,
   ).toBe("answered");
   expect(getWorkItem(db, item.id)?.state).toBe("queued");
-  const restarted = listJobs(db).find(
+  const restarted = (await listJobs(sqliteDb(db))).find(
     (job) => job.queue === JOB_KIND.resume && job.status === "pending",
   )!;
   expect(restarted.payload).toMatchObject({ itemId: item.id, reason: "answer" });

@@ -129,9 +129,9 @@ async function held(head = heads.s, base = heads.base) {
     sessionKey: "ses_1",
     title: "Token rotation",
   });
-  beginImplementRun(db, item.id, NOW - 10);
-  applyWorkItemEvent(db, item.id, "turn_ended");
-  applyWorkItemEvent(db, item.id, "closeout_accepted");
+  await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
+  await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), item.id, "closeout_accepted");
   saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: base, wipCommit: head });
   db.run("UPDATE work_item SET delegated_by = 'delegator' WHERE id = ?", [item.id]);
   await sqliteDb(db).run((q) =>
@@ -150,7 +150,11 @@ async function held(head = heads.s, base = heads.base) {
     "lea@example.com",
   ]);
   // The merge job that published the pull request, and its response in Linear.
-  enqueueJob(db, { queue: JOB_KIND.merge, payload: { itemId: item.id }, now: NOW - 5 });
+  await enqueueJob(sqliteDb(db), {
+    queue: JOB_KIND.merge,
+    payload: { itemId: item.id },
+    now: NOW - 5,
+  });
   enqueueOutboxOnce(db, {
     target: "linear",
     op: "activity",
@@ -241,7 +245,7 @@ async function riskApproved() {
 /** The fix at `head` passed Closeout and the lane holds it again. */
 async function fixAccepted(db: ReturnType<typeof openDatabase>, head: string, base: string) {
   if (getWorkItem(db, "ENG-106")?.state === "verifying")
-    applyWorkItemEvent(db, "ENG-106", "closeout_accepted");
+    await applyWorkItemEvent(sqliteDb(db), "ENG-106", "closeout_accepted");
   saveCheckpoint(db, "ENG-106", { phase: "merge_queue", baseSha: base, wipCommit: head });
   await saveCandidateRisk(sqliteDb(db), {
     itemId: "ENG-106",
@@ -253,8 +257,8 @@ async function fixAccepted(db: ReturnType<typeof openDatabase>, head: string, ba
   });
 }
 
-function activities(db: ReturnType<typeof openDatabase>) {
-  return listOutbox(db)
+async function activities(db: ReturnType<typeof openDatabase>) {
+  return (await listOutbox(sqliteDb(db)))
     .filter((row) => row.op === "activity" && row.idempotencyKey.startsWith("risk-approval:"))
     .map((row) => {
       const payload = row.payload as { kind: string; body: string };
@@ -262,8 +266,8 @@ function activities(db: ReturnType<typeof openDatabase>) {
     });
 }
 
-function resumes(db: ReturnType<typeof openDatabase>) {
-  return listJobs(db)
+async function resumes(db: ReturnType<typeof openDatabase>) {
+  return (await listJobs(sqliteDb(db)))
     .filter((job) => job.queue === JOB_KIND.resume)
     .map((job) => job.payload as { handoff: string; reason: string });
 }
@@ -280,7 +284,7 @@ test("a high-risk head is asked with a link: Markdown, no options, the link on t
     answerers: ["delegator", "lead"],
     detail: "High-risk paths changed: `session.ts`.",
   });
-  const elicitations = listOutbox(db).filter((row) => row.op === "elicitation");
+  const elicitations = (await listOutbox(sqliteDb(db))).filter((row) => row.op === "elicitation");
   expect(elicitations).toHaveLength(1);
   const payload = elicitations[0]!.payload as { options: unknown[]; body: string };
   expect(payload.options).toEqual([]);
@@ -290,9 +294,9 @@ test("a high-risk head is asked with a link: Markdown, no options, the link on t
     "Decide in Paws: https://paws.example/dashboard/issues/ENG-106#risk",
   );
   expect(payload.body).toContain("A reply here cannot approve the risk.");
-  expect(listJobs(db).find((job) => job.queue === JOB_KIND.linkAskReminder)?.runAt).toBe(
-    NOW + LINK_ASK_REMINDER_MS,
-  );
+  expect(
+    (await listJobs(sqliteDb(db))).find((job) => job.queue === JOB_KIND.linkAskReminder)?.runAt,
+  ).toBe(NOW + LINK_ASK_REMINDER_MS);
 });
 
 test("a normal-tier head, or a Paws without an https link, needs no approval", async () => {
@@ -342,7 +346,7 @@ test("Approve on the Risk card binds to S and sends the item back to the merge q
   expect(await approval(db, heads.s)).toBe("approved");
   expect(getWorkItem(db, itemId)?.state).toBe("verifying");
   expect(
-    listWorkItemEventRows(db, itemId)
+    (await listWorkItemEventRows(sqliteDb(db), itemId))
       .slice(-2)
       .map((row) => [row.fromState, row.event, row.toState]),
   ).toEqual([
@@ -350,12 +354,12 @@ test("Approve on the Risk card binds to S and sends the item back to the merge q
     ["awaiting_input", "reverify_requested", "verifying"],
   ]);
   expect(
-    listJobs(db)
+    (await listJobs(sqliteDb(db)))
       .filter((job) => job.queue === JOB_KIND.reverify)
       .map((job) => [job.jobKey, job.payload]),
   ).toEqual([[`risk-approved:${question.id}`, { itemId, decide: true }]]);
-  expect(resumes(db)).toEqual([]);
-  expect(activities(db)).toEqual([
+  expect(await resumes(db)).toEqual([]);
+  expect(await activities(db)).toEqual([
     {
       key: `risk-approval:decided:${question.id}`,
       kind: "response",
@@ -364,7 +368,9 @@ test("Approve on the Risk card binds to S and sends the item back to the merge q
   ]);
   // The link leaves the session once the approval is decided.
   expect(
-    listOutbox(db).some((row) => row.idempotencyKey === `link-ask-url-removed:${question.id}`),
+    (await listOutbox(sqliteDb(db))).some(
+      (row) => row.idempotencyKey === `link-ask-url-removed:${question.id}`,
+    ),
   ).toBe(true);
 });
 
@@ -379,14 +385,14 @@ test("Request changes on the Risk card restarts the item with the note", async (
     now: NOW + 100,
   });
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
-  expect(resumes(db)).toEqual([
+  expect(await resumes(db)).toEqual([
     expect.objectContaining({
       reason: "review",
       handoff: expect.stringContaining("Keep the old tokens valid for a day."),
     }),
   ]);
-  expect(activities(db)).toMatchObject([{ kind: "thought" }]);
-  expect(activities(db)[0]!.body).toContain("requested changes to");
+  expect(await activities(db)).toMatchObject([{ kind: "thought" }]);
+  expect((await activities(db))[0]!.body).toContain("requested changes to");
   expect(await approval(db, heads.s)).toBe("missing");
 });
 
@@ -408,10 +414,10 @@ test("a Linear reply requests changes and never approves, even when it says appr
     closedReason: "guidance",
   });
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
-  expect(resumes(db)).toEqual([
+  expect(await resumes(db)).toEqual([
     expect.objectContaining({ reason: "review", handoff: expect.stringContaining("approve") }),
   ]);
-  expect(activities(db)).toEqual([
+  expect(await activities(db)).toEqual([
     { key: `risk-approval:reply:${question.id}`, kind: "thought", body: RISK_REPLY_NOTE },
   ]);
 });
@@ -432,8 +438,12 @@ test("Stop stops the item and leaves the pull request open", async () => {
     closedReason: "cancelled",
     decidedBy: "lead",
   });
-  expect(listJobs(db).filter((job) => job.queue === JOB_KIND.closeStoppedPull)).toEqual([]);
-  const stopped = listOutbox(db).find((row) => row.idempotencyKey.startsWith("command:stop:"));
+  expect(
+    (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.closeStoppedPull),
+  ).toEqual([]);
+  const stopped = (await listOutbox(sqliteDb(db))).find((row) =>
+    row.idempotencyKey.startsWith("command:stop:"),
+  );
   const payload = stopped?.payload as { kind: string; body: string } | undefined;
   expect(payload?.kind).toBe("response");
   expect(payload?.body).toContain("The pull request stays open.");
@@ -495,7 +505,7 @@ test("the ask, its link and the decision reach Linear after the pull request res
   const tracker = createFakeTracker();
   const delivered = new Set<number>();
   const deliver = async () => {
-    for (const row of listOutbox(db, "ses_1")) {
+    for (const row of await listOutbox(sqliteDb(db), "ses_1")) {
       if (delivered.has(row.id)) continue;
       delivered.add(row.id);
       await deliverLinearOutbox(row, tracker, async () => {}, undefined, db);
@@ -561,7 +571,9 @@ test("a CI fix that only changes a test keeps the approval and merges without a 
     `The approval of ${heads.s.slice(0, 7)} carried over: none of the files the fix changed since then is a high-risk path (\`test/x.test.ts\`).`,
   );
   // Nobody is asked again.
-  expect(listOutbox(db).filter((row) => row.op === "elicitation")).toHaveLength(1);
+  expect((await listOutbox(sqliteDb(db))).filter((row) => row.op === "elicitation")).toHaveLength(
+    1,
+  );
   expect(getWorkItem(db, itemId)?.state).toBe("merge_queue");
 });
 
@@ -586,7 +598,7 @@ test("a fix that changes a high-risk path asks again and lists only that change"
   });
   // The whole pull request also changes `session.ts`; the ask leaves it out.
   expect((await getLinkAsk(sqliteDb(db), ask.id))?.detail).not.toContain("`session.ts`");
-  const elicitations = listOutbox(db).filter((row) => row.op === "elicitation");
+  const elicitations = (await listOutbox(sqliteDb(db))).filter((row) => row.op === "elicitation");
   expect(elicitations).toHaveLength(2);
   expect((elicitations[1]!.payload as { body: string }).body).toContain(detail);
 });
@@ -1216,7 +1228,7 @@ for (const scenario of ["clean", "P2", "missing security", "rules change", "off"
         now: NOW,
       });
       const tracker = createFakeTracker();
-      for (const row of listOutbox(f.db, "ses_1"))
+      for (const row of await listOutbox(sqliteDb(f.db), "ses_1"))
         await deliverLinearOutbox(row, tracker, async () => {}, undefined, f.db);
       expect(tracker.progress).toHaveLength(1);
       expect(tracker.progress[0]?.body).toBe(body);

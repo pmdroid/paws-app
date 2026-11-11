@@ -31,7 +31,8 @@ test("every engine run of an issue, including a finished one, resolves to that i
   const db = database();
   item(db, "item-1", "PAS-1", "session-a", 0);
   const runs = [];
-  for (const at of [0, 1, 2]) runs.push(insertRun(db, { itemId: "item-1", now: at }).id);
+  for (const at of [0, 1, 2])
+    runs.push((await insertRun(sqliteDb(db), { itemId: "item-1", now: at })).id);
   db.run("UPDATE work_item SET state = 'merged' WHERE id = 'item-1'");
   for (const run of runs)
     expect(await resolveDashboardAlias(sqliteDb(db), "runs", run)).toBe("PAS-1");
@@ -52,7 +53,7 @@ test("a verdict id is the issue id or one of its runs", async () => {
   const db = database();
   item(db, "item-1", "PAS-1", "session-a", 0);
   item(db, "item-2", "  ", "session-a", 1);
-  const run = insertRun(db, { itemId: "item-1", now: 0 }).id;
+  const run = (await insertRun(sqliteDb(db), { itemId: "item-1", now: 0 })).id;
   expect(await resolveDashboardAlias(sqliteDb(db), "verdicts", "PAS-1")).toBe("PAS-1");
   expect(await resolveDashboardAlias(sqliteDb(db), "verdicts", run)).toBe("PAS-1");
   expect(await resolveDashboardAlias(sqliteDb(db), "verdicts", "item-2")).toBe("item-2");
@@ -66,7 +67,7 @@ test("a reader resolves only items in their sessions, alike for hidden and unkno
   item(db, "theirs", "PAS-2", "session-other", 0);
   insertQueuedItem(db, { id: "no-session", sessionKey: "" });
   db.run("UPDATE work_item SET session_key = NULL WHERE id = 'no-session'");
-  const theirs = insertRun(db, { itemId: "theirs", now: 0 }).id;
+  const theirs = (await insertRun(sqliteDb(db), { itemId: "theirs", now: 0 })).id;
   const scope = ["session-mine"];
   expect(await resolveDashboardAlias(sqliteDb(db), "sessions", "session-mine", scope)).toBe(
     "PAS-1",

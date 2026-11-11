@@ -50,8 +50,12 @@ test("the merge queue needs a Paws session, shows only the member's sessions and
     ["PAS-2", "session-other"],
   ] as const) {
     insertQueuedItem(db, { id, sessionKey });
-    beginImplementRun(db, id, Date.now());
-    enterMergeQueue(db, id, { phase: "merge_queue", baseSha: head, wipCommit: head });
+    await beginImplementRun(sqliteDb(db), id, Date.now());
+    await enterMergeQueue(sqliteDb(db), id, {
+      phase: "merge_queue",
+      baseSha: head,
+      wipCommit: head,
+    });
   }
   const reservation = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
   const port = reservation.port!;

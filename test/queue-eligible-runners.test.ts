@@ -95,8 +95,8 @@ function orchestrator(db: Database, clock: FakeClock) {
   });
 }
 
-function bodies(db: Database, kind: string): string[] {
-  return listOutbox(db)
+async function bodies(db: Database, kind: string): Promise<string[]> {
+  return (await listOutbox(sqliteDb(db)))
     .map((row) => row.payload as { kind?: string; body?: string })
     .filter((payload) => payload.kind === kind)
     .map((payload) => payload.body ?? "");
@@ -119,8 +119,10 @@ test("a delegator with no runner they may use is not queued behind busy slots an
     await paws.reconcileExecution();
     await paws.reconcileExecution();
     expect(startJobs(db, "busy")).toBe(1);
-    expect(bodies(db, "thought").filter((body) => body.startsWith("Queued"))).toEqual([]);
-    expect(bodies(db, "thought").filter((body) => body.includes("runner you can use"))).toEqual([
+    expect((await bodies(db, "thought")).filter((body) => body.startsWith("Queued"))).toEqual([]);
+    expect(
+      (await bodies(db, "thought")).filter((body) => body.includes("runner you can use")),
+    ).toEqual([
       "PAS-1 waits for a runner you can use. Add one on the Runners page and sign in to its agent, or ask your project lead to share theirs. Paws starts PAS-1 on its own once a runner is ready.",
     ]);
 
@@ -129,11 +131,11 @@ test("a delegator with no runner they may use is not queued behind busy slots an
     db.run("UPDATE runner SET last_seen_at=?", [clock.now()]);
     await paws.reconcileExecution();
     expect(getWorkItem(db, "mine")?.state).toBe("queued");
-    expect(bodies(db, "error")).toEqual([]);
+    expect(await bodies(db, "error")).toEqual([]);
     expect(
-      bodies(db, "thought").filter((body) => body.includes("runner you can use")),
+      (await bodies(db, "thought")).filter((body) => body.includes("runner you can use")),
     ).toHaveLength(1);
-    expect(bodies(db, "thought").filter((body) => body.startsWith("Queued"))).toEqual([]);
+    expect((await bodies(db, "thought")).filter((body) => body.startsWith("Queued"))).toEqual([]);
 
     // Once the delegator pairs a runner with a free slot, the scheduler starts the item.
     addRunner(db, "own", users.me!, clock.now());
@@ -157,10 +159,12 @@ test("a delegator whose only runner is busy still gets the queue notice with the
     await paws.reconcileExecution();
     expect(startJobs(db, "busy")).toBe(1);
     expect(startJobs(db, "mine")).toBe(0);
-    expect(bodies(db, "thought")).toContain(
+    expect(await bodies(db, "thought")).toContain(
       "Queued, 1st in line. 1 of 1 runner slot is busy. Paws starts PAS-1 when a slot frees.",
     );
-    expect(bodies(db, "thought").filter((body) => body.includes("runner you can use"))).toEqual([]);
+    expect(
+      (await bodies(db, "thought")).filter((body) => body.includes("runner you can use")),
+    ).toEqual([]);
   } finally {
     await paws.shutdown();
     db.close();

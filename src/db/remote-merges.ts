@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
 import { jsonField } from "./json-text";
 
 export type ConfirmedRemoteMerge = {
@@ -33,8 +32,11 @@ export function* getConfirmedRemoteMergeSteps(q: Q, itemId: string) {
   return row ?? null;
 }
 
-export function getConfirmedRemoteMerge(db: Database, itemId: string): ConfirmedRemoteMerge | null {
-  return settled(sqliteDb(db).run((q) => getConfirmedRemoteMergeSteps(q, itemId)));
+export async function getConfirmedRemoteMerge(
+  store: Db,
+  itemId: string,
+): Promise<ConfirmedRemoteMerge | null> {
+  return store.run((q) => getConfirmedRemoteMergeSteps(q, itemId));
 }
 
 export function* recordConfirmedRemoteMergeSteps(q: Q, input: ConfirmedRemoteMerge) {
@@ -90,8 +92,13 @@ export function* beginMergeCallSteps(q: Q, itemId: string, head: string, now: nu
  * A marker left when Paws stops means the call may have reached GitHub, so the next start asks
  * GitHub before the item merges or re-verifies.
  */
-export function beginMergeCall(db: Database, itemId: string, head: string, now: number): void {
-  settled(sqliteDb(db).run((q) => beginMergeCallSteps(q, itemId, head, now)));
+export async function beginMergeCall(
+  store: Db,
+  itemId: string,
+  head: string,
+  now: number,
+): Promise<void> {
+  await store.run((q) => beginMergeCallSteps(q, itemId, head, now));
 }
 
 export function* endMergeCallSteps(q: Q, itemId: string) {

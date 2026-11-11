@@ -458,12 +458,12 @@ describe("closeout progress backend", () => {
     const db = openDatabase(":memory:");
     migrate(db);
     insertQueuedItem(db, { id: "item-1", now: 1 });
-    beginImplementRun(db, "item-1", 1, {
+    await beginImplementRun(sqliteDb(db), "item-1", 1, {
       phase: "running",
       baseSha: repo.head,
       wipCommit: repo.head,
     });
-    applyWorkItemEvent(db, "item-1", "turn_ended");
+    await applyWorkItemEvent(sqliteDb(db), "item-1", "turn_ended");
     const progress = createDbCloseoutProgress(sqliteDb(db), "item-1");
     const outage = Object.assign(new Error("503 Service Unavailable"), { status: 503 });
     try {
@@ -634,13 +634,13 @@ describe("closeout progress backend", () => {
     const db = openDatabase(dbPath);
     migrate(db);
     insertQueuedItem(db, { id: "item-1", now: 1 });
-    beginImplementRun(db, "item-1", 1, {
+    await beginImplementRun(sqliteDb(db), "item-1", 1, {
       phase: "running",
       baseSha: repo.head,
       wipCommit: repo.head,
       turn: 4,
     });
-    applyWorkItemEvent(db, "item-1", "turn_ended");
+    await applyWorkItemEvent(sqliteDb(db), "item-1", "turn_ended");
     saveCheckpoint(db, "item-1", {
       phase: "verifying",
       baseSha: repo.head,
@@ -860,17 +860,17 @@ function rowIdentity(db: ReturnType<typeof openDatabase>): CloseoutProgressIdent
 function watching(inner: CloseoutProgress, onOutput: () => void): CloseoutProgress {
   return {
     begin(identity) {
-      inner.begin(identity);
+      return inner.begin(identity);
     },
     step(identity, value) {
-      inner.step(identity, value);
+      return inner.step(identity, value);
     },
-    output(identity, stepId, stream, text, truncated) {
-      inner.output(identity, stepId, stream, text, truncated);
+    async output(identity, stepId, stream, text, truncated) {
+      await inner.output(identity, stepId, stream, text, truncated);
       onOutput();
     },
     finish(identity, decision) {
-      inner.finish(identity, decision);
+      return inner.finish(identity, decision);
     },
   };
 }

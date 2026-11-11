@@ -296,7 +296,7 @@ async function setup() {
     git(["--git-dir", paws, "update-ref", candidateRef(`display-${id}`), base]);
     const sessionKey = `session-${sequence}`;
     const record = insertQueuedItem(db, { id, now, sessionKey });
-    const { run } = beginImplementRun(db, id, now);
+    const { run } = await beginImplementRun(sqliteDb(db), id, now);
     await recordLinearInstallation(sqliteDb(db), {
       organizationId: "fixture-work",
       oauthClientId: "fixture-app",
@@ -1009,7 +1009,10 @@ test("the work turn after start_work waits for a slot on the session's runner, t
   // restart() ends the conversation's run; the work turn starts the item's next run.
   db.run("UPDATE run SET status='ended' WHERE id=?", [record.runId]);
   db.run("UPDATE work_item SET state='queued' WHERE id=?", [record.id]);
-  const next = { id: record.id, runId: beginImplementRun(db, record.id, context.now).run.id };
+  const next = {
+    id: record.id,
+    runId: (await beginImplementRun(sqliteDb(db), record.id, context.now)).run.id,
+  };
 
   // Another item takes A's only work slot; B stays paused.
   const busy = await context.item(true);

@@ -90,7 +90,7 @@ async function fixture() {
   db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);
   db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [runnerId]);
   const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
-  const { run } = beginImplementRun(db, item.id, now);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
   await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app",
@@ -312,7 +312,9 @@ test("an answer task mid-turn keeps running through a Paws restart and finishes 
     ]);
     expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "running", recoveryAttempts: 0 });
     expect(
-      listJobs(f.db).filter((job) => job.queue === "run.resume" && job.status === "pending"),
+      (await listJobs(sqliteDb(f.db))).filter(
+        (job) => job.queue === "run.resume" && job.status === "pending",
+      ),
     ).toHaveLength(1);
 
     const commands = f.commandCount();

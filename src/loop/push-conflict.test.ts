@@ -15,16 +15,16 @@ import {
 } from "../db";
 import { restartForPushConflict } from "./push-conflict";
 
-function runningItem() {
+async function runningItem() {
   const db = openDatabase(":memory:");
   migrate(db);
   const item = insertQueuedItem(db, { id: "pas-886", sessionKey: "ses", now: 1_000 });
-  const { run } = beginImplementRun(db, item.id, 1_000);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, 1_000);
   return { db, itemId: item.id, runId: run.id };
 }
 
 test("a candidate that conflicts with its moved branch restarts with reason conflict and no question", async () => {
-  const { db, itemId, runId } = runningItem();
+  const { db, itemId, runId } = await runningItem();
   expect(getWorkItem(db, itemId)?.state).toBe("running");
 
   expect(
@@ -37,7 +37,7 @@ test("a candidate that conflicts with its moved branch restarts with reason conf
 
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
   expect(getRun(db, runId)?.status).toBe("ended");
-  const resumes = listJobs(db).filter(
+  const resumes = (await listJobs(sqliteDb(db))).filter(
     (job) => job.queue === JOB_KIND.resume && job.status === "pending",
   );
   expect(resumes).toHaveLength(1);
@@ -49,16 +49,16 @@ test("a candidate that conflicts with its moved branch restarts with reason conf
 });
 
 test("an item that is no longer running is not restarted for a push conflict", async () => {
-  const { db, itemId } = runningItem();
-  applyWorkItemEvent(db, itemId, "turn_ended");
+  const { db, itemId } = await runningItem();
+  await applyWorkItemEvent(sqliteDb(db), itemId, "turn_ended");
   expect(
     await restartForPushConflict(db, itemId, { branch: "paws/pas-886", files: ["a"], now: 2_000 }),
   ).toBe(false);
-  expect(listJobs(db).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
+  expect((await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
 });
 
 test("three genuine push conflicts spend the shared budget, then ask for guidance", async () => {
-  const { db, itemId } = runningItem();
+  const { db, itemId } = await runningItem();
   for (let attempt = 0; attempt < 3; attempt++) {
     expect(
       await restartForPushConflict(db, itemId, {
@@ -67,7 +67,7 @@ test("three genuine push conflicts spend the shared budget, then ask for guidanc
         now: 2_000 + attempt,
       }),
     ).toBe(true);
-    applyWorkItemEvent(db, itemId, "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), itemId, "dispatched");
   }
   expect(
     await restartForPushConflict(db, itemId, { branch: "paws/topic", files: ["b.ts"], now: 3_000 }),
@@ -83,14 +83,14 @@ test("three genuine push conflicts spend the shared budget, then ask for guidanc
   expect(db.query("SELECT body FROM question").get()).toEqual({
     body: expect.stringContaining("Reply with guidance"),
   });
-  expect(listJobs(db).filter((j) => j.queue === JOB_KIND.resume)).toHaveLength(3);
+  expect((await listJobs(sqliteDb(db))).filter((j) => j.queue === JOB_KIND.resume)).toHaveLength(3);
   db.close();
 });
 
 test("push conflicts also respect the six-return rolling hour budget", async () => {
-  const { db, itemId } = runningItem();
+  const { db, itemId } = await runningItem();
   for (let n = 0; n < 6; n++) {
-    const jobId = enqueueJob(db, {
+    const jobId = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.resume,
       payload: { itemId, reason: "conflict" },
       now: 1_000 + n,
@@ -114,16 +114,20 @@ test("push conflicts also respect the six-return rolling hour budget", async () 
 });
 
 test("a person's answer refills the consecutive push-conflict budget", async () => {
-  const { db, itemId } = runningItem();
+  const { db, itemId } = await runningItem();
   for (let n = 0; n < 3; n++) {
     await restartForPushConflict(db, itemId, {
       branch: "paws/topic",
       files: ["a.ts"],
       now: 2_000 + n,
     });
-    applyWorkItemEvent(db, itemId, "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), itemId, "dispatched");
   }
-  enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId, reason: "answer" }, now: 3_000 });
+  await enqueueJob(sqliteDb(db), {
+    queue: JOB_KIND.resume,
+    payload: { itemId, reason: "answer" },
+    now: 3_000,
+  });
   expect(
     await restartForPushConflict(db, itemId, { branch: "paws/topic", files: ["a.ts"], now: 4_000 }),
   ).toBe(true);

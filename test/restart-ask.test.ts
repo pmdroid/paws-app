@@ -48,7 +48,7 @@ async function fixture() {
     repo: "repo",
     remoteUrl: "https://example.invalid/repo.git",
   });
-  beginImplementRun(db, "item", 1);
+  await beginImplementRun(sqliteDb(db), "item", 1);
   saveCheckpoint(db, "item", { phase: "running", baseSha: "base", wipCommit: "head" });
   return { db, item: getWorkItem(db, "item")! };
 }
@@ -58,14 +58,14 @@ describe("restart and ask", () => {
     const { db } = await fixture();
     db.run("UPDATE work_item SET state='merge_queue' WHERE id='item'");
     await joinMergeQueue(sqliteDb(db), { itemId: "item", repository: "owner/repo", now: 2 });
-    const jobs = listJobs(db).length;
+    const jobs = (await listJobs(sqliteDb(db))).length;
     const queue = listMergeQueues(db);
-    beginMergeCall(db, "item", "head", 3);
+    await beginMergeCall(sqliteDb(db), "item", "head", 3);
     expect(
       restart(db, getWorkItem(db, "item")!, { reason: "review", body: "Fix it.", now: 4 }),
     ).toBeNull();
     expect(getWorkItem(db, "item")?.state).toBe("merge_queue");
-    expect(listJobs(db)).toHaveLength(jobs);
+    expect(await listJobs(sqliteDb(db))).toHaveLength(jobs);
     expect(listMergeQueues(db)).toEqual(queue);
     await endMergeCall(sqliteDb(db), "item");
     expect(
@@ -99,7 +99,7 @@ describe("restart and ask", () => {
     "%s restarts preserve the run and session and dispatch their original handoff",
     async (reason) => {
       const { db, item } = await fixture();
-      const prior = enqueueJob(db, {
+      const prior = await enqueueJob(sqliteDb(db), {
         queue: JOB_KIND.reverify,
         payload: { itemId: item.id },
         now: 1,
@@ -115,18 +115,20 @@ describe("restart and ask", () => {
       expect(queued.version).toBeGreaterThan(item.version);
       expect(await listRuns(sqliteDb(db), item.id)).toHaveLength(1);
       expect(getRun(db, item.currentRunId!)?.status).toBe("ended");
-      expect(getJob(db, prior)?.status).toBe("cancelled");
+      expect((await getJob(sqliteDb(db), prior))?.status).toBe("cancelled");
       expect(db.query("SELECT 1 FROM merge_queue_entry WHERE item_id=?").get(item.id)).toBeNull();
-      const event = listWorkItemEventRows(db, item.id).at(-1)!;
+      const event = (await listWorkItemEventRows(sqliteDb(db), item.id)).at(-1)!;
       expect(event).toMatchObject({ kind: "restart", reason, version: queued.version });
       expect(event.payloadDigest).toMatch(/^[a-f0-9]{64}$/);
       expect(await workspaceDispatch(db, { now: 3 })).toEqual([item.id]);
-      expect(claimNextJob(db, { now: 3 })?.id).toBe(jobId!);
-      expect(getJob(db, jobId!)?.payload).toMatchObject({
+      expect((await claimNextJob(sqliteDb(db), { now: 3 }))?.id).toBe(jobId!);
+      expect((await getJob(sqliteDb(db), jobId!))?.payload).toMatchObject({
         handoff: "Keep the branch and fix this.",
         runId: item.currentRunId,
       });
-      expect(listJobs(db).filter((job) => job.queue === JOB_KIND.start)).toHaveLength(0);
+      expect(
+        (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.start),
+      ).toHaveLength(0);
       db.close();
     },
   );
@@ -138,7 +140,7 @@ describe("restart and ask", () => {
     expect(restart(db, item, { reason: "ci", body: "first failure", jobKey, now: 2 })).toBeNull();
     expect(fixRounds(db, item.id)).toBe(1);
     db.run("UPDATE job SET status='done', attempts=4, finished_at=3 WHERE id=?", [first]);
-    beginImplementRun(db, item.id, 4);
+    await beginImplementRun(sqliteDb(db), item.id, 4);
     const secondItem = getWorkItem(db, item.id)!;
     const second = restart(db, secondItem, {
       reason: "ci",
@@ -147,24 +149,24 @@ describe("restart and ask", () => {
       now: 5,
     })!;
     expect(second).toBe(first);
-    expect(getJob(db, second)).toMatchObject({
+    expect(await getJob(sqliteDb(db), second)).toMatchObject({
       status: "pending",
       attempts: 0,
       runAt: 5,
       finishedAt: null,
       payload: { handoff: "second failure", reason: "ci" },
     });
-    expect(await jobVersionCurrent(sqliteDb(db), getJob(db, second)!)).toBe(true);
+    expect(await jobVersionCurrent(sqliteDb(db), (await getJob(sqliteDb(db), second))!)).toBe(true);
     expect(fixRounds(db, item.id)).toBe(2);
     expect(
       restart(db, secondItem, { reason: "ci", body: "second failure", jobKey, now: 5 }),
     ).toBeNull();
     expect(fixRounds(db, item.id)).toBe(2);
-    expect(listJobs(db)).toHaveLength(1);
+    expect(await listJobs(sqliteDb(db))).toHaveLength(1);
 
     restart(db, getWorkItem(db, item.id)!, { reason: "answer", body: "try again", now: 6 });
     expect(fixRounds(db, item.id)).toBe(0);
-    beginImplementRun(db, item.id, 7);
+    await beginImplementRun(sqliteDb(db), item.id, 7);
     restart(db, getWorkItem(db, item.id)!, { reason: "ci", body: "third failure", jobKey, now: 8 });
     expect(fixRounds(db, item.id)).toBe(1);
     db.close();
@@ -172,7 +174,11 @@ describe("restart and ask", () => {
 
   test("a restart without a pending job rolls back the edge and handoff", async () => {
     const { db, item } = await fixture();
-    enqueueJob(db, { queue: JOB_KIND.resume, jobKey: "blocked", payload: { itemId: "other" } });
+    await enqueueJob(sqliteDb(db), {
+      queue: JOB_KIND.resume,
+      jobKey: "blocked",
+      payload: { itemId: "other" },
+    });
     db.run("UPDATE job SET status='running' WHERE job_key='blocked'");
     expect(() =>
       restart(db, item, { reason: "ci", body: "fix", jobKey: "blocked", now: 2 }),
@@ -180,7 +186,9 @@ describe("restart and ask", () => {
     expect(getWorkItem(db, item.id)).toEqual(item);
     expect(getRun(db, item.currentRunId!)?.status).toBe("active");
     expect(
-      listWorkItemEventRows(db, item.id).filter((event) => event.kind === "restart"),
+      (await listWorkItemEventRows(sqliteDb(db), item.id)).filter(
+        (event) => event.kind === "restart",
+      ),
     ).toHaveLength(0);
     db.close();
   });
@@ -190,7 +198,7 @@ describe("restart and ask", () => {
     db.run("UPDATE work_item SET recovery_attempts=1, resumed_at=1 WHERE id='item'");
     await recoverOnStartup(sqliteDb(db), 100);
     await recoverOnStartup(sqliteDb(db), 200);
-    const pending = listJobs(db).filter((job) => job.queue === "item.ask");
+    const pending = (await listJobs(sqliteDb(db))).filter((job) => job.queue === "item.ask");
     expect(pending).toHaveLength(1);
     expect(pending[0]?.status).toBe("pending");
     const clock = new FakeClock(300);
@@ -220,7 +228,7 @@ describe("restart and ask", () => {
       const owner = { itemId: item.id, runId: item.currentRunId, sessionId: "session" };
       if (status === "queued") await rawAsk(db, owner, "agent", "First question", { now: 2 });
       await rawAsk(db, owner, "agent", "Restart?", { reason: "restart", now: 3 });
-      const id = enqueueJob(db, {
+      const id = await enqueueJob(sqliteDb(db), {
         queue: "item.ask",
         jobKey: `restart-ask:${item.id}:${item.version}`,
         payload: { itemId: item.id, reason: "restart" },
@@ -230,7 +238,7 @@ describe("restart and ask", () => {
       db.run("UPDATE work_item SET recovery_attempts=1, resumed_at=1 WHERE id='item'");
       await recoverOnStartup(sqliteDb(db), 100);
       await recoverOnStartup(sqliteDb(db), 200);
-      expect(getJob(db, id)?.status).toBe("done");
+      expect((await getJob(sqliteDb(db), id))?.status).toBe("done");
       expect(
         db
           .query("SELECT status FROM question WHERE reason='restart' AND cancelled_at IS NULL")
@@ -242,7 +250,10 @@ describe("restart and ask", () => {
 
   test("a failed restart rolls back its fence, cancellations, and capacity release", async () => {
     const { db, item } = await fixture();
-    const job = enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId: item.id } });
+    const job = await enqueueJob(sqliteDb(db), {
+      queue: JOB_KIND.reverify,
+      payload: { itemId: item.id },
+    });
     db.run(
       "CREATE TRIGGER reject_restart BEFORE INSERT ON work_item_event WHEN NEW.kind='restart' BEGIN SELECT RAISE(ABORT,'injected'); END",
     );
@@ -250,27 +261,27 @@ describe("restart and ask", () => {
       "injected",
     );
     expect(getWorkItem(db, item.id)).toEqual(item);
-    expect(getJob(db, job)?.status).toBe("pending");
+    expect((await getJob(sqliteDb(db), job))?.status).toBe("pending");
     expect(getRun(db, item.currentRunId!)?.status).toBe("active");
     db.close();
   });
 
   test("an old job after restart cannot accept, ask, or execute its handler", async () => {
     const { db, item } = await fixture();
-    applyWorkItemEvent(db, item.id, "turn_ended");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
     const verifying = getWorkItem(db, item.id)!;
-    const oldId = enqueueJob(db, {
+    const oldId = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.reverify,
       payload: { itemId: item.id },
       now: 1,
     });
-    const old = claimNextJob(db, { now: 1 })!;
+    const old = (await claimNextJob(sqliteDb(db), { now: 1 }))!;
     restart(db, verifying, { reason: "findings", body: "fix", now: 2 });
     expect(await jobVersionCurrent(sqliteDb(db), old)).toBe(false);
     const before = {
-      events: listWorkItemEventRows(db, item.id),
-      outbox: listOutbox(db),
-      jobs: listJobs(db),
+      events: await listWorkItemEventRows(sqliteDb(db), item.id),
+      outbox: await listOutbox(sqliteDb(db)),
+      jobs: await listJobs(sqliteDb(db)),
     };
     expect(
       await acceptCloseout(db, {
@@ -298,9 +309,9 @@ describe("restart and ask", () => {
       ),
     ).rejects.toThrow("stale");
     expect({
-      events: listWorkItemEventRows(db, item.id),
-      outbox: listOutbox(db),
-      jobs: listJobs(db),
+      events: await listWorkItemEventRows(sqliteDb(db), item.id),
+      outbox: await listOutbox(sqliteDb(db)),
+      jobs: await listJobs(sqliteDb(db)),
     }).toEqual(before);
     // Even a replay of the persisted old job is ignored at the orchestrator boundary.
     db.run("UPDATE job SET status='pending', run_at=0 WHERE id=?", [oldId]);
@@ -316,7 +327,7 @@ describe("restart and ask", () => {
     await jobs.tick([JOB_KIND.reverify]);
     expect(getWorkItem(db, item.id)?.state).toBe("queued");
     expect(findOpenQuestion(db, "session")).toBeNull();
-    expect(listOutbox(db)).toEqual(before.outbox);
+    expect(await listOutbox(sqliteDb(db))).toEqual(before.outbox);
     db.close();
   });
 
@@ -342,7 +353,7 @@ describe("restart and ask", () => {
     );
     expect(next.status).toBe("queued");
     expect(
-      listWorkItemEventRows(db, item.id)
+      (await listWorkItemEventRows(sqliteDb(db), item.id))
         .filter((event) => event.kind === "ask")
         .map((event) => event.reason),
     ).toEqual(["agent", "agent"]);
@@ -362,7 +373,7 @@ describe("restart and ask", () => {
       currentRunId: item.currentRunId,
       sessionKey: "session",
     });
-    const resumes = listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
+    const resumes = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
     expect(resumes).toHaveLength(1);
     expect((resumes[0]!.payload as { handoff: string }).handoff).toContain("Answer: Use A");
     expect((resumes[0]!.payload as { handoff: string }).handoff).toContain("Answer: Continue");
@@ -413,7 +424,9 @@ describe("restart and ask", () => {
     await recoverOnStartup(sqliteDb(db), 3);
     expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
     expect(findOpenQuestion(db, "session")?.body).toBe("Continue?");
-    expect(listJobs(db).filter((job) => job.queue === JOB_KIND.catchup)).toHaveLength(1);
+    expect(
+      (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.catchup),
+    ).toHaveLength(1);
     db.close();
   });
 });

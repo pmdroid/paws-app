@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { applyWorkItemEvent } from "../src/db";
+import { sqliteDb, applyWorkItemEvent } from "../src/db";
 import { hasPendingDelegationChanges } from "../src/intake";
 import { tempDb } from "./helpers";
 
@@ -28,11 +28,11 @@ function seed(db: Database) {
     db.run("INSERT INTO item_reconciliation_request VALUES(?,'workspace','token')", [id]);
 }
 
-test("cancelling an item with a pending request leaves no reconciliation rows for it", () => {
+test("cancelling an item with a pending request leaves no reconciliation rows for it", async () => {
   const db = tempDb();
   try {
     seed(db);
-    applyWorkItemEvent(db, "cancelled", "cancel");
+    await applyWorkItemEvent(sqliteDb(db), "cancelled", "cancel");
     assert.deepEqual(reconciliationRows(db, "cancelled"), { requests: 0, effects: 0 });
     assert.deepEqual(reconciliationRows(db, "live"), { requests: 1, effects: 0 });
   } finally {
@@ -46,20 +46,20 @@ test("the delegation of a cancelled item is no longer held as reconciling", asyn
     seed(db);
     db.run("DELETE FROM item_reconciliation_request WHERE item_id='live'");
     assert.equal(await hasPendingDelegationChanges(db, "delegation"), true);
-    applyWorkItemEvent(db, "cancelled", "cancel");
+    await applyWorkItemEvent(sqliteDb(db), "cancelled", "cancel");
     assert.equal(await hasPendingDelegationChanges(db, "delegation"), false);
   } finally {
     db.close();
   }
 });
 
-test("cancelling an item keeps the effects a running reconcile still publishes", () => {
+test("cancelling an item keeps the effects a running reconcile still publishes", async () => {
   const db = tempDb();
   try {
     seed(db);
     for (const kind of ["spec", "removed", "canceled"])
       db.run("INSERT INTO item_reconciliation_effect VALUES('cancelled',?,'token')", [kind]);
-    applyWorkItemEvent(db, "cancelled", "cancel");
+    await applyWorkItemEvent(sqliteDb(db), "cancelled", "cancel");
     assert.deepEqual(reconciliationRows(db, "cancelled"), { requests: 0, effects: 3 });
   } finally {
     db.close();

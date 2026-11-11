@@ -67,7 +67,7 @@ test("verified host reconnection persists a new credential and restores the same
   expect(readStoredToken(f.db, f.secretsDir)).toEqual(f.next);
   const reopened = openDatabase(join(f.home, "paws.db"));
   try {
-    expect(getLinearSessionAccess(reopened, "session")).toBe("allowed");
+    expect(await getLinearSessionAccess(sqliteDb(reopened), "session")).toBe("allowed");
     expect(isLinearAppRevoked(reopened, scope)).toBe(false);
     expect(await listLinearInstallationRevocations(sqliteDb(reopened))).toEqual([]);
     expect(reopened.query("SELECT * FROM linear_app_revocation").get()).toMatchObject({
@@ -100,7 +100,7 @@ test("an unchanged credential cannot restore access or make a verification reque
     "new authorization grant",
   );
   expect(requests).toBe(0);
-  expect(getLinearSessionAccess(f.db, "session")).toBe("revoked");
+  expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("revoked");
 });
 
 test("a claimed OAuth client without a verified app user cannot restore a revoked installation", async () => {
@@ -138,7 +138,7 @@ test.each(["human", "other-app", "unauthorized", "errors", "missing"])(
     })(f.home);
     await expect(reconnect.complete({ clientId: "client", token: f.next })).rejects.toThrow();
     expect(readStoredToken(f.db, f.secretsDir)).toEqual(f.previous);
-    expect(getLinearSessionAccess(f.db, "session")).toBe("revoked");
+    expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("revoked");
   },
 );
 
@@ -169,7 +169,7 @@ test.each(["revocation", "credential"])(
     released.resolve(verified());
     await expect(pending).rejects.toThrow();
     expect(readStoredToken(f.db, f.secretsDir)).toEqual(expected);
-    expect(getLinearSessionAccess(f.db, "session")).toBe("revoked");
+    expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("revoked");
   },
 );
 
@@ -188,7 +188,7 @@ test.each([20, 25])(
         createdAtMs,
       }),
     ).toEqual(["session"]);
-    expect(getLinearSessionAccess(f.db, "session")).toBe("revoked");
+    expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("revoked");
     expect((await listLinearInstallationRevocations(sqliteDb(f.db)))[0]?.generation).toBe(2);
   },
 );
@@ -207,7 +207,7 @@ test("historical revocation before the captured grant start stays deduped and ca
         createdAtMs: 19,
       }),
     ).toEqual([]);
-    expect(getLinearSessionAccess(f.db, "session")).toBe("allowed");
+    expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("allowed");
   }
 });
 
@@ -223,7 +223,7 @@ test("a failed restoration write leaves both the credential and fence unchanged"
     "restore failed",
   );
   expect(readStoredToken(f.db, f.secretsDir)).toEqual(f.previous);
-  expect(getLinearSessionAccess(f.db, "session")).toBe("revoked");
+  expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("revoked");
 });
 
 test("a refresh started before revocation cannot overwrite the verified host reconnect credential", async () => {
@@ -241,7 +241,7 @@ test("a refresh started before revocation cannot overwrite the verified host rec
     secretsDir: f.secretsDir,
     clientId: "client",
     clientSecret: "fake-secret",
-    isAuthorized: () => !isLinearAppRevoked(f.db, scope),
+    isAuthorized: async () => !isLinearAppRevoked(f.db, scope),
     fetch: async () => {
       started.resolve();
       return released.promise;
@@ -274,5 +274,5 @@ test("a refresh started before revocation cannot overwrite the verified host rec
   );
   expect(await pending).toBe(latest.accessToken);
   expect(readStoredToken(f.db, f.secretsDir)).toEqual(latest);
-  expect(getLinearSessionAccess(f.db, "session")).toBe("allowed");
+  expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("allowed");
 });

@@ -86,7 +86,7 @@ export function createMemberVmHandler(store: Db, options: MemberVmJobOptions) {
       const provisioning = "provision" in options ? await options.provision() : options;
       outcome = await runStep(store, row, provisioning, now, (token) => minted.push(token));
     } catch (error) {
-      if (error instanceof StepMoved || !context.isCurrent()) return;
+      if (error instanceof StepMoved || !(await context.isCurrent())) return;
       const secrets = await Promise.resolve()
         .then(() => options.secrets?.())
         .then((list) => Promise.all(list ?? []))
@@ -102,7 +102,7 @@ export function createMemberVmHandler(store: Db, options: MemberVmJobOptions) {
       );
       return;
     }
-    if (outcome.next === "done" || !context.isCurrent()) return;
+    if (outcome.next === "done" || !(await context.isCurrent())) return;
     if ((await store.run((q) => memberVmByIdSteps(q, row.id)))?.deleteStep != null) return;
     const at = now();
     await store.run((q) =>

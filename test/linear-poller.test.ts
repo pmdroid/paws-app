@@ -408,7 +408,7 @@ describe("linear intake poll", () => {
       },
     });
     expect((await linear.usage()).lastCatchUpMs).toBeNull();
-    const running = linear.start();
+    const running = await linear.start();
     await running.pollDue();
     await waitFor(async () => (await createInboxStore(sqliteDb(db)).getCursor("linear")) !== null);
     expect(queries.some((body) => body.includes("IntakePoll"))).toBe(true);
@@ -866,7 +866,7 @@ describe("linear intake poll", () => {
         const result = await intakeDelegatedIssue(db, tracker, { linearIssueId: event.issueId });
         if (result.ok)
           for (const item of result.items)
-            configureWorkItem(db, item.id, { sessionKey: "ses_stop" });
+            await configureWorkItem(sqliteDb(db), item.id, { sessionKey: "ses_stop" });
       },
       submitCommand: async (command) => {
         commands.push({ type: command.type, itemId: command.itemId });
@@ -915,7 +915,7 @@ describe("linear intake poll", () => {
         const result = await intakeDelegatedIssue(db, tracker, { linearIssueId: event.issueId });
         if (result.ok)
           for (const item of result.items)
-            configureWorkItem(db, item.id, { sessionKey: "ses_stop" });
+            await configureWorkItem(sqliteDb(db), item.id, { sessionKey: "ses_stop" });
       },
       submitCommand: async (command) => {
         commands.push({ type: command.type, itemId: command.itemId });
@@ -1202,7 +1202,7 @@ test("Linear runtime stop joins interrupted events and rejects new handlers befo
       db.run("UPDATE inbox_event SET handled = 1 WHERE dedupe_key = 'accepted'");
     },
   });
-  const running = linear.start();
+  const running = await linear.start();
   const event: AcceptedLinearEvent = {
     dedupeKey: "accepted",
     deliveryId: null,

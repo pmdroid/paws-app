@@ -76,16 +76,14 @@ type ExistingStep = Pick<
   | "reviewPreExisting"
 >;
 
-export function ensureCloseoutProgress(
-  db: Database,
+export async function ensureCloseoutProgress(
+  store: Db,
   itemId: string,
   identity: CloseoutProgressIdentity,
   now: number,
   reset: boolean,
-): string {
-  return settled(
-    sqliteDb(db).transaction((q) => ensureCloseoutProgressSteps(q, itemId, identity, now, reset)),
-  );
+): Promise<string> {
+  return store.transaction((q) => ensureCloseoutProgressSteps(q, itemId, identity, now, reset));
 }
 
 export function* ensureCloseoutProgressSteps(
@@ -128,14 +126,14 @@ export function* ensureCloseoutProgressSteps(
   return id;
 }
 
-export function upsertCloseoutStep(
-  db: Database,
+export async function upsertCloseoutStep(
+  store: Db,
   itemId: string,
   identity: CloseoutProgressIdentity,
   step: CloseoutStepWrite,
   now: number,
-): void {
-  settled(sqliteDb(db).transaction((q) => upsertCloseoutStepSteps(q, itemId, identity, step, now)));
+): Promise<void> {
+  await store.transaction((q) => upsertCloseoutStepSteps(q, itemId, identity, step, now));
 }
 
 export function* upsertCloseoutStepSteps(
@@ -245,8 +243,8 @@ function findingsFor(existing: ExistingStep | null, step: CloseoutStepWrite): st
   return existing?.findings ?? null;
 }
 
-export function appendCloseoutOutput(
-  db: Database,
+export async function appendCloseoutOutput(
+  store: Db,
   itemId: string,
   identity: CloseoutProgressIdentity,
   stepId: string,
@@ -254,11 +252,9 @@ export function appendCloseoutOutput(
   text: string,
   truncated: boolean,
   now: number,
-): void {
-  settled(
-    sqliteDb(db).transaction((q) =>
-      appendCloseoutOutputSteps(q, itemId, identity, stepId, stream, text, truncated, now),
-    ),
+): Promise<void> {
+  await store.transaction((q) =>
+    appendCloseoutOutputSteps(q, itemId, identity, stepId, stream, text, truncated, now),
   );
 }
 
@@ -301,18 +297,14 @@ export function* appendCloseoutOutputSteps(
   );
 }
 
-export function finishCloseoutProgress(
-  db: Database,
+export async function finishCloseoutProgress(
+  store: Db,
   itemId: string,
   identity: CloseoutProgressIdentity,
   decision: string,
   now: number,
-): void {
-  settled(
-    sqliteDb(db).transaction((q) =>
-      finishCloseoutProgressSteps(q, itemId, identity, decision, now),
-    ),
-  );
+): Promise<void> {
+  await store.transaction((q) => finishCloseoutProgressSteps(q, itemId, identity, decision, now));
 }
 
 export function* finishCloseoutProgressSteps(
@@ -393,12 +385,12 @@ export function* latestCloseoutIdentitySteps(q: Q, itemId: string) {
  * The policy digest of the latest Closeout run on `head` and the digest of its checks marked
  * `recheck: true`, or null when no run was recorded. `recheck` is null when the run did not say.
  */
-export function closeoutPolicyDigests(
-  db: Database,
+export async function closeoutPolicyDigests(
+  store: Db,
   itemId: string,
   head: string,
-): { digest: string; recheck: string | null; decision: string | null } | null {
-  return settled(sqliteDb(db).run((q) => closeoutPolicyDigestsSteps(q, itemId, head)));
+): Promise<{ digest: string; recheck: string | null; decision: string | null } | null> {
+  return store.run((q) => closeoutPolicyDigestsSteps(q, itemId, head));
 }
 
 export function* closeoutPolicyDigestsSteps(q: Q, itemId: string, head: string) {

@@ -192,7 +192,7 @@ async function collect(
     settingsRevision: await settings(db, input.repositories ?? [REPO]),
     now: input.end,
   });
-  const result = await collectRetroDigest(db, {
+  const result = await collectRetroDigest(sqliteDb(db), {
     retroId: input.id,
     artifactRoot: root,
     now: input.end,
@@ -283,7 +283,11 @@ describe("incremental retro windows", () => {
       now: at(4),
     });
     expect(
-      await collectRetroDigest(db, { retroId: "r-overlap", artifactRoot: root, now: at(4) }),
+      await collectRetroDigest(sqliteDb(db), {
+        retroId: "r-overlap",
+        artifactRoot: root,
+        now: at(4),
+      }),
     ).toEqual({ ok: false, reason: "busy", busy: [{ repository: REPO, retroId: "r1" }] });
     await publish(db, "r1", at(3));
     const first = (await listRetroEvidence(sqliteDb(db), "r1")).map((entry) => entry.evidenceId);
@@ -306,8 +310,8 @@ describe("incremental retro windows", () => {
     expect(digest.rates.every((entry) => entry.value === null && entry.denominator === 0)).toBe(
       true,
     );
-    expect(readRetroArtifact(db, root, "r1", "digest").ok).toBe(true);
-    const manifest = readRetroArtifact(db, root, "r1", "manifest");
+    expect((await readRetroArtifact(sqliteDb(db), root, "r1", "digest")).ok).toBe(true);
+    const manifest = await readRetroArtifact(sqliteDb(db), root, "r1", "manifest");
     expect(
       manifest.ok && JSON.parse(new TextDecoder().decode(manifest.bytes)).prompt.sessionsIncluded,
     ).toBe(0);
@@ -554,7 +558,7 @@ describe("evidence quality", () => {
       end: at(1),
       secrets: ["s3cret-value-123"],
     });
-    const stored = readRetroArtifact(db, root, "r1", "digest");
+    const stored = await readRetroArtifact(sqliteDb(db), root, "r1", "digest");
     const text = stored.ok ? new TextDecoder().decode(stored.bytes) : "";
     const evidence = JSON.stringify(await listRetroEvidence(sqliteDb(db), "r1"));
     for (const leaked of [
@@ -600,7 +604,7 @@ describe("bounded prompt view", () => {
     );
     expect(included + omitted).toBe(counted(digest).length);
     expect(omitted).toBeGreaterThan(0);
-    const manifest = readRetroArtifact(db, root, "r1", "manifest");
+    const manifest = await readRetroArtifact(sqliteDb(db), root, "r1", "manifest");
     expect(manifest.ok).toBe(true);
   });
 });

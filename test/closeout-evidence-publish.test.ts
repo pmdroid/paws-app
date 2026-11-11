@@ -175,7 +175,7 @@ test("a video with a check id lands in the evidence store and the agent gets the
     });
     const link = `https://paws.example/evidence/${evidence!.id}`;
     expect(artifact.text).toBe(`[proof.webm](<${link}>)`);
-    expect(listOutbox(f.db, "session")).toHaveLength(0);
+    expect(await listOutbox(sqliteDb(f.db), "session")).toHaveLength(0);
     expect(f.linearUploads).toHaveLength(0);
   } finally {
     f.db.close();

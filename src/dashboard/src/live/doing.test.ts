@@ -39,9 +39,9 @@ function database(): Database {
   return db;
 }
 
-function running(db: Database, id: string): string {
+async function running(db: Database, id: string): Promise<string> {
   insertQueuedItem(db, { id, title: id, now: START });
-  const runId = beginImplementRun(db, id, START).run.id;
+  const runId = (await beginImplementRun(sqliteDb(db), id, START)).run.id;
   db.run("UPDATE work_item_event SET at=? WHERE item_id=?", [START, id]);
   return runId;
 }
@@ -80,7 +80,7 @@ describe("what an item does now", () => {
   test("an item with live runner work shows Running on its runner", async () => {
     const db = database();
     const now = START + 5 * MINUTE;
-    const runId = running(db, "live");
+    const runId = await running(db, "live");
     work(db, runId, "agentbox", true, now);
     event(db, runId, 1, "activity");
     const shown = await item(db, "live", now);
@@ -97,7 +97,7 @@ describe("what an item does now", () => {
   test("live runner work is preparing until its current generation reports agent activity", async () => {
     const db = database();
     const now = START + 5 * MINUTE;
-    const runId = running(db, "setup");
+    const runId = await running(db, "setup");
     work(db, runId, "agentbox", true, now, 2);
     event(db, runId, 1, "activity");
     event(db, runId, 2, "progress");
@@ -116,7 +116,7 @@ describe("what an item does now", () => {
   test("a run without runner work has no phase", async () => {
     const db = database();
     const now = START + MINUTE;
-    running(db, "local");
+    await running(db, "local");
     expect((await item(db, "local", now)).doing?.phase).toBeUndefined();
   });
 
@@ -125,7 +125,7 @@ describe("what an item does now", () => {
     const now = START + 26 * MINUTE;
     insertQueuedItem(db, { id: "parked", title: "parked", now: START });
     db.run("UPDATE work_item SET awake_ms=? WHERE id='parked'", [114 * MINUTE]);
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.resume,
       payload: {
         itemId: "parked",
@@ -144,7 +144,7 @@ describe("what an item does now", () => {
   test("the issue page splits the item's time by stage and marks stages that are not counted", async () => {
     const db = database();
     const now = START + MINUTE;
-    running(db, "staged");
+    await running(db, "staged");
     db.run(
       "UPDATE work_item SET implement_ms=?, fix_ms=?, closeout_ms=?, max_awake_ms=?, max_fix_ms=0, max_closeout_ms=0 WHERE id='staged'",
       [130 * MINUTE, 65 * MINUTE, 22 * MINUTE, 180 * MINUTE],
@@ -162,7 +162,7 @@ describe("what an item does now", () => {
 
   test("an item with a usage pause shows Paused with the reset time", async () => {
     const db = database();
-    const runId = running(db, "paused");
+    const runId = await running(db, "paused");
     await startUsagePause(sqliteDb(db), {
       runId,
       itemId: "paused",
@@ -183,9 +183,9 @@ describe("what an item does now", () => {
   test("a running item whose pinned run waits for its busy runner shows Waiting, not Running", async () => {
     const db = database();
     const now = START + 10 * MINUTE;
-    work(db, running(db, "one"), "agentbox", true, now);
-    work(db, running(db, "two"), "agentbox", true, now);
-    work(db, running(db, "pinned"), "agentbox", false, now);
+    work(db, await running(db, "one"), "agentbox", true, now);
+    work(db, await running(db, "two"), "agentbox", true, now);
+    work(db, await running(db, "pinned"), "agentbox", false, now);
     await saveItemHolds(sqliteDb(db), [{ itemId: "pinned", reason: "slot", blockers: [] }]);
     const shown = await item(db, "pinned", now);
     expect(shown.state).toBe("running");
@@ -201,7 +201,7 @@ describe("what an item does now", () => {
 
   test("an item with no live work and no transition for 30 minutes shows Stalled", async () => {
     const db = database();
-    running(db, "stuck");
+    await running(db, "stuck");
     const fresh = await item(db, "stuck", START + STALL_MS - MINUTE);
     expect(fresh.doing).toMatchObject({ kind: "idle" });
     expect(fresh.doing?.stalled).toBeUndefined();
@@ -215,8 +215,8 @@ describe("runner slots", () => {
   test("live commands and holds between commands stay apart in the runner overview", async () => {
     const db = database();
     const now = START + 10 * MINUTE;
-    for (const id of ["a", "b"]) work(db, running(db, id), "agentbox", true, now);
-    for (const id of ["c", "d"]) work(db, running(db, id), "agentbox", false, now);
+    for (const id of ["a", "b"]) work(db, await running(db, id), "agentbox", true, now);
+    for (const id of ["c", "d"]) work(db, await running(db, id), "agentbox", false, now);
     const agentbox = (await listRunnerOverview(sqliteDb(db), "workspace", now)).find(
       (r) => r.id === "agentbox",
     )!;

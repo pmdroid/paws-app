@@ -45,11 +45,11 @@ async function fixture() {
     );
     db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,?)", [id, capacity]);
   }
-  function running(id: string) {
+  async function running(id: string) {
     insertQueuedItem(db, { id, now: 0 });
-    applyWorkItemEvent(db, id, "dispatched");
-    const run = insertRun(db, { itemId: id, now: 0, status: "active" });
-    const job = enqueueJob(db, {
+    await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
+    const run = await insertRun(sqliteDb(db), { itemId: id, now: 0, status: "active" });
+    const job = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.start,
       payload: { itemId: id },
       runAt: NOW + 60_000,
@@ -57,18 +57,18 @@ async function fixture() {
     });
     return { runId: run.id, job };
   }
-  function placed(id: string) {
-    const { runId } = running(id);
+  async function placed(id: string) {
+    const { runId } = await running(id);
     db.run(
       "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,'goldbox','ws-1',1,0,?,?)",
       [runId, `cmd-${id}`, NOW + 60_000],
     );
     return runId;
   }
-  placed("placed-1");
-  const second = placed("placed-2");
+  await placed("placed-1");
+  const second = await placed("placed-2");
   const stuck = [];
-  for (const id of ["stuck-1", "stuck-2", "stuck-3"]) stuck.push(running(id).job);
+  for (const id of ["stuck-1", "stuck-2", "stuck-3"]) stuck.push((await running(id)).job);
   for (const [index, id] of READY.entries()) insertQueuedItem(db, { id, now: index + 1 });
   return { db, second, stuck };
 }
@@ -118,7 +118,7 @@ test("a task waiting for CI between its run and Closeout frees its runner slot",
       NOW + 2,
       second,
     ]);
-    const recheck = enqueueJob(db, {
+    const recheck = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.resume,
       payload: { itemId: "placed-2" },
       now: NOW + 2,

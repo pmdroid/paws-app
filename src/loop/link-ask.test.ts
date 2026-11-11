@@ -33,8 +33,8 @@ async function asked(
   const db = openDatabase(":memory:");
   migrate(db);
   const item = insertQueuedItem(db, { id: "PAS-633", sessionKey: "ses_1", title: "Signed URLs" });
-  const { run } = beginImplementRun(db, item.id, NOW - 10);
-  applyWorkItemEvent(db, item.id, "turn_ended");
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
+  await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
   db.run("UPDATE work_item SET delegated_by = 'delegator' WHERE id = ?", [item.id]);
   await sqliteDb(db).run((q) =>
     saveSchedulingContextSteps(q, { itemId: item.id, projectId: "project", projectLeadId: "lead" }),
@@ -76,7 +76,7 @@ test("a link ask opens one elicitation without options and puts the link on the 
     link: "https://paws.example/dashboard/issues/PAS-633#closeout",
     answerers: ["delegator", "lead"],
   });
-  const elicitations = listOutbox(db).filter((row) => row.op === "elicitation");
+  const elicitations = (await listOutbox(sqliteDb(db))).filter((row) => row.op === "elicitation");
   expect(elicitations).toHaveLength(1);
   expect(elicitations[0]!.payload).toEqual({
     id: question.id,
@@ -89,7 +89,7 @@ test("a link ask opens one elicitation without options and puts the link on the 
       "Reply here to send the agent guidance instead. A reply here cannot bypass a check.",
     ].join("\n\n"),
   });
-  const links = listOutbox(db).filter((row) => row.op === "linear.session.links");
+  const links = (await listOutbox(sqliteDb(db))).filter((row) => row.op === "linear.session.links");
   expect(links.map((row) => row.payload)).toEqual([
     {
       sessionId: "ses_1",
@@ -149,7 +149,9 @@ test("the project lead decides on the item page: audit row, decided note, back t
     },
   ]);
   // A risk approval comes after the pull request response, so it is a response, not a thought.
-  const notes = listOutbox(db).filter((row) => row.idempotencyKey.startsWith("risk-approval:"));
+  const notes = (await listOutbox(sqliteDb(db))).filter((row) =>
+    row.idempotencyKey.startsWith("risk-approval:"),
+  );
   expect(notes.map((row) => row.payload as { kind: string; body: string })).toMatchObject([
     {
       kind: "response",
@@ -157,7 +159,7 @@ test("the project lead decides on the item page: audit row, decided note, back t
     },
   ]);
   expect(
-    listOutbox(db).some(
+    (await listOutbox(sqliteDb(db))).some(
       (row) =>
         row.op === "linear.session.links" &&
         JSON.stringify(row.payload).includes('"removedExternalUrls"'),
@@ -193,7 +195,7 @@ test("a Linear reply never resolves an approval kind, whatever it says", async (
   expect(linkAsk).toMatchObject({ decision: null, closedReason: "guidance" });
   expect(db.query("SELECT COUNT(*) AS n FROM workspace_access_audit").get()).toEqual({ n: 0 });
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
-  const resume = listJobs(db).find((job) => job.queue === JOB_KIND.resume)!;
+  const resume = (await listJobs(sqliteDb(db))).find((job) => job.queue === JOB_KIND.resume)!;
   expect((resume.payload as { handoff: string }).handoff).toContain(
     "The reply is guidance and approves nothing",
   );
@@ -212,11 +214,13 @@ test("a Linear reply never resolves an approval kind, whatever it says", async (
 
 test("the reminder fires once after 24 hours", async () => {
   const { db, question } = await asked();
-  const job = listJobs(db).find((entry) => entry.queue === JOB_KIND.linkAskReminder)!;
+  const job = (await listJobs(sqliteDb(db))).find(
+    (entry) => entry.queue === JOB_KIND.linkAskReminder,
+  )!;
   expect(job.runAt).toBe(NOW + LINK_ASK_REMINDER_MS);
   expect(await remindLinkAsk(db, question.id, NOW + LINK_ASK_REMINDER_MS)).toBe(true);
   expect(await remindLinkAsk(db, question.id, NOW + 2 * LINK_ASK_REMINDER_MS)).toBe(false);
-  const reminders = listOutbox(db).filter((row) =>
+  const reminders = (await listOutbox(sqliteDb(db))).filter((row) =>
     row.idempotencyKey.startsWith("link-ask-reminder:"),
   );
   expect(reminders).toHaveLength(1);

@@ -125,7 +125,7 @@ export async function probeExecutionLifecycle(
     db.run(
       "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('handoff-0','handoff-1')",
     );
-    const run = insertRun(db, {
+    const run = await insertRun(sqliteDb(db), {
       itemId: "handoff-0",
       now: clock.now(),
       status: "ended",
@@ -134,7 +134,7 @@ export async function probeExecutionLifecycle(
       freshSession: true,
     });
     await saveRunResult(sqliteDb(db), run.id, "Published the exact API schema.", clock.now());
-    setCurrentRun(db, "handoff-0", run.id);
+    await setCurrentRun(sqliteDb(db), "handoff-0", run.id);
     assert.equal(
       await orchestrator.dependencyHandoff("handoff-1"),
       "Completed dependencies:\nhandoff-0: Published the exact API schema.",

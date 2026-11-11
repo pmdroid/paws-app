@@ -152,7 +152,7 @@ async function waitingTask(
     repo: "one",
     remoteUrl: "https://github.com/acme/one.git",
   });
-  const { run } = beginImplementRun(db, itemId, Date.now());
+  const { run } = await beginImplementRun(sqliteDb(db), itemId, Date.now());
   await recordItemBranchState(sqliteDb(db), {
     itemId,
     runId: run.id,
@@ -161,7 +161,11 @@ async function waitingTask(
     commits: 1,
     recordedAt: Date.now(),
   });
-  enterMergeQueue(db, itemId, { phase: "merge_queue", baseSha: "f".repeat(40), wipCommit: HEAD });
+  await enterMergeQueue(sqliteDb(db), itemId, {
+    phase: "merge_queue",
+    baseSha: "f".repeat(40),
+    wipCommit: HEAD,
+  });
   if (options.pull !== false)
     await recordItemPullRequest(sqliteDb(db), {
       itemId,
@@ -169,15 +173,18 @@ async function waitingTask(
       pullUrl: "https://github.com/acme/one/pull/7",
       openedAt: Date.now(),
     });
-  const resumes = () =>
-    listJobs(db).filter((job) => job.queue === JOB_KIND.resume && job.status === "pending");
+  const resumes = async () =>
+    (await listJobs(sqliteDb(db))).filter(
+      (job) => job.queue === JOB_KIND.resume && job.status === "pending",
+    );
   return {
     db,
     itemId,
     orchestrator,
     requests,
     resumes,
-    handoff: () => (resumes()[0]?.payload as { handoff?: string } | undefined)?.handoff ?? "",
+    handoff: async () =>
+      ((await resumes())[0]?.payload as { handoff?: string } | undefined)?.handoff ?? "",
     close: async () => {
       if (previousToken === undefined) delete process.env.FOLLOW_UP_TEST_TOKEN;
       else process.env.FOLLOW_UP_TEST_TOKEN = previousToken;
@@ -191,11 +198,11 @@ test("a follow-up on a pull request with failed CI carries the person's text, fa
   const f = await waitingTask({ ci: "failed" });
   try {
     await f.orchestrator.onLinearEvent(linearEvent("reply-1", "Please fix the build"));
-    const jobs = f.resumes();
+    const jobs = await f.resumes();
     expect(jobs).toHaveLength(1);
     expect(jobs[0]!.jobKey).toStartWith("linear-turn:session:");
     expect(jobs[0]!.payload).toMatchObject({ reason: "follow_up" });
-    const handoff = f.handoff();
+    const handoff = await f.handoff();
     expect(handoff).toStartWith("Please fix the build\n\n");
     expect(handoff).toContain(
       `Pull request #7 (https://github.com/acme/one/pull/7): Paws read CI on head ${HEAD} from GitHub at`,
@@ -223,8 +230,8 @@ for (const ci of ["green", "pending"] as const)
     const f = await waitingTask({ ci });
     try {
       await f.orchestrator.onLinearEvent(linearEvent("reply-1", "Rename the helper"));
-      expect(f.resumes()).toHaveLength(1);
-      expect(f.handoff()).toBe("Rename the helper");
+      expect(await f.resumes()).toHaveLength(1);
+      expect(await f.handoff()).toBe("Rename the helper");
     } finally {
       await f.close();
     }
@@ -234,7 +241,7 @@ test("a follow-up without a pull request reads no CI and keeps the normal handof
   const f = await waitingTask({ ci: "failed", pull: false });
   try {
     await f.orchestrator.onLinearEvent(linearEvent("reply-1", "Rename the helper"));
-    expect(f.handoff()).toBe("Rename the helper");
+    expect(await f.handoff()).toBe("Rename the helper");
     expect(f.requests).toEqual([]);
   } finally {
     await f.close();
@@ -246,8 +253,8 @@ for (const ci of ["unreadable", "throws"] as const)
     const f = await waitingTask({ ci });
     try {
       await f.orchestrator.onLinearEvent(linearEvent("reply-1", "Please fix the build"));
-      expect(f.resumes()).toHaveLength(1);
-      const handoff = f.handoff();
+      expect(await f.resumes()).toHaveLength(1);
+      const handoff = await f.handoff();
       expect(handoff).toStartWith("Please fix the build\n\n");
       expect(handoff).toContain(
         `Pull request #7 (https://github.com/acme/one/pull/7): Paws could not read CI on head ${HEAD}`,
@@ -265,7 +272,7 @@ test("a follow-up whose failing check has no readable log names the check and sa
   const f = await waitingTask({ ci: "failed", log: null });
   try {
     await f.orchestrator.onLinearEvent(linearEvent("reply-1", "Please fix the build"));
-    const handoff = f.handoff();
+    const handoff = await f.handoff();
     expect(handoff).toContain("- check / test");
     expect(handoff).toContain("Paws could not read a log for: `check / test`, `check / lint`.");
     expect(handoff).not.toContain("End of the");
@@ -289,8 +296,8 @@ test("a head that moves during the CI read attaches no stale CI facts", async ()
   });
   try {
     await f.orchestrator.onLinearEvent(linearEvent("reply-1", "Please fix the build"));
-    expect(f.resumes()).toHaveLength(1);
-    const handoff = f.handoff();
+    expect(await f.resumes()).toHaveLength(1);
+    const handoff = await f.handoff();
     expect(handoff).toStartWith("Please fix the build\n\n");
     expect(handoff).toContain("the task changed while Paws read it");
     expect(handoff).not.toContain("check / test");
@@ -307,10 +314,12 @@ test("a stop during the CI read restarts nothing", async () => {
   });
   try {
     await f.orchestrator.onLinearEvent(linearEvent("reply-1", "Please fix the build"));
-    expect(f.resumes()).toEqual([]);
+    expect(await f.resumes()).toEqual([]);
     expect(getWorkItem(f.db, f.itemId)!.state).toBe("merge_queue");
     expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toEqual([]);
-    expect(listJobs(f.db).some((job) => job.jobKey?.startsWith("linear-turn:"))).toBe(false);
+    expect(
+      (await listJobs(sqliteDb(f.db))).some((job) => job.jobKey?.startsWith("linear-turn:")),
+    ).toBe(false);
   } finally {
     await f.close();
   }
@@ -332,22 +341,24 @@ test("CI enrichment with a pending comment batch makes one follow-up handoff and
       line: null,
       receivedAt: received,
     });
-    const gathering = () =>
-      listJobs(f.db)
+    const gathering = async () =>
+      (await listJobs(sqliteDb(f.db)))
         .filter((job) => job.queue === JOB_KIND.pullComments)
         .map((job) => ({ id: job.id, status: job.status, runAt: job.runAt }));
-    const window = gathering();
+    const window = await gathering();
     expect(window).toHaveLength(1);
 
     await f.orchestrator.onLinearEvent(linearEvent("reply-1", "Please fix the build"));
 
-    const resumes = listJobs(f.db).filter((job) => job.queue === JOB_KIND.resume);
+    const resumes = (await listJobs(sqliteDb(f.db))).filter((job) => job.queue === JOB_KIND.resume);
     expect(resumes).toHaveLength(1);
     expect(resumes[0]!.jobKey).toStartWith("linear-turn:");
-    expect(f.handoff()).toContain("CI failed on the pull request");
-    expect(listJobs(f.db).some((job) => job.jobKey?.startsWith("ci-failed:"))).toBe(false);
+    expect(await f.handoff()).toContain("CI failed on the pull request");
+    expect(
+      (await listJobs(sqliteDb(f.db))).some((job) => job.jobKey?.startsWith("ci-failed:")),
+    ).toBe(false);
     expect(fixRounds(f.db, f.itemId)).toBe(0);
-    expect(gathering()).toEqual(window);
+    expect(await gathering()).toEqual(window);
     expect(
       (await pendingPullComments(sqliteDb(f.db), f.itemId)).map((comment) => comment.commentId),
     ).toEqual([501]);
@@ -361,8 +372,8 @@ test("two replies before dispatch make one handoff with both and one CI section"
   try {
     await f.orchestrator.onLinearEvent(linearEvent("reply-1", "Please fix the build"));
     await f.orchestrator.onLinearEvent(linearEvent("reply-2", "And keep the flag name"));
-    expect(f.resumes()).toHaveLength(1);
-    const handoff = f.handoff();
+    expect(await f.resumes()).toHaveLength(1);
+    const handoff = await f.handoff();
     expect(handoff).toStartWith("Please fix the build\n\nAnd keep the flag name\n\n");
     expect(handoff.split("CI failed on the pull request")).toHaveLength(2);
     expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toHaveLength(2);
@@ -382,12 +393,14 @@ test("a person's follow-up on accepted work starts with a fresh time budget and 
   try {
     spent(f.db, f.itemId);
     await f.orchestrator.onLinearEvent(linearEvent("reply-1", "CI still fails, fix the acme lint"));
-    expect(f.resumes()).toHaveLength(1);
+    expect(await f.resumes()).toHaveLength(1);
     expect(getWorkItem(f.db, f.itemId)).toMatchObject({
       awakeMs: 0,
       maxAwakeMs: DEFAULT_MAX_AWAKE_MS,
     });
-    const notes = listOutbox(f.db).filter((row) => row.idempotencyKey.startsWith("fresh-budget:"));
+    const notes = (await listOutbox(sqliteDb(f.db))).filter((row) =>
+      row.idempotencyKey.startsWith("fresh-budget:"),
+    );
     expect(notes.map((row) => (row.payload as { body: string }).body)).toEqual([
       "Starting on your request with a fresh 3-hour time limit.",
     ]);
@@ -415,7 +428,7 @@ test("an automatic CI repair restart keeps adding to the same clock", async () =
 test("a failed item's follow-up clears the stop and the retries and resets the clock", async () => {
   const f = await waitingTask({ ci: "green" });
   try {
-    applyWorkItemEvent(f.db, f.itemId, "work_failed");
+    await applyWorkItemEvent(sqliteDb(f.db), f.itemId, "work_failed");
     f.db.run("UPDATE work_item SET cancel_requested = 1, recovery_attempts = 2 WHERE id = ?", [
       f.itemId,
     ]);

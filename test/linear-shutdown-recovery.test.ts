@@ -69,7 +69,7 @@ for (const shutdown of ["application", "linear"] as const) {
         secretsDir: join(home, "secrets"),
         env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
         signal: controller.signal,
-        isAuthorized: () => false,
+        isAuthorized: async () => false,
         fetch: async () => {
           throw new Error("unexpected provider request");
         },
@@ -81,7 +81,7 @@ for (const shutdown of ["application", "linear"] as const) {
           if (outcome === "false") return false;
         },
       });
-      const running = linear.start();
+      const running = await linear.start();
       let store = createInboxStore(sqliteDb(db));
       await store.commit(event);
       const delivery = Promise.resolve(linear.webhook.onEvent!(event)).then(() =>
@@ -102,14 +102,16 @@ for (const shutdown of ["application", "linear"] as const) {
       expect(await store.listUnhandled()).toHaveLength(1);
       expect(tracker.progress).toEqual([]);
       expect(
-        listOutbox(db).filter(
+        (await listOutbox(sqliteDb(db))).filter(
           (entry) =>
             entry.status === "pending" &&
             (entry.payload as { body?: string }).body === "Picked up this issue.",
         ),
       ).toHaveLength(1);
       expect(
-        listOutbox(db).some((entry) => (entry.payload as { kind?: string }).kind === "error"),
+        (await listOutbox(sqliteDb(db))).some(
+          (entry) => (entry.payload as { kind?: string }).kind === "error",
+        ),
       ).toBe(false);
       db.close();
       db = openDatabase(path);
@@ -120,7 +122,7 @@ for (const shutdown of ["application", "linear"] as const) {
         db,
         secretsDir: join(home, "secrets"),
         env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
-        isAuthorized: () => false,
+        isAuthorized: async () => false,
         fetch: async () => {
           throw new Error("unexpected provider request");
         },
@@ -140,9 +142,11 @@ for (const shutdown of ["application", "linear"] as const) {
         expect(
           tracker.progress.filter((update) => update.body.startsWith("Picked up")),
         ).toHaveLength(1);
-        expect(listOutbox(db).filter((entry) => entry.status === "dropped")).toHaveLength(0);
+        expect(
+          (await listOutbox(sqliteDb(db))).filter((entry) => entry.status === "dropped"),
+        ).toHaveLength(0);
       } finally {
-        await recovered.start().stop();
+        await (await recovered.start()).stop();
         await orchestrator.shutdown();
         db.close();
       }

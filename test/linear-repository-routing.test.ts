@@ -263,7 +263,7 @@ test("an incomplete access scan retries without binding the surviving repository
     expect(getWorkItemRepository(f.db, item.id)).toBeNull();
     expect(findOpenQuestion(f.db, "session")).toBeNull();
     expect(
-      listJobs(f.db).some(
+      (await listJobs(sqliteDb(f.db))).some(
         (job) =>
           job.status === "pending" &&
           (job.attempts === 1 || (job.payload as { reason?: string }).reason === "follow_up"),
@@ -306,7 +306,7 @@ test("an obsolete merge job cannot bind a repository while a repository answer i
     await orchestrator.onLinearEvent(event());
     await f.jobs.tick();
     const question = findOpenQuestion(f.db, "session")!;
-    enqueueJob(f.db, {
+    await enqueueJob(sqliteDb(f.db), {
       queue: "github.merge",
       payload: { itemId: question.itemId },
       now: f.clock.now(),
@@ -348,7 +348,9 @@ test("ambiguous configured repositories ask before any worktree or issue-state m
     expect(existsSync(join(f.pawsRoot, "worktrees"))).toBe(false);
     await orchestrator.onLinearEvent(event("please use acme/two"));
     expect(
-      listJobs(f.db).some((job) => job.queue === "run.resume" && job.status === "pending"),
+      (await listJobs(sqliteDb(f.db))).some(
+        (job) => job.queue === "run.resume" && job.status === "pending",
+      ),
     ).toBe(true);
     const restored = f.attach();
     expect(restored).toBeDefined();
@@ -862,7 +864,7 @@ test("a bound repository outside the team's new links is explained once, not can
       false,
     );
     expect(getWorkItem(f.db, id)?.state).toBe("cancelled");
-    const responses = listOutbox(f.db)
+    const responses = (await listOutbox(sqliteDb(f.db)))
       .filter((entry) => entry.delivery === "stop")
       .map((entry) => (entry.payload as { body: string }).body);
     expect(responses).toEqual(["acme/four isn't mapped to ENG in Paws."]);

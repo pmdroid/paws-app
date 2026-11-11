@@ -195,7 +195,7 @@ async function setup() {
     git(["--git-dir", paws, "update-ref", head(id), base]);
     const sessionKey = `session-${sequence}`;
     const record = insertQueuedItem(db, { id, now: now(), sessionKey });
-    const { run } = beginImplementRun(db, id, now());
+    const { run } = await beginImplementRun(sqliteDb(db), id, now());
     await recordLinearInstallation(sqliteDb(db), {
       organizationId: "fixture-work",
       oauthClientId: "fixture-app",
@@ -607,7 +607,7 @@ test("a run stopped for the time cap saves its runner's work first, and the rest
           asked: true,
           stopAgent: true,
         });
-        applyWorkItemEvent(db, record.id, "blocking_question");
+        await applyWorkItemEvent(sqliteDb(db), record.id, "blocking_question");
         stop.abort();
         expect(await context.next()).toMatchObject({
           type: "checkpoint",

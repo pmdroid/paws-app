@@ -105,7 +105,7 @@ async function putBrief(request: Request, options: BriefSettingsOptions): Promis
     return json({ error: "Brief settings could not be saved" }, 503);
   }
   const where = scope === null ? "workspace" : scope;
-  options.audit?.(
+  await options.audit?.(
     "settings.brief",
     template === null ? `Reset the ${where} brief template` : `Saved the ${where} brief template`,
   );

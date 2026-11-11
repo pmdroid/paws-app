@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { asc, eq, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
 import { getLinearIssueContextSteps } from "./linear-issue-context";
 
 export function* saveLinearSessionContextSteps(
@@ -51,8 +50,8 @@ export function* getLinearSessionContextSteps(q: Q, sessionId: string) {
   return [row?.context, row?.snapshotContext, issueContext].filter(Boolean).join("\n\n");
 }
 
-export function getLinearSessionContext(db: Database, sessionId: string): string {
-  return settled(sqliteDb(db).run((q) => getLinearSessionContextSteps(q, sessionId)));
+export async function getLinearSessionContext(store: Db, sessionId: string): Promise<string> {
+  return store.run((q) => getLinearSessionContextSteps(q, sessionId));
 }
 
 export function* hasLinearSessionSnapshotContextSteps(q: Q, sessionId: string) {
@@ -128,6 +127,9 @@ export function* listLinearActivitySnapshotsSteps(q: Q, sessionId: string) {
   );
 }
 
-export function listLinearActivitySnapshots(db: Database, sessionId: string): readonly string[] {
-  return settled(sqliteDb(db).run((q) => listLinearActivitySnapshotsSteps(q, sessionId)));
+export async function listLinearActivitySnapshots(
+  store: Db,
+  sessionId: string,
+): Promise<readonly string[]> {
+  return store.run((q) => listLinearActivitySnapshotsSteps(q, sessionId));
 }

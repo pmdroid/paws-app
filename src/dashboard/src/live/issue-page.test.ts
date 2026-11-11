@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import {
+  sqliteDb,
   applyWorkItemEvent,
   beginImplementRun,
   enqueueJob,
@@ -52,8 +53,14 @@ function identify(db: Database, id: string, identifier: string, issueId = "lin-3
   ]);
 }
 
-function activity(db: Database, runId: string, sessionId: string, body: string, at: number): void {
-  enqueueOutbox(db, {
+async function activity(
+  db: Database,
+  runId: string,
+  sessionId: string,
+  body: string,
+  at: number,
+): Promise<void> {
+  await enqueueOutbox(sqliteDb(db), {
     target: "linear",
     op: "activity",
     orderingKey: sessionId,
@@ -64,7 +71,7 @@ function activity(db: Database, runId: string, sessionId: string, body: string, 
 }
 
 /** PAS-367 after a restart and a reply: three engine runs, each with one agent turn. */
-function threeRuns(db: Database): string[] {
+async function threeRuns(db: Database): Promise<string[]> {
   insertQueuedItem(db, {
     id: ITEM,
     title: "Keep runs across restart",
@@ -72,13 +79,13 @@ function threeRuns(db: Database): string[] {
     now: T0,
   });
   identify(db, ITEM, "PAS-367");
-  const first = beginImplementRun(db, ITEM, T0 + 1_000).run;
-  const second = insertRun(db, { itemId: ITEM, now: T0 + 60_000, agent: "claude" });
-  const third = insertRun(db, { itemId: ITEM, now: T0 + 120_000, agent: "claude" });
-  setCurrentRun(db, ITEM, third.id);
-  activity(db, first.id, SESSION, "First turn read the issue.", T0 + 2_000);
-  activity(db, second.id, SESSION, "Second turn after the restart.", T0 + 61_000);
-  activity(
+  const first = (await beginImplementRun(sqliteDb(db), ITEM, T0 + 1_000)).run;
+  const second = await insertRun(sqliteDb(db), { itemId: ITEM, now: T0 + 60_000, agent: "claude" });
+  const third = await insertRun(sqliteDb(db), { itemId: ITEM, now: T0 + 120_000, agent: "claude" });
+  await setCurrentRun(sqliteDb(db), ITEM, third.id);
+  await activity(db, first.id, SESSION, "First turn read the issue.", T0 + 2_000);
+  await activity(db, second.id, SESSION, "Second turn after the restart.", T0 + 61_000);
+  await activity(
     db,
     third.id,
     SESSION,
@@ -152,7 +159,7 @@ function visibleText(html: string): string {
 describe("one page per issue", () => {
   test("a task with three engine runs renders one issue page with one timeline holding all three in order", async () => {
     const db = database();
-    threeRuns(db);
+    await threeRuns(db);
     const snapshot = await snapshotOf(db);
     expect(snapshot.runs).toHaveLength(1);
     const html = issuePage(snapshot);
@@ -171,7 +178,7 @@ describe("one page per issue", () => {
 
   test("an old Conversations URL resolves to the issue page from stored records", async () => {
     const db = database();
-    threeRuns(db);
+    await threeRuns(db);
     const provider = createLiveStatusProvider(db, { env: {} });
     expect(parseRoute(`/sessions/${encodeURIComponent(SESSION)}`)).toEqual({
       view: "alias",
@@ -186,7 +193,7 @@ describe("one page per issue", () => {
 
   test("run, session and verdict links resolve to PAS-367", async () => {
     const db = database();
-    const runIds = threeRuns(db);
+    const runIds = await threeRuns(db);
     const provider = createLiveStatusProvider(db, { env: {} });
     for (const id of runIds) expect(await provider.alias("runs", id)).toBe("PAS-367");
     expect(await provider.alias("verdicts", "PAS-367")).toBe("PAS-367");
@@ -207,14 +214,14 @@ describe("one page per issue", () => {
       now: 0,
     });
     identify(db, EARLIER, "PAS-367");
-    const old = beginImplementRun(db, EARLIER, T0 - 7_200_000).run;
-    activity(db, old.id, "earlier-session", "Earlier session turn.", T0 - 7_100_000);
+    const old = (await beginImplementRun(sqliteDb(db), EARLIER, T0 - 7_200_000)).run;
+    await activity(db, old.id, "earlier-session", "Earlier session turn.", T0 - 7_100_000);
     db.run("UPDATE work_item SET state = 'cancelled' WHERE id = ?", [EARLIER]);
     db.run("UPDATE run SET status = 'ended', updated_at = ? WHERE id = ?", [
       T0 - 3_600_000,
       old.id,
     ]);
-    threeRuns(db);
+    await threeRuns(db);
     const snapshot = await snapshotOf(db);
     const earlier = snapshot.items.find((item) => item.session?.id === "earlier-session");
     expect(earlier?.endedAt).toBe(new Date(T0 - 3_600_000).toISOString());
@@ -233,7 +240,7 @@ describe("one page per issue", () => {
 
   test("sibling sub-issues that share one Linear session keep one page each, naming the session", async () => {
     const db = database();
-    threeRuns(db);
+    await threeRuns(db);
     insertQueuedItem(db, { id: "sibling", title: "Sibling", sessionKey: SESSION, now: T0 + 10 });
     identify(db, "sibling", "PAS-368", "lin-368");
     const snapshot = await snapshotOf(db);
@@ -257,9 +264,9 @@ describe("one page per issue", () => {
       now: 0,
     });
     identify(db, EARLIER, "PAS-367");
-    beginImplementRun(db, EARLIER, T0 - 7_200_000);
+    await beginImplementRun(sqliteDb(db), EARLIER, T0 - 7_200_000);
     db.run("UPDATE work_item SET state = 'cancelled' WHERE id = ?", [EARLIER]);
-    threeRuns(db);
+    await threeRuns(db);
     const snapshot = await snapshotOf(db);
     const text = visibleText(issuePage(snapshot));
     expect(text).toContain("PAS-367");
@@ -270,8 +277,8 @@ describe("one page per issue", () => {
 
   test("the item timeline reads work_item_event, a restart with its reason", async () => {
     const db = database();
-    threeRuns(db);
-    applyWorkItemEvent(db, ITEM, "restart", {
+    await threeRuns(db);
+    await applyWorkItemEvent(sqliteDb(db), ITEM, "restart", {
       kind: "restart",
       reason: "follow_up",
       actor: "Jonas Berg",
@@ -303,10 +310,10 @@ describe("one page per issue", () => {
 
   test("dead outbox rows and dead jobs of the issue are listed with a retry", async () => {
     const db = database();
-    threeRuns(db);
+    await threeRuns(db);
     insertQueuedItem(db, { id: "other", title: "Other", sessionKey: "other-session", now: T0 });
     identify(db, "other", "PAS-368", "lin-368");
-    const elicitation = enqueueOutbox(db, {
+    const elicitation = await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "elicitation",
       orderingKey: SESSION,
@@ -314,12 +321,16 @@ describe("one page per issue", () => {
       payload: { sessionId: SESSION, body: "Which repository?" },
       now: T0 + 130_000,
     });
-    const job = enqueueJob(db, {
+    const job = await enqueueJob(sqliteDb(db), {
       queue: "run.resume",
       payload: { itemId: ITEM },
       now: T0 + 140_000,
     });
-    const otherJob = enqueueJob(db, { queue: "run.resume", payload: { itemId: "other" }, now: T0 });
+    const otherJob = await enqueueJob(sqliteDb(db), {
+      queue: "run.resume",
+      payload: { itemId: "other" },
+      now: T0,
+    });
     db.run(
       "UPDATE outbox SET status = 'dead', attempts = 5, error = 'Linear is down' WHERE id = ?",
       [elicitation],

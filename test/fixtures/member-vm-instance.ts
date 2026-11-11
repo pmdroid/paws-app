@@ -186,7 +186,11 @@ for await (const line of lines) {
       VALUES('fixture-item','fixture-delegation','fixture-issue','PAS-901','Fix the login redirect','running','paws/pas-901',0,?)`,
       [at],
     );
-    const run = insertRun(paws.db, { itemId: "fixture-item", now: at, status: "active" });
+    const run = await insertRun(sqliteDb(paws.db), {
+      itemId: "fixture-item",
+      now: at,
+      status: "active",
+    });
     paws.db.run(
       `INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence)
       VALUES(?,?,?,1,0,'fixture-command',?,0)`,

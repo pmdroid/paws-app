@@ -36,7 +36,7 @@ export async function probeResponseTaskRecovery(root: string) {
     migrate(db);
     const clock = new FakeClock(1000);
     const item = insertQueuedItem(db, { id: `item-${mode}`, sessionKey: `session-${mode}` });
-    const { run } = beginImplementRun(db, item.id, clock.now());
+    const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now());
     await saveTaskMode(sqliteDb(db), item.id, mode);
     await saveConversation(
       sqliteDb(db),
@@ -119,8 +119,9 @@ export async function probeResponseTaskRecovery(root: string) {
       assert.equal(getWorkItem(db, item.id)?.recoveryAttempts, 1);
       assert.equal(getRun(db, run.id)?.status, "active");
       assert.equal(
-        listJobs(db).filter((job) => job.queue === JOB_KIND.resume && job.status === "pending")
-          .length,
+        (await listJobs(sqliteDb(db))).filter(
+          (job) => job.queue === JOB_KIND.resume && job.status === "pending",
+        ).length,
         1,
       );
       await jobs.tick();
@@ -129,7 +130,7 @@ export async function probeResponseTaskRecovery(root: string) {
       assert.equal(launches, 1);
       const trace = JSON.parse(readFileSync(tracePath, "utf8"));
       assert.match(JSON.stringify(trace.prompts), /The user answered: use the Create VM page/);
-      const responses = listOutbox(db)
+      const responses = (await listOutbox(sqliteDb(db)))
         .map((row) => row.payload as { kind?: string; body?: string })
         .filter((payload) => payload.kind === "response");
       assert.equal(responses.length, 1);

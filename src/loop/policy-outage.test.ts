@@ -32,14 +32,14 @@ afterEach(() => {
   for (const db of open.splice(0)) db.close();
 });
 
-function queue(...ids: string[]) {
+async function queue(...ids: string[]) {
   const db = openDatabase(":memory:");
   migrate(db);
   open.push(db);
   for (const id of ids) {
     insertQueuedItem(db, { id, sessionKey: `ses-${id}`, now: 0 });
-    beginImplementRun(db, id, 1);
-    enterMergeQueue(db, id, { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
+    await beginImplementRun(sqliteDb(db), id, 1);
+    await enterMergeQueue(sqliteDb(db), id, { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
   }
   return db;
 }
@@ -64,7 +64,7 @@ function questions(db: Database) {
 
 describe("an unreadable Closeout policy on main", () => {
   test("two items in one repository ask one question, and both wait in the merge queue", async () => {
-    const db = queue("ENG-1", "ENG-2");
+    const db = await queue("ENG-1", "ENG-2");
     const first = await hold(db, "ENG-1");
     const second = await hold(db, "ENG-2", 20);
     const asked = questions(db);
@@ -83,7 +83,7 @@ describe("an unreadable Closeout policy on main", () => {
   });
 
   test("main loading again settles the question and ends the outage", async () => {
-    const db = queue("ENG-1");
+    const db = await queue("ENG-1");
     await hold(db, "ENG-1");
     const [question] = questions(db);
     expect(await policyLoads(sqliteDb(db), REPOSITORY, 30)).toMatchObject({
@@ -95,7 +95,7 @@ describe("an unreadable Closeout policy on main", () => {
   });
 
   test("a different break on main replaces the question", async () => {
-    const db = queue("ENG-1", "ENG-2");
+    const db = await queue("ENG-1", "ENG-2");
     await hold(db, "ENG-1");
     await hold(db, "ENG-2", 20, { ...BROKEN, message: "another error", commit: "d".repeat(40) });
     const asked = questions(db);
@@ -108,7 +108,7 @@ describe("an unreadable Closeout policy on main", () => {
   });
 
   test("Closeout's own question names the breaking commit and links the repository question", async () => {
-    const db = queue("ENG-1", "ENG-2");
+    const db = await queue("ENG-1", "ENG-2");
     await hold(db, "ENG-1");
     const [question] = questions(db);
     const note = await policyOutageNote(db, REPOSITORY, "ENG-2", "https://paws.example");

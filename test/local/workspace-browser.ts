@@ -158,7 +158,8 @@ export async function probeWorkspaceBrowser(
     const withoutBootstrap = await login("owner");
     observe(
       "first Linear visitor cannot claim workspace ownership",
-      withoutBootstrap.response.status === 403 && workspaceForOrganization(db, "org") === null,
+      withoutBootstrap.response.status === 403 &&
+        (await workspaceForOrganization(sqliteDb(db), "org")) === null,
       { status: withoutBootstrap.response.status },
     );
     membershipDelayMs = 1000;
@@ -311,7 +312,11 @@ export async function probeWorkspaceBrowser(
       { status: guestLogin.response.status, error: guestError, rows: guestRows },
     );
     const guestAdminLogin = await login("owner");
-    const guestAdmin = workspaceMember(db, ownerSession.workspaceId, ownerSession.userId);
+    const guestAdmin = await workspaceMember(
+      sqliteDb(db),
+      ownerSession.workspaceId,
+      ownerSession.userId,
+    );
     const heldSession = await fetch(`${origin}/api/auth/session`, {
       headers: { cookie: heldLogin.cookie! },
     });
@@ -332,7 +337,11 @@ export async function probeWorkspaceBrowser(
     guest = false;
     now += 1;
     const restoredLogin = await login("owner");
-    const restoredMember = workspaceMember(db, ownerSession.workspaceId, ownerSession.userId);
+    const restoredMember = await workspaceMember(
+      sqliteDb(db),
+      ownerSession.workspaceId,
+      ownerSession.userId,
+    );
     observe(
       "an admin who is no longer a Linear guest signs in again as admin",
       restoredLogin.response.status === 303 && restoredMember?.role === "admin",
@@ -374,7 +383,11 @@ export async function probeWorkspaceBrowser(
     now += 1;
     releaseMembership();
     const raced = await racedLogin;
-    const racedMember = workspaceMember(db, ownerSession.workspaceId, ownerSession.userId);
+    const racedMember = await workspaceMember(
+      sqliteDb(db),
+      ownerSession.workspaceId,
+      ownerSession.userId,
+    );
     observe(
       "membership removal during browser sign-in cannot be undone by a delayed active response",
       raced.response.status === 400 && raced.cookie === undefined && racedMember?.active === false,

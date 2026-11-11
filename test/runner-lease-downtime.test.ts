@@ -100,7 +100,7 @@ async function fixture() {
     [runnerId, now()],
   );
   const item = insertQueuedItem(db, { id: "item", now: now(), sessionKey: "session" });
-  const { run } = beginImplementRun(db, item.id, now());
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, now());
   const start = async () =>
     await registerInstance(sqliteDb(db), { role: "all", host: "acme", version: null, now: now() });
   let instance = await start();
@@ -212,8 +212,10 @@ async function fixture() {
   };
 }
 
-const resumes = (db: Database) =>
-  listJobs(db).filter((job) => job.queue === "run.resume" && job.status === "pending");
+const resumes = async (db: Database) =>
+  (await listJobs(sqliteDb(db))).filter(
+    (job) => job.queue === "run.resume" && job.status === "pending",
+  );
 
 test("a runner that never returns retains only its remaining lease plus grace after startup", async () => {
   const f = await fixture();
@@ -246,8 +248,8 @@ test("Paws down 20 minutes with a 30-minute budget: the runner still holds the w
       { type: "resume", freshSession: true, checkpoint: null, reattach: true },
     ]);
     expect(f.leaseUntil()).toBe(before + 20 * MINUTE);
-    expect(resumes(f.db)).toHaveLength(1);
-    expect(resumes(f.db)[0]?.payload).toMatchObject({ reason: "process_restart" });
+    expect(await resumes(f.db)).toHaveLength(1);
+    expect((await resumes(f.db))[0]?.payload).toMatchObject({ reason: "process_restart" });
     expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "running", recoveryAttempts: 0 });
     const beat = await f.work.heartbeat(f.runnerId);
     expect(beat.fenced).toEqual([]);

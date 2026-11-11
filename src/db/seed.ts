@@ -1,28 +1,39 @@
 import type { Database } from "bun:sqlite";
 import type { Checkpoint, StageLimits } from "../core";
+import { settled, sqliteDb, type Db, type Q } from "./db";
 import {
-  applyWorkItemEvent,
-  configureWorkItem,
-  getWorkItem,
-  saveCheckpoint,
-  setCurrentRun,
+  applyWorkItemEventSteps,
+  configureWorkItemSteps,
+  getWorkItemSteps,
+  saveCheckpointSteps,
+  setCurrentRunSteps,
   type WorkItemRecord,
 } from "./items";
-import { insertRun, type StoredRun } from "./runs";
+import { insertRunSteps, type StoredRun } from "./runs";
+
+type QueuedItemInput = {
+  id?: string;
+  now?: number;
+  title?: string;
+  branchName?: string;
+  sessionKey?: string;
+  maxAwakeMs?: number;
+  limits?: Partial<StageLimits>;
+};
+
+function* configureQueuedItemSteps(q: Q, id: string, input: QueuedItemInput) {
+  yield* configureWorkItemSteps(q, id, {
+    sessionKey: input.sessionKey ?? "session",
+    maxAwakeMs: input.maxAwakeMs,
+    ...(input.limits ? { limits: input.limits } : {}),
+  });
+  const item = yield* getWorkItemSteps(q, id);
+  if (item === null) throw new Error(`failed to insert ${id}`);
+  return item;
+}
 
 /** Insert a queued work item. New columns keep their defaults so intake inserts stay valid. */
-export function insertQueuedItem(
-  db: Database,
-  input: {
-    id?: string;
-    now?: number;
-    title?: string;
-    branchName?: string;
-    sessionKey?: string;
-    maxAwakeMs?: number;
-    limits?: Partial<StageLimits>;
-  } = {},
-): WorkItemRecord {
+export function insertQueuedItem(db: Database, input: QueuedItemInput = {}): WorkItemRecord {
   const id = input.id ?? "item-1";
   const now = input.now ?? 0;
   const delegationId = `epic-${id}`;
@@ -40,33 +51,49 @@ export function insertQueuedItem(
       now,
     ],
   );
-  configureWorkItem(db, id, {
-    sessionKey: input.sessionKey ?? "session",
-    maxAwakeMs: input.maxAwakeMs,
-    ...(input.limits ? { limits: input.limits } : {}),
-  });
-  const item = getWorkItem(db, id);
-  if (item === null) throw new Error(`failed to insert ${id}`);
-  return item;
+  return settled(sqliteDb(db).run((q) => configureQueuedItemSteps(q, id, input)));
 }
 
-export function beginImplementRun(
-  db: Database,
+export function* beginImplementRunSteps(
+  q: Q,
   itemId: string,
   now: number,
   checkpoint?: Checkpoint,
-): { item: WorkItemRecord; run: StoredRun } {
-  applyWorkItemEvent(db, itemId, "dispatched");
-  const run = insertRun(db, { itemId, now, status: "active", kind: "implement", agent: "cursor" });
-  setCurrentRun(db, itemId, run.id);
-  if (checkpoint !== undefined) saveCheckpoint(db, itemId, checkpoint);
-  const item = getWorkItem(db, itemId);
+) {
+  yield* applyWorkItemEventSteps(q, itemId, "dispatched");
+  const run = yield* insertRunSteps(q, {
+    itemId,
+    now,
+    status: "active",
+    kind: "implement",
+    agent: "cursor",
+  });
+  yield* setCurrentRunSteps(q, itemId, run.id);
+  if (checkpoint !== undefined) yield* saveCheckpointSteps(q, itemId, checkpoint);
+  const item = yield* getWorkItemSteps(q, itemId);
   if (item === null) throw new Error(`missing ${itemId}`);
   return { item, run };
 }
 
-export function enterMergeQueue(db: Database, itemId: string, checkpoint: Checkpoint): void {
-  applyWorkItemEvent(db, itemId, "turn_ended");
-  applyWorkItemEvent(db, itemId, "closeout_accepted");
-  saveCheckpoint(db, itemId, { ...checkpoint, phase: "merge_queue" });
+export async function beginImplementRun(
+  store: Db,
+  itemId: string,
+  now: number,
+  checkpoint?: Checkpoint,
+): Promise<{ item: WorkItemRecord; run: StoredRun }> {
+  return store.transaction((q) => beginImplementRunSteps(q, itemId, now, checkpoint));
+}
+
+export function* enterMergeQueueSteps(q: Q, itemId: string, checkpoint: Checkpoint) {
+  yield* applyWorkItemEventSteps(q, itemId, "turn_ended");
+  yield* applyWorkItemEventSteps(q, itemId, "closeout_accepted");
+  yield* saveCheckpointSteps(q, itemId, { ...checkpoint, phase: "merge_queue" });
+}
+
+export async function enterMergeQueue(
+  store: Db,
+  itemId: string,
+  checkpoint: Checkpoint,
+): Promise<void> {
+  await store.transaction((q) => enterMergeQueueSteps(q, itemId, checkpoint));
 }

@@ -97,7 +97,7 @@ function issueUpdate(stateType: string, updatedFrom: Record<string, unknown> = {
 
 test("a failed task whose issue moves to Done leaves Needs a person and completes its session without reading Linear", async () => {
   const f = await fixture();
-  applyWorkItemEvent(f.db, f.item.id, "start_timed_out");
+  await applyWorkItemEvent(sqliteDb(f.db), f.item.id, "start_timed_out");
   const status = createLiveStatusProvider(f.db);
   const needsPerson = async () =>
     (await status.issues()).issues
@@ -180,7 +180,7 @@ test("a failed task whose issue moves to Done leaves Needs a person and complete
   while ((await dispatcher.tick()).length > 0) await dispatcher.idle();
   expect(requests.map((request) => request.body)).toEqual([ISSUE_CLOSED_RESPONSE.completed]);
   expect(requests.every((request) => request.query.trim().startsWith("mutation"))).toBe(true);
-  const responses = listOutbox(f.db).filter(
+  const responses = (await listOutbox(sqliteDb(f.db))).filter(
     (row) => (row.payload as { kind?: string }).kind === "response",
   );
   expect(responses).toHaveLength(1);
@@ -203,7 +203,7 @@ test("an issue moved to Canceled cancels a queued task", async () => {
   expect(outcomes).toEqual([{ itemId: f.item.id, outcome: "cancelled" }]);
   expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
   expect(notified).toEqual([f.item.id]);
-  const responses = listOutbox(f.db).filter(
+  const responses = (await listOutbox(sqliteDb(f.db))).filter(
     (row) => (row.payload as { kind?: string }).kind === "response",
   );
   expect(responses.map((row) => (row.payload as { body: string }).body)).toEqual([
@@ -214,7 +214,7 @@ test("an issue moved to Canceled cancels a queued task", async () => {
 
 test("a failed task whose issue moves to Duplicate is cancelled with the canceled response", async () => {
   const f = await fixture();
-  applyWorkItemEvent(f.db, f.item.id, "start_timed_out");
+  await applyWorkItemEvent(sqliteDb(f.db), f.item.id, "start_timed_out");
   expect(getWorkItem(f.db, f.item.id)?.state).toBe("failed");
   const closed = parseLinearIssueClosed(
     parseAgentEvent(JSON.stringify(issueUpdate("duplicate")), "issue-duplicate", Date.now())!,
@@ -224,7 +224,7 @@ test("a failed task whose issue moves to Duplicate is cancelled with the cancele
     { itemId: f.item.id, outcome: "cancelled" },
   ]);
   expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
-  const responses = listOutbox(f.db).filter(
+  const responses = (await listOutbox(sqliteDb(f.db))).filter(
     (row) => (row.payload as { kind?: string }).kind === "response",
   );
   expect(responses.map((row) => (row.payload as { body: string }).body)).toEqual([
@@ -235,7 +235,7 @@ test("a failed task whose issue moves to Duplicate is cancelled with the cancele
 test("a confirmed merge from the task's own branch completes the task as merged", async () => {
   const f = await fixture();
   for (const step of ["dispatched", "turn_ended", "closeout_accepted"] as const)
-    applyWorkItemEvent(f.db, f.item.id, step);
+    await applyWorkItemEvent(sqliteDb(f.db), f.item.id, step);
   await recordConfirmedRemoteMerge(sqliteDb(f.db), {
     itemId: f.item.id,
     repositoryOwner: "acme",
@@ -256,7 +256,7 @@ test("a confirmed merge from the task's own branch completes the task as merged"
 test("Done cancels a merge-queue task without a confirmed merge and completes its session", async () => {
   const f = await fixture();
   for (const step of ["dispatched", "turn_ended", "closeout_accepted"] as const)
-    applyWorkItemEvent(f.db, f.item.id, step);
+    await applyWorkItemEvent(sqliteDb(f.db), f.item.id, step);
   const closed = parseLinearIssueClosed(
     parseAgentEvent(JSON.stringify(issueUpdate("completed")), "issue-queued", Date.now())!,
   )!;
@@ -264,14 +264,14 @@ test("Done cancels a merge-queue task without a confirmed merge and completes it
     { itemId: f.item.id, outcome: "cancelled" },
   ]);
   expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
-  const responses = listOutbox(f.db).filter(
+  const responses = (await listOutbox(sqliteDb(f.db))).filter(
     (row) => (row.payload as { kind?: string }).kind === "response",
   );
   expect(responses.map((row) => (row.payload as { body: string }).body)).toEqual([
     ISSUE_CLOSED_RESPONSE.completed,
   ]);
   expect(
-    listJobs(f.db).some(
+    (await listJobs(sqliteDb(f.db))).some(
       (job) =>
         job.queue === JOB_KIND.closeStoppedPull &&
         (job.payload as { itemId?: string }).itemId === f.item.id,
@@ -298,7 +298,7 @@ test("a task created after the issue closed is a later delegation and stays", as
 
 test("the catch-up poll closes the tasks of an issue whose webhook was missed", async () => {
   const f = await fixture();
-  applyWorkItemEvent(f.db, f.item.id, "start_timed_out");
+  await applyWorkItemEvent(sqliteDb(f.db), f.item.id, "start_timed_out");
   const store = createInboxStore(sqliteDb(f.db));
   const closedAtMs = Date.now() + 1_000;
   const sighting: IntakeSighting = {
@@ -367,11 +367,11 @@ describe("parseLinearIssueClosed", () => {
 for (const exit of ["closed", "undelegated"] as const) {
   test(`an issue ${exit} during a merge records a deferred cancel without interrupting the call`, async () => {
     const f = await fixture();
-    applyWorkItemEvent(f.db, f.item.id, "dispatched");
-    applyWorkItemEvent(f.db, f.item.id, "turn_ended");
-    applyWorkItemEvent(f.db, f.item.id, "closeout_accepted");
+    await applyWorkItemEvent(sqliteDb(f.db), f.item.id, "dispatched");
+    await applyWorkItemEvent(sqliteDb(f.db), f.item.id, "turn_ended");
+    await applyWorkItemEvent(sqliteDb(f.db), f.item.id, "closeout_accepted");
     const now = Date.now() + 1_000;
-    beginMergeCall(f.db, f.item.id, "head", now);
+    await beginMergeCall(sqliteDb(f.db), f.item.id, "head", now);
     let notified = 0;
     const interrupted: string[] = [];
     const options = {
@@ -406,7 +406,9 @@ for (const exit of ["closed", "undelegated"] as const) {
       cancelRequested: false,
     });
     expect(
-      listJobs(f.db).filter((job) => job.queue === JOB_KIND.command && job.status === "pending"),
+      (await listJobs(sqliteDb(f.db))).filter(
+        (job) => job.queue === JOB_KIND.command && job.status === "pending",
+      ),
     ).toHaveLength(1);
     await endMergeCall(sqliteDb(f.db), f.item.id);
     await drainCommands(sqliteDb(f.db), new CommandBus(), now + 2_000);

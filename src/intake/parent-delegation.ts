@@ -298,7 +298,10 @@ export function createParentDelegations(input: {
       });
     });
   }
-  async function advance(parent: Parent, context: { signal: AbortSignal; isCurrent(): boolean }) {
+  async function advance(
+    parent: Parent,
+    context: { signal: AbortSignal; isCurrent(): Promise<boolean> },
+  ) {
     const startSession = input.startSession;
     if (!startSession) return;
     if (!(await store.run((q) => ownerCanActSteps(q, parent))))
@@ -315,7 +318,7 @@ export function createParentDelegations(input: {
         dashboardUrl(input.origin),
         context.signal,
         async (event) => {
-          if (!context.isCurrent()) throw new Error("The parent delegation claim changed.");
+          if (!(await context.isCurrent())) throw new Error("The parent delegation claim changed.");
           if (event.issueId !== sub.issueId || !event.sessionId)
             throw new Error("Linear returned another sub-issue.");
           const sessionId = event.sessionId;

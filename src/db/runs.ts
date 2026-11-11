@@ -63,8 +63,8 @@ export function* insertRunSteps(q: Q, input: RunInput): Steps<StoredRun> {
   return stored;
 }
 
-export function insertRun(db: Database, input: RunInput): StoredRun {
-  return settled(sqliteDb(db).run((q) => insertRunSteps(q, input)));
+export async function insertRun(store: Db, input: RunInput): Promise<StoredRun> {
+  return store.run((q) => insertRunSteps(q, input));
 }
 
 export function* getRunSteps(q: Q, id: string): Steps<StoredRun | null> {
@@ -126,8 +126,13 @@ export function* markRunSteps(q: Q, id: string, status: RunStatus, now: number):
   yield* q.exec(q.orm.update(q.t.run).set({ status, updatedAt: now }).where(eq(q.t.run.id, id)));
 }
 
-export function markRun(db: Database, id: string, status: RunStatus, now: number): void {
-  settled(sqliteDb(db).run((q) => markRunSteps(q, id, status, now)));
+export async function markRun(
+  store: Db,
+  id: string,
+  status: RunStatus,
+  now: number,
+): Promise<void> {
+  await store.run((q) => markRunSteps(q, id, status, now));
 }
 
 export function* recordReviewRoundsSteps(q: Q, id: string, rounds: number): Steps<void> {
@@ -298,11 +303,6 @@ export function* listWaitingProfileRunsSteps(q: Q, now: number): Steps<StoredRun
       .orderBy(asc(runTable.createdAt), asc(runTable.id)),
   );
   return rows.map((row) => mapRun(q, row.run));
-}
-
-/** Existing runs eligible for a Settings profile update. A live work lease owns its snapshot. */
-export function listWaitingProfileRuns(db: Database, now: number): StoredRun[] {
-  return settled(sqliteDb(db).run((q) => listWaitingProfileRunsSteps(q, now)));
 }
 
 export function* loseActiveItemRunsSteps(q: Q, itemId: string, now: number) {

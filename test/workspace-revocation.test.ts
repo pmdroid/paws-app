@@ -91,7 +91,7 @@ test("admin revoke atomically ends sessions, runners, queued and running work; s
       runners: 0,
       openItems: 0,
     });
-    const member = workspaceMember(db, "workspace", "member")!;
+    const member = (await workspaceMember(sqliteDb(db), "workspace", "member"))!;
     expect(member.active).toBe(true);
     expect(member.revokedAt).not.toBeNull();
     expect(member.revokedBy).toBe("admin");
@@ -110,7 +110,7 @@ test("admin revoke atomically ends sessions, runners, queued and running work; s
     for (const id of ["controlled", "other", "unmapped"])
       expect(getWorkItem(db, id)?.state).toBe("cancelled");
     expect(getWorkItem(db, "foreign")?.state).toBe("queued");
-    const responses = listOutbox(db)
+    const responses = (await listOutbox(sqliteDb(db)))
       .map((row) => row.payload as { body?: string; sessionId?: string })
       .filter((payload) => payload.body === WORKSPACE_REVOKED_RESPONSE);
     expect(new Set(responses.map((payload) => payload.sessionId))).toEqual(
@@ -131,7 +131,9 @@ test("admin revoke atomically ends sessions, runners, queued and running work; s
       teamIds: ["team"],
       now: now + 1,
     });
-    expect(workspaceMemberUsable(workspaceMember(db, "workspace", "member"))).toBe(false);
+    expect(workspaceMemberUsable(await workspaceMember(sqliteDb(db), "workspace", "member"))).toBe(
+      false,
+    );
     expect(await listUserWorkspaces(sqliteDb(db), "member")).toEqual([]);
     await expect(
       issueWorkspaceSession(db, { workspaceId: "workspace", userId: "member", now }),
@@ -195,7 +197,9 @@ test("revoke and restore require admin, origin and CSRF; self and last admin sta
         now: Date.now(),
       }),
     ).rejects.toThrow("You cannot revoke your own access.");
-    expect(workspaceMemberUsable(workspaceMember(f.db, "workspace", "admin"))).toBe(true);
+    expect(workspaceMemberUsable(await workspaceMember(sqliteDb(f.db), "workspace", "admin"))).toBe(
+      true,
+    );
     await expect(
       changeWorkspaceRevocation(sqliteDb(f.db), {
         workspaceId: "workspace",
@@ -223,7 +227,7 @@ test("a failed Stop rolls back the whole revocation", async () => {
         now: Date.now(),
       }),
     ).rejects.toThrow("Work changed before access could be revoked.");
-    expect(workspaceMember(f.db, "workspace", "member")?.revokedAt).toBeNull();
+    expect((await workspaceMember(sqliteDb(f.db), "workspace", "member"))?.revokedAt).toBeNull();
     expect(
       f.db.query("SELECT 1 FROM workspace_session WHERE user_id='member'").get(),
     ).not.toBeNull();
@@ -280,7 +284,7 @@ test("revocation uses resolved delegator ownership, not the session creator", as
       expect(getWorkItem(db, id)?.state).toBe(stop ? "cancelled" : "queued");
       if (stop) expect(await delegatedLinearUserId(sqliteDb(db), id)).toBe("linear-member");
     }
-    const responses = listOutbox(db)
+    const responses = (await listOutbox(sqliteDb(db)))
       .map((row) => row.payload as { body?: string; sessionId?: string })
       .filter((p) => p.body === WORKSPACE_REVOKED_RESPONSE);
     expect(new Set(responses.map((p) => p.sessionId))).toEqual(
@@ -312,7 +316,7 @@ test("revocation stops accepted work without closing its pull request", async ()
       db.query("SELECT pull_number FROM item_pull_request WHERE item_id='controlled'").get(),
     ).toEqual({ pull_number: 87 });
     expect(
-      listOutbox(db).some(
+      (await listOutbox(sqliteDb(db))).some(
         (row) => (row.payload as { body?: string }).body === WORKSPACE_REVOKED_RESPONSE,
       ),
     ).toBe(true);
@@ -395,7 +399,7 @@ test("a forced attribution refresh corrects an inactive snapshot after joining a
       await refresh;
       await attribution;
       expect(reads).toBe(2);
-      expect(workspaceMember(f.db, "workspace", "member")?.active).toBe(true);
+      expect((await workspaceMember(sqliteDb(f.db), "workspace", "member"))?.active).toBe(true);
     } finally {
       gate.resolve();
       await access.stop();
@@ -436,7 +440,7 @@ test("revocation stops explicit owners and delegators without session metadata",
           appUserId: "app",
           observedAtMs: now,
         });
-      if (running) beginImplementRun(db, id, now);
+      if (running) await beginImplementRun(sqliteDb(db), id, now);
     }
     const stopped = await changeWorkspaceRevocation(sqliteDb(db), {
       workspaceId: "workspace",
@@ -449,7 +453,7 @@ test("revocation stops explicit owners and delegators without session metadata",
     expect(new Set(stopped)).toEqual(new Set(expected.map((c) => c[0])));
     for (const [id, , , , stop] of cases)
       expect(getWorkItem(db, id)?.state).toBe(stop ? "cancelled" : "queued");
-    const responses = listOutbox(db)
+    const responses = (await listOutbox(sqliteDb(db)))
       .map((row) => row.payload as { body?: string; sessionId?: string })
       .filter((row) => row.body === WORKSPACE_REVOKED_RESPONSE);
     expect(new Set(responses.map((row) => row.sessionId))).toEqual(
@@ -501,7 +505,7 @@ test("revoking an idle member detaches their VM runner and notifies the connecti
         calls++;
         committed =
           !database.inTransaction &&
-          workspaceMember(database, "workspace", "member")?.revokedAt !== null;
+          (await workspaceMember(sqliteDb(database), "workspace", "member"))?.revokedAt !== null;
       },
     },
   );

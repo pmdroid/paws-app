@@ -4,7 +4,7 @@ import path from "node:path";
 import { expect, test } from "bun:test";
 import type { FakeScript } from "../src/acp/testing/script";
 import { systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, migrate, openDatabase } from "../src/db";
+import { JobLoop, OutboxDispatcher, migrate, openDatabase, syncSteps } from "../src/db";
 import { createFakeGitHub } from "../src/github";
 import { handleLinearWebhook, linearCallerFor, openLinear } from "../src/linear";
 import { attachOrchestrator, LinearTaskAccess, type AgentLaunch } from "../src/loop";
@@ -200,7 +200,7 @@ test("a delegated task spends at most five Linear requests before the agent's fi
     lifecycle: linearCallerFor(linear.issueLifecycle!, "task-access"),
     oauthClientId: "client",
     appUserId: "app",
-    stopSession: () => {},
+    stopSession: () => syncSteps(() => {}),
   });
   const launch: AgentLaunch = (input) => {
     const message = (text: string): FakeScript["steps"][number] => ({

@@ -249,13 +249,13 @@ test("run attribution snapshot persists across reopen and cannot switch repair i
   let db = openDatabase(path);
   migrate(db);
   const item = insertQueuedItem(db, { id: "item", now: 1 });
-  const { run } = beginImplementRun(db, item.id, 1);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, 1);
   await saveRunCommitPolicy(sqliteDb(db), run.id, policy);
   db.close();
   db = openDatabase(path);
   try {
     expect(getRun(db, run.id)?.checkpoint?.commitPolicy).toEqual(policy);
-    insertRun(db, { itemId: item.id, now: 2 });
+    await insertRun(sqliteDb(db), { itemId: item.id, now: 2 });
     expect(getItemRunCommitPolicy(db, item.id)).toEqual(policy);
     await expect(
       saveRunCommitPolicy(sqliteDb(db), run.id, { ...policy, credit: { ...credit, id: 9 } }),
@@ -270,7 +270,7 @@ test("a run stored with the old lead and steerer policy keeps crediting only the
   migrate(db);
   try {
     const item = insertQueuedItem(db, { id: "item", now: 1 });
-    const { run } = beginImplementRun(db, item.id, 1);
+    const { run } = await beginImplementRun(sqliteDb(db), item.id, 1);
     db.run("UPDATE run SET checkpoint=? WHERE id=?", [
       JSON.stringify({
         phase: "running",

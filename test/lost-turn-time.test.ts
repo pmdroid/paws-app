@@ -21,7 +21,7 @@ test("a turn declared lost gives back its implementation time after the last che
   const db = tempDb();
   databases.push(db);
   const { id } = insertQueuedItem(db, { sessionKey: "session" });
-  applyWorkItemEvent(db, id, "dispatched");
+  await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
   await accrueAwake(sqliteDb(db), id, 0, 1, undefined, true);
   await accrueAwake(sqliteDb(db), id, 60 * MINUTE, 2, undefined, true);
   expect(getWorkItem(db, id)!.implementMs).toBe(60 * MINUTE);

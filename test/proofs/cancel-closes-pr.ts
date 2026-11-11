@@ -19,17 +19,25 @@ export default {
     await proof.delegate();
     const queued = await proof.waitFor(
       "the pull request is open and the item waits in the merge queue",
-      () =>
-        proof.itemState() === "merge_queue" &&
+      async () =>
+        (await proof.itemState()) === "merge_queue" &&
         proof.github.calls.some((call) => call.method === "POST" && call.path.endsWith("/pulls")),
     );
-    proof.expect("the item reaches the merge queue with an open PR", queued, proof.itemState());
+    proof.expect(
+      "the item reaches the merge queue with an open PR",
+      queued,
+      await proof.itemState(),
+    );
     await proof.cancelInLinear();
     const closed = await proof.waitFor("the pull request is closed", () =>
       proof.github.closed.has(1),
     );
     await proof.waitFor("queued Linear activity is delivered", () => false, 1_000);
-    proof.expect("the item is cancelled", proof.itemState() === "cancelled", proof.itemState());
+    proof.expect(
+      "the item is cancelled",
+      (await proof.itemState()) === "cancelled",
+      await proof.itemState(),
+    );
     const comment = proof.github.calls.find(
       (call) => call.method === "POST" && call.path.endsWith("/issues/1/comments"),
     );

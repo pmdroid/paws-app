@@ -250,7 +250,7 @@ export function createBrowserOnboarding(options: {
         name: identity.name,
         email: identity.email,
       });
-      let workspace = workspaceForOrganization(db, organization.id);
+      let workspace = await workspaceForOrganization(sqliteDb(db), organization.id);
       if (workspace === null) {
         const grant = await issueWorkspaceBootstrap(db, organization.id, timestamp);
         workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {

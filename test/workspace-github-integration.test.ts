@@ -110,13 +110,13 @@ test("signed-in admins, including the one who connected the workspace, can reval
     expect((await f.request("admin", { stale: true })).status).toBe(200);
     expect((await f.request("admin", { csrf: false })).status).toBe(403);
     expect((await f.request("admin", { origin: "https://other.example" })).status).toBe(403);
-    expect(listJobs(f.db)).toHaveLength(3);
+    expect(await listJobs(sqliteDb(f.db))).toHaveLength(3);
     expect(
       f.db
         .query("SELECT * FROM workspace_access_audit WHERE action='github.integration.revalidated'")
         .all(),
     ).toHaveLength(3);
-    expect(workspaceMember(f.db, "workspace", "admin")?.role).toBe("admin");
+    expect((await workspaceMember(sqliteDb(f.db), "workspace", "admin"))?.role).toBe("admin");
   } finally {
     f.db.close();
   }
@@ -126,7 +126,7 @@ test("Paws admin permission never overrides missing GitHub installation authorit
   const f = await fixture();
   try {
     expect((await f.request("admin", { check: async () => false })).status).toBe(409);
-    expect(listJobs(f.db)).toHaveLength(0);
+    expect(await listJobs(sqliteDb(f.db))).toHaveLength(0);
   } finally {
     f.db.close();
   }
@@ -145,7 +145,7 @@ test("in-flight administrator demotion rejects recovery transaction and is audit
         })
       ).status,
     ).toBe(403);
-    expect(listJobs(f.db)).toHaveLength(0);
+    expect(await listJobs(sqliteDb(f.db))).toHaveLength(0);
     expect(
       f.db.query("SELECT * FROM workspace_access_audit WHERE action='access.denied'").all(),
     ).toHaveLength(1);
@@ -172,7 +172,7 @@ test("repository scope mutation during revalidation cannot enqueue recovery", as
         })
       ).status,
     ).toBe(403);
-    expect(listJobs(f.db)).toHaveLength(0);
+    expect(await listJobs(sqliteDb(f.db))).toHaveLength(0);
   } finally {
     f.db.close();
   }

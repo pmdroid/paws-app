@@ -74,7 +74,7 @@ if (!text.includes("fixed")) {
 
   const db = tempDb();
   insertQueuedItem(db, { id: "ENG-7", title: "Escape quotes", now: 1 });
-  const { run } = beginImplementRun(db, "ENG-7", 2);
+  const { run } = await beginImplementRun(sqliteDb(db), "ENG-7", 2);
   const main = join(workspace, "src", "main.ts");
   const steps: FakeScript["steps"] = [
     { type: "fs_write", path: main, content: "export const state = 'broken';\n" },
@@ -172,7 +172,7 @@ if (!text.includes("fixed")) {
 test("a running check reports how long it has run and a later stale report sends it back to pending", async () => {
   const db = tempDb();
   insertQueuedItem(db, { id: "ENG-8", title: "Stale", now: 1 });
-  const { run } = beginImplementRun(db, "ENG-8", 2);
+  const { run } = await beginImplementRun(sqliteDb(db), "ENG-8", 2);
   const head = "a".repeat(40);
   const attempt = {
     head,
@@ -241,7 +241,7 @@ test("a running check reports how long it has run and a later stale report sends
 test("a check still running when its run ended stops at the run's end and points to the task's newer run", async () => {
   const db = tempDb();
   insertQueuedItem(db, { id: "ENG-10", title: "Restart", now: 1 });
-  const { run } = beginImplementRun(db, "ENG-10", 2);
+  const { run } = await beginImplementRun(sqliteDb(db), "ENG-10", 2);
   await recordAgentCloseout(
     sqliteDb(db),
     run.id,
@@ -258,8 +258,8 @@ test("a check still running when its run ended stops at the run's end and points
     10_000,
   );
   await releaseRunCapacity(sqliteDb(db), run.id, 575_000);
-  const next = insertRun(db, { itemId: "ENG-10", now: 600_000 });
-  setCurrentRun(db, "ENG-10", next.id);
+  const next = await insertRun(sqliteDb(db), { itemId: "ENG-10", now: 600_000 });
+  await setCurrentRun(sqliteDb(db), "ENG-10", next.id);
   await recordAgentCloseout(
     sqliteDb(db),
     next.id,
@@ -304,7 +304,7 @@ test("a check still running when its run ended stops at the run's end and points
 test("an evidence check takes its state from the report and lets the round finish", async () => {
   const db = tempDb();
   insertQueuedItem(db, { id: "ENG-9", title: "Proof", now: 1 });
-  const { run } = beginImplementRun(db, "ENG-9", 2);
+  const { run } = await beginImplementRun(sqliteDb(db), "ENG-9", 2);
   const head = "c".repeat(40);
   const proof = {
     id: "visual-proof",

@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  applyWorkItemEvent,
+  applyWorkItemEventSteps,
   bindLinearSessionTask,
   migrate,
   openDatabase,
@@ -112,7 +112,7 @@ export async function probeEpicReconciliation(root: string) {
             .query<{ state: string }, [string]>("SELECT state FROM work_item WHERE id=?")
             .get(id)!;
           if (!["cancelled", "merged", "completed"].includes(row.state))
-            applyWorkItemEvent(db, id, "cancel");
+            yield* applyWorkItemEventSteps(q, id, "cancel");
         }
         recorded.push(structuredClone(changes));
       },
@@ -392,8 +392,7 @@ export async function probeEpicReconciliation(root: string) {
       tracker,
       lifecycle,
       *onChanges(q, changes) {
-        yield* [];
-        for (const id of changes.removedItemIds) applyWorkItemEvent(db, id, "cancel");
+        for (const id of changes.removedItemIds) yield* applyWorkItemEventSteps(q, id, "cancel");
       },
       async afterChanges() {
         throw new Error("Interrupted removed child join");

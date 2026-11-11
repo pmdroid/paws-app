@@ -68,7 +68,13 @@ export async function applyLinearCommand(
    */
   options: CommandOptions = {},
 ): Promise<{ applied: boolean; deferred?: boolean }> {
-  return applyLinearCommandAsync(store, command, now, response, options, commandInstance(store));
+  const notifications = { ready: false };
+  const self = commandInstance(store);
+  const result = await store.transaction((q) =>
+    applyLinearCommandSteps(q, command, now, response, options, self, notifications),
+  );
+  if (notifications.ready) emitJobReady(store);
+  return result;
 }
 
 export function* applyLinearCommandSteps(
@@ -85,21 +91,6 @@ export function* applyLinearCommandSteps(
     const forwarded = yield* forwardCommandSteps(q, self, command, now);
     notifications.ready ||= forwarded.inserted;
   }
-  return result;
-}
-export async function applyLinearCommandAsync(
-  store: Db,
-  command: LinearCommand,
-  now = command.requestedAt,
-  response?: string,
-  options: CommandOptions = {},
-  self?: string,
-) {
-  const notifications = { ready: false };
-  const result = await store.transaction((q) =>
-    applyLinearCommandSteps(q, command, now, response, options, self, notifications),
-  );
-  if (notifications.ready) emitJobReady(store);
   return result;
 }
 

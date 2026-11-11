@@ -77,7 +77,7 @@ import {
 import {
   handleWorkspaceGitHubIntegration,
   isWorkspaceAdmin,
-  requestWorkspaceSession,
+  requestWorkspaceSessionSteps,
   validWorkspaceCsrf,
   type WorkspaceAccess,
   type WorkspaceClient,
@@ -381,7 +381,9 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     const auth = await workspace.handle(request, { ip: secrets.ip ?? null });
     if (auth !== null) return auth;
     if (isDashboardPath(path) && secrets.db !== undefined) {
-      const access = requestWorkspaceSession(secrets.db, request, Date.now());
+      const access = await (secrets.store ?? sqliteDb(secrets.db)).run((q) =>
+        requestWorkspaceSessionSteps(q, request, Date.now()),
+      );
       if (access !== null) csrfToken = access.session.csrfToken;
     }
     if (
@@ -582,7 +584,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
-        auditWorkspaceAccess(db, {
+        auditWorkspaceAccess(secrets.store ?? sqliteDb(db), {
           workspaceId: principal?.workspaceId ?? null,
           userId: principal?.userId ?? null,
           action,
@@ -606,7 +608,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       groupingTime: (configPath && loadConfigFile(configPath).findingsGroupingTime) || "06:00",
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
-        auditWorkspaceAccess(db, {
+        auditWorkspaceAccess(store, {
           workspaceId: principal?.workspaceId ?? null,
           userId: principal?.userId ?? null,
           action,
@@ -623,7 +625,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
-        auditWorkspaceAccess(db, {
+        auditWorkspaceAccess(secrets.store ?? sqliteDb(db), {
           workspaceId: principal?.workspaceId ?? null,
           userId: principal?.userId ?? null,
           action,
@@ -641,7 +643,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
-        auditWorkspaceAccess(db, {
+        auditWorkspaceAccess(secrets.store ?? sqliteDb(db), {
           workspaceId: principal?.workspaceId ?? null,
           userId: principal?.userId ?? null,
           action,
@@ -672,7 +674,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         ? {}
         : {
             audit: (action: string, subject: string) =>
-              auditWorkspaceAccess(secrets.db!, {
+              auditWorkspaceAccess(secrets.store ?? sqliteDb(secrets.db!), {
                 workspaceId: principal!.workspaceId,
                 userId: principal!.userId,
                 action,

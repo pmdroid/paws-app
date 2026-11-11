@@ -156,20 +156,30 @@ export async function probeScheduler(
         admissions: count(db, "scheduler_admission"),
         jobs: count(db, "job"),
       });
-      const first = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] })!;
+      const first = (await claimNextJob(sqliteDb(db), { now: 1000, queues: [JOB_KIND.start] }))!;
       assert(first);
-      applyWorkItemEvent(db, (first.payload as { itemId: string }).itemId, "dispatched");
+      await applyWorkItemEvent(
+        sqliteDb(db),
+        (first.payload as { itemId: string }).itemId,
+        "dispatched",
+      );
       const secondDb = openDatabase(join(directory, "paws.sqlite"));
-      const second = claimNextJob(secondDb, { now: 1000, queues: [JOB_KIND.start] })!;
+      const second = (await claimNextJob(sqliteDb(secondDb), {
+        now: 1000,
+        queues: [JOB_KIND.start],
+      }))!;
       assert(second);
       assert.notEqual(second.id, first.id);
       const firstId = (first.payload as { itemId: string }).itemId;
-      const resume = enqueueJob(db, {
+      const resume = await enqueueJob(sqliteDb(db), {
         queue: JOB_KIND.resume,
         payload: { itemId: firstId },
         now: 1000,
       });
-      assert.equal(claimNextJob(secondDb, { now: 1000, queues: [JOB_KIND.resume] }), null);
+      assert.equal(
+        await claimNextJob(sqliteDb(secondDb), { now: 1000, queues: [JOB_KIND.resume] }),
+        null,
+      );
       observed("Reserved jobs claim concurrently but the same item cannot resume twice", {
         first: first.id,
         second: second.id,
@@ -196,12 +206,12 @@ export async function probeScheduler(
   ] as const) {
     const { db, ids } = await setup(name, 2, paths);
     assert.equal((await workspaceDispatch(db, { now: 1000 })).length, 2);
-    const first = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] })!;
-    const second = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] })!;
+    const first = (await claimNextJob(sqliteDb(db), { now: 1000, queues: [JOB_KIND.start] }))!;
+    const second = (await claimNextJob(sqliteDb(db), { now: 1000, queues: [JOB_KIND.start] }))!;
     assert.notEqual(first.id, second.id);
     const id = (first.payload as { itemId: string }).itemId;
     db.run("UPDATE work_item SET state='merged' WHERE id=?", [id]);
-    assert(completeJob(db, first, 1001));
+    assert(await completeJob(sqliteDb(db), first, 1001));
     assert.equal((await workspaceDispatch(db, { now: 1001 })).length, 0);
     observed(`${name} footprints execute independently in separate task workspaces`, { ids });
     db.close();
@@ -221,7 +231,7 @@ export async function probeScheduler(
   {
     const { db, ids } = await setup("claimed-retraction", 2, () => ["src/shared"]);
     assert.deepEqual(await workspaceDispatch(db, { now: 1000 }), ids);
-    const claimed = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] })!;
+    const claimed = (await claimNextJob(sqliteDb(db), { now: 1000, queues: [JOB_KIND.start] }))!;
     const first = (claimed.payload as { itemId: string }).itemId;
     const canDispatchDelegation = (delegationId: string) => delegationId !== `epic-${first}`;
     assert.deepEqual(
@@ -231,10 +241,10 @@ export async function probeScheduler(
       }),
       [],
     );
-    assert.equal(getJob(db, claimed.id)!.status, "running");
-    assert.equal(getJob(db, claimed.id)!.lockedBy, claimed.lockedBy);
+    assert.equal((await getJob(sqliteDb(db), claimed.id))!.status, "running");
+    assert.equal((await getJob(sqliteDb(db), claimed.id))!.lockedBy, claimed.lockedBy);
     assert.equal(count(db, "scheduler_admission"), 2);
-    assert(completeJob(db, claimed, 1002));
+    assert(await completeJob(sqliteDb(db), claimed, 1002));
     assert.deepEqual(
       await dispatch(db, {
         now: 1002,
@@ -252,12 +262,15 @@ export async function probeScheduler(
     for (const running of [false, true]) {
       const { db, ids } = await setup(`stale-start-${running}`, 1);
       await workspaceDispatch(db, { now: 1000 });
-      if (running) assert(claimNextJob(db, { now: 1000, leaseMs: 10, queues: [JOB_KIND.start] }));
+      if (running)
+        assert(
+          await claimNextJob(sqliteDb(db), { now: 1000, leaseMs: 10, queues: [JOB_KIND.start] }),
+        );
       db.run("UPDATE work_item SET state='failed' WHERE id=?", [ids[0]!]);
       await workspaceDispatch(db, { now: 1011 });
       assert.equal(count(db, "scheduler_admission"), 0);
       db.run("UPDATE work_item SET state='queued' WHERE id=?", [ids[0]!]);
-      assert.equal(claimNextJob(db, { now: 1011, queues: [JOB_KIND.start] }), null);
+      assert.equal(await claimNextJob(sqliteDb(db), { now: 1011, queues: [JOB_KIND.start] }), null);
       assert.equal(
         db.query<{ status: string }, []>("SELECT status FROM job").get()!.status,
         "cancelled",
@@ -285,22 +298,25 @@ export async function probeScheduler(
     });
     const firstOnly = { now: 1000, admission: onlyStarts(db, ids[0]!) };
     assert.deepEqual(await dispatch(db, firstOnly), [ids[0]!]);
-    const start = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] })!;
+    const start = (await claimNextJob(sqliteDb(db), { now: 1000, queues: [JOB_KIND.start] }))!;
     db.run("UPDATE work_item SET state='merge_queue' WHERE id=?", [ids[0]!]);
     assert.deepEqual(await dispatch(db, firstOnly), []);
-    assert(completeJob(db, start, 1001));
-    const mergeId = enqueueJob(db, {
+    assert(await completeJob(sqliteDb(db), start, 1001));
+    const mergeId = await enqueueJob(sqliteDb(db), {
       queue: `${JOB_KIND.merge}.deferred`,
       payload: { itemId: ids[0]! },
       now: 1001,
     });
-    const merge = claimNextJob(db, { now: 1001, queues: [`${JOB_KIND.merge}.deferred`] })!;
+    const merge = (await claimNextJob(sqliteDb(db), {
+      now: 1001,
+      queues: [`${JOB_KIND.merge}.deferred`],
+    }))!;
     assert.equal(merge.id, mergeId);
     assert.deepEqual(await workspaceDispatch(db, { now: 1002 }), [ids[1]!]);
     assert.equal(count(db, "scheduler_admission"), 2);
-    assert(completeJob(db, merge, 1003));
+    assert(await completeJob(sqliteDb(db), merge, 1003));
     assert.deepEqual(await workspaceDispatch(db, { now: 1003 }), []);
-    const blocker = claimNextJob(db, { now: 1003, queues: [JOB_KIND.start] })!;
+    const blocker = (await claimNextJob(sqliteDb(db), { now: 1003, queues: [JOB_KIND.start] }))!;
     assert.equal((blocker.payload as { itemId: string }).itemId, ids[1]!);
     observed("A live merge admits a same-session sibling with an overlapping footprint", {
       originalStart: start.id,
@@ -315,10 +331,10 @@ export async function probeScheduler(
       assert.deepEqual(await dispatch(db, { now: 1000, admission: onlyStarts(db, ids[0]!) }), [
         ids[0]!,
       ]);
-      const start = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] })!;
-      assert(completeJob(db, start, 1001));
+      const start = (await claimNextJob(sqliteDb(db), { now: 1000, queues: [JOB_KIND.start] }))!;
+      assert(await completeJob(sqliteDb(db), start, 1001));
       db.run("UPDATE work_item SET state='merge_queue' WHERE id=?", [ids[0]!]);
-      const run = insertRun(db, { itemId: ids[0]!, now: 1001, status });
+      const run = await insertRun(sqliteDb(db), { itemId: ids[0]!, now: 1001, status });
       assert.deepEqual(await workspaceDispatch(db, { now: 1002 }), [ids[1]!]);
       db.run("UPDATE run SET status='ended' WHERE id=?", [run.id]);
       assert.deepEqual(await workspaceDispatch(db, { now: 1003 }), []);
@@ -509,7 +525,7 @@ export async function probeScheduler(
       const selected = ids.filter((id) => admitted.includes(id));
       assert.equal(selected.length, ids.length);
       await activateLinearItem(sqliteDb(db), sessionId, selected[0]!);
-      applyWorkItemEvent(db, selected[0]!, "dispatched");
+      await applyWorkItemEvent(sqliteDb(db), selected[0]!, "dispatched");
       await assert.rejects(
         activateLinearItem(sqliteDb(db), sessionId, selected[1]!),
         /Previous Linear task is still active/,
@@ -561,11 +577,11 @@ export async function probeScheduler(
   {
     const { db, ids } = await setup("draining", 2);
     await workspaceDispatch(db, { now: 1000 });
-    insertRun(db, { itemId: ids[0]!, now: 1000, status: "active" });
-    const claimed = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] });
+    await insertRun(sqliteDb(db), { itemId: ids[0]!, now: 1000, status: "active" });
+    const claimed = await claimNextJob(sqliteDb(db), { now: 1000, queues: [JOB_KIND.start] });
     assert(claimed);
     assert.equal((claimed.payload as { itemId: string }).itemId, ids[1]);
-    assert.equal(claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] }), null);
+    assert.equal(await claimNextJob(sqliteDb(db), { now: 1000, queues: [JOB_KIND.start] }), null);
     observed("Queued restart cannot claim while its previous run is still draining", {
       claimed: claimed.id,
     });
@@ -584,16 +600,16 @@ export async function probeScheduler(
     );
     const first = await loop.tick();
     assert(first);
-    assert.equal(getJob(db, first.id)!.runAt, 31_000);
-    assert.equal(getJob(db, first.id)!.fireCount, 1);
+    assert.equal((await getJob(sqliteDb(db), first.id))!.runAt, 31_000);
+    assert.equal((await getJob(sqliteDb(db), first.id))!.fireCount, 1);
     now = 30_999;
     assert.equal(await loop.tick(), null);
     now = 31_000;
     assert.equal((await loop.tick())!.id, first.id);
     assert.equal(count(db, "scheduler_admission"), 1);
-    assert.equal(getJob(db, first.id)!.fireCount, 2);
+    assert.equal((await getJob(sqliteDb(db), first.id))!.fireCount, 2);
     observed("A durable thirty-second scheduler tick recurs without duplicate starts", {
-      tick: getJob(db, first.id),
+      tick: await getJob(sqliteDb(db), first.id),
     });
     db.close();
   }

@@ -236,14 +236,14 @@ export async function probeWorkspaceAuthorization(
   });
   try {
     for (let index = 0; index < 105; index++)
-      auditWorkspaceAccess(db, {
+      await auditWorkspaceAccess(sqliteDb(db), {
         workspaceId: workspace.id,
         userId: ownerId,
         action: "fixture.changed",
         subject: `record-${index}`,
         now,
       });
-    auditWorkspaceAccess(db, {
+    await auditWorkspaceAccess(sqliteDb(db), {
       workspaceId: null,
       userId: null,
       action: "fixture.changed",
@@ -269,7 +269,7 @@ export async function probeWorkspaceAuthorization(
       { status: auditResponse.status, entries: entries.length, nextBefore: history.nextBefore },
     );
     if (history.nextBefore !== undefined && history.nextBefore !== null) {
-      auditWorkspaceAccess(db, {
+      await auditWorkspaceAccess(sqliteDb(db), {
         workspaceId: workspace.id,
         userId: ownerId,
         action: "fixture.changed",
@@ -492,7 +492,7 @@ export async function probeWorkspaceAuthorization(
         demotedAdmin.status === 200 &&
         lastAdmin.status === 400 &&
         lastAdminError === "The workspace must keep an active admin." &&
-        workspaceMember(db, workspace.id, ownerId)?.role === "admin" &&
+        (await workspaceMember(sqliteDb(db), workspace.id, ownerId))?.role === "admin" &&
         formerRoles.join() === "400,400",
       {
         missingCsrf: missingCsrf.status,
@@ -626,7 +626,7 @@ export async function probeWorkspaceAuthorization(
       "an admin cannot give a verified Linear guest a role, and the guest loses access",
       guestPromotion.status === 400 &&
         guestError === "Linear guests can't use Paws." &&
-        workspaceMember(db, workspace.id, memberId)?.active === false &&
+        (await workspaceMember(sqliteDb(db), workspace.id, memberId))?.active === false &&
         guestSession.status === 401,
       { status: guestPromotion.status, error: guestError, session: guestSession.status },
     );
@@ -696,7 +696,7 @@ export async function probeWorkspaceAuthorization(
     });
     releaseMembership.resolve();
     const stalePromotion = await delayedPromotion;
-    const cappedMember = workspaceMember(db, workspace.id, memberId)!;
+    const cappedMember = (await workspaceMember(sqliteDb(db), workspace.id, memberId))!;
     observe(
       "a delayed promotion cannot restore a member a newer sync found to be a guest",
       stalePromotion.status === 400 && !cappedMember.active,
@@ -706,7 +706,7 @@ export async function probeWorkspaceAuthorization(
     const ownerReadRelease = Promise.withResolvers<void>();
     memberReadBarrier = { entered: ownerReadStarted.resolve, wait: ownerReadRelease.promise };
     guest = false;
-    const beforeDemotion = workspaceMember(db, workspace.id, memberId)!;
+    const beforeDemotion = (await workspaceMember(sqliteDb(db), workspace.id, memberId))!;
     await Bun.sleep(2);
     const demotedWrite = fetch(`${origin}/api/workspaces/members`, {
       method: "PUT",
@@ -717,7 +717,7 @@ export async function probeWorkspaceAuthorization(
     db.run("UPDATE workspace_member SET role='member' WHERE user_id=?", [ownerId]);
     ownerReadRelease.resolve();
     const deniedOwner = await demotedWrite;
-    const afterDemotion = workspaceMember(db, workspace.id, memberId)!;
+    const afterDemotion = (await workspaceMember(sqliteDb(db), workspace.id, memberId))!;
     observe(
       "an admin demoted during membership lookup cannot mutate the target membership",
       deniedOwner.status === 400 &&

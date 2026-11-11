@@ -22,7 +22,9 @@ function options(role?: string): FindingSettingsOptions {
     workspaceId: "ws",
     groupingTime: "07:30",
     ...(role ? { role } : {}),
-    audit: (action, subject) => audits.push([action, subject]),
+    audit: async (action, subject) => {
+      audits.push([action, subject]);
+    },
   };
 }
 

@@ -25,9 +25,9 @@ export type AgentSettingsOptions = {
   csrfToken: string;
   repos?: string[];
   /** Replace idle run profile snapshots after saving. Runs executing a turn are excluded. */
-  applyToWaiting?: () => number;
+  applyToWaiting?: () => Promise<number>;
   /** Records a changed workspace setting in the audit history. */
-  audit?: (action: string, subject: string) => void;
+  audit?: (action: string, subject: string) => Promise<void>;
   runnerReadiness?: (agent: ImplementerName) => RunnerReadiness[] | Promise<RunnerReadiness[]>;
 };
 
@@ -147,26 +147,26 @@ export async function handleAgentSettingsRequest(
     const config = loadConfigFile(options.configPath);
     saved = readMergeSettings(config).ciFixAttempts;
     savedQueue = queue ?? readQueueSettings(config);
-    if (applyToWaiting) waitingRuns = options.applyToWaiting?.() ?? 0;
+    if (applyToWaiting) waitingRuns = (await options.applyToWaiting?.()) ?? 0;
   } catch (caughtError4) {
     journalCaught(caughtError4, "handler.handleAgentSettingsRequest.writeAgentSettings", null);
     return json({ error: "Agent settings could not be saved" }, 503);
   }
   const before = previous.ciFixAttempts ?? DEFAULT_CI_FIX_ATTEMPTS;
   if (merge?.ciFixAttempts !== undefined && merge.ciFixAttempts !== before)
-    options.audit?.(
+    await options.audit?.(
       "settings.ci-fix-attempts",
       `CI fix attempts ${before} → ${merge.ciFixAttempts}`,
     );
   const hoursBefore = previousQueue?.startTimeoutHours ?? DEFAULT_QUEUE_START_TIMEOUT_HOURS;
   if (queue !== undefined && queue.startTimeoutHours !== hoursBefore)
-    options.audit?.(
+    await options.audit?.(
       "settings.queue-start-timeout",
       `Queue start timeout ${hoursBefore} h → ${queue.startTimeoutHours} h`,
     );
   const capBefore = previousQueue?.maxRunningPerOwner ?? null;
   if (queue !== undefined && queue.maxRunningPerOwner !== capBefore)
-    options.audit?.(
+    await options.audit?.(
       "settings.queue-owner-cap",
       `Running tasks per owner ${capBefore ?? "no cap"} → ${queue.maxRunningPerOwner ?? "no cap"}`,
     );

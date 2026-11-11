@@ -50,7 +50,7 @@ export type SerialMergeInput = {
   /** Observability for the host. Do not log the token. */
   onCredential?: (purpose: "push" | "merge", token: string) => void;
   /** Runs after preparation, immediately before the squash PUT can reach GitHub. */
-  beforeMergeCall?: (head: string) => void;
+  beforeMergeCall?: (head: string) => Promise<void>;
   commitTitle?: string;
   commitMessage?: string;
   commitEnv?: Record<string, string>;
@@ -636,7 +636,7 @@ async function squash(
       commit_message: `${fixesLine(input.issue)}\n\n${(input.commitMessage ?? summary).trim()}\n`,
     },
   };
-  input.beforeMergeCall?.(head);
+  await input.beforeMergeCall?.(head);
   try {
     return await input.client.request(request);
   } catch (error) {

@@ -63,7 +63,7 @@ test("a missing pull record with a durable marker reports an error instead of pa
   const f = await fixture();
   try {
     expect(await f.read()).toBeNull();
-    beginMergeCall(f.db, "item", "h", 1_000);
+    await beginMergeCall(sqliteDb(f.db), "item", "h", 1_000);
     await expect(f.read()).rejects.toThrow("pull request record is missing");
     expect(await mergeCallInFlight(sqliteDb(f.db), "item")).toBe(true);
   } finally {
@@ -82,7 +82,7 @@ test.each([404, 403, 502, "timeout"])(
         pullUrl: null,
         openedAt: 1_000,
       });
-      beginMergeCall(f.db, "item", "h", 1_000);
+      await beginMergeCall(sqliteDb(f.db), "item", "h", 1_000);
       f.respond(async () => {
         if (failure === "timeout") throw new DOMException("Read timed out", "TimeoutError");
         return { status: failure as number, body: {} };

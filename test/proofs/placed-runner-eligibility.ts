@@ -26,10 +26,10 @@ export default {
     const full = await pair("full", 1, [REPOSITORY]);
     const newly = await pair("newly", 1, ["other/repo"]);
     await queue("busy");
-    const busy = insertRun(db, { itemId: "busy", now: NOW, status: "active" });
+    const busy = await insertRun(sqliteDb(db), { itemId: "busy", now: NOW, status: "active" });
     await queue("parked");
-    applyWorkItemEvent(db, "parked", "dispatched");
-    const run = insertRun(db, { itemId: "parked", now: NOW, status: "active" });
+    await applyWorkItemEvent(sqliteDb(db), "parked", "dispatched");
+    const run = await insertRun(sqliteDb(db), { itemId: "parked", now: NOW, status: "active" });
     db.run("UPDATE work_item SET current_run_id=? WHERE id='parked'", [run.id]);
     db.run(
       "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,1,0,'busy',?)",
@@ -40,7 +40,7 @@ export default {
       [run.id, previous, workspace.id, NOW - 1, NOW - 1, NOW - 1],
     );
     db.run("UPDATE runner SET status='paused' WHERE id=?", [previous]);
-    const jobId = enqueueJob(db, {
+    const jobId = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.resume,
       payload: {
         itemId: "parked",
@@ -48,24 +48,28 @@ export default {
       },
       now: NOW + 60000,
     });
-    const wait = () =>
-      (getJob(db, jobId)!.payload as { capacityWait: RunnerCapacityWaitState }).capacityWait;
+    const wait = async () =>
+      ((await getJob(sqliteDb(db), jobId))!.payload as { capacityWait: RunnerCapacityWaitState })
+        .capacityWait;
     proof.expect(
       "placed work initially has no free retry runner",
       !(await runnerSlotFree(
         sqliteDb(db),
-        await slotWaitRunners(sqliteDb(db), run.id, wait(), NOW),
+        await slotWaitRunners(sqliteDb(db), run.id, await wait(), NOW),
         NOW,
         run.id,
       )),
     );
     await recordRunnerRepositories(sqliteDb(db), newly, [REPOSITORY], NOW + 1);
-    proof.expect("eligibility wakes the parked job", getJob(db, jobId)!.runAt === NOW + 1);
+    proof.expect(
+      "eligibility wakes the parked job",
+      (await getJob(sqliteDb(db), jobId))!.runAt === NOW + 1,
+    );
     proof.expect(
       "the placed-run retry filter now includes free capacity",
       await runnerSlotFree(
         sqliteDb(db),
-        await slotWaitRunners(sqliteDb(db), run.id, wait(), NOW + 1),
+        await slotWaitRunners(sqliteDb(db), run.id, await wait(), NOW + 1),
         NOW + 1,
         run.id,
       ),

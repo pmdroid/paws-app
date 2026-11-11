@@ -11,8 +11,7 @@ import {
   beginImplementRun,
   enterMergeQueue,
   finishCloseoutProgressSteps,
-  getConfirmedRemoteMerge,
-  getWorkItem,
+  getConfirmedRemoteMergeSteps,
   getWorkItemSteps,
   hasCiRerun,
   insertQueuedItem,
@@ -206,7 +205,7 @@ export async function mergeHarness(
     /** Pull request reads, by number. */
     pullReads: new Map<number, number>(),
     /** Runs during each pull request read, as if other work went on while GitHub answered. */
-    onPullRead: (_number: number): void => {},
+    onPullRead: async (_number: number): Promise<void> => {},
     /** Held open while a squash is in flight; the squash goes on when it settles. */
     squashGate: null as Promise<void> | null,
     squashing: false,
@@ -329,7 +328,7 @@ export async function mergeHarness(
   /** GitHub's pull request read: `mergeable` from whether the branch merges into main. */
   async function pullResponse(number: number): Promise<GitHubResponse> {
     state.pullReads.set(number, (state.pullReads.get(number) ?? 0) + 1);
-    state.onPullRead(number);
+    await state.onPullRead(number);
     const id = [...items.values()].find((item) => item.pull === number)?.id;
     if (id === undefined) return { status: 404, body: {} };
     const head = await git(bare, "rev-parse", `refs/heads/paws/${id}`);
@@ -381,8 +380,12 @@ export async function mergeHarness(
     const head = await git(worktree, "rev-parse", "HEAD");
     const base = await git(worktree, "rev-parse", "origin/main");
     insertQueuedItem(db, { id, now: clock.now(), sessionKey: `ses-${id}` });
-    const { run } = beginImplementRun(db, id, clock.now());
-    enterMergeQueue(db, id, { phase: "merge_queue", baseSha: base, wipCommit: head });
+    const { run } = await beginImplementRun(sqliteDb(db), id, clock.now());
+    await enterMergeQueue(sqliteDb(db), id, {
+      phase: "merge_queue",
+      baseSha: base,
+      wipCommit: head,
+    });
     // The implementer run ends once Closeout accepts, as it does in the loop.
     await store.run((q) => markRunSteps(q, run.id, "ended", clock.now()));
     await acceptHead(id, base, head);
@@ -483,7 +486,7 @@ export async function mergeHarness(
       now: () => clock.now(),
       // Like the orchestrator, a stop that cancelled or paused the item stops the lane as well as the flag.
       stopped: async () => {
-        const current = getWorkItem(db, id);
+        const current = await store.run((q) => getWorkItemSteps(q, id));
         return (
           state.stopped ||
           current === null ||
@@ -513,13 +516,12 @@ export async function mergeHarness(
       },
       readPull: (_, prNumber) => readPull(prNumber),
       mergeLane: async (current) => state.lanes.get(current.id) ?? "",
-      dependencyHold: (_q, itemId) =>
-        syncSteps(() => {
-          const open = (state.blockedBy.get(itemId) ?? []).filter(
-            (blocker) => getConfirmedRemoteMerge(db, blocker) === null,
-          );
-          return open.length ? open : null;
-        }),
+      dependencyHold: function* (q, itemId) {
+        const open: string[] = [];
+        for (const blocker of state.blockedBy.get(itemId) ?? [])
+          if ((yield* getConfirmedRemoteMergeSteps(q, blocker)) === null) open.push(blocker);
+        return open.length ? open : null;
+      },
       voice: {
         thought: (_q, _, body, key) => syncSteps(() => say("thought", body, key)),
         status: (_q, _, body, key) => syncSteps(() => say("status", body, key)),

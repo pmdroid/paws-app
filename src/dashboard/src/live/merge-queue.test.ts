@@ -51,9 +51,13 @@ function recordQueries(db: Database): string[] {
 async function queued(db: Database, id: string, session: string, at: number) {
   const head = "c".repeat(40);
   const item = insertQueuedItem(db, { id, title: `Title ${id}`, sessionKey: session, now: at });
-  beginImplementRun(db, item.id, at);
-  enterMergeQueue(db, item.id, { phase: "merge_queue", baseSha: head, wipCommit: head });
-  enqueueOutbox(db, {
+  await beginImplementRun(sqliteDb(db), item.id, at);
+  await enterMergeQueue(sqliteDb(db), item.id, {
+    phase: "merge_queue",
+    baseSha: head,
+    wipCommit: head,
+  });
+  await enqueueOutbox(sqliteDb(db), {
     target: "linear",
     op: "activity",
     orderingKey: session,
@@ -77,8 +81,8 @@ async function queued(db: Database, id: string, session: string, at: number) {
     policyDigest: "sha256:p",
     policyPath: null,
   };
-  upsertCloseoutStep(
-    db,
+  await upsertCloseoutStep(
+    sqliteDb(db),
     item.id,
     identity,
     {
@@ -102,8 +106,17 @@ async function queued(db: Database, id: string, session: string, at: number) {
     },
     at,
   );
-  appendCloseoutOutput(db, item.id, identity, "test", "stderr", "check output", false, at);
-  finishCloseoutProgress(db, item.id, identity, "accepted", at);
+  await appendCloseoutOutput(
+    sqliteDb(db),
+    item.id,
+    identity,
+    "test",
+    "stderr",
+    "check output",
+    false,
+    at,
+  );
+  await finishCloseoutProgress(sqliteDb(db), item.id, identity, "accepted", at);
 }
 
 test("the merge queue reads queue facts, issue summaries and banners for the reader's sessions only", async () => {

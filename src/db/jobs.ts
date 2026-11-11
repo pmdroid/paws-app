@@ -269,13 +269,7 @@ export function* enqueueJobSteps(q: Q, input: NewJob) {
 }
 
 /** Insert in the same transaction as the state change that needs the work. */
-export function enqueueJob(db: Database, job: NewJob): number {
-  const id = settled(sqliteDb(db).run((q) => enqueueJobSteps(q, job)));
-  emitJobReady(db);
-  return id;
-}
-
-export async function enqueueJobAsync(store: Db, job: NewJob): Promise<number> {
+export async function enqueueJob(store: Db, job: NewJob): Promise<number> {
   const id = await store.transaction((q) => enqueueJobSteps(q, job));
   emitJobReady(store);
   return id;
@@ -396,8 +390,8 @@ export function* getJobSteps(q: Q, id: number) {
   return row === undefined ? null : mapJob(q, row);
 }
 
-export function getJob(db: Database, id: number): Job | null {
-  return settled(sqliteDb(db).run((q) => getJobSteps(q, id)));
+export async function getJob(store: Db, id: number): Promise<Job | null> {
+  return store.run((q) => getJobSteps(q, id));
 }
 
 export function* jobStatusByKeySteps(q: Q, jobKey: string) {
@@ -417,8 +411,8 @@ export function* listJobsSteps(q: Q) {
   return rows.map((row) => mapJob(q, row));
 }
 
-export function listJobs(db: Database): Job[] {
-  return settled(sqliteDb(db).run(listJobsSteps));
+export async function listJobs(store: Db): Promise<Job[]> {
+  return store.run(listJobsSteps);
 }
 
 export function* nextClaimableRunAtSteps(
@@ -484,8 +478,8 @@ export function* claimNextJobSteps(q: Q, options: ClaimOptions = {}) {
   return row === undefined ? null : mapJob(q, row);
 }
 
-export function claimNextJob(db: Database, options: ClaimOptions = {}): Job | null {
-  return settled(sqliteDb(db).run((q) => claimNextJobSteps(q, options)));
+export async function claimNextJob(store: Db, options: ClaimOptions = {}): Promise<Job | null> {
+  return store.run((q) => claimNextJobSteps(q, options));
 }
 
 export function* completeJobSteps(q: Q, job: Job, now = Date.now()) {
@@ -515,8 +509,8 @@ export function* completeJobSteps(q: Q, job: Job, now = Date.now()) {
 }
 
 /** Succeeds only for the worker that holds the lease. A recurring row arms its next fire. */
-export function completeJob(db: Database, job: Job, now = Date.now()): boolean {
-  return settled(sqliteDb(db).run((q) => completeJobSteps(q, job, now)));
+export async function completeJob(store: Db, job: Job, now = Date.now()): Promise<boolean> {
+  return store.run((q) => completeJobSteps(q, job, now));
 }
 
 export function* failJobSteps(
@@ -586,10 +580,6 @@ export function* isJobCurrentSteps(q: Q, job: Job) {
     current.lockedBy === job.lockedBy &&
     current.activationId === job.activationId
   );
-}
-
-export function isJobCurrent(db: Database, job: Job): boolean {
-  return settled(sqliteDb(db).run((q) => isJobCurrentSteps(q, job)));
 }
 
 export function* hasLiveJobSteps(q: Q, itemId: string, now: number, exceptJobId?: number) {

@@ -269,7 +269,7 @@ export async function probeRunnerTaskAuthority(
           now,
           sessionKey: sessionId,
         });
-        const { run } = beginImplementRun(db, item.id, now);
+        const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
         await recordLinearInstallation(sqliteDb(db), {
           organizationId: "task-org",
           oauthClientId: "fixture",

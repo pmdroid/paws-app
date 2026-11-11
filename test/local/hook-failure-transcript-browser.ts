@@ -4,14 +4,14 @@ import { chromium } from "@playwright/test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beginImplementRun, insertQueuedItem, migrate, openDatabase } from "../../src/db";
+import { sqliteDb, beginImplementRun, insertQueuedItem, migrate, openDatabase } from "../../src/db";
 import { createLiveStatusProvider, handleStatusRequest } from "../../src/dashboard";
 
 const root = mkdtempSync(join(tmpdir(), "paws-hook-failure-transcript-"));
 const db = openDatabase(join(root, "paws.db"));
 migrate(db);
 const item = insertQueuedItem(db, { id: "PAS-449", sessionKey: "hook-session" });
-const { run } = beginImplementRun(db, item.id, Date.now());
+const { run } = await beginImplementRun(sqliteDb(db), item.id, Date.now());
 mkdirSync(join(root, "runs", run.id), { recursive: true, mode: 0o700 });
 const at = (offset: number) => new Date(Date.now() - 60_000 + offset * 1_000).toISOString();
 const line = (offset: number, event: unknown) => `${JSON.stringify({ t: at(offset), event })}\n`;

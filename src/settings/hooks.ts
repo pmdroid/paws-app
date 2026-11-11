@@ -33,7 +33,7 @@ export type HookSettingsOptions = {
   /** The signed-in member's workspace role. Absent on a local Paws without workspaces. */
   role?: string;
   /** Records every hook change in the audit history. */
-  audit: (action: string, subject: string) => void;
+  audit: (action: string, subject: string) => Promise<void>;
   root?: string;
   resolver?: SkillResolver;
   limit?: number;
@@ -78,7 +78,7 @@ export async function handleHookSettingsRequest(
   if (type === "multipart/form-data") {
     try {
       const uploaded = await uploadHook(request, options);
-      options.audit(
+      await options.audit(
         "settings.skill.add",
         `Uploaded hook ${uploaded.path} as skill ${uploaded.skill}`,
       );
@@ -104,7 +104,7 @@ export async function handleHookSettingsRequest(
     const id = body.id;
     const removed = typeof id === "string" ? await store.run((q) => deleteHookSteps(q, id)) : null;
     if (!removed) return json({ error: "That hook is already gone." }, 404);
-    options.audit("settings.hook.remove", `Removed hook ${describeHook(removed)}`);
+    await options.audit("settings.hook.remove", `Removed hook ${describeHook(removed)}`);
     return listing("Removed the hook. Runs that already started keep it until they end.");
   }
   if (body.action !== "add") return json({ error: "Unknown hook action" }, 400);
@@ -146,7 +146,7 @@ export async function handleHookSettingsRequest(
       { error: `Paws runs at most ${WORKSPACE_HOOK_LIMIT} hooks. Remove one first.` },
       409,
     );
-  options.audit("settings.hook.add", `Added hook ${describeHook(hook)}`);
+  await options.audit("settings.hook.add", `Added hook ${describeHook(hook)}`);
   return listing(`Added the hook. Runs that start from now on get it.`);
 }
 

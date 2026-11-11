@@ -99,8 +99,8 @@ async function fixture() {
   let orchestrator = makeOrchestrator();
   await orchestrator.onLinearEvent(created("old"));
   const oldId = (await getLinearSession(sqliteDb(db), "old"))!.activeItemId!;
-  beginImplementRun(db, oldId, 11);
-  applyWorkItemEvent(db, oldId, "blocking_question");
+  await beginImplementRun(sqliteDb(db), oldId, 11);
+  await applyWorkItemEvent(sqliteDb(db), oldId, "blocking_question");
   const snapshot: LinearSessionSnapshot = {
     id: "old",
     status: "error",
@@ -125,7 +125,7 @@ async function fixture() {
       db,
       secretsDir: join(home, "secrets"),
       env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
-      isAuthorized: () => false,
+      isAuthorized: async () => false,
       fetch: async () => {
         throw new Error("Unexpected provider");
       },
@@ -262,7 +262,7 @@ test.each(["unavailable", "issue", "app", "id", "generation", "authorization"])(
         f.fake.progress.filter((update) => update.sessionId === "new").map((update) => update.kind),
       ).toEqual(["thought", "thought"]);
     } finally {
-      await linear.start().stop();
+      await (await linear.start()).stop();
       await f.close();
     }
   },

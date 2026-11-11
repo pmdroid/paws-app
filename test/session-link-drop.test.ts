@@ -140,7 +140,7 @@ test("a transcript lookup resolves the session through session_key alone", async
       sessionKey: "transcript-session",
       now: 1,
     });
-    const { run } = beginImplementRun(db, item.id, 2);
+    const { run } = await beginImplementRun(sqliteDb(db), item.id, 2);
     const response = await handleStatusRequest(
       new Request(`http://127.0.0.1/api/runs/transcript?run=${run.id}`, { method: "HEAD" }),
       { db, sessionIds: ["transcript-session"] },

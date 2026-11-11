@@ -67,9 +67,15 @@ async function failedAttempt() {
   const first = await admit("old");
   if (!first.ok) throw new Error("Expected admission");
   const id = first.items[0]!.id;
-  enqueueJob(db, { queue: "item.start", payload: { itemId: id } });
-  applyWorkItemEvent(db, id, "dispatched");
-  failWorkItem(db, getWorkItem(db, id)!, "no_repository", "No repository accessible", 10);
+  await enqueueJob(sqliteDb(db), { queue: "item.start", payload: { itemId: id } });
+  await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
+  await failWorkItem(
+    sqliteDb(db),
+    getWorkItem(db, id)!,
+    "no_repository",
+    "No repository accessible",
+    10,
+  );
   tracker.progress.length = 0;
   return { db, tracker, id, admit };
 }
@@ -126,10 +132,11 @@ test.each(["run", "checkpoint", "job", "conversation", "cleanup", "parent", "sib
   "a failed attempt with %s ownership cannot be replaced",
   async (held) => {
     const { db, id, admit } = await failedAttempt();
-    if (held === "run") insertRun(db, { itemId: id, now: 1, status: "ended" });
+    if (held === "run") await insertRun(sqliteDb(db), { itemId: id, now: 1, status: "ended" });
     if (held === "checkpoint")
       db.run("UPDATE work_item SET checkpoint = ? WHERE id = ?", ['{"phase":"running"}', id]);
-    if (held === "job") enqueueJob(db, { queue: "item.start", payload: { itemId: id } });
+    if (held === "job")
+      await enqueueJob(sqliteDb(db), { queue: "item.start", payload: { itemId: id } });
     if (held === "conversation") await saveConversation(sqliteDb(db), id, "[]", null, true);
     if (held === "cleanup") blockLinearSessionCleanup(db, "old");
     if (held === "parent")
@@ -171,7 +178,7 @@ test.each(["queued", "running", "awaiting_input", "paused"])(
 
 test("session conflicts report one actionable error without suggesting another retry", async () => {
   const { db, id, tracker, admit } = await failedAttempt();
-  insertRun(db, { itemId: id, now: 1, status: "ended" });
+  await insertRun(sqliteDb(db), { itemId: id, now: 1, status: "ended" });
   await expect(
     acknowledgeNewSession(
       tracker,
@@ -231,8 +238,14 @@ test("created events replace a failed start, bind the new session and fence repl
   try {
     await orchestrator.onLinearEvent(created("old"));
     const originalId = (await getLinearSession(sqliteDb(db), "old"))!.activeItemId!;
-    applyWorkItemEvent(db, originalId, "dispatched");
-    failWorkItem(db, getWorkItem(db, originalId)!, "no_repository", "No repository accessible", 10);
+    await applyWorkItemEvent(sqliteDb(db), originalId, "dispatched");
+    await failWorkItem(
+      sqliteDb(db),
+      getWorkItem(db, originalId)!,
+      "no_repository",
+      "No repository accessible",
+      10,
+    );
     await orchestrator.onLinearEvent(created("new"));
     const replacementId = (await getLinearSession(sqliteDb(db), "new"))!.activeItemId!;
     expect(replacementId).not.toBe(originalId);
