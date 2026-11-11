@@ -1,0 +1,1 @@
+ALTER TABLE `runner_enrollment` ADD `admin_repositories` text CONSTRAINT "runner_enrollment_check_1" CHECK(admin_repositories IS NULL OR json_valid(admin_repositories));

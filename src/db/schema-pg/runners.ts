@@ -505,6 +505,7 @@ export const runnerEnrollment = pgTable(
     expiresAt: bigint("expires_at", { mode: "number" }).notNull(),
     usedAt: bigint("used_at", { mode: "number" }),
     runnerId: text("runner_id").references(() => runner.id),
+    adminRepositories: jsonb("admin_repositories"),
   },
   (table) => [
     unique().on(table.tokenHash),

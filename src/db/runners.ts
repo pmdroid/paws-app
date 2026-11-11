@@ -17,7 +17,7 @@ import {
   type SQL,
 } from "drizzle-orm";
 import { type Db, type Q, type Steps } from "./db";
-import { jsonField } from "./json-text";
+import { jsonField, jsonFromText, jsonText, jsonValue } from "./json-text";
 import { auditWorkspaceAccessSteps, workspaceMemberUsableWhere } from "./workspace";
 import { endRevokedRunnerAuthoritySteps, runnerLeaseCutoff } from "./runner-lease";
 import { emitJobReady } from "./jobs";
@@ -577,6 +577,7 @@ type RunnerEnrollmentRequest = {
   name: string;
   expiresAt: number;
   now: number;
+  adminRepositories?: readonly string[];
 };
 
 export async function createRunnerEnrollment(
@@ -614,6 +615,8 @@ export function* createRunnerEnrollmentSteps(q: Q, input: RunnerEnrollmentReques
       userId: input.userId,
       name: input.name,
       expiresAt: input.expiresAt,
+      adminRepositories:
+        input.adminRepositories === undefined ? null : jsonValue(q, input.adminRepositories),
     }),
   );
 }
@@ -624,6 +627,7 @@ type RunnerEnrollment = {
   userId: string;
   name: string;
   expiresAt: number;
+  adminRepositories: string | null;
 };
 
 /**
@@ -651,6 +655,7 @@ export function* findRunnerEnrollmentSteps(
         userId: enrollment.userId,
         name: enrollment.name,
         expiresAt: enrollment.expiresAt,
+        adminRepositories: jsonText(q, enrollment.adminRepositories),
       })
       .from(enrollment)
       .innerJoin(
@@ -688,7 +693,7 @@ export async function enrollRunner(store: Db, input: RunnerEnrollInput): Promise
 }
 
 export function* enrollRunnerSteps(q: Q, input: RunnerEnrollInput): Steps<RunnerEnrollment> {
-  const { runner, runnerEnrollment } = q.t;
+  const { runner, runnerEnrollment, runnerRepositories } = q.t;
   const enrollment = yield* findRunnerEnrollmentSteps(q, input.tokenHash, input.now);
   if (!enrollment) throw new Error("Runner enrollment is invalid or expired.");
   yield* q.exec(
@@ -701,6 +706,15 @@ export function* enrollRunnerSteps(q: Q, input: RunnerEnrollInput): Steps<Runner
       createdAt: input.now,
     }),
   );
+  if (enrollment.adminRepositories !== null)
+    yield* q.exec(
+      q.orm.insert(runnerRepositories).values({
+        runnerId: input.runnerId,
+        repositories: null,
+        reportedAt: 0,
+        adminRepositories: jsonFromText(q, enrollment.adminRepositories),
+      }),
+    );
   yield* insertCertificateSteps(q, input.runnerId, input.certificate);
   const used = yield* q.all(
     q.orm

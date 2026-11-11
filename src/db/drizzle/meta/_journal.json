@@ -134,6 +134,13 @@
       "when": 1794271596316,
       "tag": "0018_merge_settings_main_moved_green",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1794434224686,
+      "tag": "0019_runner_enrollment_admin_repositories",
+      "breakpoints": true
     }
   ]
 }
