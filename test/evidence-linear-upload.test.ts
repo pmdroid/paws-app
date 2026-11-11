@@ -12,6 +12,7 @@ import {
   migrate,
   OutboxDispatcher,
   openDatabase,
+  sqliteDb,
 } from "../src/db";
 import { createEvidenceStore } from "../src/evidence";
 import { createFakeTracker, createLinearFileTransfer } from "../src/linear";
@@ -78,7 +79,7 @@ function setup(reviewed = true) {
     maxBytes: 50 * MB,
   });
   const publisher = createEvidenceArtifactPublisher({
-    db,
+    store: sqliteDb(db),
     evidence: store,
     publicUrl: "https://paws.example",
     itemId: "item",
@@ -94,7 +95,7 @@ function setup(reviewed = true) {
     signal: new AbortController().signal,
     evidence: { checkId: "visual-proof", attempt: 1, headCommit: "a".repeat(40) },
   };
-  const publish = (displayName: string, mimeType: string, bytes: Buffer) => {
+  const publish = async (displayName: string, mimeType: string, bytes: Buffer) => {
     const artifact: ArtifactSnapshot = {
       path: displayName,
       displayName,
@@ -103,7 +104,7 @@ function setup(reviewed = true) {
       sha256: createHash("sha256").update(bytes).digest("hex"),
       bytes: new Blob([bytes]),
     };
-    return publisher.publish(artifact, context);
+    return (await publisher).publish(artifact, context);
   };
   const tracker = createFakeTracker();
   const clock = new FakeClock(Date.now());

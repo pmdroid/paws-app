@@ -91,7 +91,7 @@ function setup(
   });
   const publisher = (database = db) =>
     createLinearArtifactPublisher({
-      db: database,
+      store: sqliteDb(database),
       files,
       secretsDir,
       itemId: "item",
@@ -102,7 +102,7 @@ function setup(
 
 test("artifact publication persists immutable bytes privately and a durable inline image", async () => {
   const env = setup();
-  expect(await env.publisher().publish(artifact, context)).toEqual({
+  expect(await (await env.publisher()).publish(artifact, context)).toEqual({
     url: URL,
     displayName: "proof.png",
   });
@@ -118,7 +118,7 @@ test("artifact publication persists immutable bytes privately and a durable inli
   expect(listOutbox(env.db, "session")[0]?.payload).toMatchObject({
     body: `![proof.png](<${URL}>)`,
   });
-  expect(await env.publisher().publish(artifact, context)).toMatchObject({ url: URL });
+  expect(await (await env.publisher()).publish(artifact, context)).toMatchObject({ url: URL });
   expect(env.prepares()).toBe(1);
   expect(env.uploads()).toBe(1);
   expect(listOutbox(env.db, "session")).toHaveLength(1);
@@ -127,7 +127,7 @@ test("artifact publication persists immutable bytes privately and a durable inli
 
 test("dashboard artifact reads return the private snapshot rather than mutable workspace bytes or signed manifests", async () => {
   const env = setup();
-  await env.publisher().publish(artifact, context);
+  await (await env.publisher()).publish(artifact, context);
   const row = listArtifacts(env.db, "item")[0]!;
   const read = createLinearArtifactReader(env);
   expect(await read(row.id)).toEqual({ bytes, displayName: "proof.png", mimeType: "image/png" });
@@ -149,7 +149,7 @@ test("dashboard artifact reads return the private snapshot rather than mutable w
 
 test("dashboard can read a prepared artifact while publication retries without exposing upload credentials", async () => {
   const env = setup({ fail: true });
-  await expect(env.publisher().publish(artifact, context)).rejects.toThrow();
+  await expect((await env.publisher()).publish(artifact, context)).rejects.toThrow();
   const row = listArtifacts(env.db, "item")[0]!;
   expect(row.state).toBe("failed");
   expect(await createLinearArtifactReader(env)(row.id)).toEqual({
@@ -165,7 +165,9 @@ test("restart reconciles an uploaded asset after losing the PUT response", async
   const db = openDatabase(databasePath);
   migrate(db);
   const env = setup({ failAfterUpload: true }, db);
-  await expect(env.publisher().publish(artifact, context)).rejects.toThrow("upload request failed");
+  await expect((await env.publisher()).publish(artifact, context)).rejects.toThrow(
+    "upload request failed",
+  );
   expect(listArtifacts(env.db, "item")[0]?.state).toBe("failed");
   expect(artifactPublicationReady(env.db, "item")).toBe(false);
   expect(listOutbox(env.db, "session")).toHaveLength(0);
@@ -173,7 +175,9 @@ test("restart reconciles an uploaded asset after losing the PUT response", async
   const reopened = openDatabase(databasePath);
   migrate(reopened);
   try {
-    expect(await env.publisher(reopened).publish(artifact, context)).toMatchObject({ url: URL });
+    expect(await (await env.publisher(reopened)).publish(artifact, context)).toMatchObject({
+      url: URL,
+    });
     expect(env.prepares()).toBe(1);
     expect(env.uploads()).toBe(1);
     expect(listArtifacts(reopened, "item")[0]?.state).toBe("uploaded");
@@ -184,7 +188,7 @@ test("restart reconciles an uploaded asset after losing the PUT response", async
 
 test("concurrent identical publications share one upload and durable result", async () => {
   const env = setup();
-  const publisher = env.publisher();
+  const publisher = await env.publisher();
   const results = await Promise.all([
     publisher.publish(artifact, context),
     publisher.publish(artifact, context),
@@ -196,7 +200,7 @@ test("concurrent identical publications share one upload and durable result", as
 
 test("failed uploads remain incomplete and never publish a link", async () => {
   const env = setup({ fail: true });
-  await expect(env.publisher().publish(artifact, context)).rejects.toThrow("HTTP 503");
+  await expect((await env.publisher()).publish(artifact, context)).rejects.toThrow("HTTP 503");
   expect(artifactPublicationReady(env.db, "item")).toBe(false);
   expect(listOutbox(env.db, "session")).toHaveLength(0);
   env.db.close();
@@ -204,7 +208,7 @@ test("failed uploads remain incomplete and never publish a link", async () => {
 
 test("Stop fences a captured artifact callback from posting a late success", async () => {
   const env = setup();
-  const publisher = env.publisher();
+  const publisher = await env.publisher();
   await stopOutboxSession(sqliteDb(env.db), "linear", "session", 1);
   await publisher.publish(artifact, context);
   expect(listOutbox(env.db, "session")[0]?.status).toBe("dropped");
@@ -213,18 +217,18 @@ test("Stop fences a captured artifact callback from posting a late success", asy
 
 test("recovery refuses tampered snapshot bytes before a second upload", async () => {
   const env = setup({ fail: true });
-  await expect(env.publisher().publish(artifact, context)).rejects.toThrow();
+  await expect((await env.publisher()).publish(artifact, context)).rejects.toThrow();
   const row = listArtifacts(env.db, "item")[0]!;
   await writeFile(join(env.secretsDir, "linear-artifacts", `${row.id}.bytes`), "tampered");
-  await expect(env.publisher().publish(artifact, context)).rejects.toThrow("integrity");
+  await expect((await env.publisher()).publish(artifact, context)).rejects.toThrow("integrity");
   expect(env.uploads()).toBe(1);
   env.db.close();
 });
 
 test("expired restored destinations refresh after confirming the old asset is absent", async () => {
   const env = setup({ expired: true });
-  await expect(env.publisher().publish(artifact, context)).rejects.toThrow("HTTP 403");
-  expect(await env.publisher().publish(artifact, context)).toMatchObject({ url: URL });
+  await expect((await env.publisher()).publish(artifact, context)).rejects.toThrow("HTTP 403");
+  expect(await (await env.publisher()).publish(artifact, context)).toMatchObject({ url: URL });
   expect(env.prepares()).toBe(2);
   expect(artifactPublicationReady(env.db, "item")).toBe(true);
   env.db.close();
@@ -233,7 +237,7 @@ test("expired restored destinations refresh after confirming the old asset is ab
 test("a successful replacement resolves a failed artifact at the same path", async () => {
   const options = { fail: true };
   const env = setup(options);
-  await expect(env.publisher().publish(artifact, context)).rejects.toThrow("HTTP 503");
+  await expect((await env.publisher()).publish(artifact, context)).rejects.toThrow("HTTP 503");
   const replacementBytes = new TextEncoder().encode("replacement bytes");
   const replacement = {
     ...artifact,
@@ -242,7 +246,7 @@ test("a successful replacement resolves a failed artifact at the same path", asy
     sha256: createHash("sha256").update(replacementBytes).digest("hex"),
   };
   options.fail = false;
-  await env.publisher().publish(replacement, context);
+  await (await env.publisher()).publish(replacement, context);
   expect(artifactPublicationReady(env.db, "item")).toBe(true);
   expect(listArtifacts(env.db, "item")).toHaveLength(2);
   env.db.close();
@@ -250,7 +254,7 @@ test("a successful replacement resolves a failed artifact at the same path", asy
 
 test("a pending artifact link survives final response and is delivered first", async () => {
   const env = setup();
-  await env.publisher().publish(artifact, context);
+  await (await env.publisher()).publish(artifact, context);
   enqueueOutbox(env.db, {
     target: "linear",
     op: "activity",
@@ -271,7 +275,7 @@ test.each([false, true])(
   async (finalAlreadyQueued) => {
     const env = setup();
     try {
-      await env.publisher().publish(artifact, context);
+      await (await env.publisher()).publish(artifact, context);
       env.db.run("UPDATE outbox SET max_attempts = 1");
       const final = () =>
         enqueueOutbox(env.db, {
@@ -329,7 +333,7 @@ test("an uploaded replacement still resolves a legacy failed artifact by its exa
   );
   markArtifact(env.db, "legacy", null);
   expect(artifactPublicationReady(env.db, "item")).toBe(false);
-  await env.publisher().publish(artifact, context);
+  await (await env.publisher()).publish(artifact, context);
   expect(artifactPublicationReady(env.db, "item")).toBe(true);
   env.db.close();
 });

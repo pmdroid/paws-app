@@ -680,6 +680,7 @@ import {
   evidenceSectionUrl,
   createLinearArtifactPublisher,
   publishedEvidence,
+  publishedEvidenceSteps,
   type EvidenceSink,
 } from "./artifacts";
 import { createLinearInputLoader, createReviewMarkLoader } from "./input-files";
@@ -3592,7 +3593,7 @@ export class Orchestrator {
           home: this.options.home,
           prompt: text,
           readOnly: isReadOnlyTaskMode(mode),
-          publishArtifact: mode === "artifact" ? this.artifactPublisher(item) : undefined,
+          publishArtifact: mode === "artifact" ? await this.artifactPublisher(item) : undefined,
           checkpoint: false,
           signal: controller.signal,
           askTeam: this.askHook(item, run.id),
@@ -3923,7 +3924,7 @@ export class Orchestrator {
         pullRequest: this.pullRequestHook(item),
         postUpdate: this.updateHook(item),
         reply: this.replyHook(item),
-        publishArtifact: this.artifactPublisher(item),
+        publishArtifact: await this.artifactPublisher(item),
         closeoutProgress: this.agentCloseoutHook(item, run.id),
         ...(focus ? { closeoutFocus: focus } : {}),
         ...(draft ? { pullRequestDraft: draft } : {}),
@@ -4497,7 +4498,7 @@ export class Orchestrator {
     const sessionProgress = this.sessionProgress(item);
     sessionProgress?.phase("verifying");
     const checkoutExclusions = this.runCheckout(item).checks;
-    const deps = this.agentDeps(item);
+    const deps = await this.agentDeps(item);
     const networkGit =
       repository && deps.signal
         ? await this.repositoryGit(item, repository, deps.signal, "write")
@@ -4649,7 +4650,7 @@ export class Orchestrator {
       },
       recorder: {
         record: async (verdict) => {
-          if (!deps.signal?.aborted) this.postEvidence(item, verdict);
+          if (!deps.signal?.aborted) await this.postEvidence(item, verdict);
           if (
             deps.signal?.aborted ||
             verdict.outcome === "accepted" ||
@@ -6134,7 +6135,7 @@ export class Orchestrator {
       {},
       "ordered",
     );
-    this.attachEvidence(item, published.head);
+    await this.attachEvidence(item, published.head);
     const sessionProgress = this.sessionProgress(item);
     if (published.pull.url) sessionProgress?.link("Pull request", published.pull.url);
     if (newPublication || published.head !== candidateHead) sessionProgress?.phase("merging");
@@ -9355,13 +9356,13 @@ export class Orchestrator {
     });
   }
 
-  private artifactPublisher(item: WorkItemRecord) {
+  private async artifactPublisher(item: WorkItemRecord) {
     const sessionId = this.activitySession(item);
     if (!sessionId) return undefined;
     const linear =
       this.options.files && this.options.secretsDir
-        ? createLinearArtifactPublisher({
-            db: this.db,
+        ? await createLinearArtifactPublisher({
+            store: this.store,
             files: this.options.files,
             secretsDir: this.options.secretsDir,
             itemId: item.id,
@@ -9372,8 +9373,8 @@ export class Orchestrator {
         : undefined;
     const evidence = this.options.evidence;
     if (!evidence) return linear;
-    return createEvidenceArtifactPublisher({
-      db: this.db,
+    return await createEvidenceArtifactPublisher({
+      store: this.store,
       evidence: evidence.store,
       publicUrl: evidence.publicUrl,
       itemId: item.id,
@@ -9392,14 +9393,15 @@ export class Orchestrator {
    * One thought per evidence check Closeout recorded at the verdict's head, with the file count
    * and a link to Paws. After the pull request response, the issue's evidence card instead.
    */
-  private postEvidence(item: WorkItemRecord, verdict: GateResult): void {
+  private async postEvidence(item: WorkItemRecord, verdict: GateResult): Promise<void> {
     const link = this.options.evidence && evidenceSectionUrl(this.options.evidence.publicUrl, item);
     if (!link || !verdict.head) return;
-    if (!this.canReportProgress(item.id)) return this.attachEvidence(item, verdict.head);
+    if (!(await this.store.run((q) => this.canReportProgressSteps(q, item.id))))
+      return await this.attachEvidence(item, verdict.head);
     const checkIds = (verdict.decision?.items ?? [])
       .filter((check) => check.kind === "evidence")
       .map((check) => check.id);
-    for (const { key, body } of evidenceThoughts(this.db, {
+    for (const { key, body } of await evidenceThoughts(this.store, {
       itemId: item.id,
       checkIds,
       head: verdict.head,
@@ -9409,13 +9411,18 @@ export class Orchestrator {
   }
 
   /** The issue's one "Closeout evidence" card once the pull request response exists. */
-  private attachEvidence(item: WorkItemRecord, head: string): void {
+  private async attachEvidence(item: WorkItemRecord, head: string): Promise<void> {
     const sessionId = this.activitySession(item);
     const link = this.options.evidence && evidenceSectionUrl(this.options.evidence.publicUrl, item);
-    if (!link || sessionId === null || !this.hasPublishedPullRequest(sessionId)) return;
-    enqueueEvidenceCard(this.db, {
+    if (
+      !link ||
+      sessionId === null ||
+      !(await this.store.run((q) => this.hasPublishedPullRequestSteps(q, sessionId)))
+    )
+      return;
+    await enqueueEvidenceCard(this.store, {
       sessionId,
-      generation: getLinearSessionGeneration(this.db, sessionId),
+      generation: await this.store.run((q) => getLinearSessionGenerationSteps(q, sessionId)),
       item,
       link,
       head,
@@ -9971,7 +9978,7 @@ export class Orchestrator {
     return resolved;
   }
 
-  private agentDeps(item: WorkItemRecord): AcpAgentDeps {
+  private async agentDeps(item: WorkItemRecord): Promise<AcpAgentDeps> {
     const runId = item.currentRunId ?? item.id;
     const repository = this.repositoryForItem(item);
     const profiles = () => this.profileSnapshot(runId);
@@ -9981,7 +9988,7 @@ export class Orchestrator {
       get profiles() {
         return profiles();
       },
-      publishArtifact: this.artifactPublisher(item),
+      publishArtifact: await this.artifactPublisher(item),
       prepareInputFiles: this.prepareInputFiles(item, runId),
       onCandidate: (identity) => {
         if (!this.signalForItem(item.id)?.aborted) this.saveCandidate(runId, identity);
@@ -10426,7 +10433,10 @@ export class Orchestrator {
             now: this.now(),
           });
         return load.ok && !load.absent
-          ? { ...load, published: publishedEvidence(this.db, item.id) }
+          ? {
+              ...load,
+              published: await this.store.run((q) => publishedEvidenceSteps(q, item.id)),
+            }
           : load;
       },
     };
