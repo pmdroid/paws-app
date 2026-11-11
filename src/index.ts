@@ -104,16 +104,17 @@ import {
   workspaceLinearMember,
   workspaceForOrganization,
   listWorkspaceMembers,
-  listRepositoryCandidates,
+  listRepositoryCandidatesSteps,
   getLinearSessionInstallation,
   isLinearAppRevoked,
   journal,
   delegatedLinearUserId,
   getWorkItemRepository,
   getWorkItemRepositoryChoice,
-  getWorkItemRepositoryAnswer,
-  getTaskMode,
-  taskRequiresRepository,
+  getWorkItemRepositoryChoiceSteps,
+  getWorkItemRepositoryAnswerSteps,
+  getTaskModeSteps,
+  taskRequiresRepositorySteps,
   listWorkItems,
   listReviewEscapesSteps,
   countLinearRequest,
@@ -1630,30 +1631,37 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           runtime,
           env: envSource,
           resolveApp,
-          repositoryForItem: (item) => {
-            const bound = getWorkItemRepository(db, item.id);
-            if (bound) return bound;
-            const answer = getWorkItemRepositoryAnswer(db, item.id);
-            const selected =
-              getWorkItemRepositoryChoice(db, item.id) ??
-              (answer ? repositoryAnswer(answer.answer, answer.candidates) : null);
-            const configured = listRepositoryCandidates(db, item.sessionKey, repositories);
-            return selected
-              ? (configured.find(
-                  (candidate) =>
-                    candidate.owner === selected.owner &&
-                    candidate.repo === selected.repo &&
-                    candidate.remoteUrl === selected.remoteUrl,
-                ) ?? null)
-              : configured.length === 1
-                ? configured[0]!
-                : null;
-          },
+          repositoryForItem: (item) =>
+            store.run(function* (q) {
+              const bound = yield* getWorkItemRepositorySteps(q, item.id);
+              if (bound) return bound;
+              const answer = yield* getWorkItemRepositoryAnswerSteps(q, item.id);
+              const selected =
+                (yield* getWorkItemRepositoryChoiceSteps(q, item.id)) ??
+                (answer ? repositoryAnswer(answer.answer, answer.candidates) : null);
+              const configured = yield* listRepositoryCandidatesSteps(
+                q,
+                item.sessionKey,
+                repositories,
+              );
+              return selected
+                ? (configured.find(
+                    (candidate) =>
+                      candidate.owner === selected.owner &&
+                      candidate.repo === selected.repo &&
+                      candidate.remoteUrl === selected.remoteUrl,
+                  ) ?? null)
+                : configured.length === 1
+                  ? configured[0]!
+                  : null;
+            }),
           accessForItem: (item) =>
-            getTaskMode(db, item.id) !== "code" && taskRequiresRepository(db, item.id)
-              ? "read"
-              : "write",
-          actorForItem: (item) => delegatedLinearUserId(db, item.id),
+            store.run(function* (q) {
+              return (yield* getTaskModeSteps(q, item.id)) !== "code" &&
+                (yield* taskRequiresRepositorySteps(q, item.id))
+                ? "read"
+                : "write";
+            }),
           authorizeItem: async (item, signal, selectedRepository) => {
             const deny = <T>(result: T): T => {
               members?.forget();
@@ -2400,18 +2408,17 @@ export function createGitHubIntegration(input: {
   runtime: RuntimeConfig;
   env: EnvSource;
   resolveApp?: (repository: string) => ActiveGitHubApp;
-  repositoryForItem: (item: WorkItemRecord) => RepositoryBinding | null;
-  actorForItem: (item: WorkItemRecord) => string | null;
+  repositoryForItem: (item: WorkItemRecord) => Promise<RepositoryBinding | null>;
   /** False, or a `GitHubDenial` with the reason the session ends with, cancels the item. */
   authorizeItem?: (
     item: WorkItemRecord,
     signal: AbortSignal,
     repository: RepositoryBinding,
   ) => Promise<boolean | GitHubDenial>;
-  integrationIdentity?: (item: WorkItemRecord) => string;
+  integrationIdentity: (item: WorkItemRecord) => string;
   currentIntegrationItem?: (item: WorkItemRecord) => boolean | GitHubDenial;
   administratorsForItem?: (item: WorkItemRecord) => readonly string[];
-  accessForItem?: (item: WorkItemRecord) => "read" | "write";
+  accessForItem?: (item: WorkItemRecord) => Promise<"read" | "write">;
 }): GitHubIntegration {
   const installation = createGitHubInstallationCheck({
     home: input.runtime.env.home,
@@ -2426,21 +2433,19 @@ export function createGitHubIntegration(input: {
     administrators: input.administratorsForItem ?? (() => []),
     current: input.currentIntegrationItem ?? (() => true),
     unavailableRetryMs: [2_000, 5_000, 10_000, 20_000, 30_000],
-    identity:
-      input.integrationIdentity ??
-      ((item) => JSON.stringify([input.actorForItem(item), input.repositoryForItem(item)])),
+    identity: input.integrationIdentity,
     authorize: async (item: WorkItemRecord, signal: AbortSignal) => {
-      const selected = input.repositoryForItem(item);
+      const selected = await input.repositoryForItem(item);
       if (selected === null) return false;
       return input.authorizeItem ? input.authorizeItem(item, signal, selected) : true;
     },
     async check(item: WorkItemRecord, signal: AbortSignal) {
-      const selected = input.repositoryForItem(item);
+      const selected = await input.repositoryForItem(item);
       return (
         selected !== null &&
         (await installation(
           `${selected.owner}/${selected.repo}`,
-          input.accessForItem?.(item) ?? "write",
+          (await input.accessForItem?.(item)) ?? "write",
           signal,
         ))
       );
