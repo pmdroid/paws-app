@@ -288,7 +288,7 @@ import {
   RELATIONS_POLL_MS,
 } from "./intake";
 import { createExecutionControls } from "./execution-controls";
-import { createAdmission, registerScheduler, saveSchedulingContext } from "./scheduler";
+import { createAdmission, registerScheduler, saveSchedulingContextSteps } from "./scheduler";
 import {
   createRunnerPlacement,
   createRunnerPlacementBrowser,
@@ -1839,7 +1839,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           ...(parents ? { scopeSnapshot: parents.scopeSnapshot } : {}),
           onChanges: function* (q, changes) {
             for (const { itemId, issue } of changes.issues)
-              saveSchedulingContext(db, {
+              yield* saveSchedulingContextSteps(q, {
                 itemId,
                 ...("projectId" in issue ? { projectId: issue.projectId } : {}),
                 ...("projectLeadId" in issue ? { projectLeadId: issue.projectLeadId } : {}),
