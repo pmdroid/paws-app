@@ -1502,7 +1502,9 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       void assignments
         ?.register(created.jobs)
         .catch((error: unknown) => journalCaught(error, "index.startPaws.assignments", null));
-      parents?.register(created.jobs);
+      void parents
+        ?.register(created.jobs)
+        .catch((error: unknown) => journalCaught(error, "index.startPaws.parents", null));
       registerMemberVmJob(created.jobs, {
         provision: memberVmProvisioning,
         secrets: () => [exeDevToken(), tailscaleAuthKey()],
@@ -1662,7 +1664,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         recheckLinearEvent: async (event) =>
           workspace
             ? (await (await workspace.access).recheckLinearEvent(event)) &&
-              (parents?.recheckEvent(event) ?? (await assignments?.recheck(event)) ?? true)
+              ((await parents?.recheckEvent(event)) ?? (await assignments?.recheck(event)) ?? true)
             : true,
         scheduling: async () => {
           await enqueueMissingSnapshots();

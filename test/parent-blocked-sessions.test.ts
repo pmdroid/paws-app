@@ -41,7 +41,7 @@ async function delegate(f: Fixture, subIssues: EpicSnapshot["subIssues"]) {
   });
   const admitted = await f.orchestrator.intakeLinearTask("parent", "parent-session", "parent-task");
   expect(admitted.ok).toBe(true);
-  f.parents.register(f.jobs);
+  await f.parents.register(f.jobs);
   return admitted.delegation.id;
 }
 

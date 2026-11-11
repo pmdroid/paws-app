@@ -4,6 +4,7 @@ import {
   legacyMigrate,
   openDatabase,
   recordLinearInstallation,
+  sqliteDb,
 } from "../src/db";
 import { parentIssueIdSql } from "../src/core";
 import type { AcceptedLinearEvent, EpicSnapshot } from "../src/linear";
@@ -51,7 +52,7 @@ async function delegate(f: Fixture, blocked = false) {
   });
   const admitted = await f.orchestrator.intakeLinearTask("parent", "parent-session", "parent-task");
   expect(admitted.ok).toBe(true);
-  f.parents.register(f.jobs);
+  await f.parents.register(f.jobs);
   await f.jobs.tick();
 }
 
@@ -94,8 +95,8 @@ test("a second session on a running sub-issue is refused and the first keeps it"
       reason:
         "CH-1 is still running in its earlier Paws session. Paws continues there, so reply in that session to steer it.",
     });
-    expect(f.parents.recheckEvent(created(f, "again"))).toBe(false);
-    expect(f.parents.recheckEvent(created(f, "session-a"))).toBe(true);
+    expect(await f.parents.recheckEvent(created(f, "again"))).toBe(false);
+    expect(await f.parents.recheckEvent(created(f, "session-a"))).toBe(true);
     expect(
       f.db.query("SELECT session_id FROM parent_delegation_issue WHERE issue_id='a'").get(),
     ).toEqual({ session_id: "session-a" });
@@ -118,7 +119,7 @@ test("a failed sub-issue starts again in a new session", async () => {
     expect(f.db.query("SELECT state FROM work_item WHERE linear_issue_id='a'").get()).toEqual({
       state: "cancelled",
     });
-    expect(f.parents.actor("again")).toBe("lead");
+    expect(await sqliteDb(f.db).run((q) => f.parents.actorSteps(q, "again"))).toBe("lead");
   } finally {
     await f.close();
   }
