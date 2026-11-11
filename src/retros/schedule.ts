@@ -4,36 +4,48 @@ import {
   closeRetro,
   collectingRetroIds,
   getRetro,
-  immediate,
   latestPublishedRetro,
   latestRetro,
   listRetroItems,
-  listRetroSettingsRevisions,
-  listWorkspaceMembers,
-  listWorkspaceRepositoryNames,
   newRetroId,
   readRetroArtifact,
   recordRetroGeneration,
-  recordRetroOccurrence,
-  recordRetroScheduleRun,
   recordRetroScheduleState,
-  retroHasUnfinishedDispatch,
   retroOccurrence,
   retroScheduleRuntime,
   retroSettingsWorkspaces,
-  retroWatermarks,
   type Retro,
   type RetroOrigin,
   type RetroState,
+  closeRetroSteps,
+  latestPublishedRetroSteps,
+  latestRetroSteps,
+  listRetroSettingsRevisionsSteps,
+  listWorkspaceMembersSteps,
+  listWorkspaceRepositoryNamesSteps,
+  recordRetroGenerationSteps,
+  recordRetroOccurrenceSteps,
+  recordRetroScheduleRunSteps,
+  retroHasUnfinishedDispatchSteps,
+  retroScheduleRuntimeSteps,
+  retroWatermarksSteps,
+  settled,
+  sqliteDb,
+  type Q,
+  type Steps,
 } from "../db";
 import { journalCaught } from "../journal";
 import type { AgentModelCatalog } from "../runner-models";
 import { isWorkspaceAdmin } from "../workspace";
 import { collectRetroDigest, type RetroDigest } from "./digest";
-import { retroGenerationView, type RetroGenerationView } from "./dispatch";
+import {
+  retroGenerationView,
+  retroGenerationViewSteps,
+  type RetroGenerationView,
+} from "./dispatch";
 import { retroNeedsGeneration } from "./result";
 import {
-  freezeRetroRun,
+  freezeRetroRunSteps,
   proposedRetroSettings,
   RETRO_WEEKDAYS,
   retroRunRepositories,
@@ -192,7 +204,11 @@ type SchedulePlan =
     };
 
 function schedulePlan(db: Database, workspaceId: string, now: number): SchedulePlan {
-  const rows = listRetroSettingsRevisions(db, workspaceId);
+  return settled(sqliteDb(db).run((q) => schedulePlanSteps(q, workspaceId, now)));
+}
+
+function* schedulePlanSteps(q: Q, workspaceId: string, now: number): Steps<SchedulePlan> {
+  const rows = yield* listRetroSettingsRevisionsSteps(q, workspaceId);
   const latest = rows[0];
   if (latest === undefined) return { saved: false, schedule: proposedRetroSettings([]).schedule };
   const read = (stored: Record<string, unknown>) => stored as RetroSchedule;
@@ -205,7 +221,8 @@ function schedulePlan(db: Database, workspaceId: string, now: number): ScheduleP
     since = row.createdAt;
   }
   const active = schedule.cadence === "weekly" && validRetroTimeZone(schedule.timeZone);
-  const base = Math.max(retroScheduleRuntime(db, workspaceId)?.lastOccurrenceAt ?? since, since);
+  const runtime = yield* retroScheduleRuntimeSteps(q, workspaceId);
+  const base = Math.max(runtime?.lastOccurrenceAt ?? since, since);
   const { due, next } = active
     ? dueRetroOccurrence(schedule, base, now)
     : { due: null, next: null };
@@ -227,10 +244,11 @@ function openRetro(db: Database, workspaceId: string): Retro | null {
   return latestRetro(db, workspaceId, OPEN_STATES);
 }
 
-function retriesSpent(db: Database, retro: Retro): boolean {
+function* retriesSpentSteps(q: Q, retro: Retro): Steps<boolean> {
   if (retro.state !== "failed") return false;
   return (
-    !retroHasUnfinishedDispatch(db, retro.id) && retroGenerationView(db, retro.id)?.retry === null
+    !(yield* retroHasUnfinishedDispatchSteps(q, retro.id)) &&
+    (yield* retroGenerationViewSteps(q, retro.id))?.retry === null
   );
 }
 
@@ -315,12 +333,13 @@ export function createRetroScheduler(options: {
   const { db, artifactRoot } = options;
   const now = options.now ?? Date.now;
 
-  function catalogsFor(
+  function* catalogsForSteps(
+    q: Q,
     workspaceId: string,
     agent: string,
     author: string,
-  ): readonly AgentModelCatalog[] | null {
-    const admins = listWorkspaceMembers(db, workspaceId)
+  ): Steps<readonly AgentModelCatalog[] | null> {
+    const admins = (yield* listWorkspaceMembersSteps(q, workspaceId))
       .filter((member) => workspaceMemberUsable(member) && isWorkspaceAdmin(member.role))
       .map((member) => member.id);
     let fallback: readonly AgentModelCatalog[] | null = null;
@@ -339,119 +358,128 @@ export function createRetroScheduler(options: {
     return fallback;
   }
 
-  function windowStart(workspaceId: string, repositories: readonly string[], end: number): number {
-    const marks = retroWatermarks(db, workspaceId);
+  function* windowStartSteps(
+    q: Q,
+    workspaceId: string,
+    repositories: readonly string[],
+    end: number,
+  ): Steps<number> {
+    const marks = yield* retroWatermarksSteps(q, workspaceId);
     const cursor = (repository: string) =>
       marks.find((mark) => mark.repository.toLowerCase() === repository.toLowerCase())?.cursor ??
       end - FIRST_RETRO_WINDOW_MS;
     return Math.min(...repositories.map(cursor));
   }
 
-  function claim(input: {
+  type Claim = {
     workspaceId: string;
     origin: RetroOrigin;
     occurrence: RetroOccurrence;
     requestedBy: string | null;
-  }): RetroRequest {
+  };
+
+  function claim(input: Claim): RetroRequest {
     const at = now();
-    return immediate(db, (): RetroRequest => {
-      const plan = schedulePlan(db, input.workspaceId, at);
-      if (!plan.saved)
-        return { ok: false, reason: "no_settings", message: "Save retro settings first." };
-      if (input.origin === "scheduled" && plan.due?.at !== input.occurrence.at)
-        return { ok: false, reason: "stale", message: "Another tick claimed this occurrence." };
-      const open = openRetro(db, input.workspaceId);
-      if (open !== null) {
-        if (!retriesSpent(db, open)) {
-          if (input.origin === "manual") return { ok: true, retro: open, created: false };
-          return {
-            ok: false,
-            reason: "busy",
-            message: `Waiting for the open retro ${open.id} (${open.state}) to finish.`,
-          };
-        }
-        const reason = "Retries are spent. A new retro collects the same activity again.";
-        closeRetro(db, { retroId: open.id, state: "abandoned", error: reason, now: at });
-        recordRetroGeneration(db, {
-          retroId: open.id,
-          diagnostic: "failed",
-          detail: reason,
-          now: at,
-        });
-      }
-      const accessible = listWorkspaceRepositoryNames(db, input.workspaceId);
-      const repositories = retroRunRepositories(plan.repositories, accessible);
-      if (repositories.length === 0)
+    return settled(sqliteDb(db).transaction((q) => claimSteps(q, input, at)));
+  }
+
+  function* claimSteps(q: Q, input: Claim, at: number): Steps<RetroRequest> {
+    const plan = yield* schedulePlanSteps(q, input.workspaceId, at);
+    if (!plan.saved)
+      return { ok: false, reason: "no_settings", message: "Save retro settings first." };
+    if (input.origin === "scheduled" && plan.due?.at !== input.occurrence.at)
+      return { ok: false, reason: "stale", message: "Another tick claimed this occurrence." };
+    const open = yield* latestRetroSteps(q, input.workspaceId, OPEN_STATES);
+    if (open !== null) {
+      if (!(yield* retriesSpentSteps(q, open))) {
+        if (input.origin === "manual") return { ok: true, retro: open, created: false };
         return {
           ok: false,
-          reason: "no_accessible_repository",
-          message: "None of the selected repositories is accessible.",
-        };
-      const end = input.occurrence.at;
-      const start = windowStart(input.workspaceId, repositories, end);
-      const consume = (retroId: string) => {
-        const covered =
-          input.origin === "scheduled"
-            ? input.occurrence
-            : plan.active
-              ? dueRetroOccurrence(plan.schedule, plan.base, end).due
-              : null;
-        if (covered !== null)
-          recordRetroScheduleRun(db, {
-            workspaceId: input.workspaceId,
-            occurrenceAt: covered.at,
-            retroId,
-            nextDueAt: nextRetroOccurrence(plan.schedule, Math.max(covered.at, at)),
-            now: at,
-          });
-      };
-      if (end <= start) {
-        if (input.origin === "manual")
-          return {
-            ok: false,
-            reason: "clock_behind",
-            message: "The clock is behind the last retro cutoff. Try again later.",
-          };
-        const last = latestPublished(db, input.workspaceId);
-        if (last !== null) consume(last.id);
-        return {
-          ok: false,
-          reason: "stale",
-          message: "A published retro already covers this occurrence.",
+          reason: "busy",
+          message: `Waiting for the open retro ${open.id} (${open.state}) to finish.`,
         };
       }
-      const frozen = freezeRetroRun(db, {
-        id: newRetroId(at),
-        workspaceId: input.workspaceId,
-        windowStart: start,
-        windowEnd: end,
-        origin: input.origin,
-        ...(input.origin === "scheduled" ? { scheduledFor: end } : {}),
-        catalogs: catalogsFor(input.workspaceId, plan.agent, plan.createdBy),
-        accessibleRepositories: accessible,
+      const reason = "Retries are spent. A new retro collects the same activity again.";
+      yield* closeRetroSteps(q, { retroId: open.id, state: "abandoned", error: reason, now: at });
+      yield* recordRetroGenerationSteps(q, {
+        retroId: open.id,
+        diagnostic: "failed",
+        detail: reason,
         now: at,
       });
-      if (!frozen.ok) return frozen;
-      if (frozen.created)
-        recordRetroOccurrence(db, {
-          retroId: frozen.retro.id,
+    }
+    const accessible = yield* listWorkspaceRepositoryNamesSteps(q, input.workspaceId);
+    const repositories = retroRunRepositories(plan.repositories, accessible);
+    if (repositories.length === 0)
+      return {
+        ok: false,
+        reason: "no_accessible_repository",
+        message: "None of the selected repositories is accessible.",
+      };
+    const end = input.occurrence.at;
+    const start = yield* windowStartSteps(q, input.workspaceId, repositories, end);
+    const consume = function* (retroId: string): Steps<void> {
+      const covered =
+        input.origin === "scheduled"
+          ? input.occurrence
+          : plan.active
+            ? dueRetroOccurrence(plan.schedule, plan.base, end).due
+            : null;
+      if (covered !== null)
+        yield* recordRetroScheduleRunSteps(q, {
           workspaceId: input.workspaceId,
-          origin: input.origin,
-          occurrenceAt: input.occurrence.at,
-          windowStart: start,
-          windowEnd: end,
-          timeZone: input.occurrence.timeZone,
-          localDate: input.occurrence.localDate,
-          localTime: input.occurrence.localTime,
-          utcOffsetMinutes: input.occurrence.utcOffsetMinutes,
-          localAdjustment: input.occurrence.adjustment,
-          settingsRevision: frozen.retro.settingsRevision,
-          requestedBy: input.requestedBy,
-          createdAt: at,
+          occurrenceAt: covered.at,
+          retroId,
+          nextDueAt: nextRetroOccurrence(plan.schedule, Math.max(covered.at, at)),
+          now: at,
         });
-      consume(frozen.retro.id);
-      return { ok: true, retro: frozen.retro, created: frozen.created };
+    };
+    if (end <= start) {
+      if (input.origin === "manual")
+        return {
+          ok: false,
+          reason: "clock_behind",
+          message: "The clock is behind the last retro cutoff. Try again later.",
+        };
+      const last = yield* latestPublishedRetroSteps(q, input.workspaceId);
+      if (last !== null) yield* consume(last.id);
+      return {
+        ok: false,
+        reason: "stale",
+        message: "A published retro already covers this occurrence.",
+      };
+    }
+    const frozen = yield* freezeRetroRunSteps(q, {
+      id: newRetroId(at),
+      workspaceId: input.workspaceId,
+      windowStart: start,
+      windowEnd: end,
+      origin: input.origin,
+      ...(input.origin === "scheduled" ? { scheduledFor: end } : {}),
+      catalogs: yield* catalogsForSteps(q, input.workspaceId, plan.agent, plan.createdBy),
+      accessibleRepositories: accessible,
+      now: at,
     });
+    if (!frozen.ok) return frozen;
+    if (frozen.created)
+      yield* recordRetroOccurrenceSteps(q, {
+        retroId: frozen.retro.id,
+        workspaceId: input.workspaceId,
+        origin: input.origin,
+        occurrenceAt: input.occurrence.at,
+        windowStart: start,
+        windowEnd: end,
+        timeZone: input.occurrence.timeZone,
+        localDate: input.occurrence.localDate,
+        localTime: input.occurrence.localTime,
+        utcOffsetMinutes: input.occurrence.utcOffsetMinutes,
+        localAdjustment: input.occurrence.adjustment,
+        settingsRevision: frozen.retro.settingsRevision,
+        requestedBy: input.requestedBy,
+        createdAt: at,
+      });
+    yield* consume(frozen.retro.id);
+    return { ok: true, retro: frozen.retro, created: frozen.created };
   }
 
   function collect(retro: Retro) {

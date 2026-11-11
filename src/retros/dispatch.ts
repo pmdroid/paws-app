@@ -12,17 +12,13 @@ import {
   closeRetroSteps,
   deliverableRetroDispatchesSteps,
   failRetroAttemptSteps,
-  getRetro,
-  getRetroDispatch,
   getRetroDispatchSteps,
   getRetroSteps,
-  listRetroAttempts,
   listRetroAttemptsSteps,
   listWorkspaceMembersSteps,
   liveAccountBindingSteps,
   markRetroDispatchFetchedSteps,
   newRetroCommandId,
-  openRetroDispatch,
   openRetroDispatchSteps,
   pinnedSlotsReservedSteps,
   readRetroArtifactSteps,
@@ -35,19 +31,18 @@ import {
   resignRetroDispatchSteps,
   RETRO_WAIT_DIAGNOSTICS,
   retroArtifactSteps,
-  retroDispatchesNotStarted,
   retroDispatchesNotStartedSteps,
-  retroGeneration,
   runnerHasCapacitySteps,
   runnerOccupancySteps,
   runnerSlotsHeldBetweenCommandsSteps,
   settleRetroDispatchSteps,
+  settled,
   sqliteDb,
+  retroGenerationSteps,
+  latestRetroDispatchSteps,
   startRetroAttemptSteps,
   workspaceMemberSteps,
-  latestRetroDispatch,
   previousRetroResultDispatchSteps,
-  retroDispatchReleaseReason,
   retroDispatchReleaseReasonSteps,
   retrosToAdvanceSteps,
   runnerHostVersionSteps,
@@ -160,23 +155,6 @@ export function retroRetryDelayMs(attemptsUsed: number): number {
   );
 }
 
-function budget(db: Database, retro: Retro) {
-  const notStarted = retroDispatchesNotStarted(db, retro.id);
-  const { maxAttempts, activeExecutionMs } = retroAttemptLimits(retro.executionLimits);
-  return { notStarted, maxAttempts, activeExecutionMs, used: retro.attempt - notStarted };
-}
-
-function retryAt(db: Database, retro: Retro): number | null {
-  if (retro.state !== "failed") return null;
-  const { used, maxAttempts } = budget(db, retro);
-  if (used >= maxAttempts) return null;
-  if (openRetroDispatch(db, retro.id) !== null) return null;
-  const last = listRetroAttempts(db, retro.id).at(-1);
-  const notStarted = retroDispatchReleaseReason(db, retro.id, retro.attempt) === "not_started";
-  const finished = last?.finishedAt ?? retro.updatedAt;
-  return finished + retroRetryDelayMs(notStarted ? retroDispatchesNotStarted(db, retro.id) : used);
-}
-
 function* budgetSteps(q: Q, retro: Retro) {
   const notStarted = yield* retroDispatchesNotStartedSteps(q, retro.id);
   const { maxAttempts, activeExecutionMs } = retroAttemptLimits(retro.executionLimits);
@@ -199,12 +177,20 @@ function* retryAtSteps(q: Q, retro: Retro) {
 }
 
 export function retroGenerationView(db: Database, retroId: string): RetroGenerationView | null {
-  const retro = getRetro(db, retroId);
+  return settled(sqliteDb(db).run((q) => retroGenerationViewSteps(q, retroId)));
+}
+
+export function* retroGenerationViewSteps(
+  q: Q,
+  retroId: string,
+): Steps<RetroGenerationView | null> {
+  const retro = yield* getRetroSteps(q, retroId);
   if (retro === null) return null;
-  const row = retroGeneration(db, retroId);
-  const { used, maxAttempts } = budget(db, retro);
-  const dispatch = openRetroDispatch(db, retroId) ?? latestRetroDispatch(db, retroId);
-  const latest = dispatch === null ? null : getRetroDispatch(db, dispatch.commandId);
+  const row = yield* retroGenerationSteps(q, retroId);
+  const { used, maxAttempts } = yield* budgetSteps(q, retro);
+  const dispatch =
+    (yield* openRetroDispatchSteps(q, retroId)) ?? (yield* latestRetroDispatchSteps(q, retroId));
+  const latest = dispatch === null ? null : yield* getRetroDispatchSteps(q, dispatch.commandId);
   const waiting = row !== null && RETRO_WAIT_DIAGNOSTICS.includes(row.diagnostic);
   const state: RetroGenerationState = (() => {
     switch (retro.state) {
@@ -220,7 +206,7 @@ export function retroGenerationView(db: Database, retroId: string): RetroGenerat
         return waiting ? "waiting_for_runner" : "queued";
     }
   })();
-  const at = retryAt(db, retro);
+  const at = yield* retryAtSteps(q, retro);
   return {
     retroId,
     state,
@@ -435,31 +421,31 @@ export function createRetroDispatcher(options: {
       if (identity === null || !(yield* runnerHasWorkspaceAuthoritySteps(q, identity)))
         yield* fail("The runner's owner lost workspace authority before the result arrived.");
       else if (result.outcome === "completed") {
-        const settled = yield* settleRetroAttemptSteps(q, root, {
+        const outcome = yield* settleRetroAttemptSteps(q, root, {
           retroId: dispatch.retroId,
           attempt: dispatch.attempt,
           owner: owner(dispatch.commandId),
           output: result.output ?? null,
           now: at,
         });
-        if (settled.ok)
+        if (outcome.ok)
           yield* noteSteps(q, dispatch.retroId, "ready", "The retro report is published.");
-        else if (settled.reason === "coverage_gap")
+        else if (outcome.reason === "coverage_gap")
           yield* closeRetroSteps(q, {
             retroId: dispatch.retroId,
             state: "coverage_failed",
             error: "The retro has a coverage gap and cannot be published.",
             now: at,
           });
-        else if (settled.reason === "watermark_moved")
+        else if (outcome.reason === "watermark_moved")
           yield* closeRetroSteps(q, {
             retroId: dispatch.retroId,
             state: "abandoned",
             error: "Another retro already published activity from this window.",
             now: at,
           });
-        else if (settled.reason === "unknown_evidence" || settled.reason === "duplicate_item")
-          yield* fail(`The result did not match its evidence: ${settled.reason}.`);
+        else if (outcome.reason === "unknown_evidence" || outcome.reason === "duplicate_item")
+          yield* fail(`The result did not match its evidence: ${outcome.reason}.`);
       } else {
         const message = result.errorMessage ?? `The retro turn ended with ${result.outcome}.`;
         yield* fail(`${result.outcome}: ${message}`);
@@ -574,14 +560,14 @@ export function createRetroDispatcher(options: {
           : null;
       });
       if (started === null) return;
-      const settled = await settleRetroAttempt(db, root, {
+      const outcome = await settleRetroAttempt(db, root, {
         retroId: retro.id,
         attempt: started,
         owner: LOCAL_OWNER,
         output: null,
         now: at,
       });
-      if (settled.ok) await note(retro.id, "ready", "No session activity in this window.");
+      if (outcome.ok) await note(retro.id, "ready", "No session activity in this window.");
       else await store.transaction((q) => afterFailureSteps(q, retro.id));
       return;
     }
