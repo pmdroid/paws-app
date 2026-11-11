@@ -11,6 +11,8 @@ import {
   saveCloseoutRecovery,
   setCurrentRun,
   setJournalSink,
+  syncSteps,
+  type Q,
 } from "../src/db";
 import {
   answer,
@@ -176,7 +178,12 @@ test("the answer is idempotent on the delivery id and runs its kind's effect onc
   const { db, asker } = setup();
   const asked = ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW });
   const resumed: string[] = [];
-  const effects = { "runner-wait": (question: { id: string }) => resumed.push(question.id) };
+  const effects = {
+    "runner-wait": (_q: Q, question: { id: string }) =>
+      syncSteps(() => {
+        resumed.push(question.id);
+      }),
+  };
   expect(answer(db, reply("answer-1", "Keep waiting"), effects).status).toBe("answered");
   expect(answer(db, reply("answer-1", "Keep waiting"), effects).status).toBe("duplicate");
   expect(answer(db, reply("answer-2", "Keep waiting"), effects).status).toBe("unasked");

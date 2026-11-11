@@ -80,6 +80,7 @@ export {
   type PgOrm,
   type Q,
   type SqliteDb,
+  syncSteps,
   type Steps,
 } from "./db";
 export * as schema from "./schema";

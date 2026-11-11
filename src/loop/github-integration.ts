@@ -17,6 +17,7 @@ import {
   pendingGithubIntegrationHolds,
   setGithubIntegrationHoldStatus,
   setOpenQuestionBody,
+  syncSteps,
   type WorkItemRecord,
 } from "../db";
 import { answer, findOpenQuestion, getQuestion, type StoredQuestion } from "../questions";
@@ -293,7 +294,7 @@ export class GitHubInstallationCheck {
             answeredBy: "paws",
             now: this.now(),
           },
-          { "github-auth": (answered) => this.resume(hold, answered) },
+          { "github-auth": (_q, answered) => syncSteps(() => this.resume(hold, answered)) },
         );
       });
     }

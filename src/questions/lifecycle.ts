@@ -5,6 +5,7 @@ import {
   cancelQueuedQuestionsSteps,
   closeLinkAskSteps,
   dropQuestionElicitationsSteps,
+  emitJobReady,
   enqueueOutboxOnceSteps,
   getLinkAskSteps,
   getWorkItemSteps,
@@ -57,7 +58,9 @@ export type AnswerOutcome =
   | { status: "duplicate" }
   | { status: "unasked" };
 
-export type AnswerEffects = Partial<Record<QuestionKind, (question: StoredQuestion) => void>>;
+export type AnswerEffects = Partial<
+  Record<QuestionKind, (q: Q, question: StoredQuestion) => Steps<void>>
+>;
 
 const SUPERSEDES: Record<QuestionKind, "session" | "item" | null> = {
   agent: null,
@@ -147,7 +150,8 @@ export function* answerSteps(
     ...(reply.now === undefined ? {} : { now: reply.now }),
   });
   if (answered === null) return { status: "unasked" };
-  effects[answered.kind]?.(answered);
+  const effect = effects[answered.kind];
+  if (effect) yield* effect(q, answered);
   return {
     status: "answered",
     question: answered,
@@ -160,7 +164,9 @@ export function answer(
   reply: QuestionReply,
   effects: AnswerEffects = {},
 ): AnswerOutcome {
-  return settled(sqliteDb(db).transaction((q) => answerSteps(q, reply, effects)));
+  const outcome = settled(sqliteDb(db).transaction((q) => answerSteps(q, reply, effects)));
+  emitJobReady(db);
+  return outcome;
 }
 
 type AnswerInput = { answer: string; answeredBy: string; eventKey?: string; now?: number };
