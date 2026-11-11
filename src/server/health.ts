@@ -1,13 +1,21 @@
-import type { Database } from "bun:sqlite";
 import { statfsSync } from "node:fs";
 import {
   actionableDueSteps,
+  databaseProbeSteps,
+  deadJobCountSteps,
+  deadOutboxCountSteps,
+  expiredJobLeaseCountSteps,
   JOB_PROGRESS_STALE_MS,
   journal,
+  latestGithubDeliverySteps,
   LINEAR_WEBHOOK_SILENCE_MS,
   liveInstancesSteps,
-  sqliteDb,
+  runnerHeartbeatsSteps,
+  syncCursorSteps,
+  type Db,
   type JobLoopLiveness,
+  type Q,
+  type Steps,
 } from "../db";
 import { RUNNER_ONLINE_MS } from "../runner-placement";
 import { RUNNER_LEASE_GRACE_MS } from "../runner-protocol";
@@ -22,7 +30,7 @@ type Check = {
 };
 
 export type HealthOptions = {
-  db?: Database;
+  store?: Db;
   linearWebhook: boolean;
   githubWebhook: boolean;
   now?: () => number;
@@ -53,13 +61,12 @@ function diskSpace(path: string, statfs: StatFs = statfsSync) {
 export function createHealthReport(options: HealthOptions) {
   let previous: string | undefined;
   return async () => {
-    const db = options.db;
-    const store = db && sqliteDb(db);
+    const store = options.store;
     const now = options.now?.() ?? Date.now();
     const checks: Record<string, Check> = {};
     try {
-      if (!db) throw new Error("database unavailable");
-      db.query("SELECT count(*) FROM sqlite_schema").get();
+      if (!store) throw new Error("database unavailable");
+      await store.run(databaseProbeSteps);
       checks.database = { status: "ok" };
     } catch {
       checks.database = { status: "failed", reason: "unavailable" };
@@ -76,16 +83,12 @@ export function createHealthReport(options: HealthOptions) {
         checks[name] = { status: "failed", reason: "read_failed" };
       }
     };
-    const count = (name: string, sql: string, ...params: number[]) =>
-      read(name, () => {
-        const value = db!.query<{ count: number }, number[]>(sql).get(...params)!.count;
+    const count = (name: string, steps: (q: Q) => Steps<number>) =>
+      read(name, async () => {
+        const value = await store!.run(steps);
         return { status: value === 0 ? "ok" : "failed", count: value };
       });
-    await count(
-      "jobLeases",
-      "SELECT count(*) AS count FROM job WHERE status='running' AND (locked_until IS NULL OR locked_until<=?)",
-      now,
-    );
+    await count("jobLeases", (q) => expiredJobLeaseCountSteps(q, now));
     if (options.jobLoop === undefined) {
       checks.jobProgress = { status: "skipped", reason: "not_observed" };
     } else {
@@ -111,18 +114,11 @@ export function createHealthReport(options: HealthOptions) {
         };
       });
     }
-    await count("deadJobs", "SELECT count(*) AS count FROM job WHERE status='dead'");
-    await count("deadOutbox", "SELECT count(*) AS count FROM outbox WHERE status='dead'");
-    await read("runnerHeartbeats", () => {
+    await count("deadJobs", deadJobCountSteps);
+    await count("deadOutbox", deadOutboxCountSteps);
+    await read("runnerHeartbeats", async () => {
       const maxAgeMs = RUNNER_ONLINE_MS + RUNNER_LEASE_GRACE_MS;
-      const row = db!
-        .query<{ total: number; stale: number; oldest: number | null }, [number]>(
-          `SELECT count(*) AS total,
-             coalesce(sum(last_seen_at IS NULL OR last_seen_at<=?),0) AS stale,
-             min(last_seen_at) AS oldest
-           FROM runner WHERE status='active' AND revoked_at IS NULL`,
-        )
-        .get(now - maxAgeMs)!;
+      const row = await store!.run((q) => runnerHeartbeatsSteps(q, now - maxAgeMs));
       if (row.total === 0) return { status: "skipped", reason: "no_active_runners" };
       return {
         status: row.stale === 0 ? "ok" : "failed",
@@ -131,13 +127,17 @@ export function createHealthReport(options: HealthOptions) {
         maxAgeMs,
       };
     });
-    const webhook = async (name: string, configured: boolean, sql: string) => {
+    const webhook = async (
+      name: string,
+      configured: boolean,
+      steps: (q: Q) => Steps<number | null>,
+    ) => {
       if (!configured) {
         checks[name] = { status: "skipped", reason: "not_configured" };
         return;
       }
-      await read(name, () => {
-        const at = db!.query<{ at: number | null }, []>(sql).get()?.at ?? null;
+      await read(name, async () => {
+        const at = await store!.run(steps);
         const ageMs = at === null ? null : Math.max(0, now - at);
         const maxAgeMs = LINEAR_WEBHOOK_SILENCE_MS;
         return {
@@ -148,16 +148,10 @@ export function createHealthReport(options: HealthOptions) {
         };
       });
     };
-    await webhook(
-      "linearWebhook",
-      options.linearWebhook,
-      "SELECT cursor_ms AS at FROM sync_cursor WHERE name='linear:webhook'",
+    await webhook("linearWebhook", options.linearWebhook, (q) =>
+      syncCursorSteps(q, "linear:webhook"),
     );
-    await webhook(
-      "githubWebhook",
-      options.githubWebhook,
-      "SELECT max(received_at) AS at FROM github_delivery",
-    );
+    await webhook("githubWebhook", options.githubWebhook, latestGithubDeliverySteps);
     if (options.disk === undefined) {
       checks.diskSpace = { status: "skipped", reason: "not_configured" };
     } else {

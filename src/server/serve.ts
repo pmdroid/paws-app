@@ -219,7 +219,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
   const db = options.db;
   const store = serverStore(options);
   const health = createHealthReport({
-    db,
+    ...(store ? { store } : {}),
     linearWebhook: webhooks && Boolean(linearWebhookSecret),
     githubWebhook: webhooks && Boolean(githubWebhookSecret),
     now: options.healthNow,

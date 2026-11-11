@@ -1,1 +1,0 @@
-src/server/health.ts | db.query("SELECT count(*) FROM sqlite_schema").get(); | reads sqlite_schema to prove the SQLite file opens; no query written once does that

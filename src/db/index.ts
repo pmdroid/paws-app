@@ -21,6 +21,7 @@ export * from "./plan-proposals";
 export * from "./link-asks";
 export * from "./items";
 export * from "./jobs";
+export * from "./health";
 export * from "./loop";
 export * from "./instances";
 export * from "./loops";
