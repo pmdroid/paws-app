@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   describeOverriddenSections,
@@ -16,15 +16,17 @@ import {
   CONFIG_SETTINGS_KEY,
   migrate,
   openDatabase,
+  openPawsStore,
   readSetting,
   readSettingSteps,
   sqliteDb,
   updateSetting,
   updateSettingSteps,
 } from "../src/db";
-import { useSavedSettings } from "../src/index";
+import { withSavedStore } from "../src/doctor";
 import { handleTimeLimitSettingsRequest } from "../src/settings";
 import { tempHome } from "./helpers";
+import { copyMigratedPglite, pgliteServer } from "./pglite";
 
 const BOOTSTRAP = `[linear]
 team = "ACME"
@@ -121,29 +123,72 @@ test("once the table holds settings, config.toml supplies only what Settings doe
   expect(config.linearTeam).toBe("ACME");
 });
 
-test("a command without a running Paws, such as paws doctor, reads the saved settings", async () => {
+const SAVED_AGENTS = [
+  '[agents]\nimplementer = "codex"',
+  '[agents.defaults.implementer]\nagent = "codex"',
+  '[agents.defaults.reviewer]\nagent = "claude"',
+].join("\n\n");
+
+async function savedSettingsHome(): Promise<string> {
   const home = tempHome();
   cleanups.push(() => rmSync(home, { recursive: true, force: true }));
-  cleanups.push(useSavedSettings());
   writeFileSync(join(home, "config.toml"), BOOTSTRAP);
-  const db = openDatabase(join(home, "paws.db"));
-  migrate(db);
-  await updateSetting(sqliteDb(db), CONFIG_SETTINGS_KEY, () =>
-    [
-      '[agents]\nimplementer = "codex"',
-      '[agents.defaults.implementer]\nagent = "codex"',
-      '[agents.defaults.reviewer]\nagent = "claude"',
-    ].join("\n\n"),
-  );
-  db.close();
-  const runtime = loadRuntime({ PAWS_HOME: home });
-  expect(runtime.configError).toBe(null);
-  expect(resolveAgentProfiles(runtime.file)).toMatchObject({
+  await copyMigratedPglite(join(home, "pglite"));
+  const database = await openPawsStore({ url: null, pgliteDir: join(home, "pglite") });
+  await updateSetting(database.store, CONFIG_SETTINGS_KEY, () => SAVED_AGENTS);
+  await database.close();
+  return home;
+}
+
+test("a command without a running Paws, such as paws doctor, reads the saved settings", async () => {
+  const home = await savedSettingsHome();
+  const saved = await withSavedStore({ PAWS_HOME: home }, async ({ held }) => ({
+    held,
+    runtime: loadRuntime({ PAWS_HOME: home }),
+  }));
+  expect(saved.held).toBe(false);
+  expect(saved.runtime.configError).toBe(null);
+  expect(resolveAgentProfiles(saved.runtime.file)).toMatchObject({
     implementer: { agent: "codex" },
     reviewer: { agent: "claude" },
   });
-  expect(runtime.linearTeam).toBe("ACME");
-});
+  expect(saved.runtime.linearTeam).toBe("ACME");
+  expect(resolveAgentProfiles(loadRuntime({ PAWS_HOME: home }).file).implementer.agent).toBe(
+    "claude",
+  );
+}, 30_000);
+
+test("while Paws holds PGlite a command uses config.toml and says so", async () => {
+  const home = await savedSettingsHome();
+  writeFileSync(join(home, "pglite.lock"), String(process.ppid));
+  const saved = await withSavedStore({ PAWS_HOME: home }, async ({ store, held }) => ({
+    store,
+    held,
+    runtime: loadRuntime({ PAWS_HOME: home }),
+  }));
+  expect(saved).toMatchObject({ store: null, held: true });
+  expect(resolveAgentProfiles(saved.runtime.file).implementer.agent).toBe("claude");
+}, 30_000);
+
+test("with [database] url a command reads the saved settings from that Postgres", async () => {
+  const server = await pgliteServer();
+  const home = tempHome();
+  cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+  try {
+    writeFileSync(join(home, "config.toml"), BOOTSTRAP);
+    await updateSetting(server.store, CONFIG_SETTINGS_KEY, () => SAVED_AGENTS);
+    const env = { PAWS_HOME: home, PAWS_DATABASE_URL: server.url };
+    const saved = await withSavedStore(env, async ({ held }) => ({
+      held,
+      runtime: loadRuntime(env),
+    }));
+    expect(saved.held).toBe(false);
+    expect(resolveAgentProfiles(saved.runtime.file).implementer.agent).toBe("codex");
+    expect(existsSync(join(home, "pglite"))).toBe(false);
+  } finally {
+    await server.close();
+  }
+}, 30_000);
 
 test("a table-like line inside a multiline string is not read as a section", async () => {
   const a = await instance(shared(), "ACME");

@@ -1,10 +1,5 @@
-import { Database } from "bun:sqlite";
-import { existsSync } from "node:fs";
 import { eq } from "drizzle-orm";
 import { type Q, type Db } from "./db";
-import { orm } from "./orm";
-import { setting as savedSetting } from "./schema/settings";
-import { isLegacyDatabase } from "./migrate";
 
 export const CONFIG_SETTINGS_KEY = "config.toml";
 
@@ -43,20 +38,4 @@ export async function updateSetting(
   now = Date.now(),
 ): Promise<void> {
   await store.transaction((q) => updateSettingSteps(q, key, change, now));
-}
-
-export function readSavedSettings(path: string): string | null {
-  if (!existsSync(path) || isLegacyDatabase(path)) return null;
-  const db = new Database(path, { readonly: true });
-  try {
-    return (
-      orm(db)
-        .select({ value: savedSetting.value })
-        .from(savedSetting)
-        .where(eq(savedSetting.key, CONFIG_SETTINGS_KEY))
-        .get()?.value ?? null
-    );
-  } finally {
-    db.close();
-  }
 }

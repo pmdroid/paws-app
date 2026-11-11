@@ -28,7 +28,6 @@ export {
   describeOverriddenSections,
   overriddenConfigSections,
   readConfigText,
-  useSavedSettingsReader,
   useSettingsStore,
 } from "./settings-store";
 export type { SettingsStore } from "./settings-store";
