@@ -72,7 +72,7 @@ async function setup(options: { version?: string; conversations?: number } = {})
     "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('runner',?,?,'Acme box','active',?,?)",
     [workspace.id, userId, T0, T0],
   );
-  recordRunnerCapacity(db, "runner", 1, 1, options.conversations ?? 2);
+  await recordRunnerCapacity(sqliteDb(db), "runner", 1, 1, options.conversations ?? 2);
   await recordRunnerHostStatus(
     sqliteDb(db),
     "runner",

@@ -43,7 +43,7 @@ export async function workspaceWithRunners(db: Database) {
     );
     db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [id]);
     db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [id]);
-    recordRunnerCapacity(db, id, slots, undefined, undefined, NOW);
+    await recordRunnerCapacity(sqliteDb(db), id, slots, undefined, undefined, NOW);
     await recordRunnerRepositories(sqliteDb(db), id, repositories, NOW);
     return id;
   };

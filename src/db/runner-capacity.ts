@@ -296,9 +296,8 @@ export function* wakeRunnerSlotWaitsSteps(q: Q, runnerId: string, now: number): 
   return true;
 }
 
-export function wakeRunnerSlotWaits(db: Database, runnerId: string, now: number): void {
-  if (settled(sqliteDb(db).run((q) => wakeRunnerSlotWaitsSteps(q, runnerId, now))))
-    emitJobReady(db);
+export async function wakeRunnerSlotWaits(store: Db, runnerId: string, now: number): Promise<void> {
+  if (await store.run((q) => wakeRunnerSlotWaitsSteps(q, runnerId, now))) emitJobReady(store);
 }
 
 export async function runnerSlotFree(
@@ -389,22 +388,20 @@ export function* recordRunnerCapacityWakingSteps(
   return { concurrency, woke };
 }
 
-export function recordRunnerCapacity(
-  db: Database,
+export async function recordRunnerCapacity(
+  store: Db,
   runnerId: string,
   capacity: number,
   ceiling?: number,
   conversations?: number,
   now = Date.now(),
-): number | undefined {
-  const before = settled(sqliteDb(db).run((q) => runnerOccupancyCapacitySteps(q, runnerId)));
-  const result = settled(
-    sqliteDb(db).run((q) =>
-      recordRunnerCapacitySteps(q, runnerId, capacity, ceiling, conversations),
-    ),
+): Promise<number | undefined> {
+  const before = await store.run((q) => runnerOccupancyCapacitySteps(q, runnerId));
+  const result = await store.run((q) =>
+    recordRunnerCapacitySteps(q, runnerId, capacity, ceiling, conversations),
   );
-  if (settled(sqliteDb(db).run((q) => runnerOccupancyCapacitySteps(q, runnerId))) > before)
-    wakeRunnerSlotWaits(db, runnerId, now);
+  if ((await store.run((q) => runnerOccupancyCapacitySteps(q, runnerId))) > before)
+    await wakeRunnerSlotWaits(store, runnerId, now);
   return result;
 }
 
