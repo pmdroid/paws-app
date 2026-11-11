@@ -91,7 +91,7 @@ export async function probeResponseTaskRecovery(root: string) {
     );
     let launches = 0;
     const orchestrator = new Orchestrator({
-      db,
+      store: sqliteDb(db),
       jobs,
       clock,
       outbox: new OutboxDispatcher(db, clock),

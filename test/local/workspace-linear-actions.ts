@@ -174,7 +174,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
   }
   const clock = new FakeClock(now);
   const loop = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     pawsRoot: root,
@@ -313,7 +313,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     const queued = await task("owner");
     let calls = 0;
     const queueLoop = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       jobs: new JobLoop(db, clock),
       outbox: new OutboxDispatcher(db, clock),
       pawsRoot: root,
@@ -351,7 +351,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     });
     let followupCalls = 0;
     const followupLoop = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       jobs: new JobLoop(db, clock),
       outbox: new OutboxDispatcher(db, clock),
       pawsRoot: root,

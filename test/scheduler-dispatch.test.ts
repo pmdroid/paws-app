@@ -1,6 +1,21 @@
 import { confirmFakeMerge } from "./fake-workspace";
-import { expect, test } from "bun:test";
-import { ensureLinearSession, insertQueuedItem, sqliteDb } from "../src/db";
+import { expect, spyOn, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { FakeClock } from "../src/core";
+import {
+  JobLoop,
+  OutboxDispatcher,
+  beginImplementRun,
+  ensureLinearSession,
+  getWorkItem,
+  insertQueuedItem,
+  sqliteDb,
+  type Db,
+} from "../src/db";
+import { Orchestrator } from "../src/loop";
+import * as scheduler from "../src/scheduler";
 import type { SchedulerOptions } from "../src/scheduler";
 import { tempDb } from "./helpers";
 import { workspaceDispatch } from "./fake-workspace";
@@ -42,15 +57,45 @@ test("dispatch admits ready Items while another one is in flight", async () => {
   }
 });
 
-test("dispatch runs only after the transition's transaction has committed", () => {
+test("the orchestrator dispatches after the transition's transaction has resolved", async () => {
   const db = tempDb();
+  const root = await mkdtemp(join(tmpdir(), "paws-dispatch-"));
+  const sqlite = sqliteDb(db);
+  let open = 0;
+  const store = {
+    ...sqlite,
+    transaction: async (body) => {
+      open++;
+      try {
+        return await sqlite.transaction(body);
+      } finally {
+        open--;
+      }
+    },
+  } as Db;
+  const seen: { open: number; state: string | undefined }[] = [];
+  const spy = spyOn(scheduler, "dispatch").mockImplementation(async () => {
+    seen.push({ open, state: (await getWorkItem(sqlite, "item"))?.state });
+    return [];
+  });
   try {
+    const clock = new FakeClock(1_000);
+    const orchestrator = new Orchestrator({
+      store,
+      clock,
+      jobs: new JobLoop(db, clock),
+      outbox: new OutboxDispatcher(db, clock),
+      pawsRoot: root,
+    });
     insertQueuedItem(db, { id: "item", now: 1 });
-    expect(() => db.transaction(() => workspaceDispatch(db, { now: 1000 })).immediate()).toThrow(
-      "Dispatch runs after the transition commits",
-    );
+    await beginImplementRun(sqlite, "item", clock.now());
+    const item = (await getWorkItem(sqlite, "item"))!;
+    await orchestrator["fail"](item, "broken", "The run broke.");
+    expect(seen).toEqual([{ open: 0, state: "failed" }]);
   } finally {
+    spy.mockRestore();
     db.close();
+    await rm(root, { recursive: true, force: true });
   }
 });
 

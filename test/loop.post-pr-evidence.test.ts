@@ -42,7 +42,7 @@ function setup() {
   });
   const dispatcher = new OutboxDispatcher(db, new FakeClock(Date.now()));
   dispatcher.setHandler((row, context) =>
-    deliverLinearOutbox(row, tracker, async () => {}, context, db),
+    deliverLinearOutbox(row, tracker, async () => {}, context, sqliteDb(db)),
   );
   const flush = async () => {
     while ((await dispatcher.tick()).length) await dispatcher.idle();
@@ -172,7 +172,7 @@ test("a closed response fences later activities even without a PR response in it
     const tracker = createFakeTracker();
     const dispatcher = new OutboxDispatcher(db, new FakeClock(Date.now()));
     dispatcher.setHandler((row, context) =>
-      deliverLinearOutbox(row, tracker, async () => {}, context, db),
+      deliverLinearOutbox(row, tracker, async () => {}, context, sqliteDb(db)),
     );
     for (const [key, kind] of [
       ["closed:item:0", "response"],

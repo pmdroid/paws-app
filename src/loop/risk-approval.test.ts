@@ -516,7 +516,7 @@ test("the ask, its link and the decision reach Linear after the pull request res
     for (const row of await listOutbox(sqliteDb(db), "ses_1")) {
       if (delivered.has(row.id)) continue;
       delivered.add(row.id);
-      await deliverLinearOutbox(row, tracker, async () => {}, undefined, db);
+      await deliverLinearOutbox(row, tracker, async () => {}, undefined, sqliteDb(db));
     }
   };
   await deliver();
@@ -1237,7 +1237,7 @@ for (const scenario of ["clean", "P2", "missing security", "rules change", "off"
       });
       const tracker = createFakeTracker();
       for (const row of await listOutbox(sqliteDb(f.db), "ses_1"))
-        await deliverLinearOutbox(row, tracker, async () => {}, undefined, f.db);
+        await deliverLinearOutbox(row, tracker, async () => {}, undefined, sqliteDb(f.db));
       expect(tracker.progress).toHaveLength(1);
       expect(tracker.progress[0]?.body).toBe(body);
       expect(await f.read({ autoApproveHighRisk: scenario !== "off" })).toBe(

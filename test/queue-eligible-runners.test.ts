@@ -83,7 +83,7 @@ function addRunner(db: Database, id: string, ownerId: string, seenAt: number): v
 
 function orchestrator(db: Database, clock: FakeClock) {
   return new Orchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),

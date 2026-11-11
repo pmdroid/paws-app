@@ -1,5 +1,4 @@
-import type { Database } from "bun:sqlite";
-import { itemDelegationIdSteps, sqliteDb, type Q, type Steps } from "../db";
+import { itemDelegationIdSteps, type Db, type Q, type Steps } from "../db";
 import {
   delegationReadinessSteps,
   itemReadinessSteps,
@@ -21,11 +20,11 @@ export type ItemAdmission = {
 };
 
 export function createAdmission(input: {
-  db: Database;
+  db: Db;
   authority?: (delegationId: string) => boolean;
   workspace?: boolean;
 }): ItemAdmission {
-  const store = sqliteDb(input.db);
+  const store = input.db;
   function* delegationHeld(q: Q, delegationId: string): Steps<HeldReason | null> {
     return input.authority?.(delegationId) === false
       ? "project"

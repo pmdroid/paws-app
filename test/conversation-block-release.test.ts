@@ -92,7 +92,7 @@ async function blockedAfterCleanupFailure() {
     },
   ]);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     tracker,
     pawsRoot: home,
     jobs: new JobLoop(db, systemClock),

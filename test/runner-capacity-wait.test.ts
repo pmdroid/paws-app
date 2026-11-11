@@ -206,7 +206,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
   const jobs = new JobLoop(db, clock, { concurrency: 4, pollMs: 5 });
   const outbox = new OutboxDispatcher(db, clock);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs,
     outbox,
     clock,
@@ -310,7 +310,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
         }),
       });
     }
-    await dispatch(db, { now: clock.now() });
+    await dispatch(sqliteDb(db), { now: clock.now() });
     expect(db.query("SELECT item_id FROM scheduler_admission").all()).toHaveLength(5);
     loop = jobs.run(controller.signal, (ms) => Bun.sleep(ms));
     const deadline = Date.now() + 20_000;

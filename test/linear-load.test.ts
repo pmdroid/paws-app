@@ -122,7 +122,7 @@ test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes wh
   const outbox = new OutboxDispatcher(db, clock);
   await registerScheduler(jobs, () => orchestrator.reconcileExecution(), clock.now());
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,

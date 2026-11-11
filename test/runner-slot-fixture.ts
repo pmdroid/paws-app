@@ -69,7 +69,7 @@ export async function workspaceWithRunners(db: Database) {
     db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
   };
   const pass = (reported: RunnerHostRefusal[][] = []) =>
-    dispatch(db, {
+    dispatch(sqliteDb(db), {
       now: NOW,
       admission: workspaceAdmission(db),
       itemRunners: (q, itemId) =>

@@ -256,7 +256,7 @@ test("host credentials reach real host clone and fetch without reaching reposito
     const priorCa = process.env.GIT_SSL_CAINFO;
     process.env.GIT_SSL_CAINFO = cert;
     const orchestrator = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       admission: workspaceAdmission(db),
       jobs,
       outbox,

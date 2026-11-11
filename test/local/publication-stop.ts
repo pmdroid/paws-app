@@ -109,7 +109,7 @@ export async function probePublicationStop(
   const create = (scheduling?: OrchestratorOptions["scheduling"]) => {
     const jobs = new JobLoop(db, clock);
     const orchestrator = new Orchestrator({
-      db,
+      store: sqliteDb(db),
       jobs,
       outbox: new OutboxDispatcher(db, clock),
       clock,

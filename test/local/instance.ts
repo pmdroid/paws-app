@@ -247,7 +247,7 @@ async function scenario(
     };
   };
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs,
     outbox,
     pawsRoot,

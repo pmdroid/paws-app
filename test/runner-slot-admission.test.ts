@@ -392,10 +392,12 @@ test("an enabled but unavailable placement scope stays queued while disabled che
   await pair("agentbox", 1, [REPOSITORY]);
   await queue("unknown");
   const options = { now: NOW, admission: workspaceAdmission(db) };
-  expect(await dispatch(db, { ...options, itemRunners: () => syncSteps(() => null) })).toEqual([]);
+  expect(
+    await dispatch(sqliteDb(db), { ...options, itemRunners: () => syncSteps(() => null) }),
+  ).toEqual([]);
   expect((await getWorkItem(sqliteDb(db), "unknown"))?.state).toBe("queued");
   expect((await listItemHolds(sqliteDb(db)))[0]?.blockers[0]).toContain("placement scope");
-  expect(await dispatch(db, options)).toEqual(["unknown"]);
+  expect(await dispatch(sqliteDb(db), options)).toEqual(["unknown"]);
 });
 
 test("two flexible slow starts reserve different runner slots", async () => {
@@ -589,7 +591,7 @@ test("admission fails over from a busy session runner once session grace ends", 
   // Each pass asks placement afresh, as the scheduler does on its 30 second tick.
   const pass = (now: number) => {
     db.run("UPDATE runner SET last_seen_at=?", [now]);
-    return dispatch(db, {
+    return dispatch(sqliteDb(db), {
       now,
       admission: workspaceAdmission(db),
       itemRunners: (q, itemId) =>

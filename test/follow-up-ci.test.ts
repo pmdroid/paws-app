@@ -131,7 +131,7 @@ async function waitingTask(
   const previousToken = process.env.FOLLOW_UP_TEST_TOKEN;
   process.env.FOLLOW_UP_TEST_TOKEN = TOKEN;
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     tracker,
     pawsRoot: home,
     jobs: new JobLoop(db, systemClock),

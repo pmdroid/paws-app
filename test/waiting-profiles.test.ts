@@ -65,7 +65,7 @@ function fixture() {
   const orchestrator = new Orchestrator({
     tracker,
     journal: (line) => journal.push(line),
-    db,
+    store: sqliteDb(db),
     pawsRoot: root,
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),

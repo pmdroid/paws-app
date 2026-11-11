@@ -92,7 +92,7 @@ async function setup(options: { version?: string; conversations?: number } = {})
     wait: () => ({ quietMs: 0, maxMs: 0 }),
   };
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     clock,
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),

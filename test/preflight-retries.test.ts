@@ -183,7 +183,7 @@ async function runPreflight(fault: {
   let onStarted = () => {};
   const started = new Promise<void>((resolve) => (onStarted = resolve));
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,

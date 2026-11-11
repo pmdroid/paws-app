@@ -86,7 +86,7 @@ for await (const line of createInterface({ input: process.stdin })) {
       });
       const create = () =>
         attachOrchestrator({
-          db,
+          store: sqliteDb(db),
           jobs: new JobLoop(db, systemClock),
           outbox: new OutboxDispatcher(db, systemClock),
           pawsRoot,

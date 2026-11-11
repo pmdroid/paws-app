@@ -100,7 +100,7 @@ function orchestrator(
   extra: { tracker?: FakeTracker; pawsRoot?: string } = {},
 ) {
   return new Orchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox: new OutboxDispatcher(db, clock),

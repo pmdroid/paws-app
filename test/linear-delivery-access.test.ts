@@ -69,7 +69,7 @@ async function fixture() {
     stopSession: () => syncSteps(() => {}),
   });
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs: new JobLoop(db, systemClock),
     outbox,
     tracker,

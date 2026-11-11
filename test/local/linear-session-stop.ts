@@ -37,7 +37,7 @@ export async function probeLinearSessionStop(root: string) {
   const jobs = new JobLoop(db, clock);
   let joined = 0;
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     jobs,
     clock,
     outbox: new OutboxDispatcher(db, clock),

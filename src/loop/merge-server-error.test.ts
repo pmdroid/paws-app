@@ -36,7 +36,7 @@ async function fixture(mergeable: boolean | null) {
   const reads: string[] = [];
   const lines: string[] = [];
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     clock,
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),

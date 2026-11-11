@@ -389,7 +389,7 @@ async function firstDelegation(
     };
   };
   orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,

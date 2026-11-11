@@ -89,7 +89,7 @@ export async function probeSchedulerRuntime(
   const jobs = new JobLoop(db, clock);
   const events: string[] = [];
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     clock,

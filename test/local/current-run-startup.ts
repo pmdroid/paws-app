@@ -59,7 +59,7 @@ export async function probeCurrentRunStartup(root: string) {
       recoveryUrl: "https://paws.example/status/#/settings/integrations",
     };
     const orchestrator = new Orchestrator({
-      db,
+      store: sqliteDb(db),
       admission: workspaceAdmission(db),
       jobs,
       clock,

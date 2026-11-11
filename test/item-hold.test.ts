@@ -103,7 +103,13 @@ for (const state of ["started", "unstarted"])
     try {
       await externalBlocker(db, state);
       const { lines, log } = journal();
-      expect(await dispatch(db, { now: 1, log, admission: createAdmission({ db }) })).toEqual([]);
+      expect(
+        await dispatch(sqliteDb(db), {
+          now: 1,
+          log,
+          admission: createAdmission({ db: sqliteDb(db) }),
+        }),
+      ).toEqual([]);
       expect(await listItemHolds(sqliteDb(db))).toEqual([
         { itemId: "PAS-840", reason: "blocked", blockers: ["OPS-12"] },
       ]);
@@ -132,8 +138,8 @@ test("a blocked hold without an open blocker is journaled as an inconsistency", 
       },
     };
     const { lines, log } = journal();
-    expect(await dispatch(db, { now: 1, log, admission: blocked })).toEqual([]);
-    expect(await dispatch(db, { now: 2, log, admission: blocked })).toEqual([]);
+    expect(await dispatch(sqliteDb(db), { now: 1, log, admission: blocked })).toEqual([]);
+    expect(await dispatch(sqliteDb(db), { now: 2, log, admission: blocked })).toEqual([]);
     expect(await listItemHolds(sqliteDb(db))).toEqual([
       { itemId: "PAS-841", reason: "blocked", blockers: [] },
     ]);
@@ -180,7 +186,7 @@ test("a project that holds an item is its held reason", async () => {
     item(db, "PAS-5");
     const { lines, log } = journal();
     const admission = workspaceAdmission(db, { authority: () => false });
-    expect(await dispatch(db, { now: 1, log, admission })).toEqual([]);
+    expect(await dispatch(sqliteDb(db), { now: 1, log, admission })).toEqual([]);
     expect(await listItemHolds(sqliteDb(db))).toEqual([
       { itemId: "PAS-5", reason: "project", blockers: [] },
     ]);
@@ -201,9 +207,9 @@ test("without a workspace every queued item is held for the workspace, journaled
     await confirmFakeMerge(db, "PAS-7");
     db.run("UPDATE work_item SET state='merged' WHERE id='PAS-7'");
     item(db, "PAS-9", "queued", 2);
-    const admission = createAdmission({ db, workspace: false });
-    expect(await dispatch(db, { now: 2, log, admission })).toEqual([]);
-    expect(await dispatch(db, { now: 3, log, admission })).toEqual([]);
+    const admission = createAdmission({ db: sqliteDb(db), workspace: false });
+    expect(await dispatch(sqliteDb(db), { now: 2, log, admission })).toEqual([]);
+    expect(await dispatch(sqliteDb(db), { now: 3, log, admission })).toEqual([]);
     expect(await listItemHolds(sqliteDb(db))).toEqual([
       { itemId: "PAS-8", reason: "workspace", blockers: [] },
       { itemId: "PAS-9", reason: "workspace", blockers: [] },
@@ -273,7 +279,7 @@ test("an item blocked only by an issue canceled in Linear is not held", async ()
   try {
     await externalBlocker(db, "canceled");
     const { lines, log } = journal();
-    await dispatch(db, { now: 1, log, admission: createAdmission({ db }) });
+    await dispatch(sqliteDb(db), { now: 1, log, admission: createAdmission({ db: sqliteDb(db) }) });
     expect(await listItemHolds(sqliteDb(db))).toEqual([]);
     expect(lines).toEqual([]);
   } finally {

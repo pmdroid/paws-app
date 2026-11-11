@@ -124,7 +124,6 @@ import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
-import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import type {
   AcpEvent,
@@ -292,7 +291,6 @@ import {
   getQueuePosition,
   clearQueueWait,
   queueWaitSince,
-  sqliteDb,
   activeRunnerIdsSteps,
   announceLinearTurnSteps,
   artifactPublicationReadySteps,
@@ -717,9 +715,7 @@ import {
 export type { RepositoryBinding } from "../core";
 
 export type OrchestratorOptions = {
-  db: Database;
-  /** The async `Db` over `db` for converted code. Defaults to `sqliteDb(db)`. */
-  store?: Db;
+  store: Db;
   instanceId?: string;
   jobs: JobLoop;
   outbox: OutboxDispatcher;
@@ -964,7 +960,7 @@ export class Orchestrator {
   }
 
   constructor(private readonly options: OrchestratorOptions) {
-    this.store = options.store ?? sqliteDb(options.db);
+    this.store = options.store;
     this.riskDisplayReader = new RiskDisplayReader({
       store: this.store,
       configPath: join(options.pawsRoot, "config.toml"),
@@ -973,7 +969,7 @@ export class Orchestrator {
       journal: options.journal,
     });
     this.tracker = options.tracker ?? null;
-    this.admission = options.admission ?? createAdmission({ db: options.db });
+    this.admission = options.admission ?? createAdmission({ db: this.store });
     this.githubAuth = options.githubInstallation
       ? new GitHubInstallationCheck(
           this.store,
@@ -1863,10 +1859,6 @@ export class Orchestrator {
 
   stopTaskPlanning = (sessionId?: string): Promise<void> => this.taskPlanner.stop(sessionId);
 
-  private get db(): Database {
-    return this.options.db;
-  }
-
   private async forItem<T>(payload: unknown, run: () => T | Promise<T>): Promise<T> {
     const itemId = readString(payload, "itemId");
     const item = itemId ? await this.store.run((q) => getWorkItemSteps(q, itemId)) : null;
@@ -2571,7 +2563,7 @@ export class Orchestrator {
       tracker,
       () => this.catchUpFn(),
       context,
-      this.db,
+      this.store,
       files && storage ? { files, ...storage } : undefined,
     );
   }
@@ -7611,8 +7603,7 @@ export class Orchestrator {
       );
       config = null;
     }
-    await dispatch(this.db, {
-      store: this.store,
+    await dispatch(this.store, {
       now: this.now(),
       admission: this.admission,
       ...(this.options.journal ? { log: this.options.journal } : {}),

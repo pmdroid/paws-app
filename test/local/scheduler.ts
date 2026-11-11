@@ -43,7 +43,10 @@ if (process.argv[2] === "--contender") {
     const scratch = join(root, `scratch-${contender}.sqlite`);
     copyFileSync(join(root, "template.sqlite"), scratch);
     const warm = openDatabase(scratch);
-    await dispatch(warm, { now: 1000, admission: createAdmission({ db: warm }) });
+    await dispatch(sqliteDb(warm), {
+      now: 1000,
+      admission: createAdmission({ db: sqliteDb(warm) }),
+    });
     warm.close();
     const db = openDatabase(join(root, "paws.sqlite"));
     writeFileSync(join(root, `ready-${contender}`), "");
@@ -53,7 +56,10 @@ if (process.argv[2] === "--contender") {
       await pause(5);
     }
     // The parent joined the fake workspace, so the write lock covers only the product dispatch.
-    const admitted = await dispatch(db, { now: 1000, admission: createAdmission({ db }) });
+    const admitted = await dispatch(sqliteDb(db), {
+      now: 1000,
+      admission: createAdmission({ db: sqliteDb(db) }),
+    });
     writeFileSync(join(root, `result-${contender}.json`), JSON.stringify(admitted));
     db.close();
   } catch (error) {
@@ -235,7 +241,7 @@ export async function probeScheduler(
     const first = (claimed.payload as { itemId: string }).itemId;
     const canDispatchDelegation = (delegationId: string) => delegationId !== `epic-${first}`;
     assert.deepEqual(
-      await dispatch(db, {
+      await dispatch(sqliteDb(db), {
         now: 1001,
         admission: workspaceAdmission(db, { authority: canDispatchDelegation }),
       }),
@@ -246,7 +252,7 @@ export async function probeScheduler(
     assert.equal(count(db, "scheduler_admission"), 2);
     assert(await completeJob(sqliteDb(db), claimed, 1002));
     assert.deepEqual(
-      await dispatch(db, {
+      await dispatch(sqliteDb(db), {
         now: 1002,
         admission: workspaceAdmission(db, { authority: canDispatchDelegation }),
       }),
@@ -297,10 +303,10 @@ export async function probeScheduler(
       actorId: "owner",
     });
     const firstOnly = { now: 1000, admission: onlyStarts(db, ids[0]!) };
-    assert.deepEqual(await dispatch(db, firstOnly), [ids[0]!]);
+    assert.deepEqual(await dispatch(sqliteDb(db), firstOnly), [ids[0]!]);
     const start = (await claimNextJob(sqliteDb(db), { now: 1000, queues: [JOB_KIND.start] }))!;
     db.run("UPDATE work_item SET state='merge_queue' WHERE id=?", [ids[0]!]);
-    assert.deepEqual(await dispatch(db, firstOnly), []);
+    assert.deepEqual(await dispatch(sqliteDb(db), firstOnly), []);
     assert(await completeJob(sqliteDb(db), start, 1001));
     const mergeId = await enqueueJob(sqliteDb(db), {
       queue: `${JOB_KIND.merge}.deferred`,
@@ -328,9 +334,10 @@ export async function probeScheduler(
   {
     for (const status of ["active", "provisioning"] as const) {
       const { db, ids } = await setup(`merge-run-${status}`, 2, () => ["src/shared"]);
-      assert.deepEqual(await dispatch(db, { now: 1000, admission: onlyStarts(db, ids[0]!) }), [
-        ids[0]!,
-      ]);
+      assert.deepEqual(
+        await dispatch(sqliteDb(db), { now: 1000, admission: onlyStarts(db, ids[0]!) }),
+        [ids[0]!],
+      );
       const start = (await claimNextJob(sqliteDb(db), { now: 1000, queues: [JOB_KIND.start] }))!;
       assert(await completeJob(sqliteDb(db), start, 1001));
       db.run("UPDATE work_item SET state='merge_queue' WHERE id=?", [ids[0]!]);
@@ -424,7 +431,7 @@ export async function probeScheduler(
       actorId: "owner",
     });
     const ids = intake.items.map((item) => item.id);
-    assert.deepEqual(await dispatch(db, { now: 1000 }), []);
+    assert.deepEqual(await dispatch(sqliteDb(db), { now: 1000 }), []);
     const lifecycle = createFakeLinearIssueLifecycle({
       id: "a",
       teamId: "team",
@@ -444,9 +451,9 @@ export async function probeScheduler(
         tracker,
         lifecycle,
       });
-    assert.deepEqual(await dispatch(db, { now: 1001 }), [intake.items[0]!.id]);
+    assert.deepEqual(await dispatch(sqliteDb(db), { now: 1001 }), [intake.items[0]!.id]);
     db.run("UPDATE item_dependency_snapshot SET scope='[]'");
-    assert.deepEqual(await dispatch(db, { now: 1002 }), []);
+    assert.deepEqual(await dispatch(sqliteDb(db), { now: 1002 }), []);
     assert.equal(count(db, "scheduler_admission"), 0);
     assert.equal(
       db.query<{ status: string }, []>("SELECT status FROM job").get()!.status,
@@ -525,7 +532,7 @@ export async function probeScheduler(
           lifecycle,
         });
     }
-    const admitted = await dispatch(db, { now: 1000, defaultRepository: repository });
+    const admitted = await dispatch(sqliteDb(db), { now: 1000, defaultRepository: repository });
     assert.equal(admitted.length, 4);
     for (const [sessionId, ids] of sessions) {
       const selected = ids.filter((id) => admitted.includes(id));
@@ -546,7 +553,7 @@ export async function probeScheduler(
   {
     const { db } = await setup("effects", 2);
     assert.deepEqual(
-      await dispatch(db, {
+      await dispatch(sqliteDb(db), {
         now: 1000,
         admission: workspaceAdmission(db, { authority: () => false }),
       }),
@@ -555,7 +562,7 @@ export async function probeScheduler(
     assert.equal(count(db, "job"), 0);
     assert.equal((await workspaceDispatch(db, { now: 1001 })).length, 2);
     assert.deepEqual(
-      await dispatch(db, {
+      await dispatch(sqliteDb(db), {
         now: 1002,
         admission: workspaceAdmission(db, { authority: () => false }),
       }),

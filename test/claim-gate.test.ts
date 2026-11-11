@@ -184,7 +184,7 @@ test("a Project pause between dispatch and claim retracts the stale Reservation"
     const lines = await disagreements(async () => {
       assert.deepEqual(await workspaceDispatch(db, { now: 1000 }), ["paused"]);
       const paused = workspaceAdmission(db, { authority: () => false });
-      assert.deepEqual(await dispatch(db, { now: 1001, admission: paused }), []);
+      assert.deepEqual(await dispatch(sqliteDb(db), { now: 1001, admission: paused }), []);
       assert.equal(await claimNextJob(sqliteDb(db), { now: 1001 }), null);
     });
     assert.equal(db.query("SELECT 1 FROM scheduler_admission").get(), null);
@@ -207,7 +207,7 @@ test("an access change between dispatch and claim retracts only that Item's Rese
     const lines = await disagreements(async () => {
       assert.deepEqual(await workspaceDispatch(db, { now: 1000 }), ["revoked", "kept"]);
       const access = workspaceAdmission(db, { authority: (id) => id !== revoked });
-      assert.deepEqual(await dispatch(db, { now: 1001, admission: access }), []);
+      assert.deepEqual(await dispatch(sqliteDb(db), { now: 1001, admission: access }), []);
       claimed = [
         await claimNextJob(sqliteDb(db), { now: 1001 }),
         await claimNextJob(sqliteDb(db), { now: 1001 }),

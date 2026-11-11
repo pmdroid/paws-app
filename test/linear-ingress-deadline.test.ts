@@ -162,7 +162,7 @@ function fixture() {
   });
   const outbox = new OutboxDispatcher(db, systemClock);
   orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     pawsRoot: home,
     tracker: linear.tracker,
     linearAccess: gate,

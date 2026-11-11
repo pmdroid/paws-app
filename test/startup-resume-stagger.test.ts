@@ -79,7 +79,7 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
       interruptSession: (sessionId) => orchestrator.interruptLinearSession(sessionId),
     });
     orchestrator = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       admission: workspaceAdmission(db),
       jobs,
       outbox: new OutboxDispatcher(db, systemClock),

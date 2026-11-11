@@ -304,7 +304,7 @@ export async function probeExecutionStopStates(root: string) {
       if (state === "running" || state === "awaiting_input" || state === "verifying")
         remote = await remoteFixture(fixture, directory, state);
       const options: OrchestratorOptions = {
-        db,
+        store: sqliteDb(db),
         clock: systemClock,
         jobs: new JobLoop(db, systemClock),
         outbox: new OutboxDispatcher(db, systemClock),

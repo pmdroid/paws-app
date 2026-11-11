@@ -260,7 +260,7 @@ async function fixture({
   function buildOrchestrator() {
     orchestratorJobs = new JobLoop(db, clock);
     return attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       jobs: orchestratorJobs,
       outbox: new OutboxDispatcher(db, clock),
       pawsRoot: root,
@@ -379,7 +379,7 @@ async function fixture({
     for (const row of await listOutbox(sqliteDb(db)))
       if (row.status === "pending" && !delivered.has(row.id)) {
         delivered.add(row.id);
-        await deliverLinearOutbox(row, tracker, async () => {}, undefined, db);
+        await deliverLinearOutbox(row, tracker, async () => {}, undefined, sqliteDb(db));
       }
   }
   function jobs() {

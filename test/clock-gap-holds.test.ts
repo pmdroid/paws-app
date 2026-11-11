@@ -131,7 +131,7 @@ async function snapshot(db: Database) {
 function orchestrate(db: Database, clock: FakeClock) {
   const jobs = new JobLoop(db, clock);
   attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs,
     outbox: new OutboxDispatcher(db, clock),
     pawsRoot: tempHome(),

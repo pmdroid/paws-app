@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, syncSteps } from "../src/db";
+import { JobLoop, OutboxDispatcher, syncSteps, sqliteDb } from "../src/db";
 import {
   acknowledgeNewSession,
   createFakeLinearAccessReads,
@@ -49,7 +49,7 @@ test.each([
   });
   let launches = 0;
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs: new JobLoop(db, systemClock),
     outbox: new OutboxDispatcher(db, systemClock),
     pawsRoot: join(home, "paws"),

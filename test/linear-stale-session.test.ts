@@ -79,7 +79,7 @@ async function fixture() {
   let authorized = true;
   const makeOrchestrator = () =>
     attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       tracker,
       pawsRoot: home,
       jobs: new JobLoop(db, systemClock),

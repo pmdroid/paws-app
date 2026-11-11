@@ -114,7 +114,7 @@ function fixture(
   const interpretationTraces: string[] = [];
   const attach = () =>
     attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       admission: workspaceAdmission(db),
       jobs,
       outbox,

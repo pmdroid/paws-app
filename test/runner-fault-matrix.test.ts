@@ -456,7 +456,7 @@ async function runRemoteFault(fault: Fault) {
   const outbox = new OutboxDispatcher(db, systemClock);
   let reviews = 0;
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs,
     outbox,
     pawsRoot: root,

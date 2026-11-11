@@ -266,7 +266,7 @@ async function runRecovering(input: {
   const jobs = new JobLoop(db, input.clock, { concurrency: input.count, pollMs: 5 });
   const outbox = new OutboxDispatcher(db, input.clock);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs,
     outbox,
     clock: input.clock,

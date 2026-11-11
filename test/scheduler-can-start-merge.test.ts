@@ -124,7 +124,7 @@ test("admission holds a delegation until its snapshots exist and changes are app
       observedAtMs: 0,
     });
     item(db, { id: "work", session: "session" });
-    const admission = createAdmission({ db });
+    const admission = createAdmission({ db: sqliteDb(db) });
     assert.deepEqual(await admission.canStart("work"), { ok: false, held: "snapshot" });
     assert.equal(await admission.canDispatchDelegation("delegation"), false);
     db.run("INSERT INTO item_reconciliation_request VALUES('work','workspace','token')");

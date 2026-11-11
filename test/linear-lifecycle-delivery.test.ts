@@ -50,7 +50,7 @@ for (const [body, existing] of [
     ]);
     const outbox = new OutboxDispatcher(db, systemClock);
     const orchestrator = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       pawsRoot: home,
       tracker,
       outbox,
@@ -129,7 +129,7 @@ test("acknowledgement retry and duplicate replay preserve one activity UUID", as
   const tracker = createFakeTracker();
   const outbox = new OutboxDispatcher(db, clock);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     clock,
     tracker,
     outbox,
@@ -175,7 +175,7 @@ test("an old prompted intake failure cannot terminate a newer session generation
   const tracker = createFakeTracker();
   const outbox = new OutboxDispatcher(db, systemClock);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     pawsRoot: home,
     tracker,
     outbox,
@@ -239,7 +239,7 @@ test.each([false, true])(
     ]);
     const outbox = new OutboxDispatcher(db, systemClock);
     const orchestrator = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       pawsRoot: home,
       tracker,
       outbox,
@@ -321,7 +321,7 @@ test("item Stop delivery retains one UUID through failure, reopen and duplicate 
   };
   let outbox = new OutboxDispatcher(db, clock);
   const options = () => ({
-    db,
+    store: sqliteDb(db),
     clock,
     tracker,
     outbox,
@@ -382,7 +382,7 @@ test("a merged item settles its delegation without a delegation summary", async 
     },
   ]);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     pawsRoot: tempHome(),
     tracker,
     jobs: new JobLoop(db, systemClock),

@@ -45,7 +45,7 @@ for (const shutdown of ["application", "linear"] as const) {
       let jobs = new JobLoop(db, systemClock);
       const makeOrchestrator = () =>
         attachOrchestrator({
-          db,
+          store: sqliteDb(db),
           admission: workspaceAdmission(db),
           tracker,
           pawsRoot: home,

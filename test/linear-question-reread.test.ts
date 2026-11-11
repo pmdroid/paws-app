@@ -107,7 +107,7 @@ function setup(
 ) {
   const clock = new FakeClock(NOW + 1_000);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     pawsRoot: "/tmp/paws-question-reread",

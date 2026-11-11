@@ -54,7 +54,7 @@ async function setup(tracker: TrackerAdapter | null = null) {
   const clock = new FakeClock(NOW + 1_000);
   const outbox = new OutboxDispatcher(db, clock);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs: new JobLoop(db, clock),
     outbox,
     pawsRoot: "/tmp/paws-question-lifecycle",

@@ -171,7 +171,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
       }) as typeof fetch,
     });
     const orchestrator = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       jobs: new dbApi.JobLoop(db, clock),
       outbox: new dbApi.OutboxDispatcher(db, clock),
       pawsRoot: root,

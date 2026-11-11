@@ -127,8 +127,8 @@ async function activities(db: Database) {
 async function observe(db: Database, host: HostSupervisor, now: number): Promise<void> {
   await host.tick();
   await host.tick();
-  expect(await dispatch(db, { now })).toEqual([]);
-  await dispatch(db, { now });
+  expect(await dispatch(sqliteDb(db), { now })).toEqual([]);
+  await dispatch(sqliteDb(db), { now });
 }
 
 describe("a clock gap during a parked wait", () => {
@@ -167,7 +167,7 @@ describe("a clock gap during a parked wait", () => {
             expect(
               await claimNextJob(sqliteDb(db), { now: clock.now(), queues: [...EXECUTION] }),
             ).toBeNull();
-            expect(await dispatch(db, { now: clock.now() })).toEqual([]);
+            expect(await dispatch(sqliteDb(db), { now: clock.now() })).toEqual([]);
             expect((await executions(db)).map((job) => job.id)).toEqual([owner]);
             expect(await completeJob(sqliteDb(db), claimed!, clock.now())).toBe(true);
           } finally {
@@ -296,8 +296,8 @@ describe("ownership a clock gap does not invent", () => {
           now: 0,
         });
         db.run("UPDATE job SET status='done', finished_at=0 WHERE queue=?", [JOB_KIND.command]);
-        expect(await dispatch(db, { now: clock.now() })).toEqual([]);
-        await dispatch(db, { now: clock.now() });
+        expect(await dispatch(sqliteDb(db), { now: clock.now() })).toEqual([]);
+        await dispatch(sqliteDb(db), { now: clock.now() });
         const resumes = (await executions(db)).filter((job) => job.id !== owner);
         expect(resumes).toMatchObject([
           { queue: JOB_KIND.resume, payload: { reason: "orphaned" } },

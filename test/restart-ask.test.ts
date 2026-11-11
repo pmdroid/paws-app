@@ -233,7 +233,7 @@ describe("restart and ask", () => {
     const clock = new FakeClock(300);
     const jobs = new JobLoop(db, clock);
     attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       jobs,
       outbox: new OutboxDispatcher(db, clock),
       pawsRoot: tempHome(),
@@ -347,7 +347,7 @@ describe("restart and ask", () => {
     const clock = new FakeClock(3);
     const jobs = new JobLoop(db, clock);
     attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       jobs,
       outbox: new OutboxDispatcher(db, clock),
       pawsRoot: tempHome(),
@@ -429,7 +429,7 @@ describe("restart and ask", () => {
     const clock = new FakeClock(4);
     const jobs = new JobLoop(db, clock);
     attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       jobs,
       outbox: new OutboxDispatcher(db, clock),
       pawsRoot: tempHome(),

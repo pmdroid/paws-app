@@ -154,7 +154,7 @@ test.skipIf(process.platform !== "linux")(
     });
     const jobs = new JobLoop(db, systemClock);
     const orchestrator = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       admission: workspaceAdmission(db),
       jobs,
       outbox: new OutboxDispatcher(db, systemClock),
@@ -256,7 +256,7 @@ for (const operation of ["shutdown", "interrupt"] as const)
       );
       const jobs = new JobLoop(db, systemClock);
       const orchestrator = attachOrchestrator({
-        db,
+        store: sqliteDb(db),
         admission: workspaceAdmission(db),
         jobs,
         outbox: new OutboxDispatcher(db, systemClock),

@@ -26,7 +26,7 @@ async function fixture() {
   const clock = new FakeClock(1_000);
   let response: () => Promise<GitHubResponse> = async () => ({ status: 502, body: {} });
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     clock,
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),

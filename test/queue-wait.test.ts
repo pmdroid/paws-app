@@ -59,7 +59,7 @@ test("a ready item waiting for a runner slot is queued once in Linear and fails 
   const db = tempDb();
   const clock = new FakeClock(1_000);
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
@@ -106,7 +106,7 @@ test("the queued thought shows the place in line, and the start timeout comes fr
   const pawsRoot = tempHome();
   writeFileSync(join(pawsRoot, "config.toml"), "[queue]\nstart_timeout_hours = 2\n");
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
@@ -208,7 +208,7 @@ test("a runner-queued item names its place in the title and plan, and a restart 
   const db = tempDb();
   const clock = new FakeClock(1_000);
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
@@ -282,7 +282,7 @@ test("paused and recovering items get a waiting title and no ephemeral", async (
   const db = tempDb();
   const clock = new FakeClock(1_000);
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),

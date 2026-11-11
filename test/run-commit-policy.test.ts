@@ -37,7 +37,7 @@ test("a task keeps the commit policy it started with when credit changes mid-fli
   let current = BOT_ONLY;
   let resolutions = 0;
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     clock,

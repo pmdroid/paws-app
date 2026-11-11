@@ -451,7 +451,7 @@ async function runWithFault(fault: {
     interruptSession: (sessionId) => orchestrator.interruptLinearSession(sessionId),
   });
   orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,

@@ -22,7 +22,9 @@ function fixture() {
   insertQueuedItem(db, { id: "ACME-7", sessionKey: "ses_1", now: clock.now() });
   const tracker = createFakeTracker();
   const delivery = new OutboxDispatcher(db, clock);
-  delivery.setHandler((row) => deliverLinearOutbox(row, tracker, async () => {}, undefined, db));
+  delivery.setHandler((row) =>
+    deliverLinearOutbox(row, tracker, async () => {}, undefined, sqliteDb(db)),
+  );
   const enqueue = (key: string, kind: string, body: string) =>
     enqueueOutboxOnce(sqliteDb(db), {
       target: "linear",

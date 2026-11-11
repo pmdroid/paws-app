@@ -45,7 +45,7 @@ async function fixture(launch?: AgentLaunch) {
   host.admins = ["linear-admin"];
   const tracker = createFakeTracker();
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,

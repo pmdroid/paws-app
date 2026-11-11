@@ -65,7 +65,7 @@ async function deliverAll(db: Database, tracker: ReturnType<typeof createFakeTra
   for (const row of (await listOutbox(sqliteDb(db))).filter(
     (message) => message.target === "linear",
   ))
-    await deliverLinearOutbox(row, tracker, async () => {}, undefined, db);
+    await deliverLinearOutbox(row, tracker, async () => {}, undefined, sqliteDb(db));
 }
 
 test("two parts left for later become two delegated sub-issues after the merge, not before", async () => {

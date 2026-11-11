@@ -97,7 +97,7 @@ test("Closeout records written by instance A are shown by instance B's dashboard
   expect(await publishCloseoutEvidence(sqliteDb(db), storageA, ITEM)).toBe(0);
 
   expect(await itemReviews(db, ITEM, homeB, {})).toEqual([]);
-  expect(await hydrateItemCloseoutEvidence(db, storageB, ITEM, ["session-acme"])).toBe(2);
+  expect(await hydrateItemCloseoutEvidence(sqliteDb(db), storageB, ITEM, ["session-acme"])).toBe(2);
   const reviews = await itemReviews(db, ITEM, homeB, {});
   expect(reviews.map((review) => review.id)).toEqual(["independent-review"]);
   expect(reviews[0]!.rounds[0]!.findings[0]).toMatchObject({ explanation: "acme breaks" });
@@ -116,7 +116,9 @@ test("Closeout records written by instance A are shown by instance B's dashboard
 test("an item the session can't see is not restored", async () => {
   const { db, storageA, storageB } = await setup();
   await publishCloseoutEvidence(sqliteDb(db), storageA, ITEM);
-  expect(await hydrateItemCloseoutEvidence(db, storageB, ITEM, ["session-other"])).toBe(0);
+  expect(await hydrateItemCloseoutEvidence(sqliteDb(db), storageB, ITEM, ["session-other"])).toBe(
+    0,
+  );
   expect(existsSync(join(storageB.root, ITEM))).toBe(false);
 });
 
@@ -142,7 +144,7 @@ test("a changed object is not restored, and a changed local file replaces its co
 test("with S3 off, Closeout records stay local", async () => {
   const { db, s3, storageA, storageB } = await setup();
   expect(await publishCloseoutEvidence(sqliteDb(db), { root: storageA.root }, ITEM)).toBe(0);
-  expect(await uploadLocalCloseoutEvidence(db, { root: storageA.root })).toBe(0);
+  expect(await uploadLocalCloseoutEvidence(sqliteDb(db), { root: storageA.root })).toBe(0);
   expect(await hydrateCloseoutEvidence(sqliteDb(db), { root: storageB.root }, [ITEM])).toBe(0);
   expect(s3.writes).toEqual([]);
   expect(existsSync(join(storageA.root, ITEM, ...RECORD.split("/")))).toBe(true);
@@ -150,9 +152,9 @@ test("with S3 off, Closeout records stay local", async () => {
 
 test("existing Closeout records are uploaded once on startup and read from S3 afterwards", async () => {
   const { db, homeB, storageA, storageB } = await setup();
-  expect(await uploadLocalCloseoutEvidence(db, storageA)).toBe(2);
-  expect(await uploadLocalCloseoutEvidence(db, storageA)).toBe(0);
-  expect(await hydrateItemCloseoutEvidence(db, storageB, ITEM)).toBe(2);
+  expect(await uploadLocalCloseoutEvidence(sqliteDb(db), storageA)).toBe(2);
+  expect(await uploadLocalCloseoutEvidence(sqliteDb(db), storageA)).toBe(0);
+  expect(await hydrateItemCloseoutEvidence(sqliteDb(db), storageB, ITEM)).toBe(2);
   expect(await itemReviews(db, ITEM, homeB, {})).toHaveLength(1);
 });
 
@@ -205,7 +207,7 @@ test("a finished check's files are stored before its step is recorded, while the
   progress.step(identity, step("passed"));
   await progress.settled();
   expect(calls).toEqual(["begin", "step running", "output", "publish", "step passed"]);
-  expect(await hydrateItemCloseoutEvidence(db, storageB, ITEM)).toBe(2);
+  expect(await hydrateItemCloseoutEvidence(sqliteDb(db), storageB, ITEM)).toBe(2);
   expect(await itemReviews(db, ITEM, homeB, {})).toHaveLength(1);
 });
 
@@ -256,8 +258,10 @@ test("every visible item with the issue's identifier has its Closeout records re
   db.run("UPDATE work_item SET linear_identifier = 'ACME-1'");
   await closeoutRun(db, homeA, "item-acme-2");
   await closeoutRun(db, homeA, "item-acme-3");
-  await uploadLocalCloseoutEvidence(db, storageA);
-  expect(await hydrateItemCloseoutEvidence(db, storageB, "ACME-1", ["session-acme"])).toBe(4);
+  await uploadLocalCloseoutEvidence(sqliteDb(db), storageA);
+  expect(
+    await hydrateItemCloseoutEvidence(sqliteDb(db), storageB, "ACME-1", ["session-acme"]),
+  ).toBe(4);
   expect(existsSync(join(storageB.root, "item-acme-2", ...RECORD.split("/")))).toBe(true);
   expect(existsSync(join(storageB.root, "item-acme-3"))).toBe(false);
 });
@@ -324,7 +328,7 @@ test("the startup upload keeps a path already in the store instead of replacing 
   await publishCloseoutEvidence(sqliteDb(db), storageA, ITEM);
   await Bun.sleep(5);
   writeFileSync(join(storageA.root, ITEM, ...LOG.split("/")), "acme stale local copy\n");
-  expect(await uploadLocalCloseoutEvidence(db, storageA)).toBe(0);
+  expect(await uploadLocalCloseoutEvidence(sqliteDb(db), storageA)).toBe(0);
   await hydrateCloseoutEvidence(sqliteDb(db), storageB, [ITEM]);
   expect(readFileSync(join(storageB.root, ITEM, ...LOG.split("/")), "utf8")).toBe(
     "acme test output\n",
@@ -353,7 +357,7 @@ test("a startup upload that loses to a concurrent publish keeps the published co
       },
     };
   };
-  await uploadLocalCloseoutEvidence(db, { root: storageA.root, objects: racing });
+  await uploadLocalCloseoutEvidence(sqliteDb(db), { root: storageA.root, objects: racing });
   const storageC = { ...storageB, root: join(tempHome(), "closeout", "evidence") };
   await hydrateCloseoutEvidence(sqliteDb(db), storageC, [ITEM], { strict: true });
   expect(readFileSync(join(storageC.root, ITEM, ...LOG.split("/")), "utf8")).toBe(

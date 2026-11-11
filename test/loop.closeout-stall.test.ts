@@ -1138,7 +1138,7 @@ async function verifyingWithHeldGate(options: { publicUrl?: string; remote?: boo
   const github = createFakeGitHub();
   const attach = () =>
     attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       admission: workspaceAdmission(db),
       jobs,
       outbox,

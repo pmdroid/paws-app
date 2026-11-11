@@ -127,7 +127,7 @@ test.each([false, true, "cap"] as const)(
       return interval(handler, delay);
     }) as typeof setInterval);
     const orchestrator = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       admission: workspaceAdmission(db),
       jobs,
       outbox,
@@ -335,7 +335,7 @@ test("a task retried after failing moves its Linear issue to started again", asy
   const entered = (launch: number) => path.join(layout.root, `entered-${launch}`);
   const release = path.join(layout.root, "release");
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -420,7 +420,7 @@ test("a retried run starts with the main that moved while it was failed", async 
   const release = path.join(layout.root, "moved-release");
   const upstreamAtLaunch: string[] = [];
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -531,7 +531,7 @@ test("a frontend change without visual proof gets a fix round, publishes 16 scre
   const outbox = new OutboxDispatcher(db, systemClock);
   const prompts = new Map<string, string>();
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -715,7 +715,7 @@ test("a bound two-item delegation asks, verifies and merges in its repository af
     },
   });
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -941,7 +941,7 @@ test("the demo delegation merges three pull requests with gh auth", async () => 
     };
   };
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -1067,7 +1067,7 @@ test.each(["claude", "codex", "grok"])(
       };
     };
     const orchestrator = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       admission: workspaceAdmission(db),
       jobs,
       outbox,
@@ -1195,7 +1195,7 @@ test.each([false, true])(
       },
     });
     const orchestrator = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       admission: workspaceAdmission(db),
       jobs,
       outbox,
@@ -1265,7 +1265,7 @@ test("an unconfigured repository halts with an error and never completes the ses
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     tracker,
     jobs,
@@ -1322,7 +1322,7 @@ test("a missing reviewer blocks the item and needs a person", async () => {
     };
   };
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -1384,7 +1384,7 @@ test("a failed implementer preparation names the implementer in its question", a
     };
   };
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -1499,7 +1499,7 @@ for (const recovery of [
       const jobs = new JobLoop(db, systemClock);
       const outbox = new OutboxDispatcher(db, systemClock);
       const orchestrator = attachOrchestrator({
-        db,
+        store: sqliteDb(db),
         admission: workspaceAdmission(db),
         jobs,
         outbox,
@@ -1720,7 +1720,7 @@ test("grok implementer runs the demo delegation with ask_team and one Closeout f
     return { env };
   };
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -1881,7 +1881,7 @@ for (const review of invalidReviews) {
     let reviews = 0;
     let launches = 0;
     const orchestrator = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       admission: workspaceAdmission(db),
       jobs,
       outbox,
@@ -2136,7 +2136,7 @@ for (const sameModel of [true, false]) {
     const launches: Array<{ purpose: string; profile: unknown }> = [];
     let sequence = 0;
     const orchestrator = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       admission: workspaceAdmission(db),
       jobs,
       outbox,
@@ -2221,7 +2221,7 @@ for (const savedState of ["verifying", "merge_queue"] as const) {
     const implementerProfiles: unknown[] = [];
     let sequence = 0;
     const orchestrator = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       admission: workspaceAdmission(db),
       jobs,
       outbox,
@@ -2326,7 +2326,7 @@ test("a verifying candidate with no commit and no session model restarts impleme
   const launched: string[] = [];
   let sequence = 0;
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -2431,7 +2431,7 @@ for (const movedHead of [false, true]) {
     const attach = () => {
       const jobs = new JobLoop(db, systemClock);
       const orchestrator = attachOrchestrator({
-        db,
+        store: sqliteDb(db),
         admission: workspaceAdmission(db),
         jobs,
         outbox: new OutboxDispatcher(db, systemClock),
@@ -2625,7 +2625,7 @@ test("the active task merges while a later task in its session also waits to mer
   const client = githubClient(layout.bare, github);
   let sequence = 0;
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -2722,7 +2722,7 @@ test.each(["pending", "merged"] as const)(
     const prompts: string[] = [];
     const attach = () =>
       attachOrchestrator({
-        db,
+        store: sqliteDb(db),
         admission: workspaceAdmission(db),
         jobs,
         outbox,
@@ -2917,7 +2917,7 @@ test("post_update posts one Linear thought and refuses a second update within a 
   const resultPath = path.join(layout.root, "update-tool-result.json");
   let sequence = 0;
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -3002,7 +3002,7 @@ test("reply posts each answer as a Linear response and refuses a sixth in one tu
   const resultPath = path.join(layout.root, "reply-tool-result.json");
   let sequence = 0;
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -3091,7 +3091,7 @@ test.each([false, true])(
     let sequence = 0;
     let implementRuns = 0;
     const orchestrator = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       admission: workspaceAdmission(db),
       jobs,
       outbox,
@@ -3232,7 +3232,7 @@ test("a repository without a Closeout policy merges without Closeout checks or a
   const github = createFakeGitHub();
   let launches = 0;
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -3430,7 +3430,7 @@ async function runGitHubQueue(
   let sequence = 0;
   let implementRuns = 0;
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -3675,7 +3675,7 @@ async function runCiFix(options: {
   let reviews = 0;
   let movedMain = false;
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -3845,7 +3845,7 @@ test("a reverify after a pushed rebase uses the new main as its base", async () 
   const seen = { reads: 0 };
   let sequence = 0;
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -3960,7 +3960,7 @@ test("an unreadable CI read retries the merge job and fails the task with the re
     ms?: number,
   ) => realSetTimeout(handler, ms === 10_000 ? 1 : ms)) as unknown as typeof setTimeout);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -4065,7 +4065,7 @@ test.each([
       return realGit(args, options);
     });
     const orchestrator = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       admission: workspaceAdmission(db),
       jobs,
       outbox,
@@ -4193,7 +4193,7 @@ async function runRebaseConflict(
   let implementTurns = 0;
   let reviews = 0;
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -4677,7 +4677,7 @@ for (const race of ["token", "merge", "followup"] as const) {
     const release = Promise.withResolvers<void>();
     let sequence = 0;
     const orchestrator = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       admission: workspaceAdmission(db),
       jobs,
       outbox,
@@ -4970,7 +4970,7 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
       interruptSession: (sessionId) => orchestrator.interruptLinearSession(sessionId),
     });
     return attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       admission: workspaceAdmission(db),
       jobs,
       outbox,

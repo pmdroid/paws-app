@@ -39,7 +39,7 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
     const outbox = new OutboxDispatcher(db, systemClock);
     let launches = 0;
     const orchestrator = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       jobs,
       outbox,
       pawsRoot: root,

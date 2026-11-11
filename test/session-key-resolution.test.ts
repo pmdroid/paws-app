@@ -18,7 +18,7 @@ test("orchestrator resumes the session item through session_key alone", async ()
     },
   ]);
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     clock,

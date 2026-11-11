@@ -74,7 +74,7 @@ async function handOver(options: {
   const prompts: string[] = [];
   const repository = { owner: "pmdroid", repo: "paws-demo" };
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,

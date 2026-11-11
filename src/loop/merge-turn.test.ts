@@ -37,7 +37,7 @@ async function hungTurn() {
   const lines: string[] = [];
   const jobs = new JobLoop(db, clock);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs,
     outbox: new OutboxDispatcher(db, clock),
     pawsRoot: root,

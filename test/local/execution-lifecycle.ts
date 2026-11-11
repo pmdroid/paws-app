@@ -31,7 +31,7 @@ export async function probeExecutionLifecycle(
   migrate(db);
   const create = (scheduling?: () => Promise<object>) =>
     new Orchestrator({
-      db,
+      store: sqliteDb(db),
       admission: workspaceAdmission(db),
       jobs: new JobLoop(db, clock),
       outbox: new OutboxDispatcher(db, clock),
@@ -228,7 +228,7 @@ export async function probeExecutionLifecycle(
     const guardJobs = new JobLoop(guardDb, clock);
     let allowed = true;
     const guard = new Orchestrator({
-      db: guardDb,
+      store: sqliteDb(guardDb),
       jobs: guardJobs,
       outbox: new OutboxDispatcher(guardDb, clock),
       clock,

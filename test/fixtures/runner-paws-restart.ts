@@ -128,7 +128,9 @@ let services!: {
 let orchestrator!: ReturnType<typeof loop.attachOrchestrator>;
 const attach = loop.attachOrchestrator;
 spyOn(loop, "attachOrchestrator").mockImplementation((options) => {
-  const { db, jobs, outbox } = options;
+  const { store, jobs, outbox } = options;
+  if (store.dialect !== "sqlite") throw new Error("The restart fixture runs on SQLite");
+  const db = store.orm.$client;
   const work = createRunnerWork({
     db,
     keyId: "fixture",
@@ -156,7 +158,7 @@ spyOn(loop, "attachOrchestrator").mockImplementation((options) => {
     },
   });
   orchestrator = attach({
-    db,
+    store: sqliteDb(db),
     jobs,
     outbox,
     pawsRoot: home,

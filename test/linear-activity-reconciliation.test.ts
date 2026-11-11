@@ -75,7 +75,7 @@ function dispatcher(
 ) {
   const outbox = new OutboxDispatcher(db, clock);
   outbox.setHandler((row, context) =>
-    deliverLinearOutbox(row, tracker, async () => {}, context, db),
+    deliverLinearOutbox(row, tracker, async () => {}, context, sqliteDb(db)),
   );
   return outbox;
 }
@@ -266,7 +266,7 @@ test.each(["credentials", "reconciliation"])(
       if (boundary === "reconciliation") db.run("UPDATE outbox SET attempts = 1");
       const outbox = new OutboxDispatcher(db, new FakeClock(1000));
       outbox.setHandler((row, context) =>
-        deliverLinearOutbox(row, tracker, async () => {}, context, db),
+        deliverLinearOutbox(row, tracker, async () => {}, context, sqliteDb(db)),
       );
       await outbox.tick();
       await started.promise;

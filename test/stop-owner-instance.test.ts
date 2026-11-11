@@ -39,7 +39,7 @@ async function paws(path: string, root: string, name: string, poll = true) {
   });
   bindInstance(sqliteDb(db), self.id);
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     jobs: new JobLoop(db, clock),
     clock,
     outbox: new OutboxDispatcher(db, clock),
@@ -206,7 +206,6 @@ test("a queued stop forwards to the run's owner through the store the orchestrat
   bindInstance(store, self.id);
   const jobs = new JobLoop(db, clock, { store });
   const orchestrator = new Orchestrator({
-    db,
     store,
     jobs,
     clock,

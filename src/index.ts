@@ -943,7 +943,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     root: join(paths.home, "closeout", "evidence"),
     objects: evidenceObjects,
   };
-  void uploadLocalCloseoutEvidence(db, closeoutEvidence).catch((error: unknown) =>
+  void uploadLocalCloseoutEvidence(store, closeoutEvidence).catch((error: unknown) =>
     journalCaught(error, "index.startPaws.uploadLocalCloseoutEvidence", null),
   );
   const catalogRepositories = async () =>
@@ -1438,7 +1438,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const tracker = linear?.tracker ?? null;
   const managed = Boolean(workspace && linear?.tracker && linear.issueLifecycle);
   if (!managed) journal(LINEAR_WORKSPACE_REQUIRED);
-  const admission = createAdmission({ db, workspace: managed });
+  const admission = createAdmission({ db: store, workspace: managed });
   const enqueueMissingSnapshots = async () => {
     const targets = await store.run(missingSnapshotTargetsSteps);
     for (const target of targets)
@@ -1542,7 +1542,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         secrets: () => [exeDevToken(), tailscaleAuthKey()],
       });
       const attached = attachOrchestrator({
-        db,
         store,
         instanceId: instance.id,
         jobs: created.jobs,

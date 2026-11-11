@@ -82,7 +82,7 @@ function orchestrate(db: Database, now: number) {
   const clock = new FakeClock(now);
   const jobs = new JobLoop(db, clock);
   attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs,
     outbox: new OutboxDispatcher(db, clock),
     pawsRoot: tempHome(),

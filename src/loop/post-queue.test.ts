@@ -33,7 +33,6 @@ async function fixture() {
   } as Db;
   const journal: string[] = [];
   const orchestrator = new Orchestrator({
-    db,
     store,
     clock,
     jobs: new JobLoop(db, clock),

@@ -91,7 +91,7 @@ export async function probeLinearActivityBudget(
     const result = new OutboxDispatcher(db, clock);
     result.setHandler((row, context) =>
       row.target === "linear"
-        ? deliverLinearOutbox(row, tracker, async () => {}, context, db)
+        ? deliverLinearOutbox(row, tracker, async () => {}, context, sqliteDb(db))
         : undefined,
     );
     return result;

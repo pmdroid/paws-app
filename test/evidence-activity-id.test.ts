@@ -37,7 +37,7 @@ async function deliverAll(db: Database, tracker: ReturnType<typeof createFakeTra
   const clock = new FakeClock(Date.now());
   const dispatcher = new OutboxDispatcher(db, clock);
   dispatcher.setHandler((row, context) =>
-    deliverLinearOutbox(row, tracker, async () => {}, context, db),
+    deliverLinearOutbox(row, tracker, async () => {}, context, sqliteDb(db)),
   );
   for (let round = 0; round < 50; round++) {
     await dispatcher.tick();

@@ -32,7 +32,7 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
   const db = tempDb();
   const clock = new FakeClock(1000);
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),

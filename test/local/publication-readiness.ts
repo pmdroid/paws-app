@@ -41,7 +41,7 @@ import { createFakeLinearIssueLifecycle, createFakeTracker } from "../../src/lin
 import { createAdmission } from "../../src/scheduler";
 
 function mergeAdmission(db: Database) {
-  const admission = createAdmission({ db });
+  const admission = createAdmission({ db: sqliteDb(db) });
   return async (itemId: string) => (await admission.canMerge(itemId)).ok;
 }
 

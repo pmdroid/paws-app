@@ -36,7 +36,7 @@ test("with a workspace and no paired runner a delegated task fails because a rem
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs,
     outbox,
     home,

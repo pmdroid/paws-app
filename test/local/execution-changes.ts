@@ -68,7 +68,7 @@ export async function probeExecutionChanges(
     },
   };
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox: new OutboxDispatcher(db, clock),

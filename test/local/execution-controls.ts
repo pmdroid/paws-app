@@ -130,7 +130,7 @@ export async function createExecutionControlsFixture(
   const run = (await beginImplementRun(sqliteDb(db), item.id, now)).run;
   const clock = new FakeClock(now);
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     clock,
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),

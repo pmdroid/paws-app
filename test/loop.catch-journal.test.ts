@@ -41,7 +41,7 @@ async function fixture() {
   const tracker = createFakeTracker();
   const lines: string[] = [];
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     pawsRoot: root,

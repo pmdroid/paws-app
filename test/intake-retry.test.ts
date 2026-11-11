@@ -215,7 +215,7 @@ test("session conflicts report one actionable error without suggesting another r
 test("created events replace a failed start, bind the new session and fence replies in the old one", async () => {
   const { db, tracker } = await fixture();
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     tracker,
     jobs: new JobLoop(db, systemClock),
     outbox: new OutboxDispatcher(db, systemClock),

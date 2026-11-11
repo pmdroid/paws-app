@@ -17,7 +17,7 @@ test("a session progress row sent by a plain outbox tick counts under its task",
   };
   const outbox = new OutboxDispatcher(db, clock);
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     jobs: new JobLoop(db, clock),
     outbox,
     clock,

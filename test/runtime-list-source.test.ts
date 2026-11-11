@@ -71,7 +71,7 @@ async function runtimesFor(
   migrate(db);
   const clock = new FakeClock(1_000);
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     clock,

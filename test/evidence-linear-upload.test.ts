@@ -110,7 +110,7 @@ function setup(reviewed = true) {
   const clock = new FakeClock(Date.now());
   const dispatcher = new OutboxDispatcher(db, clock);
   dispatcher.setHandler((row, delivery) =>
-    deliverLinearOutbox(row, tracker, async () => {}, delivery, db, { files, root }),
+    deliverLinearOutbox(row, tracker, async () => {}, delivery, sqliteDb(db), { files, root }),
   );
   async function deliver(rounds = 1) {
     for (let round = 0; round < rounds; round++) {
