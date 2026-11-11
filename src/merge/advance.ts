@@ -174,7 +174,7 @@ async function rerunCancelledCi(
   if (caps.stopped()) return { kind: "obsolete" };
   if (!(await store.run((q) => hasCiRerunSteps(q, item.id, head)))) return null;
   const message = `Re-ran cancelled CI jobs on ${head.slice(0, 7)}.`;
-  caps.voice.status(item, message, `${item.id}:ci-rerun:${head}`);
+  await store.run((q) => caps.voice.status(q, item, message, `${item.id}:ci-rerun:${head}`));
   await caps.voice.flush();
   return { kind: "wait", reason: "ci", message, base, head };
 }
@@ -215,7 +215,7 @@ export async function advanceMerge(
   const merge: MergeContext = { db, store, item, caps };
   const held = await feedbackHold(merge, input.payload);
   if (held) return held;
-  const waiting = dependencyWait(item, caps);
+  const waiting = await dependencyWait(store, item, caps);
   if (waiting) return waiting;
   const published = await caps.publish(item);
   if ("kind" in published) return published;
@@ -433,7 +433,7 @@ export async function advanceMerge(
   if (step.kind === "unreadable") throw new Error(step.message);
   if (mergedPolicyError !== undefined) return returnForPolicy(merge, mergedPolicyError, ciFixLimit);
   if (step.kind === "hold_policy" && mainPolicy && "ok" in mainPolicy)
-    return holdForMainPolicy(item, caps, queueName(repository), mainPolicy, {
+    return holdForMainPolicy(store, item, caps, queueName(repository), mainPolicy, {
       base: step.base,
       head: step.head,
     });
@@ -444,12 +444,21 @@ export async function advanceMerge(
     return { kind: "returned" };
   }
   if (step.kind === "carry") {
-    voice.status(item, step.message, `${item.id}:branch-updated:${step.head}`);
+    await store.run((q) =>
+      voice.status(q, item, step.message, `${item.id}:branch-updated:${step.head}`),
+    );
     await voice.flush();
     return { kind: "wait", reason: "ci", message: step.message, base: step.base, head: step.head };
   }
   if (step.kind === "wait") {
-    voice.status(item, step.message, `${item.id}:merge-wait:${step.reason}:${step.head ?? ""}`);
+    await store.run((q) =>
+      voice.status(
+        q,
+        item,
+        step.message,
+        `${item.id}:merge-wait:${step.reason}:${step.head ?? ""}`,
+      ),
+    );
     return step;
   }
   if (step.kind === "ask_conflict") {
@@ -545,7 +554,9 @@ export async function advanceMerge(
     return { kind: "asked" };
   }
   const message = failure(turn, step);
-  voice.thought(item, message, `${item.id}:merge:${result?.outcome ?? step.kind}`);
+  await store.run((q) =>
+    voice.thought(q, item, message, `${item.id}:merge:${result?.outcome ?? step.kind}`),
+  );
   return { kind: "failed", reason: "merge", message };
 }
 
@@ -578,7 +589,9 @@ async function githubQueuePolicy(
   if (mainPolicy && "ok" in mainPolicy) {
     if (watch?.queued && (await leaveGitHubQueue(published)) === "merged") return undefined;
     return {
-      ...holdForMainPolicy(item, caps, repository, mainPolicy, { head: published.head }),
+      ...(await holdForMainPolicy(merge.store, item, caps, repository, mainPolicy, {
+        head: published.head,
+      })),
       githubQueue: { queued: false },
     };
   }
@@ -607,17 +620,20 @@ function leaveGitHubQueue(published: MergePublication) {
   });
 }
 
-function holdForMainPolicy(
+async function holdForMainPolicy(
+  store: Db,
   item: WorkItemRecord,
   caps: MergeCapabilities,
   repository: string,
   unreadable: MainPolicyUnreadable,
   candidate: { base?: string; head: string },
-): Extract<MergeStep, { kind: "wait" }> {
+): Promise<Extract<MergeStep, { kind: "wait" }>> {
   const message =
     caps.holdForPolicy?.(item, repository, unreadable) ??
     `The Closeout policy on main doesn't load: ${unreadable.message}. Paws merges again once it's fixed.`;
-  caps.voice.status(item, message, `${item.id}:policy-unreadable:${message}`);
+  await store.run((q) =>
+    caps.voice.status(q, item, message, `${item.id}:policy-unreadable:${message}`),
+  );
   return { kind: "wait", reason: "policy", queued: true, message, ...candidate };
 }
 
@@ -792,12 +808,18 @@ async function reverifyAfterRestart(
  * takes a place in the queue, so the blocker queued behind it merges first. Its merge job parks
  * without a deadline and wakes when a task merges.
  */
-function dependencyWait(item: WorkItemRecord, caps: MergeCapabilities): MergeStep | null {
+async function dependencyWait(
+  store: Db,
+  item: WorkItemRecord,
+  caps: MergeCapabilities,
+): Promise<MergeStep | null> {
   const blockers = caps.dependencyHold(item.id);
   if (blockers === null) return null;
   const what = blockers.length ? blockers.join(", ") : "a blocking issue";
   const message = `${item.linearIdentifier}: waiting for ${what}`;
-  caps.voice.status(item, message, `${item.id}:merge-dependencies:${what}`);
+  await store.run((q) =>
+    caps.voice.status(q, item, message, `${item.id}:merge-dependencies:${what}`),
+  );
   return { kind: "wait", message, queued: true, reason: "dependencies" };
 }
 
@@ -922,10 +944,13 @@ async function reverify(
   // Busy now, it no longer holds the lane: the ready tasks behind it look again.
   await store.run((q) => wakeMergesBehindSteps(q, caps.now()));
   if (step.rebased)
-    caps.voice.status(
-      item,
-      `Rebased onto main ${step.base.slice(0, 7)}, re-verifying.`,
-      `${item.id}:rebased:${step.head}`,
+    await store.run((q) =>
+      caps.voice.status(
+        q,
+        item,
+        `Rebased onto main ${step.base.slice(0, 7)}, re-verifying.`,
+        `${item.id}:rebased:${step.head}`,
+      ),
     );
 }
 

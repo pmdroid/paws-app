@@ -9,6 +9,7 @@ import {
   approveCloseoutBypassChecksSteps,
   auditWorkspaceAccessSteps,
   closeLinkAskSteps,
+  commandInstance,
   delegatedLinearUserIdSteps,
   emitJobReady,
   enqueueJobOnceSteps,
@@ -53,12 +54,12 @@ import {
 import { BYPASS_REPLY } from "./closeout-recovery";
 import { worktreeBranch } from "./sources";
 import {
-  approveRisk,
-  postRiskActivity,
+  approveRiskSteps,
+  postRiskActivitySteps,
   riskDecidedNote,
   riskReplyHandoff,
   RISK_REPLY_NOTE,
-  stopForRisk,
+  stopForRiskSteps,
 } from "./risk-approval";
 import { decideVisualReview, postNote, VISUAL_REVIEW_REPLY_NOTE } from "./visual-review";
 import { dashboardIssuePath } from "../dashboard-links";
@@ -239,6 +240,7 @@ export async function decideLinkAsk(
 ): Promise<"answered" | "forbidden" | "rejected"> {
   const store = sqliteDb(db);
   let jobReady = false;
+  const notifications = { ready: false };
   const outcome = await store.transaction(function* (q): Steps<
     "answered" | "forbidden" | "rejected"
   > {
@@ -254,7 +256,7 @@ export async function decideLinkAsk(
     if (!LINK_ASK_DECISIONS[linkAsk.kind].includes(input.decision)) return "rejected";
     if (LINK_ASK_NOTE_REQUIRED.has(input.decision) && !input.note) return "rejected";
     if (input.decision === "stop" && linkAsk.kind === "risk")
-      return yield* stopRiskAskSteps(q, db, linkAsk, item, input);
+      return yield* stopRiskAskSteps(q, db, linkAsk, item, input, notifications);
     const bypassing = linkAsk.kind === "bypass" && input.decision === "approve";
     // Approving a rule break needs a reason; it covers every rule the ask holds.
     const approvingRule = linkAsk.kind === "rule" && input.decision === "approve";
@@ -312,7 +314,7 @@ export async function decideLinkAsk(
     removeLinkAskUrl(db, linkAsk.questionId, now);
     // A risk ask comes after the pull request response, so it posts through the risk gate's keys.
     if (linkAsk.kind === "risk" && (input.decision === "approve" || input.decision === "changes"))
-      postRiskActivity(db, {
+      yield* postRiskActivitySteps(q, {
         sessionId: question.sessionId,
         item,
         kind: input.decision === "approve" ? "response" : "thought",
@@ -345,7 +347,7 @@ export async function decideLinkAsk(
     const current = (yield* getWorkItemSteps(q, item.id))!;
     // The approval binds to the ask's head; it never goes to the agent.
     if (input.decision === "approve" && linkAsk.kind === "risk") {
-      approveRisk(db, linkAsk, current, now);
+      jobReady = (yield* approveRiskSteps(q, linkAsk, current, now)).jobReady;
       return "answered";
     }
     const effect = input.decision === "approve" ? effects[linkAsk.kind] : undefined;
@@ -369,7 +371,7 @@ export async function decideLinkAsk(
     );
     return "answered";
   });
-  if (jobReady) emitJobReady(store);
+  if (jobReady || notifications.ready) emitJobReady(store);
   return outcome;
 }
 
@@ -406,6 +408,7 @@ function* stopRiskAskSteps(
     actor: { workspaceId: string; userId: string; name: string };
     now: number;
   },
+  notifications: { ready: boolean },
 ): Steps<"answered" | "rejected"> {
   const { now } = input;
   const answered = answerQuestion(db, linkAsk.questionId, {
@@ -433,7 +436,17 @@ function* stopRiskAskSteps(
     now,
   });
   removeLinkAskUrl(db, linkAsk.questionId, now);
-  if (!stopForRisk(db, linkAsk, (yield* getWorkItemSteps(q, item.id))!, input.actor.name, now))
+  if (
+    !(yield* stopForRiskSteps(
+      q,
+      linkAsk,
+      (yield* getWorkItemSteps(q, item.id))!,
+      input.actor.name,
+      now,
+      commandInstance(db),
+      notifications,
+    ))
+  )
     throw new Error("The item changed before Stop committed");
   return "answered";
 }
@@ -543,7 +556,7 @@ export async function guideLinkAsk(
     if (item.sessionKey === question.sessionId)
       yield* applyLinearTurnsSteps(q, question.sessionId, [input.eventKey], item.id);
     if (linkAsk.kind === "risk") {
-      postRiskActivity(db, {
+      yield* postRiskActivitySteps(q, {
         sessionId: question.sessionId,
         item,
         kind: "thought",

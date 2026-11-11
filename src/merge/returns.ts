@@ -18,20 +18,23 @@ import {
   keepMergeQueuePlaceSteps,
   settled,
   sqliteDb,
-  syncSteps,
   type Db,
   type Q,
   type RestartHandoff,
   type Steps,
   type WorkItemRecord,
 } from "../db";
-import type { ask, askSteps } from "../questions";
+import type { askSteps } from "../questions";
 import { rebaseBudget, type RebaseBudget, type RebaseConflict } from "./budget";
 import type { FailedCiCheck } from "./ci-fix";
 
 export type MergeReturnReason = "rebase-conflict" | "ci-failed" | "policy-invalid";
 
-export type MergeRestart = (item: WorkItemRecord, handoff: RestartHandoff) => number | null;
+export type MergeRestart = (
+  q: Q,
+  item: WorkItemRecord,
+  handoff: RestartHandoff,
+) => Steps<{ id: number; armed: boolean } | null>;
 
 export function latestUserTurn(db: Database, itemId: string): number {
   return latestHumanTurn(db, itemId);
@@ -89,7 +92,7 @@ export function postMergeConflict(
   settled(sqliteDb(db).transaction((q) => postMergeConflictSteps(q, item, notice, now)));
 }
 
-function* postMergeConflictSteps(
+export function* postMergeConflictSteps(
   q: Q,
   item: WorkItemRecord,
   notice: MergeConflictNotice,
@@ -125,7 +128,7 @@ type MergeReturn = {
   /** Keep the item's merge queue place for when Closeout accepts its rebased head. */
   keepPlace?: boolean;
   record: (q: Q, jobId: number, attempt: number) => Steps<void>;
-  announce: (running: WorkItemRecord, attempt: number, key: string) => void;
+  announce: (q: Q, running: WorkItemRecord, attempt: number, key: string) => Steps<unknown>;
   /** The failed checks of a `ci-failed` return, kept as a candidate review escape. */
   failedChecks?: readonly FailedCiCheck[];
   pullNumber?: number | null;
@@ -150,7 +153,7 @@ function* returnToAgentSteps(q: Q, input: MergeReturn): Steps<{ armed: boolean }
       : yield* fixRoundsSteps(q, current.id);
   if (!(yield* input.admit(q, returns))) return null;
   const round = `${turn}:${returns}`;
-  input.announce(current, returns + 1, `${current.id}:${input.reason}:${round}`);
+  yield* input.announce(q, current, returns + 1, `${current.id}:${input.reason}:${round}`);
   const jobKey = `${input.reason}:${current.id}:${round}`;
   if (input.keepPlace) yield* keepMergeQueuePlaceSteps(q, current.id);
   const handoff = {
@@ -159,9 +162,10 @@ function* returnToAgentSteps(q: Q, input: MergeReturn): Steps<{ armed: boolean }
     jobKey,
     now: input.now,
   };
-  const restarted = input.restart
-    ? { id: input.restart(current, handoff), armed: false }
-    : ((yield* restartSteps(q, current, handoff)) ?? { id: null, armed: false });
+  const restarted = (yield* (input.restart ?? restartSteps)(q, current, handoff)) ?? {
+    id: null,
+    armed: false,
+  };
   if (restarted.id === null) return null;
   if (input.conflict) yield* postMergeConflictSteps(q, current, input.conflict, input.now);
   // CI failed on a head Closeout accepted: a candidate escape of the independent review.
@@ -194,19 +198,8 @@ type MergeHelp = {
   options?: readonly string[];
 };
 
-export function askThrough(db: Database, syncAsk: typeof ask): typeof askSteps {
-  return (_q, ...args) => syncSteps(() => syncAsk(db, ...args));
-}
-
-export function askMergeHelp(
-  db: Database,
-  input: Omit<MergeHelp, "ask"> & { ask: typeof ask },
-): boolean {
-  return settled(
-    sqliteDb(db).transaction((q) =>
-      askMergeHelpSteps(q, { ...input, ask: askThrough(db, input.ask) }),
-    ),
-  );
+export function askMergeHelp(store: Db, input: MergeHelp): Promise<boolean> {
+  return store.transaction((q) => askMergeHelpSteps(q, input));
 }
 
 export function* askMergeHelpSteps(q: Q, input: MergeHelp): Steps<boolean> {

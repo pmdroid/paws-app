@@ -162,7 +162,9 @@ test("changes requested and a new head each post their own notice, in order", as
 test("other progress after the pull request response stays quiet", async () => {
   const f = await fixture();
   try {
-    f.caps.voice.thought(getWorkItem(f.db, "ENG-7")!, "Checking reviews.", "merge-thought:1");
+    await sqliteDb(f.db).run((q) =>
+      f.caps.voice.thought(q, getWorkItem(f.db, "ENG-7")!, "Checking reviews.", "merge-thought:1"),
+    );
     await f.wake("h1");
     await f.deliver();
     expect(listOutbox(f.db, "ses_1").map((row) => row.idempotencyKey)).toEqual([

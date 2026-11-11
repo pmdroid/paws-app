@@ -5,7 +5,6 @@ import {
   pendingPullCiFailuresSteps,
   recordCiRoundSteps,
   recordReviewEscapeSteps,
-  settled,
   settlePullCiFailuresSteps,
   sqliteDb,
   type PullCiFailureRecord,
@@ -25,15 +24,6 @@ export const CI_REVIEW_WAIT_SOURCE =
  * while it read GitHub and stays pending for its own collection window.
  */
 export type PullCiScope = { pullNumber?: number; head?: string | null; observedBy?: number };
-
-export function currentPullCi(
-  db: Database,
-  item: WorkItemRecord,
-  now: number,
-  scope: PullCiScope = {},
-): PullCiFailureRecord | null {
-  return settled(sqliteDb(db).run((q) => currentPullCiSteps(q, item, now, scope)));
-}
 
 export function* currentPullCiSteps(
   q: Q,
@@ -112,10 +102,6 @@ type PullCiRestart = {
   now: number;
 };
 
-export function pullCiRestarted(db: Database, input: PullCiRestart): string {
-  return settled(sqliteDb(db).transaction((q) => pullCiRestartedSteps(q, input)));
-}
-
 export function* pullCiRestartedSteps(q: Q, input: PullCiRestart): Steps<string> {
   const { item, failure, now } = input;
   const attempt = yield* fixRoundsSteps(q, item.id);
@@ -149,10 +135,6 @@ export function* pullCiRestartedSteps(q: Q, input: PullCiRestart): Steps<string>
 }
 
 type PullCiAsk = { item: WorkItemRecord; failure: PullCiFailureRecord; limit: number; now: number };
-
-export function pullCiAsked(db: Database, input: PullCiAsk): void {
-  settled(sqliteDb(db).transaction((q) => pullCiAskedSteps(q, input)));
-}
 
 export function* pullCiAskedSteps(q: Q, input: PullCiAsk): Steps<void> {
   yield* recordCiRoundSteps(q, {

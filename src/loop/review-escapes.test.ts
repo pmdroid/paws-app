@@ -63,7 +63,7 @@ async function accepted() {
       handoff: "CI failed.",
       now: 2,
       record: () => syncSteps(() => {}),
-      announce: () => {},
+      announce: () => syncSteps(() => {}),
       failedChecks: checks,
       pullNumber: 7,
     });

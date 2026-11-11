@@ -1,15 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { type RunnerRepositoryRefusal } from "../core";
-import {
-  applyLinearCommandSteps,
-  commandInstance,
-  emitJobReady,
-  getWorkItemSteps,
-  settled,
-  sqliteDb,
-  type Q,
-  type Steps,
-} from "../db";
+import { applyLinearCommandSteps, getWorkItemSteps, type Q, type Steps } from "../db";
 import type { StoredQuestion } from "../questions";
 import { restartSteps } from "./operations";
 
@@ -37,22 +27,6 @@ export function runnerRepositoryQuestion(
     ...lines,
     `Then reply **${RUNNER_REPOSITORY_RETRY}**, or **${RUNNER_REPOSITORY_STOP}** to cancel.`,
   ].join("\n\n");
-}
-
-export function answerRunnerRepository(
-  db: Database,
-  question: StoredQuestion,
-  now: number,
-  consumeTurn: (question: StoredQuestion) => void,
-): void {
-  consumeTurn(question);
-  const notifications = { ready: false };
-  settled(
-    sqliteDb(db).transaction((q) =>
-      answerRunnerRepositorySteps(q, question, now, commandInstance(db), notifications),
-    ),
-  );
-  if (notifications.ready) emitJobReady(db);
 }
 
 export function* answerRunnerRepositorySteps(

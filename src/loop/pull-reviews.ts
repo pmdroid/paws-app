@@ -30,7 +30,13 @@ import type { StoredReviewFinding } from "../closeout";
 import type { LeaveMergeQueueResult, ReviewThread } from "../github";
 import { askSteps, restartSteps } from "./operations";
 import { commentDigest } from "./pull-comments";
-import { currentPullCi, pullCiAsked, pullCiHandoff, pullCiHead, pullCiRestarted } from "./pull-ci";
+import {
+  currentPullCiSteps,
+  pullCiAskedSteps,
+  pullCiHandoff,
+  pullCiHead,
+  pullCiRestartedSteps,
+} from "./pull-ci";
 import { REVIEW_FIX_INSTRUCTION } from "./review-instructions";
 import { holdForReviewChecks, type ReviewChecks } from "./review-checks";
 import { replyListSection, replyTargets } from "./review-replies";
@@ -217,7 +223,7 @@ export async function handlePullReview(
     const others = comments.filter(
       (comment) => !(comment.source === "inline" && comment.reviewId === review.reviewId),
     );
-    const failure = currentPullCi(db, current, caps.now(), {
+    const failure = yield* currentPullCiSteps(q, current, caps.now(), {
       pullNumber: review.pullNumber,
       head,
       observedBy: started,
@@ -279,7 +285,13 @@ export async function handlePullReview(
           sessionId: caps.session(current),
           item: current,
           key: `${jobKey}:ci`,
-          body: pullCiRestarted(db, { item: current, failure, jobKey, limit, now: caps.now() }),
+          body: yield* pullCiRestartedSteps(q, {
+            item: current,
+            failure,
+            jobKey,
+            limit,
+            now: caps.now(),
+          }),
           now: caps.now(),
         });
       if (current.acceptedHead !== null)
@@ -314,7 +326,8 @@ export async function handlePullReview(
       `${reviewer(review)} requested changes on pull request #${review.pullNumber}, and all ${limit} fix rounds are spent. Reply with guidance and Paws hands it to the agent with the review, or stop the task.\n\n${digest}`,
       { reason: "budget_spent", now: caps.now() },
     );
-    if (failure !== null) pullCiAsked(db, { item: current, failure, limit, now: caps.now() });
+    if (failure !== null)
+      yield* pullCiAskedSteps(q, { item: current, failure, limit, now: caps.now() });
     yield* settlePullReviewSteps(q, reviewId, "asked", caps.now());
     return "asked";
   });
