@@ -1,6 +1,6 @@
 import { mergeAcceptedWork } from "./accepted-work";
 import { SLOW_CI_REASON } from "./merge-jobs";
-import { ask, restart } from "./operations";
+import { askSteps, restartSteps } from "./operations";
 import type { Database } from "bun:sqlite";
 import {
   JOB_KIND,
@@ -9,34 +9,40 @@ import {
   TIME_LIMIT_VERIFYING_REASON,
   type StageLimits,
 } from "../core";
-import { startFreshBudget } from "./time-budget";
+import { startFreshBudgetSteps } from "./time-budget";
 import {
-  hasLiveJob,
-  pendingAnswerHandoffs,
-  setQuestionHandoffVersion,
-  setRetryAnswer,
-  agentTurnStage,
-  applyLinearTurns,
-  announceLinearTurn,
-  applyWorkItemEvent,
-  completePlanTask,
-  enqueueJobOnce,
-  enqueueOutboxOnce,
-  failWorkItem,
-  getPlanProposal,
-  getWorkItem,
-  heldHandoffs,
-  listCloseoutRecoveries,
-  markHandoffsCarried,
-  saveCheckpoint,
-  savePlanProposal,
-  saveVisualReviewMarks,
+  agentTurnStageSteps,
+  announceLinearTurnSteps,
+  applyLinearTurnsSteps,
+  applyWorkItemEventSteps,
+  completePlanTaskSteps,
+  emitJobReady,
+  enqueueJobOnceSteps,
+  enqueueOutboxOnceSteps,
+  failWorkItemSteps,
+  getPlanProposalSteps,
+  getWorkItemSteps,
+  hasLiveJobSteps,
+  heldHandoffsSteps,
+  listCloseoutRecoveriesSteps,
+  markHandoffsCarriedSteps,
+  pendingAnswerHandoffsSteps,
+  saveCheckpointSteps,
+  savePlanProposalSteps,
+  saveVisualReviewMarksSteps,
+  setQuestionHandoffVersionSteps,
+  setRetryAnswerSteps,
+  settled,
+  sqliteDb,
+  syncSteps,
   type HeldHandoff,
+  type Q,
+  type Steps,
   type VisualReviewMark,
 } from "../db";
 import {
-  findOpenQuestion,
-  getVisualReview,
+  findOpenQuestionSteps,
+  getVisualReviewSteps,
   handoffNote,
   type AnswerEffects,
   type StoredQuestion,
@@ -54,26 +60,25 @@ import { worktreeBranch } from "./sources";
 import { answerRunnerRepository } from "./runner-repository";
 import { recordVisualReviewOutcome, visualReviewHandoff } from "./visual-review";
 
-const consumeTurnOf = (db: Database, question: StoredQuestion) => {
+function* consumeTurnSteps(q: Q, question: StoredQuestion): Steps<void> {
   if (
     question.answerEventKey !== null &&
-    getWorkItem(db, question.itemId)?.sessionKey === question.sessionId
+    (yield* getWorkItemSteps(q, question.itemId))?.sessionKey === question.sessionId
   )
-    applyLinearTurns(db, question.sessionId, [question.answerEventKey], question.itemId);
-};
+    yield* applyLinearTurnsSteps(q, question.sessionId, [question.answerEventKey], question.itemId);
+}
 
-export function verifyAgain(
-  db: Database,
-  question: StoredQuestion,
-  input: { now: number; key?: string },
-): void {
-  consumeTurnOf(db, question);
-  if (findOpenQuestion(db, question.sessionId)?.itemId === question.itemId) return;
-  const item = getWorkItem(db, question.itemId);
+type VerifyInput = { now: number; key?: string };
+
+export function* verifyAgainSteps(q: Q, question: StoredQuestion, input: VerifyInput) {
+  yield* consumeTurnSteps(q, question);
+  if ((yield* findOpenQuestionSteps(q, question.sessionId))?.itemId === question.itemId) return;
+  const item = yield* getWorkItemSteps(q, question.itemId);
   if (item?.state !== "awaiting_input") return;
-  applyWorkItemEvent(db, item.id, "reverify_requested", { now: input.now });
-  if (item.checkpoint) saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "verifying" });
-  enqueueJobOnce(db, {
+  yield* applyWorkItemEventSteps(q, item.id, "reverify_requested", { now: input.now });
+  if (item.checkpoint)
+    yield* saveCheckpointSteps(q, item.id, { ...item.checkpoint, phase: "verifying" });
+  yield* enqueueJobOnceSteps(q, {
     queue: JOB_KIND.reverify,
     jobKey: `${input.key ?? "time-limit"}:${question.id}`,
     payload: { itemId: item.id },
@@ -81,13 +86,21 @@ export function verifyAgain(
   });
 }
 
-export function retryCloseout(
-  db: Database,
-  question: StoredQuestion,
-  input: { now: number; answer?: string },
-): void {
-  setRetryAnswer(db, question.id, input.answer ?? RETRY_CLOSEOUT);
-  verifyAgain(db, question, { now: input.now, key: "retry-closeout" });
+export function verifyAgain(db: Database, question: StoredQuestion, input: VerifyInput): void {
+  settled(sqliteDb(db).transaction((q) => verifyAgainSteps(q, question, input)));
+  emitJobReady(db);
+}
+
+type RetryInput = { now: number; answer?: string };
+
+export function* retryCloseoutSteps(q: Q, question: StoredQuestion, input: RetryInput) {
+  yield* setRetryAnswerSteps(q, question.id, input.answer ?? RETRY_CLOSEOUT);
+  yield* verifyAgainSteps(q, question, { now: input.now, key: "retry-closeout" });
+}
+
+export function retryCloseout(db: Database, question: StoredQuestion, input: RetryInput): void {
+  settled(sqliteDb(db).transaction((q) => retryCloseoutSteps(q, question, input)));
+  emitJobReady(db);
 }
 
 export function questionEffects(
@@ -101,17 +114,18 @@ export function questionEffects(
     marks?: readonly VisualReviewMark[];
   },
 ): AnswerEffects {
-  const consumeTurn = (question: StoredQuestion) => consumeTurnOf(db, question);
-  const restartWithAnswers = (
+  const consumeTurn = (q: Q, question: StoredQuestion) => consumeTurnSteps(q, question);
+  function* restartWithAnswers(
+    q: Q,
     question: StoredQuestion,
     body: string,
     jobKey: string,
     /** Handoffs the time limit held back, handed over before the answers. */
     held: readonly HeldHandoff[] = [],
-  ) => {
-    const item = getWorkItem(db, question.itemId);
+  ): Steps<void> {
+    const item = yield* getWorkItemSteps(q, question.itemId);
     if (!item) return;
-    const pending = pendingAnswerHandoffs(db, item.id, question.sessionId, [
+    const pending = yield* pendingAnswerHandoffsSteps(q, item.id, question.sessionId, [
       "visual-review",
       "runner-wait",
       "runner-repository",
@@ -126,28 +140,29 @@ export function questionEffects(
         : handoffNote({
             question: entry.body,
             options: entry.options ? JSON.parse(entry.options) : [],
-            answer: entry.answer,
+            answer: entry.answer ?? "",
           }),
     );
     const answers = handoffs.length ? handoffs : [body];
-    const jobId = restart(db, item, {
+    const restarted = yield* restartSteps(q, item, {
       reason: "answer",
       body: [...held.map((entry) => entry.handoff), ...answers].join("\n\n"),
       jobKey,
       now: input.now,
     });
-    if (jobId !== null) {
-      markHandoffsCarried(db, held);
-      const version = getWorkItem(db, item.id)!.version;
-      for (const entry of pending) setQuestionHandoffVersion(db, entry.id, version);
+    if (restarted !== null) {
+      yield* markHandoffsCarriedSteps(q, held);
+      const version = (yield* getWorkItemSteps(q, item.id))!.version;
+      for (const entry of pending) yield* setQuestionHandoffVersionSteps(q, entry.id, version);
     }
-  };
-  const resume = (question: StoredQuestion, held: readonly HeldHandoff[] = []) => {
+  }
+  function* resume(q: Q, question: StoredQuestion, held: readonly HeldHandoff[] = []) {
     if (input.redirect && question.answerEventKey !== null)
-      announceLinearTurn(db, question.sessionId, question.answerEventKey, input.now);
-    else consumeTurn(question);
-    if (findOpenQuestion(db, question.sessionId)?.itemId === question.itemId) return;
-    restartWithAnswers(
+      yield* announceLinearTurnSteps(q, question.sessionId, question.answerEventKey, input.now);
+    else yield* consumeTurn(q, question);
+    if ((yield* findOpenQuestionSteps(q, question.sessionId))?.itemId === question.itemId) return;
+    yield* restartWithAnswers(
+      q,
       question,
       handoffNote({
         question: question.body,
@@ -157,50 +172,51 @@ export function questionEffects(
       `resume:answer:${question.id}`,
       held,
     );
-  };
+  }
   /** A reply is guidance for the agent. It never bypasses a check: that is decided on the item page. */
-  const closeoutHelp = (question: StoredQuestion) => {
-    const recovery = listCloseoutRecoveries(db, question.itemId).find(
+  function* closeoutHelp(q: Q, question: StoredQuestion): Steps<void> {
+    const recovery = (yield* listCloseoutRecoveriesSteps(q, question.itemId)).find(
       (entry) => entry.questionId === question.id,
     );
     if (recovery === undefined) return;
     if (retriesCloseout(question)) {
-      retryCloseout(db, question, { now: input.now });
+      yield* retryCloseoutSteps(q, question, { now: input.now });
       return;
     }
-    consumeTurn(question);
-    if (findOpenQuestion(db, question.sessionId)?.itemId === question.itemId) return;
-    restartWithAnswers(
+    yield* consumeTurn(q, question);
+    if ((yield* findOpenQuestionSteps(q, question.sessionId))?.itemId === question.itemId) return;
+    yield* restartWithAnswers(
+      q,
       question,
       handoffNote({ question: recovery.summary, answer: question.answer ?? "" }),
       `closeout-guidance:${question.id}`,
     );
-  };
-  const mergeHelp = (question: StoredQuestion) => {
+  }
+  function* mergeHelp(q: Q, question: StoredQuestion): Steps<void> {
     if (!retriesMerge(question)) {
-      resume(question);
+      yield* resume(q, question);
       return;
     }
-    consumeTurn(question);
-    if (findOpenQuestion(db, question.sessionId)?.itemId === question.itemId) return;
-    mergeAcceptedWork(db, question.itemId, { now: input.now });
-  };
+    yield* consumeTurn(q, question);
+    if ((yield* findOpenQuestionSteps(q, question.sessionId))?.itemId === question.itemId) return;
+    yield* syncSteps(() => mergeAcceptedWork(db, question.itemId, { now: input.now }));
+  }
   /**
    * Merge sends the accepted head to the merge queue without another turn. Continue, or a typed
    * reply, resumes the agent, or a stopped Closeout run, with a fresh budget. Stop ends the task;
    * the work stays.
    */
-  const timeLimit = (question: StoredQuestion) => {
+  function* timeLimit(q: Q, question: StoredQuestion): Steps<void> {
     if ((question.answer ?? "").trim().toLowerCase() === TIME_LIMIT_MERGE.toLowerCase()) {
-      consumeTurn(question);
-      mergeAcceptedWork(db, question.itemId, { now: input.now });
+      yield* consumeTurn(q, question);
+      yield* syncSteps(() => mergeAcceptedWork(db, question.itemId, { now: input.now }));
       return;
     }
     if (!/^\s*stop\b/i.test(question.answer ?? "")) {
       const plain =
         (question.answer ?? "").trim().toLowerCase() === TIME_LIMIT_CONTINUE.toLowerCase();
-      const item = getWorkItem(db, question.itemId);
-      startFreshBudget(db, {
+      const item = yield* getWorkItemSteps(q, question.itemId);
+      yield* startFreshBudgetSteps(q, {
         itemId: question.itemId,
         sessionId: question.sessionId,
         key: question.id,
@@ -211,77 +227,83 @@ export function questionEffects(
             ? undefined
             : question.reason === TIME_LIMIT_VERIFYING_REASON
               ? "closeout"
-              : agentTurnStage(db, question.itemId),
+              : yield* agentTurnStageSteps(q, question.itemId),
         now: input.now,
       });
       // A review or comment restart the time limit cut off reaches the agent with the answer.
-      const held = heldHandoffs(db, question.itemId);
+      const held = yield* heldHandoffsSteps(q, question.itemId);
       if (plain && held.length === 0 && question.reason === TIME_LIMIT_VERIFYING_REASON)
-        verifyAgain(db, question, { now: input.now });
-      else resume(question, held);
+        yield* verifyAgainSteps(q, question, { now: input.now });
+      else yield* resume(q, question, held);
       return;
     }
-    consumeTurn(question);
-    const item = getWorkItem(db, question.itemId);
+    yield* consumeTurn(q, question);
+    const item = yield* getWorkItemSteps(q, question.itemId);
     if (item?.state !== "awaiting_input") return;
-    failWorkItem(
-      db,
+    yield* failWorkItemSteps(
+      q,
       item,
       question.reason === SLOW_CI_REASON ? "merge" : "cap:time",
       `${question.reason === SLOW_CI_REASON ? "Stopped while GitHub CI was pending" : "Stopped at the time limit"}, as asked in Linear. The ${item.acceptedHead === null ? "work" : "accepted work"} is on branch \`${item.branchName || worktreeBranch(item)}\`.`,
       input.now,
       { stoppedByAnswer: true },
     );
-  };
+  }
   /**
    * A Linear answer to a review question asked before the link ask. It never
    * approves: it restarts the item with the feedback, or asks whether to keep
    * going after the round limit. Screens are approved only on the item page.
    */
-  const visualReview = (question: StoredQuestion) => {
-    const review = getVisualReview(db, question.id);
+  function* visualReview(q: Q, question: StoredQuestion): Steps<void> {
+    const review = yield* getVisualReviewSteps(q, question.id);
     if (review === null) return;
-    if (input.marks) saveVisualReviewMarks(db, input.marks);
-    const outcome = recordVisualReviewOutcome(db, question, review, input.now);
-    if (!input.marks) consumeTurn(question);
-    const item = getWorkItem(db, question.itemId);
+    if (input.marks) yield* saveVisualReviewMarksSteps(q, input.marks);
+    const outcome = yield* syncSteps(() =>
+      recordVisualReviewOutcome(db, question, review, input.now),
+    );
+    if (!input.marks) yield* consumeTurn(q, question);
+    const item = yield* getWorkItemSteps(q, question.itemId);
     if (outcome === "asked" || !item) return;
-    restart(db, item, {
+    yield* restartSteps(q, item, {
       reason: "review",
-      body: visualReviewHandoff(db, question.id) ?? "",
+      body: (yield* syncSteps(() => visualReviewHandoff(db, question.id))) ?? "",
       jobKey: `resume:answer:${question.id}`,
       now: input.now,
     });
-  };
+  }
   /**
    * Create completes the plan task and queues the filing, keyed on this
    * question so a redelivered answer files nothing twice. Discard completes it
    * with one response. A bare Edit asks what to change; any other reply is the
    * next planning turn.
    */
-  const planApproval = (question: StoredQuestion) => {
-    const proposal = getPlanProposal(db, question.id);
-    const item = getWorkItem(db, question.itemId);
+  function* planApproval(q: Q, question: StoredQuestion): Steps<void> {
+    const proposal = yield* getPlanProposalSteps(q, question.id);
+    const item = yield* getWorkItemSteps(q, question.itemId);
     if (proposal === null || item === null) return;
-    consumeTurn(question);
+    yield* consumeTurn(q, question);
     if (item.state !== "awaiting_input" || item.cancelRequested) return;
-    if (findOpenQuestion(db, question.sessionId)?.itemId === question.itemId) return;
+    if ((yield* findOpenQuestionSteps(q, question.sessionId))?.itemId === question.itemId) return;
     const answer = question.answer ?? "";
     const decision = planDecision(answer, proposal.drafts.length);
-    setQuestionHandoffVersion(db, question.id, 0);
+    yield* setQuestionHandoffVersionSteps(q, question.id, 0);
     if (decision === "edit-ask") {
-      const asked = ask(
-        db,
+      const asked = yield* askSteps(
+        q,
         { itemId: item.id, runId: null, sessionId: question.sessionId, version: item.version },
         "plan-approval",
         PLAN_EDIT_QUESTION,
         { options: planOptions(proposal.drafts.length), now: input.now },
       );
-      savePlanProposal(db, { ...proposal, questionId: asked.question.id, now: input.now });
+      yield* savePlanProposalSteps(q, {
+        ...proposal,
+        questionId: asked.question.id,
+        now: input.now,
+      });
       return;
     }
     if (decision === "edit") {
-      restart(db, item, {
+      yield* restartSteps(q, item, {
         reason: "answer",
         body: planEditHandoff(proposal.drafts, answer),
         jobKey: `plan-edit:${question.id}`,
@@ -289,9 +311,9 @@ export function questionEffects(
       });
       return;
     }
-    completePlanTask(db, item.id, input.now);
+    yield* completePlanTaskSteps(q, item.id, input.now);
     if (decision === "discard")
-      enqueueOutboxOnce(db, {
+      yield* enqueueOutboxOnceSteps(q, {
         target: "linear",
         op: "activity",
         orderingKey: question.sessionId,
@@ -300,7 +322,7 @@ export function questionEffects(
         now: input.now,
       });
     else
-      enqueueOutboxOnce(db, {
+      yield* enqueueOutboxOnceSteps(q, {
         target: "linear",
         op: "linear.sub_issues",
         orderingKey: question.sessionId,
@@ -314,18 +336,18 @@ export function questionEffects(
         },
         now: input.now,
       });
-  };
+  }
   return {
     "plan-approval": planApproval,
     "visual-review": visualReview,
-    "runner-wait": (question) => {
-      consumeTurn(question);
-      if (findOpenQuestion(db, question.sessionId)?.itemId === question.itemId) return;
-      const item = getWorkItem(db, question.itemId);
+    "runner-wait": function* (q, question) {
+      yield* consumeTurn(q, question);
+      if ((yield* findOpenQuestionSteps(q, question.sessionId))?.itemId === question.itemId) return;
+      const item = yield* getWorkItemSteps(q, question.itemId);
       if (item?.state !== "awaiting_input") return;
-      applyWorkItemEvent(db, item.id, "reverify_requested", { now: input.now });
-      if (!hasLiveJob(db, item.id, input.now))
-        enqueueJobOnce(db, {
+      yield* applyWorkItemEventSteps(q, item.id, "reverify_requested", { now: input.now });
+      if (!(yield* hasLiveJobSteps(q, item.id, input.now)))
+        yield* enqueueJobOnceSteps(q, {
           queue: JOB_KIND.reverify,
           jobKey: `runner-wait:${question.id}`,
           payload: { itemId: item.id },
@@ -333,7 +355,12 @@ export function questionEffects(
         });
     },
     "time-limit": timeLimit,
-    "runner-repository": (question) => answerRunnerRepository(db, question, input.now, consumeTurn),
+    "runner-repository": (q, question) =>
+      syncSteps(() =>
+        answerRunnerRepository(db, question, input.now, (asked) =>
+          settled(sqliteDb(db).run((reads) => consumeTurn(reads, asked))),
+        ),
+      ),
     agent: resume,
     clarification: resume,
     repository: resume,

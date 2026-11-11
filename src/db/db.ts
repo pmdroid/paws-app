@@ -190,3 +190,8 @@ export function settled<T>(promise: Promise<T>): T {
   }
   return value as T;
 }
+
+export function* syncSteps<T>(work: () => T): Steps<T> {
+  yield* [];
+  return work();
+}
