@@ -40,7 +40,6 @@ const CONFIG = JSON.stringify({
   controlPlaneUrl: "https://paws.example.com",
   runnerApiUrl: "https://paws.example.com:8788",
   allowedRepositories: [],
-  concurrency: 2,
 });
 const CONFIG_SHA = createHash("sha256").update(`${CONFIG}\n`).digest("hex");
 
@@ -533,7 +532,6 @@ test("the config carries the server CA and allowed repositories but no secret", 
     runnerApiUrl: "https://paws.example.com:8788",
     allowedRepositories: ["pmdroid/paws-app"],
     serverCa: ca,
-    concurrency: 2,
   });
   expect(commands(exe)[1]).toContain(
     `printf '%s\\n' ${q(config)} | sudo install -o root -g root -m 0600 /dev/stdin /var/lib/paws-bootstrap/config.json`,

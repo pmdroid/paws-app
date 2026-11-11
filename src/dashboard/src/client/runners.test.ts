@@ -1124,6 +1124,7 @@ describe("hostEnrollmentCommand", () => {
     );
     expect(command).toContain('"runnerApiUrl":"https://paws.example.com:8788"');
     expect(command).toContain('"allowedRepositories":["acme/app"]');
+    expect(command).not.toContain("concurrency");
     expect(command.endsWith("sudo systemctl enable --now paws-runner.service")).toBe(true);
   });
   test("passes the token only through the printf builtin into a root-owned 0600 file", () => {

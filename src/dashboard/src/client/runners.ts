@@ -439,7 +439,7 @@ export function hostEnrollmentCommand(
   enrollment: HostEnrollment & { config: object },
   docker: boolean,
 ): string {
-  const config = JSON.stringify({ ...enrollment.config, concurrency: 2 });
+  const config = JSON.stringify(enrollment.config);
   return [
     `curl -fsSL https://get.paws.boo | sudo env PAWS_RUNNER_DOCKER_ACCESS=${docker ? "grant" : "deny"} sh`,
     `printf '%s\\n' ${shellQuote(enrollment.token)} | sudo install -o root -g root -m 0600 /dev/stdin /etc/paws-runner/enrollment-token`,
@@ -1603,7 +1603,7 @@ export function createRunners() {
     const expired = enrollment !== null && enrollment.expiresAt <= now;
     const command =
       enrollment?.config && !expired
-        ? `<p>Run this on the Linux runner. It installs the runner, writes its config for this Paws and enrolls with a single-use token. The runner appears here, owned by you.</p><pre class="mono" id="runner-enroll-command">${esc(hostEnrollmentCommand({ ...enrollment, config: enrollment.config }, dockerAccess))}</pre><div class="between"><p class="muted">The token expires at ${esc(new Date(enrollment.expiresAt).toLocaleTimeString())} and works once.</p><button class="btn" data-runner-enroll-copy data-focus="enroll-copy">Copy command</button></div>`
+        ? `<p>Run this on the Linux runner. It installs the runner, writes its config for this Paws and enrolls with a single-use token. The runner appears here, owned by you.</p><p class="muted">The runner takes one slot per 2 CPUs and 4 GB of memory on the host, from 1 to 16; <code>concurrency</code> in <code>/etc/paws-runner/config.json</code> overrides it.</p><pre class="mono" id="runner-enroll-command">${esc(hostEnrollmentCommand({ ...enrollment, config: enrollment.config }, dockerAccess))}</pre><div class="between"><p class="muted">The token expires at ${esc(new Date(enrollment.expiresAt).toLocaleTimeString())} and works once.</p><button class="btn" data-runner-enroll-copy data-focus="enroll-copy">Copy command</button></div>`
         : enrollment && !expired
           ? '<p role="alert" class="err">Paws has no public HTTPS address for runners. Set PAWS_PUBLIC_URL and restart Paws.</p>'
           : expired
