@@ -16,6 +16,7 @@ import {
   saveCheckpoint,
   saveTaskMode,
   setCurrentRun,
+  sqliteDb,
 } from "../../src/db";
 import { createFakeTracker } from "../../src/linear";
 import { Orchestrator, type ExecutionChanges } from "../../src/loop";
@@ -255,7 +256,7 @@ export async function probeExecutionChanges(
     );
     db.run("UPDATE work_item SET state='cancelled' WHERE state IN ('queued','paused')");
     seed("pause", ["queued"]);
-    saveTaskMode(db, "pause-0", "answer");
+    await saveTaskMode(sqliteDb(db), "pause-0", "answer");
     saveCheckpoint(db, "pause-0", { phase: "running", wipCommit: "preserved-commit" });
     const pauseJob = enqueueJob(db, {
       queue: JOB_KIND.start,

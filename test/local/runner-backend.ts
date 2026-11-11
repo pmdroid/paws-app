@@ -1402,7 +1402,7 @@ export async function probeRunnerBackend(
     for (const purpose of ["answer", "artifact"] as const) {
       for (const withRepository of [false, true]) {
         const task = await item();
-        saveTaskMode(db, task.id, purpose, 0, withRepository);
+        await saveTaskMode(sqliteDb(db), task.id, purpose, 0, withRepository);
         const directory = join(root, `response-${task.id}`);
         mkdirSync(directory, { mode: 0o700 });
         if (withRepository)
@@ -1665,7 +1665,7 @@ export async function probeRunnerBackend(
       }
     }
     const changedTask = await item();
-    saveTaskMode(db, changedTask.id, "answer");
+    await saveTaskMode(sqliteDb(db), changedTask.id, "answer");
     await assert.rejects(
       sealedBackend.forItem(changedTask.id)(
         input(changedTask, {
@@ -1687,7 +1687,7 @@ export async function probeRunnerBackend(
       { commands: 0 },
     );
     const unsafeTask = await item();
-    saveTaskMode(db, unsafeTask.id, "artifact", 0, true);
+    await saveTaskMode(sqliteDb(db), unsafeTask.id, "artifact", 0, true);
     const unsafeDirectory = join(root, "unsafe-response");
     mkdirSync(unsafeDirectory, { mode: 0o700 });
     writeFileSync(
@@ -1708,7 +1708,7 @@ export async function probeRunnerBackend(
     for (const kind of ["run", "review", "answer", "artifact"] as const) {
       const record = await item();
       const isTask = kind === "answer" || kind === "artifact";
-      if (isTask) saveTaskMode(db, record.id, kind);
+      if (isTask) await saveTaskMode(sqliteDb(db), record.id, kind);
       const directory = isTask ? join(root, `inputs-${record.id}`) : source;
       mkdirSync(directory, { recursive: true, mode: 0o700 });
       if (!isTask) await git(["-C", source, "reset", "--hard", base]);
@@ -2575,7 +2575,7 @@ export async function probeRunnerBackend(
       });
       for (const purpose of ["answer", "artifact"] as const) {
         const record = await item();
-        saveTaskMode(db, record.id, purpose);
+        await saveTaskMode(sqliteDb(db), record.id, purpose);
         const host = (
           await placement.candidates({
             itemId: record.id,

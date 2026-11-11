@@ -95,7 +95,7 @@ describe("restart recovery", () => {
     });
   });
 
-  test("a code task with no checkpoint starts again from its branch", () => {
+  test("a code task with no checkpoint starts again from its branch", async () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, {
       id: "eng-2",
@@ -103,7 +103,7 @@ describe("restart recovery", () => {
       branchName: "paws/eng-2",
       now: clock.now(),
     });
-    saveTaskMode(db, item.id, "code", 0);
+    await saveTaskMode(sqliteDb(db), item.id, "code", 0);
     const { run } = beginImplementRun(db, item.id, clock.now());
     expect(recoverOnStartup(db, clock.now())).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },

@@ -42,7 +42,7 @@ export async function probeCurrentRunStartup(root: string) {
       });
       const previous = beginImplementRun(db, item.id, clock.now());
       markRun(db, previous.run.id, "ended", clock.now());
-    } else saveTaskMode(db, item.id, mode, 0, mode === "artifact");
+    } else await saveTaskMode(sqliteDb(db), item.id, mode, 0, mode === "artifact");
     const repository = {
       owner: "fixture",
       repo: "repository",

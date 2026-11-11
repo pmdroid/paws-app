@@ -189,7 +189,7 @@ export async function probeExecutionRuntime(input: {
   });
   bindLinearSessionTask(db, sessionId, target.delegationId, { actorId: "owner" });
   db.run("UPDATE work_item SET session_key=? WHERE id=?", [sessionId, itemId]);
-  saveTaskMode(db, itemId, "code", 0, true);
+  await saveTaskMode(sqliteDb(db), itemId, "code", 0, true);
   beginImplementRun(db, itemId, Date.now());
   applyWorkItemEvent(db, itemId, "turn_ended");
   saveCheckpoint(db, itemId, {

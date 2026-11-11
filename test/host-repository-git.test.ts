@@ -220,7 +220,7 @@ test("host credentials reach real host clone and fetch without reaching reposito
       now: Date.now(),
     });
     bindLinearSessionTask(db, item.sessionKey!, item.delegationId, { actorId: "human" });
-    saveTaskMode(db, item.id, "answer", 0, true);
+    await saveTaskMode(sqliteDb(db), item.id, "answer", 0, true);
     const installation = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
     await recordLinearInstallation(sqliteDb(db), {
       ...installation,

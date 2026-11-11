@@ -60,7 +60,7 @@ test("a completed blocker satisfies the Block only for answer and artifact work"
     block(db, "blocker", "blocked");
     const admission = workspaceAdmission(db);
     assert.deepEqual(await admission.canStart("blocked"), { ok: false, held: "blocked" });
-    saveTaskMode(db, "blocker", "answer");
+    await saveTaskMode(sqliteDb(db), "blocker", "answer");
     assert.deepEqual(await admission.canStart("blocked"), { ok: true });
   } finally {
     db.close();

@@ -123,7 +123,7 @@ test("Managed blockers in another delegation require canonical delivery", async 
       actorId: "linear-person",
     });
     const item = intake.items[0]!;
-    saveTaskMode(f.db, item.id, "code");
+    await saveTaskMode(sqliteDb(f.db), item.id, "code");
     await f.refresh();
     expect(await f.ready()).toBe(false);
     f.db.run("UPDATE work_item SET state='completed' WHERE id=?", [item.id]);

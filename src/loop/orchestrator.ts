@@ -3357,8 +3357,8 @@ export class Orchestrator {
     )
       return true;
     if (!saved && (!classification || classification.mode !== "clarify")) {
-      saveTaskMode(
-        this.db,
+      await saveTaskMode(
+        sqliteDb(this.db),
         item.id,
         classification?.mode ?? "code",
         generation,
@@ -3426,8 +3426,8 @@ export class Orchestrator {
         }
       }
       if (saved)
-        selectTaskModeForTurn(
-          this.db,
+        await selectTaskModeForTurn(
+          sqliteDb(this.db),
           item.id,
           resolved.mode,
           generation,
@@ -3624,14 +3624,21 @@ export class Orchestrator {
             (artifact) =>
               `[${artifact.displayName.replace(/[\\[\]]/g, "\\$&")}](<${artifact.assetUrl}>)`,
           );
-        completeArtifactTask(
-          this.db,
+        await completeArtifactTask(
+          sqliteDb(this.db),
           item.id,
           [activity.resultBody(), ...links].join("\n\n"),
           this.now(),
           finish,
         );
-      } else completeAnswerTask(this.db, item.id, activity.resultBody(), this.now(), finish);
+      } else
+        await completeAnswerTask(
+          sqliteDb(this.db),
+          item.id,
+          activity.resultBody(),
+          this.now(),
+          finish,
+        );
       await this.dispatch();
     } catch (error) {
       if (

@@ -402,7 +402,7 @@ export async function probePublicationReadiness(root: string) {
       applyWorkItemEvent(f.db, manual, "dispatched");
       applyWorkItemEvent(f.db, manual, "run_failed");
       applyWorkItemEvent(f.db, manual, "take_over");
-      saveTaskMode(f.db, manual, "code");
+      await saveTaskMode(sqliteDb(f.db), manual, "code");
       f.tracker.deps.set("parent", [
         { blockerLinearIssueId: "outside", blockedLinearIssueId: "issue" },
         { blockerLinearIssueId: "manual", blockedLinearIssueId: "issue" },

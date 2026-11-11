@@ -799,7 +799,7 @@ export async function probeRunnerOrchestration(
         });
       if (mergeDependencyYield) {
         const queued = listWorkItems(db)[0]!;
-        saveTaskMode(db, queued.id, "code", 0, true);
+        await saveTaskMode(sqliteDb(db), queued.id, "code", 0, true);
         bindWorkItemRepository(db, queued.id, {
           owner: "acme",
           repo: "fixture",
@@ -924,7 +924,7 @@ export async function probeRunnerOrchestration(
              VALUES('new-blocker',?,'new-blocker','ENG-43','New blocker','queued','paws/new-blocker',1,?,'session')`,
             [item.delegationId, clock.now()],
           );
-          saveTaskMode(db, "new-blocker", "answer");
+          await saveTaskMode(sqliteDb(db), "new-blocker", "answer");
           bindWorkItemRepository(db, "new-blocker", {
             owner: "acme",
             repo: "fixture",

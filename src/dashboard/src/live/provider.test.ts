@@ -1750,7 +1750,7 @@ describe("live status provider", () => {
       const blocker = insertQueuedItem(db, { id: "PAS-709", now: 10 });
       const blocked = insertQueuedItem(db, { id: "PAS-710", now: 20 });
       db.run("UPDATE work_item SET state=? WHERE id=?", [state, blocker.id]);
-      saveTaskMode(db, blocker.id, mode);
+      await saveTaskMode(sqliteDb(db), blocker.id, mode);
       if (mergeSha)
         recordConfirmedRemoteMerge(db, {
           itemId: blocker.id,

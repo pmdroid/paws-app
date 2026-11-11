@@ -82,13 +82,13 @@ test("an issue delegated without a human actor gets no status change", async () 
   }
 });
 
-test("an answer task completing leaves the issue status alone", () => {
+test("an answer task completing leaves the issue status alone", async () => {
   const db = tempDb();
   try {
     const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
     beginImplementRun(db, item.id, 1);
-    saveTaskMode(db, item.id, "answer");
-    completeAnswerTask(db, item.id, "The answer.", 3);
+    await saveTaskMode(sqliteDb(db), item.id, "answer");
+    await completeAnswerTask(sqliteDb(db), item.id, "The answer.", 3);
     expect(statusRows(db)).toEqual([]);
   } finally {
     db.close();

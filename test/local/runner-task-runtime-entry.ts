@@ -222,7 +222,7 @@ if (mode === "agent") {
         observedAtMs: now,
       });
       bindLinearSessionTask(db, sessionId, item.delegationId, { actorId: "owner" });
-      saveTaskMode(db, item.id, purpose, 0, repository);
+      await saveTaskMode(sqliteDb(db), item.id, purpose, 0, repository);
       const binding = {
         owner: "fixture",
         repo: "repository",

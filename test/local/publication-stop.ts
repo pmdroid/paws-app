@@ -384,7 +384,7 @@ export async function probePublicationStop(
           }),
         ],
       );
-      saveTaskMode(db, `cycle-${id}`, "code");
+      await saveTaskMode(sqliteDb(db), `cycle-${id}`, "code");
     }
     db.run(
       "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('cycle-workspace','cycle-org','Cycle workspace',1)",

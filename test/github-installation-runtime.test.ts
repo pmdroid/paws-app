@@ -199,7 +199,7 @@ test.each(["pending", "rejected"] as const)(
       await reading.promise;
       const writer = insertQueuedItem(f.db, { id: "ENG-2", sessionKey: "writer" });
       applyWorkItemEvent(f.db, writer.id, "dispatched");
-      saveTaskMode(f.db, writer.id, "answer");
+      await saveTaskMode(sqliteDb(f.db), writer.id, "answer");
       enqueueJobOnce(f.db, {
         queue: JOB_KIND.resume,
         jobKey: "writer",
