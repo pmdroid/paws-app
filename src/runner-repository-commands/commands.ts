@@ -14,7 +14,6 @@ import {
   repositoryCommandSettlementSteps,
   runnerHostVersionSteps,
   setRepositoryCommandGrantSteps,
-  settled as settledValue,
   sqliteDb,
   usableRunnerSteps,
   type Db,
@@ -82,11 +81,6 @@ function parse(payload: string): RunnerRepositoryCommand {
   const command = RunnerCommandSchema.parse(JSON.parse(payload));
   if (command.type !== "rebase") throw new Error("Repository command payload is invalid.");
   return command;
-}
-
-function expire(db: Database, at: number) {
-  for (const id of settledValue(sqliteDb(db).run((q) => expireDueRepositoryCommandsSteps(q, at))))
-    settle(db, id, { outcome: "expired" });
 }
 
 async function expireDue(store: Db, db: Database, at: number) {
@@ -214,21 +208,20 @@ function pause(ms: number, signal: AbortSignal) {
   });
 }
 
-export function deliverRepositoryCommands(
+export async function deliverRepositoryCommands(
   db: Database,
   runnerId: string,
   at: number,
   limit: number,
-): RunnerRepositoryCommand[] {
+): Promise<RunnerRepositoryCommand[]> {
   if (limit <= 0) return [];
-  expire(db, at);
-  return settledValue(
-    sqliteDb(db).transaction(function* (q) {
-      const rows = yield* pendingRepositoryCommandsSteps(q, runnerId, at, limit);
-      for (const row of rows) yield* markRepositoryCommandDeliveredSteps(q, row.id, at);
-      return rows.map((row) => parse(row.payload));
-    }),
-  );
+  const store = sqliteDb(db);
+  await expireDue(store, db, at);
+  return await store.transaction(function* (q) {
+    const rows = yield* pendingRepositoryCommandsSteps(q, runnerId, at, limit);
+    for (const row of rows) yield* markRepositoryCommandDeliveredSteps(q, row.id, at);
+    return rows.map((row) => parse(row.payload));
+  });
 }
 
 function* currentSteps(q: Q, runnerId: string, commandId: string, at: number) {

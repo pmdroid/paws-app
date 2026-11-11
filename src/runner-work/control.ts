@@ -650,7 +650,12 @@ export function createRunnerWork(options: {
         }
         return signed;
       });
-      for (const command of deliverRepositoryCommands(db, runnerId, now(), 16 - result.length))
+      for (const command of await deliverRepositoryCommands(
+        db,
+        runnerId,
+        now(),
+        16 - result.length,
+      ))
         result.push(
           signRunnerCommand({ keyId: options.keyId, privateKey: options.privateKey, command }),
         );
