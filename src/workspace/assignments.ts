@@ -818,7 +818,8 @@ export function createWorkspaceAssignments(options: {
             return refuseHold(hold, verified.reason, verified.response);
           }
           const accepted = await store.transaction(function* (q) {
-            if (!context.isCurrent()) throw new Error("Assignment job claim is no longer current.");
+            if (!(yield* context.isCurrentSteps(q)))
+              throw new Error("Assignment job claim is no longer current.");
             if (
               !(yield* currentSteps(q, hold)) ||
               (yield* holdsSteps(q, hold.sessionId))?.status === "invalid"

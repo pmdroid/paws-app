@@ -300,11 +300,6 @@ export function* listWaitingProfileRunsSteps(q: Q, now: number): Steps<StoredRun
   return rows.map((row) => mapRun(q, row.run));
 }
 
-/** Existing runs eligible for a Settings profile update. A live work lease owns its snapshot. */
-export function listWaitingProfileRuns(db: Database, now: number): StoredRun[] {
-  return settled(sqliteDb(db).run((q) => listWaitingProfileRunsSteps(q, now)));
-}
-
 export function* loseActiveItemRunsSteps(q: Q, itemId: string, now: number) {
   const { run } = q.t;
   yield* q.exec(

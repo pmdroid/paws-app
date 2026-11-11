@@ -588,10 +588,6 @@ export function* isJobCurrentSteps(q: Q, job: Job) {
   );
 }
 
-export function isJobCurrent(db: Database, job: Job): boolean {
-  return settled(sqliteDb(db).run((q) => isJobCurrentSteps(q, job)));
-}
-
 export function* hasLiveJobSteps(q: Q, itemId: string, now: number, exceptJobId?: number) {
   const { job } = q.t;
   const row = yield* q.one(

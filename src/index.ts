@@ -1362,7 +1362,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         updates: skillUpdates,
       },
       agentSettings: {
-        applyToWaiting: () => orchestrator?.applyAgentSettingsToWaiting() ?? 0,
+        applyToWaiting: async () => (await orchestrator?.applyAgentSettingsToWaiting()) ?? 0,
         runnerReadiness: (agent) => activeRunnerReadiness(db, agent),
         ...(linear?.tracker?.readBriefIssue
           ? {

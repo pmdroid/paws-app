@@ -105,10 +105,10 @@ export interface RunAgentOptions {
   networkGit?: (args: string[]) => Promise<string>;
   profile?: AgentProfile;
   fallbackProfile?: AgentProfile;
-  resolveProfiles?: () => {
+  resolveProfiles?: () => Promise<{
     profile?: AgentProfile;
     fallbackProfile?: AgentProfile;
-  };
+  }>;
   readOnly?: boolean;
   closeoutRulesFirst?: boolean;
   closeoutFocus?: CloseoutFocus;

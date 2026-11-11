@@ -59,10 +59,10 @@ test("a cancelled resume handler stays fenced while its revived row runs a new h
   loop.register(JOB_KIND.resume, async (job, context) => {
     if ((job.payload as { handoff: string }).handoff === "old") {
       await gate;
-      staleChecks = [context.isCurrent(), await jobVersionCurrent(sqliteDb(db), job)];
+      staleChecks = [await context.isCurrent(), await jobVersionCurrent(sqliteDb(db), job)];
       if (staleChecks.some(Boolean)) writes.push("stale");
     } else {
-      expect(context.isCurrent()).toBe(true);
+      expect(await context.isCurrent()).toBe(true);
       expect(await jobVersionCurrent(sqliteDb(db), job)).toBe(true);
       writes.push("new");
     }

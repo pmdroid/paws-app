@@ -58,8 +58,8 @@ export type AcpAgentDeps = {
   updatePlan?: UpdatePlanHook;
   pullRequest?: PullRequestHook;
   postUpdate?: PostUpdateHook;
-  profiles?: AgentProfiles;
-  onCandidate?: (identity: AgentIdentity) => void;
+  profiles?: () => Promise<AgentProfiles>;
+  onCandidate?: (identity: AgentIdentity) => void | Promise<void>;
   home?: string;
   launch: AgentLaunch;
   brief?: string;
@@ -167,6 +167,7 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
   let seq = 0;
   return {
     async review(request): Promise<ReviewResult> {
+      const launchProfiles = await deps.profiles?.();
       const prompt = [
         ...(deps.brief ? [deps.brief] : []),
         request.prompt ?? "Review the change.",
@@ -176,7 +177,7 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
       ].join("\n");
       const launch = deps.launch({
         role: "reviewer",
-        profile: deps.profiles?.reviewer,
+        profile: launchProfiles?.reviewer,
         purpose: "review",
         itemId: request.taskId,
         worktree: request.worktree,
@@ -193,14 +194,13 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
           seq += 1;
           text = "";
           refusals.length = 0;
+          const profiles = await deps.profiles?.();
           result = await (deps.agentRunner ?? runAgent)({
             repository: deps.repository,
             prepareInputFiles: deps.prepareInputFiles,
             role: "reviewer",
-            profile: deps.profiles?.reviewer,
-            ...(deps.profiles?.reviewerFallback
-              ? { fallbackProfile: deps.profiles.reviewerFallback }
-              : {}),
+            profile: profiles?.reviewer,
+            ...(profiles?.reviewerFallback ? { fallbackProfile: profiles.reviewerFallback } : {}),
             itemId: request.taskId,
             runId: `rev-${request.taskId}-${seq}`,
             prompt: turnPrompt,
@@ -286,10 +286,11 @@ export function createReviewCommandReviewer(deps: AcpAgentDeps): CodexReviewer {
   let seq = 0;
   return {
     async review(request): Promise<ReviewResult> {
+      const profiles = await deps.profiles?.();
       const prompt = `Review ${request.base}..${request.head} with the agent's review command.`;
       const launch = deps.launch({
         role: "reviewer",
-        profile: deps.profiles?.reviewer,
+        profile: profiles?.reviewer,
         purpose: "review",
         itemId: request.taskId,
         worktree: request.worktree,
@@ -300,10 +301,8 @@ export function createReviewCommandReviewer(deps: AcpAgentDeps): CodexReviewer {
       const result = await (deps.agentRunner ?? runAgent)({
         repository: deps.repository,
         role: "reviewer",
-        profile: deps.profiles?.reviewer,
-        ...(deps.profiles?.reviewerFallback
-          ? { fallbackProfile: deps.profiles.reviewerFallback }
-          : {}),
+        profile: profiles?.reviewer,
+        ...(profiles?.reviewerFallback ? { fallbackProfile: profiles.reviewerFallback } : {}),
         itemId: request.taskId,
         runId: `rev-${request.taskId}-${seq}`,
         prompt,
@@ -355,10 +354,11 @@ export function createReviewCommandReviewer(deps: AcpAgentDeps): CodexReviewer {
 export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
   return {
     async applyFix(request): Promise<FixResult> {
+      const profiles = await deps.profiles?.();
       const prompt = fixPrompt(request, deps.brief);
       const launch = deps.launch({
         role: "implementer",
-        profile: deps.profiles?.implementer,
+        profile: profiles?.implementer,
         purpose: "fix",
         itemId: request.taskId,
         worktree: request.worktree,
@@ -373,7 +373,7 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
         postUpdate: deps.postUpdate,
         role: "implementer",
         publishArtifact: deps.publishArtifact,
-        profile: deps.profiles?.implementer,
+        profile: profiles?.implementer,
         itemId: request.taskId,
         runId: `fix-${request.taskId}-${request.fixAttempt}`,
         prompt,
@@ -394,7 +394,7 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
       if (head === "" || (head === request.head && !evidenceOnly(request.items))) {
         return { ok: false, reason: "fix did not move HEAD to a new commit" };
       }
-      deps.onCandidate?.(result.identity);
+      await deps.onCandidate?.(result.identity);
       return {
         ok: true,
         head,

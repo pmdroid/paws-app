@@ -41,7 +41,7 @@ export function usageLimitWait(
         });
         for (;;) {
           const wait = ((await store.run((q) => usagePauseSteps(q, runId)))?.resumeAt ?? 0) - now();
-          changed = profilesChanged?.() ?? false;
+          changed = (await profilesChanged?.()) ?? false;
           if (wait <= 0 || changed) break;
           if ((await limit.readyRunners?.())?.length) break;
           await delay(Math.min(wait, interval * 20), undefined, { signal: input.signal });

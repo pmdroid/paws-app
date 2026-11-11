@@ -25,6 +25,7 @@ import {
   putWorkspaceUser,
   syncWorkspaceMember,
   sqliteDb,
+  syncSteps,
 } from "../src/db";
 import {
   createFakeCloseoutGate,
@@ -366,7 +367,11 @@ for (const hold of ["sibling", "live-decide"] as const)
           jobContexts: Map<string, unknown>;
         }
       ).jobContexts;
-      if (hold === "sibling") contexts.set(item.id, { isCurrent: () => true });
+      if (hold === "sibling")
+        contexts.set(item.id, {
+          isCurrent: async () => true,
+          isCurrentSteps: () => syncSteps(() => true),
+        });
       const jobId = enqueueJob(f.db, {
         queue: JOB_KIND.reverify,
         payload: { itemId: item.id, decide: true },
@@ -555,7 +560,10 @@ test("a prolonged sibling ownership hold cannot interrupt its healthy owner", as
     const item = listWorkItems(f.db)[0]!;
     const contexts = (f.orchestrator as unknown as { jobContexts: Map<string, unknown> })
       .jobContexts;
-    contexts.set(item.id, { isCurrent: () => true });
+    contexts.set(item.id, {
+      isCurrent: async () => true,
+      isCurrentSteps: () => syncSteps(() => true),
+    });
     const jobId = enqueueJob(f.db, {
       queue: JOB_KIND.reverify,
       now: Date.now(),
@@ -668,7 +676,10 @@ for (const state of [
       ]);
       const contexts = (f.orchestrator as unknown as { jobContexts: Map<string, unknown> })
         .jobContexts;
-      contexts.set(item.id, { isCurrent: () => true });
+      contexts.set(item.id, {
+        isCurrent: async () => true,
+        isCurrentSteps: () => syncSteps(() => true),
+      });
       const jobId = enqueueJob(f.db, {
         queue: JOB_KIND.reverify,
         payload: { itemId: item.id, verificationWaitSince: Date.now() - 30 * 60_000 },
@@ -714,7 +725,10 @@ test("an ownership timer is cleared before work and a later hold starts a fresh 
     await f.tickReverify();
     expect(entered).toBe(true);
     expect(listJobs(f.db).find((job) => job.id === jobId)?.status).toBe("pending");
-    contexts.set(item.id, { isCurrent: () => true });
+    contexts.set(item.id, {
+      isCurrent: async () => true,
+      isCurrentSteps: () => syncSteps(() => true),
+    });
     f.db.run("UPDATE job SET run_at=0 WHERE id=?", [jobId]);
     await f.tickReverify();
     contexts.delete(item.id);

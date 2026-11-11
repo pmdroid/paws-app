@@ -25,7 +25,7 @@ export type AgentSettingsOptions = {
   csrfToken: string;
   repos?: string[];
   /** Replace idle run profile snapshots after saving. Runs executing a turn are excluded. */
-  applyToWaiting?: () => number;
+  applyToWaiting?: () => Promise<number>;
   /** Records a changed workspace setting in the audit history. */
   audit?: (action: string, subject: string) => void;
   runnerReadiness?: (agent: ImplementerName) => RunnerReadiness[] | Promise<RunnerReadiness[]>;
@@ -147,7 +147,7 @@ export async function handleAgentSettingsRequest(
     const config = loadConfigFile(options.configPath);
     saved = readMergeSettings(config).ciFixAttempts;
     savedQueue = queue ?? readQueueSettings(config);
-    if (applyToWaiting) waitingRuns = options.applyToWaiting?.() ?? 0;
+    if (applyToWaiting) waitingRuns = (await options.applyToWaiting?.()) ?? 0;
   } catch (caughtError4) {
     journalCaught(caughtError4, "handler.handleAgentSettingsRequest.writeAgentSettings", null);
     return json({ error: "Agent settings could not be saved" }, 503);

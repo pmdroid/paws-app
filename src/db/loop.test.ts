@@ -182,7 +182,7 @@ for (const scenario of ["reclaimed", "cancelled"] as const) {
     } else
       await cancelOpenJobs(sqliteDb(db), { itemId: "item", reason: "cancelled", now: clock.now() });
     const replacement = getJob(db, id);
-    expect(context.isCurrent()).toBe(false);
+    expect(await context.isCurrent()).toBe(false);
     expect(context.signal.aborted).toBe(true);
     expect(await context.extendLease()).toBe(false);
     finish();
@@ -240,7 +240,7 @@ test("a renewal after a pause keeps the job when nobody claimed it in the meanti
   const running = loop.tick();
   await started;
   clock.advance(45_000);
-  expect(context.isCurrent()).toBe(true);
+  expect(await context.isCurrent()).toBe(true);
   expect(await context.extendLease()).toBe(true);
   expect(claimNextJob(db, { workerId: "other", queues: ["work"], now: clock.now() })).toBeNull();
   finish();

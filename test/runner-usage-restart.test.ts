@@ -449,7 +449,7 @@ async function usageLimitScenario(
     worktreePath: worktree,
     pawsRoot: root,
     profile: { agent: "claude" as const, model: null },
-    resolveProfiles: () => ({ profile: { agent: selectedAgent, model: null } }),
+    resolveProfiles: async () => ({ profile: { agent: selectedAgent, model: null } }),
     onEvent: (event: { type: string; text?: string }) => {
       if (event.type === "progress" && event.text?.startsWith("Paused:")) {
         pauseEvents++;
