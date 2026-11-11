@@ -7,7 +7,7 @@ import {
   applyCommandRowsSteps,
   pauseFromLinearSteps,
   getWorkItemSteps,
-  takeOverItemAsync,
+  takeOverItem,
   submitCommandSteps,
   drainCommandsSteps,
 } from "../src/db";
@@ -80,7 +80,7 @@ forEachDialect((open) => {
           q.orm.update(q.t.workItem).set({ state: "failed" }).where(eq(q.t.workItem.id, "manual")),
         ),
       );
-      expect(await takeOverItemAsync(db, "manual", "Person", 13)).toEqual({ applied: true });
+      expect(await takeOverItem(db, "manual", "Person", 13)).toEqual({ applied: true });
       expect((await db.run((q) => getWorkItemSteps(q, "manual")))?.state).toBe("manual");
     } finally {
       await close();

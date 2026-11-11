@@ -96,7 +96,7 @@ describe("a closeout-help question blocked by an unreadable policy on main", () 
   test("records the cause and says Paws retries by itself", async () => {
     const db = database();
     const asked = await blockedOnMain(db, "ENG-1");
-    expect(listOpenPolicyBlocks(db, REPOSITORY)).toEqual([
+    expect(await listOpenPolicyBlocks(sqliteDb(db), REPOSITORY)).toEqual([
       {
         questionId: asked.id,
         itemId: "ENG-1",

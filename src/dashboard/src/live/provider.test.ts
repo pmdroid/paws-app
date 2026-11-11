@@ -816,8 +816,8 @@ describe("live status provider", () => {
       }),
       review.id,
     ]);
-    keepTaskMergeSettings(
-      db,
+    await keepTaskMergeSettings(
+      sqliteDb(db),
       review.id,
       {
         order: "ci-green",

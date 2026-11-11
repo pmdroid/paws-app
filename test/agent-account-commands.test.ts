@@ -118,7 +118,7 @@ test("an old runner keeps running the default sign-in and never receives a named
   const { db, now, runnerId, workspace, heartbeat, check, queued } = await fixture();
   expect(await heartbeat({ runnerVersion: "0.1.59" })).toBe(200);
   const legacy = await check();
-  expect(commandAccount(db, legacy)).toMatchObject({
+  expect(await commandAccount(sqliteDb(db), legacy)).toMatchObject({
     bindingId: `legacy_claude_${runnerId}`,
     accountId: `legacy_claude_${workspace}`,
     named: false,
@@ -160,7 +160,10 @@ test("an old runner keeps running the default sign-in and never receives a named
     }),
   ).toBe(200);
   const accepted = await check(named);
-  expect(commandAccount(db, accepted)).toMatchObject({ bindingId: binding.id, named: true });
+  expect(await commandAccount(sqliteDb(db), accepted)).toMatchObject({
+    bindingId: binding.id,
+    named: true,
+  });
   // Routine checks go to the runner one at a time: the named one follows the legacy one's result.
   expect(await queued()).toEqual([{ id: legacy, account: undefined }]);
   db.run(

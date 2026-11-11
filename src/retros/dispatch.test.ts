@@ -861,7 +861,7 @@ describe("agent account admission", () => {
          binding_id, named, recorded_at) VALUES ('other', 'ws', 'R1', 'codex', ?, ?, 0, ?)`,
       [accountId, binding.id, clock.now],
     );
-    expect(accountSlotsInUse(db, accountId, clock.now)).toBe(1);
+    expect(await accountSlotsInUse(sqliteDb(db), accountId, clock.now)).toBe(1);
     const dispatcher = open(db);
     await dispatcher.tick();
     expect(await dispatcher.generation("r1")).toMatchObject({
@@ -876,6 +876,6 @@ describe("agent account admission", () => {
     );
     await dispatcher.tick();
     expect(await dispatcher.generation("r1")).toMatchObject({ state: "generating", attempt: 1 });
-    expect(accountSlotsInUse(db, accountId, clock.now)).toBe(1);
+    expect(await accountSlotsInUse(sqliteDb(db), accountId, clock.now)).toBe(1);
   });
 });

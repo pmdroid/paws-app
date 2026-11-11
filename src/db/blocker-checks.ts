@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { eq, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 
 export function* recordBlockerChecksSteps(q: Q, itemIds: readonly string[], at: number) {
   const { itemBlockerCheck } = q.t;
@@ -17,8 +16,12 @@ export function* recordBlockerChecksSteps(q: Q, itemIds: readonly string[], at: 
     );
 }
 
-export function recordBlockerChecks(db: Database, itemIds: readonly string[], at: number): void {
-  settled(sqliteDb(db).transaction((q) => recordBlockerChecksSteps(q, itemIds, at)));
+export async function recordBlockerChecks(
+  store: Db,
+  itemIds: readonly string[],
+  at: number,
+): Promise<void> {
+  await store.transaction((q) => recordBlockerChecksSteps(q, itemIds, at));
 }
 
 export function* blockerCheckedAtSteps(q: Q, itemId: string) {
@@ -32,6 +35,6 @@ export function* blockerCheckedAtSteps(q: Q, itemId: string) {
   return row?.at ?? null;
 }
 
-export function blockerCheckedAt(db: Database, itemId: string): number | null {
-  return settled(sqliteDb(db).run((q) => blockerCheckedAtSteps(q, itemId)));
+export async function blockerCheckedAt(store: Db, itemId: string): Promise<number | null> {
+  return store.run((q) => blockerCheckedAtSteps(q, itemId));
 }

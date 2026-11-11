@@ -83,7 +83,7 @@ test("rejecting a carried head retires its source acceptance", async () => {
   migrate(db);
   insertQueuedItem(db, { id: "item" });
   await markCloseoutAccepted(sqliteDb(db), "item", "s");
-  recordCarriedAccept(db, {
+  await recordCarriedAccept(sqliteDb(db), {
     itemId: "item",
     head: "rebased",
     acceptedHead: "s",

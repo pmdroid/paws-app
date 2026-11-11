@@ -119,7 +119,9 @@ test("the fast relations poll unblocks an item whose blocker was removed in Line
   expect(listTaskBlockers(fixture.db, "acme-child")).toEqual([]);
   expect(fixture.executionReconciles()).toBe(1);
   expect(fixture.tracker.blockerReads).toEqual([["acme-child"]]);
-  expect(blockerCheckedAt(fixture.db, fixture.child.id)).toBe(10_000 + BLOCKED_RELATIONS_POLL_MS);
+  expect(await blockerCheckedAt(sqliteDb(fixture.db), fixture.child.id)).toBe(
+    10_000 + BLOCKED_RELATIONS_POLL_MS,
+  );
 });
 
 test("with nothing blocked the relations poll keeps five minutes and reads nothing fast", async () => {

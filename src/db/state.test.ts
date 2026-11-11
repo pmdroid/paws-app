@@ -885,15 +885,15 @@ describe("linear commands", () => {
     db.close();
   });
 
-  test("a take over ends the session with who took it and the manual title", () => {
+  test("a take over ends the session with who took it and the manual title", async () => {
     const { db, clock } = harness();
     insertQueuedItem(db, { id: "eng-9", sessionKey: "ses", now: clock.now() });
     const identifier = getWorkItem(db, "eng-9")!.linearIdentifier;
     beginImplementRun(db, "eng-9", clock.now());
-    expect(takeOverItem(db, "eng-9", "Ada", clock.now()).applied).toBe(false);
+    expect((await takeOverItem(sqliteDb(db), "eng-9", "Ada", clock.now())).applied).toBe(false);
     applyWorkItemEvent(db, "eng-9", "run_failed");
     const version = getWorkItem(db, "eng-9")!.version;
-    expect(takeOverItem(db, "eng-9", "Ada", clock.now()).applied).toBe(true);
+    expect((await takeOverItem(sqliteDb(db), "eng-9", "Ada", clock.now())).applied).toBe(true);
     expect(getWorkItem(db, "eng-9")).toMatchObject({ state: "manual" });
     expect(getWorkItem(db, "eng-9")!.version).toBeGreaterThan(version + 1);
     const stop = listOutbox(db).filter((row) => row.delivery === "stop");
