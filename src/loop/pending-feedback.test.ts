@@ -18,6 +18,8 @@ import {
   openDatabase,
   pendingPullComments,
   recordItemPullRequest,
+  sqliteDb,
+  syncSteps,
 } from "../db";
 import { REBASE_CONFLICT_INSTRUCTION, ciFixHandoff, returnToAgent } from "../merge";
 import { findOpenQuestion } from "../questions";
@@ -296,17 +298,17 @@ describe("a comment restart on a conflicting pull request", () => {
   });
 });
 
-test("the merge lane's rebase return carries the stored comment", () => {
+test("the merge lane's rebase return carries the stored comment", async () => {
   const h = setup("merge_queue");
   h.setBusy(true);
   h.inline(9801, "cursor[bot]", BOT_FINDING);
-  const returned = returnToAgent(h.db, {
+  const returned = await returnToAgent(sqliteDb(h.db), {
     itemId: "eng-1",
     reason: "rebase-conflict",
-    admit: () => true,
+    admit: () => syncSteps(() => true),
     handoff: REBASE_CONFLICT_INSTRUCTION,
     now: 2_000,
-    record: () => {},
+    record: () => syncSteps(() => {}),
     announce: () => {},
     restart: (item, handoff) =>
       restartWithFeedback(h.db, item, {
