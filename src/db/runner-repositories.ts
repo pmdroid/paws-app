@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
-import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
+import { type Db, type Q, type Steps } from "./db";
 import { emitJobReady, enqueueJobSteps } from "./jobs";
 import { wakeRunnerSlotWaitsSteps } from "./runner-capacity";
 import { jsonField, jsonText, jsonValue } from "./json-text";
@@ -157,24 +156,24 @@ export function* runnerRepositoryRefusalSteps(
   return null;
 }
 
-export function runnerRepositoryRefusal(
-  db: Database,
+export async function runnerRepositoryRefusal(
+  store: Db,
   runnerId: string,
   repository: string,
-): RunnerRepositoryRefusal | null {
-  return settled(sqliteDb(db).run((q) => runnerRepositoryRefusalSteps(q, runnerId, repository)));
+): Promise<RunnerRepositoryRefusal | null> {
+  return store.run((q) => runnerRepositoryRefusalSteps(q, runnerId, repository));
 }
 
 export function* runnerAllowsRepositorySteps(q: Q, runnerId: string, repository: string) {
   return (yield* runnerRepositoryRefusalSteps(q, runnerId, repository)) === null;
 }
 
-export function runnerAllowsRepository(
-  db: Database,
+export async function runnerAllowsRepository(
+  store: Db,
   runnerId: string,
   repository: string,
-): boolean {
-  return settled(sqliteDb(db).run((q) => runnerAllowsRepositorySteps(q, runnerId, repository)));
+): Promise<boolean> {
+  return store.run((q) => runnerAllowsRepositorySteps(q, runnerId, repository));
 }
 
 function* enqueueRepositoryCheckSteps(

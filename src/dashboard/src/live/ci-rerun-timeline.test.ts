@@ -9,6 +9,7 @@ import {
   migrate,
   openDatabase,
   recordCiRerun,
+  sqliteDb,
 } from "../../../db";
 import { parseIssueListResponse } from "../contract";
 import { handleStatusRequest } from "../engine";
@@ -27,7 +28,7 @@ test("the timeline shows the agent's CI re-run with its reason and run id", asyn
   insertQueuedItem(db, { id: "item" });
   beginImplementRun(db, "item", 1);
   const reason = "shard 3 hit its 12-minute limit in a test this change does not touch";
-  recordCiRerun(db, {
+  await recordCiRerun(sqliteDb(db), {
     itemId: "item",
     head: "d".repeat(40),
     runIds: [41474224082],

@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { eq, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 
 export function* blockLinearSessionCleanupSteps(q: Q, sessionId: string) {
   yield* q.exec(
@@ -24,6 +24,6 @@ export function* assertLinearSessionCleanupSteps(q: Q, sessionId?: string) {
   if (blocked) throw new Error("ACP process cleanup could not be verified");
 }
 
-export function assertLinearSessionCleanup(db: Database, sessionId?: string): void {
-  settled(sqliteDb(db).run((q) => assertLinearSessionCleanupSteps(q, sessionId)));
+export async function assertLinearSessionCleanup(store: Db, sessionId?: string): Promise<void> {
+  await store.run((q) => assertLinearSessionCleanupSteps(q, sessionId));
 }

@@ -390,7 +390,7 @@ describe("advanceMerge on failed CI while a review is required", () => {
     expect(pendingPullCiFailures(h.db, "ENG-131")[0]?.observedAt).toBe(observed);
     expect(feedbackJobs(h).map((job) => job.runAt)).toEqual([observed + 60_000]);
     expect(resumes(h)).toEqual([]);
-    expect(listCiRounds(h.db, "ENG-131")).toEqual([]);
+    expect(await listCiRounds(sqliteDb(h.db), "ENG-131")).toEqual([]);
     expect(getWorkItem(h.db, "ENG-131")?.state).toBe("merge_queue");
     expect(h.github.merged).toEqual([]);
   });
@@ -410,7 +410,7 @@ describe("advanceMerge on failed CI while a review is required", () => {
     expect(await h.pass("ENG-132")).toEqual({ kind: "merged" });
     expect(pendingPullCiFailures(h.db, "ENG-132")).toEqual([]);
     expect(h.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([item.accepted]);
-    expect(listCiRounds(h.db, "ENG-132")).toEqual([]);
+    expect(await listCiRounds(sqliteDb(h.db), "ENG-132")).toEqual([]);
   });
 
   test("pending or green CI waits for the review and records nothing; a moved head drops the failure", async () => {
@@ -433,7 +433,7 @@ describe("advanceMerge on failed CI while a review is required", () => {
     expect(await h.pass("ENG-133")).toMatchObject({ kind: "wait", reason: "review" });
     expect(pendingPullCiFailures(h.db, "ENG-133")).toEqual([]);
     expect(resumes(h)).toEqual([]);
-    expect(listCiRounds(h.db, "ENG-133")).toEqual([]);
+    expect(await listCiRounds(sqliteDb(h.db), "ENG-133")).toEqual([]);
   });
 });
 
@@ -448,7 +448,7 @@ describe("advanceMerge on a CI failure", () => {
     expect(resume?.reason).toBe("ci");
     expect(resume?.handoff).toContain(`End of the \`test\` log:\n\`\`\`\n${LOG_TAIL}\n\`\`\``);
     expect(h.bodies("status")).toContain("CI: `test` failed. Sent back to the agent, fix 1 of 3.");
-    const rounds = listCiRounds(h.db, "ENG-1");
+    const rounds = await listCiRounds(sqliteDb(h.db), "ENG-1");
     expect(rounds).toHaveLength(1);
     expect(rounds[0]).toMatchObject({ head: item.accepted, next: "agent", fix: 1, fixLimit: 3 });
     expect(rounds[0]?.runId).not.toBeNull();
@@ -504,7 +504,7 @@ describe("advanceMerge on a CI failure", () => {
       "The agent used all 1 fix round across Closeout, CI and review.",
     );
     expect(question.body).toContain("- test (https://ci.example/1)");
-    const rounds = listCiRounds(h.db, "ENG-1");
+    const rounds = await listCiRounds(sqliteDb(h.db), "ENG-1");
     expect(rounds.map((round) => [round.next, round.fix, round.fixLimit])).toEqual([
       ["agent", 1, 1],
       ["asked", null, 1],
@@ -581,7 +581,7 @@ describe("advanceMerge on cancelled CI jobs", () => {
         head: item.accepted,
       });
       expect(h.state.ciReruns).toEqual(["/repos/acme/app/actions/runs/900/rerun-failed-jobs"]);
-      expect(listCiReruns(h.db, "ENG-1")).toMatchObject([
+      expect(await listCiReruns(sqliteDb(h.db), "ENG-1")).toMatchObject([
         { head: item.accepted, runIds: [900], reason: "cancelled or timed-out CI job" },
       ]);
       expect(h.bodies("status")).toContain(
@@ -589,7 +589,7 @@ describe("advanceMerge on cancelled CI jobs", () => {
       );
       expect(getWorkItem(h.db, "ENG-1")?.state).toBe("merge_queue");
       expect(resumes(h)).toEqual([]);
-      expect(listCiRounds(h.db, "ENG-1")).toEqual([]);
+      expect(await listCiRounds(sqliteDb(h.db), "ENG-1")).toEqual([]);
 
       h.state.ci = () => undefined;
       expect(await passUntilMerged(h, "ENG-1")).toEqual({ kind: "merged" });
@@ -615,13 +615,13 @@ describe("advanceMerge on cancelled CI jobs", () => {
     h.state.ci = () => cancelledShard("CANCELLED", "FAILURE");
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
     expect(h.state.ciReruns).toEqual([]);
-    expect(listCiReruns(h.db, "ENG-1")).toEqual([]);
+    expect(await listCiReruns(sqliteDb(h.db), "ENG-1")).toEqual([]);
   });
 
   test("a head already re-run is not re-run again", async () => {
     const h = await start();
     const item = await h.addItem("ENG-1");
-    recordCiRerun(h.db, {
+    await recordCiRerun(sqliteDb(h.db), {
       itemId: "ENG-1",
       head: item.accepted,
       runIds: [899],

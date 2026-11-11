@@ -14,6 +14,7 @@ import {
   openDatabase,
   recordCiRound,
   recordRebaseReturn,
+  sqliteDb,
 } from "../src/db";
 import { legacyTempDb } from "./helpers";
 
@@ -122,12 +123,12 @@ test("a rebase return keeps the main commit, files and time it conflicted on", (
   }
 });
 
-test("CI fixes are counted from the CI rounds recorded after the latest user turn", () => {
+test("CI fixes are counted from the CI rounds recorded after the latest user turn", async () => {
   const db = legacyTempDb();
   try {
     insertItem(db, "item");
-    const round = (head: string, fix: number | null, recordedAt: number) =>
-      recordCiRound(db, {
+    const round = async (head: string, fix: number | null, recordedAt: number) =>
+      await recordCiRound(sqliteDb(db), {
         itemId: "item",
         head,
         runId: null,
@@ -137,16 +138,16 @@ test("CI fixes are counted from the CI rounds recorded after the latest user tur
         checks: [],
         recordedAt,
       });
-    round("h1", 1, 10);
-    round("h2", 2, 20);
-    expect(countCiFixes(db, "item", 0)).toBe(2);
-    round("h2", 3, 30);
-    expect(countCiFixes(db, "item", 0)).toBe(3);
+    await round("h1", 1, 10);
+    await round("h2", 2, 20);
+    expect(await countCiFixes(sqliteDb(db), "item", 0)).toBe(2);
+    await round("h2", 3, 30);
+    expect(await countCiFixes(sqliteDb(db), "item", 0)).toBe(3);
     const turn = userTurn(db, "item", 40);
-    expect(countCiFixes(db, "item", turn)).toBe(0);
-    round("h3", 1, 50);
-    round("h4", null, 60);
-    expect(countCiFixes(db, "item", turn)).toBe(1);
+    expect(await countCiFixes(sqliteDb(db), "item", turn)).toBe(0);
+    await round("h3", 1, 50);
+    await round("h4", null, 60);
+    expect(await countCiFixes(sqliteDb(db), "item", turn)).toBe(1);
   } finally {
     db.close();
   }

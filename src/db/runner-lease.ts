@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   and,
   eq,
@@ -20,7 +19,7 @@ import {
   RUNNER_OFFLINE_BUDGET_MS,
   runnerReleaseAtLeast,
 } from "../runner-protocol";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
 import { ownerGoneSteps } from "./instances";
 
 export { PAWS_ALIVE_LEASE_SKEW_MS };
@@ -248,13 +247,13 @@ export function* shiftRunnerLeasesForDowntimeSteps(
  * extended. A runner older than `OFFLINE_LEASE_RUNNER_VERSION` still stops at its own grace, so
  * its lease is not moved. Run inside the transaction that takes the runs over.
  */
-export function shiftRunnerLeasesForDowntime(
-  db: Database,
+export async function shiftRunnerLeasesForDowntime(
+  store: Db,
   now: number,
   budgetMs = RUNNER_OFFLINE_BUDGET_MS,
   self?: string,
-): void {
-  settled(sqliteDb(db).run((q) => shiftRunnerLeasesForDowntimeSteps(q, now, budgetMs, self)));
+): Promise<void> {
+  await store.run((q) => shiftRunnerLeasesForDowntimeSteps(q, now, budgetMs, self));
 }
 
 export function* runnerHoldsRunWorkSteps(q: Q, runId: string, now: number, cancelled = false) {
@@ -278,13 +277,13 @@ export function* runnerHoldsRunWorkSteps(q: Q, runId: string, now: number, cance
 }
 
 /** Open work still belongs to its run while leased or while a delivered result awaits import. */
-export function runnerHoldsRunWork(
-  db: Database,
+export async function runnerHoldsRunWork(
+  store: Db,
   runId: string,
   now: number,
   cancelled = false,
-): boolean {
-  return settled(sqliteDb(db).run((q) => runnerHoldsRunWorkSteps(q, runId, now, cancelled)));
+): Promise<boolean> {
+  return store.run((q) => runnerHoldsRunWorkSteps(q, runId, now, cancelled));
 }
 
 export function* runnerWorkHasResultSteps(q: Q, runId: string) {

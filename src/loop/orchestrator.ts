@@ -3242,8 +3242,8 @@ export class Orchestrator {
   private async repositoryBeforeSelection(item: WorkItemRecord): Promise<RepositoryBinding | null> {
     const bound = this.repositoryForItem(item);
     if (bound) return bound;
-    const candidates = listRepositoryCandidates(
-      this.db,
+    const candidates = await listRepositoryCandidates(
+      sqliteDb(this.db),
       item.sessionKey,
       this.options.repositories ?? [],
     );

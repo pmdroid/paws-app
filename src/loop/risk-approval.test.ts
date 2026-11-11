@@ -1161,7 +1161,7 @@ for (const scenario of ["clean", "P2", "missing security", "rules change", "off"
         head: heads.s,
         pull: { number: 1 },
         riskApproval: async () => (await display.read(f.itemId, heads.s))!.detail,
-        risk: getCandidateRisk(f.db, f.itemId, heads.s),
+        risk: await getCandidateRisk(sqliteDb(f.db), f.itemId, heads.s),
         openLine: "",
       });
       expect(body).toContain(expected);

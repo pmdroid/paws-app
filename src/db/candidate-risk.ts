@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { and, desc, eq } from "drizzle-orm";
 import type { RiskClassification, RiskMatch, RiskTier } from "../core";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 import { jsonValue, parsedJson } from "./json-text";
 import type { candidateRisk } from "./schema-pg";
 
@@ -53,8 +53,12 @@ export function* getCandidateRiskSteps(q: Q, itemId: string, head: string) {
   return row ? fromRow(q, row) : null;
 }
 
-export function getCandidateRisk(db: Database, itemId: string, head: string): CandidateRisk | null {
-  return settled(sqliteDb(db).run((q) => getCandidateRiskSteps(q, itemId, head)));
+export async function getCandidateRisk(
+  store: Db,
+  itemId: string,
+  head: string,
+): Promise<CandidateRisk | null> {
+  return store.run((q) => getCandidateRiskSteps(q, itemId, head));
 }
 
 /** Ties on `classified_at` go to the greater head SHA. */
@@ -72,8 +76,11 @@ export function* latestCandidateRiskSteps(q: Q, itemId: string) {
 }
 
 /** The most recently classified head of the item. */
-export function latestCandidateRisk(db: Database, itemId: string): CandidateRisk | null {
-  return settled(sqliteDb(db).run((q) => latestCandidateRiskSteps(q, itemId)));
+export async function latestCandidateRisk(
+  store: Db,
+  itemId: string,
+): Promise<CandidateRisk | null> {
+  return store.run((q) => latestCandidateRiskSteps(q, itemId));
 }
 
 function fromRow(q: Q, row: Row): CandidateRisk {

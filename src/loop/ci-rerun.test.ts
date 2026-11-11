@@ -1,6 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { getWorkItem, insertQueuedItem, listCiReruns, migrate, openDatabase } from "../db";
+import {
+  getWorkItem,
+  insertQueuedItem,
+  listCiReruns,
+  migrate,
+  openDatabase,
+  sqliteDb,
+} from "../db";
 import { CI_ALREADY_RERUN, CI_RERUN_PERMISSION_MISSING, type GitHubClient } from "../github";
 import { rerunItemCi } from "./ci-rerun";
 
@@ -84,7 +91,7 @@ test("the item records the agent's reason and refuses a second re-run of the sam
   expect(await rerun(db, github.client, journal, reason)).toContain("41545628595");
   expect(await rerun(db, github.client, journal, "again")).toBe(CI_ALREADY_RERUN);
   expect(github.posts).toEqual(["/repos/owner/repo/actions/runs/41545628595/rerun-failed-jobs"]);
-  expect(listCiReruns(db, "item")).toEqual([
+  expect(await listCiReruns(sqliteDb(db), "item")).toEqual([
     { itemId: "item", head, runIds: [41545628595], reason, at: 1_000 },
   ]);
   expect(journal).toEqual([
@@ -99,7 +106,7 @@ test("a 403 from GitHub answers with the permission message and leaves the item 
   const answer = await rerun(db, fakeGitHub(403).client, journal, "flaky shard");
   expect(answer.startsWith(CI_RERUN_PERMISSION_MISSING)).toBe(true);
   expect(answer).toContain("with status 403");
-  expect(listCiReruns(db, "item")).toEqual([]);
+  expect(await listCiReruns(sqliteDb(db), "item")).toEqual([]);
   expect(journal).toEqual([]);
   const after = getWorkItem(db, "item");
   expect(after?.state).toBe(before.state);

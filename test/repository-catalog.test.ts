@@ -9,6 +9,7 @@ import {
   listRepositoryCandidates,
   listRepositoryCatalog,
   refreshRepositoryCatalog,
+  sqliteDb,
 } from "../src/db";
 import {
   listAppRepositories,
@@ -145,7 +146,7 @@ test("the catalog is replaced on refresh and kept when a refresh fails", async (
       defaultBranch: "main",
     };
     expect(await refreshRepositoryCatalog(db, async () => [paws], 1)).toBe(true);
-    expect(listRepositoryCatalog(db)).toEqual([paws]);
+    expect(await listRepositoryCatalog(sqliteDb(db))).toEqual([paws]);
     expect(
       await refreshRepositoryCatalog(
         db,
@@ -155,9 +156,9 @@ test("the catalog is replaced on refresh and kept when a refresh fails", async (
         2,
       ),
     ).toBe(false);
-    expect(listRepositoryCatalog(db)).toEqual([paws]);
+    expect(await listRepositoryCatalog(sqliteDb(db))).toEqual([paws]);
     expect(await refreshRepositoryCatalog(db, async () => [], 3)).toBe(true);
-    expect(listRepositoryCatalog(db)).toEqual([]);
+    expect(await listRepositoryCatalog(sqliteDb(db))).toEqual([]);
   } finally {
     db.close();
   }
@@ -212,10 +213,10 @@ test("fresh workspace repository choices are available before catalog refresh an
     });
     const one = { owner: "acme", repo: "one", remoteUrl: "https://github.com/acme/one.git" };
     const two = { owner: "acme", repo: "two", remoteUrl: "https://github.com/acme/two.git" };
-    expect(listRepositoryCatalog(db)).toEqual([]);
-    expect(listRepositoryCandidates(db, "session", [])).toEqual([one, two]);
-    expect(listRepositoryCandidates(db, "unrelated-session", [])).toEqual([]);
-    expect(listRepositoryCandidates(db, null, [])).toEqual([]);
+    expect(await listRepositoryCatalog(sqliteDb(db))).toEqual([]);
+    expect(await listRepositoryCandidates(sqliteDb(db), "session", [])).toEqual([one, two]);
+    expect(await listRepositoryCandidates(sqliteDb(db), "unrelated-session", [])).toEqual([]);
+    expect(await listRepositoryCandidates(sqliteDb(db), null, [])).toEqual([]);
     await refreshRepositoryCatalog(db, async () => [
       { ...one, defaultBranch: "main" },
       {
@@ -225,11 +226,11 @@ test("fresh workspace repository choices are available before catalog refresh an
         defaultBranch: "main",
       },
     ]);
-    expect(listRepositoryCandidates(db, "session", [])).toEqual([one, two]);
+    expect(await listRepositoryCandidates(sqliteDb(db), "session", [])).toEqual([one, two]);
     db.run(
       "DELETE FROM workspace_repository WHERE workspace_id='ws' AND lower(repository)='acme/one'",
     );
-    expect(listRepositoryCandidates(db, "session", [one])).toEqual([two]);
+    expect(await listRepositoryCandidates(sqliteDb(db), "session", [one])).toEqual([two]);
   } finally {
     db.close();
   }
@@ -253,7 +254,7 @@ test("repository candidates preserve configured clone URLs and deduplicate catal
         defaultBranch: "main",
       },
     ]);
-    expect(listRepositoryCandidates(db, null, [configured, configured])).toEqual([
+    expect(await listRepositoryCandidates(sqliteDb(db), null, [configured, configured])).toEqual([
       configured,
       { owner: "acme", repo: "two", remoteUrl: "https://github.com/acme/two.git" },
     ]);

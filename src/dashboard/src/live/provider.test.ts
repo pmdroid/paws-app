@@ -1673,7 +1673,7 @@ describe("live status provider", () => {
       logTail,
       logSource: logTail === null ? null : ("actions" as const),
     });
-    recordCiRound(db, {
+    await recordCiRound(sqliteDb(db), {
       itemId: item.id,
       head: "a".repeat(40),
       runId: run.id,
@@ -1687,7 +1687,7 @@ describe("live status provider", () => {
       ],
       recordedAt: now + 1,
     });
-    recordCiRound(db, {
+    await recordCiRound(sqliteDb(db), {
       itemId: item.id,
       head: "b".repeat(40),
       runId: run.id,

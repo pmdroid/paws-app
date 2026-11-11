@@ -112,7 +112,7 @@ test("a setting saved on instance A is read by instance B after its next refresh
 test("once the table holds settings, config.toml supplies only what Settings does not own", async () => {
   const a = await instance(shared(), "ACME");
   writeFileSync(a.configPath, `${BOOTSTRAP}\n[queue]\nmax_running_per_owner = 2\n`);
-  updateSetting(a.db, CONFIG_SETTINGS_KEY, () => '[merge]\norder = "ci-green"\n');
+  await updateSetting(sqliteDb(a.db), CONFIG_SETTINGS_KEY, () => '[merge]\norder = "ci-green"\n');
   await a.refresh();
   const config = loadConfigFile(a.configPath);
   expect(readMergeSettings(config).default.order).toBe("ci-green");
@@ -121,14 +121,14 @@ test("once the table holds settings, config.toml supplies only what Settings doe
   expect(config.linearTeam).toBe("ACME");
 });
 
-test("a command without a running Paws, such as paws doctor, reads the saved settings", () => {
+test("a command without a running Paws, such as paws doctor, reads the saved settings", async () => {
   const home = tempHome();
   cleanups.push(() => rmSync(home, { recursive: true, force: true }));
   cleanups.push(useSavedSettings());
   writeFileSync(join(home, "config.toml"), BOOTSTRAP);
   const db = openDatabase(join(home, "paws.db"));
   migrate(db);
-  updateSetting(db, CONFIG_SETTINGS_KEY, () =>
+  await updateSetting(sqliteDb(db), CONFIG_SETTINGS_KEY, () =>
     [
       '[agents]\nimplementer = "codex"',
       '[agents.defaults.implementer]\nagent = "codex"',
@@ -149,14 +149,18 @@ test("a table-like line inside a multiline string is not read as a section", asy
   const a = await instance(shared(), "ACME");
   const template = "Summarise the issue.\n[example]\nKeep it short.\n";
   writeFileSync(a.configPath, `${BOOTSTRAP}\n[brief]\ntemplate = """\n${template}"""\n`);
-  updateSetting(a.db, CONFIG_SETTINGS_KEY, () => "[queue]\nmax_running_per_owner = 2\n");
+  await updateSetting(
+    sqliteDb(a.db),
+    CONFIG_SETTINGS_KEY,
+    () => "[queue]\nmax_running_per_owner = 2\n",
+  );
   await a.refresh();
   const text = readConfigText(a.configPath);
   expect(text).not.toContain("[example]");
   expect(parseBriefTemplates(text).template).toBe(null);
 
-  updateSetting(
-    a.db,
+  await updateSetting(
+    sqliteDb(a.db),
     CONFIG_SETTINGS_KEY,
     () => `[brief]\ntemplate = """\n${template}"""\n\n[queue]\nmax_running_per_owner = 2\n`,
   );
@@ -171,7 +175,7 @@ test("triple quotes in a comment or a one-line string do not hide later sections
       a.configPath,
       `[linear]\nteam = "ACME" # see ${quote}\nnote = "${quote === '"""' ? "'''" : '\\"\\"\\"'}"\n\n[caps]\nmax_awake_ms = 5400000\n\n[merge]\norder = "queue"\n`,
     );
-    updateSetting(a.db, CONFIG_SETTINGS_KEY, () => '[merge]\norder = "ci-green"\n');
+    await updateSetting(sqliteDb(a.db), CONFIG_SETTINGS_KEY, () => '[merge]\norder = "ci-green"\n');
     await a.refresh();
     const text = readConfigText(a.configPath);
     expect(text).not.toContain('order = "queue"');
@@ -184,7 +188,7 @@ test("config.toml sections the saved settings override are named, the rest are n
   const a = await instance(shared(), "ACME");
   writeFileSync(a.configPath, `${BOOTSTRAP}\n[merge.projects.abc]\nmain_moved = "ci"\n`);
   expect(overriddenConfigSections(a.configPath)).toEqual([]);
-  updateSetting(a.db, CONFIG_SETTINGS_KEY, () => '[merge]\norder = "ci-green"\n');
+  await updateSetting(sqliteDb(a.db), CONFIG_SETTINGS_KEY, () => '[merge]\norder = "ci-green"\n');
   await a.refresh();
   expect(overriddenConfigSections(a.configPath)).toEqual(["merge", "merge.projects.abc"]);
   expect(describeOverriddenSections(["merge"])).toBe(

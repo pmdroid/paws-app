@@ -360,7 +360,7 @@ describe("failed CI while a pull request waits for review", () => {
     expect(getPullCiFailure(h.db, "eng-1", HEAD)?.observedAt).toBe(observed);
     expect(resumes(h.db)).toEqual([]);
     expect(fixRounds(h.db, "eng-1")).toBe(0);
-    expect(listCiRounds(h.db, "eng-1")).toEqual([]);
+    expect(await listCiRounds(sqliteDb(h.db), "eng-1")).toEqual([]);
 
     h.tick(observed + 60_000 - h.now());
     expect(await h.runDue()).toEqual(["restarted"]);
@@ -370,7 +370,7 @@ describe("failed CI while a pull request waits for review", () => {
     expect(resume?.handoff).toContain("- test (https://ci.example/1)");
     expect(resume?.handoff).toContain(`End of the \`test\` log:\n\`\`\`\n${LOG}\n\`\`\``);
     expect(fixRounds(h.db, "eng-1")).toBe(1);
-    expect(listCiRounds(h.db, "eng-1")).toMatchObject([
+    expect(await listCiRounds(sqliteDb(h.db), "eng-1")).toMatchObject([
       { head: HEAD, next: "agent", fix: 1, fixLimit: 3 },
     ]);
     expect(thoughts(h.db)).toEqual(["CI: `test` failed. Sent back to the agent, fix 1 of 3."]);
@@ -434,7 +434,9 @@ describe("failed CI while a pull request waits for review", () => {
     expect(resume?.handoff).toContain(`End of the \`test\` log:`);
     expect(unreportedReviewReplies(h.db, "eng-1").map((reply) => reply.commentId)).toEqual([1, 2]);
     expect(fixRounds(h.db, "eng-1")).toBe(1);
-    expect(listCiRounds(h.db, "eng-1")).toMatchObject([{ head: HEAD, next: "agent", fix: 1 }]);
+    expect(await listCiRounds(sqliteDb(h.db), "eng-1")).toMatchObject([
+      { head: HEAD, next: "agent", fix: 1 },
+    ]);
   });
 
   test("CI during a burst of comments extends the quiet time, never past the longest wait", async () => {
@@ -505,7 +507,9 @@ describe("failed CI while a pull request waits for review", () => {
     expect(resume?.handoff).toContain(CI_REVIEW_WAIT_SOURCE);
     expect(resumes(h.db)).toHaveLength(1);
     expect(fixRounds(h.db, "eng-1")).toBe(1);
-    expect(listCiRounds(h.db, "eng-1")).toMatchObject([{ head: HEAD, next: "agent", fix: 1 }]);
+    expect(await listCiRounds(sqliteDb(h.db), "eng-1")).toMatchObject([
+      { head: HEAD, next: "agent", fix: 1 },
+    ]);
     expect(getPullCiFailure(h.db, "eng-1", HEAD)?.outcome).toBe("restarted");
   });
 
@@ -546,7 +550,7 @@ describe("failed CI while a pull request waits for review", () => {
     expect(await h.runDue()).toEqual(["done"]);
     expect(resumes(h.db)).toEqual([]);
     expect(fixRounds(h.db, "eng-1")).toBe(0);
-    expect(listCiRounds(h.db, "eng-1")).toEqual([]);
+    expect(await listCiRounds(sqliteDb(h.db), "eng-1")).toEqual([]);
   });
 
   test("with the fix rounds spent it asks once with budget_spent, and replays do not ask again", async () => {
@@ -561,7 +565,9 @@ describe("failed CI while a pull request waits for review", () => {
       "CI failed on the pull request (https://github.com/acme/one/pull/7)",
     );
     expect(question?.body).toContain("- test (https://ci.example/1)");
-    expect(listCiRounds(h.db, "eng-1")).toMatchObject([{ head: HEAD, next: "asked", fix: null }]);
+    expect(await listCiRounds(sqliteDb(h.db), "eng-1")).toMatchObject([
+      { head: HEAD, next: "asked", fix: null },
+    ]);
 
     await h.checkRun();
     h.tick(60_000);
@@ -599,7 +605,7 @@ describe("failed CI while a pull request waits for review", () => {
     expect(getPullCiFailure(h.db, "eng-1", HEAD)?.outcome).toBe("dropped");
     expect(resumes(h.db)).toEqual([]);
     expect(fixRounds(h.db, "eng-1")).toBe(0);
-    expect(listCiRounds(h.db, "eng-1")).toEqual([]);
+    expect(await listCiRounds(sqliteDb(h.db), "eng-1")).toEqual([]);
   });
 
   test("a head GitHub cannot return keeps the failure pending until the head is read", async () => {
@@ -638,7 +644,7 @@ describe("failed CI while a pull request waits for review", () => {
     expect(resume?.handoff).toContain("Rename the helper.");
     expect(resume?.handoff).not.toContain(CI_REVIEW_WAIT_SOURCE);
     expect(fixRounds(h.db, "eng-1")).toBe(1);
-    expect(listCiRounds(h.db, "eng-1")).toEqual([]);
+    expect(await listCiRounds(sqliteDb(h.db), "eng-1")).toEqual([]);
     expect(getPullCiFailure(h.db, "eng-1", HEAD)).toMatchObject({
       observedAt: observed,
       handledAt: null,
@@ -661,7 +667,7 @@ describe("failed CI while a pull request waits for review", () => {
     expect(await h.runDue()).toEqual(["restarted"]);
     expect(resumes(h.db).map((resume) => resume.reason)).toEqual(["review"]);
     expect(resumes(h.db)[0]?.handoff).not.toContain(CI_REVIEW_WAIT_SOURCE);
-    expect(listCiRounds(h.db, "eng-1")).toEqual([]);
+    expect(await listCiRounds(sqliteDb(h.db), "eng-1")).toEqual([]);
     expect(getPullCiFailure(h.db, "eng-1", HEAD)?.handledAt).toBeNull();
   });
 });

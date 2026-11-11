@@ -143,9 +143,13 @@ async function fixture() {
 
 test("a runner with no admin list and no host list allows any repository", async () => {
   const runner = await fixture();
-  expect(runnerAllowsRepository(runner.db, runner.runnerId, "acme/anything")).toBe(true);
+  expect(await runnerAllowsRepository(sqliteDb(runner.db), runner.runnerId, "acme/anything")).toBe(
+    true,
+  );
   await recordRunnerRepositories(sqliteDb(runner.db), runner.runnerId, null, runner.now);
-  expect(runnerAllowsRepository(runner.db, runner.runnerId, "acme/anything")).toBe(true);
+  expect(await runnerAllowsRepository(sqliteDb(runner.db), runner.runnerId, "acme/anything")).toBe(
+    true,
+  );
   expect(await runner.list()).toEqual({ admin: null, host: null });
 });
 
@@ -164,9 +168,15 @@ test("an admin list excludes a repository the host allows, matching case-insensi
     repositories: ["ACME/Paws"],
     now: runner.now,
   });
-  expect(runnerAllowsRepository(runner.db, runner.runnerId, "acme/paws")).toBe(true);
-  expect(runnerAllowsRepository(runner.db, runner.runnerId, "acme/looky")).toBe(false);
-  expect(runnerAllowsRepository(runner.db, runner.runnerId, "acme/other")).toBe(false);
+  expect(await runnerAllowsRepository(sqliteDb(runner.db), runner.runnerId, "acme/paws")).toBe(
+    true,
+  );
+  expect(await runnerAllowsRepository(sqliteDb(runner.db), runner.runnerId, "acme/looky")).toBe(
+    false,
+  );
+  expect(await runnerAllowsRepository(sqliteDb(runner.db), runner.runnerId, "acme/other")).toBe(
+    false,
+  );
 });
 
 test("a heartbeat does not change the admin list", async () => {
@@ -188,10 +198,14 @@ test("only admins save valid owner/repo names, and null restores all repositorie
     400,
   );
   expect(await runner.save(["acme/paws"])).toBe(200);
-  expect(runnerAllowsRepository(runner.db, runner.runnerId, "acme/looky")).toBe(false);
+  expect(await runnerAllowsRepository(sqliteDb(runner.db), runner.runnerId, "acme/looky")).toBe(
+    false,
+  );
   expect(await runner.save(null)).toBe(200);
   expect(await runner.list()).toEqual({ admin: null, host: null });
-  expect(runnerAllowsRepository(runner.db, runner.runnerId, "acme/looky")).toBe(true);
+  expect(await runnerAllowsRepository(sqliteDb(runner.db), runner.runnerId, "acme/looky")).toBe(
+    true,
+  );
   expect(
     runner.db
       .query("SELECT action FROM workspace_access_audit WHERE action='runner.repositories'")
