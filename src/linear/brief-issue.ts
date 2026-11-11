@@ -1,6 +1,7 @@
 import type { IssueBrief } from "../core";
 import type { TrackerRequestOptions } from "./adapter";
 import type { LinearClient } from "./graphql";
+import { projectOverviewFrom, projectOverviewText } from "./project-scope";
 import { isRecord, readString } from "./read";
 
 export type BriefIssueRead = {
@@ -15,7 +16,7 @@ const QUERY = `query BriefPreview($id: String!) {
     identifier
     title
     description
-    project { name content }
+    project { name content documents(first: 10, orderBy: updatedAt) { nodes { title content } } }
     parent { id identifier title description }
   }
 }`;
@@ -66,7 +67,5 @@ function issueBrief(record: Record<string, unknown>): IssueBrief | null {
 function projectOverview(value: unknown): string {
   if (value === null || value === undefined) return "";
   if (!isRecord(value)) throw new Error("Linear returned an invalid project.");
-  const name = readString(value, "name");
-  const content = readString(value, "content");
-  return name && content?.trim() ? `Project overview: ${name}\n\n${content}` : "";
+  return projectOverviewText(projectOverviewFrom(value));
 }

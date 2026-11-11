@@ -493,7 +493,6 @@ import type {
   RepositorySuggestion,
   LinearMergeContext,
   IntakeDecision,
-  ProjectOverview,
   LinearComment,
 } from "../linear";
 import {
@@ -508,6 +507,7 @@ import {
   linearCommentOf,
   linearSourceCommentId,
   parseLinearSessionContext,
+  projectOverviewText,
   renderLinearSessionContext,
 } from "../linear";
 import {
@@ -11078,10 +11078,6 @@ function closeActiveRun(
 ): void {
   const run = getRun(db, runId);
   if (run && run.status === "active") markRun(db, runId, status, now);
-}
-
-function projectOverviewText(overview: ProjectOverview | null): string {
-  return overview ? `Project overview: ${overview.name}\n\n${overview.content}` : "";
 }
 
 function inFlight(state: WorkItemRecord["state"]): boolean {

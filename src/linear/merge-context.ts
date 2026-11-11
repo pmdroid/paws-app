@@ -1,6 +1,7 @@
 import type { TrackerRequestOptions } from "./adapter";
 import type { LinearClient } from "./graphql";
 import { takeIssueStart, type IssueStartReads } from "./issue-start";
+import { projectOverviewFrom } from "./project-scope";
 import type { ProjectOverview } from "./project-scope";
 import { isRecord, readString } from "./read";
 
@@ -14,7 +15,7 @@ export type LinearMergeChoices = { projects: { id: string; name: string }[]; lab
 
 const ISSUE_QUERY = `query PawsMergeContext($id: String!) {
   issue(id: $id) {
-    project { id name content }
+    project { id name content documents(first: 10, orderBy: updatedAt) { nodes { title content } } }
     labels(first: 100) { nodes { name } }
   }
 }`;
@@ -44,12 +45,10 @@ export function createLinearMergeReads(client: LinearClient, starts?: IssueStart
       const issue = isRecord(data) ? data["issue"] : null;
       if (!isRecord(issue)) throw new Error("Linear returned no issue for merge settings");
       const project = isRecord(issue["project"]) ? issue["project"] : null;
-      const name = project ? readString(project, "name") : null;
-      const content = project ? readString(project, "content") : null;
       return {
         projectId: project ? readString(project, "id") : null,
         labels: nodes(issue["labels"]).flatMap((label) => readString(label, "name") ?? []),
-        overview: name && content?.trim() ? { name, content } : null,
+        overview: projectOverviewFrom(project),
       };
     },
     async mergeChoices(options?: TrackerRequestOptions): Promise<LinearMergeChoices> {
