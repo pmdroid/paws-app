@@ -303,7 +303,7 @@ async function scenario(
           merged: pulls.merged,
         });
       return (
-        (await handleStatusRequest(request, { db, env: {} })) ??
+        (await handleStatusRequest(request, { store: sqliteDb(db), env: {} })) ??
         new Response("Not found", { status: 404 })
       );
     },

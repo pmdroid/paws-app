@@ -14,7 +14,9 @@ describe("live status: a runner too old for a Closeout policy key", () => {
   test("the merge queue carries the recorded warning until it clears", async () => {
     const db = openDatabase(":memory:");
     migrate(db);
-    expect((await createLiveStatusProvider(db).mergeQueue()).policyRunnerWarnings).toEqual([]);
+    expect(
+      (await createLiveStatusProvider(sqliteDb(db)).mergeQueue()).policyRunnerWarnings,
+    ).toEqual([]);
     await savePolicyRunnerWarning(sqliteDb(db), {
       repository: "pmdroid/paws-app",
       policyDigest: DIGEST,
@@ -22,7 +24,9 @@ describe("live status: a runner too old for a Closeout policy key", () => {
       keys: [{ key: "items[].ci", needs: "0.1.49" }],
       checkedAt: Date.parse("2026-10-28T06:43:00.000Z"),
     });
-    expect((await createLiveStatusProvider(db).mergeQueue()).policyRunnerWarnings).toEqual([
+    expect(
+      (await createLiveStatusProvider(sqliteDb(db)).mergeQueue()).policyRunnerWarnings,
+    ).toEqual([
       {
         repository: "pmdroid/paws-app",
         policyDigest: DIGEST,
@@ -32,6 +36,8 @@ describe("live status: a runner too old for a Closeout policy key", () => {
       },
     ]);
     await clearPolicyRunnerWarning(sqliteDb(db), "pmdroid/paws-app");
-    expect((await createLiveStatusProvider(db).mergeQueue()).policyRunnerWarnings).toEqual([]);
+    expect(
+      (await createLiveStatusProvider(sqliteDb(db)).mergeQueue()).policyRunnerWarnings,
+    ).toEqual([]);
   });
 });

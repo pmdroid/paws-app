@@ -118,7 +118,7 @@ describe("status payload budget", () => {
 
     const get = async (path: string) => {
       const response = (await handleStatusRequest(new Request(`http://127.0.0.1${path}`), {
-        db,
+        store: sqliteDb(db),
         env: {},
         responseSizes: { record() {}, flush() {} },
       }))!;
@@ -140,7 +140,7 @@ describe("status payload budget", () => {
       CHECK_LOG_BUDGET_BYTES,
     );
 
-    const live = createLiveStatusProvider(db, { env: {} });
+    const live = createLiveStatusProvider(sqliteDb(db), { env: {} });
     const calls: string[] = [];
     const provider = {
       issues: async () => (calls.push("issues"), await live.issues()),
@@ -198,7 +198,7 @@ describe("evidence gallery budget", () => {
         });
     }
     const response = await handleStatusRequest(new Request("http://paws.test/api/evidence"), {
-      provider: createLiveStatusProvider(db),
+      provider: createLiveStatusProvider(sqliteDb(db)),
     });
     const body = await response!.text();
     expect(response!.status).toBe(200);
@@ -206,7 +206,7 @@ describe("evidence gallery budget", () => {
     expect(new TextEncoder().encode(body).byteLength).toBeLessThan(LIST_BUDGET_BYTES);
     const metadata = await handleStatusRequest(
       new Request(`http://paws.test/api/evidence/${"01J0000".padEnd(26, "Z")}/metadata`),
-      { provider: createLiveStatusProvider(db) },
+      { provider: createLiveStatusProvider(sqliteDb(db)) },
     );
     expect(metadata!.status).toBe(200);
     expect(Buffer.byteLength(await metadata!.text())).toBeLessThanOrEqual(

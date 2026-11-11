@@ -110,7 +110,10 @@ test("Merge at the time limit records one acceptance, no agent turn, and no runn
   ]);
 
   clock.advance(5 * MINUTE);
-  const provider = createLiveStatusProvider(db, { now: () => new Date(clock.now()), env: {} });
+  const provider = createLiveStatusProvider(sqliteDb(db), {
+    now: () => new Date(clock.now()),
+    env: {},
+  });
   const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(await provider.issues())));
   if (!parsed.ok) throw new Error(parsed.error);
   const times = parsed.response.issues.find((entry) => entry.id === itemId)!.stateTimes!;

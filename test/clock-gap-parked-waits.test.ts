@@ -43,7 +43,7 @@ type Wait = (typeof WAITS)[number];
 function boot(clock: Clock & { now(): number } = new FakeClock(1_000_000)) {
   const db = openDatabase(":memory:");
   migrate(db);
-  const host = new HostSupervisor(db, clock, new WakeDetector(clock), 250);
+  const host = new HostSupervisor(sqliteDb(db), clock, new WakeDetector(clock), 250);
   return { db, host };
 }
 
@@ -191,7 +191,7 @@ describe("a clock gap during a parked wait", () => {
           clock.sleep(TWO_HOURS + 1);
           clock.advance(1_000);
           expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([]);
-          const next = new HostSupervisor(db, clock, new WakeDetector(clock), 250);
+          const next = new HostSupervisor(sqliteDb(db), clock, new WakeDetector(clock), 250);
           await observe(db, next, clock.now());
           next.stop();
 

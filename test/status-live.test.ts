@@ -183,7 +183,7 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
 
     const read = async (path: string) => {
       const response = await handleStatusRequest(new Request(`http://127.0.0.1${path}`), {
-        db,
+        store: sqliteDb(db),
         env: {},
       });
       expect(response?.status).toBe(200);
@@ -239,7 +239,7 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
 
     const hidden = await handleStatusRequest(
       new Request("http://127.0.0.1/api/issues?engine=demo"),
-      { db, env: {} },
+      { store: sqliteDb(db), env: {} },
     );
     const demo = (await hidden?.json()) as { source: string };
     expect(demo.source).toBe("live");
@@ -257,7 +257,7 @@ test("each task on /api/issues carries the Linear requests it made", async () =>
     for (let request = 0; request < 3; request++)
       await countLinearRequest(sqliteDb(db), "item-1", "outbox");
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-      db,
+      store: sqliteDb(db),
       env: {},
     });
     const parsed = parseIssueListResponse(await response?.json());
@@ -275,7 +275,7 @@ test("an empty live overview asks the operator to delegate a Linear issue", asyn
   try {
     migrate(db);
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/overview"), {
-      db,
+      store: sqliteDb(db),
       env: {},
     });
     const parsed = parseOverviewResponse(await response?.json());
@@ -325,7 +325,7 @@ test("a merge-queue item whose re-verify waits for a runner slot says it is next
       now: NOW,
     });
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/merge-queue"), {
-      db,
+      store: sqliteDb(db),
       env: {},
     });
     const parsed = parseMergeQueueResponse(await response?.json());

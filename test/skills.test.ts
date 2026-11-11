@@ -103,7 +103,7 @@ function npmRegistry(releases: Record<string, Uint8Array>) {
 }
 
 function registry(resolver: SkillRegistry["resolver"], patch: Partial<SkillRegistry> = {}) {
-  return { db, root: join(root, "skills"), resolver, now: 1, ...patch };
+  return { store: sqliteDb(db), root: join(root, "skills"), resolver, now: 1, ...patch };
 }
 
 async function bundleFiles(path: string): Promise<Record<string, string>> {
@@ -722,9 +722,11 @@ describe("skill pins", () => {
 
   test("removing a skill marks it for removal on the runners", async () => {
     await addSkill(registry(fakeSkillResolver()), { kind: "npm", package: "impeccable" });
-    const removed = await removeSkill({ db, now: 5 }, "fake");
+    const removed = await removeSkill({ store: sqliteDb(db), now: 5 }, "fake");
     expect(removed.removedAt).toBe(5);
-    await expect(removeSkill({ db, now: 6 }, "fake")).rejects.toThrow("No skill named fake");
+    await expect(removeSkill({ store: sqliteDb(db), now: 6 }, "fake")).rejects.toThrow(
+      "No skill named fake",
+    );
   });
 
   test("a removed skill is forgotten once no runner reports it", async () => {
@@ -754,7 +756,7 @@ describe("skill pins", () => {
     ];
     await recordRunnerSkills(sqliteDb(db), "runner-1", installed, 2);
     await recordRunnerSkills(sqliteDb(db), "runner-2", installed, 2);
-    await removeSkill({ db, now: 5 }, "fake");
+    await removeSkill({ store: sqliteDb(db), now: 5 }, "fake");
     await recordRunnerSkills(sqliteDb(db), "runner-1", [], 6);
     expect((await getSkill(sqliteDb(db), "fake"))?.removedAt).toBe(5);
     await recordRunnerSkills(sqliteDb(db), "runner-2", [], 7);
@@ -779,7 +781,7 @@ type Listing = {
 describe("skill settings API", () => {
   const audit: [string, string][] = [];
   const options = (patch: Partial<SkillSettingsOptions> = {}): SkillSettingsOptions => ({
-    db,
+    store: sqliteDb(db),
     root: join(root, "skills"),
     resolver: fakeSkillResolver(),
     csrfToken: "csrf",

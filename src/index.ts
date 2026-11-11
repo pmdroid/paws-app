@@ -1342,7 +1342,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         }),
       findingIssues: createFindingIssueRoute({
         db,
-        reviews: (itemId) => itemReviews(db, itemId, paths.home, envSource),
+        reviews: (itemId) => itemReviews(store, itemId, paths.home, envSource),
         // Linear is called only when someone files an issue, never when the page loads.
         file: linear?.tracker?.fileFindingIssue
           ? (request, fileOptions) => linear.tracker!.fileFindingIssue!(request, fileOptions)
@@ -1357,7 +1357,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       },
       agentSettings: {
         applyToWaiting: async () => (await orchestrator?.applyAgentSettingsToWaiting()) ?? 0,
-        runnerReadiness: (agent) => activeRunnerReadiness(db, agent),
+        runnerReadiness: (agent) => activeRunnerReadiness(store, agent),
         ...(linear?.tracker?.readBriefIssue
           ? {
               readIssue: (identifier: string, signal: AbortSignal) =>
@@ -2128,7 +2128,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   lagTimer.unref();
   abort.signal.addEventListener("abort", () => clearInterval(lagTimer), { once: true });
   const host = startHost({
-    db,
+    store,
     clock: options?.hostClock,
     signal: abort.signal,
     stopAgent: (itemId) => {

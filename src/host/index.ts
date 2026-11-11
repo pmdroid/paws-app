@@ -1,5 +1,5 @@
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
+import type { Db } from "../db";
 import { systemClock, type Clock } from "../core";
 import { HostSupervisor } from "./supervisor";
 import { WakeDetector } from "./wake";
@@ -8,7 +8,7 @@ export { HostSupervisor } from "./supervisor";
 export { WakeDetector, type WakeSample } from "./wake";
 
 export function startHost(input: {
-  db: Database;
+  store: Db;
   signal: AbortSignal;
   clock?: Clock;
   pollMs?: number;
@@ -17,7 +17,7 @@ export function startHost(input: {
 }): { stop: () => void; supervisor: HostSupervisor } {
   const clock = input.clock ?? systemClock;
   const supervisor = new HostSupervisor(
-    input.db,
+    input.store,
     clock,
     new WakeDetector(clock),
     input.pollMs,

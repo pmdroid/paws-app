@@ -121,7 +121,11 @@ describe("dashboard resource cache", () => {
     }
     const resourceCache = createResourceCache({ now: () => 0 });
     const read = async (sessionIds: string[]) => {
-      const response = await handleStatusRequest(poll(), { db, resourceCache, sessionIds });
+      const response = await handleStatusRequest(poll(), {
+        store: sqliteDb(db),
+        resourceCache,
+        sessionIds,
+      });
       const body = (await response!.json()) as { pushOutages: Array<{ repository: string }> };
       return body.pushOutages.map((outage) => outage.repository).sort();
     };

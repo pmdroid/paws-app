@@ -1,7 +1,6 @@
 import { isWorkspaceAdmin } from "../workspace";
 import { journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
-import type { Database } from "bun:sqlite";
 import {
   HOOK_AGENTS,
   HOOK_EVENT_LABELS,
@@ -13,7 +12,7 @@ import {
   type HookEvent,
   type WorkspaceHook,
 } from "../core";
-import { deleteHookSteps, listHooksSteps, listSkillsSteps, saveHookSteps, sqliteDb } from "../db";
+import { deleteHookSteps, listHooksSteps, listSkillsSteps, saveHookSteps, type Db } from "../db";
 import {
   addUploadedSkill,
   SKILL_BUNDLE_LIMIT,
@@ -27,7 +26,7 @@ import { readSkillUpload } from "./upload";
 export const HOOK_SETTINGS_PATH = "/api/settings/hooks";
 
 export type HookSettingsOptions = {
-  db: Database;
+  store: Db;
   csrfToken: string;
   trustedOrigin?: string;
   /** The signed-in member's workspace role. Absent on a local Paws without workspaces. */
@@ -54,7 +53,7 @@ export async function handleHookSettingsRequest(
     return json({ error: "Hook settings are only available on the local Paws origin" }, 403);
   if (options.role !== undefined && !isWorkspaceAdmin(options.role))
     return json({ error: "Only workspace admins can change hooks." }, 403);
-  const store = sqliteDb(options.db);
+  const { store } = options;
   const skills = async () =>
     (await store.run(listSkillsSteps))
       .filter((skill) => skill.removedAt === null)
@@ -168,7 +167,7 @@ async function uploadHook(request: Request, options: HookSettingsOptions): Promi
   );
   const skill = await addUploadedSkill(
     {
-      db: options.db,
+      store: options.store,
       root: options.root,
       resolver: options.resolver,
       now: (options.now ?? Date.now)(),

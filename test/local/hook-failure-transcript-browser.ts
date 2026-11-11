@@ -49,7 +49,10 @@ writeFileSync(
       reason: "timed out after 10s",
     }),
 );
-const provider = createLiveStatusProvider(db, { pawsHome: root, sessionIds: ["hook-session"] });
+const provider = createLiveStatusProvider(sqliteDb(db), {
+  pawsHome: root,
+  sessionIds: ["hook-session"],
+});
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
@@ -57,7 +60,7 @@ const server = Bun.serve({
     return (
       (await handleStatusRequest(request, {
         provider,
-        db,
+        store: sqliteDb(db),
         closeoutHome: root,
         sessionIds: ["hook-session"],
       })) ?? new Response("Not found", { status: 404 })

@@ -1,14 +1,13 @@
-import type { Database } from "bun:sqlite";
 import type { AgentSettings, ImplementerName } from "../config";
-import { runnerAgentReadinessSteps, sqliteDb } from "../db";
+import { runnerAgentReadinessSteps, type Db } from "../db";
 
 export type RunnerReadiness = { name: string; ready: boolean };
 
 export function activeRunnerReadiness(
-  db: Database,
+  store: Db,
   agent: ImplementerName,
 ): Promise<RunnerReadiness[]> {
-  return sqliteDb(db).run((q) => runnerAgentReadinessSteps(q, agent));
+  return store.run((q) => runnerAgentReadinessSteps(q, agent));
 }
 
 export async function reviewerRunnerWarnings(

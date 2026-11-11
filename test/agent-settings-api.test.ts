@@ -547,12 +547,14 @@ describe("reviewer profile validation", () => {
       [expired],
     );
     db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [paused]);
-    expect(await activeRunnerReadiness(db, "codex")).toEqual([
+    expect(await activeRunnerReadiness(sqliteDb(db), "codex")).toEqual([
       { name: "blank", ready: false },
       { name: "expired", ready: false },
       { name: "ready", ready: true },
     ]);
-    expect((await activeRunnerReadiness(db, "claude")).every((entry) => !entry.ready)).toBe(true);
+    expect(
+      (await activeRunnerReadiness(sqliteDb(db), "claude")).every((entry) => !entry.ready),
+    ).toBe(true);
     db.close();
   });
 });

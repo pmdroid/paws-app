@@ -170,7 +170,7 @@ async function fixture() {
     )) as typeof fetch;
   const handler = () =>
     createHostedGitHubConnect({
-      db,
+      store: sqliteDb(db),
       home,
       env,
       origin: "https://paws.example",
@@ -211,7 +211,7 @@ async function fixture() {
     handler,
     setup: () =>
       createGitHubRepositorySetup({
-        db,
+        store: sqliteDb(db),
         home,
         env,
         origin: "https://paws.example",
@@ -358,7 +358,7 @@ test("hosted connection reports missing server credentials as JSON without chang
   const f = await fixture();
   try {
     const handler = createHostedGitHubConnect({
-      db: f.db,
+      store: sqliteDb(f.db),
       home: f.home,
       env: {},
       origin: "https://paws.example",

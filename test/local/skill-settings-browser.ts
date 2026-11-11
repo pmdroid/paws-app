@@ -4,7 +4,7 @@ import { chromium } from "@playwright/test";
 import { mkdtempSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { migrate, openDatabase } from "../../src/db";
+import { migrate, openDatabase, sqliteDb } from "../../src/db";
 import { handleSkillSettingsRequest } from "../../src/settings";
 import { addSkill, fakeSkillResolver } from "../../src/skills";
 
@@ -18,7 +18,7 @@ const resolver = fakeSkillResolver((request) => {
 });
 const skillsRoot = join(output, "skills");
 await addSkill(
-  { db, root: skillsRoot, resolver, now: Date.now() },
+  { store: sqliteDb(db), root: skillsRoot, resolver, now: Date.now() },
   { kind: "git", url: "https://github.com/pmdroid/skills.git", subfolder: "review-paws" },
   { agents: ["claude"] },
 );
@@ -52,7 +52,7 @@ const server = Bun.serve({
       });
     if (url.pathname === "/api/settings/skills")
       return (await handleSkillSettingsRequest(req, {
-        db,
+        store: sqliteDb(db),
         root: skillsRoot,
         resolver,
         csrfToken: "synthetic-csrf",

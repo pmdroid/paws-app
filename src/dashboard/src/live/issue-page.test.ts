@@ -107,7 +107,7 @@ type Status = {
 };
 
 async function snapshotOf(db: Database): Promise<Status> {
-  const provider = createLiveStatusProvider(db, {
+  const provider = createLiveStatusProvider(sqliteDb(db), {
     now: () => new Date(T0 + 300_000),
     env: {},
   });
@@ -179,7 +179,7 @@ describe("one page per issue", () => {
   test("an old Conversations URL resolves to the issue page from stored records", async () => {
     const db = database();
     await threeRuns(db);
-    const provider = createLiveStatusProvider(db, { env: {} });
+    const provider = createLiveStatusProvider(sqliteDb(db), { env: {} });
     expect(parseRoute(`/sessions/${encodeURIComponent(SESSION)}`)).toEqual({
       view: "alias",
       kind: "sessions",
@@ -194,7 +194,7 @@ describe("one page per issue", () => {
   test("run, session and verdict links resolve to PAS-367", async () => {
     const db = database();
     const runIds = await threeRuns(db);
-    const provider = createLiveStatusProvider(db, { env: {} });
+    const provider = createLiveStatusProvider(sqliteDb(db), { env: {} });
     for (const id of runIds) expect(await provider.alias("runs", id)).toBe("PAS-367");
     expect(await provider.alias("verdicts", "PAS-367")).toBe("PAS-367");
     expect(await provider.alias("verdicts", runIds[0]!)).toBe("PAS-367");
@@ -233,7 +233,7 @@ describe("one page per issue", () => {
     expect(html).not.toContain("earlier-attempt");
     expect(html).not.toContain("Earlier attempt");
     expect(html).not.toContain("Earlier session turn.");
-    const provider = createLiveStatusProvider(db, { env: {} });
+    const provider = createLiveStatusProvider(sqliteDb(db), { env: {} });
     expect(await provider.alias("sessions", "earlier-session")).toBe("PAS-367");
     expect(await provider.alias("runs", old.id)).toBe("PAS-367");
   });
@@ -250,9 +250,9 @@ describe("one page per issue", () => {
     expect(own).toContain('shared with <a class="lin-id" href="/issues/PAS-368">PAS-368</a>');
     expect(sibling).toContain('shared with <a class="lin-id" href="/issues/PAS-367">PAS-367</a>');
     expect(sibling).not.toContain("First turn read the issue.");
-    expect(await createLiveStatusProvider(db, { env: {} }).alias("sessions", SESSION)).toBe(
-      "PAS-367",
-    );
+    expect(
+      await createLiveStatusProvider(sqliteDb(db), { env: {} }).alias("sessions", SESSION),
+    ).toBe("PAS-367");
   });
 
   test("the page names the task only as PAS-367, with no internal id in visible text", async () => {

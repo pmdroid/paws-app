@@ -63,7 +63,7 @@ test("one Linear session shows as one run with every attempt in its timeline", a
       });
 
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-      db,
+      store: sqliteDb(db),
       env: {},
     });
     const parsed = parseIssueListResponse(await response?.json());
@@ -89,14 +89,14 @@ test("one Linear session shows as one run with every attempt in its timeline", a
 
     const alias = await handleStatusRequest(
       new Request(`http://127.0.0.1/api/aliases/runs/${review.id}`),
-      { db, env: {} },
+      { store: sqliteDb(db), env: {} },
     );
     expect(await alias?.json()).toEqual({ issueId: "ENG-7" });
     const route = parseRoute("/issues/ENG-7");
     const itemResponse = await handleStatusRequest(
       new Request("http://127.0.0.1/api/issues/ENG-7"),
       {
-        db,
+        store: sqliteDb(db),
         env: {},
       },
     );
@@ -156,7 +156,7 @@ test("a reply in the Linear session shows in the run's timeline with its author,
     await applyLinearTurns(sqliteDb(db), "ses_8", ["reply-1"], item.id);
 
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-      db,
+      store: sqliteDb(db),
       env: {},
     });
     const parsed = parseIssueListResponse(await response?.json());
@@ -191,7 +191,7 @@ test("a Closeout re-check shows as a re-check, not as a review by the reviewer a
     });
     await setCurrentRun(sqliteDb(db), item.id, recheck.id);
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-      db,
+      store: sqliteDb(db),
       env: {},
     });
     const parsed = parseIssueListResponse(await response?.json());

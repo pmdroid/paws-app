@@ -98,7 +98,7 @@ function issueUpdate(stateType: string, updatedFrom: Record<string, unknown> = {
 test("a failed task whose issue moves to Done leaves Needs a person and completes its session without reading Linear", async () => {
   const f = await fixture();
   await applyWorkItemEvent(sqliteDb(f.db), f.item.id, "start_timed_out");
-  const status = createLiveStatusProvider(f.db);
+  const status = createLiveStatusProvider(sqliteDb(f.db));
   const needsPerson = async () =>
     (await status.issues()).issues
       .filter((item) => item.state === "needs_human")

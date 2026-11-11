@@ -254,7 +254,7 @@ test.each([false, true, "cap"] as const)(
       expect(tracker.progress.at(-1)?.body).toBe("Step 1 of 1: Repair missing output.");
       const response = await handleStatusRequest(
         new Request("http://localhost/api/issues/ENG-302"),
-        { db },
+        { store: sqliteDb(db) },
       );
       const parsed = parseIssueDetailResponse(await response!.json());
       expect(parsed.ok).toBe(true);
@@ -3515,7 +3515,7 @@ async function runGitHubQueue(
       const pull = [...pulls.values()][0] ?? 0;
       if (pull > 0 && queue.isQueued(pull)) {
         const response = await handleStatusRequest(new Request("http://localhost/api/issues"), {
-          db,
+          store: sqliteDb(db),
         });
         const parsed = parseIssueListResponse(await response!.json());
         if (!parsed.ok) throw new Error("Invalid issue list");

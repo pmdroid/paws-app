@@ -579,7 +579,7 @@ describe("daily findings share legacy claims", () => {
         body: JSON.stringify({ action: "file", id: groupId }),
       }),
       {
-        db: w.db,
+        store: sqliteDb(w.db),
         principal: w.people["bea"]!,
         sessionIds: ONLY_A,
         services: {
@@ -629,7 +629,7 @@ describe("legacy dismissal after an inbox accept", () => {
         method: "POST",
         body: JSON.stringify({ action: "dismiss", id: groupId, reason: "Noise" }),
       }),
-      { db: w.db, principal: w.people["bea"]!, sessionIds: ONLY_A },
+      { store: sqliteDb(w.db), principal: w.people["bea"]!, sessionIds: ONLY_A },
     );
     expect(group!.status).toBe(409);
     const single = await handleFindingsRequest(
@@ -637,7 +637,7 @@ describe("legacy dismissal after an inbox accept", () => {
         method: "POST",
         body: JSON.stringify({ action: "dismiss", id: findings[0]!.id, reason: "Noise" }),
       }),
-      { db: w.db, principal: w.people["bea"]!, sessionIds: ONLY_A },
+      { store: sqliteDb(w.db), principal: w.people["bea"]!, sessionIds: ONLY_A },
     );
     expect(single!.status).toBe(409);
     expect((await listReviewFindings(sqliteDb(w.db))).every((f) => f.status === "open")).toBe(true);
@@ -767,7 +767,7 @@ describe("individual finding issues share the inbox claim", () => {
         method: "POST",
         body: JSON.stringify({ action: "dismiss", id: groupId, reason: "Noise" }),
       }),
-      { db: w.db, principal: w.people["bea"]!, sessionIds: ONLY_A },
+      { store: sqliteDb(w.db), principal: w.people["bea"]!, sessionIds: ONLY_A },
     );
     expect(dismissed!.status).toBe(200);
     const { post } = await route(w);

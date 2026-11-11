@@ -1,5 +1,4 @@
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
   authorizeHostedGitHubUser,
@@ -28,7 +27,7 @@ import {
   updateGithubOAuthIntentSteps,
   listWorkspaceRepositoriesSteps,
   replaceWorkspaceRepositoriesSteps,
-  sqliteDb,
+  type Db,
   type Q,
 } from "../db";
 import { readWorkspaceJson, requestWorkspaceSessionSteps, validWorkspaceCsrf } from "../workspace";
@@ -54,7 +53,7 @@ type Secret = {
 };
 
 export function createGitHubRepositorySetup(options: {
-  db: Database;
+  store: Db;
   home: string;
   env: Record<string, string | undefined>;
   origin: string;
@@ -65,8 +64,7 @@ export function createGitHubRepositorySetup(options: {
   fetch?: typeof fetch;
   now?: () => number;
 }) {
-  const { db } = options;
-  const store = sqliteDb(db);
+  const { store } = options;
   const now = options.now ?? Date.now;
   const http = options.fetch ?? fetch;
   const activation = createWorkspaceGitHubActivation(store, options.home, options.env);

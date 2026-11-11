@@ -1,12 +1,11 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
-import type { Database } from "bun:sqlite";
 import {
   getWorkItemRepositorySteps,
   listCloseoutProgressSteps,
   reviewFindingIssuesSteps,
   reviewFindingKey,
-  sqliteDb,
+  type Db,
   type CloseoutProgressRecord,
   type CloseoutStepRecord,
 } from "../../../db";
@@ -102,13 +101,12 @@ export function reviewsOf(
  * it on any item. Reads the database only; Linear is called when someone files an issue.
  */
 export async function itemReviews(
-  db: Database,
+  store: Db,
   itemId: string,
   pawsHome: string,
   env: NodeJS.ProcessEnv,
   progress?: readonly CloseoutProgressRecord[],
 ): Promise<StatusReview[]> {
-  const store = sqliteDb(db);
   const reviews = reviewsOf(
     (progress ?? (await store.run(listCloseoutProgressSteps))).filter(
       (row) => row.itemId === itemId,
