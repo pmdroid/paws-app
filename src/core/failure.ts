@@ -131,6 +131,7 @@ export class AgentHungError extends Error {
     readonly runnerId: string,
     readonly runIds: readonly string[],
     readonly hangs: number,
+    readonly minutes: number,
   ) {
     super(
       `The agent hung ${hangs} times in a row after its first tool call on runner ${runnerId} (runs ${runIds.join(", ")}).`,

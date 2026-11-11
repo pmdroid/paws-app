@@ -2318,7 +2318,7 @@ export function createRemoteAgentRunner(options: {
                     `item ${itemId} run ${assigned.runId} generation ${assigned.generation} hung on runner ${selected.id} after ${minutes} minutes: ${hangs.count} consecutive hangs, asking the team`,
                   );
                   await cancelItem(itemId, signal);
-                  throw new AgentHungError(selected.id, hangs.runIds, hangs.count);
+                  throw new AgentHungError(selected.id, hangs.runIds, hangs.count, minutes);
                 }
                 if (!recovered?.retryable) throw new Error(RUN_LOST_MESSAGE);
                 throw await lostRun(

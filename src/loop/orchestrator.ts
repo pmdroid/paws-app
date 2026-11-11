@@ -4064,9 +4064,9 @@ export class Orchestrator {
             current,
             error instanceof LinearRateLimitError ? error.retryAfterMs : 0,
           );
-        else if (error instanceof AgentHungError && current.state === "running")
-          await this.askAgentHung(current, run.id, error);
-        else if (isTransient(error) || slotsBusy(error)) {
+        else if (error instanceof AgentHungError) {
+          if (current.state === "running") await this.askAgentHung(current, run.id, error);
+        } else if (isTransient(error) || slotsBusy(error)) {
           deferred = true;
           capacityWaiting = capacityWaitIn(error) !== null;
           throw error;
@@ -4938,7 +4938,7 @@ export class Orchestrator {
       await this.fail(item, "run_error", error.message, error);
       return;
     }
-    const body = `The agent on runner ${error.runnerId} hung after its first tool call ${error.hangs} times in a row for ${item.linearIdentifier}: the runner kept confirming the command, but the agent sent nothing for 45 minutes. Runs: ${error.runIds.join(", ")}. Paws stopped retrying. Retry once, or stop?`;
+    const body = `The agent on runner ${error.runnerId} hung after its first tool call ${error.hangs} times in a row for ${item.linearIdentifier}: the runner kept confirming the command, but the agent sent nothing for ${error.minutes} minutes. Runs: ${error.runIds.join(", ")}. Paws stopped retrying. Retry once, or stop?`;
     const now = this.now();
     await this.store.transaction(function* (q) {
       const version = (yield* getWorkItemSteps(q, item.id))?.version;

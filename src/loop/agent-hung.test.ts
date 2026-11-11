@@ -64,7 +64,7 @@ async function askHung(answer: string) {
       now: clock.now(),
     }),
   );
-  expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
+  expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("awaiting_input");
   expect((await listJobs(sqliteDb(db))).filter((job) => job.status === "pending")).toEqual([]);
   clock.advance(60_000);
   const outcome = await sqliteDb(db).transaction((q) =>
@@ -77,11 +77,14 @@ async function askHung(answer: string) {
         answeredBy: "pascal",
         now: clock.now(),
       },
-      questionEffects(db, { now: clock.now() }),
+      questionEffects(sqliteDb(db), { now: clock.now() }),
     ),
   );
   expect(outcome.status).toBe("answered");
-  return { state: getWorkItem(db, item.id)?.state, jobs: await listJobs(sqliteDb(db)) };
+  return {
+    state: (await getWorkItem(sqliteDb(db), item.id))?.state,
+    jobs: await listJobs(sqliteDb(db)),
+  };
 }
 
 test("Retry on a hung agent restarts the item once", async () => {
