@@ -174,14 +174,14 @@ export default {
     const asked = await proof.waitFor(
       "the question is asked and the item waits for input",
       async () =>
-        (await proof.itemState()) === "awaiting_input" && proof.heldWork().activeRuns === 0,
+        (await proof.itemState()) === "awaiting_input" && (await proof.heldWork()).activeRuns === 0,
     );
     proof.expect(
       "the implement turn asks the question in Linear",
       proof.linear.questions.some((question) => question.body.includes(QUESTION)),
       proof.linear.questions,
     );
-    const held = proof.heldWork();
+    const held = await proof.heldWork();
     proof.expect(
       "the item goes to awaiting_input and its slot is freed",
       asked && held.activeRuns === 0 && held.reservations === 0 && held.runningJobs === 0,

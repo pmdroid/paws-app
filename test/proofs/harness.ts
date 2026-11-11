@@ -10,10 +10,13 @@ import {
   OutboxDispatcher,
   listWorkItemEventRows,
   listWorkItemsByStates,
-  migrate,
-  openDatabase,
-  sqliteDb,
+  openPawsStore,
+  type Db,
+  type Q,
 } from "../../src/db";
+import { pawsPaths } from "../../src/config";
+import { count as countRows, inArray, eq, type SQL } from "drizzle-orm";
+import type { PgTable } from "drizzle-orm/pg-core";
 import { createFakeTracker, type AcceptedLinearEvent, type FakeTracker } from "../../src/linear";
 import {
   createFakeGitHub,
@@ -227,7 +230,7 @@ export const ACME = {
 export type Assertion = { name: string; passed: boolean; observed: unknown };
 
 export type ProofContext = {
-  database: ReturnType<typeof openDatabase>;
+  store: Db;
   linear: FakeTracker;
   github: ReturnType<typeof fixtureGitHub>;
   launches: LaunchInput[];
@@ -239,9 +242,9 @@ export type ProofContext = {
   originMainLog(): Promise<string[]>;
   /** Someone else pushes a commit to origin main. */
   pushToMain(path: string, content: string, message: string): Promise<void>;
-  storedReviewFindings(): number;
+  storedReviewFindings(): Promise<number>;
   closeoutReports(): string[];
-  heldWork(): { activeRuns: number; reservations: number; runningJobs: number };
+  heldWork(): Promise<{ activeRuns: number; reservations: number; runningJobs: number }>;
   ageCandidate(): Promise<boolean>;
   delegate(): Promise<void>;
   answerInLinear(answer: string): Promise<void>;
@@ -314,8 +317,11 @@ export async function runProof(name: string, proof: Proof, dir: string) {
     ciPending: proof.ciPending,
     noCi: proof.noCi,
   });
-  const db = openDatabase(join(pawsRoot, "paws.db"));
-  migrate(db);
+  const database = await openPawsStore({
+    url: process.env.PAWS_DATABASE_URL ?? null,
+    pgliteDir: pawsPaths(pawsRoot).pgliteDir,
+  });
+  const db = database.store;
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const { launch, launches } = scriptedAgent(dir, pawsRoot, proof.agent);
@@ -324,7 +330,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
     ...(proof.reviewer
       ? { closeoutGate: (options) => createCloseoutGate({ ...options, reviewer: proof.reviewer! }) }
       : {}),
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -343,15 +349,17 @@ export async function runProof(name: string, proof: Proof, dir: string) {
   });
   const actions: { at: string; action: string }[] = [];
   const assertions: Assertion[] = [];
-  const items = async () => await listWorkItemsByStates(sqliteDb(db), WORK_ITEM_STATES);
+  const items = async () => await listWorkItemsByStates(db, WORK_ITEM_STATES);
   const transitions = async () => {
     const rows = [];
     for (const item of await items())
-      for (const row of await listWorkItemEventRows(sqliteDb(db), item.id))
+      for (const row of await listWorkItemEventRows(db, item.id))
         rows.push({ item: item.id, from: row.fromState, to: row.toState, event: row.event });
     return rows;
   };
-  const count = (query: string) => (db.query(query).get() as { n: number }).n;
+  const count = async (table: (q: Q) => PgTable, where?: (q: Q) => SQL) =>
+    (await db.run((q) => q.one(q.orm.select({ n: countRows() }).from(table(q)).where(where?.(q)))))
+      ?.n ?? 0;
   const event = (action: "created" | "prompted", extra: Partial<AcceptedLinearEvent> = {}) =>
     orchestrator.onLinearEvent({
       dedupeKey: `proof-${action}-${actions.length}`,
@@ -372,7 +380,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
     console.log(`ACT ${action}`);
   };
   const context: ProofContext = {
-    database: db,
+    store: db,
     linear,
     github,
     launches,
@@ -394,23 +402,29 @@ export async function runProof(name: string, proof: Proof, dir: string) {
       await git("-C", seed, "commit", "-q", "-m", message);
       await git("-C", seed, "push", "-q", "origin", "HEAD:main");
     },
-    storedReviewFindings: () => count("SELECT count(*) AS n FROM review_finding"),
+    storedReviewFindings: () => count((q) => q.t.reviewFinding),
     closeoutReports: () =>
       launches.flatMap((_, index) => {
         const file = join(dir, `agent-${index + 1}-result.json`);
         if (!existsSync(file)) return [];
         return (JSON.parse(readFileSync(file, "utf8")) as { closeouts?: string[] }).closeouts ?? [];
       }),
-    heldWork: () => ({
-      activeRuns: count("SELECT count(*) AS n FROM run WHERE status IN ('active', 'provisioning')"),
-      reservations: count("SELECT count(*) AS n FROM runner_reservation"),
-      runningJobs: count("SELECT count(*) AS n FROM job WHERE status = 'running'"),
+    heldWork: async () => ({
+      activeRuns: await count(
+        (q) => q.t.run,
+        (q) => inArray(q.t.run.status, ["active", "provisioning"]),
+      ),
+      reservations: await count((q) => q.t.runnerReservation),
+      runningJobs: await count(
+        (q) => q.t.job,
+        (q) => eq(q.t.job.status, "running"),
+      ),
     }),
     async ageCandidate() {
       const item = (await items())[0];
-      const candidate = item && (await getItemCandidate(sqliteDb(db), item.id));
+      const candidate = item && (await getItemCandidate(db, item.id));
       if (!candidate) return false;
-      await recordItemCandidate(sqliteDb(db), {
+      await recordItemCandidate(db, {
         ...candidate,
         recordedAt: Date.now() - 6 * 60_000,
       });
@@ -436,7 +450,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
       act(`Move ${ACME.identifier} to Canceled in Linear`);
       linear.issueStateTypes.set(ACME.issueId, "canceled");
       await closeClosedIssueTasks(
-        sqliteDb(db),
+        db,
         {
           issueId: ACME.issueId,
           organizationId: null,
@@ -499,7 +513,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
     transitions: await transitions(),
     assertions,
   };
-  db.close();
+  await database.close();
   return result;
 }
 
