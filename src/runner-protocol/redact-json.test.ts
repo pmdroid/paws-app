@@ -2,15 +2,11 @@ import { expect, test } from "bun:test";
 import { redactedJson, redactGitHubTokens } from "./activity";
 
 test("a quoted token-shaped string in agent output still serializes to valid JSON", () => {
-  const event = {
-    type: "acp",
-    output: 'return Response.json({ access_token: "ghu_fixtureIdentityOnly", scope });',
-  };
-  const line = redactedJson(event);
-  expect(JSON.parse(line)).toEqual({
-    type: "acp",
-    output: 'return Response.json({ access_token: "[redacted]", scope });',
-  });
+  const fixture = 'return Response.json({ access_token: "ghu_fixtureIdentityOnly", scope });';
+  expect(JSON.parse(redactedJson({ type: "acp", output: fixture })).output).toBe(fixture);
+  const token = `ghu_${"x".repeat(36)}`;
+  const line = redactedJson({ type: "acp", output: `access_token: "${token}"` });
+  expect(JSON.parse(line).output).toBe('access_token: "[redacted]"');
 });
 
 test("an exact read token holding JSON-escaped characters is redacted, not left in the line", () => {
