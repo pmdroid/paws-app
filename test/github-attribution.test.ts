@@ -435,11 +435,13 @@ test("the Settings link returns to Settings, and a forged return_path never leav
       f.db.run("UPDATE github_attribution_request SET return_path='https://evil.example/'"),
     ).toThrow();
     expect(
-      consumeGitHubAttributionRequest(f.db, binding(f), {
-        stateHash: "s".repeat(43),
-        browserHash: "b".repeat(43),
-        now: f.now,
-      }).returnPath,
+      (
+        await consumeGitHubAttributionRequest(sqliteDb(f.db), binding(f), {
+          stateHash: "s".repeat(43),
+          browserHash: "b".repeat(43),
+          now: f.now,
+        })
+      ).returnPath,
     ).toBe(onboarding);
   } finally {
     await f.close();

@@ -118,12 +118,12 @@ export function beginGitHubAttribution(
 
 type ConsumeInput = { stateHash: string; browserHash: string; now: number };
 
-export function consumeGitHubAttribution(
+export async function consumeGitHubAttribution(
   db: Database,
   binding: AttributionBinding,
   input: ConsumeInput,
-): number {
-  return consumeGitHubAttributionRequest(db, binding, input).revision;
+): Promise<number> {
+  return (await consumeGitHubAttributionRequest(sqliteDb(db), binding, input)).revision;
 }
 
 export function* consumeGitHubAttributionRequestSteps(
@@ -153,14 +153,12 @@ export function* consumeGitHubAttributionRequestSteps(
 }
 
 /** Uses up one pending link and says where its callback returns. */
-export function consumeGitHubAttributionRequest(
-  db: Database,
+export async function consumeGitHubAttributionRequest(
+  store: Db,
   binding: AttributionBinding,
   input: ConsumeInput,
-): { revision: number; returnPath: string } {
-  return settled(
-    sqliteDb(db).transaction((q) => consumeGitHubAttributionRequestSteps(q, binding, input)),
-  );
+): Promise<{ revision: number; returnPath: string }> {
+  return store.transaction((q) => consumeGitHubAttributionRequestSteps(q, binding, input));
 }
 
 export function* saveGitHubAttributionSteps(
@@ -201,18 +199,14 @@ export function* saveGitHubAttributionSteps(
   });
 }
 
-export function saveGitHubAttribution(
-  db: Database,
+export async function saveGitHubAttribution(
+  store: Db,
   binding: AttributionBinding,
   identity: VerifiedGitHubAttribution,
   revision: number,
   now: number,
 ) {
-  settled(
-    sqliteDb(db).transaction((q) =>
-      saveGitHubAttributionSteps(q, binding, identity, revision, now),
-    ),
-  );
+  return store.transaction((q) => saveGitHubAttributionSteps(q, binding, identity, revision, now));
 }
 
 export function* revokeGitHubAttributionSteps(q: Q, binding: AttributionBinding, now: number) {
@@ -249,8 +243,8 @@ export function* revokeGitHubAttributionSteps(q: Q, binding: AttributionBinding,
   });
 }
 
-export function revokeGitHubAttribution(db: Database, binding: AttributionBinding, now: number) {
-  settled(sqliteDb(db).transaction((q) => revokeGitHubAttributionSteps(q, binding, now)));
+export async function revokeGitHubAttribution(store: Db, binding: AttributionBinding, now: number) {
+  return store.transaction((q) => revokeGitHubAttributionSteps(q, binding, now));
 }
 
 export function* githubAttributionSteps(q: Q, workspaceId: string, userId: string) {

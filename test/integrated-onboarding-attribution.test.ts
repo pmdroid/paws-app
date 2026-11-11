@@ -332,9 +332,9 @@ test("onboarded authoritative creator resumes once with current App and no perso
     };
     const request = { stateHash: "synthetic-state", browserHash: "synthetic-browser", now: now() };
     dbApi.beginGitHubAttribution(db, binding, request);
-    const revision = dbApi.consumeGitHubAttribution(db, binding, request);
-    dbApi.saveGitHubAttribution(
-      db,
+    const revision = await dbApi.consumeGitHubAttribution(db, binding, request);
+    await dbApi.saveGitHubAttribution(
+      sqliteDb(db),
       binding,
       {
         id: 7,
@@ -366,8 +366,8 @@ test("onboarded authoritative creator resumes once with current App and no perso
     } finally {
       persisted.close();
     }
-    dbApi.revokeGitHubAttribution(
-      db,
+    await dbApi.revokeGitHubAttribution(
+      sqliteDb(db),
       { workspaceId: "workspace", userId: member.userId, sessionHash: login.session.tokenHash },
       now(),
     );

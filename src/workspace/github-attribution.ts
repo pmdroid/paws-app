@@ -188,7 +188,7 @@ export function createGitHubAttributionLink(options: {
         await requireAttributionSession(sqliteDb(options.db), binding, now());
         if (url.pathname === PATH) {
           if (request.method === "DELETE") {
-            revokeGitHubAttribution(options.db, binding, now());
+            await revokeGitHubAttribution(sqliteDb(options.db), binding, now());
             return reply({ ok: true });
           }
           if (!options.client) return reply({ error: NOT_CONFIGURED }, 503);
@@ -215,11 +215,15 @@ export function createGitHubAttributionLink(options: {
           !/^[A-Za-z0-9_-]{43}$/.test(browser)
         )
           throw new Error("Invalid request.");
-        const { revision, returnPath } = consumeGitHubAttributionRequest(options.db, binding, {
-          stateHash: workspaceTokenHash(state),
-          browserHash: workspaceTokenHash(browser),
-          now: now(),
-        });
+        const { revision, returnPath } = await consumeGitHubAttributionRequest(
+          sqliteDb(options.db),
+          binding,
+          {
+            stateHash: workspaceTokenHash(state),
+            browserHash: workspaceTokenHash(browser),
+            now: now(),
+          },
+        );
         if (!options.client) return reply({ error: NOT_CONFIGURED }, 503);
         const code = url.searchParams.get("code");
         if (url.searchParams.has("error") || !code || code.length > 4096)
@@ -280,8 +284,8 @@ export function createGitHubAttributionLink(options: {
             .slice(0, 200)
             .trim() || login;
         await options.refresh(binding.workspaceId, binding.userId);
-        saveGitHubAttribution(
-          options.db,
+        await saveGitHubAttribution(
+          sqliteDb(options.db),
           binding,
           { id, login, name, email: `${id}+${login}@users.noreply.github.com` },
           revision,

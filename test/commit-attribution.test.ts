@@ -19,7 +19,7 @@ import { delegatorCommitCredit, issueWorkspaceSession } from "../src/workspace";
 const fetchSpy = spyOn(globalThis, "fetch");
 afterEach(() => fetchSpy.mockClear());
 
-function fixture() {
+async function fixture() {
   const db = openDatabase(":memory:");
   migrate(db);
   const now = Date.now();
@@ -43,9 +43,13 @@ function fixture() {
     };
     bindings.set(id, binding);
     beginGitHubAttribution(db, binding, { stateHash: id, browserHash: id, now });
-    const revision = consumeGitHubAttribution(db, binding, { stateHash: id, browserHash: id, now });
-    saveGitHubAttribution(
-      db,
+    const revision = await consumeGitHubAttribution(db, binding, {
+      stateHash: id,
+      browserHash: id,
+      now,
+    });
+    await saveGitHubAttribution(
+      sqliteDb(db),
       binding,
       { id: index + 1, login: id, name: id, email: `${index + 1}+${id}@users.noreply.github.com` },
       revision,
@@ -70,7 +74,7 @@ function fixture() {
 }
 
 test("credit is the delegating member's linked GitHub identity, never the project lead", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     expect(await delegatorCommitCredit(f.db, f.item.id)).toEqual({
       id: 2,
@@ -86,9 +90,9 @@ test("credit is the delegating member's linked GitHub identity, never the projec
 });
 
 test("a delegator who did not link GitHub gets no credit", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
-    revokeGitHubAttribution(f.db, f.bindings.get("steerer")!, f.now);
+    await revokeGitHubAttribution(sqliteDb(f.db), f.bindings.get("steerer")!, f.now);
     expect(await delegatorCommitCredit(f.db, f.item.id)).toBeNull();
     f.db.run(
       "INSERT INTO workspace_identity_link(workspace_id,user_id,provider,external_id,installation_id,method,status,checked_at) VALUES('workspace','steerer','github','steerer',NULL,'manual','linked',?)",
@@ -103,7 +107,7 @@ test("a delegator who did not link GitHub gets no credit", async () => {
 
 for (const scenario of ["no-actor", "unknown-actor", "inactive", "no-workspace"] as const)
   test(`no credit without a permitted delegating member: ${scenario}`, async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       if (scenario === "no-actor")
         f.db.run("UPDATE work_item SET owner_user_id=NULL, delegated_by=NULL");
