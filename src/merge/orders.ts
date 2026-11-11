@@ -26,7 +26,6 @@ import {
   recordPullCiFailureSteps,
   recordRebaseReturnSteps,
   resetOtherLaneCiFailuresSteps,
-  settled,
   settlePullCiFailuresSteps,
   syncSteps,
   wakePullReviewsSteps,
@@ -221,18 +220,16 @@ export async function observeHeldCi(
 }
 
 /** Whether the merge call must not be made now: stopped, artifacts missing, or a review pending. */
-export function mergeHeld({ store, item, caps }: MergeContext): boolean {
+export async function mergeHeld({ store, item, caps }: MergeContext): Promise<boolean> {
   return (
     caps.stopped() ||
-    settled(
-      store.run(function* (q): Steps<boolean> {
-        return (
-          (yield* mergeStopRequestedSteps(q, item.id)) ||
-          !(yield* artifactPublicationReadySteps(q, item.id)) ||
-          (yield* feedbackPendingSteps(q, item.id))
-        );
-      }),
-    )
+    (await store.run(function* (q): Steps<boolean> {
+      return (
+        (yield* mergeStopRequestedSteps(q, item.id)) ||
+        !(yield* artifactPublicationReadySteps(q, item.id)) ||
+        (yield* feedbackPendingSteps(q, item.id))
+      );
+    }))
   );
 }
 

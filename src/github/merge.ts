@@ -55,7 +55,7 @@ export type SerialMergeInput = {
   commitMessage?: string;
   commitEnv?: Record<string, string>;
   sleep?: (ms: number) => Promise<void>;
-  isCancelled?: () => boolean;
+  isCancelled?: () => Promise<boolean>;
   /**
    * `[merge] main_moved = "overlap"`: compare main's new commits with the pull request's files,
    * grouped by these package roots, when S is behind main.
@@ -110,7 +110,7 @@ export async function readPullFacts(input: SerialMergeInput): Promise<PullFactsR
         message: "worktree has uncommitted changes",
       },
     };
-  if (input.isCancelled?.()) return { kind: "stopped", result: cancelled(branch) };
+  if (await input.isCancelled?.()) return { kind: "stopped", result: cancelled(branch) };
   const token = await operationToken(input, "merge");
   input.onCredential?.("merge", token);
   const url = input.remoteUrl ?? githubHttpsUrl(input.owner, input.repo);
@@ -176,7 +176,7 @@ export type RebaseResult =
 export async function rebaseOntoMain(input: SerialMergeInput): Promise<RebaseResult> {
   const branch = laneBranch(input);
   if (typeof branch !== "string") return { rebased: false, result: branch };
-  if (input.isCancelled?.()) return { rebased: false, result: cancelled(branch) };
+  if (await input.isCancelled?.()) return { rebased: false, result: cancelled(branch) };
   const url = input.remoteUrl ?? githubHttpsUrl(input.owner, input.repo);
   const gitExec = input.gitExec ?? defaultGitExec();
   const pushed = input.ref
@@ -195,7 +195,7 @@ export async function adoptRunnerRebase(
 ): Promise<RebaseResult | { refused: string }> {
   const branch = laneBranch(input);
   if (typeof branch !== "string") return { rebased: false, result: branch };
-  if (input.isCancelled?.()) return { rebased: false, result: cancelled(branch) };
+  if (await input.isCancelled?.()) return { rebased: false, result: cancelled(branch) };
   const gitExec = input.gitExec ?? defaultGitExec();
   const run = async (args: string[]) =>
     (await gitExec(args, { cwd: input.worktree, env: gitEnv(), signal })).stdout.trim();
@@ -281,7 +281,7 @@ export async function squashPull(
   const expectedHead = expected.head;
   const branch = laneBranch(input);
   if (typeof branch !== "string") return branch;
-  if (input.isCancelled?.()) return cancelled(branch);
+  if (await input.isCancelled?.()) return cancelled(branch);
   const token = await operationToken(input, "merge");
   input.onCredential?.("merge", token);
   const gitExec = input.gitExec ?? defaultGitExec();
@@ -315,7 +315,7 @@ export async function squashPull(
       readiness: recheck,
     };
   // A stop or withdrawn publication during the reads must still win.
-  if (input.isCancelled?.()) return cancelled(branch);
+  if (await input.isCancelled?.()) return cancelled(branch);
   const merged = await squash(input, token, expectedHead, summary);
   // A server error or an unreadable success response can arrive after GitHub committed the merge.
   // Keep the caller's durable marker until a pull request read establishes the outcome.
@@ -641,7 +641,7 @@ async function squash(
     return await input.client.request(request);
   } catch (error) {
     // Cancellation belongs to the owner. It must retain the marker and propagate normally.
-    if (input.isCancelled?.() || (error instanceof Error && error.name === "AbortError"))
+    if ((await input.isCancelled?.()) || (error instanceof Error && error.name === "AbortError"))
       throw error;
     // Only the PUT was attempted here. Preparation and request construction errors propagate.
     journalCaught(error, "merge.squash.request", input.issue);
