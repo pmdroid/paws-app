@@ -254,7 +254,7 @@ async function setup(options: { version?: string; conversations?: number } = {})
         .filter((row) => (row.payload as { kind: string }).kind === "response")
         .map((row) => (row.payload as { body: string }).body),
     resumes: async () => listJobs(db).filter((job) => job.queue === JOB_KIND.resume),
-    taskSlots: async () => runnerTaskSlots(db, clock.now(), clock.now() - 60_000),
+    taskSlots: async () => await runnerTaskSlots(sqliteDb(db), clock.now(), clock.now() - 60_000),
   };
 }
 

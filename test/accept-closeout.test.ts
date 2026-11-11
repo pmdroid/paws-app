@@ -180,7 +180,7 @@ test("a confirmed merge cannot be revived while the merged item edge is still pe
   const db = tempDb();
   const id = (await accept(db, await verifying(db)))!;
   db.run("UPDATE job SET status='done' WHERE id=?", [id]);
-  recordConfirmedRemoteMerge(db, {
+  await recordConfirmedRemoteMerge(sqliteDb(db), {
     itemId: "item",
     repositoryOwner: "acme",
     repositoryName: "platform",

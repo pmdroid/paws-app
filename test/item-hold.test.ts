@@ -63,7 +63,7 @@ test("a blocked item names its blocker once in the journal and once more when it
       (await createLiveStatusProvider(db).issues()).issues.find((entry) => entry.id === "PAS-368")
         ?.blockers,
     ).toEqual(["PAS-367"]);
-    confirmFakeMerge(db, "PAS-367");
+    await confirmFakeMerge(db, "PAS-367");
     expect(await workspaceDispatch(db, { now: 3, log })).toEqual(["PAS-368"]);
     expect(await listItemHolds(sqliteDb(db))).toEqual([]);
     expect(lines).toEqual(["item PAS-368 held: blocked by PAS-367", "item PAS-368 no longer held"]);
@@ -198,7 +198,7 @@ test("without a workspace every queued item is held for the workspace, journaled
     db.run("INSERT INTO task_block VALUES('issue-PAS-7','issue-PAS-8')");
     const { lines, log } = journal();
     expect(await workspaceDispatch(db, { now: 1, log })).toEqual([]);
-    confirmFakeMerge(db, "PAS-7");
+    await confirmFakeMerge(db, "PAS-7");
     db.run("UPDATE work_item SET state='merged' WHERE id='PAS-7'");
     item(db, "PAS-9", "queued", 2);
     const admission = createAdmission({ db, workspace: false });

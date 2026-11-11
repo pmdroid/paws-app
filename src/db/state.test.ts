@@ -699,7 +699,7 @@ describe("linear commands", () => {
     });
     insertQueuedItem(db, { id: "eng-2", sessionKey: "ses", now: clock.now() });
     const { run } = beginImplementRun(db, "eng-2", clock.now());
-    recordItemBranchState(db, {
+    await recordItemBranchState(sqliteDb(db), {
       itemId: "eng-2",
       runId: run.id,
       head: "b".repeat(40),
@@ -792,7 +792,7 @@ describe("linear commands", () => {
     const { db, clock } = harness();
     insertQueuedItem(db, { id: "eng-5", sessionKey: "ses", now: clock.now() });
     const { run } = beginImplementRun(db, "eng-5", clock.now());
-    recordItemBranchState(db, {
+    await recordItemBranchState(sqliteDb(db), {
       itemId: "eng-5",
       runId: run.id,
       head: "b".repeat(40),
@@ -869,12 +869,12 @@ describe("linear commands", () => {
     db.close();
   });
 
-  test("a cancel with an outside reason names the branch only when work is left on it", () => {
+  test("a cancel with an outside reason names the branch only when work is left on it", async () => {
     const { db, clock } = harness();
     insertQueuedItem(db, { id: "eng-7", sessionKey: "ses-7", now: clock.now() });
     insertQueuedItem(db, { id: "eng-8", sessionKey: "ses-8", now: clock.now() });
     const { run } = beginImplementRun(db, "eng-8", clock.now());
-    recordItemBranchState(db, {
+    await recordItemBranchState(sqliteDb(db), {
       itemId: "eng-8",
       runId: run.id,
       head: "b".repeat(40),

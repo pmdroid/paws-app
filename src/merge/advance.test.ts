@@ -78,7 +78,7 @@ describe("advanceMerge", () => {
 
   test("a recorded remote merge completes the item before anything is published", async () => {
     const db = queued();
-    recordConfirmedRemoteMerge(db, {
+    await recordConfirmedRemoteMerge(sqliteDb(db), {
       itemId: "eng-1",
       repositoryOwner: "acme",
       repositoryName: "app",

@@ -1,8 +1,7 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, gt, inArray, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { JOB_KIND, delegationHasOpenWork, type WorkItemState } from "../core";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
 import { jsonItemId } from "./jobs";
 import { jsonField, jsonText, jsonValue } from "./json-text";
 import { ciWaitingSql, workHelperSql } from "./runner-capacity";
@@ -307,8 +306,8 @@ export function* runnerTaskSlotsSteps(q: Q, now: number, seenAfter: number) {
   );
 }
 
-export function runnerTaskSlots(db: Database, now: number, seenAfter: number) {
-  return settled(sqliteDb(db).run((q) => runnerTaskSlotsSteps(q, now, seenAfter)));
+export async function runnerTaskSlots(store: Db, now: number, seenAfter: number) {
+  return store.run((q) => runnerTaskSlotsSteps(q, now, seenAfter));
 }
 
 export function* pendingRunnerWaitsSteps(q: Q, seenAfter: number) {

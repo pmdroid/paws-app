@@ -236,7 +236,7 @@ test("a confirmed merge from the task's own branch completes the task as merged"
   const f = await fixture();
   for (const step of ["dispatched", "turn_ended", "closeout_accepted"] as const)
     applyWorkItemEvent(f.db, f.item.id, step);
-  recordConfirmedRemoteMerge(f.db, {
+  await recordConfirmedRemoteMerge(sqliteDb(f.db), {
     itemId: f.item.id,
     repositoryOwner: "acme",
     repositoryName: "app",

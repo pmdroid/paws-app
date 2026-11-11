@@ -48,7 +48,7 @@ test("admin revoke atomically ends sessions, runners, queued and running work; s
     const { db } = f;
     const now = Date.now();
     db.run("UPDATE linear_session SET creator_id='member' WHERE session_id='session-unmapped'");
-    recordItemBranchState(db, {
+    await recordItemBranchState(sqliteDb(db), {
       itemId: "controlled",
       runId: f.runId,
       head: "head",

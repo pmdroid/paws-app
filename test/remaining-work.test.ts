@@ -45,7 +45,7 @@ async function itemWithReport(report: Record<string, unknown>) {
 }
 
 async function merge(db: Database, itemId: string) {
-  recordConfirmedRemoteMerge(db, {
+  await recordConfirmedRemoteMerge(sqliteDb(db), {
     itemId,
     repositoryOwner: "acme",
     repositoryName: "app",

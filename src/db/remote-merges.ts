@@ -65,11 +65,11 @@ export function* recordConfirmedRemoteMergeSteps(q: Q, input: ConfirmedRemoteMer
   return saved;
 }
 
-export function recordConfirmedRemoteMerge(
-  db: Database,
+export async function recordConfirmedRemoteMerge(
+  store: Db,
   input: ConfirmedRemoteMerge,
-): ConfirmedRemoteMerge {
-  return settled(sqliteDb(db).transaction((q) => recordConfirmedRemoteMergeSteps(q, input)));
+): Promise<ConfirmedRemoteMerge> {
+  return store.transaction((q) => recordConfirmedRemoteMergeSteps(q, input));
 }
 
 export function* beginMergeCallSteps(q: Q, itemId: string, head: string, now: number) {

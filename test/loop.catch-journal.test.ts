@@ -169,7 +169,7 @@ test("removeWorktree failure is journaled once after the confirmed merge", async
     const repository = { owner: "test", repo: "repo", remoteUrl: "unused" };
     beginImplementRun(f.db, f.item.id, 1_000);
     enterMergeQueue(f.db, f.item.id, { phase: "merge_queue" });
-    recordConfirmedRemoteMerge(f.db, {
+    await recordConfirmedRemoteMerge(sqliteDb(f.db), {
       itemId: f.item.id,
       repositoryOwner: repository.owner,
       repositoryName: repository.repo,

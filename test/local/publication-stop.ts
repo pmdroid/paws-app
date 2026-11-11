@@ -711,7 +711,7 @@ export async function probePublicationStop(
           [itemId, present],
         );
         if (state === "merged") {
-          confirmFakeMerge(db, itemId);
+          await confirmFakeMerge(db, itemId);
           const producer = insertRun(db, {
             itemId,
             kind: "implement",

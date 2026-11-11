@@ -19,7 +19,7 @@ test("dispatch asks readiness itself instead of trusting a handed-in ready list"
       "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('lin-item-blocker','lin-item-blocked')",
     );
     expect(await workspaceDispatch(db, { now: 1000 })).toEqual(["blocker"]);
-    confirmFakeMerge(db, "blocker");
+    await confirmFakeMerge(db, "blocker");
     db.run("UPDATE work_item SET state='merged' WHERE id='blocker'");
     expect(await workspaceDispatch(db, { now: 1001 })).toEqual(["blocked"]);
   } finally {

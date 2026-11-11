@@ -139,7 +139,7 @@ export async function probeDependencySnapshots(
       ["completed", "artifact", "started", true],
       ["completed", "artifact", "canceled", true],
     ] as const;
-    confirmFakeMerge(db, ids.get("a")!);
+    await confirmFakeMerge(db, ids.get("a")!);
     for (const [state, mode, linearState, expected] of cases) {
       db.run("UPDATE work_item SET state=? WHERE id=?", [state, ids.get("a")!]);
       db.run("UPDATE work_item_task SET mode=? WHERE item_id=?", [mode, ids.get("a")!]);

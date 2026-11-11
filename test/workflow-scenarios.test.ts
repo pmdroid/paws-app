@@ -175,7 +175,7 @@ describe("combined recovery scenarios", () => {
         );
         expect(liveExecution(w, id).map((job) => job.queue)).toEqual([JOB_KIND.merge]);
       }
-      recordConfirmedRemoteMerge(w.db, {
+      await recordConfirmedRemoteMerge(sqliteDb(w.db), {
         itemId: id,
         repositoryOwner: "owner",
         repositoryName: "repo",

@@ -89,7 +89,7 @@ test("a stop during a successful squash waits for completion and answers already
   expect(getWorkItem(db, "holder")).toMatchObject({ state: "merge_queue", cancelRequested: false });
   expect(await mergeStopRequested(sqliteDb(db), "holder")).toBe(true);
   expect(drainCommands(db, bus, 1_010)).toBe(1);
-  recordConfirmedRemoteMerge(db, {
+  await recordConfirmedRemoteMerge(sqliteDb(db), {
     itemId: "holder",
     repositoryOwner: "acme",
     repositoryName: "app",

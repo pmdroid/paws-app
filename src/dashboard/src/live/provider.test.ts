@@ -829,7 +829,7 @@ describe("live status provider", () => {
     );
     const merged = await merging("ENG-14", "acme/platform", null, 5);
     applyWorkItemEvent(db, merged.id, "merge_accepted");
-    recordConfirmedRemoteMerge(db, {
+    await recordConfirmedRemoteMerge(sqliteDb(db), {
       itemId: merged.id,
       repositoryOwner: "acme",
       repositoryName: "platform",
@@ -1752,7 +1752,7 @@ describe("live status provider", () => {
       db.run("UPDATE work_item SET state=? WHERE id=?", [state, blocker.id]);
       await saveTaskMode(sqliteDb(db), blocker.id, mode);
       if (mergeSha)
-        recordConfirmedRemoteMerge(db, {
+        await recordConfirmedRemoteMerge(sqliteDb(db), {
           itemId: blocker.id,
           repositoryOwner: "pmdroid",
           repositoryName: "paws-app",

@@ -80,7 +80,7 @@ test("migration 059 drops the old block tables and task_block holds each depende
       db.query<{ id: string }, []>("SELECT item_id AS id FROM scheduler_admission").all(),
     ).toEqual([{ id: "hold-0" }]);
     expect(await orchestrator.dependencyHandoff("hold-1")).toBeUndefined();
-    confirmFakeMerge(db, "hold-0");
+    await confirmFakeMerge(db, "hold-0");
     db.run("UPDATE work_item SET state = 'merged' WHERE id = 'hold-0'");
     const run = insertRun(db, {
       itemId: "hold-0",

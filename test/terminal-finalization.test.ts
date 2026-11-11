@@ -117,11 +117,11 @@ test("a committed failure survives a restart and is not repeated", () => {
   expect(listOutbox(restored, "session")).toHaveLength(1);
 });
 
-function mergingTask(db: Database) {
+async function mergingTask(db: Database) {
   const { item, run } = runningTask(db);
   enterMergeQueue(db, item.id, { phase: "merge_queue" });
   const jobId = enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId: item.id }, now: 2 });
-  recordConfirmedRemoteMerge(db, {
+  await recordConfirmedRemoteMerge(sqliteDb(db), {
     itemId: item.id,
     repositoryOwner: "acme",
     repositoryName: "app",
@@ -146,7 +146,7 @@ function announceMerge(_db: Database) {
 test("a confirmed merge commits its state, run, jobs and notice together and only once", async () => {
   const file = join(tempHome(), "paws.db");
   const db = migratedDatabase(file);
-  const { item, run, jobId } = mergingTask(db);
+  const { item, run, jobId } = await mergingTask(db);
   const { announced, announce } = announceMerge(db);
   expect(
     (await completeMergedItem(sqliteDb(db), { itemId: item.id, now: 4, announce }))?.state,
@@ -173,7 +173,7 @@ test("a confirmed merge commits its state, run, jobs and notice together and onl
 test("a fault in the merge notice leaves the task in the merge queue", async () => {
   const db = tempDb();
   databases.push(db);
-  const { item, run, jobId } = mergingTask(db);
+  const { item, run, jobId } = await mergingTask(db);
   breakOutbox(db);
   const { announce } = announceMerge(db);
   await expect(
@@ -187,7 +187,7 @@ test("a fault in the merge notice leaves the task in the merge queue", async () 
 test("a merge result for a cancelled, superseded or unconfirmed task changes nothing", async () => {
   const db = tempDb();
   databases.push(db);
-  const { item } = mergingTask(db);
+  const { item } = await mergingTask(db);
   const { announced, announce } = announceMerge(db);
   applyWorkItemEvent(db, item.id, "restart");
   applyWorkItemEvent(db, item.id, "dispatched");

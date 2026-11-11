@@ -225,8 +225,8 @@ function reads(db: Database, itemId: string) {
 }
 
 /** Record the evidence a real merge writes before a fixture enters merged. */
-export function confirmFakeMerge(db: Database, itemId: string): void {
-  recordConfirmedRemoteMerge(db, {
+export async function confirmFakeMerge(db: Database, itemId: string): Promise<void> {
+  await recordConfirmedRemoteMerge(sqliteDb(db), {
     itemId,
     repositoryOwner: "owner",
     repositoryName: "repo",

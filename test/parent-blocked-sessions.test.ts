@@ -50,11 +50,11 @@ async function pass(f: Fixture) {
   await f.jobs.tick();
 }
 
-function merge(f: Fixture, issueId: string) {
+async function merge(f: Fixture, issueId: string) {
   const item = f.db
     .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_issue_id=?")
     .get(issueId)!;
-  confirmFakeMerge(f.db, item.id);
+  await confirmFakeMerge(f.db, item.id);
   f.db.run("UPDATE work_item SET state='merged' WHERE linear_issue_id=?", [issueId]);
 }
 
@@ -96,7 +96,7 @@ test("a chain of sub-issues opens each Linear session only after its blocker mer
     await pass(f);
     expect(f.started).toEqual(["a"]);
 
-    merge(f, "a");
+    await merge(f, "a");
     await pass(f);
     expect(f.started).toEqual(["a", "b"]);
     expect(await waiting(f, parent)).toEqual({ a: [], b: [], c: ["CH-2"] });
@@ -104,7 +104,7 @@ test("a chain of sub-issues opens each Linear session only after its blocker mer
     await pass(f);
     expect(f.started).toEqual(["a", "b"]);
 
-    merge(f, "b");
+    await merge(f, "b");
     await pass(f);
     expect(f.started).toEqual(["a", "b", "c"]);
   } finally {

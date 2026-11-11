@@ -121,7 +121,7 @@ export async function probeExecutionLifecycle(
       { state: state("failed"), notices: notices("failed"), stallQuestions },
     );
     seed("handoff", ["merged", "queued"]);
-    confirmFakeMerge(db, "handoff-0");
+    await confirmFakeMerge(db, "handoff-0");
     db.run(
       "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('handoff-0','handoff-1')",
     );

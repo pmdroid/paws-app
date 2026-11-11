@@ -176,7 +176,7 @@ test("a task_block dependency is admitted only after its blocker item is merged"
     assert(blocker);
     assert(blocked);
     assert.deepEqual(await workspaceDispatch(db, { now: 1000 }), [blocker]);
-    confirmFakeMerge(db, blocker);
+    await confirmFakeMerge(db, blocker);
     db.run("UPDATE work_item SET state='merged' WHERE id=?", [blocker]);
     assert.deepEqual(await workspaceDispatch(db, { now: 1001 }), [blocked]);
   } finally {

@@ -45,7 +45,7 @@ test("an Item starts once its blocker in the delegation merged", async () => {
     assert.deepEqual(await admission.canStart("blocked"), { ok: false, held: "blocked" });
     setState(db, "blocker", "merged");
     assert.deepEqual(await admission.canStart("blocked"), { ok: false, held: "blocked" });
-    confirmFakeMerge(db, "blocker");
+    await confirmFakeMerge(db, "blocker");
     assert.deepEqual(await admission.canStart("blocked"), { ok: true });
   } finally {
     db.close();
@@ -76,7 +76,7 @@ test("a merge waits for an unmerged blocker and passes once it merged", async ()
     const admission = workspaceAdmission(db);
     assert.deepEqual(await admission.canMerge("blocked"), { ok: false, held: "blocked" });
     setState(db, "blocker", "merged");
-    confirmFakeMerge(db, "blocker");
+    await confirmFakeMerge(db, "blocker");
     assert.deepEqual(await admission.canMerge("blocked"), { ok: true });
   } finally {
     db.close();

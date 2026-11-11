@@ -108,7 +108,7 @@ test("a blocked item gets one thought, then an ephemeral at each 25-minute mark 
     expect(activities(db, session).filter((row) => row.ephemeral)).toHaveLength(2);
 
     db.run("UPDATE work_item SET state='merged' WHERE id='PAS-618'");
-    recordConfirmedRemoteMerge(db, {
+    await recordConfirmedRemoteMerge(sqliteDb(db), {
       itemId: "PAS-618",
       repositoryOwner: "owner",
       repositoryName: "repo",

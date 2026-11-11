@@ -153,7 +153,7 @@ test("a delegated parent records its sub-issues and each sub-issue runs alone in
     const merged = db
       .query<{ id: string }, []>("SELECT id FROM work_item WHERE linear_issue_id='child-a'")
       .get()!;
-    confirmFakeMerge(db, merged.id);
+    await confirmFakeMerge(db, merged.id);
     db.run("UPDATE work_item SET state='merged' WHERE linear_issue_id='child-a'");
     fixture.clock.advance(30_000);
     await jobs.tick();

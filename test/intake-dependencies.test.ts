@@ -111,7 +111,7 @@ test("sync stores internal and external edges in task_block and readiness matche
     expect(await readyIds()).toContain(ids.get("a")!);
     db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [ids.get("a")!]);
     expect(await readyIds()).not.toContain(ids.get("b")!);
-    confirmFakeMerge(db, ids.get("a")!);
+    await confirmFakeMerge(db, ids.get("a")!);
     expect(await readyIds()).toContain(ids.get("b")!);
     lifecycle.issues.get("outside")!.stateType = "started";
     await refresh();

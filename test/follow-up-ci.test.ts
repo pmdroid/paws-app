@@ -153,7 +153,7 @@ async function waitingTask(
     remoteUrl: "https://github.com/acme/one.git",
   });
   const { run } = beginImplementRun(db, itemId, Date.now());
-  recordItemBranchState(db, {
+  await recordItemBranchState(sqliteDb(db), {
     itemId,
     runId: run.id,
     head: HEAD,
@@ -278,7 +278,7 @@ test("a head that moves during the CI read attaches no stale CI facts", async ()
   const f = await waitingTask({
     ci: "failed",
     onCiRead: async (db, itemId) =>
-      recordItemBranchState(db, {
+      await recordItemBranchState(sqliteDb(db), {
         itemId,
         runId: getWorkItem(db, itemId)!.currentRunId!,
         head: OTHER,
