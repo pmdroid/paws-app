@@ -398,7 +398,7 @@ describe("linear intake poll", () => {
     mkdirSync(secrets, { recursive: true });
     const db = tempDb();
     const queries: string[] = [];
-    const linear = openLinear({
+    const linear = await openLinear({
       db,
       secretsDir: secrets,
       env: { LINEAR_ACCESS_TOKEN: "token" },
@@ -1045,7 +1045,7 @@ function emptyRelations(): Record<string, unknown> {
 }
 
 const AUTH: LinearAuth = {
-  hasToken: () => true,
+  hasToken: async () => true,
   ensureFresh: async () => "token",
   forceRefresh: async () => "token",
 };
@@ -1195,7 +1195,7 @@ test("Linear runtime stop joins interrupted events and rejects new handlers befo
   const db = tempDb();
   const ready = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
-  const linear = openLinear({
+  const linear = await openLinear({
     db,
     secretsDir: join(tempHome(), "secrets"),
     env: { LINEAR_ACCESS_TOKEN: "fixture-token" },

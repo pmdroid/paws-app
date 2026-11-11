@@ -10,7 +10,7 @@ describe("Linear transport cancellation", () => {
     let requests = 0;
     const client = createLinearClient({
       auth: {
-        hasToken: () => true,
+        hasToken: async () => true,
         async ensureFresh() {
           authCalls += 1;
           return token;
@@ -39,7 +39,7 @@ describe("Linear transport cancellation", () => {
     let requests = 0;
     const client = createLinearClient({
       auth: {
-        hasToken: () => true,
+        hasToken: async () => true,
         ensureFresh: () => credentials,
         forceRefresh: () => credentials,
       },
@@ -65,7 +65,7 @@ describe("Linear transport cancellation", () => {
     const controller = new AbortController();
     const client = createLinearClient({
       auth: {
-        hasToken: () => true,
+        hasToken: async () => true,
         ensureFresh: async () => token,
         forceRefresh: async () => token,
       },
@@ -97,7 +97,7 @@ describe("Linear transport cancellation", () => {
     let requests = 0;
     const client = createLinearClient({
       auth: {
-        hasToken: () => true,
+        hasToken: async () => true,
         ensureFresh: async () => token,
         forceRefresh: () => {
           notifyRefresh();
@@ -124,7 +124,7 @@ describe("Linear HTTP failures", () => {
   const failing = (status: number, headers?: Record<string, string>) =>
     createLinearClient({
       auth: {
-        hasToken: () => true,
+        hasToken: async () => true,
         ensureFresh: async () => token,
         forceRefresh: async () => token,
       },

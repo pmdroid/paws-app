@@ -24,7 +24,7 @@ test("Stop aborts active Linear HTTP delivery before its final acknowledgement s
       auth: {
         ensureFresh: async () => "fixture-token",
         forceRefresh: async () => "fixture-token",
-        hasToken: () => true,
+        hasToken: async () => true,
       },
       fetch: async (_url, init) => {
         const input = JSON.parse(String(init?.body)).variables.input;

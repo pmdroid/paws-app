@@ -2,7 +2,7 @@ import "../quiet-journal";
 import { join } from "node:path";
 import { migrate, openDatabase } from "../../src/db";
 import { refreshCredential } from "../../src/credentials";
-import { readStoredToken, refreshLinearToken, writeStoredToken } from "../../src/linear";
+import { readStoredTokenSteps, refreshLinearToken, writeStoredTokenSteps } from "../../src/linear";
 
 const [home, endpoint, crash] = process.argv.slice(2) as [string, string, string];
 const db = openDatabase(join(home, "paws.db"));
@@ -11,8 +11,8 @@ const secretsDir = join(home, "secrets");
 await refreshCredential({
   db,
   identity: "linear",
-  read: () => readStoredToken(db, secretsDir),
-  write: (token) => writeStoredToken(db, secretsDir, token),
+  read: (q) => readStoredTokenSteps(q, secretsDir),
+  write: (q, token) => writeStoredTokenSteps(q, secretsDir, token),
   leaseMs: 1_000,
   refresh: async (current, signal) =>
     refreshLinearToken({

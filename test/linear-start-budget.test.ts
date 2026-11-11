@@ -180,7 +180,7 @@ test("a delegated task spends at most five Linear requests before the agent's fi
   let gate: LinearTaskAccess | undefined;
   let orchestrator: ReturnType<typeof attachOrchestrator> | undefined;
   const firstPrompt = Promise.withResolvers<Record<string, number>>();
-  const linear = openLinear({
+  const linear = await openLinear({
     db,
     secretsDir: path.join(layout.pawsRoot, "secrets"),
     env: { LINEAR_ACCESS_TOKEN: "fixture-token", LINEAR_CLIENT_ID: "client" },

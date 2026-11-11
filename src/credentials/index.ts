@@ -4,6 +4,8 @@ export { loadSecretKey } from "./key";
 export {
   importCredentialFile,
   readCredential,
+  readCredentialSteps,
   writeCredential,
+  writeCredentialSteps,
   type CredentialKind,
 } from "./store";

@@ -108,7 +108,7 @@ test.each(["workflow states", "credential acquisition"])(
       createLinearTracker(
         createLinearClient({
           auth: {
-            hasToken: () => true,
+            hasToken: async () => true,
             async ensureFresh() {
               if (boundary === "credential acquisition") {
                 started.resolve();

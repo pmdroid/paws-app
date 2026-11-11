@@ -227,7 +227,7 @@ test.each(["credentials", "reconciliation"])(
       const tracker = createLinearTracker(
         createLinearClient({
           auth: {
-            hasToken: () => true,
+            hasToken: async () => true,
             async ensureFresh() {
               if (boundary === "credentials") {
                 started.resolve();

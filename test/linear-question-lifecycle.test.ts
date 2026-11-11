@@ -291,7 +291,7 @@ test("a Linear Stop pauses the item with its question open, and a reply restarts
 test("polling keeps activity creation and human identity distinct from viewer and update time", async () => {
   const client = createLinearClient({
     auth: {
-      hasToken: () => true,
+      hasToken: async () => true,
       ensureFresh: async () => "fixture-token",
       forceRefresh: async () => "fixture-token",
     },

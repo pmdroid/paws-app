@@ -68,7 +68,7 @@ for (const [body, existing] of [
       options?.signal?.throwIfAborted();
       return post(update, options);
     };
-    const linear = openLinear({
+    const linear = await openLinear({
       db,
       secretsDir: join(home, "secrets"),
       env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
@@ -183,7 +183,7 @@ test("an old prompted intake failure cannot terminate a newer session generation
   });
   const ready = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
-  const linear = openLinear({
+  const linear = await openLinear({
     db,
     secretsDir: join(home, "secrets"),
     env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
@@ -257,7 +257,7 @@ test.each([false, true])(
       }
       return load(issueId);
     };
-    const linear = openLinear({
+    const linear = await openLinear({
       db,
       secretsDir: join(home, "secrets"),
       env: { LINEAR_ACCESS_TOKEN: "fixture-token" },

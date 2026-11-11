@@ -39,7 +39,7 @@ async function delayed(release: Promise<void>, signal: AbortSignal): Promise<voi
   }
 }
 
-function fixture() {
+async function fixture() {
   const db = tempDb();
   const home = tempHome();
   const deadlines: AbortController[] = [];
@@ -70,7 +70,7 @@ function fixture() {
   let orchestrator: ReturnType<typeof attachOrchestrator>;
   let pending: Promise<void | boolean> | undefined;
   const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
-  const linear = openLinear({
+  const linear = await openLinear({
     db,
     secretsDir: join(home, "secrets"),
     env: { LINEAR_ACCESS_TOKEN: "fixture-token", LINEAR_CLIENT_ID: "client" },
@@ -325,7 +325,7 @@ function fixture() {
 }
 
 test("one initial deadline spans authoritative reads and timeout leaves the inbox retryable", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     f.delayTeam();
     expect((await f.deliver()).status).toBe(200);
@@ -353,7 +353,7 @@ test("one initial deadline spans authoritative reads and timeout leaves the inbo
 });
 
 test("a deadline aborts the held acknowledgement transport and its retry keeps the durable UUID", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     f.delayActivity();
     await f.deliver();
@@ -380,7 +380,7 @@ test("a deadline aborts the held acknowledgement transport and its retry keeps t
 });
 
 test("Stop during delayed ingress prevents the first acknowledgement after its deadline is released", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     f.delayTeam();
     await f.deliver();
@@ -399,7 +399,7 @@ test("Stop during delayed ingress prevents the first acknowledgement after its d
 });
 
 test("the first-activity deadline does not silence a later intake error", async () => {
-  const f = fixture();
+  const f = await fixture();
   const started = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   try {
@@ -424,7 +424,7 @@ test("the first-activity deadline does not silence a later intake error", async 
 });
 
 test("another session delivery cannot hold the first acknowledgement's intake open", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.blockOtherSession();
     await f.otherStarted.promise;
@@ -452,7 +452,7 @@ test("another session delivery cannot hold the first acknowledgement's intake op
 });
 
 test("a signed created acknowledgement bypasses and retains dead public history from a preceding prompt", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     f.runFollowUps();
     expect((await f.deliver("prompted")).status).toBe(200);
@@ -491,7 +491,7 @@ test("a signed created acknowledgement bypasses and retains dead public history 
 });
 
 test("Stop aborts a critical first acknowledgement and prevents its later retry", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     f.delayActivity();
     await f.deliver();

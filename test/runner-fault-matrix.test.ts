@@ -432,7 +432,7 @@ async function runRemoteFault(fault: Fault) {
         runner.faultedAttempts++;
         await createLinearClient({
           auth: {
-            hasToken: () => true,
+            hasToken: async () => true,
             ensureFresh: async () => "synthetic-linear-token",
             forceRefresh: async () => "synthetic-linear-token",
           },

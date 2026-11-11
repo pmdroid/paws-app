@@ -78,7 +78,7 @@ export async function probeLinearDependencyPagination(
   const tracker = createLinearTracker(
     createLinearClient({
       auth: {
-        hasToken: () => true,
+        hasToken: async () => true,
         ensureFresh: async () => "fixture",
         forceRefresh: async () => "fixture",
       },

@@ -8,10 +8,10 @@ import {
   sqliteDb,
   type LinearInstallationRevocation,
 } from "../db";
-import type { Database } from "bun:sqlite";
 import {
   readStoredToken,
-  writeStoredToken,
+  writeStoredTokenSteps,
+  readStoredTokenSteps,
   type FetchLike,
   type StoredLinearToken,
 } from "../linear";
@@ -32,13 +32,12 @@ export function createLinearReconnect(options?: {
 }): LinearReconnect {
   return async (home) => {
     const paths = pawsPaths(home);
-    const read = (db: Database) => fingerprint(readStoredToken(db, paths.secretsDir));
     const db = openDatabase(paths.db);
     let snapshot;
     try {
       migrate(db);
       snapshot = options?.snapshot ?? {
-        previous: read(db),
+        previous: fingerprint(await readStoredToken(sqliteDb(db), paths.secretsDir)),
         grantStartedAtMs: (options?.now ?? Date.now)(),
         revocations: await sqliteDb(db).run((q) => listLinearInstallationRevocationsSteps(q)),
       };
@@ -89,7 +88,7 @@ export function createLinearReconnect(options?: {
         try {
           migrate(current);
           await sqliteDb(current).transaction(function* (q) {
-            if (read(current) !== previous)
+            if (fingerprint(yield* readStoredTokenSteps(q, paths.secretsDir)) !== previous)
               throw new Error("The stored Linear authorization changed during reconnection.");
             if (
               !(yield* restoreLinearInstallationSteps(q, {
@@ -102,7 +101,7 @@ export function createLinearReconnect(options?: {
               }))
             )
               throw new Error("Linear access changed during reconnection. Reconnect again.");
-            writeStoredToken(current, paths.secretsDir, input.token);
+            yield* writeStoredTokenSteps(q, paths.secretsDir, input.token);
           });
           return true;
         } finally {

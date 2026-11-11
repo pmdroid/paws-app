@@ -105,7 +105,7 @@ test("a failed task whose issue moves to Done leaves Needs a person and complete
       .map((item) => item.title);
   expect(await needsPerson()).toEqual(["Task"]);
 
-  storeLinearToken(f.home, {
+  await storeLinearToken(f.home, {
     accessToken: "fake-access",
     refreshToken: "fake-refresh",
     expiresAtMs: Date.now() + 600_000,
@@ -118,7 +118,7 @@ test("a failed task whose issue moves to Done leaves Needs a person and complete
   bus.subscribe((command) => notified.push(command.itemId));
   const interrupted: string[] = [];
   const handled = Promise.withResolvers<void>();
-  const opened = openLinear({
+  const opened = await openLinear({
     db: f.db,
     secretsDir: join(f.home, "secrets"),
     env: { LINEAR_CLIENT_ID: "client", LINEAR_APP_USER_ID: "app" },

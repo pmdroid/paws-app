@@ -70,7 +70,7 @@ async function fixture(token = true, children = false) {
     owned.abort(new Error("Cancelled"));
   });
   if (token)
-    storeLinearToken(home, {
+    await storeLinearToken(home, {
       accessToken: "fake-old-access",
       refreshToken: "fake-old-refresh",
       expiresAtMs: Date.now() + 600_000,
@@ -79,7 +79,7 @@ async function fixture(token = true, children = false) {
     });
   const requests: string[] = [];
   const active = Promise.withResolvers<void>();
-  const opened = openLinear({
+  const opened = await openLinear({
     db,
     secretsDir: join(home, "secrets"),
     env: { LINEAR_CLIENT_ID: "client", LINEAR_APP_USER_ID: "app" },

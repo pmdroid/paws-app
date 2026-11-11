@@ -2,12 +2,13 @@ import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { pawsPaths } from "../config";
 import {
-  readCredential,
+  readCredentialSteps,
   readSecretFile,
   refreshCredential,
-  writeCredential,
+  writeCredentialSteps,
   writeSecretFile,
 } from "../credentials";
+import { sqliteDb, type Db, type Q, type Steps } from "../db";
 import { authorizeSlack } from "./authorize";
 
 export const SLACK_BOT_SCOPES = "chat:write,im:write,users:read,users:read.email,channels:read";
@@ -26,12 +27,16 @@ export function readSlackApp(home: string): SlackApp | null {
   return readJson<SlackApp>(home, "slack-app.json");
 }
 
-export function readSlackToken(db: Database, home: string): SlackToken | null {
-  return parseJson<SlackToken>(readCredential(db, pawsPaths(home).secretsDir, "slack"));
+function* readSlackTokenSteps(q: Q, home: string): Steps<SlackToken | null> {
+  return parseJson<SlackToken>(yield* readCredentialSteps(q, pawsPaths(home).secretsDir, "slack"));
 }
 
-function writeSlackToken(db: Database, home: string, token: SlackToken): void {
-  writeCredential(db, pawsPaths(home).secretsDir, "slack", JSON.stringify(token));
+export function readSlackToken(store: Db, home: string): Promise<SlackToken | null> {
+  return store.run((q) => readSlackTokenSteps(q, home));
+}
+
+function writeSlackTokenSteps(q: Q, home: string, token: SlackToken): Steps<boolean> {
+  return writeCredentialSteps(q, pawsPaths(home).secretsDir, "slack", JSON.stringify(token));
 }
 
 export async function loginSlack(input: {
@@ -68,14 +73,14 @@ export async function loginSlack(input: {
     ...(input.fetch ? { fetch: input.fetch } : {}),
   });
   writeSecretFile(join(pawsPaths(input.home).secretsDir, "slack-app.json"), JSON.stringify(app));
-  writeSlackToken(input.db, input.home, token);
+  await sqliteDb(input.db).run((q) => writeSlackTokenSteps(q, input.home, token));
   return token;
 }
 
 export function createSlackAuth(input: { home: string; db: Database; fetch?: SlackFetch }) {
   return {
     async ensureFresh(): Promise<string> {
-      const current = readSlackToken(input.db, input.home);
+      const current = await readSlackToken(sqliteDb(input.db), input.home);
       if (current === null) throw new Error("Run paws login slack.");
       if (current.expiresAtMs === null || current.expiresAtMs > Date.now() + 60_000)
         return current.accessToken;
@@ -84,8 +89,8 @@ export function createSlackAuth(input: { home: string; db: Database; fetch?: Sla
       const saved = await refreshCredential({
         db: input.db,
         identity: "slack",
-        read: () => readSlackToken(input.db, input.home),
-        write: (token) => writeSlackToken(input.db, input.home, token),
+        read: (q) => readSlackTokenSteps(q, input.home),
+        write: (q, token) => writeSlackTokenSteps(q, input.home, token),
         refresh: (token, signal) =>
           requestSlackToken(
             app,

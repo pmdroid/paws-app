@@ -140,7 +140,7 @@ test("production explicit session intake stays pending when follow-up fails and 
         : { agentActivityCreate: { success: true, agentActivity: { id: crypto.randomUUID() } } },
     });
   };
-  const first = openLinear({
+  const first = await openLinear({
     db,
     secretsDir,
     env: { LINEAR_ACCESS_TOKEN: "host-only-token" },
@@ -155,7 +155,7 @@ test("production explicit session intake stays pending when follow-up fails and 
   await Bun.sleep(5);
   const reopened = createInboxStore(sqliteDb(db));
   expect(await reopened.listUnhandled()).toHaveLength(1);
-  const second = openLinear({
+  const second = await openLinear({
     db,
     secretsDir,
     env: { LINEAR_ACCESS_TOKEN: "host-only-token" },

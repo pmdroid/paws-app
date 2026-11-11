@@ -58,7 +58,7 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
     });
     const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
     const secret = "fake-webhook-secret";
-    writeStoredToken(db, join(root, "secrets"), {
+    await writeStoredToken(sqliteDb(db), join(root, "secrets"), {
       accessToken: "fake-access",
       refreshToken: "fake-refresh",
       expiresAtMs: Date.now() + 600_000,
@@ -70,7 +70,7 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
     let lostTeam = mode === "initial-denied";
     let failedRead = false;
     const requests: string[] = [];
-    const opened = openLinear({
+    const opened = await openLinear({
       db,
       secretsDir: join(root, "secrets"),
       env: { LINEAR_CLIENT_ID: "client", LINEAR_APP_USER_ID: "app" },

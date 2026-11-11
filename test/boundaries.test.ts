@@ -107,7 +107,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "worktree-checkout": ["journal"],
   config: ["journal", "core", "credentials", "worktree-checkout"],
   credentials: ["journal", "db"],
-  slack: ["journal", "config", "credentials", "webhook-body"],
+  slack: ["journal", "config", "credentials", "db", "webhook-body"],
   core: [],
   "host-operation": [],
   db: ["journal", "core", "runner-protocol", "dashboard-links", "host-operation"],

@@ -79,7 +79,7 @@ describe("shutdown WIP", () => {
       "implementer",
       "hang",
     ].join(" ");
-    storeLinearToken(home, {
+    await storeLinearToken(home, {
       accessToken: "synthetic-linear-token",
       refreshToken: "synthetic-refresh-token",
       expiresAtMs: Date.now() + 600_000,

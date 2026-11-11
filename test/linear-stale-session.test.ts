@@ -120,8 +120,8 @@ async function fixture() {
     pullRequest: null,
   };
   tracker.getSession = async (id) => ({ ...snapshot, id });
-  const runtime = () =>
-    openLinear({
+  const runtime = async () =>
+    await openLinear({
       db,
       secretsDir: join(home, "secrets"),
       env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
@@ -256,7 +256,7 @@ test.each(["unavailable", "issue", "app", "id", "generation", "authorization"])(
         ...(failure === "app" ? { appUserId: "wrong" } : {}),
       };
     };
-    const linear = f.runtime();
+    const linear = await f.runtime();
     const event = created("new");
     const store = createInboxStore(sqliteDb(f.db));
     await store.commit(event);

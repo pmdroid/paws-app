@@ -105,7 +105,7 @@ test("Slack OAuth uses bot scopes, exact HTTPS redirect and single-use state, th
     botUserId: "U1",
     refreshToken: null,
   });
-  expect(readSlackToken(db, dir)).toEqual(token);
+  expect(await readSlackToken(sqliteDb(db), dir)).toEqual(token);
   expect(readSlackApp(dir)).toEqual({
     clientId: env.SLACK_CLIENT_ID,
     clientSecret: env.SLACK_CLIENT_SECRET,
@@ -151,7 +151,7 @@ test("Slack rejects denial and provider errors without saving or reflecting cred
         },
       }),
     ).rejects.toThrow(mode === "deny" ? "Slack authorization was denied" : "Could not exchange");
-    expect(readSlackToken(db, dir)).toBeNull();
+    expect(await readSlackToken(sqliteDb(db), dir)).toBeNull();
     expect(readSlackApp(dir)).toBeNull();
   }
 });
@@ -203,7 +203,12 @@ test("rotating Slack bot tokens use one durable refresh job and retain installat
       Response.json({ ...grant, refresh_token: "synthetic-slack-refresh-old", expires_in: 3600 }),
     onAuthorize: approve,
   });
-  writeCredential(db, join(dir, "secrets"), "slack", JSON.stringify({ ...token, expiresAtMs: 0 }));
+  await writeCredential(
+    sqliteDb(db),
+    join(dir, "secrets"),
+    "slack",
+    JSON.stringify({ ...token, expiresAtMs: 0 }),
+  );
   let requests = 0;
   const options = {
     home: dir,
@@ -230,7 +235,7 @@ test("rotating Slack bot tokens use one durable refresh job and retain installat
     ]),
   ).toEqual(["synthetic-slack-token-next", "synthetic-slack-token-next"]);
   expect(requests).toBe(1);
-  expect(readSlackToken(db, dir)).toMatchObject({
+  expect(await readSlackToken(sqliteDb(db), dir)).toMatchObject({
     teamId: "T1",
     botUserId: "U1",
     scope: SLACK_BOT_SCOPES,

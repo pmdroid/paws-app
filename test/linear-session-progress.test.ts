@@ -417,7 +417,7 @@ test("a generation change during actual session-update authentication prevents t
     const tracker = createLinearTracker(
       createLinearClient({
         auth: {
-          hasToken: () => true,
+          hasToken: async () => true,
           async ensureFresh() {
             started.resolve();
             await release.promise;

@@ -450,8 +450,13 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const db = openDatabase(paths.db);
   const store = sqliteDb(db);
   migrate(db);
-  importLinearTokenFile(db, paths.secretsDir, runtime.linearTokenFile);
-  importCredentialFile(db, paths.secretsDir, "slack", join(paths.secretsDir, "slack-oauth.json"));
+  await importLinearTokenFile(store, paths.secretsDir, runtime.linearTokenFile);
+  await importCredentialFile(
+    store,
+    paths.secretsDir,
+    "slack",
+    join(paths.secretsDir, "slack-oauth.json"),
+  );
   await store.run(clearUsagePausesSteps);
   const linearRevoked = () =>
     store.run((q) =>
@@ -463,7 +468,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   if (
     publicDashboard &&
     ((await linearRevoked()) ||
-      (runtime.linearAccessToken === null && readStoredToken(db, paths.secretsDir) === null))
+      (runtime.linearAccessToken === null &&
+        (await readStoredToken(store, paths.secretsDir)) === null))
   ) {
     const reconnect = await linearRevoked();
     db.close();
@@ -668,7 +674,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     }
   }
 
-  const linear = openLinear({
+  const linear = await openLinear({
     db,
     signal: abort.signal,
     countItemRequest: async (itemId, caller) =>
@@ -867,7 +873,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             return undefined;
           }
         })(),
-        slackIdentities: createSlackIdentityReads({ home: paths.home, db }),
+        slackIdentities: await createSlackIdentityReads({ home: paths.home, db }),
         db,
         publicUrl: runtime.publicUrl!,
         clientId: runtime.linearClientId!,

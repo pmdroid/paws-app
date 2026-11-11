@@ -310,7 +310,7 @@ async function firstDelegation(
   const github = createFakeGitHub();
   let gate: LinearTaskAccess | undefined;
   let orchestrator: ReturnType<typeof attachOrchestrator> | undefined;
-  const linear = openLinear({
+  const linear = await openLinear({
     db,
     secretsDir: path.join(layout.pawsRoot, "secrets"),
     env: { LINEAR_ACCESS_TOKEN: "fixture-token", LINEAR_CLIENT_ID: "client" },

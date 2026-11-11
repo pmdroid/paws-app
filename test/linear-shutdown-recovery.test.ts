@@ -64,7 +64,7 @@ for (const shutdown of ["application", "linear"] as const) {
       const controller = new AbortController();
       const entered = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();
-      const linear = openLinear({
+      const linear = await openLinear({
         db,
         secretsDir: join(home, "secrets"),
         env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
@@ -118,7 +118,7 @@ for (const shutdown of ["application", "linear"] as const) {
       store = createInboxStore(sqliteDb(db));
       jobs = new JobLoop(db, systemClock);
       orchestrator = makeOrchestrator();
-      const recovered = openLinear({
+      const recovered = await openLinear({
         db,
         secretsDir: join(home, "secrets"),
         env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
