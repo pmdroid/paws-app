@@ -986,7 +986,7 @@ export class Orchestrator {
   private readonly riskDisplayReader: RiskDisplayReader;
 
   /** The dashboard reads through this callback without importing the loop or loading config. */
-  riskDisplay(itemId: string, head?: string): RiskDisplay | null {
+  riskDisplay(itemId: string, head?: string): Promise<RiskDisplay | null> {
     return this.riskDisplayReader.read(itemId, head);
   }
 
@@ -6124,7 +6124,7 @@ export class Orchestrator {
     this.post(
       item,
       "response",
-      pullRequestReadyResponse({
+      await pullRequestReadyResponse({
         itemId: item.id,
         head: published.head,
         pull: published.pull,
@@ -6132,8 +6132,8 @@ export class Orchestrator {
         openLine,
         summary: runs.findLast((stored) => stored.checkpoint?.resultBody?.trim())?.checkpoint
           ?.resultBody,
-        riskApproval: () =>
-          this.riskDisplay(item.id, published.head)?.detail ?? "Manual approval required",
+        riskApproval: async () =>
+          (await this.riskDisplay(item.id, published.head))?.detail ?? "Manual approval required",
         journal: this.options.journal,
       }),
       `pull-request-ready:${item.id}:${generation}`,
