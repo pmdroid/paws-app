@@ -298,7 +298,7 @@ test("a pending helper goes out before a queued login check, which waits until t
   await f.helpers.acknowledge(runnerId, helper.id);
   expect(await f.delivered(runnerId)).toEqual([]);
 
-  f.helpers.finish(helper.id);
+  await f.helpers.finish(helper.id);
   expect((await f.delivered(runnerId)).map(({ type }) => type)).toEqual(["login_check"]);
 });
 

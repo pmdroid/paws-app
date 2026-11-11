@@ -780,7 +780,7 @@ export async function probeRunnerWork(
       await assert.rejects(helpers.dispatch(helperInput), /busy/);
       await work.finish(released.runId, 3);
       await work.heartbeat(firstRunner, 1);
-      helpers.finish(helper.command.id);
+      await helpers.finish(helper.command.id);
       await work.assign(review);
       const commandCount = db
         .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM runner_command")
@@ -912,7 +912,7 @@ export async function probeRunnerWork(
       });
       await work.finish(waiting.runId, 8);
       const recoveredHelper = await helpers.dispatch(helperInput);
-      helpers.finish(recoveredHelper.command.id);
+      await helpers.finish(recoveredHelper.command.id);
       observe(
         "Expired cancellation recovery joins a fresh signed command without fabricating the older acknowledgement",
         true,

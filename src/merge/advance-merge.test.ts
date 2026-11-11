@@ -562,7 +562,7 @@ describe("advanceMerge on a conflicting pull request waiting for CI", () => {
         row.idempotencyKey.startsWith("merge-conflict:"),
       ),
     ).toHaveLength(1);
-    expect(listMergeQueues(h.db).map((entry) => entry.itemId)).toEqual(["ENG-2"]);
+    expect((await listMergeQueues(sqliteDb(h.db))).map((entry) => entry.itemId)).toEqual(["ENG-2"]);
     h.state.mergeState = null;
     h.state.ci = () => undefined;
     expect(await h.pass("ENG-2")).toEqual({ kind: "merged" });
@@ -575,6 +575,9 @@ describe("advanceMerge on a conflicting pull request waiting for CI", () => {
     expect(await h.pass("ENG-2")).toMatchObject({ kind: "wait", reason: "ahead" });
     expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "ci" });
     expect(await resumes(h)).toEqual([]);
-    expect(listMergeQueues(h.db).map((entry) => entry.itemId)).toEqual(["ENG-1", "ENG-2"]);
+    expect((await listMergeQueues(sqliteDb(h.db))).map((entry) => entry.itemId)).toEqual([
+      "ENG-1",
+      "ENG-2",
+    ]);
   });
 });

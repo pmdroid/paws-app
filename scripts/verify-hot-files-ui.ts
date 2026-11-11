@@ -38,7 +38,7 @@ const server = Bun.serve({
       (await handleMergeSettingsRequest(request, {
         configPath,
         csrfToken: "ui-fixture",
-        hotFiles: () => [
+        hotFiles: async () => [
           {
             repository: "acme/platform",
             path: "src/merge/advance-harness.ts",

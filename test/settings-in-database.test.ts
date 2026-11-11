@@ -83,7 +83,7 @@ function saveTimeLimits(configPath: string, implementationMinutes: number) {
 
 test("an empty setting table reads config.toml as the bootstrap", async () => {
   const a = await instance(shared(), "ACME");
-  expect(readSetting(a.db, CONFIG_SETTINGS_KEY)).toBe(null);
+  expect(await readSetting(sqliteDb(a.db), CONFIG_SETTINGS_KEY)).toBe(null);
   expect(readMergeSettings(loadConfigFile(a.configPath)).default.order).toBe("queue");
   expect(loadConfigFile(a.configPath).linearTeam).toBe("ACME");
 });

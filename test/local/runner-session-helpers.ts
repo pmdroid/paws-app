@@ -236,7 +236,7 @@ export async function probeRunnerSessionHelpers(
       409,
     );
     await assert.rejects(coordinator.helpers.result(first.command.id), /authority changed/);
-    coordinator.helpers.finish(first.command.id);
+    await coordinator.helpers.finish(first.command.id);
     observe("a newer Linear request fences the old helper and its result", true, {
       oldGeneration: first.command.sessionGeneration,
       leaseStatus: 409,
@@ -271,7 +271,7 @@ export async function probeRunnerSessionHelpers(
       prompt: "Implement task",
     };
     await assert.rejects(coordinator.work.assign(workCommand), /occupied by active work/);
-    coordinator.helpers.finish(selected.command.id);
+    await coordinator.helpers.finish(selected.command.id);
     await coordinator.work.assign(workCommand);
     await assert.rejects(coordinator.helpers.dispatch(input), /busy/);
     await coordinator.work.finish(run.id, 1);
@@ -282,13 +282,13 @@ export async function probeRunnerSessionHelpers(
     const stopped = await coordinator.helpers.dispatch(input);
     db.run("UPDATE linear_session SET stopped_at=? WHERE session_id=?", [now, "session"]);
     assert.equal((await call(`/v1/helper-commands/${stopped.command.id}/lease`, {})).status, 409);
-    coordinator.helpers.finish(stopped.command.id);
+    await coordinator.helpers.finish(stopped.command.id);
     db.run("UPDATE linear_session SET stopped_at=NULL WHERE session_id=?", ["session"]);
     const expired = await coordinator.helpers.dispatch(input);
     now = expired.command.expiresAt;
     assert.equal((await call(`/v1/helper-commands/${expired.command.id}/lease`, {})).status, 409);
     assert.deepEqual((await call("/v1/helper-commands")).body.commands, []);
-    coordinator.helpers.finish(expired.command.id);
+    await coordinator.helpers.finish(expired.command.id);
     observe("Stop and exact helper expiry fence delivery and execution authority", true, {
       stopStatus: 409,
       expiryStatus: 409,
@@ -309,7 +309,7 @@ export async function probeRunnerSessionHelpers(
     const fenced = await coordinator.helpers.dispatch(input);
     db.run("UPDATE runner SET fence=fence+1 WHERE id=?", [runnerId]);
     await assert.rejects(coordinator.helpers.result(fenced.command.id), /identity changed/);
-    coordinator.helpers.finish(fenced.command.id);
+    await coordinator.helpers.finish(fenced.command.id);
     const removed = await coordinator.helpers.dispatch(input);
     db.run("UPDATE workspace_member SET active=0 WHERE workspace_id=? AND user_id=?", [
       workspace.id,
@@ -337,7 +337,7 @@ export async function probeRunnerSessionHelpers(
         changedFenceDenied: true,
       },
     );
-    coordinator.helpers.finish(removed.command.id);
+    await coordinator.helpers.finish(removed.command.id);
     const replacement = await pair("Revoked helper runner", RUNNER_IDENTITIES[1]);
     const pending = await coordinator.helpers.dispatch({ ...input, runnerId: replacement });
     await coordinator.control.setStatus(principal, replacement, "revoked");

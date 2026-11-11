@@ -85,7 +85,9 @@ describe("a Paws restart and the merge queue", () => {
       expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("merge_queue");
       expect(await reverifies(h)).toEqual([]);
       expect(h.github.merged).toEqual([]);
-      expect(listMergeQueues(h.db).map((entry) => entry.itemId)).toEqual([item.id]);
+      expect((await listMergeQueues(sqliteDb(h.db))).map((entry) => entry.itemId)).toEqual([
+        item.id,
+      ]);
       h.state.beforeMergeToken = () => {};
       h.state.beforeGit = () => {};
       expect(await h.pass(item.id)).toEqual({ kind: "merged" });
@@ -118,14 +120,14 @@ describe("a Paws restart and the merge queue", () => {
       expect(await h.pass(id, await openMergeJob(h, id))).toMatchObject({ kind: "wait" });
       h.clock.advance(1_000);
     }
-    expect(listMergeQueues(h.db).map((entry) => entry.itemId)).toEqual(ids);
+    expect((await listMergeQueues(sqliteDb(h.db))).map((entry) => entry.itemId)).toEqual(ids);
 
     await restart(h);
 
     expect(await reverifies(h)).toEqual([]);
     for (const id of ids)
       expect((await getWorkItem(sqliteDb(h.db), id))?.state).toBe("merge_queue");
-    expect(listMergeQueues(h.db).map((entry) => entry.itemId)).toEqual(ids);
+    expect((await listMergeQueues(sqliteDb(h.db))).map((entry) => entry.itemId)).toEqual(ids);
 
     h.state.ci = () => undefined;
     for (const id of [...ids].reverse()) await h.pass(id, await openMergeJob(h, id));
@@ -181,14 +183,14 @@ describe("a Paws restart and the merge queue", () => {
       await restart(h);
       h.state.mergeReadUnknown = true;
       const published = h.published.length;
-      const queue = listMergeQueues(h.db);
+      const queue = await listMergeQueues(sqliteDb(h.db));
       for (let attempt = 0; attempt < 3; attempt++) {
         expect(await h.pass(item.id, { itemId: item.id })).toMatchObject({
           kind: "wait",
           reason: "merge_outcome",
         });
         expect(await mergeCallInFlight(sqliteDb(h.db), item.id)).toBe(true);
-        expect(listMergeQueues(h.db)).toEqual(queue);
+        expect(await listMergeQueues(sqliteDb(h.db))).toEqual(queue);
         expect(await getConfirmedRemoteMerge(sqliteDb(h.db), item.id)).toBeNull();
         expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("merge_queue");
         expect(await reverifies(h)).toEqual([]);
@@ -235,7 +237,10 @@ describe("a Paws restart and the merge queue", () => {
     expect((await reverifies(h)).map((job) => job.payload)).toEqual([{ itemId: first.id }]);
     expect(await mergeCallInFlight(sqliteDb(h.db), first.id)).toBe(false);
     expect((await getWorkItem(sqliteDb(h.db), second.id))?.state).toBe("merge_queue");
-    expect(listMergeQueues(h.db).map((entry) => entry.itemId)).toEqual([first.id, second.id]);
+    expect((await listMergeQueues(sqliteDb(h.db))).map((entry) => entry.itemId)).toEqual([
+      first.id,
+      second.id,
+    ]);
     expect(h.github.merged).toEqual([]);
   });
 });

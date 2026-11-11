@@ -108,7 +108,7 @@ test("daily helper uses an admin runner, accepts a stopped reporting session, an
     const dispatched = await f.helpers.dispatch(input);
     f.db.run("UPDATE workspace_member SET role='member'");
     await expect(f.helpers.current(dispatched.command.id)).rejects.toThrow("authority changed");
-    f.helpers.finish(dispatched.command.id);
+    await f.helpers.finish(dispatched.command.id);
     await expect(f.helpers.dispatch(input)).rejects.toThrow("authority changed");
   } finally {
     f.db.close();

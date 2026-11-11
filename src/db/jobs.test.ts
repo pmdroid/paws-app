@@ -418,7 +418,12 @@ describe("job queue", () => {
     expect((await claim(db, clock, [JOB_KIND.merge]))?.payload).toEqual({ itemId: "eng-1" });
     expect((await claim(db, clock, [JOB_KIND.merge]))?.payload).toEqual({ itemId: "eng-2" });
     expect(
-      listMergeQueues(db).map((entry) => [entry.itemId, entry.lane, entry.position, entry.total]),
+      (await listMergeQueues(sqliteDb(db))).map((entry) => [
+        entry.itemId,
+        entry.lane,
+        entry.position,
+        entry.total,
+      ]),
     ).toEqual([
       ["eng-1", "project-a", 1, 1],
       ["eng-2", "project-b", 1, 1],
@@ -438,7 +443,11 @@ describe("job queue", () => {
     expect((await claim(db, clock, [JOB_KIND.merge]))?.payload).toEqual({ itemId: "eng-1" });
     expect(await claim(db, clock, [JOB_KIND.merge])).toBeNull();
     expect(
-      listMergeQueues(db).map((entry) => [entry.itemId, entry.position, entry.aheadItemId]),
+      (await listMergeQueues(sqliteDb(db))).map((entry) => [
+        entry.itemId,
+        entry.position,
+        entry.aheadItemId,
+      ]),
     ).toEqual([
       ["eng-1", 1, null],
       ["eng-2", 2, "eng-1"],

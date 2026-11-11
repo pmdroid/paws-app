@@ -63,8 +63,8 @@ async function passUntilMerged(h: MergeHarness, id: string) {
   return step;
 }
 
-function queued(h: MergeHarness): string[] {
-  return listMergeQueues(h.db).map((entry) => entry.itemId);
+async function queued(h: MergeHarness): Promise<string[]> {
+  return (await listMergeQueues(sqliteDb(h.db))).map((entry) => entry.itemId);
 }
 
 describe("advanceMerge in the repository merge queue", () => {
@@ -77,7 +77,7 @@ describe("advanceMerge in the repository merge queue", () => {
       await h.pass(id);
       h.clock.advance(1_000);
     }
-    expect(queued(h)).toEqual(ids);
+    expect(await queued(h)).toEqual(ids);
     expect(await h.pass("ENG-101")).toMatchObject({
       kind: "wait",
       reason: "ahead",
@@ -93,7 +93,7 @@ describe("advanceMerge in the repository merge queue", () => {
     expect(await h.pass("ENG-101")).toEqual({ kind: "merged" });
     expect(await h.pass("ENG-102")).toEqual({ kind: "merged" });
     expect(mergedOrder(h, ids)).toEqual(ids);
-    expect(queued(h)).toEqual([]);
+    expect(await queued(h)).toEqual([]);
     expect(h.bodies("status").filter((body) => body.includes("acme/app queue"))).toEqual([
       "Second in the acme/app queue. ENG-103 merges first.",
       "Third in the acme/app queue. ENG-101 merges first.",
@@ -115,7 +115,7 @@ describe("advanceMerge in the repository merge queue", () => {
       await h.pass(id);
       h.clock.advance(1_000);
     }
-    expect(queued(h)).toEqual(["ENG-111", "ENG-112"]);
+    expect(await queued(h)).toEqual(["ENG-111", "ENG-112"]);
     expect(mergedOrder(h, ids)).toEqual(["ENG-114"]);
     expect(h.bodies("afterPullRequest")).toEqual([
       "Waiting for an approving review on [pull request #3](https://github.com/acme/app/pull/3). It joins the acme/app merge queue once approved.",
@@ -162,13 +162,13 @@ describe("advanceMerge in the repository merge queue", () => {
     expect((await resumes(h)).map((payload) => [payload.itemId, payload.reason])).toEqual([
       ["ENG-121", "ci"],
     ]);
-    expect(queued(h)).toEqual(["ENG-122", "ENG-123"]);
+    expect(await queued(h)).toEqual(["ENG-122", "ENG-123"]);
 
     expect(await h.pass("ENG-122")).toEqual({ kind: "merged" });
     await h.requeue("ENG-121", "fixed\n");
     h.clock.advance(1_000);
     expect(await h.pass("ENG-121")).toMatchObject({ kind: "wait", reason: "ahead" });
-    expect(queued(h)).toEqual(["ENG-123", "ENG-121"]);
+    expect(await queued(h)).toEqual(["ENG-123", "ENG-121"]);
     expect(await h.pass("ENG-123")).toEqual({ kind: "merged" });
     expect(await h.pass("ENG-121")).toEqual({ kind: "merged" });
     expect(mergedOrder(h, ids)).toEqual(["ENG-122", "ENG-123", "ENG-121"]);
@@ -185,7 +185,11 @@ describe("advanceMerge in the repository merge queue", () => {
     }
     await applyWorkItemEvent(sqliteDb(h.db), "ENG-141", "reverify_requested");
     expect(
-      listMergeQueues(h.db).map((entry) => [entry.itemId, entry.position, entry.busy]),
+      (await listMergeQueues(sqliteDb(h.db))).map((entry) => [
+        entry.itemId,
+        entry.position,
+        entry.busy,
+      ]),
     ).toEqual([
       ["ENG-141", 1, true],
       ["ENG-142", 2, false],
@@ -201,7 +205,7 @@ describe("advanceMerge in the repository merge queue", () => {
     });
     expect(await h.pass("ENG-142")).toEqual({ kind: "merged" });
     expect(await passUntilMerged(h, "ENG-143")).toEqual({ kind: "merged" });
-    expect(queued(h)).toEqual(["ENG-141", "ENG-144"]);
+    expect(await queued(h)).toEqual(["ENG-141", "ENG-144"]);
 
     await h.closeout("ENG-141");
     expect(await h.pass("ENG-144")).toMatchObject({
@@ -262,9 +266,9 @@ describe("advanceMerge in the repository merge queue", () => {
     );
     expect(new Set(reverify.map((job) => job.status))).toEqual(new Set(["pending"]));
     expect(new Set(reverify.map((job) => job.runAt))).toEqual(new Set([h.clock.now()]));
-    expect(listMergeQueues(h.db).map((entry) => [entry.itemId, entry.busy])).toEqual(
-      ids.map((id) => [id, true]),
-    );
+    expect(
+      (await listMergeQueues(sqliteDb(h.db))).map((entry) => [entry.itemId, entry.busy]),
+    ).toEqual(ids.map((id) => [id, true]));
     expect(h.github.merged).toEqual([]);
     // The five Closeout re-runs are claimed side by side, not one after another.
     const running = [];
@@ -307,7 +311,7 @@ describe("advanceMerge in the repository merge queue", () => {
     expect(h.published).toEqual(["ENG-132"]);
     expect((await getJob(sqliteDb(h.db), waiting))?.runAt).toBe(h.clock.now());
 
-    expect(queued(h)).toEqual(["ENG-131"]);
+    expect(await queued(h)).toEqual(["ENG-131"]);
     expect(await h.pass("ENG-131")).toEqual({ kind: "merged" });
     expect(mergedOrder(h, ids)).toEqual(["ENG-132", "ENG-131"]);
   });
@@ -331,7 +335,11 @@ describe("advanceMerge in the repository merge queue", () => {
       h.clock.advance(1_000);
     }
     expect(
-      listMergeQueues(h.db).map((entry) => [entry.itemId, entry.lane, entry.position]),
+      (await listMergeQueues(sqliteDb(h.db))).map((entry) => [
+        entry.itemId,
+        entry.lane,
+        entry.position,
+      ]),
     ).toEqual([
       ["ENG-171", "project-a", 1],
       ["ENG-173", "project-a", 2],
@@ -376,7 +384,7 @@ describe("advanceMerge in the repository merge queue", () => {
     expect(h.published).toEqual(["ENG-142"]);
     expect(mergedOrder(h, ids)).toEqual(["ENG-142"]);
     // ENG-141 keeps its row, so its place comes back when ENG-140 merges.
-    expect(queued(h)).toEqual(["ENG-141"]);
+    expect(await queued(h)).toEqual(["ENG-141"]);
   });
 });
 

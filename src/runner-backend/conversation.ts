@@ -91,8 +91,8 @@ export function conversationTurns(options: {
         ];
       });
     },
-    finish(commandId: string): void {
-      options.helpers.finish(commandId);
+    finishSteps(q: Q, commandId: string): Steps<void> {
+      return options.helpers.finishSteps(q, commandId);
     },
   };
 }

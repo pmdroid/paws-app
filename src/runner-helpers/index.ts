@@ -1,6 +1,6 @@
 import {
   acknowledgeRunnerHelperSteps,
-  endRunnerHelper,
+  endRunnerHelperSteps,
   workspaceMemberUsable,
   getLinearSessionSteps,
   insertRunnerHelperSteps,
@@ -242,8 +242,11 @@ export function createRunnerHelpers(options: {
       const { row } = await store.run((q) => currentSteps(q, id));
       return row.result === null ? null : RunnerHelperResultSchema.parse(JSON.parse(row.result));
     },
-    finish(id: string) {
-      endRunnerHelper(db, id, now());
+    finishSteps(q: Q, id: string): Steps<void> {
+      return endRunnerHelperSteps(q, id, now());
+    },
+    async finish(id: string): Promise<void> {
+      await store.run((q) => endRunnerHelperSteps(q, id, now()));
     },
     async fetch(request: Request, runnerId: string): Promise<Response | null> {
       const path = new URL(request.url).pathname;

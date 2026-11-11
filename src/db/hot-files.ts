@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { aliasedTable, and, asc, desc, eq, gt, lte, or, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
 
 /** Conflict restarts this recent make their files hot. */
@@ -213,6 +212,6 @@ export function* hotFilesSteps(q: Q, now: number): Steps<HotFile[]> {
  * candidate it returned shares with pull requests that merged into the same repository before
  * it.
  */
-export function hotFiles(db: Database, now: number): HotFile[] {
-  return settled(sqliteDb(db).run((q) => hotFilesSteps(q, now)));
+export async function hotFiles(store: Db, now: number): Promise<HotFile[]> {
+  return await store.run((q) => hotFilesSteps(q, now));
 }

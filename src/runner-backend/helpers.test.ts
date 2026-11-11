@@ -1040,7 +1040,7 @@ test("held-back helpers journal one line per runner at most every five minutes",
     await Bun.sleep(20);
     controller.abort();
     await waiting.catch(() => undefined);
-    f.helpers.finish(out.command.id);
+    await f.helpers.finish(out.command.id);
   };
   await holdOnce();
   expect(f.journaled).toHaveLength(1);

@@ -63,7 +63,7 @@ describe("restart and ask", () => {
     db.run("UPDATE work_item SET state='merge_queue' WHERE id='item'");
     await joinMergeQueue(sqliteDb(db), { itemId: "item", repository: "owner/repo", now: 2 });
     const jobs = (await listJobs(sqliteDb(db))).length;
-    const queue = listMergeQueues(db);
+    const queue = await listMergeQueues(sqliteDb(db));
     await beginMergeCall(sqliteDb(db), "item", "head", 3);
     expect(
       restart(db, (await getWorkItem(sqliteDb(db), "item"))!, {
@@ -74,7 +74,7 @@ describe("restart and ask", () => {
     ).toBeNull();
     expect((await getWorkItem(sqliteDb(db), "item"))?.state).toBe("merge_queue");
     expect(await listJobs(sqliteDb(db))).toHaveLength(jobs);
-    expect(listMergeQueues(db)).toEqual(queue);
+    expect(await listMergeQueues(sqliteDb(db))).toEqual(queue);
     await endMergeCall(sqliteDb(db), "item");
     expect(
       restart(db, (await getWorkItem(sqliteDb(db), "item"))!, {

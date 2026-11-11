@@ -406,7 +406,7 @@ export function createRemoteSessionAgentRunner(options: {
             journalCaught(error, "helpers.forSession.accountingCleanup", null);
           }
           try {
-            if (others === 0) options.helpers.finish(command.id);
+            if (others === 0) await options.helpers.finish(command.id);
           } catch (error) {
             journalCaught(error, "helpers.forSession.finishCleanup", null);
           }

@@ -29,13 +29,15 @@ test("each repository has its own queue, in the order tasks became ready", async
   await ready(db, "web", "acme/web", 3);
   await ready(db, "c", "acme/platform", 3);
   expect(
-    listMergeQueues(db).map(({ itemId, repository, position, total, aheadItemId }) => ({
-      itemId,
-      repository,
-      position,
-      total,
-      aheadItemId,
-    })),
+    (await listMergeQueues(sqliteDb(db))).map(
+      ({ itemId, repository, position, total, aheadItemId }) => ({
+        itemId,
+        repository,
+        position,
+        total,
+        aheadItemId,
+      }),
+    ),
   ).toEqual([
     { itemId: "a", repository: "acme/platform", position: 1, total: 3, aheadItemId: null },
     { itemId: "b", repository: "acme/platform", position: 2, total: 3, aheadItemId: "a" },
@@ -49,12 +51,15 @@ test("joining again keeps the place; leaving and joining again goes to the end",
   await ready(db, "a", "acme/platform", 1);
   await ready(db, "b", "acme/platform", 2);
   await joinMergeQueue(sqliteDb(db), { itemId: "a", repository: "acme/platform", now: 5 });
-  expect(mergeQueuePosition(db, "a")?.position).toBe(1);
+  expect((await mergeQueuePosition(sqliteDb(db), "a"))?.position).toBe(1);
   await leaveMergeQueue(sqliteDb(db), "a");
-  expect(mergeQueuePosition(db, "a")).toBeNull();
-  expect(mergeQueuePosition(db, "b")?.position).toBe(1);
+  expect(await mergeQueuePosition(sqliteDb(db), "a")).toBeNull();
+  expect((await mergeQueuePosition(sqliteDb(db), "b"))?.position).toBe(1);
   await joinMergeQueue(sqliteDb(db), { itemId: "a", repository: "acme/platform", now: 6 });
-  expect(mergeQueuePosition(db, "a")).toMatchObject({ position: 2, aheadItemId: "b" });
+  expect(await mergeQueuePosition(sqliteDb(db), "a")).toMatchObject({
+    position: 2,
+    aheadItemId: "b",
+  });
 });
 
 test("a task back with the agent or waiting for an answer holds no place", async () => {
@@ -62,19 +67,19 @@ test("a task back with the agent or waiting for an answer holds no place", async
   await ready(db, "a", "acme/platform", 1);
   await ready(db, "b", "acme/platform", 2);
   db.run("UPDATE work_item SET state='running' WHERE id='a'");
-  expect(mergeQueuePosition(db, "b")?.position).toBe(1);
+  expect((await mergeQueuePosition(sqliteDb(db), "b"))?.position).toBe(1);
   db.run("UPDATE work_item SET state='awaiting_input' WHERE id='a'");
-  expect(mergeQueuePosition(db, "b")?.position).toBe(1);
+  expect((await mergeQueuePosition(sqliteDb(db), "b"))?.position).toBe(1);
   // The first task runs Closeout again after main moved and keeps its place.
   db.run("UPDATE work_item SET state='verifying' WHERE id='a'");
-  expect(mergeQueuePosition(db, "b")?.position).toBe(2);
+  expect((await mergeQueuePosition(sqliteDb(db), "b"))?.position).toBe(2);
 });
 
 test("the notified position is kept with the entry", async () => {
   const db = tempDb();
   await ready(db, "a", "acme/platform", 1);
   await markMergeQueueNotified(sqliteDb(db), "a", 2);
-  expect(mergeQueuePosition(db, "a")?.notifiedPosition).toBe(2);
+  expect((await mergeQueuePosition(sqliteDb(db), "a"))?.notifiedPosition).toBe(2);
 });
 
 test("the position reads like the run page", () => {
@@ -134,7 +139,9 @@ test("mixed-case bindings join one ordered queue and keep their places", async (
   await ready(db, "first", "Acme/APP", 1);
   await ready(db, "second", "acme/app", 2);
   await joinMergeQueue(sqliteDb(db), { itemId: "first", repository: "ACME/App", now: 3 });
-  expect(listMergeQueues(db).map((e) => [e.itemId, e.repository, e.position])).toEqual([
+  expect(
+    (await listMergeQueues(sqliteDb(db))).map((e) => [e.itemId, e.repository, e.position]),
+  ).toEqual([
     ["first", "acme/app", 1],
     ["second", "acme/app", 2],
   ]);

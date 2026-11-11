@@ -57,7 +57,7 @@ export type MergeSettingsOptions = {
    */
   highRiskFile?: (repo: string) => Promise<HighRiskFile | null>;
   /** The files that caused merge-queue conflicts in the last 7 days, shown read-only. */
-  hotFiles?: () => HotFileView[];
+  hotFiles?: () => Promise<HotFileView[]>;
 };
 
 /** One conflict-prone file under Settings › Merging. */
@@ -141,7 +141,7 @@ export async function handleMergeSettingsRequest(
       ...(choicesError ? { choicesError } : {}),
       ...(options.githubQueues ? await githubQueueView(options.githubQueues) : {}),
       ...(options.upToDateRules ? await upToDateRuleView(options.upToDateRules) : {}),
-      ...(options.hotFiles ? hotFileView(options.hotFiles) : {}),
+      ...(options.hotFiles ? await hotFileView(options.hotFiles) : {}),
     });
   }
   if (request.method !== "PUT") return json({ error: "Method not allowed" }, 405);
@@ -473,9 +473,11 @@ async function upToDateRuleView(
   return repositories.length ? { upToDateRule: repositories } : {};
 }
 
-function hotFileView(read: () => HotFileView[]): { hotFiles?: HotFileView[] } {
+async function hotFileView(
+  read: () => Promise<HotFileView[]>,
+): Promise<{ hotFiles?: HotFileView[] }> {
   try {
-    return { hotFiles: read() };
+    return { hotFiles: await read() };
   } catch (caughtError) {
     journalCaught(caughtError, "merging.hotFileView.read", null);
     return {};
