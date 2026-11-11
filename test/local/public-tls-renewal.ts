@@ -1,3 +1,4 @@
+import { pgliteServer } from "../pglite";
 import assert from "node:assert/strict";
 import { X509Certificate } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -12,7 +13,6 @@ import {
   insertQueuedItem,
   openDatabase,
   migrate,
-  sqliteDb,
 } from "../../src/db";
 import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "../../src/deployment";
 import { startServer } from "../../src/server";
@@ -301,6 +301,8 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
   const worktree = worktreePath(home, itemId);
   writeFileSync(join(worktree, "notes.txt"), "shutdown work\n");
   stage(old);
+  const database = await pgliteServer();
+  const cliEnv = { ...env, PAWS_DATABASE_URL: database.url };
   function runCli(logName: string) {
     const child = Bun.spawn(
       [
@@ -310,7 +312,7 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
         "./test/fixtures/workspace-runtime-linear.ts",
         "src/index.ts",
       ],
-      { cwd, env, stdout: "pipe", stderr: "pipe" },
+      { cwd, env: cliEnv, stdout: "pipe", stderr: "pipe" },
     );
     let output = "",
       error = "";
@@ -355,15 +357,13 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
     const cliPort = Number(running.output.match(/https:\/\/127\.0\.0\.1:(\d+)/)?.[1]);
     assert(cliPort > 0, running.output);
     assert.equal(await fingerprint(cliPort), oldFingerprint);
-    const db = openDatabase(join(home, "paws.db"));
+    const db = database.store;
     await insertQueuedItem(db, { id: itemId, branchName: "paws/tls-1", now: Date.now() });
     await saveRunCommitPolicy(
-      sqliteDb(db),
-      (await beginImplementRun(sqliteDb(db), itemId, Date.now(), { phase: "running", turn: 1 })).run
-        .id,
+      db,
+      (await beginImplementRun(db, itemId, Date.now(), { phase: "running", turn: 1 })).run.id,
       APP_POLICY,
     );
-    db.close();
     const rejectedSignals: string[] = [];
     for (const [name, tls] of [
       ["malformed", { key: old.key, cert: "invalid certificate" }],
@@ -394,9 +394,7 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
       (await git(["log", "-1", "--format=%s"], { cwd: worktree })).trim(),
       "wip: shutdown",
     );
-    const after = openDatabase(join(home, "paws.db"));
-    const state = (await getWorkItem(sqliteDb(after), itemId))?.state;
-    after.close();
+    const state = (await getWorkItem(database.store, itemId))?.state;
     assert.equal(state, "recovering");
     const restarted = runCli("cli-restarted.log");
     try {
@@ -426,6 +424,7 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
     );
   } finally {
     await running.stop();
+    await database.close();
   }
 }
 

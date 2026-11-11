@@ -27,10 +27,10 @@ function database() {
   return { db, root };
 }
 
-test("startup holds one store, sqliteDb() of its database", async () => {
+test("startup holds one store on Postgres", async () => {
   const paws = await startPaws({ PAWS_HOME: tempHome(), PAWS_PORT: "0", PAWS_HOST: "127.0.0.1" });
   try {
-    expect(paws.store).toBe(sqliteDb(paws.db));
+    expect(paws.store.dialect).toBe("postgres");
   } finally {
     await paws.stop();
   }

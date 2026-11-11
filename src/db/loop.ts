@@ -3,7 +3,7 @@ import { journalCaught, journalItemId } from "../journal";
 import type { Database } from "bun:sqlite";
 import { DEFAULT_LEASE_MS, isMergeWork, JOB_KIND, sleep, type Clock } from "../core";
 import { and, eq, isNotNull, notInArray, sql } from "drizzle-orm";
-import { sqliteDb, type Db, type Q, type Steps } from "./db";
+import { storeOf, type Db, type Q, type Steps } from "./db";
 import { jobInstanceElsewhereSteps } from "./instances";
 import { journal } from "./journal";
 import { accrueAtJobBoundary } from "./items";
@@ -116,7 +116,7 @@ export class JobLoop {
   readonly store: Db;
 
   constructor(
-    readonly db: Database,
+    readonly db: Database | Db,
     readonly clock: Clock,
     readonly options: {
       store?: Db;
@@ -128,7 +128,7 @@ export class JobLoop {
       concurrency?: number;
     } = {},
   ) {
-    this.store = options.store ?? sqliteDb(db);
+    this.store = options.store ?? storeOf(db);
   }
 
   get pollMs(): number {

@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { sqliteDb } from "../db";
+import { storeOf, type Db } from "../db";
 import { createSlackAuth, readSlackToken, type SlackFetch } from "./oauth";
 
 export type SlackIdentityReads = {
@@ -9,10 +9,10 @@ export type SlackIdentityReads = {
 
 export async function createSlackIdentityReads(options: {
   home: string;
-  db: Database;
+  db: Database | Db;
   fetch?: SlackFetch;
 }): Promise<SlackIdentityReads | null> {
-  const store = sqliteDb(options.db);
+  const store = storeOf(options.db);
   const installation = await readSlackToken(store, options.home);
   if (installation === null) return null;
   const auth = createSlackAuth(options);

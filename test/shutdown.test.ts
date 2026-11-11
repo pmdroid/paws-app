@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { setJournalSink } from "../src/db";
+import { databaseProbeSteps, setJournalSink } from "../src/db";
 import { startPaws } from "../src/index";
 import { shutdownPaws, stopPawsComponents } from "../src/shutdown";
 import { tempHome } from "./helpers";
@@ -24,7 +24,7 @@ for (const requestedCode of [0, 75]) {
         "Paws shutdown failed at server: Error: fake server stop rejected",
       );
       expect(lines.filter((line) => !shutdownLines.includes(line))).toEqual([]);
-      expect(() => paws.db.query("SELECT 1").get()).toThrow();
+      await expect(paws.store.run(databaseProbeSteps)).rejects.toThrow();
     } finally {
       restore();
       paws.server.stop = stopServer;

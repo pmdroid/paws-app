@@ -6,7 +6,8 @@ import {
   enqueueJobOnce,
   failJobSteps,
   getJobSteps,
-  sqliteDb,
+  storeOf,
+  type Db,
   type Q,
   type Steps,
 } from "../db";
@@ -14,14 +15,14 @@ import {
 type RotatingCredential = { accessToken: string; refreshToken: string | null };
 
 export async function refreshCredential<T extends RotatingCredential>(input: {
-  db: Database;
+  db: Database | Db;
   identity: string;
   read: (q: Q) => Steps<T | null>;
   write: (q: Q, value: T) => Steps<unknown>;
   refresh: (value: T, signal: AbortSignal) => Promise<T>;
   leaseMs?: number;
 }): Promise<T> {
-  const store = sqliteDb(input.db);
+  const store = storeOf(input.db);
   const read = () => store.run((q) => input.read(q));
   const original = await read();
   if (original?.refreshToken == null)

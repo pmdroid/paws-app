@@ -30,7 +30,7 @@ To start work, delegate an issue to the Paws app in Linear. Delegation is the ap
 
 | Path                          | What it is                                                                                                       |
 | ----------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `~/.paws/paws.db`             | SQLite queue (WAL, `synchronous=FULL`), and the Linear and Slack OAuth tokens sealed with the envelope key       |
+| `~/.paws/pglite/`             | The embedded Postgres (PGlite) database, unless `[database] url` names a server ([Database](docs/postgres.md))   |
 | `~/.paws/config.toml`         | Linear credentials and team, GitHub auth and repo, caps, and `agents.implementer`                                |
 | `~/.paws/secrets/`            | OAuth token file when Keychain or libsecret is unavailable, the envelope key and any GitHub App key. Mode `0700` |
 | `~/.paws/repos/`              | One bare mirror per repository; a runner-backed item's head is its `refs/paws/candidates/<item>` ref there       |
@@ -38,8 +38,6 @@ To start work, delegate an issue to the Paws app in Linear. Delegation is the ap
 | `~/.paws/runs/`               | Transcripts and Closeout reports                                                                                 |
 | `~/.paws/runner-transcripts/` | Paired runner transcripts, stored locally by default                                                             |
 | `~/.paws/logs/`               | Process logs                                                                                                     |
-
-To shrink `~/.paws/paws.db`, or to clear the plaintext runner-event bytes that sealing leaves in page slack, stop Paws and run `sqlite3 ~/.paws/paws.db "PRAGMA temp_store=FILE; VACUUM;"`; Paws itself never runs `VACUUM`, which would copy the whole database into memory.
 
 Paws can leave selected folders out of its worktrees. Add literal repository-relative folder paths to `~/.paws/config.toml`:
 

@@ -1,3 +1,4 @@
+import { and, eq, gt } from "drizzle-orm";
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -11,13 +12,12 @@ import {
   ensureLinearSession,
   getWorkItem,
   insertQueuedItem,
-  openDatabase,
   saveTaskMode,
-  sqliteDb,
 } from "../src/db";
 import { JOB_KIND } from "../src/core";
 import { startPaws } from "../src/index";
-import { tempHome, storeLinearToken } from "./helpers";
+import { tempHome, storeHomeLinearToken, withHomeStore } from "./helpers";
+import { pgliteServer } from "./pglite";
 
 /** App mode commits WIP only under a run commit policy. */
 const APP_POLICY = {
@@ -35,15 +35,15 @@ describe("shutdown WIP", () => {
       PAWS_PORT: "0",
       PAWS_HOST: "127.0.0.1",
     });
-    await insertQueuedItem(paws.db, {
+    await insertQueuedItem(paws.store, {
       id: "ENG-21",
       branchName: "paws/eng-21",
       now: Date.now(),
     });
     await saveRunCommitPolicy(
-      sqliteDb(paws.db),
+      paws.store,
       (
-        await beginImplementRun(sqliteDb(paws.db), "ENG-21", Date.now(), {
+        await beginImplementRun(paws.store, "ENG-21", Date.now(), {
           phase: "running",
           wipCommit: "wip",
           turn: 1,
@@ -59,9 +59,9 @@ describe("shutdown WIP", () => {
     expect(
       (await git(["-C", worktreePath(home, "ENG-21"), "branch", "--show-current"])).trim(),
     ).toBe("paws/eng-21");
-    const db = openDatabase(paws.paths.db);
-    expect((await getWorkItem(sqliteDb(db), "ENG-21"))?.state).toBe("recovering");
-    db.close();
+    expect((await withHomeStore(home, (store) => getWorkItem(store, "ENG-21")))?.state).toBe(
+      "recovering",
+    );
   }, 20_000);
 
   test("without a Linear workspace a start job launches nothing and stop still commits recoverable WIP", async () => {
@@ -79,7 +79,7 @@ describe("shutdown WIP", () => {
       "implementer",
       "hang",
     ].join(" ");
-    await storeLinearToken(home, {
+    await storeHomeLinearToken(home, {
       accessToken: "synthetic-linear-token",
       refreshToken: "synthetic-refresh-token",
       expiresAtMs: Date.now() + 600_000,
@@ -175,34 +175,41 @@ describe("shutdown WIP", () => {
       LINEAR_TEAM_ID: "team",
     });
     try {
-      const answer = await insertQueuedItem(paws.db, { id: "answer", sessionKey: "session" });
-      await ensureLinearSession(sqliteDb(paws.db), {
+      const answer = await insertQueuedItem(paws.store, { id: "answer", sessionKey: "session" });
+      await ensureLinearSession(paws.store, {
         sessionId: "session",
         issueId: answer.linearIssueId,
         creatorId: "human",
       });
-      await bindLinearSessionTask(sqliteDb(paws.db), "session", answer.delegationId);
-      await saveTaskMode(sqliteDb(paws.db), answer.id, "answer");
-      await enqueueJob(sqliteDb(paws.db), {
+      await bindLinearSessionTask(paws.store, "session", answer.delegationId);
+      await saveTaskMode(paws.store, answer.id, "answer");
+      await enqueueJob(paws.store, {
         queue: JOB_KIND.start,
         payload: { itemId: answer.id },
       });
-      const ticked = () =>
-        paws.db
-          .query<{ n: number }, []>(
-            "SELECT COUNT(*) AS n FROM job WHERE queue='scheduler.tick' AND run_at>created_at",
+      const ticked = async () =>
+        (
+          await paws.store.run((q) =>
+            q.all(
+              q.orm
+                .select({ id: q.t.job.id })
+                .from(q.t.job)
+                .where(
+                  and(eq(q.t.job.queue, "scheduler.tick"), gt(q.t.job.runAt, q.t.job.createdAt)),
+                ),
+            ),
           )
-          .get()!.n > 0;
-      for (let i = 0; i < 2_000 && !ticked(); i += 5) await Bun.sleep(5);
-      expect(ticked()).toBe(true);
-      expect((await getWorkItem(sqliteDb(paws.db), answer.id))?.state).toBe("queued");
+        ).length > 0;
+      for (let i = 0; i < 2_000 && !(await ticked()); i += 5) await Bun.sleep(5);
+      expect(await ticked()).toBe(true);
+      expect((await getWorkItem(paws.store, answer.id))?.state).toBe("queued");
       expect(existsSync(evidence)).toBe(false);
       expect(existsSync(`${evidence}.descendant`)).toBe(false);
-      await insertQueuedItem(paws.db, { id: "ENG-21", branchName: "paws/eng-21" });
+      await insertQueuedItem(paws.store, { id: "ENG-21", branchName: "paws/eng-21" });
       await saveRunCommitPolicy(
-        sqliteDb(paws.db),
+        paws.store,
         (
-          await beginImplementRun(sqliteDb(paws.db), "ENG-21", Date.now(), {
+          await beginImplementRun(paws.store, "ENG-21", Date.now(), {
             phase: "running",
             turn: 1,
           })
@@ -212,17 +219,14 @@ describe("shutdown WIP", () => {
       const stopping = paws.stop();
       expect(paws.stop()).toBe(stopping);
       await stopping;
-      await expect(getWorkItem(sqliteDb(paws.db), answer.id)).rejects.toThrow();
+      await expect(getWorkItem(paws.store, answer.id)).rejects.toThrow();
       expect(
         (await git(["-C", worktreePath(home, "ENG-21"), "log", "-1", "--format=%s"])).trim(),
       ).toBe("wip: shutdown");
-      const recovered = openDatabase(paws.paths.db);
-      try {
-        expect((await getWorkItem(sqliteDb(recovered), "ENG-21"))?.state).toBe("recovering");
-        expect((await getWorkItem(sqliteDb(recovered), answer.id))?.state).toBe("queued");
-      } finally {
-        recovered.close();
-      }
+      await withHomeStore(home, async (store) => {
+        expect((await getWorkItem(store, "ENG-21"))?.state).toBe("recovering");
+        expect((await getWorkItem(store, answer.id))?.state).toBe("queued");
+      });
     } finally {
       await paws.stop();
       globalThis.fetch = nativeFetch;
@@ -235,7 +239,8 @@ describe("shutdown WIP", () => {
     const home = tempHome();
     await seedWorktree(home, "ENG-21");
     await writeFile(join(worktreePath(home, "ENG-21"), "notes.txt"), "dirty\n");
-    const env = childEnv(home);
+    const server = await pgliteServer();
+    const env = { ...childEnv(home), PAWS_DATABASE_URL: server.url };
     const proc = Bun.spawn(["bun", "src/index.ts"], {
       cwd: new URL("..", import.meta.url).pathname,
       env,
@@ -244,19 +249,17 @@ describe("shutdown WIP", () => {
     });
     try {
       await readUntil(proc, "paws ready", 15_000);
-      const db = openDatabase(join(home, "paws.db"));
+      const db = server.store;
       await insertQueuedItem(db, {
         id: "ENG-21",
         branchName: "paws/eng-21",
         now: Date.now(),
       });
       await saveRunCommitPolicy(
-        sqliteDb(db),
-        (await beginImplementRun(sqliteDb(db), "ENG-21", Date.now(), { phase: "running", turn: 1 }))
-          .run.id,
+        db,
+        (await beginImplementRun(db, "ENG-21", Date.now(), { phase: "running", turn: 1 })).run.id,
         APP_POLICY,
       );
-      db.close();
       proc.kill("SIGTERM");
       const code = await Promise.race([
         proc.exited,
@@ -268,11 +271,10 @@ describe("shutdown WIP", () => {
       expect(
         (await git(["-C", worktreePath(home, "ENG-21"), "log", "-1", "--format=%s"])).trim(),
       ).toBe("wip: shutdown");
-      const after = openDatabase(join(home, "paws.db"));
-      expect((await getWorkItem(sqliteDb(after), "ENG-21"))?.state).toBe("recovering");
-      after.close();
+      expect((await getWorkItem(db, "ENG-21"))?.state).toBe("recovering");
     } finally {
       proc.kill();
+      await server.close();
     }
   }, 30_000);
 });

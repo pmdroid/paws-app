@@ -84,6 +84,10 @@ export function sqliteDb(database: Database): SqliteDb {
   return db;
 }
 
+export function storeOf(source: Database | Db): Db {
+  return "dialect" in source ? source : sqliteDb(source);
+}
+
 type SqliteQuery = { all(): unknown[]; run(): unknown };
 
 function openSqliteDb(database: Database): SqliteDb {

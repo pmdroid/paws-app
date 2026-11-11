@@ -1,13 +1,9 @@
+import { asc } from "drizzle-orm";
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import {
-  consumeWorkspaceBootstrap,
-  putWorkspaceUser,
-  syncWorkspaceMember,
-  sqliteDb,
-} from "../../src/db";
+import { consumeWorkspaceBootstrap, putWorkspaceUser, syncWorkspaceMember } from "../../src/db";
 import { startPaws } from "../../src/index";
 import { initializeRunnerCoordinator } from "../../src/runner-coordinator";
 import { createRunnerKey } from "../../src/runner-identity";
@@ -85,27 +81,27 @@ const paws = await startPaws({
 });
 await paws.ready;
 const now = Date.now();
-const owner = await putWorkspaceUser(sqliteDb(paws.db), {
+const owner = await putWorkspaceUser(paws.store, {
   id: workspaceId(),
   linearUserId: "owner",
   name: "Owner",
   email: "owner@example.invalid",
 });
-const workspace = await consumeWorkspaceBootstrap(sqliteDb(paws.db), {
+const workspace = await consumeWorkspaceBootstrap(paws.store, {
   id: workspaceId(),
   organizationId: "org",
   name: "Runner proof",
   userId: owner,
-  tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(paws.db), "org", now)),
+  tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(paws.store, "org", now)),
   now,
 });
-const member = await putWorkspaceUser(sqliteDb(paws.db), {
+const member = await putWorkspaceUser(paws.store, {
   id: workspaceId(),
   linearUserId: "member",
   name: "Member",
   email: "member@example.invalid",
 });
-await syncWorkspaceMember(sqliteDb(paws.db), {
+await syncWorkspaceMember(paws.store, {
   workspaceId: workspace.id,
   userId: member,
   role: "member",
@@ -119,7 +115,7 @@ for (const [name, userId, authenticatedAt] of [
   ["member", member, now],
   ["stale", owner, now - 2 * 24 * 60 * 60_000],
 ] as const) {
-  const issued = await issueWorkspaceSession(sqliteDb(paws.db), {
+  const issued = await issueWorkspaceSession(paws.store, {
     userId,
     workspaceId: workspace.id,
     now: authenticatedAt,
@@ -144,9 +140,25 @@ for await (const line of lines) {
     console.log(
       JSON.stringify({
         snapshot: {
-          runners: paws.db.query("SELECT id,status FROM runner").all(),
-          commands: paws.db.query("SELECT kind FROM runner_command ORDER BY rowid").all(),
-          audit: paws.db.query("SELECT action FROM workspace_access_audit ORDER BY rowid").all(),
+          runners: await paws.store.run((q) =>
+            q.all(q.orm.select({ id: q.t.runner.id, status: q.t.runner.status }).from(q.t.runner)),
+          ),
+          commands: await paws.store.run((q) =>
+            q.all(
+              q.orm
+                .select({ kind: q.t.runnerCommand.kind })
+                .from(q.t.runnerCommand)
+                .orderBy(asc(q.t.runnerCommand.ordinal)),
+            ),
+          ),
+          audit: await paws.store.run((q) =>
+            q.all(
+              q.orm
+                .select({ action: q.t.workspaceAccessAudit.action })
+                .from(q.t.workspaceAccessAudit)
+                .orderBy(asc(q.t.workspaceAccessAudit.id)),
+            ),
+          ),
         },
       }),
     );

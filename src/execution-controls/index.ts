@@ -14,7 +14,8 @@ import {
   parseDeadDeliveryRef,
   resumeUsagePauseNowSteps,
   retryDeadDeliverySteps,
-  sqliteDb,
+  storeOf,
+  type Db,
   submitCommandSteps,
   usagePauseSteps,
   workspaceMemberSteps,
@@ -40,13 +41,13 @@ export type CanAct = (q: Q) => Steps<boolean>;
 export type OnCommitted = (q: Q) => Steps<void>;
 
 export function createExecutionControls(input: {
-  db: Database;
+  db: Database | Db;
   bus: CommandBus;
   getPort: (workspaceId: string) => ExecutionControlPort | null;
   now?: () => number;
 }) {
   const now = input.now ?? Date.now;
-  const store = sqliteDb(input.db);
+  const store = storeOf(input.db);
   function* authorizedSteps(
     q: Q,
     itemId: string,

@@ -429,7 +429,7 @@ export function* pruneRunnerEventsSteps(q: Q, cutoff: number, limit: number): St
           AND NOT EXISTS(SELECT 1 FROM runner_question_answer a
             WHERE a.run_id=q.run_id AND a.generation=q.generation AND a.sequence=q.sequence))`;
   const prunable = sql`
-    SELECT e.rowid FROM runner_event e
+    SELECT e.run_id, e.generation, e.sequence FROM runner_event e
     WHERE e.run_id IN (${prunableRuns})
       AND NOT EXISTS(SELECT 1 FROM runner_question_answer a
         WHERE a.run_id=e.run_id AND a.generation=e.generation AND a.sequence=e.sequence)
@@ -437,7 +437,7 @@ export function* pruneRunnerEventsSteps(q: Q, cutoff: number, limit: number): St
   const deleted = yield* q.all(
     q.orm
       .delete(e)
-      .where(sql`rowid IN (${prunable})`)
+      .where(sql`(${e.runId}, ${e.generation}, ${e.sequence}) IN (${prunable})`)
       .returning({ sequence: e.sequence }),
   );
   return deleted.length;

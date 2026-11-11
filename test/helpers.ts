@@ -9,9 +9,12 @@ import {
   legacyMigrate,
   migrate,
   openDatabase,
+  openPawsStore,
   recordItemCandidate,
   sqliteDb,
+  type Db,
 } from "../src/db";
+import { pawsPaths } from "../src/config";
 import type { Database } from "bun:sqlite";
 import { writeStoredToken, type StoredLinearToken } from "../src/linear";
 
@@ -189,6 +192,19 @@ export function cloneRunner(
     }
     return result;
   };
+}
+
+export async function withHomeStore<T>(home: string, work: (store: Db) => Promise<T>): Promise<T> {
+  const database = await openPawsStore({ url: null, pgliteDir: pawsPaths(home).pgliteDir });
+  try {
+    return await work(database.store);
+  } finally {
+    await database.close();
+  }
+}
+
+export async function storeHomeLinearToken(home: string, token: StoredLinearToken): Promise<void> {
+  await withHomeStore(home, (store) => writeStoredToken(store, join(home, "secrets"), token));
 }
 
 export async function storeLinearToken(home: string, token: StoredLinearToken): Promise<void> {

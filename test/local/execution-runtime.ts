@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import type { Database } from "bun:sqlite";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import {
   applyWorkItemEvent,
   beginImplementRun,
@@ -13,7 +13,8 @@ import {
   recordLinearInstallation,
   saveCheckpoint,
   saveTaskMode,
-  sqliteDb,
+  listJobs,
+  type Db,
 } from "../../src/db";
 import {
   hasPendingDelegationChanges,
@@ -25,7 +26,7 @@ import { createFakeTracker, createInboxStore } from "../../src/linear";
 import { runtimeLinear } from "../fixtures/workspace-runtime-linear";
 
 export async function probeExecutionRuntime(input: {
-  db: Database;
+  store: Db;
   workspaceId: string;
   secret: string;
   post(body: unknown, headers: Record<string, string>): Promise<{ status: number }>;
@@ -33,7 +34,7 @@ export async function probeExecutionRuntime(input: {
   catchUp(): Promise<void>;
   observe(name: string, observed: unknown): void;
 }) {
-  const { db, observe } = input;
+  const { store: db, observe } = input;
   const until = async (condition: () => boolean | Promise<boolean>) => {
     const deadline = performance.now() + 6000;
     while (!(await condition())) {
@@ -42,14 +43,31 @@ export async function probeExecutionRuntime(input: {
     }
   };
   const timers = () =>
-    db
-      .query<{ queue: string; interval: number; fires: number }, []>(
-        "SELECT queue,recurring_every_ms AS interval,fire_count AS fires FROM job WHERE queue IN ('scheduler.tick','execution.reconcile','linear.epics.reconcile') ORDER BY queue",
-      )
-      .all();
-  await until(() => timers().length === 2 && timers().every((row) => row.fires > 0));
+    db.run((q) =>
+      q.all(
+        q.orm
+          .select({
+            queue: q.t.job.queue,
+            interval: q.t.job.recurringEveryMs,
+            fires: q.t.job.fireCount,
+          })
+          .from(q.t.job)
+          .where(
+            inArray(q.t.job.queue, [
+              "scheduler.tick",
+              "execution.reconcile",
+              "linear.epics.reconcile",
+            ]),
+          )
+          .orderBy(asc(q.t.job.queue)),
+      ),
+    );
+  await until(async () => {
+    const rows = await timers();
+    return rows.length === 2 && rows.every((row) => row.fires > 0);
+  });
   assert.deepEqual(
-    timers().map(({ queue, interval }) => ({ queue, interval })),
+    (await timers()).map(({ queue, interval }) => ({ queue, interval })),
     [
       { queue: "linear.epics.reconcile", interval: 1_800_000 },
       { queue: "scheduler.tick", interval: 30_000 },
@@ -57,7 +75,7 @@ export async function probeExecutionRuntime(input: {
   );
   observe(
     "Actual Paws startup persists and executes only the scheduler and active-epic sweep timers",
-    timers(),
+    await timers(),
   );
   let changed = false;
   let gate: Promise<void> | undefined;
@@ -173,7 +191,7 @@ export async function probeExecutionRuntime(input: {
       subIssues: [],
     },
   ]);
-  const accepted = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+  const accepted = await intakeDelegatedIssue(db, tracker, {
     linearIssueId: "runtime-issue",
   });
   assert(accepted.ok);
@@ -181,7 +199,7 @@ export async function probeExecutionRuntime(input: {
   const target = { delegationId: accepted.delegation.id, workspaceId: input.workspaceId };
   const itemTarget = { itemId, workspaceId: input.workspaceId };
   const sessionId = "runtime-execution-session";
-  await recordLinearInstallation(sqliteDb(db), {
+  await recordLinearInstallation(db, {
     sessionId,
     organizationId: "org",
     teamId: "team",
@@ -189,34 +207,49 @@ export async function probeExecutionRuntime(input: {
     appUserId: "app",
     observedAtMs: Date.now(),
   });
-  await bindLinearSessionTask(sqliteDb(db), sessionId, target.delegationId, { actorId: "owner" });
-  db.run("UPDATE work_item SET session_key=? WHERE id=?", [sessionId, itemId]);
-  await saveTaskMode(sqliteDb(db), itemId, "code", 0, true);
-  await beginImplementRun(sqliteDb(db), itemId, Date.now());
-  await applyWorkItemEvent(sqliteDb(db), itemId, "turn_ended");
-  await saveCheckpoint(sqliteDb(db), itemId, {
+  await bindLinearSessionTask(db, sessionId, target.delegationId, { actorId: "owner" });
+  await db.run((q) =>
+    q.exec(
+      q.orm.update(q.t.workItem).set({ sessionKey: sessionId }).where(eq(q.t.workItem.id, itemId)),
+    ),
+  );
+  await saveTaskMode(db, itemId, "code", 0, true);
+  await beginImplementRun(db, itemId, Date.now());
+  await applyWorkItemEvent(db, itemId, "turn_ended");
+  await saveCheckpoint(db, itemId, {
     phase: "verifying",
     wipCommit: "a".repeat(40),
     baseSha: "b".repeat(40),
   });
-  const oldRun = (await getWorkItem(sqliteDb(db), itemId))!.currentRunId;
-  const oldMerge = await enqueueJob(sqliteDb(db), {
+  const oldRun = (await getWorkItem(db, itemId))!.currentRunId;
+  const oldMerge = await enqueueJob(db, {
     queue: "github.merge",
     payload: { itemId },
     runAt: Date.now() + 86_400_000,
   });
   const spec = () =>
-    db
-      .query<{ hash: string; revision: number }, [string]>(
-        "SELECT hash,revision FROM work_item_specification WHERE item_id=?",
+    db.run((q) =>
+      q.one(
+        q.orm
+          .select({
+            hash: q.t.workItemSpecification.hash,
+            revision: q.t.workItemSpecification.revision,
+          })
+          .from(q.t.workItemSpecification)
+          .where(eq(q.t.workItemSpecification.itemId, itemId)),
+      ),
+    );
+  const generation = async () =>
+    (
+      await db.run((q) =>
+        q.one(
+          q.orm
+            .select({ generation: q.t.itemDependencySnapshot.generation })
+            .from(q.t.itemDependencySnapshot)
+            .where(eq(q.t.itemDependencySnapshot.itemId, itemId)),
+        ),
       )
-      .get(itemId);
-  const generation = () =>
-    db
-      .query<{ generation: number }, [string]>(
-        "SELECT generation FROM item_dependency_snapshot WHERE item_id=?",
-      )
-      .get(itemId)?.generation ?? 0;
+    )?.generation ?? 0;
   const issueEvent = () => ({
     type: "Issue",
     action: "update",
@@ -237,17 +270,17 @@ export async function probeExecutionRuntime(input: {
         : {}),
     });
   assert.equal((await post(issueEvent(), "runtime-unsigned", false)).status, 401);
-  assert.equal(generation(), 0);
+  assert.equal(await generation(), 0);
   assert.equal((await post(issueEvent(), "runtime-initial")).status, 200);
   await until(
     async () =>
-      generation() > 0 && !(await hasPendingDelegationChanges(sqliteDb(db), target.delegationId)),
+      (await generation()) > 0 && !(await hasPendingDelegationChanges(db, target.delegationId)),
   );
-  assert.equal(spec()!.revision, 1);
-  const first = { ...spec()! };
+  assert.equal((await spec())!.revision, 1);
+  const first = { ...(await spec())! };
   observe(
     "Authenticated signed Issue ingress creates the authoritative runtime snapshot and unsigned ingress changes nothing",
-    { generation: generation(), revision: first.revision, unsigned: 401, signed: 200 },
+    { generation: await generation(), revision: first.revision, unsigned: 401, signed: 200 },
   );
   const release = Promise.withResolvers<void>();
   gate = release.promise;
@@ -256,24 +289,26 @@ export async function probeExecutionRuntime(input: {
   try {
     assert.equal((await post(issueEvent(), "runtime-criteria-edit")).status, 200);
     await until(
-      async () =>
-        fetching && (await hasPendingDelegationChanges(sqliteDb(db), target.delegationId)),
+      async () => fetching && (await hasPendingDelegationChanges(db, target.delegationId)),
     );
-    const before = timers().find((row) => row.queue === "scheduler.tick")!.fires;
-    db.run("UPDATE job SET run_at=? WHERE queue='scheduler.tick' AND status='pending'", [
-      Date.now(),
-    ]);
-    await until(() => timers().find((row) => row.queue === "scheduler.tick")!.fires > before);
-    assert.deepEqual(
-      (await sqliteDb(db).run((q) => readyItemsSteps(q, itemTarget))).readyItemIds,
-      [],
+    const before = (await timers()).find((row) => row.queue === "scheduler.tick")!.fires;
+    await db.run((q) =>
+      q.exec(
+        q.orm
+          .update(q.t.job)
+          .set({ runAt: Date.now() })
+          .where(and(eq(q.t.job.queue, "scheduler.tick"), eq(q.t.job.status, "pending"))),
+      ),
     );
+    await until(
+      async () => (await timers()).find((row) => row.queue === "scheduler.tick")!.fires > before,
+    );
+    assert.deepEqual((await db.run((q) => readyItemsSteps(q, itemTarget))).readyItemIds, []);
     assert.equal(
-      db
-        .query<{ n: number }, [string]>(
-          "SELECT COUNT(*) AS n FROM job WHERE queue='item.start' AND json_extract(payload,'$.itemId')=?",
-        )
-        .get(itemId)!.n,
+      (await listJobs(db)).filter(
+        (job) =>
+          job.queue === "item.start" && (job.payload as { itemId?: string }).itemId === itemId,
+      ).length,
       0,
     );
   } finally {
@@ -281,67 +316,63 @@ export async function probeExecutionRuntime(input: {
   }
   await until(
     async () =>
-      spec()?.revision === 2 &&
-      !(await hasPendingDelegationChanges(sqliteDb(db), target.delegationId)),
+      (await spec())?.revision === 2 &&
+      !(await hasPendingDelegationChanges(db, target.delegationId)),
   );
-  assert.notEqual(spec()!.hash, first.hash);
-  assert.equal((await getWorkItem(sqliteDb(db), itemId))!.currentRunId, oldRun);
-  assert.equal((await getWorkItem(sqliteDb(db), itemId))!.checkpoint?.phase, "running");
-  assert.equal((await getWorkItem(sqliteDb(db), itemId))!.state, "queued");
+  assert.notEqual((await spec())!.hash, first.hash);
+  assert.equal((await getWorkItem(db, itemId))!.currentRunId, oldRun);
+  assert.equal((await getWorkItem(db, itemId))!.checkpoint?.phase, "running");
+  assert.equal((await getWorkItem(db, itemId))!.state, "queued");
   assert.equal(
-    db.query<{ status: string }, [number]>("SELECT status FROM job WHERE id=?").get(oldMerge)!
-      .status,
+    (await db.run((q) =>
+      q.one(q.orm.select({ status: q.t.job.status }).from(q.t.job).where(eq(q.t.job.id, oldMerge))),
+    ))!.status,
     "cancelled",
   );
   assert.equal(
-    db.query<{ status: string }, [string]>("SELECT status FROM run WHERE id=?").get(oldRun!)!
-      .status,
+    (await db.run((q) =>
+      q.one(q.orm.select({ status: q.t.run.status }).from(q.t.run).where(eq(q.t.run.id, oldRun!))),
+    ))!.status,
     "ended",
   );
-  assert.deepEqual(
-    (await sqliteDb(db).run((q) => readyItemsSteps(q, itemTarget))).readyItemIds,
-    [],
-  );
+  assert.deepEqual((await db.run((q) => readyItemsSteps(q, itemTarget))).readyItemIds, []);
   observe(
     "Signed live criteria changes hold the actual scheduler during reads then fence old candidate, run and merge before blocked redispatch",
     {
-      revision: spec()!.revision,
+      revision: (await spec())!.revision,
       candidate: null,
       oldRun: "lost",
       oldMerge: "cancelled",
       ready: [],
     },
   );
-  const beforeSweep = timers().find((row) => row.queue === "linear.epics.reconcile")!.fires;
-  const beforeGeneration = generation();
+  const beforeSweep = (await timers()).find((row) => row.queue === "linear.epics.reconcile")!.fires;
+  const beforeGeneration = await generation();
   input.advance(SWEEP_FULL_REFRESH_MS + 1);
   await until(
     async () =>
-      timers().find((row) => row.queue === "linear.epics.reconcile")!.fires > beforeSweep &&
-      generation() > beforeGeneration &&
-      !(await hasPendingDelegationChanges(sqliteDb(db), target.delegationId)),
+      (await timers()).find((row) => row.queue === "linear.epics.reconcile")!.fires > beforeSweep &&
+      (await generation()) > beforeGeneration &&
+      !(await hasPendingDelegationChanges(db, target.delegationId)),
   );
-  assert.equal(spec()!.revision, 2);
-  assert.deepEqual(
-    (await sqliteDb(db).run((q) => readyItemsSteps(q, itemTarget))).readyItemIds,
-    [],
-  );
+  assert.equal((await spec())!.revision, 2);
+  assert.deepEqual((await db.run((q) => readyItemsSteps(q, itemTarget))).readyItemIds, []);
   observe(
     "The actual durable runtime sweep refreshes active epics without changing unchanged criteria or bypassing blockers",
     {
       previousGeneration: beforeGeneration,
-      generation: generation(),
-      sweepFires: timers().find((row) => row.queue === "linear.epics.reconcile")!.fires,
+      generation: await generation(),
+      sweepFires: (await timers()).find((row) => row.queue === "linear.epics.reconcile")!.fires,
       revision: 2,
     },
   );
   await acceptLinearStop(
-    sqliteDb(db),
+    db,
     sessionId,
     JSON.stringify(["activity", "runtime-session-late"]),
     Date.now(),
   );
-  await applyWorkItemEvent(sqliteDb(db), itemId, "cancel");
+  await applyWorkItemEvent(db, itemId, "cancel");
   const late = {
     type: "AgentSessionEvent",
     action: "prompted",
@@ -360,14 +391,19 @@ export async function probeExecutionRuntime(input: {
   };
   assert.equal((await post(late, "runtime-session-late")).status, 200);
   await until(
-    () =>
-      db
-        .query<{ handled: number }, []>(
-          "SELECT handled FROM inbox_event WHERE delivery_id='runtime-session-late'",
+    async () =>
+      (
+        await db.run((q) =>
+          q.one(
+            q.orm
+              .select({ handled: q.t.inboxEvent.handled })
+              .from(q.t.inboxEvent)
+              .where(eq(q.t.inboxEvent.deliveryId, "runtime-session-late")),
+          ),
         )
-        .get()?.handled === 1,
+      )?.handled === 1,
   );
-  assert.equal((await getWorkItem(sqliteDb(db), itemId))!.state, "cancelled");
+  assert.equal((await getWorkItem(db, itemId))!.state, "cancelled");
   observe("Signed Stop replay drains without reconciling or reviving its stopped epic", {
     cancelled: true,
     handled: true,
@@ -377,7 +413,7 @@ export async function probeExecutionRuntime(input: {
     sessionKey: "runtime-terminal-session",
   });
   for (const nextSession of ["runtime-terminal-session", "runtime-fresh-session"])
-    await recordLinearInstallation(sqliteDb(db), {
+    await recordLinearInstallation(db, {
       sessionId: nextSession,
       organizationId: "org",
       teamId: "team",
@@ -385,12 +421,12 @@ export async function probeExecutionRuntime(input: {
       appUserId: "app",
       observedAtMs: Date.now(),
     });
-  await bindLinearSessionTask(sqliteDb(db), "runtime-terminal-session", terminal.delegationId, {
+  await bindLinearSessionTask(db, "runtime-terminal-session", terminal.delegationId, {
     actorId: "owner",
   });
-  await applyWorkItemEvent(sqliteDb(db), terminal.id, "cancel");
-  const store = createInboxStore(sqliteDb(db));
-  const replayKeys = [];
+  await applyWorkItemEvent(db, terminal.id, "cancel");
+  const store = createInboxStore(db);
+  const replayKeys: string[] = [];
   for (const [nextSession, body] of [
     [sessionId, "stop"],
     ["runtime-terminal-session", " "],
@@ -415,18 +451,17 @@ export async function probeExecutionRuntime(input: {
     });
   }
   await input.catchUp();
-  assert(
-    replayKeys.every(
-      (key) =>
-        db
-          .query<{ handled: number }, [string]>(
-            "SELECT handled FROM inbox_event WHERE dedupe_key=?",
-          )
-          .get(key)?.handled === 1,
+  const handled = await db.run((q) =>
+    q.all(
+      q.orm
+        .select({ handled: q.t.inboxEvent.handled })
+        .from(q.t.inboxEvent)
+        .where(inArray(q.t.inboxEvent.dedupeKey, replayKeys)),
     ),
   );
-  assert.equal((await getWorkItem(sqliteDb(db), itemId))!.state, "cancelled");
-  assert.equal((await getLinearSession(sqliteDb(db), "runtime-fresh-session"))!.stoppedAt, null);
+  assert(handled.length === replayKeys.length && handled.every((row) => row.handled === 1));
+  assert.equal((await getWorkItem(db, itemId))!.state, "cancelled");
+  assert.equal((await getLinearSession(db, "runtime-fresh-session"))!.stoppedAt, null);
   observe(
     "Production catch-up drains stopped and terminal session replays before delivering a fresh session activity",
     { handled: replayKeys.length, oldCancelled: true, freshSessionActive: true },

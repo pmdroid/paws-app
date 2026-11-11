@@ -275,7 +275,7 @@ test("signed revocation stops owned work and fences active, queued and delayed r
     now: () => Date.now() + 1000,
     fetch: async () =>
       Response.json({ data: { viewer: { id: "app", app: true, organization: { id: "org" } } } }),
-  })(f.home);
+  })(sqliteDb(f.db), f.home);
   expect(
     await reconnect.complete({
       clientId: "client",

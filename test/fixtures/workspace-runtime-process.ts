@@ -1,3 +1,4 @@
+import { eq, sql } from "drizzle-orm";
 import { writeSecretFile } from "../../src/credentials";
 import { createHmac } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -5,12 +6,11 @@ import { get, request } from "node:https";
 import { join } from "node:path";
 import {
   consumeWorkspaceBootstrap,
-  openDatabase,
   type WorkspaceMember,
   putWorkspaceUser,
   workspaceMember,
   workspaceIdentityLinks,
-  sqliteDb,
+  type PgDb,
 } from "../../src/db";
 import type { HealthReport } from "../../src/server";
 import { startPaws } from "../../src/index";
@@ -22,6 +22,7 @@ import {
   WORKSPACE_COOKIE,
 } from "../../src/workspace";
 import { runtimeLinear, runtimeNativeFetch } from "./workspace-runtime-linear";
+import { withHomeStore } from "../helpers";
 
 const mode = process.argv[2]!;
 const failures: unknown[] = [];
@@ -38,7 +39,8 @@ if (mode === "no-tls") {
   } catch (caught) {
     error = caught;
   }
-  const opened = existsSync(join(source.PAWS_HOME!, "paws.db"));
+  const opened =
+    existsSync(join(source.PAWS_HOME!, "paws.db")) || existsSync(join(source.PAWS_HOME!, "pglite"));
   console.log(
     JSON.stringify([
       {
@@ -157,21 +159,21 @@ function permissionPayload() {
 
 async function createOwner() {
   const now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(paws.db), {
+  const userId = await putWorkspaceUser(paws.store, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(paws.db), {
+  const workspace = await consumeWorkspaceBootstrap(paws.store, {
     id: workspaceId(),
     organizationId: "org",
     name: "Local workspace",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(paws.db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(paws.store, "org", now)),
     now,
   });
-  const issued = await issueWorkspaceSession(sqliteDb(paws.db), {
+  const issued = await issueWorkspaceSession(paws.store, {
     userId,
     workspaceId: workspace.id,
     now,
@@ -199,13 +201,13 @@ try {
     const waited = !stopped;
     readiness.resolve();
     await stopping;
-    const db = openDatabase(paws.paths.db);
-    const member = await workspaceMember(sqliteDb(db), workspace.id, userId);
-    const sessions = db
-      .query<{ count: number }, []>("SELECT count(*) AS count FROM workspace_session")
-      .get()!.count;
-    const handled = db.query<{ handled: number }, []>("SELECT handled FROM inbox_event").get()!;
-    db.close();
+    const { member, sessions, handled } = await withHomeStore(paws.paths.home, async (db) => ({
+      member: await workspaceMember(db, workspace.id, userId),
+      sessions: (await db.run((q) => q.all(q.orm.select().from(q.t.workspaceSession)))).length,
+      handled: (await db.run((q) =>
+        q.one(q.orm.select({ handled: q.t.inboxEvent.handled }).from(q.t.inboxEvent)),
+      ))!,
+    }));
     observe(
       "shutdown joins an accepted permission change awaiting installation before closing workspace access",
       accepted.status === 200 &&
@@ -251,9 +253,8 @@ try {
     const beforeReady = { signedStatus, unsignedStatus, protectedStatus };
     readiness.resolve();
     await requests;
-    const persisted = paws.db
-      .query<{ count: number }, []>("SELECT count(*) AS count FROM inbox_event")
-      .get()!.count;
+    const persisted = (await paws.store.run((q) => q.all(q.orm.select().from(q.t.inboxEvent))))
+      .length;
     observe(
       "pending installation keeps signed webhooks live and protected APIs closed",
       beforeReady.signedStatus === 200 &&
@@ -322,11 +323,12 @@ try {
       },
     );
     let failedRoute;
-    paws.db.exec("ALTER TABLE work_item RENAME TO runtime_fault_item");
+    const alter = (statement: string) => (paws.store as PgDb).orm.execute(sql.raw(statement));
+    await alter("ALTER TABLE work_item RENAME TO runtime_fault_item");
     try {
       failedRoute = await read("/api/issues", undefined, undefined, callback.cookie!.split(";")[0]);
     } finally {
-      paws.db.exec("ALTER TABLE runtime_fault_item RENAME TO work_item");
+      await alter("ALTER TABLE runtime_fault_item RENAME TO work_item");
     }
     const recovered = await read(
       "/api/issues",
@@ -341,7 +343,7 @@ try {
       failedRoute.status === 500 && !detailsVisible && recovered.status === 200,
       { failed: failedRoute.status, detailsVisible, recovered: recovered.status },
     );
-    const link = (await workspaceIdentityLinks(sqliteDb(paws.db), workspace.id)).find(
+    const link = (await workspaceIdentityLinks(paws.store, workspace.id)).find(
       (value) => value.userId === userId && value.provider === "slack",
     );
     observe(
@@ -365,15 +367,20 @@ try {
     );
     let member: WorkspaceMember | null = null;
     for (let attempt = 0; attempt < 100; attempt++) {
-      member = await workspaceMember(sqliteDb(paws.db), workspace.id, userId);
+      member = await workspaceMember(paws.store, workspace.id, userId);
       if (member?.active === false) break;
       await Bun.sleep(5);
     }
-    const remaining = paws.db
-      .query<{ count: number }, [string]>(
-        "SELECT count(*) AS count FROM workspace_session WHERE token_hash=?",
+    const remaining = (
+      await paws.store.run((q) =>
+        q.all(
+          q.orm
+            .select()
+            .from(q.t.workspaceSession)
+            .where(eq(q.t.workspaceSession.tokenHash, workspaceTokenHash(issued.token))),
+        ),
       )
-      .get(workspaceTokenHash(issued.token))!.count;
+    ).length;
     observe(
       "only verified permission delivery refreshes membership and revokes durable sessions",
       bad.status === 401 &&

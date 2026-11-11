@@ -4,6 +4,7 @@
 // PAWS_FIXTURE_NO_EXE_DEV=1 starts it without the fakes and without an exe.dev token.
 // Commands on stdin: fail-install, heartbeat, snapshot, stop.
 import assert from "node:assert/strict";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import { chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -12,7 +13,6 @@ import {
   insertRun,
   putWorkspaceUser,
   syncWorkspaceMember,
-  sqliteDb,
 } from "../../src/db";
 import { startPaws } from "../../src/index";
 import { createFakeBootstrap, createFakeExeDev } from "../../src/provisioning";
@@ -121,28 +121,28 @@ const paws = await startPaws(
 );
 await paws.ready;
 const now = Date.now();
-const owner = await putWorkspaceUser(sqliteDb(paws.db), {
+const owner = await putWorkspaceUser(paws.store, {
   id: workspaceId(),
   linearUserId: "owner",
   name: "Owner",
   email: "owner@example.invalid",
 });
-const workspace = await consumeWorkspaceBootstrap(sqliteDb(paws.db), {
+const workspace = await consumeWorkspaceBootstrap(paws.store, {
   id: workspaceId(),
   organizationId: "org",
   name: "Create VM proof",
   userId: owner,
-  tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(paws.db), "org", now)),
+  tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(paws.store, "org", now)),
   now,
 });
 const person = async (name: string, role: "member" | "admin") => {
-  const userId = await putWorkspaceUser(sqliteDb(paws.db), {
+  const userId = await putWorkspaceUser(paws.store, {
     id: workspaceId(),
     linearUserId: name.toLowerCase(),
     name,
     email: `${name.toLowerCase().replaceAll(" ", ".")}@example.invalid`,
   });
-  await syncWorkspaceMember(sqliteDb(paws.db), {
+  await syncWorkspaceMember(paws.store, {
     workspaceId: workspace.id,
     userId,
     role,
@@ -160,7 +160,7 @@ for (const [name, userId] of [
   ["admin", admin],
 ] as const)
   sessions[name] = (
-    await issueWorkspaceSession(sqliteDb(paws.db), { userId, workspaceId: workspace.id, now })
+    await issueWorkspaceSession(paws.store, { userId, workspaceId: workspace.id, now })
   ).token;
 console.log(JSON.stringify({ origin, cookie: WORKSPACE_COOKIE, sessions, member }));
 
@@ -171,30 +171,60 @@ for await (const line of lines) {
     console.log(JSON.stringify({ done: line }));
   }
   if (line === "heartbeat") {
-    paws.db.run("UPDATE runner SET last_seen_at=? WHERE owner_user_id=?", [Date.now(), member]);
+    await paws.store.run((q) =>
+      q.exec(
+        q.orm
+          .update(q.t.runner)
+          .set({ lastSeenAt: Date.now() })
+          .where(eq(q.t.runner.ownerUserId, member)),
+      ),
+    );
     console.log(JSON.stringify({ done: line }));
   }
   if (line === "task") {
-    const runner = paws.db
-      .query<{ id: string }, [string]>(
-        "SELECT id FROM runner WHERE owner_user_id=? AND revoked_at IS NULL ORDER BY created_at DESC",
-      )
-      .get(member)!;
+    const runner = (await paws.store.run((q) =>
+      q.one(
+        q.orm
+          .select({ id: q.t.runner.id })
+          .from(q.t.runner)
+          .where(and(eq(q.t.runner.ownerUserId, member), isNull(q.t.runner.revokedAt)))
+          .orderBy(desc(q.t.runner.createdAt)),
+      ),
+    ))!;
     const at = Date.now();
-    paws.db.run(
-      `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at)
-      VALUES('fixture-item','fixture-delegation','fixture-issue','PAS-901','Fix the login redirect','running','paws/pas-901',0,?)`,
-      [at],
+    await paws.store.run((q) =>
+      q.exec(
+        q.orm.insert(q.t.workItem).values({
+          id: "fixture-item",
+          delegationId: "fixture-delegation",
+          linearIssueId: "fixture-issue",
+          linearIdentifier: "PAS-901",
+          title: "Fix the login redirect",
+          state: "running",
+          branchName: "paws/pas-901",
+          position: 0,
+          createdAt: at,
+        }),
+      ),
     );
-    const run = await insertRun(sqliteDb(paws.db), {
+    const run = await insertRun(paws.store, {
       itemId: "fixture-item",
       now: at,
       status: "active",
     });
-    paws.db.run(
-      `INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence)
-      VALUES(?,?,?,1,0,'fixture-command',?,0)`,
-      [run.id, runner.id, workspace.id, at + 3_600_000],
+    await paws.store.run((q) =>
+      q.exec(
+        q.orm.insert(q.t.runnerWork).values({
+          runId: run.id,
+          runnerId: runner.id,
+          workspaceId: workspace.id,
+          generation: 1,
+          runnerFence: 0,
+          commandId: "fixture-command",
+          leaseUntil: at + 3_600_000,
+          lastSequence: 0,
+        }),
+      ),
     );
     console.log(JSON.stringify({ done: line }));
   }
@@ -202,14 +232,32 @@ for await (const line of lines) {
     console.log(
       JSON.stringify({
         snapshot: {
-          vm: paws.db
-            .query(
-              "SELECT vm_name AS vmName,step,failure,runner_id AS runnerId,delete_step AS deleteStep,delete_failure AS deleteFailure FROM member_vm",
-            )
-            .all(),
-          runners: paws.db
-            .query("SELECT id,name,status,owner_user_id AS ownerUserId FROM runner")
-            .all(),
+          vm: await paws.store.run((q) =>
+            q.all(
+              q.orm
+                .select({
+                  vmName: q.t.memberVm.vmName,
+                  step: q.t.memberVm.step,
+                  failure: q.t.memberVm.failure,
+                  runnerId: q.t.memberVm.runnerId,
+                  deleteStep: q.t.memberVm.deleteStep,
+                  deleteFailure: q.t.memberVm.deleteFailure,
+                })
+                .from(q.t.memberVm),
+            ),
+          ),
+          runners: await paws.store.run((q) =>
+            q.all(
+              q.orm
+                .select({
+                  id: q.t.runner.id,
+                  name: q.t.runner.name,
+                  status: q.t.runner.status,
+                  ownerUserId: q.t.runner.ownerUserId,
+                })
+                .from(q.t.runner),
+            ),
+          ),
           exeDev: [...exeDev.vms.keys()],
           deleteVm: exeDev.calls.filter((call) => call.operation === "deleteVm").length,
           createVm: exeDev.calls.filter((call) => call.operation === "createVm").length,

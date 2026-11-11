@@ -36,7 +36,7 @@ export default {
       "question names the problem preset",
       JSON.stringify(proof.linear.questions).includes("Acme unknown"),
     );
-    const held = proof.heldWork();
+    const held = await proof.heldWork();
     proof.expect(
       "the item waits for input with no run or slot held",
       (await proof.itemState()) === "awaiting_input" &&
