@@ -847,10 +847,11 @@ export type OrchestratorOptions = {
    */
   ownerHasRunner?: (q: Q, itemId: string, agent: string, now: number) => Steps<boolean | null>;
   itemRunners?: (
+    q: Q,
     itemId: string,
     profile: { agent: string; model?: string | null },
     now: number,
-  ) => ItemRunnerVerdicts | null;
+  ) => Steps<ItemRunnerVerdicts | null>;
   onRunnerHostRefusals?: (refusals: readonly RunnerHostRefusal[], now: number) => void;
   /**
    * Why the item's owner has no runner they may use for this agent, for the runner-setup hold
@@ -7549,7 +7550,7 @@ export class Orchestrator {
   }
 
   private async dispatch(): Promise<void> {
-    const ownerHasRunner = this.options.ownerHasRunner;
+    const { ownerHasRunner, itemRunners } = this.options;
     let config: ReturnType<typeof loadConfigFile> | null = null;
     try {
       this.reconcileAgentSettings();
@@ -7575,18 +7576,10 @@ export class Orchestrator {
       ...(await this.options.scheduling?.()),
       onWaiting: (itemIds) => this.noteQueued(itemIds),
       onWaits: (waits) => this.noteWaits(waits),
-      ...(this.options.itemRunners
+      ...(itemRunners
         ? {
-            itemRunners: (itemId: string) => {
-              const item = getWorkItem(this.db, itemId);
-              return item && config
-                ? this.options.itemRunners!(
-                    itemId,
-                    this.implementerProfile(item, config),
-                    this.now(),
-                  )
-                : null;
-            },
+            itemRunners: (q: Q, itemId: string) =>
+              this.itemRunnersSteps(q, itemId, itemRunners, config),
           }
         : {}),
       ...(ownerHasRunner && config
@@ -7622,6 +7615,18 @@ export class Orchestrator {
   private *itemSessionSteps(q: Q, itemId: string): Steps<string | null> {
     const item = yield* getWorkItemSteps(q, itemId);
     return item ? this.activitySession(item) : null;
+  }
+
+  private *itemRunnersSteps(
+    q: Q,
+    itemId: string,
+    itemRunners: NonNullable<OrchestratorOptions["itemRunners"]>,
+    config: ReturnType<typeof loadConfigFile> | null,
+  ): Steps<ItemRunnerVerdicts | null> {
+    const item = yield* getWorkItemSteps(q, itemId);
+    return item && config
+      ? yield* itemRunners(q, itemId, this.implementerProfile(item, config), this.now())
+      : null;
   }
 
   private *ownerHasRunnerSteps(

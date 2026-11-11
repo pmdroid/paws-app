@@ -139,7 +139,7 @@ export function itemRunnerVerdicts(
   return settled(sqliteDb(db).run((q) => itemRunnerVerdictsSteps(q, db, input)));
 }
 
-function* itemRunnerVerdictsSteps(
+export function* itemRunnerVerdictsSteps(
   q: Q,
   db: Database,
   input: { itemId: string; agent: string; model?: string | null; now: number },

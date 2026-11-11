@@ -173,7 +173,7 @@ export {
 } from "./placement";
 
 export { createRunnerPlacementBrowser } from "./browser";
-export { itemRunnerVerdicts } from "./fit";
+export { itemRunnerVerdicts, itemRunnerVerdictsSteps } from "./fit";
 export { createRunnerHostRefusals } from "./host-refusals";
 
 export { sessionHolderSteps, runRunnerSteps } from "./session";
