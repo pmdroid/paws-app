@@ -56,7 +56,8 @@ type Fault =
   | "silent-live"
   | "silent-unconfirmed"
   | "silent-hung"
-  | "silent-hung-checkpoint";
+  | "silent-hung-checkpoint"
+  | "silent-hung-always";
 
 const RUN_LOST = "The runner lost this run after it restarted; continuing from the branch.";
 const SILENT_RUN_MS = 300;
@@ -171,6 +172,18 @@ test("a hung run recovers onto its last interval checkpoint, and the prompt says
   expect(result.recovered?.prompt, result.detail).toContain(
     restoredCheckpointNote(result.checkpointSha!),
   );
+}, 60_000);
+
+test("an agent that hangs after every start is asked about after its third hang and not dispatched again", async () => {
+  const result = await runRemoteFault("silent-hung-always");
+  expect(result.state, result.detail).toBe("awaiting_input");
+  expect(result.faultedAttempts, result.detail).toBe(3);
+  expect(result.questions, result.detail).toEqual([
+    expect.objectContaining({ kind: "runner-wait", reason: "agent_hung" }),
+  ]);
+  expect(result.questions[0]!.body, result.detail).toContain(result.runIds[0]!);
+  expect(result.pendingJobs, result.detail).toEqual([]);
+  expect(result.retries, result.detail).toEqual([]);
 }, 60_000);
 
 test("a runner that is unreachable for longer than its lease keeps its run and reaches Closeout", async () => {
@@ -380,7 +393,7 @@ async function runRemoteFault(fault: Fault) {
     recovered: null as { restore: string | undefined; prompt: string } | null,
   };
   // The work this fake runner names in its heartbeat, for faults where the runner reports it.
-  const hung = fault === "silent-hung" || fault === "silent-hung-checkpoint";
+  const hung = fault.startsWith("silent-hung");
   const reporting = fault === "restarted" || fault === "silent-live" || hung;
   const live = new Map<
     string,
@@ -726,7 +739,7 @@ async function runRemoteFault(fault: Fault) {
         if (hung && runner.faulty) {
           // The runner stays alive and names the command, but its agent never sends anything.
           runner.faultedAttempts++;
-          runner.faulty = false;
+          runner.faulty = fault === "silent-hung-always";
           // Paws starts its silence clock when it issues the command, which a busy machine can
           // leave well before this loop picks it up, so the hung bound is measured from then.
           live.set(command.id, { command, at: command.issuedAt, hung: true });
@@ -825,6 +838,14 @@ async function runRemoteFault(fault: Fault) {
       hungStopped: runner.hungStopped,
       checkpointSha: runner.checkpointSha,
       recovered: runner.recovered,
+      questions: db
+        .query<{ kind: string; reason: string; body: string }, []>(
+          "SELECT kind, reason, body FROM question",
+        )
+        .all(),
+      pendingJobs: (await listJobs(sqliteDb(db)))
+        .filter((job) => job.status === "pending" && job.queue !== JOB_KIND.reverify)
+        .map((job) => job.queue),
       detail: JSON.stringify({
         state: (await getWorkItem(sqliteDb(db), item.id))?.state,
         runs: (await listRuns(sqliteDb(db))).map((run) => `${run.kind}:${run.status}`),

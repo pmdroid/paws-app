@@ -139,6 +139,8 @@ export {
 
 export { PawsShutdown, RunnerSlotsBusyError, UserFacingError } from "./user-facing-error";
 export {
+  AgentHungError,
+  HANG_ASK_AFTER,
   MAX_TRANSIENT_RETRIES,
   RUNNER_CAPACITY_WAIT_MS,
   RunnerCapacityWait,
