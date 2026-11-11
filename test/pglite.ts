@@ -3,7 +3,8 @@ import { citext } from "@electric-sql/pglite/contrib/citext";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
-import { createHash } from "node:crypto";
+import { SQL } from "bun";
+import { createHash, randomUUID } from "node:crypto";
 import {
   cpSync,
   existsSync,
@@ -15,16 +16,26 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { openPawsStore, PG_MIGRATIONS_FOLDER, pgSchema, type Db, type PgliteDb } from "../src/db";
+import {
+  openPawsStore,
+  openPostgres,
+  PG_MIGRATIONS_FOLDER,
+  pgSchema,
+  postgresDb,
+  type Db,
+  type PgliteDb,
+} from "../src/db";
 
 const PGLITE_PACKAGE = Bun.resolveSync("@electric-sql/pglite/package.json", import.meta.dir);
 
 const CACHE = join(dirname(PGLITE_PACKAGE), "..", "..", ".cache");
 
+const JOURNAL = readFileSync(join(PG_MIGRATIONS_FOLDER, "meta/_journal.json"));
+
 const TEMPLATE = join(
   CACHE,
   `paws-pglite-template-${createHash("sha256")
-    .update(readFileSync(join(PG_MIGRATIONS_FOLDER, "meta/_journal.json")))
+    .update(JOURNAL)
     .update(readFileSync(PGLITE_PACKAGE))
     .digest("hex")
     .slice(0, 16)}`,
@@ -107,7 +118,71 @@ function syncedSession(client: PGlite): PGlite {
   });
 }
 
-export async function pgliteServer(): Promise<{ url: string; store: Db; close(): Promise<void> }> {
+type TestPostgres = { url: string; store: Db; close(): Promise<void> };
+
+function databaseUrl(base: string, name: string): string {
+  const url = new URL(base);
+  url.pathname = `/${name}`;
+  return url.toString();
+}
+
+async function onServer<T>(base: string, work: (admin: SQL) => Promise<T>): Promise<T> {
+  const admin = new SQL({ url: base, max: 1 });
+  try {
+    return await work(admin);
+  } finally {
+    await admin.close();
+  }
+}
+
+const exists = async (admin: SQL, name: string) =>
+  (await admin`SELECT 1 FROM pg_database WHERE datname = ${name}`).length > 0;
+
+const uniqueName = (prefix: string) => `${prefix}_${randomUUID().replaceAll("-", "")}`;
+
+let serverTemplate: Promise<string> | undefined;
+
+function migratedServerTemplate(base: string): Promise<string> {
+  serverTemplate ??= onServer(base, async (admin) => {
+    const name = `paws_template_${createHash("sha256").update(JOURNAL).digest("hex").slice(0, 16)}`;
+    if (await exists(admin, name)) return name;
+    const build = uniqueName("paws_build");
+    await admin.unsafe(`CREATE DATABASE ${build}`);
+    const migrated = await openPawsStore({ url: databaseUrl(base, build), pgliteDir: "" });
+    await migrated.close();
+    try {
+      await admin.unsafe(`ALTER DATABASE ${build} RENAME TO ${name}`);
+    } catch (error) {
+      await admin.unsafe(`DROP DATABASE ${build} WITH (FORCE)`);
+      if (!(await exists(admin, name))) throw error;
+    }
+    return name;
+  });
+  return serverTemplate;
+}
+
+export async function serverPostgres(base: string, max?: number): Promise<TestPostgres> {
+  const source = await migratedServerTemplate(base);
+  const name = uniqueName("paws_test");
+  await onServer(base, (admin) => admin.unsafe(`CREATE DATABASE ${name} TEMPLATE ${source}`));
+  const url = new URL(databaseUrl(base, name));
+  if (max !== undefined) url.searchParams.set("max", String(max));
+  const pg = openPostgres(url.toString());
+  return {
+    url: url.toString(),
+    store: postgresDb(pg),
+    async close() {
+      await pg.$client.close();
+      await onServer(base, (admin) => admin.unsafe(`DROP DATABASE ${name} WITH (FORCE)`));
+    },
+  };
+}
+
+export async function pgliteServer(
+  env: Record<string, string | undefined> = process.env,
+): Promise<TestPostgres> {
+  const base = env.PAWS_TEST_DATABASE_URL;
+  if (base) return await serverPostgres(base);
   const client = await migratedClient();
   const server = new PGLiteSocketServer({
     db: syncedSession(client),
