@@ -158,7 +158,7 @@ async function fixture(agentRead?: AgentRead) {
     while (!sim.stopped) {
       if (!sim.paused) {
         const { work } = services;
-        work.heartbeat(runnerId);
+        await work.heartbeat(runnerId);
         for (const envelope of await work.commands(runnerId)) {
           const command = JSON.parse(
             Buffer.from(envelope.payload, "base64url").toString(),
@@ -167,7 +167,7 @@ async function fixture(agentRead?: AgentRead) {
           handled.add(command.id);
           await work.acknowledge(runnerId, command.id);
           if (command.type === "cancel")
-            work.heartbeat(
+            await work.heartbeat(
               runnerId,
               1,
               {},

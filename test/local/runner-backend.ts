@@ -126,7 +126,7 @@ export async function probeRunnerBackend(
   });
   const results = createRunnerResults({ db, work, now: () => now });
   const health = createRunnerHealth({ db, work, now: () => now });
-  work.heartbeat(runnerId);
+  await work.heartbeat(runnerId);
   const source = join(root, "source");
   async function git(args: string[]) {
     const child = Bun.spawn(["/usr/bin/git", ...args], {
@@ -204,14 +204,14 @@ export async function probeRunnerBackend(
   };
   const backend = createRemoteAgentRunner(backendOptions);
   const seen = new Set<string>();
-  function terminated(
+  async function terminated(
     selectedRunnerId: string,
     command: { id: string; runId: string; generation: number },
   ) {
     const lastSeen = db
       .query<{ at: number | null }, [string]>("SELECT last_seen_at AS at FROM runner WHERE id=?")
       .get(selectedRunnerId)?.at;
-    work.heartbeat(
+    await work.heartbeat(
       selectedRunnerId,
       1,
       {},
@@ -233,7 +233,7 @@ export async function probeRunnerBackend(
       if (command.type !== "cancel") continue;
       seen.add(command.id);
       await work.acknowledge(selectedRunnerId, command.id);
-      terminated(selectedRunnerId, command);
+      await terminated(selectedRunnerId, command);
     }
   }
   async function next(selectedRunnerId = runnerId, acknowledge = true) {
@@ -255,7 +255,8 @@ export async function probeRunnerBackend(
         });
         if (v.ok) {
           if (acknowledge) await work.acknowledge(selectedRunnerId, v.command.id);
-          if (acknowledge && v.command.type === "cancel") terminated(selectedRunnerId, v.command);
+          if (acknowledge && v.command.type === "cancel")
+            await terminated(selectedRunnerId, v.command);
           return v.command;
         }
       }
@@ -1176,7 +1177,7 @@ export async function probeRunnerBackend(
     const recoveredFetches = fetched - fetchedBeforeExpiry;
     fetched = fetchedBeforeExpiry;
     const placedAgain = (await work.commands(runnerId)).length > 0;
-    work.heartbeat(runnerId);
+    await work.heartbeat(runnerId);
     observe(
       "a result accepted before the lease expired is consumed after a restart without another execution",
       !placedAgain &&
@@ -2343,7 +2344,7 @@ export async function probeRunnerBackend(
       ) as RunnerCommand;
       if (command.type === "cancel") {
         await work.acknowledge(runnerId, command.id);
-        terminated(runnerId, command);
+        await terminated(runnerId, command);
       }
     }
     const hostIds = [runnerId];
@@ -2357,7 +2358,7 @@ export async function probeRunnerBackend(
       await control.setStatus(principal, enrolled.runnerId, "active");
       hostIds.push(enrolled.runnerId);
     }
-    for (const hostId of hostIds) work.heartbeat(hostId);
+    for (const hostId of hostIds) await work.heartbeat(hostId);
     const placements: string[] = [];
     const observedFailures: string[] = [];
     const failoverItem = await item();
@@ -2485,7 +2486,7 @@ export async function probeRunnerBackend(
         const implemented = await step(firstHost, "implementer");
         // An idle runner and more than the old grace period cannot draw this run away.
         now += 180_001;
-        for (const id of hostIds) work.heartbeat(id);
+        for (const id of hostIds) await work.heartbeat(id);
         await step(firstHost, "reviewer");
         const sameRunnerFix = await step(firstHost, "implementer");
         assert.equal(
@@ -2635,7 +2636,7 @@ export async function probeRunnerBackend(
           if (!delayedPreparation) {
             delayedPreparation = true;
             now += 16_000;
-            for (const hostId of hostIds) work.heartbeat(hostId);
+            for (const hostId of hostIds) await work.heartbeat(hostId);
             db.run("UPDATE workspace_member SET checked_at=? WHERE user_id=?", [
               now,
               principal.userId,
@@ -2711,7 +2712,7 @@ export async function probeRunnerBackend(
       ) as RunnerCommand;
       if (command.type === "cancel") {
         await work.acknowledge(hostIds[0]!, command.id);
-        terminated(hostIds[0]!, command);
+        await terminated(hostIds[0]!, command);
       }
     }
     const secondAttempt = await next(hostIds[1]!);
@@ -2756,7 +2757,7 @@ export async function probeRunnerBackend(
       ) as RunnerCommand;
       if (command.type === "cancel") {
         await work.acknowledge(hostIds[1]!, command.id);
-        terminated(hostIds[1]!, command);
+        await terminated(hostIds[1]!, command);
       }
     }
     // An online pin waits out its quota instead of taking the idle third runner.
@@ -2765,7 +2766,7 @@ export async function probeRunnerBackend(
     assert(pinnedPause);
     assert.equal((await work.commands(hostIds[2]!)).length, 0);
     now = pinnedPause.resumeAt;
-    for (const hostId of hostIds) work.heartbeat(hostId);
+    for (const hostId of hostIds) await work.heartbeat(hostId);
     db.run("UPDATE workspace_member SET checked_at=? WHERE user_id=?", [now, principal.userId]);
     const thirdAttempt = await next(hostIds[1]!);
     if (thirdAttempt.type !== "run") throw new Error("Expected third failover work");
@@ -2824,8 +2825,8 @@ export async function probeRunnerBackend(
         completedCandidateHonoredAfterHeartbeatLoss: true,
       },
     );
-    work.heartbeat(hostIds[0]!);
-    work.heartbeat(hostIds[1]!);
+    await work.heartbeat(hostIds[0]!);
+    await work.heartbeat(hostIds[1]!);
     const probeHost = (
       await placement.candidates({
         itemId: failoverItem.id,
@@ -2944,7 +2945,7 @@ export async function probeRunnerBackend(
       ) as RunnerCommand;
       if (command.type === "cancel") {
         await work.acknowledge(hostIds[0]!, command.id);
-        terminated(hostIds[0]!, command);
+        await terminated(hostIds[0]!, command);
       }
     }
     for (let index = 0; index < 1000 && !continuationState.questionId; index++) await delay(1);
@@ -2992,7 +2993,7 @@ export async function probeRunnerBackend(
     );
     {
       now += 120_001;
-      for (const id of hostIds) work.heartbeat(id);
+      for (const id of hostIds) await work.heartbeat(id);
       const reviewEvents: string[] = [];
       const independentReview = placedBackend.forItem(artifactItem.id)(
         input(artifactItem, {
@@ -3046,7 +3047,7 @@ export async function probeRunnerBackend(
         ) as RunnerCommand;
         if (command.type === "cancel") {
           await work.acknowledge(continuationHost, command.id);
-          terminated(continuationHost, command);
+          await terminated(continuationHost, command);
         }
       }
       const independentHost = continuationHost;
@@ -3192,7 +3193,7 @@ export async function probeRunnerBackend(
         }
         return null;
       };
-      for (const hostId of hostIds) work.heartbeat(hostId);
+      for (const hostId of hostIds) await work.heartbeat(hostId);
       const paused = async (runId: string) => {
         for (let attempt = 0; attempt < 500 && !usagePause(db, runId); attempt++) await delay(2);
         return usagePause(db, runId);
@@ -3229,7 +3230,7 @@ export async function probeRunnerBackend(
         `Paused: Codex usage limit reached; resumes at ${day}${resume.slice(11, 16)} UTC.`,
       ]);
       now += 180_000;
-      for (const hostId of hostIds) work.heartbeat(hostId);
+      for (const hostId of hostIds) await work.heartbeat(hostId);
       db.run("UPDATE workspace_member SET checked_at=? WHERE user_id=?", [now, principal.userId]);
       const placedOn = await dispatched();
       assert(placedOn);
@@ -3333,7 +3334,7 @@ export async function probeRunnerBackend(
       const sent = async (version: string, checkpointBase = base) => {
         await drain();
         reportVersion(version);
-        for (const hostId of hostIds) work.heartbeat(hostId);
+        for (const hostId of hostIds) await work.heartbeat(hostId);
         const record = await item();
         saveCheckpoint(db, record.id, {
           phase: "running",
@@ -3395,7 +3396,7 @@ export async function probeRunnerBackend(
         throw new Error("No dispatched run command");
       };
       await drain();
-      for (const hostId of hostIds) work.heartbeat(hostId);
+      for (const hostId of hostIds) await work.heartbeat(hostId);
       const restarted = await item();
       const restartAbort = new AbortController();
       let restartFailure: unknown = null;
@@ -3408,7 +3409,7 @@ export async function probeRunnerBackend(
         now - 1 - RUNNER_LEASE_GRACE_MS,
         firstPlacement.runId,
       ]);
-      for (const hostId of hostIds) work.heartbeat(hostId);
+      for (const hostId of hostIds) await work.heartbeat(hostId);
       await delay(50);
       assert.equal(restartFailure, null);
       const secondPlacement = await nextRun();
@@ -3449,7 +3450,7 @@ export async function probeRunnerBackend(
         assert(offlineWait.message.includes(`${name}: offline`));
         assert(JSON.stringify(placementLogs).includes(`${name}: offline`));
       }
-      for (const hostId of hostIds) work.heartbeat(hostId);
+      for (const hostId of hostIds) await work.heartbeat(hostId);
       const offlineAbort = new AbortController();
       const offlineRun = placedBackend.forItem(offline.id)(
         input(offline, { signal: offlineAbort.signal }),

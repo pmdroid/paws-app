@@ -206,13 +206,13 @@ async function setup() {
    * Both runners online, restore-capable for Claude, Codex and Grok, signed in to Claude 2.1.7,
    * Codex 2.1.1 and Grok 1.0.50, owned by the delegator.
    */
-  function reset() {
+  async function reset() {
     for (const runnerId of Object.values(runners)) {
       db.run("UPDATE runner SET status='active',revoked_at=NULL,owner_user_id=? WHERE id=?", [
         userId,
         runnerId,
       ]);
-      work.heartbeat(runnerId);
+      await work.heartbeat(runnerId);
       db.run(
         `INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.46',?)
          ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version`,
@@ -323,7 +323,7 @@ async function setup() {
     /** Runs while the second turn's command holds the run. */
     dispatched?: (command: RunCommand, runnerId: string) => Promise<void>;
   }) {
-    reset();
+    await reset();
     // A and B tie on rank and load, and ULIDs minted in one millisecond order at random, so B
     // stays offline until A has run the first turn.
     db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 60_001, runners.b]);
@@ -355,7 +355,7 @@ async function setup() {
     await first;
     expect(onA.restoreSession).toBeUndefined();
     notices.length = 0;
-    work.heartbeat(runners.b);
+    await work.heartbeat(runners.b);
     if (!options.stay)
       db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 60_001, runners.a]);
     options.change?.();
@@ -649,7 +649,7 @@ test("another Grok version still restores, and a failed load names both versions
  */
 async function mergeQueueItemOnFullRunner() {
   const { db, runners, backend, root } = context;
-  context.reset();
+  await context.reset();
   db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
   const record = context.item();
   const turn = (options: { checkpoint?: false } = {}) =>
@@ -669,8 +669,8 @@ async function mergeQueueItemOnFullRunner() {
   await context.finish(onA, runners.a);
   await first;
   db.run("UPDATE runner SET status='active' WHERE id=?", [runners.b]);
-  context.work.heartbeat(runners.a);
-  context.work.heartbeat(runners.b);
+  await context.work.heartbeat(runners.a);
+  await context.work.heartbeat(runners.b);
   // A re-verify moves the first item in the merge queue to verifying; it keeps its place.
   db.run("UPDATE work_item SET state='verifying' WHERE id=?", [record.id]);
   db.run("INSERT INTO merge_queue_entry(item_id,repository,ready_at) VALUES(?,?,?)", [

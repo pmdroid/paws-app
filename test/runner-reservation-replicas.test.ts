@@ -108,7 +108,7 @@ async function replicas() {
   };
   const first = instance("acme-a");
   const second = instance("acme-b");
-  first.work.heartbeat(runnerId, 1);
+  await first.work.heartbeat(runnerId, 1);
 
   let sequence = 0;
   const item = () => {
@@ -171,9 +171,9 @@ async function replicas() {
     prepare,
     probes,
     now: () => clock,
-    tick(ms: number) {
+    async tick(ms: number) {
       clock += ms;
-      first.work.heartbeat(runnerId, 1);
+      await first.work.heartbeat(runnerId, 1);
     },
     close() {
       for (const handle of [first.db, second.db, db]) handle.close();
@@ -231,7 +231,7 @@ test("a crashed instance's reservation expires after two minutes and frees the s
     await Bun.sleep(50);
     expect(await fixture.probes()).toHaveLength(0);
 
-    fixture.tick(RUNNER_RESERVATION_MS + 1);
+    await fixture.tick(RUNNER_RESERVATION_MS + 1);
     const placed = fixture.prepare(fixture.second, waiting, stop.signal);
     void placed.catch(() => undefined);
     const until = performance.now() + 5_000;

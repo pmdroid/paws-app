@@ -382,7 +382,7 @@ async function runnerWorld() {
   const work = controller();
   work.assign(command);
   await work.acknowledge("box", command.id);
-  work.heartbeat(
+  await work.heartbeat(
     "box",
     1,
     host,
@@ -433,7 +433,7 @@ describe("runner control across Paws restarts", () => {
       await held();
       await controller().acknowledge("box", cancel.id);
       w.advance(cancel.expiresAt - w.now + RUNNER_LEASE_GRACE_MS + 1);
-      controller().heartbeat("box", 1, host, undefined, undefined, undefined, undefined, [
+      await controller().heartbeat("box", 1, host, undefined, undefined, undefined, undefined, [
         { runId: run.id, generation: 1 },
       ]);
       w.stop();
@@ -444,7 +444,7 @@ describe("runner control across Paws restarts", () => {
         controller().assign({ ...command, id: "work-2", generation: 2, issuedAt: w.now }),
       ).toThrow(RunnerTeardownPending);
 
-      controller().heartbeat(
+      await controller().heartbeat(
         "box",
         1,
         host,
@@ -481,7 +481,7 @@ describe("runner control across Paws restarts", () => {
         else w.stop();
         w.start();
         expect(() => controller().current(run.id, 1)).toThrow(RunnerWorkFencedError);
-        controller().heartbeat("box", 1, {}, undefined, undefined, undefined, undefined, [
+        await controller().heartbeat("box", 1, {}, undefined, undefined, undefined, undefined, [
           { runId: run.id, generation: 1 },
         ]);
         expect(() => controller().current(run.id, 1)).toThrow(RunnerWorkFencedError);

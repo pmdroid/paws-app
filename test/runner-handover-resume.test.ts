@@ -267,7 +267,7 @@ async function setup() {
    * Both runners active, online and signed in to Claude; only A is free until `start` places.
    * With `alongside`, the runs already active keep running.
    */
-  function item(alongside = false) {
+  async function item(alongside = false) {
     if (!alongside) {
       git(["-C", checkout, "reset", "-q", "--hard", base]);
       db.run("UPDATE run SET status='ended' WHERE status='active'");
@@ -275,7 +275,7 @@ async function setup() {
     }
     for (const runnerId of Object.values(runners)) {
       db.run("UPDATE runner SET status='active',owner_user_id=? WHERE id=?", [userId, runnerId]);
-      work.heartbeat(runnerId);
+      await work.heartbeat(runnerId);
       db.run(
         `INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.44',?)
          ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version`,
@@ -382,7 +382,7 @@ async function setup() {
    * `question`, A asks first and the question is answered or still open at the handover.
    */
   async function handOverTurn(whileMoving: () => void = () => {}, question?: "answered" | "open") {
-    const record = item();
+    const record = await item();
     const notices: string[] = [];
     const prompts: string[] = [];
     db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
@@ -585,7 +585,7 @@ test("only a runner that ends the turn at a question is told to; an older one ke
     ["0.1.73", undefined],
     [QUESTION_ENDS_TURN_RUNNER_VERSION.join("."), true],
   ] as const) {
-    const record = context.item();
+    const record = await context.item();
     db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
     db.run("UPDATE runner_host_status SET runner_version=? WHERE runner_id=?", [
       version,
@@ -601,7 +601,7 @@ test("only a runner that ends the turn at a question is told to; an older one ke
 
 test("a question that cannot be asked keeps the turn's work as a WIP commit before the cancel", async () => {
   const { db, runners } = context;
-  const record = context.item();
+  const record = await context.item();
   db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
   db.run("UPDATE runner_host_status SET runner_version='0.1.73' WHERE runner_id=?", [runners.a]);
   const { running } = context.turn(record, [], "stale");
@@ -620,7 +620,7 @@ test("a question that cannot be asked keeps the turn's work as a WIP commit befo
 
 test("a Paws shutdown while the run waits on its question keeps the turn's work before the cancel", async () => {
   const { db, runners } = context;
-  const record = context.item();
+  const record = await context.item();
   db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
   db.run("UPDATE runner_host_status SET runner_version='0.1.73' WHERE runner_id=?", [runners.a]);
   const { running, stop } = context.turn(record, [], "waiting");
@@ -696,7 +696,7 @@ async function card(runnerId: string) {
 /** A turn running on A, with B paused until it lands there. */
 async function runningOnA(notices: string[] = []) {
   const { db, runners } = context;
-  const record = context.item();
+  const record = await context.item();
   db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
   const { running } = context.turn(record, notices);
   const onA = (await context.next(runners.a)) as RunCommand;
@@ -846,7 +846,7 @@ async function twoRunningOnA(notices: string[] = []) {
   const { db, runners } = context;
   const turns = [];
   for (const alongside of [false, true]) {
-    const record = context.item(alongside);
+    const record = await context.item(alongside);
     // Each runner has two slots, so both sessions fit on A and then on B.
     for (const runnerId of Object.values(runners))
       db.run("INSERT OR REPLACE INTO runner_capacity(runner_id,capacity) VALUES(?,2)", [runnerId]);
@@ -998,7 +998,7 @@ test("Move running work needs a draining runner and an admin", async () => {
 
 test("the work turn after start_work waits for a slot on the session's runner, then resumes the same session", async () => {
   const { db, runners } = context;
-  const record = context.item();
+  const record = await context.item();
   db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
   const first = context.turn(record, []);
   const earlier = (await context.next(runners.a)) as RunCommand;
@@ -1010,7 +1010,7 @@ test("the work turn after start_work waits for a slot on the session's runner, t
   const next = { id: record.id, runId: beginImplementRun(db, record.id, context.now).run.id };
 
   // Another item takes A's only work slot; B stays paused.
-  const busy = context.item(true);
+  const busy = await context.item(true);
   db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
   const other = context.turn(busy, []);
   const busyOnA = (await context.next(runners.a)) as RunCommand;
@@ -1041,7 +1041,7 @@ test("the work turn after start_work waits for a slot on the session's runner, t
 
 test("replayed questions attach to the open answer without asking or cancelling again", async () => {
   const { db, runners } = context;
-  const record = context.item();
+  const record = await context.item();
   context.db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
   let asks = 0;
   const ask = async (request: { question: string }) => {
@@ -1104,7 +1104,7 @@ test("replayed questions attach to the open answer without asking or cancelling 
 
 test("different text while a question is open still fails as overlapping questions", async () => {
   const { runners } = context;
-  const record = context.item();
+  const record = await context.item();
   context.db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
   let release!: (answer: { answer: string }) => void;
   const turn = context.turn(
@@ -1127,7 +1127,7 @@ test("different text while a question is open still fails as overlapping questio
 
 test("a replay attaches to a question already stored by an earlier attachment", async () => {
   const { db, runners } = context;
-  const record = context.item();
+  const record = await context.item();
   context.db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
   db.run(
     "INSERT INTO question(id,item_id,run_id,session_id,kind,body,status,created_at) VALUES(?,?,?,?,'agent',?,'open',?)",
@@ -1181,7 +1181,7 @@ for (const [owner, change] of [
   test(`a replay gets no answer when the item ${owner}, before or after attaching`, async () => {
     for (const whileAttached of [false, true]) {
       const { db, runners } = context;
-      const record = context.item();
+      const record = await context.item();
       db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
       db.run(
         "INSERT INTO question(id,item_id,run_id,session_id,kind,body,status,created_at) VALUES(?,?,?,?,'agent',?,'open',?)",
@@ -1226,7 +1226,7 @@ for (const [owner, change] of [
 
 test("a replay fails as stale when the open question belongs to an earlier session", async () => {
   const { db, runners } = context;
-  const record = context.item();
+  const record = await context.item();
   db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
   db.run(
     "INSERT INTO question(id,item_id,run_id,session_id,kind,body,status,created_at) VALUES(?,?,?,?,'agent',?,'open',?)",

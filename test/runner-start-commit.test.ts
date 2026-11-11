@@ -568,7 +568,7 @@ async function startScenario(input: {
   const sim = { stopped: false };
   const runner = (async () => {
     while (!sim.stopped) {
-      work.heartbeat(runnerId);
+      await work.heartbeat(runnerId);
       for (const envelope of await work.commands(runnerId)) {
         const command = JSON.parse(
           Buffer.from(envelope.payload, "base64url").toString(),

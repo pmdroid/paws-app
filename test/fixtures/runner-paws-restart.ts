@@ -350,7 +350,7 @@ const runtimeOptions: Parameters<typeof openRunnerRuntime>[0] = {
     async heartbeat(skills, runtimes, agents, live) {
       reachable();
       heartbeats++;
-      return services.work.heartbeat(
+      return await services.work.heartbeat(
         runnerId,
         1,
         { runnerVersion: "9.0.0" },
