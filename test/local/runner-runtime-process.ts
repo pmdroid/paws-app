@@ -186,7 +186,7 @@ if (mode === "prepare") {
     ]);
     for (const [index, type] of ["run", "review", "run", "run"].entries()) {
       const session = `session-${index}`;
-      const item = insertQueuedItem(db, { id: `item-${index}`, now, sessionKey: session });
+      const item = await insertQueuedItem(db, { id: `item-${index}`, now, sessionKey: session });
       const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
       await recordLinearInstallation(sqliteDb(db), {
         organizationId: "org",

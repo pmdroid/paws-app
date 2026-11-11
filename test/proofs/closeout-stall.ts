@@ -31,7 +31,7 @@ export default {
     try {
       migrate(db);
       const clock = new FakeClock(Date.now() + 1000);
-      insertQueuedItem(db, { id: "quiet", sessionKey: "quiet-session", now: clock.now() });
+      await insertQueuedItem(db, { id: "quiet", sessionKey: "quiet-session", now: clock.now() });
       await beginImplementRun(sqliteDb(db), "quiet", clock.now());
       await applyWorkItemEvent(sqliteDb(db), "quiet", "turn_ended", { now: clock.now() });
       await saveCheckpoint(sqliteDb(db), "quiet", {

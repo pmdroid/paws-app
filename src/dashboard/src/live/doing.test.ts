@@ -40,7 +40,7 @@ function database(): Database {
 }
 
 async function running(db: Database, id: string): Promise<string> {
-  insertQueuedItem(db, { id, title: id, now: START });
+  await insertQueuedItem(db, { id, title: id, now: START });
   const runId = (await beginImplementRun(sqliteDb(db), id, START)).run.id;
   db.run("UPDATE work_item_event SET at=? WHERE item_id=?", [START, id]);
   return runId;
@@ -123,7 +123,7 @@ describe("what an item does now", () => {
   test("an item parked in a slot wait shows Waiting for a slot with its runners and wait time", async () => {
     const db = database();
     const now = START + 26 * MINUTE;
-    insertQueuedItem(db, { id: "parked", title: "parked", now: START });
+    await insertQueuedItem(db, { id: "parked", title: "parked", now: START });
     db.run("UPDATE work_item SET awake_ms=? WHERE id='parked'", [114 * MINUTE]);
     await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.resume,

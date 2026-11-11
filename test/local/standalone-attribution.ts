@@ -67,7 +67,7 @@ export async function probeStandaloneAttribution(root: string) {
   };
   const consent = async () => {
     const stateHash = randomUUID();
-    beginGitHubAttribution(db, binding, { stateHash, browserHash: stateHash, now });
+    await beginGitHubAttribution(sqliteDb(db), binding, { stateHash, browserHash: stateHash, now });
     const revision = await consumeGitHubAttribution(db, binding, {
       stateHash,
       browserHash: stateHash,
@@ -86,7 +86,7 @@ export async function probeStandaloneAttribution(root: string) {
       now,
     );
   };
-  const item = insertQueuedItem(db, { id: "item", sessionKey: "session", now });
+  const item = await insertQueuedItem(db, { id: "item", sessionKey: "session", now });
   await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "client",

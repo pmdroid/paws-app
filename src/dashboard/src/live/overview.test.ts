@@ -36,8 +36,8 @@ function database(): Database {
 
 async function fixture(): Promise<Database> {
   const db = database();
-  insertQueuedItem(db, { id: "ENG-1", title: "Queued", sessionKey: "s1", now: NOW - 9_000 });
-  insertQueuedItem(db, { id: "ENG-2", title: "Running", sessionKey: "s1", now: NOW - 8_000 });
+  await insertQueuedItem(db, { id: "ENG-1", title: "Queued", sessionKey: "s1", now: NOW - 9_000 });
+  await insertQueuedItem(db, { id: "ENG-2", title: "Running", sessionKey: "s1", now: NOW - 8_000 });
   await beginImplementRun(sqliteDb(db), "ENG-2", NOW - 7_900);
   const identity = { taskId: "ENG-2", base: "b".repeat(40), head: HEAD, policyDigest: "sha256:p" };
   await upsertCloseoutStep(
@@ -75,14 +75,14 @@ async function fixture(): Promise<Database> {
     false,
     NOW - 6_900,
   );
-  insertQueuedItem(db, { id: "ENG-3", title: "Merging", sessionKey: "s1", now: NOW - 7_000 });
+  await insertQueuedItem(db, { id: "ENG-3", title: "Merging", sessionKey: "s1", now: NOW - 7_000 });
   await beginImplementRun(sqliteDb(db), "ENG-3", NOW - 6_900);
   await enterMergeQueue(sqliteDb(db), "ENG-3", {
     phase: "merge_queue",
     baseSha: "b".repeat(40),
     wipCommit: "c".repeat(40),
   });
-  insertQueuedItem(db, { id: "ENG-4", title: "Risky", sessionKey: "s1", now: NOW - 6_000 });
+  await insertQueuedItem(db, { id: "ENG-4", title: "Risky", sessionKey: "s1", now: NOW - 6_000 });
   await beginImplementRun(sqliteDb(db), "ENG-4", NOW - 5_900);
   await applyWorkItemEvent(sqliteDb(db), "ENG-4", "blocking_question");
   db.run(
@@ -108,7 +108,12 @@ async function fixture(): Promise<Database> {
     paths: ["src/auth/session.ts"],
     classifiedAt: NOW - 5_000,
   });
-  insertQueuedItem(db, { id: "ENG-5", title: "Held review", sessionKey: "s1", now: NOW - 4_000 });
+  await insertQueuedItem(db, {
+    id: "ENG-5",
+    title: "Held review",
+    sessionKey: "s1",
+    now: NOW - 4_000,
+  });
   await beginImplementRun(sqliteDb(db), "ENG-5", NOW - 3_900);
   await applyWorkItemEvent(sqliteDb(db), "ENG-5", "turn_ended");
   await enqueueJob(sqliteDb(db), {
@@ -118,7 +123,12 @@ async function fixture(): Promise<Database> {
     now: NOW - 3_000,
   });
   for (const [index, id] of ["ENG-6", "ENG-7"].entries()) {
-    insertQueuedItem(db, { id, title: `Stopped ${index}`, sessionKey: "s1", now: NOW - 2_000 });
+    await insertQueuedItem(db, {
+      id,
+      title: `Stopped ${index}`,
+      sessionKey: "s1",
+      now: NOW - 2_000,
+    });
     await applyWorkItemEvent(sqliteDb(db), id, "cancel", { now: NOW - 1_000 });
   }
   return db;
@@ -230,7 +240,7 @@ describe("overview resource", () => {
 
   test("lists only the reader's sessions", async () => {
     const db = await fixture();
-    insertQueuedItem(db, { id: "ENG-9", title: "Elsewhere", sessionKey: "s2", now: NOW });
+    await insertQueuedItem(db, { id: "ENG-9", title: "Elsewhere", sessionKey: "s2", now: NOW });
     const mine = await createLiveStatusProvider(sqliteDb(db), {
       now: () => new Date(NOW),
       env: {},

@@ -74,7 +74,7 @@ test("migration 062 starts items without a snapshot so startup resyncs them", ()
 test("a delegation is snapshot-ready only when every active item has a snapshot", async () => {
   const db = tempDb();
   try {
-    const first = insertQueuedItem(db, { id: "first", now: 1 });
+    const first = await insertQueuedItem(db, { id: "first", now: 1 });
     db.run(
       "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('second',?,'second','DEP-3','Second','queued','paws/second',1,1)",
       [first.delegationId],
@@ -112,7 +112,7 @@ test("a delegation is snapshot-ready only when every active item has a snapshot"
 test("merged blocker evidence keeps the newest check", async () => {
   const db = tempDb();
   try {
-    const first = insertQueuedItem(db, { id: "first", now: 1 });
+    const first = await insertQueuedItem(db, { id: "first", now: 1 });
     db.run(
       "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('second',?,'second','DEP-3','Second','queued','paws/second',1,1)",
       [first.delegationId],

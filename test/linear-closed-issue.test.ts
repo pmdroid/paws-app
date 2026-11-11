@@ -49,7 +49,7 @@ test.each([
   });
   let launches = 0;
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs: new JobLoop(db, systemClock),
     outbox: new OutboxDispatcher(db, systemClock),
     pawsRoot: join(home, "paws"),

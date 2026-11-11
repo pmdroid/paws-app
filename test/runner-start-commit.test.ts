@@ -505,7 +505,12 @@ async function startScenario(input: {
       now,
     ]);
   db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [runnerId]);
-  const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session", branchName: BRANCH });
+  const item = await insertQueuedItem(db, {
+    id: "item",
+    now,
+    sessionKey: "session",
+    branchName: BRANCH,
+  });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
   await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",

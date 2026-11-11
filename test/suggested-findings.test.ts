@@ -22,9 +22,9 @@ import { tempDb } from "./helpers";
 
 const HOUR = 3_600_000;
 
-function mergeQueueItem(id: string, awakeMs = 0) {
+async function mergeQueueItem(id: string, awakeMs = 0) {
   const db = tempDb();
-  insertQueuedItem(db, { id, sessionKey: `session-${id}`, now: 1, maxAwakeMs: 2 * HOUR });
+  await insertQueuedItem(db, { id, sessionKey: `session-${id}`, now: 1, maxAwakeMs: 2 * HOUR });
   db.run("UPDATE work_item SET state = 'merge_queue', awake_ms = ? WHERE id = ?", [awakeMs, id]);
   return db;
 }
@@ -46,7 +46,7 @@ function startTurn(
 }
 
 test("own_turn starts exactly one suggestion restart from merge_queue, and none for a second head", async () => {
-  const db = mergeQueueItem("acme-1");
+  const db = await mergeQueueItem("acme-1");
   try {
     expect(
       await startTurn(db, { itemId: "acme-1", head: "a".repeat(40), suggestions: 1, now: 5 }),
@@ -69,7 +69,7 @@ test("own_turn starts exactly one suggestion restart from merge_queue, and none 
 });
 
 test("own_turn starts nothing without suggestions or when another restart is already coming", async () => {
-  const db = mergeQueueItem("acme-2");
+  const db = await mergeQueueItem("acme-2");
   try {
     expect(
       await startTurn(db, { itemId: "acme-2", head: "a".repeat(40), suggestions: 0, now: 5 }),
@@ -98,7 +98,7 @@ test("own_turn starts nothing without suggestions or when another restart is alr
 });
 
 test("own_turn skips the suggestion restart under 45 minutes of awake budget and records why", async () => {
-  const db = mergeQueueItem("acme-3", 2 * HOUR - 44 * 60_000);
+  const db = await mergeQueueItem("acme-3", 2 * HOUR - 44 * 60_000);
   try {
     expect(
       await startTurn(db, { itemId: "acme-3", head: "a".repeat(40), suggestions: 1, now: 5 }),
@@ -184,7 +184,7 @@ const META: OpenFinding = {
 };
 
 async function handedItem(id: string) {
-  const db = mergeQueueItem(id);
+  const db = await mergeQueueItem(id);
   await handSuggestions(sqliteDb(db), id, [GRANT, META], 5);
   const idAt = async (location: string) =>
     (await suggestedFindings(sqliteDb(db), id)).find((record) => record.location === location)!

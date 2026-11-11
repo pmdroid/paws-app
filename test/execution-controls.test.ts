@@ -106,7 +106,7 @@ test("Clear stuck agent clears a blocked conversation for an admin, refuses a me
   const fixture = await createExecutionControlsFixture(root);
   try {
     const { db, call } = fixture;
-    blockConversation(db, "controlled", Date.now());
+    await blockConversation(sqliteDb(db), "controlled", Date.now());
     const view = (await (await call(undefined, "admin")).json()) as {
       actions: string[];
       notice?: string;

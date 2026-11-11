@@ -63,7 +63,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       "fixture/repository",
       "team",
     ]);
-    const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
+    const item = await insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
     await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
@@ -232,7 +232,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       [{ runId: run.id, generation: 2, commandId: "cancel-2" }],
     );
     expect(await runnerSlotFree(sqliteDb(db), ["box"], now)).toBe(true);
-    const other = insertQueuedItem(db, { id: "item-2", now, sessionKey: "session-2" });
+    const other = await insertQueuedItem(db, { id: "item-2", now, sessionKey: "session-2" });
     const retry = (await beginImplementRun(sqliteDb(db), other.id, now)).run;
     await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",

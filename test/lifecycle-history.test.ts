@@ -55,7 +55,7 @@ async function reply(db: Database, body: string, now: number) {
 async function askedAtTimeLimit() {
   const clock = new FakeClock(Date.now());
   const db = database();
-  const item = insertQueuedItem(db, {
+  const item = await insertQueuedItem(db, {
     id: "eng-7",
     sessionKey: "ses",
     limits: { fixes: 30 * MINUTE },
@@ -122,7 +122,7 @@ test("Merge at the time limit records one acceptance, no agent turn, and no runn
   expect(ms.awaiting_input).toBe(10 * MINUTE);
   expect(ms.merge_queue).toBe(5 * MINUTE);
 
-  restart(db, (await getWorkItem(sqliteDb(db), itemId))!, {
+  await restart(sqliteDb(db), (await getWorkItem(sqliteDb(db), itemId))!, {
     reason: "ci",
     body: "CI failed",
     now: clock.now(),
@@ -138,7 +138,7 @@ test("Stop at the time limit records answer_stopped from the wait, not a run fai
 
 test("an answered runner wait re-verifies without passing through running", async () => {
   const db = database();
-  const item = insertQueuedItem(db, { id: "eng-8", sessionKey: "ses", now: 1_000 });
+  const item = await insertQueuedItem(db, { id: "eng-8", sessionKey: "ses", now: 1_000 });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, 1_000);
   await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
   await loopAsk(
@@ -158,7 +158,7 @@ test("an answered runner wait re-verifies without passing through running", asyn
 
 test("Discarding a plan completes it from the wait with one answer_completed", async () => {
   const db = database();
-  const item = insertQueuedItem(db, { id: "eng-9", sessionKey: "ses", now: 1_000 });
+  const item = await insertQueuedItem(db, { id: "eng-9", sessionKey: "ses", now: 1_000 });
   await saveTaskMode(sqliteDb(db), item.id, "plan");
   const { run } = await beginImplementRun(sqliteDb(db), item.id, 1_000);
   const asked = await loopAsk(
@@ -187,7 +187,7 @@ test("Discarding a plan completes it from the wait with one answer_completed", a
 
 test("a failure in the merge queue records work_failed, not a lease expiry", async () => {
   const db = database();
-  const item = insertQueuedItem(db, { id: "eng-10", sessionKey: "ses", now: 1_000 });
+  const item = await insertQueuedItem(db, { id: "eng-10", sessionKey: "ses", now: 1_000 });
   await beginImplementRun(sqliteDb(db), item.id, 1_000);
   await enterMergeQueue(sqliteDb(db), item.id, {
     phase: "merge_queue",

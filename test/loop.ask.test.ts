@@ -44,7 +44,11 @@ test.each([
 
 async function parked() {
   const db = tempDb();
-  const item = insertQueuedItem(db, { id: "ENG-2", sessionKey: "ses_1", title: "Export rows" });
+  const item = await insertQueuedItem(db, {
+    id: "ENG-2",
+    sessionKey: "ses_1",
+    title: "Export rows",
+  });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
   await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
   return { db, asker: { itemId: item.id, runId: run.id, sessionId: "ses_1" } };
@@ -194,7 +198,7 @@ test("an amended question delivers and keeps the added context and options", asy
 
 test("structured choices persist their values and display their labels", async () => {
   const db = tempDb();
-  const item = insertQueuedItem(db, {
+  const item = await insertQueuedItem(db, {
     id: "ENG-choices",
     sessionKey: "ses-choices",
     title: "Choose",

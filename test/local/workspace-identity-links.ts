@@ -67,8 +67,8 @@ export async function probeWorkspaceIdentityLinks(
     now,
   });
   const secrets = pawsPaths(root).secretsDir;
-  writeCredential(
-    db,
+  await writeCredential(
+    sqliteDb(db),
     secrets,
     "slack",
     JSON.stringify({
@@ -83,7 +83,7 @@ export async function probeWorkspaceIdentityLinks(
   const requests: { email: string; authorized: boolean }[] = [];
   let wrongTeam = false;
   let barrier: { entered: () => void; wait: Promise<void> } | undefined;
-  const slack = createSlackIdentityReads({
+  const slack = await createSlackIdentityReads({
     home: root,
     db,
     fetch: async (input, init) => {

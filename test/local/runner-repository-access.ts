@@ -141,7 +141,7 @@ export async function probeRunnerRepositoryAccess(
   });
   async function assigned(type: "run" | "review" = "run", targetRunner = runnerId, bindBot = true) {
     const sessionId = workspaceId();
-    const item = insertQueuedItem(db, {
+    const item = await insertQueuedItem(db, {
       id: workspaceId(),
       now,
       sessionKey: sessionId,

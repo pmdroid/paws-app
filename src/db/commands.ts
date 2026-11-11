@@ -1,5 +1,4 @@
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import { and, eq, inArray, isNull, like, or, sql } from "drizzle-orm";
 import {
   CommandBus,
@@ -30,7 +29,7 @@ import { markRunSteps } from "./runs";
 import { haltSteps } from "./halt";
 import { enqueueEndedSessionFaceSteps, stoppedResponseSteps } from "./stop-response";
 import { mergeCallInFlightSteps, getConfirmedRemoteMergeSteps } from "./remote-merges";
-import { settled, sqliteDb, type Q, type Db, type Steps } from "./db";
+import { type Q, type Db, type Steps } from "./db";
 
 export function* enqueueCommandSteps(q: Q, command: LinearCommand, now = command.requestedAt) {
   return yield* enqueueJobOnceSteps(q, {
@@ -43,13 +42,13 @@ export function* enqueueCommandSteps(q: Q, command: LinearCommand, now = command
   });
 }
 
-export function enqueueCommand(
-  db: Database,
+export async function enqueueCommand(
+  store: Db,
   command: LinearCommand,
   now = command.requestedAt,
-): number {
-  const { id, inserted } = settled(sqliteDb(db).run((q) => enqueueCommandSteps(q, command, now)));
-  if (inserted) emitJobReady(db);
+): Promise<number> {
+  const { id, inserted } = await store.run((q) => enqueueCommandSteps(q, command, now));
+  if (inserted) emitJobReady(store);
   return id;
 }
 

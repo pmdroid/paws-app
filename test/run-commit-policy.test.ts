@@ -37,7 +37,7 @@ test("a task keeps the commit policy it started with when credit changes mid-fli
   let current = BOT_ONLY;
   let resolutions = 0;
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     clock,
@@ -62,7 +62,7 @@ test("a task keeps the commit policy it started with when credit changes mid-fli
       }
     ).commitPolicy(item);
   try {
-    insertQueuedItem(db, { id: "task", sessionKey: "session", now: 1_000 });
+    await insertQueuedItem(db, { id: "task", sessionKey: "session", now: 1_000 });
     await beginImplementRun(sqliteDb(db), "task", 1_000);
     expect(await policyFor((await getWorkItem(sqliteDb(db), "task"))!)).toEqual(BOT_ONLY);
     current = WITH_CREDIT;

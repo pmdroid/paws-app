@@ -24,7 +24,7 @@ const ACCEPTED = "672c580b";
 async function acceptedItem() {
   const db = openDatabase(":memory:");
   migrate(db);
-  const item = insertQueuedItem(db, { id: "pas-814", sessionKey: "ses", now: 1_000 });
+  const item = await insertQueuedItem(db, { id: "pas-814", sessionKey: "ses", now: 1_000 });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, 1_000);
   await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
   await applyWorkItemEvent(sqliteDb(db), item.id, "closeout_accepted");
@@ -155,7 +155,7 @@ test("a rejected push whose remote diverged from the accepted head is left to co
 test("an item without accepted work is not sent to the merge queue", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
-  insertQueuedItem(db, { id: "fresh", sessionKey: "ses", now: 1_000 });
+  await insertQueuedItem(db, { id: "fresh", sessionKey: "ses", now: 1_000 });
   await beginImplementRun(sqliteDb(db), "fresh", 1_000);
   expect(await mergeAcceptedWork(sqliteDb(db), "fresh", { now: 2_000 })).toBe(false);
   expect(
@@ -171,7 +171,11 @@ test("an item without accepted work is not sent to the merge queue", async () =>
 test("an accepted item queued again by a restart leaves that restart for the merge queue", async () => {
   const { db, itemId } = await acceptedItem();
   const item = (await getWorkItem(sqliteDb(db), itemId))!;
-  const job = restart(db, item, { reason: "follow_up", body: "go on", now: 2_000 })!;
+  const job = (await restart(sqliteDb(db), item, {
+    reason: "follow_up",
+    body: "go on",
+    now: 2_000,
+  }))!;
   expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
   expect(await mergeAcceptedWork(sqliteDb(db), itemId, { now: 3_000, exceptJobId: job })).toBe(
     true,
@@ -183,11 +187,11 @@ test("an accepted item queued again by a restart leaves that restart for the mer
 for (const reason of ["ci", "review"] as const) {
   test(`a rejected push of a turn carrying ${reason} input goes to the question, not the merge queue`, async () => {
     const { db, itemId } = await acceptedItem();
-    const job = restart(db, (await getWorkItem(sqliteDb(db), itemId))!, {
+    const job = (await restart(sqliteDb(db), (await getWorkItem(sqliteDb(db), itemId))!, {
       reason,
       body: `fix ${reason}`,
       now: 2_000,
-    })!;
+    }))!;
     await beginImplementRun(sqliteDb(db), itemId, 2_500);
     db.run("UPDATE job SET status = 'running' WHERE id = ?", [job]);
     expect(

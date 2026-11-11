@@ -7,6 +7,8 @@ import {
   failJobSteps,
   getJobSteps,
   sqliteDb,
+  type Q,
+  type Steps,
 } from "../db";
 
 type RotatingCredential = { accessToken: string; refreshToken: string | null };
@@ -14,13 +16,14 @@ type RotatingCredential = { accessToken: string; refreshToken: string | null };
 export async function refreshCredential<T extends RotatingCredential>(input: {
   db: Database;
   identity: string;
-  read: () => T | null;
-  write: (value: T) => void;
+  read: (q: Q) => Steps<T | null>;
+  write: (q: Q, value: T) => Steps<unknown>;
   refresh: (value: T, signal: AbortSignal) => Promise<T>;
   leaseMs?: number;
 }): Promise<T> {
   const store = sqliteDb(input.db);
-  const original = input.read();
+  const read = () => store.run((q) => input.read(q));
+  const original = await read();
   if (original?.refreshToken == null)
     throw new Error("No refresh token is stored. Reconnect the integration.");
   const queue = `oauth.refresh.${digest(input.identity)}.${digest(original.refreshToken)}`;
@@ -28,12 +31,12 @@ export async function refreshCredential<T extends RotatingCredential>(input: {
   const workerId = `oauth:${process.pid}:${randomUUID()}`;
   const leaseMs = input.leaseMs ?? 30_000;
   for (;;) {
-    const current = input.read();
+    const current = await read();
     if (current === null) throw new Error("Integration credentials were removed.");
     if (changed(original, current)) return current;
     const state = await store.run((q) => getJobSteps(q, id));
     if (state?.status === "dead" || state?.status === "done" || state?.status === "cancelled") {
-      const latest = input.read();
+      const latest = await read();
       if (latest !== null && changed(original, latest)) return latest;
       throw new Error("Integration refresh could not complete. Reconnect the integration.");
     }
@@ -49,7 +52,7 @@ export async function refreshCredential<T extends RotatingCredential>(input: {
       const published = await store.transaction(function* (q) {
         const held = yield* getJobSteps(q, id);
         if (held?.lockedBy !== job.lockedBy || (held.lockedUntil ?? 0) <= Date.now()) return null;
-        const latest = input.read();
+        const latest = yield* input.read(q);
         if (latest === null) throw new Error("Integration credentials were removed.");
         const now = Date.now();
         const latestClaim = yield* getJobSteps(q, id);
@@ -59,7 +62,7 @@ export async function refreshCredential<T extends RotatingCredential>(input: {
           yield* completeJobSteps(q, job, now);
           return latest;
         }
-        input.write(next);
+        yield* input.write(q, next);
         yield* completeJobSteps(q, job, now);
         return next;
       });

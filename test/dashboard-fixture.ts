@@ -63,7 +63,7 @@ export async function startDashboardFixture(
         installation_observed_at, created_at) VALUES (?, 'org', 'fixture', 'app', ?, 1, 0)`,
       [session, team],
     );
-    insertQueuedItem(db, {
+    await insertQueuedItem(db, {
       id: item,
       sessionKey: session,
       title: `Fixture ${item}`,
@@ -90,7 +90,7 @@ export async function startDashboardFixture(
     ["PAS-3", "session-mine"],
     ["PAS-4", "session-other"],
   ] as const) {
-    insertQueuedItem(db, {
+    await insertQueuedItem(db, {
       id: item,
       sessionKey: session,
       title: `Fixture ${item}`,

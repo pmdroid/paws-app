@@ -52,7 +52,7 @@ function lease(db: Database, runId: string, generation: number, until: number) {
 async function leased(path = ":memory:") {
   const db = openDatabase(path);
   migrate(db);
-  const item = insertQueuedItem(db, { id: "item", sessionKey: "session", now: START });
+  const item = await insertQueuedItem(db, { id: "item", sessionKey: "session", now: START });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, START, running);
   lease(db, run.id, 1, START + LEASE_MS);
   return { db, item, run };

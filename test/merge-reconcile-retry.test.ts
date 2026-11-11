@@ -115,7 +115,7 @@ async function delegate(failures: number) {
   const lines: string[] = [];
   let sequence = 0;
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission,
     jobs,
     outbox,

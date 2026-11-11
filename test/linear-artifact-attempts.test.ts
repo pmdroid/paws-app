@@ -22,14 +22,14 @@ import { createFakeTracker, createLinearFileTransfer } from "../src/linear";
 import { createLinearArtifactPublisher, deliverLinearOutbox } from "../src/loop";
 import { tempHome } from "./helpers";
 
-function setup() {
+async function setup() {
   const home = tempHome();
   const workspace = join(home, "workspace");
   mkdirSync(workspace);
   const database = join(home, "paws.db");
   let db = openDatabase(database);
   migrate(db);
-  insertQueuedItem(db, { id: "item", sessionKey: "session" });
+  await insertQueuedItem(db, { id: "item", sessionKey: "session" });
   let uploadFailure = false;
   let sequence = 0;
   const files = createLinearFileTransfer({
@@ -98,7 +98,7 @@ function setup() {
 }
 
 test("a missing file invocation remains required after end_turn and database reopen", async () => {
-  const f = setup();
+  const f = await setup();
   try {
     const first = await f.run([{ type: "publish_artifact", path: "shot.png" }]);
     expect(first.result.stopReason).toBe("end_turn");
@@ -119,7 +119,7 @@ test("a missing file invocation remains required after end_turn and database reo
 });
 
 test("a corrected unsafe path recovers the same explicit deliverable without storing the rejected path", async () => {
-  const f = setup();
+  const f = await setup();
   try {
     await f.run([
       {
@@ -142,7 +142,7 @@ test("a corrected unsafe path recovers the same explicit deliverable without sto
 });
 
 test("another deliverable with the same basename cannot clear a missing publication", async () => {
-  const f = setup();
+  const f = await setup();
   try {
     await f.run([{ type: "publish_artifact", path: "required/proof.png" }]);
     await f.run([
@@ -162,7 +162,7 @@ test("another deliverable with the same basename cannot clear a missing publicat
 });
 
 test("a failed PUT at an old path is superseded by the same named deliverable at a corrected path", async () => {
-  const f = setup();
+  const f = await setup();
   try {
     f.failUpload(true);
     await f.run([
@@ -187,7 +187,7 @@ test("a failed PUT at an old path is superseded by the same named deliverable at
 });
 
 test("a late earlier success does not resolve a newer failed invocation of the same deliverable", async () => {
-  const f = setup();
+  const f = await setup();
   try {
     const first = await beginArtifactAttempt(sqliteDb(f.db), "item", "same-identity");
     const retry = await beginArtifactAttempt(sqliteDb(f.db), "item", "same-identity");
@@ -203,7 +203,7 @@ test("a late earlier success does not resolve a newer failed invocation of the s
 });
 
 test("requested issue cards survive a missing file and reopen before a corrected-path retry", async () => {
-  const f = setup();
+  const f = await setup();
   try {
     await f.run([
       {
@@ -256,7 +256,7 @@ test("requested issue cards survive a missing file and reopen before a corrected
 });
 
 test("ordinary publication does not create a requested issue card", async () => {
-  const f = setup();
+  const f = await setup();
   try {
     await f.run([
       { type: "fs_write", path: "proof.png", content: "PNG bytes" },
@@ -271,7 +271,7 @@ test("ordinary publication does not create a requested issue card", async () => 
 });
 
 test("a requested card retries ahead of the terminal reply and is fenced by Stop", async () => {
-  const f = setup();
+  const f = await setup();
   try {
     await f.run([
       { type: "fs_write", path: "proof.png", content: "PNG bytes" },
@@ -313,7 +313,7 @@ test("a requested card retries ahead of the terminal reply and is fenced by Stop
 });
 
 test("exhausted attachment and image delivery preserve a claimable final response after reopen", async () => {
-  const f = setup();
+  const f = await setup();
   try {
     await f.run([
       { type: "fs_write", path: "proof.png", content: "PNG bytes" },
@@ -346,7 +346,7 @@ test("exhausted attachment and image delivery preserve a claimable final respons
 });
 
 test("a malformed attachment flag still leaves its publication attempt required", async () => {
-  const f = setup();
+  const f = await setup();
   try {
     await f.run([
       { type: "fs_write", path: "proof.png", content: "PNG bytes" },

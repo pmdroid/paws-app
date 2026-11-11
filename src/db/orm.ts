@@ -2,7 +2,7 @@ import type { Changes, Database } from "bun:sqlite";
 import { drizzle, type BunSQLiteDatabase } from "drizzle-orm/bun-sqlite";
 import * as schema from "./schema";
 
-export type Orm = BunSQLiteDatabase<typeof schema>;
+export type Orm = BunSQLiteDatabase<typeof schema> & { $client: Database };
 
 const handles = new WeakMap<Database, Orm>();
 

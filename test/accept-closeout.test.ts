@@ -23,7 +23,7 @@ const base = "b".repeat(40);
 const head = "a".repeat(40);
 
 async function verifying(db: Database, state = "verifying") {
-  insertQueuedItem(db, { id: "item", now: 1 });
+  await insertQueuedItem(db, { id: "item", now: 1 });
   db.run("UPDATE work_item SET state = ? WHERE id = 'item'", [state]);
   await joinMergeQueue(sqliteDb(db), { itemId: "item", repository: "acme/platform", now: 1 });
   const run = await insertRun(sqliteDb(db), {

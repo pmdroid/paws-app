@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { sqliteDb } from "../db";
 import { createSlackAuth, readSlackToken, type SlackFetch } from "./oauth";
 
 export type SlackIdentityReads = {
@@ -6,19 +7,20 @@ export type SlackIdentityReads = {
   lookup(email: string, signal: AbortSignal): Promise<string | null>;
 };
 
-export function createSlackIdentityReads(options: {
+export async function createSlackIdentityReads(options: {
   home: string;
   db: Database;
   fetch?: SlackFetch;
-}): SlackIdentityReads | null {
-  const installation = readSlackToken(options.db, options.home);
+}): Promise<SlackIdentityReads | null> {
+  const store = sqliteDb(options.db);
+  const installation = await readSlackToken(store, options.home);
   if (installation === null) return null;
   const auth = createSlackAuth(options);
   return {
     teamId: installation.teamId,
     async lookup(email, signal) {
       const token = await auth.ensureFresh();
-      if (readSlackToken(options.db, options.home)?.teamId !== installation.teamId)
+      if ((await readSlackToken(store, options.home))?.teamId !== installation.teamId)
         throw new Error("Slack installation changed.");
       const url = new URL("https://slack.com/api/users.lookupByEmail");
       url.searchParams.set("email", email);

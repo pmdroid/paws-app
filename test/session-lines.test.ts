@@ -104,7 +104,7 @@ describe("lifecycle lines", () => {
 
 describe("a waiting question", () => {
   async function waiting(db: Database) {
-    insertQueuedItem(db, { id: "item-q", sessionKey: "ses-1", now: 0 });
+    await insertQueuedItem(db, { id: "item-q", sessionKey: "ses-1", now: 0 });
     await beginImplementRun(sqliteDb(db), "item-q", 1_000);
     const item = (await getWorkItem(sqliteDb(db), "item-q"))!;
     await sqliteDb(db).transaction((q) =>
@@ -166,7 +166,7 @@ describe("acknowledgeNewSession on a session with a running item", () => {
 
   test("posts no terminal error and leaves the retry to the queue", async () => {
     const db = database();
-    insertQueuedItem(db, { id: "item-1", sessionKey: "ses-1", now: 0 });
+    await insertQueuedItem(db, { id: "item-1", sessionKey: "ses-1", now: 0 });
     await beginImplementRun(sqliteDb(db), "item-1", 1_000);
     expect(await sessionHasItemInFlight(sqliteDb(db), "ses-1")).toBe(true);
     const tracker = createFakeTracker();

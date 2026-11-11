@@ -90,7 +90,7 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
   };
   const github = createFakeGitHub();
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,

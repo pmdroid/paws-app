@@ -85,7 +85,7 @@ async function seed() {
   const head = await commit(dir, "acme rocket and anvil");
   const db = openDatabase(":memory:");
   migrate(db);
-  insertQueuedItem(db, { id: "acme-1", now: 1, sessionKey: "acme-session" });
+  await insertQueuedItem(db, { id: "acme-1", now: 1, sessionKey: "acme-session" });
   let reviews = 0;
   const gate = () =>
     ({

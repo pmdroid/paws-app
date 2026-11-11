@@ -50,7 +50,12 @@ function recordQueries(db: Database): string[] {
 
 async function queued(db: Database, id: string, session: string, at: number) {
   const head = "c".repeat(40);
-  const item = insertQueuedItem(db, { id, title: `Title ${id}`, sessionKey: session, now: at });
+  const item = await insertQueuedItem(db, {
+    id,
+    title: `Title ${id}`,
+    sessionKey: session,
+    now: at,
+  });
   await beginImplementRun(sqliteDb(db), item.id, at);
   await enterMergeQueue(sqliteDb(db), item.id, {
     phase: "merge_queue",
@@ -127,7 +132,7 @@ test("the merge queue reads queue facts, issue summaries and banners for the rea
   await queued(db, "ENG-1", "ses_mine", 1);
   await queued(db, "ENG-2", "ses_mine", 2);
   await queued(db, "ENG-3", "ses_other", 3);
-  insertQueuedItem(db, { id: "ENG-4", title: "Not merging", sessionKey: "ses_mine", now: 4 });
+  await insertQueuedItem(db, { id: "ENG-4", title: "Not merging", sessionKey: "ses_mine", now: 4 });
   await recordPushOutage(sqliteDb(db), {
     repository: "acme/platform",
     error: "denied",

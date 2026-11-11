@@ -30,7 +30,7 @@ async function fixture(
 ) {
   const db = tempDb();
   const now = 1_700_000_000_000;
-  const item = insertQueuedItem(db, { id: "risk-item", sessionKey: "risk-session", now });
+  const item = await insertQueuedItem(db, { id: "risk-item", sessionKey: "risk-session", now });
   const identity = {
     taskId: item.id,
     base: "base",

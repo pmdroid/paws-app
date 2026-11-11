@@ -6,8 +6,8 @@ import { claimNextJob, completeJob, listJobs, migrate, openDatabase, sqliteDb } 
 import { refreshCredential } from "../src/credentials";
 import { storeLinearToken, tempHome } from "./helpers";
 
-function initial(home: string): string {
-  storeLinearToken(home, {
+async function initial(home: string): Promise<string> {
+  await storeLinearToken(home, {
     accessToken: "synthetic-access-old",
     refreshToken: "synthetic-refresh-old",
     expiresAtMs: 0,
@@ -17,10 +17,10 @@ function initial(home: string): string {
   return join(home, "secrets");
 }
 
-function storedRefresh(home: string): string | null | undefined {
+async function storedRefresh(home: string): Promise<string | null | undefined> {
   const db = openDatabase(join(home, "paws.db"));
   try {
-    return readStoredToken(db, join(home, "secrets"))?.refreshToken;
+    return (await readStoredToken(sqliteDb(db), join(home, "secrets")))?.refreshToken;
   } finally {
     db.close();
   }
@@ -60,7 +60,8 @@ test("a refresh waiter rereads credentials when another worker completes between
     const value = await refreshCredential({
       db,
       identity: "synthetic-linear-install",
-      read() {
+      *read() {
+        yield* [];
         const snapshot = stored;
         if (++reads === 2)
           void (async () => {
@@ -71,7 +72,8 @@ test("a refresh waiter rereads credentials when another worker completes between
           })();
         return snapshot;
       },
-      write(credential) {
+      *write(_q, credential) {
+        yield* [];
         stored = credential;
       },
       async refresh() {
@@ -104,7 +106,8 @@ test("a refresh discards its rotation when its claim expires during the latest r
       db,
       identity: "synthetic-expired-refresh",
       leaseMs: 100,
-      read() {
+      *read() {
+        yield* [];
         const snapshot = stored;
         if (++reads === 3) {
           now += 101;
@@ -112,7 +115,8 @@ test("a refresh discards its rotation when its claim expires during the latest r
         }
         return snapshot;
       },
-      write(credential) {
+      *write(_q, credential) {
+        yield* [];
         writes += 1;
         stored = credential;
       },
@@ -147,14 +151,16 @@ test("credential publication holds the SQLite writer lock through read and write
     await refreshCredential({
       db,
       identity: "synthetic-serialized-refresh",
-      read() {
+      *read() {
+        yield* [];
         if (++reads === 3) {
           expect(claim).toThrow("database is locked");
           lockedReads += 1;
         }
         return stored;
       },
-      write() {
+      *write() {
+        yield* [];
         expect(claim).toThrow("database is locked");
         lockedReads += 1;
       },
@@ -173,7 +179,7 @@ test("credential publication holds the SQLite writer lock through read and write
 
 test("separate Linear clients share one durable refresh job and rotate the encrypted token", async () => {
   const home = tempHome();
-  const secretsDir = initial(home);
+  const secretsDir = await initial(home);
   const db = openDatabase(join(home, "paws.db"));
   migrate(db);
   let requests = 0;
@@ -193,13 +199,15 @@ test("separate Linear clients share one durable refresh job and rotate the encry
     },
   };
   try {
-    const clients = Array.from({ length: 5 }, () => createLinearAuth(options));
+    const clients = await Promise.all(Array.from({ length: 5 }, () => createLinearAuth(options)));
     expect(await Promise.all(clients.map((client) => client.ensureFresh()))).toEqual(
       Array(5).fill("synthetic-access-new"),
     );
     expect(requests).toBe(1);
     expect((await listJobs(sqliteDb(db))).map((job) => job.status)).toEqual(["done"]);
-    expect(readStoredToken(db, secretsDir)?.refreshToken).toBe("synthetic-refresh-new");
+    expect((await readStoredToken(sqliteDb(db), secretsDir))?.refreshToken).toBe(
+      "synthetic-refresh-new",
+    );
   } finally {
     db.close();
     rmSync(home, { recursive: true, force: true });
@@ -208,7 +216,7 @@ test("separate Linear clients share one durable refresh job and rotate the encry
 
 test("a killed refresh process replays the consumed Linear token after restart and persists its rotation", async () => {
   const home = tempHome();
-  initial(home);
+  await initial(home);
   const bodies: string[] = [];
   const provider = Bun.serve({
     hostname: "127.0.0.1",
@@ -238,12 +246,12 @@ test("a killed refresh process replays the consumed Linear token after restart a
     expect(new TextDecoder().decode(ready.value)).toContain("provider rotated");
     first.kill("SIGKILL");
     await first.exited;
-    expect(storedRefresh(home)).toBe("synthetic-refresh-old");
+    expect(await storedRefresh(home)).toBe("synthetic-refresh-old");
     second = spawn("recover");
     expect(await second.exited).toBe(0);
     expect(await new Response(second.stderr).text()).toBe("");
     expect(bodies).toEqual(["synthetic-refresh-old", "synthetic-refresh-old"]);
-    expect(storedRefresh(home)).toBe("synthetic-refresh-rotated");
+    expect(await storedRefresh(home)).toBe("synthetic-refresh-rotated");
     const db = openDatabase(join(home, "paws.db"));
     expect(
       (await listJobs(sqliteDb(db))).map((job) => ({ status: job.status, attempts: job.attempts })),
@@ -276,11 +284,11 @@ test("a killed refresh process replays the consumed Linear token after restart a
 
 test("refresh failures keep the prior token and persist only a sanitized retry error", async () => {
   const home = tempHome();
-  const secretsDir = initial(home);
+  const secretsDir = await initial(home);
   const db = openDatabase(join(home, "paws.db"));
   migrate(db);
   try {
-    const auth = createLinearAuth({
+    const auth = await createLinearAuth({
       db,
       secretsDir,
       clientId: "synthetic-client",
@@ -290,7 +298,9 @@ test("refresh failures keep the prior token and persist only a sanitized retry e
       },
     });
     await expect(auth.ensureFresh()).rejects.toThrow("Integration token refresh failed");
-    expect(readStoredToken(db, secretsDir)?.refreshToken).toBe("synthetic-refresh-old");
+    expect((await readStoredToken(sqliteDb(db), secretsDir))?.refreshToken).toBe(
+      "synthetic-refresh-old",
+    );
     expect((await listJobs(sqliteDb(db)))[0]?.lastError).toBe("Integration token refresh failed.");
     expect((await listJobs(sqliteDb(db)))[0]?.status).toBe("pending");
   } finally {
@@ -301,7 +311,7 @@ test("refresh failures keep the prior token and persist only a sanitized retry e
 
 test("after one process refreshes, another process's next call uses the new token", async () => {
   const home = tempHome();
-  storeLinearToken(home, {
+  await storeLinearToken(home, {
     accessToken: "acme-access-old",
     refreshToken: "acme-refresh-old",
     expiresAtMs: Date.now() + 600_000,
@@ -325,7 +335,7 @@ test("after one process refreshes, another process's next call uses the new toke
   const db = openDatabase(join(home, "paws.db"));
   let requests = 0;
   try {
-    const auth = createLinearAuth({
+    const auth = await createLinearAuth({
       db,
       secretsDir: replicaSecrets,
       clientId: "acme-client",
@@ -339,7 +349,9 @@ test("after one process refreshes, another process's next call uses the new toke
     const other = spawnRefresh(home, provider.port!, "recover");
     expect(await other.exited).toBe(0);
     expect(await auth.ensureFresh()).toBe("acme-access-new");
-    expect(readStoredToken(db, replicaSecrets)?.refreshToken).toBe("acme-refresh-new");
+    expect((await readStoredToken(sqliteDb(db), replicaSecrets))?.refreshToken).toBe(
+      "acme-refresh-new",
+    );
     expect(requests).toBe(0);
   } finally {
     db.close();

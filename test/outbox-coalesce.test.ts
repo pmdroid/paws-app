@@ -13,7 +13,7 @@ function harness() {
     progressIntervalMs: LINEAR_PROGRESS_INTERVAL_MS,
   });
   dispatcher.setHandler((row, context) =>
-    deliverLinearOutbox(row, tracker, async () => {}, context, db),
+    deliverLinearOutbox(row, tracker, async () => {}, context, sqliteDb(db)),
   );
   const flush = async () => {
     while ((await dispatcher.tick()).length > 0) await dispatcher.idle();

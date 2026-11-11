@@ -46,10 +46,10 @@ function instance(db: ReturnType<typeof openDatabase>, objects: EvidenceObjects)
   return { root, store, get };
 }
 
-function setup() {
+async function setup() {
   const db = openDatabase(":memory:");
   migrate(db);
-  insertQueuedItem(db, { id: "item-acme", sessionKey: "session-acme" });
+  await insertQueuedItem(db, { id: "item-acme", sessionKey: "session-acme" });
   const s3 = createFakeRunFileObjects();
   const save = (store: ReturnType<typeof instance>["store"], source: Uint8Array) =>
     store.save({
@@ -66,7 +66,7 @@ function setup() {
 
 describe("evidence in the run file object store", () => {
   test("evidence written by one instance is served by another", async () => {
-    const { db, s3, save } = setup();
+    const { db, s3, save } = await setup();
     const a = instance(db, () => s3);
     const b = instance(db, () => s3);
     const saved = await save(a.store, VIDEO);
@@ -88,7 +88,7 @@ describe("evidence in the run file object store", () => {
   });
 
   test("a missing object answers 404", async () => {
-    const { db, s3, save } = setup();
+    const { db, s3, save } = await setup();
     const a = instance(db, () => s3);
     const saved = await save(a.store, WEBM);
     s3.objects.clear();
@@ -96,7 +96,7 @@ describe("evidence in the run file object store", () => {
   });
 
   test("a rejected file leaves no chunks behind", async () => {
-    const { db, s3, save } = setup();
+    const { db, s3, save } = await setup();
     const a = instance(db, () => s3);
     const text = new Uint8Array(RUN_FILE_CHUNK_BYTES + 5).fill(0x41);
     await expect(save(a.store, text)).rejects.toBeInstanceOf(EvidenceRejectedError);
@@ -105,7 +105,7 @@ describe("evidence in the run file object store", () => {
   });
 
   test("with S3 off the file stays local, as before", async () => {
-    const { db, s3, save } = setup();
+    const { db, s3, save } = await setup();
     const a = instance(db, () => null);
     const saved = await save(a.store, VIDEO);
     expect(s3.writes).toEqual([]);
@@ -115,7 +115,7 @@ describe("evidence in the run file object store", () => {
   });
 
   test("local evidence is uploaded once on startup and served from S3 afterwards", async () => {
-    const { db, s3, save } = setup();
+    const { db, s3, save } = await setup();
     let configured = false;
     const objects = () => (configured ? s3 : null);
     const a = instance(db, objects);
@@ -141,7 +141,7 @@ describe("evidence in the run file object store", () => {
   });
 
   test("migrated evidence still reads from its local copy once S3 is turned off", async () => {
-    const { db, s3, save } = setup();
+    const { db, s3, save } = await setup();
     let configured = false;
     const objects = () => (configured ? s3 : null);
     const a = instance(db, objects);
@@ -155,7 +155,7 @@ describe("evidence in the run file object store", () => {
   });
 
   test("two instances migrating the same file keep one complete copy", async () => {
-    const { db, s3, save } = setup();
+    const { db, s3, save } = await setup();
     let configured = false;
     const objects = () => (configured ? s3 : null);
     const a = instance(db, objects);
@@ -183,7 +183,7 @@ describe("evidence in the run file object store", () => {
   });
 
   test("sealed chunks hold no plaintext, and a changed or swapped chunk is not served", async () => {
-    const { db, s3, save } = setup();
+    const { db, s3, save } = await setup();
     const sealed = withSealedRunFileObjects(s3, Buffer.alloc(32, 7));
     const a = instance(db, () => sealed);
     const saved = await save(a.store, VIDEO);
@@ -202,7 +202,7 @@ describe("evidence in the run file object store", () => {
   });
 
   test("two instances with their own sealed stores and the same envelope key share evidence", async () => {
-    const { db, s3, save } = setup();
+    const { db, s3, save } = await setup();
     const secrets = (name: string) => {
       const home = mkdtempSync(join(tmpdir(), `paws-acme-${name}-`));
       homes.push(home);

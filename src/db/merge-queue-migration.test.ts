@@ -1,14 +1,14 @@
 import { expect, test } from "bun:test";
-import { insertQueuedItem, listMergeQueues, legacyMigrate, openDatabase } from "./index";
+import { sqliteDb, insertQueuedItem, listMergeQueues, legacyMigrate, openDatabase } from "./index";
 
-test("normalizing old queue rows preserves order, kept places and notification metadata", () => {
+test("normalizing old queue rows preserves order, kept places and notification metadata", async () => {
   const db = openDatabase(":memory:");
   legacyMigrate(db, { until: "20261029T1559_opencode_agent_rows" });
   for (const [id, repository] of [
     ["first", "Acme/APP"],
     ["second", "acme/app"],
   ]) {
-    insertQueuedItem(db, { id: id!, now: 1 });
+    await insertQueuedItem(db, { id: id!, now: 1 });
     db.run("UPDATE work_item SET state='merge_queue' WHERE id=?", [id!]);
     db.run(
       "INSERT INTO merge_queue_entry(item_id,repository,ready_at,kept,notified_position) VALUES (?,?,1,1,2)",
@@ -24,11 +24,13 @@ test("normalizing old queue rows preserves order, kept places and notification m
       .query("SELECT id,item_id,ready_at,kept,notified_position FROM merge_queue_entry ORDER BY id")
       .all(),
   ).toEqual(before);
-  expect(listMergeQueues(db).map((e) => [e.itemId, e.repository, e.position])).toEqual([
+  expect(
+    (await listMergeQueues(sqliteDb(db))).map((e) => [e.itemId, e.repository, e.position]),
+  ).toEqual([
     ["first", "acme/app", 1],
     ["second", "acme/app", 2],
   ]);
   legacyMigrate(db);
-  expect(listMergeQueues(db)).toHaveLength(2);
+  expect(await listMergeQueues(sqliteDb(db))).toHaveLength(2);
   db.close();
 });

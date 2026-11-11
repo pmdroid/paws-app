@@ -20,8 +20,8 @@ function edge(blockerLinearIssueId: string, blockedLinearIssueId: string): TaskB
 describe("task blocks", () => {
   test("saves and lists blockers sorted", async () => {
     const db = tempDb();
-    saveTaskBlocks(
-      db,
+    await saveTaskBlocks(
+      sqliteDb(db),
       ["a", "b"],
       [edge("m", "a"), edge("a-blocker", "a"), edge("a-blocker", "a"), edge("z", "b")],
     );
@@ -33,11 +33,15 @@ describe("task blocks", () => {
 
   test("saving again replaces the old blockers", async () => {
     const db = tempDb();
-    saveTaskBlocks(db, ["a", "b"], [edge("x", "a"), edge("y", "a"), edge("z", "b")]);
-    saveTaskBlocks(db, ["a"], [edge("y", "a")]);
+    await saveTaskBlocks(
+      sqliteDb(db),
+      ["a", "b"],
+      [edge("x", "a"), edge("y", "a"), edge("z", "b")],
+    );
+    await saveTaskBlocks(sqliteDb(db), ["a"], [edge("y", "a")]);
     expect(await listTaskBlockers(sqliteDb(db), "a")).toEqual(["y"]);
     expect(await listTaskBlockers(sqliteDb(db), "b")).toEqual(["z"]);
-    saveTaskBlocks(db, ["a"], []);
+    await saveTaskBlocks(sqliteDb(db), ["a"], []);
     expect(await listTaskBlockers(sqliteDb(db), "a")).toEqual([]);
     expect(await listTaskBlockers(sqliteDb(db), "b")).toEqual(["z"]);
     db.close();
@@ -45,8 +49,10 @@ describe("task blocks", () => {
 
   test("rejects an edge whose blocked issue is outside the set", async () => {
     const db = tempDb();
-    saveTaskBlocks(db, ["a"], [edge("x", "a")]);
-    expect(() => saveTaskBlocks(db, ["a"], [edge("y", "a"), edge("z", "b")])).toThrow(Error);
+    await saveTaskBlocks(sqliteDb(db), ["a"], [edge("x", "a")]);
+    await expect(
+      saveTaskBlocks(sqliteDb(db), ["a"], [edge("y", "a"), edge("z", "b")]),
+    ).rejects.toThrow(Error);
     expect(await listTaskBlockers(sqliteDb(db), "a")).toEqual(["x"]);
     expect(await listTaskBlockers(sqliteDb(db), "b")).toEqual([]);
     db.close();
@@ -54,8 +60,8 @@ describe("task blocks", () => {
 
   test("rejects a self block", async () => {
     const db = tempDb();
-    saveTaskBlocks(db, ["a"], [edge("x", "a")]);
-    expect(() => saveTaskBlocks(db, ["a"], [edge("a", "a")])).toThrow(/CHECK/);
+    await saveTaskBlocks(sqliteDb(db), ["a"], [edge("x", "a")]);
+    await expect(saveTaskBlocks(sqliteDb(db), ["a"], [edge("a", "a")])).rejects.toThrow(/CHECK/);
     expect(await listTaskBlockers(sqliteDb(db), "a")).toEqual(["x"]);
     db.close();
   });
@@ -151,11 +157,11 @@ describe("task blocks", () => {
         )
         .get()?.name,
     ).toBe("work_item_active_issue");
-    const extra = insertQueuedItem(db, { id: "extra", now: 3 });
+    const extra = await insertQueuedItem(db, { id: "extra", now: 3 });
     expect(() =>
       db.run("UPDATE work_item SET linear_issue_id = ? WHERE id = ?", ["shared-issue", extra.id]),
     ).toThrow(/UNIQUE/);
-    const done = insertQueuedItem(db, { id: "done", now: 4 });
+    const done = await insertQueuedItem(db, { id: "done", now: 4 });
     db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [done.id]);
     db.run("UPDATE work_item SET linear_issue_id = ? WHERE id = ?", ["shared-issue", done.id]);
     expect(await getWorkItem(sqliteDb(db), "done")).toMatchObject({

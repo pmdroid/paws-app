@@ -1225,7 +1225,7 @@ async function pausedForReview(
     };
   };
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,

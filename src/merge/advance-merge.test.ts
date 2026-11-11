@@ -67,24 +67,26 @@ describe("advanceMerge and a changes-requested review", () => {
   test("a review recorded while the merge attempt runs holds the squash", async () => {
     const h = await start();
     await h.addItem("ENG-1");
-    let recorded = false;
+    const recorded: Promise<boolean>[] = [];
     // The webhook lands after the first guard, during the readiness reads.
     h.state.ci = () => {
-      if (!recorded)
-        recorded = recordPullReview(h.db, {
-          reviewId: 41,
-          itemId: "ENG-1",
-          state: "changes_requested",
-          pullNumber: 1,
-          head: null,
-          reviewer: "rev",
-          body: "Please rename it.",
-          receivedAt: h.clock.now(),
-        });
+      if (recorded.length === 0)
+        recorded.push(
+          recordPullReview(sqliteDb(h.db), {
+            reviewId: 41,
+            itemId: "ENG-1",
+            state: "changes_requested",
+            pullNumber: 1,
+            head: null,
+            reviewer: "rev",
+            body: "Please rename it.",
+            receivedAt: h.clock.now(),
+          }),
+        );
       return undefined;
     };
     expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "review" });
-    expect(recorded).toBe(true);
+    expect(await recorded[0]).toBe(true);
     expect(h.github.merged).toEqual([]);
     expect(await getConfirmedRemoteMerge(sqliteDb(h.db), "ENG-1")).toBeNull();
     expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("merge_queue");
@@ -289,7 +291,10 @@ describe("advanceMerge on a rebase conflict", () => {
       },
     ] as never);
     expect(
-      listRebaseReturns(h.db, "ENG-1", 0).map((row) => ({ base: row.base, files: row.files })),
+      (await listRebaseReturns(sqliteDb(h.db), "ENG-1", 0)).map((row) => ({
+        base: row.base,
+        files: row.files,
+      })),
     ).toEqual([{ base: main, files: ["ok.txt"] }]);
     expect(h.bodies("thought")).toContain(REBASE_CONFLICT_THOUGHT);
 
@@ -560,7 +565,7 @@ describe("advanceMerge on a conflicting pull request waiting for CI", () => {
         row.idempotencyKey.startsWith("merge-conflict:"),
       ),
     ).toHaveLength(1);
-    expect(listMergeQueues(h.db).map((entry) => entry.itemId)).toEqual(["ENG-2"]);
+    expect((await listMergeQueues(sqliteDb(h.db))).map((entry) => entry.itemId)).toEqual(["ENG-2"]);
     h.state.mergeState = null;
     h.state.ci = () => undefined;
     expect(await h.pass("ENG-2")).toEqual({ kind: "merged" });
@@ -573,6 +578,9 @@ describe("advanceMerge on a conflicting pull request waiting for CI", () => {
     expect(await h.pass("ENG-2")).toMatchObject({ kind: "wait", reason: "ahead" });
     expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "ci" });
     expect(await resumes(h)).toEqual([]);
-    expect(listMergeQueues(h.db).map((entry) => entry.itemId)).toEqual(["ENG-1", "ENG-2"]);
+    expect((await listMergeQueues(sqliteDb(h.db))).map((entry) => entry.itemId)).toEqual([
+      "ENG-1",
+      "ENG-2",
+    ]);
   });
 });

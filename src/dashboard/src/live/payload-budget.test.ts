@@ -89,14 +89,14 @@ describe("status payload budget", () => {
     const now = Date.now() - 60 * 60 * 1000;
     for (let index = 0; index < 100; index += 1) {
       const id = `PAS-${1000 + index}`;
-      insertQueuedItem(db, { id, title: `Finished item ${index}`, now: now + index });
+      await insertQueuedItem(db, { id, title: `Finished item ${index}`, now: now + index });
       await beginImplementRun(sqliteDb(db), id, now + index);
       await closeout(db, id, 1, 2, now + index);
       await applyWorkItemEvent(sqliteDb(db), id, "cancel", { now: now + index + 10 });
     }
     for (let index = 0; index < 10; index += 1) {
       const id = `PAS-${2000 + index}`;
-      insertQueuedItem(db, { id, title: `Open item ${index}`, now: now + index });
+      await insertQueuedItem(db, { id, title: `Open item ${index}`, now: now + index });
       await beginImplementRun(sqliteDb(db), id, now + index);
       await enterMergeQueue(sqliteDb(db), id, {
         phase: "merge_queue",
@@ -179,7 +179,7 @@ describe("evidence gallery budget", () => {
     const now = Date.now();
     for (let index = 0; index < 110; index += 1) {
       const item = `PAS-${1000 + index}`;
-      insertQueuedItem(db, { id: item, now: now - index });
+      await insertQueuedItem(db, { id: item, now: now - index });
       if (index >= 10) db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [item]);
       for (let file = 0; file < 8; file += 1)
         await saveEvidence(sqliteDb(db), {

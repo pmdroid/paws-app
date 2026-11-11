@@ -25,7 +25,7 @@ const NOW = 1_000_000;
 async function verifying(candidate = true) {
   const db = openDatabase(":memory:");
   migrate(db);
-  const item = insertQueuedItem(db, { id: "item", sessionKey: "session", now: NOW });
+  const item = await insertQueuedItem(db, { id: "item", sessionKey: "session", now: NOW });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, NOW);
   await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
   if (candidate)

@@ -39,7 +39,7 @@ async function paws(path: string, root: string, name: string, poll = true) {
   });
   bindInstance(sqliteDb(db), self.id);
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     jobs: new JobLoop(db, clock),
     clock,
     outbox: new OutboxDispatcher(db, clock),
@@ -81,7 +81,7 @@ async function twoInstances(poll = true) {
 }
 
 async function runningItem(db: Database, id: string, owner: string): Promise<void> {
-  insertQueuedItem(db, { id, sessionKey: `${id}-session`, now: Date.now() });
+  await insertQueuedItem(db, { id, sessionKey: `${id}-session`, now: Date.now() });
   const { run } = await beginImplementRun(sqliteDb(db), id, Date.now());
   await claimRun(sqliteDb(db), run.id, owner);
 }
@@ -206,7 +206,6 @@ test("a queued stop forwards to the run's owner through the store the orchestrat
   bindInstance(store, self.id);
   const jobs = new JobLoop(db, clock, { store });
   const orchestrator = new Orchestrator({
-    db,
     store,
     jobs,
     clock,
@@ -220,7 +219,7 @@ test("a queued stop forwards to the run's owner through the store the orchestrat
   });
   try {
     await runningItem(a.db, "acme-5", a.id);
-    enqueueCommand(db, {
+    await enqueueCommand(sqliteDb(db), {
       type: "stop",
       source: "dashboard",
       itemId: "acme-5",

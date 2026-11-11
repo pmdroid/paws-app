@@ -89,7 +89,7 @@ test("removes a waiting worktree only when its clean HEAD was merged on GitHub",
 test("keeps a worktree another live item shares", async () => {
   const fixture = await setup();
   await fixture.item("ENG-1", "cancelled", old);
-  const sibling = insertQueuedItem(fixture.db, { id: "ENG-1-again" });
+  const sibling = await insertQueuedItem(fixture.db, { id: "ENG-1-again" });
   fixture.db.run(
     "UPDATE work_item SET linear_identifier = 'ENG-1', state = 'running' WHERE id = ?",
     [sibling.id],
@@ -121,7 +121,7 @@ test("keeps a worktree when its owners or files change before removal", async ()
       hold: async (itemIds, operation) => {
         held.push([...itemIds]);
         if (itemIds.includes("ENG-2")) {
-          const sibling = insertQueuedItem(fixture.db, { id: "ENG-2-again" });
+          const sibling = await insertQueuedItem(fixture.db, { id: "ENG-2-again" });
           fixture.db.run("UPDATE work_item SET linear_identifier = 'ENG-2' WHERE id = ?", [
             sibling.id,
           ]);
@@ -231,7 +231,7 @@ async function setup() {
     mirror,
     async item(id: string, state: WorkItemRecord["state"], touched: number) {
       ids.push(id);
-      const item = insertQueuedItem(db, { id });
+      const item = await insertQueuedItem(db, { id });
       db.run("UPDATE work_item SET state = ? WHERE id = ?", [state, id]);
       await insertRun(sqliteDb(db), { itemId: id, now: touched, status: "ended" });
       const tree = await createWorktree({ ...repository, itemId: id, pawsRoot });

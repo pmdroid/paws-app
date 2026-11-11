@@ -417,7 +417,7 @@ test("a generation change during actual session-update authentication prevents t
     const tracker = createLinearTracker(
       createLinearClient({
         auth: {
-          hasToken: () => true,
+          hasToken: async () => true,
           async ensureFresh() {
             started.resolve();
             await release.promise;
@@ -434,7 +434,7 @@ test("a generation change during actual session-update authentication prevents t
     await (await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1")).phase("verifying");
     const outbox = new OutboxDispatcher(db, new FakeClock(1000));
     outbox.setHandler((row, context) =>
-      deliverLinearOutbox(row, tracker, async () => {}, context, db),
+      deliverLinearOutbox(row, tracker, async () => {}, context, sqliteDb(db)),
     );
     await outbox.tick();
     await started.promise;

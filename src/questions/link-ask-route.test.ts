@@ -8,7 +8,7 @@ const NOW = 1_700_000_000_000;
 async function setup(active = true, kind: "risk" | "bypass" | "rule" = "risk") {
   const db = openDatabase(":memory:");
   migrate(db);
-  insertQueuedItem(db, { id: "PAS-633", sessionKey: "ses_1" });
+  await insertQueuedItem(db, { id: "PAS-633", sessionKey: "ses_1" });
   db.run("INSERT INTO workspace (id, linear_organization_id, name, created_at) VALUES (?,?,?,?)", [
     "ws",
     "org",

@@ -7,7 +7,7 @@ const root = process.argv[2]!;
 mkdirSync(root, { recursive: true, mode: 0o700 });
 const db = openDatabase(join(root, "paws.db"));
 migrate(db);
-const item = insertQueuedItem(db, { id: "PAS-306", sessionKey: "transcript-session" });
+const item = await insertQueuedItem(db, { id: "PAS-306", sessionKey: "transcript-session" });
 const { run } = await beginImplementRun(sqliteDb(db), item.id, Date.now());
 const directory = join(root, "runs", run.id);
 mkdirSync(directory, { recursive: true, mode: 0o700 });

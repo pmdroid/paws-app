@@ -21,12 +21,10 @@ import {
   recordPlanFiledSteps,
   setEvidenceAssetUrlSteps,
   listOutboxSteps,
-  sqliteDb,
   type Db,
   type Q,
   type Steps,
 } from "../db";
-import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { readEvidenceBytes, type EvidenceStorage } from "../evidence";
 import { visualReviewBody } from "../questions";
@@ -53,10 +51,9 @@ export async function deliverLinearOutbox(
   tracker: TrackerAdapter,
   catchUp: () => Promise<void>,
   context?: OutboxDeliveryContext,
-  db?: Database,
+  store?: Db,
   uploads?: EvidenceUploads,
 ): Promise<void> {
-  const store = db && sqliteDb(db);
   context?.signal.throwIfAborted();
   if (context && !(await context.isCurrent()))
     throw new Error("Linear delivery superseded by a session fence.");
@@ -144,8 +141,8 @@ export async function deliverLinearOutbox(
     return postActivity(message, payload, tracker, options);
   }
   if (message.op === "linear.evidence") {
-    if (!db) throw new Error("Evidence delivery needs the database");
-    return uploadEvidence(message, payload, db, uploads, options);
+    if (!store) throw new Error("Evidence delivery needs the database");
+    return uploadEvidence(message, payload, store, uploads, options);
   }
   if (message.op.startsWith("linear.session.")) {
     return postSession(payload, tracker, options);
@@ -287,19 +284,18 @@ async function postActivity(
 async function uploadEvidence(
   message: OutboxRow,
   payload: Record<string, unknown>,
-  db: Database,
+  store: Db,
   uploads: EvidenceUploads | undefined,
   options: TrackerRequestOptions,
 ): Promise<void> {
   const evidenceId = readString(payload, "evidenceId");
   if (!evidenceId) throw new Error("Evidence upload is missing its evidence id");
-  const store = sqliteDb(db);
   const evidence = await store.run((q) => getEvidenceSteps(q, evidenceId));
   if (evidence === null) throw new Error("Evidence upload has no evidence row");
   if (evidence.assetUrl) return;
   try {
     if (!uploads) throw new Error("Linear file uploads are unavailable");
-    const bytes = await readEvidenceBytes(sqliteDb(db), uploads, evidence.id);
+    const bytes = await readEvidenceBytes(store, uploads, evidence.id);
     if (
       bytes.byteLength !== evidence.sizeBytes ||
       createHash("sha256").update(bytes).digest("hex") !== evidence.sha256

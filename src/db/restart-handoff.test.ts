@@ -27,7 +27,7 @@ for (const reason of ["findings", "review", "ci"] as const) {
     test(`${reason} input survives ${recovery} recovery`, async () => {
       const db = openDatabase(":memory:");
       migrate(db);
-      insertQueuedItem(db, { id: "item" });
+      await insertQueuedItem(db, { id: "item" });
       await beginImplementRun(sqliteDb(db), "item", 1, checkpoint);
       await applyWorkItemEvent(sqliteDb(db), "item", "turn_ended");
       await applyWorkItemEvent(sqliteDb(db), "item", "closeout_accepted");
@@ -43,12 +43,12 @@ for (const reason of ["findings", "review", "ci"] as const) {
       if (reason === "findings")
         await finishCloseoutProgress(sqliteDb(db), "item", identity, "rejected", 3);
       const body = `Address pending ${reason}`;
-      const jobId = restart(db, (await getWorkItem(sqliteDb(db), "item"))!, {
+      const jobId = (await restart(sqliteDb(db), (await getWorkItem(sqliteDb(db), "item"))!, {
         reason,
         body,
         limit: 4,
         now: 4,
-      })!;
+      }))!;
       await applyWorkItemEvent(sqliteDb(db), "item", "dispatched");
       db.run("UPDATE job SET status='dead', finished_at=5 WHERE id=?", [jobId]);
       const item = (await getWorkItem(sqliteDb(db), "item"))!;
@@ -78,7 +78,7 @@ for (const reason of ["findings", "review", "ci"] as const) {
 test("completed input is not resurrected by recovery", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
-  insertQueuedItem(db, { id: "item" });
+  await insertQueuedItem(db, { id: "item" });
   await beginImplementRun(sqliteDb(db), "item", 1, checkpoint);
   const id = await enqueueJob(sqliteDb(db), {
     queue: JOB_KIND.resume,
@@ -96,7 +96,7 @@ test("completed input is not resurrected by recovery", async () => {
 test("pending input follows activation order when an older job row is reused", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
-  insertQueuedItem(db, { id: "item" });
+  await insertQueuedItem(db, { id: "item" });
   const first = await enqueueJob(sqliteDb(db), {
     queue: JOB_KIND.resume,
     jobKey: "reused",
@@ -124,17 +124,17 @@ test("pending input follows activation order when an older job row is reused", a
 async function acceptedFollowUp() {
   const db = openDatabase(":memory:");
   migrate(db);
-  insertQueuedItem(db, { id: "item" });
+  await insertQueuedItem(db, { id: "item" });
   await beginImplementRun(sqliteDb(db), "item", 1, checkpoint);
   await applyWorkItemEvent(sqliteDb(db), "item", "turn_ended");
   await applyWorkItemEvent(sqliteDb(db), "item", "closeout_accepted");
   await markCloseoutAccepted(sqliteDb(db), "item", "s");
   const body = "Fix the failing CI checks on acme/widgets";
-  const jobId = restart(db, (await getWorkItem(sqliteDb(db), "item"))!, {
+  const jobId = (await restart(sqliteDb(db), (await getWorkItem(sqliteDb(db), "item"))!, {
     reason: "follow_up",
     body,
     now: Date.now(),
-  })!;
+  }))!;
   await applyWorkItemEvent(sqliteDb(db), "item", "dispatched");
   return { db, body, jobId };
 }

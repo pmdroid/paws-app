@@ -132,7 +132,7 @@ test("a merge-queue re-check waits for CI, sends red CI to a fix, a conflict to 
   let reviews = 0;
   let sequence = 0;
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,

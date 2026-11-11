@@ -1,7 +1,9 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { eq } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
+import { orm } from "./orm";
+import { setting as savedSetting } from "./schema/settings";
 import { isLegacyDatabase } from "./migrate";
 
 export const CONFIG_SETTINGS_KEY = "config.toml";
@@ -14,8 +16,8 @@ export function* readSettingSteps(q: Q, key: string) {
   return row?.value ?? null;
 }
 
-export function readSetting(db: Database, key: string): string | null {
-  return settled(sqliteDb(db).run((q) => readSettingSteps(q, key)));
+export async function readSetting(store: Db, key: string): Promise<string | null> {
+  return await store.run((q) => readSettingSteps(q, key));
 }
 
 export function* updateSettingSteps(
@@ -47,7 +49,13 @@ export function readSavedSettings(path: string): string | null {
   if (!existsSync(path) || isLegacyDatabase(path)) return null;
   const db = new Database(path, { readonly: true });
   try {
-    return readSetting(db, CONFIG_SETTINGS_KEY);
+    return (
+      orm(db)
+        .select({ value: savedSetting.value })
+        .from(savedSetting)
+        .where(eq(savedSetting.key, CONFIG_SETTINGS_KEY))
+        .get()?.value ?? null
+    );
   } finally {
     db.close();
   }

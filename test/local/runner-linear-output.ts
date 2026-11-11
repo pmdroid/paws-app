@@ -130,7 +130,7 @@ export async function probeRunnerLinearOutput(root: string) {
   const tracker = createLinearTracker(
     createLinearClient({
       auth: {
-        hasToken: () => true,
+        hasToken: async () => true,
         ensureFresh: async () => "fixture",
         forceRefresh: async () => "fixture",
       },

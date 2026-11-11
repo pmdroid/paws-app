@@ -132,7 +132,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
   async function task(actor: string | null, signal: string | null = null) {
     const id = `item-${++serial}`,
       sessionId = `session-${serial}`;
-    const item = insertQueuedItem(db, { id, sessionKey: sessionId, title: "Export rows" });
+    const item = await insertQueuedItem(db, { id, sessionKey: sessionId, title: "Export rows" });
     await ensureLinearSession(sqliteDb(db), { sessionId, issueId: id, now });
     await recordLinearInstallation(sqliteDb(db), {
       sessionId,
@@ -174,7 +174,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
   }
   const clock = new FakeClock(now);
   const loop = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     pawsRoot: root,
@@ -313,7 +313,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     const queued = await task("owner");
     let calls = 0;
     const queueLoop = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       jobs: new JobLoop(db, clock),
       outbox: new OutboxDispatcher(db, clock),
       pawsRoot: root,
@@ -351,7 +351,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     });
     let followupCalls = 0;
     const followupLoop = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       jobs: new JobLoop(db, clock),
       outbox: new OutboxDispatcher(db, clock),
       pawsRoot: root,
@@ -587,7 +587,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
   async function task(actor: string, signal: string | null = null) {
     const id = `native-${++sequence}`,
       at = Date.now();
-    const item = insertQueuedItem(db, { id, sessionKey: id, title: "Export rows" });
+    const item = await insertQueuedItem(db, { id, sessionKey: id, title: "Export rows" });
     await ensureLinearSession(sqliteDb(db), { sessionId: id, issueId: id, now: at });
     await recordLinearInstallation(sqliteDb(db), {
       sessionId: id,

@@ -51,7 +51,7 @@ async function acme() {
     teamId: "team",
     observedAtMs: now,
   });
-  const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
+  const item = await insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
   await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "ada" });
   db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [ada, item.id]);
   for (const id of ["acme-1", "acme-2"]) {

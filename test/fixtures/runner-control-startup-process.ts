@@ -476,7 +476,7 @@ try {
         observe("Production Paws startup wires the host sharing policy route", {
           hostPolicy: true,
         });
-        const controlled = insertQueuedItem(paws.db, {
+        const controlled = await insertQueuedItem(paws.db, {
           id: "startup-controlled",
           sessionKey: "startup-controlled-session",
           now,

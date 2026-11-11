@@ -51,7 +51,7 @@ async function fixture() {
       sessionHash: session.session.tokenHash,
     };
     bindings.set(id, binding);
-    beginGitHubAttribution(db, binding, { stateHash: id, browserHash: id, now });
+    await beginGitHubAttribution(sqliteDb(db), binding, { stateHash: id, browserHash: id, now });
     const revision = await consumeGitHubAttribution(db, binding, {
       stateHash: id,
       browserHash: id,
@@ -65,7 +65,7 @@ async function fixture() {
       now,
     );
   }
-  const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
+  const item = await insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
   await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "client",

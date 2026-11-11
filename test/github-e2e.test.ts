@@ -85,7 +85,7 @@ test("a Linear delegation publishes and merges three GitHub pull requests with o
     };
   };
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,

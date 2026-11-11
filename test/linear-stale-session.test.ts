@@ -79,7 +79,7 @@ async function fixture() {
   let authorized = true;
   const makeOrchestrator = () =>
     attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       tracker,
       pawsRoot: home,
       jobs: new JobLoop(db, systemClock),
@@ -120,8 +120,8 @@ async function fixture() {
     pullRequest: null,
   };
   tracker.getSession = async (id) => ({ ...snapshot, id });
-  const runtime = () =>
-    openLinear({
+  const runtime = async () =>
+    await openLinear({
       db,
       store: sqliteDb(db),
       secretsDir: join(home, "secrets"),
@@ -257,7 +257,7 @@ test.each(["unavailable", "issue", "app", "id", "generation", "authorization"])(
         ...(failure === "app" ? { appUserId: "wrong" } : {}),
       };
     };
-    const linear = f.runtime();
+    const linear = await f.runtime();
     const event = created("new");
     const store = createInboxStore(sqliteDb(f.db));
     await store.commit(event);
@@ -345,7 +345,7 @@ test.each([
       const old = (await getWorkItem(sqliteDb(f.db), f.oldId))!;
       const now = Date.now();
       // The run failed on agentbox with a cleanup error, then the item was cancelled.
-      blockConversation(f.db, f.oldId, now);
+      await blockConversation(sqliteDb(f.db), f.oldId, now);
       f.db.run("UPDATE work_item SET state = 'cancelled' WHERE id = ?", [f.oldId]);
       // The runner's first heartbeat after its restart. Foreign keys are off only for its rows.
       const reported = now + RUNNER_LIVE_GRACE_MS;

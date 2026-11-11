@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
 import { jsonFromText, jsonText } from "./json-text";
 
 /** What the item page and the Linear session say while a block holds a reply back. */
@@ -122,8 +121,8 @@ export function* blockConversationSteps(q: Q, itemId: string, now: number) {
   );
 }
 
-export function blockConversation(db: Database, itemId: string, now: number): void {
-  settled(sqliteDb(db).run((q) => blockConversationSteps(q, itemId, now)));
+export async function blockConversation(store: Db, itemId: string, now: number): Promise<void> {
+  await store.run((q) => blockConversationSteps(q, itemId, now));
 }
 
 /**

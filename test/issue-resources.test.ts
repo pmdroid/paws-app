@@ -48,7 +48,7 @@ test("issue and question resources need a Paws session, show only the member's s
     ["PAS-1", "session-mine"],
     ["PAS-2", "session-other"],
   ] as const) {
-    insertQueuedItem(db, { id: item, sessionKey: session });
+    await insertQueuedItem(db, { id: item, sessionKey: session });
     await beginImplementRun(sqliteDb(db), item, Date.now());
     await applyWorkItemEvent(sqliteDb(db), item, "blocking_question");
     db.run(

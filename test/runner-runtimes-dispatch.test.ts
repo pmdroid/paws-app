@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { expect, test } from "bun:test";
 import { runAgent, type RunAgentOptions, type RunAgentResult } from "../src/acp";
 import type { Clock } from "../src/core";
-import { JobLoop, OutboxDispatcher, migrate, openDatabase } from "../src/db";
+import { JobLoop, OutboxDispatcher, migrate, openDatabase, sqliteDb } from "../src/db";
 import { createFakeGitHub } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
@@ -69,7 +69,7 @@ test("a runner-backed run gets mise.toml's runtimes from the mirror while origin
   );
   const github = createFakeGitHub();
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,

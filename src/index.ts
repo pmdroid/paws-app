@@ -451,8 +451,13 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const db = openDatabase(paths.db);
   const store = sqliteDb(db);
   migrate(db);
-  importLinearTokenFile(db, paths.secretsDir, runtime.linearTokenFile);
-  importCredentialFile(db, paths.secretsDir, "slack", join(paths.secretsDir, "slack-oauth.json"));
+  await importLinearTokenFile(store, paths.secretsDir, runtime.linearTokenFile);
+  await importCredentialFile(
+    store,
+    paths.secretsDir,
+    "slack",
+    join(paths.secretsDir, "slack-oauth.json"),
+  );
   await store.run(clearUsagePausesSteps);
   const linearRevoked = () =>
     store.run((q) =>
@@ -464,7 +469,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   if (
     publicDashboard &&
     ((await linearRevoked()) ||
-      (runtime.linearAccessToken === null && readStoredToken(db, paths.secretsDir) === null))
+      (runtime.linearAccessToken === null &&
+        (await readStoredToken(store, paths.secretsDir)) === null))
   ) {
     const reconnect = await linearRevoked();
     db.close();
@@ -669,7 +675,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     }
   }
 
-  const linear = openLinear({
+  const linear = await openLinear({
     db,
     store,
     signal: abort.signal,
@@ -869,7 +875,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             return undefined;
           }
         })(),
-        slackIdentities: createSlackIdentityReads({ home: paths.home, db }),
+        slackIdentities: await createSlackIdentityReads({ home: paths.home, db }),
         store,
         publicUrl: runtime.publicUrl!,
         clientId: runtime.linearClientId!,
@@ -945,7 +951,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     root: join(paths.home, "closeout", "evidence"),
     objects: evidenceObjects,
   };
-  void uploadLocalCloseoutEvidence(db, closeoutEvidence).catch((error: unknown) =>
+  void uploadLocalCloseoutEvidence(store, closeoutEvidence).catch((error: unknown) =>
     journalCaught(error, "index.startPaws.uploadLocalCloseoutEvidence", null),
   );
   const catalogRepositories = async () =>
@@ -1437,7 +1443,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const tracker = linear?.tracker ?? null;
   const managed = Boolean(workspace && linear?.tracker && linear.issueLifecycle);
   if (!managed) journal(LINEAR_WORKSPACE_REQUIRED);
-  const admission = createAdmission({ db, workspace: managed });
+  const admission = createAdmission({ db: store, workspace: managed });
   const enqueueMissingSnapshots = async () => {
     const targets = await store.run(missingSnapshotTargetsSteps);
     for (const target of targets)
@@ -1541,7 +1547,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         secrets: () => [exeDevToken(), tailscaleAuthKey()],
       });
       const attached = attachOrchestrator({
-        db,
         store,
         instanceId: instance.id,
         jobs: created.jobs,
@@ -2149,11 +2154,11 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   }, INSTANCE_HEARTBEAT_MS);
   instanceTimer.unref?.();
   const commandTimer = setInterval(() => {
-    try {
-      orchestrator?.deliverInstanceCommands();
-    } catch (error) {
-      journalCaught(error, "index.startPaws.deliverInstanceCommands", null);
-    }
+    orchestrator
+      ?.deliverInstanceCommands()
+      .catch((error: unknown) =>
+        journalCaught(error, "index.startPaws.deliverInstanceCommands", null),
+      );
   }, COMMAND_DELIVERY_MS);
   commandTimer.unref?.();
 

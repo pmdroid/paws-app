@@ -25,7 +25,7 @@ test("the timeline shows the agent's CI re-run with its reason and run id", asyn
   const db = openDatabase(":memory:");
   open.push(db);
   migrate(db);
-  insertQueuedItem(db, { id: "item" });
+  await insertQueuedItem(db, { id: "item" });
   await beginImplementRun(sqliteDb(db), "item", 1);
   const reason = "shard 3 hit its 12-minute limit in a test this change does not touch";
   await recordCiRerun(sqliteDb(db), {

@@ -37,7 +37,7 @@ async function hungTurn() {
   const lines: string[] = [];
   const jobs = new JobLoop(db, clock);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs,
     outbox: new OutboxDispatcher(db, clock),
     pawsRoot: root,
@@ -45,7 +45,7 @@ async function hungTurn() {
     tracker,
     journal: (line) => lines.push(line),
   });
-  insertQueuedItem(db, { id: ITEM, sessionKey: "", now: clock.now() });
+  await insertQueuedItem(db, { id: ITEM, sessionKey: "", now: clock.now() });
   await beginImplementRun(sqliteDb(db), ITEM, clock.now());
   await markCloseoutAccepted(sqliteDb(db), ITEM, HEAD);
   const read = tracker.issueMergeContext.bind(tracker);

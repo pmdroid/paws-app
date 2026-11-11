@@ -28,7 +28,7 @@ const root = mkdtempSync(join(tmpdir(), "paws-waiting-settings-"));
 const db = openDatabase(join(root, "paws.sqlite"));
 migrate(db);
 const orchestrator = new Orchestrator({
-  db,
+  store: sqliteDb(db),
   pawsRoot: root,
   jobs: new JobLoop(db, systemClock),
   outbox: new OutboxDispatcher(db, systemClock),
@@ -40,7 +40,7 @@ const original = {
 } as const;
 const files: string[] = [];
 for (let index = 0; index < 3; index++) {
-  const item = insertQueuedItem(db, { id: `waiting-${index}` });
+  const item = await insertQueuedItem(db, { id: `waiting-${index}` });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, Date.now());
   db.run("UPDATE work_item SET state='awaiting_input' WHERE id=?", [item.id]);
   mkdirSync(runDir(root, run.id), { recursive: true });

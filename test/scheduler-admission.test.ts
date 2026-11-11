@@ -16,7 +16,6 @@ import {
   listQueuePositions,
   putWorkspaceUser,
   recordLinearInstallation,
-  settled,
   sqliteDb,
 } from "../src/db";
 import { intakeDelegatedIssue, readyItemsSteps, syncItemDependencies } from "../src/intake";
@@ -48,7 +47,7 @@ test("three ready items in one project and repository are all admitted", async (
   try {
     const ids = ["a", "b", "c"];
     for (const [index, id] of ids.entries()) {
-      insertQueuedItem(db, { id, now: index });
+      await insertQueuedItem(db, { id, now: index });
       await bindWorkItemRepository(sqliteDb(db), id, repository);
       await sqliteDb(db).run((q) =>
         saveSchedulingContextSteps(q, { itemId: id, projectId: "project", paths: ["src/same.ts"] }),
@@ -72,8 +71,8 @@ test("three ready items in one project and repository are all admitted", async (
 test("two ready items that share a Linear session are both admitted", async () => {
   const db = tempDb();
   try {
-    insertQueuedItem(db, { id: "one", now: 1, sessionKey: "shared" });
-    insertQueuedItem(db, { id: "two", now: 2, sessionKey: "shared" });
+    await insertQueuedItem(db, { id: "one", now: 1, sessionKey: "shared" });
+    await insertQueuedItem(db, { id: "two", now: 2, sessionKey: "shared" });
     db.run("UPDATE work_item SET delegation_id=? WHERE id=?", ["epic-one", "two"]);
     await ensureLinearSession(sqliteDb(db), { sessionId: "shared", issueId: "lin-one", now: 1000 });
     await bindLinearSessionTask(sqliteDb(db), "shared", "epic-one");
@@ -96,7 +95,7 @@ test("two ready items with overlapping path hints are both admitted", async () =
   const db = tempDb();
   try {
     for (const [index, id] of ["left", "right"].entries()) {
-      insertQueuedItem(db, { id, now: index });
+      await insertQueuedItem(db, { id, now: index });
       await bindWorkItemRepository(sqliteDb(db), id, repository);
       db.run("UPDATE work_item SET brief=? WHERE id=?", [
         brief(index === 0 ? "paths: src/shared/**" : "paths: src/shared/file.ts"),
@@ -191,7 +190,7 @@ test("a longer task_block chain is admitted before an unrelated ready item", asy
   const db = tempDb();
   try {
     for (const [index, id] of ["d", "c", "b", "a"].entries()) {
-      insertQueuedItem(db, { id, now: index });
+      await insertQueuedItem(db, { id, now: index });
       await bindWorkItemRepository(sqliteDb(db), id, repository);
     }
     db.run(
@@ -214,7 +213,7 @@ test("task_block depth stays on the active item when a merged row shares its iss
   const db = tempDb();
   try {
     for (const [index, id] of ["old", "d", "b", "a"].entries()) {
-      insertQueuedItem(db, { id, now: index });
+      await insertQueuedItem(db, { id, now: index });
       await bindWorkItemRepository(sqliteDb(db), id, repository);
     }
     db.run("UPDATE work_item SET state='merged', linear_issue_id='lin-item-a' WHERE id='old'");
@@ -271,14 +270,14 @@ test("a waiting item's place in line moves up as items ahead start or leave", as
   try {
     await runnerWithSlots(db, 2);
     for (const id of ["busy-1", "busy-2"]) {
-      insertQueuedItem(db, { id, now: 0 });
+      await insertQueuedItem(db, { id, now: 0 });
       await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
       await placeOnRunner(db, id);
     }
     const ready = ["a", "b", "c", "d"];
-    for (const [index, id] of ready.entries()) insertQueuedItem(db, { id, now: index + 1 });
-    const line = () =>
-      settled(listQueuePositions(sqliteDb(db))).map(
+    for (const [index, id] of ready.entries()) await insertQueuedItem(db, { id, now: index + 1 });
+    const line = async () =>
+      (await listQueuePositions(sqliteDb(db))).map(
         ({ itemId, position, busySlots, totalSlots }) => [
           itemId,
           position,
@@ -287,13 +286,13 @@ test("a waiting item's place in line moves up as items ahead start or leave", as
       );
 
     assert.deepEqual(await workspaceDispatch(db, { now: 1000 }), []);
-    assert.deepEqual(line(), [
+    assert.deepEqual(await line(), [
       ["a", 1, "2/2"],
       ["b", 2, "2/2"],
       ["c", 3, "2/2"],
       ["d", 4, "2/2"],
     ]);
-    assert.deepEqual(settled(getQueuePosition(sqliteDb(db), "c")), {
+    assert.deepEqual(await getQueuePosition(sqliteDb(db), "c"), {
       itemId: "c",
       position: 3,
       busySlots: 2,
@@ -305,7 +304,7 @@ test("a waiting item's place in line moves up as items ahead start or leave", as
     await applyWorkItemEvent(sqliteDb(db), "busy-1", "blocking_question");
     leaveRunner(db, "busy-1");
     assert.deepEqual(await workspaceDispatch(db, { now: 1001 }), ["a"]);
-    assert.deepEqual(line(), [
+    assert.deepEqual(await line(), [
       ["b", 1, "2/2"],
       ["c", 2, "2/2"],
       ["d", 3, "2/2"],
@@ -314,16 +313,16 @@ test("a waiting item's place in line moves up as items ahead start or leave", as
     // An item ahead leaves the queue.
     db.run("UPDATE work_item SET cancel_requested=1 WHERE id='b'");
     await workspaceDispatch(db, { now: 1002 });
-    assert.deepEqual(line(), [
+    assert.deepEqual(await line(), [
       ["c", 1, "2/2"],
       ["d", 2, "2/2"],
     ]);
-    assert.equal(settled(getQueuePosition(sqliteDb(db), "b")), null);
+    assert.equal(await getQueuePosition(sqliteDb(db), "b"), null);
 
     // With no runner online, admission is unlimited as in local execution, and there is no line.
     db.run("UPDATE runner SET last_seen_at=0");
     await workspaceDispatch(db, { now: 120_000 });
-    assert.deepEqual(line(), []);
+    assert.deepEqual(await line(), []);
   } finally {
     db.close();
   }
@@ -333,11 +332,11 @@ test("queued items wait for a free runner slot, and work in flight keeps its slo
   const db = tempDb();
   try {
     await runnerWithSlots(db, 2);
-    insertQueuedItem(db, { id: "busy", now: 0 });
+    await insertQueuedItem(db, { id: "busy", now: 0 });
     await applyWorkItemEvent(sqliteDb(db), "busy", "dispatched");
     await placeOnRunner(db, "busy");
     for (const [index, id] of ["a", "b", "c"].entries())
-      insertQueuedItem(db, { id, now: index + 1 });
+      await insertQueuedItem(db, { id, now: index + 1 });
     assert.deepEqual(await workspaceDispatch(db, { now: 1000 }), ["a"]);
     assert.deepEqual(await workspaceDispatch(db, { now: 1001 }), []);
     await applyWorkItemEvent(sqliteDb(db), "busy", "blocking_question");
@@ -352,7 +351,7 @@ test("work back in flight without an admission is re-admitted, so its jobs run i
   const db = tempDb();
   try {
     for (const id of ["a", "b"]) {
-      insertQueuedItem(db, { id, now: 0 });
+      await insertQueuedItem(db, { id, now: 0 });
       await bindWorkItemRepository(sqliteDb(db), id, repository);
       await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
       await applyWorkItemEvent(sqliteDb(db), id, "turn_ended");
@@ -375,7 +374,7 @@ test("work back in flight without an admission is re-admitted, so its jobs run i
 test("work stuck in flight with no job is queued again and doesn't block other starts", async () => {
   const db = tempDb();
   try {
-    insertQueuedItem(db, { id: "stuck", now: 0, sessionKey: "stuck-session" });
+    await insertQueuedItem(db, { id: "stuck", now: 0, sessionKey: "stuck-session" });
     await bindWorkItemRepository(sqliteDb(db), "stuck", repository);
     await applyWorkItemEvent(sqliteDb(db), "stuck", "dispatched");
     await applyWorkItemEvent(sqliteDb(db), "stuck", "turn_ended");
@@ -385,7 +384,7 @@ test("work stuck in flight with no job is queued again and doesn't block other s
       now: 0,
     });
     db.run("UPDATE job SET status='done', finished_at=0 WHERE id=?", [finished]);
-    insertQueuedItem(db, { id: "next", now: 1 });
+    await insertQueuedItem(db, { id: "next", now: 1 });
     await bindWorkItemRepository(sqliteDb(db), "next", repository);
     const now = 10 * 60_000;
     assert.deepEqual(await workspaceDispatch(db, { now }), ["next"]);
@@ -404,7 +403,7 @@ test("work stuck in flight with no job is queued again and doesn't block other s
 });
 
 async function mergeQueueItem(db: ReturnType<typeof tempDb>, id: string): Promise<void> {
-  insertQueuedItem(db, { id, now: 0, sessionKey: `${id}-session` });
+  await insertQueuedItem(db, { id, now: 0, sessionKey: `${id}-session` });
   await bindWorkItemRepository(sqliteDb(db), id, repository);
   await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
   await applyWorkItemEvent(sqliteDb(db), id, "turn_ended");

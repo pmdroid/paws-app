@@ -48,7 +48,7 @@ async function workspace(db: Database) {
     now: 0,
   });
   addRunner(db, "runner-1", START);
-  const item = insertQueuedItem(db, { id: "cli", now: START, sessionKey: "session" });
+  const item = await insertQueuedItem(db, { id: "cli", now: START, sessionKey: "session" });
   db.run("UPDATE work_item SET linear_identifier='DEP-12',owner_user_id='me' WHERE id='cli'");
   await ensureLinearSession(sqliteDb(db), {
     sessionId: "session",
@@ -85,7 +85,7 @@ function addRunner(db: Database, id: string, seenAt: number) {
 
 function orchestrator(db: Database, clock: FakeClock, jobs: JobLoop) {
   return new Orchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox: new OutboxDispatcher(db, clock),

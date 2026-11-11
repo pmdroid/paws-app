@@ -16,7 +16,7 @@ test("a queued Linear comment holds the merge until it is handed over or settled
   const db = openDatabase(":memory:");
   const store = sqliteDb(db);
   migrate(db);
-  insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
+  await insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
   await beginImplementRun(sqliteDb(db), "eng-1", 1);
   await enterMergeQueue(sqliteDb(db), "eng-1", {
     phase: "merge_queue",

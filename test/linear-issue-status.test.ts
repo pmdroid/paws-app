@@ -26,7 +26,7 @@ for (const [type, source] of [
   test(`a ${source} ${type} leaves the issue status to people`, async () => {
     const db = tempDb();
     try {
-      const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
+      const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
       await beginImplementRun(sqliteDb(db), item.id, 1);
       const command = { type, source, itemId: item.id, requestedAt: 5 };
       expect((await applyLinearCommand(sqliteDb(db), command, 5)).applied).toBe(true);
@@ -48,7 +48,7 @@ for (const [type, source] of [
 test("a cancel from the issue closing in Linear enqueues no status", async () => {
   const db = tempDb();
   try {
-    const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
+    const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
     await beginImplementRun(sqliteDb(db), item.id, 1);
     const command = { type: "cancel", source: "linear", itemId: item.id, requestedAt: 5 } as const;
     expect(
@@ -63,7 +63,7 @@ test("a cancel from the issue closing in Linear enqueues no status", async () =>
 test("an issue delegated without a human actor gets no status change", async () => {
   const db = tempDb();
   try {
-    const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
+    const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
     await requireLinearTaskDelegation(sqliteDb(db), {
       itemId: item.id,
       issueId: item.linearIssueId,
@@ -87,7 +87,7 @@ test("an issue delegated without a human actor gets no status change", async () 
 test("an answer task completing leaves the issue status alone", async () => {
   const db = tempDb();
   try {
-    const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
+    const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
     await beginImplementRun(sqliteDb(db), item.id, 1);
     await saveTaskMode(sqliteDb(db), item.id, "answer");
     await completeAnswerTask(sqliteDb(db), item.id, "The answer.", 3);

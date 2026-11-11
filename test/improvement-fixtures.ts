@@ -76,7 +76,11 @@ export async function world(extra: Partial<Parameters<typeof createImprovementsH
          installation_observed_at, created_at) VALUES (?, 'org', 'client', 'app', ?, 1, 0)`,
       [`session-${suffix}`, team],
     );
-    insertQueuedItem(db, { id: `item-${suffix}`, sessionKey: `session-${suffix}`, now: START + 1 });
+    await insertQueuedItem(db, {
+      id: `item-${suffix}`,
+      sessionKey: `session-${suffix}`,
+      now: START + 1,
+    });
     const [owner, repo] = repository.split("/");
     db.run("INSERT INTO work_item_repository VALUES (?, ?, ?, 'git@x')", [
       `item-${suffix}`,

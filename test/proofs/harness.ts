@@ -324,7 +324,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
     ...(proof.reviewer
       ? { closeoutGate: (options) => createCloseoutGate({ ...options, reviewer: proof.reviewer! }) }
       : {}),
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,

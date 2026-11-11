@@ -132,7 +132,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
   };
   const busyRunner = await pair("busy");
   const freeRunner = await pair("free");
-  const other = insertQueuedItem(db, { id: "other", now });
+  const other = await insertQueuedItem(db, { id: "other", now });
   const otherRun = await insertRun(sqliteDb(db), { itemId: other.id, now, status: "active" });
   db.run(
     "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,1,0,'other',?)",
@@ -206,7 +206,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
   const jobs = new JobLoop(db, clock, { concurrency: 4, pollMs: 5 });
   const outbox = new OutboxDispatcher(db, clock);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs,
     outbox,
     clock,
@@ -310,7 +310,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
         }),
       });
     }
-    await dispatch(db, { now: clock.now() });
+    await dispatch(sqliteDb(db), { now: clock.now() });
     expect(db.query("SELECT item_id FROM scheduler_admission").all()).toHaveLength(5);
     loop = jobs.run(controller.signal, (ms) => Bun.sleep(ms));
     const deadline = Date.now() + 20_000;

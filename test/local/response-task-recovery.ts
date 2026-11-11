@@ -35,7 +35,7 @@ export async function probeResponseTaskRecovery(root: string) {
     let db = openDatabase(path);
     migrate(db);
     const clock = new FakeClock(1000);
-    const item = insertQueuedItem(db, { id: `item-${mode}`, sessionKey: `session-${mode}` });
+    const item = await insertQueuedItem(db, { id: `item-${mode}`, sessionKey: `session-${mode}` });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now());
     await saveTaskMode(sqliteDb(db), item.id, mode);
     await saveConversation(
@@ -91,7 +91,7 @@ export async function probeResponseTaskRecovery(root: string) {
     );
     let launches = 0;
     const orchestrator = new Orchestrator({
-      db,
+      store: sqliteDb(db),
       jobs,
       clock,
       outbox: new OutboxDispatcher(db, clock),

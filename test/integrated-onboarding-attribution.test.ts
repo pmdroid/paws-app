@@ -171,7 +171,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
       }) as typeof fetch,
     });
     const orchestrator = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       jobs: new dbApi.JobLoop(db, clock),
       outbox: new dbApi.OutboxDispatcher(db, clock),
       pawsRoot: root,
@@ -336,7 +336,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
       sessionHash: login.session.tokenHash,
     };
     const request = { stateHash: "synthetic-state", browserHash: "synthetic-browser", now: now() };
-    dbApi.beginGitHubAttribution(db, binding, request);
+    await dbApi.beginGitHubAttribution(sqliteDb(db), binding, request);
     const revision = await dbApi.consumeGitHubAttribution(db, binding, request);
     await dbApi.saveGitHubAttribution(
       sqliteDb(db),

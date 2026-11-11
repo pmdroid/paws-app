@@ -10,7 +10,7 @@ export async function probeRunnerPublicActivity(root: string) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const db = openDatabase(join(root, "paws.db"));
   migrate(db);
-  const item = insertQueuedItem(db, { id: "activity-item", sessionKey: "visible-session" });
+  const item = await insertQueuedItem(db, { id: "activity-item", sessionKey: "visible-session" });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, 1000);
   const journalRoot = join(root, "journal");
   mkdirSync(journalRoot, { mode: 0o700 });

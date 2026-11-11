@@ -50,7 +50,7 @@ import {
   recentRepositoryNamesSteps,
   recordAgentCloseoutSteps,
   jobStatusByKey,
-  restartAsync,
+  restart,
   reviewerAlertedSinceSteps,
   saveConversationSteps,
   saveLinearActivitySnapshotSteps,
@@ -124,7 +124,6 @@ import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
-import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import type {
   AcpEvent,
@@ -292,7 +291,6 @@ import {
   getQueuePosition,
   clearQueueWait,
   queueWaitSince,
-  sqliteDb,
   activeRunnerIdsSteps,
   announceLinearTurnSteps,
   artifactPublicationReadySteps,
@@ -717,9 +715,7 @@ import {
 export type { RepositoryBinding } from "../core";
 
 export type OrchestratorOptions = {
-  db: Database;
-  /** The async `Db` over `db` for converted code. Defaults to `sqliteDb(db)`. */
-  store?: Db;
+  store: Db;
   instanceId?: string;
   jobs: JobLoop;
   outbox: OutboxDispatcher;
@@ -964,7 +960,7 @@ export class Orchestrator {
   }
 
   constructor(private readonly options: OrchestratorOptions) {
-    this.store = options.store ?? sqliteDb(options.db);
+    this.store = options.store;
     this.riskDisplayReader = new RiskDisplayReader({
       store: this.store,
       configPath: join(options.pawsRoot, "config.toml"),
@@ -973,7 +969,7 @@ export class Orchestrator {
       journal: options.journal,
     });
     this.tracker = options.tracker ?? null;
-    this.admission = options.admission ?? createAdmission({ db: options.db });
+    this.admission = options.admission ?? createAdmission({ db: this.store });
     this.githubAuth = options.githubInstallation
       ? new GitHubInstallationCheck(
           this.store,
@@ -1863,10 +1859,6 @@ export class Orchestrator {
 
   stopTaskPlanning = (sessionId?: string): Promise<void> => this.taskPlanner.stop(sessionId);
 
-  private get db(): Database {
-    return this.options.db;
-  }
-
   private async forItem<T>(payload: unknown, run: () => T | Promise<T>): Promise<T> {
     const itemId = readString(payload, "itemId");
     const item = itemId ? await this.store.run((q) => getWorkItemSteps(q, itemId)) : null;
@@ -2571,7 +2563,7 @@ export class Orchestrator {
       tracker,
       () => this.catchUpFn(),
       context,
-      this.db,
+      this.store,
       files && storage ? { files, ...storage } : undefined,
     );
   }
@@ -3792,7 +3784,7 @@ export class Orchestrator {
       const returned = await this.store.run((q) => latestRestartEventSteps(q, item.id));
       const fixing =
         returned !== null && ["findings", "ci", "review", "conflict"].includes(returned.reason);
-      if (!fixing) sessionProgress?.phase("implementing");
+      if (!fixing) await sessionProgress?.phase("implementing");
       if (fixing) {
         const round = await this.store.run((q) => fixRoundsSteps(q, item.id));
         const limit = await this.fixAttemptLimit(item, returned.reason);
@@ -3805,8 +3797,8 @@ export class Orchestrator {
                 ? "merge conflicts"
                 : "Closeout findings";
         const counter = returned.reason === "conflict" ? "" : ` (${round} of ${limit})`;
-        sessionProgress?.restart(returned.reason, round, returned.version, limit);
-        sessionProgress?.restartWait(`${item.linearIdentifier}: fixing ${label}${counter}`);
+        await sessionProgress?.restart(returned.reason, round, returned.version, limit);
+        await sessionProgress?.restartWait(`${item.linearIdentifier}: fixing ${label}${counter}`);
         live.progress =
           returned.reason === "conflict"
             ? `Resolving merge conflicts for ${item.linearIdentifier}.`
@@ -3936,7 +3928,7 @@ export class Orchestrator {
       if (executed.run.handoverFailure && !this.askedRuns.has(run.id)) {
         // The handover stopped the agent, then failed: the session stays on its runner, and the
         // next turn loads it there and goes on from the WIP commit.
-        await restartAsync(this.store, finished, {
+        await restart(this.store, finished, {
           reason: "follow_up",
           body: HANDOVER_FAILED_PROMPT,
           now: this.now(),
@@ -3977,7 +3969,7 @@ export class Orchestrator {
       if (replies !== "complete") return;
       if (!executed.run.identity)
         throw new Error("Implementer did not report a concrete session model");
-      this.saveCandidate(run.id, executed.run.identity);
+      await this.saveCandidate(run.id, executed.run.identity);
       const at = await this.itemHead(finished);
       const head = (await git(["-C", at.repo, "rev-parse", at.ref])).trim();
       await recordAgentFindingDecisions(
@@ -4859,7 +4851,7 @@ export class Orchestrator {
           );
       },
       notify: (reason) => {
-        this.post(item, "thought", reason, `${runId}:closeout-runner-wait:${head}:${reason}`);
+        void this.post(item, "thought", reason, `${runId}:closeout-runner-wait:${head}:${reason}`);
         void this.flush().catch((caughtError4) => {
           journalCaught(
             caughtError4,
@@ -7065,7 +7057,7 @@ export class Orchestrator {
             undefined,
             journalTo,
           );
-          post(
+          void post(
             item,
             error instanceof Error ? error.message : "Answer this question in your own words.",
           );
@@ -7611,8 +7603,7 @@ export class Orchestrator {
       );
       config = null;
     }
-    await dispatch(this.db, {
-      store: this.store,
+    await dispatch(this.store, {
       now: this.now(),
       admission: this.admission,
       ...(this.options.journal ? { log: this.options.journal } : {}),
@@ -10334,7 +10325,7 @@ export class Orchestrator {
         base === head &&
         (await jobStatusByKey(this.store, jobKey)) === null
       ) {
-        await restartAsync(this.store, item, {
+        await restart(this.store, item, {
           reason: "follow_up",
           body: "The earlier implementation run ended before it committed anything. Implement the task from the start.",
           jobKey,
@@ -11150,15 +11141,11 @@ export class Orchestrator {
         !controller.signal.aborted &&
         (await this.store.run((q) => getWorkItemSteps(q, item.id)))?.state === "running"
       )
-        await restartAsync(
-          this.store,
-          (await this.store.run((q) => getWorkItemSteps(q, item.id)))!,
-          {
-            reason: "follow_up",
-            body: "Retry repository selection.",
-            now: this.now(),
-          },
-        );
+        await restart(this.store, (await this.store.run((q) => getWorkItemSteps(q, item.id)))!, {
+          reason: "follow_up",
+          body: "Retry repository selection.",
+          now: this.now(),
+        });
       throw error;
     } finally {
       this.live.delete(liveKey);

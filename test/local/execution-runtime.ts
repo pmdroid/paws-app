@@ -372,7 +372,7 @@ export async function probeExecutionRuntime(input: {
     cancelled: true,
     handled: true,
   });
-  const terminal = insertQueuedItem(db, {
+  const terminal = await insertQueuedItem(db, {
     id: "runtime-terminal",
     sessionKey: "runtime-terminal-session",
   });

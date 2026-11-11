@@ -30,7 +30,7 @@ async function setup() {
   const db = openDatabase(":memory:");
   migrate(db);
   const clock = new FakeClock(1_000);
-  insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
+  await insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
   await bindWorkItemRepository(sqliteDb(db), "eng-1", {
     owner: "acme",
     repo: "one",
@@ -66,7 +66,7 @@ async function setup() {
     }),
   );
   const startRestart = async (reason: RestartReason, body: string, jobKey: string) => {
-    restart(db, (await getWorkItem(sqliteDb(db), "eng-1"))!, {
+    await restart(sqliteDb(db), (await getWorkItem(sqliteDb(db), "eng-1"))!, {
       reason,
       body,
       jobKey,

@@ -59,7 +59,7 @@ async function setup(role: WorkspaceRole | null = "member") {
   const db = openDatabase(":memory:");
   migrate(db);
   for (const id of ["PAS-633", "PAS-700"]) {
-    insertQueuedItem(db, { id, sessionKey: `ses_${id}` });
+    await insertQueuedItem(db, { id, sessionKey: `ses_${id}` });
     await bindWorkItemRepository(sqliteDb(db), id, {
       owner: "acme",
       repo: "widgets",

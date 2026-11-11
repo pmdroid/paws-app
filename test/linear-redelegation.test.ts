@@ -66,7 +66,7 @@ test("a re-delegation that brought a new session leaves intake to that session",
 
 test("an issue that already has an open task starts nothing", async () => {
   const f = fixture();
-  insertQueuedItem(f.db, { id: "task", sessionKey: "new-session" });
+  await insertQueuedItem(f.db, { id: "task", sessionKey: "new-session" });
   await f.session("old-session", "lin-item-task", 10 * MINUTE);
 
   expect(await f.check("lin-item-task")).toBe(false);

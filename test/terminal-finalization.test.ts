@@ -37,7 +37,7 @@ afterEach(() => {
 async function runningTask(db: Database) {
   const { item, run } = await beginImplementRun(
     sqliteDb(db),
-    insertQueuedItem(db, { id: "ENG-1" }).id,
+    (await insertQueuedItem(db, { id: "ENG-1" })).id,
     1,
   );
   const jobId = await enqueueJob(sqliteDb(db), {
@@ -219,7 +219,7 @@ test("a merge result for a cancelled, superseded or unconfirmed task changes not
   expect(await completeMergedItem(sqliteDb(db), { itemId: item.id, now: 4, announce })).toBeNull();
   await applyWorkItemEvent(sqliteDb(db), item.id, "cancel");
   expect(await completeMergedItem(sqliteDb(db), { itemId: item.id, now: 4, announce })).toBeNull();
-  const other = insertQueuedItem(db, { id: "ENG-2" });
+  const other = await insertQueuedItem(db, { id: "ENG-2" });
   await beginImplementRun(sqliteDb(db), other.id, 5);
   await enterMergeQueue(sqliteDb(db), other.id, { phase: "merge_queue" });
   expect(await completeMergedItem(sqliteDb(db), { itemId: other.id, now: 6, announce })).toBeNull();

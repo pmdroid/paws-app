@@ -44,7 +44,7 @@ test("a green check_suite delivery for the pull request's head merges it before 
   let green = false;
   let sequence = 0;
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,

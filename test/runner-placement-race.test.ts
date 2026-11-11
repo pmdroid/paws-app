@@ -164,7 +164,7 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
   const jobs = new JobLoop(db, systemClock, { concurrency: 2, pollMs: 5 });
   const outbox = new OutboxDispatcher(db, systemClock);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs,
     outbox,
     pawsRoot: root,
@@ -258,7 +258,7 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
         projectId: "project",
       }),
     });
-    await dispatch(db, { now: Date.now() });
+    await dispatch(sqliteDb(db), { now: Date.now() });
     loop = jobs.run(controller.signal, (ms) => Bun.sleep(ms));
     const deadline = Date.now() + 20_000;
     while (

@@ -72,7 +72,7 @@ async function activity(
 
 /** PAS-367 after a restart and a reply: three engine runs, each with one agent turn. */
 async function threeRuns(db: Database): Promise<string[]> {
-  insertQueuedItem(db, {
+  await insertQueuedItem(db, {
     id: ITEM,
     title: "Keep runs across restart",
     sessionKey: SESSION,
@@ -207,7 +207,7 @@ describe("one page per issue", () => {
 
   test("a re-delegated issue shows only the current Linear session on its page", async () => {
     const db = database();
-    insertQueuedItem(db, {
+    await insertQueuedItem(db, {
       id: EARLIER,
       title: "Keep runs",
       sessionKey: "earlier-session",
@@ -241,7 +241,12 @@ describe("one page per issue", () => {
   test("sibling sub-issues that share one Linear session keep one page each, naming the session", async () => {
     const db = database();
     await threeRuns(db);
-    insertQueuedItem(db, { id: "sibling", title: "Sibling", sessionKey: SESSION, now: T0 + 10 });
+    await insertQueuedItem(db, {
+      id: "sibling",
+      title: "Sibling",
+      sessionKey: SESSION,
+      now: T0 + 10,
+    });
     identify(db, "sibling", "PAS-368", "lin-368");
     const snapshot = await snapshotOf(db);
     const own = issuePage(snapshot);
@@ -257,7 +262,7 @@ describe("one page per issue", () => {
 
   test("the page names the task only as PAS-367, with no internal id in visible text", async () => {
     const db = database();
-    insertQueuedItem(db, {
+    await insertQueuedItem(db, {
       id: EARLIER,
       title: "Keep runs",
       sessionKey: "earlier-session",
@@ -311,7 +316,12 @@ describe("one page per issue", () => {
   test("dead outbox rows and dead jobs of the issue are listed with a retry", async () => {
     const db = database();
     await threeRuns(db);
-    insertQueuedItem(db, { id: "other", title: "Other", sessionKey: "other-session", now: T0 });
+    await insertQueuedItem(db, {
+      id: "other",
+      title: "Other",
+      sessionKey: "other-session",
+      now: T0,
+    });
     identify(db, "other", "PAS-368", "lin-368");
     const elicitation = await enqueueOutbox(sqliteDb(db), {
       target: "linear",

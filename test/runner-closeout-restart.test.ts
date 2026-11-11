@@ -110,7 +110,7 @@ async function fixture(agentRead?: AgentRead) {
     "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'9.0.0',?)",
     [runnerId, now],
   );
-  const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
+  const item = await insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
   await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",

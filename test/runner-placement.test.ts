@@ -88,7 +88,7 @@ async function placeItem(bindTask = true) {
       teamIds: ["team"],
       now,
     });
-  const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
+  const item = await insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
   await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app-client",
@@ -344,7 +344,7 @@ test("session affinity waits for other runs' held slots and unassigned reservati
     expect(await placed.ids({ ...session, reserved: new Map([["second", 1]]) })).toEqual([
       "second",
     ]);
-    insertQueuedItem(db, { id: "pinned", now: placed.now() });
+    await insertQueuedItem(db, { id: "pinned", now: placed.now() });
     const pin = await enqueueJob(sqliteDb(db), {
       queue: "run.resume",
       now: placed.now(),

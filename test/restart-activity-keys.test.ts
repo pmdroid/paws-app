@@ -57,7 +57,7 @@ test("updates from a run that Paws resumes after a restart all land in the outbo
     const jobs = new JobLoop(database, systemClock, { leaseMs: 1_000 });
     const outbox = new OutboxDispatcher(database, systemClock);
     const orchestrator = attachOrchestrator({
-      db: database,
+      store: sqliteDb(database),
       admission: workspaceAdmission(database),
       jobs,
       outbox,

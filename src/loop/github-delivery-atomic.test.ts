@@ -28,7 +28,7 @@ async function setup(file = ":memory:") {
   const db = openDatabase(file);
   migrate(db);
   for (const id of ["first", "second"]) {
-    insertQueuedItem(db, { id, now: 1 });
+    await insertQueuedItem(db, { id, now: 1 });
     await bindWorkItemRepository(sqliteDb(db), id, {
       owner: "acme",
       repo: "one",
@@ -58,7 +58,7 @@ async function setup(file = ":memory:") {
       runAt: 90_000,
     });
   }
-  recordPullReview(db, {
+  await recordPullReview(sqliteDb(db), {
     reviewId: 40,
     itemId: "first",
     state: "changes_requested",

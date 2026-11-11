@@ -324,7 +324,7 @@ async function runTask(input: {
   let polls = 0;
   let gate: LinearTaskAccess | undefined;
   let orchestrator: ReturnType<typeof attachOrchestrator> | undefined;
-  const linear = openLinear({
+  const linear = await openLinear({
     db,
     store: sqliteDb(db),
     secretsDir: path.join(layout.pawsRoot, "secrets"),
@@ -379,7 +379,7 @@ async function runTask(input: {
     };
   };
   orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,

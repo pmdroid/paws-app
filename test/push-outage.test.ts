@@ -111,7 +111,7 @@ async function delegate(refusal: string) {
   };
   let sequence = 0;
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,

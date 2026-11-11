@@ -721,7 +721,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   const closeoutItem = secrets.closeoutEvidence ? closeoutEvidenceItemOf(request) : null;
   if (closeoutItem !== null && secrets.db)
     await hydrateItemCloseoutEvidence(
-      secrets.db,
+      secrets.store ?? sqliteDb(secrets.db),
       secrets.closeoutEvidence!,
       closeoutItem,
       sessionIds,

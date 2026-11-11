@@ -128,7 +128,9 @@ let services!: {
 let orchestrator!: ReturnType<typeof loop.attachOrchestrator>;
 const attach = loop.attachOrchestrator;
 spyOn(loop, "attachOrchestrator").mockImplementation((options) => {
-  const { db, jobs, outbox } = options;
+  const { store, jobs, outbox } = options;
+  if (store.dialect !== "sqlite") throw new Error("The restart fixture runs on SQLite");
+  const db = store.orm.$client;
   const work = createRunnerWork({
     store: sqliteDb(db),
     keyId: "fixture",
@@ -156,7 +158,7 @@ spyOn(loop, "attachOrchestrator").mockImplementation((options) => {
     },
   });
   orchestrator = attach({
-    db,
+    store: sqliteDb(db),
     jobs,
     outbox,
     pawsRoot: home,
@@ -478,7 +480,7 @@ async function until(label: string, done: () => boolean | Promise<boolean>) {
 }
 async function addItem(id: string, answer = false) {
   const sessionKey = `session-${id}`;
-  const item = insertQueuedItem(paws.db, { id, sessionKey, now: Date.now() });
+  const item = await insertQueuedItem(paws.db, { id, sessionKey, now: Date.now() });
   await recordLinearInstallation(sqliteDb(paws.db), {
     organizationId: "org",
     oauthClientId: "app",

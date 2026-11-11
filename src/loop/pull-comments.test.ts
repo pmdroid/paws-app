@@ -100,7 +100,7 @@ const FILTER: PullCommentFilter = {
 async function setup(threads = THREADS) {
   const db = openDatabase(":memory:");
   migrate(db);
-  insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
+  await insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
   await bindWorkItemRepository(sqliteDb(db), "eng-1", {
     owner: "acme",
     repo: "one",
@@ -290,7 +290,7 @@ describe("pull request comments restart the item", () => {
 
     expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("restarted");
     expect((await getWorkItem(sqliteDb(db), "eng-1"))?.state).toBe("queued");
-    expect(fixRounds(db, "eng-1")).toBe(1);
+    expect(await fixRounds(sqliteDb(db), "eng-1")).toBe(1);
     expect(await resumeJobs(db)).toHaveLength(1);
     const { handoff: text, reason } = (await handoff(db))!;
     expect(reason).toBe("review");
@@ -602,7 +602,7 @@ describe("timing", () => {
     expect(text).toContain("1. @pascal in the conversation:");
     expect(text).toContain("2. @pascal reviewed:");
     expect(text).toContain("3. @rev in the conversation:");
-    expect(fixRounds(db, "eng-1")).toBe(1);
+    expect(await fixRounds(sqliteDb(db), "eng-1")).toBe(1);
   });
 
   test("a comment during a turn or evaluation waits, and holds the merge", async () => {

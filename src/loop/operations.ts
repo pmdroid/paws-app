@@ -1,9 +1,11 @@
 import {
+  type Db,
   applyWorkItemEventSteps,
   getWorkItemSteps,
   saveCheckpointSteps,
   type Q,
   type Steps,
+  type RestartHandoff,
   type WorkItemRecord,
   restart as restartItem,
 } from "../db";
@@ -45,8 +47,12 @@ export function* askSteps(q: Q, asker: Asker, ...args: AskArgs): Steps<Asked> {
   return result;
 }
 
-export function restart(...args: Parameters<typeof restartItem>): ReturnType<typeof restartItem> {
-  return restartItem(...args);
+export async function restart(
+  store: Db,
+  item: WorkItemRecord,
+  handoff: RestartHandoff,
+): Promise<number | null> {
+  return await restartItem(store, item, handoff);
 }
 
 export function* awaitQuestionSteps(

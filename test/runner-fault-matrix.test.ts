@@ -432,7 +432,7 @@ async function runRemoteFault(fault: Fault) {
         runner.faultedAttempts++;
         await createLinearClient({
           auth: {
-            hasToken: () => true,
+            hasToken: async () => true,
             ensureFresh: async () => "synthetic-linear-token",
             forceRefresh: async () => "synthetic-linear-token",
           },
@@ -456,7 +456,7 @@ async function runRemoteFault(fault: Fault) {
   const outbox = new OutboxDispatcher(db, systemClock);
   let reviews = 0;
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs,
     outbox,
     pawsRoot: root,

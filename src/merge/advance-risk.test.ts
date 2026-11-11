@@ -56,7 +56,7 @@ test("a high-risk head is held out of the merge queue and asked about", async ()
   expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
   expect(h.state.riskAsked).toEqual([item.accepted]);
   expect(h.github.merged).toEqual([]);
-  expect(mergeQueuePosition(h.db, "ENG-1")).toBeNull();
+  expect(await mergeQueuePosition(sqliteDb(h.db), "ENG-1")).toBeNull();
   expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("merge_queue");
 });
 

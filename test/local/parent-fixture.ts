@@ -120,7 +120,7 @@ export async function createParentFixture(
   }
   const outbox = new OutboxDispatcher(db, clock);
   orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     clock,
     jobs: new JobLoop(db, clock),
     outbox,

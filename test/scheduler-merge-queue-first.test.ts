@@ -52,19 +52,19 @@ async function fixture() {
     );
     db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,1)", [runnerId]);
     const itemId = `busy-${runnerId}`;
-    insertQueuedItem(db, { id: itemId, now: 0 });
+    await insertQueuedItem(db, { id: itemId, now: 0 });
     await applyWorkItemEvent(sqliteDb(db), itemId, "dispatched");
     const runId = (await insertRun(sqliteDb(db), { itemId, now: 0, status: "active" })).id;
     work(runId, runnerId, null);
     busy.set(runnerId, runId);
   }
 
-  insertQueuedItem(db, { id: "N", now: 1 });
+  await insertQueuedItem(db, { id: "N", now: 1 });
   await sqliteDb(db).run((q) => saveSchedulingContextSteps(q, { itemId: "N", priority: 1 }));
 
   /** An item that Closeout accepted, ran on A and joined the merge queue at `readyAt`. */
   const mergeItem = async (id: string, readyAt: number) => {
-    insertQueuedItem(db, { id, now: 2 });
+    await insertQueuedItem(db, { id, now: 2 });
     await sqliteDb(db).run((q) => saveSchedulingContextSteps(q, { itemId: id, priority: 4 }));
     await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
     const runId = (await insertRun(sqliteDb(db), { itemId: id, now: 2, status: "ended" })).id;
@@ -161,7 +161,7 @@ test("a conflict fix sent back from the merge queue is admitted before a queued 
     await mergeItem("M", NOW - 120_000);
     // M's owner already runs both busy items; N's owner runs nothing.
     db.run("UPDATE work_item SET owner_user_id='user-1' WHERE id IN ('M','busy-A','busy-B')");
-    restart(db, (await getWorkItem(sqliteDb(db), "M"))!, {
+    await restart(sqliteDb(db), (await getWorkItem(sqliteDb(db), "M"))!, {
       reason: "conflict",
       body: "Resolve conflicts",
       now: NOW,
@@ -179,7 +179,7 @@ test("findings from a merge-queue re-verify send the fix ahead of a queued item 
   try {
     await mergeItem("M", NOW - 120_000);
     await applyWorkItemEvent(sqliteDb(db), "M", "reverify_requested");
-    restart(db, (await getWorkItem(sqliteDb(db), "M"))!, {
+    await restart(sqliteDb(db), (await getWorkItem(sqliteDb(db), "M"))!, {
       reason: "findings",
       body: "Fix findings",
       now: NOW,
@@ -194,11 +194,11 @@ test("findings from a merge-queue re-verify send the fix ahead of a queued item 
 test("a fix sent back by a first Closeout keeps the usual order", async () => {
   const { db, free } = await fixture();
   try {
-    insertQueuedItem(db, { id: "F", now: 2 });
+    await insertQueuedItem(db, { id: "F", now: 2 });
     await sqliteDb(db).run((q) => saveSchedulingContextSteps(q, { itemId: "F", priority: 4 }));
     await applyWorkItemEvent(sqliteDb(db), "F", "dispatched");
     await applyWorkItemEvent(sqliteDb(db), "F", "turn_ended");
-    restart(db, (await getWorkItem(sqliteDb(db), "F"))!, {
+    await restart(sqliteDb(db), (await getWorkItem(sqliteDb(db), "F"))!, {
       reason: "findings",
       body: "Fix findings",
       now: NOW,

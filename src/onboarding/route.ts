@@ -170,8 +170,8 @@ export function createBrowserOnboarding(options: {
     }
     if (url.pathname !== CALLBACK)
       return Response.json({ error: "Sign in to connect your Linear workspace." }, { status: 401 });
-    if (installing || (readStoredToken(db, secretsDir) !== null && !options.reconnect))
-      return retry("already-connected");
+    const stored = await readStoredToken(sqliteDb(db), secretsDir);
+    if (installing || (stored !== null && !options.reconnect)) return retry("already-connected");
     installing = true;
     try {
       const state = url.searchParams.get("state") ?? "";
@@ -206,7 +206,7 @@ export function createBrowserOnboarding(options: {
       });
       const client = createLinearClient({
         auth: {
-          hasToken: () => true,
+          hasToken: async () => true,
           ensureFresh: async () => token.accessToken,
           forceRefresh: async () => token.accessToken,
         },
@@ -242,7 +242,8 @@ export function createBrowserOnboarding(options: {
           await createLinearReconnect({ fetch: fetchImpl, snapshot: reconnect })(home)
         ).complete({ clientId: options.clientId!, token });
         if (!restored) return retry("workspace-mismatch");
-      } else if (!writeStoredToken(db, secretsDir, token, true)) return retry("already-connected");
+      } else if (!(await writeStoredToken(sqliteDb(db), secretsDir, token, true)))
+        return retry("already-connected");
       const timestamp = now();
       const userId = await putWorkspaceUser(sqliteDb(db), {
         id: workspaceId(),

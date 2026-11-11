@@ -1,5 +1,4 @@
 import { journal, journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import {
   JOB_KIND,
@@ -43,7 +42,6 @@ import {
   listOverlapHoldAgesSteps,
   saveItemHoldsSteps,
   saveQueuePositionsSteps,
-  sqliteDb,
   savePinnedSlotsSteps,
   type Db,
   RUNNER_FULL,
@@ -78,7 +76,6 @@ export type SchedulerOptions = {
   now?: number;
   admission?: ItemAdmission;
   defaultRepository?: RepositoryBinding | null;
-  store?: Db;
   handoffForItem?: (q: Q, itemId: string) => Steps<string | undefined>;
   sessionFor?: (q: Q, itemId: string) => Steps<string | null>;
   onWaiting?: (itemIds: readonly string[]) => unknown;
@@ -506,13 +503,8 @@ function* reportDependencyCycles(
   }
 }
 
-export function dispatch(db: Database, options: SchedulerOptions = {}): Promise<string[]> {
-  if (db.inTransaction) throw new Error("Dispatch runs after the transition commits");
-  return admit(
-    options.store ?? sqliteDb(db),
-    options.admission ?? createAdmission({ db }),
-    options,
-  );
+export function dispatch(db: Db, options: SchedulerOptions = {}): Promise<string[]> {
+  return admit(db, options.admission ?? createAdmission({ db }), options);
 }
 
 async function admit(

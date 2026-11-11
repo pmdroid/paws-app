@@ -70,7 +70,11 @@ export async function probeRunnerResults(root: string, observe: Observe) {
       })
     ).runnerId;
     db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
-    const item = insertQueuedItem(db, { id: "result-item", now, sessionKey: "result-session" });
+    const item = await insertQueuedItem(db, {
+      id: "result-item",
+      now,
+      sessionKey: "result-session",
+    });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
     await recordLinearInstallation(sqliteDb(db), {
       organizationId: "fixture-org",

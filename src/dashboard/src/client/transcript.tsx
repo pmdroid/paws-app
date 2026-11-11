@@ -238,7 +238,7 @@ function TranscriptPage({ runId }: { runId: string | null }) {
             }));
         }
       }
-      if (!stopped) timer = window.setTimeout(poll, POLL_MS);
+      if (!stopped) timer = window.setTimeout(() => void poll(), POLL_MS);
     };
     void poll();
     return () => {

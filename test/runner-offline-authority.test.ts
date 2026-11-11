@@ -106,7 +106,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
     "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.59',?)",
     [runnerId, pawsNow()],
   );
-  const item = insertQueuedItem(db, { id: "item", now: pawsNow(), sessionKey: "session" });
+  const item = await insertQueuedItem(db, { id: "item", now: pawsNow(), sessionKey: "session" });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, pawsNow());
   await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
@@ -404,7 +404,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
     async pawsOutage(ms: number) {
       link = "paws-down";
       await prepareShutdown(sqliteDb(db), clock.at, undefined, instance.id);
-      stopInstance(db, instance.id, clock.at);
+      await stopInstance(sqliteDb(db), instance.id, clock.at);
       db.close();
       await this.advance(ms, false);
       db = openDatabase(path);

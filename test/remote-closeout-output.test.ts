@@ -69,7 +69,7 @@ test("remote session output survives result transport, persistence and the live 
     writeSessionCloseout(path, head, transported.closeoutReport);
     const saved = readSessionCloseout(path)!;
     migrate(db);
-    insertQueuedItem(db, { id: "item", title: "Remote output", now: 1 });
+    await insertQueuedItem(db, { id: "item", title: "Remote output", now: 1 });
     const started = await beginImplementRun(sqliteDb(db), "item", 1, {
       phase: "verifying",
       baseSha: head,

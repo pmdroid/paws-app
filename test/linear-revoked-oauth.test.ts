@@ -39,7 +39,7 @@ async function fixture() {
     scope: "read,write",
     actor: "app",
   };
-  writeStoredToken(db, secretsDir, token);
+  await writeStoredToken(sqliteDb(db), secretsDir, token);
   const revoke = async () =>
     await revokeLinearInstallation(sqliteDb(db), { ...scope, eventKey: "revoked", createdAtMs: 2 });
   return {
@@ -48,14 +48,14 @@ async function fixture() {
     secretsDir,
     token,
     revoke,
-    allowed: async () => !isLinearAppRevoked(db, scope),
+    allowed: async () => !(await isLinearAppRevoked(sqliteDb(db), scope)),
   };
 }
 
 test("known revocation blocks fresh credentials and refresh without a network request", async () => {
   const f = await fixture();
   let requests = 0;
-  const auth = createLinearAuth({
+  const auth = await createLinearAuth({
     db: f.db,
     secretsDir: f.secretsDir,
     clientId: "client",
@@ -67,22 +67,22 @@ test("known revocation blocks fresh credentials and refresh without a network re
     },
   });
   await f.revoke();
-  expect(auth.hasToken()).toBe(true);
+  expect(await auth.hasToken()).toBe(true);
   await expect(auth.ensureFresh()).rejects.toThrow("revoked");
   await expect(auth.forceRefresh()).rejects.toThrow("revoked");
   expect(requests).toBe(0);
-  expect(readStoredToken(f.db, f.secretsDir)).toEqual(f.token);
+  expect(await readStoredToken(sqliteDb(f.db), f.secretsDir)).toEqual(f.token);
 });
 
 test.each([false, true])(
   "revocation fences a pending refresh and preserves operator replacement=%s",
   async (replace) => {
     const f = await fixture();
-    writeStoredToken(f.db, f.secretsDir, { ...f.token, expiresAtMs: 0 });
+    await writeStoredToken(sqliteDb(f.db), f.secretsDir, { ...f.token, expiresAtMs: 0 });
     const started = Promise.withResolvers<void>();
     const released = Promise.withResolvers<Response>();
     let requests = 0;
-    const auth = createLinearAuth({
+    const auth = await createLinearAuth({
       db: f.db,
       secretsDir: f.secretsDir,
       clientId: "client",
@@ -100,7 +100,7 @@ test.each([false, true])(
     const expected = replace
       ? { ...f.token, accessToken: "fake-operator-access", refreshToken: "fake-operator-refresh" }
       : { ...f.token, expiresAtMs: 0 };
-    if (replace) writeStoredToken(f.db, f.secretsDir, expected);
+    if (replace) await writeStoredToken(sqliteDb(f.db), f.secretsDir, expected);
     released.resolve(
       Response.json({
         access_token: "fake-stale-access",
@@ -109,7 +109,7 @@ test.each([false, true])(
       }),
     );
     await expect(pending).rejects.toThrow();
-    expect(readStoredToken(f.db, f.secretsDir)).toEqual(expected);
+    expect(await readStoredToken(sqliteDb(f.db), f.secretsDir)).toEqual(expected);
     await expect(auth.ensureFresh()).rejects.toThrow("revoked");
     expect(requests).toBe(1);
   },
@@ -117,7 +117,7 @@ test.each([false, true])(
 
 test("revocation after token load fences the GraphQL request before transport dispatch", async () => {
   const f = await fixture();
-  const auth = createLinearAuth({
+  const auth = await createLinearAuth({
     db: f.db,
     secretsDir: f.secretsDir,
     clientId: "client",
@@ -142,7 +142,7 @@ test("a revoked installation leaves webhook dispatch available but starts no cat
   const f = await fixture();
   await f.revoke();
   let requests = 0;
-  const opened = openLinear({
+  const opened = await openLinear({
     db: f.db,
     store: sqliteDb(f.db),
     secretsDir: join(f.home, "secrets"),
@@ -179,9 +179,13 @@ test("revocation for another client or app user does not block the configured in
     createdAtMs: 2,
   });
   expect(await f.allowed()).toBe(true);
-  expect(isLinearAppRevoked(f.db, { oauthClientId: "other-client", appUserId: "app" })).toBe(true);
-  expect(isLinearAppRevoked(f.db, { oauthClientId: "client", appUserId: "other-app" })).toBe(false);
-  const auth = createLinearAuth({
+  expect(
+    await isLinearAppRevoked(sqliteDb(f.db), { oauthClientId: "other-client", appUserId: "app" }),
+  ).toBe(true);
+  expect(
+    await isLinearAppRevoked(sqliteDb(f.db), { oauthClientId: "client", appUserId: "other-app" }),
+  ).toBe(false);
+  const auth = await createLinearAuth({
     db: f.db,
     secretsDir: f.secretsDir,
     clientId: "client",
@@ -194,15 +198,27 @@ test("revocation for another client or app user does not block the configured in
 test("incomplete configured identity cannot bypass a possibly matching revocation", async () => {
   const f = await fixture();
   await f.revoke();
-  expect(isLinearAppRevoked(f.db, { oauthClientId: "client", appUserId: null })).toBe(true);
-  expect(isLinearAppRevoked(f.db, { oauthClientId: null, appUserId: "app" })).toBe(true);
-  expect(isLinearAppRevoked(f.db, { oauthClientId: null, appUserId: null })).toBe(true);
-  expect(isLinearAppRevoked(f.db, { oauthClientId: "client", appUserId: "not-yet-known" })).toBe(
+  expect(
+    await isLinearAppRevoked(sqliteDb(f.db), { oauthClientId: "client", appUserId: null }),
+  ).toBe(true);
+  expect(await isLinearAppRevoked(sqliteDb(f.db), { oauthClientId: null, appUserId: "app" })).toBe(
     true,
   );
-  expect(isLinearAppRevoked(f.db, { oauthClientId: "different-client", appUserId: null })).toBe(
-    false,
+  expect(await isLinearAppRevoked(sqliteDb(f.db), { oauthClientId: null, appUserId: null })).toBe(
+    true,
   );
+  expect(
+    await isLinearAppRevoked(sqliteDb(f.db), {
+      oauthClientId: "client",
+      appUserId: "not-yet-known",
+    }),
+  ).toBe(true);
+  expect(
+    await isLinearAppRevoked(sqliteDb(f.db), {
+      oauthClientId: "different-client",
+      appUserId: null,
+    }),
+  ).toBe(false);
 });
 
 test("the production startup guard uses persisted revocation when the configured app user is absent", async () => {

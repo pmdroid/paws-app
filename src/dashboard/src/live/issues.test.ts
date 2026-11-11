@@ -27,7 +27,7 @@ function database(): Database {
 }
 
 async function finish(db: Database, id: string, at: number): Promise<void> {
-  insertQueuedItem(db, { id, title: id, now: at - 1_000 });
+  await insertQueuedItem(db, { id, title: id, now: at - 1_000 });
   await applyWorkItemEvent(sqliteDb(db), id, "cancel", { now: at });
 }
 
@@ -42,7 +42,7 @@ function provider(db: Database, sessionIds?: readonly string[]) {
 describe("issue resources", () => {
   test("the list keeps every open issue and the 50 latest finished in a day; older issues open directly", async () => {
     const db = database();
-    insertQueuedItem(db, { id: "ENG-OPEN", title: "Open", now: NOW - 7 * STATUS_RECENT_MS });
+    await insertQueuedItem(db, { id: "ENG-OPEN", title: "Open", now: NOW - 7 * STATUS_RECENT_MS });
     await finish(db, "ENG-OLD", NOW - STATUS_RECENT_MS - 60_000);
     for (let index = 0; index < STATUS_RECENT_LIMIT + 5; index += 1)
       await finish(db, `ENG-${100 + index}`, NOW - 120_000 - index * 1_000);
@@ -60,9 +60,19 @@ describe("issue resources", () => {
 
   test("the list carries the snapshot's issue rows, runs and summaries and nothing else", async () => {
     const db = database();
-    insertQueuedItem(db, { id: "ENG-1", title: "Running", sessionKey: "s1", now: NOW - 9_000 });
+    await insertQueuedItem(db, {
+      id: "ENG-1",
+      title: "Running",
+      sessionKey: "s1",
+      now: NOW - 9_000,
+    });
     await beginImplementRun(sqliteDb(db), "ENG-1", NOW - 8_000);
-    insertQueuedItem(db, { id: "ENG-2", title: "Merging", sessionKey: "s1", now: NOW - 7_000 });
+    await insertQueuedItem(db, {
+      id: "ENG-2",
+      title: "Merging",
+      sessionKey: "s1",
+      now: NOW - 7_000,
+    });
     await beginImplementRun(sqliteDb(db), "ENG-2", NOW - 6_000);
     await enterMergeQueue(sqliteDb(db), "ENG-2", {
       phase: "merge_queue",
@@ -92,14 +102,19 @@ describe("issue resources", () => {
         "UPDATE work_item SET linear_identifier = 'PAS-367', linear_issue_id = 'lin' WHERE id = ?",
         [id],
       );
-    insertQueuedItem(db, { id: "OLD", title: "Keep runs", sessionKey: "earlier", now: 0 });
+    await insertQueuedItem(db, { id: "OLD", title: "Keep runs", sessionKey: "earlier", now: 0 });
     identify("OLD");
     await beginImplementRun(sqliteDb(db), "OLD", NOW - 7_200_000);
     db.run("UPDATE work_item SET state = 'cancelled' WHERE id = 'OLD'");
     db.run("UPDATE run SET status = 'ended', updated_at = ? WHERE item_id = 'OLD'", [
       NOW - 3_600_000,
     ]);
-    insertQueuedItem(db, { id: "NEW", title: "Keep runs", sessionKey: "current", now: NOW - 1 });
+    await insertQueuedItem(db, {
+      id: "NEW",
+      title: "Keep runs",
+      sessionKey: "current",
+      now: NOW - 1,
+    });
     identify("NEW");
     const live = provider(db);
     const parsed = parseIssueDetailResponse(

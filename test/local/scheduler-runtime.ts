@@ -89,7 +89,7 @@ export async function probeSchedulerRuntime(
   const jobs = new JobLoop(db, clock);
   const events: string[] = [];
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     clock,
@@ -149,7 +149,7 @@ export async function probeSchedulerRuntime(
   const defaults = openDatabase(join(root, "default.sqlite"));
   migrate(defaults);
   try {
-    insertQueuedItem(defaults, { id: "default", now: clock.now() });
+    await insertQueuedItem(defaults, { id: "default", now: clock.now() });
     await bindWorkItemRepository(sqliteDb(defaults), "default", repository);
     await sqliteDb(defaults).run((q) =>
       saveSchedulingContextSteps(q, {

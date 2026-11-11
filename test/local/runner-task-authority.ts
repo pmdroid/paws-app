@@ -264,7 +264,7 @@ export async function probeRunnerTaskAuthority(
     for (const purpose of ["answer", "artifact"] as const) {
       for (const withRepository of [false, true]) {
         const sessionId = `task-session-${++taskCount}`;
-        const item = insertQueuedItem(db, {
+        const item = await insertQueuedItem(db, {
           id: `task-item-${taskCount}`,
           now,
           sessionKey: sessionId,

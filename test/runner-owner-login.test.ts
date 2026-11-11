@@ -367,8 +367,8 @@ test("migration 091 drops member accounts and asks their runners to sign in agai
   expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
 });
 
-function busy(f: Awaited<ReturnType<typeof fixture>>, agent: string) {
-  insertQueuedItem(f.db, { id: `busy-item-${agent}`, now: 0 });
+async function busy(f: Awaited<ReturnType<typeof fixture>>, agent: string) {
+  await insertQueuedItem(f.db, { id: `busy-item-${agent}`, now: 0 });
   f.db.run(
     "INSERT INTO run(id,item_id,kind,agent,status,created_at,updated_at) VALUES(?,?,'implement',?,'active',0,0)",
     [`busy-run-${agent}`, `busy-item-${agent}`, agent],
@@ -389,7 +389,7 @@ function busy(f: Awaited<ReturnType<typeof fixture>>, agent: string) {
 for (const agent of ["claude", "grok"] as const) {
   test(`a sign-in to ${agent} starts while the runner runs a Claude task`, async () => {
     const f = await fixture();
-    busy(f, "claude");
+    await busy(f, "claude");
     const response = (await f.login.browser(
       new Request(
         `https://paws.example.invalid/api/runners/${f.runnerId}/accounts/${agent}/login`,
@@ -416,7 +416,7 @@ for (const agent of ["claude", "grok"] as const) {
 
 test("a runner with four sign-ins waiting refuses another, even while it works", async () => {
   const f = await fixture();
-  busy(f, "codex");
+  await busy(f, "codex");
   for (const agent of ["claude", "codex", "grok"] as const)
     await f.login.start(f.owner, f.runnerId, agent);
   // Sign-ins left waiting by the runner's earlier owners still count.
@@ -446,7 +446,7 @@ test("a sign-in that succeeds during a live turn of its agent clears auth_expire
     "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?,'claude',0,1)",
     [f.runnerId],
   );
-  const turn = busy(f, "claude");
+  const turn = await busy(f, "claude");
   const before = turn();
   const session = await f.login.start(f.owner, f.runnerId, "claude");
   expect(session.state).toBe("starting");

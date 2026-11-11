@@ -37,7 +37,7 @@ async function queue(...ids: string[]) {
   migrate(db);
   open.push(db);
   for (const id of ids) {
-    insertQueuedItem(db, { id, sessionKey: `ses-${id}`, now: 0 });
+    await insertQueuedItem(db, { id, sessionKey: `ses-${id}`, now: 0 });
     await beginImplementRun(sqliteDb(db), id, 1);
     await enterMergeQueue(sqliteDb(db), id, { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
   }

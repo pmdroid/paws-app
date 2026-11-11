@@ -10,7 +10,6 @@ import {
   fixRounds,
   fixRoundsSteps,
   countRebaseReturnsSteps,
-  listRebaseReturns,
   listRebaseReturnsSteps,
   getWorkItemSteps,
   recordReviewEscapeSteps,
@@ -20,6 +19,7 @@ import {
   type RestartHandoff,
   type Steps,
   type WorkItemRecord,
+  sqliteDb,
 } from "../db";
 import type { askSteps } from "../questions";
 import { rebaseBudget, type RebaseBudget, type RebaseConflict } from "./budget";
@@ -33,8 +33,8 @@ export type MergeRestart = (
   handoff: RestartHandoff,
 ) => Steps<{ id: number; armed: boolean } | null>;
 
-export function latestUserTurn(db: Database, itemId: string): number {
-  return latestHumanTurn(db, itemId);
+export async function latestUserTurn(db: Database, itemId: string): Promise<number> {
+  return await latestHumanTurn(sqliteDb(db), itemId);
 }
 
 export function rebaseReturns(store: Db, itemId: string): Promise<number> {
@@ -44,16 +44,6 @@ export function rebaseReturns(store: Db, itemId: string): Promise<number> {
 }
 
 /** Whether a conflict on this main may go back to the agent; see {@link rebaseBudget}. */
-export function rebaseBudgetFor(
-  db: Database,
-  itemId: string,
-  conflict: RebaseConflict,
-  now: number,
-): RebaseBudget {
-  return rebaseBudget(listRebaseReturns(db, itemId, latestUserTurn(db, itemId)), conflict, now);
-}
-
-/** {@link rebaseBudgetFor} as Steps, for a caller that runs them on the store. */
 export function* rebaseBudgetForSteps(
   q: Q,
   itemId: string,
@@ -70,8 +60,8 @@ const RESTART_REASONS = {
   "policy-invalid": "findings",
 } as const;
 
-export function ciFixes(db: Database, itemId: string): number {
-  return fixRounds(db, itemId);
+export async function ciFixes(db: Database, itemId: string): Promise<number> {
+  return await fixRounds(sqliteDb(db), itemId);
 }
 
 /** The pull request a conflict return is about, for the line in the item's Linear session. */

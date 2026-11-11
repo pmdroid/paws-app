@@ -32,13 +32,13 @@ async function fixture() {
   migrate(db);
   const clock = new FakeClock(1_000);
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     clock,
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     pawsRoot: root,
   });
-  insertQueuedItem(db, { id: "ENG-7", sessionKey: "ses_1", now: clock.now() });
+  await insertQueuedItem(db, { id: "ENG-7", sessionKey: "ses_1", now: clock.now() });
   await beginImplementRun(sqliteDb(db), "ENG-7", clock.now());
   await applyWorkItemEvent(sqliteDb(db), "ENG-7", "turn_ended");
   await applyWorkItemEvent(sqliteDb(db), "ENG-7", "closeout_accepted");
@@ -70,7 +70,7 @@ async function fixture() {
   delivery.setHandler(async (row) => {
     const failure = failures.shift();
     if (failure) throw failure;
-    await deliverLinearOutbox(row, tracker, async () => {}, undefined, db);
+    await deliverLinearOutbox(row, tracker, async () => {}, undefined, sqliteDb(db));
   });
   const caps = orchestrator["orderCapabilities"]("ENG-7");
   return {

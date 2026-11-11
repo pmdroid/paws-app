@@ -20,9 +20,7 @@ import {
   saveRunResult,
   applyLinearCommand,
   applyWorkItemEvent,
-  immediate,
   sqliteDb,
-  settled,
   applyLinearCommandSteps,
 } from "../../src/db";
 import { closeStoppedPull, createFetchGitHubClient } from "../../src/github";
@@ -109,7 +107,7 @@ export async function probePublicationStop(
   const create = (scheduling?: OrchestratorOptions["scheduling"]) => {
     const jobs = new JobLoop(db, clock);
     const orchestrator = new Orchestrator({
-      db,
+      store: sqliteDb(db),
       jobs,
       outbox: new OutboxDispatcher(db, clock),
       clock,
@@ -162,18 +160,14 @@ export async function probePublicationStop(
       jobKey: "old-merge",
       now: clock.now(),
     });
-    assert.throws(() =>
-      immediate(db, () => {
-        settled(
-          sqliteDb(db).transaction((q) =>
-            applyLinearCommandSteps(q, {
-              type: "stop",
-              source: "dashboard",
-              itemId: "item",
-              requestedAt: clock.now(),
-            }),
-          ),
-        );
+    await assert.rejects(
+      sqliteDb(db).transaction(function* (q) {
+        yield* applyLinearCommandSteps(q, {
+          type: "stop",
+          source: "dashboard",
+          itemId: "item",
+          requestedAt: clock.now(),
+        });
         throw new Error("Rollback Stop");
       }),
     );

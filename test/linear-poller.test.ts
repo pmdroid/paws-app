@@ -247,7 +247,7 @@ describe("linear intake poll", () => {
     async (withTask) => {
       const db = tempDb();
       const store = createInboxStore(sqliteDb(db));
-      if (withTask) insertQueuedItem(db, { sessionKey: "session-reused" });
+      if (withTask) await insertQueuedItem(db, { sessionKey: "session-reused" });
       const created: string[] = [];
       let polls = 0;
       const { client } = scripted(() => {
@@ -291,7 +291,7 @@ describe("linear intake poll", () => {
     async (withTask) => {
       const db = tempDb();
       const store = createInboxStore(sqliteDb(db));
-      if (withTask) insertQueuedItem(db, { sessionKey: "session-again" });
+      if (withTask) await insertQueuedItem(db, { sessionKey: "session-again" });
       const created: string[] = [];
       const { client } = scripted(() => ({
         ...page([]),
@@ -398,7 +398,7 @@ describe("linear intake poll", () => {
     mkdirSync(secrets, { recursive: true });
     const db = tempDb();
     const queries: string[] = [];
-    const linear = openLinear({
+    const linear = await openLinear({
       db,
       store: sqliteDb(db),
       secretsDir: secrets,
@@ -1046,7 +1046,7 @@ function emptyRelations(): Record<string, unknown> {
 }
 
 const AUTH: LinearAuth = {
-  hasToken: () => true,
+  hasToken: async () => true,
   ensureFresh: async () => "token",
   forceRefresh: async () => "token",
 };
@@ -1196,7 +1196,7 @@ test("Linear runtime stop joins interrupted events and rejects new handlers befo
   const db = tempDb();
   const ready = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
-  const linear = openLinear({
+  const linear = await openLinear({
     db,
     store: sqliteDb(db),
     secretsDir: join(tempHome(), "secrets"),

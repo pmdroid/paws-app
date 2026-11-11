@@ -42,7 +42,11 @@ test("question handoff preserves selection labels and their values for freeform 
 
 async function setup(tracker: TrackerAdapter | null = null) {
   const db = tempDb();
-  const item = insertQueuedItem(db, { id: "ENG-2", sessionKey: "ses_1", title: "Export rows" });
+  const item = await insertQueuedItem(db, {
+    id: "ENG-2",
+    sessionKey: "ses_1",
+    title: "Export rows",
+  });
   await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
   await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
   const question = await openQuestion(sqliteDb(db), {
@@ -54,7 +58,7 @@ async function setup(tracker: TrackerAdapter | null = null) {
   const clock = new FakeClock(NOW + 1_000);
   const outbox = new OutboxDispatcher(db, clock);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs: new JobLoop(db, clock),
     outbox,
     pawsRoot: "/tmp/paws-question-lifecycle",
@@ -291,7 +295,7 @@ test("a Linear Stop pauses the item with its question open, and a reply restarts
 test("polling keeps activity creation and human identity distinct from viewer and update time", async () => {
   const client = createLinearClient({
     auth: {
-      hasToken: () => true,
+      hasToken: async () => true,
       ensureFresh: async () => "fixture-token",
       forceRefresh: async () => "fixture-token",
     },

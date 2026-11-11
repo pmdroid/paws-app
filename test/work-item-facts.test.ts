@@ -10,9 +10,9 @@ import { tempDb } from "./helpers";
 
 test("lists each item's owner, Linear project, and creation time", async () => {
   const db = tempDb();
-  const older = insertQueuedItem(db, { id: "older", title: "Older", now: 10 });
-  const newer = insertQueuedItem(db, { id: "newer", title: "Newer", now: 20 });
-  const solo = insertQueuedItem(db, { id: "solo", title: "Solo", now: 30 });
+  const older = await insertQueuedItem(db, { id: "older", title: "Older", now: 10 });
+  const newer = await insertQueuedItem(db, { id: "newer", title: "Newer", now: 20 });
+  const solo = await insertQueuedItem(db, { id: "solo", title: "Solo", now: 30 });
   db.run(
     "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('ws','org','Workspace',0)",
   );

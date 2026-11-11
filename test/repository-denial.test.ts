@@ -56,7 +56,7 @@ async function seed() {
     })),
   );
   const item = async (id = "PAS-677", team: string | null = "Pascal"): Promise<WorkItemRecord> => {
-    insertQueuedItem(db, { id, sessionKey: `session-${id}`, title: id });
+    await insertQueuedItem(db, { id, sessionKey: `session-${id}`, title: id });
     await beginImplementRun(sqliteDb(db), id, 1000);
     if (team !== null)
       db.run(

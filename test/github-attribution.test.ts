@@ -422,14 +422,14 @@ test("the Settings link returns to Settings, and a forged return_path never leav
       "",
     ]) {
       expect(attributionReturnPath(forged)).toBe("/dashboard/settings/account");
-      expect(() =>
-        beginGitHubAttribution(f.db, binding(f), {
+      await expect(
+        beginGitHubAttribution(sqliteDb(f.db), binding(f), {
           stateHash: "s".repeat(43),
           browserHash: "b".repeat(43),
           now: f.now,
           returnPath: forged,
         }),
-      ).toThrow();
+      ).rejects.toThrow();
     }
     expect(attributionReturnPath(onboarding)).toBe(onboarding);
     expect(attributionReturnPath("/dashboard/settings/account")).toBe(
@@ -438,7 +438,7 @@ test("the Settings link returns to Settings, and a forged return_path never leav
     expect(attributionReturnPath(null)).toBe("/dashboard/settings/account");
 
     // SQLite refuses a forged path written past the helpers, and a damaged row reads as Settings.
-    beginGitHubAttribution(f.db, binding(f), {
+    await beginGitHubAttribution(sqliteDb(f.db), binding(f), {
       stateHash: "s".repeat(43),
       browserHash: "b".repeat(43),
       now: f.now,

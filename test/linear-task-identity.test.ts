@@ -219,7 +219,7 @@ test("prompt before hydration persists, ordered duplicates apply once and Stop f
 test("a second session for an active issue is rejected and a prompt still hydrates after that item is cancelled", async () => {
   const db = legacyTempDb();
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     tracker: createFakeTracker([snapshot]),
     jobs: new JobLoop(db, systemClock),
     outbox: new OutboxDispatcher(db, systemClock),
@@ -283,7 +283,7 @@ test("a second session for an active issue is rejected and a prompt still hydrat
 test("a redirect cancels the previous item before the replacement is inserted", async () => {
   const db = legacyTempDb();
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     tracker: createFakeTracker([snapshot]),
     jobs: new JobLoop(db, systemClock),
     outbox: new OutboxDispatcher(db, systemClock),
@@ -348,7 +348,7 @@ test("intake sets the session owner's workspace user on each new solo item and l
     ],
   };
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     tracker: createFakeTracker([
       parent,
       {

@@ -92,7 +92,7 @@ async function setup(options: { version?: string; conversations?: number } = {})
     wait: () => ({ quietMs: 0, maxMs: 0 }),
   };
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     clock,
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
@@ -108,7 +108,7 @@ async function setup(options: { version?: string; conversations?: number } = {})
 
   async function item(id: string, state: "merge_queue" | "running" | "queued" = "merge_queue") {
     const session = `ses-${id}`;
-    insertQueuedItem(db, { id, now: T0, sessionKey: session });
+    await insertQueuedItem(db, { id, now: T0, sessionKey: session });
     await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org-acme",
       oauthClientId: "app",

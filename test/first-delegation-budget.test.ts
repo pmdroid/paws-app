@@ -310,7 +310,7 @@ async function firstDelegation(
   const github = createFakeGitHub();
   let gate: LinearTaskAccess | undefined;
   let orchestrator: ReturnType<typeof attachOrchestrator> | undefined;
-  const linear = openLinear({
+  const linear = await openLinear({
     db,
     store: sqliteDb(db),
     secretsDir: path.join(layout.pawsRoot, "secrets"),
@@ -390,7 +390,7 @@ async function firstDelegation(
     };
   };
   orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,

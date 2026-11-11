@@ -25,10 +25,10 @@ import { tempDb, tempHome } from "./helpers";
 
 const PNG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
-function setup() {
+async function setup() {
   const db = tempDb();
   const home = tempHome();
-  const item = insertQueuedItem(db, { id: "item", sessionKey: "session" });
+  const item = await insertQueuedItem(db, { id: "item", sessionKey: "session" });
   db.run("UPDATE work_item SET state='verifying' WHERE id='item'");
   const tracker = createFakeTracker();
   const store = createEvidenceStore({ store: sqliteDb(db), root: join(home, "evidence") });
@@ -42,7 +42,7 @@ function setup() {
   });
   const dispatcher = new OutboxDispatcher(db, new FakeClock(Date.now()));
   dispatcher.setHandler((row, context) =>
-    deliverLinearOutbox(row, tracker, async () => {}, context, db),
+    deliverLinearOutbox(row, tracker, async () => {}, context, sqliteDb(db)),
   );
   const flush = async () => {
     while ((await dispatcher.tick()).length) await dispatcher.idle();
@@ -86,7 +86,7 @@ function setup() {
 }
 
 test("16 screenshots of a check post one thought with the count and the link, once per head", async () => {
-  const f = setup();
+  const f = await setup();
   try {
     const head = "a".repeat(40);
     for (let index = 0; index < 16; index++) await f.publish(index, head);
@@ -121,7 +121,7 @@ test("16 screenshots of a check post one thought with the count and the link, on
 });
 
 test("after the PR response the issue gets one evidence card, and a new head updates it", async () => {
-  const f = setup();
+  const f = await setup();
   try {
     await enqueueOutbox(sqliteDb(f.db), {
       target: "linear",
@@ -172,7 +172,7 @@ test("a closed response fences later activities even without a PR response in it
     const tracker = createFakeTracker();
     const dispatcher = new OutboxDispatcher(db, new FakeClock(Date.now()));
     dispatcher.setHandler((row, context) =>
-      deliverLinearOutbox(row, tracker, async () => {}, context, db),
+      deliverLinearOutbox(row, tracker, async () => {}, context, sqliteDb(db)),
     );
     for (const [key, kind] of [
       ["closed:item:0", "response"],

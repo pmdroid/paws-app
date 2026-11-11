@@ -145,11 +145,11 @@ test("a rebase return keeps the main commit, files and time it conflicted on", a
       candidate: null,
       reason: "linear",
     });
-    expect(listRebaseReturns(db, "item", 0)).toEqual([
+    expect(await listRebaseReturns(sqliteDb(db), "item", 0)).toEqual([
       { jobId: first, reason: "merge", base: "abc1234", files: ["src/index.ts"], recordedAt: 10 },
       { jobId: second, reason: "linear", base: null, files: null, recordedAt: null },
     ]);
-    expect(listRebaseReturns(db, "item", second)).toHaveLength(1);
+    expect(await listRebaseReturns(sqliteDb(db), "item", second)).toHaveLength(1);
   } finally {
     db.close();
   }

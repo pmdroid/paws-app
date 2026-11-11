@@ -457,7 +457,7 @@ describe("closeout progress backend", () => {
     });
     const db = openDatabase(":memory:");
     migrate(db);
-    insertQueuedItem(db, { id: "item-1", now: 1 });
+    await insertQueuedItem(db, { id: "item-1", now: 1 });
     await beginImplementRun(sqliteDb(db), "item-1", 1, {
       phase: "running",
       baseSha: repo.head,
@@ -633,7 +633,7 @@ describe("closeout progress backend", () => {
     const dbPath = path.join(repo.root, "state.sqlite");
     const db = openDatabase(dbPath);
     migrate(db);
-    insertQueuedItem(db, { id: "item-1", now: 1 });
+    await insertQueuedItem(db, { id: "item-1", now: 1 });
     await beginImplementRun(sqliteDb(db), "item-1", 1, {
       phase: "running",
       baseSha: repo.head,

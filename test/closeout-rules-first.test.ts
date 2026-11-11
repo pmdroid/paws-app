@@ -106,7 +106,7 @@ test("a checks run whose rule breaks asks the rule question before the checks, a
   };
   const github = createFakeGitHub();
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,

@@ -60,8 +60,7 @@ test("the orchestrator holds the store it is given", () => {
   const store = sqliteDb(db);
   const jobs = new JobLoop(db, systemClock, { store });
   const outbox = new OutboxDispatcher(db, systemClock, { store });
-  expect(attachOrchestrator({ db, store, jobs, outbox, pawsRoot: root }).store).toBe(store);
-  expect(attachOrchestrator({ db, jobs, outbox, pawsRoot: root }).store).toBe(store);
+  expect(attachOrchestrator({ store, jobs, outbox, pawsRoot: root }).store).toBe(store);
   db.close();
 });
 

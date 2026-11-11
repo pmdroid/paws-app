@@ -70,7 +70,7 @@ export function linearTokenPath(secretsDir: string): string {
 /**
  * Build the inbox and tracker. Call `start` to poll Linear.
  */
-export function openLinear(options: {
+export async function openLinear(options: {
   db: Database;
   store: Db;
   secretsDir: string;
@@ -88,7 +88,7 @@ export function openLinear(options: {
   countItemRequest?: (itemId: string, caller: string) => void | Promise<void>;
   budget?: LinearSharedBudget;
   fetch?: FetchLike;
-}): OpenLinear {
+}): Promise<OpenLinear> {
   const stopping = new AbortController();
   const signal = options.signal
     ? AbortSignal.any([options.signal, stopping.signal])
@@ -96,7 +96,7 @@ export function openLinear(options: {
   const settings = readLinearEnv(options.env);
   const store = createInboxStore(options.store);
   const accessAllowed = options.isAuthorized ?? (async () => true);
-  const auth = createLinearAuth({
+  const auth = await createLinearAuth({
     db: options.db,
     secretsDir: options.secretsDir,
     clientId: settings.clientId,
@@ -110,7 +110,7 @@ export function openLinear(options: {
     countItem: options.countItemRequest,
     shared: options.budget,
   });
-  const client = auth.hasToken()
+  const client = (await auth.hasToken())
     ? createLinearClient({ auth, fetch: options.fetch, ledger })
     : null;
   const starts: IssueStartReads = new Map();
@@ -183,7 +183,7 @@ export function openLinear(options: {
 
   async function startRunning(): Promise<LinearRunning> {
     const poller = (await accessAllowed())
-      ? startPoller({
+      ? await startPoller({
           auth,
           onEvent,
           intake: intake?.queue,
@@ -219,7 +219,7 @@ export function openLinear(options: {
   }
 }
 
-function startPoller(options: {
+async function startPoller(options: {
   auth: LinearAuth;
   onEvent: ((event: AcceptedLinearEvent) => Promise<void | boolean>) | undefined;
   intake: IntakeQueue | undefined;
@@ -230,8 +230,8 @@ function startPoller(options: {
   teamId: string | null;
   appUserId: string | null;
   submitCommand: (command: LinearCommand) => Promise<void>;
-}): CatchUpPoller | null {
-  if (!options.auth.hasToken() || options.onEvent === undefined) return null;
+}): Promise<CatchUpPoller | null> {
+  if (!(await options.auth.hasToken()) || options.onEvent === undefined) return null;
   const client = createLinearClient({
     auth: options.auth,
     fetch: options.fetchImpl,

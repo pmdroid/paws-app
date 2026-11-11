@@ -108,7 +108,7 @@ test("the stopped and closed responses carry the open findings of the last publi
       ["stopped", undefined],
       ["closed", "Closed: the issue was canceled in Linear."],
     ] as const) {
-      insertQueuedItem(db, { id, sessionKey: `session-${id}`, now: 1 });
+      await insertQueuedItem(db, { id, sessionKey: `session-${id}`, now: 1 });
       await saveOpenFindings(sqliteDb(db), {
         itemId: id,
         head: "a".repeat(40),

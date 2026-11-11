@@ -92,7 +92,7 @@ test("Stop rejects delayed prior turns and a later turn starts a new generation"
 test("discarding rejected replies is session-scoped, idempotent and preserves applied history", async () => {
   const db = tempDb();
   try {
-    const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
+    const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
     for (const key of ["applied", "rejected", "pending"]) await turn(db, key);
     await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId);
     await activateLinearItem(sqliteDb(db), "session", item.id);

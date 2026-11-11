@@ -14,7 +14,7 @@ const previous = {
   actor: "app" as const,
   scope: "read,write",
 };
-storeLinearToken(home, previous);
+await storeLinearToken(home, previous);
 const nativeFetch = fetch;
 const started = Promise.withResolvers<void>();
 const released = Promise.withResolvers<Response>();

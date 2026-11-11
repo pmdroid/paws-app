@@ -25,7 +25,7 @@ test("only a newer accepted turn can change a non-code task outcome and code sta
   const db = tempDb();
   try {
     await ensureLinearSession(sqliteDb(db), { sessionId: "session" });
-    const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
+    const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
     await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
     await expect(selectTaskModeForTurn(sqliteDb(db), item.id, "answer", 1)).rejects.toThrow(
       "changed",
@@ -62,7 +62,7 @@ test("artifact completion requires uploaded deliverables and survives database r
   const file = join(tempHome(), "paws.db");
   const db = openDatabase(file);
   migrate(db);
-  const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
+  const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
   const run = (await beginImplementRun(sqliteDb(db), item.id, 1)).run;
   await saveTaskMode(sqliteDb(db), item.id, "artifact");
   await expect(completeArtifactTask(sqliteDb(db), item.id, "Done")).rejects.toThrow(

@@ -36,14 +36,14 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
   const db = openDatabase(":memory:");
   try {
     migrate(db);
-    const waiting = insertQueuedItem(db, {
+    const waiting = await insertQueuedItem(db, {
       id: "01WAITINGITEM",
       title: "Export rows",
       sessionKey: "ses_1",
       branchName: "paws/ENG-2",
       now: NOW,
     });
-    const merging = insertQueuedItem(db, {
+    const merging = await insertQueuedItem(db, {
       id: "01MERGINGITEM",
       title: "Export the header",
       sessionKey: "ses_1",
@@ -66,8 +66,8 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
       id: "linear-exports",
       name: "Exports",
     });
-    saveTaskBlocks(
-      db,
+    await saveTaskBlocks(
+      sqliteDb(db),
       [merging.linearIssueId],
       [
         {
@@ -252,8 +252,8 @@ test("each task on /api/issues carries the Linear requests it made", async () =>
   const db = openDatabase(":memory:");
   try {
     migrate(db);
-    insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: NOW });
-    insertQueuedItem(db, { id: "item-2", sessionKey: "ses_2", now: NOW });
+    await insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: NOW });
+    await insertQueuedItem(db, { id: "item-2", sessionKey: "ses_2", now: NOW });
     for (let request = 0; request < 3; request++)
       await countLinearRequest(sqliteDb(db), "item-1", "outbox");
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
@@ -302,7 +302,11 @@ test("a merge-queue item whose re-verify waits for a runner slot says it is next
   const db = openDatabase(":memory:");
   try {
     migrate(db);
-    const merging = insertQueuedItem(db, { id: "01MERGINGITEM", sessionKey: "ses_1", now: NOW });
+    const merging = await insertQueuedItem(db, {
+      id: "01MERGINGITEM",
+      sessionKey: "ses_1",
+      now: NOW,
+    });
     db.run("UPDATE work_item SET linear_identifier = ? WHERE id = ?", ["ENG-3", merging.id]);
     await beginImplementRun(sqliteDb(db), merging.id, NOW);
     await enterMergeQueue(sqliteDb(db), merging.id, {

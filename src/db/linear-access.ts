@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, inArray, isNotNull, isNull, lt, sql, type SQL } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { ensureLinearSessionSteps } from "./linear-sessions";
 
 export type LinearInstallationScope = {
@@ -471,8 +470,8 @@ export function* isLinearAppRevokedSteps(q: Q, input: LinearAppIdentity): Steps<
   return row !== undefined;
 }
 
-export function isLinearAppRevoked(db: Database, input: LinearAppIdentity): boolean {
-  return settled(sqliteDb(db).run((q) => isLinearAppRevokedSteps(q, input)));
+export async function isLinearAppRevoked(store: Db, input: LinearAppIdentity): Promise<boolean> {
+  return store.run((q) => isLinearAppRevokedSteps(q, input));
 }
 
 function* unrestoredSteps(q: Q, organizationId: string, oauthClientId: string): Steps<boolean> {

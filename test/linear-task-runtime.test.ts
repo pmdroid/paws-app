@@ -189,7 +189,7 @@ function setup(
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -544,7 +544,7 @@ test("clarified parent code requests recover the ordered child queue and every c
     reopened = openDatabase(databasePath);
     migrate(reopened);
     const recovery = attachOrchestrator({
-      db: reopened,
+      store: sqliteDb(reopened),
       admission: workspaceAdmission(reopened),
       jobs: new JobLoop(reopened, systemClock),
       outbox: new OutboxDispatcher(reopened, systemClock),

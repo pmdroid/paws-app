@@ -18,7 +18,7 @@ import { restartForPushConflict } from "./push-conflict";
 async function runningItem() {
   const db = openDatabase(":memory:");
   migrate(db);
-  const item = insertQueuedItem(db, { id: "pas-886", sessionKey: "ses", now: 1_000 });
+  const item = await insertQueuedItem(db, { id: "pas-886", sessionKey: "ses", now: 1_000 });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, 1_000);
   return { db, itemId: item.id, runId: run.id };
 }

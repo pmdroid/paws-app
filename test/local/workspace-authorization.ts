@@ -107,7 +107,7 @@ export async function probeWorkspaceAuthorization(
     ["other-installation", "org", "team-a"],
     ["unknown", null, null],
   ]) {
-    const item = insertQueuedItem(db, {
+    const item = await insertQueuedItem(db, {
       id: id!,
       sessionKey: `session-${id}`,
       title: `${id} private content`,
