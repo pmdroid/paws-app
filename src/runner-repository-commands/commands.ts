@@ -2,20 +2,19 @@ import type { Database } from "bun:sqlite";
 import {
   cancelOpenRepositoryCommandSteps,
   completeRepositoryCommandSteps,
-  expireDueRepositoryCommands,
   expireDueRepositoryCommandsSteps,
   expireRepositoryCommandSteps,
   getWorkItemRepositorySteps,
   getWorkItemSteps,
-  immediate,
   insertRepositoryCommandSteps,
-  markRepositoryCommandDelivered,
-  pendingRepositoryCommands,
-  repositoryCommandReachedRunner,
+  markRepositoryCommandDeliveredSteps,
+  pendingRepositoryCommandsSteps,
+  repositoryCommandReachedRunnerSteps,
   repositoryCommandRowSteps,
   repositoryCommandSettlementSteps,
   runnerHostVersionSteps,
   setRepositoryCommandGrantSteps,
+  settled as settledValue,
   sqliteDb,
   usableRunnerSteps,
   type Db,
@@ -86,7 +85,8 @@ function parse(payload: string): RunnerRepositoryCommand {
 }
 
 function expire(db: Database, at: number) {
-  for (const id of expireDueRepositoryCommands(db, at)) settle(db, id, { outcome: "expired" });
+  for (const id of settledValue(sqliteDb(db).run((q) => expireDueRepositoryCommandsSteps(q, at))))
+    settle(db, id, { outcome: "expired" });
 }
 
 async function expireDue(store: Db, db: Database, at: number) {
@@ -222,11 +222,13 @@ export function deliverRepositoryCommands(
 ): RunnerRepositoryCommand[] {
   if (limit <= 0) return [];
   expire(db, at);
-  return immediate(db, () => {
-    const rows = pendingRepositoryCommands(db, runnerId, at, limit);
-    for (const row of rows) markRepositoryCommandDelivered(db, row.id, at);
-    return rows.map((row) => parse(row.payload));
-  });
+  return settledValue(
+    sqliteDb(db).transaction(function* (q) {
+      const rows = yield* pendingRepositoryCommandsSteps(q, runnerId, at, limit);
+      for (const row of rows) yield* markRepositoryCommandDeliveredSteps(q, row.id, at);
+      return rows.map((row) => parse(row.payload));
+    }),
+  );
 }
 
 function* currentSteps(q: Q, runnerId: string, commandId: string, at: number) {
@@ -304,8 +306,8 @@ export async function recordRepositoryCommandResult(
   return { duplicate: !recorded };
 }
 
-export function repositoryCommandDeliveredTo(db: Database, runnerId: string, id: string) {
-  return repositoryCommandReachedRunner(db, id, runnerId);
+export function repositoryCommandDeliveredToSteps(q: Q, runnerId: string, id: string) {
+  return repositoryCommandReachedRunnerSteps(q, id, runnerId);
 }
 
 export async function repositoryCommandState(db: Database, id: string, at = Date.now()) {

@@ -101,12 +101,17 @@ import {
   withoutJournalTime,
 } from "../runner-protocol";
 import { workspaceSecret, workspaceTokenHash } from "../workspace";
-import { findOpenQuestion } from "../questions";
+import { findOpenQuestionSteps } from "../questions";
 import {
   deliverRepositoryCommands,
-  repositoryCommandDeliveredTo,
+  repositoryCommandDeliveredToSteps,
 } from "../runner-repository-commands";
-import { openRunnerEvent, payloadSha256, sealRunnerEvent, type StoredRunnerEvent } from "./events";
+import {
+  openRunnerEventSteps,
+  payloadSha256,
+  sealRunnerEvent,
+  type StoredRunnerEvent,
+} from "./events";
 
 export { RunnerEventSchema, type RunnerEvent } from "../runner-protocol";
 type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" | "task" }>;
@@ -188,7 +193,7 @@ export function createRunnerWork(options: {
     if (!sessionId || (yield* getLinearSessionAccessSteps(q, sessionId)) !== "allowed")
       throw new Error("Linear task access is unavailable.");
     if (item.state === "awaiting_input" && !allowPendingQuestion && !checkpointing) {
-      const question = findOpenQuestion(db, sessionId);
+      const question = yield* findOpenQuestionSteps(q, sessionId);
       if (question?.itemId !== item.id || question.runId !== runId)
         throw new Error("Run has no matching open question.");
     }
@@ -419,6 +424,76 @@ export function createRunnerWork(options: {
     });
     return envelope;
   }
+  function parseEnqueued(input: RunnerCommand) {
+    const command = RunnerCommandSchema.parse(input);
+    if (command.type === "run" || command.type === "review" || command.type === "task")
+      throw new Error("Use work assignment for run commands.");
+    if (command.type === "helper") throw new Error("Use session assignment for helper commands.");
+    if (command.type === "rebase")
+      throw new Error("Use enqueueRepositoryCommand for repository commands.");
+    return command;
+  }
+  function* enqueuedSteps(q: Q, command: ReturnType<typeof parseEnqueued>) {
+    const identity = yield* runnerSteps(q, command.runnerId);
+    if (
+      identity.workspaceId !== command.workspaceId ||
+      command.issuedAt > now() ||
+      command.expiresAt <= now()
+    )
+      throw new Error("Command scope or lifetime is invalid.");
+    if (command.type === "cancel") {
+      const work = yield* runnerWorkAssignmentSteps(q, command.runId);
+      if (!work || work.runnerId !== command.runnerId || work.generation !== command.generation)
+        throw new Error("Cancellation assignment changed.");
+      yield* endRunnerWorkSteps(q, work.runId, work.generation, now());
+      yield* deleteRunnerWorkGrantsSteps(q, work.runId);
+    }
+    if (command.type === "handover" || command.type === "checkpoint") {
+      const work = yield* runnerWorkAssignmentSteps(q, command.runId);
+      if (
+        !work ||
+        work.runnerId !== command.runnerId ||
+        work.generation !== command.generation ||
+        work.endedAt !== null ||
+        (yield* workCommandSteps(q, work)).type !== "run"
+      )
+        throw new Error(
+          command.type === "handover"
+            ? "Handover assignment changed."
+            : "Checkpoint assignment changed.",
+        );
+    }
+    return yield* queueSteps(q, command);
+  }
+  function* currentSteps(q: Q, runId: string, generation: number) {
+    const assigned = yield* runnerWorkAssignmentSteps(q, runId);
+    if (!assigned) throw new RunnerWorkFencedError("Runner work is unavailable.");
+    const current = yield* liveSteps(
+      q,
+      assigned.runnerId,
+      runId,
+      generation,
+      now(),
+      false,
+      yield* acceptedSteps(q, assigned),
+    );
+    return { assignment: current, command: yield* workCommandSteps(q, current) };
+  }
+  function* authorizeSteps(
+    q: Q,
+    input: { runnerId: string; runId: string; generation: number; token: string },
+  ) {
+    const work = yield* authorizedSteps(q, input);
+    const command = yield* workCommandSteps(q, work);
+    return {
+      command,
+      branch:
+        command.type === "task" ? null : (yield* getWorkItemSteps(q, command.itemId))!.branchName,
+    };
+  }
+  function openEventSteps(q: Q, row: StoredRunnerEvent): Steps<RunnerEvent> {
+    return openRunnerEventSteps(q, eventKey, row);
+  }
   return {
     supportsAgent(runnerId: string, agent: string) {
       return read((q) => supportsAgentSteps(q, runnerId, agent));
@@ -433,21 +508,9 @@ export function createRunnerWork(options: {
       return read((q) => responseTaskSteps(q, runId, workspaceId, false, userId));
     },
     current(runId: string, generation: number) {
-      return read(function* (q) {
-        const assigned = yield* runnerWorkAssignmentSteps(q, runId);
-        if (!assigned) throw new RunnerWorkFencedError("Runner work is unavailable.");
-        const current = yield* liveSteps(
-          q,
-          assigned.runnerId,
-          runId,
-          generation,
-          now(),
-          false,
-          yield* acceptedSteps(q, assigned),
-        );
-        return { assignment: current, command: yield* workCommandSteps(q, current) };
-      });
+      return read((q) => currentSteps(q, runId, generation));
     },
+    currentSteps,
     assign(input: WorkCommand) {
       const command = RunnerCommandSchema.parse(input);
       if (command.type !== "run" && command.type !== "review" && command.type !== "task")
@@ -545,46 +608,11 @@ export function createRunnerWork(options: {
       });
     },
     enqueue(input: RunnerCommand) {
-      const command = RunnerCommandSchema.parse(input);
-      if (command.type === "run" || command.type === "review" || command.type === "task")
-        throw new Error("Use work assignment for run commands.");
-      if (command.type === "helper") throw new Error("Use session assignment for helper commands.");
-      if (command.type === "rebase")
-        throw new Error("Use enqueueRepositoryCommand for repository commands.");
-      return transaction(function* (q) {
-        const identity = yield* runnerSteps(q, command.runnerId);
-        if (
-          identity.workspaceId !== command.workspaceId ||
-          command.issuedAt > now() ||
-          command.expiresAt <= now()
-        )
-          throw new Error("Command scope or lifetime is invalid.");
-        if (command.type === "cancel") {
-          const work = yield* runnerWorkAssignmentSteps(q, command.runId);
-          if (!work || work.runnerId !== command.runnerId || work.generation !== command.generation)
-            throw new Error("Cancellation assignment changed.");
-          yield* endRunnerWorkSteps(q, work.runId, work.generation, now());
-          yield* deleteRunnerWorkGrantsSteps(q, work.runId);
-        }
-        // A handover keeps the work live: the runner still publishes its WIP commit and result.
-        // So does a checkpoint: the runner publishes the WIP commit while the agent goes on.
-        if (command.type === "handover" || command.type === "checkpoint") {
-          const work = yield* runnerWorkAssignmentSteps(q, command.runId);
-          if (
-            !work ||
-            work.runnerId !== command.runnerId ||
-            work.generation !== command.generation ||
-            work.endedAt !== null ||
-            (yield* workCommandSteps(q, work)).type !== "run"
-          )
-            throw new Error(
-              command.type === "handover"
-                ? "Handover assignment changed."
-                : "Checkpoint assignment changed.",
-            );
-        }
-        return yield* queueSteps(q, command);
-      });
+      const command = parseEnqueued(input);
+      return transaction((q) => enqueuedSteps(q, command));
+    },
+    enqueueSteps(q: Q, input: RunnerCommand) {
+      return enqueuedSteps(q, parseEnqueued(input));
     },
     commands(runnerId: string): SignedRunnerCommand[] {
       const result = read(function* (q) {
@@ -636,7 +664,7 @@ export function createRunnerWork(options: {
       read((q) => runnerSteps(q, runnerId));
       if (
         read((q) => acknowledgeRunnerCommandSteps(q, runnerId, commandId, now())) !== 1 &&
-        !repositoryCommandDeliveredTo(db, runnerId, commandId)
+        !read((q) => repositoryCommandDeliveredToSteps(q, runnerId, commandId))
       )
         throw new Error("Runner command is unknown.");
     },
@@ -867,21 +895,13 @@ export function createRunnerWork(options: {
       });
     },
     openEvent(row: StoredRunnerEvent): RunnerEvent {
-      return openRunnerEvent(db, eventKey, row);
+      return read((q) => openEventSteps(q, row));
     },
+    openEventSteps,
     authorize(input: { runnerId: string; runId: string; generation: number; token: string }) {
-      return read(function* (q) {
-        const work = yield* authorizedSteps(q, input);
-        const command = yield* workCommandSteps(q, work);
-        return {
-          command,
-          branch:
-            command.type === "task"
-              ? null
-              : (yield* getWorkItemSteps(q, command.itemId))!.branchName,
-        };
-      });
+      return read((q) => authorizeSteps(q, input));
     },
+    authorizeSteps,
     async finish(runId: string, generation: number) {
       await store.transaction(function* (q) {
         if ((yield* finishRunnerWorkSteps(q, runId, generation, now())) !== 1)

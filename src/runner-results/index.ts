@@ -2,21 +2,24 @@ import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import {
-  immediate,
-  insertRunnerFollowUp,
-  insertRunnerQuestionAnswer,
-  insertRunnerResult,
-  itemRunnerFollowUpTarget,
-  recordRunnerAgentUsage,
-  runnerEventPage,
-  runnerFollowUpsAfter,
+  insertRunnerFollowUpSteps,
+  insertRunnerQuestionAnswerSteps,
+  insertRunnerResultSteps,
+  itemRunnerFollowUpTargetSteps,
+  recordRunnerAgentUsageSteps,
+  runnerEventPageSteps,
+  runnerFollowUpsAfterSteps,
   runnerLeaseCutoff,
-  runnerQuestionAnswersAfter,
-  runnerResultForCommand,
-  runnerResultMatches,
-  storedRunnerAnswer,
-  storedRunnerEvent,
-  unansweredRunnerQuestions,
+  runnerQuestionAnswersAfterSteps,
+  runnerResultForCommandSteps,
+  runnerResultMatchesSteps,
+  settled,
+  sqliteDb,
+  storedRunnerAnswerSteps,
+  storedRunnerEventSteps,
+  unansweredRunnerQuestionsSteps,
+  type Q,
+  type Steps,
 } from "../db";
 import {
   RUNNER_RESULT_BODY_LIMIT,
@@ -53,9 +56,12 @@ export function createRunnerResults(options: {
   now?: () => number;
 }) {
   const { db, work } = options;
+  const store = sqliteDb(db);
+  const transaction = <T>(body: (q: Q) => Steps<T>) => settled(store.transaction(body));
+  const read = <T>(body: (q: Q) => Steps<T>) => settled(store.run(body));
   const now = options.now ?? Date.now;
-  function current(runId: string, generation: number, commandId?: string) {
-    const { command } = work.current(runId, generation);
+  function* currentSteps(q: Q, runId: string, generation: number, commandId?: string) {
+    const { command } = yield* work.currentSteps(q, runId, generation);
     if (commandId !== undefined && command.id !== commandId)
       throw new RunnerWorkFencedError("Runner result belongs to fenced work.");
     return command;
@@ -69,8 +75,8 @@ export function createRunnerResults(options: {
       result: RunnerResult;
     }) {
       const result = RunnerResultSchema.parse(input.result);
-      return immediate(db, () => {
-        const { command } = work.authorize(input);
+      return transaction(function* (q) {
+        const { command } = yield* work.authorizeSteps(q, input);
         if (
           (command.type !== "run" && command.type !== "review" && command.type !== "task") ||
           result.commandId !== command.id ||
@@ -88,13 +94,13 @@ export function createRunnerResults(options: {
         )
           throw new Error("Runner result command binding is invalid.");
         const payload = JSON.stringify(result);
-        const existing = runnerResultMatches(db, input, payload);
+        const existing = yield* runnerResultMatchesSteps(q, input, payload);
         if (existing !== null) {
           if (!existing) throw new Error("Runner result is immutable.");
           return { duplicate: true };
         }
         const at = now();
-        insertRunnerResult(db, {
+        yield* insertRunnerResultSteps(q, {
           runId: input.runId,
           generation: input.generation,
           commandId: command.id,
@@ -102,7 +108,7 @@ export function createRunnerResults(options: {
           receivedAt: at,
         });
         if (result.agentLimits)
-          recordRunnerAgentUsage(db, {
+          yield* recordRunnerAgentUsageSteps(q, {
             runnerId: input.runnerId,
             agent: command.profile.agent,
             limits: result.agentLimits,
@@ -112,41 +118,47 @@ export function createRunnerResults(options: {
       });
     },
     read(runId: string, generation: number, commandId: string): RunnerResult | null {
-      current(runId, generation, commandId);
-      const payload = runnerResultForCommand(db, { runId, generation }, commandId);
+      const payload = read(function* (q) {
+        yield* currentSteps(q, runId, generation, commandId);
+        return yield* runnerResultForCommandSteps(q, { runId, generation }, commandId);
+      });
       return payload === null ? null : RunnerResultSchema.parse(JSON.parse(payload));
     },
     events(runId: string, generation: number, after: number) {
       integer.parse(generation);
       z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).parse(after);
-      current(runId, generation);
-      return runnerEventPage(db, { runId, generation }, after).map((row) => ({
-        sequence: row.sequence,
-        event: work.openEvent(row),
-      }));
+      return read(function* (q) {
+        yield* currentSteps(q, runId, generation);
+        const page = [];
+        for (const row of yield* runnerEventPageSteps(q, { runId, generation }, after))
+          page.push({ sequence: row.sequence, event: yield* work.openEventSteps(q, row) });
+        return page;
+      });
     },
     /** The stored answer to a runner event, or null before Paws answered it. */
     answered(runId: string, generation: number, sequence: number): string | null {
       integer.parse(generation);
       integer.parse(sequence);
-      current(runId, generation);
-      return storedRunnerAnswer(db, { runId, generation }, sequence);
+      return read(function* (q) {
+        yield* currentSteps(q, runId, generation);
+        return yield* storedRunnerAnswerSteps(q, { runId, generation }, sequence);
+      });
     },
     answer(input: { runId: string; generation: number; sequence: number; answer: string }) {
       integer.parse(input.generation);
       integer.parse(input.sequence);
       const answer = z.string().min(1).max(65536).parse(input.answer);
-      immediate(db, () => {
-        current(input.runId, input.generation);
-        const question = storedRunnerEvent(db, input, input.sequence);
-        if (!question || !QUESTION_TYPES.includes(work.openEvent(question).type))
+      transaction(function* (q) {
+        yield* currentSteps(q, input.runId, input.generation);
+        const question = yield* storedRunnerEventSteps(q, input, input.sequence);
+        if (!question || !QUESTION_TYPES.includes((yield* work.openEventSteps(q, question)).type))
           throw new Error("Runner question is unavailable.");
-        const existing = storedRunnerAnswer(db, input, input.sequence);
+        const existing = yield* storedRunnerAnswerSteps(q, input, input.sequence);
         if (existing !== null) {
           if (existing !== answer) throw new Error("Runner answer is immutable.");
           return;
         }
-        insertRunnerQuestionAnswer(db, {
+        yield* insertRunnerQuestionAnswerSteps(q, {
           runId: input.runId,
           generation: input.generation,
           sequence: input.sequence,
@@ -164,26 +176,31 @@ export function createRunnerResults(options: {
     }) {
       work.authorize(input);
       z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).parse(input.after);
-      const unanswered = unansweredRunnerQuestions(db, input, QUESTION_TYPES).find((row) =>
-        QUESTION_TYPES.includes(work.openEvent(row).type),
-      );
-      return runnerQuestionAnswersAfter(db, input, input.after).filter(
-        (answer) => !unanswered || answer.sequence < unanswered.sequence,
-      );
+      return read(function* (q) {
+        let unanswered: { sequence: number } | undefined;
+        for (const row of yield* unansweredRunnerQuestionsSteps(q, input, QUESTION_TYPES))
+          if (QUESTION_TYPES.includes((yield* work.openEventSteps(q, row)).type)) {
+            unanswered = row;
+            break;
+          }
+        return (yield* runnerQuestionAnswersAfterSteps(q, input, input.after)).filter(
+          (answer) => !unanswered || answer.sequence < unanswered.sequence,
+        );
+      });
     },
     deliverFollowUp(itemId: string, body: string): boolean {
       const text = z.string().min(1).max(65536).safeParse(body);
       if (!text.success) return false;
-      return immediate(db, () => {
-        const row = itemRunnerFollowUpTarget(db, itemId, runnerLeaseCutoff(now()));
+      return transaction(function* (q) {
+        const row = yield* itemRunnerFollowUpTargetSteps(q, itemId, runnerLeaseCutoff(now()));
         if (!row || !followUpsSupported(row.version)) return false;
         try {
-          if (current(row.runId, row.generation).type !== "run") return false;
+          if ((yield* currentSteps(q, row.runId, row.generation)).type !== "run") return false;
         } catch (caughtError1) {
           journalCaught(caughtError1, "runner-results.deliverFollowUp.current", itemId);
           return false;
         }
-        insertRunnerFollowUp(db, {
+        yield* insertRunnerFollowUpSteps(q, {
           runId: row.runId,
           generation: row.generation,
           body: text.data,
@@ -201,7 +218,7 @@ export function createRunnerResults(options: {
     }) {
       work.authorize(input);
       z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).parse(input.after);
-      return runnerFollowUpsAfter(db, input, input.after);
+      return read((q) => runnerFollowUpsAfterSteps(q, input, input.after));
     },
     async fetch(request: Request, runnerId: string): Promise<Response | null> {
       const match = /^\/v1\/runs\/([^/]+)\/(result|answers|follow-ups)$/.exec(
