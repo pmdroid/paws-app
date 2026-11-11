@@ -2,11 +2,13 @@ import {
   workspaceMemberUsable,
   auditWorkspaceAccessSteps,
   clearRunnerSessionMoveSteps,
+  liveRunnerSessionsSteps,
   noteRunnerSessionMoveSteps,
   requestRunnerSessionMoveSteps,
   runnerSessionMoveSteps,
   sqliteDb,
   workspaceMemberSteps,
+  workspaceRunnerStatusSteps,
   type Q,
 } from "../db";
 import { journalCaught } from "../journal";
@@ -131,35 +133,21 @@ export function createRunnerSessionMoves(options: {
     });
     return false;
   }
-  /** Sessions on `runnerId` the runner can hand over now: a live work lease on an active run. */
-  function liveSessions(runnerId: string, workspaceId: string, at: number, runId?: string) {
-    return db
-      .query<
-        { runId: string; itemId: string },
-        [string, string, number, string | null, string | null]
-      >(
-        `SELECT w.run_id AS runId,r.item_id AS itemId FROM runner_work w JOIN run r ON r.id=w.run_id
-         WHERE w.runner_id=? AND w.workspace_id=? AND w.ended_at IS NULL AND w.lease_until>?
-         AND r.status IN ('active','provisioning') AND (? IS NULL OR w.run_id=?)
-         ORDER BY r.created_at,w.run_id`,
-      )
-      .all(runnerId, workspaceId, at, runId ?? null, runId ?? null);
-  }
   /** `POST /api/runners/:runnerId/sessions/move`: Move running work off a draining runner. */
   async function moveAll(runnerId: string, principal: WorkspacePrincipal): Promise<Response> {
     const at = now();
     const decision = await store.transaction(function* (q) {
       if (!(yield* adminSteps(q, principal, `runner_drain_move:${runnerId}`, at)))
         return "denied" as const;
-      const runner = db
-        .query<{ status: string }, [string, string]>(
-          "SELECT status FROM runner WHERE id=? AND workspace_id=?",
-        )
-        .get(runnerId, principal.workspaceId);
-      if (runner?.status !== "draining") return "not_draining" as const;
+      if ((yield* workspaceRunnerStatusSteps(q, runnerId, principal.workspaceId)) !== "draining")
+        return "not_draining" as const;
       // One move per session, as Move to another runner asks it.
       const moving = [];
-      for (const session of liveSessions(runnerId, principal.workspaceId, at))
+      for (const session of yield* liveRunnerSessionsSteps(q, {
+        runnerId,
+        workspaceId: principal.workspaceId,
+        at,
+      }))
         if ((yield* requestSteps(q, session.runId, runnerId, principal, at)) !== null)
           moving.push(session);
       return moving;
@@ -184,7 +172,12 @@ export function createRunnerSessionMoves(options: {
       const decision = await store.transaction(function* (q) {
         if (!(yield* adminSteps(q, principal, `runner_session_move:${runId}`, at)))
           return "denied" as const;
-        const [session] = liveSessions(runnerId, principal.workspaceId, at, runId);
+        const [session] = yield* liveRunnerSessionsSteps(q, {
+          runnerId,
+          workspaceId: principal.workspaceId,
+          at,
+          runId,
+        });
         if (!session) return "gone" as const;
         if ((yield* requestSteps(q, runId, runnerId, principal, at)) === null)
           return "moving" as const;

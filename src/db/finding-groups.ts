@@ -77,8 +77,12 @@ export function* listFindingGroupsSteps(
   return rows.map(({ members, ...row }) => ({ ...row, memberIds: memberIds(q, members) }));
 }
 
-export function listFindingGroups(db: Database, workspaceId: string, limit = -1): FindingGroup[] {
-  return settled(sqliteDb(db).run((q) => listFindingGroupsSteps(q, workspaceId, limit)));
+export async function listFindingGroups(
+  store: Db,
+  workspaceId: string,
+  limit = -1,
+): Promise<FindingGroup[]> {
+  return store.run((q) => listFindingGroupsSteps(q, workspaceId, limit));
 }
 
 export function* getFindingGroupSteps(
@@ -98,12 +102,12 @@ export function* getFindingGroupSteps(
   return { ...group, memberIds: memberIds(q, members) };
 }
 
-export function getFindingGroup(
-  db: Database,
+export async function getFindingGroup(
+  store: Db,
   workspaceId: string,
   id: string,
-): FindingGroup | null {
-  return settled(sqliteDb(db).run((q) => getFindingGroupSteps(q, workspaceId, id)));
+): Promise<FindingGroup | null> {
+  return store.run((q) => getFindingGroupSteps(q, workspaceId, id));
 }
 
 /** Untouched groups follow individual finding decisions immediately. Claimed writes reconcile first. */
@@ -151,8 +155,12 @@ export function* removeFindingFromOpenGroupsSteps(
   );
 }
 
-export function removeFindingFromOpenGroups(db: Database, workspaceId: string, id: number): void {
-  settled(sqliteDb(db).run((q) => removeFindingFromOpenGroupsSteps(q, workspaceId, id)));
+export async function removeFindingFromOpenGroups(
+  store: Db,
+  workspaceId: string,
+  id: number,
+): Promise<void> {
+  await store.run((q) => removeFindingFromOpenGroupsSteps(q, workspaceId, id));
 }
 
 export function* lastFindingGroupRunSteps(
@@ -181,8 +189,11 @@ export function* lastFindingGroupRunSteps(
   );
 }
 
-export function lastFindingGroupRun(db: Database, workspaceId: string): FindingGroupRun | null {
-  return settled(sqliteDb(db).run((q) => lastFindingGroupRunSteps(q, workspaceId)));
+export async function lastFindingGroupRun(
+  store: Db,
+  workspaceId: string,
+): Promise<FindingGroupRun | null> {
+  return store.run((q) => lastFindingGroupRunSteps(q, workspaceId));
 }
 
 type FindingGroupSource = { id: number; teamId: string; sessionId: string };
@@ -267,8 +278,8 @@ export function* findingGroupingEnabledSteps(q: Q, workspaceId: string): Steps<b
   ));
 }
 
-export function findingGroupingEnabled(db: Database, workspaceId: string): boolean {
-  return settled(sqliteDb(db).run((q) => findingGroupingEnabledSteps(q, workspaceId)));
+export async function findingGroupingEnabled(store: Db, workspaceId: string): Promise<boolean> {
+  return store.run((q) => findingGroupingEnabledSteps(q, workspaceId));
 }
 
 export function* setFindingGroupingSteps(q: Q, workspaceId: string, on: boolean): Steps<void> {
@@ -555,13 +566,13 @@ export function* claimFindingGroupActionSteps(
   return claimed.length;
 }
 
-export function claimFindingGroupAction(
-  db: Database,
+export async function claimFindingGroupAction(
+  store: Db,
   id: string,
   action: GroupAction,
   members: readonly number[],
-): number {
-  return settled(sqliteDb(db).run((q) => claimFindingGroupActionSteps(q, id, action, members)));
+): Promise<number> {
+  return store.run((q) => claimFindingGroupActionSteps(q, id, action, members));
 }
 
 export type FindingGroupClose = {
@@ -603,8 +614,12 @@ export function* releaseFindingGroupActionSteps(q: Q, id: string, action: GroupA
   );
 }
 
-export function releaseFindingGroupAction(db: Database, id: string, action: GroupAction): void {
-  settled(sqliteDb(db).run((q) => releaseFindingGroupActionSteps(q, id, action)));
+export async function releaseFindingGroupAction(
+  store: Db,
+  id: string,
+  action: GroupAction,
+): Promise<void> {
+  await store.run((q) => releaseFindingGroupActionSteps(q, id, action));
 }
 
 export function* findingHasGroupActionSteps(q: Q, workspaceId: string, findingId: number) {
@@ -623,10 +638,10 @@ export function* findingHasGroupActionSteps(q: Q, workspaceId: string, findingId
   return row !== undefined;
 }
 
-export function findingHasGroupAction(
-  db: Database,
+export async function findingHasGroupAction(
+  store: Db,
   workspaceId: string,
   findingId: number,
-): boolean {
-  return settled(sqliteDb(db).run((q) => findingHasGroupActionSteps(q, workspaceId, findingId)));
+): Promise<boolean> {
+  return store.run((q) => findingHasGroupActionSteps(q, workspaceId, findingId));
 }

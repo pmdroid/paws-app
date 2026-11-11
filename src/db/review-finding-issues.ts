@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { reviewFindingKey as coreFindingKey } from "../core";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 
 /** Where a finding points: its path and its line, or `first-last`. */
 export type ReviewFindingPlace = { path: string; lines: string };
@@ -50,8 +50,11 @@ export function* getReviewFindingIssueSteps(q: Q, key: string): Steps<ReviewFind
   );
 }
 
-export function getReviewFindingIssue(db: Database, key: string): ReviewFindingIssue | null {
-  return settled(sqliteDb(db).run((q) => getReviewFindingIssueSteps(q, key)));
+export async function getReviewFindingIssue(
+  store: Db,
+  key: string,
+): Promise<ReviewFindingIssue | null> {
+  return store.run((q) => getReviewFindingIssueSteps(q, key));
 }
 
 /** The filed issues of `keys`, by key. */
@@ -94,11 +97,11 @@ export function* saveReviewFindingIssueSteps(
   return (yield* getReviewFindingIssueSteps(q, issue.key))!;
 }
 
-export function saveReviewFindingIssue(
-  db: Database,
+export async function saveReviewFindingIssue(
+  store: Db,
   issue: ReviewFindingIssue,
-): ReviewFindingIssue {
-  return settled(sqliteDb(db).run((q) => saveReviewFindingIssueSteps(q, issue)));
+): Promise<ReviewFindingIssue> {
+  return store.run((q) => saveReviewFindingIssueSteps(q, issue));
 }
 
 type ReviewFindingIssueClaimInput = {
@@ -147,11 +150,11 @@ export function* claimReviewFindingIssueSteps(
   return true;
 }
 
-export function claimReviewFindingIssue(
-  db: Database,
+export async function claimReviewFindingIssue(
+  store: Db,
   input: ReviewFindingIssueClaimInput,
-): boolean {
-  return settled(sqliteDb(db).transaction((q) => claimReviewFindingIssueSteps(q, input)));
+): Promise<boolean> {
+  return store.transaction((q) => claimReviewFindingIssueSteps(q, input));
 }
 
 export type ReviewFindingIssueClaim = { findingKey: string; issue: ReviewFindingIssue | null };
@@ -201,9 +204,9 @@ export function* reviewFindingIssueClaimsSteps(
   return claims;
 }
 
-export function reviewFindingIssueClaims(
-  db: Database,
+export async function reviewFindingIssueClaims(
+  store: Db,
   findings: readonly ClaimedFinding[],
-): Map<string, ReviewFindingIssueClaim> {
-  return settled(sqliteDb(db).run((q) => reviewFindingIssueClaimsSteps(q, findings)));
+): Promise<Map<string, ReviewFindingIssueClaim>> {
+  return store.run((q) => reviewFindingIssueClaimsSteps(q, findings));
 }

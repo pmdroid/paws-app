@@ -1,6 +1,15 @@
 import type { Database } from "bun:sqlite";
-import { getRetro, readRetroArtifact, workItemSessionKeys, type Retro } from "../db";
-import { memberRepositories } from "../improvements";
+import {
+  getRetroSteps,
+  readRetroArtifactSteps,
+  settled,
+  sqliteDb,
+  workItemSessionKeysSteps,
+  type Q,
+  type Retro,
+  type Steps,
+} from "../db";
+import { memberRepositoriesSteps } from "../improvements";
 import type { WorkspacePrincipal } from "../workspace";
 import type { RetroDigest } from "./digest";
 
@@ -26,13 +35,13 @@ export type RetroReaderAccess = {
 const CACHE_LIMIT = 16;
 const indexes = new Map<string, DigestIndex>();
 
-function digestIndex(db: Database, root: string, retro: Retro): DigestIndex | null {
+function* digestIndexSteps(q: Q, root: string, retro: Retro): Steps<DigestIndex | null> {
   if (retro.digestSha256 === null)
     return { records: new Map(), itemIds: [], coverage: { sessions: 0, counted: 0, context: 0 } };
   const key = `${retro.id}:${retro.digestSha256}`;
   const cached = indexes.get(key);
   if (cached) return cached;
-  const stored = readRetroArtifact(db, root, retro.id, "digest");
+  const stored = yield* readRetroArtifactSteps(q, root, retro.id, "digest");
   if (!stored.ok || stored.artifact.sha256 !== retro.digestSha256) return null;
   let digest: RetroDigest;
   try {
@@ -64,24 +73,24 @@ function digestIndex(db: Database, root: string, retro: Retro): DigestIndex | nu
   return index;
 }
 
-export function retroReaderAccess(
-  db: Database,
+export function* retroReaderAccessSteps(
+  q: Q,
   root: string,
   principal: WorkspacePrincipal,
   sessionIds: readonly string[],
   retroId: string,
-): RetroReaderAccess | null {
-  const retro = getRetro(db, retroId);
+): Steps<RetroReaderAccess | null> {
+  const retro = yield* getRetroSteps(q, retroId);
   if (retro === null || retro.workspaceId !== principal.workspaceId) return null;
-  const index = digestIndex(db, root, retro);
+  const index = yield* digestIndexSteps(q, root, retro);
   if (index === null) return null;
   const accessible = new Set(
-    memberRepositories(db, principal.workspaceId, principal.userId).map((name) =>
+    (yield* memberRepositoriesSteps(q, principal.workspaceId, principal.userId)).map((name) =>
       name.toLowerCase(),
     ),
   );
   const sessions = new Map(
-    workItemSessionKeys(db, index.itemIds).map((row) => [row.id, row.sessionKey]),
+    (yield* workItemSessionKeysSteps(q, index.itemIds)).map((row) => [row.id, row.sessionKey]),
   );
   const allowedSessions = new Set(sessionIds);
   const readableItem = (itemId: string) => {
@@ -106,4 +115,16 @@ export function retroReaderAccess(
     sources: index.records,
     digest: index.coverage,
   };
+}
+
+export function retroReaderAccess(
+  db: Database,
+  root: string,
+  principal: WorkspacePrincipal,
+  sessionIds: readonly string[],
+  retroId: string,
+): RetroReaderAccess | null {
+  return settled(
+    sqliteDb(db).run((q) => retroReaderAccessSteps(q, root, principal, sessionIds, retroId)),
+  );
 }

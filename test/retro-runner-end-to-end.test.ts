@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getRetro, listRetroItems, openDatabase } from "../src/db";
+import { getRetro, listRetroItems, openDatabase, sqliteDb } from "../src/db";
 import { RunnerRequestError } from "../src/runner-daemon";
 import { readRunnerJob, readRunnerJobInputs } from "../src/runner-execution";
 import {
@@ -215,7 +215,7 @@ function runnerHost(
 test.skipIf(!nonRootLinux)(
   "a retro waits, runs on the paired runner, survives both restarts and publishes once",
   async () => {
-    const w = world();
+    const w = await world();
     const root = mkdtempSync(join(tmpdir(), "paws-retro-runner-"));
     roots.push(root);
     const control = { dispatcher: w.open(w.db) };
@@ -258,7 +258,7 @@ test.skipIf(!nonRootLinux)(
     expect(runtime.status().active).toEqual([]);
 
     const reopened = openDatabase(w.path);
-    expect(getRetro(reopened, "r1")?.state).toBe("published");
+    expect((await getRetro(sqliteDb(reopened), "r1"))?.state).toBe("published");
     const items = listRetroItems(reopened, "r1").length;
     expect(items).toBeGreaterThan(0);
     expect(control.dispatcher.generation("r1")).toMatchObject({ state: "ready" });
@@ -278,7 +278,7 @@ test.skipIf(!nonRootLinux)(
 test.skipIf(!nonRootLinux)(
   "a worker that dies without a result is reported as teardown and starts no second turn",
   async () => {
-    const w = world({ retries: 0 });
+    const w = await world({ retries: 0 });
     const root = mkdtempSync(join(tmpdir(), "paws-retro-runner-"));
     roots.push(root);
     addRunner(w.db, { id: "R1" });
@@ -313,7 +313,7 @@ test.skipIf(!nonRootLinux)(
 test.skipIf(!nonRootLinux)(
   "a failed admission whose termination fails retries teardown before releasing the slot",
   async () => {
-    const w = world({ retries: 0 });
+    const w = await world({ retries: 0 });
     const root = mkdtempSync(join(tmpdir(), "paws-retro-runner-"));
     roots.push(root);
     addRunner(w.db, { id: "R1" });

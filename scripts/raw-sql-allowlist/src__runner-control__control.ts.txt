@@ -1,2 +1,0 @@
-src/runner-control/control.ts | const fingerprints = db .query<{ fingerprint: string }, [number]>( | not yet converted to Drizzle
-src/runner-control/control.ts | db .query( | not yet converted to Drizzle
