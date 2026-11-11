@@ -1,8 +1,0 @@
-src/server/github-connect.ts | const connection = db .query< | not yet converted to Drizzle
-src/server/github-connect.ts | db.run( | not yet converted to Drizzle
-src/server/github-connect.ts | const generation = db .query<{ generation: number }, [string]>( | not yet converted to Drizzle
-src/server/github-connect.ts | db.run( | not yet converted to Drizzle
-src/server/github-connect.ts | return db .query<Pending, [string, string, string, string, number]>( | not yet converted to Drizzle
-src/server/github-connect.ts | const changed = db.run( | not yet converted to Drizzle
-src/server/github-connect.ts | db.run( | not yet converted to Drizzle
-src/server/github-connect.ts | db.run("UPDATE workspace_github_oauth SET status='failed' WHERE state_hash=?", [ | not yet converted to Drizzle

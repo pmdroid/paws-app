@@ -141,12 +141,10 @@ export async function openRunnerCoordinator(options: {
     work,
     now: options.now,
     onSignedIn: ({ runnerId, agent }) => {
-      try {
-        health.afterSignIn(runnerId, agent);
-      } catch (error) {
+      health.afterSignIn(runnerId, agent).catch((error: unknown) => {
         journalCaught(error, "runner-coordinator.onSignedIn.afterSignIn", null);
         options.onError(error);
-      }
+      });
     },
   });
   const http = createRunnerHttp(control, {
@@ -274,12 +272,10 @@ export async function openRunnerCoordinator(options: {
   modelTimer?.unref();
   if (options.discoverModels) refreshModels();
   const checkSignIn = () => {
-    try {
-      health.refresh();
-    } catch (error) {
+    health.refresh().catch((error: unknown) => {
       journalCaught(error, "runner-coordinator.openRunnerCoordinator.refresh", null);
       options.onError(error);
-    }
+    });
   };
   const signInTimer = options.checkSignIn ? setInterval(checkSignIn, 15_000) : undefined;
   signInTimer?.unref();
