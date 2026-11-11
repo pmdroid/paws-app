@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { eq, notInArray } from "drizzle-orm";
 import { WORK_ITEM_STATES } from "../src/core";
 import { listTaskBlockers, migrations } from "../src/db";
 import { cycleMessage, intakeDelegatedIssue, orderByBlocks, queueMessage } from "../src/intake";
@@ -342,13 +343,20 @@ describe("intake", () => {
       linearIssueId: "only",
       sessionId: "ses_1",
       taskKey: "second",
-      beforeAdmit: () => {
-        activeBefore = db
-          .query<{ n: number }, []>(
-            "SELECT COUNT(*) AS n FROM work_item WHERE state NOT IN ('completed', 'merged', 'cancelled')",
-          )
-          .get()!.n;
-        db.run("UPDATE work_item SET state = 'cancelled' WHERE id = ?", [first.items[0]!.id]);
+      beforeAdmit: function* (q) {
+        const { workItem } = q.t;
+        activeBefore = (yield* q.all(
+          q.orm
+            .select({ id: workItem.id })
+            .from(workItem)
+            .where(notInArray(workItem.state, ["completed", "merged", "cancelled"])),
+        )).length;
+        yield* q.exec(
+          q.orm
+            .update(workItem)
+            .set({ state: "cancelled" })
+            .where(eq(workItem.id, first.items[0]!.id)),
+        );
       },
     });
     expect(activeBefore).toBe(1);
