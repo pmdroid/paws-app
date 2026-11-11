@@ -175,6 +175,7 @@ import {
   RUNNER_ONLINE_MS,
   SESSION_GRACE_MS,
   type PlacementAccount,
+  type PlacementDisposition,
   type RunnerPlacement,
 } from "../runner-placement";
 
@@ -961,8 +962,8 @@ export function createRemoteAgentRunner(options: {
             const id = randomUUID();
             const issuedAt = now();
             try {
-              await store.transaction(() =>
-                syncSteps(() => {
+              await store.transaction(function* (q) {
+                yield* syncSteps(() =>
                   work.enqueue({
                     id,
                     runnerId: selected.id,
@@ -972,8 +973,10 @@ export function createRemoteAgentRunner(options: {
                     type: "probe",
                     profile,
                     ...commandAccount(selected.account),
-                  });
-                  options.placement?.started({
+                  }),
+                );
+                if (options.placement)
+                  yield* options.placement.startedSteps(q, {
                     commandId: id,
                     runnerId: selected.id,
                     itemId,
@@ -984,8 +987,7 @@ export function createRemoteAgentRunner(options: {
                     purpose: "prepare",
                     startedAt: issuedAt,
                   });
-                }),
-              );
+              });
             } catch (error) {
               if (error instanceof PlacementRaceError)
                 throw await placementRace(itemId, selected.id, error);
@@ -1002,17 +1004,18 @@ export function createRemoteAgentRunner(options: {
               else work.scope(selected.runId, selected.workspaceId);
               const result = await health.read(selected.id, id);
               if (result) {
-                const disposition = await store.transaction(() =>
-                  syncSteps(() =>
-                    options.placement?.finished({
+                const disposition = await store.transaction(function* (q) {
+                  return (
+                    options.placement &&
+                    (yield* options.placement.finishedSteps(q, {
                       commandId: id,
                       runnerId: selected.id,
                       profile,
                       result,
                       finishedAt: now(),
-                    }),
-                  ),
-                );
+                    }))
+                  );
+                });
                 if (
                   disposition?.retryable &&
                   result.agentExited &&
@@ -1694,17 +1697,18 @@ export function createRemoteAgentRunner(options: {
                     );
                   work.assign(assigned);
                   yield* releaseRunnerReservationSteps(q, selected.runId, instanceId);
-                  options.placement?.started({
-                    commandId: assigned.id,
-                    runnerId: selected.id,
-                    itemId,
-                    runId: selected.runId,
-                    profile,
-                    ...(selected.account ? { account: selected.account } : {}),
-                    role: input.role,
-                    purpose: "work",
-                    startedAt: issuedAt,
-                  });
+                  if (options.placement)
+                    yield* options.placement.startedSteps(q, {
+                      commandId: assigned.id,
+                      runnerId: selected.id,
+                      itemId,
+                      runId: selected.runId,
+                      profile,
+                      ...(selected.account ? { account: selected.account } : {}),
+                      role: input.role,
+                      purpose: "work",
+                      startedAt: issuedAt,
+                    });
                 });
               } catch (error) {
                 if (error instanceof PlacementRaceError)
@@ -1786,7 +1790,7 @@ export function createRemoteAgentRunner(options: {
           command = assigned;
           let cursor = attached?.cursor ?? 0;
           let complete: RunnerResult | null = null;
-          let disposition: ReturnType<RunnerPlacement["finished"]> | undefined;
+          let disposition: PlacementDisposition | undefined;
           let heardAt = now();
           let savedAt = heardAt;
           const liveness = () =>
@@ -1843,31 +1847,33 @@ export function createRemoteAgentRunner(options: {
               signal.throwIfAborted();
               // The runner's heartbeat no longer names this work, so it is gone, not just quiet.
               if ((await liveness())?.lostAt != null) {
-                const recovered = await store.transaction(() =>
-                  syncSteps(() =>
-                    options.placement?.finished({
+                const recovered = await store.transaction(function* (q) {
+                  return (
+                    options.placement &&
+                    (yield* options.placement.finishedSteps(q, {
                       commandId: assigned.id,
                       runnerId: selected.id,
                       profile,
                       failure: "heartbeat_lost",
                       finishedAt: now(),
-                    }),
-                  ),
-                );
+                    }))
+                  );
+                });
                 if (!recovered?.retryable) throw error;
                 throw await lostRun("the runner no longer reports the command");
               }
-              const interrupted = await store.transaction(() =>
-                syncSteps(() =>
-                  options.placement?.finished({
+              const interrupted = await store.transaction(function* (q) {
+                return (
+                  options.placement &&
+                  (yield* options.placement.finishedSteps(q, {
                     commandId: assigned.id,
                     runnerId: selected.id,
                     profile,
                     failure: "heartbeat_lost",
                     finishedAt: now(),
-                  }),
-                ),
-              );
+                  }))
+                );
+              });
               if (!interrupted?.retryable) throw error;
               if (await heartbeatLost())
                 throw new RetryableRunnerError(
@@ -1888,17 +1894,18 @@ export function createRemoteAgentRunner(options: {
             if (questionError) throw questionError;
             complete = results.read(assigned.runId, assigned.generation, assigned.id);
             if (complete && !disposition)
-              disposition = await store.transaction(() =>
-                syncSteps(() =>
-                  options.placement?.finished({
+              disposition = await store.transaction(function* (q) {
+                return (
+                  options.placement &&
+                  (yield* options.placement.finishedSteps(q, {
                     commandId: assigned.id,
                     runnerId: selected.id,
                     profile,
                     result: complete!,
                     finishedAt: now(),
-                  }),
-                ),
-              );
+                  }))
+                );
+              });
             if (complete && disposition?.retryable && input.role === "reviewer")
               throw new RetryableRunnerError(
                 selected.id,
@@ -2283,14 +2290,15 @@ export function createRemoteAgentRunner(options: {
                 const minutes = Math.round((at - heardAt) / 60_000);
                 const recovered = await store.transaction(function* (q) {
                   yield* endLostRunnerWorkSteps(q, assigned.runId, assigned.generation, at);
-                  return yield* syncSteps(() =>
-                    options.placement?.finished({
+                  return (
+                    options.placement &&
+                    (yield* options.placement.finishedSteps(q, {
                       commandId: assigned.id,
                       runnerId: selected.id,
                       profile,
                       failure: "heartbeat_lost",
                       finishedAt: at,
-                    }),
+                    }))
                   );
                 });
                 if (!recovered?.retryable) throw new Error(RUN_LOST_MESSAGE);
@@ -2307,17 +2315,18 @@ export function createRemoteAgentRunner(options: {
               (await heartbeatLost()) &&
               !(await unreachableWithAuthority())
             ) {
-              const lost = await store.transaction(() =>
-                syncSteps(() =>
-                  options.placement?.finished({
+              const lost = await store.transaction(function* (q) {
+                return (
+                  options.placement &&
+                  (yield* options.placement.finishedSteps(q, {
                     commandId: assigned.id,
                     runnerId: selected.id,
                     profile,
                     failure: "heartbeat_lost",
                     finishedAt: now(),
-                  }),
-                ),
-              );
+                  }))
+                );
+              });
               if (!lost?.retryable) throw new Error("The runner stopped sending heartbeats.");
               throw new RetryableRunnerError(
                 selected.id,

@@ -98,8 +98,8 @@ test("a failed preparation releases its reservation and the next recovering item
       wrap(placement) {
         return {
           ...placement,
-          started(input) {
-            placement.started(input);
+          *startedSteps(q, input) {
+            yield* placement.startedSteps(q, input);
             if (failPreparation && input.purpose === "prepare") {
               failPreparation = false;
               throw new Error("preparation blew up");
@@ -221,8 +221,8 @@ async function runRecovering(input: {
   const basePlacement = createRunnerPlacement({ db });
   const trackedPlacement: RunnerPlacement = {
     ...basePlacement,
-    started(value) {
-      basePlacement.started(value);
+    *startedSteps(q, value) {
+      yield* basePlacement.startedSteps(q, value);
       if (value.purpose === "prepare" && value.itemId) {
         const roles = prepared.get(value.itemId) ?? new Set<string>();
         roles.add(value.role);

@@ -203,24 +203,27 @@ export function createRemoteSessionAgentRunner(options: {
             }
             try {
               placed = runner.account;
-              command = await store.transaction(() =>
-                syncSteps(() => {
-                  const dispatched = options.helpers.dispatch({
-                    runnerId: runner.id,
-                    sessionId,
-                    purpose,
-                    profile,
-                    prompt: input.prompt,
-                    ...(runner.account?.named
-                      ? {
-                          account: {
-                            accountId: runner.account.accountId,
-                            bindingId: runner.account.bindingId,
-                          },
-                        }
-                      : {}),
-                  }).command;
-                  options.placement?.started({
+              command = await store.transaction(function* (q) {
+                const dispatched = yield* syncSteps(
+                  () =>
+                    options.helpers.dispatch({
+                      runnerId: runner.id,
+                      sessionId,
+                      purpose,
+                      profile,
+                      prompt: input.prompt,
+                      ...(runner.account?.named
+                        ? {
+                            account: {
+                              accountId: runner.account.accountId,
+                              bindingId: runner.account.bindingId,
+                            },
+                          }
+                        : {}),
+                    }).command,
+                );
+                if (options.placement)
+                  yield* options.placement.startedSteps(q, {
                     commandId: dispatched.id,
                     runnerId: runner.id,
                     sessionId,
@@ -230,9 +233,8 @@ export function createRemoteSessionAgentRunner(options: {
                     purpose: "helper",
                     startedAt: now(),
                   });
-                  return dispatched;
-                }),
-              );
+                return dispatched;
+              });
               break;
             } catch (caughtError1) {
               const busy = caughtError1 instanceof RunnerHelperBusyError ? caughtError1 : null;
@@ -290,17 +292,18 @@ export function createRemoteSessionAgentRunner(options: {
               break;
             }
             if (result) {
-              const disposition = await store.transaction(() =>
-                syncSteps(() =>
-                  options.placement?.finished({
+              const disposition = await store.transaction(function* (q) {
+                return (
+                  options.placement &&
+                  (yield* options.placement.finishedSteps(q, {
                     commandId: command!.id,
                     runnerId: command!.runnerId,
                     profile,
                     result,
                     finishedAt: now(),
-                  }),
-                ),
-              );
+                  }))
+                );
+              });
               accounted = true;
               if (
                 disposition?.retryable &&
@@ -383,9 +386,10 @@ export function createRemoteSessionAgentRunner(options: {
           // Cleanup failures must not replace the original timeout, fence or cancellation error.
           try {
             if (!accounted && others === 0)
-              await store.transaction(() =>
-                syncSteps(() =>
-                  options.placement?.finished({
+              await store.transaction(function* (q) {
+                return (
+                  options.placement &&
+                  (yield* options.placement.finishedSteps(q, {
                     commandId: command.id,
                     runnerId: command.runnerId,
                     profile,
@@ -398,9 +402,9 @@ export function createRemoteSessionAgentRunner(options: {
                         ? "timeout"
                         : "error",
                     finishedAt: now(),
-                  }),
-                ),
-              );
+                  }))
+                );
+              });
           } catch (error) {
             journalCaught(error, "helpers.forSession.accountingCleanup", null);
           }

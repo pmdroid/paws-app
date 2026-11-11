@@ -2372,7 +2372,7 @@ export async function probeRunnerBackend(
           selectionReads++;
           return placement.candidates(request);
         },
-        started(request) {
+        *startedSteps(q, request) {
           assert(db.inTransaction);
           assert(
             db
@@ -2383,12 +2383,12 @@ export async function probeRunnerBackend(
               )
               .get(request.commandId, request.runnerId),
           );
-          placement.started(request);
+          yield* placement.startedSteps(q, request);
           placements.push(request.runnerId);
         },
-        finished(observation) {
+        *finishedSteps(q, observation) {
           assert(db.inTransaction);
-          const disposition = placement.finished(observation);
+          const disposition = yield* placement.finishedSteps(q, observation);
           if (disposition.retryable)
             observedFailures.push(
               observation.failure ??

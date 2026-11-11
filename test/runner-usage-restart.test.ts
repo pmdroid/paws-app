@@ -310,8 +310,8 @@ async function usageLimitScenario(
           }
           return placement.candidates(input);
         },
-        finished(input) {
-          const disposition = placement.finished(input);
+        *finishedSteps(q, input) {
+          const disposition = yield* placement.finishedSteps(q, input);
           if (input.commandId === limitedCommand && !limitedAt) {
             limitedAt = input.finishedAt;
             // Paws stops right after the usage receipt commits.

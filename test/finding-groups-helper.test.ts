@@ -8,6 +8,7 @@ import {
   syncWorkspaceMember,
   recordRunnerHostStatus,
   sqliteDb,
+  syncSteps,
 } from "../src/db";
 import { tempDb } from "./helpers";
 
@@ -381,11 +382,12 @@ test("cleanup accounting cannot replace a local abort and reports cancellation i
         async candidates() {
           return [{ id: "runner", workspaceId: "ws" }];
         },
-        started() {},
-        finished(input) {
-          outcomes.push(input.failure ?? "result");
-          throw new Error("Receipt cleanup failed");
-        },
+        startedSteps: () => syncSteps(() => {}),
+        finishedSteps: (_q, input) =>
+          syncSteps(() => {
+            outcomes.push(input.failure ?? "result");
+            throw new Error("Receipt cleanup failed");
+          }),
       },
     });
     await expect(
@@ -475,9 +477,9 @@ test("a failed receipt completion is retried by cleanup before the original erro
       profile: () => ({ agent: "codex", model: null }),
       placement: {
         ...placement,
-        finished(input) {
+        *finishedSteps(q, input) {
           if (++attempts === 1) throw original;
-          return placement.finished(input);
+          return yield* placement.finishedSteps(q, input);
         },
       },
       helpers: async () => ({

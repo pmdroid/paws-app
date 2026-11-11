@@ -117,6 +117,30 @@ export type PlacementRequest = {
   onRejected?: (runnerId: string, reason: string, until?: number) => void;
   signal?: AbortSignal;
 };
+type PlacementStart = {
+  commandId: string;
+  runnerId: string;
+  itemId?: string;
+  sessionId?: string;
+  runId?: string;
+  profile?: PlacementProfile;
+  account?: PlacementAccount;
+  role: "implementer" | "reviewer";
+  purpose: PlacementPurpose;
+  startedAt: number;
+};
+type PlacementFinish = {
+  commandId: string;
+  runnerId: string;
+  profile?: PlacementProfile;
+  result?: RunnerResult | RunnerHelperResult;
+  failure?: "heartbeat_lost" | "cancelled" | "timeout" | "error";
+  finishedAt: number;
+};
+export type PlacementDisposition = {
+  retryable: boolean;
+  usageLimit?: { resetsAt: number | null; recheckAt?: number };
+};
 export type RunnerPlacement = {
   candidates(input: PlacementRequest): Promise<readonly PlacementCandidate[]>;
   preview?(input: PlacementRequest): readonly PlacementCandidate[];
@@ -128,26 +152,8 @@ export type RunnerPlacement = {
   repositoryRefusals?(
     input: PlacementRequest,
   ): Promise<{ repository: string; refusals: RepositoryRefusal[] } | null>;
-  started(input: {
-    commandId: string;
-    runnerId: string;
-    itemId?: string;
-    sessionId?: string;
-    runId?: string;
-    profile?: PlacementProfile;
-    account?: PlacementAccount;
-    role: "implementer" | "reviewer";
-    purpose: PlacementPurpose;
-    startedAt: number;
-  }): void;
-  finished(input: {
-    commandId: string;
-    runnerId: string;
-    profile?: PlacementProfile;
-    result?: RunnerResult | RunnerHelperResult;
-    failure?: "heartbeat_lost" | "cancelled" | "timeout" | "error";
-    finishedAt: number;
-  }): { retryable: boolean; usageLimit?: { resetsAt: number | null; recheckAt?: number } };
+  startedSteps(q: Q, input: PlacementStart): Steps<void>;
+  finishedSteps(q: Q, input: PlacementFinish): Steps<PlacementDisposition>;
 };
 
 /** Why placement ranked a runner ahead of the others, recorded with its usage. */
