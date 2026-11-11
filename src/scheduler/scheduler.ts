@@ -45,7 +45,6 @@ import {
   saveQueuePositionsSteps,
   sqliteDb,
   savePinnedSlotsSteps,
-  settled,
   type Db,
   RUNNER_FULL,
   type ItemHold,
@@ -244,10 +243,6 @@ type SchedulingContext = {
   priority?: number;
   paths?: readonly string[] | null;
 };
-
-export function saveSchedulingContext(db: Database, input: SchedulingContext): void {
-  settled(sqliteDb(db).run((q) => saveSchedulingContextSteps(q, input)));
-}
 
 export function* saveSchedulingContextSteps(q: Q, input: SchedulingContext): Steps<void> {
   if (input.projectId != null && !input.projectId.trim()) throw new Error("Invalid Linear project");

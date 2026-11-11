@@ -61,7 +61,7 @@ import {
   VISUAL_REVIEW_REMINDER_MS,
   visualReviewCarriedNote,
 } from "../src/questions";
-import { saveSchedulingContext } from "../src/scheduler";
+import { saveSchedulingContextSteps } from "../src/scheduler";
 import { githubClient } from "./e2e-harness";
 import { screenshotPng, type Rect } from "./png";
 import { workspaceAdmission } from "./fake-workspace";
@@ -1238,11 +1238,13 @@ async function pausedForReview(
   });
   await orchestrator.onLinearEvent(created());
   db.run("UPDATE work_item SET delegated_by = 'delegator-1'");
-  saveSchedulingContext(db, {
-    itemId: listWorkItems(db)[0]!.id,
-    projectId: "project-1",
-    projectLeadId: "lead-1",
-  });
+  await sqliteDb(db).run((q) =>
+    saveSchedulingContextSteps(q, {
+      itemId: listWorkItems(db)[0]!.id,
+      projectId: "project-1",
+      projectLeadId: "lead-1",
+    }),
+  );
   const running = jobs.tick();
   const runnerId = leaseActiveRun(db);
   if (!options.gate?.held) {

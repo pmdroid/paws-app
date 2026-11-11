@@ -21,7 +21,7 @@ import {
 } from "../src/db";
 import { intakeDelegatedIssue, readyItemsSteps, syncItemDependencies } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
-import { saveSchedulingContext } from "../src/scheduler";
+import { saveSchedulingContextSteps } from "../src/scheduler";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { JOB_KIND } from "../src/core";
 import { workspaceDispatch } from "./fake-workspace";
@@ -50,7 +50,9 @@ test("three ready items in one project and repository are all admitted", async (
     for (const [index, id] of ids.entries()) {
       insertQueuedItem(db, { id, now: index });
       bindWorkItemRepository(db, id, repository);
-      saveSchedulingContext(db, { itemId: id, projectId: "project", paths: ["src/same.ts"] });
+      await sqliteDb(db).run((q) =>
+        saveSchedulingContextSteps(q, { itemId: id, projectId: "project", paths: ["src/same.ts"] }),
+      );
     }
     assert.deepEqual(await workspaceDispatch(db, { now: 1000 }), ids);
     const rows = db

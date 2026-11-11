@@ -12,7 +12,7 @@ import {
   syncWorkspaceMember,
   sqliteDb,
 } from "../src/db";
-import { saveSchedulingContext } from "../src/scheduler";
+import { saveSchedulingContextSteps } from "../src/scheduler";
 import { tempDb } from "./helpers";
 import { workspaceDispatch } from "./fake-workspace";
 
@@ -21,7 +21,7 @@ const BACKOFF = NOW + 4 * 60_000;
 
 // Runner A has one slot, held by `busy`. X resumes pinned to A and waits for that slot on its
 // backoff; Y is queued with a lower priority and no dependents.
-function fixture() {
+async function fixture() {
   const db = tempDb();
   const userId = putWorkspaceUser(db, {
     id: "user-1",
@@ -55,7 +55,7 @@ function fixture() {
   work(busy, null);
 
   insertQueuedItem(db, { id: "X", now: 1 });
-  saveSchedulingContext(db, { itemId: "X", priority: 1 });
+  await sqliteDb(db).run((q) => saveSchedulingContextSteps(q, { itemId: "X", priority: 1 }));
   applyWorkItemEvent(db, "X", "dispatched");
   const lost = insertRun(db, { itemId: "X", now: 1, status: "lost" }).id;
   db.run("UPDATE work_item SET current_run_id=? WHERE id='X'", [lost]);
@@ -75,7 +75,7 @@ function fixture() {
   });
 
   insertQueuedItem(db, { id: "Y", now: 2 });
-  saveSchedulingContext(db, { itemId: "Y", priority: 4 });
+  await sqliteDb(db).run((q) => saveSchedulingContextSteps(q, { itemId: "Y", priority: 4 }));
 
   const runAt = () =>
     db.query<{ runAt: number }, [number]>("SELECT run_at AS runAt FROM job WHERE id=?").get(resume)!
@@ -92,7 +92,7 @@ function fixture() {
 }
 
 test("a freed slot on the pinned runner goes to the item waiting on it, not to a queued item", async () => {
-  const { db, runAt, free } = fixture();
+  const { db, runAt, free } = await fixture();
   try {
     expect(await workspaceDispatch(db, { now: NOW })).toEqual([]);
     expect(runAt()).toBe(BACKOFF);
@@ -108,10 +108,10 @@ test("a freed slot on the pinned runner goes to the item waiting on it, not to a
 });
 
 test("a queued item ranked ahead of the waiting item takes the freed slot", async () => {
-  const { db, runAt, free } = fixture();
+  const { db, runAt, free } = await fixture();
   try {
-    saveSchedulingContext(db, { itemId: "Y", priority: 1 });
-    saveSchedulingContext(db, { itemId: "X", priority: 4 });
+    await sqliteDb(db).run((q) => saveSchedulingContextSteps(q, { itemId: "Y", priority: 1 }));
+    await sqliteDb(db).run((q) => saveSchedulingContextSteps(q, { itemId: "X", priority: 4 }));
     free(NOW + 1);
     expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual(["Y"]);
     expect(runAt()).toBe(BACKOFF);
@@ -121,7 +121,7 @@ test("a queued item ranked ahead of the waiting item takes the freed slot", asyn
 });
 
 test("a wait on an offline pinned runner reserves nothing", async () => {
-  const { db, runAt } = fixture();
+  const { db, runAt } = await fixture();
   try {
     db.run(
       "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('B','ws-1','user-1','B','active',0,?)",
@@ -136,7 +136,7 @@ test("a wait on an offline pinned runner reserves nothing", async () => {
 });
 
 test("a wait past its hold reserves nothing", async () => {
-  const { db, runAt, free } = fixture();
+  const { db, runAt, free } = await fixture();
   try {
     db.run("UPDATE job SET payload=json_set(payload,'$.capacityWait.holdMs',1000) WHERE queue=?", [
       JOB_KIND.resume,
@@ -150,7 +150,7 @@ test("a wait past its hold reserves nothing", async () => {
 });
 
 test("with another runner free, the waiting item's slot stays off limits to the queued item", async () => {
-  const { db, runAt, free } = fixture();
+  const { db, runAt, free } = await fixture();
   try {
     db.run(
       "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('B','ws-1','user-1','B','active',0,?)",
@@ -175,10 +175,10 @@ test("with another runner free, the waiting item's slot stays off limits to the 
 });
 
 test("a waiting item ranked behind a queued item that took the last slot reserves nothing", async () => {
-  const { db, runAt, free } = fixture();
+  const { db, runAt, free } = await fixture();
   try {
-    saveSchedulingContext(db, { itemId: "Y", priority: 1 });
-    saveSchedulingContext(db, { itemId: "X", priority: 4 });
+    await sqliteDb(db).run((q) => saveSchedulingContextSteps(q, { itemId: "Y", priority: 1 }));
+    await sqliteDb(db).run((q) => saveSchedulingContextSteps(q, { itemId: "X", priority: 4 }));
     free(NOW + 1);
     expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual(["Y"]);
     expect(pinnedSlotsReserved(db, "A", "Y", NOW + 2)).toBe(0);
@@ -189,7 +189,7 @@ test("a waiting item ranked behind a queued item that took the last slot reserve
 });
 
 test("a waiting item on a full runner holds the slot that frees next", async () => {
-  const { db } = fixture();
+  const { db } = await fixture();
   try {
     expect(await workspaceDispatch(db, { now: NOW })).toEqual([]);
     expect(pinnedSlotsReserved(db, "A", "Y", NOW)).toBe(1);
@@ -199,7 +199,7 @@ test("a waiting item on a full runner holds the slot that frees next", async () 
 });
 
 test("a reservation is released when its runner goes offline", async () => {
-  const { db } = fixture();
+  const { db } = await fixture();
   try {
     expect(await workspaceDispatch(db, { now: NOW })).toEqual([]);
     expect(pinnedSlotsReserved(db, "A", "Y", NOW)).toBe(1);

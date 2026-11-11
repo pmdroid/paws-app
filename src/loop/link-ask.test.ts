@@ -13,7 +13,7 @@ import {
   sqliteDb,
 } from "../db";
 import { findOpenQuestion, getQuestion, LINK_ASK_REMINDER_MS } from "../questions";
-import { saveSchedulingContext } from "../scheduler";
+import { saveSchedulingContextSteps } from "../scheduler";
 import {
   askWithLinkSteps,
   closeLinkAsksOnHead,
@@ -36,7 +36,9 @@ async function asked(
   const { run } = beginImplementRun(db, item.id, NOW - 10);
   applyWorkItemEvent(db, item.id, "turn_ended");
   db.run("UPDATE work_item SET delegated_by = 'delegator' WHERE id = ?", [item.id]);
-  saveSchedulingContext(db, { itemId: item.id, projectId: "project", projectLeadId: "lead" });
+  await sqliteDb(db).run((q) =>
+    saveSchedulingContextSteps(q, { itemId: item.id, projectId: "project", projectLeadId: "lead" }),
+  );
   db.run("INSERT INTO workspace (id, linear_organization_id, name, created_at) VALUES (?,?,?,?)", [
     "ws",
     "org",

@@ -16,9 +16,10 @@ import {
   insertQueuedItem,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../../src/db";
 import { Orchestrator } from "../../src/loop";
-import { registerScheduler, saveSchedulingContext } from "../../src/scheduler";
+import { registerScheduler, saveSchedulingContextSteps } from "../../src/scheduler";
 import { workspaceAdmission, workspaceDispatch } from "../fake-workspace";
 
 export async function probeSchedulerRuntime(
@@ -44,7 +45,9 @@ export async function probeSchedulerRuntime(
       [id, id, id, id, state, `paws/${id}`, position],
     );
     bindWorkItemRepository(db, id, repository);
-    saveSchedulingContext(db, { itemId: id, projectId: "project", paths: ["src/shared"] });
+    await sqliteDb(db).run((q) =>
+      saveSchedulingContextSteps(q, { itemId: id, projectId: "project", paths: ["src/shared"] }),
+    );
   }
   db.run(
     "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('blocker','original')",
@@ -139,11 +142,13 @@ export async function probeSchedulerRuntime(
   try {
     insertQueuedItem(defaults, { id: "default", now: clock.now() });
     bindWorkItemRepository(defaults, "default", repository);
-    saveSchedulingContext(defaults, {
-      itemId: "default",
-      projectId: "project",
-      paths: ["src/default"],
-    });
+    await sqliteDb(defaults).run((q) =>
+      saveSchedulingContextSteps(q, {
+        itemId: "default",
+        projectId: "project",
+        paths: ["src/default"],
+      }),
+    );
     const loop = new JobLoop(defaults, clock);
     const run = () => workspaceDispatch(defaults, { now: clock.now() });
     registerScheduler(

@@ -28,7 +28,7 @@ import {
   createAdmission,
   dispatch,
   registerScheduler,
-  saveSchedulingContext,
+  saveSchedulingContextSteps,
 } from "../../src/scheduler";
 import { joinFakeWorkspace, workspaceAdmission, workspaceDispatch } from "../fake-workspace";
 
@@ -114,7 +114,7 @@ export async function probeScheduler(
       },
     };
   };
-  const setup = (
+  const setup = async (
     name: string,
     count: number,
     paths: (index: number) => string[] = (index) => [`src/task-${index}`],
@@ -127,14 +127,16 @@ export async function probeScheduler(
     for (const [index, id] of ids.entries()) {
       insertQueuedItem(db, { id, now: index });
       bindWorkItemRepository(db, id, repository);
-      saveSchedulingContext(db, { itemId: id, projectId: "project", paths: paths(index) });
+      await sqliteDb(db).run((q) =>
+        saveSchedulingContextSteps(q, { itemId: id, projectId: "project", paths: paths(index) }),
+      );
     }
     return { directory, db, ids };
   };
   const count = (db: ReturnType<typeof openDatabase>, table: string) =>
     (db.query(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
   {
-    const { directory, db, ids } = setup("competing", 20);
+    const { directory, db, ids } = await setup("competing", 20);
     for (const id of ids) joinFakeWorkspace(db, `epic-${id}`);
     db.run("VACUUM INTO ?", [join(directory, "template.sqlite")]);
     const children = Array.from({ length: 20 }, (_, index) => spawnContender(directory, index));
@@ -192,7 +194,7 @@ export async function probeScheduler(
     ["hot", (index: number) => [index ? "packages/other/package.json" : "bun.lock"]],
     ["unknown", () => []],
   ] as const) {
-    const { db, ids } = setup(name, 2, paths);
+    const { db, ids } = await setup(name, 2, paths);
     assert.equal((await workspaceDispatch(db, { now: 1000 })).length, 2);
     const first = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] })!;
     const second = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] })!;
@@ -206,7 +208,7 @@ export async function probeScheduler(
   }
   {
     for (const glob of ["src*", "package*.json", "ab*"]) {
-      const { db } = setup(`root-glob-${glob.replaceAll("*", "")}`, 2, (index) => [
+      const { db } = await setup(`root-glob-${glob.replaceAll("*", "")}`, 2, (index) => [
         index ? glob.replace("*", "concrete") : glob,
       ]);
       assert.equal((await workspaceDispatch(db, { now: 1000 })).length, 2);
@@ -217,7 +219,7 @@ export async function probeScheduler(
     });
   }
   {
-    const { db, ids } = setup("claimed-retraction", 2, () => ["src/shared"]);
+    const { db, ids } = await setup("claimed-retraction", 2, () => ["src/shared"]);
     assert.deepEqual(await workspaceDispatch(db, { now: 1000 }), ids);
     const claimed = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] })!;
     const first = (claimed.payload as { itemId: string }).itemId;
@@ -248,7 +250,7 @@ export async function probeScheduler(
   }
   {
     for (const running of [false, true]) {
-      const { db, ids } = setup(`stale-start-${running}`, 1);
+      const { db, ids } = await setup(`stale-start-${running}`, 1);
       await workspaceDispatch(db, { now: 1000 });
       if (running) assert(claimNextJob(db, { now: 1000, leaseMs: 10, queues: [JOB_KIND.start] }));
       db.run("UPDATE work_item SET state='failed' WHERE id=?", [ids[0]!]);
@@ -268,7 +270,7 @@ export async function probeScheduler(
     });
   }
   {
-    const { db, ids } = setup("idle-merge", 2, () => ["src/shared"]);
+    const { db, ids } = await setup("idle-merge", 2, () => ["src/shared"]);
     db.run("UPDATE work_item SET delegation_id=? WHERE id=?", [`epic-${ids[0]!}`, ids[1]!]);
     recordLinearInstallation(db, {
       organizationId: "merge-org",
@@ -307,7 +309,7 @@ export async function probeScheduler(
   }
   {
     for (const status of ["active", "provisioning"] as const) {
-      const { db, ids } = setup(`merge-run-${status}`, 2, () => ["src/shared"]);
+      const { db, ids } = await setup(`merge-run-${status}`, 2, () => ["src/shared"]);
       assert.deepEqual(await dispatch(db, { now: 1000, admission: onlyStarts(db, ids[0]!) }), [
         ids[0]!,
       ]);
@@ -325,7 +327,7 @@ export async function probeScheduler(
     });
   }
   {
-    const { db, ids } = setup("waiting-independent", 3, () => []);
+    const { db, ids } = await setup("waiting-independent", 3, () => []);
     db.run("UPDATE work_item SET state='awaiting_input' WHERE id=?", [ids[0]!]);
     assert.deepEqual(await workspaceDispatch(db, { now: 1000 }), ids.slice(1));
     observed("A waiting task without live work releases capacity for two independent tasks", {
@@ -334,7 +336,7 @@ export async function probeScheduler(
     db.close();
   }
   {
-    const { db, ids } = setup("duplicate-issue", 2, () => []);
+    const { db, ids } = await setup("duplicate-issue", 2, () => []);
     assert.throws(
       () =>
         db.run("UPDATE work_item SET linear_issue_id=? WHERE id=?", [
@@ -347,7 +349,7 @@ export async function probeScheduler(
     db.close();
   }
   {
-    const { db } = setup("rollback", 2);
+    const { db } = await setup("rollback", 2);
     db.run(
       "CREATE TRIGGER fail_admission BEFORE INSERT ON scheduler_admission BEGIN SELECT RAISE(ABORT,'injected crash'); END",
     );
@@ -361,7 +363,7 @@ export async function probeScheduler(
     db.close();
   }
   {
-    const { db, ids } = setup("priority", 4);
+    const { db, ids } = await setup("priority", 4);
     const issue = (id: string) => `lin-item-${id}`;
     const epic = (id: string) => `epic-${id}`;
     db.run("UPDATE work_item SET delegation_id=? WHERE id LIKE 'priority-%'", [epic(ids[0]!)]);
@@ -375,7 +377,7 @@ export async function probeScheduler(
     db.close();
   }
   {
-    const { db } = setup("authoritative", 0);
+    const { db } = await setup("authoritative", 0);
     const tracker = createFakeTracker([
       {
         linearIssueId: "parent",
@@ -434,7 +436,7 @@ export async function probeScheduler(
     db.close();
   }
   {
-    const { db } = setup("sessions", 0);
+    const { db } = await setup("sessions", 0);
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
     const tracker = createFakeTracker(
       ["one", "two"].map((parent) => ({
@@ -475,11 +477,13 @@ export async function probeScheduler(
         intake.items.map((item) => item.id),
       );
       for (const item of intake.items)
-        saveSchedulingContext(db, {
-          itemId: item.id,
-          projectId: "same-project",
-          paths: [`src/${item.linearIssueId}`],
-        });
+        await sqliteDb(db).run((q) =>
+          saveSchedulingContextSteps(q, {
+            itemId: item.id,
+            projectId: "same-project",
+            paths: [`src/${item.linearIssueId}`],
+          }),
+        );
       for (const item of intake.items)
         await syncItemDependencies(db, {
           itemId: item.id,
@@ -512,7 +516,7 @@ export async function probeScheduler(
     db.close();
   }
   {
-    const { db } = setup("effects", 2);
+    const { db } = await setup("effects", 2);
     assert.deepEqual(
       await dispatch(db, {
         now: 1000,
@@ -536,8 +540,11 @@ export async function probeScheduler(
     db.close();
   }
   {
-    const { db, ids } = setup("unknown-project", 3);
-    for (const id of ids) saveSchedulingContext(db, { itemId: id, paths: ["src/a"] });
+    const { db, ids } = await setup("unknown-project", 3);
+    for (const id of ids)
+      await sqliteDb(db).run((q) =>
+        saveSchedulingContextSteps(q, { itemId: id, paths: ["src/a"] }),
+      );
     db.run("UPDATE work_item_repository SET repo=item_id");
     assert.equal((await workspaceDispatch(db, { now: 1000 })).length, 3);
     observed("Unknown project identity does not cap ready items across repositories", {
@@ -546,7 +553,7 @@ export async function probeScheduler(
     db.close();
   }
   {
-    const { db, ids } = setup("draining", 2);
+    const { db, ids } = await setup("draining", 2);
     await workspaceDispatch(db, { now: 1000 });
     insertRun(db, { itemId: ids[0]!, now: 1000, status: "active" });
     const claimed = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] });
@@ -559,7 +566,7 @@ export async function probeScheduler(
     db.close();
   }
   {
-    const { db } = setup("tick", 1);
+    const { db } = await setup("tick", 1);
     let now = 1000;
     const loop = new JobLoop(db, { now: () => now, mono: () => now });
     registerScheduler(
@@ -585,7 +592,7 @@ export async function probeScheduler(
     db.close();
   }
   {
-    const { db } = setup("workers", 2);
+    const { db } = await setup("workers", 2);
     await workspaceDispatch(db, { now: 1000 });
     const controller = new AbortController();
     const entered: string[] = [];
