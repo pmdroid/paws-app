@@ -39,6 +39,7 @@ const TEST_CALLBACKS = new Set(["test", "it", "beforeAll", "beforeEach", "afterA
 const TRANSACTION_CALLS = new Set(["transaction", "immediate"]);
 const DB_TYPES = new Set(["Db", "SqliteDb", "PgDb"]);
 const LEFT_ALONE = new Set(["migrate", "appliedMigrations", "legacyMigrate", "sqliteDb"]);
+const RUNNERS = new Set(["settled", "sqliteDb", "run", "transaction", "runSteps", "sync"]);
 
 export const manipulationSettings = {
   indentationText: IndentationText.TwoSpaces,
@@ -113,7 +114,9 @@ function references(decl: FunctionDeclaration | VariableDeclaration | MethodDecl
     .findReferencesAsNodes()
     .filter(
       (ref) =>
-        !ref.getFirstAncestor((n) => Node.isImportDeclaration(n) || Node.isExportDeclaration(n)),
+        !ref.getFirstAncestor(
+          (n) => Node.isImportDeclaration(n) || Node.isExportDeclaration(n) || Node.isTypeQuery(n),
+        ),
     );
 }
 
@@ -132,11 +135,34 @@ function findWrappers(files: SourceFile[], dbDir: string, report: Report): Wrapp
         report.withoutSteps.push({ ...site(fn), name });
         continue;
       }
+      if (!onlyRunsSteps(fn, steps)) {
+        report.boundaries.push({
+          ...site(fn),
+          reason: "body does more than run its Steps",
+          wrapper: name,
+        });
+        continue;
+      }
       const sibling = sf.getFunction(`${name}Async`);
       wrappers.push({ fn, steps, sibling: sibling?.isAsync() ? sibling : undefined });
     }
   }
   return wrappers;
+}
+
+function onlyRunsSteps(fn: FunctionDeclaration, steps: FunctionDeclaration): boolean {
+  const statements = fn.getStatements();
+  if (statements.length !== 1) return false;
+  const [statement] = statements;
+  if (statement!.getDescendantsOfKind(SyntaxKind.AsExpression).length > 0) return false;
+  return statement!.getDescendantsOfKind(SyntaxKind.CallExpression).every((call) => {
+    const name = calleeName(call);
+    return name === steps.getName() || (name !== undefined && RUNNERS.has(name));
+  });
+}
+
+function topLevelAwaits(sf: SourceFile): boolean {
+  return /\/(test|scripts)\//.test(sf.getFilePath());
 }
 
 function plan(wrapper: Wrapper, inScope: Set<SourceFile>, report: Report): Plan | null {
@@ -183,6 +209,10 @@ function plan(wrapper: Wrapper, inScope: Set<SourceFile>, report: Report): Plan 
         continue;
       }
       const fn = call.getFirstAncestor(isFunctionLike);
+      if (!fn && topLevelAwaits(call.getSourceFile())) {
+        result.awaits.set(call, wrap);
+        continue;
+      }
       const reason = enclosingBoundary(fn);
       if (reason) {
         stop(call, reason);
@@ -219,12 +249,19 @@ function enclosingBoundary(fn: Node | undefined): string | undefined {
   if (Node.isFunctionDeclaration(fn)) return undefined;
   if (Node.isVariableDeclaration(parent) && parent.getInitializer() === fn) return undefined;
   if (Node.isCallExpression(parent) && parent.getArguments().includes(fn)) {
-    const name = calleeName(parent) ?? "an expression";
+    const name = calleeName(parent) ?? eachName(parent) ?? "an expression";
     if (TEST_CALLBACKS.has(name)) return undefined;
     if (SYNC_CALLBACKS.has(name)) return `sync callback (${name})`;
     return `callback passed to ${name}`;
   }
   return "function value";
+}
+
+function eachName(call: CallExpression): string | undefined {
+  const callee = call.getExpression();
+  if (!Node.isCallExpression(callee) || calleeName(callee) !== "each") return undefined;
+  const owner = callee.getExpression();
+  return Node.isPropertyAccessExpression(owner) ? owner.getExpression().getText() : undefined;
 }
 
 function moduleSpecifier(from: SourceFile, to: SourceFile): string {

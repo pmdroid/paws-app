@@ -61,3 +61,14 @@ export function labelItem(db: Database, name: string): string {
 export function itemFile(db: Database): string {
   return db.filename;
 }
+
+export function* bumpItemSteps(_q: Q, name: string): Steps<boolean> {
+  yield name;
+  return true;
+}
+
+export function bumpItem(db: Database, name: string): boolean {
+  const bumped = settled(sqliteDb(db).run((q) => bumpItemSteps(q, name)));
+  if (bumped) console.log(name);
+  return bumped;
+}

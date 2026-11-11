@@ -37,6 +37,9 @@ test.each([
   ["a Db argument is kept as is", "db-arg.ts"],
   ["propagation reaches the caller's caller", "propagation.ts"],
   ["a sync test callback becomes async", "sync-test.ts"],
+  ["a test.each callback becomes async", "each.ts"],
+  ["a typeof reference does not hold the wrapper back", "typeof.ts"],
+  ["a test or script module awaits at top level", "test/top.ts"],
   ["a .map callback stays synchronous", "map.ts"],
   ["a transaction body stays synchronous", "transaction.ts"],
   ["callers of a folded fooAsync sibling use the final name", "fold.ts"],
@@ -53,8 +56,9 @@ test("boundaries and exports without a Steps form are reported", () => {
     [7, "inside a transaction(...) body"],
   ]);
   expect(boundary("outside.ts")).toEqual([[5, "used outside the given files"]]);
+  expect(boundary("db/items.ts")).toEqual([[70, "body does more than run its Steps"]]);
   expect(first.withoutSteps.map((s) => s.name)).toEqual(["itemFile"]);
-  expect(first).toMatchObject({ wrappers: 3, folded: 1, calls: 7, wrapped: 4, asyncFunctions: 6 });
+  expect(first).toMatchObject({ wrappers: 3, folded: 1, calls: 10, wrapped: 7, asyncFunctions: 8 });
 });
 
 test("a second run changes nothing", () => {
