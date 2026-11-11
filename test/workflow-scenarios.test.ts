@@ -312,7 +312,7 @@ describe("combined recovery scenarios", () => {
   });
 });
 
-function runnerWorld() {
+async function runnerWorld() {
   const w = new World(Date.now());
   const keys = generateKeyPairSync("ed25519");
   const controller = () =>
@@ -381,8 +381,8 @@ function runnerWorld() {
   const host = { runnerVersion: CONFIRMED_TEARDOWN_RUNNER_VERSION.join(".") };
   const work = controller();
   work.assign(command);
-  work.acknowledge("box", command.id);
-  work.heartbeat(
+  await work.acknowledge("box", command.id);
+  await work.heartbeat(
     "box",
     1,
     host,
@@ -399,7 +399,7 @@ function runnerWorld() {
 
 describe("runner control across Paws restarts", () => {
   test("PAS-943/961: a stop whose teardown is unconfirmed keeps the slot through restarts, sweeps and the cancel receipt", async () => {
-    const { w, controller, run, command, host, workspaceId } = runnerWorld();
+    const { w, controller, run, command, host, workspaceId } = await runnerWorld();
     try {
       expect(
         applyLinearCommand(w.db, {
@@ -431,9 +431,9 @@ describe("runner control across Paws restarts", () => {
       w.crash();
       w.start();
       await held();
-      controller().acknowledge("box", cancel.id);
+      await controller().acknowledge("box", cancel.id);
       w.advance(cancel.expiresAt - w.now + RUNNER_LEASE_GRACE_MS + 1);
-      controller().heartbeat("box", 1, host, undefined, undefined, undefined, undefined, [
+      await controller().heartbeat("box", 1, host, undefined, undefined, undefined, undefined, [
         { runId: run.id, generation: 1 },
       ]);
       w.stop();
@@ -444,7 +444,7 @@ describe("runner control across Paws restarts", () => {
         controller().assign({ ...command, id: "work-2", generation: 2, issuedAt: w.now }),
       ).toThrow(RunnerTeardownPending);
 
-      controller().heartbeat(
+      await controller().heartbeat(
         "box",
         1,
         host,
@@ -468,8 +468,8 @@ describe("runner control across Paws restarts", () => {
     }
   });
 
-  test("a runner reconnecting after its lease expired cannot act for the fenced generation", () => {
-    const { w, controller, run } = runnerWorld();
+  test("a runner reconnecting after its lease expired cannot act for the fenced generation", async () => {
+    const { w, controller, run } = await runnerWorld();
     try {
       expect(controller().current(run.id, 1).command.id).toBe("work-1");
       w.advance(10 * MINUTE + RUNNER_LEASE_GRACE_MS);
@@ -481,7 +481,7 @@ describe("runner control across Paws restarts", () => {
         else w.stop();
         w.start();
         expect(() => controller().current(run.id, 1)).toThrow(RunnerWorkFencedError);
-        controller().heartbeat("box", 1, {}, undefined, undefined, undefined, undefined, [
+        await controller().heartbeat("box", 1, {}, undefined, undefined, undefined, undefined, [
           { runId: run.id, generation: 1 },
         ]);
         expect(() => controller().current(run.id, 1)).toThrow(RunnerWorkFencedError);

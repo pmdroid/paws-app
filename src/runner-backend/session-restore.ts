@@ -1,13 +1,14 @@
-import type { Database } from "bun:sqlite";
 import {
-  currentRunnerAgentVersion,
-  lastRunCommandAccount,
-  latestSealedSnapshot,
-  runnerAgentLoginReady,
+  currentRunnerAgentVersionSteps,
+  lastRunCommandAccountSteps,
+  latestSealedSnapshotSteps,
+  runnerAgentLoginReadySteps,
   runnerStandingSteps,
-  runnerTargetForRestore,
+  runnerTargetForRestoreSteps,
   storedRunnerNameSteps,
   type Db,
+  type Q,
+  type Steps,
 } from "../db";
 import {
   CLAUDE_SESSION_RESTORE_RUNNER_VERSION,
@@ -72,16 +73,18 @@ export function versionAtLeast(
  * ready, and the agent installed. A different agent version does not refuse the restore: the
  * runner tries `session/load`, and the notice names both versions if the load fails.
  */
-export function planSessionRestore(
-  db: Database,
-  input: {
-    runId: string;
-    agent: string;
-    targetRunnerId: string;
-    targetAccount?: { accountId: string; named: boolean };
-  },
-): SessionRestorePlan {
-  const snapshot = latestSealedSnapshot(db, input.runId);
+export type SessionRestoreInput = {
+  runId: string;
+  agent: string;
+  targetRunnerId: string;
+  targetAccount?: { accountId: string; named: boolean };
+};
+
+export function* planSessionRestoreSteps(
+  q: Q,
+  input: SessionRestoreInput,
+): Steps<SessionRestorePlan> {
+  const snapshot = yield* latestSealedSnapshotSteps(q, input.runId);
   // Another agent's snapshot is not this run's session.
   const minimum = snapshot && RESTORE_RUNNER_VERSION.get(snapshot.agent);
   if (
@@ -91,12 +94,12 @@ export function planSessionRestore(
     !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(snapshot.sessionId)
   )
     return { eligible: false, failure: "no_snapshot" };
-  const target = runnerTargetForRestore(db, input.targetRunnerId);
+  const target = yield* runnerTargetForRestoreSteps(q, input.targetRunnerId);
   if (!target || !versionAtLeast(target.version, minimum))
     return { eligible: false, failure: "old_runner" };
   if (target.ownerUserId !== snapshot.ownerUserId)
     return { eligible: false, failure: "other_account" };
-  const source = lastRunCommandAccount(db, input.runId, snapshot.generation);
+  const source = yield* lastRunCommandAccountSteps(q, input.runId, snapshot.generation);
   const sourceNamed = source?.named === 1;
   const targetNamed = input.targetAccount?.named === true;
   if (
@@ -104,9 +107,9 @@ export function planSessionRestore(
     (sourceNamed && source!.accountId !== input.targetAccount!.accountId)
   )
     return { eligible: false, failure: "other_account" };
-  if (!targetNamed && !runnerAgentLoginReady(db, input.targetRunnerId, snapshot.agent))
+  if (!targetNamed && !(yield* runnerAgentLoginReadySteps(q, input.targetRunnerId, snapshot.agent)))
     return { eligible: false, failure: "login_not_ready" };
-  const installed = currentRunnerAgentVersion(db, input.targetRunnerId, snapshot.agent);
+  const installed = yield* currentRunnerAgentVersionSteps(q, input.targetRunnerId, snapshot.agent);
   if (installed === null) return { eligible: false, failure: "not_installed" };
   return {
     eligible: true,

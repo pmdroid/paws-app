@@ -108,8 +108,13 @@ async function fixture() {
     prompt: "Fixture",
   };
   work.assign(command);
-  work.acknowledge(runnerId, command.id);
-  const grant = work.issueGrant({ runnerId, runId: run.id, commandId: command.id, generation: 1 });
+  await work.acknowledge(runnerId, command.id);
+  const grant = await work.issueGrant({
+    runnerId,
+    runId: run.id,
+    commandId: command.id,
+    generation: 1,
+  });
   // A helper holds the runner's only slot, so the runner has no capacity left.
   db.run(
     "INSERT INTO runner_helper(id,runner_id,workspace_id,session_id,session_generation,runner_fence,envelope,expires_at) VALUES('busy',?,?,'session',0,0,'{}',?)",
@@ -143,20 +148,22 @@ test("a heartbeat 70 s late for a run the runner reports, on a full runner, rene
   const f = await fixture();
   try {
     expect(
-      f.work.heartbeat(
-        f.runnerId,
-        1,
-        {},
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        running(f.run.id),
+      (
+        await f.work.heartbeat(
+          f.runnerId,
+          1,
+          {},
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          running(f.run.id),
+        )
       ).fenced,
     ).toEqual([]);
     f.clock.at += 60_000 + 70_000;
     // Before the late heartbeat lands, the run's own requests still see it as reported.
-    const renewed = f.work.issueGrant({
+    const renewed = await f.work.issueGrant({
       runnerId: f.runnerId,
       runId: f.run.id,
       commandId: f.command.id,
@@ -164,7 +171,7 @@ test("a heartbeat 70 s late for a run the runner reports, on a full runner, rene
     });
     expect(renewed.expiresAt).toBeGreaterThan(f.clock.at);
     f.clock.at += 5_000;
-    const reply = f.work.heartbeat(
+    const reply = await f.work.heartbeat(
       f.runnerId,
       1,
       {},
@@ -180,7 +187,7 @@ test("a heartbeat 70 s late for a run the runner reports, on a full runner, rene
     ]);
     expect(f.grants()).toBe(1);
     expect(
-      f.results().answers({
+      await f.results().answers({
         runnerId: f.runnerId,
         runId: f.run.id,
         generation: 1,
@@ -197,7 +204,7 @@ test("the same late run on a full runner is fenced when the runner does not repo
   const f = await fixture();
   try {
     f.clock.at += 60_000 + 70_000;
-    const reply = f.work.heartbeat(
+    const reply = await f.work.heartbeat(
       f.runnerId,
       1,
       {},
@@ -219,7 +226,7 @@ test("a runner that does not report its work keeps today's rule: a full runner i
   const f = await fixture();
   try {
     f.clock.at += 60_000 + 70_000;
-    const reply = f.work.heartbeat(f.runnerId);
+    const reply = await f.work.heartbeat(f.runnerId);
     expect(reply.fenced).toEqual(running(f.run.id));
     expect(f.grants()).toBe(0);
   } finally {
@@ -230,7 +237,7 @@ test("a runner that does not report its work keeps today's rule: a full runner i
 test("a run reported earlier but left out of the latest report gets no grace on a full runner", async () => {
   const f = await fixture();
   try {
-    f.work.heartbeat(
+    await f.work.heartbeat(
       f.runnerId,
       1,
       {},
@@ -242,14 +249,14 @@ test("a run reported earlier but left out of the latest report gets no grace on 
     );
     f.db.run("UPDATE runner SET live_reported_at=? WHERE id=?", [f.clock.at + 1, f.runnerId]);
     f.clock.at += 60_000 + 70_000;
-    expect(() =>
+    await expect(
       f.work.issueGrant({
         runnerId: f.runnerId,
         runId: f.run.id,
         commandId: f.command.id,
         generation: 1,
       }),
-    ).toThrow("Runner work is fenced or its lease expired.");
+    ).rejects.toThrow("Runner work is fenced or its lease expired.");
   } finally {
     f.close();
   }

@@ -38,7 +38,7 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
     outbox: new OutboxDispatcher(db, clock),
     clock,
     pawsRoot: tempHome(),
-    scheduling: () => ({}),
+    scheduling: async () => ({}),
   });
   const states = [
     "running",

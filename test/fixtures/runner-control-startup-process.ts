@@ -56,9 +56,9 @@ if (mode === "remote") {
 }
 if (mode === "invalid-execution") {
   source.PAWS_EXECUTION = "local";
-  assert.throws(() => startPaws(source), /remote runner/);
+  await assert.rejects(() => startPaws(source), /remote runner/);
   source.PAWS_EXECUTION = "remtoe";
-  assert.throws(() => startPaws(source), /PAWS_EXECUTION must be remote/);
+  await assert.rejects(() => startPaws(source), /PAWS_EXECUTION must be remote/);
   assert(!existsSync(join(root, "paws.db")));
   observe("local and unknown execution modes fail before opening production state", {
     databaseOpened: false,
@@ -94,7 +94,7 @@ if (mode === "transcripts-later") {
   source.GITHUB_APP_ID = "99";
   source.GITHUB_APP_INSTALLATION_ID = "1";
   source.GITHUB_APP_PRIVATE_KEY_PATH = source.PAWS_TLS_KEY_PATH;
-  const paws = startPaws(source, { server: browserServer });
+  const paws = await startPaws(source, { server: browserServer });
   try {
     const health = await runtimeNativeFetch(`https://127.0.0.1:${browserPort}/health`, {
       tls: { ca },
@@ -112,7 +112,7 @@ if (mode === "transcripts-later") {
 }
 if (mode === "invalid") {
   source.PAWS_RUNNER_HOST = "https://invalid.example/path";
-  assert.throws(() => startPaws(source), /hostname or IP/);
+  await assert.rejects(() => startPaws(source), /hostname or IP/);
   assert(!existsSync(join(root, "paws.db")));
   observe("invalid runner hostname fails before opening production state", {
     databaseOpened: false,
@@ -155,7 +155,7 @@ if (mode === "pending") runtimeLinear.installation = pending.promise;
 if (mode === "remote") {
   const config = join(root, "secrets", "runner-transcript-storage.json");
   writeFileSync(config, "invalid", { mode: 0o600 });
-  assert.throws(
+  await assert.rejects(
     () =>
       startPaws(source, {
         runnerRepositoryAccess: {
@@ -168,7 +168,7 @@ if (mode === "remote") {
   assert(!existsSync(join(root, "paws.db")));
   rmSync(config);
 }
-const paws = startPaws(source, {
+const paws = await startPaws(source, {
   server: browserServer,
   ...(enabled
     ? {

@@ -193,7 +193,7 @@ const start = () =>
     { PAWS_HOME: home, PAWS_PORT: "0" },
     { refreshAgentCatalog: false, refreshRepositories: false },
   );
-let paws = start();
+let paws = await start();
 await paws.ready;
 const userId = putWorkspaceUser(paws.db, {
   id: workspaceId(),
@@ -350,7 +350,7 @@ const runtimeOptions: Parameters<typeof openRunnerRuntime>[0] = {
     async heartbeat(skills, runtimes, agents, live) {
       reachable();
       heartbeats++;
-      return services.work.heartbeat(
+      return await services.work.heartbeat(
         runnerId,
         1,
         { runnerVersion: "9.0.0" },
@@ -363,13 +363,13 @@ const runtimeOptions: Parameters<typeof openRunnerRuntime>[0] = {
     },
     async pollCommands() {
       reachable();
-      for (const envelope of services.work.commands(runnerId)) {
+      for (const envelope of await services.work.commands(runnerId)) {
         const command = JSON.parse(
           Buffer.from(envelope.payload, "base64url").toString(),
         ) as RunnerCommand;
         commands.set(command.id, command);
         if (command.type === "probe") {
-          services.work.acknowledge(runnerId, command.id);
+          await services.work.acknowledge(runnerId, command.id);
           await services.health.submit(runnerId, result(command, workspaceId()));
         } else if (!pending.some((c) => c.id === command.id)) pending.push(command);
       }
@@ -378,13 +378,13 @@ const runtimeOptions: Parameters<typeof openRunnerRuntime>[0] = {
     pendingCommands: () => pending,
     async acknowledgeCommand(id) {
       reachable();
-      services.work.acknowledge(runnerId, id);
+      await services.work.acknowledge(runnerId, id);
       pending = pending.filter((c) => c.id !== id);
     },
     async issueRunGrant(runId, request) {
       reachable();
       try {
-        return services.work.issueGrant({ runnerId, runId, ...request });
+        return await services.work.issueGrant({ runnerId, runId, ...request });
       } catch (error) {
         throw new RunnerRequestError(
           runnerFailureStatus(error),
@@ -397,7 +397,7 @@ const runtimeOptions: Parameters<typeof openRunnerRuntime>[0] = {
     },
     async sendEvent(event, token) {
       reachable();
-      const receipt = services.work.event({ runnerId, token, ...event });
+      const receipt = await services.work.event({ runnerId, token, ...event });
       if (receipt.duplicate) duplicateEvents++;
       if (!lostEventReceipts.has(`${event.runId}:${event.generation}`)) {
         lostEventReceipts.add(`${event.runId}:${event.generation}`);
@@ -411,7 +411,7 @@ const runtimeOptions: Parameters<typeof openRunnerRuntime>[0] = {
     },
     async postResult(runId, generation, value, token) {
       reachable();
-      const receipt = services.results.submit({
+      const receipt = await services.results.submit({
         runnerId,
         runId,
         generation,
@@ -578,7 +578,7 @@ async function restartMidTurn(command: RunnerCommand) {
   finish(command);
   await runtime.tick();
   assert(!accepted.some((r) => r.commandId === command.id));
-  paws = start();
+  paws = await start();
   await paws.ready;
   down = false;
   assert.equal(getWorkItem(paws.db, command.itemId)?.recoveryAttempts, 0);

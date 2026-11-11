@@ -149,13 +149,13 @@ export async function probeAgentModels(
     assert.deepEqual(await empty!.json(), { catalogs: [] });
     assert.equal(count(), 0);
     observe("cached HTTP reads do not dispatch ACP", true, { commands: count() });
-    catalog.refresh();
+    await catalog.refresh();
     assert.equal(count(), 1);
-    catalog.refresh();
+    await catalog.refresh();
     assert.equal(count(), 1);
     observe("background discovery queues one signed member probe", true, { commands: count() });
     await complete();
-    catalog.refresh();
+    await catalog.refresh();
     assert.equal(catalog.read(principal)[0]!.models.length, 2);
     assert.deepEqual(
       catalog.read(principal)[0]!.efforts.map((choice) => choice.id),
@@ -169,7 +169,7 @@ export async function probeAgentModels(
     const specific = latest();
     assert.equal(specific.type === "probe" && specific.profile.model, "model-b");
     await complete();
-    catalog.refresh();
+    await catalog.refresh();
     assert.deepEqual(
       catalog
         .read(principal)[0]!
@@ -194,7 +194,7 @@ export async function probeAgentModels(
       runnerId,
     ]);
     assert.deepEqual(catalog.read(principal), before);
-    catalog.refresh();
+    await catalog.refresh();
     assert.equal(count(), 2);
     observe("offline and cooling hosts retain cached choices", true, {});
     now += 6 * 60 * 60_000 + 1;
@@ -207,23 +207,23 @@ export async function probeAgentModels(
       "INSERT INTO runner_helper(id,runner_id,workspace_id,session_id,session_generation,runner_fence,envelope,expires_at) VALUES('models-busy',?,?,'models-busy',0,0,'{}',?)",
       [runnerId, workspace, now + 60_000],
     );
-    catalog.refresh();
+    await catalog.refresh();
     assert.equal(count(), 2);
     observe("background discovery yields to active runner work", true, {});
     db.run("UPDATE runner_helper SET ended_at=? WHERE id='models-busy'", [now]);
-    catalog.refresh();
+    await catalog.refresh();
     assert.equal(count(), 3);
     await complete(true);
-    catalog.refresh();
+    await catalog.refresh();
     assert.deepEqual(catalog.read(principal), before);
     const afterFailure = count();
-    catalog.refresh();
+    await catalog.refresh();
     assert.equal(count(), afterFailure);
     observe("failed refresh preserves last good cache and backs off", true, {});
     db.run("UPDATE runner_agent_policy SET auth_expired=1 WHERE runner_id=?", [runnerId]);
     assert.deepEqual(catalog.read(principal), []);
     const beforeDisconnected = count();
-    catalog.refresh();
+    await catalog.refresh();
     assert.equal(count(), beforeDisconnected);
     observe("disconnected agent accounts cannot supply new or cached choices", true, {});
     db.run("UPDATE runner_agent_policy SET auth_expired=0 WHERE runner_id=?", [runnerId]);

@@ -307,7 +307,7 @@ export async function probeExecutionStopStates(root: string) {
         jobs: new JobLoop(db, systemClock),
         outbox: new OutboxDispatcher(db, systemClock),
         pawsRoot: directory,
-        scheduling: () => ({}),
+        scheduling: async () => ({}),
         ...(remote
           ? {
               remoteExecution: {

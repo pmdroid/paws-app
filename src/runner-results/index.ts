@@ -67,7 +67,7 @@ export function createRunnerResults(options: {
     return command;
   }
   const api = {
-    submit(input: {
+    async submit(input: {
       runnerId: string;
       runId: string;
       generation: number;
@@ -75,7 +75,7 @@ export function createRunnerResults(options: {
       result: RunnerResult;
     }) {
       const result = RunnerResultSchema.parse(input.result);
-      return transaction(function* (q) {
+      return store.transaction(function* (q) {
         const { command } = yield* work.authorizeSteps(q, input);
         if (
           (command.type !== "run" && command.type !== "review" && command.type !== "task") ||
@@ -167,16 +167,16 @@ export function createRunnerResults(options: {
         });
       });
     },
-    answers(input: {
+    async answers(input: {
       runnerId: string;
       runId: string;
       generation: number;
       token: string;
       after: number;
     }) {
-      work.authorize(input);
+      await work.authorizeAsync(input);
       z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).parse(input.after);
-      return read(function* (q) {
+      return store.run(function* (q) {
         let unanswered: { sequence: number } | undefined;
         for (const row of yield* unansweredRunnerQuestionsSteps(q, input, QUESTION_TYPES))
           if (QUESTION_TYPES.includes((yield* work.openEventSteps(q, row)).type)) {
@@ -188,10 +188,10 @@ export function createRunnerResults(options: {
         );
       });
     },
-    deliverFollowUp(itemId: string, body: string): boolean {
+    async deliverFollowUp(itemId: string, body: string): Promise<boolean> {
       const text = z.string().min(1).max(65536).safeParse(body);
       if (!text.success) return false;
-      return transaction(function* (q) {
+      return store.transaction(function* (q) {
         const row = yield* itemRunnerFollowUpTargetSteps(q, itemId, runnerLeaseCutoff(now()));
         if (!row || !followUpsSupported(row.version)) return false;
         try {
@@ -209,16 +209,16 @@ export function createRunnerResults(options: {
         return true;
       });
     },
-    followUps(input: {
+    async followUps(input: {
       runnerId: string;
       runId: string;
       generation: number;
       token: string;
       after: number;
     }) {
-      work.authorize(input);
+      await work.authorizeAsync(input);
       z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).parse(input.after);
-      return read((q) => runnerFollowUpsAfterSteps(q, input, input.after));
+      return store.run((q) => runnerFollowUpsAfterSteps(q, input, input.after));
     },
     async fetch(request: Request, runnerId: string): Promise<Response | null> {
       const match = /^\/v1\/runs\/([^/]+)\/(result|answers|follow-ups)$/.exec(
@@ -238,10 +238,10 @@ export function createRunnerResults(options: {
         };
         const body = await readBody(request);
         if (match[2] === "result")
-          return json(api.submit({ ...input, ...resultInput.parse(body) }));
+          return json(await api.submit({ ...input, ...resultInput.parse(body) }));
         if (match[2] === "follow-ups")
-          return json({ followUps: api.followUps({ ...input, ...answerInput.parse(body) }) });
-        return json({ answers: api.answers({ ...input, ...answerInput.parse(body) }) });
+          return json({ followUps: await api.followUps({ ...input, ...answerInput.parse(body) }) });
+        return json({ answers: await api.answers({ ...input, ...answerInput.parse(body) }) });
       } catch (error) {
         journalCaught(error, "runner-results.fetch.get", null);
         const status = runnerFailureStatus(error);

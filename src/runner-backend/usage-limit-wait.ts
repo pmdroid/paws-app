@@ -1,19 +1,18 @@
 import { setTimeout as delay } from "node:timers/promises";
-import type { Database } from "bun:sqlite";
 import type { RunAgentOptions } from "../acp";
 import { usageLimitNotice } from "../core";
-import { endUsagePause, startUsagePause, usagePause } from "../db";
+import { endUsagePauseAsync, startUsagePauseAsync, usagePauseSteps, type Db } from "../db";
 import type { UsageLimitWait } from "./failover";
 
 export function usageLimitWait(
-  options: { db: Database; now: () => number; mono: () => number; interval: number },
+  options: { store: Db; now: () => number; mono: () => number; interval: number },
   target: () =>
     | { itemId: string; runId: string }
     | null
     | Promise<{ itemId: string; runId: string } | null>,
   input: RunAgentOptions,
 ): UsageLimitWait {
-  const { db, now, mono, interval } = options;
+  const { store, now, mono, interval } = options;
   return {
     now,
     async pause(limit, profilesChanged) {
@@ -21,8 +20,8 @@ export function usageLimitWait(
       if (!run) throw limit;
       const { itemId, runId } = run;
       const agent = agentName(limit.agent);
-      startUsagePause(
-        db,
+      await startUsagePauseAsync(
+        store,
         {
           runId,
           itemId,
@@ -41,14 +40,14 @@ export function usageLimitWait(
           text: `Paused: ${usageLimitNotice(limit.agent, limit.resumeAt, now())}`,
         });
         for (;;) {
-          const wait = (usagePause(db, runId)?.resumeAt ?? 0) - now();
+          const wait = ((await store.run((q) => usagePauseSteps(q, runId)))?.resumeAt ?? 0) - now();
           changed = profilesChanged?.() ?? false;
           if (wait <= 0 || changed) break;
           if ((await limit.readyRunners?.())?.length) break;
           await delay(Math.min(wait, interval * 20), undefined, { signal: input.signal });
         }
       } finally {
-        endUsagePause(db, runId, mono(), now());
+        await endUsagePauseAsync(store, runId, mono(), now());
       }
       input.signal?.throwIfAborted();
       await input.onEvent?.({

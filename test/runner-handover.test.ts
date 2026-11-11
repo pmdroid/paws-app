@@ -153,7 +153,7 @@ async function setup() {
   const seen = new Set<string>();
   async function next() {
     for (let index = 0; index < 5000; index++) {
-      for (const envelope of work.commands(runnerId)) {
+      for (const envelope of await work.commands(runnerId)) {
         const verified = verifyRunnerCommand(envelope, {
           trustedKeys: new Map([["fixture", signing.publicKey]]),
           runnerId,
@@ -163,10 +163,10 @@ async function setup() {
           claimCommand: (id) => !seen.has(id) && Boolean(seen.add(id)),
         });
         if (verified.ok) {
-          work.acknowledge(runnerId, verified.command.id);
+          await work.acknowledge(runnerId, verified.command.id);
           const command = verified.command;
           if (command.type === "cancel")
-            work.heartbeat(
+            await work.heartbeat(
               runnerId,
               1,
               {},
@@ -186,11 +186,11 @@ async function setup() {
     throw new Error("No dispatched runner command");
   }
   let sequence = 0;
-  function item() {
+  async function item() {
     git(["-C", runner, "reset", "-q", "--hard", base]);
     git(["-C", runner, "clean", "-qfd"]);
     db.run("UPDATE run SET status='ended' WHERE status='active'");
-    work.heartbeat(runnerId);
+    await work.heartbeat(runnerId);
     const id = `item-${++sequence}`;
     git(["--git-dir", paws, "update-ref", head(id), base]);
     const sessionKey = `session-${sequence}`;
@@ -251,33 +251,34 @@ async function setup() {
     await drive(command);
     return { result: (await settled)!, notices, command };
   }
-  function grant(command: RunCommand) {
-    return work.issueGrant({
-      runnerId,
-      runId: command.runId,
-      commandId: command.id,
-      generation: command.generation,
-    }).token;
+  async function grant(command: RunCommand) {
+    return (
+      await work.issueGrant({
+        runnerId,
+        runId: command.runId,
+        commandId: command.id,
+        generation: command.generation,
+      })
+    ).token;
   }
-  function events(command: RunCommand, list: RunnerEvent[]) {
-    const token = grant(command);
+  async function events(command: RunCommand, list: RunnerEvent[]) {
+    const token = await grant(command);
     const after = db
       .query<{ sequence: number }, [string]>(
         "SELECT last_sequence AS sequence FROM runner_work WHERE run_id=?",
       )
       .get(command.runId)!.sequence;
-    list.forEach((event, index) =>
-      work.event({
+    for (const [index, event] of list.entries())
+      await work.event({
         runnerId,
         runId: command.runId,
         generation: command.generation,
         sequence: after + index + 1,
         token,
         event,
-      }),
-    );
+      });
   }
-  function submit(
+  async function submit(
     command: RunCommand,
     extra: {
       handedOver?: true;
@@ -285,11 +286,11 @@ async function setup() {
       handoverFailure?: "commit" | "snapshot" | "publication";
     },
   ) {
-    results.submit({
+    await results.submit({
       runnerId,
       runId: command.runId,
       generation: command.generation,
-      token: grant(command),
+      token: await grant(command),
       result: {
         executionId: workspaceId(),
         commandId: command.id,
@@ -318,7 +319,7 @@ async function setup() {
     git(["-C", runner, "add", "-A"]);
     git(["-C", runner, "commit", "-q", "-m", "Save work in progress"]);
     const wip = git(["-C", runner, "rev-parse", "HEAD"]);
-    const access = { runnerId, runId: command.runId, token: grant(command) };
+    const access = { runnerId, runId: command.runId, token: await grant(command) };
     const bundle = randomBytes(10_000);
     await sessions.upload(access, {
       generation: command.generation,
@@ -338,8 +339,8 @@ async function setup() {
       turn: command.generation,
     });
     // The runner commits to the handover before it publishes the result.
-    events(command, [{ type: "handover", handedOver: true }]);
-    submit(command, { handedOver: true, candidateSha: wip });
+    await events(command, [{ type: "handover", handedOver: true }]);
+    await submit(command, { handedOver: true, candidateSha: wip });
     return wip;
   }
   return {
@@ -375,7 +376,7 @@ afterAll(() => context.cleanup());
 
 test("a fake runner handover leaves its WIP commit on the Paws side as the checkpoint, with its session", async () => {
   const { git, paws, runner } = context;
-  const record = context.item();
+  const record = await context.item();
   let wip = "";
   let outcome: unknown;
   const stop = new AbortController();
@@ -420,14 +421,14 @@ test("a fake runner handover leaves its WIP commit on the Paws side as the check
 });
 
 test("a session waiting on ask_team hands over without losing its question", async () => {
-  const record = context.item();
+  const record = await context.item();
   const asked: { question: string; abortedWhilePosting?: boolean }[] = [];
   let posted!: () => void;
   const posting = new Promise<void>((resolve) => (posted = resolve));
   const { result } = await context.turn(
     record,
     async (command) => {
-      context.events(command, [
+      await context.events(command, [
         { type: "question", text: "Which color should the button be?", options: ["Red", "Blue"] },
       ]);
       while (!asked.length) await delay(1);
@@ -454,25 +455,25 @@ test("a session waiting on ask_team hands over without losing its question", asy
 });
 
 test("a handover that fails after the interrupt while Paws posts a question keeps the question", async () => {
-  const record = context.item();
+  const record = await context.item();
   const asked: { question: string; abortedWhilePosting?: boolean }[] = [];
   let posted!: () => void;
   const posting = new Promise<void>((resolve) => (posted = resolve));
   const { result } = await context.turn(
     record,
     async (command) => {
-      context.events(command, [
+      await context.events(command, [
         { type: "question", text: "Which color should the button be?", options: ["Red", "Blue"] },
       ]);
       while (!asked.length) await delay(1);
       const handing = context.backend.handOverItem(record.id);
       await context.next();
       // The snapshot fails after the interrupt while Paws is still posting the question.
-      context.events(command, [
+      await context.events(command, [
         { type: "handover_interrupted" },
         { type: "handover", handedOver: false, reason: "snapshot" },
       ]);
-      context.submit(command, { handoverFailure: "snapshot" });
+      await context.submit(command, { handoverFailure: "snapshot" });
       await delay(20);
       posted();
       expect(await handing).toEqual({ status: "failed", reason: "snapshot" });
@@ -493,17 +494,17 @@ test("a handover that fails after the interrupt while Paws posts a question keep
 });
 
 test("a handover the runner cannot finish within 2 minutes is reported and the session stays on the runner", async () => {
-  const record = context.item();
+  const record = await context.item();
   let outcome: unknown;
   const { result, notices } = await context.turn(record, async (command) => {
     const handing = context.backend.handOverItem(record.id);
     await context.next();
-    context.events(command, [{ type: "handover", handedOver: false, reason: "timeout" }]);
+    await context.events(command, [{ type: "handover", handedOver: false, reason: "timeout" }]);
     outcome = await handing;
     // The session went on and finished its turn on the same runner.
     writeFileSync(join(context.runner, "result.txt"), "finished");
     context.git(["-C", context.runner, "commit", "-q", "-am", "Finish"]);
-    context.submit(command, {
+    await context.submit(command, {
       candidateSha: context.git(["-C", context.runner, "rev-parse", "HEAD"]),
     });
   });
@@ -516,17 +517,17 @@ test("a handover the runner cannot finish within 2 minutes is reported and the s
 });
 
 test("a handover that fails after the interrupt is reported with its reason, and the run keeps its session here", async () => {
-  const record = context.item();
+  const record = await context.item();
   let outcome: unknown;
   const { result, notices } = await context.turn(record, async (command) => {
     const handing = context.backend.handOverItem(record.id);
     await context.next();
-    context.events(command, [
+    await context.events(command, [
       { type: "handover_interrupted" },
       { type: "handover", handedOver: false, reason: "snapshot" },
     ]);
     outcome = await handing;
-    context.submit(command, { handoverFailure: "snapshot" });
+    await context.submit(command, { handoverFailure: "snapshot" });
   });
   expect(outcome).toEqual({ status: "failed", reason: "snapshot" });
   expect(result.handedOver).toBeUndefined();
@@ -543,7 +544,7 @@ test("an item with no running session has nothing to hand over", async () => {
 });
 
 test("a runner release that cannot hand over is never sent the command", async () => {
-  const record = context.item();
+  const record = await context.item();
   context.release("0.1.43");
   try {
     const { result } = await context.turn(record, async (command) => {
@@ -553,7 +554,7 @@ test("a runner release that cannot hand over is never sent the command", async (
           .query("SELECT 1 FROM runner_command WHERE run_id=? AND kind='handover'")
           .get(command.runId),
       ).toBeNull();
-      context.submit(command, { candidateSha: context.base });
+      await context.submit(command, { candidateSha: context.base });
     });
     expect(result.stopReason).toBe("end_turn");
   } finally {
@@ -563,7 +564,7 @@ test("a runner release that cannot hand over is never sent the command", async (
 
 test("a run stopped for the time cap saves its runner's work first, and the restarted turn starts from it", async () => {
   const { db, git, paws, runner } = context;
-  const record = context.item();
+  const record = await context.item();
   context.release("0.1.46");
   try {
     const stop = new AbortController();
@@ -578,7 +579,7 @@ test("a run stopped for the time cap saves its runner's work first, and the rest
         git(["-C", runner, "commit", "-q", "-m", "Add the findings contract"]);
         interval = git(["-C", runner, "rev-parse", "HEAD"]);
         // An interval checkpoint becomes the item's checkpoint while the turn runs.
-        context.events(command, [{ type: "checkpoint", reason: "interval", sha: interval }]);
+        await context.events(command, [{ type: "checkpoint", reason: "interval", sha: interval }]);
         while (getWorkItem(db, record.id)?.checkpoint?.wipCommit !== interval) await delay(1);
         writeFileSync(join(runner, "findings.tsx"), "<Findings />\n");
         git(["-C", runner, "add", "-A"]);
@@ -611,7 +612,7 @@ test("a run stopped for the time cap saves its runner's work first, and the rest
           runId: command.runId,
           generation: command.generation,
         });
-        context.events(command, [{ type: "checkpoint", reason: "stop", sha: snapshot }]);
+        await context.events(command, [{ type: "checkpoint", reason: "stop", sha: snapshot }]);
         // Only then does Paws cancel the run.
         expect(await context.next()).toMatchObject({ type: "cancel", runId: command.runId });
       },
@@ -639,7 +640,7 @@ test("a run stopped for the time cap saves its runner's work first, and the rest
     db.run("UPDATE run SET status='active' WHERE id=?", [record.runId]);
     const restarted = await context.turn(record, async (command) => {
       expect(command.repository.baseSha).toBe(snapshot);
-      context.submit(command, { candidateSha: snapshot });
+      await context.submit(command, { candidateSha: snapshot });
     });
     expect(restarted.result.stopReason).toBe("end_turn");
     const ref = context.head(record.id);
@@ -658,7 +659,7 @@ test("a run stopped for the time cap saves its runner's work first, and the rest
 });
 
 test("a runner release that cannot checkpoint is cancelled at once", async () => {
-  const record = context.item();
+  const record = await context.item();
   const stop = new AbortController();
   const { result } = await context.turn(
     record,
@@ -680,7 +681,7 @@ test("a runner release that cannot checkpoint is cancelled at once", async () =>
 
 test("a restarted turn whose saved work cannot be fetched fails instead of starting from an older head", async () => {
   const { db } = context;
-  const record = context.item();
+  const record = await context.item();
   // A checkpoint the runner published that Paws no longer can fetch.
   const lost = "f".repeat(40);
   saveCheckpoint(db, record.id, { phase: "running", baseSha: context.base, wipCommit: lost });
@@ -703,7 +704,7 @@ test("a restarted turn whose saved work cannot be fetched fails instead of start
 
 test("a stop while a handover is under way is cancelled at once, leaving the checkpoint to the handover", async () => {
   const { db } = context;
-  const record = context.item();
+  const record = await context.item();
   context.release("0.1.46");
   try {
     const stop = new AbortController();

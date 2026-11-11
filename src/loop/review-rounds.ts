@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import {
+  emitJobReady,
   getWorkItemSteps,
   saveCheckpointSteps,
   saveCloseoutRecoverySteps,
@@ -9,7 +10,7 @@ import {
 } from "../db";
 import { reviewRoundsDetail, type StoredQuestion } from "../questions";
 import type { CloseoutHelp } from "./closeout-help";
-import { askWithLink } from "./link-ask";
+import { askWithLinkSteps } from "./link-ask";
 
 /** The rounds a Keep going grants, read from the exhausted check: "4 of 4 allowed failed review attempts used." */
 export function reviewRoundLimit(detail: string | null | undefined): number | null {
@@ -33,10 +34,11 @@ export async function askReviewRounds(
     now: number;
   },
 ): Promise<StoredQuestion | null> {
-  return await sqliteDb(db).transaction(function* (q) {
+  const store = sqliteDb(db);
+  const asked = await store.transaction(function* (q) {
     const item = yield* getWorkItemSteps(q, input.item.id);
     if (item === null || item.state === "cancelled") return null;
-    const { question } = askWithLink(db, {
+    const { question } = yield* askWithLinkSteps(q, {
       item,
       runId: item.currentRunId,
       kind: "rounds",
@@ -55,4 +57,6 @@ export async function askReviewRounds(
     });
     return question;
   });
+  if (asked !== null) emitJobReady(store);
+  return asked;
 }

@@ -28,7 +28,7 @@ import {
 import { attachOrchestrator, LinearTaskAccess, type AgentLaunch } from "../src/loop";
 import {
   itemOwnerEligibleRunner,
-  itemOwnerHasEligibleRunner,
+  itemOwnerHasEligibleRunnerSteps,
   itemOwnerRunnerSetupNeed,
 } from "../src/runner-placement";
 import {
@@ -408,11 +408,12 @@ async function firstDelegation(
     linearTaskModes: true,
     linearAccess: gate,
     runnersUrl: RUNNERS_URL,
-    ownerHasRunner: (itemId, agent, at) =>
-      itemOwnerHasEligibleRunner(db, { itemId, agent, now: at }),
-    runnerSetupNeed: (itemId, agent, at) =>
+    ownerHasRunner: (q, itemId, agent, at) =>
+      itemOwnerHasEligibleRunnerSteps(q, { itemId, agent, now: at }),
+    runnerSetupNeed: async (itemId, agent, at) =>
       itemOwnerRunnerSetupNeed(db, { itemId, agent, now: at }),
-    eligibleRunner: (itemId, agent, at) => itemOwnerEligibleRunner(db, { itemId, agent, now: at }),
+    eligibleRunner: async (itemId, agent, at) =>
+      itemOwnerEligibleRunner(db, { itemId, agent, now: at }),
     authorizeLinearEvent: async (event) =>
       (await access.authorizeLinearEvent(event))
         ? assignments.authorize(event)

@@ -1,8 +1,17 @@
 import type { Database } from "bun:sqlite";
 import { type RunnerRepositoryRefusal } from "../core";
-import { applyLinearCommand, getWorkItem } from "../db";
+import {
+  applyLinearCommandSteps,
+  commandInstance,
+  emitJobReady,
+  getWorkItemSteps,
+  settled,
+  sqliteDb,
+  type Q,
+  type Steps,
+} from "../db";
 import type { StoredQuestion } from "../questions";
-import { restart } from "./operations";
+import { restartSteps } from "./operations";
 
 export const RUNNER_REPOSITORY_RETRY = "Retry";
 export const RUNNER_REPOSITORY_STOP = "Stop";
@@ -37,21 +46,41 @@ export function answerRunnerRepository(
   consumeTurn: (question: StoredQuestion) => void,
 ): void {
   consumeTurn(question);
-  const item = getWorkItem(db, question.itemId);
+  const notifications = { ready: false };
+  settled(
+    sqliteDb(db).transaction((q) =>
+      answerRunnerRepositorySteps(q, question, now, commandInstance(db), notifications),
+    ),
+  );
+  if (notifications.ready) emitJobReady(db);
+}
+
+export function* answerRunnerRepositorySteps(
+  q: Q,
+  question: StoredQuestion,
+  now: number,
+  self: string | undefined,
+  notifications: { ready: boolean },
+): Steps<void> {
+  const item = yield* getWorkItemSteps(q, question.itemId);
   if (item?.state !== "awaiting_input" || item.cancelRequested) return;
   if (/^\s*stop\b/i.test(question.answer ?? "")) {
-    applyLinearCommand(db, {
-      type: "cancel",
-      itemId: item.id,
-      source: "linear",
-      requestedAt: now,
-    });
+    yield* applyLinearCommandSteps(
+      q,
+      { type: "cancel", itemId: item.id, source: "linear", requestedAt: now },
+      now,
+      undefined,
+      {},
+      self,
+      notifications,
+    );
     return;
   }
-  restart(db, item, {
+  const restarted = yield* restartSteps(q, item, {
     reason: "follow_up",
     body: "Retry runner placement.",
     jobKey: `runner-repository:${question.id}`,
     now,
   });
+  if (restarted?.armed) notifications.ready = true;
 }

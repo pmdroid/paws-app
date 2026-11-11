@@ -11,6 +11,7 @@ import {
   listOutbox,
   migrate,
   openDatabase,
+  syncSteps,
 } from "../src/db";
 import { GitHubInstallationCheck, type GitHubIntegration } from "../src/loop";
 
@@ -76,9 +77,9 @@ function scene() {
   const clock = { now: 1_000 };
   const integration: GitHubIntegration = {
     check: (_item, signal) => installation("acme/widgets", "read", signal),
-    administrators: () => ["admin"],
+    administrators: () => syncSteps(() => ["admin"]),
     recoveryUrl: "https://paws.example/settings/integrations",
-    identity: () => "member:acme/widgets",
+    identity: () => syncSteps(() => "member:acme/widgets"),
     unavailableRetryMs: [0],
   };
   const auth = new GitHubInstallationCheck(db, integration, () => clock.now);

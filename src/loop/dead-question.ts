@@ -8,8 +8,8 @@ import {
   redeliverQuestionSteps,
   sqliteDb,
 } from "../db";
-import { cancelQuestion, getQuestion } from "../questions";
-import { ask } from "./operations";
+import { cancelQuestionSteps, getQuestionSteps } from "../questions";
+import { askSteps } from "./operations";
 
 /**
  * A question whose elicitation died twice is asked again, so the person always has
@@ -31,7 +31,7 @@ export async function reaskDeadQuestion(
   return await sqliteDb(db).transaction(function* (q) {
     const { itemId, questionId, jobId, now } = input;
     const item = yield* getWorkItemSteps(q, itemId);
-    const question = getQuestion(db, questionId);
+    const question = yield* getQuestionSteps(q, questionId);
     if (
       item === null ||
       question === null ||
@@ -49,9 +49,9 @@ export async function reaskDeadQuestion(
       yield* recordQuestionReaskSteps(q, jobId, question.id);
       return question.id;
     }
-    cancelQuestion(db, question.id, now);
-    const asked = ask(
-      db,
+    yield* cancelQuestionSteps(q, question.id, now);
+    const asked = yield* askSteps(
+      q,
       {
         itemId: item.id,
         runId: item.currentRunId,

@@ -6,6 +6,7 @@ import {
   listOutbox,
   refreshRepositoryCatalog,
   type WorkItemRecord,
+  syncSteps,
 } from "../src/db";
 import {
   FakeGitHubIntegration,
@@ -234,7 +235,7 @@ test("a local membership check that fails explains without reading GitHub or Lin
   const { db, item } = await seed();
   const current = item();
   const integration = new FakeGitHubIntegration({
-    current: (subject) => teamMemberDenial(db, subject),
+    current: (_q, subject) => syncSteps(() => teamMemberDenial(db, subject)),
   });
   const check = new GitHubInstallationCheck(db, integration, () => 1000);
   try {

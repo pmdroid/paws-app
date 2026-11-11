@@ -126,7 +126,7 @@ async function fixture() {
     return { work, results: createRunnerResults({ db, work, now }) };
   };
   let services = open();
-  function admit(expiresInMs = 4 * 60 * MINUTE) {
+  async function admit(expiresInMs = 4 * 60 * MINUTE) {
     const command: Extract<RunnerCommand, { type: "run" }> = {
       type: "run",
       id: workspaceId(),
@@ -142,12 +142,14 @@ async function fixture() {
       prompt: "Fixture",
     };
     services.work.assign(command);
-    const token = services.work.issueGrant({
-      runnerId,
-      runId: run.id,
-      commandId: command.id,
-      generation: 1,
-    }).token;
+    const token = (
+      await services.work.issueGrant({
+        runnerId,
+        runId: run.id,
+        commandId: command.id,
+        generation: 1,
+      })
+    ).token;
     const result: RunnerResult = {
       executionId: workspaceId(),
       commandId: command.id,
@@ -215,7 +217,7 @@ const resumes = (db: Database) =>
 test("a runner that never returns retains only its remaining lease plus grace after startup", async () => {
   const f = await fixture();
   try {
-    f.admit();
+    await f.admit();
     const remaining = f.leaseUntil() - f.clock.at;
     f.down(25 * MINUTE);
     recoverOnStartup(f.db, f.clock.at, BUDGET, f.instance.id);
@@ -236,7 +238,7 @@ test("a runner that never returns retains only its remaining lease plus grace af
 test("Paws down 20 minutes with a 30-minute budget: the runner still holds the work and the run reattaches", async () => {
   const f = await fixture();
   try {
-    f.admit();
+    await f.admit();
     const before = f.leaseUntil();
     f.down(20 * MINUTE);
     expect(recoverOnStartup(f.db, f.clock.at, BUDGET, f.instance.id)).toEqual([
@@ -246,7 +248,7 @@ test("Paws down 20 minutes with a 30-minute budget: the runner still holds the w
     expect(resumes(f.db)).toHaveLength(1);
     expect(resumes(f.db)[0]?.payload).toMatchObject({ reason: "process_restart" });
     expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "running", recoveryAttempts: 0 });
-    const beat = f.work.heartbeat(f.runnerId);
+    const beat = await f.work.heartbeat(f.runnerId);
     expect(beat.fenced).toEqual([]);
     expect(beat.offlineBudgetMs).toBe(BUDGET);
     expect(beat.aliveAt).toBe(f.clock.at);
@@ -288,7 +290,7 @@ test("with a second instance alive throughout, a restart gives no credit and the
   const f = await fixture();
   const b = f.second();
   try {
-    f.admit();
+    await f.admit();
     const before = f.leaseUntil();
     const acme = f.instance.id;
     const expiredAt = serveUntilExpiry(f, b, (at) => {
@@ -317,7 +319,7 @@ test("an instance alive throughout takes over a crashed instance's run without c
   const f = await fixture();
   const b = f.second();
   try {
-    f.admit();
+    await f.admit();
     const before = f.leaseUntil();
     const acme = f.instance.id;
     const expiredAt = serveUntilExpiry(f, b, null);
@@ -334,7 +336,7 @@ test("a second instance started during the outage credits only the time before i
   const f = await fixture();
   const b = f.second();
   try {
-    f.admit();
+    await f.admit();
     const before = f.leaseUntil();
     f.clock.at += 10 * MINUTE;
     const other = registerInstance(b, {
@@ -358,7 +360,7 @@ test("an instance that outlived the owner and then stopped credits only the time
   const f = await fixture();
   const b = f.second();
   try {
-    f.admit();
+    await f.admit();
     const before = f.leaseUntil();
     const other = registerInstance(b, {
       role: "all",
@@ -385,7 +387,7 @@ test("an instance that came and went during the outage without taking over leave
   const f = await fixture();
   const b = f.second();
   try {
-    f.admit();
+    await f.admit();
     const before = f.leaseUntil();
     // The owner dies now; another instance runs from minute 5 to minute 6 and takes nothing over.
     f.clock.at += 5 * MINUTE;
@@ -410,7 +412,7 @@ test("an instance that came and went during the outage without taking over leave
 test("Paws down longer than the budget: the run resumes as today", async () => {
   const f = await fixture();
   try {
-    f.admit();
+    await f.admit();
     const before = f.leaseUntil();
     f.down(40 * MINUTE);
     expect(recoverOnStartup(f.db, f.clock.at, BUDGET, f.instance.id)).toEqual([
@@ -421,7 +423,9 @@ test("Paws down longer than the budget: the run resumes as today", async () => {
       state: "recovering",
       recoveryAttempts: 1,
     });
-    expect(f.work.heartbeat(f.runnerId).fenced).toEqual([{ runId: f.run.id, generation: 1 }]);
+    expect((await f.work.heartbeat(f.runnerId)).fenced).toEqual([
+      { runId: f.run.id, generation: 1 },
+    ]);
   } finally {
     f.close();
   }
@@ -430,7 +434,7 @@ test("Paws down longer than the budget: the run resumes as today", async () => {
 test("the shift stops at the command's expiresAt", async () => {
   const f = await fixture();
   try {
-    const { command } = f.admit(10 * MINUTE);
+    const { command } = await f.admit(10 * MINUTE);
     f.down(20 * MINUTE);
     expect(recoverOnStartup(f.db, f.clock.at, BUDGET, f.instance.id)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
@@ -444,8 +448,8 @@ test("the shift stops at the command's expiresAt", async () => {
 test("work with a result or an acknowledged cancel is not extended", async () => {
   const withResult = await fixture();
   try {
-    const { submit } = withResult.admit();
-    submit();
+    const { submit } = await withResult.admit();
+    await submit();
     const before = withResult.leaseUntil();
     withResult.down(20 * MINUTE);
     recoverOnStartup(withResult.db, withResult.clock.at, BUDGET, withResult.instance.id);
@@ -455,7 +459,7 @@ test("work with a result or an acknowledged cancel is not extended", async () =>
   }
   const cancelled = await fixture();
   try {
-    cancelled.admit();
+    await cancelled.admit();
     cancelled.db.run(
       `INSERT INTO runner_command(id,runner_id,run_id,generation,kind,envelope,expires_at,acknowledged_at)
        VALUES('cancel',?,?,1,'cancel','{}',?,?)`,
@@ -475,7 +479,7 @@ test("work with a result or an acknowledged cancel is not extended", async () =>
 test("a runner silent past the grace while Paws is up is still fenced", async () => {
   const f = await fixture();
   try {
-    f.admit();
+    await f.admit();
     const before = f.leaseUntil();
     // Paws stays up and keeps recording that it is alive while the runner is silent.
     while (f.clock.at <= before + RUNNER_LEASE_GRACE_MS) {
@@ -488,7 +492,9 @@ test("a runner silent past the grace while Paws is up is still fenced", async ()
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
     expect(f.leaseUntil()).toBe(before);
-    expect(f.work.heartbeat(f.runnerId).fenced).toEqual([{ runId: f.run.id, generation: 1 }]);
+    expect((await f.work.heartbeat(f.runnerId)).fenced).toEqual([
+      { runId: f.run.id, generation: 1 },
+    ]);
   } finally {
     f.close();
   }
@@ -509,7 +515,7 @@ test("heartbeats recover after the wall clock moves backward", () => {
 test("a lease renewed within the alive skew still receives downtime credit", async () => {
   const f = await fixture();
   try {
-    f.admit();
+    await f.admit();
     const before = f.leaseUntil();
     const aliveAt = before - PAWS_ALIVE_LEASE_SKEW_MS;
     heartbeatInstance(f.db, f.instance.id, aliveAt);
@@ -527,7 +533,7 @@ test("a lease renewed within the alive skew still receives downtime credit", asy
 test("a lease renewed past the alive skew receives no downtime credit", async () => {
   const f = await fixture();
   try {
-    f.admit();
+    await f.admit();
     const before = f.leaseUntil();
     heartbeatInstance(f.db, f.instance.id, before - PAWS_ALIVE_LEASE_SKEW_MS - 1);
     f.clock.at += 20 * MINUTE;
@@ -544,7 +550,7 @@ test("a lease renewed past the alive skew receives no downtime credit", async ()
 test("leases renewed after an obsolete alive mark receive no downtime credit", async () => {
   const f = await fixture();
   try {
-    f.admit();
+    await f.admit();
     heartbeatInstance(f.db, f.instance.id, f.clock.at - 24 * 60 * MINUTE);
     const before = f.leaseUntil();
     // Model an older build renewing work without updating the heartbeat.
@@ -562,20 +568,20 @@ test("leases renewed after an obsolete alive mark receive no downtime credit", a
 test("a runner that parses the level is told it on the heartbeat reply", async () => {
   const f = await fixture();
   f.db.run("UPDATE runner_host_status SET runner_version='0.1.76' WHERE runner_id=?", [f.runnerId]);
-  expect(f.work.heartbeat(f.runnerId).protocolLevel).toBe(CONTROL_PLANE_PROTOCOL_LEVEL);
+  expect((await f.work.heartbeat(f.runnerId)).protocolLevel).toBe(CONTROL_PLANE_PROTOCOL_LEVEL);
   f.db.run("DELETE FROM runner_host_status WHERE runner_id=?", [f.runnerId]);
-  expect(f.work.heartbeat(f.runnerId).protocolLevel).toBe(CONTROL_PLANE_PROTOCOL_LEVEL);
+  expect((await f.work.heartbeat(f.runnerId)).protocolLevel).toBe(CONTROL_PLANE_PROTOCOL_LEVEL);
   f.close();
 });
 
 test("a runner older than the offline lease release is not extended", async () => {
   const f = await fixture();
   try {
-    f.admit();
+    await f.admit();
     f.db.run("UPDATE runner_host_status SET runner_version='0.1.52' WHERE runner_id=?", [
       f.runnerId,
     ]);
-    const beat = f.work.heartbeat(f.runnerId);
+    const beat = await f.work.heartbeat(f.runnerId);
     expect(beat).not.toHaveProperty("offlineBudgetMs");
     expect(beat).not.toHaveProperty("aliveAt");
     expect(beat).not.toHaveProperty("protocolLevel");
@@ -593,7 +599,7 @@ test("a runner older than the offline lease release is not extended", async () =
 test("revoked runners receive no downtime credit", async () => {
   const f = await fixture();
   try {
-    f.admit();
+    await f.admit();
     f.db.run("UPDATE runner SET status='revoked',revoked_at=? WHERE id=?", [
       f.clock.at,
       f.runnerId,

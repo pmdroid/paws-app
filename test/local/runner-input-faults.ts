@@ -27,7 +27,7 @@ const { createRunnerInputStore } = await import("../../src/runner-inputs");
 let command = { type: "run" as const, id: "wide", inputFiles: [] as RunnerInputFile[] };
 const store = createRunnerInputStore({
   root,
-  work: { authorize: () => ({ command }) } as unknown as RunnerWork,
+  work: { authorizeAsync: async () => ({ command }) } as unknown as RunnerWork,
 });
 const access = { runnerId: "runner", runId: "run", token: "token" };
 const observations = [];

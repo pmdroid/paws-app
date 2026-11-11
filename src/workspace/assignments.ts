@@ -10,28 +10,23 @@ import {
   enqueueJobOnceSteps,
   enqueueOutboxOnceSteps,
   ensureLinearSessionSteps,
-  getLinearSession,
-  getLinearSessionAccess,
   getLinearSessionAccessSteps,
   getLinearSessionInstallationSteps,
   getLinearSessionSteps,
   insertWorkspaceAssignmentSteps,
-  invalidateWorkspaceAssignment,
   invalidateWorkspaceAssignmentSteps,
-  latestWorkspaceAssignment,
   latestWorkspaceAssignmentSteps,
   linkWorkspaceAssignmentSteps,
-  listWorkspaceRepositories,
   listWorkspaceRepositoriesSteps,
   moveWorkspaceAssignmentSteps,
   pendingWorkspaceAssignmentTokensSteps,
   recordLinearTurnSteps,
+  settled,
   sqliteDb,
   syncWorkspaceMemberSteps,
   workspaceAssignmentByTokenSteps,
   workspaceAssignmentTokenForLinkSteps,
   workspaceForOrganizationSteps,
-  workspaceLinearMember,
   workspaceLinearMemberSteps,
   type JobLoop,
   type Q,
@@ -200,8 +195,7 @@ export function createWorkspaceAssignments(options: {
   continue: (event: AcceptedLinearEvent) => Promise<void | boolean>;
   now?: () => number;
 }) {
-  const { db } = options;
-  const store = sqliteDb(db);
+  const store = sqliteDb(options.db);
   const origin = new URL(options.origin);
   if (origin.protocol !== "https:" || origin.username || origin.password)
     throw new Error("Assignment sign-in requires verified HTTPS.");
@@ -573,36 +567,30 @@ export function createWorkspaceAssignments(options: {
     };
     await store.transaction((q) => recordLinearTurnSteps(q, turn));
   }
-  /** `current` for `authorizeIntake`, which stays synchronous for its orchestrator callers. */
-  function currentNow(hold: Hold) {
-    const session = getLinearSession(db, hold.sessionId);
-    return (
-      session?.generation === hold.generation &&
-      session.stoppedAt === null &&
-      getLinearSessionAccess(db, hold.sessionId) === "allowed" &&
-      session.creatorId === hold.actorId
-    );
+  function* authorizeIntakeSteps(q: Q, sessionId: string, spec: EpicSnapshot): Steps<boolean> {
+    const hold = yield* latestWorkspaceAssignmentSteps(q, sessionId);
+    if (!hold) return true;
+    if (hold.status !== "accepted" || !(yield* currentSteps(q, hold)))
+      return hold.status === "continued";
+    const expected = JSON.parse(hold.fingerprint) as {
+      spec: EpicSnapshot;
+      repositories: unknown;
+    };
+    const member = yield* workspaceLinearMemberSteps(q, hold.workspaceId, hold.actorId);
+    if (
+      !canAct({ id: hold.actorId, member, teamId: holdIssue(hold).teamId }, "delegate").allowed ||
+      JSON.stringify(spec) !== JSON.stringify(expected.spec) ||
+      JSON.stringify(yield* listWorkspaceRepositoriesSteps(q, hold.workspaceId)) !==
+        JSON.stringify(expected.repositories)
+    ) {
+      yield* invalidateWorkspaceAssignmentSteps(q, hold.tokenHash);
+      return false;
+    }
+    return true;
   }
   return {
     authorizeIntake(sessionId: string, spec: EpicSnapshot): boolean {
-      const hold = latestWorkspaceAssignment(db, sessionId);
-      if (!hold) return true;
-      if (hold.status !== "accepted" || !currentNow(hold)) return hold.status === "continued";
-      const expected = JSON.parse(hold.fingerprint) as {
-        spec: EpicSnapshot;
-        repositories: unknown;
-      };
-      const member = workspaceLinearMember(db, hold.workspaceId, hold.actorId);
-      if (
-        !canAct({ id: hold.actorId, member, teamId: holdIssue(hold).teamId }, "delegate").allowed ||
-        JSON.stringify(spec) !== JSON.stringify(expected.spec) ||
-        JSON.stringify(listWorkspaceRepositories(db, hold.workspaceId)) !==
-          JSON.stringify(expected.repositories)
-      ) {
-        invalidateWorkspaceAssignment(db, hold.tokenHash);
-        return false;
-      }
-      return true;
+      return settled(store.run((q) => authorizeIntakeSteps(q, sessionId, spec)));
     },
     async authorize(event: AcceptedLinearEvent): Promise<IntakeDecision> {
       if (!event.sessionId) return refused("Paws could not match this event to a session.");

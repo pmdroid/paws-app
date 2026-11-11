@@ -59,10 +59,10 @@ describe("[database] url", () => {
     expect(fromEnv.configError).toBe("PAWS_DATABASE_URL is not a URL");
   });
 
-  test("starting the service with a URL set refuses", () => {
-    expect(() =>
+  test("starting the service with a URL set refuses", async () => {
+    await expect(
       startPaws({ PAWS_HOME: tempHome(), PAWS_PORT: "0", PAWS_DATABASE_URL: URL_WITH_PASSWORD }),
-    ).toThrow(POSTGRES_NOT_YET);
+    ).rejects.toThrow(POSTGRES_NOT_YET);
   });
 });
 

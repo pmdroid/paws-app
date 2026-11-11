@@ -74,10 +74,6 @@ export function* saveItemSchedulingSteps(q: Q, row: ItemScheduling) {
   );
 }
 
-export function saveItemScheduling(db: Database, row: ItemScheduling): void {
-  settled(sqliteDb(db).run((q) => saveItemSchedulingSteps(q, row)));
-}
-
 export function* schedulingProjectLeadSteps(q: Q, itemId: string) {
   const { workItemScheduling } = q.t;
   const row = yield* q.one(

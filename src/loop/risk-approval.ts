@@ -1,32 +1,36 @@
-import { automaticRiskApproval } from "./automatic-risk-approval";
+import { automaticRiskApprovalSteps } from "./automatic-risk-approval";
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { JOB_KIND, riskLine } from "../core";
 import {
-  applyLinearCommand,
-  applyWorkItemEvent,
+  applyLinearCommandSteps,
+  applyWorkItemEventSteps,
+  commandInstance,
   deleteRiskFixSteps,
-  enqueueJobOnce,
-  enqueueOutboxOnce,
+  emitJobReady,
+  enqueueJobOnceSteps,
+  enqueueOutboxOnceSteps,
   getCandidateRiskSteps,
   getRiskFixSteps,
   getWorkItemSteps,
-  listLinkAsks,
   listLinkAsksSteps,
   openLinkAsksSteps,
-  saveCheckpoint,
+  saveCheckpointSteps,
   saveRiskFixSteps,
+  settled,
   sqliteDb,
   type CandidateRisk,
   type Db,
   type LinkAsk,
+  type Q,
   type RiskFix,
+  type Steps,
   type WorkItemRecord,
 } from "../db";
 import { journalCaught } from "../journal";
 import type { RiskApproval } from "../merge";
 import { shortCommit } from "../questions";
-import { askWithLink, closeLinkAsksOnHead, linkAskAvailable } from "./link-ask";
+import { askWithLinkSteps, closeLinkAsksOnHead, linkAskAvailable } from "./link-ask";
 
 /** Why Settings › Merging shows the risk gate as off on a Paws without an https dashboard link. */
 export const RISK_GATE_NEEDS_PUBLIC_URL =
@@ -110,7 +114,8 @@ export async function riskApprovalFor(
   // Recompute from stored evidence on every read. Never persist an automatic approval.
   if (input.autoApproveHighRisk === true && risk?.tier === "high") {
     try {
-      if (automaticRiskApproval(db, risk, input).eligible) return "approved";
+      if ((await store.run((q) => automaticRiskApprovalSteps(q, risk, input))).eligible)
+        return "approved";
     } catch (error) {
       journalCaught(
         error,
@@ -185,7 +190,11 @@ function listedPaths(paths: string[]): string {
 
 /** Risk link asks a signed-in person approved on the item page, oldest first. */
 export function riskApprovals(db: Database, itemId: string): LinkAsk[] {
-  return listLinkAsks(db, itemId).filter(isRiskApproval);
+  return settled(sqliteDb(db).run((q) => riskApprovalsSteps(q, itemId)));
+}
+
+export function* riskApprovalsSteps(q: Q, itemId: string): Steps<LinkAsk[]> {
+  return (yield* listLinkAsksSteps(q, itemId)).filter(isRiskApproval);
 }
 
 function isRiskApproval(ask: LinkAsk): boolean {
@@ -228,15 +237,18 @@ export async function askRiskApproval(
   if ((await openRiskAsk(store, item.id)) !== null) return "asked";
   const risk = await store.run((q) => getCandidateRiskSteps(q, item.id, input.head));
   const fix = await store.run((q) => getRiskFixSteps(q, item.id, input.head));
-  askWithLink(db, {
-    item,
-    runId: item.currentRunId,
-    kind: "risk",
-    head: input.head,
-    detail: riskAskDetail(risk, fix),
-    publicUrl: input.publicUrl,
-    now: input.now,
-  });
+  await store.transaction((q) =>
+    askWithLinkSteps(q, {
+      item,
+      runId: item.currentRunId,
+      kind: "risk",
+      head: input.head,
+      detail: riskAskDetail(risk, fix),
+      publicUrl: input.publicUrl,
+      now: input.now,
+    }),
+  );
+  emitJobReady(store);
   return "asked";
 }
 
@@ -250,21 +262,34 @@ export function approveRisk(
   item: WorkItemRecord,
   now: number,
 ): boolean {
-  if (item.state !== "awaiting_input") return false;
-  applyWorkItemEvent(db, item.id, "reverify_requested", { now });
+  const approved = settled(
+    sqliteDb(db).transaction((q) => approveRiskSteps(q, linkAsk, item, now)),
+  );
+  if (approved.jobReady) emitJobReady(db);
+  return approved.applied;
+}
+
+export function* approveRiskSteps(
+  q: Q,
+  linkAsk: LinkAsk,
+  item: WorkItemRecord,
+  now: number,
+): Steps<{ applied: boolean; jobReady: boolean }> {
+  if (item.state !== "awaiting_input") return { applied: false, jobReady: false };
+  yield* applyWorkItemEventSteps(q, item.id, "reverify_requested", { now });
   if (item.checkpoint)
-    saveCheckpoint(db, item.id, {
+    yield* saveCheckpointSteps(q, item.id, {
       ...item.checkpoint,
       phase: "verifying",
       wipCommit: linkAsk.headCommit,
     });
-  enqueueJobOnce(db, {
+  const job = yield* enqueueJobOnceSteps(q, {
     queue: JOB_KIND.reverify,
     jobKey: `risk-approved:${linkAsk.questionId}`,
     payload: { itemId: item.id, decide: true },
     now,
   });
-  return true;
+  return { applied: true, jobReady: job.inserted };
 }
 
 /**
@@ -278,13 +303,34 @@ export function stopForRisk(
   by: string,
   now: number,
 ): boolean {
-  return applyLinearCommand(
-    db,
+  const notifications = { ready: false };
+  const stopped = settled(
+    sqliteDb(db).transaction((q) =>
+      stopForRiskSteps(q, linkAsk, item, by, now, commandInstance(db), notifications),
+    ),
+  );
+  if (notifications.ready) emitJobReady(db);
+  return stopped;
+}
+
+export function* stopForRiskSteps(
+  q: Q,
+  linkAsk: LinkAsk,
+  item: WorkItemRecord,
+  by: string,
+  now: number,
+  self: string | undefined,
+  notifications: { ready: boolean },
+): Steps<boolean> {
+  return (yield* applyLinearCommandSteps(
+    q,
     { type: "stop", source: "dashboard", itemId: item.id, requestedAt: now },
     now,
     `${by} stopped this in Paws instead of approving the high-risk changes in ${shortCommit(linkAsk.headCommit)}. The pull request stays open.`,
     { keepPullRequest: true },
-  ).applied;
+    self,
+    notifications,
+  )).applied;
 }
 
 /** The line Paws posts once a person approved or requested changes on the Risk card. */
@@ -319,18 +365,21 @@ export function riskReplyHandoff(linkAsk: LinkAsk, reply: string): string {
  * the `risk-approval:` prefix the activity gate lets through: a `response` for an approval and
  * a `thought` for a change request.
  */
-export function postRiskActivity(
-  db: Database,
-  input: {
-    sessionId: string;
-    item: WorkItemRecord;
-    kind: "response" | "thought";
-    body: string;
-    key: string;
-    now: number;
-  },
-): void {
-  enqueueOutboxOnce(db, {
+type RiskActivity = {
+  sessionId: string;
+  item: WorkItemRecord;
+  kind: "response" | "thought";
+  body: string;
+  key: string;
+  now: number;
+};
+
+export function postRiskActivity(db: Database, input: RiskActivity): void {
+  settled(sqliteDb(db).transaction((q) => postRiskActivitySteps(q, input)));
+}
+
+export function* postRiskActivitySteps(q: Q, input: RiskActivity): Steps<void> {
+  yield* enqueueOutboxOnceSteps(q, {
     target: "linear",
     op: "activity",
     orderingKey: input.sessionId,

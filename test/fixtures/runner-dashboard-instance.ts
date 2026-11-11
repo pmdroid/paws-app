@@ -59,7 +59,7 @@ const port = await reserve(),
 mkdirSync(join(home, "secrets"), { recursive: true, mode: 0o700 });
 await initializeRunnerCoordinator(join(home, "secrets", "runner-identity"));
 const origin = `https://127.0.0.1:${port}`;
-const paws = startPaws({
+const paws = await startPaws({
   ...process.env,
   PAWS_HOME: home,
   KYOTOAGENT_ROOT: home,

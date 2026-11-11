@@ -165,13 +165,13 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     eventKey: Buffer.alloc(32, 7),
   });
   const freeRunner = await pair("owner-runner", ownerId, 1);
-  work.heartbeat(freeRunner, 8);
+  await work.heartbeat(freeRunner, 8);
   let memberRunner: string | null = null;
   if (delegatorRunner !== "none") {
     memberRunner = await pair("member-vm", memberId, delegatorRunner === "busy" ? 1 : 0);
     if (delegatorRunner === "offline")
       db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 10 * 60_000, memberRunner]);
-    else work.heartbeat(memberRunner, 1);
+    else await work.heartbeat(memberRunner, 1);
   }
   if (delegatorRunner === "busy") {
     const other = insertQueuedItem(db, { id: "other", now });
@@ -231,9 +231,10 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     home: root,
     tracker,
     repositories: [{ owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL }],
-    scheduling: () => ({}),
+    scheduling: async () => ({}),
     runnersUrl: RUNNERS_URL,
-    eligibleRunner: (itemId, agent, at) => itemOwnerEligibleRunner(db, { itemId, agent, now: at }),
+    eligibleRunner: async (itemId, agent, at) =>
+      itemOwnerEligibleRunner(db, { itemId, agent, now: at }),
     launch() {
       return { command: "/forbidden-local-agent", args: [] };
     },
@@ -250,8 +251,8 @@ async function delegate(delegatorRunner: DelegatorRunner) {
   const sim = { stopped: false };
   const heartbeats = (async () => {
     while (!sim.stopped) {
-      work.heartbeat(freeRunner, 8);
-      if (memberRunner && delegatorRunner !== "offline") work.heartbeat(memberRunner, 1);
+      await work.heartbeat(freeRunner, 8);
+      if (memberRunner && delegatorRunner !== "offline") await work.heartbeat(memberRunner, 1);
       await Bun.sleep(5);
     }
   })();

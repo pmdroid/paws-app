@@ -108,7 +108,7 @@ async function fixture() {
     return { work, results: createRunnerResults({ db, work, now }) };
   };
   let services = open();
-  function admit(generation: number) {
+  async function admit(generation: number) {
     const command: Extract<RunnerCommand, { type: "run" }> = {
       type: "run",
       id: workspaceId(),
@@ -124,12 +124,14 @@ async function fixture() {
       prompt: "Fixture",
     };
     services.work.assign(command);
-    const token = services.work.issueGrant({
-      runnerId,
-      runId: run.id,
-      commandId: command.id,
-      generation,
-    }).token;
+    const token = (
+      await services.work.issueGrant({
+        runnerId,
+        runId: run.id,
+        commandId: command.id,
+        generation,
+      })
+    ).token;
     const result: RunnerResult = {
       executionId: workspaceId(),
       commandId: command.id,
@@ -178,13 +180,13 @@ const resumes = (db: Database) =>
 test("an accepted result survives a reopen and lease expiry, and recovery reattaches to it", async () => {
   const f = await fixture();
   try {
-    const { command, result, submit } = f.admit(1);
-    expect(submit()).toEqual({ duplicate: false });
+    const { command, result, submit } = await f.admit(1);
+    expect(await submit()).toEqual({ duplicate: false });
     f.reopen();
     f.clock.at += 60_001;
     expect(f.results.read(f.run.id, 1, command.id)).toEqual(result);
-    expect(() => submit()).toThrow();
-    expect(f.work.heartbeat(f.runnerId).fenced).toEqual([]);
+    await expect(submit()).rejects.toThrow();
+    expect((await f.work.heartbeat(f.runnerId)).fenced).toEqual([]);
     prepareShutdown(f.db, f.clock.at);
     const decisions = recoverOnStartup(f.db, f.clock.at);
     expect(decisions).toEqual([
@@ -204,12 +206,14 @@ test("an accepted result survives a reopen and lease expiry, and recovery reatta
 test("an expired execution without an accepted result follows the existing recovery path", async () => {
   const f = await fixture();
   try {
-    const { command } = f.admit(1);
+    const { command } = await f.admit(1);
     f.clock.at += 60_001 + RUNNER_LEASE_GRACE_MS;
     expect(() => f.results.read(f.run.id, 1, command.id)).toThrow(
       "Runner work is fenced or its lease expired.",
     );
-    expect(f.work.heartbeat(f.runnerId).fenced).toEqual([{ runId: f.run.id, generation: 1 }]);
+    expect((await f.work.heartbeat(f.runnerId)).fenced).toEqual([
+      { runId: f.run.id, generation: 1 },
+    ]);
     expect(recoverOnStartup(f.db, f.clock.at)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
@@ -225,8 +229,8 @@ test("an expired execution without an accepted result follows the existing recov
 test("a cancelled item does not consume its accepted result after expiry", async () => {
   const f = await fixture();
   try {
-    const { command, submit } = f.admit(1);
-    submit();
+    const { command, submit } = await f.admit(1);
+    await submit();
     f.clock.at += 60_001 + RUNNER_LEASE_GRACE_MS;
     f.db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [f.item.id]);
     expect(() => f.results.read(f.run.id, 1, command.id)).toThrow();
@@ -241,10 +245,10 @@ test("a cancelled item does not consume its accepted result after expiry", async
 test("a superseding generation fences the earlier accepted result", async () => {
   const f = await fixture();
   try {
-    const first = f.admit(1);
-    first.submit();
+    const first = await f.admit(1);
+    await first.submit();
     f.clock.at += 60_001;
-    const second = f.admit(2);
+    const second = await f.admit(2);
     expect(() => f.results.read(f.run.id, 1, first.command.id)).toThrow();
     expect(() => f.results.read(f.run.id, 2, first.command.id)).toThrow();
     expect(f.results.read(f.run.id, 2, second.command.id)).toBeNull();

@@ -293,7 +293,7 @@ import {
 import {
   listWaitingProfileRuns,
   getTaskMode,
-  getLinearSessionAccess,
+  getLinearSessionAccessSteps,
   type ConfirmedRemoteMerge,
   getLinearTaskDelegation,
   getLinearSessionGeneration,
@@ -816,7 +816,7 @@ export type OrchestratorOptions = {
   launch?: AgentLaunch;
   remoteExecution?: {
     cancelItem?(itemId: string): Promise<void>;
-    slotFree?(): boolean;
+    slotFree?(): Promise<boolean>;
     /** An importer already owns this run, including backend preparation before attachment. */
     runInProgress?(runId: string): Promise<boolean>;
     agentForSession(sessionId: string, purpose: "classify" | "select_repository"): typeof runAgent;
@@ -825,7 +825,7 @@ export type OrchestratorOptions = {
      * Whether the runners the item ran on report all of its commands gone since `since`, so a
      * conversation blocked on their cleanup can continue. SQLite only.
      */
-    commandsGone?(itemId: string, since: number): boolean;
+    commandsGone?(q: Q, itemId: string, since: number): Steps<boolean>;
   };
   remoteCloseoutRetry?: { attempts: number; delayMs: number };
   /** How often Closeout rechecks an unavailable runner, and when it asks the team. */
@@ -838,12 +838,12 @@ export type OrchestratorOptions = {
   ) => boolean | Promise<boolean>;
   admission?: ItemAdmission;
   journal?: (line: string) => void;
-  scheduling?: () => Pick<SchedulerOptions, "ownerCap">;
+  scheduling?: () => Promise<Pick<SchedulerOptions, "ownerCap">>;
   /**
    * Whether the item's owner has a runner they may use for this agent. False keeps a queued
    * item out of the slot line and its start timeout. Null when it cannot tell. SQLite only.
    */
-  ownerHasRunner?: (itemId: string, agent: string, now: number) => boolean | null;
+  ownerHasRunner?: (q: Q, itemId: string, agent: string, now: number) => Steps<boolean | null>;
   itemRunners?: (
     itemId: string,
     profile: { agent: string; model?: string | null },
@@ -854,12 +854,12 @@ export type OrchestratorOptions = {
    * Why the item's owner has no runner they may use for this agent, for the runner-setup hold
    * and its thought. Null when a runner is usable or only offline. SQLite only.
    */
-  runnerSetupNeed?: (itemId: string, agent: string, now: number) => RunnerSetupNeed | null;
+  runnerSetupNeed?: (itemId: string, agent: string, now: number) => Promise<RunnerSetupNeed | null>;
   repositoryRefusals?: (
     itemId: string,
     now: number,
-  ) => { repository: string; refusals: readonly RunnerRepositoryRefusal[] } | null;
-  repositoryAllowedOn?: (itemId: string, runnerId: string, now: number) => boolean;
+  ) => Promise<{ repository: string; refusals: readonly RunnerRepositoryRefusal[] } | null>;
+  repositoryAllowedOn?: (itemId: string, runnerId: string, now: number) => Promise<boolean>;
   /**
    * A runner the item's owner may use for this agent now, for the line that resumes a
    * runner-setup hold. Null when none is eligible. SQLite only.
@@ -868,7 +868,7 @@ export type OrchestratorOptions = {
     itemId: string,
     agent: string,
     now: number,
-  ) => { id: string; name: string } | null;
+  ) => Promise<{ id: string; name: string } | null>;
   runnerRebase?: (
     item: WorkItemRecord,
     heads: { head: string; main: string },
@@ -1006,10 +1006,8 @@ export class Orchestrator {
           options.db,
           options.githubInstallation,
           () => this.now(),
-          (item) =>
-            !this.taskAccess() ||
-            (item.sessionKey !== null &&
-              getLinearSessionAccess(this.db, item.sessionKey) === "allowed"),
+          (q, item) => this.sessionAccessAllowedSteps(q, item),
+          this.store,
         )
       : null;
     this.inputLoader = options.files
@@ -1644,7 +1642,7 @@ export class Orchestrator {
       listDeps,
       loadEpic: async (id: string) => authorizeSnapshot(await progressTracker.loadEpic(id)),
     };
-    const deferred = !savedRequest && this.options.remoteExecution?.slotFree?.() === false;
+    const deferred = !savedRequest && (await this.options.remoteExecution?.slotFree?.()) === false;
     const snapshot =
       this.options.linearTaskModes && sessionId && taskKey && !deferred
         ? authorizeSnapshot(await tracker.loadEpic(issueId))
@@ -2887,7 +2885,7 @@ export class Orchestrator {
     for (const hold of holds) {
       const item = await this.store.run((q) => getWorkItemSteps(q, hold.itemId));
       if (!item || item.state !== "queued" || item.cancelRequested) continue;
-      const runner = eligibleRunner(item.id, this.implementerAgent(item, config), now);
+      const runner = await eligibleRunner(item.id, this.implementerAgent(item, config), now);
       if (!runner) continue;
       resumed =
         (await this.store.transaction((q) =>
@@ -3000,7 +2998,7 @@ export class Orchestrator {
     for (let batch = await waiting(); batch.length > 0; batch = await waiting())
       for (const question of batch) {
         seen.add(question.id);
-        if (!allowedOn(question.itemId, runnerId, now)) continue;
+        if (!(await allowedOn(question.itemId, runnerId, now))) continue;
         const outcome = await this.answerInStore(
           {
             sessionId: question.sessionId,
@@ -3202,7 +3200,7 @@ export class Orchestrator {
         }
       }
       if (!(await this.selectRepository(item))) return;
-      const refused = this.options.repositoryRefusals?.(item.id, this.now());
+      const refused = await this.options.repositoryRefusals?.(item.id, this.now());
       if (refused) throw new RunnerRepositoryRefused(refused.repository, refused.refusals);
       // A rule matches the issue's labels as they are when the task starts.
       await this.mergeSettingsFor(item, this.signalForItem(item.id)).catch((caughtError3) => {
@@ -7547,7 +7545,7 @@ export class Orchestrator {
       ...(this.options.journal ? { log: this.options.journal } : {}),
       handoffForItem: (q, itemId) => this.dependencyHandoffSteps(q, itemId),
       sessionFor: (q, itemId) => this.itemSessionSteps(q, itemId),
-      ...this.options.scheduling?.(),
+      ...(await this.options.scheduling?.()),
       onWaiting: (itemIds) => this.noteQueued(itemIds),
       onWaits: (waits) => this.noteWaits(waits),
       ...(this.options.itemRunners
@@ -7608,7 +7606,8 @@ export class Orchestrator {
     const item = yield* getWorkItemSteps(q, itemId);
     if (!item) return null;
     const repository = yield* getWorkItemRepositorySteps(q, item.id);
-    return ownerHasRunner(
+    return yield* ownerHasRunner(
+      q,
       itemId,
       implementerAgentFor(config, repository, this.knownProfileLabels(item)),
       this.now(),
@@ -7713,7 +7712,7 @@ export class Orchestrator {
       const item = getWorkItem(this.db, id);
       if (!item || item.state !== "queued" || item.cancelRequested) continue;
       settled(clearQueueWait(sqliteDb(this.db), item.id));
-      const need = this.options.runnerSetupNeed?.(item.id, agentFor(item), now) ?? null;
+      const need = (await this.options.runnerSetupNeed?.(item.id, agentFor(item), now)) ?? null;
       if (need) {
         await this.store.transaction((q) => this.queuedRunnerSetupHoldSteps(q, item.id, need, now));
         emitJobReady(this.store);
@@ -8510,6 +8509,14 @@ export class Orchestrator {
     });
   }
 
+  private *sessionAccessAllowedSteps(q: Q, item: WorkItemRecord): Steps<boolean> {
+    return (
+      !this.taskAccess() ||
+      (item.sessionKey !== null &&
+        (yield* getLinearSessionAccessSteps(q, item.sessionKey)) === "allowed")
+    );
+  }
+
   private authorization(item: WorkItemRecord): GitHubInstallationCheck | null {
     return item.sessionKey !== null ? this.githubAuth : null;
   }
@@ -8909,7 +8916,7 @@ export class Orchestrator {
       const { blockedAt } = yield* getConversationSteps(q, itemId);
       return (
         blockedAt !== null &&
-        gone(itemId, blockedAt) &&
+        (yield* gone(q, itemId, blockedAt)) &&
         (yield* clearConversationBlockSteps(q, itemId, blockedAt))
       );
     });

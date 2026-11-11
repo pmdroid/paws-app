@@ -125,7 +125,7 @@ test("the owner's sign-in carries no member and readies the runner's own agent",
   const f = fixture();
   const session = await f.login.start(f.owner, f.runnerId, "codex");
   expect((await f.login.start(f.owner, f.runnerId, "codex")).id).toBe(session.id);
-  const [envelope] = f.work.commands(f.runnerId);
+  const [envelope] = await f.work.commands(f.runnerId);
   const command = JSON.parse(
     Buffer.from(envelope!.payload, "base64url").toString(),
   ) as RunnerCommand;

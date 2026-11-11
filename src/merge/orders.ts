@@ -3,37 +3,32 @@ import { journal, journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { mergeQueueLine, type RepositoryBinding } from "../core";
 import {
-  artifactPublicationReady,
+  artifactPublicationReadySteps,
   clearPullCiFailuresSteps,
   emitJobReady,
   getItemPullRequestSteps,
   getLinearSessionGenerationSteps,
-  getWorkItem,
   getWorkItemSteps,
   joinMergeQueueSteps,
   laneCiFailureTimeSteps,
   leaveMergeQueueSteps,
   markMergeQueueNotifiedSteps,
   mergeQueuePositionSteps,
-  mergeStopRequested,
   mergeStopRequestedSteps,
-  pendingChangeRequests,
   pendingChangeRequestsSteps,
-  pendingLinearComments,
   pendingLinearCommentsSteps,
-  pendingPullCiFailures,
   pendingPullCiFailuresSteps,
-  pendingPullComments,
   pendingPullCommentsSteps,
   pullReviewCheckWaitSteps,
   rebaseReturnedForSteps,
-  recordCiRound,
   recordCiRoundSteps,
   recordConfirmedRemoteMergeSteps,
   recordPullCiFailureSteps,
-  recordRebaseReturn,
+  recordRebaseReturnSteps,
   resetOtherLaneCiFailuresSteps,
+  settled,
   settlePullCiFailuresSteps,
+  syncSteps,
   wakePullReviewsSteps,
   type CiRound,
   type CiRoundCheck,
@@ -55,8 +50,8 @@ import {
 import { ciFixHandoff, ciFixQuestion, ciFixRoundLine, type FailedCiCheck } from "./ci-fix";
 import type { RebaseConflict } from "./budget";
 import {
-  askMergeHelp,
-  rebaseBudgetFor,
+  askMergeHelpSteps,
+  askThrough,
   rebaseBudgetForSteps,
   returnToAgent,
   type MergeRestart,
@@ -227,12 +222,18 @@ export async function observeHeldCi(
 }
 
 /** Whether the merge call must not be made now: stopped, artifacts missing, or a review pending. */
-export function mergeHeld({ db, item, caps }: MergeContext): boolean {
+export function mergeHeld({ store, item, caps }: MergeContext): boolean {
   return (
     caps.stopped() ||
-    mergeStopRequested(db, item.id) ||
-    !artifactPublicationReady(db, item.id) ||
-    feedbackPending(db, item.id)
+    settled(
+      store.run(function* (q): Steps<boolean> {
+        return (
+          (yield* mergeStopRequestedSteps(q, item.id)) ||
+          !(yield* artifactPublicationReadySteps(q, item.id)) ||
+          (yield* feedbackPendingSteps(q, item.id))
+        );
+      }),
+    )
   );
 }
 
@@ -253,17 +254,6 @@ function* pullFeedbackPendingSteps(q: Q, itemId: string): Steps<boolean> {
   return (yield* pendingPullCiFailuresSteps(q, itemId)).some(
     (failure) => failure.itemVersion === version,
   );
-}
-
-function feedbackPending(db: Database, itemId: string): boolean {
-  return pullFeedbackPending(db, itemId) || pendingLinearComments(db, itemId).length > 0;
-}
-
-function pullFeedbackPending(db: Database, itemId: string): boolean {
-  if (pendingChangeRequests(db, itemId).length > 0 || pendingPullComments(db, itemId).length > 0)
-    return true;
-  const version = getWorkItem(db, itemId)?.version;
-  return pendingPullCiFailures(db, itemId).some((failure) => failure.itemVersion === version);
 }
 
 export type MergeVoice = {
@@ -315,19 +305,19 @@ export type MergePull = {
 };
 
 export function sendBack(
-  { db, item, caps }: MergeContext,
+  { store, item, caps }: MergeContext,
   reason: MergeReturnReason,
-  admit: (returns: number) => boolean,
+  admit: (q: Q, returns: number) => Steps<boolean>,
   handoff: string,
   report: {
     thought: (attempt: number) => string;
-    record: (jobId: number, attempt: number) => void;
+    record: (q: Q, jobId: number, attempt: number) => Steps<void>;
     failedChecks?: readonly FailedCiCheck[];
     pullNumber?: number | null;
     conflict?: { pullNumber: number; head: string };
   },
-): boolean {
-  return returnToAgent(db, {
+): Promise<boolean> {
+  return returnToAgent(store, {
     itemId: item.id,
     reason,
     admit,
@@ -346,34 +336,38 @@ export function sendBack(
 }
 
 export function askHelp(
-  { db, item, caps }: MergeContext,
+  { db, store, item, caps }: MergeContext,
   body: string,
   reason = "merge_help",
   options?: readonly string[],
-): boolean {
-  return askMergeHelp(db, {
-    itemId: item.id,
-    body,
-    reason,
-    ...(options ? { options } : {}),
-    now: caps.now(),
-    session: caps.session,
-    ask: caps.ask,
-  });
+): Promise<boolean> {
+  return store.transaction((q) =>
+    askMergeHelpSteps(q, {
+      itemId: item.id,
+      body,
+      reason,
+      ...(options ? { options } : {}),
+      now: caps.now(),
+      session: caps.session,
+      ask: askThrough(db, caps.ask),
+    }),
+  );
 }
 
-export function ciRound(
-  { db, item, caps }: MergeContext,
+export function* ciRoundSteps(
+  q: Q,
+  { item, caps }: Pick<MergeContext, "item" | "caps">,
   head: string,
   checks: readonly CiRoundCheck[] | undefined,
   next: CiRound["next"],
   limit: number,
   fix: number | null,
-): void {
-  recordCiRound(db, {
+): Steps<void> {
+  const current = yield* getWorkItemSteps(q, item.id);
+  yield* recordCiRoundSteps(q, {
     itemId: item.id,
     head,
-    runId: getWorkItem(db, item.id)?.currentRunId ?? item.currentRunId,
+    runId: current?.currentRunId ?? item.currentRunId,
     next,
     fix,
     fixLimit: limit,
@@ -384,26 +378,14 @@ export function ciRound(
 
 /** {@link ciRound} on the store, for a caller outside a synchronous transaction. */
 export function ciRoundAsync(
-  { store, item, caps }: MergeContext,
+  merge: MergeContext,
   head: string,
   checks: readonly CiRoundCheck[] | undefined,
   next: CiRound["next"],
   limit: number,
   fix: number | null,
 ): Promise<void> {
-  return store.run(function* (q) {
-    const current = yield* getWorkItemSteps(q, item.id);
-    yield* recordCiRoundSteps(q, {
-      itemId: item.id,
-      head,
-      runId: current?.currentRunId ?? item.currentRunId,
-      next,
-      fix,
-      fixLimit: limit,
-      checks: [...(checks ?? [])],
-      recordedAt: caps.now(),
-    });
-  });
+  return merge.store.run((q) => ciRoundSteps(q, merge, head, checks, next, limit, fix));
 }
 
 export async function mergeQueueTurn(
@@ -489,7 +471,7 @@ export async function waitConflict(
   prNumber: number,
   waiting: { for: "a review" | "CI"; main?: string },
 ): Promise<Extract<MergeStep, { kind: "returned" | "asked" }> | null> {
-  const { db, store, item, caps } = merge;
+  const { store, item, caps } = merge;
   const read = await caps.readPull(item, prNumber);
   if (caps.stopped() || read === null || !read.open || read.merges !== "conflict") return null;
   if (await store.run((q) => rebaseReturnedForSteps(q, item.id, read.head))) return null;
@@ -503,16 +485,18 @@ export async function waitConflict(
   const conflict: RebaseConflict = { base, files: null };
   const found = `item ${item.linearIdentifier} pull request #${prNumber} at ${read.head.slice(0, 7)} conflicts with main while it waits for ${waiting.for}`;
   if (
-    sendBack(
+    await sendBack(
       merge,
       "rebase-conflict",
-      () => rebaseBudgetFor(db, item.id, conflict, caps.now()).allowed,
+      function* (q) {
+        return (yield* rebaseBudgetForSteps(q, item.id, conflict, caps.now())).allowed;
+      },
       REBASE_CONFLICT_INSTRUCTION,
       {
         thought: () => REBASE_CONFLICT_THOUGHT,
         conflict: { pullNumber: prNumber, head: read.head },
-        record: (jobId) =>
-          recordRebaseReturn(db, {
+        record: (q, jobId) =>
+          recordRebaseReturnSteps(q, {
             itemId: item.id,
             jobId,
             candidate: read.head,
@@ -529,11 +513,11 @@ export async function waitConflict(
   const budget = await store.run((q) => rebaseBudgetForSteps(q, item.id, conflict, caps.now()));
   if (
     budget.allowed ||
-    !askHelp(
+    !(await askHelp(
       merge,
       `${budget.message} Reply with guidance to continue, or stop the task.`,
       "rebase_budget_spent",
-    )
+    ))
   )
     return null;
   journal(`${found}: the rebase budget is spent, asked for guidance`);
@@ -571,7 +555,7 @@ export async function mergeThroughGitHubQueue(
   payload: unknown,
   published: MergePull,
 ): Promise<MergeStep | "no_queue"> {
-  const { db, store, item, caps } = merge;
+  const { store, item, caps } = merge;
   const { repository, github, pull, head } = published;
   const name = `${repository.owner}/${repository.repo}`;
   await store.run((q) => resetOtherLaneCiFailuresSteps(q, item.id, head));
@@ -679,17 +663,19 @@ export async function mergeThroughGitHubQueue(
         );
         if (
           base !== null &&
-          sendBack(
+          (await sendBack(
             merge,
             "rebase-conflict",
-            () => rebaseBudgetFor(db, item.id, conflict, caps.now()).allowed,
+            function* (q) {
+              return (yield* rebaseBudgetForSteps(q, item.id, conflict, caps.now())).allowed;
+            },
             REBASE_CONFLICT_INSTRUCTION,
             {
               thought: () =>
                 `GitHub's merge queue removed the pull request for a conflict${why}. Sent it back to the agent to rebase.`,
               conflict: { pullNumber: pull.number, head },
-              record: (jobId) =>
-                recordRebaseReturn(db, {
+              record: (q, jobId) =>
+                recordRebaseReturnSteps(q, {
                   itemId: item.id,
                   jobId,
                   candidate: head,
@@ -698,12 +684,12 @@ export async function mergeThroughGitHubQueue(
                   recordedAt: caps.now(),
                 }),
             },
-          )
+          ))
         )
           return { kind: "returned" };
         const message = `GitHub's merge queue removed the pull request for a conflict${why}.${budget.allowed ? "" : ` ${budget.message}`}`;
         if (
-          askHelp(
+          await askHelp(
             merge,
             `${message} Reply with guidance to continue, or stop the task.`,
             budget.allowed ? "merge_help" : "rebase_budget_spent",
@@ -749,21 +735,21 @@ async function githubQueueCiFailed(
     logSource: null,
   }));
   if (
-    sendBack(
+    await sendBack(
       merge,
       "ci-failed",
-      (fixes) => fixes < limit,
+      (_q, fixes) => syncSteps(() => fixes < limit),
       `${source}\n\n${ciFixHandoff(checks, running)}`,
       {
         thought: (attempt) => ciFixRoundLine(checks, attempt, limit),
-        record: (_, attempt) => ciRound(merge, head, failed, "agent", limit, attempt),
+        record: (q, _, attempt) => ciRoundSteps(q, merge, head, failed, "agent", limit, attempt),
         failedChecks: checks,
         pullNumber: pull.number,
       },
     )
   )
     return { kind: "returned" };
-  if (askHelp(merge, ciFixQuestion(checks, limit, pull.url), "budget_spent")) {
+  if (await askHelp(merge, ciFixQuestion(checks, limit, pull.url), "budget_spent")) {
     await merge.caps.voice.flush();
     return { kind: "asked" };
   }
@@ -780,7 +766,7 @@ async function askGitHubQueueRemoval(merge: MergeContext, what: string): Promise
     "",
     "What should Paws do? Reply with what to change, and the agent works on it. Paws adds the pull request to the merge queue again after Closeout accepts the change. To leave it as it is, stop the task.",
   ].join("\n");
-  if (askHelp(merge, body)) {
+  if (await askHelp(merge, body)) {
     await merge.caps.voice.flush();
     return { kind: "asked" };
   }

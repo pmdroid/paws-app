@@ -161,7 +161,7 @@ globalThis.fetch = Object.assign(
   },
   { preconnect: () => undefined },
 );
-const paws = startPaws({
+const paws = await startPaws({
   HOME: home,
   PAWS_HOME: home,
   PAWS_PORT: "0",

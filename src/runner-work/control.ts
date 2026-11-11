@@ -1,5 +1,5 @@
 import {
-  extendStalledRunnerWork,
+  extendStalledRunnerWorkSteps,
   acknowledgeRunnerCommandSteps,
   assignRunnerWorkSteps,
   availableRunnerIdentitySteps,
@@ -65,6 +65,7 @@ import {
   workspaceInLinearOrganizationSteps,
   workspaceSessionIdsSteps,
   workspaceSessionRepositoryAllowedSteps,
+  type Db,
   type Q,
   type Steps,
   type RunnerAssignment as Assignment,
@@ -424,6 +425,93 @@ export function createRunnerWork(options: {
     });
     return envelope;
   }
+  function* assignSteps(q: Q, input: WorkCommand) {
+    const command = RunnerCommandSchema.parse(input);
+    if (command.type !== "run" && command.type !== "review" && command.type !== "task")
+      throw new Error("Work command is required.");
+    const at = now();
+    const accepting = yield* runnerSteps(q, command.runnerId);
+    if (
+      accepting.status !== "active" ||
+      accepting.workspaceId !== command.workspaceId ||
+      command.issuedAt > at ||
+      command.expiresAt <= at
+    )
+      throw new Error("Runner is not accepting this assignment.");
+    if (
+      (yield* runnerCancelPendingSteps(q, command.runnerId)) &&
+      !(yield* runnerHasCapacitySteps(q, command.runnerId, at, command.runId))
+    )
+      throw new RunnerTeardownPending([command.runnerId]);
+    if (!(yield* runnerHasCapacitySteps(q, command.runnerId, at, command.runId)))
+      throw new Error("Runner is occupied by active work.");
+    if (command.type === "task")
+      bindTask(
+        command,
+        yield* responseTaskSteps(q, command.runId, command.workspaceId, false, accepting.userId),
+      );
+    else {
+      const { item, repository } = yield* taskSteps(q, command.runId, command.workspaceId);
+      if (
+        item.id !== command.itemId ||
+        repository.owner !== command.repository.owner ||
+        repository.repo !== command.repository.repo ||
+        repository.remoteUrl !== command.repository.remoteUrl
+      )
+        throw new Error("Run assignment repository or task changed.");
+    }
+    const owner = yield* runTeardownOwnerSteps(q, command.runId);
+    if (owner !== null) throw new RunnerTeardownPending([owner]);
+    const previous = yield* runnerWorkAssignmentSteps(q, command.runId);
+    if (
+      command.generation !== (previous?.generation ?? 0) + 1 ||
+      (previous?.endedAt === null &&
+        ((yield* acceptedSteps(q, previous))
+          ? previous.leaseUntil > at
+          : runnerLeaseLive(previous.leaseUntil, at)) &&
+        (yield* availableRunnerIdentitySteps(q, previous.runnerId))?.fence === previous.runnerFence)
+    )
+      throw new Error("Run assignment generation conflicts.");
+    const leaseUntil = Math.min(command.expiresAt, at + RUNNER_LEASE_MS);
+    if (
+      command.type === "run" &&
+      command.livePreview &&
+      !runnerReleaseAtLeast(
+        yield* runnerHostVersionSteps(q, command.runnerId),
+        LIVE_PREVIEW_RUNNER_VERSION,
+      )
+    )
+      delete command.livePreview;
+    const envelope = yield* queueSteps(q, command);
+    yield* assignRunnerWorkSteps(q, {
+      runId: command.runId,
+      runnerId: command.runnerId,
+      workspaceId: command.workspaceId,
+      generation: command.generation,
+      runnerFence: accepting.fence,
+      commandId: command.id,
+      leaseUntil,
+    });
+    yield* deleteRunnerWorkGrantsSteps(q, command.runId);
+    yield* recordRunAgentSetupSteps(q, {
+      runId: command.runId,
+      runnerId: command.runnerId,
+      agent: command.profile.agent,
+      hooks:
+        command.type === "run" &&
+        (command.profile.agent === "claude" || command.profile.agent === "codex")
+          ? [
+              { name: "Paws Closeout", event: "stop" },
+              ...(command.hooks ?? []).map((hook) => ({
+                name: hook.command,
+                event: hook.event,
+              })),
+            ]
+          : [],
+      at,
+    });
+    return { envelope, leaseUntil };
+  }
   function parseEnqueued(input: RunnerCommand) {
     const command = RunnerCommandSchema.parse(input);
     if (command.type === "run" || command.type === "review" || command.type === "task")
@@ -495,6 +583,7 @@ export function createRunnerWork(options: {
     return openRunnerEventSteps(q, eventKey, row);
   }
   return {
+    supportsAgentSteps,
     supportsAgent(runnerId: string, agent: string) {
       return read((q) => supportsAgentSteps(q, runnerId, agent));
     },
@@ -510,102 +599,13 @@ export function createRunnerWork(options: {
     current(runId: string, generation: number) {
       return read((q) => currentSteps(q, runId, generation));
     },
+    currentAsync(runId: string, generation: number) {
+      return store.run((q) => currentSteps(q, runId, generation));
+    },
     currentSteps,
+    assignSteps,
     assign(input: WorkCommand) {
-      const command = RunnerCommandSchema.parse(input);
-      if (command.type !== "run" && command.type !== "review" && command.type !== "task")
-        throw new Error("Work command is required.");
-      return transaction(function* (q) {
-        const at = now();
-        const accepting = yield* runnerSteps(q, command.runnerId);
-        if (
-          accepting.status !== "active" ||
-          accepting.workspaceId !== command.workspaceId ||
-          command.issuedAt > at ||
-          command.expiresAt <= at
-        )
-          throw new Error("Runner is not accepting this assignment.");
-        if (
-          (yield* runnerCancelPendingSteps(q, command.runnerId)) &&
-          !(yield* runnerHasCapacitySteps(q, command.runnerId, at, command.runId))
-        )
-          throw new RunnerTeardownPending([command.runnerId]);
-        if (!(yield* runnerHasCapacitySteps(q, command.runnerId, at, command.runId)))
-          throw new Error("Runner is occupied by active work.");
-        if (command.type === "task")
-          bindTask(
-            command,
-            yield* responseTaskSteps(
-              q,
-              command.runId,
-              command.workspaceId,
-              false,
-              accepting.userId,
-            ),
-          );
-        else {
-          const { item, repository } = yield* taskSteps(q, command.runId, command.workspaceId);
-          if (
-            item.id !== command.itemId ||
-            repository.owner !== command.repository.owner ||
-            repository.repo !== command.repository.repo ||
-            repository.remoteUrl !== command.repository.remoteUrl
-          )
-            throw new Error("Run assignment repository or task changed.");
-        }
-        const owner = yield* runTeardownOwnerSteps(q, command.runId);
-        if (owner !== null) throw new RunnerTeardownPending([owner]);
-        const previous = yield* runnerWorkAssignmentSteps(q, command.runId);
-        if (
-          command.generation !== (previous?.generation ?? 0) + 1 ||
-          (previous?.endedAt === null &&
-            ((yield* acceptedSteps(q, previous))
-              ? previous.leaseUntil > at
-              : runnerLeaseLive(previous.leaseUntil, at)) &&
-            (yield* availableRunnerIdentitySteps(q, previous.runnerId))?.fence ===
-              previous.runnerFence)
-        )
-          throw new Error("Run assignment generation conflicts.");
-        const leaseUntil = Math.min(command.expiresAt, at + RUNNER_LEASE_MS);
-        if (
-          command.type === "run" &&
-          command.livePreview &&
-          !runnerReleaseAtLeast(
-            yield* runnerHostVersionSteps(q, command.runnerId),
-            LIVE_PREVIEW_RUNNER_VERSION,
-          )
-        )
-          delete command.livePreview;
-        const envelope = yield* queueSteps(q, command);
-        yield* assignRunnerWorkSteps(q, {
-          runId: command.runId,
-          runnerId: command.runnerId,
-          workspaceId: command.workspaceId,
-          generation: command.generation,
-          runnerFence: accepting.fence,
-          commandId: command.id,
-          leaseUntil,
-        });
-        yield* deleteRunnerWorkGrantsSteps(q, command.runId);
-        yield* recordRunAgentSetupSteps(q, {
-          runId: command.runId,
-          runnerId: command.runnerId,
-          agent: command.profile.agent,
-          hooks:
-            command.type === "run" &&
-            (command.profile.agent === "claude" || command.profile.agent === "codex")
-              ? [
-                  { name: "Paws Closeout", event: "stop" },
-                  ...(command.hooks ?? []).map((hook) => ({
-                    name: hook.command,
-                    event: hook.event,
-                  })),
-                ]
-              : [],
-          at,
-        });
-        return { envelope, leaseUntil };
-      });
+      return transaction((q) => assignSteps(q, input));
     },
     enqueue(input: RunnerCommand) {
       const command = parseEnqueued(input);
@@ -614,8 +614,8 @@ export function createRunnerWork(options: {
     enqueueSteps(q: Q, input: RunnerCommand) {
       return enqueuedSteps(q, parseEnqueued(input));
     },
-    commands(runnerId: string): SignedRunnerCommand[] {
-      const result = read(function* (q) {
+    async commands(runnerId: string): Promise<SignedRunnerCommand[]> {
+      const result = await store.run(function* (q) {
         yield* runnerSteps(q, runnerId);
         const signed: SignedRunnerCommand[] = [];
         // A sign-in someone is waiting on goes out before probes and sign-in checks queued earlier.
@@ -660,11 +660,12 @@ export function createRunnerWork(options: {
         );
       return result;
     },
-    acknowledge(runnerId: string, commandId: string) {
-      read((q) => runnerSteps(q, runnerId));
+    async acknowledge(runnerId: string, commandId: string) {
+      await store.run((q) => runnerSteps(q, runnerId));
       if (
-        read((q) => acknowledgeRunnerCommandSteps(q, runnerId, commandId, now())) !== 1 &&
-        !read((q) => repositoryCommandDeliveredToSteps(q, runnerId, commandId))
+        (await store.run((q) => acknowledgeRunnerCommandSteps(q, runnerId, commandId, now()))) !==
+          1 &&
+        !(await store.run((q) => repositoryCommandDeliveredToSteps(q, runnerId, commandId)))
       )
         throw new Error("Runner command is unknown.");
     },
@@ -676,7 +677,7 @@ export function createRunnerWork(options: {
      * `reported` comes from runners that name the work they still run: only that work is renewed,
      * and acknowledged work without a result that the runner no longer runs is fenced as lost.
      */
-    heartbeat(
+    async heartbeat(
       runnerId: string,
       capacity = 1,
       host: RunnerHostSample = {},
@@ -695,7 +696,7 @@ export function createRunnerWork(options: {
         reported && new Set(reported.map(({ runId, generation }) => `${runId}:${generation}`));
       // The capacity, repository and slot-wait writes that wake jobs say so once they commit.
       let woke = false;
-      const reply = transaction(function* (q) {
+      const reply = await store.transaction(function* (q) {
         yield* runnerSteps(q, runnerId);
         const storedVersion = yield* runnerHostVersionSteps(q, runnerId);
         const version = host.runnerVersion ?? storedVersion;
@@ -838,7 +839,7 @@ export function createRunnerWork(options: {
       });
     },
     issueGrant(input: { runnerId: string; runId: string; commandId: string; generation: number }) {
-      return transaction(function* (q) {
+      return store.transaction(function* (q) {
         const work = yield* liveSteps(q, input.runnerId, input.runId, input.generation, now());
         if (work.commandId !== input.commandId) throw new Error("Run command changed.");
         const token = workspaceSecret();
@@ -855,7 +856,7 @@ export function createRunnerWork(options: {
         return { token, expiresAt };
       });
     },
-    event(input: {
+    async event(input: {
       runnerId: string;
       runId: string;
       generation: number;
@@ -866,7 +867,7 @@ export function createRunnerWork(options: {
       const event = JSON.stringify(RunnerEventSchema.parse(withoutJournalTime(input.event)));
       if (!Number.isSafeInteger(input.sequence) || input.sequence < 1)
         throw new Error("Event sequence is invalid.");
-      return transaction(function* (q) {
+      return store.transaction(function* (q) {
         const at = now();
         const key = {
           runId: input.runId,
@@ -901,6 +902,9 @@ export function createRunnerWork(options: {
     authorize(input: { runnerId: string; runId: string; generation: number; token: string }) {
       return read((q) => authorizeSteps(q, input));
     },
+    authorizeAsync(input: { runnerId: string; runId: string; generation: number; token: string }) {
+      return store.run((q) => authorizeSteps(q, input));
+    },
     authorizeSteps,
     async finish(runId: string, generation: number) {
       await store.transaction(function* (q) {
@@ -914,6 +918,6 @@ export function createRunnerWork(options: {
 export type RunnerWork = ReturnType<typeof createRunnerWork>;
 
 // Use the same monotonic lease extension as heartbeat renewal.
-export function recoverRunnerWorkStall(db: Database, startedAt: number, lagMs: number): void {
-  extendStalledRunnerWork(db, startedAt, lagMs);
+export function recoverRunnerWorkStall(store: Db, startedAt: number, lagMs: number): Promise<void> {
+  return store.transaction((q) => extendStalledRunnerWorkSteps(q, startedAt, lagMs));
 }

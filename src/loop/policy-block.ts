@@ -1,9 +1,15 @@
 import type { Database } from "bun:sqlite";
-import { enqueueOutboxOnceSteps, listOpenPolicyBlocksSteps, sqliteDb, type Db } from "../db";
+import {
+  emitJobReady,
+  enqueueOutboxOnceSteps,
+  listOpenPolicyBlocksSteps,
+  sqliteDb,
+  type Db,
+} from "../db";
 import { journal } from "../journal";
-import { answerQuestion, shortCommit } from "../questions";
+import { answerQuestionSteps, shortCommit } from "../questions";
 import { POLICY_LOADS_ANSWER } from "./closeout-recovery";
-import { retryCloseout } from "./question-effects";
+import { retryCloseoutSteps } from "./question-effects";
 
 export const POLICY_BLOCK_CHECK_JOB = "closeout.policy-block.check";
 export const POLICY_BLOCK_CHECK_MS = 5 * 60_000;
@@ -28,16 +34,17 @@ export async function retryPolicyBlocks(
 ): Promise<string[]> {
   if (input.policy === null || "ok" in input.policy) return [];
   const answer = `${POLICY_LOADS_ANSWER} ${shortCommit(input.main)}.`;
-  const answered = await sqliteDb(db).transaction(function* (q) {
+  const store = sqliteDb(db);
+  const answered = await store.transaction(function* (q) {
     const retried: string[] = [];
     for (const block of yield* listOpenPolicyBlocksSteps(q, input.repository)) {
-      const question = answerQuestion(db, block.questionId, {
+      const question = yield* answerQuestionSteps(q, block.questionId, {
         answer,
         answeredBy: "paws",
         now: input.now,
       });
       if (question === null) continue;
-      retryCloseout(db, question, { now: input.now, answer });
+      yield* retryCloseoutSteps(q, question, { now: input.now, answer });
       yield* enqueueOutboxOnceSteps(q, {
         target: "linear",
         op: "activity",
@@ -50,6 +57,7 @@ export async function retryPolicyBlocks(
     }
     return retried;
   });
+  if (answered.length > 0) emitJobReady(store);
   if (answered.length > 0)
     journal(
       `closeout policy on main of ${input.repository} loads at ${input.main}: retried ${answered.length} closeout-help questions`,

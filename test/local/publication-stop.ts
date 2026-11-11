@@ -679,7 +679,7 @@ export async function probePublicationStop(
       },
     );
     await current.orchestrator.shutdown();
-    current = create(() => ({}));
+    current = create(async () => ({}));
     for (const [delegationId, retiredState] of [
       ["handoff-history", "merged"],
       ["cancelled-history", "cancelled"],

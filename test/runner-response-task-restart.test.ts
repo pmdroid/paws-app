@@ -143,14 +143,14 @@ async function fixture() {
     while (!sim.stopped) {
       if (!sim.paused) {
         const { work } = services;
-        work.heartbeat(runnerId);
-        for (const envelope of work.commands(runnerId)) {
+        await work.heartbeat(runnerId);
+        for (const envelope of await work.commands(runnerId)) {
           const command = JSON.parse(
             Buffer.from(envelope.payload, "base64url").toString(),
           ) as RunnerCommand;
           if (handled.has(command.id)) continue;
           handled.add(command.id);
-          work.acknowledge(runnerId, command.id);
+          await work.acknowledge(runnerId, command.id);
           if (command.type === "task") tasks.push(command);
         }
       }
@@ -210,7 +210,7 @@ async function fixture() {
     get services() {
       return services;
     },
-    say(
+    async say(
       command: Extract<RunnerCommand, { type: "task" }>,
       sequence: number,
       text: string,
@@ -220,12 +220,14 @@ async function fixture() {
         runnerId,
         runId: command.runId,
         generation: command.generation,
-        token: services.work.issueGrant({
-          runnerId,
-          runId: command.runId,
-          commandId: command.id,
-          generation: command.generation,
-        }).token,
+        token: (
+          await services.work.issueGrant({
+            runnerId,
+            runId: command.runId,
+            commandId: command.id,
+            generation: command.generation,
+          })
+        ).token,
         sequence,
         event: {
           type: "activity",
@@ -234,17 +236,19 @@ async function fixture() {
         } as RunnerEvent,
       });
     },
-    finish(command: Extract<RunnerCommand, { type: "task" }>) {
+    async finish(command: Extract<RunnerCommand, { type: "task" }>) {
       return services.results.submit({
         runnerId,
         runId: command.runId,
         generation: command.generation,
-        token: services.work.issueGrant({
-          runnerId,
-          runId: command.runId,
-          commandId: command.id,
-          generation: command.generation,
-        }).token,
+        token: (
+          await services.work.issueGrant({
+            runnerId,
+            runId: command.runId,
+            commandId: command.id,
+            generation: command.generation,
+          })
+        ).token,
         result: {
           executionId: workspaceId(),
           commandId: command.id,
@@ -289,9 +293,9 @@ test("an answer task mid-turn keeps running through a Paws restart and finishes 
       );
     await f.until(() => f.tasks.length === 1);
     const command = f.tasks[0]!;
-    f.say(command, 1, "Before the restart.");
+    await f.say(command, 1, "Before the restart.");
     await f.until(() => f.consumed() === 1);
-    expect(f.say(command, 1, "Before the restart.", "2026-11-03T18:09:13.000Z")).toEqual({
+    expect(await f.say(command, 1, "Before the restart.", "2026-11-03T18:09:13.000Z")).toEqual({
       duplicate: true,
     });
     shutdown.abort(new PawsShutdown());
@@ -313,8 +317,8 @@ test("an answer task mid-turn keeps running through a Paws restart and finishes 
     const commands = f.commandCount();
     f.events.length = 0;
     const resumed = f.services.backend.forItem(f.item.id)(f.options(new AbortController().signal));
-    f.say(command, 2, "After the restart.");
-    expect(f.finish(command)).toEqual({ duplicate: false });
+    await f.say(command, 2, "After the restart.");
+    expect(await f.finish(command)).toEqual({ duplicate: false });
     const result = await resumed;
 
     expect(result).toMatchObject({ stopReason: "end_turn", agentExited: true });

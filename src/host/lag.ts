@@ -1,12 +1,12 @@
 import { systemClock, type Clock } from "../core";
-import { journal } from "../journal";
+import { journal, journalCaught } from "../journal";
 
 import { sampleHostOperations } from "../host-operation";
 
 export function createLagWatchdog(input: {
   clock?: Clock;
   log?: (line: string) => void;
-  recover: (lagMs: number, startedAt: number) => void;
+  recover: (lagMs: number, startedAt: number) => Promise<void>;
 }) {
   const clock = input.clock ?? systemClock;
   let previous = clock.mono();
@@ -21,7 +21,9 @@ export function createLagWatchdog(input: {
     const names = sampleHostOperations();
     if (lag > 5000) {
       (input.log ?? journal)(`event loop stalled ${lag} ms operation=${names}`);
-      input.recover(lag, startedAt);
+      input.recover(lag, startedAt).catch((error: unknown) => {
+        journalCaught(error, "lag.recover", null);
+      });
     }
   };
 }

@@ -36,7 +36,7 @@ function source(overrides: Partial<MemberVmProvisioningSource> = {}) {
     readToken: () => null,
     installer: () => INSTALLER,
     publicUrl: "https://paws.example.invalid",
-    repositories: () => ["acme/app"],
+    repositories: async () => ["acme/app"],
     runnerControl: async () => control,
     latestRelease: async () => null,
     exeDev,

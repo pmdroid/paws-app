@@ -93,7 +93,7 @@ test("a session delegated while every runner slot is busy is queued at once and 
       throw new Error("Remote execution must not launch a local agent");
     },
     remoteExecution: {
-      slotFree: () => !busy,
+      slotFree: async () => !busy,
       agentForSession: (_sessionId, purpose) => remote(purpose),
       agentForItem: () => remote("answer"),
     },

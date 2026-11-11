@@ -7,14 +7,14 @@ const CHECK_TIMEOUT = 15_000;
 
 export type SkillUpdates = {
   check(skills: readonly SkillPin[]): Promise<void>;
-  available(skills: readonly SkillPin[]): Record<string, string>;
+  available(skills: readonly SkillPin[]): Promise<Record<string, string>>;
 };
 
 type LatestCommit = (url: string, ref: string | undefined, signal: AbortSignal) => Promise<string>;
 
 type SkillUpdateStore = {
-  read(): Record<string, string>;
-  write(commits: Record<string, string>): void;
+  read(): Promise<Record<string, string>>;
+  write(commits: Record<string, string>): Promise<void>;
 };
 
 export function createSkillUpdates(
@@ -24,14 +24,14 @@ export function createSkillUpdates(
     options.latest ?? ((url, ref, signal) => gitRemoteCommit(url, ref, { signal }));
   let memory: Record<string, string> = {};
   const store = options.store ?? {
-    read: () => memory,
-    write: (commits) => {
+    read: async () => memory,
+    write: async (commits) => {
       memory = commits;
     },
   };
   return {
     async check(skills) {
-      const commits = new Map(Object.entries(store.read()));
+      const commits = new Map(Object.entries(await store.read()));
       const sources = new Map(
         skills.flatMap((skill) => {
           const source = trackedSource(skill);
@@ -51,10 +51,10 @@ export function createSkillUpdates(
           }
         }),
       );
-      store.write(Object.fromEntries(commits));
+      await store.write(Object.fromEntries(commits));
     },
-    available(skills) {
-      const commits = new Map(Object.entries(store.read()));
+    async available(skills) {
+      const commits = new Map(Object.entries(await store.read()));
       const updates: Record<string, string> = {};
       for (const skill of skills) {
         const source = trackedSource(skill);

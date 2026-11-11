@@ -50,7 +50,7 @@ export function createRunnerHttp(
     agents?: (principal: WorkspacePrincipal, runnerId: string) => Promise<readonly unknown[]>;
     hostWarnings?: (runnerId: string) => readonly string[];
     /** What a new host's config needs: this Paws's endpoints and the repositories it may run. */
-    hostConfig?: () => RunnerHostConfig | null;
+    hostConfig?: () => Promise<RunnerHostConfig | null>;
   } = {},
 ) {
   let enrolling = 0;
@@ -106,7 +106,7 @@ export function createRunnerHttp(
           });
         if (path === "/api/runners/enrollments" && request.method === "POST") {
           const input = enrollmentRequest.parse(await readJson(request));
-          const config = options.hostConfig?.() ?? null;
+          const config = (await options.hostConfig?.()) ?? null;
           // An empty list makes the runner refuse every run, so no token is issued for one.
           if (config?.allowedRepositories.length === 0)
             return json(

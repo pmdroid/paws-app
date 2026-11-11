@@ -11,12 +11,12 @@ import {
   getRunnerSteps,
   linearSessionClientIdSteps,
   recentRunnersSteps,
-  runnerHelperAvailability,
+  runnerHelperAvailabilitySteps,
   runnerHostVersionSteps,
   runnerOwnerSteps,
   sessionActiveRuns,
   sqliteDb,
-  workspaceSessionIds,
+  workspaceSessionIdsSteps,
   type Db,
 } from "../db";
 import {
@@ -25,7 +25,6 @@ import {
   type RunnerHelperResult,
 } from "../runner-protocol";
 import { versionAtLeast } from "./session-restore";
-import { syncSteps } from "./sync-steps";
 import { usageLimitWait } from "./usage-limit-wait";
 
 import {
@@ -82,7 +81,7 @@ export function createRemoteSessionAgentRunner(options: {
       ? null
       : store.run((q) => earliestRunnerCooldownSteps(q, { agent, now: now(), runnerIds }));
   const sessionRun = async (sessionId: string) => {
-    const rows = await sessionActiveRuns(sqliteDb(options.db), sessionId);
+    const rows = await sessionActiveRuns(store, sessionId);
     return rows.length === 1 ? rows[0]! : null;
   };
   return {
@@ -133,7 +132,7 @@ export function createRemoteSessionAgentRunner(options: {
           held.clear();
           const open =
             purpose === "classify" || purpose === "select_repository"
-              ? options.helpers.open(sessionId)
+              ? await store.run((q) => options.helpers.openSteps(q, sessionId))
               : null;
           if (open?.purpose === purpose && open.prompt === input.prompt) {
             command = open;
@@ -145,6 +144,7 @@ export function createRemoteSessionAgentRunner(options: {
             slotBusy = true;
           }
           let runners: readonly PlacementCandidate[] = [];
+          const full: string[] = [];
           if (!open)
             runners = options.placement
               ? await options.placement.candidates({
@@ -155,15 +155,7 @@ export function createRemoteSessionAgentRunner(options: {
                     note(runnerId, reason.replaceAll("-", " "));
                     if (AT_CAPACITY.test(reason)) {
                       slotBusy = true;
-                      if (
-                        runnerHelperAvailability(
-                          options.db,
-                          runnerId,
-                          now(),
-                          purpose !== "finding_groups",
-                        ).held
-                      )
-                        held.add(runnerId);
+                      full.push(runnerId);
                       return;
                     }
                     if (reason === "agent quota cooldown") cooling.push(runnerId);
@@ -171,6 +163,15 @@ export function createRemoteSessionAgentRunner(options: {
                   },
                 })
               : await store.run((q) => recentRunnersSteps(q, now() - 60_000));
+          for (const runnerId of full)
+            if (
+              (
+                await store.run((q) =>
+                  runnerHelperAvailabilitySteps(q, runnerId, now(), purpose !== "finding_groups"),
+                )
+              ).held
+            )
+              held.add(runnerId);
           for (const runner of runners) {
             if (
               excluded.includes(runner.id) ||
@@ -192,35 +193,34 @@ export function createRemoteSessionAgentRunner(options: {
               if (
                 !owner ||
                 !clientId ||
-                !workspaceSessionIds(
-                  options.db,
-                  owner.workspaceId,
-                  owner.userId,
-                  clientId,
+                !(
+                  await store.run((q) =>
+                    workspaceSessionIdsSteps(q, owner.workspaceId, owner.userId, clientId),
+                  )
                 ).includes(sessionId)
               )
                 continue;
             }
             try {
               placed = runner.account;
-              command = await store.transaction(() =>
-                syncSteps(() => {
-                  const dispatched = options.helpers.dispatch({
-                    runnerId: runner.id,
-                    sessionId,
-                    purpose,
-                    profile,
-                    prompt: input.prompt,
-                    ...(runner.account?.named
-                      ? {
-                          account: {
-                            accountId: runner.account.accountId,
-                            bindingId: runner.account.bindingId,
-                          },
-                        }
-                      : {}),
-                  }).command;
-                  options.placement?.started({
+              command = await store.transaction(function* (q) {
+                const { command: dispatched } = yield* options.helpers.dispatchSteps(q, {
+                  runnerId: runner.id,
+                  sessionId,
+                  purpose,
+                  profile,
+                  prompt: input.prompt,
+                  ...(runner.account?.named
+                    ? {
+                        account: {
+                          accountId: runner.account.accountId,
+                          bindingId: runner.account.bindingId,
+                        },
+                      }
+                    : {}),
+                });
+                if (options.placement)
+                  yield* options.placement.startedSteps(q, {
                     commandId: dispatched.id,
                     runnerId: runner.id,
                     sessionId,
@@ -230,9 +230,8 @@ export function createRemoteSessionAgentRunner(options: {
                     purpose: "helper",
                     startedAt: now(),
                   });
-                  return dispatched;
-                }),
-              );
+                return dispatched;
+              });
               break;
             } catch (caughtError1) {
               const busy = caughtError1 instanceof RunnerHelperBusyError ? caughtError1 : null;
@@ -290,17 +289,18 @@ export function createRemoteSessionAgentRunner(options: {
               break;
             }
             if (result) {
-              const disposition = await store.transaction(() =>
-                syncSteps(() =>
-                  options.placement?.finished({
+              const disposition = await store.transaction(function* (q) {
+                return (
+                  options.placement &&
+                  (yield* options.placement.finishedSteps(q, {
                     commandId: command!.id,
                     runnerId: command!.runnerId,
                     profile,
                     result,
                     finishedAt: now(),
-                  }),
-                ),
-              );
+                  }))
+                );
+              });
               accounted = true;
               if (
                 disposition?.retryable &&
@@ -383,9 +383,10 @@ export function createRemoteSessionAgentRunner(options: {
           // Cleanup failures must not replace the original timeout, fence or cancellation error.
           try {
             if (!accounted && others === 0)
-              await store.transaction(() =>
-                syncSteps(() =>
-                  options.placement?.finished({
+              await store.transaction(function* (q) {
+                return (
+                  options.placement &&
+                  (yield* options.placement.finishedSteps(q, {
                     commandId: command.id,
                     runnerId: command.runnerId,
                     profile,
@@ -398,9 +399,9 @@ export function createRemoteSessionAgentRunner(options: {
                         ? "timeout"
                         : "error",
                     finishedAt: now(),
-                  }),
-                ),
-              );
+                  }))
+                );
+              });
           } catch (error) {
             journalCaught(error, "helpers.forSession.accountingCleanup", null);
           }
@@ -419,7 +420,7 @@ export function createRemoteSessionAgentRunner(options: {
               attempt,
               async () => {},
               usageLimitWait(
-                { db: options.db, now, mono, interval: options.pollIntervalMs ?? 250 },
+                { store, now, mono, interval: options.pollIntervalMs ?? 250 },
                 () => sessionRun(sessionId),
                 input,
               ),

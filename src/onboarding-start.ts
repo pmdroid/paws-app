@@ -12,7 +12,7 @@ import { isDashboardPage } from "./dashboard-links";
 export function startBrowserOnboarding(
   runtime: RuntimeConfig,
   tls: PublicTls,
-  start: (server: Bun.Server<undefined>) => PawsProcess,
+  start: (server: Bun.Server<undefined>) => Promise<PawsProcess>,
   source: Record<string, string | undefined>,
   reconnect = false,
 ): PawsProcess {
@@ -49,7 +49,7 @@ export function startBrowserOnboarding(
           await Promise.allSettled([...requests]);
           if (stopping) return;
           closeDatabase();
-          active = start(server);
+          active = await start(server);
           await active.ready;
         })().catch((caughtError1) => {
           journalCaught(caughtError1, "Paws could not start after Linear authorization.", null);

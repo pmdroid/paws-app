@@ -134,7 +134,7 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
-  work.heartbeat(runnerId, 8);
+  await work.heartbeat(runnerId, 8);
   const results = createRunnerResults({ db, work });
   const health = createRunnerHealth({ db, work });
   const backend = createRemoteAgentRunner({
@@ -170,7 +170,7 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
     home: root,
     tracker,
     repositories: [{ owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL }],
-    scheduling: () => ({}),
+    scheduling: async () => ({}),
     // Waits for a runner are re-placed in milliseconds rather than seconds.
     placementPollMs: 1,
     launch() {
@@ -191,14 +191,14 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
   const handled = new Set<string>();
   const runner = (async () => {
     while (!sim.stopped) {
-      work.heartbeat(runnerId, 8);
-      for (const envelope of work.commands(runnerId)) {
+      await work.heartbeat(runnerId, 8);
+      for (const envelope of await work.commands(runnerId)) {
         const command = JSON.parse(
           Buffer.from(envelope.payload, "base64url").toString(),
         ) as RunnerCommand;
         if (handled.has(command.id)) continue;
         handled.add(command.id);
-        work.acknowledge(runnerId, command.id);
+        await work.acknowledge(runnerId, command.id);
         if (command.type === "login_check")
           await health.submit(runnerId, {
             ...receipt(command),
@@ -304,9 +304,9 @@ test("a runner that restarts between selection and assignment gets the item agai
 test("a real assignment error still fails the item", async () => {
   const outcome = await runItem(({ placement }) => ({
     ...placement,
-    started(input) {
+    *startedSteps(q, input) {
       if (input.purpose === "work") throw new Error("Runner usage receipt could not be written");
-      placement.started(input);
+      yield* placement.startedSteps(q, input);
     },
   }));
   const detail = JSON.stringify(outcome);

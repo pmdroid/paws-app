@@ -2,17 +2,15 @@ import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
   emitJobReady,
-  enqueueJobOnce,
   enqueueJobOnceSteps,
   getItemPullRequestSteps,
   getWorkItemSteps,
-  immediate,
-  itemJobRunning,
   itemJobRunningSteps,
-  listMergeQueues,
   listMergeQueuesSteps,
   rebaseReturnedForSteps,
-  recordRebaseReturn,
+  recordRebaseReturnSteps,
+  settled,
+  sqliteDb,
   type Db,
   type MergeQueuePosition,
   type Q,
@@ -25,7 +23,7 @@ import {
   REBASE_CONFLICT_THOUGHT,
   type OrderCapabilities,
 } from "./orders";
-import { askMergeHelp, rebaseBudgetFor, returnToAgent } from "./returns";
+import { askMergeHelpSteps, askThrough, rebaseBudgetForSteps, returnToAgent } from "./returns";
 
 export type QueueConflictCapabilities = Pick<
   OrderCapabilities,
@@ -42,8 +40,7 @@ export type QueueConflictSweep = { repository: string; main: string | null };
  * commit. A redelivered webhook, or the lane's merge and its webhook, share the one job.
  */
 export function mainMoved(db: Database, input: QueueConflictSweep & { now: number }): void {
-  if (behindFront(db, input.repository).length === 0) return;
-  enqueueJobOnce(db, sweepJob(input));
+  if (settled(sqliteDb(db).run((q) => mainMovedSteps(q, input)))) emitJobReady(db);
 }
 
 /** {@link mainMoved} on the store, for a caller outside a synchronous transaction. */
@@ -51,11 +48,12 @@ export async function mainMovedAsync(
   store: Db,
   input: QueueConflictSweep & { now: number },
 ): Promise<void> {
-  const inserted = await store.run(function* (q): Steps<boolean> {
-    if ((yield* behindFrontSteps(q, input.repository)).length === 0) return false;
-    return (yield* enqueueJobOnceSteps(q, sweepJob(input))).inserted;
-  });
-  if (inserted) emitJobReady(store);
+  if (await store.run((q) => mainMovedSteps(q, input))) emitJobReady(store);
+}
+
+function* mainMovedSteps(q: Q, input: QueueConflictSweep & { now: number }): Steps<boolean> {
+  if ((yield* behindFrontSteps(q, input.repository)).length === 0) return false;
+  return (yield* enqueueJobOnceSteps(q, sweepJob(input))).inserted;
 }
 
 function sweepJob(input: QueueConflictSweep & { now: number }) {
@@ -99,38 +97,44 @@ export async function returnQueuedConflicts(
     const conflict: RebaseConflict = { base: sweep.main, files: null };
     // The read awaited GitHub: the item may have reached the front, or its merge may have started.
     // Judge that again in the transaction that sends it back or asks.
-    const owned = () => behindFront(db, sweep.repository).includes(item.id);
-    if (returnConflict(db, item, pull.pullNumber, read.head, conflict, caps, owned)) {
+    const owned = function* (q: Q): Steps<boolean> {
+      return (yield* behindFrontSteps(q, sweep.repository)).includes(item.id);
+    };
+    if (await returnConflict(store, item, pull.pullNumber, read.head, conflict, caps, owned)) {
       handled.push(item.id);
       continue;
     }
-    if (askSpentBudget(db, item, conflict, caps, owned)) handled.push(item.id);
+    if (await askSpentBudget(db, store, item, conflict, caps, owned)) handled.push(item.id);
   }
   if (handled.length > 0) await caps.voice.flush();
   return handled;
 }
 
 function returnConflict(
-  db: Database,
+  store: Db,
   item: WorkItemRecord,
   pullNumber: number,
   head: string,
   conflict: RebaseConflict,
   caps: QueueConflictCapabilities,
-  owned: () => boolean,
-): boolean {
-  return returnToAgent(db, {
+  owned: (q: Q) => Steps<boolean>,
+): Promise<boolean> {
+  return returnToAgent(store, {
     itemId: item.id,
     reason: "rebase-conflict",
-    admit: () => owned() && rebaseBudgetFor(db, item.id, conflict, caps.now()).allowed,
+    admit: function* (q) {
+      return (
+        (yield* owned(q)) && (yield* rebaseBudgetForSteps(q, item.id, conflict, caps.now())).allowed
+      );
+    },
     handoff: REBASE_CONFLICT_INSTRUCTION,
     now: caps.now(),
     keepPlace: true,
     conflict: { sessionId: caps.session(item), pullNumber, head },
     ...(caps.restart ? { restart: caps.restart } : {}),
     announce: (running, _, key) => caps.voice.thought(running, REBASE_CONFLICT_THOUGHT, key),
-    record: (jobId) =>
-      recordRebaseReturn(db, {
+    record: (q, jobId) =>
+      recordRebaseReturnSteps(q, {
         itemId: item.id,
         jobId,
         candidate: head,
@@ -143,34 +147,27 @@ function returnConflict(
 
 function askSpentBudget(
   db: Database,
+  store: Db,
   item: WorkItemRecord,
   conflict: RebaseConflict,
   caps: QueueConflictCapabilities,
-  owned: () => boolean,
-): boolean {
-  return immediate(db, () => {
-    if (!owned()) return false;
-    const budget = rebaseBudgetFor(db, item.id, conflict, caps.now());
+  owned: (q: Q) => Steps<boolean>,
+): Promise<boolean> {
+  return store.transaction(function* (q): Steps<boolean> {
+    if (!(yield* owned(q))) return false;
+    const budget = yield* rebaseBudgetForSteps(q, item.id, conflict, caps.now());
     return (
       !budget.allowed &&
-      askMergeHelp(db, {
+      (yield* askMergeHelpSteps(q, {
         itemId: item.id,
         body: `${budget.message} Reply with guidance to continue, or stop the task.`,
         reason: "rebase_budget_spent",
         now: caps.now(),
         session: caps.session,
-        ask: caps.ask,
-      })
+        ask: askThrough(db, caps.ask),
+      }))
     );
   });
-}
-
-/** Queued items in `repository` behind the front whose merge attempt is not running. */
-function behindFront(db: Database, repository: string): string[] {
-  return listMergeQueues(db)
-    .filter((entry) => queuedBehind(entry, repository))
-    .map((entry) => entry.itemId)
-    .filter((itemId) => !mergeRunning(db, itemId));
 }
 
 /** {@link behindFront}, read through the store. */
@@ -190,8 +187,4 @@ function* behindFrontSteps(q: Q, repository: string): Steps<string[]> {
 
 function queuedBehind(entry: MergeQueuePosition, repository: string): boolean {
   return entry.repository.toLowerCase() === repository.toLowerCase() && entry.position > 1;
-}
-
-function mergeRunning(db: Database, itemId: string): boolean {
-  return itemJobRunning(db, JOB_KIND.merge, itemId);
 }

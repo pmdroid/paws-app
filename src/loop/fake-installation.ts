@@ -1,4 +1,4 @@
-import type { WorkItemRecord } from "../db";
+import { syncSteps, type Steps, type WorkItemRecord } from "../db";
 import type { GitHubDenial, GitHubIntegration } from "./github-integration";
 
 /**
@@ -28,11 +28,11 @@ export class FakeGitHubIntegration implements GitHubIntegration {
     return this.permitted;
   }
 
-  administrators(_item: WorkItemRecord): readonly string[] {
-    return this.admins;
+  administrators(): Steps<readonly string[]> {
+    return syncSteps(() => this.admins);
   }
 
-  identity(_item: WorkItemRecord): string {
-    return "workspace-app";
+  identity(): Steps<string> {
+    return syncSteps(() => "workspace-app");
   }
 }

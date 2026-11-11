@@ -37,6 +37,7 @@ import {
   saveCheckpoint,
   type WorkItemRecord,
   sqliteDb,
+  syncSteps,
 } from "../../src/db";
 import { createFakeTracker, LinearRateLimitError } from "../../src/linear";
 import { findOpenQuestion } from "../../src/questions";
@@ -389,8 +390,8 @@ export async function probeRunnerOrchestration(
                 });
                 return true;
               },
-              identity: () => "workspace-installation-repository",
-              administrators: () => [],
+              identity: () => syncSteps(() => "workspace-installation-repository"),
+              administrators: () => syncSteps(() => []),
               recoveryUrl: "https://paws.example/status/#/settings/integrations",
             },
             repositoryToken: async () => "fixture",
@@ -399,7 +400,7 @@ export async function probeRunnerOrchestration(
       linearTaskModes: mergeDependencyYield,
       ...(mergeDependencyYield
         ? {
-            scheduling: () => ({}),
+            scheduling: async () => ({}),
             publicationReady(itemId: string) {
               assert.equal(getLinearSession(db, "session")?.activeItemId, itemId);
               assert.equal(getWorkItem(db, "new-blocker")?.state, "completed");

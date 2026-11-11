@@ -131,12 +131,12 @@ test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes wh
     tracker,
     clock,
     linearTaskModes: true,
-    scheduling: () => ({}),
+    scheduling: async () => ({}),
     launch: () => {
       throw new Error("Remote execution must not launch a local agent");
     },
     remoteExecution: {
-      slotFree: () => !runner.full(),
+      slotFree: async () => !runner.full(),
       agentForSession: (_sessionId, purpose) => agent(purpose),
       agentForItem: () => agent("answer"),
     },

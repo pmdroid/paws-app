@@ -1,4 +1,4 @@
-import { itemWorkPlacement } from "./session";
+import { itemWorkPlacementSteps } from "./session";
 import { createRunnerPlacement, PlacementUnavailableError } from "./placement";
 import type { Database } from "bun:sqlite";
 import {
@@ -44,14 +44,6 @@ export function* repositoryRejectionSteps(
     : "repository not allowed in the runner's host config";
 }
 
-export function repositoryRejection(
-  db: Database,
-  runnerId: string,
-  repository: string,
-): string | null {
-  return settled(sqliteDb(db).run((q) => repositoryRejectionSteps(q, runnerId, repository)));
-}
-
 export function* signInFitSteps(
   q: Q,
   runner: SignInRunner,
@@ -81,15 +73,6 @@ export function* signInFitSteps(
     account: { accountId: legacyAgentAccountId(workspaceId, agent), bindingId, named: false },
     low: runner.quotaState === "low",
   };
-}
-
-export function signInFit(
-  db: Database,
-  runner: SignInRunner,
-  workspaceId: string,
-  input: SignInInput,
-): AccountFit | AccountRefusal {
-  return settled(sqliteDb(db).run((q) => signInFitSteps(q, runner, workspaceId, input)));
 }
 
 function* runnerVerdictsSteps(
@@ -153,19 +136,27 @@ export function itemRunnerVerdicts(
   db: Database,
   input: { itemId: string; agent: string; model?: string | null; now: number },
 ): ItemRunnerVerdicts | null {
-  const found = settled(sqliteDb(db).run((q) => runnerVerdictsSteps(q, input)));
+  return settled(sqliteDb(db).run((q) => itemRunnerVerdictsSteps(q, db, input)));
+}
+
+function* itemRunnerVerdictsSteps(
+  q: Q,
+  db: Database,
+  input: { itemId: string; agent: string; model?: string | null; now: number },
+): Steps<ItemRunnerVerdicts | null> {
+  const found = yield* runnerVerdictsSteps(q, input);
   if (!found) return null;
   const { repository, runners } = found;
   let order: string[];
   try {
     // A new instance is safe here: session grace is kept per database, so this does not restart it.
-    order = createRunnerPlacement({ db, now: () => input.now }).preview!({
+    order = (yield* createRunnerPlacement({ db, now: () => input.now }).previewSteps!(q, {
       itemId: input.itemId,
       profile: { agent: input.agent as RunnerCodingAgent, model: input.model },
       role: "implementer",
       purpose: "work",
-      ...itemWorkPlacement(db, input.itemId, input.agent),
-    }).map((r) => r.id);
+      ...(yield* itemWorkPlacementSteps(q, input.itemId, input.agent)),
+    })).map((r) => r.id);
   } catch (error) {
     if (error instanceof PlacementUnavailableError) return null;
     throw error;

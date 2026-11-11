@@ -866,7 +866,7 @@ describe("linear intake poll", () => {
           for (const item of result.items)
             configureWorkItem(db, item.id, { sessionKey: "ses_stop" });
       },
-      submitCommand: (command) => {
+      submitCommand: async (command) => {
         commands.push({ type: command.type, itemId: command.itemId });
       },
       sleeper: recordingSleeper(waits, gate),
@@ -915,7 +915,7 @@ describe("linear intake poll", () => {
           for (const item of result.items)
             configureWorkItem(db, item.id, { sessionKey: "ses_stop" });
       },
-      submitCommand: (command) => {
+      submitCommand: async (command) => {
         commands.push({ type: command.type, itemId: command.itemId });
       },
       sleeper: recordingSleeper(waits, gate),

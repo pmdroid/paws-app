@@ -1,20 +1,21 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
-  openItemIdsForRepository,
+  emitJobReady,
+  openItemIdsForRepositorySteps,
   enqueueOutboxOnce,
   enqueueOutboxOnceSteps,
   fixRoundsSteps,
   getPullReviewSteps,
   pendingPullCommentsSteps,
   settlePullCommentsSteps,
-  getItemPullRequest,
-  getWorkItem,
+  getItemPullRequestSteps,
   getWorkItemSteps,
-  immediate,
-  recordPullReview,
+  recordPullReviewSteps,
   recordReviewEscapeSteps,
+  recordReviewRepliesSteps,
   settlePullReviewSteps,
+  settled,
   sqliteDb,
   type PullReviewRecord,
   type PullFeedbackWait,
@@ -27,12 +28,12 @@ import {
 } from "../db";
 import type { StoredReviewFinding } from "../closeout";
 import type { LeaveMergeQueueResult, ReviewThread } from "../github";
-import { ask, restart } from "./operations";
+import { askSteps, restartSteps } from "./operations";
 import { commentDigest } from "./pull-comments";
 import { currentPullCi, pullCiAsked, pullCiHandoff, pullCiHead, pullCiRestarted } from "./pull-ci";
 import { REVIEW_FIX_INSTRUCTION } from "./review-instructions";
 import { holdForReviewChecks, type ReviewChecks } from "./review-checks";
-import { recordReplyTargets, replyListSection, replyTargets } from "./review-replies";
+import { replyListSection, replyTargets } from "./review-replies";
 import { worktreeBranch } from "./sources";
 
 /** How often a review waiting for a live turn, evaluation or merge attempt looks again. */
@@ -50,20 +51,21 @@ export { REVIEW_FIX_INSTRUCTION } from "./review-instructions";
  * (`recordCommentDelivery`); approvals and dismissals only wake the merge job. True when this
  * delivery recorded a new review.
  */
-export function recordReviewDelivery(
-  db: Database,
+export function* recordReviewDeliverySteps(
+  q: Q,
   event: string,
   body: unknown,
   now: number,
   wait?: PullFeedbackWait,
-): boolean {
-  if (event !== "pull_request_review") return false;
+): Steps<{ recorded: boolean; enqueued: boolean }> {
+  const none = { recorded: false, enqueued: false };
+  if (event !== "pull_request_review") return none;
   const payload = record(body);
   const review = record(payload.review);
   const pull = record(payload.pull_request);
   const head = record(pull.head);
   const state = typeof review.state === "string" ? review.state.toLowerCase() : "";
-  if (payload.action !== "submitted" || state !== "changes_requested") return false;
+  if (payload.action !== "submitted" || state !== "changes_requested") return none;
   const reviewId = review.id;
   const pullNumber = pull.number;
   const branch = head.ref;
@@ -82,28 +84,26 @@ export function recordReviewDelivery(
     typeof headRepository.id !== "number" ||
     headRepository.id !== repository.id
   )
-    return false;
-  return immediate(db, () => {
-    const item = itemForBranch(db, owner, repo, branch);
-    if (item === null) return false;
-    const opened = getItemPullRequest(db, item.id);
-    if (opened !== null && opened.pullNumber !== pullNumber) return false;
-    return recordPullReview(
-      db,
-      {
-        reviewId,
-        itemId: item.id,
-        state: state as PullReviewState,
-        pullNumber,
-        head: typeof review.commit_id === "string" ? review.commit_id : null,
-        reviewer:
-          typeof record(review.user).login === "string" ? String(record(review.user).login) : null,
-        body: typeof review.body === "string" ? review.body : "",
-        receivedAt: now,
-      },
-      wait,
-    );
-  });
+    return none;
+  const item = yield* itemForBranchSteps(q, owner, repo, branch);
+  if (item === null) return none;
+  const opened = yield* getItemPullRequestSteps(q, item.id);
+  if (opened !== null && opened.pullNumber !== pullNumber) return none;
+  return yield* recordPullReviewSteps(
+    q,
+    {
+      reviewId,
+      itemId: item.id,
+      state: state as PullReviewState,
+      pullNumber,
+      head: typeof review.commit_id === "string" ? review.commit_id : null,
+      reviewer:
+        typeof record(review.user).login === "string" ? String(record(review.user).login) : null,
+      body: typeof review.body === "string" ? review.body : "",
+      receivedAt: now,
+    },
+    wait,
+  );
 }
 
 /** The ongoing item whose branch in `owner/repo` is `branch`. */
@@ -113,8 +113,17 @@ export function itemForBranch(
   repo: string,
   branch: string,
 ): WorkItemRecord | null {
-  for (const id of openItemIdsForRepository(db, owner, repo)) {
-    const item = getWorkItem(db, id);
+  return settled(sqliteDb(db).run((q) => itemForBranchSteps(q, owner, repo, branch)));
+}
+
+export function* itemForBranchSteps(
+  q: Q,
+  owner: string,
+  repo: string,
+  branch: string,
+): Steps<WorkItemRecord | null> {
+  for (const id of yield* openItemIdsForRepositorySteps(q, owner, repo)) {
+    const item = yield* getWorkItemSteps(q, id);
     if (item && (item.branchName || worktreeBranch(item)) === branch) return item;
   }
   return null;
@@ -194,6 +203,7 @@ export async function handlePullReview(
   const findings = await caps.closeoutFindings(item);
   const head = await pullCiHead(db, item, review.pullNumber, caps.pullHead);
   if (head === "unreadable") return "wait";
+  let armed = false;
   const step = await store.transaction(function* (q): Steps<PullReviewStep> {
     const current = yield* getWorkItemSteps(q, item.id);
     if (current === null || current.version !== item.version || current.state !== "merge_queue")
@@ -227,7 +237,7 @@ export async function handlePullReview(
         reviews: [review],
         comments,
       });
-      const jobId = restart(db, current, {
+      const restarted = yield* restartSteps(q, current, {
         reason: "review",
         body: [
           digest,
@@ -248,7 +258,8 @@ export async function handlePullReview(
         jobKey,
         now: caps.now(),
       });
-      if (jobId === null) return "wait";
+      if (restarted === null) return "wait";
+      armed = restarted.armed;
       yield* postPullFeedbackSteps(q, {
         sessionId: caps.session(current),
         item: current,
@@ -256,7 +267,12 @@ export async function handlePullReview(
         body: `${reviewer(review)} requested changes on pull request #${review.pullNumber}. The agent is working on them.`,
         now: caps.now(),
       });
-      recordReplyTargets(db, current.id, jobKey, targets, caps.now());
+      yield* recordReviewRepliesSteps(q, {
+        itemId: current.id,
+        restartKey: jobKey,
+        replies: targets,
+        now: caps.now(),
+      });
       yield* settlePullCommentsSteps(q, comments, "covered", caps.now());
       if (failure !== null)
         yield* postPullFeedbackSteps(q, {
@@ -286,8 +302,8 @@ export async function handlePullReview(
       yield* settlePullReviewSteps(q, reviewId, "dropped", caps.now());
       return "dropped";
     }
-    ask(
-      db,
+    yield* askSteps(
+      q,
       {
         itemId: current.id,
         runId: current.currentRunId,
@@ -302,6 +318,7 @@ export async function handlePullReview(
     yield* settlePullReviewSteps(q, reviewId, "asked", caps.now());
     return "asked";
   });
+  if (armed) emitJobReady(store);
   if (step !== "wait") await caps.flush();
   return step;
 }

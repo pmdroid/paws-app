@@ -176,7 +176,7 @@ test("a parked item is placed on a runner as soon as it reports the repository a
     eventKey: Buffer.alloc(32, 7),
     now: () => clock.now,
   });
-  work.heartbeat(goldbox, 6, {}, undefined, undefined, undefined, undefined, undefined, [
+  await work.heartbeat(goldbox, 6, {}, undefined, undefined, undefined, undefined, undefined, [
     "other/repo",
     REPOSITORY,
   ]);
@@ -293,10 +293,14 @@ test("a reconnect with unchanged reports wakes parked work once, without waking 
     eventKey: Buffer.alloc(32, 7),
     now: () => now,
   });
-  work.heartbeat(id, 2, {}, undefined, undefined, undefined, undefined, undefined, [REPOSITORY]);
+  await work.heartbeat(id, 2, {}, undefined, undefined, undefined, undefined, undefined, [
+    REPOSITORY,
+  ]);
   expect(getJob(db, jobId)!.runAt).toBe(now);
   db.run("UPDATE job SET run_at=? WHERE id=?", [now + 60_000, jobId]);
-  work.heartbeat(id, 2, {}, undefined, undefined, undefined, undefined, undefined, [REPOSITORY]);
+  await work.heartbeat(id, 2, {}, undefined, undefined, undefined, undefined, undefined, [
+    REPOSITORY,
+  ]);
   expect(getJob(db, jobId)!.runAt).toBe(now + 60_000);
 });
 
@@ -327,7 +331,7 @@ test("a successful background sign-in check wakes parked work", async () => {
   });
   const health = createRunnerHealth({ db, work, now: () => at });
   expect(await health.afterSignIn(id, "claude")).toBe(true);
-  const envelope = work.commands(id)[0]!;
+  const envelope = (await work.commands(id))[0]!;
   const command = JSON.parse(Buffer.from(envelope.payload, "base64url").toString()) as {
     id: string;
   };

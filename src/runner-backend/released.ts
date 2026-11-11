@@ -1,5 +1,4 @@
-import type { Database } from "bun:sqlite";
-import { itemRunnerWorkReports } from "../db";
+import { itemRunnerWorkReportsSteps, type Q, type Steps } from "../db";
 import { RUNNER_LIVE_GRACE_MS } from "../runner-work";
 
 /**
@@ -8,8 +7,8 @@ import { RUNNER_LIVE_GRACE_MS } from "../runner-work";
  * runner that restarted reports this on its first heartbeat; one that still names the command
  * keeps it. False when the item never ran on a runner, so only a person can vouch for it.
  */
-export function remoteCommandsGone(db: Database, itemId: string, since: number): boolean {
-  const rows = itemRunnerWorkReports(db, itemId);
+export function* remoteCommandsGoneSteps(q: Q, itemId: string, since: number): Steps<boolean> {
+  const rows = yield* itemRunnerWorkReportsSteps(q, itemId);
   return (
     rows.length > 0 &&
     rows.every(

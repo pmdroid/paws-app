@@ -65,7 +65,7 @@ test("a ready item waiting for a runner slot is queued once in Linear and fails 
     outbox: new OutboxDispatcher(db, clock),
     clock,
     pawsRoot: tempHome(),
-    scheduling: () => ({}),
+    scheduling: async () => ({}),
   });
   try {
     oneBusyRunnerSlot(db);
@@ -108,7 +108,7 @@ test("the queued thought shows the place in line, and the start timeout comes fr
     outbox: new OutboxDispatcher(db, clock),
     clock,
     pawsRoot,
-    scheduling: () => ({}),
+    scheduling: async () => ({}),
   });
   try {
     oneBusyRunnerSlot(db);
@@ -205,7 +205,7 @@ test("a runner-queued item names its place in the title and plan, and a restart 
     clock,
     pawsRoot: tempHome(),
     tracker: createFakeTracker(),
-    scheduling: () => ({}),
+    scheduling: async () => ({}),
   });
   try {
     oneBusyRunnerSlot(db);
@@ -272,7 +272,7 @@ test("paused and recovering items get a waiting title and no ephemeral", async (
     clock,
     pawsRoot: tempHome(),
     tracker: createFakeTracker(),
-    scheduling: () => ({}),
+    scheduling: async () => ({}),
   });
   try {
     const item = insertQueuedItem(db, { id: "paused", now: 1_000, sessionKey: "session" });

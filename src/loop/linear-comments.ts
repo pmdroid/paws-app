@@ -38,7 +38,7 @@ import {
 } from "../db";
 import type { LeaveMergeQueueResult } from "../github";
 import { isPawsStop } from "../linear";
-import { findOpenQuestion } from "../questions";
+import { findOpenQuestionSteps } from "../questions";
 import { publicToolText } from "./activity";
 
 export type LinearCommentActor = { id: string; teamId: string | null };
@@ -361,7 +361,7 @@ export async function deliverLinearComments(
   if (turns.length > 0) await caps.resumeSession?.(item.sessionKey!);
   if (kept.length === 0) return unknown ? "wait" : "done";
   if (item.state === "awaiting_input") {
-    const question = findOpenQuestion(db, item.sessionKey!);
+    const question = await store.run((q) => findOpenQuestionSteps(q, item.sessionKey!));
     if (question !== null) {
       await store.transaction((q) =>
         enqueueOutboxOnceSteps(q, {

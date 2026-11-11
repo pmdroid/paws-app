@@ -168,13 +168,13 @@ export async function probeRunnerHealth(
       memberRead: true,
     });
     assert.equal((await health.list(principal, runnerId)).lastSeenAt, null);
-    work.heartbeat(runnerId);
+    await work.heartbeat(runnerId);
     assert.equal((await health.list(principal, runnerId)).lastSeenAt, now);
     now += 1000;
-    work.heartbeat(runnerId);
+    await work.heartbeat(runnerId);
     assert.equal((await health.list(principal, runnerId)).lastSeenAt, now);
     const pending = await health.request(principal, runnerId, requestInput);
-    const verified = verifyRunnerCommand(work.commands(runnerId)[0], {
+    const verified = verifyRunnerCommand((await work.commands(runnerId))[0], {
       trustedKeys: new Map([["health-fixture", signing.publicKey]]),
       runnerId,
       workspaceId: workspace.id,

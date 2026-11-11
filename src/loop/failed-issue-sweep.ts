@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { LinearCommand } from "../core";
-import { listWorkItems } from "../db";
+import { listWorkItemsSteps, sqliteDb } from "../db";
 import { journalCaught } from "../journal";
 import type { LinearIssueClosed, TrackerRequestOptions } from "../linear";
 import { closeClosedIssueTasks, type ClosedIssueTask } from "./linear-administration";
@@ -23,7 +23,7 @@ export async function sweepFailedIssues(
 ): Promise<ClosedIssueTask[]> {
   const ids = [
     ...new Set(
-      listWorkItems(db)
+      (await sqliteDb(db).run(listWorkItemsSteps))
         .filter((item) => item.state === "failed" && item.linearIssueId !== "")
         .map((item) => item.linearIssueId),
     ),

@@ -12,7 +12,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function freshInstance(expectedOrganizationId?: string) {
+async function freshInstance(expectedOrganizationId?: string) {
   const home = mkdtempSync(join(tmpdir(), "paws-browser-onboarding-"));
   roots.push(home);
   const cert = join(home, "server.crt");
@@ -43,7 +43,7 @@ function freshInstance(expectedOrganizationId?: string) {
     { stdout: "ignore", stderr: "pipe" },
   );
   expect(generated.exitCode).toBe(0);
-  const paws = startPaws({
+  const paws = await startPaws({
     PAWS_HOME: home,
     PAWS_HOST: "127.0.0.1",
     PAWS_PORT: "0",
@@ -60,7 +60,7 @@ function freshInstance(expectedOrganizationId?: string) {
 }
 
 test("a fresh HTTPS instance serves browser onboarding for its configured organization", async () => {
-  const paws = freshInstance("org");
+  const paws = await freshInstance("org");
   await paws.ready;
   const response = await paws.server.fetch(new Request("https://localhost:8787/api/auth/session"));
   expect(response.status).toBe(401);
@@ -93,7 +93,7 @@ test("a fresh HTTPS instance serves browser onboarding for its configured organi
 });
 
 test("a fresh HTTPS instance refuses sign-in until its organization is configured", async () => {
-  const paws = freshInstance();
+  const paws = await freshInstance();
   await paws.ready;
   const login = await paws.server.fetch(new Request("https://localhost:8787/auth/linear"));
   expect(login.status).toBe(503);

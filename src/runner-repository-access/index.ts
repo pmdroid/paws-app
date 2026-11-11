@@ -140,7 +140,7 @@ export function createRunnerRepositoryAccess(options: {
         generation: input.generation,
         token: received.token,
       };
-      const initial = options.work.authorize(access);
+      const initial = await options.work.authorizeAsync(access);
       if (!initial.command.repository) return denied();
       if (input.access === "write" && (initial.command.type !== "run" || !initial.branch))
         return denied();
@@ -156,7 +156,7 @@ export function createRunnerRepositoryAccess(options: {
         return sameBot(await github(async () => options.checkpointBot?.(repository)), expectedBot);
       };
       if (!(await matchesBot())) return denied();
-      options.work.authorize(access);
+      await options.work.authorizeAsync(access);
       if (options.installationForRepository(repository) !== installationId) return denied();
       const credential = await github(() =>
         options.github.mintInstallationToken({
@@ -166,7 +166,7 @@ export function createRunnerRepositoryAccess(options: {
         }),
       );
       if (!(await matchesBot())) return denied();
-      const current = options.work.authorize(access);
+      const current = await options.work.authorizeAsync(access);
       const checkedAt = now();
       if (options.installationForRepository(repository) !== installationId) return denied();
       if (
@@ -361,7 +361,7 @@ export function createAgentReadAccess(options: { work: RunnerWork; agentRead: Ag
       const received = await credentialRequest(request);
       if (!received) return denied();
       const input = inputSchema.pick({ generation: true }).parse(received.body);
-      const { command } = options.work.authorize({
+      const { command } = await options.work.authorizeAsync({
         runnerId,
         runId: idSchema.parse(decodeURIComponent(path[1]!)),
         generation: input.generation,

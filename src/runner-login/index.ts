@@ -162,9 +162,9 @@ export function createRunnerLogin(options: {
     list(principal: WorkspacePrincipal, runnerId: string) {
       return store.run(function* (q) {
         yield* accessSteps(q, principal.workspaceId, principal.userId, runnerId);
-        const agents = (["claude", "codex", "grok", "opencode"] as const).filter((agent) =>
-          work.supportsAgent(runnerId, agent),
-        );
+        const agents: Agent[] = [];
+        for (const agent of ["claude", "codex", "grok", "opencode"] as const)
+          if (yield* work.supportsAgentSteps(q, runnerId, agent)) agents.push(agent);
         const accounts = [];
         for (const agent of agents) {
           const account = yield* runnerAgentPolicyStateSteps(q, runnerId, agent);
@@ -241,7 +241,7 @@ export function createRunnerLogin(options: {
           );
         const id = randomUUID();
         const expiresAt = at + SIGN_IN_MS;
-        work.enqueue({
+        yield* work.enqueueSteps(q, {
           id,
           type: "login",
           runnerId,

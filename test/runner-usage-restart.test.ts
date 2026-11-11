@@ -310,8 +310,8 @@ async function usageLimitScenario(
           }
           return placement.candidates(input);
         },
-        finished(input) {
-          const disposition = placement.finished(input);
+        *finishedSteps(q, input) {
+          const disposition = yield* placement.finishedSteps(q, input);
           if (input.commandId === limitedCommand && !limitedAt) {
             limitedAt = input.finishedAt;
             // Paws stops right after the usage receipt commits.
@@ -360,7 +360,7 @@ async function usageLimitScenario(
     while (!sim.stopped) {
       if (!sim.paused) {
         const { work, results } = services;
-        work.heartbeat(runnerId);
+        await work.heartbeat(runnerId);
         const pause = db
           .query<{ runId: string; resetsAt: number }, []>(
             "SELECT run_id AS runId,resets_at AS resetsAt FROM usage_pause",
@@ -393,24 +393,24 @@ async function usageLimitScenario(
               [runnerId],
             );
         }
-        for (const envelope of work.commands(runnerId)) {
+        for (const envelope of await work.commands(runnerId)) {
           const command = JSON.parse(
             Buffer.from(envelope.payload, "base64url").toString(),
           ) as RunnerCommand;
           if (handled.has(command.id)) continue;
           handled.add(command.id);
-          work.acknowledge(runnerId, command.id);
+          await work.acknowledge(runnerId, command.id);
           if (command.type !== "run") continue;
           agents.push(command.profile.agent);
           const limited = !limitedCommand;
           if (limited) limitedCommand = command.id;
-          const grant = work.issueGrant({
+          const grant = await work.issueGrant({
             runnerId,
             runId: command.runId,
             commandId: command.id,
             generation: command.generation,
           });
-          results.submit({
+          await results.submit({
             runnerId,
             runId: command.runId,
             generation: command.generation,

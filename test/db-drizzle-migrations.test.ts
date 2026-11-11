@@ -149,7 +149,7 @@ describe("a database from the legacy migrations", () => {
     expect(readdirSync(home).filter((name) => name.includes("pre-drizzle"))).toHaveLength(3);
   });
 
-  test("stops startup without the opt-in and changes nothing on disk", () => {
+  test("stops startup without the opt-in and changes nothing on disk", async () => {
     const home = tempHome();
     const path = closedLegacyDatabase(home);
     writeFileSync(join(home, "config.toml"), "");
@@ -157,9 +157,9 @@ describe("a database from the legacy migrations", () => {
     const release = useSavedSettings();
     try {
       for (const flag of [undefined, "", "0", "true"])
-        expect(() =>
+        await expect(
           startPaws({ PAWS_HOME: home, PAWS_PORT: "0", PAWS_RESET_LEGACY_DATABASE: flag }),
-        ).toThrow(refusal(path));
+        ).rejects.toThrow(refusal(path));
     } finally {
       release();
     }
@@ -179,7 +179,7 @@ describe("a database from the legacy migrations", () => {
     const home = tempHome();
     const path = closedLegacyDatabase(home);
     const before = readFileSync(path);
-    const paws = startPaws({ PAWS_HOME: home, PAWS_PORT: "0", ...RESET });
+    const paws = await startPaws({ PAWS_HOME: home, PAWS_PORT: "0", ...RESET });
     await shutdownPaws(paws, 0, () => {});
     const renamed = readdirSync(home).filter((name) => /pre-drizzle-\d+T\d+Z$/.test(name));
     expect(renamed).toHaveLength(1);

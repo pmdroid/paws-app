@@ -26,7 +26,7 @@ import {
   type TrackerAdapter,
 } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
-import { remoteCommandsGone } from "../src/runner-backend";
+import { remoteCommandsGoneSteps } from "../src/runner-backend";
 import { RUNNER_LIVE_GRACE_MS } from "../src/runner-work";
 import { tempHome } from "./helpers";
 
@@ -92,7 +92,7 @@ async function fixture() {
         agentForSession: () => {
           throw new Error("Unexpected agent");
         },
-        commandsGone: (itemId, since) => remoteCommandsGone(db, itemId, since),
+        commandsGone: (q, itemId, since) => remoteCommandsGoneSteps(q, itemId, since),
       },
     });
   let orchestrator = makeOrchestrator();

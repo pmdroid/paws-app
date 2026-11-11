@@ -53,7 +53,7 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
     const path = new URL(request.url).pathname;
     try {
       if (path === "/v1/commands" && request.method === "GET")
-        return json({ commands: work.commands(runnerId) });
+        return json({ commands: await work.commands(runnerId) });
       if (path === "/v1/heartbeat" && request.method === "POST") {
         const {
           capacity,
@@ -70,7 +70,7 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
           ...host
         } = heartbeat.parse(await body(request));
         return json(
-          work.heartbeat(
+          await work.heartbeat(
             runnerId,
             capacity ?? 1,
             host,
@@ -103,14 +103,14 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
       const acknowledgment = /^\/v1\/commands\/([^/]+)\/ack$/.exec(path);
       if (acknowledgment && request.method === "POST") {
         empty.parse(await body(request));
-        work.acknowledge(runnerId, id.parse(decodeURIComponent(acknowledgment[1]!)));
+        await work.acknowledge(runnerId, id.parse(decodeURIComponent(acknowledgment[1]!)));
         return json({ ok: true });
       }
       const permission = /^\/v1\/runs\/([^/]+)\/grant$/.exec(path);
       if (permission && request.method === "POST") {
         const input = grant.parse(await body(request));
         return json(
-          work.issueGrant({
+          await work.issueGrant({
             ...input,
             runnerId,
             runId: id.parse(decodeURIComponent(permission[1]!)),
@@ -122,7 +122,7 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
         if (!authorization || !/^Bearer [A-Za-z0-9_-]{43}$/.test(authorization))
           return json({ error: "A run grant is required." }, 403);
         const input = event.parse(await body(request, 1_048_576));
-        return json(work.event({ ...input, runnerId, token: authorization.slice(7) }));
+        return json(await work.event({ ...input, runnerId, token: authorization.slice(7) }));
       }
       return null;
     } catch (error) {

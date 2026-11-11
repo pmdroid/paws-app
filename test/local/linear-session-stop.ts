@@ -126,7 +126,7 @@ export async function probeLinearSessionStop(root: string) {
             joined++;
           }
         },
-        submitCommand: (command) => {
+        submitCommand: async (command) => {
           assert.equal(command.itemId, old.id);
         },
       });

@@ -168,7 +168,7 @@ async function fixture({
     disconnect: () => {},
     now: () => clock.now(),
   });
-  const runnerHttp = createRunnerHttp(control, { hostConfig: () => HOST_CONFIG });
+  const runnerHttp = createRunnerHttp(control, { hostConfig: async () => HOST_CONFIG });
   const loop = new JobLoop(db, clock, { leaseMs: 60_000 });
   registerMemberVmJob(loop, {
     exeDev: createFakeExeDev(),

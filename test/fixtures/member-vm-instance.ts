@@ -92,7 +92,7 @@ const bootstrap = createFakeBootstrap({
   },
 });
 
-const paws = startPaws(
+const paws = await startPaws(
   {
     ...process.env,
     PAWS_HOME: home,

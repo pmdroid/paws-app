@@ -28,7 +28,7 @@ export async function startRunnerListener(options: {
   hostname?: string;
   port?: number;
   authorize(peer: RunnerPeer): boolean | Promise<boolean>;
-  revoked?(peer: RunnerPeer): boolean;
+  revoked?(peer: RunnerPeer): boolean | Promise<boolean>;
   fetch(request: Request, peer: RunnerPeer): Promise<Response>;
   now?: () => number;
   log?: (line: string) => void;
@@ -63,7 +63,10 @@ export async function startRunnerListener(options: {
         const peer = readPeer(socket, now());
         connections.set(socket, peer.fingerprint);
         socket.once("close", () => connections.delete(socket));
-        if (revoked.has(peer.fingerprint) && !isRevoked(peer)) socket.destroy();
+        if (revoked.has(peer.fingerprint))
+          void isRevoked(peer).then((still) => {
+            if (!still) socket.destroy();
+          });
       } catch (caughtError1) {
         journalCaught(caughtError1, "listener.createServer.readPeer", null);
         socket.destroy();
@@ -77,23 +80,23 @@ export async function startRunnerListener(options: {
     return server;
   }
   /** A failing authorization check (a busy database) throws as itself, so it answers 503. */
-  function isRevoked(peer: RunnerPeer): boolean {
+  async function isRevoked(peer: RunnerPeer): Promise<boolean> {
     try {
-      return options.revoked?.(peer) === true;
+      return (await options.revoked?.(peer)) === true;
     } catch (error) {
       journalCaught(error, "listener.isRevoked", null);
       return false;
     }
   }
-  function refused(peer: RunnerPeer): never {
-    if (isRevoked(peer)) throw new RunnerRevokedError("Runner is revoked");
+  async function refused(peer: RunnerPeer): Promise<never> {
+    if (await isRevoked(peer)) throw new RunnerRevokedError("Runner is revoked");
     throw new RunnerAuthorizationError("Runner authorization expired");
   }
   async function authorize(socket: TLSSocket): Promise<RunnerPeer> {
     const peer = authorizedPeer(socket, now());
-    if (revoked.has(peer.fingerprint) || !(await options.authorize(peer))) refused(peer);
+    if (revoked.has(peer.fingerprint) || !(await options.authorize(peer))) await refused(peer);
     authorizedPeer(socket, now());
-    if (revoked.has(peer.fingerprint)) refused(peer);
+    if (revoked.has(peer.fingerprint)) await refused(peer);
     return peer;
   }
   async function handle(request: Http2ServerRequest, response: Http2ServerResponse) {

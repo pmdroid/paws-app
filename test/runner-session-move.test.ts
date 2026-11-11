@@ -156,7 +156,7 @@ async function setup() {
   const seen = new Set<string>();
   async function next(runnerId: string) {
     for (let index = 0; index < 2000; index++) {
-      for (const envelope of work.commands(runnerId)) {
+      for (const envelope of await work.commands(runnerId)) {
         const verified = verifyRunnerCommand(envelope, {
           trustedKeys: new Map([["fixture", signing.publicKey]]),
           runnerId,
@@ -166,7 +166,7 @@ async function setup() {
           claimCommand: (id) => !seen.has(id) && Boolean(seen.add(id)),
         });
         if (verified.ok) {
-          work.acknowledge(runnerId, verified.command.id);
+          await work.acknowledge(runnerId, verified.command.id);
           return verified.command;
         }
       }
@@ -206,13 +206,13 @@ async function setup() {
    * Both runners online, restore-capable for Claude, Codex and Grok, signed in to Claude 2.1.7,
    * Codex 2.1.1 and Grok 1.0.50, owned by the delegator.
    */
-  function reset() {
+  async function reset() {
     for (const runnerId of Object.values(runners)) {
       db.run("UPDATE runner SET status='active',revoked_at=NULL,owner_user_id=? WHERE id=?", [
         userId,
         runnerId,
       ]);
-      work.heartbeat(runnerId);
+      await work.heartbeat(runnerId);
       db.run(
         `INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.46',?)
          ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version`,
@@ -238,24 +238,23 @@ async function setup() {
     db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 1, runners.b]);
   }
   /** A finished turn: optional runner events, then the result. */
-  function finish(command: RunCommand, runnerId: string, events: RunnerEvent[] = []) {
-    const grant = work.issueGrant({
+  async function finish(command: RunCommand, runnerId: string, events: RunnerEvent[] = []) {
+    const grant = await work.issueGrant({
       runnerId,
       runId: command.runId,
       commandId: command.id,
       generation: command.generation,
     });
-    events.forEach((event, index) =>
-      work.event({
+    for (const [index, event] of events.entries())
+      await work.event({
         runnerId,
         runId: command.runId,
         generation: command.generation,
         sequence: index + 1,
         token: grant.token,
         event,
-      }),
-    );
-    results.submit({
+      });
+    await results.submit({
       runnerId,
       runId: command.runId,
       generation: command.generation,
@@ -279,7 +278,7 @@ async function setup() {
   const VERSIONS = { claude: "2.1.7", codex: "2.1.1", grok: "1.0.50" };
   /** Runner A seals a snapshot of its turn through the store, as the runner uploads it. */
   async function seal(command: RunCommand, agent: "claude" | "codex" | "grok") {
-    const grant = work.issueGrant({
+    const grant = await work.issueGrant({
       runnerId: runners.a,
       runId: command.runId,
       commandId: command.id,
@@ -324,7 +323,7 @@ async function setup() {
     /** Runs while the second turn's command holds the run. */
     dispatched?: (command: RunCommand, runnerId: string) => Promise<void>;
   }) {
-    reset();
+    await reset();
     // A and B tie on rank and load, and ULIDs minted in one millisecond order at random, so B
     // stays offline until A has run the first turn.
     db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 60_001, runners.b]);
@@ -352,11 +351,11 @@ async function setup() {
     db.run("UPDATE runner SET status='active' WHERE id=?", [runners.b]);
     const sealed =
       options.snapshot === false ? undefined : await seal(onA, options.agent ?? "claude");
-    finish(onA, runners.a);
+    await finish(onA, runners.a);
     await first;
     expect(onA.restoreSession).toBeUndefined();
     notices.length = 0;
-    work.heartbeat(runners.b);
+    await work.heartbeat(runners.b);
     if (!options.stay)
       db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 60_001, runners.a]);
     options.change?.();
@@ -364,7 +363,7 @@ async function setup() {
     const target = options.stay ? runners.a : runners.b;
     const onB = (await next(target)) as RunCommand;
     await options.dispatched?.(onB, target);
-    finish(onB, target, options.events);
+    await finish(onB, target, options.events);
     await second;
     db.run("UPDATE run SET status='ended' WHERE id=?", [record.runId]);
     return { record, onA, onB, sealed, notices };
@@ -413,7 +412,7 @@ test("a move with an eligible snapshot sends restoreSession and posts the restor
     events: [{ type: "session_restore", restored: true }],
     // The new runner, holding the run's grant, reads the snapshot Paws sealed for A.
     async dispatched(command, runnerId) {
-      const grant = context.work.issueGrant({
+      const grant = await context.work.issueGrant({
         runnerId,
         runId: command.runId,
         commandId: command.id,
@@ -650,7 +649,7 @@ test("another Grok version still restores, and a failed load names both versions
  */
 async function mergeQueueItemOnFullRunner() {
   const { db, runners, backend, root } = context;
-  context.reset();
+  await context.reset();
   db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
   const record = context.item();
   const turn = (options: { checkpoint?: false } = {}) =>
@@ -667,11 +666,11 @@ async function mergeQueueItemOnFullRunner() {
     });
   const first = turn();
   const onA = (await context.next(runners.a)) as RunCommand;
-  context.finish(onA, runners.a);
+  await context.finish(onA, runners.a);
   await first;
   db.run("UPDATE runner SET status='active' WHERE id=?", [runners.b]);
-  context.work.heartbeat(runners.a);
-  context.work.heartbeat(runners.b);
+  await context.work.heartbeat(runners.a);
+  await context.work.heartbeat(runners.b);
   // A re-verify moves the first item in the merge queue to verifying; it keeps its place.
   db.run("UPDATE work_item SET state='verifying' WHERE id=?", [record.id]);
   db.run("INSERT INTO merge_queue_entry(item_id,repository,ready_at) VALUES(?,?,?)", [
@@ -704,7 +703,7 @@ test("a merge-queue re-verify's checks run on a free runner while the pinned run
     const onB = (await context.next(runners.b)) as RunCommand;
     expect(onB.runnerId).toBe(runners.b);
     expect(onB.checkpoint).toBe(false);
-    context.finish(onB, runners.b);
+    await context.finish(onB, runners.b);
     await checks;
   } finally {
     freeA();
@@ -734,14 +733,14 @@ test("after checks ran on another runner, the next agent turn returns to the run
   try {
     const checks = turn({ checkpoint: false });
     const onB = (await context.next(runners.b)) as RunCommand;
-    context.finish(onB, runners.b);
+    await context.finish(onB, runners.b);
     await checks;
     freeA();
     const fix = turn();
     const onA = (await context.next(runners.a)) as RunCommand;
     expect(onA.runnerId).toBe(runners.a);
     expect(onA.resumeSessionId).toBe("claude-session");
-    context.finish(onA, runners.a);
+    await context.finish(onA, runners.a);
     await fix;
   } finally {
     freeA();

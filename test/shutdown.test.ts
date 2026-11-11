@@ -6,7 +6,7 @@ import { tempHome } from "./helpers";
 
 for (const requestedCode of [0, 75]) {
   test(`composition logs a rejected server stop and exits ${requestedCode} after database close`, async () => {
-    const paws = startPaws({ PAWS_HOME: tempHome(), PAWS_PORT: "0" });
+    const paws = await startPaws({ PAWS_HOME: tempHome(), PAWS_PORT: "0" });
     const stopServer = paws.server.stop.bind(paws.server);
     paws.server.stop = async (force) => {
       await stopServer(force);
@@ -23,9 +23,7 @@ for (const requestedCode of [0, 75]) {
       expect(shutdownLines[0]).toContain(
         "Paws shutdown failed at server: Error: fake server stop rejected",
       );
-      expect(lines.filter((line) => !shutdownLines.includes(line))).toEqual([
-        "catch item=none operation=index.startPaws.ready expected=shutdown interrupted startup error=Paws is stopping.",
-      ]);
+      expect(lines.filter((line) => !shutdownLines.includes(line))).toEqual([]);
       expect(() => paws.db.query("SELECT 1").get()).toThrow();
     } finally {
       restore();

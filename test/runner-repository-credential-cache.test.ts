@@ -30,7 +30,7 @@ function fixture() {
     checkpointBot: bot,
   } as unknown as RunnerCommand;
   const work = {
-    authorize: () => ({ command, branch: "paws/fixture" }),
+    authorizeAsync: async () => ({ command, branch: "paws/fixture" }),
   } as unknown as RunnerWork;
   const cached = cacheRepositoryCredentials(
     {

@@ -33,7 +33,7 @@ test("migration 059 drops the old block tables and task_block holds each depende
     outbox: new OutboxDispatcher(db, clock),
     clock,
     pawsRoot: tempHome(),
-    scheduling: () => ({}),
+    scheduling: async () => ({}),
   });
   let closeReconciler: (() => Promise<void>) | undefined;
   try {

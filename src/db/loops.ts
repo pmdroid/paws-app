@@ -11,7 +11,7 @@ const JOB_LEASE_MS = 120_000;
 export const JOB_WORKERS = 64;
 
 /** Poll the job queue and the outbox until `signal` aborts. `prepare` registers handlers first. */
-export function startLoops(input: {
+export async function startLoops(input: {
   db: Database;
   /** The async `Db` over `db`, handed to the job loop and the outbox. */
   store?: Db;
@@ -20,12 +20,12 @@ export function startLoops(input: {
   signal: AbortSignal;
   clock?: Clock;
   concurrency?: number;
-  prepare?: (loops: { jobs: JobLoop; outbox: OutboxDispatcher }) => void;
-}): {
+  prepare?: (loops: { jobs: JobLoop; outbox: OutboxDispatcher }) => void | Promise<void>;
+}): Promise<{
   stop: () => Promise<void>;
   jobs: JobLoop;
   outbox: OutboxDispatcher;
-} {
+}> {
   const clock = input.clock ?? systemClock;
   const runsJobs = roleRunsJobs(input.role ?? "all");
   const jobs = new JobLoop(input.db, clock, {
@@ -42,7 +42,7 @@ export function startLoops(input: {
     claims: runsJobs,
     progressIntervalMs: LINEAR_PROGRESS_INTERVAL_MS,
   });
-  input.prepare?.({ jobs, outbox });
+  await input.prepare?.({ jobs, outbox });
   const task = runsJobs
     ? Promise.all([jobs.run(input.signal), outbox.run(input.signal)])
     : Promise.resolve();

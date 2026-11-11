@@ -1,39 +1,42 @@
 import {
-  activeParentSubIssue,
-  claimParentSubIssueSession,
-  delegationHasLiveItem,
-  insertParentDelegation,
-  insertParentSubIssue,
-  latestIssueIdentifier,
-  listActiveParentDelegationIds,
-  listFailedDelegationItemIds,
-  listIssueBlockerItems,
-  listParentSubIssues,
-  moveParentSubIssueSession,
-  outboxKeyExists,
-  parentDelegationActive,
-  parentSubIssueActive,
-  parentSubIssueForSession,
-  parentSubIssueIdentifier,
-  readParentDelegation,
-  setItemOwner,
-  setParentDelegationError,
-  setParentSubIssueDelegation,
-  workspaceIssueHasOpenItem,
+  activeParentSubIssueSteps,
+  claimParentSubIssueSessionSteps,
+  delegationHasLiveItemSteps,
+  insertParentDelegationSteps,
+  insertParentSubIssueSteps,
+  latestIssueIdentifierSteps,
+  listActiveParentDelegationIdsSteps,
+  listFailedDelegationItemIdsSteps,
+  listIssueBlockerItemsSteps,
+  listParentSubIssuesSteps,
+  moveParentSubIssueSessionSteps,
+  outboxKeyExistsSteps,
+  parentDelegationActiveSteps,
+  parentSubIssueActiveSteps,
+  parentSubIssueForSessionSteps,
+  parentSubIssueIdentifierSteps,
+  readParentDelegationSteps,
+  setItemOwnerSteps,
+  setParentDelegationErrorSteps,
+  setParentSubIssueDelegationSteps,
+  workspaceIssueHasOpenItemSteps,
   workspaceMemberUsable,
-  applyWorkItemEvent,
-  auditWorkspaceAccess,
-  deliveredLinearIssueState,
-  enqueueJobOnce,
-  enqueueOutboxOnce,
-  getLinearSession,
-  immediate,
-  listTaskBlockers,
-  saveTaskBlocks,
-  workspaceForOrganization,
-  workspaceLinearMember,
-  workspaceMember,
+  applyWorkItemEventSteps,
+  auditWorkspaceAccessSteps,
+  deliveredLinearIssueStateSteps,
+  emitJobReady,
+  enqueueJobOnceSteps,
+  enqueueOutboxOnceSteps,
+  getLinearSessionSteps,
+  listTaskBlockersSteps,
+  saveTaskBlocksSteps,
+  workspaceForOrganizationSteps,
+  workspaceLinearMemberSteps,
+  workspaceMemberSteps,
+  settled,
   type JobLoop,
+  type Q,
+  type Steps,
   sqliteDb,
 } from "../db";
 import { journalCaught } from "../journal";
@@ -102,35 +105,36 @@ export function createParentDelegations(input: {
   origin: string;
   now?: () => number;
 }) {
-  const { db } = input;
+  const store = sqliteDb(input.db);
   const now = input.now ?? Date.now;
 
-  function readParent(delegationId: string): Parent | null {
-    return readParentDelegation<DependencyEdge>(db, delegationId);
+  function readParentSteps(q: Q, delegationId: string): Steps<Parent | null> {
+    return readParentDelegationSteps<DependencyEdge>(q, delegationId);
   }
-  function subIssues(parentDelegationId: string): SubIssue[] {
-    return listParentSubIssues(db, parentDelegationId);
+  function readParent(delegationId: string): Promise<Parent | null> {
+    return store.run((q) => readParentSteps(q, delegationId));
   }
-  function subIssueForSession(sessionId: string): SubIssue | null {
-    return parentSubIssueForSession(db, sessionId);
-  }
-  function activeSubIssue(issueId: string, organizationId: string): SubIssue | null {
-    return activeParentSubIssue(db, issueId, organizationId);
-  }
-  function eventSubIssue(event: AcceptedLinearEvent): SubIssue | null {
+  function* eventSubIssueSteps(q: Q, event: AcceptedLinearEvent): Steps<SubIssue | null> {
     if (!event.issueId || !event.sessionId) return null;
-    const organizationId = getLinearSession(db, event.sessionId)?.organizationId;
-    return organizationId ? activeSubIssue(event.issueId, organizationId) : null;
+    const organizationId = (yield* getLinearSessionSteps(q, event.sessionId))?.organizationId;
+    return organizationId
+      ? yield* activeParentSubIssueSteps(q, event.issueId, organizationId)
+      : null;
   }
-  function ownerLinearUserId(parent: Parent): string | undefined {
-    return workspaceMember(db, parent.workspaceId, parent.ownerUserId)?.linearUserId;
+  function* ownerLinearUserIdSteps(q: Q, parent: Parent): Steps<string | undefined> {
+    return (yield* workspaceMemberSteps(q, parent.workspaceId, parent.ownerUserId))?.linearUserId;
   }
-  function ownerCanAct(parent: Parent): boolean {
-    const owner = workspaceMember(db, parent.workspaceId, parent.ownerUserId);
+  function* ownerCanActSteps(q: Q, parent: Parent): Steps<boolean> {
+    const owner = yield* workspaceMemberSteps(q, parent.workspaceId, parent.ownerUserId);
     return !!workspaceMemberUsable(owner);
   }
-  function refuse(parent: Parent, event: AcceptedLinearEvent, reason = PARENT_REFUSAL.reason) {
-    auditWorkspaceAccess(db, {
+  function* refuseSteps(
+    q: Q,
+    parent: Parent,
+    event: AcceptedLinearEvent,
+    reason = PARENT_REFUSAL.reason,
+  ) {
+    yield* auditWorkspaceAccessSteps(q, {
       workspaceId: parent.workspaceId,
       userId: null,
       action: "access.denied",
@@ -140,18 +144,21 @@ export function createParentDelegations(input: {
     return { outcome: "refused" as const, reason };
   }
   /** A sub-issue whose earlier attempt failed may start again in a new session. */
-  function restartable(parent: Parent, sub: SubIssue): boolean {
+  function* restartableSteps(q: Q, parent: Parent, sub: SubIssue): Steps<boolean> {
     return (
       parent.stoppedAt === null &&
       sub.delegationId !== null &&
-      !delegationHasLiveItem(db, sub.delegationId)
+      !(yield* delegationHasLiveItemSteps(q, sub.delegationId))
     );
   }
-  function scope(sessionId: string, snapshot: EpicSnapshot): EpicSnapshot {
-    const sub = subIssueForSession(sessionId);
+  function* scopeSteps(q: Q, sessionId: string, snapshot: EpicSnapshot): Steps<EpicSnapshot> {
+    const sub = yield* parentSubIssueForSessionSteps(q, sessionId);
     if (!sub) {
-      const organizationId = getLinearSession(db, sessionId)?.organizationId;
-      if (organizationId && activeSubIssue(snapshot.linearIssueId, organizationId))
+      const organizationId = (yield* getLinearSessionSteps(q, sessionId))?.organizationId;
+      if (
+        organizationId &&
+        (yield* activeParentSubIssueSteps(q, snapshot.linearIssueId, organizationId))
+      )
         throw new Error("This issue already runs as a sub-issue of a delegated parent.");
       return snapshot;
     }
@@ -159,38 +166,45 @@ export function createParentDelegations(input: {
       throw new Error("This session belongs to another sub-issue of the delegated parent.");
     return { ...snapshot, subIssues: [] };
   }
-  function blockerSatisfied(parent: Parent, blockerId: string): boolean {
-    const items = listIssueBlockerItems(db, parent.workspaceId, blockerId);
+  function scope(sessionId: string, snapshot: EpicSnapshot): EpicSnapshot {
+    return settled(store.run((q) => scopeSteps(q, sessionId, snapshot)));
+  }
+  function* blockerSatisfiedSteps(q: Q, parent: Parent, blockerId: string): Steps<boolean> {
+    const items = yield* listIssueBlockerItemsSteps(q, parent.workspaceId, blockerId);
     if (items.length > 0) {
       const active = items.filter((item) => !item.cancelRequested);
       const item = (active.length > 0 ? active : items).at(-1)!;
       return !item.cancelRequested && isBlockerSatisfied(item);
     }
-    const delivered = deliveredLinearIssueState(db, parent.organizationId, blockerId);
+    const delivered = yield* deliveredLinearIssueStateSteps(q, parent.organizationId, blockerId);
     if (delivered?.stateType) return delivered.stateType === "completed";
-    return !parentSubIssueActive(db, parent.workspaceId, blockerId);
+    return !(yield* parentSubIssueActiveSteps(q, parent.workspaceId, blockerId));
   }
-  function pendingBlockers(parent: Parent, issueId: string): string[] {
+  function* pendingBlockersSteps(q: Q, parent: Parent, issueId: string): Steps<string[]> {
     const blockers = new Set([
       ...parent.edges
         .filter((edge) => edge.blockedLinearIssueId === issueId)
         .map((edge) => edge.blockerLinearIssueId),
-      ...listTaskBlockers(db, issueId),
+      ...(yield* listTaskBlockersSteps(q, issueId)),
     ]);
-    return [...blockers].filter((blockerId) => !blockerSatisfied(parent, blockerId));
+    const pending: string[] = [];
+    for (const blockerId of blockers)
+      if (!(yield* blockerSatisfiedSteps(q, parent, blockerId))) pending.push(blockerId);
+    return pending;
   }
-  function identifierFor(parent: Parent, issueId: string): string {
+  function* identifierForSteps(q: Q, parent: Parent, issueId: string): Steps<string> {
     return (
-      parentSubIssueIdentifier(db, parent.delegationId, issueId) ??
-      latestIssueIdentifier(db, issueId) ??
-      deliveredLinearIssueState(db, parent.organizationId, issueId)?.identifier ??
+      (yield* parentSubIssueIdentifierSteps(q, parent.delegationId, issueId)) ??
+      (yield* latestIssueIdentifierSteps(q, issueId)) ??
+      (yield* deliveredLinearIssueStateSteps(q, parent.organizationId, issueId))?.identifier ??
       issueId
     );
   }
-  function waitingFor(parent: Parent, issueId: string): string[] {
-    return pendingBlockers(parent, issueId)
-      .map((blockerId) => identifierFor(parent, blockerId))
-      .sort();
+  function* waitingForSteps(q: Q, parent: Parent, issueId: string): Steps<string[]> {
+    const waiting: string[] = [];
+    for (const blockerId of yield* pendingBlockersSteps(q, parent, issueId))
+      waiting.push(yield* identifierForSteps(q, parent, blockerId));
+    return waiting.sort();
   }
   /**
    * End the parent's own session with one response once its sub-issue sessions are open:
@@ -198,13 +212,13 @@ export function createParentDelegations(input: {
    */
   async function summarize(parent: Parent, signal: AbortSignal) {
     const key = `parent-summary:${parent.delegationId}`;
-    if (await outboxKeyExists(sqliteDb(db), key)) return;
-    const subs = subIssues(parent.delegationId);
+    if (await store.run((q) => outboxKeyExistsSteps(q, key))) return;
+    const subs = await store.run((q) => listParentSubIssuesSteps(q, parent.delegationId));
     const own = new Map(subs.map((sub) => [sub.issueId, sub]));
     const outside = new Map<string, SummaryIssue | null>();
     const lines: SummarySubIssue[] = [];
     for (const sub of subs) {
-      const pending = pendingBlockers(parent, sub.issueId);
+      const pending = await store.run((q) => pendingBlockersSteps(q, parent, sub.issueId));
       const blockers: SummaryIssue[] = [];
       for (const edge of parent.edges) {
         if (
@@ -235,7 +249,10 @@ export function createParentDelegations(input: {
       signal.throwIfAborted();
       for (const blockerId of pending)
         if (!own.has(blockerId) && !outside.get(blockerId))
-          external.push({ identifier: identifierFor(parent, blockerId), url: null });
+          external.push({
+            identifier: await store.run((q) => identifierForSteps(q, parent, blockerId)),
+            url: null,
+          });
       external.sort((left, right) => left.identifier.localeCompare(right.identifier));
       lines.push({
         identifier: sub.identifier,
@@ -245,9 +262,9 @@ export function createParentDelegations(input: {
       });
     }
     if (!lines.length) return;
-    immediate(db, () => {
-      if (readParent(parent.delegationId)?.stoppedAt !== null) return;
-      enqueueOutboxOnce(db, {
+    await store.transaction(function* (q) {
+      if ((yield* readParentSteps(q, parent.delegationId))?.stoppedAt !== null) return;
+      yield* enqueueOutboxOnceSteps(q, {
         target: "linear",
         op: "activity",
         orderingKey: parent.sessionId,
@@ -265,15 +282,15 @@ export function createParentDelegations(input: {
   async function advance(parent: Parent, context: { signal: AbortSignal; isCurrent(): boolean }) {
     const startSession = input.startSession;
     if (!startSession) return;
-    if (!ownerCanAct(parent))
+    if (!(await store.run((q) => ownerCanActSteps(q, parent))))
       throw new Error("The person who delegated the parent no longer has workspace access.");
-    for (const sub of subIssues(parent.delegationId)) {
+    for (const sub of await store.run((q) => listParentSubIssuesSteps(q, parent.delegationId))) {
       context.signal.throwIfAborted();
       if (sub.sessionId) {
         if (!sub.delegationId) await input.resumeSession(sub.sessionId);
         continue;
       }
-      if (waitingFor(parent, sub.issueId).length > 0) continue;
+      if ((await store.run((q) => waitingForSteps(q, parent, sub.issueId))).length > 0) continue;
       await startSession(
         { kind: "issue", id: sub.issueId },
         dashboardUrl(input.origin),
@@ -282,17 +299,126 @@ export function createParentDelegations(input: {
           if (!context.isCurrent()) throw new Error("The parent delegation claim changed.");
           if (event.issueId !== sub.issueId || !event.sessionId)
             throw new Error("Linear returned another sub-issue.");
-          const changed = claimParentSubIssueSession(
-            db,
-            parent.delegationId,
-            sub.issueId,
-            event.sessionId,
+          const sessionId = event.sessionId;
+          const changed = settled(
+            store.run((q) =>
+              claimParentSubIssueSessionSteps(q, parent.delegationId, sub.issueId, sessionId),
+            ),
           );
           if (changed !== 1) throw new Error("This sub-issue already has a session.");
         },
       );
     }
-    await summarize(readParent(parent.delegationId)!, context.signal);
+    await summarize((await readParent(parent.delegationId))!, context.signal);
+  }
+
+  function* adoptParentSteps(
+    q: Q,
+    sessionId: string,
+    snapshot: EpicSnapshot,
+    edges: readonly DependencyEdge[],
+  ): Steps<boolean> {
+    if (!input.startSession) return false;
+    const session = yield* getLinearSessionSteps(q, sessionId);
+    if (!session?.organizationId || !session.creatorId) return false;
+    const workspace = yield* workspaceForOrganizationSteps(q, session.organizationId);
+    if (!workspace) return false;
+    if (yield* parentDelegationActiveSteps(q, workspace.id, snapshot.linearIssueId)) return true;
+    const owner = yield* workspaceLinearMemberSteps(q, workspace.id, session.creatorId);
+    if (!workspaceMemberUsable(owner)) return false;
+    const issueIds = snapshot.subIssues.map((issue) => issue.linearIssueId);
+    for (const issueId of issueIds)
+      if (
+        (yield* parentSubIssueActiveSteps(q, workspace.id, issueId)) ||
+        (yield* workspaceIssueHasOpenItemSteps(q, workspace.id, issueId))
+      )
+        return false;
+    const subIds = new Set(issueIds);
+    const internal = edges.filter(
+      (edge) => subIds.has(edge.blockerLinearIssueId) && subIds.has(edge.blockedLinearIssueId),
+    );
+    const ordered = orderByBlocks(
+      snapshot.subIssues.map((issue) => ({
+        linearIssueId: issue.linearIssueId,
+        identifier: issue.identifier,
+        title: issue.title,
+      })),
+      internal,
+    );
+    if (!ordered.ok) return false;
+    const createdAt = now();
+    const delegationId = ulid(createdAt);
+    yield* insertParentDelegationSteps(q, {
+      delegationId,
+      workspaceId: workspace.id,
+      organizationId: workspace.organizationId,
+      parentIssueId: snapshot.linearIssueId,
+      parentIdentifier: snapshot.identifier,
+      title: snapshot.title,
+      sessionId,
+      ownerUserId: owner.userId,
+      edges: internal,
+      createdAt,
+    });
+    const issues = new Map(snapshot.subIssues.map((issue) => [issue.linearIssueId, issue]));
+    for (const [position, node] of ordered.ordered.entries()) {
+      const issue = issues.get(node.linearIssueId)!;
+      yield* insertParentSubIssueSteps(q, {
+        parentDelegationId: delegationId,
+        workspaceId: workspace.id,
+        issueId: issue.linearIssueId,
+        identifier: issue.identifier,
+        title: issue.title,
+        url: issue.url ?? null,
+        position,
+      });
+    }
+    yield* saveTaskBlocksSteps(
+      q,
+      issueIds,
+      edges.filter((edge) => subIds.has(edge.blockedLinearIssueId)),
+    );
+    yield* auditWorkspaceAccessSteps(q, {
+      workspaceId: workspace.id,
+      userId: owner.userId,
+      action: "parent.delegated",
+      subject: `${delegationId}:${snapshot.linearIssueId}`,
+      now: createdAt,
+    });
+    return true;
+  }
+  function* authorizeEventSteps(
+    q: Q,
+    event: AcceptedLinearEvent,
+  ): Steps<IntakeDecision | { sub: SubIssue; parent: Parent } | undefined> {
+    const sub = yield* eventSubIssueSteps(q, event);
+    if (!sub) return undefined;
+    const parent = (yield* readParentSteps(q, sub.parentDelegationId))!;
+    if (sub.sessionId === event.sessionId) return ACCEPTED;
+    if (event.action !== "created" || parent.stoppedAt !== null)
+      return yield* refuseSteps(q, parent, event);
+    if (sub.sessionId === null)
+      return yield* refuseSteps(
+        q,
+        parent,
+        event,
+        `${sub.identifier} waits for its blockers under its delegated parent. Paws opens its session when they finish.`,
+      );
+    if (!(yield* restartableSteps(q, parent, sub)))
+      return yield* refuseSteps(
+        q,
+        parent,
+        event,
+        `${sub.identifier} is still running in its earlier Paws session. Paws continues there, so reply in that session to steer it.`,
+      );
+    return { sub, parent };
+  }
+  function* recheckEventSteps(q: Q, event: AcceptedLinearEvent): Steps<boolean | undefined> {
+    const sub = yield* eventSubIssueSteps(q, event);
+    if (!sub) return undefined;
+    if (sub.sessionId === event.sessionId) return true;
+    yield* refuseSteps(q, (yield* readParentSteps(q, sub.parentDelegationId))!, event);
+    return false;
   }
 
   return {
@@ -300,86 +426,26 @@ export function createParentDelegations(input: {
      * Record a delegated parent so each sub-issue runs in its own session. Returns false when
      * the parent should run its sub-issues in its own session instead.
      */
-    adoptParent(sessionId: string, snapshot: EpicSnapshot, edges: readonly DependencyEdge[]) {
-      if (!input.startSession) return false;
-      const session = getLinearSession(db, sessionId);
-      if (!session?.organizationId || !session.creatorId) return false;
-      const workspace = workspaceForOrganization(db, session.organizationId);
-      if (!workspace) return false;
-      if (parentDelegationActive(db, workspace.id, snapshot.linearIssueId)) return true;
-      const owner = workspaceLinearMember(db, workspace.id, session.creatorId);
-      if (!workspaceMemberUsable(owner)) return false;
-      const issueIds = snapshot.subIssues.map((issue) => issue.linearIssueId);
-      if (
-        issueIds.some(
-          (issueId) =>
-            parentSubIssueActive(db, workspace.id, issueId) ||
-            workspaceIssueHasOpenItem(db, workspace.id, issueId),
-        )
-      )
-        return false;
-      const subIds = new Set(issueIds);
-      const internal = edges.filter(
-        (edge) => subIds.has(edge.blockerLinearIssueId) && subIds.has(edge.blockedLinearIssueId),
-      );
-      const ordered = orderByBlocks(
-        snapshot.subIssues.map((issue) => ({
-          linearIssueId: issue.linearIssueId,
-          identifier: issue.identifier,
-          title: issue.title,
-        })),
-        internal,
-      );
-      if (!ordered.ok) return false;
-      const createdAt = now();
-      const delegationId = ulid(createdAt);
-      insertParentDelegation(db, {
-        delegationId,
-        workspaceId: workspace.id,
-        organizationId: workspace.organizationId,
-        parentIssueId: snapshot.linearIssueId,
-        parentIdentifier: snapshot.identifier,
-        title: snapshot.title,
-        sessionId,
-        ownerUserId: owner.userId,
-        edges: internal,
-        createdAt,
-      });
-      const issues = new Map(snapshot.subIssues.map((issue) => [issue.linearIssueId, issue]));
-      ordered.ordered.forEach((node, position) => {
-        const issue = issues.get(node.linearIssueId)!;
-        insertParentSubIssue(db, {
-          parentDelegationId: delegationId,
-          workspaceId: workspace.id,
-          issueId: issue.linearIssueId,
-          identifier: issue.identifier,
-          title: issue.title,
-          url: issue.url ?? null,
-          position,
-        });
-      });
-      saveTaskBlocks(
-        db,
-        issueIds,
-        edges.filter((edge) => subIds.has(edge.blockedLinearIssueId)),
-      );
-      auditWorkspaceAccess(db, {
-        workspaceId: workspace.id,
-        userId: owner.userId,
-        action: "parent.delegated",
-        subject: `${delegationId}:${snapshot.linearIssueId}`,
-        now: createdAt,
-      });
-      return true;
+    adoptParent(
+      sessionId: string,
+      snapshot: EpicSnapshot,
+      edges: readonly DependencyEdge[],
+    ): boolean {
+      return settled(store.transaction((q) => adoptParentSteps(q, sessionId, snapshot, edges)));
     },
     /** The sub-issues of a delegated parent, in blocks order, and what each waits for. */
-    progress(parentDelegationId: string): ParentSubIssueProgress[] {
-      const parent = readParent(parentDelegationId);
-      if (!parent) return [];
-      return subIssues(parentDelegationId).map((sub) => ({
-        ...sub,
-        waitingFor: sub.sessionId ? [] : waitingFor(parent, sub.issueId),
-      }));
+    progress(parentDelegationId: string): Promise<ParentSubIssueProgress[]> {
+      return store.run(function* (q): Steps<ParentSubIssueProgress[]> {
+        const parent = yield* readParentSteps(q, parentDelegationId);
+        if (!parent) return [];
+        const progress: ParentSubIssueProgress[] = [];
+        for (const sub of yield* listParentSubIssuesSteps(q, parentDelegationId))
+          progress.push({
+            ...sub,
+            waitingFor: sub.sessionId ? [] : yield* waitingForSteps(q, parent, sub.issueId),
+          });
+        return progress;
+      });
     },
     scope,
     authorizeIntake(sessionId: string, snapshot: EpicSnapshot): boolean {
@@ -393,77 +459,74 @@ export function createParentDelegations(input: {
     },
     /** A sub-issue's session acts for the person who delegated its parent. */
     actor(sessionId: string): string | undefined {
-      const sub = subIssueForSession(sessionId);
-      const parent = sub ? readParent(sub.parentDelegationId) : null;
-      return parent ? ownerLinearUserId(parent) : undefined;
+      return settled(
+        store.run(function* (q): Steps<string | undefined> {
+          const sub = yield* parentSubIssueForSessionSteps(q, sessionId);
+          const parent = sub ? yield* readParentSteps(q, sub.parentDelegationId) : null;
+          return parent ? yield* ownerLinearUserIdSteps(q, parent) : undefined;
+        }),
+      );
     },
     accepted(sessionId: string, result: IntakeResult): void {
-      const sub = subIssueForSession(sessionId);
-      if (!sub) return;
-      const parent = readParent(sub.parentDelegationId)!;
-      if (!result.ok || result.items.length !== 1 || result.items[0]?.linearIssueId !== sub.issueId)
-        throw new Error("Intake did not keep the sub-issue to itself.");
-      setItemOwner(db, result.items[0].id, parent.ownerUserId);
-      setParentSubIssueDelegation(db, sessionId, result.delegation.id);
+      settled(
+        store.transaction(function* (q) {
+          const sub = yield* parentSubIssueForSessionSteps(q, sessionId);
+          if (!sub) return;
+          const parent = (yield* readParentSteps(q, sub.parentDelegationId))!;
+          if (
+            !result.ok ||
+            result.items.length !== 1 ||
+            result.items[0]?.linearIssueId !== sub.issueId
+          )
+            throw new Error("Intake did not keep the sub-issue to itself.");
+          yield* setItemOwnerSteps(q, result.items[0].id, parent.ownerUserId);
+          yield* setParentSubIssueDelegationSteps(q, sessionId, result.delegation.id);
+        }),
+      );
     },
     async authorizeEvent(event: AcceptedLinearEvent): Promise<IntakeDecision | undefined> {
-      const sub = eventSubIssue(event);
-      if (!sub) return undefined;
-      const parent = readParent(sub.parentDelegationId)!;
-      if (sub.sessionId === event.sessionId) return ACCEPTED;
-      if (event.action !== "created" || parent.stoppedAt !== null) return refuse(parent, event);
-      if (sub.sessionId === null)
-        return refuse(
-          parent,
-          event,
-          `${sub.identifier} waits for its blockers under its delegated parent. Paws opens its session when they finish.`,
-        );
-      if (!restartable(parent, sub))
-        return refuse(
-          parent,
-          event,
-          `${sub.identifier} is still running in its earlier Paws session. Paws continues there, so reply in that session to steer it.`,
-        );
-      const moved = immediate(db, () => {
-        if (!restartable(parent, sub)) return false;
-        for (const itemId of listFailedDelegationItemIds(db, sub.delegationId!))
-          applyWorkItemEvent(db, itemId, "cancel");
-        moveParentSubIssueSession(db, {
+      const decided = await store.run((q) => authorizeEventSteps(q, event));
+      if (decided === undefined || "outcome" in decided) return decided;
+      const { sub, parent } = decided;
+      return store.transaction(function* (q): Steps<IntakeDecision> {
+        if (!(yield* restartableSteps(q, parent, sub))) return yield* refuseSteps(q, parent, event);
+        for (const itemId of yield* listFailedDelegationItemIdsSteps(q, sub.delegationId!))
+          yield* applyWorkItemEventSteps(q, itemId, "cancel");
+        yield* moveParentSubIssueSessionSteps(q, {
           parentDelegationId: sub.parentDelegationId,
           issueId: sub.issueId,
           from: sub.sessionId!,
           to: event.sessionId!,
         });
-        return true;
+        return ACCEPTED;
       });
-      return moved ? ACCEPTED : refuse(parent, event);
     },
     recheckEvent(event: AcceptedLinearEvent): boolean | undefined {
-      const sub = eventSubIssue(event);
-      if (!sub) return undefined;
-      if (sub.sessionId === event.sessionId) return true;
-      refuse(readParent(sub.parentDelegationId)!, event);
-      return false;
+      return settled(store.transaction((q) => recheckEventSteps(q, event)));
     },
     async scopeSnapshot(sessionId: string, snapshot: EpicSnapshot) {
       return scope(sessionId, snapshot);
     },
     register(jobs: JobLoop) {
       if (!input.startSession) return;
-      enqueueJobOnce(db, { queue: QUEUE, jobKey: QUEUE, recurringEveryMs: 30_000, now: now() });
+      const job = { queue: QUEUE, jobKey: QUEUE, recurringEveryMs: 30_000, now: now() };
+      if (settled(store.transaction((q) => enqueueJobOnceSteps(q, job))).inserted)
+        emitJobReady(store);
       jobs.register(QUEUE, async (_job, context) => {
-        for (const id of listActiveParentDelegationIds(db)) {
+        for (const id of await store.run((q) => listActiveParentDelegationIdsSteps(q))) {
           context.signal.throwIfAborted();
           try {
-            await advance(readParent(id)!, context);
-            setParentDelegationError(db, id, null);
+            await advance((await readParent(id))!, context);
+            await store.run((q) => setParentDelegationErrorSteps(q, id, null));
           } catch (caughtError2) {
             journalCaught(caughtError2, "parent-delegation.register.advance", null);
             context.signal.throwIfAborted();
-            setParentDelegationError(
-              db,
-              id,
-              "Sub-issue sessions could not be opened. Check Linear access.",
+            await store.run((q) =>
+              setParentDelegationErrorSteps(
+                q,
+                id,
+                "Sub-issue sessions could not be opened. Check Linear access.",
+              ),
             );
           }
         }

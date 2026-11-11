@@ -14,6 +14,7 @@ import {
   openDatabase,
   saveCheckpoint,
   sqliteDb,
+  syncSteps,
 } from "../db";
 import { LinearRateLimitError } from "../linear";
 import { getQuestion } from "../questions";
@@ -29,15 +30,15 @@ function fixture(path = ":memory:") {
     async check() {
       return ready && allowed;
     },
-    administrators: () => ["lead", "admin", "admin"],
+    administrators: () => syncSteps(() => ["lead", "admin", "admin"]),
     recoveryUrl: "https://paws.example/status/settings/integrations",
-    identity: () => authority,
+    identity: () => syncSteps(() => authority),
   };
   const auth = new GitHubInstallationCheck(
     db,
     integration,
     () => 1000,
-    () => allowed,
+    () => syncSteps(() => allowed),
   );
   const item = (id: string) => {
     insertQueuedItem(db, { id, sessionKey: `session-${id}`, title: id });
@@ -302,7 +303,7 @@ for (const source of ["local", "live"] as const) {
       f.db,
       {
         ...f.integration,
-        current: () => source !== "local",
+        current: () => syncSteps(() => source !== "local"),
         authorize: async () => source !== "live",
       },
       () => 1000,

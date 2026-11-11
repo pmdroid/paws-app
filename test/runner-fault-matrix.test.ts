@@ -387,8 +387,8 @@ async function runRemoteFault(fault: Fault) {
     { command: Extract<RunnerCommand, { type: "run" }>; at: number; hung?: boolean }
   >();
   const terminated: { runId: string; generation: number; commandId: string }[] = [];
-  const heartbeat = () =>
-    work.heartbeat(
+  const heartbeat = async () =>
+    await work.heartbeat(
       runnerId,
       1,
       {},
@@ -541,8 +541,8 @@ async function runRemoteFault(fault: Fault) {
   }
   const handled = new Set<string>();
   let unreachable: { command: RunnerCommand; since: number } | undefined;
-  function deliver(command: Extract<RunnerCommand, { type: "run" }>) {
-    const grant = work.issueGrant({
+  async function deliver(command: Extract<RunnerCommand, { type: "run" }>) {
+    const grant = await work.issueGrant({
       runnerId,
       runId: command.runId,
       commandId: command.id,
@@ -555,7 +555,7 @@ async function runRemoteFault(fault: Fault) {
       runner.faultedAttempts++;
       runner.faulty = false;
     }
-    results.submit({
+    await results.submit({
       runnerId,
       runId: command.runId,
       generation: command.generation,
@@ -587,17 +587,19 @@ async function runRemoteFault(fault: Fault) {
     const sha = await git(["-C", source, "rev-parse", "HEAD"]);
     await git(["-C", source, "push", "-q", origin, `${sha}:refs/paws/checkpoints/${branch}`]);
     runner.checkpointSha = sha;
-    work.event({
+    await work.event({
       runnerId,
       runId: command.runId,
       generation: command.generation,
       sequence: 1,
-      token: work.issueGrant({
-        runnerId,
-        runId: command.runId,
-        commandId: command.id,
-        generation: command.generation,
-      }).token,
+      token: (
+        await work.issueGrant({
+          runnerId,
+          runId: command.runId,
+          commandId: command.id,
+          generation: command.generation,
+        })
+      ).token,
       event: { type: "checkpoint", reason: "interval", sha },
     });
   }
@@ -609,13 +611,13 @@ async function runRemoteFault(fault: Fault) {
         unreachable = undefined;
         runner.stale = false;
         runner.faulty = false;
-        heartbeat();
-        if (command.type === "run") deliver(command);
+        await heartbeat();
+        if (command.type === "run") await deliver(command);
       }
       for (const [key, entry] of live)
         if (!entry.hung && Date.now() - entry.at > SILENT_RUN_MS * 2) {
           live.delete(key);
-          deliver(entry.command);
+          await deliver(entry.command);
         }
       if (!runner.stale) {
         const lostBefore =
@@ -626,7 +628,7 @@ async function runRemoteFault(fault: Fault) {
                 )
                 .get()
             : null;
-        const reply = heartbeat();
+        const reply = await heartbeat();
         if (lostBefore && reply.fenced.length)
           runner.lostBeforeLease = lostBefore.leaseUntil > Date.now();
         // A hung agent's lease is no longer renewed although the runner still names its work.
@@ -648,13 +650,13 @@ async function runRemoteFault(fault: Fault) {
             runner.hungStopped = Date.now() - entry.at >= HUNG_RUN_MS;
           }
       }
-      for (const envelope of work.commands(runnerId)) {
+      for (const envelope of await work.commands(runnerId)) {
         const command = JSON.parse(
           Buffer.from(envelope.payload, "base64url").toString(),
         ) as RunnerCommand;
         if (handled.has(command.id)) continue;
         handled.add(command.id);
-        work.acknowledge(runnerId, command.id);
+        await work.acknowledge(runnerId, command.id);
         if (command.type === "cancel") {
           live.delete(command.id);
           terminated.push({
@@ -662,7 +664,7 @@ async function runRemoteFault(fault: Fault) {
             generation: command.generation,
             commandId: command.id,
           });
-          heartbeat();
+          await heartbeat();
           runner.stale = false;
         }
         if (command.type === "login_check")
@@ -747,7 +749,7 @@ async function runRemoteFault(fault: Fault) {
         }
         if (fault === "silent-hung-checkpoint" && runner.checkpointSha)
           runner.recovered = { restore: command.restoreCheckpoint?.sha, prompt: command.prompt };
-        deliver(command);
+        await deliver(command);
       }
       await Bun.sleep(5);
     }

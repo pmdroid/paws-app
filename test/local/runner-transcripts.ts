@@ -124,12 +124,14 @@ export async function probeRunnerTranscripts(
     prompt: "Produce the fixture.",
   };
   work.assign(command);
-  const token = work.issueGrant({
-    runnerId,
-    runId: run.id,
-    commandId: command.id,
-    generation: 1,
-  }).token;
+  const token = (
+    await work.issueGrant({
+      runnerId,
+      runId: run.id,
+      commandId: command.id,
+      generation: 1,
+    })
+  ).token;
   const access = { runnerId, runId: run.id, token };
   const objects = providedObjects ?? createFakeRunnerTranscriptObjects();
   let readFault: "throw" | "short" | "long" | "digest" | undefined;
@@ -201,7 +203,7 @@ export async function probeRunnerTranscripts(
       readFault = fault;
       const failed = await storageHttp(storageRequest(), runnerId);
       assert.equal(failed!.status, 503);
-      assert.equal(transcripts.read(run.id, 1)!.uri, null);
+      assert.equal((await transcripts.read(run.id, 1))!.uri, null);
       faultStatuses.push({ fault, status: failed!.status });
     }
     readFault = undefined;
@@ -314,12 +316,14 @@ export async function probeRunnerTranscripts(
       generation: 2,
     };
     work.assign(emptyCommand);
-    const emptyToken = work.issueGrant({
-      runnerId,
-      runId: run.id,
-      commandId: emptyCommand.id,
-      generation: 2,
-    }).token;
+    const emptyToken = (
+      await work.issueGrant({
+        runnerId,
+        runId: run.id,
+        commandId: emptyCommand.id,
+        generation: 2,
+      })
+    ).token;
     await transcripts.finish(
       { ...access, token: emptyToken },
       {
@@ -337,12 +341,14 @@ export async function probeRunnerTranscripts(
     });
     const next = { ...emptyCommand, id: workspaceId(now), generation: 3 };
     work.assign(next);
-    const nextToken = work.issueGrant({
-      runnerId,
-      runId: run.id,
-      commandId: next.id,
-      generation: 3,
-    }).token;
+    const nextToken = (
+      await work.issueGrant({
+        runnerId,
+        runId: run.id,
+        commandId: next.id,
+        generation: 3,
+      })
+    ).token;
     let release: () => void = () => undefined;
     let entered: () => void = () => undefined;
     const held = new Promise<void>((resolve) => {
@@ -380,8 +386,8 @@ export async function probeRunnerTranscripts(
     await control.setStatus(principal, runnerId, "revoked");
     release();
     await deniedWrite;
-    assert.equal(interrupted.read(run.id, 3)!.sizeBytes, 0);
-    assert.equal(interrupted.read(run.id, 3)!.uri, null);
+    assert.equal((await interrupted.read(run.id, 3))!.sizeBytes, 0);
+    assert.equal((await interrupted.read(run.id, 3))!.uri, null);
     observe(
       "revocation during object storage I/O prevents durable acceptance after the write returns",
       true,

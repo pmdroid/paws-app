@@ -12,6 +12,7 @@ import {
   migrate,
   openDatabase,
   sqliteDb,
+  syncSteps,
 } from "../db";
 import { returnToAgent, type FailedCiCheck } from "../merge";
 import {
@@ -55,13 +56,13 @@ async function accepted() {
   await markCloseoutAccepted(sqliteDb(db), "eng-1", head);
 
   const ciFailed = (checks: FailedCiCheck[]) =>
-    returnToAgent(db, {
+    returnToAgent(sqliteDb(db), {
       itemId: "eng-1",
       reason: "ci-failed",
-      admit: (returns) => returns < 3,
+      admit: (_q, returns) => syncSteps(() => returns < 3),
       handoff: "CI failed.",
       now: 2,
-      record: () => {},
+      record: () => syncSteps(() => {}),
       announce: () => {},
       failedChecks: checks,
       pullNumber: 7,
@@ -87,9 +88,9 @@ async function accepted() {
 describe("review escapes found after the pull request", () => {
   test("a CI fix after an accepted head records one candidate, and a docs-only fix is not an escape", async () => {
     const { db, head, ciFailed, commit, settle } = await accepted();
-    expect(ciFailed([{ name: "test", url: null }])).toBe(true);
+    expect(await ciFailed([{ name: "test", url: null }])).toBe(true);
     // The item is back with the agent; the same failure read again starts no second round.
-    expect(ciFailed([{ name: "test", url: null }])).toBe(false);
+    expect(await ciFailed([{ name: "test", url: null }])).toBe(false);
     const [candidate, ...rest] = listReviewEscapes(db);
     expect(rest).toEqual([]);
     expect(candidate).toMatchObject({
@@ -118,7 +119,7 @@ describe("review escapes found after the pull request", () => {
 
   test("a code fix is an escape with the files it changed", async () => {
     const { db, ciFailed, commit, settle } = await accepted();
-    ciFailed([{ name: "test", url: null }]);
+    await ciFailed([{ name: "test", url: null }]);
     const fix = await commit({
       "src/rank.ts": "export const rank = (a: number) => -a;\n",
       "src/rank.test.ts": "// covers rank\n",
@@ -134,7 +135,7 @@ describe("review escapes found after the pull request", () => {
 
   test("a whitespace-only fix and a check that also fails on main are not escapes", async () => {
     const formatted = await accepted();
-    formatted.ciFailed([{ name: "fmt", url: null }]);
+    await formatted.ciFailed([{ name: "fmt", url: null }]);
     await formatted.settle(
       await formatted.commit({ "src/rank.ts": "export const rank  = (a: number) => a;\n\n" }),
     );
@@ -145,7 +146,7 @@ describe("review escapes found after the pull request", () => {
     });
 
     const flaky = await accepted();
-    flaky.ciFailed([{ name: "e2e", url: null, failsOnBase: true }]);
+    await flaky.ciFailed([{ name: "e2e", url: null, failsOnBase: true }]);
     await flaky.settle(
       await flaky.commit({ "src/rank.ts": "export const rank = (a: number) => a + 0;\n" }),
     );
@@ -158,7 +159,7 @@ describe("review escapes found after the pull request", () => {
   test("no candidate when Closeout has not accepted a head", async () => {
     const { db, ciFailed } = await accepted();
     db.run("UPDATE work_item SET accepted_head = NULL");
-    expect(ciFailed([{ name: "test", url: null }])).toBe(true);
+    expect(await ciFailed([{ name: "test", url: null }])).toBe(true);
     expect(listReviewEscapes(db)).toEqual([]);
   });
 });

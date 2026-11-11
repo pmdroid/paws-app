@@ -17,6 +17,7 @@ import {
   recordRunnerSkills,
   runAgentSetup,
   saveSkill,
+  sqliteDb,
 } from "../../src/db";
 import { createRunnerControl } from "../../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../../src/runner-identity";
@@ -104,13 +105,22 @@ export async function probeRunnerWork(
     eventKey: Buffer.alloc(32, 7),
     now: () => now,
   });
-  const confirmStopped = (
+  const confirmStopped = async (
     runnerId: string,
     command: { runId: string; generation: number; id: string },
   ) =>
-    work.heartbeat(runnerId, 1, {}, undefined, undefined, undefined, undefined, [], undefined, [
-      { runId: command.runId, generation: command.generation, commandId: command.id },
-    ]);
+    await work.heartbeat(
+      runnerId,
+      1,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [],
+      undefined,
+      [{ runId: command.runId, generation: command.generation, commandId: command.id }],
+    );
   const item = insertQueuedItem(db, { id: "fixture-item", now, sessionKey: "fixture-session" });
   const { run } = beginImplementRun(db, item.id, now);
   recordLinearInstallation(db, {
@@ -225,8 +235,8 @@ export async function probeRunnerWork(
       claimCommand: () => true,
     });
     assert(verified.ok);
-    assert.equal(work.commands(firstRunner).length, 1);
-    assert.equal(work.commands(secondRunner).length, 0);
+    assert.equal((await work.commands(firstRunner)).length, 1);
+    assert.equal((await work.commands(secondRunner)).length, 0);
     observe("durable work is signed and bound to an active Linear workspace repository", true, {
       signatureVerified: verified.ok,
       firstRunnerCommands: 1,
@@ -236,9 +246,9 @@ export async function probeRunnerWork(
     });
     const before = await restartSnapshot(root, path, keyPath, firstRunner, now);
     assert.deepEqual(before.commands, [command.id]);
-    work.acknowledge(firstRunner, command.id);
-    work.acknowledge(firstRunner, command.id);
-    assert.throws(() => work.acknowledge(secondRunner, command.id), /unknown/);
+    await work.acknowledge(firstRunner, command.id);
+    await work.acknowledge(firstRunner, command.id);
+    await assert.rejects(work.acknowledge(secondRunner, command.id), /unknown/);
     const after = await restartSnapshot(root, path, keyPath, firstRunner, now);
     assert.deepEqual(after.commands, []);
     observe(
@@ -257,24 +267,24 @@ export async function probeRunnerWork(
       commandId: command.id,
       generation: 1,
     };
-    assert.throws(() => work.issueGrant({ ...grantInput, runnerId: secondRunner }), /fenced/);
-    assert.throws(() => work.issueGrant({ ...grantInput, commandId: "other" }), /changed/);
-    const grant = work.issueGrant(grantInput);
+    await assert.rejects(work.issueGrant({ ...grantInput, runnerId: secondRunner }), /fenced/);
+    await assert.rejects(work.issueGrant({ ...grantInput, commandId: "other" }), /changed/);
+    const grant = await work.issueGrant(grantInput);
     const beforeStall = now;
     now = command.expiresAt + 1000;
     const stallMs = now - beforeStall;
-    recoverRunnerWorkStall(db, beforeStall, stallMs);
+    await recoverRunnerWorkStall(sqliteDb(db), beforeStall, stallMs);
     const extended = db
       .query<{ expires_at: number }, []>("SELECT expires_at FROM runner_work_grant")
       .get()!;
     assert.equal(extended.expires_at, grant.expiresAt + stallMs);
-    work.event({
+    await work.event({
       ...grantInput,
       token: grant.token,
       sequence: 1,
       event: { type: "progress", text: "Working" },
     });
-    assert.deepEqual(work.heartbeat(firstRunner).fenced, []);
+    assert.deepEqual((await work.heartbeat(firstRunner)).fenced, []);
     // Restore this fixture's delivery deadline for its later normal-expiry assertions.
     db.run("UPDATE runner_command SET expires_at=? WHERE id=?", [command.expiresAt, command.id]);
     now = beforeStall;
@@ -288,8 +298,8 @@ export async function probeRunnerWork(
       sequence: 1,
       event: { type: "progress" as const, text: "Working" },
     };
-    assert.equal(work.event(event).duplicate, true);
-    assert.equal(work.event(event).duplicate, true);
+    assert.equal((await work.event(event)).duplicate, true);
+    assert.equal((await work.event(event)).duplicate, true);
     const http = createRunnerWorkHttp(work);
     const request = (route: string, body: unknown, token?: string) =>
       new Request(`https://runner.invalid${route}`, {
@@ -341,13 +351,13 @@ export async function probeRunnerWork(
     assert.equal(pulls, 2);
     assert.equal(cancelled, true);
 
-    assert.throws(
-      () => work.event({ ...event, event: { type: "progress", text: "Changed" } }),
+    await assert.rejects(
+      work.event({ ...event, event: { type: "progress", text: "Changed" } }),
       /changed its payload/,
     );
-    assert.throws(() => work.event({ ...event, sequence: 3 }), /gap/);
-    assert.throws(() => work.event({ ...event, token: "wrong", sequence: 2 }), /grant/);
-    assert.throws(() => work.event({ ...event, runnerId: secondRunner, sequence: 2 }), /fenced/);
+    await assert.rejects(work.event({ ...event, sequence: 3 }), /gap/);
+    await assert.rejects(work.event({ ...event, token: "wrong", sequence: 2 }), /grant/);
+    await assert.rejects(work.event({ ...event, runnerId: secondRunner, sequence: 2 }), /fenced/);
     assert.equal(work.authorize(event).command.id, command.id);
     assert.throws(() => work.authorize({ ...event, token: "wrong" }), /grant/);
     db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
@@ -360,8 +370,8 @@ export async function probeRunnerWork(
       [item.id],
     );
     assert.throws(() => work.authorize(event), /repository binding changed/);
-    assert.throws(() => work.event({ ...event, sequence: 2 }), /repository binding changed/);
-    assert.throws(() => work.issueGrant(grantInput), /repository binding changed/);
+    await assert.rejects(work.event({ ...event, sequence: 2 }), /repository binding changed/);
+    await assert.rejects(work.issueGrant(grantInput), /repository binding changed/);
     db.run("UPDATE work_item_repository SET repo=?,remote_url=? WHERE item_id=?", [
       repository.repo,
       repository.remoteUrl,
@@ -385,7 +395,7 @@ export async function probeRunnerWork(
     );
     applyWorkItemEvent(db, item.id, "blocking_question");
     assert.throws(() => work.authorize(event), /matching open question/);
-    assert.equal(work.heartbeat(firstRunner).leases.length, 1);
+    assert.equal((await work.heartbeat(firstRunner)).leases.length, 1);
     const question = openQuestion(db, {
       itemId: item.id,
       runId: run.id,
@@ -394,12 +404,12 @@ export async function probeRunnerWork(
       now,
     });
     assert.equal(work.authorize(event).command.id, command.id);
-    assert.equal(work.heartbeat(firstRunner).leases.length, 1);
+    assert.equal((await work.heartbeat(firstRunner)).leases.length, 1);
     answerQuestion(db, question.id, { answer: "Yes", answeredBy: "owner", now: now + 1 });
-    assert.equal(work.event(event).duplicate, true);
-    assert.throws(() => work.event({ ...event, sequence: 2 }), /matching open question/);
+    assert.equal((await work.event(event)).duplicate, true);
+    await assert.rejects(work.event({ ...event, sequence: 2 }), /matching open question/);
     assert.throws(() => work.authorize(event), /matching open question/);
-    assert.equal(work.heartbeat(firstRunner).leases.length, 1);
+    assert.equal((await work.heartbeat(firstRunner)).leases.length, 1);
     applyWorkItemEvent(db, item.id, "answer_received");
     assert.equal(work.authorize(event).command.id, command.id);
     observe(
@@ -408,20 +418,22 @@ export async function probeRunnerWork(
       { matchingQuestionAllowed: true, unrelatedWaitDenied: true, answeredTaskResumed: true },
     );
     now += 90_000;
-    const reattached = work.heartbeat(firstRunner);
+    const reattached = await work.heartbeat(firstRunner);
     assert.deepEqual(reattached.fenced, []);
     assert.equal(reattached.leases[0]!.expiresAt, now + 60_000);
     now += 90_000;
-    const renewedGrant = work.issueGrant(grantInput);
+    const renewedGrant = await work.issueGrant(grantInput);
     assert.equal(renewedGrant.expiresAt, now + 60_000);
     assert.equal(work.authorize({ ...event, token: renewedGrant.token }).command.id, command.id);
     assert.equal(
-      work.event({
-        ...event,
-        token: renewedGrant.token,
-        sequence: 2,
-        event: { type: "progress", text: "Back online" },
-      }).duplicate,
+      (
+        await work.event({
+          ...event,
+          token: renewedGrant.token,
+          sequence: 2,
+          event: { type: "progress", text: "Back online" },
+        })
+      ).duplicate,
       false,
     );
     observe(
@@ -430,16 +442,16 @@ export async function probeRunnerWork(
       { heartbeatReattached: true, grantRenewedLease: true, eventAccepted: true },
     );
     now += 15_000;
-    const heartbeat = work.heartbeat(firstRunner);
+    const heartbeat = await work.heartbeat(firstRunner);
     assert.equal(heartbeat.leases[0]!.expiresAt, now + 60_000);
     const cap = command.expiresAt - 30_000;
     db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [command.expiresAt, run.id]);
     now = cap;
-    assert.equal(work.heartbeat(firstRunner).leases[0]!.expiresAt, command.expiresAt);
+    assert.equal((await work.heartbeat(firstRunner)).leases[0]!.expiresAt, command.expiresAt);
     now = command.expiresAt;
-    assert.throws(() => work.issueGrant(grantInput), /command expired/);
-    assert.throws(() => work.event({ ...event, sequence: 2 }), /command expired/);
-    const expired = work.heartbeat(firstRunner);
+    await assert.rejects(work.issueGrant(grantInput), /command expired/);
+    await assert.rejects(work.event({ ...event, sequence: 2 }), /command expired/);
+    const expired = await work.heartbeat(firstRunner);
     assert.deepEqual(expired.leases, []);
     assert.equal(expired.fenced[0]!.generation, 1);
     const secondCommand = {
@@ -450,11 +462,11 @@ export async function probeRunnerWork(
       issuedAt: now,
       expiresAt: now + 5 * 60_000,
     };
-    confirmStopped(firstRunner, command);
+    await confirmStopped(firstRunner, command);
     work.assign(secondCommand);
-    assert.throws(() => work.issueGrant(grantInput), /fenced/);
-    assert.equal(work.commands(firstRunner).length, 0);
-    assert.equal(work.commands(secondRunner).length, 1);
+    await assert.rejects(work.issueGrant(grantInput), /fenced/);
+    assert.equal((await work.commands(firstRunner)).length, 0);
+    assert.equal((await work.commands(secondRunner)).length, 1);
     observe(
       "expired leases cannot be revived and reassignment fences the previous generation",
       true,
@@ -472,7 +484,7 @@ export async function probeRunnerWork(
       commandId: secondCommand.id,
       generation: 2,
     };
-    const currentGrant = work.issueGrant(current);
+    const currentGrant = await work.issueGrant(current);
     const previousCancellationId = workspaceId();
     work.enqueue({
       id: previousCancellationId,
@@ -484,17 +496,16 @@ export async function probeRunnerWork(
       issuedAt: now,
       expiresAt: now + 60_000,
     });
-    assert.throws(
-      () =>
-        work.event({
-          ...current,
-          token: currentGrant.token,
-          sequence: 1,
-          event: { type: "candidate", sha: "b".repeat(40) },
-        }),
+    await assert.rejects(
+      work.event({
+        ...current,
+        token: currentGrant.token,
+        sequence: 1,
+        event: { type: "candidate", sha: "b".repeat(40) },
+      }),
       /fenced/,
     );
-    const cancel = work.commands(secondRunner);
+    const cancel = await work.commands(secondRunner);
     assert.equal(cancel.length, 1);
     assert.equal(
       JSON.parse(Buffer.from(cancel[0]!.payload, "base64url").toString("utf8")).type,
@@ -508,23 +519,22 @@ export async function probeRunnerWork(
         .get(item.id)!.state,
     });
     const third = { ...secondCommand, id: workspaceId(), generation: 3 };
-    work.acknowledge(secondRunner, previousCancellationId);
-    confirmStopped(secondRunner, secondCommand);
+    await work.acknowledge(secondRunner, previousCancellationId);
+    await confirmStopped(secondRunner, secondCommand);
     work.assign(third);
-    const thirdGrant = work.issueGrant({ ...current, commandId: third.id, generation: 3 });
+    const thirdGrant = await work.issueGrant({ ...current, commandId: third.id, generation: 3 });
     await control.setStatus(principal, secondRunner, "revoked");
-    assert.throws(
-      () =>
-        work.event({
-          ...current,
-          generation: 3,
-          token: thirdGrant.token,
-          sequence: 1,
-          event: { type: "completed" },
-        }),
+    await assert.rejects(
+      work.event({
+        ...current,
+        generation: 3,
+        token: thirdGrant.token,
+        sequence: 1,
+        event: { type: "completed" },
+      }),
       /unavailable/,
     );
-    assert.throws(() => work.heartbeat(secondRunner), /unavailable/);
+    await assert.rejects(work.heartbeat(secondRunner), /unavailable/);
     const replacement = { ...third, id: workspaceId(), runnerId: firstRunner, generation: 4 };
     work.assign(replacement);
     assert.equal(work.current(run.id, 4).command.id, replacement.id);
@@ -558,12 +568,10 @@ export async function probeRunnerWork(
       profile: command.profile,
     });
     assert(
-      work
-        .commands(firstRunner)
-        .some(
-          (envelope) =>
-            JSON.parse(Buffer.from(envelope.payload, "base64url").toString("utf8")).id === probeId,
-        ),
+      (await work.commands(firstRunner)).some(
+        (envelope) =>
+          JSON.parse(Buffer.from(envelope.payload, "base64url").toString("utf8")).id === probeId,
+      ),
     );
     observe(
       "runner revocation fences current work independently of an otherwise valid run grant",
@@ -681,14 +689,13 @@ export async function probeRunnerWork(
         expiresAt: now + 60_000,
       };
       work.assign(released);
-      assert.throws(
-        () =>
-          work.issueGrant({
-            runnerId: firstRunner,
-            runId: waiting.runId,
-            commandId: waiting.id,
-            generation: 1,
-          }),
+      await assert.rejects(
+        work.issueGrant({
+          runnerId: firstRunner,
+          runId: waiting.runId,
+          commandId: waiting.id,
+          generation: 1,
+        }),
         /lease expired/,
       );
       const cancellationId = workspaceId();
@@ -729,12 +736,12 @@ export async function probeRunnerWork(
           now: () => now,
         });
         assert.throws(() => reconstructed.assign(afterCancel), /(?:cancellation|free slot)/);
-        reconstructed.acknowledge(firstRunner, cancellationId);
+        await reconstructed.acknowledge(firstRunner, cancellationId);
       } finally {
         waitingForTeardown.close();
       }
-      confirmStopped(firstRunner, released);
-      confirmStopped(firstRunner, waiting);
+      await confirmStopped(firstRunner, released);
+      await confirmStopped(firstRunner, waiting);
       work.assign(afterCancel);
       await work.finish(waiting.runId, 2);
       await control.setStatus(principal, firstRunner, "paused");
@@ -746,12 +753,12 @@ export async function probeRunnerWork(
       const helper = helpers.dispatch(helperInput);
       const review = { ...afterCancel, type: "review" as const, id: workspaceId(), generation: 3 };
       assert.throws(() => work.assign(review), /occupied/);
-      work.heartbeat(firstRunner, 2);
+      await work.heartbeat(firstRunner, 2);
       work.assign({ ...released, id: workspaceId(), generation: 3 });
       assert.throws(() => work.assign(review), /occupied/);
       assert.throws(() => helpers.dispatch(helperInput), /busy/);
       await work.finish(released.runId, 3);
-      work.heartbeat(firstRunner, 1);
+      await work.heartbeat(firstRunner, 1);
       helpers.finish(helper.command.id);
       work.assign(review);
       const commandCount = db
@@ -812,7 +819,7 @@ export async function probeRunnerWork(
           () => work.assign({ ...review, id: workspaceId(), generation: 6 }),
           /(?:cancellation|free slot)/,
         );
-        work.acknowledge(firstRunner, pendingCancellation.id);
+        await work.acknowledge(firstRunner, pendingCancellation.id);
         let retryJoined = false;
         retriedAfterReceipt = backend.cancelItem(waiting.itemId).then(() => {
           retryJoined = true;
@@ -825,7 +832,7 @@ export async function probeRunnerWork(
           /(?:cancellation|free slot)/,
         );
       } finally {
-        confirmStopped(firstRunner, { ...review, id: pendingCancellation.id, generation: 5 });
+        await confirmStopped(firstRunner, { ...review, id: pendingCancellation.id, generation: 5 });
         await Promise.all([cancelTask, repeatedCancelTask, retriedAfterReceipt]);
       }
       assert.equal(cancellationJoined, true);
@@ -860,8 +867,12 @@ export async function probeRunnerWork(
       await until(() => latestCancel()?.id !== expiredCancel.id);
       const replacementCancellation = latestCancel()!;
       assert.notEqual(replacementCancellation.id, expiredCancel.id);
-      work.acknowledge(firstRunner, replacementCancellation.id);
-      confirmStopped(firstRunner, { ...review, id: replacementCancellation.id, generation: 7 });
+      await work.acknowledge(firstRunner, replacementCancellation.id);
+      await confirmStopped(firstRunner, {
+        ...review,
+        id: replacementCancellation.id,
+        generation: 7,
+      });
       await retriedCancel;
       assert.equal(
         db

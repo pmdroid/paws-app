@@ -95,7 +95,7 @@ function fixture() {
     work,
     runId: run.id,
     command,
-    heartbeat(
+    async heartbeat(
       live: Live,
       liveAfter?: number,
       terminated?: { runId: string; generation: number; commandId: string }[],
@@ -140,12 +140,12 @@ function fixture() {
 test("a delayed heartbeat sampled before the acknowledgement cannot fence the work as lost", async () => {
   const f = fixture();
   try {
-    const before = f.heartbeat([], 0);
+    const before = await f.heartbeat([], 0);
     expect(before.observedAt).toBe(f.clock.now);
     f.clock.now += 1_000;
     f.work.assign(f.command(1));
     f.clock.now += 1_000;
-    f.work.acknowledge("box", "work-1");
+    await f.work.acknowledge("box", "work-1");
     f.clock.now += 2 * RUNNER_LIVE_GRACE_MS;
     const http = createRunnerWorkHttp(f.work);
     const response = await http(
@@ -168,7 +168,7 @@ test("a delayed heartbeat sampled before the acknowledgement cannot fence the wo
     expect(f.row()).toMatchObject({ endedAt: null, lostAt: null });
 
     f.clock.now += 1_000;
-    const missing = f.heartbeat([], delayed.observedAt);
+    const missing = await f.heartbeat([], delayed.observedAt);
     expect(missing.fenced).toEqual([{ runId: f.runId, generation: 1 }]);
     expect(f.row()).toMatchObject({ endedAt: f.clock.now, lostAt: f.clock.now });
   } finally {
@@ -176,53 +176,55 @@ test("a delayed heartbeat sampled before the acknowledgement cannot fence the wo
   }
 });
 
-test("a sample that names the work confirms it, and out-of-order older samples never fence it", () => {
+test("a sample that names the work confirms it, and out-of-order older samples never fence it", async () => {
   const f = fixture();
   try {
-    const first = f.heartbeat([], 0);
+    const first = await f.heartbeat([], 0);
     f.clock.now += 1_000;
     f.work.assign(f.command(1));
-    f.work.acknowledge("box", "work-1");
+    await f.work.acknowledge("box", "work-1");
     f.clock.now += 1_000;
-    const named = f.heartbeat([{ runId: f.runId, generation: 1 }], first.observedAt);
+    const named = await f.heartbeat([{ runId: f.runId, generation: 1 }], first.observedAt);
     expect(f.row().confirmedAt).toBe(f.clock.now);
     f.clock.now += 3 * RUNNER_LIVE_GRACE_MS;
-    expect(f.heartbeat([], first.observedAt).fenced).toEqual([]);
-    expect(f.heartbeat([], 0).fenced).toEqual([]);
+    expect((await f.heartbeat([], first.observedAt)).fenced).toEqual([]);
+    expect((await f.heartbeat([], 0)).fenced).toEqual([]);
     expect(f.row()).toMatchObject({ endedAt: null, lostAt: null });
-    expect(f.heartbeat([], named.observedAt).fenced).toEqual([{ runId: f.runId, generation: 1 }]);
+    expect((await f.heartbeat([], named.observedAt)).fenced).toEqual([
+      { runId: f.runId, generation: 1 },
+    ]);
   } finally {
     f.close();
   }
 });
 
-test("a runner without a cursor keeps the grace rule", () => {
+test("a runner without a cursor keeps the grace rule", async () => {
   const f = fixture();
   try {
     f.work.assign(f.command(1));
-    f.work.acknowledge("box", "work-1");
+    await f.work.acknowledge("box", "work-1");
     f.clock.now += RUNNER_LIVE_GRACE_MS - 1;
-    const early = f.heartbeat([]);
+    const early = await f.heartbeat([]);
     expect(early.fenced).toEqual([]);
     expect(early.observedAt).toBeUndefined();
     f.clock.now += 1;
-    expect(f.heartbeat([]).fenced).toEqual([{ runId: f.runId, generation: 1 }]);
+    expect((await f.heartbeat([])).fenced).toEqual([{ runId: f.runId, generation: 1 }]);
   } finally {
     f.close();
   }
 });
 
-test("a new generation inherits neither confirmation nor loss, and an old report cannot confirm it", () => {
+test("a new generation inherits neither confirmation nor loss, and an old report cannot confirm it", async () => {
   const f = fixture();
   try {
-    const first = f.heartbeat([], 0);
+    const first = await f.heartbeat([], 0);
     f.clock.now += 1_000;
     f.work.assign(f.command(1));
-    f.work.acknowledge("box", "work-1");
+    await f.work.acknowledge("box", "work-1");
     f.clock.now += 1_000;
-    const named = f.heartbeat([{ runId: f.runId, generation: 1 }], first.observedAt);
+    const named = await f.heartbeat([{ runId: f.runId, generation: 1 }], first.observedAt);
     f.clock.now += 1_000;
-    const lost = f.heartbeat([], named.observedAt, [
+    const lost = await f.heartbeat([], named.observedAt, [
       { runId: f.runId, generation: 1, commandId: "work-1" },
     ]);
     expect(lost.fenced).toEqual([{ runId: f.runId, generation: 1 }]);
@@ -241,7 +243,7 @@ test("a new generation inherits neither confirmation nor loss, and an old report
       teardownAt: null,
     });
     f.clock.now += 1_000;
-    f.heartbeat([{ runId: f.runId, generation: 1 }], lost.observedAt);
+    await f.heartbeat([{ runId: f.runId, generation: 1 }], lost.observedAt);
     expect(f.row()).toMatchObject({ generation: 2, confirmedAt: null, lostAt: null });
   } finally {
     f.close();

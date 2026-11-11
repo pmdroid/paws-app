@@ -1,11 +1,12 @@
-import type { Database } from "bun:sqlite";
 import {
-  getWorkItem,
-  itemSessionResults,
-  runPlacementCommand,
+  getWorkItemSteps,
+  itemSessionResultsSteps,
+  runPlacementCommandSteps,
   legacyAgentBindingId,
-  inMergeQueue,
-  restartedFromMergeQueue,
+  inMergeQueueSteps,
+  restartedFromMergeQueueSteps,
+  type Q,
+  type Steps,
 } from "../db";
 import type { RunnerCodingAgent } from "../runner-protocol";
 import { quotaSignal } from "../core";
@@ -20,8 +21,8 @@ type SessionHolder = {
 };
 
 /** The runner and agent holding the item's last resumable session. */
-export function sessionHolder(db: Database, itemId: string): SessionHolder | undefined {
-  const rows = itemSessionResults(db, itemId);
+export function* sessionHolderSteps(q: Q, itemId: string): Steps<SessionHolder | undefined> {
+  const rows = yield* itemSessionResultsSteps(q, itemId);
   for (const row of rows) {
     const command = JSON.parse(
       Buffer.from((JSON.parse(row.envelope) as { payload: string }).payload, "base64url").toString(
@@ -73,18 +74,18 @@ export function sessionHolder(db: Database, itemId: string): SessionHolder | und
  * work last ran on another runner, the merge-queue item's next turn is pinned to the runner
  * holding its session. A run that moved because its runner went away keeps its new runner.
  */
-export function runRunner(
-  db: Database,
+export function* runRunnerSteps(
+  q: Q,
   input: { itemId: string; runId: string; continuesSession: boolean; sessionRunnerId?: string },
-): { pinnedRunnerId?: string; preferRunnerId?: string } {
-  const row = runPlacementCommand(db, input.runId);
+): Steps<{ pinnedRunnerId?: string; preferRunnerId?: string }> {
+  const row = yield* runPlacementCommandSteps(q, input.runId);
   if (!row) return {};
-  const merging = inMergeQueue(db, input.itemId);
+  const merging = yield* inMergeQueueSteps(q, input.itemId);
   if (!input.continuesSession && merging) return { preferRunnerId: row.runnerId };
   const backToSession =
     input.continuesSession &&
     input.sessionRunnerId !== undefined &&
-    (merging || restartedFromMergeQueue(db, input.itemId)) &&
+    (merging || (yield* restartedFromMergeQueueSteps(q, input.itemId))) &&
     (row.kind === "review" ||
       (row.kind === "run" &&
         row.envelope !== null &&
@@ -99,16 +100,16 @@ export function runRunner(
   return { pinnedRunnerId: backToSession ? input.sessionRunnerId : row.runnerId };
 }
 
-export function itemWorkPlacement(db: Database, itemId: string, agent: string) {
-  const holder = sessionHolder(db, itemId);
+export function* itemWorkPlacementSteps(q: Q, itemId: string, agent: string) {
+  const holder = yield* sessionHolderSteps(q, itemId);
   const session =
     holder?.agent === agent
       ? { runnerId: holder.runnerId, bindingId: holder.bindingId }
       : undefined;
-  const runId = getWorkItem(db, itemId)?.currentRunId;
+  const runId = (yield* getWorkItemSteps(q, itemId))?.currentRunId;
   return {
     ...(runId
-      ? runRunner(db, {
+      ? yield* runRunnerSteps(q, {
           itemId,
           runId,
           continuesSession: true,

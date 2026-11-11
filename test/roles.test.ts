@@ -108,7 +108,10 @@ describe("roles", () => {
           });
         },
       });
-    const loops = [start(first, web.id, "web"), start(second, worker.id, "worker")];
+    const loops = await Promise.all([
+      start(first, web.id, "web"),
+      start(second, worker.id, "worker"),
+    ]);
     await waitFor(() => runs.length > 0);
     await Bun.sleep(50);
     controller.abort();
@@ -127,7 +130,7 @@ describe("roles", () => {
       enqueueJobOnce(first, { queue, jobKey: queue, recurringEveryMs: 600_000, now: now + 60_000 });
     const run = async (role: InstanceRole) => {
       const controller = new AbortController();
-      const loops = startLoops({
+      const loops = await startLoops({
         db: first,
         instanceId: self.id,
         role,
@@ -283,7 +286,7 @@ describe("roles", () => {
     const delivered: number[] = [];
     const run = async (role: InstanceRole) => {
       const controller = new AbortController();
-      const loops = startLoops({
+      const loops = await startLoops({
         db,
         instanceId: `01JACME${role.toUpperCase()}`,
         role,

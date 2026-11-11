@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import {
+  emitJobReady,
   getWorkItemSteps,
   saveCheckpointSteps,
   saveCloseoutBypassChecksSteps,
@@ -10,7 +11,7 @@ import {
 } from "../db";
 import type { RuleApproval } from "../closeout";
 import { shortCommit } from "../questions";
-import { ask } from "./operations";
+import { askSteps } from "./operations";
 import {
   NO_SESSION_MODEL,
   PREPARATION_FAILED,
@@ -18,7 +19,7 @@ import {
   RETRY_CLOSEOUT,
   recoveryQuestion,
 } from "./closeout-recovery";
-import { askWithLink, linkAskAvailable } from "./link-ask";
+import { askWithLinkSteps, linkAskAvailable } from "./link-ask";
 import type { MainPolicyError } from "./policy-outage";
 
 const RETRIES_BY_ITSELF =
@@ -78,9 +79,10 @@ export async function askCloseoutHelp(
   },
 ): Promise<void> {
   const rules = input.rules ?? [];
-  await sqliteDb(db).transaction(function* (q) {
+  const store = sqliteDb(db);
+  const linked = await store.transaction(function* (q) {
     const item = yield* getWorkItemSteps(q, help.itemId);
-    if (!item || item.state === "cancelled") return;
+    if (!item || item.state === "cancelled") return false;
     const retry = retryCloseoutOffered(help, input);
     const block = retry ? input.policyBlock : undefined;
     const body = recoveryQuestion(help, input.error);
@@ -88,45 +90,46 @@ export async function askCloseoutHelp(
     // Without a session model there is nothing for Closeout to retry: only a fresh implementation helps.
     const fresh = help.summary.startsWith(NO_SESSION_MODEL);
     const freshNote = `Choose ${RESTART_IMPLEMENTATION}, or reply with guidance, to start a fresh implementation turn.`;
-    const question =
+    const link =
       linkAskAvailable(input.publicUrl) &&
       help.failedChecks.length > 0 &&
       help.head !== "" &&
-      !help.summary.startsWith(PREPARATION_FAILED)
-        ? askWithLink(db, {
-            item,
+      !help.summary.startsWith(PREPARATION_FAILED);
+    const question = link
+      ? (yield* askWithLinkSteps(q, {
+          item,
+          runId: item.currentRunId,
+          kind: rules.length > 0 ? "rule" : "bypass",
+          head: help.head,
+          detail: rules.length > 0 ? ruleDetail(rules) : bypassDetail(help, input.error),
+          publicUrl: input.publicUrl ?? null,
+          now: input.now,
+          ...(input.version !== undefined ? { version: input.version } : {}),
+        })).question
+      : (yield* askSteps(
+          q,
+          {
+            itemId: item.id,
             runId: item.currentRunId,
-            kind: rules.length > 0 ? "rule" : "bypass",
-            head: help.head,
-            detail: rules.length > 0 ? ruleDetail(rules) : bypassDetail(help, input.error),
-            publicUrl: input.publicUrl,
-            now: input.now,
+            sessionId,
             ...(input.version !== undefined ? { version: input.version } : {}),
-          }).question
-        : ask(
-            db,
-            {
-              itemId: item.id,
-              runId: item.currentRunId,
-              sessionId,
-              ...(input.version !== undefined ? { version: input.version } : {}),
-            },
-            "closeout-help",
-            retry
-              ? [body, retryNote, ...(block ? [RETRIES_BY_ITSELF] : [])].join("\n\n")
+          },
+          "closeout-help",
+          retry
+            ? [body, retryNote, ...(block ? [RETRIES_BY_ITSELF] : [])].join("\n\n")
+            : fresh
+              ? [body, freshNote].join("\n\n")
+              : body,
+          {
+            now: input.now,
+            reason: input.reason ?? "closeout_help",
+            ...(retry
+              ? { options: [RETRY_CLOSEOUT] }
               : fresh
-                ? [body, freshNote].join("\n\n")
-                : body,
-            {
-              now: input.now,
-              reason: input.reason ?? "closeout_help",
-              ...(retry
-                ? { options: [RETRY_CLOSEOUT] }
-                : fresh
-                  ? { options: [RESTART_IMPLEMENTATION] }
-                  : {}),
-            },
-          ).question;
+                ? { options: [RESTART_IMPLEMENTATION] }
+                : {}),
+          },
+        )).question;
     yield* saveCloseoutRecoverySteps(q, { ...help, questionId: question.id });
     if (block && question.kind === "closeout-help")
       yield* savePolicyBlockSteps(q, {
@@ -160,7 +163,9 @@ export async function askCloseoutHelp(
       baseSha: help.base,
       wipCommit: help.head,
     });
+    return link;
   });
+  if (linked) emitJobReady(store);
 }
 
 /** The Markdown under the link ask's title: which checks failed and what the person can do. */

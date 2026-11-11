@@ -11,7 +11,7 @@ import {
   type GitCommitPolicy,
 } from "../src/core";
 import * as dbApi from "../src/db";
-import { saveRunCommitPolicy, sqliteDb } from "../src/db";
+import { saveRunCommitPolicy, sqliteDb, syncSteps } from "../src/db";
 import { INSTALLATION_PERMISSIONS } from "../src/github";
 import {
   createFakeTracker,
@@ -303,9 +303,9 @@ test("onboarded authoritative creator resumes once with current App and no perso
       db,
       {
         check: (_item, signal) => installation("acme/widgets", "write", signal),
-        administrators: () => ["owner"],
+        administrators: () => syncSteps(() => ["owner"]),
         recoveryUrl: `${origin}/status`,
-        identity: () => "creator:acme/widgets",
+        identity: () => syncSteps(() => "creator:acme/widgets"),
       },
       now,
     );

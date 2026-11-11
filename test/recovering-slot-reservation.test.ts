@@ -98,8 +98,8 @@ test("a failed preparation releases its reservation and the next recovering item
       wrap(placement) {
         return {
           ...placement,
-          started(input) {
-            placement.started(input);
+          *startedSteps(q, input) {
+            yield* placement.startedSteps(q, input);
             if (failPreparation && input.purpose === "prepare") {
               failPreparation = false;
               throw new Error("preparation blew up");
@@ -214,15 +214,15 @@ async function runRecovering(input: {
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
-  work.heartbeat(runnerId, input.capacity);
+  await work.heartbeat(runnerId, input.capacity);
   const results = createRunnerResults({ db, work });
   const health = createRunnerHealth({ db, work });
   const prepared = new Map<string, Set<string>>();
   const basePlacement = createRunnerPlacement({ db });
   const trackedPlacement: RunnerPlacement = {
     ...basePlacement,
-    started(value) {
-      basePlacement.started(value);
+    *startedSteps(q, value) {
+      yield* basePlacement.startedSteps(q, value);
       if (value.purpose === "prepare" && value.itemId) {
         const roles = prepared.get(value.itemId) ?? new Set<string>();
         roles.add(value.role);
@@ -266,7 +266,7 @@ async function runRecovering(input: {
     home: root,
     tracker,
     repositories: [{ owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL }],
-    scheduling: () => ({}),
+    scheduling: async () => ({}),
     reviewRequirements: () => ({
       ok: true,
       items: [
@@ -303,14 +303,14 @@ async function runRecovering(input: {
     while (!sim.stopped) {
       for (const simulatedRunnerId of runnerIds) {
         db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [Date.now(), simulatedRunnerId]);
-        work.heartbeat(simulatedRunnerId, input.capacity);
-        for (const envelope of work.commands(simulatedRunnerId)) {
+        await work.heartbeat(simulatedRunnerId, input.capacity);
+        for (const envelope of await work.commands(simulatedRunnerId)) {
           const command = JSON.parse(
             Buffer.from(envelope.payload, "base64url").toString(),
           ) as RunnerCommand;
           if (handled.has(command.id)) continue;
           handled.add(command.id);
-          work.acknowledge(simulatedRunnerId, command.id);
+          await work.acknowledge(simulatedRunnerId, command.id);
           if (command.type === "login_check")
             await health.submit(simulatedRunnerId, {
               ...receipt(command),

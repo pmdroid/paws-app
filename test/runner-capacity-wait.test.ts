@@ -157,12 +157,12 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     issuedAt: now - 120_000,
     expiresAt: now - 60_000,
   });
-  work.acknowledge(busyRunner, "cancel-other");
+  await work.acknowledge(busyRunner, "cancel-other");
   workNow = Date.now;
-  work.heartbeat(busyRunner, 1, {}, undefined, undefined, undefined, undefined, [
+  await work.heartbeat(busyRunner, 1, {}, undefined, undefined, undefined, undefined, [
     { runId: otherRun.id, generation: 1 },
   ]);
-  work.heartbeat(freeRunner, 8);
+  await work.heartbeat(freeRunner, 8);
   const results = createRunnerResults({ db, work });
   const health = createRunnerHealth({ db, work });
   const identifiers = ["ENG-1", "ENG-2", "ENG-3", "ENG-4", "ENG-5"];
@@ -211,7 +211,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     home: root,
     tracker,
     repositories: [{ owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL }],
-    scheduling: () => ({}),
+    scheduling: async () => ({}),
     launch() {
       return { command: "/forbidden-local-agent", args: [] };
     },
@@ -231,14 +231,14 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
   const runner = (async () => {
     while (!sim.stopped) {
       db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [Date.now(), busyRunner]);
-      work.heartbeat(freeRunner, 8);
-      for (const envelope of work.commands(freeRunner)) {
+      await work.heartbeat(freeRunner, 8);
+      for (const envelope of await work.commands(freeRunner)) {
         const command = JSON.parse(
           Buffer.from(envelope.payload, "base64url").toString(),
         ) as RunnerCommand;
         if (handled.has(command.id)) continue;
         handled.add(command.id);
-        work.acknowledge(freeRunner, command.id);
+        await work.acknowledge(freeRunner, command.id);
         if (command.type === "login_check")
           await health.submit(freeRunner, {
             ...receipt(command),

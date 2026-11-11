@@ -18,6 +18,7 @@ import {
   listJobs,
   listOutbox,
   migrate,
+  syncSteps,
   openDatabase,
   recordLinearInstallation,
   revokeLinearInstallation,
@@ -35,12 +36,12 @@ test("transient production authorization persists a wait, survives restart and r
   const host = createGitHubIntegration({
     runtime: loadRuntime(env),
     env,
-    repositoryForItem: () => ({
+    repositoryForItem: async () => ({
       owner: "acme",
       repo: "widgets",
       remoteUrl: "https://github.com/acme/widgets.git",
     }),
-    actorForItem: () => "member",
+    integrationIdentity: () => syncSteps(() => "member"),
     authorizeItem: async () => {
       if (unavailable) throw new Error("Scripted Linear outage");
       return true;
@@ -137,12 +138,12 @@ test("real LinearTaskAccess distinguishes revoked installation from unavailable 
   const host = createGitHubIntegration({
     runtime: loadRuntime({ GITHUB_AUTH: "app" }),
     env: {},
-    repositoryForItem: () => ({
+    repositoryForItem: async () => ({
       owner: "acme",
       repo: "widgets",
       remoteUrl: "https://github.com/acme/widgets.git",
     }),
-    actorForItem: () => "human",
+    integrationIdentity: () => syncSteps(() => "human"),
     authorizeItem: (current, signal) => authorizeLinearTask(gate, current, signal),
   });
   host.check = async () => true;
@@ -175,12 +176,12 @@ test("an App task with a selected repository starts without an attribution wait"
   const host = createGitHubIntegration({
     runtime: loadRuntime(env),
     env,
-    repositoryForItem: () => ({
+    repositoryForItem: async () => ({
       owner: "acme",
       repo: "chosen",
       remoteUrl: "https://github.com/acme/chosen.git",
     }),
-    actorForItem: () => "member",
+    integrationIdentity: () => syncSteps(() => "member"),
   });
   expect(Object.keys(host!)).not.toContain("attributionReady");
   host.check = async () => true;
@@ -210,12 +211,12 @@ for (const later of [60_000, 11 * 60_000]) {
     const host = createGitHubIntegration({
       runtime: loadRuntime(env),
       env,
-      repositoryForItem: () => ({
+      repositoryForItem: async () => ({
         owner: "acme",
         repo: "widgets",
         remoteUrl: "https://github.com/acme/widgets.git",
       }),
-      actorForItem: () => "member",
+      integrationIdentity: () => syncSteps(() => "member"),
       authorizeItem: async () => true,
     });
     host.check = async () => true;
@@ -252,12 +253,12 @@ test("a denied authorization after an issue change still stops the task", async 
   const host = createGitHubIntegration({
     runtime: loadRuntime(env),
     env,
-    repositoryForItem: () => ({
+    repositoryForItem: async () => ({
       owner: "acme",
       repo: "widgets",
       remoteUrl: "https://github.com/acme/widgets.git",
     }),
-    actorForItem: () => "member",
+    integrationIdentity: () => syncSteps(() => "member"),
     authorizeItem: async () => allowed,
   });
   host.check = async () => true;
@@ -283,8 +284,8 @@ test("production App authorization retries an unavailable check for about a minu
   const host = createGitHubIntegration({
     runtime: loadRuntime(env),
     env,
-    repositoryForItem: () => null,
-    actorForItem: () => "member",
+    repositoryForItem: async () => null,
+    integrationIdentity: () => syncSteps(() => "member"),
   });
   const total = (host.unavailableRetryMs ?? []).reduce((sum, ms) => sum + ms, 0);
   expect(total).toBeGreaterThanOrEqual(60_000);
@@ -300,12 +301,12 @@ function cachedAuthorization() {
   const host = createGitHubIntegration({
     runtime: loadRuntime(env),
     env,
-    repositoryForItem: () => ({
+    repositoryForItem: async () => ({
       owner: "acme",
       repo: "widgets",
       remoteUrl: "https://github.com/acme/widgets.git",
     }),
-    actorForItem: () => "member",
+    integrationIdentity: () => syncSteps(() => "member"),
     authorizeItem: async () => {
       reads.membership++;
       return true;
