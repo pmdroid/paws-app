@@ -104,8 +104,9 @@ import {
   linearBudgetStore,
   openDatabase,
   checkPostgres,
-  checkSqlite,
+  connectPglite,
   connectPostgres,
+  PgliteInUseError,
   type PostgresConnection,
   readSavedSettings,
   readSettingSteps,
@@ -2554,22 +2555,7 @@ export async function dbCheckMain(
     return 1;
   }
   const url = runtime.databaseUrl;
-  if (url === null) {
-    const path = pawsPaths(runtime.env.home).db;
-    print("SQLite is in use: neither [database] url nor PAWS_DATABASE_URL is set.");
-    try {
-      const report = checkSqlite(path);
-      print(
-        report === null
-          ? `ok · SQLite ${path} · no database yet; migrations apply at start`
-          : `ok · SQLite ${path} · ${report.applied} of ${report.known} migrations applied`,
-      );
-      return 0;
-    } catch (error) {
-      fail(`paws db check failed on SQLite ${path}: ${(error as Error).message}`);
-      return 1;
-    }
-  }
+  if (url === null) return checkPglite(pawsPaths(runtime.env.home).pgliteDir, print, fail);
   const where = describeDatabaseUrl(url);
   let connection: PostgresConnection | null = null;
   try {
@@ -2582,6 +2568,35 @@ export async function dbCheckMain(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     fail(`paws db check failed on Postgres ${where}: ${redactDatabaseUrl(message, url)}`);
+    return 1;
+  } finally {
+    await connection?.close().catch(() => undefined);
+  }
+}
+
+async function checkPglite(
+  dir: string,
+  print: (line: string) => void,
+  fail: (line: string) => void,
+): Promise<number> {
+  if (!existsSync(dir)) {
+    print(`ok · PGlite ${dir} · no database yet; migrations apply at start`);
+    return 0;
+  }
+  let connection: PostgresConnection | null = null;
+  try {
+    connection = connectPglite(dir);
+    const report = await checkPostgres(connection);
+    print(
+      `ok · PGlite ${dir} · server ${report.serverVersion} · ${report.applied} of ${report.known} migrations applied`,
+    );
+    return 0;
+  } catch (error) {
+    if (error instanceof PgliteInUseError) {
+      fail("paws db check: Paws is running; stop it or set [database] url to check");
+      return 1;
+    }
+    fail(`paws db check failed on PGlite ${dir}: ${(error as Error).message}`);
     return 1;
   } finally {
     await connection?.close().catch(() => undefined);

@@ -1,3 +1,4 @@
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { PGlite } from "@electric-sql/pglite";
 import { citext } from "@electric-sql/pglite/contrib/citext";
 import { SQL } from "bun";
@@ -29,6 +30,56 @@ export function connectPostgres(url: string): PostgresConnection {
   };
 }
 
+export class PgliteInUseError extends Error {
+  constructor(
+    readonly dir: string,
+    readonly pid: number,
+  ) {
+    super(`PGlite ${dir} is in use by process ${pid}`);
+  }
+}
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function lockPglite(dir: string): () => void {
+  const lock = `${dir}.lock`;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      writeFileSync(lock, String(process.pid), { flag: "wx", mode: 0o600 });
+      return () => rmSync(lock, { force: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    const holder = existsSync(lock) ? Number(readFileSync(lock, "utf8")) : 0;
+    if (attempt > 0 || (holder > 0 && holder !== process.pid && alive(holder)))
+      throw new PgliteInUseError(dir, holder);
+    rmSync(lock, { force: true });
+  }
+}
+
+export function connectPglite(dir: string): PostgresConnection {
+  const release = lockPglite(dir);
+  try {
+    const client = new PGlite(dir, { extensions: { citext } });
+    const db = drizzlePglite({ client, schema: pgSchema });
+    return {
+      db,
+      migrate: () => migratePglite(db, { migrationsFolder: PG_MIGRATIONS_FOLDER }),
+      close: () => client.close().finally(release),
+    };
+  } catch (error) {
+    release();
+    throw error;
+  }
+}
+
 export async function openPglite(dir: string): Promise<PgliteDb> {
   const client = new PGlite(dir, { extensions: { citext } });
   const db = drizzlePglite({ client, schema: pgSchema });
@@ -48,8 +99,14 @@ export async function openPawsStore(input: {
   pgliteDir: string;
 }): Promise<PawsStore> {
   if (input.url === null) {
-    const pg = await openPglite(input.pgliteDir);
-    return { store: postgresDb(pg), close: () => pg.$client.close() };
+    const release = lockPglite(input.pgliteDir);
+    try {
+      const pg = await openPglite(input.pgliteDir);
+      return { store: postgresDb(pg), close: () => pg.$client.close().finally(release) };
+    } catch (error) {
+      release();
+      throw error;
+    }
   }
   const db = openPostgres(input.url);
   try {
