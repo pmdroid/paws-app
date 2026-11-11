@@ -590,6 +590,7 @@ export function createRunnerWork(options: {
     identity(runnerId: string) {
       return read((q) => runnerSteps(q, runnerId));
     },
+    identitySteps: runnerSteps,
     scope(runId: string, workspaceId: string) {
       return read((q) => taskSteps(q, runId, workspaceId));
     },

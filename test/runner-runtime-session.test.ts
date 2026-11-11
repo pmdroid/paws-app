@@ -27,6 +27,7 @@ import { openExecutionJournal } from "../src/runner-journal";
 import type { RunnerCommand, RunnerResult } from "../src/runner-protocol";
 import { openRunnerRuntime, type RunnerAgents } from "../src/runner-runtime";
 import type { RunnerWork } from "../src/runner-work";
+import { syncSteps } from "../src/db";
 import { tempDb } from "./helpers";
 
 const linux = process.platform === "linux" && process.getuid!() !== 0 && process.getgid!() !== 0;
@@ -122,8 +123,8 @@ function fixture(
   db.run("PRAGMA foreign_keys=OFF");
   const objects = createFakeAgentSessionObjects();
   const work = {
-    authorize: () => ({ command }),
-    identity: () => ({ userId: "owner" }),
+    authorizeSteps: () => syncSteps(() => ({ command })),
+    identitySteps: () => syncSteps(() => ({ userId: "owner" })),
   } as unknown as RunnerWork;
   const sessions = createAgentSessions({ db, work, objects, key: randomBytes(32) });
   const access = { runnerId: "runner", runId: "run", token: "token" };
@@ -354,7 +355,7 @@ function fixture(
       existsSync(join(root, "repositories")) ? readdirSync(join(root, "repositories")) : [],
     async read(generation: number) {
       const parts: Uint8Array[] = [];
-      for await (const part of sessions.read({ ...access, generation }, generation))
+      for await (const part of await sessions.read({ ...access, generation }, generation))
         parts.push(part);
       return Buffer.concat(parts);
     },
@@ -376,7 +377,7 @@ test.skipIf(!linux)("a Grok session folder seals with the runner's Grok version"
     expect(context.finishes).toMatchObject([
       { generation: 3, agent: "grok", agentVersion: "1.0.50", sha256: sha(bundle) },
     ]);
-    expect(context.sessions.snapshot("run", 3)).toMatchObject({
+    expect(await context.sessions.snapshot("run", 3)).toMatchObject({
       status: "sealed",
       agent: "grok",
       agentVersion: "1.0.50",
@@ -399,7 +400,7 @@ test.skipIf(!linux)("a Codex rollout seals with the runner's Codex version", asy
     expect(context.finishes).toMatchObject([
       { generation: 3, agent: "codex", agentVersion: "2.1.1", sha256: sha(bundle) },
     ]);
-    expect(context.sessions.snapshot("run", 3)).toMatchObject({
+    expect(await context.sessions.snapshot("run", 3)).toMatchObject({
       status: "sealed",
       agent: "codex",
       agentVersion: "2.1.1",
@@ -438,7 +439,7 @@ test.skipIf(!linux)(
           turn: 3,
         },
       ]);
-      expect(context.sessions.snapshot("run", 3)).toMatchObject({
+      expect(await context.sessions.snapshot("run", 3)).toMatchObject({
         status: "sealed",
         agentVersion: "2.1.7",
         sessionId: "claude-session",
@@ -650,7 +651,7 @@ test.skipIf(!linux)(
       const bundle = randomBytes(600_000);
       context.finishWorker(id, bundle, { stopReason: "cancelled", handedOver: true });
       await context.drive(runtime, () => context.posted.length > 0);
-      expect(context.sessions.snapshot("run", 3)).toMatchObject({
+      expect(await context.sessions.snapshot("run", 3)).toMatchObject({
         status: "sealed",
         sessionId: "claude-session",
         commitSha: context.baseSha,

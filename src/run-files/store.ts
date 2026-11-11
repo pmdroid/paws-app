@@ -8,6 +8,7 @@ import {
   sqliteDb,
   type Q,
   type RunFileChunkRow,
+  type Steps,
 } from "../db";
 import { journalCaught } from "../journal";
 import { openRunFileChunk, runFileKeyId, sealRunFileChunk } from "./key";
@@ -72,13 +73,13 @@ export function createRunFileChunks(options: {
   }
 
   /** Plaintext chunks in order, each checked against its recorded offset, size and sha256. */
-  async function* chunks(file: RunFile, before?: () => void) {
+  async function* chunks(file: RunFile, before?: () => Promise<void>) {
     const address = { kind, runId: file.runId, generation: file.generation };
     const rows = await store.run((q) => listRunFileChunksSteps(q, address));
     let total = 0;
     let plaintext: boolean | undefined;
     for (const chunk of rows) {
-      before?.();
+      await before?.();
       // A chunk without a key ID was stored before encryption and is read as is until it is
       // converted. It may be sealed between the row read and the object read, so it opens too.
       if (chunk.keyId === null) plaintext ??= (await options.plaintext?.()) ?? false;
@@ -112,9 +113,9 @@ export function createRunFileChunks(options: {
       runId: string,
       chunk: RunFileChunk,
       maxBytes: number,
-      state: () => RunFileState,
+      state: (q: Q) => Steps<RunFileState>,
       /** True when the file was dropped while its chunk was written; the object is removed. */
-      dropped?: () => boolean,
+      dropped?: () => Promise<boolean>,
     ) {
       const bytes = Buffer.from(chunk.data, "base64");
       if (
@@ -129,7 +130,7 @@ export function createRunFileChunks(options: {
       const end = chunk.offset + bytes.length;
       const address = { kind, runId, generation: chunk.generation };
       const check = function* (q: Q) {
-        const file = state();
+        const file = yield* state(q);
         const previous = yield* runFileChunkSteps(q, address, chunk.offset);
         if (previous) {
           if (previous.sha256 !== chunk.sha256 || previous.sizeBytes !== bytes.length) refused();
@@ -158,7 +159,7 @@ export function createRunFileChunks(options: {
           return { offset: end, duplicate: !!current.previous };
         });
       } catch (error) {
-        if (dropped?.())
+        if (await dropped?.())
           await objects
             .delete(name)
             .catch((caught: unknown) => journalCaught(caught, "run-files.upload.delete", null));
@@ -204,7 +205,7 @@ export function createRunFileChunks(options: {
       if (total !== sizeBytes || digest.digest("hex") !== sha256) refused();
     },
     /** The sealed file's plaintext, chunk by chunk; `before` re-checks access before each one. */
-    async *read(file: RunFile, sizeBytes: number, sha256: string, before?: () => void) {
+    async *read(file: RunFile, sizeBytes: number, sha256: string, before?: () => Promise<void>) {
       const digest = createHash("sha256");
       let total = 0;
       for await (const bytes of chunks(file, before)) {
