@@ -33,8 +33,12 @@ import {
   insertQueuedItem,
   putWorkspaceUser,
   recordLinearInstallation,
+  sqliteDb,
 } from "../src/db";
-import { planSessionRestore } from "../src/runner-backend/session-restore";
+import {
+  planSessionRestoreSteps,
+  type SessionRestoreInput,
+} from "../src/runner-backend/session-restore";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
 import type { RunnerCommand } from "../src/runner-protocol";
@@ -614,11 +618,12 @@ describe("agent session snapshots", () => {
       "INSERT INTO runner_agent(runner_id,agent,version,status,reported_at) VALUES(?,'claude','0.88.0','current',?)",
       [runnerB, at],
     );
-    const plan = () =>
-      planSessionRestore(db, { runId: run.runId, agent: "claude", targetRunnerId: runnerB });
-    expect(plan()).toMatchObject({ eligible: true, restoreSession: { generation: 1 } });
+    const restore = (input: SessionRestoreInput) =>
+      sqliteDb(db).run((q) => planSessionRestoreSteps(q, input));
+    const plan = () => restore({ runId: run.runId, agent: "claude", targetRunnerId: runnerB });
+    expect(await plan()).toMatchObject({ eligible: true, restoreSession: { generation: 1 } });
     expect(
-      planSessionRestore(db, {
+      await restore({
         runId: run.runId,
         agent: "claude",
         targetRunnerId: runnerB,
@@ -628,13 +633,13 @@ describe("agent session snapshots", () => {
 
     await work.finish(run.runId, 1);
     await seal(sessions, f.assign(run, runnerA, 2), 2);
-    expect(plan()).toMatchObject({ eligible: true, restoreSession: { generation: 2 } });
+    expect(await plan()).toMatchObject({ eligible: true, restoreSession: { generation: 2 } });
 
     // The newest row discarded by an interrupted prune is skipped too.
     db.run("UPDATE agent_session_snapshot SET status='discarded' WHERE run_id=? AND generation=2", [
       run.runId,
     ]);
-    expect(plan()).toEqual({ eligible: false, failure: "no_snapshot" });
+    expect(await plan()).toEqual({ eligible: false, failure: "no_snapshot" });
   });
 });
 

@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   currentRunnerAgentVersionSteps,
   lastRunCommandAccountSteps,
@@ -6,8 +5,6 @@ import {
   runnerAgentLoginReadySteps,
   runnerStandingSteps,
   runnerTargetForRestoreSteps,
-  settled,
-  sqliteDb,
   storedRunnerNameSteps,
   type Db,
   type Q,
@@ -76,16 +73,12 @@ export function versionAtLeast(
  * ready, and the agent installed. A different agent version does not refuse the restore: the
  * runner tries `session/load`, and the notice names both versions if the load fails.
  */
-type SessionRestoreInput = {
+export type SessionRestoreInput = {
   runId: string;
   agent: string;
   targetRunnerId: string;
   targetAccount?: { accountId: string; named: boolean };
 };
-
-export function planSessionRestore(db: Database, input: SessionRestoreInput): SessionRestorePlan {
-  return settled(sqliteDb(db).run((q) => planSessionRestoreSteps(q, input)));
-}
 
 export function* planSessionRestoreSteps(
   q: Q,
