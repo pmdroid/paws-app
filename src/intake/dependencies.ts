@@ -105,8 +105,17 @@ function* scopeSteps(q: Q, target: Target): Steps<Scope | null> {
   };
 }
 
+function comparableScope(token: string): unknown {
+  const scope: unknown = JSON.parse(token);
+  if (!Array.isArray(scope)) return scope;
+  const identity: unknown = scope[3];
+  if (identity === null || typeof identity !== "object" || !("sessionGeneration" in identity))
+    return scope;
+  return scope.with(3, { ...identity, sessionGeneration: String(identity.sessionGeneration) });
+}
+
 function sameScope(saved: string, token: string): boolean {
-  return saved === token || Bun.deepEquals(JSON.parse(saved), JSON.parse(token), true);
+  return saved === token || Bun.deepEquals(comparableScope(saved), comparableScope(token), true);
 }
 
 function* snapshotSteps(q: Q, target: Target): Steps<Snapshot | null> {

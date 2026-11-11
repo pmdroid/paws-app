@@ -458,7 +458,10 @@ export function* closeExpiredRunnerLeasesSteps(q: Q, now: number): Steps<Recover
   const cutoff = runnerLeaseCutoff(now);
   const rows = yield* q.all(
     q.orm
-      .select({ runId: sql<string>`w.run_id`, generation: sql<number>`w.generation` })
+      .select({
+        runId: sql<string>`w.run_id`,
+        generation: sql<number>`w.generation`.mapWith(Number),
+      })
       .from(sql`runner_work w JOIN run r ON r.id = w.run_id`)
       .where(
         sql`w.ended_at IS NULL AND w.lease_until <= ${cutoff}
