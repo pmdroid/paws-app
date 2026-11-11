@@ -433,7 +433,7 @@ export async function probeScheduler(
       delegateId: null,
     });
     for (const item of intake.items)
-      await syncItemDependencies(db, {
+      await syncItemDependencies(sqliteDb(db), {
         itemId: item.id,
         workspaceId: "workspace",
         expectedGeneration: (
@@ -513,7 +513,7 @@ export async function probeScheduler(
           }),
         );
       for (const item of intake.items)
-        await syncItemDependencies(db, {
+        await syncItemDependencies(sqliteDb(db), {
           itemId: item.id,
           workspaceId: "workspace",
           expectedGeneration: (

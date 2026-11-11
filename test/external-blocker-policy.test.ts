@@ -59,7 +59,7 @@ async function fixture() {
   const itemId = intake.items[0]!.id;
   const target = { workspaceId: "workspace", itemId };
   const refresh = async () =>
-    syncItemDependencies(db, {
+    syncItemDependencies(sqliteDb(db), {
       ...target,
       expectedGeneration: (await sqliteDb(db).run((q) => readyItemsSteps(q, target))).generation,
       tracker,

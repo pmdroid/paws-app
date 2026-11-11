@@ -101,7 +101,7 @@ describe("restart and ask", () => {
       cancelRequested: false,
       recoveryAttempts: 0,
     });
-    expect(await itemReadiness(db, "item", "start")).not.toBe("cancelled");
+    expect(await itemReadiness(sqliteDb(db), "item", "start")).not.toBe("cancelled");
   });
 
   test("a restart keeps the cancel request of an item a person is stopping", async () => {

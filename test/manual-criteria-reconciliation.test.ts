@@ -73,7 +73,7 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
   for (const state of [...states, "removed"])
     lifecycle.issues.set(state, { ...lifecycle.issue, id: state });
   const reconciler = createItemReconciler({
-    db,
+    store: sqliteDb(db),
     tracker,
     lifecycle,
     now: () => clock.now(),

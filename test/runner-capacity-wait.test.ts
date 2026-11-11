@@ -295,7 +295,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
         actorId: "owner",
       });
       db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, item.id]);
-      await syncItemDependencies(db, {
+      await syncItemDependencies(sqliteDb(db), {
         itemId: item.id,
         workspaceId: workspace.id,
         expectedGeneration: 0,

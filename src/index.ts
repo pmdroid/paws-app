@@ -1075,7 +1075,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const parents =
     workspace && linear?.tracker && linear.issueLifecycle
       ? createParentDelegations({
-          db,
+          store,
           tracker: linear.tracker,
           lifecycle: linear.issueLifecycle,
           ...(linear.startSession && runtime.publicUrl
@@ -1873,7 +1873,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       });
       if (workspace && linear?.tracker && linear.issueLifecycle) {
         reconciler = createItemReconciler({
-          db,
+          store,
           tracker: linear.tracker,
           lifecycle: linear.issueLifecycle,
           ...(parents ? { scopeSnapshot: parents.scopeSnapshot } : {}),
@@ -1890,7 +1890,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           afterChanges: (changes) => attached.finishDelegationChanges(changes),
         });
         publication = createPublicationReadiness({
-          db,
+          store,
           reconciler,
           canMerge: async (itemId) => (await admission.canMerge(itemId)).ok,
         });
@@ -1931,7 +1931,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           now: Date.now(),
         });
         const relations = createRelationsPolls({
-          db,
+          store,
           reconciler,
           lowBudget: async () =>
             linearBudgetIsLow((await linear?.usage())?.budget ?? null, Date.now()),
@@ -1939,7 +1939,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           read: (run) => linearCaller("relations-poll", run),
         });
         blockerChecks = createBlockerCheckRoute({
-          db,
+          store,
           polls: relations,
           blockedItemIds: reconciler.blockedItemIds,
           signal: abort.signal,

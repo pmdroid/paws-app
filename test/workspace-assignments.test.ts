@@ -235,7 +235,7 @@ async function fixture({
           )
           .all(delegationId);
         for (const item of itemIds)
-          await syncItemDependencies(db, {
+          await syncItemDependencies(sqliteDb(db), {
             itemId: item.id,
             workspaceId: "workspace",
             expectedGeneration: (

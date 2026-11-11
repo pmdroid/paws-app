@@ -160,7 +160,7 @@ test("a task_block dependency is admitted only after its blocker item is merged"
       actorId: "owner",
     });
     for (const item of intake.items)
-      await syncItemDependencies(db, {
+      await syncItemDependencies(sqliteDb(db), {
         itemId: item.id,
         workspaceId: "workspace",
         expectedGeneration: (

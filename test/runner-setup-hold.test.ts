@@ -282,7 +282,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
   });
   await bindLinearSessionTask(sqliteDb(db), "session-1", item.delegationId, { actorId: "member" });
   db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [memberId, item.id]);
-  await syncItemDependencies(db, {
+  await syncItemDependencies(sqliteDb(db), {
     itemId: item.id,
     workspaceId: workspace.id,
     expectedGeneration: 0,

@@ -66,7 +66,7 @@ async function blockedFixture(options: { blocked?: boolean; lowBudget?: boolean 
   if (options.blocked !== false) tracker.deps.set("acme-child", BLOCKED_BY_B);
   let epicReads = 0;
   const reconciler = createItemReconciler({
-    db,
+    store: sqliteDb(db),
     tracker: {
       ...tracker,
       async loadEpic(id) {
@@ -89,7 +89,7 @@ async function blockedFixture(options: { blocked?: boolean; lowBudget?: boolean 
   tracker.blockerReads.length = 0;
   let executionReconciles = 0;
   const polls = createRelationsPolls({
-    db,
+    store: sqliteDb(db),
     reconciler,
     lowBudget: async () => options.lowBudget ?? false,
     reconcileExecution: () => executionReconciles++,
@@ -151,7 +151,7 @@ test("a low Linear budget keeps the relations poll at five minutes with blocked 
 test("Check blockers now reads the item at once and refuses a second press within 15 s", async () => {
   await using fixture = await blockedFixture();
   const route = createBlockerCheckRoute({
-    db: fixture.db,
+    store: sqliteDb(fixture.db),
     polls: fixture.polls,
     blockedItemIds: fixture.reconciler.blockedItemIds,
   });
@@ -186,7 +186,7 @@ test("Check blockers now reads the item at once and refuses a second press withi
 test("Check blockers now reports a failed Linear read instead of an unchanged check", async () => {
   await using fixture = await blockedFixture();
   const route = createBlockerCheckRoute({
-    db: fixture.db,
+    store: sqliteDb(fixture.db),
     polls: fixture.polls,
     blockedItemIds: fixture.reconciler.blockedItemIds,
   });

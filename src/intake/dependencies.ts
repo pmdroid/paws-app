@@ -1,5 +1,4 @@
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import { isBlockerSatisfied, isTerminalWorkItemState } from "../core";
 import {
   delegationHasItemWithoutSnapshot,
@@ -15,12 +14,12 @@ import {
   readDependencySnapshotSteps,
   saveDependencySnapshotSteps,
   saveTaskBlocksSteps,
-  sqliteDb,
   type Q,
   type Steps,
   type DependencyIdentity,
   type DependencyItem,
   type DependencySnapshot,
+  type Db,
 } from "../db";
 import type { DependencyEdge, LinearIssueLifecycle, TrackerAdapter } from "../linear";
 import { orderByBlocks } from "./order";
@@ -114,17 +113,17 @@ function* snapshotSteps(q: Q, target: Target): Steps<Snapshot | null> {
 }
 
 export async function delegationSnapshotsComplete(
-  db: Database,
+  store: Db,
   delegationId: string,
 ): Promise<boolean> {
-  return !(await delegationHasItemWithoutSnapshot(sqliteDb(db), delegationId));
+  return !(await delegationHasItemWithoutSnapshot(store, delegationId));
 }
 
 export async function hasPendingDelegationChanges(
-  db: Database,
+  store: Db,
   delegationId: string,
 ): Promise<boolean> {
-  return delegationHasReconciliationWork(sqliteDb(db), delegationId);
+  return delegationHasReconciliationWork(store, delegationId);
 }
 
 export function* readyItemsSteps(q: Q, target: Target): Steps<DependencyReadiness> {
@@ -239,7 +238,7 @@ function blockerSatisfied(
 }
 
 export async function syncItemDependencies(
-  db: Database,
+  store: Db,
   input: Target & {
     expectedGeneration: number;
     tracker: Pick<TrackerAdapter, "listDeps">;
@@ -255,7 +254,6 @@ export async function syncItemDependencies(
     expectedGeneration === Number.MAX_SAFE_INTEGER
   )
     throw new Error("Invalid dependency snapshot generation");
-  const store = sqliteDb(db);
   const initial = await store.run((q) => scopeSteps(q, target));
   if (!initial) throw new Error("Dependency workspace or task ownership changed");
   if (((await store.run((q) => snapshotSteps(q, target)))?.generation ?? 0) !== expectedGeneration)

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { insertQueuedItem, legacyMigrate, migrations, openDatabase } from "../src/db";
+import { insertQueuedItem, legacyMigrate, migrations, openDatabase, sqliteDb } from "../src/db";
 import { delegationSnapshotsComplete, readExternalBlockerEvidence } from "../src/intake";
 import { tempDb } from "./helpers";
 
@@ -91,11 +91,11 @@ test("a delegation is snapshot-ready only when every active item has a snapshot"
         "INSERT INTO item_dependency_snapshot(item_id,workspace_id,generation,scope,linear_states) VALUES(?,'workspace',1,'[]','[]')",
         [itemId],
       );
-    expect(await delegationSnapshotsComplete(db, first.delegationId)).toBe(false);
+    expect(await delegationSnapshotsComplete(sqliteDb(db), first.delegationId)).toBe(false);
     snap("first");
-    expect(await delegationSnapshotsComplete(db, first.delegationId)).toBe(false);
+    expect(await delegationSnapshotsComplete(sqliteDb(db), first.delegationId)).toBe(false);
     snap("second");
-    expect(await delegationSnapshotsComplete(db, first.delegationId)).toBe(true);
+    expect(await delegationSnapshotsComplete(sqliteDb(db), first.delegationId)).toBe(true);
     db.run(
       "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('removed',?,'removed','DEP-5','Removed','queued','paws/removed',3,1)",
       [first.delegationId],
@@ -103,7 +103,7 @@ test("a delegation is snapshot-ready only when every active item has a snapshot"
     db.run(
       "INSERT INTO work_item_specification(item_id,hash,revision,present) VALUES('removed','hash',1,0)",
     );
-    expect(await delegationSnapshotsComplete(db, first.delegationId)).toBe(true);
+    expect(await delegationSnapshotsComplete(sqliteDb(db), first.delegationId)).toBe(true);
   } finally {
     db.close();
   }
@@ -129,7 +129,7 @@ test("merged blocker evidence keeps the newest check", async () => {
     snap("second", 1, { out: { satisfied: true, reason: "new", checkedAt: 9 } });
     expect(
       (
-        await readExternalBlockerEvidence(db, {
+        await readExternalBlockerEvidence(sqliteDb(db), {
           workspaceId: "workspace",
           delegationId: first.delegationId,
         })
