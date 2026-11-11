@@ -3150,8 +3150,8 @@ export class Orchestrator {
     if (item && key) this.post(item, "thought", HOST_DISK_FULL_THOUGHT, key);
   }
 
-  private pushWorked(repository: string): void {
-    const ended = pushWorked(this.db, repository, this.now());
+  private async pushWorked(repository: string): Promise<void> {
+    const ended = await pushWorked(this.store, repository, this.now());
     if (ended) this.options.journal?.(`push outage on ${repository} ended`);
   }
 
@@ -5736,15 +5736,15 @@ export class Orchestrator {
         settings: (item, signal) => this.mergeSettingsFor(item, signal, mergePolicy),
         policyDigests,
         holdForPolicy: (item, repository, unreadable) =>
-          holdForPolicyOutage(this.db, {
+          holdForPolicyOutage(this.store, {
             item,
             repository,
             unreadable,
             now: this.now(),
             publicUrl: this.options.publicUrl ?? null,
           }),
-        policyLoads: (repository) => {
-          policyLoads(this.db, repository, this.now());
+        policyLoads: async (repository) => {
+          await policyLoads(this.store, repository, this.now());
         },
         mergeResultPolicy: (_, worktree, heads) => {
           const error = mergeResultPolicyError(worktree, heads.base, heads.head);
@@ -5908,7 +5908,7 @@ export class Orchestrator {
       ...(this.options.publicationGitExec ? { gitExec: this.options.publicationGitExec } : {}),
       // During a push outage only the probe pushes; the first push that works ends it.
       push: {
-        before: () => holdPush(this.db, repositoryName, run.jobId),
+        before: () => holdPush(this.store, repositoryName, run.jobId),
         after: () => this.pushWorked(repositoryName),
       },
       onCleanupFailure: () => this.blockConversation(item.id),

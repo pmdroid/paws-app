@@ -122,8 +122,8 @@ export type MergeCapabilities = OrderCapabilities & {
     item: WorkItemRecord,
     repository: string,
     unreadable: MainPolicyUnreadable,
-  ): string;
-  policyLoads?(repository: string): void;
+  ): Promise<string>;
+  policyLoads?(repository: string): Promise<void>;
   mergeResultPolicy?(
     item: WorkItemRecord,
     worktree: string,
@@ -347,7 +347,7 @@ export async function advanceMerge(
       return squashed;
     },
   });
-  if (mainPolicy && !("ok" in mainPolicy)) caps.policyLoads?.(queueName(repository));
+  if (mainPolicy && !("ok" in mainPolicy)) await caps.policyLoads?.(queueName(repository));
   if (turn.kind === "stopped" && turn.result.outcome === "unknown") return pendingMergeOutcome();
   // A review recorded during the turn stopped the squash or rebase; it goes to the agent first.
   // A turn that already rebased goes on to re-verify the pushed head.
@@ -595,7 +595,7 @@ async function githubQueuePolicy(
       githubQueue: { queued: false },
     };
   }
-  if (mainPolicy) caps.policyLoads?.(repository);
+  if (mainPolicy) await caps.policyLoads?.(repository);
   const broken = caps.mergeResultPolicy(item, published.worktree, {
     base: main,
     head: published.head,
@@ -629,7 +629,7 @@ async function holdForMainPolicy(
   candidate: { base?: string; head: string },
 ): Promise<Extract<MergeStep, { kind: "wait" }>> {
   const message =
-    caps.holdForPolicy?.(item, repository, unreadable) ??
+    (await caps.holdForPolicy?.(item, repository, unreadable)) ??
     `The Closeout policy on main doesn't load: ${unreadable.message}. Paws merges again once it's fixed.`;
   await store.run((q) =>
     caps.voice.status(q, item, message, `${item.id}:policy-unreadable:${message}`),
