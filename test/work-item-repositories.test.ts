@@ -67,7 +67,7 @@ test("an interpreted offered repository survives restart without changing the an
       sessionId: "session",
       body: "Which repository?",
     });
-    saveWorkItemRepositoryQuestion(db, item.id, question.id, repositories);
+    await saveWorkItemRepositoryQuestion(sqliteDb(db), item.id, question.id, repositories);
     expect(
       await rememberWorkItemRepositoryChoice(sqliteDb(db), item.id, question.id, repositories[1]!),
     ).toBe(false);
@@ -87,9 +87,9 @@ test("an interpreted offered repository survives restart without changing the an
     db.close();
     db = openDatabase(filename);
     migrate(db);
-    expect(getWorkItemRepositoryChoice(db, item.id)).toEqual(repositories[1]!);
+    expect(await getWorkItemRepositoryChoice(sqliteDb(db), item.id)).toEqual(repositories[1]!);
     expect(getWorkItemRepository(db, item.id)).toBeNull();
-    expect(getWorkItemRepositoryAnswer(db, item.id)?.answer).toBe(
+    expect((await getWorkItemRepositoryAnswer(sqliteDb(db), item.id))?.answer).toBe(
       "Use the second repository for this change.",
     );
     const replacement = await openQuestion(db, {
@@ -97,8 +97,8 @@ test("an interpreted offered repository survives restart without changing the an
       sessionId: "session",
       body: "Choose an accessible repository.",
     });
-    saveWorkItemRepositoryQuestion(db, item.id, replacement.id, repositories);
-    expect(getWorkItemRepositoryChoice(db, item.id)).toBeNull();
+    await saveWorkItemRepositoryQuestion(sqliteDb(db), item.id, replacement.id, repositories);
+    expect(await getWorkItemRepositoryChoice(sqliteDb(db), item.id)).toBeNull();
     expect(
       await rememberWorkItemRepositoryChoice(sqliteDb(db), item.id, question.id, repositories[0]!),
     ).toBe(false);

@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, count, eq, like } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 
 export const MERGE_DENIED_REASON = "merge_denied";
 
@@ -21,6 +20,6 @@ export function* countMergeDenialsSteps(q: Q, itemId: string, head: string) {
   return Number(row?.n ?? 0);
 }
 
-export function countMergeDenials(db: Database, itemId: string, head: string): number {
-  return settled(sqliteDb(db).run((q) => countMergeDenialsSteps(q, itemId, head)));
+export async function countMergeDenials(store: Db, itemId: string, head: string): Promise<number> {
+  return store.run((q) => countMergeDenialsSteps(q, itemId, head));
 }

@@ -3344,7 +3344,7 @@ export class Orchestrator {
     if (
       saved &&
       (await this.store.run((q) => taskRequiresRepositorySteps(q, item.id))) &&
-      getWorkItemRepositoryAnswer(this.db, item.id) &&
+      (await getWorkItemRepositoryAnswer(sqliteDb(this.db), item.id)) &&
       !(await this.store.run((q) => getWorkItemRepositorySteps(q, item.id)))
     )
       return true;

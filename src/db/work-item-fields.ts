@@ -16,8 +16,8 @@ export function* itemOwnerUserIdSteps(q: Q, itemId: string) {
   return row?.owner ?? null;
 }
 
-export function itemOwnerUserId(db: Database, itemId: string): string | null {
-  return run(db, (q) => itemOwnerUserIdSteps(q, itemId));
+export async function itemOwnerUserId(store: Db, itemId: string): Promise<string | null> {
+  return store.run((q) => itemOwnerUserIdSteps(q, itemId));
 }
 
 export function* assignUnownedItemSteps(q: Q, itemId: string, ownerUserId: string) {
@@ -30,8 +30,12 @@ export function* assignUnownedItemSteps(q: Q, itemId: string, ownerUserId: strin
   );
 }
 
-export function assignUnownedItem(db: Database, itemId: string, ownerUserId: string): void {
-  run(db, (q) => assignUnownedItemSteps(q, itemId, ownerUserId));
+export async function assignUnownedItem(
+  store: Db,
+  itemId: string,
+  ownerUserId: string,
+): Promise<void> {
+  await store.run((q) => assignUnownedItemSteps(q, itemId, ownerUserId));
 }
 
 export function* setItemBranchNameSteps(q: Q, itemId: string, branchName: string) {
@@ -57,8 +61,8 @@ export function* clearItemRecoverySteps(q: Q, itemId: string) {
   );
 }
 
-export function clearItemRecovery(db: Database, itemId: string): void {
-  run(db, (q) => clearItemRecoverySteps(q, itemId));
+export async function clearItemRecovery(store: Db, itemId: string): Promise<void> {
+  await store.run((q) => clearItemRecoverySteps(q, itemId));
 }
 
 export function* bumpItemVersionSteps(q: Q, itemId: string) {
@@ -71,8 +75,8 @@ export function* bumpItemVersionSteps(q: Q, itemId: string) {
   );
 }
 
-export function bumpItemVersion(db: Database, itemId: string): void {
-  run(db, (q) => bumpItemVersionSteps(q, itemId));
+export async function bumpItemVersion(store: Db, itemId: string): Promise<void> {
+  await store.run((q) => bumpItemVersionSteps(q, itemId));
 }
 
 type SessionMove = { delegationId: string; from: string; to: string };
@@ -87,8 +91,8 @@ export function* moveDelegationSessionSteps(q: Q, move: SessionMove) {
   );
 }
 
-export function moveDelegationSession(db: Database, move: SessionMove): void {
-  run(db, (q) => moveDelegationSessionSteps(q, move));
+export async function moveDelegationSession(store: Db, move: SessionMove): Promise<void> {
+  await store.run((q) => moveDelegationSessionSteps(q, move));
 }
 
 export function* issueOpenInOtherSessionSteps(q: Q, issueId: string, sessionId: string) {
