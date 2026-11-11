@@ -77,9 +77,9 @@ describe("run ownership", () => {
       ]);
       expect(getWorkItem(b, "acme-1")).toMatchObject({ state: "running", recoveryAttempts: 0 });
       expect(resumeJobs(b, "acme-1")).toEqual([]);
-      expect(runOwner(b, ownedRun)).toBe(acme.id);
+      expect(await runOwner(sqliteDb(b), ownedRun)).toBe(acme.id);
       expect(getWorkItem(b, "acme-2")).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
-      expect(runOwner(b, getWorkItem(b, "acme-2")!.currentRunId!)).toBe(other.id);
+      expect(await runOwner(sqliteDb(b), getWorkItem(b, "acme-2")!.currentRunId!)).toBe(other.id);
     } finally {
       b.close();
       a.close();
@@ -154,7 +154,7 @@ describe("run ownership", () => {
       expect(takenAt!).toBeLessThanOrEqual(90_000);
       expect(decisions).toHaveLength(1);
       expect(decisions[0]!.decision).toEqual({ type: "resume", freshSession: true, checkpoint });
-      expect(runOwner(b, runId)).toBe(decisions[0]!.by);
+      expect(await runOwner(sqliteDb(b), runId)).toBe(decisions[0]!.by);
       expect(getWorkItem(b, "acme-1")).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
       expect(resumeJobs(b, "acme-1")).toHaveLength(1);
     } finally {
@@ -187,7 +187,7 @@ describe("run ownership", () => {
       expect(recoverOnStartup(db, 1_000, undefined, restarted.id)).toEqual([
         { type: "resume", freshSession: true, checkpoint },
       ]);
-      expect(runOwner(db, runId)).toBe(restarted.id);
+      expect(await runOwner(sqliteDb(db), runId)).toBe(restarted.id);
     } finally {
       db.close();
     }
@@ -272,7 +272,7 @@ describe("run ownership across two Paws processes", () => {
       const b = await readyInstance(second);
       expect(getWorkItem(db, "acme-1")).toMatchObject({ state: "running", recoveryAttempts: 0 });
       expect(resumeJobs(db, "acme-1")).toEqual([]);
-      expect(runOwner(db, aRun)).toBe(a);
+      expect(await runOwner(sqliteDb(db), aRun)).toBe(a);
       const bRun = await runningItem(db, "acme-2", b, Date.now());
 
       first.kill("SIGTERM");

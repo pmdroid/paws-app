@@ -303,7 +303,7 @@ test("with a second instance alive throughout, a restart gives no credit and the
       if (at === before + 4 * MINUTE) {
         await f.crash();
         recoverOnStartup(f.db, at, BUDGET, f.instance.id);
-        expect(runOwner(f.db, f.run.id)).toBe(f.instance.id);
+        expect(await runOwner(sqliteDb(f.db), f.run.id)).toBe(f.instance.id);
         expect(f.leaseUntil()).toBe(before);
       }
     });
@@ -324,7 +324,7 @@ test("an instance alive throughout takes over a crashed instance's run without c
     const before = f.leaseUntil();
     const acme = f.instance.id;
     const expiredAt = await serveUntilExpiry(f, b, null);
-    expect(runOwner(b, f.run.id)).not.toBe(acme);
+    expect(await runOwner(sqliteDb(b), f.run.id)).not.toBe(acme);
     expect(f.leaseUntil()).toBe(before);
     expect(expiredAt).toBe(before + RUNNER_LEASE_GRACE_MS);
   } finally {
@@ -349,7 +349,7 @@ test("a second instance started during the outage credits only the time before i
     f.clock.at += 5 * MINUTE;
     await heartbeatInstance(sqliteDb(b), other.id, f.clock.at);
     takeOverGoneRuns(b, other.id, f.clock.at);
-    expect(runOwner(b, f.run.id)).toBe(other.id);
+    expect(await runOwner(sqliteDb(b), f.run.id)).toBe(other.id);
     expect(f.leaseUntil()).toBe(before + 10 * MINUTE);
   } finally {
     b.close();
@@ -376,7 +376,7 @@ test("an instance that outlived the owner and then stopped credits only the time
     f.clock.at += 20 * MINUTE;
     await f.crash();
     recoverOnStartup(f.db, f.clock.at, BUDGET, f.instance.id);
-    expect(runOwner(f.db, f.run.id)).toBe(f.instance.id);
+    expect(await runOwner(sqliteDb(f.db), f.run.id)).toBe(f.instance.id);
     expect(f.leaseUntil()).toBe(before + f.clock.at - stoppedAt);
   } finally {
     b.close();

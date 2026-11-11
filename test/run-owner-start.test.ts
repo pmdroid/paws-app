@@ -101,7 +101,7 @@ test("a run the orchestrator starts records the instance that started it", async
     expect(dispatched).toBe(1);
     const runs = await listRuns(sqliteDb(db));
     expect(runs).toHaveLength(1);
-    expect(runOwner(db, runs[0]!.id)).toBe(instance.id);
+    expect(await runOwner(sqliteDb(db), runs[0]!.id)).toBe(instance.id);
   } finally {
     await orchestrator.shutdown();
     db.close();
