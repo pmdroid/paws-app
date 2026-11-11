@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { eq } from "drizzle-orm";
 import type { TaskMode } from "../core";
-import { settled, sqliteDb, type Q, type Db, type Steps } from "./db";
+import { type Q, type Db, type Steps } from "./db";
 import { workItemTask } from "./schema";
 import { applyWorkItemEventSteps, cancelAdvancingJobsSteps, getWorkItemSteps } from "./items";
 import { enqueueOutboxOnceSteps } from "./outbox";
@@ -28,8 +27,8 @@ export function* getTaskModeSteps(q: Q, itemId: string) {
   return ((yield* taskColumnSteps(q, itemId, "mode")) as TaskMode | undefined) ?? null;
 }
 
-export function getTaskMode(db: Database, itemId: string): TaskMode | null {
-  return settled(sqliteDb(db).run((q) => getTaskModeSteps(q, itemId)));
+export async function getTaskMode(store: Db, itemId: string): Promise<TaskMode | null> {
+  return store.run((q) => getTaskModeSteps(q, itemId));
 }
 
 export function* saveTaskModeSteps(

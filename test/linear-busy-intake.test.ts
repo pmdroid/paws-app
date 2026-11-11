@@ -10,6 +10,7 @@ import {
   getTaskMode,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator, type AgentLaunch } from "../src/loop";
@@ -116,7 +117,7 @@ test("a session delegated while every runner slot is busy is queued at once and 
     const itemId = db.query<{ id: string }, []>("SELECT id FROM work_item").get()?.id;
     const atIntake = {
       state: itemId ? getWorkItem(db, itemId)?.state : null,
-      mode: itemId ? getTaskMode(db, itemId) : null,
+      mode: itemId ? await getTaskMode(sqliteDb(db), itemId) : null,
       purposes: [...purposes],
     };
     busy = false;
@@ -125,7 +126,7 @@ test("a session delegated while every runner slot is busy is queued at once and 
     expect({
       atIntake,
       state: getWorkItem(db, itemId!)?.state,
-      mode: getTaskMode(db, itemId!),
+      mode: await getTaskMode(sqliteDb(db), itemId!),
       purposes,
     }).toEqual({
       atIntake: { state: "queued", mode: null, purposes: [] },

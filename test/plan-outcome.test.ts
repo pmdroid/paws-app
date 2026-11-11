@@ -227,7 +227,7 @@ test("a planning request proposes sub-issues, takes an edit, and files them once
     await orchestrator.onLinearEvent(created);
     const itemId = db.query<{ id: string }, []>("SELECT id FROM work_item").get()!.id;
     await jobs.tick();
-    expect(getTaskMode(db, itemId)).toBe("plan");
+    expect(await getTaskMode(sqliteDb(db), itemId)).toBe("plan");
 
     // The proposal arrives as one select elicitation, and the run wrote nothing.
     expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");

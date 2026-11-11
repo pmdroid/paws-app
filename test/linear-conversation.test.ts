@@ -484,7 +484,7 @@ test("an accepted answer question redirects through classification before code e
     const task = (await f.item()).id;
     const original = tickWithRestarts(f.jobs, f.orchestrator, f.db);
     await until(() => Boolean(findOpenQuestion(f.db, "session")));
-    expect(getTaskMode(f.db, task)).toBe("answer");
+    expect(await getTaskMode(sqliteDb(f.db), task)).toBe("answer");
     expect(f.starts).toEqual(["classify", "answer"]);
     const reply = {
       ...event("redirect", "Also implement the change", Date.now()),
@@ -497,7 +497,7 @@ test("an accepted answer question redirects through classification before code e
     expect((await f.item()).id).toBe(task);
     expect(f.tracker.progress.filter((row) => row.kind === "response")).toHaveLength(0);
     await tickWithRestarts(f.jobs, f.orchestrator, f.db);
-    expect(getTaskMode(f.db, task)).toBe("code");
+    expect(await getTaskMode(sqliteDb(f.db), task)).toBe("code");
     expect(f.starts.indexOf("implement")).toBeGreaterThan(f.starts.lastIndexOf("classify"));
     expect(f.prompts().find((row) => row.purpose === "implement")?.prompt).toContain(
       "Also implement the change",
@@ -524,7 +524,7 @@ test("a prompt interrupts intake classification and is routed once after the old
     await f.orchestrator.onLinearEvent(event("early-update", "Explain the updated request", 2));
     expect(await rejected).toBeNull();
     expect(f.starts).toEqual(["classify", "classify"]);
-    expect(getTaskMode(f.db, (await f.item()).id)).toBe("answer");
+    expect(await getTaskMode(sqliteDb(f.db), (await f.item()).id)).toBe("answer");
     expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(1);
     expect(
       (await listPendingLinearTurns(sqliteDb(f.db), "session")).map((turn) => turn.body),
@@ -575,7 +575,9 @@ test.each(["answer", "artifact"] as const)(
         )
         .all();
       expect(children.map((child) => child.linear_issue_id)).toEqual(["first", "second"]);
-      expect(children.map((child) => getTaskMode(f.db, child.id))).toEqual(["code", "code"]);
+      const modes = [];
+      for (const child of children) modes.push(await getTaskMode(sqliteDb(f.db), child.id));
+      expect(modes).toEqual(["code", "code"]);
       expect(f.starts).toEqual(["classify", mode, "classify"]);
       f.reopen();
       await f.orchestrator.onLinearEvent(event("created", null, 1));

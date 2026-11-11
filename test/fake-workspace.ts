@@ -2,8 +2,8 @@ import type { Database } from "bun:sqlite";
 import { isBlockerSatisfied, type WorkItemState } from "../src/core";
 import {
   bindLinearSessionTaskSteps,
-  getTaskMode,
-  getConfirmedRemoteMerge,
+  getTaskModeSteps,
+  getConfirmedRemoteMergeSteps,
   recordConfirmedRemoteMerge,
   recordLinearInstallationSteps,
   sqliteDb,
@@ -131,7 +131,7 @@ function* joinFakeWorkspaceSteps(q: Q, db: Database, delegationId: string): Step
       .get(item.id)?.id;
     if (workspaceId === undefined) continue;
     const target = { itemId: item.id, workspaceId };
-    const fresh = reads(db, item.id);
+    const fresh = yield* readsSteps(q, db, item.id);
     const saved = snapshot(db, item.id);
     const inputs = db
       .query<{ inputs: string }, [string]>(DEPENDENCY_INPUTS)
@@ -194,33 +194,32 @@ function snapshot(db: Database, itemId: string) {
     .get(itemId);
 }
 
-function reads(db: Database, itemId: string) {
+function* readsSteps(q: Q, db: Database, itemId: string) {
   const edges = db
     .query<{ blockerLinearIssueId: string; blockedLinearIssueId: string }, [string]>(
       `SELECT b.blocker_linear_issue_id AS blockerLinearIssueId,b.blocked_linear_issue_id AS blockedLinearIssueId
        FROM task_block b JOIN work_item i ON i.linear_issue_id=b.blocked_linear_issue_id WHERE i.id=?`,
     )
     .all(itemId);
-  const states = new Map(
-    edges.map(({ blockerLinearIssueId: id }) => {
-      const blocker = db
-        .query<{ id: string; state: WorkItemState }, [string, string]>(
-          `SELECT i.id,i.state FROM work_item i
-           WHERE i.linear_issue_id=? AND ${PRESENT}
-           AND i.delegation_id=(SELECT delegation_id FROM work_item WHERE id=?)
-           ORDER BY i.position DESC,i.rowid DESC LIMIT 1`,
-        )
-        .get(id, itemId);
-      const satisfied =
-        !blocker ||
-        isBlockerSatisfied({
-          ...blocker,
-          mode: getTaskMode(db, blocker.id),
-          mergeSha: getConfirmedRemoteMerge(db, blocker.id)?.mergeSha ?? null,
-        });
-      return [id, satisfied ? "completed" : "started"] as const;
-    }),
-  );
+  const states = new Map<string, "completed" | "started">();
+  for (const { blockerLinearIssueId: id } of edges) {
+    const blocker = db
+      .query<{ id: string; state: WorkItemState }, [string, string]>(
+        `SELECT i.id,i.state FROM work_item i
+         WHERE i.linear_issue_id=? AND ${PRESENT}
+         AND i.delegation_id=(SELECT delegation_id FROM work_item WHERE id=?)
+         ORDER BY i.position DESC,i.rowid DESC LIMIT 1`,
+      )
+      .get(id, itemId);
+    const satisfied =
+      !blocker ||
+      isBlockerSatisfied({
+        ...blocker,
+        mode: yield* getTaskModeSteps(q, blocker.id),
+        mergeSha: (yield* getConfirmedRemoteMergeSteps(q, blocker.id))?.mergeSha ?? null,
+      });
+    states.set(id, satisfied ? "completed" : "started");
+  }
   return { edges, states, identifiers: new Map<string, string>(), evidence: {} };
 }
 

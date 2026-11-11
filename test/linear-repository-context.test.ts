@@ -291,7 +291,7 @@ test.each(
           activityCreatedAtMs: Date.now() + 1,
           actorId: "human",
         });
-        expect(getLinearSessionGeneration(db, "session")).toBe(0);
+        expect(await getLinearSessionGeneration(sqliteDb(db), "session")).toBe(0);
       }
       await f.jobs.tick();
       expect(getWorkItem(db, itemId)?.state).toBe("completed");

@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   and,
   asc,
@@ -18,7 +17,7 @@ import {
 } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { IN_FLIGHT_ITEM_STATES, JOB_KIND, parentIssueIdSql } from "../core";
-import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
+import { type Db, type Q, type Steps } from "./db";
 import { mergeLaneSql } from "./jobs";
 import { advanceOutboxSessionSteps, enqueueOutboxOnceSteps } from "./outbox";
 
@@ -456,8 +455,8 @@ export function* getLinearSessionGenerationSteps(q: Q, sessionId: string): Steps
   return (yield* getLinearSessionSteps(q, sessionId))?.generation ?? 0;
 }
 
-export function getLinearSessionGeneration(db: Database, sessionId: string): number {
-  return settled(sqliteDb(db).run((q) => getLinearSessionGenerationSteps(q, sessionId)));
+export async function getLinearSessionGeneration(store: Db, sessionId: string): Promise<number> {
+  return store.run((q) => getLinearSessionGenerationSteps(q, sessionId));
 }
 
 // SQLite's write transaction serializes these operations. Postgres needs the same
@@ -538,8 +537,11 @@ export function* listLinearTurnsForItemSteps(q: Q, itemId: string): Steps<Stored
   return rows.map(mapTurn);
 }
 
-export function listLinearTurnsForItem(db: Database, itemId: string): StoredLinearTurn[] {
-  return settled(sqliteDb(db).run((q) => listLinearTurnsForItemSteps(q, itemId)));
+export async function listLinearTurnsForItem(
+  store: Db,
+  itemId: string,
+): Promise<StoredLinearTurn[]> {
+  return store.run((q) => listLinearTurnsForItemSteps(q, itemId));
 }
 
 export function* getLinearTurnGenerationSteps(

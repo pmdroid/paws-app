@@ -385,7 +385,7 @@ test("Stop during delayed ingress prevents the first acknowledgement after its d
     await f.deliver();
     await f.teamStarted.promise;
     await f.stop();
-    expect(getLinearSessionGeneration(f.db, "session")).toBe(1);
+    expect(await getLinearSessionGeneration(sqliteDb(f.db), "session")).toBe(1);
     f.deadlines[0]!.abort(new Error("Initial acknowledgement deadline expired"));
     f.teamRelease.resolve();
     await f.outcome();

@@ -119,7 +119,7 @@ test("answer mode and full prepared response survive reopen as a terminal comple
   db.close();
   const restored = openDatabase(file);
   try {
-    expect(getTaskMode(restored, item.id)).toBe("answer");
+    expect(await getTaskMode(sqliteDb(restored), item.id)).toBe("answer");
     expect(getWorkItem(restored, item.id)?.state).toBe("completed");
     expect(isTerminalWorkItemState(getWorkItem(restored, item.id)!.state)).toBe(true);
     const dashboard = await createLiveStatusProvider(restored).issues();

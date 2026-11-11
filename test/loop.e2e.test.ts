@@ -4220,7 +4220,7 @@ async function runRebaseConflict(
         op: "activity",
         orderingKey: "ses_1",
         delivery: "ordered",
-        idempotencyKey: `pull-request-ready:${listWorkItems(db).find((item) => item.linearIdentifier === identifier)!.id}:${getLinearSessionGeneration(db, "ses_1")}`,
+        idempotencyKey: `pull-request-ready:${listWorkItems(db).find((item) => item.linearIdentifier === identifier)!.id}:${await getLinearSessionGeneration(sqliteDb(db), "ses_1")}`,
         payload: { sessionId: "ses_1", kind: "response", body: "Opened pull request #1." },
       });
       while ((await outbox.tick()).length > 0) await outbox.idle();

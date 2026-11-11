@@ -103,8 +103,10 @@ test("discarding rejected replies is session-scoped, idempotent and preserves ap
     expect(
       (await listPendingLinearTurns(sqliteDb(db), "session")).map((entry) => entry.eventKey),
     ).toEqual(["pending"]);
-    expect(listLinearTurnsForItem(db, item.id).map((entry) => entry.eventKey)).toEqual(["applied"]);
-    expect(listLinearTurnsForItem(db, "other")).toEqual([]);
+    expect(
+      (await listLinearTurnsForItem(sqliteDb(db), item.id)).map((entry) => entry.eventKey),
+    ).toEqual(["applied"]);
+    expect(await listLinearTurnsForItem(sqliteDb(db), "other")).toEqual([]);
     expect(await announceLinearTurn(sqliteDb(db), "session", "rejected")).toBe(false);
   } finally {
     db.close();

@@ -226,7 +226,7 @@ test("a parent discussion classifies before fanout and completes without Git, is
     const item = getWorkItem(f.db, session.activeItemId!)!;
     expect(item.linearIssueId).toBe("parent");
     expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(1);
-    expect(getTaskMode(f.db, item.id)).toBe("answer");
+    expect(await getTaskMode(sqliteDb(f.db), item.id)).toBe("answer");
     expect(f.launches).toEqual(["classify"]);
     await f.jobs.tick();
     expect(getWorkItem(f.db, item.id)?.state).toBe("completed");
@@ -258,7 +258,7 @@ test("code classification persists before child work is dispatched", async () =>
     const session = (await getLinearSession(sqliteDb(f.db), "session"))!;
     const item = getWorkItem(f.db, session.activeItemId!)!;
     expect(item.linearIssueId).toBe("child");
-    expect(getTaskMode(f.db, item.id)).toBe("code");
+    expect(await getTaskMode(sqliteDb(f.db), item.id)).toBe("code");
     expect(f.launches).toEqual(["classify"]);
     expect(f.tracker.statuses).toEqual([]);
     expect(existsSync(join(f.root, "worktrees"))).toBe(false);
@@ -519,9 +519,10 @@ test("clarified parent code requests recover the ordered child queue and every c
       )
       .all(session.delegationId!);
     expect(children.map((child) => child.linear_issue_id)).toEqual(["child", "second-child"]);
-    expect(
-      children.every((child) => child.state === "queued" && getTaskMode(db, child.id) === "code"),
-    ).toBe(true);
+    const modes = [];
+    for (const child of children) modes.push(await getTaskMode(sqliteDb(db), child.id));
+    expect(children.every((child) => child.state === "queued")).toBe(true);
+    expect(modes.every((mode) => mode === "code")).toBe(true);
     expect(f.tracker.progress.filter((update) => update.kind === "response")).toEqual([]);
     const originalKey = db
       .query<{ task_key: string }, [string]>(
@@ -694,7 +695,7 @@ test.each(["ok", "fail", "omit"] as const)(
       await f.orchestrator.onLinearEvent(event());
       const session = (await getLinearSession(sqliteDb(f.db), "session"))!;
       const itemId = session.activeItemId!;
-      expect(getTaskMode(f.db, itemId)).toBe("artifact");
+      expect(await getTaskMode(sqliteDb(f.db), itemId)).toBe("artifact");
       await f.jobs.tick();
       expect(f.launches).toEqual(["classify", "artifact"]);
       expect(f.tracker.statuses).toEqual(
