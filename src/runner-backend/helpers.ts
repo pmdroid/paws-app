@@ -11,12 +11,12 @@ import {
   getRunnerSteps,
   linearSessionClientIdSteps,
   recentRunnersSteps,
-  runnerHelperAvailability,
+  runnerHelperAvailabilitySteps,
   runnerHostVersionSteps,
   runnerOwnerSteps,
   sessionActiveRuns,
   sqliteDb,
-  workspaceSessionIds,
+  workspaceSessionIdsSteps,
   type Db,
 } from "../db";
 import {
@@ -82,7 +82,7 @@ export function createRemoteSessionAgentRunner(options: {
       ? null
       : store.run((q) => earliestRunnerCooldownSteps(q, { agent, now: now(), runnerIds }));
   const sessionRun = async (sessionId: string) => {
-    const rows = await sessionActiveRuns(sqliteDb(options.db), sessionId);
+    const rows = await sessionActiveRuns(store, sessionId);
     return rows.length === 1 ? rows[0]! : null;
   };
   return {
@@ -145,6 +145,7 @@ export function createRemoteSessionAgentRunner(options: {
             slotBusy = true;
           }
           let runners: readonly PlacementCandidate[] = [];
+          const full: string[] = [];
           if (!open)
             runners = options.placement
               ? await options.placement.candidates({
@@ -155,15 +156,7 @@ export function createRemoteSessionAgentRunner(options: {
                     note(runnerId, reason.replaceAll("-", " "));
                     if (AT_CAPACITY.test(reason)) {
                       slotBusy = true;
-                      if (
-                        runnerHelperAvailability(
-                          options.db,
-                          runnerId,
-                          now(),
-                          purpose !== "finding_groups",
-                        ).held
-                      )
-                        held.add(runnerId);
+                      full.push(runnerId);
                       return;
                     }
                     if (reason === "agent quota cooldown") cooling.push(runnerId);
@@ -171,6 +164,15 @@ export function createRemoteSessionAgentRunner(options: {
                   },
                 })
               : await store.run((q) => recentRunnersSteps(q, now() - 60_000));
+          for (const runnerId of full)
+            if (
+              (
+                await store.run((q) =>
+                  runnerHelperAvailabilitySteps(q, runnerId, now(), purpose !== "finding_groups"),
+                )
+              ).held
+            )
+              held.add(runnerId);
           for (const runner of runners) {
             if (
               excluded.includes(runner.id) ||
@@ -192,11 +194,10 @@ export function createRemoteSessionAgentRunner(options: {
               if (
                 !owner ||
                 !clientId ||
-                !workspaceSessionIds(
-                  options.db,
-                  owner.workspaceId,
-                  owner.userId,
-                  clientId,
+                !(
+                  await store.run((q) =>
+                    workspaceSessionIdsSteps(q, owner.workspaceId, owner.userId, clientId),
+                  )
                 ).includes(sessionId)
               )
                 continue;
