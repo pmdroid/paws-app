@@ -113,7 +113,7 @@ import {
   RUNTIMES_RUNNER_VERSION,
   ANY_MISE_BACKEND_RUNNER_VERSION,
   legacyRuntimeTool,
-  redactGitHubTokens,
+  redactedJson,
   SESSION_RESUME_RUNNER_VERSION,
   HIDDEN_CHECKPOINT_RUNNER_VERSION,
   type RunnerCommand,
@@ -922,9 +922,7 @@ export function createRemoteAgentRunner(options: {
         let readCommand: string | undefined;
         const scrub = <T>(value: T): T =>
           readCommand && options.agentRead
-            ? (JSON.parse(
-                redactGitHubTokens(JSON.stringify(value), options.agentRead.tokens(readCommand)),
-              ) as T)
+            ? (JSON.parse(redactedJson(value, options.agentRead.tokens(readCommand))) as T)
             : value;
         const reattached = attached?.assigned;
         if (
