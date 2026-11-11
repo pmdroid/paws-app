@@ -1,7 +1,6 @@
 import { mergeAcceptedWorkSteps } from "./accepted-work";
 import { SLOW_CI_REASON } from "./merge-jobs";
 import { askSteps, restartSteps } from "./operations";
-import type { Database } from "bun:sqlite";
 import {
   JOB_KIND,
   TIME_LIMIT_CONTINUE,
@@ -36,6 +35,7 @@ import {
   type Q,
   type Steps,
   type VisualReviewMark,
+  type Db,
 } from "../db";
 import {
   findOpenQuestionSteps,
@@ -91,7 +91,7 @@ export function* retryCloseoutSteps(q: Q, question: StoredQuestion, input: Retry
 }
 
 export function questionEffects(
-  db: Database,
+  store: Db,
   input: {
     now: number;
     maxAwakeMs?: number | undefined;
@@ -342,7 +342,7 @@ export function questionEffects(
     "time-limit": timeLimit,
     "runner-repository": function* (q, question) {
       yield* consumeTurn(q, question);
-      yield* answerRunnerRepositorySteps(q, question, input.now, commandInstance(db), {
+      yield* answerRunnerRepositorySteps(q, question, input.now, commandInstance(store), {
         ready: false,
       });
     },

@@ -36,7 +36,7 @@ describe("intake", () => {
     const db = tempDb();
     const tracker = createFakeTracker([parent]);
     tracker.deps.set("parent", [{ blockerLinearIssueId: "a", blockedLinearIssueId: "b" }]);
-    const result = await intakeDelegatedIssue(db, tracker, {
+    const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
     });
@@ -55,7 +55,7 @@ describe("intake", () => {
       )
       .all();
     expect(blocks).toEqual([{ blocker: "a", blocked: "b" }]);
-    const again = await intakeDelegatedIssue(db, tracker, {
+    const again = await intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
     });
@@ -75,7 +75,7 @@ describe("intake", () => {
         subIssues: [],
       },
     ]);
-    const result = await intakeDelegatedIssue(db, tracker, {
+    const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "only",
       sessionId: "ses_9",
     });
@@ -103,7 +103,7 @@ describe("intake", () => {
       },
     ]);
     let epicExisted = true;
-    const result = await intakeDelegatedIssue(db, tracker, {
+    const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
       adoptParent: () =>
@@ -134,7 +134,7 @@ describe("intake", () => {
       db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
     ).toEqual([]);
     expect(tracker.progress.map((update) => update.body)).toEqual([]);
-    const again = await intakeDelegatedIssue(db, tracker, {
+    const again = await intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
       adoptParent: () => {
@@ -152,7 +152,7 @@ describe("intake", () => {
   test("adoptParent false keeps the ordered multi-item delegation", async () => {
     const db = tempDb();
     const tracker = createFakeTracker([parent]);
-    const result = await intakeDelegatedIssue(db, tracker, {
+    const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
       adoptParent: () => syncSteps(() => false),
@@ -176,7 +176,7 @@ describe("intake", () => {
       { blockerLinearIssueId: "b", blockedLinearIssueId: "a" },
     ]);
     let called = false;
-    const result = await intakeDelegatedIssue(db, tracker, {
+    const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
       adoptParent: () =>
@@ -200,7 +200,7 @@ describe("intake", () => {
       { blockerLinearIssueId: "a", blockedLinearIssueId: "b" },
       { blockerLinearIssueId: "b", blockedLinearIssueId: "a" },
     ]);
-    const result = await intakeDelegatedIssue(db, tracker, {
+    const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
     });
@@ -237,7 +237,7 @@ describe("intake", () => {
       { blockerLinearIssueId: "outside", blockedLinearIssueId: "b" },
       { blockerLinearIssueId: "b", blockedLinearIssueId: "outside" },
     ]);
-    const result = await intakeDelegatedIssue(db, tracker, {
+    const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
     });
@@ -259,7 +259,7 @@ describe("intake", () => {
         subIssues: [],
       },
     ]);
-    const first = await intakeDelegatedIssue(db, tracker, {
+    const first = await intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "only",
       sessionId: "ses_1",
       taskKey: "first",
@@ -268,7 +268,7 @@ describe("intake", () => {
     const message =
       "ENG-9 has an unfinished attempt in another Paws session. Reply in that session to continue, or stop it before starting a new one.";
     await expect(
-      intakeDelegatedIssue(db, tracker, {
+      intakeDelegatedIssue(sqliteDb(db), tracker, {
         linearIssueId: "only",
         sessionId: "ses_2",
         taskKey: "second",
@@ -300,14 +300,14 @@ describe("intake", () => {
           subIssues: [],
         },
       ]);
-      const first = await intakeDelegatedIssue(db, tracker, {
+      const first = await intakeDelegatedIssue(sqliteDb(db), tracker, {
         linearIssueId: "only",
         sessionId: "ses_1",
         taskKey: "first",
       });
       if (!first.ok) throw new Error("expected intake");
       db.run("UPDATE work_item SET state = ? WHERE id = ?", [state, first.items[0]!.id]);
-      const second = await intakeDelegatedIssue(db, tracker, {
+      const second = await intakeDelegatedIssue(sqliteDb(db), tracker, {
         linearIssueId: "only",
         sessionId: "ses_2",
         taskKey: "second",
@@ -334,14 +334,14 @@ describe("intake", () => {
         subIssues: [],
       },
     ]);
-    const first = await intakeDelegatedIssue(db, tracker, {
+    const first = await intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "only",
       sessionId: "ses_1",
       taskKey: "first",
     });
     if (!first.ok) throw new Error("expected intake");
     let activeBefore = -1;
-    const second = await intakeDelegatedIssue(db, tracker, {
+    const second = await intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "only",
       sessionId: "ses_1",
       taskKey: "second",
@@ -385,7 +385,7 @@ describe("intake", () => {
         subIssues: [],
       },
     ]);
-    const result = await intakeDelegatedIssue(db, tracker, {
+    const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "only",
       sessionId: "ses_9",
     });
@@ -395,7 +395,7 @@ describe("intake", () => {
     expect(
       db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
     ).toEqual([]);
-    const again = await intakeDelegatedIssue(db, tracker, {
+    const again = await intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "only",
       sessionId: "ses_9",
     });
@@ -405,13 +405,13 @@ describe("intake", () => {
     expect(again.items.map((item) => item.id)).toEqual(result.items.map((item) => item.id));
     expect(tracker.progress).toHaveLength(1);
     db.run("UPDATE work_item SET state = 'cancelled'");
-    const cancelled = await intakeDelegatedIssue(db, tracker, {
+    const cancelled = await intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "only",
       sessionId: "ses_9",
     });
     expect(cancelled.ok && cancelled.delegation.state).toBe("cancelled");
     db.run("UPDATE work_item SET state = 'merged'");
-    const done = await intakeDelegatedIssue(db, tracker, {
+    const done = await intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "only",
       sessionId: "ses_9",
     });
@@ -437,7 +437,7 @@ describe("intake", () => {
     db.run(
       "INSERT INTO workspace_user VALUES('person','linear-person','Person','person@example.test')",
     );
-    const result = await intakeDelegatedIssue(db, tracker, {
+    const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
       taskKey: "parent-task",
@@ -464,7 +464,7 @@ describe("intake", () => {
     expect(
       db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
     ).toEqual([]);
-    const again = await intakeDelegatedIssue(db, tracker, {
+    const again = await intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
       taskKey: "parent-followup",
@@ -490,7 +490,7 @@ describe("intake", () => {
       { blockerLinearIssueId: "a", blockedLinearIssueId: "b" },
       { blockerLinearIssueId: "b", blockedLinearIssueId: "a" },
     ]);
-    const result = await intakeDelegatedIssue(db, tracker, {
+    const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
     });
@@ -504,7 +504,7 @@ describe("intake", () => {
       db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
     ).toEqual([]);
     expect(db.query("SELECT id FROM work_item").all()).toEqual([]);
-    const again = await intakeDelegatedIssue(db, tracker, {
+    const again = await intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
     });

@@ -40,7 +40,7 @@ let contextReads = 0;
 const db = openDatabase(join(home, "paws.db"));
 migrate(db);
 const task = await intakeDelegatedIssue(
-  db,
+  sqliteDb(db),
   createFakeTracker([
     {
       linearIssueId: "issue",

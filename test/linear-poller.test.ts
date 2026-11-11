@@ -634,7 +634,7 @@ describe("linear intake poll", () => {
       db,
       onEvent: async (event) => {
         if (event.action !== "created" || event.issueId === null) return;
-        const result = await intakeDelegatedIssue(db, tracker, {
+        const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
           linearIssueId: event.issueId,
           sessionId: event.sessionId,
         });
@@ -863,7 +863,9 @@ describe("linear intake poll", () => {
       db,
       onEvent: async (event) => {
         if (event.action !== "created" || event.issueId === null) return;
-        const result = await intakeDelegatedIssue(db, tracker, { linearIssueId: event.issueId });
+        const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+          linearIssueId: event.issueId,
+        });
         if (result.ok)
           for (const item of result.items)
             await configureWorkItem(sqliteDb(db), item.id, { sessionKey: "ses_stop" });
@@ -912,7 +914,9 @@ describe("linear intake poll", () => {
       db,
       onEvent: async (event) => {
         if (event.action !== "created" || event.issueId === null) return;
-        const result = await intakeDelegatedIssue(db, tracker, { linearIssueId: event.issueId });
+        const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+          linearIssueId: event.issueId,
+        });
         if (result.ok)
           for (const item of result.items)
             await configureWorkItem(sqliteDb(db), item.id, { sessionKey: "ses_stop" });

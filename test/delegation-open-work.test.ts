@@ -52,7 +52,10 @@ test("a delegation whose only item is cancelled is no longer treated as running 
     onChanges: () => syncSteps(() => {}),
   });
   try {
-    const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "only", now: 1000 });
+    const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+      linearIssueId: "only",
+      now: 1000,
+    });
     expect(intake.ok).toBe(true);
     if (!intake.ok) return;
     const itemId = intake.items[0]!.id;
@@ -103,7 +106,7 @@ test("a sub-issue of a delegated parent reads its parent issue from parent_deleg
     return listDeps(id);
   };
   try {
-    const intake = await intakeDelegatedIssue(db, tracker, {
+    const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "child-issue",
       now: 1000,
     });
@@ -137,7 +140,10 @@ test("the scheduler admits an item without reading the epic table", async () => 
   const db = tempDb();
   const tracker = createFakeTracker([issue]);
   try {
-    const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "only", now: 1 });
+    const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+      linearIssueId: "only",
+      now: 1,
+    });
     expect(intake.ok).toBe(true);
     if (!intake.ok) return;
     expect(

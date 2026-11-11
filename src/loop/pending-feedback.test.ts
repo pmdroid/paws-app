@@ -136,7 +136,7 @@ async function setup(state: "running" | "verifying" | "merge_queue") {
     reason: "conflict" | "ci" | "findings",
     lead: string,
   ): Promise<number | null> => {
-    const reads = await readPendingFeedback(db, getWorkItem(db, "eng-1")!, caps);
+    const reads = await readPendingFeedback(sqliteDb(db), getWorkItem(db, "eng-1")!, caps);
     const restarted = await sqliteDb(db).transaction(function* (q) {
       const current = (yield* getWorkItemSteps(q, "eng-1"))!;
       return yield* restartWithFeedbackSteps(q, current, {
@@ -208,7 +208,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
     expect(fixRounds(h.db, "eng-1")).toBe(1);
 
     await backToMergeQueue(h.db);
-    expect(await handlePullComments(h.db, "eng-1", h.caps)).toBe("done");
+    expect(await handlePullComments(sqliteDb(h.db), "eng-1", h.caps)).toBe("done");
     expect(await handoffs(h.db)).toHaveLength(1);
   });
 
@@ -252,7 +252,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
     expect(await pendingPullComments(sqliteDb(h.db), "eng-1")).toHaveLength(2);
 
     await backToMergeQueue(h.db);
-    expect(await handlePullComments(h.db, "eng-1", h.caps)).toBe("asked");
+    expect(await handlePullComments(sqliteDb(h.db), "eng-1", h.caps)).toBe("asked");
     expect(findOpenQuestion(h.db, "s-1")?.body).toContain(BOT_FINDING);
     expect(getWorkItem(h.db, "eng-1")?.state).toBe("awaiting_input");
     expect(await handoffs(h.db)).toHaveLength(1);
@@ -262,7 +262,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
     const h = await setup("running");
     h.setBusy(true);
     await h.inline(9401, "cursor[bot]", BOT_FINDING);
-    expect(await handlePullComments(h.db, "eng-1", h.caps)).toBe("wait");
+    expect(await handlePullComments(sqliteDb(h.db), "eng-1", h.caps)).toBe("wait");
     expect(await handoffs(h.db)).toHaveLength(0);
     expect(getWorkItem(h.db, "eng-1")?.state).toBe("running");
 
@@ -287,7 +287,7 @@ describe("a comment restart on a conflicting pull request", () => {
     const h = await setup("merge_queue");
     h.setConflict({ head: "h", base: "main-2" });
     await h.inline(9601, "cursor[bot]", BOT_FINDING);
-    expect(await handlePullComments(h.db, "eng-1", h.caps)).toBe("restarted");
+    expect(await handlePullComments(sqliteDb(h.db), "eng-1", h.caps)).toBe("restarted");
     const [restarted] = await handoffs(h.db);
     expect(await handoffs(h.db)).toHaveLength(1);
     expect(restarted?.reason).toBe("review");
@@ -303,7 +303,7 @@ describe("a comment restart on a conflicting pull request", () => {
   test("without a conflict has no rebase instruction", async () => {
     const h = await setup("merge_queue");
     await h.inline(9701, "cursor[bot]", BOT_FINDING);
-    expect(await handlePullComments(h.db, "eng-1", h.caps)).toBe("restarted");
+    expect(await handlePullComments(sqliteDb(h.db), "eng-1", h.caps)).toBe("restarted");
     expect((await handoffs(h.db))[0]?.handoff).not.toContain(REBASE_CONFLICT_INSTRUCTION);
     expect(listRebaseReturns(h.db, "eng-1", 0)).toEqual([]);
   });

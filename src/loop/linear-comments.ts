@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import { isTerminalWorkItemState } from "../core";
 import {
   commentOpenedAgentSessionSteps,
@@ -26,7 +25,6 @@ import {
   queueLinearCommentSteps,
   restartSteps,
   settleLinearCommentsSteps,
-  sqliteDb,
   type Db,
   type LinearCommentAuthority,
   type LinearCommentRecord,
@@ -116,11 +114,11 @@ export const LINEAR_COMMENT_INSTRUCTION =
   "These comments were posted on the Linear issue while you worked on it. Treat them as direction from the team. A comment can be a question, a note or a status line rather than a request; change nothing for those.";
 
 export async function routeLinearComment(
-  db: Database,
+  store: Db,
   comment: LinearCommentRecord,
   policy: LinearCommentPolicy,
 ): Promise<LinearCommentRoute> {
-  return await sqliteDb(db).run((q) => routeLinearCommentSteps(q, comment, policy));
+  return await store.run((q) => routeLinearCommentSteps(q, comment, policy));
 }
 
 function* routeLinearCommentSteps(
@@ -209,12 +207,11 @@ export async function authorizeLinearComment(
 }
 
 export async function commitLinearCommentRoute(
-  db: Database,
+  store: Db,
   commentId: string,
   route: LinearCommentRoute,
   options: { now: number; wait?: PullFeedbackWait; authorized: boolean },
 ): Promise<LinearCommentRecord | null> {
-  const store = sqliteDb(db);
   const job = { ready: false };
   const comment = await store.transaction((q) =>
     commitLinearCommentRouteSteps(q, commentId, route, options, job),
@@ -321,11 +318,10 @@ export function receivedNote(item: WorkItemRecord): string {
 }
 
 export async function deliverLinearComments(
-  db: Database,
+  store: Db,
   itemId: string,
   caps: LinearCommentCapabilities,
 ): Promise<LinearCommentStep> {
-  const store = sqliteDb(db);
   const item = await store.run((q) => getWorkItemSteps(q, itemId));
   const talk = (await caps.conversations?.()) ?? null;
   if (talk !== null) {

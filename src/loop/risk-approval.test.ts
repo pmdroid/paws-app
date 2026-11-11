@@ -180,7 +180,7 @@ async function classify(db: ReturnType<typeof openDatabase>, head: string, base:
 
 async function asked(head = heads.s) {
   const fixture = await held(head);
-  const outcome = await askRiskApproval(fixture.db, {
+  const outcome = await askRiskApproval(sqliteDb(fixture.db), {
     item: getWorkItem(fixture.db, fixture.itemId)!,
     head,
     publicUrl: PUBLIC_URL,
@@ -191,7 +191,7 @@ async function asked(head = heads.s) {
 }
 
 function approval(db: ReturnType<typeof openDatabase>, head: string) {
-  return riskApprovalFor(db, {
+  return riskApprovalFor(sqliteDb(db), {
     itemId: "ENG-106",
     head,
     publicUrl: PUBLIC_URL,
@@ -208,7 +208,7 @@ function approvalWithFixes(
   head: string,
   globs: readonly string[] = HIGH_RISK,
 ) {
-  return riskApprovalFor(db, {
+  return riskApprovalFor(sqliteDb(db), {
     itemId: "ENG-106",
     head,
     publicUrl: PUBLIC_URL,
@@ -312,7 +312,7 @@ test("a normal-tier head, or a Paws without an https link, needs no approval", a
   expect(await approval(db, heads.s)).toBe("not_required");
   await classify(db, heads.s, heads.base);
   const local = (publicUrl: string | null) =>
-    riskApprovalFor(db, {
+    riskApprovalFor(sqliteDb(db), {
       itemId: "ENG-106",
       head: heads.s,
       publicUrl,
@@ -321,7 +321,7 @@ test("a normal-tier head, or a Paws without an https link, needs no approval", a
   expect(await local(null)).toBe("not_required");
   expect(await local("http://127.0.0.1:8787")).toBe("not_required");
   expect(
-    await askRiskApproval(db, {
+    await askRiskApproval(sqliteDb(db), {
       item: getWorkItem(db, "ENG-106")!,
       head: heads.s,
       publicUrl: null,
@@ -582,7 +582,7 @@ test("a fix that changes a high-risk path asks again and lists only that change"
   await fixAccepted(db, heads.authFix, heads.base);
   expect(await approvalWithFixes(db, heads.authFix)).toBe("missing");
   expect(
-    await askRiskApproval(db, {
+    await askRiskApproval(sqliteDb(db), {
       item: getWorkItem(db, itemId)!,
       head: heads.authFix,
       publicUrl: PUBLIC_URL,
@@ -623,7 +623,7 @@ test("without an approval, or when the fix cannot be read, a fix asks", async ()
   const fixture = await riskApproved();
   await fixAccepted(fixture.db, heads.ciFix, heads.base);
   expect(
-    await riskApprovalFor(fixture.db, {
+    await riskApprovalFor(sqliteDb(fixture.db), {
       itemId: "ENG-106",
       head: heads.ciFix,
       publicUrl: PUBLIC_URL,
@@ -643,7 +643,7 @@ test("a carried-over approval is checked again against the high-risk paths in fo
   // A fix Paws can no longer read forgets the earlier carry-over instead of trusting it.
   expect(await approvalWithFixes(db, heads.ciFix)).toBe("approved");
   expect(
-    await riskApprovalFor(db, {
+    await riskApprovalFor(sqliteDb(db), {
       itemId: "ENG-106",
       head: heads.ciFix,
       publicUrl: PUBLIC_URL,
@@ -722,7 +722,7 @@ async function cleanRiskFixture() {
   step("independent-review");
   progress.finish(identity, "accepted");
   const read = (overrides: Partial<Parameters<typeof riskApprovalFor>[1]> = {}) =>
-    riskApprovalFor(db, {
+    riskApprovalFor(sqliteDb(db), {
       itemId,
       head: heads.s,
       publicUrl: PUBLIC_URL,
@@ -779,7 +779,7 @@ async function automaticMerge(f: Awaited<ReturnType<typeof cleanRiskFixture>>) {
   });
   if (!verdict.ok && verdict.block === "risk_approval") {
     expect(
-      await askRiskApproval(f.db, {
+      await askRiskApproval(sqliteDb(f.db), {
         item: getWorkItem(f.db, f.itemId)!,
         head: heads.s,
         publicUrl: PUBLIC_URL,
@@ -1151,7 +1151,7 @@ for (const enabled of [undefined, false]) {
     const f = await cleanRiskFixture();
     expect(await f.read({ autoApproveHighRisk: enabled })).toBe("missing");
     expect(
-      await askRiskApproval(f.db, {
+      await askRiskApproval(sqliteDb(f.db), {
         item: getWorkItem(f.db, f.itemId)!,
         head: heads.s,
         publicUrl: PUBLIC_URL,

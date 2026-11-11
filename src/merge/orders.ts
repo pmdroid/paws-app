@@ -1,6 +1,5 @@
 import type { askSteps } from "../questions";
 import { journal, journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import { mergeQueueLine, type RepositoryBinding } from "../core";
 import {
   artifactPublicationReadySteps,
@@ -286,7 +285,6 @@ export type OrderCapabilities = {
 };
 
 export type MergeContext = {
-  db: Database;
   store: Db;
   item: WorkItemRecord;
   caps: OrderCapabilities;
@@ -385,7 +383,7 @@ export function ciRoundAsync(
 }
 
 export async function mergeQueueTurn(
-  { db, store, item, caps }: MergeContext,
+  { store, item, caps }: MergeContext,
   repository: { owner: string; repo: string },
   github: GitHubBinding,
   pull: { number: number; url: string | null; head: string },
@@ -415,7 +413,7 @@ export async function mergeQueueTurn(
   if (review === "required" || review === "changes_requested") {
     await store.run((q) => leaveMergeQueueSteps(q, item.id));
     // Reviewers do not approve a conflicting pull request, so the rebase does not wait for them.
-    const conflict = await waitConflict({ db, store, item, caps }, pull.number, {
+    const conflict = await waitConflict({ store, item, caps }, pull.number, {
       for: "a review",
     });
     if (await caps.stopped()) return undefined;
@@ -427,7 +425,7 @@ export async function mergeQueueTurn(
     const notice = reviewWaitNotice(review, prNumber, pull.url, name);
     const key = await reviewWaitKey(store, item, caps, review, pull.head);
     caps.voice.afterPullRequest(item, notice, key);
-    await observeHeldCi({ db, store, item, caps }, pull);
+    await observeHeldCi({ store, item, caps }, pull);
     if (await caps.stopped()) return undefined;
     return { message: body, queued: true, reason: "review" };
   }

@@ -313,14 +313,14 @@ describe("a review and the comments after it reach the agent together", () => {
       path: "src/cache.ts",
     });
     // The comment job runs first and leaves the comments to the waiting review.
-    expect(await handlePullComments(db, "eng-1", caps)).toBe("wait");
-    expect(await handlePullReview(db, 601, caps)).toBe("restarted");
+    expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("wait");
+    expect(await handlePullReview(sqliteDb(db), 601, caps)).toBe("restarted");
     const text = await handoffText(db);
     expect(text).toContain("@pascal requested changes on pull request #7.");
     expect(text).toContain("Bug: the cache key ignores the tenant.");
     expect(await jobs(db, JOB_KIND.resume)).toHaveLength(1);
     expect((await getPullComment(sqliteDb(db), "inline", 9101))?.outcome).toBe("covered");
-    expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
+    expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("done");
   });
 });
 
@@ -341,7 +341,7 @@ describe("Paws replies to every handed-off comment", () => {
       body: "Please fix the ranking.",
     });
     await conversation({ id: 3001, author: "pascal", body: "Why does this skip the cache?" });
-    expect(await handlePullReview(db, 601, caps)).toBe("restarted");
+    expect(await handlePullReview(sqliteDb(db), 601, caps)).toBe("restarted");
     const text = await handoffText(db);
     expect(text).toContain("End your final message with a `Review replies` section");
     expect(text).toContain(
@@ -381,7 +381,7 @@ describe("Paws replies to every handed-off comment", () => {
     });
     await review({ id: 601, author: "pascal", state: "changes_requested", body: "" });
     await conversation({ id: 3001, author: "pascal", body: "Why does this skip the cache?" });
-    expect(await handlePullReview(db, 601, caps)).toBe("restarted");
+    expect(await handlePullReview(sqliteDb(db), 601, caps)).toBe("restarted");
 
     const final = [
       "I fixed the sort order and left the cache key alone.",
@@ -559,7 +559,7 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
       body: "Fix the ranking.",
     });
     await conversation({ id: 3001, author: "pascal", body: "Why skip the cache?" });
-    expect(await handlePullReview(db, 601, caps)).toBe("restarted");
+    expect(await handlePullReview(sqliteDb(db), 601, caps)).toBe("restarted");
     return context;
   }
   // The turn the restart handed the reply list to ends with `finalMessage`.

@@ -10,6 +10,7 @@ import {
   saveCloseoutEvidenceObjectSteps,
   sqliteDb,
   type CloseoutEvidenceObject,
+  type Db,
 } from "../db";
 import { journalCaught } from "../journal";
 import type { RunFileObjects } from "../run-files";
@@ -56,12 +57,11 @@ async function sha256Of(source: AsyncIterable<Uint8Array>): Promise<string> {
 }
 
 export async function publishCloseoutEvidence(
-  db: Database,
+  store: Db,
   storage: EvidenceStorage,
   taskId: string,
   options: { now?: () => number; keepStored?: boolean } = {},
 ): Promise<number> {
-  const store = sqliteDb(db);
   const now = options.now ?? Date.now;
   const objects = storage.objects?.();
   const task = closeoutTaskDirectory(taskId);
@@ -112,12 +112,11 @@ export async function publishCloseoutEvidence(
 }
 
 export async function hydrateCloseoutEvidence(
-  db: Database,
+  store: Db,
   storage: EvidenceStorage,
   taskIds: readonly string[],
   options: { strict?: boolean } = {},
 ): Promise<number> {
-  const store = sqliteDb(db);
   const objects = storage.objects?.();
   if (!objects) return 0;
   const tasks = taskIds.map(closeoutTaskDirectory).filter(safeTask);
@@ -180,7 +179,7 @@ export async function hydrateItemCloseoutEvidence(
   sessionIds?: readonly string[],
 ): Promise<number> {
   const tasks = await sqliteDb(db).run((q) => closeoutTasksOfItemSteps(q, ref, sessionIds));
-  return hydrateCloseoutEvidence(db, storage, tasks);
+  return hydrateCloseoutEvidence(sqliteDb(db), storage, tasks);
 }
 
 export function closeoutEvidenceItemOf(request: Request): string | null {
@@ -211,7 +210,9 @@ export async function uploadLocalCloseoutEvidence(
   for (const entry of entries) {
     if (!entry.isDirectory() || !safeTask(entry.name)) continue;
     try {
-      uploaded += await publishCloseoutEvidence(db, storage, entry.name, { keepStored: true });
+      uploaded += await publishCloseoutEvidence(sqliteDb(db), storage, entry.name, {
+        keepStored: true,
+      });
     } catch (error) {
       journalCaught(error, "evidence.uploadLocalCloseoutEvidence", null);
     }

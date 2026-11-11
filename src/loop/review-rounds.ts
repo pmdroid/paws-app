@@ -1,12 +1,11 @@
-import type { Database } from "bun:sqlite";
 import {
   emitJobReady,
   getWorkItemSteps,
   saveCheckpointSteps,
   saveCloseoutRecoverySteps,
-  sqliteDb,
   type LinkAskRounds,
   type WorkItemRecord,
+  type Db,
 } from "../db";
 import { reviewRoundsDetail, type StoredQuestion } from "../questions";
 import type { CloseoutHelp } from "./closeout-help";
@@ -24,7 +23,7 @@ export function reviewRoundLimit(detail: string | null | undefined): number | nu
  * keeps the retry baseline, so Rethink and Keep going start a new round budget.
  */
 export async function askReviewRounds(
-  db: Database,
+  store: Db,
   input: {
     item: WorkItemRecord;
     help: CloseoutHelp;
@@ -34,7 +33,6 @@ export async function askReviewRounds(
     now: number;
   },
 ): Promise<StoredQuestion | null> {
-  const store = sqliteDb(db);
   const asked = await store.transaction(function* (q) {
     const item = yield* getWorkItemSteps(q, input.item.id);
     if (item === null || item.state === "cancelled") return null;

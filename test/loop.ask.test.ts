@@ -74,7 +74,7 @@ test("an answered agent question restarts the same run with the handoff", async 
   const outcome = await answer(
     db,
     reply("parquet, please"),
-    questionEffects(db, { now: NOW + 100 }),
+    questionEffects(sqliteDb(db), { now: NOW + 100 }),
   );
 
   expect(outcome.status).toBe("answered");
@@ -96,7 +96,8 @@ test("an answered agent question restarts the same run with the handoff", async 
     }),
   ]);
   expect(
-    (await answer(db, reply("parquet, please"), questionEffects(db, { now: NOW + 100 }))).status,
+    (await answer(db, reply("parquet, please"), questionEffects(sqliteDb(db), { now: NOW + 100 })))
+      .status,
   ).toBe("duplicate");
   expect(await resumes(db)).toHaveLength(1);
 });
@@ -106,7 +107,7 @@ test.each(["clarification", "repository"] as const)(
   async (kind) => {
     const { db, asker } = await parked();
     const asked = await ask(db, asker, kind, "Which outcome?", { now: NOW });
-    await answer(db, reply("Change the code"), questionEffects(db, { now: NOW + 100 }));
+    await answer(db, reply("Change the code"), questionEffects(sqliteDb(db), { now: NOW + 100 }));
     expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
     expect((await resumes(db)).map((job) => job.jobKey)).toEqual([
       `resume:answer:${asked.question.id}`,
@@ -117,7 +118,10 @@ test.each(["clarification", "repository"] as const)(
 test("an answer while the asking run is still live leaves the resume to the end of that run", async () => {
   const { db, asker } = await parked();
   await ask(db, asker, "agent", "Include archived rows?", { now: NOW });
-  const effects = questionEffects(db, { now: NOW + 100, asking: (runId) => runId === asker.runId });
+  const effects = questionEffects(sqliteDb(db), {
+    now: NOW + 100,
+    asking: (runId) => runId === asker.runId,
+  });
   expect((await answer(db, reply("parquet"), effects)).status).toBe("answered");
   expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
   expect(await resumes(db)).toHaveLength(1);
@@ -126,7 +130,7 @@ test("an answer while the asking run is still live leaves the resume to the end 
 test("a redirecting answer resumes the task without a handoff job", async () => {
   const { db, asker } = await parked();
   await ask(db, asker, "agent", "Include archived rows?", { now: NOW });
-  const effects = questionEffects(db, { now: NOW + 100, redirect: true });
+  const effects = questionEffects(sqliteDb(db), { now: NOW + 100, redirect: true });
   expect((await answer(db, reply("parquet"), effects)).status).toBe("answered");
   expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
   expect(await resumes(db)).toHaveLength(1);
@@ -146,7 +150,11 @@ test("an agent question queued behind another is delivered once that one is answ
   const queued = await ask(db, asker, "agent", "Include archived rows?", { now: NOW + 1 });
   expect(queued.status).toBe("queued");
 
-  const outcome = await answer(db, reply("Keep waiting"), questionEffects(db, { now: NOW + 100 }));
+  const outcome = await answer(
+    db,
+    reply("Keep waiting"),
+    questionEffects(sqliteDb(db), { now: NOW + 100 }),
+  );
 
   expect(outcome).toMatchObject({
     status: "answered",

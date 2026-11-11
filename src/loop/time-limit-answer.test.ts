@@ -128,7 +128,7 @@ async function reply(
     answerSteps(
       q,
       { sessionId: "ses", deliveryId: `reply:${body}`, body, answeredBy: "pascal", now },
-      questionEffects(db, { now, ...(asking ? { asking } : {}) }),
+      questionEffects(sqliteDb(db), { now, ...(asking ? { asking } : {}) }),
     ),
   );
 }

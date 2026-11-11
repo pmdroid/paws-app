@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   emitJobReady,
   openItemIdForPullSteps,
@@ -14,12 +13,12 @@ import {
   restartSteps,
   settlePullCiFailuresSteps,
   settlePullCommentsSteps,
-  sqliteDb,
   type PullCommentRecord,
   type PullFeedbackWait,
   type Q,
   type Steps,
   type WorkItemRecord,
+  type Db,
 } from "../db";
 import type { ReviewThread } from "../github";
 import { REBASE_CONFLICT_INSTRUCTION, rebaseBudgetForSteps } from "../merge";
@@ -245,11 +244,10 @@ function* itemForPullSteps(
  * when the fix rounds are spent.
  */
 export async function handlePullComments(
-  db: Database,
+  store: Db,
   itemId: string,
   caps: PullReviewCapabilities,
 ): Promise<PullReviewStep> {
-  const store = sqliteDb(db);
   const started = caps.now();
   const open = await store.run((q) => pendingPullCommentsSteps(q, itemId));
   const failures = await store.run((q) => pendingPullCiFailuresSteps(q, itemId));
@@ -289,7 +287,7 @@ export async function handlePullComments(
     return "wait";
   const threads = open.length > 0 ? await caps.threads(item, pullNumber) : [];
   const findings = await caps.closeoutFindings(item);
-  const head = await pullCiHead(db, item, pullNumber, caps.pullHead);
+  const head = await pullCiHead(store, item, pullNumber, caps.pullHead);
   if (head === "unreadable") return "wait";
   const conflict = (await caps.pullConflict?.(item, pullNumber)) ?? null;
   const job = { ready: false };

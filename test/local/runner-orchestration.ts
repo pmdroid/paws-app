@@ -779,7 +779,7 @@ export async function probeRunnerOrchestration(
     });
     try {
       if (mergeDependencyYield) {
-        const intake = await intakeDelegatedIssue(db, tracker, {
+        const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
           linearIssueId: "issue",
           now: clock.now(),
         });

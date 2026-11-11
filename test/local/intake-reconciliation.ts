@@ -79,7 +79,10 @@ export async function probeEpicReconciliation(root: string) {
   const observe = (name: string, observed: unknown) =>
     observations.push({ name, passed: true, observed });
   try {
-    const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent", now: 1000 });
+    const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+      linearIssueId: "parent",
+      now: 1000,
+    });
     assert(intake.ok);
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
     await recordLinearInstallation(sqliteDb(db), {

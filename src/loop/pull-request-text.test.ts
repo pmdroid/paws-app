@@ -39,7 +39,7 @@ async function fixture(
       subIssues: [],
     },
   ]);
-  const task = await intakeDelegatedIssue(db, tracker, { linearIssueId: "issue" });
+  const task = await intakeDelegatedIssue(sqliteDb(db), tracker, { linearIssueId: "issue" });
   if (!task.ok) throw new Error("Unexpected dependency cycle");
   const itemId = task.items[0]!.id;
   db.run("UPDATE work_item SET state = 'running' WHERE id = ?", [itemId]);

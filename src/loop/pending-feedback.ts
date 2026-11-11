@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import type { StoredReviewFinding } from "../closeout";
 import {
   fixRoundsSteps,
@@ -10,7 +9,6 @@ import {
   recordReviewEscapeSteps,
   recordReviewRepliesSteps,
   settlePullCommentsSteps,
-  sqliteDb,
   type Q,
   type Steps,
   type NewReviewReply,
@@ -18,6 +16,7 @@ import {
   type PullCiFailureRecord,
   type PullCommentRecord,
   type WorkItemRecord,
+  type Db,
 } from "../db";
 import type { ReviewThread } from "../github";
 import { REBASE_CONFLICT_INSTRUCTION } from "../merge";
@@ -57,11 +56,10 @@ export type PendingFeedback = {
 };
 
 export async function readPendingFeedback(
-  db: Database,
+  store: Db,
   item: WorkItemRecord,
   caps: FeedbackCapabilities,
 ): Promise<FeedbackReads | null> {
-  const store = sqliteDb(db);
   const started = caps.now();
   const open = await store.run((q) => pendingPullCommentsSteps(q, item.id));
   if (
@@ -76,7 +74,7 @@ export async function readPendingFeedback(
   const threads =
     open.length > 0 ? await caps.threads(item, pullNumber).catch((): ReviewThread[] => []) : [];
   const findings = open.length > 0 ? await caps.closeoutFindings(item) : [];
-  const head = await pullCiHead(db, item, pullNumber, caps.pullHead).catch(() => null);
+  const head = await pullCiHead(store, item, pullNumber, caps.pullHead).catch(() => null);
   return {
     pullNumber,
     threads,

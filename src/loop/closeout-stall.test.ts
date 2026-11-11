@@ -39,7 +39,7 @@ test("quiet verification retries once across restart, then asks a person", async
     const lines: string[] = [];
     const cancelled: string[] = [];
     const check = () =>
-      recoverStalledCloseout(db, {
+      recoverStalledCloseout(sqliteDb(db), {
         now: clock.now(),
         cancel: async (id) => {
           cancelled.push(id);
@@ -122,7 +122,7 @@ test("quiet verification retries once across restart, then asks a person", async
           answeredBy: "person",
           now: clock.now(),
         },
-        questionEffects(db, { now: clock.now() }),
+        questionEffects(sqliteDb(db), { now: clock.now() }),
       ),
     );
     expect(getWorkItem(db, "stalled")?.state).toBe("verifying");
@@ -157,7 +157,7 @@ test("a usage pause is not a stall, and one failed cancel leaves the other items
     });
     clock.advance(31 * 60_000);
     const lines: string[] = [];
-    await recoverStalledCloseout(db, {
+    await recoverStalledCloseout(sqliteDb(db), {
       now: clock.now(),
       cancel: async (id) => {
         if (id === "broken") throw new Error("runner did not confirm");

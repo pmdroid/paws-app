@@ -131,10 +131,10 @@ async function apply(w: World, sequence: Sequence, action: Action): Promise<void
         answeredBy: "lead",
         now: w.now,
       };
-      const first = await answer(w.db, reply, questionEffects(w.db, { now: w.now }));
+      const first = await answer(w.db, reply, questionEffects(sqliteDb(w.db), { now: w.now }));
       const after = dump(w.db);
       w.crash();
-      const again = await answer(w.db, reply, questionEffects(w.db, { now: w.now }));
+      const again = await answer(w.db, reply, questionEffects(sqliteDb(w.db), { now: w.now }));
       if (first.status === "answered") expect(again.status).toBe("duplicate");
       expect(dump(w.db)).toEqual(after);
       return;

@@ -46,7 +46,7 @@ async function blockedFixture(options: { blocked?: boolean; lowBudget?: boolean 
   });
   lifecycle.issues.set("acme-child", { ...lifecycle.issue, id: "acme-child" });
   lifecycle.issues.set("acme-b", { ...lifecycle.issue, id: "acme-b" });
-  const intake = await intakeDelegatedIssue(db, tracker, {
+  const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
     linearIssueId: "acme-parent",
     now: 1000,
   });

@@ -695,7 +695,7 @@ describe("slow CI question", () => {
         answerSteps(
           q,
           { sessionId: "ses", deliveryId: `reply:${body}`, body, answeredBy: "pascal", now },
-          questionEffects(db, { now }),
+          questionEffects(sqliteDb(db), { now }),
         ),
       )
     ).status;

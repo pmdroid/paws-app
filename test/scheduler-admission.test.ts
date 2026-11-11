@@ -141,7 +141,10 @@ test("a task_block dependency is admitted only after its blocker item is merged"
       assigneeId: null,
       delegateId: null,
     });
-    const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent", now: 1000 });
+    const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+      linearIssueId: "parent",
+      now: 1000,
+    });
     assert(intake.ok);
     const ids = new Map(intake.items.map((item) => [item.linearIssueId, item.id]));
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");

@@ -36,7 +36,7 @@ const snapshot = {
 };
 
 async function task(db: ReturnType<typeof legacyTempDb>, key?: string) {
-  const result = await intakeDelegatedIssue(db, createFakeTracker([snapshot]), {
+  const result = await intakeDelegatedIssue(sqliteDb(db), createFakeTracker([snapshot]), {
     linearIssueId: "issue",
     taskKey: key,
   });

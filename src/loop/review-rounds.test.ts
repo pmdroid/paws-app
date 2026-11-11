@@ -61,7 +61,7 @@ async function asked(findings?: string) {
     "Lea",
     "lea@example.com",
   ]);
-  const question = (await askReviewRounds(db, {
+  const question = (await askReviewRounds(sqliteDb(db), {
     item: getWorkItem(db, item.id)!,
     help: {
       itemId: item.id,
@@ -125,7 +125,7 @@ test("one elicitation without options names the recurring bug class and links to
     },
   ]);
   // Nobody answered yet, so no new round budget.
-  expect((await recoveryOptions(db, itemId)).retryBaseline).toEqual([]);
+  expect((await recoveryOptions(sqliteDb(db), itemId)).retryBaseline).toEqual([]);
 });
 
 test("the question lists the open findings' text without changing the dashboard detail", async () => {
@@ -165,7 +165,7 @@ test("Rethink the approach restarts the item with the findings, the note and a n
   expect(body).toContain("(most are unchecked null)");
   expect(body).toContain("Note from the person: Validate the session once at the boundary.");
   expect(body).toContain(ROUNDS.handoff);
-  expect((await recoveryOptions(db, itemId)).retryBaseline).toEqual(BASELINE);
+  expect((await recoveryOptions(sqliteDb(db), itemId)).retryBaseline).toEqual(BASELINE);
   expect(
     db
       .query("SELECT action FROM workspace_access_audit")
@@ -206,7 +206,7 @@ test("Keep going restarts the item with four more rounds", async () => {
   expect(await handoff(db)).toContain(
     "A person allowed 4 more review rounds: fix the open findings.",
   );
-  expect((await recoveryOptions(db, itemId)).retryBaseline).toEqual(BASELINE);
+  expect((await recoveryOptions(sqliteDb(db), itemId)).retryBaseline).toEqual(BASELINE);
   const notes = (await listOutbox(sqliteDb(db))).filter((row) =>
     row.idempotencyKey.startsWith("link-ask-decided:"),
   );
@@ -295,7 +295,7 @@ test("a reply in Linear is Rethink the approach with the reply as the note", asy
     "Note from the person: Stop patching; move the check into the middleware.",
   );
   expect(body).toContain(ROUNDS.handoff);
-  expect((await recoveryOptions(db, itemId)).retryBaseline).toEqual(BASELINE);
+  expect((await recoveryOptions(sqliteDb(db), itemId)).retryBaseline).toEqual(BASELINE);
   const notes = (await listOutbox(sqliteDb(db))).filter((row) =>
     row.idempotencyKey.startsWith("link-ask-guidance:"),
   );

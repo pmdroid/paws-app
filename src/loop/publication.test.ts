@@ -84,7 +84,7 @@ test.each(["push", "pr", "merge"] as const)(
       },
     ]);
     try {
-      const task = await intakeDelegatedIssue(db, tracker, { linearIssueId: "issue" });
+      const task = await intakeDelegatedIssue(sqliteDb(db), tracker, { linearIssueId: "issue" });
       if (!task.ok) throw new Error("Unexpected dependency cycle");
       await recordLinearInstallation(sqliteDb(db), {
         ...scope,

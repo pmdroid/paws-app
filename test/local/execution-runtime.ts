@@ -173,7 +173,9 @@ export async function probeExecutionRuntime(input: {
       subIssues: [],
     },
   ]);
-  const accepted = await intakeDelegatedIssue(db, tracker, { linearIssueId: "runtime-issue" });
+  const accepted = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    linearIssueId: "runtime-issue",
+  });
   assert(accepted.ok);
   const itemId = accepted.items[0]!.id;
   const target = { delegationId: accepted.delegation.id, workspaceId: input.workspaceId };

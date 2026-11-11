@@ -55,7 +55,7 @@ test("an answer restarts the task with a fresh transient-retry count", async () 
             answeredBy: "pascal",
             now: clock.now(),
           },
-          questionEffects(db, { now: clock.now() }),
+          questionEffects(sqliteDb(db), { now: clock.now() }),
         ),
       )
     ).status,

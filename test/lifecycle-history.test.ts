@@ -48,7 +48,7 @@ async function reply(db: Database, body: string, now: number) {
   return await answer(
     db,
     { sessionId: "ses", deliveryId: `reply:${body}:${now}`, body, answeredBy: "pascal", now },
-    questionEffects(db, { now }),
+    questionEffects(sqliteDb(db), { now }),
   );
 }
 

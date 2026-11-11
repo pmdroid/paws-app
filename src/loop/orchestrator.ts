@@ -1139,10 +1139,10 @@ export class Orchestrator {
     const wait = policy.wait?.() ?? this.feedbackWait();
     for (const received of await this.store.run((q) => receivedLinearCommentsSteps(q))) {
       if (received.issueId !== comment.issueId) continue;
-      const route = await routeLinearComment(this.db, received, policy);
+      const route = await routeLinearComment(this.store, received, policy);
       const authorized =
         route.kind === "queue" ? await authorizeLinearComment(route, policy) : true;
-      await commitLinearCommentRoute(this.db, received.commentId, route, {
+      await commitLinearCommentRoute(this.store, received.commentId, route, {
         now: this.now(),
         wait,
         authorized,
@@ -1688,7 +1688,7 @@ export class Orchestrator {
         (await this.store.run((q) => authorize(q, sessionId, authorized)))
       );
     };
-    const result = await intakeDelegatedIssue(this.db, intakeTracker, {
+    const result = await intakeDelegatedIssue(this.store, intakeTracker, {
       linearIssueId: issueId,
       sessionId,
       acknowledged: options.acknowledged,
@@ -2184,7 +2184,7 @@ export class Orchestrator {
       const reviewId = (job.payload as { reviewId?: unknown }).reviewId;
       if (typeof reviewId !== "number" || !(await context.isCurrent())) return;
       let reviewWait: ReviewCheckWait | null | undefined;
-      const step = await handlePullReview(this.db, reviewId, {
+      const step = await handlePullReview(this.store, reviewId, {
         ...this.pullFeedbackCapabilities(context.signal),
         noteReviewWait: (wait) => {
           reviewWait = wait;
@@ -2204,7 +2204,7 @@ export class Orchestrator {
       if (typeof itemId !== "string" || policy === undefined || !(await context.isCurrent()))
         return;
       const step = await deliverLinearComments(
-        this.db,
+        this.store,
         itemId,
         this.linearCommentCapabilities(policy, context.signal),
       );
@@ -2215,7 +2215,7 @@ export class Orchestrator {
       const itemId = (job.payload as { pullCommentsFor?: unknown }).pullCommentsFor;
       if (typeof itemId !== "string" || !(await context.isCurrent())) return;
       let reviewWait: ReviewCheckWait | null | undefined;
-      const step = await handlePullComments(this.db, itemId, {
+      const step = await handlePullComments(this.store, itemId, {
         ...this.pullFeedbackCapabilities(context.signal),
         noteReviewWait: (wait) => {
           reviewWait = wait;
@@ -3006,7 +3006,7 @@ export class Orchestrator {
             answeredBy,
             now,
           },
-          questionEffects(this.db, { now, maxAwakeMs: this.options.caps?.maxAwakeMs }),
+          questionEffects(this.store, { now, maxAwakeMs: this.options.caps?.maxAwakeMs }),
         );
         answered = outcome.status === "answered" || answered;
       }
@@ -4509,7 +4509,7 @@ export class Orchestrator {
         return undefined;
       return saved.report;
     };
-    const recovery = await recoveryOptions(this.db, item.id);
+    const recovery = await recoveryOptions(this.store, item.id);
     let rulesFirst = !recovery.bypasses.some((bypass) => bypass.head === head);
     let stoppedOnRule: string | undefined;
     const runnerChecks = new Map<string, Promise<void>>();
@@ -4614,7 +4614,7 @@ export class Orchestrator {
     const gate = (this.options.closeoutGate ?? createCloseoutGate)({
       checkoutExclusions,
       candidate,
-      published: () => publishedEvidence(this.db, item.id),
+      published: () => publishedEvidence(this.store, item.id),
       approvals: () =>
         this.store.run((q) => visualReviewApprovalsSteps(q, item.id, itemPathId(item))),
       ...(fromCi.length > 0 ? { fromCi } : {}),
@@ -5208,7 +5208,7 @@ export class Orchestrator {
 
   private async readPendingFeedback(item: WorkItemRecord): Promise<FeedbackReads | null> {
     return readPendingFeedback(
-      this.db,
+      this.store,
       item,
       this.pullFeedbackCapabilities(this.jobContexts.get(item.id)?.signal),
     );
@@ -5329,14 +5329,14 @@ export class Orchestrator {
     const brokenMain =
       repositoryName && policyFailed
         ? await policyOutageNote(
-            this.db,
+            this.store,
             repositoryName,
             item.id,
             this.options.publicUrl ?? null,
             unreadable,
           )
         : null;
-    await askCloseoutHelp(this.db, sessionId, context, {
+    await askCloseoutHelp(this.store, sessionId, context, {
       now: this.now(),
       ...(brokenMain ? { error: brokenMain } : {}),
       ...(repositoryName && unreadable
@@ -5400,7 +5400,7 @@ export class Orchestrator {
     try {
       rounds = await readReviewRounds(
         itemPathId(item),
-        (await recoveryOptions(this.db, item.id)).retryBaseline,
+        (await recoveryOptions(this.store, item.id)).retryBaseline,
         this.options.pawsRoot,
       );
     } catch (caught) {
@@ -5418,7 +5418,7 @@ export class Orchestrator {
     );
     const findings = reviewFindingText(await this.failedReviewFindings(item));
     await this.assertJobCurrent(item.id);
-    const question = await askReviewRounds(this.db, {
+    const question = await askReviewRounds(this.store, {
       item,
       help,
       findings,
@@ -5672,7 +5672,7 @@ export class Orchestrator {
     if (!repository) return;
     const name = `${repository.owner}/${repository.repo}`;
     if ((await this.store.run((q) => listOpenPolicyBlocksSteps(q, name))).length === 0) return;
-    await retryPolicyBlocks(this.db, {
+    await retryPolicyBlocks(this.store, {
       repository: name,
       main,
       policy: await this.candidatePolicy(item, (await this.itemHead(item)).repo),
@@ -5724,7 +5724,6 @@ export class Orchestrator {
       return this.candidatePolicy(item, worktree);
     };
     return advanceMerge(
-      this.db,
       this.store,
       { itemId, payload, jobId },
       {
@@ -5756,7 +5755,7 @@ export class Orchestrator {
           const { autoApproveHighRisk, policyDigest, policyPaths } = context;
           let approvedHead: string | undefined;
           let approvalKind: "exact" | "same_patch" | "fix" | undefined;
-          return riskApprovalFor(this.db, {
+          return riskApprovalFor(this.store, {
             itemId: item.id,
             head: published.head,
             publicUrl: this.options.publicUrl,
@@ -5781,7 +5780,7 @@ export class Orchestrator {
           });
         },
         askRiskApproval: async (item, published) => {
-          const asked = await askRiskApproval(this.db, {
+          const asked = await askRiskApproval(this.store, {
             item,
             head: published.head,
             publicUrl: this.options.publicUrl ?? null,
@@ -7009,7 +7008,7 @@ export class Orchestrator {
     ) {
       const outcome = await this.answerInStore(
         { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: this.now() },
-        questionEffects(this.db, {
+        questionEffects(this.store, {
           now: this.now(),
           maxAwakeMs: this.options.caps?.maxAwakeMs,
           timeLimits: this.options.caps?.limits,
@@ -7029,7 +7028,7 @@ export class Orchestrator {
         return "rejected";
       const outcome = await this.answerInStore(
         { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: this.now() },
-        questionEffects(this.db, {
+        questionEffects(this.store, {
           now: this.now(),
           maxAwakeMs: this.options.caps?.maxAwakeMs,
           timeLimits: this.options.caps?.limits,
@@ -7038,7 +7037,7 @@ export class Orchestrator {
       await this.flush();
       return outcome.status === "answered" ? "answered" : "rejected";
     }
-    const db = this.db;
+    const store = this.store;
     const now = () => this.now();
     const caps = this.options.caps;
     const journalTo = this.options.journal;
@@ -7075,7 +7074,7 @@ export class Orchestrator {
       const answered = yield* answerSteps(
         q,
         { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: now() },
-        questionEffects(db, {
+        questionEffects(store, {
           maxAwakeMs: caps?.maxAwakeMs,
           timeLimits: caps?.limits,
           now: now(),
@@ -7480,7 +7479,7 @@ export class Orchestrator {
   }
 
   async recoverStalledCloseout(): Promise<void> {
-    await recoverStalledCloseout(this.db, {
+    await recoverStalledCloseout(this.store, {
       now: this.now(),
       cancel: (id) => this.joinChangedItems([id]),
       journal: this.options.journal ?? journal,
@@ -9973,9 +9972,8 @@ export class Orchestrator {
     marks?: readonly VisualReviewMark[],
   ): Promise<"answered" | "rejected"> {
     const sessionId = open.sessionId;
-    const db = this.db;
     const now = this.now();
-    const effects = questionEffects(db, {
+    const effects = questionEffects(this.store, {
       now,
       asking: (runId) => this.askedRuns.has(runId),
       ...(marks ? { marks } : {}),
@@ -10085,7 +10083,7 @@ export class Orchestrator {
       {
         kind: "visual-review",
         delegatorId: await this.store.run((q) => delegatedLinearUserIdSteps(q, item.id)),
-        leadId: await projectLeadId(this.db, item.id),
+        leadId: await projectLeadId(this.store, item.id),
       },
       { id: actorId },
     );
@@ -10118,7 +10116,7 @@ export class Orchestrator {
   private async pullCloseoutEvidence(item: WorkItemRecord, strict = false): Promise<void> {
     const storage = this.closeoutEvidence();
     if (storage === null) return;
-    const restored = hydrateCloseoutEvidence(this.db, storage, [itemPathId(item)], { strict });
+    const restored = hydrateCloseoutEvidence(this.store, storage, [itemPathId(item)], { strict });
     if (strict) await restored;
     else
       await restored.catch((error: unknown) =>
@@ -10129,7 +10127,7 @@ export class Orchestrator {
   private async pushCloseoutEvidence(item: WorkItemRecord): Promise<void> {
     const storage = this.closeoutEvidence();
     if (storage === null) return;
-    await publishCloseoutEvidence(this.db, storage, itemPathId(item));
+    await publishCloseoutEvidence(this.store, storage, itemPathId(item));
   }
 
   private evidenceStorage(): EvidenceStorage | undefined {

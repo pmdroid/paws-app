@@ -173,7 +173,7 @@ describe("changes-requested reviews", () => {
       ["pull-review:501", { reviewId: 501 }],
     ]);
 
-    expect(await handlePullReview(db, 501, caps)).toBe("restarted");
+    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("restarted");
     expect(getWorkItem(db, "eng-1")?.state).toBe("queued");
     expect(fixRounds(db, "eng-1")).toBe(1);
     const [resume] = await resumeJobs(db);
@@ -200,7 +200,7 @@ describe("changes-requested reviews", () => {
 
     // A redelivered webhook after the restart does nothing.
     expect(await deliver({ id: 501, state: "changes_requested" })).toBe(true);
-    expect(await handlePullReview(db, 501, caps)).toBe("done");
+    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("done");
     expect(await reviewJobs(db)).toHaveLength(1);
     expect(await resumeJobs(db)).toHaveLength(1);
     expect(await feedbackActivities(db)).toHaveLength(1);
@@ -220,7 +220,7 @@ describe("changes-requested reviews", () => {
       },
     ]);
     await deliver({ id: 501, state: "changes_requested", body: "Please fix the ranking." });
-    expect(await handlePullReview(db, 501, caps)).toBe("restarted");
+    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("restarted");
     const { handoff } = (await resumeJobs(db))[0]!.payload as { handoff: string };
     expect(handoff).toContain("- open, P2 at `src/rank.ts:14`: Ties must keep insertion order.");
     expect(handoff).toContain(
@@ -236,10 +236,10 @@ describe("changes-requested reviews", () => {
     await markCloseoutAccepted(sqliteDb(db), "eng-1", "h");
     await deliver({ id: 501, state: "changes_requested", body: "The ranking is reversed." });
     await deliver({ id: 501, state: "changes_requested", body: "The ranking is reversed." });
-    expect(await handlePullReview(db, 501, caps)).toBe("restarted");
-    expect(await handlePullReview(db, 501, caps)).toBe("done");
+    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("restarted");
+    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("done");
     await deliver({ id: 501, state: "changes_requested", body: "The ranking is reversed." });
-    expect(await handlePullReview(db, 501, caps)).toBe("done");
+    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("done");
     expect(await listReviewEscapes(sqliteDb(db))).toEqual([
       expect.objectContaining({
         triggerKey: "review:eng-1:501",
@@ -255,14 +255,13 @@ describe("changes-requested reviews", () => {
     const { db, caps, deliver, setBusy } = await setup();
     db.run("UPDATE work_item SET state='verifying' WHERE id='eng-1'");
     await deliver({ id: 501, state: "changes_requested" });
-    expect(await handlePullReview(db, 501, caps)).toBe("wait");
+    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("wait");
 
     await applyWorkItemEvent(sqliteDb(db), "eng-1", "closeout_accepted");
     expect(getWorkItem(db, "eng-1")?.state).toBe("merge_queue");
     setBusy(true);
-    expect(await handlePullReview(db, 501, caps)).toBe("wait");
+    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("wait");
     const step = await advanceMerge(
-      db,
       sqliteDb(db),
       { itemId: "eng-1", payload: {}, jobId: 1 },
       laneCapabilities(),
@@ -270,7 +269,7 @@ describe("changes-requested reviews", () => {
     expect(step).toMatchObject({ kind: "wait", reason: "review", queued: true });
 
     setBusy(false);
-    expect(await handlePullReview(db, 501, caps)).toBe("restarted");
+    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("restarted");
     expect(await resumeJobs(db)).toHaveLength(1);
   });
 
@@ -281,13 +280,12 @@ describe("changes-requested reviews", () => {
     queue.calls.length = 0;
     setBusy(true);
     await deliver({ id: 501, state: "changes_requested" });
-    expect(await handlePullReview(db, 501, caps)).toBe("wait");
+    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("wait");
     expect(queue.calls).toEqual(["entry", "dequeue"]);
     expect(queue.isQueued(7)).toBe(false);
 
     // The merge step that finds the pull request gone waits for the review instead.
     const step = await advanceMerge(
-      db,
       sqliteDb(db),
       { itemId: "eng-1", payload: {}, jobId: 1 },
       laneCapabilities(),
@@ -295,7 +293,7 @@ describe("changes-requested reviews", () => {
     expect(step).toMatchObject({ kind: "wait", reason: "review" });
 
     setBusy(false);
-    expect(await handlePullReview(db, 501, caps)).toBe("restarted");
+    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("restarted");
     expect(queue.calls).toEqual(["entry", "dequeue", "entry"]);
   });
 
@@ -303,7 +301,7 @@ describe("changes-requested reviews", () => {
     const { db, caps, deliver, queue } = await setup();
     queue.merge(7);
     await deliver({ id: 501, state: "changes_requested" });
-    expect(await handlePullReview(db, 501, caps)).toBe("dropped");
+    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("dropped");
     expect(await resumeJobs(db)).toHaveLength(0);
   });
 
@@ -311,7 +309,7 @@ describe("changes-requested reviews", () => {
     const { db, caps, deliver, setLimit } = await setup();
     setLimit(0);
     await deliver({ id: 501, state: "changes_requested", body: "Rename it." });
-    expect(await handlePullReview(db, 501, caps)).toBe("asked");
+    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("asked");
     expect(await feedbackActivities(db)).toEqual([]);
     expect(getWorkItem(db, "eng-1")?.state).toBe("awaiting_input");
     expect(await resumeJobs(db)).toHaveLength(0);
@@ -326,7 +324,7 @@ describe("changes-requested reviews", () => {
     const { db, caps, deliver } = await setup();
     await deliver({ id: 501, state: "changes_requested" });
     db.run("UPDATE work_item SET state='cancelled' WHERE id='eng-1'");
-    expect(await handlePullReview(db, 501, caps)).toBe("dropped");
+    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("dropped");
     expect(await resumeJobs(db)).toHaveLength(0);
   });
 });

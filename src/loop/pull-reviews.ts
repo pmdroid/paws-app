@@ -15,7 +15,6 @@ import {
   recordReviewEscapeSteps,
   recordReviewRepliesSteps,
   settlePullReviewSteps,
-  sqliteDb,
   type PullReviewRecord,
   type PullFeedbackWait,
   type PullReviewState,
@@ -24,6 +23,7 @@ import {
   type ReviewCheckWait,
   type Steps,
   type WorkItemRecord,
+  type Db,
 } from "../db";
 import type { StoredReviewFinding } from "../closeout";
 import type { LeaveMergeQueueResult, ReviewThread } from "../github";
@@ -162,11 +162,10 @@ export type PullReviewStep = "wait" | "restarted" | "asked" | "dropped" | "done"
  * the team when the fix rounds are spent.
  */
 export async function handlePullReview(
-  db: Database,
+  store: Db,
   reviewId: number,
   caps: PullReviewCapabilities,
 ): Promise<PullReviewStep> {
-  const store = sqliteDb(db);
   const started = caps.now();
   // One read, so no other job runs between the review and its item, as in the synchronous read.
   const read = await store.run(function* (q) {
@@ -197,7 +196,7 @@ export async function handlePullReview(
   if (await holdForReviewChecks(item, review.pullNumber, review.receivedAt, caps)) return "wait";
   const threads = await caps.threads(item, review.pullNumber);
   const findings = await caps.closeoutFindings(item);
-  const head = await pullCiHead(db, item, review.pullNumber, caps.pullHead);
+  const head = await pullCiHead(store, item, review.pullNumber, caps.pullHead);
   if (head === "unreadable") return "wait";
   let armed = false;
   const step = await store.transaction(function* (q): Steps<PullReviewStep> {

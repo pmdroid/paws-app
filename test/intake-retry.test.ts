@@ -53,7 +53,7 @@ async function fixture() {
     onAccepted?: (q: Q, result: IntakeResult) => Steps<void>,
     taskKey = sessionId,
   ) =>
-    intakeDelegatedIssue(db, tracker, {
+    intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "issue",
       sessionId,
       taskKey,
@@ -275,7 +275,7 @@ test("concurrent deliveries of the same task share admission after session recon
   const ready = Promise.withResolvers<void>();
   let arrivals = 0;
   const admit = () =>
-    intakeDelegatedIssue(db, tracker, {
+    intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "issue",
       sessionId: "new",
       taskKey: "same-task",
