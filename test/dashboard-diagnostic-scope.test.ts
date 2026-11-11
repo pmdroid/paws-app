@@ -74,14 +74,17 @@ async function seed(): Promise<Database> {
 
 test("diagnostics follow the team repository policy of the authorized sessions", async () => {
   const db = await seed();
-  const allowed = (sessions: string[]) => [
-    ...sessionRepositoriesAllowed(db, sessions, REPOSITORIES),
+  const allowed = async (sessions: string[]) => [
+    ...(await sessionRepositoriesAllowed(sqliteDb(db), sessions, REPOSITORIES)),
   ];
-  expect(allowed([])).toEqual([]);
-  expect(allowed(["session-a"])).toEqual(["fixture/team-a"]);
-  expect(allowed(["session-c"])).toEqual(["Fixture/Catalog"]);
-  expect(allowed(["session-missing"])).toEqual([]);
-  expect(allowed(["session-a", "session-b"])).toEqual(["fixture/team-a", "fixture/private-team-b"]);
+  expect(await allowed([])).toEqual([]);
+  expect(await allowed(["session-a"])).toEqual(["fixture/team-a"]);
+  expect(await allowed(["session-c"])).toEqual(["Fixture/Catalog"]);
+  expect(await allowed(["session-missing"])).toEqual([]);
+  expect(await allowed(["session-a", "session-b"])).toEqual([
+    "fixture/team-a",
+    "fixture/private-team-b",
+  ]);
   db.close();
 });
 

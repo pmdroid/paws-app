@@ -26,7 +26,7 @@ import { acceptGitHubDelivery } from "./merge-jobs";
 import { restart } from "./operations";
 import { recordReplyTargets } from "./review-replies";
 
-function setup() {
+async function setup() {
   const db = openDatabase(":memory:");
   migrate(db);
   const clock = new FakeClock(1_000);
@@ -38,7 +38,12 @@ function setup() {
   });
   beginImplementRun(db, "eng-1", 1);
   enterMergeQueue(db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
-  recordItemPullRequest(db, { itemId: "eng-1", pullNumber: 7, pullUrl: null, openedAt: 1 });
+  await recordItemPullRequest(sqliteDb(db), {
+    itemId: "eng-1",
+    pullNumber: 7,
+    pullUrl: null,
+    openedAt: 1,
+  });
   const github = createFakeReviewReplies();
   const client: GitHubClient = {
     request: async (request) => github.respond(request) ?? { status: 404, body: null },
@@ -78,7 +83,7 @@ const target = (number: number, kind: "thread" | "conversation", commentId: numb
 });
 
 test("a review restart posts one working-on-it comment and 👀 on each comment, once", async () => {
-  const { db, github, clock, startRestart, turnStarts } = setup();
+  const { db, github, clock, startRestart, turnStarts } = await setup();
   startRestart("review", "Fix the review.", "review:eng-1:601");
   await recordReplyTargets(
     db,
@@ -102,7 +107,7 @@ test("a review restart posts one working-on-it comment and 👀 on each comment,
 });
 
 test("a conflict restart names the merge conflict and reacts to nothing", async () => {
-  const { github, startRestart, turnStarts } = setup();
+  const { github, startRestart, turnStarts } = await setup();
   startRestart("conflict", REBASE_CONFLICT_INSTRUCTION, "conflict:eng-1:recheck:h");
 
   await turnStarts();
@@ -114,7 +119,7 @@ test("a conflict restart names the merge conflict and reacts to nothing", async 
 });
 
 test("Paws does not read its own working-on-it comment back as a new comment", async () => {
-  const { db, github, clock, startRestart, turnStarts } = setup();
+  const { db, github, clock, startRestart, turnStarts } = await setup();
   startRestart("conflict", REBASE_CONFLICT_INSTRUCTION, "conflict:eng-1:recheck:h");
   await turnStarts();
 

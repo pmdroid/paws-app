@@ -114,14 +114,12 @@ export function* sessionRepositoriesAllowedSteps(
   return allowed;
 }
 
-export function sessionRepositoriesAllowed(
-  db: Database,
+export async function sessionRepositoriesAllowed(
+  store: Db,
   sessionIds: readonly string[],
   repositories: readonly string[],
-): Set<string> {
-  return settled(
-    sqliteDb(db).run((q) => sessionRepositoriesAllowedSteps(q, sessionIds, repositories)),
-  );
+): Promise<Set<string>> {
+  return store.run((q) => sessionRepositoriesAllowedSteps(q, sessionIds, repositories));
 }
 
 /** Whether the session belongs to the workspace and its team may use the repository. */

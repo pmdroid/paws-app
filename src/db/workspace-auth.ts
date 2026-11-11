@@ -233,8 +233,11 @@ export function* replaceWorkspaceRepositoriesSteps(q: Q, input: RepositoriesChan
   });
 }
 
-export function replaceWorkspaceRepositories(db: Database, input: RepositoriesChange): void {
-  settled(sqliteDb(db).transaction((q) => replaceWorkspaceRepositoriesSteps(q, input)));
+export async function replaceWorkspaceRepositories(
+  store: Db,
+  input: RepositoriesChange,
+): Promise<void> {
+  await store.transaction((q) => replaceWorkspaceRepositoriesSteps(q, input));
 }
 
 /**

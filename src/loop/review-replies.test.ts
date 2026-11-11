@@ -85,7 +85,7 @@ const FILTER: PullCommentFilter = {
   ignoredMarkers: () => [],
 };
 
-function setup() {
+async function setup() {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
@@ -96,7 +96,12 @@ function setup() {
   });
   beginImplementRun(db, "eng-1", 1);
   enterMergeQueue(db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
-  recordItemPullRequest(db, { itemId: "eng-1", pullNumber: 7, pullUrl: null, openedAt: 1 });
+  await recordItemPullRequest(sqliteDb(db), {
+    itemId: "eng-1",
+    pullNumber: 7,
+    pullUrl: null,
+    openedAt: 1,
+  });
   const threads = createFakeReviewThreads(THREADS);
   const queue = createFakeMergeQueue();
   const replies = createFakeReviewReplies();
@@ -198,10 +203,10 @@ function setup() {
   };
 }
 
-const jobs = (db: ReturnType<typeof setup>["db"], queue: string) =>
+const jobs = (db: Awaited<ReturnType<typeof setup>>["db"], queue: string) =>
   listJobs(db).filter((job) => job.queue === queue);
 const report = (
-  db: ReturnType<typeof setup>["db"],
+  db: Awaited<ReturnType<typeof setup>>["db"],
   finalMessage: string,
   sessionId: string | null = "s-1",
 ) => {
@@ -214,12 +219,12 @@ const report = (
     now: 2_000,
   });
 };
-const handoffText = (db: ReturnType<typeof setup>["db"]) =>
+const handoffText = (db: Awaited<ReturnType<typeof setup>>["db"]) =>
   (jobs(db, JOB_KIND.resume)[0]?.payload as { handoff: string } | undefined)?.handoff ?? "";
 
 describe("a review and the comments after it reach the agent together", () => {
   test("a changes-requested review waits a quiet minute, and a later comment moves both jobs", async () => {
-    const { db, review, inline, tick } = setup();
+    const { db, review, inline, tick } = await setup();
     await inline({
       id: 9001,
       review: 601,
@@ -249,7 +254,7 @@ describe("a review and the comments after it reach the agent together", () => {
   });
 
   test("the wait from Settings › Merging replaces the default quiet minute and five-minute cap", async () => {
-    const { db, review, inline, tick, setWait } = setup();
+    const { db, review, inline, tick, setWait } = await setup();
     setWait({ quietMs: 10_000, maxMs: 25_000 });
     await review({
       id: 601,
@@ -281,7 +286,7 @@ describe("a review and the comments after it reach the agent together", () => {
   });
 
   test("the review restart carries the bot comment, and the comment job then has nothing left", async () => {
-    const { db, caps, review, inline } = setup();
+    const { db, caps, review, inline } = await setup();
     await inline({
       id: 9001,
       review: 601,
@@ -316,7 +321,7 @@ describe("a review and the comments after it reach the agent together", () => {
 
 describe("Paws replies to every handed-off comment", () => {
   test("the handoff lists each thread, review body and conversation comment to reply to", async () => {
-    const { db, caps, review, inline, conversation } = setup();
+    const { db, caps, review, inline, conversation } = await setup();
     await inline({
       id: 9001,
       review: 601,
@@ -354,7 +359,7 @@ describe("Paws replies to every handed-off comment", () => {
   });
 
   test("replies are posted once after the fix is published; only fixed threads are resolved", async () => {
-    const { db, caps, github, replies, review, inline, conversation } = setup();
+    const { db, caps, github, replies, review, inline, conversation } = await setup();
     await inline({
       id: 9001,
       review: 601,
@@ -422,7 +427,7 @@ describe("Paws replies to every handed-off comment", () => {
   });
 
   test("answered and unreported threads stay open", async () => {
-    const { db, github, replies } = setup();
+    const { db, github, replies } = await setup();
     await recordReplyTargets(
       db,
       "eng-1",
@@ -457,7 +462,7 @@ describe("Paws replies to every handed-off comment", () => {
   });
 
   test("a permanently failed resolution leaves later replies and resolutions independent", async () => {
-    const { db, github, replies } = setup();
+    const { db, github, replies } = await setup();
     await recordReplyTargets(
       db,
       "eng-1",
@@ -525,7 +530,7 @@ describe("Paws replies to every handed-off comment", () => {
     ["paws-test[bot]", "A reply without a marker."],
     ["pascal", `**Fixed** in abcdef1.\n\n${REVIEW_REPLY_MARKER}`],
   ])("Paws replies from %s never come back as new comments", async (author, body) => {
-    const { db, conversation } = setup();
+    const { db, conversation } = await setup();
     await conversation({ id: 3002, author, body });
     expect(await getPullComment(sqliteDb(db), "conversation", 3002)).toBeNull();
   });
@@ -533,7 +538,7 @@ describe("Paws replies to every handed-off comment", () => {
 
 describe("a fix turn cannot end until every comment has its own reply", () => {
   async function handedOff() {
-    const context = setup();
+    const context = await setup();
     const { db, caps, review, inline, conversation } = context;
     await inline({
       id: 9001,
@@ -553,7 +558,11 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
     return context;
   }
   // The turn the restart handed the reply list to ends with `finalMessage`.
-  function turnEnds(db: ReturnType<typeof setup>["db"], finalMessage: string, now = 5_000) {
+  function turnEnds(
+    db: Awaited<ReturnType<typeof setup>>["db"],
+    finalMessage: string,
+    now = 5_000,
+  ) {
     applyWorkItemEvent(db, "eng-1", "dispatched");
     const item = getWorkItem(db, "eng-1")!;
     return checkReviewReplies(sqliteDb(db), {
@@ -564,7 +573,7 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
       now,
     });
   }
-  const latestHandoff = (db: ReturnType<typeof setup>["db"]) =>
+  const latestHandoff = (db: Awaited<ReturnType<typeof setup>>["db"]) =>
     jobs(db, JOB_KIND.resume).at(-1)!.payload as { handoff: string; reason: string };
 
   test("a missing entry sends the turn straight back with that entry, spending no fix round", async () => {

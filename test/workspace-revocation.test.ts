@@ -30,11 +30,11 @@ import {
 import { createExecutionControlsFixture } from "./local/execution-controls";
 
 async function fixtureTest(
-  run: (f: ReturnType<typeof createExecutionControlsFixture>) => Promise<void>,
+  run: (f: Awaited<ReturnType<typeof createExecutionControlsFixture>>) => Promise<void>,
   options: Parameters<typeof createExecutionControlsFixture>[1] = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "paws-member-revocation-"));
-  const f = createExecutionControlsFixture(root, options);
+  const f = await createExecutionControlsFixture(root, options);
   try {
     await run(f);
   } finally {
@@ -292,7 +292,7 @@ test("revocation stops accepted work without closing its pull request", async ()
   await fixtureTest(async ({ db }) => {
     db.run("UPDATE linear_session SET creator_id='member' WHERE session_id='session-controlled'");
     db.run("UPDATE work_item SET state='merge_queue' WHERE id='controlled'");
-    recordItemPullRequest(db, {
+    await recordItemPullRequest(sqliteDb(db), {
       itemId: "controlled",
       pullNumber: 87,
       pullUrl: "https://example.invalid/pull/87",

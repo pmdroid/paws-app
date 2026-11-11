@@ -37,7 +37,7 @@ import {
   type WorkspaceAccess,
 } from "../../src/workspace";
 
-export function createExecutionControlsFixture(
+export async function createExecutionControlsFixture(
   root: string,
   options: {
     interruptItem?: (id: string) => Promise<void>;
@@ -112,7 +112,7 @@ export function createExecutionControlsFixture(
     repo: "unmapped",
     remoteUrl: "https://example.invalid/fixture/unmapped",
   });
-  replaceWorkspaceRepositories(db, {
+  await replaceWorkspaceRepositories(sqliteDb(db), {
     workspaceId,
     actorId: "admin",
     repositories: [{ repository: "fixture/allowed", teamId: "team" }],
@@ -222,7 +222,7 @@ export function createExecutionControlsFixture(
 }
 
 export async function probeExecutionControls(root: string) {
-  const fixture = createExecutionControlsFixture(root);
+  const fixture = await createExecutionControlsFixture(root);
   const { db, call } = fixture;
   const observations: { name: string; passed: boolean; observed: unknown }[] = [];
   const observe = (name: string, observed: unknown) =>
@@ -415,7 +415,7 @@ export async function probeExecutionControls(root: string) {
 if (import.meta.main) {
   const root = mkdtempSync(join(tmpdir(), "paws-execution-controls-"));
   if (process.argv.includes("--serve")) {
-    const fixture = createExecutionControlsFixture(root);
+    const fixture = await createExecutionControlsFixture(root);
     console.log(
       JSON.stringify({
         root,

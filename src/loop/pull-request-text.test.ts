@@ -49,7 +49,12 @@ async function fixture(
     evidence: EVIDENCE,
   });
   if (options.pull !== false)
-    recordItemPullRequest(db, { itemId, pullNumber: 12, pullUrl: null, openedAt: 1 });
+    await recordItemPullRequest(sqliteDb(db), {
+      itemId,
+      pullNumber: 12,
+      pullUrl: null,
+      openedAt: 1,
+    });
   if (options.pull !== false && options.stored !== false) {
     await savePullRequestText(
       sqliteDb(db),

@@ -41,7 +41,7 @@ async function setup(file = ":memory:") {
       repository: "acme/one",
       now: id === "first" ? 1 : 2,
     });
-    recordItemPullRequest(db, {
+    await recordItemPullRequest(sqliteDb(db), {
       itemId: id,
       pullNumber: id === "first" ? 7 : 8,
       pullUrl: null,

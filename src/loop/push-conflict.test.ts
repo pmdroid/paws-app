@@ -11,6 +11,7 @@ import {
   listJobs,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../db";
 import { restartForPushConflict } from "./push-conflict";
 
@@ -94,7 +95,7 @@ test("push conflicts also respect the six-return rolling hour budget", async () 
       payload: { itemId, reason: "conflict" },
       now: 1_000 + n,
     });
-    recordRebaseReturn(db, {
+    await recordRebaseReturn(sqliteDb(db), {
       itemId,
       jobId,
       candidate: null,

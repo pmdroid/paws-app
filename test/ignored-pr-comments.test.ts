@@ -205,7 +205,12 @@ describe("Settings › Merging › Ignored PR comments", () => {
     });
     beginImplementRun(db, "eng-1", 1);
     enterMergeQueue(db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
-    recordItemPullRequest(db, { itemId: "eng-1", pullNumber: 7, pullUrl: null, openedAt: 1 });
+    await recordItemPullRequest(sqliteDb(db), {
+      itemId: "eng-1",
+      pullNumber: 7,
+      pullUrl: null,
+      openedAt: 1,
+    });
     const settings = () => readMergeSettings(loadConfigFile(options.configPath));
     const filter: PullCommentFilter = {
       appId: () => null,

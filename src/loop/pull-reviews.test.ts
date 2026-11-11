@@ -349,7 +349,12 @@ describe("other reviews", () => {
     const { db, deliver } = setup();
     await deliver({ id: 4, state: "changes_requested", headRepository: 99 });
     await deliver({ id: 5, state: "changes_requested", headRepository: null });
-    recordItemPullRequest(db, { itemId: "eng-1", pullNumber: 7, pullUrl: null, openedAt: 1 });
+    await recordItemPullRequest(sqliteDb(db), {
+      itemId: "eng-1",
+      pullNumber: 7,
+      pullUrl: null,
+      openedAt: 1,
+    });
     await deliver({ id: 6, state: "changes_requested", pull: 8 });
     expect(reviewJobs(db)).toHaveLength(0);
     await deliver({ id: 7, state: "changes_requested" });

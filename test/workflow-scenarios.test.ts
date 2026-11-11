@@ -150,7 +150,12 @@ describe("combined recovery scenarios", () => {
     const w = await new World().seed(["merge_inflight"]);
     try {
       const id = "merge_inflight";
-      recordItemPullRequest(w.db, { itemId: id, pullNumber: 7, pullUrl: null, openedAt: w.now });
+      await recordItemPullRequest(sqliteDb(w.db), {
+        itemId: id,
+        pullNumber: 7,
+        pullUrl: null,
+        openedAt: w.now,
+      });
       const stop = {
         type: "stop" as const,
         itemId: id,
@@ -205,7 +210,12 @@ describe("combined recovery scenarios", () => {
     const w = await new World().seed(["merge_queue", "merge_active_run"]);
     try {
       const id = "merge_queue";
-      recordItemPullRequest(w.db, { itemId: id, pullNumber: 7, pullUrl: null, openedAt: w.now });
+      await recordItemPullRequest(sqliteDb(w.db), {
+        itemId: id,
+        pullNumber: 7,
+        pullUrl: null,
+        openedAt: w.now,
+      });
       const delivery = {
         deliveryId: "delivery-1",
         event: "pull_request_review",

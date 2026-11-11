@@ -119,7 +119,7 @@ export async function probeWorkspaceAuthorization(
       repo: repo!,
       remoteUrl: `https://example.invalid/fixture/${repo}`,
     });
-  replaceWorkspaceRepositories(db, {
+  await replaceWorkspaceRepositories(sqliteDb(db), {
     workspaceId: workspace.id,
     actorId: ownerId,
     repositories: [{ repository: "fixture/allowed", teamId: "team-a" }],

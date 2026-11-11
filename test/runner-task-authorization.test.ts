@@ -118,8 +118,8 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
       [run.id, runnerId, workspace.id, `cmd-${id}`, now + 600_000],
     );
   }
-  const mapping = (teamA: boolean) =>
-    replaceWorkspaceRepositories(db, {
+  const mapping = async (teamA: boolean) =>
+    await replaceWorkspaceRepositories(sqliteDb(db), {
       workspaceId: workspace.id,
       actorId: users["owner"]!,
       repositories: [
@@ -128,7 +128,7 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
       ],
       now,
     });
-  mapping(true);
+  await mapping(true);
   const control = createRunnerControl({
     db,
     authority: await initializeRunnerAuthority(join(root, "issuer")),
@@ -219,7 +219,7 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
         { id: runnerId, name: "Shared host", slots: { used: 3, total: 1 } },
       ]);
 
-    mapping(false);
+    await mapping(false);
     expect(identifiers((await list("member")).body)).toEqual([]);
     expect(identifiers((await list("administrator")).body)).toEqual(["PRIVATE-42"]);
     await changeLinearTeamAccess(sqliteDb(db), {

@@ -44,8 +44,8 @@ export function* recordRebaseReturnSteps(q: Q, row: RebaseReturn) {
   );
 }
 
-export function recordRebaseReturn(db: Database, row: RebaseReturn): void {
-  settled(sqliteDb(db).run((q) => recordRebaseReturnSteps(q, row)));
+export async function recordRebaseReturn(store: Db, row: RebaseReturn): Promise<void> {
+  await store.run((q) => recordRebaseReturnSteps(q, row));
 }
 
 export function* countRebaseReturnsSteps(q: Q, itemId: string, sinceActivationId: number) {
@@ -61,12 +61,12 @@ export function* countRebaseReturnsSteps(q: Q, itemId: string, sinceActivationId
   return Number(row?.n ?? 0);
 }
 
-export function countRebaseReturns(
-  db: Database,
+export async function countRebaseReturns(
+  store: Db,
   itemId: string,
   sinceActivationId: number,
-): number {
-  return settled(sqliteDb(db).run((q) => countRebaseReturnsSteps(q, itemId, sinceActivationId)));
+): Promise<number> {
+  return store.run((q) => countRebaseReturnsSteps(q, itemId, sinceActivationId));
 }
 
 export function* listRebaseReturnsSteps(

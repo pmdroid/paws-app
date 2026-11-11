@@ -65,7 +65,7 @@ describe("merge returns", () => {
       ],
     ]);
     expect(announced).toEqual(["1:eng-1:rebase-conflict:0:0"]);
-    expect(rebaseReturns(db, "eng-1")).toBe(1);
+    expect(await rebaseReturns(db, "eng-1")).toBe(1);
     expect(ciFixes(db, "eng-1")).toBe(0);
   });
 
@@ -86,20 +86,20 @@ describe("merge returns", () => {
       payload: { itemId: "eng-1" },
       now: 3,
     });
-    expect(rebaseReturns(db, "eng-1")).toBe(0);
+    expect(await rebaseReturns(db, "eng-1")).toBe(0);
   });
 
   test("a guidance-answer restart resets the return budget", async () => {
     const db = queued();
     await sendBack(db, 1);
-    expect(rebaseReturns(db, "eng-1")).toBe(1);
+    expect(await rebaseReturns(db, "eng-1")).toBe(1);
     enqueueJob(db, {
       queue: JOB_KIND.resume,
       jobKey: "resume:answer:guidance",
       payload: { itemId: "eng-1", reason: "answer" },
       now: 3,
     });
-    expect(rebaseReturns(db, "eng-1")).toBe(0);
+    expect(await rebaseReturns(db, "eng-1")).toBe(0);
   });
 
   test("findings, CI and review share one budget until a person replies", async () => {

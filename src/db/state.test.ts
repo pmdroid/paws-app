@@ -702,7 +702,12 @@ describe("linear commands", () => {
       commits: 3,
       recordedAt: clock.now(),
     });
-    recordItemPullRequest(db, { itemId: "eng-2", pullNumber: 7, pullUrl: null, openedAt: 1 });
+    await recordItemPullRequest(sqliteDb(db), {
+      itemId: "eng-2",
+      pullNumber: 7,
+      pullUrl: null,
+      openedAt: 1,
+    });
     enqueueJob(db, {
       queue: "github.merge",
       payload: { itemId: "eng-2" },
@@ -778,7 +783,7 @@ describe("linear commands", () => {
     );
   });
 
-  test("a stop names the commits left on the branch and the open pull request", () => {
+  test("a stop names the commits left on the branch and the open pull request", async () => {
     const { db, clock } = harness();
     insertQueuedItem(db, { id: "eng-5", sessionKey: "ses", now: clock.now() });
     const { run } = beginImplementRun(db, "eng-5", clock.now());
@@ -790,7 +795,12 @@ describe("linear commands", () => {
       commits: 1,
       recordedAt: clock.now(),
     });
-    recordItemPullRequest(db, { itemId: "eng-5", pullNumber: 12, pullUrl: null, openedAt: 1 });
+    await recordItemPullRequest(sqliteDb(db), {
+      itemId: "eng-5",
+      pullNumber: 12,
+      pullUrl: null,
+      openedAt: 1,
+    });
     submitCommand(db, new CommandBus(), {
       type: "stop",
       source: "dashboard",

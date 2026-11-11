@@ -20,7 +20,7 @@ import { answerQuestion } from "../questions";
 import { createExecutionControlsFixture } from "./execution-controls";
 
 export async function decisionFixture(root: string) {
-  const fixture = createExecutionControlsFixture(root);
+  const fixture = await createExecutionControlsFixture(root);
   activateLinearItem(fixture.db, "session-controlled", "controlled");
   bindWorkItemRepository(fixture.db, "controlled", {
     owner: "fixture",

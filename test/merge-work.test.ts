@@ -74,35 +74,45 @@ function userTurn(db: Database, itemId: string, now: number): number {
   });
 }
 
-test("rebase returns are counted from rebase_return rows after the latest user turn", () => {
+test("rebase returns are counted from rebase_return rows after the latest user turn", async () => {
   const db = legacyTempDb();
   try {
     insertItem(db, "item");
     const before = enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "item" }, now: 1 });
-    recordRebaseReturn(db, { itemId: "item", jobId: before, candidate: "a1", reason: "merge" });
+    await recordRebaseReturn(sqliteDb(db), {
+      itemId: "item",
+      jobId: before,
+      candidate: "a1",
+      reason: "merge",
+    });
     const turn = userTurn(db, "item", 2);
-    expect(countRebaseReturns(db, "item", turn)).toBe(0);
-    recordRebaseReturn(db, { itemId: "item", jobId: turn, candidate: null, reason: "linear" });
+    expect(await countRebaseReturns(sqliteDb(db), "item", turn)).toBe(0);
+    await recordRebaseReturn(sqliteDb(db), {
+      itemId: "item",
+      jobId: turn,
+      candidate: null,
+      reason: "linear",
+    });
     const after = enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "item" }, now: 3 });
-    recordRebaseReturn(db, {
+    await recordRebaseReturn(sqliteDb(db), {
       itemId: "item",
       jobId: after,
       candidate: "b2",
       reason: "github_queue",
     });
-    expect(countRebaseReturns(db, "item", turn)).toBe(2);
-    expect(countRebaseReturns(db, "item", 0)).toBe(3);
+    expect(await countRebaseReturns(sqliteDb(db), "item", turn)).toBe(2);
+    expect(await countRebaseReturns(sqliteDb(db), "item", 0)).toBe(3);
   } finally {
     db.close();
   }
 });
 
-test("a rebase return keeps the main commit, files and time it conflicted on", () => {
+test("a rebase return keeps the main commit, files and time it conflicted on", async () => {
   const db = legacyTempDb();
   try {
     insertItem(db, "item");
     const first = enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "item" }, now: 1 });
-    recordRebaseReturn(db, {
+    await recordRebaseReturn(sqliteDb(db), {
       itemId: "item",
       jobId: first,
       candidate: null,
@@ -112,7 +122,12 @@ test("a rebase return keeps the main commit, files and time it conflicted on", (
       recordedAt: 10,
     });
     const second = enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "item" }, now: 2 });
-    recordRebaseReturn(db, { itemId: "item", jobId: second, candidate: null, reason: "linear" });
+    await recordRebaseReturn(sqliteDb(db), {
+      itemId: "item",
+      jobId: second,
+      candidate: null,
+      reason: "linear",
+    });
     expect(listRebaseReturns(db, "item", 0)).toEqual([
       { jobId: first, reason: "merge", base: "abc1234", files: ["src/index.ts"], recordedAt: 10 },
       { jobId: second, reason: "linear", base: null, files: null, recordedAt: null },
@@ -153,7 +168,7 @@ test("CI fixes are counted from the CI rounds recorded after the latest user tur
   }
 });
 
-test("the rebase_return migration backfills rebase-conflict returns so budgets survive a deploy", () => {
+test("the rebase_return migration backfills rebase-conflict returns so budgets survive a deploy", async () => {
   const db = openDatabase(":memory:");
   try {
     db.run(
@@ -205,7 +220,7 @@ test("the rebase_return migration backfills rebase-conflict returns so budgets s
       { job_id: merge, item_id: "item", candidate: null, reason: "merge" },
       { job_id: linear, item_id: "item", candidate: null, reason: "linear" },
     ]);
-    expect(countRebaseReturns(db, "item", 0)).toBe(2);
+    expect(await countRebaseReturns(sqliteDb(db), "item", 0)).toBe(2);
     expect(listJobs(db)).toHaveLength(4);
   } finally {
     db.close();

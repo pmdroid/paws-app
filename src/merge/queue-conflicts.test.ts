@@ -176,7 +176,7 @@ describe("queued pull requests that conflict with main", () => {
     const h = await start();
     await threeQueued(h);
     for (let round = 1; round <= MAX_REBASE_RETURNS; round++)
-      recordRebaseReturn(h.db, {
+      await recordRebaseReturn(sqliteDb(h.db), {
         itemId: "ENG-2",
         jobId: 900 + round,
         candidate: `old-${round}`,
@@ -208,7 +208,7 @@ describe("queued pull requests that conflict with main", () => {
     const h = await start();
     await threeQueued(h);
     for (let round = 1; round <= MAX_REBASE_RETURNS; round++)
-      recordRebaseReturn(h.db, {
+      await recordRebaseReturn(sqliteDb(h.db), {
         itemId: "ENG-3",
         jobId: 900 + round,
         candidate: `old-${round}`,

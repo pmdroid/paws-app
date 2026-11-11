@@ -32,7 +32,7 @@ async function until(predicate: () => boolean, message: string, timeout = 5000) 
 }
 
 async function remoteFixture(
-  fixture: ReturnType<typeof createExecutionControlsFixture>,
+  fixture: Awaited<ReturnType<typeof createExecutionControlsFixture>>,
   root: string,
   state: "running" | "awaiting_input" | "verifying",
 ) {
@@ -287,11 +287,11 @@ export async function probeExecutionStopStates(root: string) {
   );
   for (const state of states) {
     const directory = join(root, state);
-    const fixture = createExecutionControlsFixture(directory);
+    const fixture = await createExecutionControlsFixture(directory);
     const { db } = fixture;
     let remote: Awaited<ReturnType<typeof remoteFixture>> | undefined;
     let orchestrator: Orchestrator | undefined;
-    let server: ReturnType<typeof startServer> | undefined;
+    let server: Awaited<ReturnType<typeof startServer>> | undefined;
     let access: WorkspaceAccess | undefined;
     try {
       db.run("UPDATE work_item SET state=? WHERE id='controlled'", [

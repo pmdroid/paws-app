@@ -45,7 +45,7 @@ async function conflicted(
 ): Promise<void> {
   await item(db, "earlier", null);
   db.run("UPDATE work_item SET state='merged' WHERE id='earlier'");
-  recordRebaseReturn(db, {
+  await recordRebaseReturn(sqliteDb(db), {
     itemId: "earlier",
     jobId: 9000 + db.query<{ n: number }, []>("SELECT count(*) AS n FROM rebase_return").get()!.n,
     candidate: "head-earlier",
@@ -293,7 +293,7 @@ test("a conflict restart without files counts the files a merge before it shared
       confirmedAt: NOW - 120_000,
     });
     await item(db, "returned", [PROVIDER, "src/b.ts"]);
-    recordRebaseReturn(db, {
+    await recordRebaseReturn(sqliteDb(db), {
       itemId: "returned",
       jobId: 1,
       candidate: "head-returned",
@@ -323,7 +323,7 @@ test("a later candidate does not change the files of an earlier conflict", async
       confirmedAt: NOW - 120_000,
     });
     await item(db, "returned", [PROVIDER, "src/b.ts"], NOW - 100_000);
-    recordRebaseReturn(db, {
+    await recordRebaseReturn(sqliteDb(db), {
       itemId: "returned",
       jobId: 1,
       candidate: "head-returned",

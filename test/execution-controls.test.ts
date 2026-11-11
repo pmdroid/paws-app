@@ -32,7 +32,7 @@ test("Workspace execution controls reach canonical Stop, Pause and Resume with c
 
 test("Retry puts a dead job of an authorized item back to pending and refuses everything else", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-controls-retry-"));
-  const fixture = createExecutionControlsFixture(root);
+  const fixture = await createExecutionControlsFixture(root);
   try {
     const { db, origin } = fixture;
     const retry = (target: unknown, identity = "member") =>
@@ -103,7 +103,7 @@ test("Retry puts a dead job of an authorized item back to pending and refuses ev
 
 test("Clear stuck agent clears a blocked conversation for an admin, refuses a member and is audited", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-controls-stuck-"));
-  const fixture = createExecutionControlsFixture(root);
+  const fixture = await createExecutionControlsFixture(root);
   try {
     const { db, call } = fixture;
     blockConversation(db, "controlled", Date.now());
@@ -144,7 +144,7 @@ test("Clear stuck agent clears a blocked conversation for an admin, refuses a me
 
 test("Resume restarts an item a Linear stop paused, and Stop cancels it", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-controls-linear-stop-"));
-  const fixture = createExecutionControlsFixture(root);
+  const fixture = await createExecutionControlsFixture(root);
   try {
     const { db, orchestrator, call } = fixture;
     const stop = async () => {
@@ -175,7 +175,7 @@ test("Resume restarts an item a Linear stop paused, and Stop cancels it", async 
 
 test("Asking which controls an item has is not a denial; a refused action still is", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-controls-audit-"));
-  const fixture = createExecutionControlsFixture(root);
+  const fixture = await createExecutionControlsFixture(root);
   try {
     const { db, call } = fixture;
     const denials = () =>

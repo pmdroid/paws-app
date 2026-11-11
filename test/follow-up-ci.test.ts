@@ -163,7 +163,7 @@ async function waitingTask(
   });
   enterMergeQueue(db, itemId, { phase: "merge_queue", baseSha: "f".repeat(40), wipCommit: HEAD });
   if (options.pull !== false)
-    recordItemPullRequest(db, {
+    await recordItemPullRequest(sqliteDb(db), {
       itemId,
       pullNumber: 7,
       pullUrl: "https://github.com/acme/one/pull/7",

@@ -1049,7 +1049,12 @@ describe("review findings", () => {
     const f = setup();
     try {
       toMergeQueue(f.db);
-      recordItemPullRequest(f.db, { itemId: "eng-1", pullNumber: 7, pullUrl: null, openedAt: T0 });
+      await recordItemPullRequest(sqliteDb(f.db), {
+        itemId: "eng-1",
+        pullNumber: 7,
+        pullUrl: null,
+        openedAt: T0,
+      });
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "One more thing." })));
       f.setQueueResult("merged");
       expect(await f.deliver()).toBe("wait");
@@ -1091,7 +1096,12 @@ describe("review findings", () => {
     const f = setup();
     try {
       toMergeQueue(f.db);
-      recordItemPullRequest(f.db, { itemId: "eng-1", pullNumber: 7, pullUrl: null, openedAt: T0 });
+      await recordItemPullRequest(sqliteDb(f.db), {
+        itemId: "eng-1",
+        pullNumber: 7,
+        pullUrl: null,
+        openedAt: T0,
+      });
       const left: number[] = [];
       f.onLeave((pullNumber) => left.push(pullNumber));
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Wait for me." })));
@@ -1106,7 +1116,12 @@ describe("review findings", () => {
     const f = setup();
     try {
       toMergeQueue(f.db);
-      recordItemPullRequest(f.db, { itemId: "eng-1", pullNumber: 7, pullUrl: null, openedAt: T0 });
+      await recordItemPullRequest(sqliteDb(f.db), {
+        itemId: "eng-1",
+        pullNumber: 7,
+        pullUrl: null,
+        openedAt: T0,
+      });
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Too late?" })));
       f.setQueueResult("closed");
       expect(await f.deliver()).toBe("done");

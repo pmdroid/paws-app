@@ -8,6 +8,7 @@ import {
   replaceWorkspaceRepositories,
   syncWorkspaceMember,
   workspaceMember,
+  sqliteDb,
 } from "../src/db";
 import {
   handleWorkspaceGitHubIntegration,
@@ -17,7 +18,7 @@ import {
   type WorkspacePrincipal,
 } from "../src/workspace";
 
-function fixture() {
+async function fixture() {
   const db = openDatabase(":memory:");
   migrate(db);
   const now = 1000000;
@@ -51,7 +52,7 @@ function fixture() {
       now,
     });
   }
-  replaceWorkspaceRepositories(db, {
+  await replaceWorkspaceRepositories(sqliteDb(db), {
     workspaceId: "workspace",
     actorId: "owner",
     repositories: [{ repository: "acme/widgets", teamId: "team" }],
@@ -102,7 +103,7 @@ function fixture() {
 }
 
 test("signed-in admins, including the one who connected the workspace, can revalidate the App regardless of sign-in age", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     for (const role of ["owner", "admin"]) expect((await f.request(role)).status).toBe(200);
     expect((await f.request("member")).status).toBe(403);
@@ -122,7 +123,7 @@ test("signed-in admins, including the one who connected the workspace, can reval
 });
 
 test("Paws admin permission never overrides missing GitHub installation authority", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     expect((await f.request("admin", { check: async () => false })).status).toBe(409);
     expect(listJobs(f.db)).toHaveLength(0);
@@ -132,7 +133,7 @@ test("Paws admin permission never overrides missing GitHub installation authorit
 });
 
 test("in-flight administrator demotion rejects recovery transaction and is audited", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     expect(
       (
@@ -154,13 +155,13 @@ test("in-flight administrator demotion rejects recovery transaction and is audit
 });
 
 test("repository scope mutation during revalidation cannot enqueue recovery", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     expect(
       (
         await f.request("owner", {
           check: async () => {
-            replaceWorkspaceRepositories(f.db, {
+            await replaceWorkspaceRepositories(sqliteDb(f.db), {
               workspaceId: "workspace",
               actorId: "owner",
               repositories: [{ repository: "acme/other", teamId: "team" }],

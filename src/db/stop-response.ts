@@ -57,8 +57,8 @@ export function* recordItemPullRequestSteps(q: Q, pull: ItemPullRequest): Steps<
 }
 
 /** The pull request Paws opened for the item. Republishing keeps the same number. */
-export function recordItemPullRequest(db: Database, pull: ItemPullRequest): void {
-  settled(sqliteDb(db).run((q) => recordItemPullRequestSteps(q, pull)));
+export async function recordItemPullRequest(store: Db, pull: ItemPullRequest): Promise<void> {
+  await store.run((q) => recordItemPullRequestSteps(q, pull));
 }
 
 export function* getItemPullRequestSteps(q: Q, itemId: string): Steps<ItemPullRequest | null> {

@@ -787,7 +787,7 @@ describe("advanceMerge while the pull request waits for a review", () => {
     const h = await waiting();
     const main = await h.moveMain("ok.txt", "from-main\n");
     for (let spent = 0; spent < 3; spent++)
-      recordRebaseReturn(h.db, {
+      await recordRebaseReturn(sqliteDb(h.db), {
         itemId: "ENG-1",
         jobId: 900 + spent,
         candidate: `earlier-${spent}`,
