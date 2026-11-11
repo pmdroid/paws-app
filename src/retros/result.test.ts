@@ -372,7 +372,7 @@ describe("settling an attempt", () => {
       settingsRevision: revision,
       now: FIXTURE_END,
     });
-    const collected = await collectRetroDigest(db, {
+    const collected = await collectRetroDigest(sqliteDb(db), {
       retroId: "r1",
       artifactRoot: root,
       now: FIXTURE_END,

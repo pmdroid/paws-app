@@ -621,7 +621,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     recheckLinearEvent: linearActions.recheck,
     authorizeLinearCommentActor: (actor: Parameters<typeof linearActions.authorizeActor>[0]) =>
       track(() => linearActions.authorizeActor(actor)),
-    recheckLinearCommentActor: linearActions.recheckActor,
+    recheckLinearCommentActorSteps: linearActions.recheckActorSteps,
     authenticate: (request: Request) => track(() => authenticate(request)),
     repositoryTeams: (request: Request, signal: AbortSignal) =>
       track(async () => {

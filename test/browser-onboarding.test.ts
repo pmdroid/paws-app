@@ -264,7 +264,7 @@ test("browser sign-in creates an owner only in the operator's configured organiz
     expect(response.headers.get("location")).toBe("/dashboard/settings/integrations?connecting=1");
     expect(response.headers.get("set-cookie")).toContain("__Host-paws-session=");
     expect(scene.state.installed).toBe(1);
-    const workspace = workspaceForOrganization(scene.db, "org")!;
+    const workspace = (await workspaceForOrganization(sqliteDb(scene.db), "org"))!;
     expect((await listWorkspaceMembers(sqliteDb(scene.db), workspace.id))[0]?.role).toBe("admin");
     expect(readStoredToken(scene.db, join(scene.home, "secrets"))?.accessToken).toBe("fixture-app");
     expect(JSON.stringify(scene.db.query("SELECT * FROM credential").all())).not.toContain(
@@ -352,7 +352,7 @@ test("a concurrently bound foreign workspace prevents credential writes", async 
     expect(response.headers.get("location")).toBe("/dashboard/?onboarding=workspace-mismatch");
     expect(readStoredToken(scene.db, join(scene.home, "secrets"))).toBeNull();
     expect(existsSync(join(scene.home, "secrets/linear-client.json"))).toBe(false);
-    expect(workspaceForOrganization(scene.db, "org")).toBeNull();
+    expect(await workspaceForOrganization(sqliteDb(scene.db), "org")).toBeNull();
     expect(scene.state.installed).toBe(0);
   } finally {
     scene.close();
@@ -413,7 +413,7 @@ for (const failure of [
       );
       expect(response.headers.get("location")).toContain("/dashboard/?onboarding=");
       expect(readStoredToken(scene.db, join(scene.home, "secrets"))).toBeNull();
-      expect(workspaceForOrganization(scene.db, "org")).toBeNull();
+      expect(await workspaceForOrganization(sqliteDb(scene.db), "org")).toBeNull();
       expect(scene.state.installed).toBe(0);
     } finally {
       scene.close();
@@ -430,7 +430,7 @@ for (const concurrentRevocation of [false, true]) {
         `/auth/linear/install/callback?state=${initial.state}&code=app-code`,
         initial.cookie,
       );
-      const workspace = workspaceForOrganization(scene.db, "org")!;
+      const workspace = (await workspaceForOrganization(sqliteDb(scene.db), "org"))!;
       const scope = { organizationId: "org", oauthClientId: "fixture-client", appUserId: "app" };
       await recordLinearInstallation(sqliteDb(scene.db), {
         ...scope,
@@ -465,13 +465,13 @@ for (const concurrentRevocation of [false, true]) {
           ? "/dashboard/?onboarding=failed"
           : "/dashboard/settings/integrations?connecting=1",
       );
-      expect(getLinearSessionAccess(scene.db, "session")).toBe(
+      expect(await getLinearSessionAccess(sqliteDb(scene.db), "session")).toBe(
         concurrentRevocation ? "revoked" : "allowed",
       );
       expect(readStoredToken(scene.db, join(scene.home, "secrets"))?.accessToken).toBe(
         concurrentRevocation ? "fixture-app" : "fixture-reconnected-app",
       );
-      expect(workspaceForOrganization(scene.db, "org")?.id).toBe(workspace.id);
+      expect((await workspaceForOrganization(sqliteDb(scene.db), "org"))?.id).toBe(workspace.id);
       expect(
         (await listWorkspaceMembers(sqliteDb(scene.db), workspace.id)).filter(
           (member) => member.role === "admin",
@@ -513,7 +513,7 @@ for (const admin of [false, true]) {
         ),
       );
       expect(response?.status).toBe(admin ? 303 : 403);
-      const workspace = workspaceForOrganization(scene.db, "org");
+      const workspace = await workspaceForOrganization(sqliteDb(scene.db), "org");
       if (admin)
         expect((await listWorkspaceMembers(sqliteDb(scene.db), workspace!.id))[0]?.role).toBe(
           "admin",

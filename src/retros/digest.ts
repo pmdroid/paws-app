@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import type { Database } from "bun:sqlite";
 import { scrubText } from "../closeout-spec";
 import {
   beginRetroCollection,
@@ -12,7 +11,7 @@ import {
   type RetroActivityItem,
   type RetroActivitySnapshot,
   type RetroActivityTransition,
-  sqliteDb,
+  type Db,
 } from "../db";
 import { dailyFindingKey } from "../improvements";
 
@@ -1024,7 +1023,7 @@ const progressKey = (progressId: string) =>
     : `sha256:${createHash("sha256").update(progressId).digest("hex")}`;
 
 export async function collectRetroDigest(
-  db: Database,
+  store: Db,
   input: {
     retroId: string;
     artifactRoot: string;
@@ -1033,10 +1032,10 @@ export async function collectRetroDigest(
     maxPromptChars?: number;
   },
 ): Promise<RetroCollection> {
-  const retro = await getRetro(sqliteDb(db), input.retroId);
+  const retro = await getRetro(store, input.retroId);
   if (retro === null || retro.state !== "collecting")
     return { ok: false, reason: "not_collecting" };
-  const begun = await beginRetroCollection(sqliteDb(db), {
+  const begun = await beginRetroCollection(store, {
     retroId: retro.id,
     initialCursors: Object.fromEntries(
       retro.repositories.map((repository) => [repository, retro.windowStart]),
@@ -1050,7 +1049,7 @@ export async function collectRetroDigest(
     start: cursor.startCursor,
     end: Math.max(cursor.startCursor, cut),
   }));
-  const snapshot = await readRetroActivity(sqliteDb(db), {
+  const snapshot = await readRetroActivity(store, {
     workspaceId: retro.workspaceId,
     repositories: retro.repositories,
     before: Math.max(cut, ...windows.map((window) => window.end)),
@@ -1063,7 +1062,7 @@ export async function collectRetroDigest(
     ...(input.secrets === undefined ? {} : { secrets: input.secrets }),
   });
   await recordRetroEvidence(
-    sqliteDb(db),
+    store,
     retro.id,
     digest.records.map((record) => ({
       evidenceId: record.evidenceId,
@@ -1087,19 +1086,19 @@ export async function collectRetroDigest(
     coverage: digest.coverage,
     prompt: view.manifest,
   };
-  await writeRetroArtifact(sqliteDb(db), input.artifactRoot, {
+  await writeRetroArtifact(store, input.artifactRoot, {
     retroId: retro.id,
     kind: "digest",
     bytes: digestBytes,
     now: input.now,
   });
-  const manifestRecord = await writeRetroArtifact(sqliteDb(db), input.artifactRoot, {
+  const manifestRecord = await writeRetroArtifact(store, input.artifactRoot, {
     retroId: retro.id,
     kind: "manifest",
     bytes: new TextEncoder().encode(JSON.stringify(manifest)),
     now: input.now,
   });
-  const frozen = await freezeRetroInput(sqliteDb(db), {
+  const frozen = await freezeRetroInput(store, {
     retroId: retro.id,
     endCursors: Object.fromEntries(windows.map((window) => [window.repository, window.end])),
     now: input.now,

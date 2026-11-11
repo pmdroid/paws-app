@@ -5,6 +5,7 @@ export {
   issueWorkspaceSession,
   WorkspaceAccessRevoked,
   requestWorkspaceSession,
+  requestWorkspaceSessionSteps,
   validWorkspaceCsrf,
   workspaceId,
   workspaceSecret,

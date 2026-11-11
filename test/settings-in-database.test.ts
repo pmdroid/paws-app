@@ -77,7 +77,7 @@ function saveTimeLimits(configPath: string, implementationMinutes: number) {
         projects: [],
       }),
     }),
-    { configPath, csrfToken: "csrf", role: "admin", audit: () => {} },
+    { configPath, csrfToken: "csrf", role: "admin", audit: async () => {} },
   );
 }
 

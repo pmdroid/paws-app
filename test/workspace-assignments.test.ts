@@ -729,7 +729,9 @@ test("a Linear guest's delegation is ignored, and the session's response says gu
       ["response", "Linear guests can't use Paws."],
     ]);
     // A linked member who became a guest loses access, the same as a deactivated account.
-    expect(workspaceLinearMember(f.db, "workspace", "member")?.active).toBe(false);
+    expect((await workspaceLinearMember(sqliteDb(f.db), "workspace", "member"))?.active).toBe(
+      false,
+    );
   } finally {
     await f.close();
   }
@@ -1931,10 +1933,10 @@ test("revoked members cannot sign in or delegate while Linear still considers th
       now: f.clock.now(),
     });
     f.db.run("UPDATE workspace_member SET active=0,checked_at=0 WHERE user_id='member'");
-    const before = workspaceLinearMember(f.db, "workspace", "member")!;
+    const before = (await workspaceLinearMember(sqliteDb(f.db), "workspace", "member"))!;
     const denied = await f.callback(await f.begin(`${f.origin}/auth/linear`));
     expect(denied.status).toBe(403);
-    expect(workspaceLinearMember(f.db, "workspace", "member")).toMatchObject({
+    expect(await workspaceLinearMember(sqliteDb(f.db), "workspace", "member")).toMatchObject({
       active: before.active,
       checkedAt: before.checkedAt,
       role: before.role,
@@ -1955,7 +1957,9 @@ test("revoked members cannot sign in or delegate while Linear still considers th
     expect(f.tracker.progress.slice(1).map((update) => [update.kind, update.body])).toEqual([
       ["response", WORKSPACE_REVOKED_RESPONSE],
     ]);
-    expect(workspaceLinearMember(f.db, "workspace", "member")?.revokedAt).not.toBeNull();
+    expect(
+      (await workspaceLinearMember(sqliteDb(f.db), "workspace", "member"))?.revokedAt,
+    ).not.toBeNull();
     await changeWorkspaceRevocation(sqliteDb(f.db), {
       workspaceId: "workspace",
       actorId: "owner",
@@ -1978,7 +1982,7 @@ test("a held delegation revoked during continuation retains its final response",
       await changeWorkspaceRevocation(sqliteDb(f.db), {
         workspaceId: "workspace",
         actorId: "owner",
-        userId: workspaceLinearMember(f.db, "workspace", "member")!.userId,
+        userId: (await workspaceLinearMember(sqliteDb(f.db), "workspace", "member"))!.userId,
         revoked: true,
         now: f.clock.now(),
       });

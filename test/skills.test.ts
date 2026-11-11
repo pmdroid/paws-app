@@ -783,7 +783,9 @@ describe("skill settings API", () => {
     root: join(root, "skills"),
     resolver: fakeSkillResolver(),
     csrfToken: "csrf",
-    audit: (action, subject) => audit.push([action, subject]),
+    audit: async (action, subject) => {
+      audit.push([action, subject]);
+    },
     now: () => 10,
     ...patch,
   });

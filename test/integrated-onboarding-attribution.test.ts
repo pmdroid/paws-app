@@ -195,7 +195,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
     expect(
       await runtime.assignments.authorize({ ...event, deliveryId: "duplicate" }),
     ).toMatchObject({ outcome: "refused" });
-    expect(dbApi.workspaceLinearMember(db, "workspace", "creator")).toBeNull();
+    expect(await dbApi.workspaceLinearMember(sqliteDb(db), "workspace", "creator")).toBeNull();
     expect(dbApi.listWorkItems(db)).toHaveLength(0);
     expect(dbApi.listOutbox(db)).toHaveLength(1);
     const prompt = dbApi.listOutbox(db)[0]!.payload as { auth: { url: string; userId: string } };
@@ -321,7 +321,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
     expect(current().state).toBe("running");
     expect(policyCoauthors(await policy())).toEqual([]);
     expect(dbApi.listJobs(db).filter((job) => job.queue === "run.resume")).toHaveLength(1);
-    const member = dbApi.workspaceLinearMember(db, "workspace", "creator")!;
+    const member = (await dbApi.workspaceLinearMember(sqliteDb(db), "workspace", "creator"))!;
     const login = await workspace.issueWorkspaceSession(db, {
       workspaceId: "workspace",
       userId: member.userId,

@@ -34,7 +34,9 @@ function fixture() {
   const options: MergeSettingsOptions = {
     configPath,
     csrfToken: "test-token",
-    audit: (_action, subject) => audits.push(subject),
+    audit: async (_action, subject) => {
+      audits.push(subject);
+    },
   };
   return { options, audits };
 }

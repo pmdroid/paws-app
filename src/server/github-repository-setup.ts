@@ -31,7 +31,7 @@ import {
   sqliteDb,
   type Q,
 } from "../db";
-import { readWorkspaceJson, requestWorkspaceSession, validWorkspaceCsrf } from "../workspace";
+import { readWorkspaceJson, requestWorkspaceSessionSteps, validWorkspaceCsrf } from "../workspace";
 import { discoverGitHubInstallation } from "./github-connect-status";
 import { githubRepositoryChoices } from "./github-repository-choices";
 import { dashboardUrl } from "../dashboard-links";
@@ -83,7 +83,7 @@ export function createGitHubRepositorySetup(options: {
         !(await store.run((q) => githubOAuthStateExistsSteps(q, hash(state), KIND))))
     )
       return null;
-    const access = requestWorkspaceSession(db, request, now());
+    const access = await store.run((q) => requestWorkspaceSessionSteps(q, request, now()));
     const denied = () =>
       reply(
         {
@@ -95,20 +95,21 @@ export function createGitHubRepositorySetup(options: {
         },
         403,
       );
-    const permitted = () => {
-      const current = requestWorkspaceSession(db, request, now());
+    function* permittedSteps(q: Q) {
+      const current = yield* requestWorkspaceSessionSteps(q, request, now());
       return (
         access &&
         current?.session.tokenHash === access.session.tokenHash &&
         current.principal.workspaceId === access.principal.workspaceId &&
         current.principal.role === "admin"
       );
-    };
+    }
+    const permitted = () => store.run(permittedSteps);
     const selected = url.searchParams.get("workspaceId") ?? request.headers.get("x-paws-workspace");
     if (
       url.origin !== origin ||
       (request.headers.has("host") && request.headers.get("host") !== url.host) ||
-      !permitted() ||
+      !(await permitted()) ||
       (selected !== null && selected !== access!.principal.workspaceId)
     )
       return denied();
@@ -139,7 +140,7 @@ export function createGitHubRepositorySetup(options: {
     function* unchangedSteps(q: Q, pending: Pending, secret: Secret) {
       const row = yield* latestCompleteGithubOAuthSteps(q, requester, KIND, now());
       return Boolean(
-        permitted() &&
+        (yield* permittedSteps(q)) &&
         row?.state_hash === pending.state_hash &&
         row.secret_id === pending.secret_id &&
         row.expected_generation === pending.expected_generation &&
@@ -180,7 +181,7 @@ export function createGitHubRepositorySetup(options: {
           });
           await discoverGitHubInstallation(secret.app, [], signal, http);
           if (
-            !permitted() ||
+            !(await permitted()) ||
             pending.expires_at <= now() ||
             (await generation()) !== pending.expected_generation ||
             JSON.parse(pending.intent).scope !== (await scope()) ||
@@ -215,7 +216,8 @@ export function createGitHubRepositorySetup(options: {
         activation.save(secret.id, { app, verifier: secret.verifier });
         try {
           await store.transaction(function* (q) {
-            if (!permitted()) throw new Error("Workspace access changed. Sign in again.");
+            if (!(yield* permittedSteps(q)))
+              throw new Error("Workspace access changed. Sign in again.");
             yield* insertGithubOAuthSteps(q, {
               ...requester,
               stateHash: hash(secret.state),

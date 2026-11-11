@@ -87,13 +87,13 @@ export async function handleQuestionAnswer(
   const kind = question.kind;
   if (!isPawsAnswerKind(kind))
     return Response.json({ error: "Answer this on the issue page" }, { status: 400 });
-  const member = workspaceMember(db, principal.workspaceId, principal.userId);
+  const member = await workspaceMember(sqliteDb(db), principal.workspaceId, principal.userId);
   if (
     !workspaceMemberUsable(member) ||
     !member.linearUserId ||
     !canAnswer({ kind }, { id: member.linearUserId })
   ) {
-    auditWorkspaceAccess(db, {
+    await auditWorkspaceAccess(sqliteDb(db), {
       workspaceId: principal.workspaceId,
       userId: principal.userId,
       action: "question.refused",

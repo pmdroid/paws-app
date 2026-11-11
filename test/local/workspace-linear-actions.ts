@@ -214,7 +214,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       "workspace ownership cannot bypass mapped Linear team membership",
       (await getQuestion(sqliteDb(db), outsideOwner.question.id))?.status === "open" &&
         resumes() === 0,
-      { role: workspaceMember(db, "workspace", "owner")?.role },
+      { role: (await workspaceMember(sqliteDb(db), "workspace", "owner"))?.role },
     );
     identities.get("owner")!.teamIds = ["team"];
     const positive = await task("new-member");
@@ -224,7 +224,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       "verified in-team Linear actor answers once without a Paws browser identity",
       (await getQuestion(sqliteDb(db), positive.question.id))?.answeredBy === "new-member" &&
         resumes() === 1 &&
-        workspaceMember(db, "workspace", "new-member") === null,
+        (await workspaceMember(sqliteDb(db), "workspace", "new-member")) === null,
       {
         answer: (await getQuestion(sqliteDb(db), positive.question.id))?.answeredBy,
         resumes: resumes(),
@@ -261,7 +261,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       (await getQuestion(sqliteDb(db), changed.question.id))?.status === "open" && resumes() === 1,
       {
         question: (await getQuestion(sqliteDb(db), changed.question.id))?.status,
-        role: workspaceMember(db, "workspace", "member")?.role,
+        role: (await workspaceMember(sqliteDb(db), "workspace", "member"))?.role,
       },
     );
     const unavailable = await task("new-member"),
@@ -730,7 +730,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
       (await getQuestion(sqliteDb(db), allowed.question.id))?.answeredBy === "new-member" &&
         listJobs(db).filter((j) => j.jobKey === `resume:answer:${allowed.question.id}`).length ===
           1 &&
-        workspaceMember(db, "workspace", "new-member") === null,
+        (await workspaceMember(sqliteDb(db), "workspace", "new-member")) === null,
       {
         answeredBy: (await getQuestion(sqliteDb(db), allowed.question.id))?.answeredBy,
         resumes: listJobs(db).filter((j) => j.jobKey === `resume:answer:${allowed.question.id}`)

@@ -111,7 +111,7 @@ export async function probeWorkspaceRefresh(root: string, observe: Observe) {
   const rejectedDuringDrain = rejectedBeforeDrain.every(Boolean);
   secondGate.resolve();
   await Promise.all([stopping, ...attempts]);
-  const member = workspaceMember(db, workspace.id, userId);
+  const member = await workspaceMember(sqliteDb(db), workspace.id, userId);
   await runtime.refresh();
   observe(
     "permission invalidations during a refresh coalesce into a nonoverlapping follow-up joined by shutdown",
@@ -214,7 +214,7 @@ export async function probeWorkspaceRefresh(root: string, observe: Observe) {
   await authenticated;
   await forcedRefresh;
   await stop;
-  const current = workspaceMember(draining, selected.id, memberId);
+  const current = await workspaceMember(sqliteDb(draining), selected.id, memberId);
   observe(
     "shutdown joins the HTTP lookup and a fresh forced read after a later invalidation",
     requestWaited && requestStopped && requestReads === 2 && current?.active === false,

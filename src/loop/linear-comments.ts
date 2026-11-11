@@ -46,7 +46,7 @@ export type LinearCommentPolicy = {
   appUserId: string | null;
   agents: readonly string[];
   authorize?(actor: LinearCommentActor): Promise<boolean>;
-  recheck?(actor: LinearCommentActor): boolean | null;
+  recheck?(q: Q, actor: LinearCommentActor): Steps<boolean | null>;
   wait?(): PullFeedbackWait;
 };
 
@@ -722,7 +722,8 @@ function* staleReasonSteps(
         : [comment.authorId];
     if (comment.authority === "agent" && !policy.agents.includes(comment.authorId))
       return "not_member";
-    const verdicts = actors.map((id) => policy.recheck!({ id, teamId }));
+    const verdicts: (boolean | null)[] = [];
+    for (const id of actors) verdicts.push(yield* policy.recheck(q, { id, teamId }));
     if (verdicts.includes(false)) return "not_member";
     if (verdicts.includes(null)) return "unknown";
   }

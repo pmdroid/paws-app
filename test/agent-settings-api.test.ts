@@ -196,7 +196,9 @@ describe("local agent settings API", () => {
   test("reads and writes CI fix attempts from 0 to 10 and audits each change", async () => {
     const { options } = fixture();
     const audits: [string, string][] = [];
-    options.audit = (action, subject) => audits.push([action, subject]);
+    options.audit = async (action, subject) => {
+      audits.push([action, subject]);
+    };
     writeFileSync(options.configPath, '[merge]\nmain_moved = "closeout"\n');
     const read = async () =>
       ((await (await handleAgentSettingsRequest(request(), options))!.json()) as { merge: unknown })
@@ -232,7 +234,9 @@ describe("local agent settings API", () => {
   test("reads and writes the queue start timeout from 1 to 720 hours and audits each change", async () => {
     const { options } = fixture();
     const audits: [string, string][] = [];
-    options.audit = (action, subject) => audits.push([action, subject]);
+    options.audit = async (action, subject) => {
+      audits.push([action, subject]);
+    };
     writeFileSync(options.configPath, "[merge]\nci_fix_attempts = 5\n");
     const read = async () =>
       ((await (await handleAgentSettingsRequest(request(), options))!.json()) as { queue: unknown })
@@ -283,7 +287,9 @@ describe("local agent settings API", () => {
   test("reads, writes and clears the running task cap per owner and audits each change", async () => {
     const { options } = fixture();
     const audits: [string, string][] = [];
-    options.audit = (action, subject) => audits.push([action, subject]);
+    options.audit = async (action, subject) => {
+      audits.push([action, subject]);
+    };
     const read = async () =>
       ((await (await handleAgentSettingsRequest(request(), options))!.json()) as { queue: unknown })
         .queue;

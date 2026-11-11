@@ -14,7 +14,7 @@ export type FindingSettingsOptions = {
   groupingTime: string;
   trustedOrigin?: string;
   role?: string;
-  audit: (action: string, subject: string) => void;
+  audit: (action: string, subject: string) => Promise<void>;
 };
 
 export async function handleFindingSettingsRequest(
@@ -47,7 +47,7 @@ export async function handleFindingSettingsRequest(
     return json({ error: "Send grouping as true or false." }, 400);
   const grouping = body.grouping;
   await store.run((q) => setFindingGroupingSteps(q, options.workspaceId, grouping));
-  options.audit(
+  await options.audit(
     "settings.findings.grouping",
     `Turned daily finding grouping ${body.grouping ? "on" : "off"}`,
   );

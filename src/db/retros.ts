@@ -1,9 +1,8 @@
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Database } from "bun:sqlite";
 import { and, desc, eq, inArray, max, notInArray, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { recordImprovementProposalSteps, type ImprovementActionStep } from "./improvements";
 import { jsonValue } from "./json-text";
 import type * as pgSchema from "./schema-pg";
@@ -627,13 +626,13 @@ export function* retroArtifactSteps(q: Q, retroId: string, kind: RetroArtifactKi
   return row === undefined ? null : (row as RetroArtifactRecord);
 }
 
-export function readRetroArtifact(
-  db: Database,
+export async function readRetroArtifact(
+  store: Db,
   root: string,
   retroId: string,
   kind: RetroArtifactKind,
-): RetroArtifactRead {
-  return settled(sqliteDb(db).run((q) => readRetroArtifactSteps(q, root, retroId, kind)));
+): Promise<RetroArtifactRead> {
+  return store.run((q) => readRetroArtifactSteps(q, root, retroId, kind));
 }
 
 export function* readRetroArtifactSteps(

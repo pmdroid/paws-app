@@ -17,7 +17,7 @@ import {
   type Q,
   type Steps,
 } from "../db";
-import { isWorkspaceAdmin, requestWorkspaceSession, validWorkspaceCsrf } from "../workspace";
+import { isWorkspaceAdmin, requestWorkspaceSessionSteps, validWorkspaceCsrf } from "../workspace";
 import { journalCaught } from "../journal";
 import { discoverGitHubInstallation } from "./github-connect-status";
 import type { Database } from "bun:sqlite";
@@ -60,10 +60,10 @@ export function createHostedGitHubConnect(options: {
   return async (request: Request): Promise<Response | null> => {
     const url = new URL(request.url);
     if (![START, CALLBACK].includes(url.pathname)) return null;
-    const access = requestWorkspaceSession(db, request, now());
+    const access = await store.run((q) => requestWorkspaceSessionSteps(q, request, now()));
     const selected = url.searchParams.get("workspaceId") ?? request.headers.get("x-paws-workspace");
     function* permittedSteps(q: Q) {
-      const current = requestWorkspaceSession(db, request, now());
+      const current = yield* requestWorkspaceSessionSteps(q, request, now());
       const member = access
         ? yield* workspaceMemberSteps(q, access.principal.workspaceId, access.principal.userId)
         : null;
@@ -91,8 +91,8 @@ export function createHostedGitHubConnect(options: {
       return Boolean(workspaceMemberUsable(member) && isWorkspaceAdmin(member.role));
     }
     const administrator = () => store.run(administratorSteps);
-    const signedIn = () => {
-      const current = requestWorkspaceSession(db, request, now());
+    const signedIn = async () => {
+      const current = await store.run((q) => requestWorkspaceSessionSteps(q, request, now()));
       return access && current?.session.tokenHash === access.session.tokenHash;
     };
     function* deniedSteps(q: Q): Steps<Response> {
@@ -113,7 +113,7 @@ export function createHostedGitHubConnect(options: {
     if (
       url.origin !== origin ||
       (request.headers.has("host") && request.headers.get("host") !== url.host) ||
-      !signedIn() ||
+      !(await signedIn()) ||
       (selected !== null && selected !== access!.principal.workspaceId)
     )
       return denied();
@@ -168,7 +168,7 @@ export function createHostedGitHubConnect(options: {
           for (const repository of repositories)
             if (!(await check(repository, "write", signal))) connected = false;
         }
-        if (!signedIn()) return await denied();
+        if (!(await signedIn())) return await denied();
         if (
           JSON.stringify(await repositoriesOf(workspaceId)) !== scope ||
           JSON.stringify(activation.template()) !== JSON.stringify(app)
@@ -198,7 +198,7 @@ export function createHostedGitHubConnect(options: {
         );
       } catch (caughtError2) {
         journalCaught(caughtError2, "github-connect.createHostedGitHubConnect.any", null);
-        if (!signedIn()) return denied();
+        if (!(await signedIn())) return denied();
         return Response.json(
           {
             error:

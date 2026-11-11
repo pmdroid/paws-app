@@ -429,7 +429,7 @@ export async function probeRunnerPlacement(
       createdAtMs: ++installationObservation,
     });
     await assert.rejects(ids(), /Runner (?:task|session authority) is unavailable/);
-    assert.equal(getLinearSessionAccess(db, "session"), "revoked");
+    assert.equal(await getLinearSessionAccess(sqliteDb(db), "session"), "revoked");
     observe("App revocation fences selection", true, {
       revoked: true,
     });

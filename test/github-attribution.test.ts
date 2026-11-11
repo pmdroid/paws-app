@@ -282,7 +282,8 @@ for (const scenario of [
         f.db.run("UPDATE github_attribution_request SET expires_at=?", [f.now]);
       if (scenario === "expired-session")
         f.db.run("UPDATE workspace_session SET expires_at=?", [f.now]);
-      if (scenario === "logout") deleteWorkspaceSession(f.db, f.alice.session.tokenHash);
+      if (scenario === "logout")
+        await deleteWorkspaceSession(sqliteDb(f.db), f.alice.session.tokenHash);
       if (scenario === "demotion") f.guest = true;
       if (scenario === "removed") f.active = false;
       if (scenario === "personal-scope") f.scope = "repo";
@@ -293,7 +294,7 @@ for (const scenario of [
         };
       if (scenario === "logout-inflight")
         f.beforeUser = async () => {
-          deleteWorkspaceSession(f.db, f.alice.session.tokenHash);
+          await deleteWorkspaceSession(sqliteDb(f.db), f.alice.session.tokenHash);
         };
       if (scenario === "demote-inflight")
         f.beforeUser = async () => {

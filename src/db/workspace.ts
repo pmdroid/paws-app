@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, desc, eq, exists, gt, isNull, lt, notInArray, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
 import { endRevokedRunnerAuthoritySteps } from "./runner-lease";
 import type { workspaceSession } from "./schema-pg";
 
@@ -59,11 +58,11 @@ export function* workspaceForOrganizationSteps(q: Q, organizationId: string) {
   return yield* findWorkspaceSteps(q, "linearOrganizationId", organizationId);
 }
 
-export function workspaceForOrganization(
-  db: Database,
+export async function workspaceForOrganization(
+  store: Db,
   organizationId: string,
-): WorkspaceRecord | null {
-  return settled(sqliteDb(db).run((q) => workspaceForOrganizationSteps(q, organizationId)));
+): Promise<WorkspaceRecord | null> {
+  return store.run((q) => workspaceForOrganizationSteps(q, organizationId));
 }
 
 type WorkspaceUserInput = { id: string; linearUserId: string; name: string; email: string };
@@ -155,12 +154,12 @@ export function* workspaceMemberSteps(q: Q, workspaceId: string, userId: string)
   } satisfies WorkspaceMember;
 }
 
-export function workspaceMember(
-  db: Database,
+export async function workspaceMember(
+  store: Db,
   workspaceId: string,
   userId: string,
-): WorkspaceMember | null {
-  return settled(sqliteDb(db).run((q) => workspaceMemberSteps(q, workspaceId, userId)));
+): Promise<WorkspaceMember | null> {
+  return store.run((q) => workspaceMemberSteps(q, workspaceId, userId));
 }
 
 export function* workspaceLinearMemberSteps(q: Q, workspaceId: string, linearUserId: string) {
@@ -168,8 +167,8 @@ export function* workspaceLinearMemberSteps(q: Q, workspaceId: string, linearUse
   return userId === null ? null : yield* workspaceMemberSteps(q, workspaceId, userId);
 }
 
-export function workspaceLinearMember(db: Database, workspaceId: string, linearUserId: string) {
-  return settled(sqliteDb(db).run((q) => workspaceLinearMemberSteps(q, workspaceId, linearUserId)));
+export async function workspaceLinearMember(store: Db, workspaceId: string, linearUserId: string) {
+  return store.run((q) => workspaceLinearMemberSteps(q, workspaceId, linearUserId));
 }
 
 type WorkspaceMemberSync = {
@@ -393,24 +392,13 @@ export function* readWorkspaceSessionSteps(q: Q, tokenHash: string, now: number,
   return { ...session, lastSeenAt: now, expiresAt };
 }
 
-export function readWorkspaceSession(
-  db: Database,
-  tokenHash: string,
-  now: number,
-  lifetime: number,
-): WorkspaceSession | null {
-  return settled(
-    sqliteDb(db).transaction((q) => readWorkspaceSessionSteps(q, tokenHash, now, lifetime)),
-  );
-}
-
 export function* deleteWorkspaceSessionSteps(q: Q, tokenHash: string) {
   const { workspaceSession } = q.t;
   yield* q.exec(q.orm.delete(workspaceSession).where(eq(workspaceSession.tokenHash, tokenHash)));
 }
 
-export function deleteWorkspaceSession(db: Database, tokenHash: string): void {
-  settled(sqliteDb(db).run((q) => deleteWorkspaceSessionSteps(q, tokenHash)));
+export async function deleteWorkspaceSession(store: Db, tokenHash: string): Promise<void> {
+  await store.run((q) => deleteWorkspaceSessionSteps(q, tokenHash));
 }
 
 type WorkspaceAuditInput = {
@@ -433,8 +421,8 @@ export function* auditWorkspaceAccessSteps(q: Q, input: WorkspaceAuditInput) {
   );
 }
 
-export function auditWorkspaceAccess(db: Database, input: WorkspaceAuditInput): void {
-  settled(sqliteDb(db).run((q) => auditWorkspaceAccessSteps(q, input)));
+export async function auditWorkspaceAccess(store: Db, input: WorkspaceAuditInput): Promise<void> {
+  await store.run((q) => auditWorkspaceAccessSteps(q, input));
 }
 
 export function* listWorkspaceAuditSteps(q: Q, workspaceId: string, before: number) {
