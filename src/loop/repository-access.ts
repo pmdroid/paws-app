@@ -1,11 +1,14 @@
 import {
-  sessionIssueTeamName,
+  sessionIssueTeamNameSteps,
+  settled,
   sqliteDb,
   teamRepositoryAllowedSteps,
   workspaceMemberUsable,
   listWorkspaceMembersSteps,
   listWorkspaceRepositoriesSteps,
   type Db,
+  type Q,
+  type Steps,
   type WorkItemRecord,
 } from "../db";
 import { isWorkspaceAdmin } from "../workspace";
@@ -38,7 +41,7 @@ export async function teamRepositoryDenial(
     )
   )
     return null;
-  const team = issueTeamName(db, item);
+  const team = await store.run((q) => issueTeamNameSteps(q, item));
   const linked = (
     await store.run((q) => listWorkspaceRepositoriesSteps(q, scope.workspaceId))
   ).some((entry) => entry.teamId === scope.teamId);
@@ -67,7 +70,11 @@ export async function workspaceAdministratorNames(
  * identifier when no stored payload names it. Never reads Linear.
  */
 export function issueTeamName(db: Database, item: WorkItemRecord): string {
-  const stored = item.sessionKey ? sessionIssueTeamName(db, item.sessionKey) : undefined;
+  return settled(sqliteDb(db).run((q) => issueTeamNameSteps(q, item)));
+}
+
+export function* issueTeamNameSteps(q: Q, item: WorkItemRecord): Steps<string> {
+  const stored = item.sessionKey ? yield* sessionIssueTeamNameSteps(q, item.sessionKey) : undefined;
   if (typeof stored === "string" && stored.trim() !== "") return stored.trim();
   const key = /^([A-Za-z][A-Za-z0-9_]*)-\d+$/.exec(item.linearIdentifier)?.[1];
   return key ?? "this team";

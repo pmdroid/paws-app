@@ -4,7 +4,7 @@ import { readEvidenceBytes, type EvidenceStorage } from "../evidence";
 import { listEvidenceSteps, sqliteDb, type StoredEvidence } from "../db";
 import type { StoredEvidenceFiles } from "../github";
 import { journalCaught } from "../journal";
-import { rejectedEvidenceIds } from "../questions";
+import { rejectedEvidenceIdsSteps } from "../questions";
 import { EVIDENCE_INLINE_LIMITS } from "./artifacts";
 
 export const PULL_REQUEST_SCREENSHOT_LIMIT = 20;
@@ -19,9 +19,10 @@ export async function pullRequestScreenshotRows(
   db: Database,
   itemId: string,
 ): Promise<StoredEvidence[]> {
-  const rejected = rejectedEvidenceIds(db, itemId);
+  const store = sqliteDb(db);
+  const rejected = await store.run((q) => rejectedEvidenceIdsSteps(q, itemId));
   const latest = new Map<string, StoredEvidence>();
-  for (const row of await sqliteDb(db).run((q) => listEvidenceSteps(q, itemId)))
+  for (const row of await store.run((q) => listEvidenceSteps(q, itemId)))
     latest.set(JSON.stringify([row.checkId, row.displayName]), row);
   return [...latest.values()]
     .filter(

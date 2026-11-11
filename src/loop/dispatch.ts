@@ -33,7 +33,7 @@ import { visualReviewBody } from "../questions";
 import {
   AFTER_PULL_REQUEST_RESPONSE,
   AFTER_PULL_REQUEST_THOUGHT,
-  canReportProgress,
+  canReportProgressSteps,
 } from "./activity-policy";
 import { planFiledResponse } from "./plan-proposal";
 import { parseRemainingParts } from "../core";
@@ -134,9 +134,11 @@ export async function deliverLinearOutbox(
       (payload.kind === "response" && AFTER_PULL_REQUEST_RESPONSE.test(message.idempotencyKey)) ||
       (payload.kind === "thought" && AFTER_PULL_REQUEST_THOUGHT.test(message.idempotencyKey));
     if (
-      db &&
+      store &&
       !terminal &&
-      !canReportProgress(db, orderingKey ?? "", message.generation ?? 0, message.id)
+      !(await store.run((q) =>
+        canReportProgressSteps(q, orderingKey ?? "", message.generation ?? 0, message.id),
+      ))
     )
       return;
     return postActivity(message, payload, tracker, options);
@@ -150,9 +152,10 @@ export async function deliverLinearOutbox(
   }
   if (message.op === "elicitation") {
     if (
-      db &&
       store &&
-      !canReportProgress(db, orderingKey ?? "", message.generation ?? 0, message.id) &&
+      !(await store.run((q) =>
+        canReportProgressSteps(q, orderingKey ?? "", message.generation ?? 0, message.id),
+      )) &&
       !(await store.run((q) =>
         askedQuestionOpenSteps(q, orderingKey ?? "", readString(payload, "questionId") ?? ""),
       ))

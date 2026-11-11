@@ -16,7 +16,7 @@ import {
   type WorkItemRecord,
 } from "../db";
 import { RETRY_CLOSEOUT } from "./closeout-recovery";
-import { ask } from "./operations";
+import { askSteps } from "./operations";
 
 const QUIET_MS = 30 * 60_000;
 
@@ -85,8 +85,8 @@ export async function recoverStalledCloseout(
           );
           return inserted;
         }
-        const { question } = ask(
-          db,
+        const { question } = yield* askSteps(
+          q,
           { itemId: id, runId: item.currentRunId, sessionId: item.sessionKey! },
           "closeout-help",
           "Closeout stalled again after its automatic retry. Retry Closeout on this head, or send back to the agent?",
