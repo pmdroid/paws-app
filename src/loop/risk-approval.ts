@@ -5,7 +5,6 @@ import { JOB_KIND, riskLine } from "../core";
 import {
   applyLinearCommandSteps,
   applyWorkItemEventSteps,
-  commandInstance,
   deleteRiskFixSteps,
   emitJobReady,
   enqueueJobOnceSteps,
@@ -256,19 +255,6 @@ export async function askRiskApproval(
  * A person approved S on the item page: the item verifies S again from Closeout's recorded
  * results and, once accepted, joins the merge queue, where `mergeable(S)` finds the approval.
  */
-export function approveRisk(
-  db: Database,
-  linkAsk: LinkAsk,
-  item: WorkItemRecord,
-  now: number,
-): boolean {
-  const approved = settled(
-    sqliteDb(db).transaction((q) => approveRiskSteps(q, linkAsk, item, now)),
-  );
-  if (approved.jobReady) emitJobReady(db);
-  return approved.applied;
-}
-
 export function* approveRiskSteps(
   q: Q,
   linkAsk: LinkAsk,
@@ -296,23 +282,6 @@ export function* approveRiskSteps(
  * Stop on the Risk card: the item stops and its pull request stays open. Posts the stop
  * response in Linear. Returns whether the item stopped.
  */
-export function stopForRisk(
-  db: Database,
-  linkAsk: LinkAsk,
-  item: WorkItemRecord,
-  by: string,
-  now: number,
-): boolean {
-  const notifications = { ready: false };
-  const stopped = settled(
-    sqliteDb(db).transaction((q) =>
-      stopForRiskSteps(q, linkAsk, item, by, now, commandInstance(db), notifications),
-    ),
-  );
-  if (notifications.ready) emitJobReady(db);
-  return stopped;
-}
-
 export function* stopForRiskSteps(
   q: Q,
   linkAsk: LinkAsk,
@@ -373,10 +342,6 @@ type RiskActivity = {
   key: string;
   now: number;
 };
-
-export function postRiskActivity(db: Database, input: RiskActivity): void {
-  settled(sqliteDb(db).transaction((q) => postRiskActivitySteps(q, input)));
-}
 
 export function* postRiskActivitySteps(q: Q, input: RiskActivity): Steps<void> {
   yield* enqueueOutboxOnceSteps(q, {

@@ -708,7 +708,7 @@ import { policyBlockedRepositories, retryPolicyBlocks } from "./policy-block";
 import { changedPaths, classifyPathsRisk } from "./candidate-risk";
 import {
   askRiskApproval,
-  postRiskActivity,
+  postRiskActivitySteps,
   riskApprovalFor,
   type FixRisk,
   RISK_ANSWERERS,
@@ -6914,14 +6914,16 @@ export class Orchestrator {
         !canAnswer({ kind: "link", allowedIds: linkAsk.answerers }, { id: answeredBy })
       ) {
         if (linkAsk.kind === "risk")
-          postRiskActivity(this.db, {
-            sessionId,
-            item,
-            kind: "thought",
-            body: RISK_ANSWERERS,
-            key: `refused:${event.dedupeKey}`,
-            now: this.now(),
-          });
+          await this.store.transaction((q) =>
+            postRiskActivitySteps(q, {
+              sessionId,
+              item,
+              kind: "thought",
+              body: RISK_ANSWERERS,
+              key: `refused:${event.dedupeKey}`,
+              now: this.now(),
+            }),
+          );
         else
           postNote(
             this.db,
