@@ -13,8 +13,7 @@ export type ItemAdmission = {
   canDispatchDelegation: (delegationId: string) => Promise<boolean>;
   canStart: (itemId: string) => Promise<Admission>;
   canMerge: (itemId: string) => Promise<Admission>;
-  /** The same checks as steps, for use inside a transaction. Without them the scheduler settles the checks above. */
-  steps?: {
+  steps: {
     canDispatchDelegation: (q: Q, delegationId: string) => Steps<boolean>;
     canStart: (q: Q, itemId: string) => Steps<Admission>;
   };
