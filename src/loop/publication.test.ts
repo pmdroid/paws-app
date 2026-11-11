@@ -47,7 +47,7 @@ function fixture(gitExec?: GitExec, onCleanupFailure = () => {}) {
     signal: controller.signal,
     gitExec,
     onCleanupFailure,
-    isCurrent: () => state.current,
+    isCurrent: async () => state.current,
     async assert() {
       state.checks++;
       await state.verify();

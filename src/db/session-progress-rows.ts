@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, desc, eq, gt, inArray, isNull, like, lt, lte, max, or, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { type Q, type Steps } from "./db";
 import { jsonFromText, jsonText } from "./json-text";
 import { enqueueOutboxOnceSteps } from "./outbox";
 
@@ -13,10 +12,6 @@ export function* sessionFenceGenerationSteps(q: Q, sessionId: string): Steps<num
       .where(and(eq(f.target, "linear"), eq(f.orderingKey, sessionId))),
   );
   return row?.generation ?? 0;
-}
-
-export function sessionFenceGeneration(db: Database, sessionId: string): number {
-  return settled(sqliteDb(db).run((q) => sessionFenceGenerationSteps(q, sessionId)));
 }
 
 export type SessionMetadataPublish = {
@@ -117,10 +112,6 @@ export function* publishSessionMetadataSteps(q: Q, input: SessionMetadataPublish
   );
 }
 
-export function publishSessionMetadata(db: Database, input: SessionMetadataPublish): void {
-  settled(sqliteDb(db).transaction((q) => publishSessionMetadataSteps(q, input)));
-}
-
 export function* sessionLinkQueuedSteps(
   q: Q,
   sessionId: string,
@@ -149,13 +140,4 @@ export function* sessionLinkQueuedSteps(
       .limit(1),
   );
   return row !== undefined;
-}
-
-export function sessionLinkQueued(
-  db: Database,
-  sessionId: string,
-  generation: number,
-  url: string,
-): boolean {
-  return settled(sqliteDb(db).run((q) => sessionLinkQueuedSteps(q, sessionId, generation, url)));
 }

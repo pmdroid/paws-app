@@ -111,7 +111,7 @@ export async function feedbackHold(
   const pull = await store.run((q) => getItemPullRequestSteps(q, item.id));
   const head = ciWaitVerification(payload)?.head ?? item.checkpoint?.wipCommit;
   if (pull !== null && head) await observeHeldCi(merge, { number: pull.pullNumber, head });
-  if (caps.stopped()) return { kind: "obsolete" };
+  if (await caps.stopped()) return { kind: "obsolete" };
   return reviewHold(store, item.id, caps.now(), caps.feedbackWait());
 }
 
@@ -156,7 +156,7 @@ export async function observeHeldCi(
     journalCaught(error, "orders.observeHeldCi.readPullCi", item.id);
     return { state: "unknown", message: "could not read GitHub CI" };
   });
-  if (caps.stopped() || (ci.state === "unknown" && ci.moved !== true)) return;
+  if ((await caps.stopped()) || (ci.state === "unknown" && ci.moved !== true)) return;
   const enqueued = await store.transaction(function* (q): Steps<boolean> {
     const current = yield* getWorkItemSteps(q, item.id);
     if (
@@ -222,7 +222,7 @@ export async function observeHeldCi(
 /** Whether the merge call must not be made now: stopped, artifacts missing, or a review pending. */
 export async function mergeHeld({ store, item, caps }: MergeContext): Promise<boolean> {
   return (
-    caps.stopped() ||
+    (await caps.stopped()) ||
     (await store.run(function* (q): Steps<boolean> {
       return (
         (yield* mergeStopRequestedSteps(q, item.id)) ||
@@ -262,11 +262,11 @@ export type MergeVoice = {
 export type OrderCapabilities = {
   ask: typeof askSteps;
   now(): number;
-  stopped(): boolean;
+  stopped(): Promise<boolean>;
   session(item: WorkItemRecord): string | null;
   /** Fetch main into the item's worktree. Main's commit, or null without a worktree. */
   fetchMain(item: WorkItemRecord): Promise<string | null>;
-  ciFixAttempts(item: WorkItemRecord): number;
+  ciFixAttempts(item: WorkItemRecord): Promise<number>;
   feedbackWait(): PullFeedbackWait;
   readPullCi(item: WorkItemRecord, pull: { number: number; head: string }): Promise<PullCi>;
   /** GitHub's `mergeable` for the item's pull request, read again while GitHub computes it. */
@@ -280,7 +280,7 @@ export type OrderCapabilities = {
    * The merge-queue lane the task joins in its repository: its Linear project id, or `''` for the
    * repository-wide lane.
    */
-  mergeLane(item: WorkItemRecord): string;
+  mergeLane(item: WorkItemRecord): Promise<string>;
   restart?: MergeRestart;
   voice: MergeVoice;
 };
@@ -402,7 +402,7 @@ export async function mergeQueueTurn(
     prNumber,
     ...credentials(github),
   });
-  if (caps.stopped()) return undefined;
+  if (await caps.stopped()) return undefined;
   if (
     review === "unreadable" &&
     (await store.run((q) => mergeQueuePositionSteps(q, item.id, held))) === null
@@ -418,7 +418,7 @@ export async function mergeQueueTurn(
     const conflict = await waitConflict({ db, store, item, caps }, pull.number, {
       for: "a review",
     });
-    if (caps.stopped()) return undefined;
+    if (await caps.stopped()) return undefined;
     if (conflict) return conflict;
     const body =
       review === "required"
@@ -428,14 +428,15 @@ export async function mergeQueueTurn(
     const key = await reviewWaitKey(store, item, caps, review, pull.head);
     caps.voice.afterPullRequest(item, notice, key);
     await observeHeldCi({ db, store, item, caps }, pull);
-    if (caps.stopped()) return undefined;
+    if (await caps.stopped()) return undefined;
     return { message: body, queued: true, reason: "review" };
   }
+  const lane = await caps.mergeLane(item);
   await store.run((q) =>
     joinMergeQueueSteps(q, {
       itemId: item.id,
       repository: name,
-      lane: caps.mergeLane(item),
+      lane,
       now: caps.now(),
     }),
   );
@@ -473,7 +474,8 @@ export async function waitConflict(
 ): Promise<Extract<MergeStep, { kind: "returned" | "asked" }> | null> {
   const { store, item, caps } = merge;
   const read = await caps.readPull(item, prNumber);
-  if (caps.stopped() || read === null || !read.open || read.merges !== "conflict") return null;
+  if ((await caps.stopped()) || read === null || !read.open || read.merges !== "conflict")
+    return null;
   if (await store.run((q) => rebaseReturnedForSteps(q, item.id, read.head))) return null;
   const base =
     waiting.main ??
@@ -481,7 +483,7 @@ export async function waitConflict(
       journalCaught(error, "orders.waitConflict.fetchMain", item.id);
       return null;
     }));
-  if (caps.stopped() || base === null) return null;
+  if ((await caps.stopped()) || base === null) return null;
   const conflict: RebaseConflict = { base, files: null };
   const found = `item ${item.linearIdentifier} pull request #${prNumber} at ${read.head.slice(0, 7)} conflicts with main while it waits for ${waiting.for}`;
   if (
@@ -574,7 +576,7 @@ export async function mergeThroughGitHubQueue(
     isCancelled: () => mergeHeld(merge),
     signal: published.signal,
   });
-  if (caps.stopped()) return { kind: "obsolete" };
+  if (await caps.stopped()) return { kind: "obsolete" };
   // The review job may take the pull request out of GitHub's queue meanwhile; that removal is
   // the review's, not a person's or a failed check's.
   if (result.outcome !== "merged") {
@@ -733,7 +735,7 @@ async function githubQueueCiFailed(
   source: string,
   running: readonly FailedCiCheck[] = [],
 ): Promise<MergeStep> {
-  const limit = merge.caps.ciFixAttempts(merge.item);
+  const limit = await merge.caps.ciFixAttempts(merge.item);
   const failed = checks.map((check) => ({
     name: check.name,
     state: "failed" as const,

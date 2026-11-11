@@ -678,7 +678,7 @@ async function cleanRiskFixture() {
     policyDigest: "policy",
     policyPath: null,
   };
-  const progress = createDbCloseoutProgress(db, itemId, () => NOW);
+  const progress = createDbCloseoutProgress(sqliteDb(db), itemId, () => NOW);
   progress.begin(identity);
   const step = (
     id: string,

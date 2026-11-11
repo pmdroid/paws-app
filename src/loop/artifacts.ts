@@ -202,7 +202,7 @@ export async function createEvidenceArtifactPublisher(options: {
   sessionId: string;
   /** Upload evidence to Linear. The outbox handler needs the Linear file transfer. */
   uploads?: boolean;
-  reviewed?: (checkId: string) => boolean;
+  reviewed?: (checkId: string) => Promise<boolean>;
   linear?: PublishArtifactHook;
   now?: () => number;
 }): Promise<PublishArtifactHook> {
@@ -257,7 +257,7 @@ export async function createEvidenceArtifactPublisher(options: {
         const row = await store.run((q) => getEvidenceSteps(q, stored.id));
         const kind = row?.mediaType.startsWith("video/") ? "video" : "image";
         const inline = row !== null && row.sizeBytes <= EVIDENCE_INLINE_LIMITS[kind];
-        if (inline && options.uploads && (options.reviewed?.(evidence.checkId) ?? false))
+        if (inline && options.uploads && ((await options.reviewed?.(evidence.checkId)) ?? false))
           await store.transaction((q) =>
             enqueueOutboxOnceSteps(q, {
               target: "linear",

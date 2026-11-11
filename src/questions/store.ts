@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
-  askedQuestionRow,
+  askedQuestionRowSteps,
   insertQuestionRowSteps,
   nextQueuedQuestionRowSteps,
   openQuestionRowSteps,
@@ -120,12 +120,12 @@ export function findOpenQuestion(db: Database, sessionId: string): StoredQuestio
 }
 
 /** The question this run still waits on for one kind, open or queued. */
-export function findAskedQuestion(
-  db: Database,
+export function* findAskedQuestionSteps(
+  q: Q,
   runId: string,
   kind: QuestionKind,
-): StoredQuestion | null {
-  const row = askedQuestionRow(db, runId, kind);
+): Steps<StoredQuestion | null> {
+  const row = yield* askedQuestionRowSteps(q, runId, kind);
   return row === null ? null : mapQuestion(row);
 }
 

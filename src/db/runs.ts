@@ -257,18 +257,6 @@ export function* pinRunCheckoutSteps(
   return checkout;
 }
 
-/**
- * The run's checkout exclusions. The first call stores `resolve()` on the run; every later call
- * returns that, so a settings change never alters a checkout a run already started with.
- */
-export function pinRunCheckout(
-  db: Database,
-  id: string,
-  resolve: () => NonNullable<Checkpoint["checkout"]>,
-): NonNullable<Checkpoint["checkout"]> {
-  return settled(sqliteDb(db).run((q) => pinRunCheckoutSteps(q, id, resolve)));
-}
-
 export function* getItemRunCommitPolicySteps(
   q: Q,
   itemId: string,

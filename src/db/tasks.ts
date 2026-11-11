@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { eq } from "drizzle-orm";
 import type { TaskMode } from "../core";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { settled, sqliteDb, type Q, type Db, type Steps } from "./db";
 import { workItemTask } from "./schema";
 import { applyWorkItemEventSteps, cancelAdvancingJobsSteps, getWorkItemSteps } from "./items";
 import { enqueueOutboxOnceSteps } from "./outbox";
@@ -122,7 +122,7 @@ export function selectTaskModeForTurn(
   );
 }
 
-export type ResultFinish = { runId?: string; announce?: () => void };
+export type ResultFinish = { runId?: string; announce?: (q: Q) => Steps<void> };
 
 export function* completeAnswerTaskSteps(
   q: Q,
@@ -213,5 +213,5 @@ function* completeResultTaskSteps(
   // An answer does not finish the issue; a delivered artifact does.
   if (mode === "artifact")
     yield* enqueueIssueStatusSteps(q, (yield* getWorkItemSteps(q, itemId))!, "completed", now);
-  finish.announce?.();
+  if (finish.announce) yield* finish.announce(q);
 }

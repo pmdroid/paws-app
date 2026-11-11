@@ -286,7 +286,7 @@ export async function probePublicationStop(
       repository,
       signal: new AbortController().signal,
       onCleanupFailure: () => {},
-      isCurrent: () => !pending,
+      isCurrent: async () => !pending,
       async assert() {
         if (pending) throw new Error("Refresh is pending");
       },

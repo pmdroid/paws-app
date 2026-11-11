@@ -262,11 +262,6 @@ export function* restartLimitSteps(q: Q, itemId: string): Steps<number | null> {
   return typeof row?.limit === "number" ? row.limit : null;
 }
 
-/** The limit the latest restart of `itemId` recorded for its fix-attempt lines, if any. */
-export function restartLimit(db: Database, itemId: string): number | null {
-  return settled(sqliteDb(db).run((q) => restartLimitSteps(q, itemId)));
-}
-
 export function* pendingRestartHandoffSteps(
   q: Q,
   itemId: string,

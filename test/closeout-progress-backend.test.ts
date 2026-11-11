@@ -24,6 +24,7 @@ import {
   openDatabase,
   saveCheckpoint,
   type CloseoutProgressRecord,
+  sqliteDb,
 } from "../src/db";
 import { createDbCloseoutProgress } from "../src/loop/closeout-progress";
 import { createLiveStatusProvider } from "../src/dashboard/src/live/provider";
@@ -90,7 +91,7 @@ describe("closeout progress backend", () => {
     const db = openDatabase(":memory:");
     migrate(db);
     let clock = 1_000;
-    const progress = createDbCloseoutProgress(db, "item-1", () => clock);
+    const progress = createDbCloseoutProgress(sqliteDb(db), "item-1", () => clock);
     const base = "a".repeat(40);
     const head = "b".repeat(40);
     const otherHead = "c".repeat(40);
@@ -227,7 +228,7 @@ describe("closeout progress backend", () => {
           throw new Error("reviewer should not run");
         },
       },
-      progress: createDbCloseoutProgress(db, "item-1"),
+      progress: createDbCloseoutProgress(sqliteDb(db), "item-1"),
     });
     expect(result.outcome).toBe("invalid");
     expect(listCloseoutProgress(db)).toEqual([]);
@@ -257,7 +258,7 @@ describe("closeout progress backend", () => {
     migrate(db);
     try {
       await writeFile(phase, "one\n");
-      const progress = createDbCloseoutProgress(db, "item-1", () => Date.now());
+      const progress = createDbCloseoutProgress(sqliteDb(db), "item-1", () => Date.now());
       const first = await evaluateCandidate(evalInput(repo, progress));
       expect(first.outcome).toBe("rejected");
       const firstRow = only(db, rowIdentity(db));
@@ -338,7 +339,7 @@ describe("closeout progress backend", () => {
     });
     const db = openDatabase(":memory:");
     migrate(db);
-    const progress = createDbCloseoutProgress(db, "item-1");
+    const progress = createDbCloseoutProgress(sqliteDb(db), "item-1");
     const previous = process.env.DEMO_API_KEY;
     process.env.DEMO_API_KEY = API_KEY;
     let startedAt: number | null = null;
@@ -395,7 +396,7 @@ describe("closeout progress backend", () => {
         "http://127.0.0.1:1/x.git",
       ]);
       const thrown = await evaluateCandidate(
-        evalInput(repo, createDbCloseoutProgress(db, "item-1")),
+        evalInput(repo, createDbCloseoutProgress(sqliteDb(db), "item-1")),
       ).catch((error: unknown) => error);
       expect(isTransient(thrown)).toBe(true);
       expect(String(thrown)).toContain("origin/main is unavailable");
@@ -408,7 +409,7 @@ describe("closeout progress backend", () => {
         path.join(repo.root, "gone"),
       ]);
       const missing = await evaluateCandidate(
-        evalInput(repo, createDbCloseoutProgress(db, "item-1")),
+        evalInput(repo, createDbCloseoutProgress(sqliteDb(db), "item-1")),
       );
       expect(missing.outcome).toBe("blocked");
     } finally {
@@ -426,7 +427,7 @@ describe("closeout progress backend", () => {
     migrate(db);
     try {
       const thrown = await evaluateCandidate({
-        ...evalInput(repo, createDbCloseoutProgress(db, "item-1")),
+        ...evalInput(repo, createDbCloseoutProgress(sqliteDb(db), "item-1")),
         reviewer: {
           async review() {
             await exec("git", [
@@ -463,7 +464,7 @@ describe("closeout progress backend", () => {
       wipCommit: repo.head,
     });
     applyWorkItemEvent(db, "item-1", "turn_ended");
-    const progress = createDbCloseoutProgress(db, "item-1");
+    const progress = createDbCloseoutProgress(sqliteDb(db), "item-1");
     const outage = Object.assign(new Error("503 Service Unavailable"), { status: 503 });
     try {
       const thrown = await evaluateCandidate({
@@ -526,7 +527,7 @@ describe("closeout progress backend", () => {
     let startedAt: number | null = null;
     try {
       const result = await evaluateCandidate({
-        ...evalInput(repo, createDbCloseoutProgress(db, "item-1")),
+        ...evalInput(repo, createDbCloseoutProgress(sqliteDb(db), "item-1")),
         reviewer: {
           async review() {
             const row = listCloseoutProgress(db)[0];
@@ -577,7 +578,7 @@ describe("closeout progress backend", () => {
     let calls = 0;
     try {
       const result = await evaluateCandidate({
-        ...evalInput(repo, createDbCloseoutProgress(db, "item-1")),
+        ...evalInput(repo, createDbCloseoutProgress(sqliteDb(db), "item-1")),
         reviewer: {
           async review() {
             calls += 1;
@@ -646,7 +647,7 @@ describe("closeout progress backend", () => {
       wipCommit: repo.head,
       turn: 4,
     });
-    const progress = createDbCloseoutProgress(db, "item-1", () => Date.now());
+    const progress = createDbCloseoutProgress(sqliteDb(db), "item-1", () => Date.now());
     let liveHead: string | undefined;
     try {
       const result = await runCloseoutGate({
@@ -759,7 +760,7 @@ describe("closeout progress backend", () => {
       const result = await evaluateCandidate(
         evalInput(
           repo,
-          watching(createDbCloseoutProgress(db, "item-1"), () => {
+          watching(createDbCloseoutProgress(sqliteDb(db), "item-1"), () => {
             const row = listCloseoutProgress(db)[0];
             const step = row?.steps[0];
             if (step?.state !== "running") return;

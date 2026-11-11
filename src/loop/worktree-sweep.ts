@@ -37,7 +37,7 @@ export type WorktreeSweep = {
    * earlier release left goes as soon as no work on its items runs in this process.
    */
   runnerBacked?: boolean;
-  repositoryForItem(item: WorkItemRecord): RepositoryBinding | null;
+  repositoryForItem(item: WorkItemRecord): Promise<RepositoryBinding | null>;
   busy(itemId: string): boolean;
   hold(itemIds: readonly string[], operation: () => Promise<void>): Promise<void>;
   mergedHeads(item: WorkItemRecord, repository: RepositoryBinding): Promise<string[]>;
@@ -47,7 +47,7 @@ export async function sweepWorktrees(sweep: WorktreeSweep): Promise<void> {
   for (const [pathId, items] of await owners(sweep.store)) {
     sweep.signal.throwIfAborted();
     const path = worktreePath(sweep.pawsRoot, pathId);
-    const repository = sweep.repositoryForItem(items[0]!);
+    const repository = await sweep.repositoryForItem(items[0]!);
     const touched = await lastTouched(sweep.store, items, path);
     const leftover = sweep.runnerBacked === true;
     if (!repository || touched === null || (!leftover && !items.every(idle))) continue;

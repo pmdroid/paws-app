@@ -119,7 +119,7 @@ async function fixture(
       issue: "DEP-686",
       draft,
       previous,
-      stopped: () => controller.signal.aborted,
+      stopped: async () => controller.signal.aborted,
       signal: controller.signal,
       repository: { owner: "acme", repo: "monorepo" },
       github,

@@ -266,7 +266,7 @@ async function setup() {
         pawsRoot,
         now,
         signal: new AbortController().signal,
-        repositoryForItem: () => repository,
+        repositoryForItem: async () => repository,
         busy: () => false,
         hold: (_itemIds, operation) => operation(),
         mergedHeads: async () => [],

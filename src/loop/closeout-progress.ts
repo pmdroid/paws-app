@@ -1,57 +1,61 @@
-import type { Database } from "bun:sqlite";
 import type { CloseoutProgress } from "../closeout";
 import {
-  appendCloseoutOutput,
-  ensureCloseoutProgress,
-  finishCloseoutProgress,
-  getWorkItem,
-  saveCheckpoint,
-  upsertCloseoutStep,
+  appendCloseoutOutputSteps,
+  ensureCloseoutProgressSteps,
+  finishCloseoutProgressSteps,
+  getWorkItemSteps,
+  saveCheckpointSteps,
+  upsertCloseoutStepSteps,
+  type Db,
 } from "../db";
 
-export function createDbCloseoutProgress(
-  db: Database,
-  itemId: string,
-  now: () => number = Date.now,
-): CloseoutProgress {
+type StoredCloseoutProgress = {
+  [K in keyof CloseoutProgress]: (...args: Parameters<CloseoutProgress[K]>) => unknown;
+};
+
+export function createDbCloseoutProgress(store: Db, itemId: string, now: () => number = Date.now) {
   return {
-    begin(identity) {
-      ensureCloseoutProgress(db, itemId, identity, now(), true);
-      const checkpoint = getWorkItem(db, itemId)?.checkpoint;
-      if (checkpoint === undefined || checkpoint === null) return;
-      if (identity.base.length === 0 || identity.head.length === 0) return;
-      if (checkpoint.baseSha === identity.base && checkpoint.wipCommit === identity.head) return;
-      saveCheckpoint(db, itemId, {
-        ...checkpoint,
-        baseSha: identity.base,
-        wipCommit: identity.head,
-      });
-    },
-    step(identity, step) {
-      upsertCloseoutStep(db, itemId, identity, step, now());
-    },
-    output(identity, stepId, stream, text, truncated) {
-      appendCloseoutOutput(db, itemId, identity, stepId, stream, text, truncated, now());
-    },
-    finish(identity, decision) {
-      finishCloseoutProgress(db, itemId, identity, decision, now());
-    },
-  };
+    begin: (identity) =>
+      store.transaction(function* (q) {
+        yield* ensureCloseoutProgressSteps(q, itemId, identity, now(), true);
+        const checkpoint = (yield* getWorkItemSteps(q, itemId))?.checkpoint;
+        if (checkpoint === undefined || checkpoint === null) return;
+        if (identity.base.length === 0 || identity.head.length === 0) return;
+        if (checkpoint.baseSha === identity.base && checkpoint.wipCommit === identity.head) return;
+        yield* saveCheckpointSteps(q, itemId, {
+          ...checkpoint,
+          baseSha: identity.base,
+          wipCommit: identity.head,
+        });
+      }),
+    step: (identity, step) =>
+      store.transaction((q) => upsertCloseoutStepSteps(q, itemId, identity, step, now())),
+    output: (identity, stepId, stream, text, truncated) =>
+      store.transaction((q) =>
+        appendCloseoutOutputSteps(q, itemId, identity, stepId, stream, text, truncated, now()),
+      ),
+    finish: (identity, decision) =>
+      store.transaction((q) => finishCloseoutProgressSteps(q, itemId, identity, decision, now())),
+  } satisfies StoredCloseoutProgress;
 }
 
 const PUBLISH_ATTEMPTS = 3;
 const UNSTORED = "Paws could not store this check's evidence in the object store.";
 
 export function publishingCloseoutProgress(
-  inner: CloseoutProgress,
+  inner: StoredCloseoutProgress,
   publish: () => Promise<void>,
 ): CloseoutProgress & { settled(): Promise<void> } {
   let chain: Promise<void> = Promise.resolve();
   let failure: { error: unknown } | null = null;
-  const queue = (action: () => void | Promise<void>) => {
-    chain = chain.then(action).catch((error: unknown) => {
-      failure ??= { error };
-    });
+  const queue = (action: () => unknown) => {
+    chain = chain
+      .then(async () => {
+        await action();
+      })
+      .catch((error: unknown) => {
+        failure ??= { error };
+      });
   };
   const stored = async (): Promise<boolean> => {
     let last: unknown;
@@ -76,16 +80,16 @@ export function publishingCloseoutProgress(
           (step.logPath !== null || step.evidencePath !== null) &&
           !(await stored())
         ) {
-          inner.step(identity, { ...step, state: "failed", detail: UNSTORED });
+          await inner.step(identity, { ...step, state: "failed", detail: UNSTORED });
           return;
         }
-        inner.step(identity, step);
+        await inner.step(identity, step);
       }),
     output: (identity, stepId, stream, text, truncated) =>
       queue(() => inner.output(identity, stepId, stream, text, truncated)),
     finish: (identity, decision) =>
       queue(async () => {
-        inner.finish(identity, (await stored()) ? decision : "blocked");
+        await inner.finish(identity, (await stored()) ? decision : "blocked");
       }),
     async settled() {
       await chain;

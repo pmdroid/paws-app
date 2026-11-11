@@ -37,10 +37,10 @@ export async function waitForRunner(input: {
   now(): number;
   sleep(ms: number): Promise<void>;
   /** The reason to show on the waiting step, or null once the wait ends. */
-  waiting(reason: string | null): void;
+  waiting(reason: string | null): unknown;
   notify(reason: string): void;
   ask(runner: RunnerAvailability, reason: string): RunnerWaitQuestion | Promise<RunnerWaitQuestion>;
-  asked?(): RunnerWaitQuestion | null;
+  asked?(): Promise<RunnerWaitQuestion | null>;
   askAfterMs?: number;
   pollMs?: number;
 }): Promise<"available" | "move"> {
@@ -48,7 +48,7 @@ export async function waitForRunner(input: {
   const pollMs = input.pollMs ?? RUNNER_WAIT_POLL_MS;
   let shown: string | null = null;
   let since = 0;
-  let question = input.asked?.() ?? undefined;
+  let question = (await input.asked?.()) ?? undefined;
   try {
     for (;;) {
       const runner = await input.runner();
@@ -57,7 +57,7 @@ export async function waitForRunner(input: {
       if (shown === null) since = input.now();
       if (reason !== shown) {
         shown = reason;
-        input.waiting(reason);
+        await input.waiting(reason);
         input.notify(reason);
       }
       const answer = (await question?.answer()) ?? null;
@@ -71,7 +71,7 @@ export async function waitForRunner(input: {
       await input.sleep(pollMs);
     }
   } finally {
-    if (shown !== null) input.waiting(null);
+    if (shown !== null) await input.waiting(null);
     if (question !== undefined && (await question.answer()) === null) await question.cancel();
   }
 }

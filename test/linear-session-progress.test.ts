@@ -29,7 +29,9 @@ async function flush(dispatcher: OutboxDispatcher) {
 test("ACP plans preserve status and append host verification and publication steps", async () => {
   const db = tempDb();
   const clock = new FakeClock(1);
-  const progress = createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
+  const progress = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1", () =>
+    clock.now(),
+  );
   const reporter = createAcpActivityReporter(() => {}, progress.plan);
   reporter.onEvent({
     type: "session_update",
@@ -57,15 +59,17 @@ test("ACP plans preserve status and append host verification and publication ste
     { content: "Open pull request", status: "pending" },
     { content: "Merge verified changes", status: "pending" },
   ]);
-  const recovered = createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
-  recovered.phase("verifying");
+  const recovered = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1", () =>
+    clock.now(),
+  );
+  await recovered.phase("verifying");
   clock.advance(120_000);
   await flush(dispatcher);
   expect(tracker.sessionUpdates.findLast((update) => update.plan)?.plan?.[3]).toEqual({
     content: "Verify changes",
     status: "inProgress",
   });
-  recovered.phase("completed");
+  await recovered.phase("completed");
   await flush(dispatcher);
   expect(
     tracker.sessionUpdates
@@ -77,9 +81,9 @@ test("ACP plans preserve status and append host verification and publication ste
 
 test("plan replacements retain only the newest durable version across delivery retries", async () => {
   const db = tempDb();
-  const progress = createLinearSessionProgress(db, "session", "ENG-1");
-  progress.plan([{ content: "Old", status: "pending" }]);
-  progress.plan([{ content: "Current", status: "inProgress" }]);
+  const progress = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1");
+  await progress.plan([{ content: "Old", status: "pending" }]);
+  await progress.plan([{ content: "Current", status: "inProgress" }]);
   const rows = listOutbox(db, "session");
   expect(rows).toHaveLength(1);
   expect(rows[0]?.status).toBe("pending");
@@ -97,18 +101,20 @@ test("plan replacements retain only the newest durable version across delivery r
 test("ten plan updates in ten seconds send one request carrying the last plan", async () => {
   const db = tempDb();
   const clock = new FakeClock(1_000);
-  const progress = createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
+  const progress = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1", () =>
+    clock.now(),
+  );
   const tracker = createFakeTracker();
   const dispatcher = new OutboxDispatcher(db, clock);
   dispatcher.setHandler((row, context) =>
     deliverLinearOutbox(row, tracker, async () => {}, context),
   );
-  progress.phase("implementing");
+  await progress.phase("implementing");
   await flush(dispatcher);
   expect(tracker.sessionUpdates.filter((update) => update.plan)).toHaveLength(1);
   for (let step = 1; step <= 10; step++) {
     clock.advance(1_000);
-    progress.plan([{ content: `Step ${step}`, status: "inProgress" }]);
+    await progress.plan([{ content: `Step ${step}`, status: "inProgress" }]);
     await flush(dispatcher);
   }
   expect(listOutbox(db, "session").filter((row) => row.status === "pending")).toHaveLength(1);
@@ -127,7 +133,9 @@ test("ten plan updates in ten seconds send one request carrying the last plan", 
 test("a session flapping between phases sends one plan and summary every two minutes", async () => {
   const db = tempDb();
   const clock = new FakeClock(1_000);
-  const progress = createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
+  const progress = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1", () =>
+    clock.now(),
+  );
   const tracker = createFakeTracker();
   const dispatcher = new OutboxDispatcher(db, clock);
   dispatcher.setHandler((row, context) =>
@@ -135,7 +143,7 @@ test("a session flapping between phases sends one plan and summary every two min
   );
   const phases = ["verifying", "publishing", "merging"] as const;
   for (let tick = 0; tick < 40; tick++) {
-    progress.phase(phases[tick % phases.length]!);
+    await progress.phase(phases[tick % phases.length]!);
     await flush(dispatcher);
     clock.advance(30_000);
   }
@@ -158,20 +166,22 @@ test("a session flapping between phases sends one plan and summary every two min
 test("a summary equal to the last one sent is not sent again", async () => {
   const db = tempDb();
   const clock = new FakeClock(1_000);
-  const progress = createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
+  const progress = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1", () =>
+    clock.now(),
+  );
   const tracker = createFakeTracker();
   const dispatcher = new OutboxDispatcher(db, clock);
   dispatcher.setHandler((row, context) =>
     deliverLinearOutbox(row, tracker, async () => {}, context),
   );
-  progress.phase("merging");
+  await progress.phase("merging");
   await flush(dispatcher);
   clock.advance(1_000);
-  progress.phase("publishing");
-  progress.phase("merging");
+  await progress.phase("publishing");
+  await progress.phase("merging");
   clock.advance(120_000);
   await flush(dispatcher);
-  progress.phase("merging");
+  await progress.phase("merging");
   clock.advance(120_000);
   await flush(dispatcher);
   expect(tracker.sessionUpdates.filter((update) => update.summary)).toHaveLength(1);
@@ -182,18 +192,20 @@ test("a summary equal to the last one sent is not sent again", async () => {
 test("a summary waiting on the interval takes the newest text in place", async () => {
   const db = tempDb();
   const clock = new FakeClock(1_000);
-  const progress = createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
+  const progress = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1", () =>
+    clock.now(),
+  );
   const tracker = createFakeTracker();
   const dispatcher = new OutboxDispatcher(db, clock);
   dispatcher.setHandler((row, context) =>
     deliverLinearOutbox(row, tracker, async () => {}, context),
   );
-  progress.phase("implementing");
+  await progress.phase("implementing");
   await flush(dispatcher);
-  progress.phase("verifying");
-  progress.phase("fixing");
-  progress.phase("verifying");
-  progress.phase("publishing");
+  await progress.phase("verifying");
+  await progress.phase("fixing");
+  await progress.phase("verifying");
+  await progress.phase("publishing");
   const summaries = () =>
     listOutbox(db, "session").filter((row) => row.op === "linear.session.summary");
   expect(summaries()).toHaveLength(2);
@@ -210,23 +222,25 @@ test("a summary waiting on the interval takes the newest text in place", async (
 test("the final plan and summary go out right away and links are not held behind them", async () => {
   const db = tempDb();
   const clock = new FakeClock(1_000);
-  const progress = createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
+  const progress = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1", () =>
+    clock.now(),
+  );
   const tracker = createFakeTracker();
   const dispatcher = new OutboxDispatcher(db, clock);
   dispatcher.setHandler((row, context) =>
     deliverLinearOutbox(row, tracker, async () => {}, context),
   );
-  progress.phase("implementing");
+  await progress.phase("implementing");
   await flush(dispatcher);
   clock.advance(1_000);
-  progress.phase("merging");
-  progress.link("Pull request", "https://github.com/pmdroid/paws-app/pull/1");
+  await progress.phase("merging");
+  await progress.link("Pull request", "https://github.com/pmdroid/paws-app/pull/1");
   await flush(dispatcher);
   expect(tracker.sessionUpdates).toHaveLength(2);
   expect(tracker.sessionUpdates.at(-1)?.addedExternalUrls).toHaveLength(1);
   expect(tracker.sessionUpdates.at(-1)?.summary).toBe("ENG-1: merging");
   clock.advance(1_000);
-  progress.phase("completed");
+  await progress.phase("completed");
   await flush(dispatcher);
   const plan = tracker.sessionUpdates.findLast((update) => update.plan)?.plan;
   expect(plan?.every((step) => step.status === "completed")).toBe(true);
@@ -241,7 +255,7 @@ test.each(["elicitation", "activity"])(
   "a failed optional update leaves %s deliverable",
   async (op) => {
     const db = tempDb();
-    createLinearSessionProgress(db, "session", "ENG-1").phase("verifying");
+    await (await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1")).phase("verifying");
     const clock = new FakeClock(1);
     const dispatcher = new OutboxDispatcher(db, clock);
     dispatcher.setHandler((row) => {
@@ -266,15 +280,15 @@ test.each(["elicitation", "activity"])(
 
 test("Stop and newer turns fence captured metadata callbacks", async () => {
   const db = tempDb();
-  const old = createLinearSessionProgress(db, "session", "ENG-1");
-  old.phase("implementing");
+  const old = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1");
+  await old.phase("implementing");
   await stopOutboxSession(sqliteDb(db), "linear", "session");
-  old.plan([{ content: "After Stop", status: "completed" }]);
+  await old.plan([{ content: "After Stop", status: "completed" }]);
   expect(listOutbox(db).every((row) => row.status === "dropped")).toBe(true);
   await advanceOutboxSession(sqliteDb(db), "linear", "session");
-  const fresh = createLinearSessionProgress(db, "session", "ENG-1");
-  fresh.plan([{ content: "New turn", status: "inProgress" }]);
-  old.phase("completed");
+  const fresh = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1");
+  await fresh.plan([{ content: "New turn", status: "inProgress" }]);
+  await old.phase("completed");
   const dispatcher = new OutboxDispatcher(db, new FakeClock(1));
   const tracker = createFakeTracker();
   dispatcher.setHandler((row, context) =>
@@ -296,8 +310,8 @@ test("PR links use incremental session updates through the GraphQL adapter", asy
     },
   });
   const tracker = linear;
-  const progress = createLinearSessionProgress(db, "session", "ENG-1");
-  progress.link("Pull request", "https://github.com/pmdroid/paws-app/pull/1");
+  const progress = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1");
+  await progress.link("Pull request", "https://github.com/pmdroid/paws-app/pull/1");
   const dispatcher = new OutboxDispatcher(db, new FakeClock(1));
   dispatcher.setHandler((row, context) =>
     deliverLinearOutbox(row, tracker, async () => {}, context),
@@ -317,13 +331,13 @@ test("PR links use incremental session updates through the GraphQL adapter", asy
   db.close();
 });
 
-test("a new delegation child starts its own plan without requiring an ACP plan event", () => {
+test("a new delegation child starts its own plan without requiring an ACP plan event", async () => {
   const db = tempDb();
-  const first = createLinearSessionProgress(db, "session", "ENG-1");
-  first.plan([{ content: "Build first child", status: "completed" }]);
-  first.phase("completed");
-  const second = createLinearSessionProgress(db, "session", "ENG-2");
-  second.phase("implementing");
+  const first = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1");
+  await first.plan([{ content: "Build first child", status: "completed" }]);
+  await first.phase("completed");
+  const second = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-2");
+  await second.phase("implementing");
   const row = listOutbox(db, "session").findLast(
     (candidate) => candidate.op === "linear.session.plan",
   );
@@ -338,20 +352,38 @@ test("a new delegation child starts its own plan without requiring an ACP plan e
   db.close();
 });
 
-test("response plans recover their ACP steps without code milestones and reset for a changed mode", () => {
+test("response plans recover their ACP steps without code milestones and reset for a changed mode", async () => {
   const db = tempDb();
-  const answer = createLinearSessionProgress(db, "session", "ENG-1", Date.now, "answer");
-  answer.plan([{ content: "Explain the API", status: "inProgress" }]);
-  const recovered = createLinearSessionProgress(db, "session", "ENG-1", Date.now, "answer");
-  recovered.phase("working");
+  const answer = await createLinearSessionProgress(
+    sqliteDb(db),
+    "session",
+    "ENG-1",
+    Date.now,
+    "answer",
+  );
+  await answer.plan([{ content: "Explain the API", status: "inProgress" }]);
+  const recovered = await createLinearSessionProgress(
+    sqliteDb(db),
+    "session",
+    "ENG-1",
+    Date.now,
+    "answer",
+  );
+  await recovered.phase("working");
   expect(
     listOutbox(db, "session").findLast((row) => row.op === "linear.session.plan")?.payload,
   ).toMatchObject({
     mode: "answer",
     plan: [{ content: "Explain the API", status: "inProgress" }],
   });
-  const artifact = createLinearSessionProgress(db, "session", "ENG-1", Date.now, "artifact");
-  artifact.phase("working");
+  const artifact = await createLinearSessionProgress(
+    sqliteDb(db),
+    "session",
+    "ENG-1",
+    Date.now,
+    "artifact",
+  );
+  await artifact.phase("working");
   expect(
     listOutbox(db, "session").findLast((row) => row.op === "linear.session.plan")?.payload,
   ).toMatchObject({
@@ -387,7 +419,7 @@ test("a generation change during actual session-update authentication prevents t
         },
       }),
     );
-    createLinearSessionProgress(db, "session", "ENG-1").phase("verifying");
+    await (await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1")).phase("verifying");
     const outbox = new OutboxDispatcher(db, new FakeClock(1000));
     outbox.setHandler((row, context) =>
       deliverLinearOutbox(row, tracker, async () => {}, context, db),
@@ -410,12 +442,20 @@ test.each(["code", "answer", "artifact"] as const)(
   async (mode) => {
     const db = tempDb();
     try {
-      createLinearSessionProgress(db, "session", "ENG-1", Date.now, mode).plan([
+      await (
+        await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1", Date.now, mode)
+      ).plan([
         { content: "Discarded approach", status: "canceled" },
         { content: "Chosen approach", status: "pending" },
       ]);
-      const recovered = createLinearSessionProgress(db, "session", "ENG-1", Date.now, mode);
-      recovered.phase(mode === "code" ? "verifying" : "completed");
+      const recovered = await createLinearSessionProgress(
+        sqliteDb(db),
+        "session",
+        "ENG-1",
+        Date.now,
+        mode,
+      );
+      await recovered.phase(mode === "code" ? "verifying" : "completed");
       const tracker = createFakeTracker();
       const dispatcher = new OutboxDispatcher(db, new FakeClock(1));
       dispatcher.setHandler((row, context) =>
@@ -443,19 +483,19 @@ function markPr(db: ReturnType<typeof tempDb>) {
   });
 }
 
-test("post-PR reconstruction refuses backwards phases and appends rebase verification", () => {
+test("post-PR reconstruction refuses backwards phases and appends rebase verification", async () => {
   const db = tempDb();
   try {
-    const progress = createLinearSessionProgress(db, "session", "ENG-1");
-    progress.phase("merging");
+    const progress = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1");
+    await progress.phase("merging");
     markPr(db);
-    const recovered = createLinearSessionProgress(db, "session", "ENG-1");
-    recovered.phase("implementing");
-    recovered.phase("fixing");
+    const recovered = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1");
+    await recovered.phase("implementing");
+    await recovered.phase("fixing");
     expect(
       listOutbox(db).findLast((row) => row.op === "linear.session.summary")?.payload,
     ).toMatchObject({ summary: "ENG-1: merging" });
-    recovered.phase("verifying");
+    await recovered.phase("verifying");
     const plan = listOutbox(db).findLast((row) => row.op === "linear.session.plan")
       ?.payload as SessionUpdate;
     expect(plan.plan).toEqual([
@@ -467,8 +507,10 @@ test("post-PR reconstruction refuses backwards phases and appends rebase verific
     expect(
       listOutbox(db).findLast((row) => row.op === "linear.session.summary")?.payload,
     ).toMatchObject({ summary: "ENG-1: merging" });
-    recovered.status("ENG-1: second in queue behind ENG-2");
-    createLinearSessionProgress(db, "session", "ENG-1").phase("implementing");
+    await recovered.status("ENG-1: second in queue behind ENG-2");
+    await (
+      await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1")
+    ).phase("implementing");
     expect(
       listOutbox(db).findLast((row) => row.op === "linear.session.summary")?.payload,
     ).toMatchObject({ summary: "ENG-1: second in queue behind ENG-2" });
@@ -483,23 +525,17 @@ test.each([
   ["ci", "Fix CI", 3],
   ["review", "Fix review findings", 3],
   ["conflict", "Fix merge conflicts", 3],
-])("%s restarts append one durable reason-named step", (reason, content, limit) => {
+])("%s restarts append one durable reason-named step", async (reason, content, limit) => {
   const db = tempDb();
   try {
-    createLinearSessionProgress(db, "session", "ENG-1").phase("merging");
+    await (await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1")).phase("merging");
     markPr(db);
-    createLinearSessionProgress(db, "session", "ENG-1").restart(
-      String(reason),
-      2,
-      10,
-      typeof limit === "number" ? limit : 3,
-    );
-    createLinearSessionProgress(db, "session", "ENG-1").restart(
-      String(reason),
-      2,
-      10,
-      typeof limit === "number" ? limit : 3,
-    );
+    await (
+      await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1")
+    ).restart(String(reason), 2, 10, typeof limit === "number" ? limit : 3);
+    await (
+      await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1")
+    ).restart(String(reason), 2, 10, typeof limit === "number" ? limit : 3);
     const plan = listOutbox(db).findLast((row) => row.op === "linear.session.plan")
       ?.payload as SessionUpdate;
     expect(plan.plan?.filter((step) => step.content === content)).toEqual([
@@ -512,15 +548,17 @@ test.each([
   }
 });
 
-test("a restart's plan step goes out with the turn, not after the metadata interval", () => {
+test("a restart's plan step goes out with the turn, not after the metadata interval", async () => {
   const db = tempDb();
   try {
-    createLinearSessionProgress(db, "session", "ENG-1").phase("merging");
+    await (await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1")).phase("merging");
     markPr(db);
     db.run("UPDATE outbox SET status='sent', sent_at=? WHERE op LIKE 'linear.session.%'", [
       Date.now(),
     ]);
-    createLinearSessionProgress(db, "session", "ENG-1").restart("conflict", 1, 10);
+    await (
+      await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1")
+    ).restart("conflict", 1, 10);
     expect(listOutbox(db).findLast((row) => row.op === "linear.session.plan")).toMatchObject({
       status: "pending",
       notBefore: 0,
@@ -530,23 +568,27 @@ test("a restart's plan step goes out with the turn, not after the metadata inter
   }
 });
 
-test("a captured plan callback preserves milestones completed by a newer reporter", () => {
+test("a captured plan callback preserves milestones completed by a newer reporter", async () => {
   const db = tempDb();
   try {
-    const captured = createLinearSessionProgress(db, "session", "ENG-1");
-    captured.phase("implementing");
-    createLinearSessionProgress(db, "session", "ENG-1").phase("merging");
+    const captured = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1");
+    await captured.phase("implementing");
+    await (await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1")).phase("merging");
     markPr(db);
-    captured.plan([{ content: "Repair CI", status: "inProgress" }]);
+    await captured.plan([{ content: "Repair CI", status: "inProgress" }]);
     const plan = listOutbox(db).findLast((row) => row.op === "linear.session.plan")
       ?.payload as SessionUpdate;
     expect(plan.plan?.find((step) => step.content === "Verify changes")?.status).toBe("completed");
     expect(plan.plan?.find((step) => step.content === "Open pull request")?.status).toBe(
       "completed",
     );
-    createLinearSessionProgress(db, "session", "ENG-1").restart("ci", 1, 10);
-    captured.plan([{ content: "Repair CI", status: "completed" }]);
-    createLinearSessionProgress(db, "session", "ENG-1").restart("ci", 1, 10);
+    await (
+      await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1")
+    ).restart("ci", 1, 10);
+    await captured.plan([{ content: "Repair CI", status: "completed" }]);
+    await (
+      await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1")
+    ).restart("ci", 1, 10);
     const current = listOutbox(db).findLast((row) => row.op === "linear.session.plan")
       ?.payload as SessionUpdate;
     expect(current.plan?.filter((step) => step.content === "Fix CI")).toHaveLength(1);
@@ -555,16 +597,22 @@ test("a captured plan callback preserves milestones completed by a newer reporte
   }
 });
 
-test("successive restart rounds preserve their newest identity across captured callbacks", () => {
+test("successive restart rounds preserve their newest identity across captured callbacks", async () => {
   const db = tempDb();
   try {
-    const captured = createLinearSessionProgress(db, "session", "ENG-1");
-    captured.phase("merging");
+    const captured = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1");
+    await captured.phase("merging");
     markPr(db);
-    createLinearSessionProgress(db, "session", "ENG-1").restart("ci", 1, 10);
-    createLinearSessionProgress(db, "session", "ENG-1").restart("ci", 2, 20);
-    captured.plan([]);
-    createLinearSessionProgress(db, "session", "ENG-1").restart("ci", 2, 20);
+    await (
+      await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1")
+    ).restart("ci", 1, 10);
+    await (
+      await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1")
+    ).restart("ci", 2, 20);
+    await captured.plan([]);
+    await (
+      await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1")
+    ).restart("ci", 2, 20);
     const plan = listOutbox(db).findLast((row) => row.op === "linear.session.plan")
       ?.payload as SessionUpdate;
     expect(plan.plan?.filter((step) => step.content === "Fix CI")).toEqual([
@@ -580,13 +628,12 @@ function latest(db: ReturnType<typeof tempDb>, op: string) {
   return listOutbox(db).findLast((row) => row.op === op)?.payload as SessionUpdate;
 }
 
-test("a waiting item leads its plan with a Wait step that completes when it starts", () => {
+test("a waiting item leads its plan with a Wait step that completes when it starts", async () => {
   const db = tempDb();
   try {
-    createLinearSessionProgress(db, "session", "PAS-619").wait(
-      "Wait for PAS-618",
-      "PAS-619: waiting for PAS-618",
-    );
+    await (
+      await createLinearSessionProgress(sqliteDb(db), "session", "PAS-619")
+    ).wait("Wait for PAS-618", "PAS-619: waiting for PAS-618");
     expect(latest(db, "linear.session.summary").summary).toBe("PAS-619: waiting for PAS-618");
     expect(latest(db, "linear.session.plan").plan).toEqual([
       { content: "Wait for PAS-618", status: "inProgress" },
@@ -595,22 +642,20 @@ test("a waiting item leads its plan with a Wait step that completes when it star
       { content: "Merge verified changes", status: "pending" },
     ]);
     // Another tick with the same wait changes nothing; a new wait completes the previous one.
-    createLinearSessionProgress(db, "session", "PAS-619").wait(
-      "Wait for PAS-618",
-      "PAS-619: waiting for PAS-618",
-    );
-    createLinearSessionProgress(db, "session", "PAS-619").wait(
-      "Wait for a runner",
-      "PAS-619: 2nd in line for a runner",
-    );
+    await (
+      await createLinearSessionProgress(sqliteDb(db), "session", "PAS-619")
+    ).wait("Wait for PAS-618", "PAS-619: waiting for PAS-618");
+    await (
+      await createLinearSessionProgress(sqliteDb(db), "session", "PAS-619")
+    ).wait("Wait for a runner", "PAS-619: 2nd in line for a runner");
     expect(latest(db, "linear.session.plan").plan?.slice(0, 2)).toEqual([
       { content: "Wait for PAS-618", status: "completed" },
       { content: "Wait for a runner", status: "inProgress" },
     ]);
     // A run reporter created before the wait ended still completes it on start.
-    const run = createLinearSessionProgress(db, "session", "PAS-619");
-    run.phase("implementing");
-    run.plan([{ content: "Rank runners", status: "inProgress" }]);
+    const run = await createLinearSessionProgress(sqliteDb(db), "session", "PAS-619");
+    await run.phase("implementing");
+    await run.plan([{ content: "Rank runners", status: "inProgress" }]);
     expect(latest(db, "linear.session.plan").plan).toEqual([
       { content: "Wait for PAS-618", status: "completed" },
       { content: "Wait for a runner", status: "completed" },
@@ -625,18 +670,20 @@ test("a waiting item leads its plan with a Wait step that completes when it star
   }
 });
 
-test("a restarted item waiting for a runner shows its appended step, once, not a Wait step", () => {
+test("a restarted item waiting for a runner shows its appended step, once, not a Wait step", async () => {
   const db = tempDb();
   try {
-    createLinearSessionProgress(db, "session", "PAS-7").phase("verifying");
-    const waiting = createLinearSessionProgress(db, "session", "PAS-7");
-    waiting.restart("findings", 1, 12, 3);
-    waiting.status("PAS-7: waiting for a runner to fix Closeout findings (1 of 3)");
+    await (await createLinearSessionProgress(sqliteDb(db), "session", "PAS-7")).phase("verifying");
+    const waiting = await createLinearSessionProgress(sqliteDb(db), "session", "PAS-7");
+    await waiting.restart("findings", 1, 12, 3);
+    await waiting.status("PAS-7: waiting for a runner to fix Closeout findings (1 of 3)");
     expect(latest(db, "linear.session.summary").summary).toBe(
       "PAS-7: waiting for a runner to fix Closeout findings (1 of 3)",
     );
     // The run starts with the same restart.
-    createLinearSessionProgress(db, "session", "PAS-7").restart("findings", 1, 12, 3);
+    await (
+      await createLinearSessionProgress(sqliteDb(db), "session", "PAS-7")
+    ).restart("findings", 1, 12, 3);
     const plan = latest(db, "linear.session.plan").plan ?? [];
     expect(plan.filter((step) => step.content.startsWith("Fix Closeout findings"))).toEqual([
       { content: "Fix Closeout findings (1 of 3)", status: "inProgress" },
@@ -662,22 +709,26 @@ test("repeated phases, plans and status lines enqueue no duplicate title or plan
   try {
     for (let round = 0; round < 3; round++) {
       // A fresh reporter per round, as each job and callback builds its own.
-      const progress = createLinearSessionProgress(db, "session", "PAS-1", () => clock.now());
-      progress.phase("implementing");
-      progress.plan(plan);
-      progress.plan(plan.map((step) => ({ ...step })));
-      progress.phase("implementing");
+      const progress = await createLinearSessionProgress(sqliteDb(db), "session", "PAS-1", () =>
+        clock.now(),
+      );
+      await progress.phase("implementing");
+      await progress.plan(plan);
+      await progress.plan(plan.map((step) => ({ ...step })));
+      await progress.phase("implementing");
       await flush(dispatcher);
       clock.advance(150_000);
       await flush(dispatcher);
     }
-    const voice = createLinearSessionProgress(db, "session", "PAS-1", () => clock.now());
-    voice.status("PAS-1: CI running");
-    await flush(dispatcher);
-    voice.status("PAS-1: CI running");
-    createLinearSessionProgress(db, "session", "PAS-1", () => clock.now()).status(
-      "PAS-1: CI running",
+    const voice = await createLinearSessionProgress(sqliteDb(db), "session", "PAS-1", () =>
+      clock.now(),
     );
+    await voice.status("PAS-1: CI running");
+    await flush(dispatcher);
+    await voice.status("PAS-1: CI running");
+    await (
+      await createLinearSessionProgress(sqliteDb(db), "session", "PAS-1", () => clock.now())
+    ).status("PAS-1: CI running");
     clock.advance(150_000);
     await flush(dispatcher);
 
@@ -703,14 +754,16 @@ test("a plan step status change replaces the plan and an unchanged step does not
     deliverLinearOutbox(row, tracker, async () => {}, context),
   );
   try {
-    const progress = createLinearSessionProgress(db, "session", "PAS-1", () => clock.now());
-    progress.phase("implementing");
-    progress.plan([{ content: "Rank runners", status: "inProgress" }]);
+    const progress = await createLinearSessionProgress(sqliteDb(db), "session", "PAS-1", () =>
+      clock.now(),
+    );
+    await progress.phase("implementing");
+    await progress.plan([{ content: "Rank runners", status: "inProgress" }]);
     await flush(dispatcher);
     clock.advance(150_000);
-    progress.plan([{ content: "Rank runners", status: "inProgress" }]);
+    await progress.plan([{ content: "Rank runners", status: "inProgress" }]);
     await flush(dispatcher);
-    progress.plan([{ content: "Rank runners", status: "completed" }]);
+    await progress.plan([{ content: "Rank runners", status: "completed" }]);
     clock.advance(150_000);
     await flush(dispatcher);
     expect(
@@ -726,34 +779,36 @@ test("a plan step status change replaces the plan and an unchanged step does not
   }
 });
 
-test("the keepalive names the current agent step, else the last line, else the phase", () => {
+test("the keepalive names the current agent step, else the last line, else the phase", async () => {
   const db = tempDb();
   try {
-    const progress = createLinearSessionProgress(db, "session", "PAS-1");
-    progress.phase("implementing");
-    expect(progress.keepalive(null)).toBe("Implementing PAS-1.");
-    expect(progress.keepalive("Found the cause in the scheduler.")).toBe(
+    const progress = await createLinearSessionProgress(sqliteDb(db), "session", "PAS-1");
+    await progress.phase("implementing");
+    expect(await progress.keepalive(null)).toBe("Implementing PAS-1.");
+    expect(await progress.keepalive("Found the cause in the scheduler.")).toBe(
       "Found the cause in the scheduler.",
     );
-    progress.plan([
+    await progress.plan([
       { content: "Read the scheduler", status: "completed" },
       { content: "Add coverage", status: "completed" },
       { content: "rank runners by load share", status: "inProgress" },
       { content: "Wire the setting", status: "pending" },
       { content: "Document it", status: "pending" },
     ]);
-    expect(progress.keepalive("Found the cause.")).toBe("Step 3 of 5: rank runners by load share.");
-    // Another reporter for the same session reads the step from the saved plan.
-    expect(createLinearSessionProgress(db, "session", "PAS-1").keepalive(null)).toBe(
+    expect(await progress.keepalive("Found the cause.")).toBe(
       "Step 3 of 5: rank runners by load share.",
     );
-    progress.plan([
+    // Another reporter for the same session reads the step from the saved plan.
+    expect(
+      await (await createLinearSessionProgress(sqliteDb(db), "session", "PAS-1")).keepalive(null),
+    ).toBe("Step 3 of 5: rank runners by load share.");
+    await progress.plan([
       { content: "Read the scheduler", status: "completed" },
       { content: "Wire the setting", status: "pending" },
     ]);
-    expect(progress.keepalive(null)).toBe("Step 2 of 2: Wire the setting.");
-    progress.phase("verifying");
-    expect(progress.keepalive(null)).toBe("Verifying PAS-1.");
+    expect(await progress.keepalive(null)).toBe("Step 2 of 2: Wire the setting.");
+    await progress.phase("verifying");
+    expect(await progress.keepalive(null)).toBe("Verifying PAS-1.");
   } finally {
     db.close();
   }
@@ -767,16 +822,17 @@ test("repeated merge wakes on a published pull request keep a stable title withi
   dispatcher.setHandler((row, context) =>
     deliverLinearOutbox(row, tracker, async () => {}, context),
   );
-  const wake = () => createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
+  const wake = () =>
+    createLinearSessionProgress(sqliteDb(db), "session", "ENG-1", () => clock.now());
   try {
-    wake().phase("verifying");
+    await (await wake()).phase("verifying");
     await flush(dispatcher);
-    wake().phase("publishing");
+    await (await wake()).phase("publishing");
     markPr(db);
-    wake().phase("merging");
+    await (await wake()).phase("merging");
     expect(latest(db, "linear.session.summary").summary).toBe("ENG-1: waiting to merge");
     for (let tick = 0; tick < 10; tick++) {
-      wake().reach("merging");
+      await (await wake()).reach("merging");
       clock.advance(30_000);
       await flush(dispatcher);
     }
@@ -784,13 +840,13 @@ test("repeated merge wakes on a published pull request keep a stable title withi
       update.summary ? [update.summary] : [],
     );
     expect(summaries).toEqual(["ENG-1: verifying", "ENG-1: waiting to merge"]);
-    expect(wake().keepalive(null)).toBe("Merging ENG-1.");
+    expect(await (await wake()).keepalive(null)).toBe("Merging ENG-1.");
 
     // A stable CI wait stays the title through further wakes.
-    wake().status("ENG-1: CI 4 of 6 done");
+    await (await wake()).status("ENG-1: CI 4 of 6 done");
     for (let tick = 0; tick < 5; tick++) {
-      wake().reach("merging");
-      wake().status("ENG-1: CI 4 of 6 done");
+      await (await wake()).reach("merging");
+      await (await wake()).status("ENG-1: CI 4 of 6 done");
       clock.advance(30_000);
       await flush(dispatcher);
     }
@@ -815,25 +871,26 @@ test("a new head on a published pull request updates it without regressing the p
   dispatcher.setHandler((row, context) =>
     deliverLinearOutbox(row, tracker, async () => {}, context),
   );
-  const wake = () => createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
+  const wake = () =>
+    createLinearSessionProgress(sqliteDb(db), "session", "ENG-1", () => clock.now());
   try {
-    wake().phase("merging");
+    await (await wake()).phase("merging");
     markPr(db);
     await flush(dispatcher);
     clock.advance(120_000);
-    wake().restart("ci", 1, 10);
+    await (await wake()).restart("ci", 1, 10);
     await flush(dispatcher);
     expect(tracker.sessionUpdates.at(-1)?.summary).toBe("ENG-1: fixing CI");
-    wake().phase("verifying");
+    await (await wake()).phase("verifying");
     clock.advance(1_000);
-    wake().phase("publishing");
+    await (await wake()).phase("publishing");
     expect(latest(db, "linear.session.summary").summary).toBe("ENG-1: fixing CI");
     expect(latest(db, "linear.session.plan").plan?.at(-1)).toEqual({
       content: "Verify fixes",
       status: "inProgress",
     });
-    expect(wake().keepalive(null)).toBe("Merging ENG-1.");
-    wake().phase("merging");
+    expect(await (await wake()).keepalive(null)).toBe("Merging ENG-1.");
+    await (await wake()).phase("merging");
     expect(latest(db, "linear.session.summary").summary).toBe("ENG-1: waiting to merge");
     clock.advance(120_000);
     await flush(dispatcher);
@@ -845,10 +902,10 @@ test("a new head on a published pull request updates it without regressing the p
         .plan?.slice(3)
         .every((step) => step.status === "completed"),
     ).toBe(true);
-    wake().phase("completed");
+    await (await wake()).phase("completed");
     await flush(dispatcher);
     expect(tracker.sessionUpdates.at(-1)?.summary).toBe("ENG-1: merged");
-    wake().reach("merging");
+    await (await wake()).reach("merging");
     expect(latest(db, "linear.session.summary").summary).toBe("ENG-1: merged");
   } finally {
     db.close();
@@ -858,18 +915,18 @@ test("a new head on a published pull request updates it without regressing the p
 test("reconstruction reaches merging once and stale or stopped reporters change nothing", async () => {
   const db = tempDb();
   try {
-    createLinearSessionProgress(db, "session", "ENG-1").phase("publishing");
+    await (await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1")).phase("publishing");
     markPr(db);
-    const captured = createLinearSessionProgress(db, "session", "ENG-1");
-    createLinearSessionProgress(db, "session", "ENG-1").reach("merging");
+    const captured = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1");
+    await (await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1")).reach("merging");
     expect(latest(db, "linear.session.summary").summary).toBe("ENG-1: waiting to merge");
     const rows = listOutbox(db).length;
-    createLinearSessionProgress(db, "session", "ENG-1").reach("merging");
-    captured.reach("merging");
+    await (await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1")).reach("merging");
+    await captured.reach("merging");
     expect(listOutbox(db)).toHaveLength(rows);
 
     await advanceOutboxSession(sqliteDb(db), "linear", "session");
-    captured.phase("publishing");
+    await captured.phase("publishing");
     expect(
       listOutbox(db).filter((row) => row.status !== "dropped" && row.generation === 0),
     ).not.toContainEqual(
@@ -877,15 +934,15 @@ test("reconstruction reaches merging once and stale or stopped reporters change 
         payload: expect.objectContaining({ summary: "ENG-1: publishing" }),
       }),
     );
-    const fresh = createLinearSessionProgress(db, "session", "ENG-1");
-    fresh.reach("merging");
+    const fresh = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1");
+    await fresh.reach("merging");
     expect(listOutbox(db).findLast((row) => row.op === "linear.session.summary")?.generation).toBe(
       1,
     );
 
     await stopOutboxSession(sqliteDb(db), "linear", "session");
-    fresh.phase("publishing");
-    fresh.reach("merging");
+    await fresh.phase("publishing");
+    await fresh.reach("merging");
     expect(
       listOutbox(db).every(
         (row) => !row.op.startsWith("linear.session.") || row.status === "dropped",

@@ -19,6 +19,7 @@ import {
   unreportedReviewReplies,
   type PullFeedbackWait,
   sqliteDb,
+  syncSteps,
 } from "../db";
 import {
   commentOnPullRequest,
@@ -121,7 +122,7 @@ async function setup() {
     pullHead: async () => null,
     leaveMergeQueue: (_, prNumber) =>
       leaveGitHubMergeQueue({ client, owner: "acme", repo: "one", prNumber, tokenProvider }),
-    fixRoundLimit: () => 3,
+    fixRoundLimit: () => syncSteps(() => 3),
     closeoutFindings: async () => [],
     session: (item) => item.sessionKey,
     flush: async () => {},

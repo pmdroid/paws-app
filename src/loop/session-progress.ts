@@ -1,13 +1,15 @@
-import { hasPublishedPullRequest } from "./activity-policy";
-import type { Database } from "bun:sqlite";
+import { hasPublishedPullRequestSteps } from "./activity-policy";
 import type { TaskMode } from "../core";
 import { randomUUID } from "node:crypto";
 import {
-  enqueueOutboxOnce,
-  listOutbox,
-  publishSessionMetadata,
-  sessionFenceGeneration,
-  sessionLinkQueued,
+  enqueueOutboxOnceSteps,
+  listOutboxSteps,
+  publishSessionMetadataSteps,
+  sessionFenceGenerationSteps,
+  sessionLinkQueuedSteps,
+  type Db,
+  type Q,
+  type Steps,
 } from "../db";
 import type { SessionPlanStep, SessionUpdate } from "../linear";
 
@@ -35,8 +37,38 @@ const PHASE_LINES: Record<Phase, string> = {
   completed: "Finishing",
 };
 
-export function createLinearSessionProgress(
-  db: Database,
+export type LinearSessionProgress = Awaited<ReturnType<typeof createLinearSessionProgress>>;
+
+export async function createLinearSessionProgress(
+  store: Db,
+  sessionId: string,
+  identifier: string,
+  now: () => number = Date.now,
+  mode: TaskMode = "code",
+  itemId?: string,
+) {
+  const progress = await store.run((q) =>
+    linearSessionProgressSteps(q, sessionId, identifier, now, mode, itemId),
+  );
+  return {
+    steps: progress,
+    plan: (plan: readonly SessionPlanStep[]) => store.transaction((q) => progress.plan(q, plan)),
+    wait: (step: string | null, title: string) =>
+      store.transaction((q) => progress.wait(q, step, title)),
+    restart: (reason: string, round: number, version: number, limit = 3) =>
+      store.transaction((q) => progress.restart(q, reason, round, version, limit)),
+    phase: (next: Phase) => store.transaction((q) => progress.phase(q, next)),
+    reach: (next: "merging") => store.transaction((q) => progress.reach(q, next)),
+    keepalive: (lastLine: string | null) => store.run((q) => progress.keepalive(q, lastLine)),
+    status: (text: string) => store.transaction((q) => progress.status(q, text)),
+    mergeStatus: (text: string) => store.transaction((q) => progress.mergeStatus(q, text)),
+    restartWait: (text: string) => store.transaction((q) => progress.restartWait(q, text)),
+    link: (label: string, url: string) => store.transaction((q) => progress.link(q, label, url)),
+  };
+}
+
+export function* linearSessionProgressSteps(
+  read: Q,
   sessionId: string,
   identifier: string,
   now: () => number = Date.now,
@@ -44,10 +76,10 @@ export function createLinearSessionProgress(
   itemId?: string,
 ) {
   const owner = itemId === undefined ? {} : { itemId };
-  const generation = sessionFenceGeneration(db, sessionId);
+  const generation = yield* sessionFenceGenerationSteps(read, sessionId);
   const hostSteps = mode === "code" ? HOST_STEPS : [];
-  const latestPlan = () =>
-    listOutbox(db, sessionId).findLast(
+  const latestPlan = function* (q: Q) {
+    return (yield* listOutboxSteps(q, sessionId)).findLast(
       (row) =>
         (row.payload as SessionUpdate).plan !== undefined &&
         row.generation === generation &&
@@ -55,7 +87,8 @@ export function createLinearSessionProgress(
         (row.payload as { identifier?: string }).identifier === identifier &&
         ((row.payload as { mode?: TaskMode }).mode ?? "code") === mode,
     );
-  const saved = latestPlan()?.payload as
+  };
+  const saved = (yield* latestPlan(read))?.payload as
     | (SessionUpdate & {
         agentSteps?: SessionPlanStep[];
         hostPlan?: SessionPlanStep[];
@@ -76,10 +109,10 @@ export function createLinearSessionProgress(
   let restartVersion = saved?.restartVersion;
   let waits: SessionPlanStep[] = saved?.waits ?? [];
   let started = false;
-  const afterPr = () => hasPublishedPullRequest(db, sessionId, generation);
+  const afterPr = (q: Q) => hasPublishedPullRequestSteps(q, sessionId, generation);
 
-  function preserveHostProgress() {
-    const latest = latestPlan()?.payload as typeof saved;
+  function* preserveHostProgress(q: Q): Steps<void> {
+    const latest = (yield* latestPlan(q))?.payload as typeof saved;
     if (latest?.waits)
       waits = latest.waits
         .map((step, index) => {
@@ -103,19 +136,19 @@ export function createLinearSessionProgress(
           : current;
       })
       .concat(milestones.slice(latest.hostPlan.length));
-    if (afterPr() && ["working", "implementing", "fixing", "verifying"].includes(phase))
+    if ((yield* afterPr(q)) && ["working", "implementing", "fixing", "verifying"].includes(phase))
       phase = latest.phase ?? "merging";
   }
 
   // Plan and summary are latest-wins: a pending row takes the new payload, and a new row
   // waits until METADATA_INTERVAL_MS after the last one went out. A final update is due now.
-  function publish(op: string, update: SessionUpdate, final = false) {
+  function* publish(q: Q, op: string, update: SessionUpdate, final = false): Steps<void> {
     const metadata =
       op === "linear.session.plan"
         ? { agentSteps: steps, hostPlan: milestones, phase, restartVersion, waits }
         : {};
     const field = op === "linear.session.plan" ? "plan" : "summary";
-    publishSessionMetadata(db, {
+    yield* publishSessionMetadataSteps(q, {
       sessionId,
       generation,
       op,
@@ -135,8 +168,8 @@ export function createLinearSessionProgress(
     );
   }
 
-  function publishPlan(final = false) {
-    preserveHostProgress();
+  function* publishPlan(q: Q, final = false): Steps<void> {
+    yield* preserveHostProgress(q);
     if (started) endWaits();
     const phaseIndex =
       phase === "fixing"
@@ -166,7 +199,8 @@ export function createLinearSessionProgress(
         status: desired === "pending" && step.status === "inProgress" ? "inProgress" : desired,
       };
     });
-    publish(
+    yield* publish(
+      q,
       "linear.session.plan",
       { sessionId, plan: [...waits, ...agentSteps, ...milestones] },
       final || phase === "completed",
@@ -174,29 +208,29 @@ export function createLinearSessionProgress(
   }
 
   return {
-    plan(plan: readonly SessionPlanStep[]) {
+    *plan(q: Q, plan: readonly SessionPlanStep[]): Steps<void> {
       started = true;
       steps = plan;
-      publishPlan();
+      yield* publishPlan(q);
     },
-    wait(step: string | null, title: string) {
-      preserveHostProgress();
+    *wait(q: Q, step: string | null, title: string): Steps<void> {
+      yield* preserveHostProgress(q);
       started = false;
       const last = waits.at(-1);
       if (step !== null && (last?.content !== step || last.status !== "inProgress")) {
         endWaits();
         waits.push({ content: step, status: "inProgress" });
       }
-      publishPlan();
-      if (!afterPr())
-        publish("linear.session.summary", { sessionId, summary: title.slice(0, 255) });
+      yield* publishPlan(q);
+      if (!(yield* afterPr(q)))
+        yield* publish(q, "linear.session.summary", { sessionId, summary: title.slice(0, 255) });
     },
-    restart(reason: string, round: number, version: number, limit = 3) {
+    *restart(q: Q, reason: string, round: number, version: number, limit = 3): Steps<void> {
       started = true;
-      preserveHostProgress();
+      yield* preserveHostProgress(q);
       if (
         restartVersion === version ||
-        (latestPlan()?.payload as typeof saved)?.restartVersion === version
+        ((yield* latestPlan(q))?.payload as typeof saved)?.restartVersion === version
       )
         return;
       restartVersion = version;
@@ -214,10 +248,10 @@ export function createLinearSessionProgress(
           : step,
       );
       milestones.push({ content, status: "inProgress" });
-      const pullRequest = afterPr();
+      const pullRequest = yield* afterPr(q);
       if (!pullRequest) phase = "fixing";
       // Due now, with the summary below: the turn's new step should not lag it by the interval.
-      publishPlan(true);
+      yield* publishPlan(q, true);
       const status = pullRequest
         ? reason === "ci"
           ? "fixing CI"
@@ -233,12 +267,18 @@ export function createLinearSessionProgress(
             : reason === "conflict"
               ? "resolving merge conflict"
               : `fixing Closeout findings (${round} of ${limit})`;
-      publish("linear.session.summary", { sessionId, summary: `${identifier}: ${status}` }, true);
+      yield* publish(
+        q,
+        "linear.session.summary",
+        { sessionId, summary: `${identifier}: ${status}` },
+        true,
+      );
     },
-    phase(next: Phase) {
+    *phase(q: Q, next: Phase): Steps<void> {
       started = true;
-      preserveHostProgress();
-      if (afterPr() && ["working", "implementing", "fixing", "verifying"].includes(next)) {
+      yield* preserveHostProgress(q);
+      const afterPullRequest = yield* afterPr(q);
+      if (afterPullRequest && ["working", "implementing", "fixing", "verifying"].includes(next)) {
         if (next === "verifying") {
           const last = milestones.at(-1);
           const fixing = last?.status === "inProgress" && /^(Fix |Resolve )/.test(last.content);
@@ -249,17 +289,17 @@ export function createLinearSessionProgress(
             );
           if (last?.content !== content || last.status === "completed")
             milestones.push({ content, status: "inProgress" });
-          publishPlan();
+          yield* publishPlan(q);
         }
         return;
       }
-      if (next === "publishing" && afterPr()) return;
+      if (next === "publishing" && afterPullRequest) return;
       if (next === "merging")
         milestones = milestones.map((step, index) =>
           index >= hostSteps.length ? { ...step, status: "completed" } : step,
         );
       phase = next;
-      publishPlan();
+      yield* publishPlan(q);
       const status =
         next === "working"
           ? mode === "answer"
@@ -269,25 +309,25 @@ export function createLinearSessionProgress(
               : "creating files"
           : next === "fixing"
             ? "fixing Closeout findings"
-            : next === "merging" && afterPr()
+            : next === "merging" && (yield* afterPr(q))
               ? "waiting to merge"
-              : next === "completed" && afterPr()
+              : next === "completed" && (yield* afterPr(q))
                 ? "merged"
                 : next;
       const summary = `${identifier}: ${status}`.slice(0, 255);
-      publish("linear.session.summary", { sessionId, summary }, next === "completed");
+      yield* publish(q, "linear.session.summary", { sessionId, summary }, next === "completed");
     },
-    reach(next: "merging") {
-      const current = (latestPlan()?.payload as typeof saved)?.phase ?? phase;
+    *reach(q: Q, next: "merging"): Steps<void> {
+      const current = ((yield* latestPlan(q))?.payload as typeof saved)?.phase ?? phase;
       if (current === next || current === "completed") return;
-      this.phase(next);
+      yield* this.phase(q, next);
     },
     /**
      * The keepalive line: the agent's current plan step while it works, else the last
      * line it posted, else the phase name.
      */
-    keepalive(lastLine: string | null): string {
-      const latest = latestPlan()?.payload as typeof saved;
+    *keepalive(q: Q, lastLine: string | null): Steps<string> {
+      const latest = (yield* latestPlan(q))?.payload as typeof saved;
       const current = latest?.phase ?? phase;
       const agentSteps = latest?.agentSteps ?? steps;
       if (current === "working" || current === "implementing" || current === "fixing") {
@@ -307,19 +347,19 @@ export function createLinearSessionProgress(
             : PHASE_LINES[current];
       return `${line} ${identifier}.`;
     },
-    status(text: string) {
-      publish("linear.session.summary", { sessionId, summary: text.slice(0, 255) }, true);
+    *status(q: Q, text: string): Steps<void> {
+      yield* publish(q, "linear.session.summary", { sessionId, summary: text.slice(0, 255) }, true);
     },
-    mergeStatus(text: string) {
-      this.status(afterPr() ? `${identifier}: waiting to merge` : text);
+    *mergeStatus(q: Q, text: string): Steps<void> {
+      yield* this.status(q, (yield* afterPr(q)) ? `${identifier}: waiting to merge` : text);
     },
-    restartWait(text: string) {
-      if (!afterPr()) this.status(text);
+    *restartWait(q: Q, text: string): Steps<void> {
+      if (!(yield* afterPr(q))) yield* this.status(q, text);
     },
-    link(label: string, url: string) {
+    *link(q: Q, label: string, url: string): Steps<void> {
       // Links are not throttled, so they sort ahead of a plan or summary that is still waiting.
-      if (sessionLinkQueued(db, sessionId, generation, url)) return;
-      enqueueOutboxOnce(db, {
+      if (yield* sessionLinkQueuedSteps(q, sessionId, generation, url)) return;
+      yield* enqueueOutboxOnceSteps(q, {
         target: "linear",
         op: "linear.session.links",
         orderingKey: sessionId,

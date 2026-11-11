@@ -9,7 +9,7 @@ export function createRepositoryGit(input: {
   token: (signal: AbortSignal) => Promise<string>;
   signal: AbortSignal;
   assert: () => Promise<void>;
-  onCleanupFailure: () => void;
+  onCleanupFailure: () => void | Promise<void>;
   env?: NodeJS.ProcessEnv;
   /** Allows a fast-forward push of one commit to a branch, for a token with write access. */
   pushBranch?: string;

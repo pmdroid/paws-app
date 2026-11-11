@@ -80,10 +80,12 @@ test("progress opens again in a later generation once the pull request merged", 
 
 test("after the PR the title moves once to waiting to merge and once more to merged", async () => {
   const { db, clock, flush, post, titles } = harness();
-  const progress = createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
-  progress.phase("publishing");
+  const progress = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1", () =>
+    clock.now(),
+  );
+  await progress.phase("publishing");
   post(`pull-request-ready:${ITEM}:0`, "response", true);
-  progress.phase("merging");
+  await progress.phase("merging");
   await flush();
   for (const step of [
     "Branch updated onto main e51458c, waiting for CI. Closeout does not run again.",
@@ -91,13 +93,13 @@ test("after the PR the title moves once to waiting to merge and once more to mer
     "ENG-1 held: waiting for ENG-2 to merge first",
   ]) {
     clock.advance(130_000);
-    progress.mergeStatus(step);
+    await progress.mergeStatus(step);
     await flush();
   }
-  progress.phase("verifying");
-  progress.phase("publishing");
+  await progress.phase("verifying");
+  await progress.phase("publishing");
   clock.advance(130_000);
-  progress.phase("completed");
+  await progress.phase("completed");
   await flush();
   expect(titles()).toEqual(["ENG-1: waiting to merge", "ENG-1: merged"]);
   db.close();
@@ -105,16 +107,18 @@ test("after the PR the title moves once to waiting to merge and once more to mer
 
 test("after the PR a restart names its phase once, without the round", async () => {
   const { db, clock, flush, post, titles } = harness();
-  const progress = createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
+  const progress = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1", () =>
+    clock.now(),
+  );
   post(`pull-request-ready:${ITEM}:0`, "response", true);
-  progress.phase("merging");
+  await progress.phase("merging");
   await flush();
   clock.advance(130_000);
-  progress.restart("ci", 1, 7, 3);
-  progress.restartWait("ENG-1: waiting for a runner to fix CI (1 of 3)");
+  await progress.restart("ci", 1, 7, 3);
+  await progress.restartWait("ENG-1: waiting for a runner to fix CI (1 of 3)");
   await flush();
   clock.advance(130_000);
-  progress.restart("review", 2, 9, 3);
+  await progress.restart("review", 2, 9, 3);
   await flush();
   expect(titles()).toEqual([
     "ENG-1: waiting to merge",

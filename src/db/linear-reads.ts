@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
 
 export type TaskLinearReadKind = "project_overview" | "repository_hints" | "repository_suggestions";
 
@@ -45,10 +44,6 @@ export function* getTaskLinearReadSteps(q: Q, itemId: string, kind: TaskLinearRe
   );
   if (row === undefined) return undefined;
   return q.dialect === "sqlite" ? (JSON.parse(row.valueJson as string) as unknown) : row.valueJson;
-}
-
-export function getTaskLinearRead(db: Database, itemId: string, kind: TaskLinearReadKind): unknown {
-  return settled(sqliteDb(db).run((q) => getTaskLinearReadSteps(q, itemId, kind)));
 }
 
 export function* linearActivitiesListedAtSteps(q: Q, sessionId: string) {

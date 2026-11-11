@@ -740,25 +740,6 @@ function clipUtf8(text: string, maxBytes: number): string {
   return bytes.subarray(0, end).toString("utf8");
 }
 
-/**
- * Notes on a running step why it has not reached its runner yet. Null clears
- * the note. The step's own state and attempt stay as they are.
- */
-export function setRunningCloseoutStepDetail(
-  db: Database,
-  itemId: string,
-  head: string,
-  stepId: string,
-  detail: string | null,
-  now: number,
-): void {
-  settled(
-    sqliteDb(db).transaction((q) =>
-      setRunningCloseoutStepDetailSteps(q, itemId, head, stepId, detail, now),
-    ),
-  );
-}
-
 export function* setRunningCloseoutStepDetailSteps(
   q: Q,
   itemId: string,

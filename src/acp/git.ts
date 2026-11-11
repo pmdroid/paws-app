@@ -21,7 +21,7 @@ export async function git(
     cwd?: string;
     env?: NodeJS.ProcessEnv;
     signal?: AbortSignal;
-    onCleanupFailure?: () => void;
+    onCleanupFailure?: () => void | Promise<void>;
   },
 ): Promise<string> {
   options?.signal?.throwIfAborted();
@@ -86,7 +86,7 @@ export async function git(
     options?.signal?.removeEventListener("abort", abort);
   }
   if (options?.signal && !(await (stopping ?? cleanup()))) {
-    options.onCleanupFailure?.();
+    await options.onCleanupFailure?.();
     throw new Error("Git process cleanup could not be verified");
   }
   options?.signal?.throwIfAborted();

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { FakeClock } from "../src/core";
-import { enqueueOutbox, LINEAR_PROGRESS_INTERVAL_MS, OutboxDispatcher } from "../src/db";
+import { enqueueOutbox, LINEAR_PROGRESS_INTERVAL_MS, OutboxDispatcher, sqliteDb } from "../src/db";
 import { createFakeTracker } from "../src/linear";
 import { createLinearSessionProgress, deliverLinearOutbox } from "../src/loop";
 import { tempDb } from "./helpers";
@@ -35,13 +35,15 @@ function harness() {
 
 test("a run producing 50 progress events in a minute sends at most a few Linear requests", async () => {
   const { db, clock, tracker, flush, requests, activity } = harness();
-  const progress = createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
+  const progress = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1", () =>
+    clock.now(),
+  );
   for (let index = 0; index < 50; index++) {
     if (index % 5 === 4) {
       activity({ kind: "thought", body: `Working ${index}`, ephemeral: true });
     } else if (index % 7 === 3) {
-      progress.plan([{ content: `Step ${index}`, status: "inProgress" }]);
-      progress.phase(index % 2 === 0 ? "implementing" : "verifying");
+      await progress.plan([{ content: `Step ${index}`, status: "inProgress" }]);
+      await progress.phase(index % 2 === 0 ? "implementing" : "verifying");
     } else {
       activity({ kind: "thought", body: `Thought ${index}` });
     }
@@ -89,13 +91,15 @@ test("questions, errors and links go out at once and keep their order", async ()
 
 test("pending plan, summary and links for one session go out as one update", async () => {
   const { db, clock, tracker, flush } = harness();
-  const progress = createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
-  progress.plan([{ content: "Build", status: "inProgress" }]);
+  const progress = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1", () =>
+    clock.now(),
+  );
+  await progress.plan([{ content: "Build", status: "inProgress" }]);
   await flush();
-  progress.plan([{ content: "Build", status: "completed" }]);
-  progress.status("ENG-1: verifying");
-  progress.link("Pull request", "https://github.com/acme/app/pull/1");
-  progress.link("Run", "https://paws.example/run/1");
+  await progress.plan([{ content: "Build", status: "completed" }]);
+  await progress.status("ENG-1: verifying");
+  await progress.link("Pull request", "https://github.com/acme/app/pull/1");
+  await progress.link("Run", "https://paws.example/run/1");
   await flush();
   expect(tracker.sessionUpdates).toHaveLength(2);
   expect(tracker.sessionUpdates[1]).toEqual({
@@ -112,7 +116,7 @@ test("pending plan, summary and links for one session go out as one update", asy
       { label: "Run", url: "https://paws.example/run/1" },
     ],
   });
-  progress.phase("merging");
+  await progress.phase("merging");
   await flush();
   expect(tracker.sessionUpdates).toHaveLength(2);
   clock.advance(120_000);

@@ -29,7 +29,7 @@ export async function applyPullRequestDraft(input: {
   now: number;
   status: (line: string) => void;
   journal?: (line: string) => void;
-  stopped: () => boolean;
+  stopped: () => Promise<boolean>;
   signal?: AbortSignal;
 }): Promise<"updated" | "unchanged" | "no_pull" | "failed" | "stopped"> {
   const { store } = input;
@@ -49,11 +49,11 @@ export async function applyPullRequestDraft(input: {
   };
   const title = input.draft.title;
   try {
-    if (input.stopped()) return "stopped";
+    if (await input.stopped()) return "stopped";
     let written = await store.run((q) => getPullRequestTextSteps(q, input.itemId));
     if (written && sameText(written, input.issue, input.draft)) return "unchanged";
     const live = await readPullRequestText(target);
-    if (input.stopped()) return "stopped";
+    if (await input.stopped()) return "stopped";
     if (!live.open) return "no_pull";
     if (!written) {
       written = recoveredText(input.issue, live, [
@@ -68,12 +68,12 @@ export async function applyPullRequestDraft(input: {
     }
     const body = textBody(written, input.issue, input.draft);
     await updatePullRequestText({ ...target, title, body });
-    if (input.stopped()) return "stopped";
+    if (await input.stopped()) return "stopped";
     const saved = { ...written, title, body };
     await store.run((q) => savePullRequestTextSteps(q, input.itemId, saved, input.now));
     return "updated";
   } catch (error) {
-    if (input.signal?.aborted || input.stopped()) return "stopped";
+    if (input.signal?.aborted || (await input.stopped())) return "stopped";
     const reason = error instanceof Error ? error.message : String(error);
     input.status(`Couldn't update the pull request title: ${reason}`);
     input.journal?.(

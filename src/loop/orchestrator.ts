@@ -31,6 +31,7 @@ import {
   getItemBranchStateSteps,
   getItemCandidateSteps,
   getItemRunCommitPolicySteps,
+  pinRunCheckoutSteps,
   getLinearSessionGenerationSteps,
   getPullRequestDraftSteps,
   getTaskClassificationSteps,
@@ -49,7 +50,6 @@ import {
   recentRepositoryNamesSteps,
   recordAgentCloseoutSteps,
   jobStatusByKey,
-  latestHumanTurn,
   restartAsync,
   reviewerAlertedSinceSteps,
   saveConversationSteps,
@@ -86,12 +86,12 @@ import { readTurnSummary, transcriptOffset } from "./turn-summary";
 import type { ItemRunnerVerdicts, RunnerHostRefusal } from "../db";
 import {
   AFTER_PULL_REQUEST_RESPONSE,
-  canReportProgress as canReportSessionProgress,
+  canReportProgressSteps as canReportSessionProgressSteps,
   hasPublishedPullRequestSteps as hasPublishedPullRequestPolicySteps,
 } from "./activity-policy";
 import { reaskDeadQuestion } from "./dead-question";
 import { createHash, randomUUID } from "node:crypto";
-import { askSteps, restart, restartSteps, awaitQuestionSteps } from "./operations";
+import { askSteps, restartSteps, awaitQuestionSteps } from "./operations";
 import {
   RUNNER_REPOSITORY_REASON,
   RUNNER_REPOSITORY_RETRY,
@@ -102,8 +102,6 @@ import { acceptedResumeNeedsTurn, mergeAcceptedWork, settleRejectedPush } from "
 import { restartForPushConflict } from "./push-conflict";
 import {
   saveHumanRetryWindowSteps,
-  fixRounds,
-  restartLimit,
   type RestartHandoff,
   activateLinearItemSteps,
   bindLinearSessionTaskSteps,
@@ -284,26 +282,15 @@ import {
 } from "../core";
 import {
   listWaitingProfileRuns,
-  getTaskMode,
   getLinearSessionAccessSteps,
   type ConfirmedRemoteMerge,
-  getLinearTaskDelegation,
-  getLinearSessionGeneration,
-  getLinearSession,
-  saveTaskMode,
-  selectTaskModeForTurn,
-  completeAnswerTask,
-  completeArtifactTask,
-  getTaskClassification,
+  completeAnswerTaskSteps,
+  completeArtifactTaskSteps,
   accrueAwake,
-  enqueueOutboxOnce,
-  lastOutboxSequence,
-  settled,
   getQueuePosition,
   clearQueueWait,
   queueWaitSince,
   sqliteDb,
-  syncSteps,
   activeRunnerIdsSteps,
   announceLinearTurnSteps,
   applyLinearCommandAsync,
@@ -316,6 +303,15 @@ import {
   getConfirmedRemoteMergeSteps,
   getLinearSessionContextSteps,
   getLinearTaskDelegationSteps,
+  getWorkItemLinearProjectIdSteps,
+  stopSessionParentDelegationSteps,
+  setRunningCloseoutStepDetailSteps,
+  lastOutboxSequenceSteps,
+  latestHumanTurnSteps,
+  selectTaskModeForTurnSteps,
+  itemParentTaskKeySteps,
+  listLinearTurnsForItemSteps,
+  restartLimitSteps,
   getLinearTurnGenerationSteps,
   getTaskModeGenerationSteps,
   hasLiveJobSteps,
@@ -349,8 +345,7 @@ import {
   type Db,
   getRun,
   CLEANUP_BLOCKED_NOTICE,
-  blockConversation as blockStoredConversation,
-  listLinearTurnsForItem,
+  blockConversationSteps,
   getWorkItemRepository,
   getWorkItemRepositoryAnswer,
   saveWorkItemRepositoryQuestionSteps,
@@ -358,14 +353,10 @@ import {
   getPullRequestDraft,
   drainInstanceCommands,
   runRunnerAvailability,
-  setRunningCloseoutStepDetail,
-  markRun,
   saveVisualReviewMarksSteps,
   type VisualReviewMark,
   listRunsSteps,
   type StoredLinearSession,
-  getLinearSessionContext,
-  listLinearActivitySnapshots,
   type Job,
   type JobLoop,
   type JobContext,
@@ -384,22 +375,15 @@ import {
   markRunnerSetupNotifiedSteps,
   runnerAgentName,
   runnerCapacityWait,
-  getTaskMergeSettings,
-  pinRunCheckout,
-  getTaskLinearRead,
   type TaskMergeSettings,
   resetAwakeTimeSteps,
-  getWorkItemLinearProjectId,
   assignUnownedItemSteps,
   bumpItemVersionSteps,
   cancelItemPendingJobsSteps,
   clearItemRecoverySteps,
   itemOwnerUserIdSteps,
-  itemParentTaskKey,
   itemSpecificationRevisionSteps,
   landedTaskBlockersSteps,
-  latestRestartEvent,
-  listItemIds,
   listItemIdsSteps,
   getWorkItemRepositorySteps,
   acceptLinearStopSteps,
@@ -464,7 +448,6 @@ import {
   asksForFreshStart,
   blockingIssuesSteps,
   intakeDelegatedIssue,
-  stopAdoptedParent,
   type EarlierAttempt,
   type EarlierBranch,
   type IntakeResult,
@@ -517,8 +500,7 @@ import {
   canAnswer,
   cancelItemQuestionsSteps,
   cancelQuestionSteps,
-  findAskedQuestion,
-  findOpenQuestion,
+  findAskedQuestionSteps,
   findOpenQuestionSteps,
   handoffNote,
   acceptedVisualReviewsSteps,
@@ -653,7 +635,11 @@ import {
 } from "./agents";
 import { deliverLinearOutbox } from "./dispatch";
 import { durableConversation } from "./conversation";
-import { createLinearSessionProgress } from "./session-progress";
+import {
+  createLinearSessionProgress,
+  linearSessionProgressSteps,
+  type LinearSessionProgress,
+} from "./session-progress";
 import { renderWorkContext, withLeftForLater } from "../core";
 import { recordLinearSessionEventSteps, sessionTaskKey } from "./linear-routing";
 import {
@@ -1092,8 +1078,9 @@ export class Orchestrator {
           announceLinearTurnSteps(q, announcedSession, turn.eventKey, this.now()),
         ))
       ) {
+        const sessionItems = await this.itemsForSession(event.sessionId);
         for (const live of this.live.values())
-          if (this.itemsForSession(event.sessionId).some((item) => item.id === live.itemId))
+          if (sessionItems.some((item) => item.id === live.itemId))
             live.controller.abort(FOLLOW_UP_INTERRUPTION);
         await this.stopTaskPlanning(event.sessionId);
       }
@@ -1101,13 +1088,11 @@ export class Orchestrator {
     const key = event.sessionId ?? event.issueId ?? event.dedupeKey;
     const previous = this.sessionEvents.get(key) ?? Promise.resolve();
     const done = previous
-      .catch((caughtError1) => {
+      .catch(async (caughtError1) => {
         journalCaught(
           caughtError1,
           "orchestrator.onLinearEvent",
-          this.itemsForSession(event.sessionId ?? "")
-            .map((item) => item.id)
-            .join(",") || null,
+          await this.sessionItemIds(event.sessionId ?? ""),
           undefined,
           this.options.journal,
         );
@@ -1223,7 +1208,7 @@ export class Orchestrator {
         this.jobContexts.has(item.id) ||
         (await this.store.run((q) => hasLiveJobSteps(q, item.id, this.now()))),
       leaveMergeQueue: async (item, pullNumber) => {
-        const repository = this.repositoryForItem(item);
+        const repository = await this.repositoryForItem(item);
         const github = repository ? this.githubForRepository(repository) : null;
         if (!repository || !github) return "not_queued";
         return leaveGitHubMergeQueue({
@@ -1284,7 +1269,7 @@ export class Orchestrator {
   }
 
   async interruptLinearSession(sessionId: string): Promise<void> {
-    const items = this.itemsForSession(sessionId);
+    const items = await this.itemsForSession(sessionId);
     for (const item of items) this.githubAuth?.revoke(item.id);
     const owned = [...this.live.values()].filter((live) =>
       items.some((item) => item.id === live.itemId),
@@ -1321,7 +1306,7 @@ export class Orchestrator {
     ]);
     await Promise.allSettled([...this.sessionEvents.values(), ...this.stopEvents.values()]);
     await this.flushPosts();
-    for (const item of this.allItems(true))
+    for (const item of await this.allItems(true))
       if ((await this.store.run((q) => getConversationSteps(q, item.id))).blocked)
         throw new Error("ACP process cleanup could not be verified");
     const failure = joined.find((result) => result.status === "rejected");
@@ -1454,9 +1439,7 @@ export class Orchestrator {
         journalCaught(
           error,
           "orchestrator.handleLinearEvent.intakeLinearTask",
-          this.itemsForSession(event.sessionId ?? "")
-            .map((item) => item.id)
-            .join(",") || null,
+          await this.sessionItemIds(event.sessionId ?? ""),
           undefined,
           this.options.journal,
         );
@@ -1480,10 +1463,10 @@ export class Orchestrator {
   }
 
   sessionProgressReporter(event: AcceptedLinearEvent): TrackerAdapter["postProgress"] {
-    const generation = event.sessionId
-      ? getLinearSessionGeneration(this.db, event.sessionId)
-      : undefined;
     const sessionId = event.sessionId;
+    const generation = sessionId
+      ? this.store.run((q) => getLinearSessionGenerationSteps(q, sessionId))
+      : undefined;
     return async (update, request) =>
       this.enqueueSessionProgress(
         update,
@@ -1492,7 +1475,7 @@ export class Orchestrator {
           ? await this.store.run((q) =>
               getLinearTurnGenerationSteps(q, sessionId, event.dedupeKey, event.activityId),
             )
-          : null) ?? generation,
+          : null) ?? (await generation),
         request,
         event.action === "created" &&
           update.kind === "thought" &&
@@ -1552,13 +1535,11 @@ export class Orchestrator {
       const held = setTimeout(() => {
         if (!this.shuttingDown)
           void this.flush(request?.signal, update.sessionId)
-            .catch((caughtError2) => {
+            .catch(async (caughtError2) => {
               journalCaught(
                 caughtError2,
                 "orchestrator.enqueueSessionProgress.flush",
-                this.itemsForSession(update.sessionId)
-                  .map((item) => item.id)
-                  .join(",") || null,
+                await this.sessionItemIds(update.sessionId),
                 undefined,
                 this.options.journal,
               );
@@ -1804,7 +1785,7 @@ export class Orchestrator {
    */
   private async inspectEarlierBranch(earlier: EarlierAttempt): Promise<EarlierBranch> {
     const previous = await this.store.run((q) => getWorkItemSteps(q, earlier.itemId));
-    const repository = previous ? this.repositoryForItem(previous) : null;
+    const repository = previous ? await this.repositoryForItem(previous) : null;
     const github = repository ? this.githubForRepository(repository) : null;
     if (!repository || !github) return { pull: null, commits: 0 };
     return readBranchWork({
@@ -1831,7 +1812,7 @@ export class Orchestrator {
       for (const issueId of issueIds) {
         for (const sessionId of await candidates(issueId)) {
           const previous = (await this.store.run((q) => getLinearSessionSteps(q, sessionId)))!;
-          const unfinished = this.itemsForSession(sessionId).some(
+          const unfinished = (await this.itemsForSession(sessionId)).some(
             (item) => !isTerminalWorkItemState(item.state),
           );
           if (previous.stoppedAt === null && unfinished) {
@@ -2182,7 +2163,7 @@ export class Orchestrator {
       // A re-delegation that took over the branch owns its pull request now.
       if (await this.store.run((q) => itemContinuedSteps(q, item.id))) return;
       await this.joinChangedItems([item.id]);
-      const repository = this.repositoryForItem(item);
+      const repository = await this.repositoryForItem(item);
       const github = repository ? this.githubForRepository(repository) : null;
       if (!repository || !github) return;
       context.signal.throwIfAborted();
@@ -2277,7 +2258,7 @@ export class Orchestrator {
   private async deliverGitHubMessage(message: OutboxRow): Promise<void> {
     const itemId = readString(message.payload, "itemId");
     const item = itemId ? await this.store.run((q) => getWorkItemSteps(q, itemId)) : null;
-    const repository = item ? this.repositoryForItem(item) : null;
+    const repository = item ? await this.repositoryForItem(item) : null;
     const github = repository ? this.githubForRepository(repository) : null;
     if (!repository || !github) throw new Error("No GitHub binding for the item's repository");
     const access = {
@@ -2300,7 +2281,7 @@ export class Orchestrator {
         this.jobContexts.has(item.id) ||
         (await this.store.run((q) => hasLiveJobSteps(q, item.id, this.now()))),
       threads: async (item, pullNumber) => {
-        const repository = this.repositoryForItem(item);
+        const repository = await this.repositoryForItem(item);
         const github = repository ? this.githubForRepository(repository) : null;
         if (!repository || !github) return [];
         return readReviewThreads({
@@ -2312,7 +2293,7 @@ export class Orchestrator {
         });
       },
       pullHead: async (item, pullNumber) => {
-        const repository = this.repositoryForItem(item);
+        const repository = await this.repositoryForItem(item);
         const github = repository ? this.githubForRepository(repository) : null;
         if (!repository || !github) return null;
         const pull = await readPullMergeable({
@@ -2327,7 +2308,7 @@ export class Orchestrator {
         return pull?.head ?? null;
       },
       pullConflict: async (item, pullNumber) => {
-        const repository = this.repositoryForItem(item);
+        const repository = await this.repositoryForItem(item);
         const github = repository ? this.githubForRepository(repository) : null;
         if (!repository || !github) return null;
         const pull = await readPullMergeable({
@@ -2344,7 +2325,7 @@ export class Orchestrator {
         return base === null ? null : { head: pull.head, base };
       },
       leaveMergeQueue: async (item, pullNumber) => {
-        const repository = this.repositoryForItem(item);
+        const repository = await this.repositoryForItem(item);
         const github = repository ? this.githubForRepository(repository) : null;
         if (!repository || !github) return "not_queued";
         return leaveGitHubMergeQueue({
@@ -2356,7 +2337,7 @@ export class Orchestrator {
           ...(signal ? { signal } : {}),
         });
       },
-      fixRoundLimit: (item) => this.fixRoundLimit(item),
+      fixRoundLimit: (q, item) => this.fixRoundLimitSteps(q, item),
       closeoutFindings: async (item) => {
         await this.pullCloseoutEvidence(item);
         const started = await this.store.run((q) => closeoutHeadsStartedSteps(q, item.id));
@@ -2380,7 +2361,7 @@ export class Orchestrator {
       session: (item) => this.activitySession(item),
       flush: () => this.flush(),
       reviewChecks: async (item, pullNumber, since) => {
-        const repository = this.repositoryForItem(item);
+        const repository = await this.repositoryForItem(item);
         const github = repository ? this.githubForRepository(repository) : null;
         if (!repository || !github) return null;
         const pull = await readPullMergeable({
@@ -2523,7 +2504,7 @@ export class Orchestrator {
     signal?: AbortSignal,
     reads?: number,
   ): Promise<PullMergeable | null> {
-    const repository = this.repositoryForItem(item);
+    const repository = await this.repositoryForItem(item);
     const github = repository ? this.githubForRepository(repository) : null;
     if (!repository || !github) return null;
     return readPullMergeable({
@@ -2899,7 +2880,7 @@ export class Orchestrator {
     for (const hold of holds) {
       const item = await this.store.run((q) => getWorkItemSteps(q, hold.itemId));
       if (!item || item.state !== "queued" || item.cancelRequested) continue;
-      const runner = await eligibleRunner(item.id, this.implementerAgent(item, config), now);
+      const runner = await eligibleRunner(item.id, await this.implementerAgent(item, config), now);
       if (!runner) continue;
       resumed =
         (await this.store.transaction((q) =>
@@ -3103,7 +3084,7 @@ export class Orchestrator {
     const itemId = readString(job.payload, "itemId");
     const item =
       refused && itemId ? await this.store.run((q) => getWorkItemSteps(q, itemId)) : null;
-    const repository = item ? this.repositoryForItem(item) : null;
+    const repository = item ? await this.repositoryForItem(item) : null;
     if (!refused || !item || !repository) return false;
     const github = this.githubForRepository(repository);
     const repositoryName = `${repository.owner}/${repository.repo}`;
@@ -3242,10 +3223,10 @@ export class Orchestrator {
   }
 
   private async repositoryBeforeSelection(item: WorkItemRecord): Promise<RepositoryBinding | null> {
-    const bound = this.repositoryForItem(item);
+    const bound = await this.repositoryForItem(item);
     if (bound) return bound;
     const candidates = await listRepositoryCandidates(
-      sqliteDb(this.db),
+      this.store,
       item.sessionKey,
       this.options.repositories ?? [],
     );
@@ -3302,14 +3283,14 @@ export class Orchestrator {
     const sessionGeneration = (key: string) =>
       this.store.run((q) => getLinearSessionGenerationSteps(q, key));
     const generation = sessionKey ? await sessionGeneration(sessionKey) : 0;
-    const taskKey = this.parentTaskKey(item);
+    const taskKey = await this.parentTaskKey(item);
     let classification = taskKey
       ? await this.store.run((q) => getTaskClassificationSteps(q, taskKey))
       : null;
     const delegatedIssueId = await this.delegationIssueId(item);
     if (!saved && !classification && taskKey && sessionKey && delegatedIssueId) {
       if (await this.hasOpenPawsPull(item)) {
-        if (this.stopped(item.id) || (await sessionGeneration(sessionKey)) !== generation)
+        if ((await this.stopped(item.id)) || (await sessionGeneration(sessionKey)) !== generation)
           return false;
         await this.store.transaction((q) =>
           saveTaskModeSteps(q, item.id, "code", generation, false),
@@ -3346,7 +3327,7 @@ export class Orchestrator {
     if (
       saved &&
       (await this.store.run((q) => taskRequiresRepositorySteps(q, item.id))) &&
-      (await getWorkItemRepositoryAnswer(sqliteDb(this.db), item.id)) &&
+      (await getWorkItemRepositoryAnswer(this.store, item.id)) &&
       !(await this.store.run((q) => getWorkItemRepositorySteps(q, item.id)))
     )
       return true;
@@ -3357,12 +3338,14 @@ export class Orchestrator {
     )
       return true;
     if (!saved && (!classification || classification.mode !== "clarify")) {
-      saveTaskMode(
-        this.db,
-        item.id,
-        classification?.mode ?? "code",
-        generation,
-        classification?.repository === true,
+      await this.store.transaction((q) =>
+        saveTaskModeSteps(
+          q,
+          item.id,
+          classification?.mode ?? "code",
+          generation,
+          classification?.repository === true,
+        ),
       );
       return true;
     }
@@ -3379,7 +3362,7 @@ export class Orchestrator {
         itemId: itemPathId(item),
         runId: run.id,
         request: [
-          this.workContext(item),
+          await this.workContext(item),
           (await this.store.run((q) => getConversationSteps(q, item.id))).entries,
           handoff,
         ].join("\n\n"),
@@ -3393,7 +3376,7 @@ export class Orchestrator {
       });
       controller.signal.throwIfAborted();
       if (
-        this.stopped(item.id) ||
+        (await this.stopped(item.id)) ||
         (sessionKey && (await sessionGeneration(sessionKey)) !== generation)
       )
         return false;
@@ -3408,17 +3391,14 @@ export class Orchestrator {
         const snapshot = await this.tracker!.loadEpic(issueId);
         controller.signal.throwIfAborted();
         if (
-          this.stopped(item.id) ||
+          (await this.stopped(item.id)) ||
           (sessionKey && (await sessionGeneration(sessionKey)) !== generation)
         )
           return false;
         if (snapshot.subIssues.length) {
+          const context = [await this.workContext(item), handoff].join("\n\n");
           await this.store.transaction((q) =>
-            resolveTaskClassificationSteps(q, {
-              taskKey,
-              itemId: item.id,
-              context: [this.workContext(item), handoff].join("\n\n"),
-            }),
+            resolveTaskClassificationSteps(q, { taskKey, itemId: item.id, context }),
           );
           await this.intakeLinearTask(issueId, item.sessionKey, taskKey);
           await this.dispatch();
@@ -3426,12 +3406,14 @@ export class Orchestrator {
         }
       }
       if (saved)
-        selectTaskModeForTurn(
-          this.db,
-          item.id,
-          resolved.mode,
-          generation,
-          resolved.repository === true,
+        await this.store.transaction((q) =>
+          selectTaskModeForTurnSteps(
+            q,
+            item.id,
+            resolved.mode,
+            generation,
+            resolved.repository === true,
+          ),
         );
       else
         await this.store.transaction((q) =>
@@ -3493,8 +3475,8 @@ export class Orchestrator {
     const controller = live.controller;
     const workspace = join(this.options.pawsRoot, "tasks", item.id, mode);
     mkdirSync(workspace, { recursive: true, mode: 0o700 });
-    const sessionProgress = this.sessionProgress(item, mode);
-    sessionProgress?.phase("working");
+    const sessionProgress = await this.sessionProgress(item, mode);
+    await sessionProgress?.phase("working");
     const activity = createAcpActivityReporter(
       (update, origin) => {
         if (!controller.signal.aborted && update.kind !== "elicitation")
@@ -3507,15 +3489,18 @@ export class Orchestrator {
           );
       },
       (steps) => {
-        if (!controller.signal.aborted && !this.stopped(item.id)) sessionProgress?.plan(steps);
+        if (!controller.signal.aborted) this.reportPlan(item, sessionProgress, steps);
       },
     );
     const keepAlive = setInterval(() => {
-      void this.postKeepalive(item, `${run.id}:keep:${this.now()}`, [
-        sessionProgress?.keepalive(live.progress),
-        sessionProgress?.keepalive(null),
-        "Preparing the requested answer.",
-      ]).then((posted) => (posted ? this.flush() : undefined));
+      const progress = live.progress;
+      void this.postKeepalive(item, `${run.id}:keep:${this.now()}`, function* (q) {
+        return [
+          sessionProgress ? yield* sessionProgress.steps.keepalive(q, progress) : undefined,
+          sessionProgress ? yield* sessionProgress.steps.keepalive(q, null) : undefined,
+          "Preparing the requested answer.",
+        ];
+      }).then((posted) => (posted ? this.flush() : undefined));
     }, KEEPALIVE_MS);
     keepAlive.unref?.();
     try {
@@ -3527,7 +3512,7 @@ export class Orchestrator {
         if (repository === null) throw new Error("The requested repository has not been selected");
         const auth = this.authorization(item);
         if (auth && !(await auth.ensure(item, "initial", controller.signal))) return;
-        const hidden = this.runCheckout(item).agent;
+        const hidden = (await this.runCheckout(item)).agent;
         const source = await prepareRepositorySnapshot({
           ...repository,
           checkoutExclusions: hidden,
@@ -3554,7 +3539,7 @@ export class Orchestrator {
         "Call update_plan with the full working checklist whenever the steps or their statuses change. Statuses are pending, inProgress, completed, and canceled.",
         POST_UPDATE_PROMPT,
         repositoryContext,
-        this.workContext(item),
+        await this.workContext(item),
         handoff ?? "",
         responseComments?.text ?? "",
       ]
@@ -3594,7 +3579,7 @@ export class Orchestrator {
         if (result.stopReason === "end_turn" || this.askedRuns.has(run.id))
           await this.settleLinearCommentBrief(item, comments);
         controller.signal.throwIfAborted();
-        if (this.stopped(item.id) || this.askedRuns.has(run.id)) return false;
+        if ((await this.stopped(item.id)) || this.askedRuns.has(run.id)) return false;
         if (
           result.stopReason !== "end_turn" ||
           result.authRequired ||
@@ -3616,7 +3601,12 @@ export class Orchestrator {
         await this.proposePlan(item, run.id, activity.resultBody());
         return;
       }
-      const finish = { runId: run.id, announce: () => sessionProgress?.phase("completed") };
+      const finish = {
+        runId: run.id,
+        announce: function* (q: Q): Steps<void> {
+          if (sessionProgress) yield* sessionProgress.steps.phase(q, "completed");
+        },
+      };
       if (mode === "artifact") {
         const links = (await this.store.run((q) => listArtifactsSteps(q, item.id)))
           .filter((artifact) => artifact.state === "uploaded")
@@ -3624,19 +3614,21 @@ export class Orchestrator {
             (artifact) =>
               `[${artifact.displayName.replace(/[\\[\]]/g, "\\$&")}](<${artifact.assetUrl}>)`,
           );
-        completeArtifactTask(
-          this.db,
-          item.id,
-          [activity.resultBody(), ...links].join("\n\n"),
-          this.now(),
-          finish,
+        const body = [activity.resultBody(), ...links].join("\n\n");
+        await this.store.transaction((q) =>
+          completeArtifactTaskSteps(q, item.id, body, this.now(), finish),
         );
-      } else completeAnswerTask(this.db, item.id, activity.resultBody(), this.now(), finish);
+      } else {
+        const body = activity.resultBody();
+        await this.store.transaction((q) =>
+          completeAnswerTaskSteps(q, item.id, body, this.now(), finish),
+        );
+      }
       await this.dispatch();
     } catch (error) {
       if (
         !this.askedRuns.has(run.id) &&
-        !this.stopped(item.id) &&
+        !(await this.stopped(item.id)) &&
         !controller.signal.aborted &&
         (await this.store.run((q) => getWorkItemSteps(q, item.id)))?.state !== "awaiting_input"
       ) {
@@ -3713,12 +3705,12 @@ export class Orchestrator {
   }
 
   private async runItem(item: WorkItemRecord, handoff?: string): Promise<void> {
-    const repository = this.repositoryForItem(item);
+    const repository = await this.repositoryForItem(item);
     if (repository === null || repository === undefined) {
       await this.fail(item, "no_repository", "No repository is selected for this item.");
       return;
     }
-    if (this.stopped(item.id)) return;
+    if (await this.stopped(item.id)) return;
     const pathId = itemPathId(item);
     const branch = worktreeBranch(item);
     if (item.branchName !== branch) {
@@ -3731,14 +3723,16 @@ export class Orchestrator {
     const live = await this.beginLive(item.id, run.id);
     const controller = live.controller;
     let posted = true;
-    const sessionProgress = this.sessionProgress(item);
+    const sessionProgress = await this.sessionProgress(item);
     const first = setTimeout(() => {
       if (posted) return;
       const working = `Working on ${item.linearIdentifier}.`;
       void this.postWhileReporting(
         item,
         "thought",
-        sessionProgress?.keepalive(working) ?? working,
+        function* (q) {
+          return sessionProgress ? yield* sessionProgress.steps.keepalive(q, working) : working;
+        },
         `${run.id}:first`,
         { ephemeral: true },
         () => (posted = true),
@@ -3746,11 +3740,14 @@ export class Orchestrator {
     }, FIRST_ACTIVITY_MS);
     const keepAlive = setInterval(() => {
       if (this.live.get(run.id) !== live) return;
-      void this.postKeepalive(item, `${run.id}:keep:${this.now()}`, [
-        sessionProgress?.keepalive(live.progress) ?? live.progress,
-        sessionProgress?.keepalive(null),
-        `Working on ${item.linearIdentifier}.`,
-      ]).then((allowed) => (allowed ? this.flush() : undefined));
+      const progress = live.progress;
+      void this.postKeepalive(item, `${run.id}:keep:${this.now()}`, function* (q) {
+        return [
+          sessionProgress ? yield* sessionProgress.steps.keepalive(q, progress) : progress,
+          sessionProgress ? yield* sessionProgress.steps.keepalive(q, null) : undefined,
+          `Working on ${item.linearIdentifier}.`,
+        ];
+      }).then((allowed) => (allowed ? this.flush() : undefined));
     }, KEEPALIVE_MS);
     first.unref?.();
     keepAlive.unref?.();
@@ -3768,7 +3765,7 @@ export class Orchestrator {
         );
       },
       (steps) => {
-        if (!controller.signal.aborted && !this.stopped(item.id)) sessionProgress?.plan(steps);
+        if (!controller.signal.aborted) this.reportPlan(item, sessionProgress, steps);
       },
     );
     let deferred = false;
@@ -3792,7 +3789,7 @@ export class Orchestrator {
       if (!fixing) sessionProgress?.phase("implementing");
       if (fixing) {
         const round = await this.store.run((q) => fixRoundsSteps(q, item.id));
-        const limit = this.fixAttemptLimit(item, returned.reason);
+        const limit = await this.fixAttemptLimit(item, returned.reason);
         const label =
           returned.reason === "ci"
             ? "CI"
@@ -3811,10 +3808,11 @@ export class Orchestrator {
         await this.post(item, "thought", live.progress, `${item.id}:fix:${item.version}`);
       }
       if (working !== undefined) await this.startPost(working);
-      if (!this.taskAccess()) this.postStatus(item, "started");
+      if (!this.taskAccess())
+        await this.store.transaction((q) => this.postStatusSteps(q, item, "started"));
       const promptRunner = await this.prepareConversation(item);
       await this.hydrateLinearContext(item.sessionKey, controller.signal);
-      const checkout = this.runCheckout(item);
+      const checkout = await this.runCheckout(item);
       const comments = await this.linearCommentBrief(item);
       const suggestions = returned === null ? "" : await this.suggestionBrief(item, repository);
       const turnHandoff = [handoff, comments?.text, suggestions]
@@ -3825,20 +3823,20 @@ export class Orchestrator {
       const prompt = implementPrompt({
         identifier: item.linearIdentifier,
         title: item.title,
-        brief: this.workContext(item),
+        brief: await this.workContext(item),
         hiddenPaths: checkout.agent,
         ...(turnHandoff ? { handoff: turnHandoff } : {}),
         ...(item.continuesBranch ? { continuesBranch: item.continuesBranch } : {}),
         ...(focus ? { closeoutFocus: focus } : {}),
       });
       await this.flush();
-      if (this.stopped(item.id)) return;
+      if (await this.stopped(item.id)) return;
       try {
         if (!this.readProfileSnapshot(run.id)?.candidate)
           await this.preflight(item, run.id, profiles, controller.signal, activity.onEvent);
       } catch (error) {
         if (
-          this.stopped(item.id) ||
+          (await this.stopped(item.id)) ||
           (await this.store.run((q) => getWorkItemSteps(q, item.id)))?.state === "awaiting_input"
         )
           return;
@@ -3932,7 +3930,7 @@ export class Orchestrator {
       if (executed.run.handoverFailure && !this.askedRuns.has(run.id)) {
         // The handover stopped the agent, then failed: the session stays on its runner, and the
         // next turn loads it there and goes on from the WIP commit.
-        restart(this.db, finished, {
+        await restartAsync(this.store, finished, {
           reason: "follow_up",
           body: HANDOVER_FAILED_PROMPT,
           now: this.now(),
@@ -3974,7 +3972,7 @@ export class Orchestrator {
       if (!executed.run.identity)
         throw new Error("Implementer did not report a concrete session model");
       this.saveCandidate(run.id, executed.run.identity);
-      const at = this.itemHead(finished);
+      const at = await this.itemHead(finished);
       const head = (await git(["-C", at.repo, "rev-parse", at.ref])).trim();
       await recordAgentFindingDecisions(
         this.store,
@@ -4168,8 +4166,8 @@ export class Orchestrator {
       startRound: boolean;
       fromTurn?: readonly TurnPass[];
     },
-    assertCurrent: () => void,
-    assertOwned: () => void,
+    assertCurrent: () => Promise<void>,
+    assertOwned: () => Promise<void>,
   ): Promise<void> {
     if (options.startRound) await this.startCloseoutRound(item, head);
     if (
@@ -4209,7 +4207,7 @@ export class Orchestrator {
         options.fromTurn,
       );
       // A finished verdict may decide an aborted but still-owned run (PAS-771).
-      assertOwned();
+      await assertOwned();
       const owner = this.options.remoteExecution
         ? (await this.store.run((q) => getWorkItemSteps(q, item.id)))!
         : before;
@@ -4220,7 +4218,7 @@ export class Orchestrator {
       if (after === null) return;
       if (verdict.decision === "accepted" && !verdict.exhausted) {
         const acceptedHead = (
-          await git(["-C", worktree, "rev-parse", this.itemHead(item).ref])
+          await git(["-C", worktree, "rev-parse", (await this.itemHead(item)).ref])
         ).trim();
         const mergeJob = await acceptCloseout(this.db, {
           itemId: item.id,
@@ -4316,13 +4314,13 @@ export class Orchestrator {
     recheck: boolean,
     operation: (
       owned: WorkItemRecord,
-      assertCurrent: () => void,
-      assertOwned: () => void,
+      assertCurrent: () => Promise<void>,
+      assertOwned: () => Promise<void>,
     ) => Promise<void>,
   ): Promise<void> {
     if (!this.options.remoteExecution) {
-      const assertCurrent = () => this.assertJobCurrent(item.id);
-      assertCurrent();
+      const assertCurrent = async () => this.assertJobCurrent(item.id);
+      await assertCurrent();
       await operation(item, assertCurrent, assertCurrent);
       return;
     }
@@ -4331,7 +4329,6 @@ export class Orchestrator {
       throw new VerificationHeld();
     let ownedRunId: string | null = null;
     try {
-      const db = this.db;
       const now = () => this.now();
       const snapshotOf = (runId: string) => this.readProfileSnapshot(runId);
       const holder = (q: Q, current: WorkItemRecord) =>
@@ -4368,7 +4365,7 @@ export class Orchestrator {
           }
           if ((yield* holder(q, current)) === "runner") throw new VerificationHeld();
           // An abandoned run did not finish cleanly. Preserve that in its history.
-          closeActiveRun(db, prior.id, now(), "lost");
+          yield* closeActiveRunSteps(q, prior.id, now(), "lost");
           yield* releaseRunCapacitySteps(q, prior.id, now());
         } else if (prior.status !== "ended" && prior.status !== "lost")
           throw new Error("Prior verification run is still provisioning");
@@ -4398,29 +4395,29 @@ export class Orchestrator {
       const operationLive = this.live.get(`operation:${item.id}`);
       if (ownedRunId && operationLive) this.live.set(ownedRunId, operationLive);
       const runId = item.currentRunId!;
-      const assertOwned = () => {
-        const current = getWorkItem(this.db, item.id);
+      const assertOwned = async () => {
+        const owned = await this.store.run(function* (q) {
+          const current = yield* getWorkItemSteps(q, item.id);
+          return (
+            current !== null &&
+            current.currentRunId === runId &&
+            !current.cancelRequested &&
+            (["verifying", "running"].includes(current.state) ||
+              (current.state === "awaiting_input" &&
+                current.sessionKey !== null &&
+                (yield* findOpenQuestionSteps(q, current.sessionKey))?.kind === "runner-wait")) &&
+            (yield* getRunSteps(q, runId))?.status === "active"
+          );
+        });
         const identity = this.readProfileSnapshot(runId)?.candidate;
-        if (
-          !current ||
-          current.currentRunId !== runId ||
-          current.cancelRequested ||
-          !(
-            ["verifying", "running"].includes(current.state) ||
-            (current.state === "awaiting_input" &&
-              current.sessionKey !== null &&
-              findOpenQuestion(this.db, current.sessionKey)?.kind === "runner-wait")
-          ) ||
-          getRun(this.db, runId)?.status !== "active" ||
-          JSON.stringify(identity) !== JSON.stringify(candidate)
-        )
+        if (!owned || JSON.stringify(identity) !== JSON.stringify(candidate))
           throw new Error("Verification belongs to an obsolete candidate or run");
       };
-      const assertCurrent = () => {
+      const assertCurrent = async () => {
         this.signalForItem(item.id)?.throwIfAborted();
-        assertOwned();
+        await assertOwned();
       };
-      assertCurrent();
+      await assertCurrent();
       await operation(item, assertCurrent, assertOwned);
     } finally {
       if (ownedRunId) {
@@ -4451,12 +4448,12 @@ export class Orchestrator {
     base: string,
     head: string,
     candidate: CandidateIdentity,
-    assertCurrent: () => void = () => {},
+    assertCurrent: () => Promise<void> = async () => {},
     decide = false,
     fromCi: readonly CiResult[] = [],
     fromTurn: readonly TurnPass[] = [],
   ): Promise<CloseoutVerdict> {
-    const repository = this.repositoryForItem(item);
+    const repository = await this.repositoryForItem(item);
     const mirror =
       this.options.remoteExecution && repository
         ? {
@@ -4474,9 +4471,9 @@ export class Orchestrator {
         undefined,
         this.signalForItem(item.id),
       );
-    const sessionProgress = this.sessionProgress(item);
-    sessionProgress?.phase("verifying");
-    const checkoutExclusions = this.runCheckout(item).checks;
+    const sessionProgress = await this.sessionProgress(item);
+    await sessionProgress?.phase("verifying");
+    const checkoutExclusions = (await this.runCheckout(item)).checks;
     const deps = await this.agentDeps(item);
     const networkGit =
       repository && deps.signal
@@ -4486,13 +4483,13 @@ export class Orchestrator {
       const runner = deps[key];
       if (runner)
         deps[key] = async (options) => {
-          assertCurrent();
+          await assertCurrent();
           const result = await runner({
             ...options,
             checkoutExclusions,
             ...(networkGit && options.role === "implementer" ? { networkGit } : {}),
           });
-          assertCurrent();
+          await assertCurrent();
           return result;
         };
     }
@@ -4536,11 +4533,11 @@ export class Orchestrator {
     const commands = this.options.remoteExecution
       ? {
           runLogged: async (request: Parameters<typeof loggedSessionCloseout>[1]) => {
-            assertCurrent();
+            await assertCurrent();
             const commit = request.expectedHead;
             if (!sessionCloseoutResult(savedReport(commit, request.argv), request))
               await runnerResults(commit, request.itemId);
-            assertCurrent();
+            await assertCurrent();
             const broken = rulesFirst ? brokenRuleOf(savedReport(commit)) : undefined;
             if (broken && !sessionCloseoutResult(savedReport(commit, request.argv), request)) {
               stoppedOnRule = broken;
@@ -4556,10 +4553,10 @@ export class Orchestrator {
               );
               runnerChecks.delete(commit);
               await runnerResults(commit, request.itemId, true);
-              assertCurrent();
+              await assertCurrent();
             }
             const result = loggedSessionCloseout(savedReport(commit, request.argv), request);
-            assertCurrent();
+            await assertCurrent();
             return result;
           },
           // No runProbe: Closeout runs each rule's policy probe here, against its own worktree
@@ -4586,7 +4583,7 @@ export class Orchestrator {
         );
       },
       (steps) => {
-        if (!deps.signal?.aborted && !this.stopped(item.id)) sessionProgress?.plan(steps);
+        if (!deps.signal?.aborted) this.reportPlan(item, sessionProgress, steps);
       },
     );
     const onCandidate = deps.onCandidate;
@@ -4601,7 +4598,7 @@ export class Orchestrator {
       reviewerAgent === "grok" || reviewerAgent === "opencode"
         ? createAcpCodexReviewer({ ...deps, postUpdate: this.updateHook(item) })
         : createReviewCommandReviewer({ ...deps, postUpdate: this.updateHook(item) });
-    const recorded = createDbCloseoutProgress(this.db, item.id, () => this.now());
+    const recorded = createDbCloseoutProgress(this.store, item.id, () => this.now());
     const publishing = this.closeoutEvidence()?.objects?.()
       ? publishingCloseoutProgress(recorded, () => this.pushCloseoutEvidence(item))
       : null;
@@ -4649,7 +4646,7 @@ export class Orchestrator {
         },
       },
       reportDir: `${this.options.pawsRoot}/runs/${itemPathId(item)}`,
-      ...this.closeoutHome(item),
+      ...(await this.closeoutHome(item)),
       ...recovery,
       progress,
     });
@@ -4699,7 +4696,7 @@ export class Orchestrator {
       stepId: string | undefined;
       sessionPath: string;
       policy: GitCommitPolicy | undefined;
-      assertCurrent: () => void;
+      assertCurrent: () => Promise<void>;
       report: (body: string) => void;
       /** Checks Closeout took from CI, which the runner leaves alone. */
       fromCi?: readonly string[];
@@ -4717,14 +4714,14 @@ export class Orchestrator {
     let reason = "remote execution is unavailable";
     const rateLimitDeadline = this.now() + CHECKS_RATE_LIMIT_WAIT_MS;
     for (let attempt = 1; attempt <= (runner ? attempts : 0); attempt++) {
-      assertCurrent();
+      await assertCurrent();
       await this.waitForTaskRunner(item, head, input.stepId, deps.signal, assertCurrent);
       if (attempt > 1) {
         input.report(
           `Closeout could not run the checks for ${item.linearIdentifier} on its runner (${reason}). Retrying in ${Math.round(delayMs / 1000)} s.`,
         );
         await this.waitWithoutAwake(item.id, "backoff", delayMs, deps.signal);
-        assertCurrent();
+        await assertCurrent();
       } else
         input.report(
           `Running the Closeout checks for ${item.linearIdentifier} on its runner at ${short}.`,
@@ -4753,8 +4750,8 @@ export class Orchestrator {
           ...options,
           ...(await this.trustedRunInputs(item, options)),
         });
-        assertCurrent();
-        const { ref } = this.itemHead(item);
+        await assertCurrent();
+        const { ref } = await this.itemHead(item);
         const at = (await git(["-C", worktree, "rev-parse", ref])).trim();
         if (at !== head) {
           await git(
@@ -4788,7 +4785,7 @@ export class Orchestrator {
           return;
         }
       } catch (error) {
-        assertCurrent();
+        await assertCurrent();
         if (deps.signal?.aborted || error instanceof RunnerCapacityWait) throw error;
         journalCaught(
           error,
@@ -4810,7 +4807,7 @@ export class Orchestrator {
               : CHECKS_RATE_LIMIT_RETRY_MS,
             deps.signal,
           );
-          assertCurrent();
+          await assertCurrent();
           attempt -= 1;
         } else if (isTransient(error)) throw error;
       }
@@ -4830,7 +4827,7 @@ export class Orchestrator {
     head: string,
     stepId: string | undefined,
     signal: AbortSignal | undefined,
-    assertCurrent: () => void,
+    assertCurrent: () => Promise<void>,
   ): Promise<void> {
     const runId = item.currentRunId;
     if (runId === null) return;
@@ -4838,17 +4835,19 @@ export class Orchestrator {
     let runnerName = "";
     const outcome = await waitForRunner({
       runner: async () => {
-        assertCurrent();
-        const runner = await runRunnerAvailability(sqliteDb(this.db), runId);
+        await assertCurrent();
+        const runner = await runRunnerAvailability(this.store, runId);
         if (runner) runnerName = runner.name;
         return runner;
       },
       now: () => this.now(),
       sleep: (ms) =>
         this.waitWithoutAwake(item.id, "runner", ms, signal, this.options.runnerWait?.sleep),
-      waiting: (reason) => {
+      waiting: async (reason) => {
         if (stepId)
-          setRunningCloseoutStepDetail(this.db, item.id, head, stepId, reason, this.now());
+          await this.store.transaction((q) =>
+            setRunningCloseoutStepDetailSteps(q, item.id, head, stepId, reason, this.now()),
+          );
       },
       notify: (reason) => {
         this.post(item, "thought", reason, `${runId}:closeout-runner-wait:${head}:${reason}`);
@@ -4863,8 +4862,8 @@ export class Orchestrator {
         });
       },
       ask: (runner, reason) => this.askRunnerWait(item, runId, runner.name, reason),
-      asked: () => {
-        const asked = findAskedQuestion(this.db, runId, "runner-wait");
+      asked: async () => {
+        const asked = await this.store.run((q) => findAskedQuestionSteps(q, runId, "runner-wait"));
         return asked === null ? null : this.runnerWaitQuestion(asked.id);
       },
       ...(pollMs === undefined ? {} : { pollMs }),
@@ -4985,10 +4984,10 @@ export class Orchestrator {
       (await this.store.run((q) => getWorkItemSteps(q, item.id)))?.acceptedHead == null
     )
       return null;
-    const repository = this.repositoryForItem(item);
+    const repository = await this.repositoryForItem(item);
     const github = repository ? this.githubForRepository(repository) : null;
     if (!repository || !github) return null;
-    const { home, policyRoot } = this.closeoutHome(item);
+    const { home, policyRoot } = await this.closeoutHome(item);
     const mappings = ciMappings(worktree, home, policyRoot);
     if (mappings.length === 0) return null;
     const signal = this.signalForItem(item.id);
@@ -5079,7 +5078,7 @@ export class Orchestrator {
       reason: "conflict",
       lead: [REBASE_CONFLICT_INSTRUCTION],
       reads,
-      fixRoundLimit: this.fixRoundLimit(current),
+      fixRoundLimit: yield* this.fixRoundLimitSteps(q, current),
       sessionId: this.activitySession(current),
       now: this.now(),
       jobKey: `conflict:${item.id}:recheck:${head}`,
@@ -5137,7 +5136,7 @@ export class Orchestrator {
     )
       return null;
     const rounds = yield* fixRoundsSteps(q, item.id);
-    const limit = this.fixRoundLimit(current);
+    const limit = yield* this.fixRoundLimitSteps(q, current);
     if (rounds >= limit) return null;
     const restarted = yield* restartWithFeedbackSteps(q, current, {
       reason: "ci",
@@ -5194,7 +5193,7 @@ export class Orchestrator {
       lead: [handoff.body],
       reads: yield* storedFeedbackReadsSteps(q, item, handoff.now),
       ci: false,
-      fixRoundLimit: this.fixRoundLimit(item),
+      fixRoundLimit: yield* this.fixRoundLimitSteps(q, item),
       sessionId: this.activitySession(item),
     });
   }
@@ -5224,10 +5223,10 @@ export class Orchestrator {
     const exhausted = free.some((check) => check.state === "exhausted");
     const setupFailed = checks.some((check) => check.kind === "setup" && check.state === "failed");
     const rounds = await this.store.run((q) => fixRoundsSteps(q, item.id));
-    const limit = this.fixRoundLimit(item);
+    const limit = await this.fixRoundLimit(item);
     if (failed && !exhausted && !setupFailed && rounds < limit) {
       const reviews = result?.reviewFindings ?? [];
-      const repository = this.repositoryForItem(item);
+      const repository = await this.repositoryForItem(item);
       const judgedReviews =
         (await this.store.run((q) => failedCloseoutReviewsSteps(q, item.id)))?.reviews ?? [];
       if (repository && reviews.length > 0) {
@@ -5315,10 +5314,10 @@ export class Orchestrator {
       (await this.askReviewRounds(current, sessionId, result, context))
     )
       return;
-    const repository = this.repositoryForItem(item);
+    const repository = await this.repositoryForItem(item);
     const repositoryName = repository ? `${repository.owner}/${repository.repo}` : null;
     const policyFailed = repositoryName !== null && policyLoadFailed(result?.decision);
-    const unreadable = policyFailed ? this.unreadableMainPolicy(item) : null;
+    const unreadable = policyFailed ? await this.unreadableMainPolicy(item) : null;
     const brokenMain =
       repositoryName && policyFailed
         ? await policyOutageNote(
@@ -5579,7 +5578,7 @@ export class Orchestrator {
     if (itemId === null) return;
     const item = await this.store.run((q) => getWorkItemSteps(q, itemId));
     if (item === null || !this.reverifyEligible(item)) return;
-    const repository = this.repositoryForItem(item);
+    const repository = await this.repositoryForItem(item);
     if (repository === null || repository === undefined) {
       await this.fail(item, "no_repository", "No repository is selected for this item.");
       return;
@@ -5634,14 +5633,19 @@ export class Orchestrator {
     });
   }
 
-  private candidatePolicy(item: WorkItemRecord, worktree: string) {
-    const { home, policyRoot } = this.closeoutHome(item);
-    return candidatePolicyDigests(worktree, home, policyRoot, this.runCheckout(item).checks);
+  private async candidatePolicy(item: WorkItemRecord, worktree: string) {
+    const { home, policyRoot } = await this.closeoutHome(item);
+    return candidatePolicyDigests(
+      worktree,
+      home,
+      policyRoot,
+      (await this.runCheckout(item)).checks,
+    );
   }
 
-  private unreadableMainPolicy(item: WorkItemRecord): MainPolicyError | null {
+  private async unreadableMainPolicy(item: WorkItemRecord): Promise<MainPolicyError | null> {
     try {
-      const read = this.candidatePolicy(item, this.itemHead(item).repo);
+      const read = await this.candidatePolicy(item, (await this.itemHead(item)).repo);
       return read !== null && "ok" in read ? read : null;
     } catch (caughtError) {
       journalCaught(
@@ -5656,32 +5660,32 @@ export class Orchestrator {
   }
 
   private async retryPolicyBlocks(item: WorkItemRecord, main: string): Promise<void> {
-    const repository = this.repositoryForItem(item);
+    const repository = await this.repositoryForItem(item);
     if (!repository) return;
     const name = `${repository.owner}/${repository.repo}`;
     if ((await this.store.run((q) => listOpenPolicyBlocksSteps(q, name))).length === 0) return;
     await retryPolicyBlocks(this.db, {
       repository: name,
       main,
-      policy: this.candidatePolicy(item, this.itemHead(item).repo),
+      policy: await this.candidatePolicy(item, (await this.itemHead(item)).repo),
       now: this.now(),
     });
   }
 
-  private riskDisplayInputs(item: WorkItemRecord, worktree: string) {
+  private async riskDisplayInputs(item: WorkItemRecord, worktree: string) {
     const settings = this.riskDisplayReader.inputs();
     let policyDigest: string | null = null;
     let policyPaths: readonly string[] | null = null;
     let policyFiles: ReturnType<RiskDisplayReader["observeFiles"]> = [];
     try {
       if (settings.autoApproveHighRisk) {
-        const read = this.candidatePolicy(item, worktree);
+        const read = await this.candidatePolicy(item, worktree);
         const current = read !== null && !("ok" in read) ? read : null;
         policyDigest = current?.digest ?? null;
         policyPaths = current?.paths ?? null;
-        const { home, policyRoot } = this.closeoutHome(item);
+        const { home, policyRoot } = await this.closeoutHome(item);
         // A runner-backed item has no checkout to observe; its head already names its files.
-        const checkout = this.itemHead(item).ref === "HEAD" ? [worktree] : [];
+        const checkout = (await this.itemHead(item)).ref === "HEAD" ? [worktree] : [];
         const roots = [...checkout, ...(home ? [home] : []), ...(policyRoot ? [policyRoot] : [])];
         policyFiles = this.riskDisplayReader.observeFiles(
           roots.flatMap((root) =>
@@ -5739,8 +5743,8 @@ export class Orchestrator {
         packages: (repository) => this.repositoryPackages(repository),
         assertReady: (item) =>
           this.assertPublicationReady(item, "merge", run.signal!, run.publicationCandidate),
-        riskApproval: (item, published) => {
-          const context = this.riskDisplayInputs(item, published.worktree);
+        riskApproval: async (item, published) => {
+          const context = await this.riskDisplayInputs(item, published.worktree);
           const { autoApproveHighRisk, policyDigest, policyPaths } = context;
           let approvedHead: string | undefined;
           let approvalKind: "exact" | "same_patch" | "fix" | undefined;
@@ -5787,7 +5791,7 @@ export class Orchestrator {
   }
 
   private async rerunCi(item: WorkItemRecord, pullNumber: number, reason: string): Promise<string> {
-    const repository = this.repositoryForItem(item);
+    const repository = await this.repositoryForItem(item);
     const github = repository ? this.githubForRepository(repository) : null;
     if (!repository || !github) return "no GitHub binding for the item";
     return rerunItemCi({
@@ -5813,7 +5817,7 @@ export class Orchestrator {
     item: WorkItemRecord,
   ): Promise<Omit<ConfirmedRemoteMerge, "itemId" | "confirmedAt"> | null | "unknown"> {
     const pull = await this.store.run((q) => getItemPullRequestSteps(q, item.id));
-    const repository = pull ? this.repositoryForItem(item) : null;
+    const repository = pull ? await this.repositoryForItem(item) : null;
     const github = repository ? this.githubForRepository(repository) : null;
     if (!pull) {
       if (await this.store.run((q) => mergeCallInFlightSteps(q, item.id)))
@@ -5868,7 +5872,7 @@ export class Orchestrator {
     run: MergeRun,
   ): Promise<MergePublication | MergeStep> {
     await this.reconcileForMerge(item, run);
-    const repository = this.repositoryForItem(item);
+    const repository = await this.repositoryForItem(item);
     const configuredGitHub = repository === null ? null : this.githubForRepository(repository);
     if (
       repository === null ||
@@ -5898,10 +5902,11 @@ export class Orchestrator {
         after: () => this.pushWorked(repositoryName),
       },
       onCleanupFailure: () => this.blockConversation(item.id),
-      isCurrent: () =>
-        !this.stopped(item.id) &&
+      isCurrent: async () =>
+        !(await this.stopped(item.id)) &&
         (live.sessionId === null ||
-          getLinearSessionGeneration(this.db, live.sessionId) === live.generation),
+          (await this.store.run((q) => getLinearSessionGenerationSteps(q, live.sessionId!))) ===
+            live.generation),
       assert: async (purpose, merging) => {
         const current = await this.store.run((q) => getWorkItemSteps(q, item.id));
         if (!current) throw new Error("The published task no longer exists.");
@@ -5930,7 +5935,7 @@ export class Orchestrator {
     const { repo: worktree, ref } = await this.legacyItemHead(item);
     const summary = readString(run.payload, "summary") ?? "Closeout accepted.";
     const policy = await this.commitPolicy(item);
-    if (this.stopped(item.id)) return { kind: "obsolete" };
+    if (await this.stopped(item.id)) return { kind: "obsolete" };
     if (!(await this.store.run((q) => artifactPublicationReadySteps(q, item.id))))
       return {
         kind: "failed",
@@ -5944,7 +5949,7 @@ export class Orchestrator {
       run.publicationCandidate,
       live.controller.signal,
     );
-    if (this.stopped(item.id)) return { kind: "obsolete" };
+    if (await this.stopped(item.id)) return { kind: "obsolete" };
     await this.pullCloseoutEvidence(item);
     const publicUrl = this.options.evidence?.publicUrl ?? this.options.publicUrl ?? null;
     const open: OpenItems = {
@@ -5983,12 +5988,12 @@ export class Orchestrator {
         );
         return null;
       });
-    if (this.stopped(item.id)) return { kind: "obsolete" };
+    if (await this.stopped(item.id)) return { kind: "obsolete" };
     const newPublication =
       candidateHead === null ||
       (await this.store.run((q) => getItemPullRequestSteps(q, item.id))) === null ||
       (await this.store.run((q) => getPublishedHeadSteps(q, item.id))) !== candidateHead;
-    if (newPublication) this.sessionProgress(item)?.phase("publishing");
+    if (newPublication) await (await this.sessionProgress(item))?.phase("publishing");
     const draft = await this.store.run((q) => getPullRequestDraftSteps(q, item.id));
     const screenshots = await pullRequestScreenshots({
       db: this.db,
@@ -6008,7 +6013,7 @@ export class Orchestrator {
         }),
       ...(this.options.journal ? { journal: this.options.journal } : {}),
     });
-    if (this.stopped(item.id)) return { kind: "obsolete" };
+    if (await this.stopped(item.id)) return { kind: "obsolete" };
     const evidence = [
       summary,
       riskLine(risk),
@@ -6049,7 +6054,7 @@ export class Orchestrator {
       live.controller.signal,
       run.publicationCandidate,
     );
-    if (this.stopped(item.id)) return { kind: "obsolete" };
+    if (await this.stopped(item.id)) return { kind: "obsolete" };
     if ((await this.store.run((q) => getWorkItemSteps(q, item.id)))?.state === "awaiting_input")
       return { kind: "obsolete" };
     if (!published.published)
@@ -6099,7 +6104,7 @@ export class Orchestrator {
       await this.riskDisplayReader.remember(
         item.id,
         published.head,
-        this.riskDisplayInputs(item, worktree),
+        await this.riskDisplayInputs(item, worktree),
       );
     await this.postReviewReplies(item, github, repository, published.pull.number, published.head);
     const sessionKey = item.sessionKey;
@@ -6127,10 +6132,10 @@ export class Orchestrator {
       "ordered",
     );
     await this.attachEvidence(item, published.head);
-    const sessionProgress = this.sessionProgress(item);
-    if (published.pull.url) sessionProgress?.link("Pull request", published.pull.url);
-    if (newPublication || published.head !== candidateHead) sessionProgress?.phase("merging");
-    else sessionProgress?.reach("merging");
+    const sessionProgress = await this.sessionProgress(item);
+    if (published.pull.url) await sessionProgress?.link("Pull request", published.pull.url);
+    if (newPublication || published.head !== candidateHead) await sessionProgress?.phase("merging");
+    else await sessionProgress?.reach("merging");
     await this.flush(live.controller.signal);
     if (
       this.suggestedFindingsMode(repositoryName) === "own_turn" &&
@@ -6195,7 +6200,7 @@ export class Orchestrator {
     candidate: { sha: string; baseSha: string } | undefined,
   ): Promise<RiskClassification> {
     const run = (args: string[]) => git(["-C", worktree, ...args]);
-    const { ref } = this.itemHead(item);
+    const { ref } = await this.itemHead(item);
     const head = (await run(["rev-parse", ref])).trim();
     const base =
       candidate?.sha === head
@@ -6280,7 +6285,7 @@ export class Orchestrator {
       await this.fail(item, step.reason, step.message);
       return;
     }
-    const repository = this.repositoryForItem(item);
+    const repository = await this.repositoryForItem(item);
     if (repository) await this.completeMerge(item, repository);
   }
 
@@ -6289,14 +6294,11 @@ export class Orchestrator {
       completeMergedItemSteps(q, {
         itemId: item.id,
         now: this.now(),
-        announce: (current) => {
-          this.sessionProgress(current)?.phase("completed");
-          this.postStatus(current, "completed");
-        },
+        announce: (inner, current) => this.announceMergedSteps(inner, current),
       }),
     );
     if (!merged) return;
-    await wakeMergesBehind(sqliteDb(this.db), this.now());
+    await wakeMergesBehind(this.store, this.now());
     await (this.options.remoteExecution ? removeCandidateRef : removeWorktree)({
       owner: repository.owner,
       repo: repository.repo,
@@ -6327,7 +6329,7 @@ export class Orchestrator {
       ciFixAttempts: (item) => this.fixRoundLimit(item),
       feedbackWait: () => this.feedbackWait(),
       readPullCi: async (item, pull) => {
-        const repository = this.repositoryForItem(item);
+        const repository = await this.repositoryForItem(item);
         const github = repository ? this.githubForRepository(repository) : null;
         if (!repository || !github)
           return { state: "unknown", message: "GitHub App is not configured." };
@@ -6349,8 +6351,11 @@ export class Orchestrator {
         if (admitted.ok || admitted.held !== "blocked") return null;
         return yield* blockingIssuesSteps(q, id);
       },
-      mergeLane: (item) =>
-        mergeLaneKey(getWorkItemLinearProjectId(this.db, item.id), this.readMergePolicy()),
+      mergeLane: async (item) =>
+        mergeLaneKey(
+          await this.store.run((q) => getWorkItemLinearProjectIdSteps(q, item.id)),
+          this.readMergePolicy(),
+        ),
       voice: {
         thought: (q, item, body, key) => this.postSteps(q, item, "thought", body, key),
         status: (q, item, body) => this.statusAfterPullRequestSteps(q, item, body),
@@ -6363,7 +6368,8 @@ export class Orchestrator {
   private *statusAfterPullRequestSteps(q: Q, item: WorkItemRecord, body: string): Steps<void> {
     if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return;
     if ((yield* getWorkItemSteps(q, item.id))?.state === "cancelled") return;
-    yield* syncSteps(() => this.sessionProgress(item)?.mergeStatus(body));
+    const progress = yield* this.sessionProgressSteps(q, item);
+    if (progress) yield* progress.mergeStatus(q, body);
     void this.flush().catch((caughtError10) => {
       journalCaught(
         caughtError10,
@@ -6430,19 +6436,27 @@ export class Orchestrator {
     }
   }
 
-  private fixRoundLimit(item: WorkItemRecord): number {
-    const { home, policyRoot } = this.closeoutHome(item);
-    return policyFixBudget(this.itemHead(item).repo, home, policyRoot) ?? 3;
+  private fixRoundLimit(item: WorkItemRecord): Promise<number> {
+    return this.store.run((q) => this.fixRoundLimitSteps(q, item));
+  }
+
+  private *fixRoundLimitSteps(q: Q, item: WorkItemRecord): Steps<number> {
+    const { home, policyRoot } = yield* this.closeoutHomeSteps(q, item);
+    return policyFixBudget((yield* this.itemHeadSteps(q, item)).repo, home, policyRoot) ?? 3;
   }
 
   /**
    * The limit a fix-attempt line names for this round. Closeout findings also end when a failed
    * check spends its attempts, so their restart records whichever limit stops the item first.
    */
-  private fixAttemptLimit(item: WorkItemRecord, reason: string): number {
-    const rounds = this.fixRoundLimit(item);
+  private fixAttemptLimit(item: WorkItemRecord, reason: string): Promise<number> {
+    return this.store.run((q) => this.fixAttemptLimitSteps(q, item, reason));
+  }
+
+  private *fixAttemptLimitSteps(q: Q, item: WorkItemRecord, reason: string): Steps<number> {
+    const rounds = yield* this.fixRoundLimitSteps(q, item);
     if (reason !== "findings") return rounds;
-    return Math.min(rounds, restartLimit(this.db, item.id) ?? rounds);
+    return Math.min(rounds, (yield* restartLimitSteps(q, item.id)) ?? rounds);
   }
 
   private feedbackWait(): PullFeedbackWait {
@@ -6690,7 +6704,7 @@ export class Orchestrator {
   ): Promise<boolean> {
     const accepted =
       (await this.store.run((q) => getWorkItemSteps(q, item.id)))?.acceptedHead ?? null;
-    const repository = accepted === null ? null : this.repositoryForItem(item);
+    const repository = accepted === null ? null : await this.repositoryForItem(item);
     const github = repository ? this.githubForRepository(repository) : null;
     if (accepted === null || !repository || !github) return false;
     const remote = await branchContains({
@@ -6738,7 +6752,7 @@ export class Orchestrator {
     )
       return false;
     const pull = await this.store.run((q) => getItemPullRequestSteps(q, item.id));
-    const repository = pull ? this.repositoryForItem(item) : null;
+    const repository = pull ? await this.repositoryForItem(item) : null;
     const github = repository ? this.githubForRepository(repository) : null;
     if (!pull || !repository || !github) return false;
     const pullHead = await readOpenPullHead({
@@ -7069,7 +7083,8 @@ export class Orchestrator {
         if (live.itemId === open.itemId) live.controller.abort(FOLLOW_UP_INTERRUPTION);
     if (outcome === "answered" && open.kind === "plan-approval") {
       const item = await this.store.run((q) => getWorkItemSteps(q, open.itemId));
-      if (item?.state === "completed") this.sessionProgress(item, "plan")?.phase("completed");
+      if (item?.state === "completed")
+        await (await this.sessionProgress(item, "plan"))?.phase("completed");
     }
     await this.flush();
     return outcome;
@@ -7089,12 +7104,12 @@ export class Orchestrator {
     let deferred = false;
     const notifications = { ready: false };
     const db = this.db;
-    const itemsForSession = (id: string) => this.itemsForSession(id);
+    const itemsForSessionSteps = (q: Q, id: string) => this.itemsForSessionSteps(q, id);
     const accepted = await this.store.transaction(function* (q) {
       if ((yield* acceptLinearStopSteps(q, sessionId, eventKey, requestedAt)) === null)
         return false;
-      const items = itemsForSession(sessionId);
-      if (items.length === 0) stopAdoptedParent(db, sessionId, requestedAt);
+      const items = yield* itemsForSessionSteps(q, sessionId);
+      if (items.length === 0) yield* stopSessionParentDelegationSteps(q, sessionId, requestedAt);
       if (items.length === 0)
         yield* enqueueOutboxOnceSteps(q, {
           target: "linear",
@@ -7256,11 +7271,11 @@ export class Orchestrator {
           // Intake saved the new brief in this transaction. Human ownership keeps its fence.
           yield* cancelItemQuestionsSteps(q, itemId, this.now(), "criteria");
           if (
-            !canReportSessionProgress(
-              this.db,
+            !(yield* canReportSessionProgressSteps(
+              q,
               changes.sessionId,
               yield* getLinearSessionGenerationSteps(q, changes.sessionId),
-            )
+            ))
           )
             continue;
           const revision = (yield* itemSpecificationRevisionSteps(q, itemId)) ?? 0;
@@ -7324,7 +7339,7 @@ export class Orchestrator {
       ...changes.canceledItemIds,
       ...changes.specChangedItemIds,
       ...(changes.parentCanceled
-        ? this.delegationItems(changes.delegationId).map((item) => item.id)
+        ? (await this.delegationItems(changes.delegationId)).map((item) => item.id)
         : []),
     ]);
     await this.joinChangedItems([...affected]);
@@ -7363,8 +7378,9 @@ export class Orchestrator {
     const resumed = await this.store.transaction((q) =>
       this.resumeItemSteps(q, itemId, canAct, onCommitted),
     );
+    if (resumed && resumed.armed) emitJobReady(this.store);
     if (resumed) await this.reconcileExecution();
-    return resumed;
+    return resumed !== false;
   }
 
   private *resumeItemSteps(
@@ -7372,7 +7388,7 @@ export class Orchestrator {
     itemId: string,
     canAct?: (q: Q) => Steps<boolean>,
     onCommitted?: (q: Q) => Steps<void>,
-  ): Steps<boolean> {
+  ): Steps<false | { armed: boolean }> {
     const item = yield* getWorkItemSteps(q, itemId);
     if ((canAct && !(yield* canAct(q))) || item?.state !== "paused" || item.cancelRequested)
       return false;
@@ -7380,13 +7396,13 @@ export class Orchestrator {
     if (session?.stoppedAt != null)
       yield* advanceLinearSessionGenerationSteps(q, session.sessionId, { now: this.now() });
     yield* cancelItemQuestionsSteps(q, item.id, this.now());
-    restart(this.db, item, {
+    const restarted = yield* restartSteps(q, item, {
       reason: "follow_up",
       body: "Continue the task from its branch.",
       now: this.now(),
     });
     if (onCommitted) yield* onCommitted(q);
-    return true;
+    return { armed: restarted?.armed ?? false };
   }
 
   deliverInstanceCommands(): number {
@@ -7601,11 +7617,12 @@ export class Orchestrator {
         ? {
             ownerHasRunner: (q: Q, itemId: string) =>
               this.ownerHasRunnerSteps(q, itemId, ownerHasRunner, config),
-            onRunnerSetup: (itemIds: readonly string[]) =>
-              this.noteRunnerSetup(
-                itemIds.filter((id) => !this.awaitsAdmissionLabels(id, config)),
-                (item) => this.implementerAgent(item, config),
-              ),
+            onRunnerSetup: async (itemIds: readonly string[]) => {
+              const ready: string[] = [];
+              for (const id of itemIds)
+                if (!(await this.awaitsAdmissionLabels(id, config))) ready.push(id);
+              await this.noteRunnerSetup(ready, (item) => this.implementerAgent(item, config));
+            },
             ...(this.options.onRunnerHostRefusals
               ? { onRunnerHostRefusals: this.options.onRunnerHostRefusals }
               : {}),
@@ -7614,8 +7631,12 @@ export class Orchestrator {
     });
   }
 
-  private implementerAgent(item: WorkItemRecord, config: ReturnType<typeof loadConfigFile>) {
-    return implementerAgentFor(config, this.repositoryForItem(item), this.knownProfileLabels(item));
+  private async implementerAgent(item: WorkItemRecord, config: ReturnType<typeof loadConfigFile>) {
+    return implementerAgentFor(
+      config,
+      await this.repositoryForItem(item),
+      this.knownProfileLabels(item),
+    );
   }
 
   private *implementerProfileSteps(
@@ -7709,12 +7730,13 @@ export class Orchestrator {
    * once per queue entry, and the scheduler looks again. Returns whether that read is under way.
    * Without presets a label can't change the agent, and nothing is read.
    */
-  private awaitsAdmissionLabels(
+  private async awaitsAdmissionLabels(
     itemId: string,
     config: ReturnType<typeof loadConfigFile>,
-  ): boolean {
+  ): Promise<boolean> {
     if (this.admissionLabelReads.has(itemId)) return true;
-    const item = getWorkItem(this.db, itemId);
+    const item = await this.store.run((q) => getWorkItemSteps(q, itemId));
+    if (this.admissionLabelReads.has(itemId)) return true;
     if (
       !item ||
       !this.tracker?.issueRepositoryHints ||
@@ -7761,14 +7783,15 @@ export class Orchestrator {
    */
   private async noteRunnerSetup(
     itemIds: readonly string[],
-    agentFor: (item: WorkItemRecord) => string,
+    agentFor: (item: WorkItemRecord) => Promise<string>,
   ): Promise<void> {
     const now = this.now();
     for (const id of itemIds) {
-      const item = getWorkItem(this.db, id);
+      const item = await this.store.run((q) => getWorkItemSteps(q, id));
       if (!item || item.state !== "queued" || item.cancelRequested) continue;
       await clearQueueWait(this.store, item.id);
-      const need = (await this.options.runnerSetupNeed?.(item.id, agentFor(item), now)) ?? null;
+      const need =
+        (await this.options.runnerSetupNeed?.(item.id, await agentFor(item), now)) ?? null;
       if (need) {
         await this.store.transaction((q) => this.queuedRunnerSetupHoldSteps(q, item.id, need, now));
         emitJobReady(this.store);
@@ -7777,70 +7800,82 @@ export class Orchestrator {
       const sessionId = this.activitySession(item);
       if (sessionId === null) continue;
       const name = item.linearIdentifier ?? "this issue";
-      enqueueOutboxOnce(this.db, {
-        target: OUTBOX_ACTIVITY.target,
-        op: OUTBOX_ACTIVITY.op,
-        orderingKey: sessionId,
-        idempotencyKey: `runner-setup:${item.id}:${item.version}`,
-        payload: {
-          sessionId,
-          kind: "thought",
-          body: `${name} waits for a runner you can use. Add one on the Runners page and sign in to its agent, or ask your project lead to share theirs. Paws starts ${name} on its own once a runner is ready.`,
-        },
-        now,
-      });
+      await this.store.transaction((q) =>
+        enqueueOutboxOnceSteps(q, {
+          target: OUTBOX_ACTIVITY.target,
+          op: OUTBOX_ACTIVITY.op,
+          orderingKey: sessionId,
+          idempotencyKey: `runner-setup:${item.id}:${item.version}`,
+          payload: {
+            sessionId,
+            kind: "thought",
+            body: `${name} waits for a runner you can use. Add one on the Runners page and sign in to its agent, or ask your project lead to share theirs. Paws starts ${name} on its own once a runner is ready.`,
+          },
+          now,
+        }),
+      );
     }
   }
 
-  private noteWaits(waits: readonly ItemWait[]): void {
+  private async noteWaits(waits: readonly ItemWait[]): Promise<void> {
     const current = new Set(waits.map((wait) => wait.itemId));
     for (const itemId of this.waitFaces.keys())
       if (!current.has(itemId)) this.waitFaces.delete(itemId);
-    for (const wait of waits) {
-      const round = wait.kind === "runner" && wait.restart ? fixRounds(this.db, wait.itemId) : 0;
-      const face = JSON.stringify([wait, round]);
-      if (this.waitFaces.get(wait.itemId) === face) continue;
-      const item = getWorkItem(this.db, wait.itemId);
-      if (!item || item.version !== wait.version || item.sessionKey !== wait.sessionId) continue;
-      const mode = getTaskMode(this.db, item.id);
-      const progress = this.sessionProgress(item, isResponseTaskMode(mode) ? mode : "code");
-      if (!progress) continue;
-      const name = item.linearIdentifier;
-      if (wait.kind === "blocked") {
-        const blockers = wait.blockers.length ? wait.blockers.join(", ") : "a blocking issue";
-        progress.wait(`Wait for ${blockers}`, `${name}: waiting for ${blockers}`);
-      } else if (wait.kind === "overlap") {
-        progress.wait(
-          `Wait for ${wait.blocker} to merge`,
-          `${name} held: ${overlapLine(wait.blocker, wait.files, wait.start)}`,
-        );
-      } else if (wait.kind === "runner" && wait.restart) {
-        const limit = this.fixAttemptLimit(item, wait.restart);
-        const restarted = latestRestartEvent(this.db, item.id);
-        if (restarted) progress.restart(wait.restart, round, restarted.version, limit);
-        progress.restartWait(
-          `${name}: waiting for a runner to ${
-            wait.restart === "ci"
-              ? `fix CI (${round} of ${limit})`
-              : wait.restart === "review"
-                ? `address the review (${round} of ${limit})`
-                : wait.restart === "conflict"
-                  ? "resolve a merge conflict"
-                  : `fix Closeout findings (${round} of ${limit})`
-          }`,
-        );
-      } else if (wait.kind === "runner")
-        progress.wait(
-          "Wait for a runner",
-          wait.noRunner
-            ? `${name}: ${wait.noRunner}`
-            : `${name}: ${ordinal(wait.position)} in line for a runner`,
-        );
-      else if (wait.kind === "paused")
-        progress.status(`${name}: paused by ${wait.by ?? "a workspace member"}`);
-      else progress.status(`${name}: recovering an interrupted turn`);
-      this.waitFaces.set(wait.itemId, face);
-    }
+    for (const wait of waits) await this.store.transaction((q) => this.noteWaitSteps(q, wait));
+  }
+
+  private *noteWaitSteps(q: Q, wait: ItemWait): Steps<void> {
+    const round =
+      wait.kind === "runner" && wait.restart ? yield* fixRoundsSteps(q, wait.itemId) : 0;
+    const face = JSON.stringify([wait, round]);
+    if (this.waitFaces.get(wait.itemId) === face) return;
+    const item = yield* getWorkItemSteps(q, wait.itemId);
+    if (!item || item.version !== wait.version || item.sessionKey !== wait.sessionId) return;
+    const mode = yield* getTaskModeSteps(q, item.id);
+    const progress = yield* this.sessionProgressSteps(
+      q,
+      item,
+      isResponseTaskMode(mode) ? mode : "code",
+    );
+    if (!progress) return;
+    const name = item.linearIdentifier;
+    if (wait.kind === "blocked") {
+      const blockers = wait.blockers.length ? wait.blockers.join(", ") : "a blocking issue";
+      yield* progress.wait(q, `Wait for ${blockers}`, `${name}: waiting for ${blockers}`);
+    } else if (wait.kind === "overlap") {
+      yield* progress.wait(
+        q,
+        `Wait for ${wait.blocker} to merge`,
+        `${name} held: ${overlapLine(wait.blocker, wait.files, wait.start)}`,
+      );
+    } else if (wait.kind === "runner" && wait.restart) {
+      const limit = yield* this.fixAttemptLimitSteps(q, item, wait.restart);
+      const restarted = yield* latestRestartEventSteps(q, item.id);
+      if (restarted) yield* progress.restart(q, wait.restart, round, restarted.version, limit);
+      yield* progress.restartWait(
+        q,
+        `${name}: waiting for a runner to ${
+          wait.restart === "ci"
+            ? `fix CI (${round} of ${limit})`
+            : wait.restart === "review"
+              ? `address the review (${round} of ${limit})`
+              : wait.restart === "conflict"
+                ? "resolve a merge conflict"
+                : `fix Closeout findings (${round} of ${limit})`
+        }`,
+      );
+    } else if (wait.kind === "runner")
+      yield* progress.wait(
+        q,
+        "Wait for a runner",
+        wait.noRunner
+          ? `${name}: ${wait.noRunner}`
+          : `${name}: ${ordinal(wait.position)} in line for a runner`,
+      );
+    else if (wait.kind === "paused")
+      yield* progress.status(q, `${name}: paused by ${wait.by ?? "a workspace member"}`);
+    else yield* progress.status(q, `${name}: recovering an interrupted turn`);
+    this.waitFaces.set(wait.itemId, face);
   }
 
   private async noteQueued(itemIds: readonly string[]): Promise<void> {
@@ -7907,7 +7942,7 @@ export class Orchestrator {
         return existing;
       }
     }
-    const repository = this.repositoryForItem(item);
+    const repository = await this.repositoryForItem(item);
     // A new run, including a retry, uses the profiles saved in Settings now (PAS-831).
     const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
     const repoName = repository ? `${repository.owner}/${repository.repo}` : undefined;
@@ -7988,7 +8023,7 @@ export class Orchestrator {
     const saved = this.readProfileSnapshot(runId);
     if (!saved) return true;
     const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
-    const repository = this.repositoryForItem(item);
+    const repository = await this.repositoryForItem(item);
     const repo = repository ? `${repository.owner}/${repository.repo}` : undefined;
     let resolved = resolveAgentProfiles(config, repo, saved.profileLabels);
     let answered = false;
@@ -8094,15 +8129,33 @@ export class Orchestrator {
     await this.dispatch();
   }
 
+  private reportPlan(
+    item: WorkItemRecord,
+    progress: LinearSessionProgress | null,
+    steps: readonly SessionPlanStep[],
+  ): void {
+    if (progress)
+      void this.queuePost(item.id, (q) => this.reportPlanSteps(q, item, progress, steps));
+  }
+
+  private *reportPlanSteps(
+    q: Q,
+    item: WorkItemRecord,
+    progress: LinearSessionProgress,
+    steps: readonly SessionPlanStep[],
+  ): Steps<void> {
+    if (!(yield* this.stoppedSteps(q, item.id))) yield* progress.steps.plan(q, steps);
+  }
+
   private planHook(
     item: WorkItemRecord,
-    progress: { plan(steps: readonly SessionPlanStep[]): void } | null,
+    progress: LinearSessionProgress | null,
   ): UpdatePlanHook | undefined {
     if (!progress) return undefined;
     return {
       update: async (steps) => {
-        if (this.stopped(item.id)) throw new Error("Plan updates are closed for this run");
-        progress.plan(steps);
+        if (await this.stopped(item.id)) throw new Error("Plan updates are closed for this run");
+        await progress.plan(steps);
         await this.flush();
       },
     };
@@ -8111,7 +8164,7 @@ export class Orchestrator {
   private agentCloseoutHook(item: WorkItemRecord, runId: string): CloseoutProgressHook {
     return {
       record: async (progress) => {
-        if (this.stopped(item.id)) return;
+        if (await this.stopped(item.id)) return;
         await this.store.transaction((q) =>
           recordAgentCloseoutSteps(q, runId, item.id, progress, this.now()),
         );
@@ -8127,10 +8180,11 @@ export class Orchestrator {
   private pullRequestHook(item: WorkItemRecord): PullRequestHook {
     return {
       update: async (description) => {
-        if (this.stopped(item.id)) throw new Error("Pull request updates are closed for this run");
+        if (await this.stopped(item.id))
+          throw new Error("Pull request updates are closed for this run");
         const previous = await this.store.run((q) => getPullRequestDraftSteps(q, item.id));
         await this.store.run((q) => savePullRequestDraftSteps(q, item.id, description, this.now()));
-        const repository = this.repositoryForItem(item);
+        const repository = await this.repositoryForItem(item);
         const signal = this.signalForItem(item.id);
         await applyPullRequestDraft({
           store: this.store,
@@ -8194,13 +8248,28 @@ export class Orchestrator {
     };
   }
 
-  private sessionProgress(item: WorkItemRecord, mode: TaskMode = "code") {
+  private async sessionProgress(item: WorkItemRecord, mode: TaskMode = "code") {
     if (!this.tracker?.updateSession) return null;
     const sessionId = this.activitySession(item);
     return sessionId === null
       ? null
-      : createLinearSessionProgress(
-          this.db,
+      : await createLinearSessionProgress(
+          this.store,
+          sessionId,
+          item.linearIdentifier,
+          () => this.now(),
+          mode,
+          item.id,
+        );
+  }
+
+  private *sessionProgressSteps(q: Q, item: WorkItemRecord, mode: TaskMode = "code") {
+    if (!this.tracker?.updateSession) return null;
+    const sessionId = this.activitySession(item);
+    return sessionId === null
+      ? null
+      : yield* linearSessionProgressSteps(
+          q,
           sessionId,
           item.linearIdentifier,
           () => this.now(),
@@ -8214,10 +8283,15 @@ export class Orchestrator {
    * so a replay after a restart finds its earlier row. Any other update takes the next number
    * after the keys already stored, so a key from before a restart is not reused.
    */
-  private activityKey(prefix: string, origin?: ActivityOrigin): string {
+  private activityKey(prefix: string, origin?: ActivityOrigin): Deferred<string> {
     if (origin)
       return `${prefix}:${origin.runId}:${origin.generation}:${origin.sequence}:${origin.part}`;
-    const next = (this.activitySeqs.get(prefix) ?? lastOutboxSequence(this.db, `${prefix}:`)) + 1;
+    return (q) => this.activitySequenceSteps(q, prefix);
+  }
+
+  private *activitySequenceSteps(q: Q, prefix: string): Steps<string> {
+    const next =
+      (this.activitySeqs.get(prefix) ?? (yield* lastOutboxSequenceSteps(q, `${prefix}:`))) + 1;
     this.activitySeqs.set(prefix, next);
     return `${prefix}:${next}`;
   }
@@ -8226,7 +8300,7 @@ export class Orchestrator {
     item: WorkItemRecord,
     kind: "thought" | "action" | "response" | "error",
     body: string,
-    key: string,
+    key: Deferred<string>,
     details: Pick<ProgressUpdate, "id" | "ephemeral" | "action"> = {},
     delivery?: "critical" | "ordered",
   ): Promise<number | undefined> {
@@ -8239,8 +8313,8 @@ export class Orchestrator {
   private async postWhileReporting(
     item: WorkItemRecord,
     kind: "thought" | "action" | "response" | "error",
-    body: string,
-    key: string,
+    body: Deferred<string>,
+    key: Deferred<string>,
     details: Pick<ProgressUpdate, "id" | "ephemeral" | "action"> = {},
     allowed?: () => void,
   ): Promise<boolean> {
@@ -8255,14 +8329,15 @@ export class Orchestrator {
     q: Q,
     item: WorkItemRecord,
     kind: "thought" | "action" | "response" | "error",
-    body: string,
-    key: string,
+    body: Deferred<string>,
+    key: Deferred<string>,
     details: Pick<ProgressUpdate, "id" | "ephemeral" | "action">,
     allowed?: () => void,
   ): Steps<boolean> {
+    const idempotencyKey = yield* deferredSteps(q, key);
     if (!(yield* this.canReportProgressSteps(q, item.id))) return false;
     allowed?.();
-    yield* this.postSteps(q, item, kind, body, key, details);
+    yield* this.postSteps(q, item, kind, yield* deferredSteps(q, body), idempotencyKey, details);
     return true;
   }
 
@@ -8297,7 +8372,7 @@ export class Orchestrator {
   private async postKeepalive(
     item: WorkItemRecord,
     key: string,
-    lines: readonly (string | null | undefined)[],
+    lines: Deferred<readonly (string | null | undefined)[]>,
   ): Promise<boolean> {
     return (
       (await this.queuePost(item.id, (q) => this.postKeepaliveSteps(q, item, key, lines))) === true
@@ -8308,9 +8383,10 @@ export class Orchestrator {
     q: Q,
     item: WorkItemRecord,
     key: string,
-    lines: readonly (string | null | undefined)[],
+    deferredLines: Deferred<readonly (string | null | undefined)[]>,
   ): Steps<boolean> {
     if (!(yield* this.canReportProgressSteps(q, item.id))) return false;
+    const lines = yield* deferredSteps(q, deferredLines);
     const tried = new Set<string>();
     for (const line of lines) {
       if (!line?.trim() || tried.has(line)) continue;
@@ -8336,10 +8412,11 @@ export class Orchestrator {
     item: WorkItemRecord,
     kind: "thought" | "action" | "response" | "error",
     body: string,
-    key: string,
+    postKey: Deferred<string>,
     details: Pick<ProgressUpdate, "id" | "ephemeral" | "action"> = {},
     delivery?: "critical" | "ordered",
   ): Steps<number | undefined> {
+    const key = yield* deferredSteps(q, postKey);
     if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return;
     const current = yield* getWorkItemSteps(q, item.id);
     if (current === null || current.state === "cancelled") return;
@@ -8391,15 +8468,25 @@ export class Orchestrator {
     return await this.store.run((q) => linearOutboxKeyedSteps(q, prefix));
   }
 
-  private postStatus(
+  private *announceMergedSteps(q: Q, item: WorkItemRecord): Steps<void> {
+    const progress = yield* this.sessionProgressSteps(q, item);
+    if (progress) yield* progress.phase(q, "completed");
+    yield* this.postStatusSteps(q, item, "completed");
+  }
+
+  private *postStatusSteps(
+    q: Q,
     item: WorkItemRecord,
     stateType: "started" | "completed" | "canceled",
     issueId = item.linearIssueId,
-  ): void {
-    if (this.taskAccess() && !getLinearTaskDelegation(this.db, item.id, issueId)?.humanActorId)
+  ): Steps<void> {
+    if (
+      this.taskAccess() &&
+      !(yield* getLinearTaskDelegationSteps(q, item.id, issueId))?.humanActorId
+    )
       return;
     const sessionId = this.activitySession(item) ?? item.id;
-    enqueueOutboxOnce(this.db, {
+    yield* enqueueOutboxOnceSteps(q, {
       target: "linear",
       op: "status",
       orderingKey: sessionId,
@@ -8595,7 +8682,7 @@ export class Orchestrator {
         const current = await this.store.run((q) => getWorkItemSteps(q, item.id));
         if (
           !current ||
-          this.stopped(item.id) ||
+          (await this.stopped(item.id)) ||
           current.currentRunId !== item.currentRunId ||
           (item.sessionKey &&
             (await this.store.run((q) => getLinearSessionGenerationSteps(q, item.sessionKey!))) !==
@@ -8650,7 +8737,7 @@ export class Orchestrator {
     const snapshot = await this.tracker.loadEpic(issueId);
     const authorize = this.options.authorizeLinearIntake;
     const isCurrent = async () => {
-      const current = getLinearSession(this.db, session.sessionId);
+      const current = await this.store.run((q) => getLinearSessionSteps(q, session.sessionId));
       return (
         !this.shuttingDown &&
         current?.generation === session.generation &&
@@ -8702,8 +8789,9 @@ export class Orchestrator {
   }
 
   private async resumeLinearSession(sessionId: string, talk = true): Promise<void> {
+    const sessionItems = await this.itemsForSession(sessionId);
     const active = [...this.live.values()].filter((live) =>
-      this.itemsForSession(sessionId).some((item) => item.id === live.itemId),
+      sessionItems.some((item) => item.id === live.itemId),
     );
     await this.stopTaskPlanning(sessionId);
     await Promise.all(active.map((live) => live.done));
@@ -8897,7 +8985,7 @@ export class Orchestrator {
     const pull = await this.store.run((q) => getItemPullRequestSteps(q, item.id));
     if (pull === null) return null;
     const ref = { number: pull.pullNumber, url: pull.pullUrl };
-    const repository = this.repositoryForItem(item);
+    const repository = await this.repositoryForItem(item);
     const github = repository ? this.githubForRepository(repository) : null;
     if (!repository || !github)
       return unavailableCi(ref, null, "GitHub is not connected for this repository");
@@ -8928,9 +9016,9 @@ export class Orchestrator {
    * pass does before a rebase-conflict return. Returns main's commit, or null without either.
    */
   private async fetchUpstreamMain(item: WorkItemRecord): Promise<string | null> {
-    const repository = this.repositoryForItem(item);
+    const repository = await this.repositoryForItem(item);
     const github = repository ? this.githubForRepository(repository) : null;
-    const worktree = this.itemHead(item).repo;
+    const worktree = (await this.itemHead(item)).repo;
     if (!repository || !github || !existsSync(worktree)) return null;
     const main = await fetchUpstreamMain({
       worktree,
@@ -8949,8 +9037,9 @@ export class Orchestrator {
     turn: { eventKey: string; body: string },
   ): Promise<boolean> {
     if (!this.options.remoteFollowUp) return false;
+    const sessionItems = await this.itemsForSession(sessionId);
     const live = [...this.live.values()].filter((entry) =>
-      this.itemsForSession(sessionId).some((item) => item.id === entry.itemId),
+      sessionItems.some((item) => item.id === entry.itemId),
     );
     if (live.length !== 1) return false;
     const item = await this.store.run((q) => getWorkItemSteps(q, live[0]!.itemId));
@@ -9087,14 +9176,26 @@ export class Orchestrator {
     }
   }
 
-  private itemsForSession(sessionId: string): WorkItemRecord[] {
-    return this.allItems().filter((item) => item.sessionKey === sessionId);
+  private itemsForSession(sessionId: string): Promise<WorkItemRecord[]> {
+    return this.store.run((q) => this.itemsForSessionSteps(q, sessionId));
   }
 
-  private allItems(includeArchived = false): WorkItemRecord[] {
+  private async sessionItemIds(sessionId: string): Promise<string | null> {
+    return (await this.itemsForSession(sessionId)).map((item) => item.id).join(",") || null;
+  }
+
+  private *itemsForSessionSteps(q: Q, sessionId: string): Steps<WorkItemRecord[]> {
+    return (yield* this.allItemsSteps(q)).filter((item) => item.sessionKey === sessionId);
+  }
+
+  private allItems(includeArchived = false): Promise<WorkItemRecord[]> {
+    return this.store.run((q) => this.allItemsSteps(q, includeArchived));
+  }
+
+  private *allItemsSteps(q: Q, includeArchived = false): Steps<WorkItemRecord[]> {
     const items: WorkItemRecord[] = [];
-    for (const id of listItemIds(this.db, includeArchived)) {
-      const item = getWorkItem(this.db, id);
+    for (const id of yield* listItemIdsSteps(q, includeArchived)) {
+      const item = yield* getWorkItemSteps(q, id);
       if (item) items.push(item);
     }
     return items;
@@ -9109,14 +9210,12 @@ export class Orchestrator {
     return items.sort((left, right) => left.position - right.position);
   }
 
-  private delegationItems(delegationId: string): WorkItemRecord[] {
-    return this.allItems()
-      .filter((item) => item.delegationId === delegationId)
-      .sort((left, right) => left.position - right.position);
+  private delegationItems(delegationId: string): Promise<WorkItemRecord[]> {
+    return this.store.run((q) => this.delegationItemsSteps(q, delegationId));
   }
 
-  private parentTaskKey(item: WorkItemRecord): string | null {
-    return itemParentTaskKey(this.db, item.id);
+  private parentTaskKey(item: WorkItemRecord): Promise<string | null> {
+    return this.store.run((q) => itemParentTaskKeySteps(q, item.id));
   }
 
   private async delegationIssueId(item: WorkItemRecord): Promise<string | null> {
@@ -9157,8 +9256,8 @@ export class Orchestrator {
     }
   }
 
-  private stopped(itemId: string): boolean {
-    return settled(this.store.run((q) => this.stoppedSteps(q, itemId)));
+  private stopped(itemId: string): Promise<boolean> {
+    return this.store.run((q) => this.stoppedSteps(q, itemId));
   }
 
   private *stoppedSteps(q: Q, itemId: string): Steps<boolean> {
@@ -9405,26 +9504,35 @@ export class Orchestrator {
     }
   }
 
-  private workContext(item: WorkItemRecord): string {
-    const taskKey = this.parentTaskKey(item);
-    const classification = taskKey ? getTaskClassification(this.db, taskKey) : null;
+  private workContext(item: WorkItemRecord): Promise<string> {
+    return this.store.run((q) => this.workContextSteps(q, item));
+  }
+
+  private *workContextSteps(q: Q, item: WorkItemRecord): Steps<string> {
+    const taskKey = yield* itemParentTaskKeySteps(q, item.id);
+    const classification = taskKey ? yield* getTaskClassificationSteps(q, taskKey) : null;
     const activities = item.sessionKey
-      ? listLinearActivitySnapshots(this.db, item.sessionKey)
+      ? (yield* listLinearActivitySnapshotsSteps(q, item.sessionKey))
           .map((snapshot) => JSON.parse(snapshot) as LinearActivitySnapshot)
           .filter((activity) => activity.content.type !== "thought" && !activity.ephemeral)
       : [];
-    const repository = this.repositoryForItem(item);
+    const repository = yield* getWorkItemRepositorySteps(q, item.id);
+    const projectOverview =
+      ((yield* getTaskLinearReadSteps(q, item.id, "project_overview")) as string | undefined) ?? "";
+    const userUpdates = (yield* listLinearTurnsForItemSteps(q, item.id)).map((turn) => turn.body);
+    const sessionContext = item.sessionKey
+      ? yield* getLinearSessionContextSteps(q, item.sessionKey)
+      : "";
     const template = resolveBriefTemplate(
       loadConfigFile(join(this.options.pawsRoot, "config.toml")),
       repository ? `${repository.owner}/${repository.repo}` : null,
     );
     return renderWorkContext(template, {
       brief: item.brief,
-      projectOverview:
-        (getTaskLinearRead(this.db, item.id, "project_overview") as string | undefined) ?? "",
-      userUpdates: listLinearTurnsForItem(this.db, item.id).map((turn) => turn.body),
+      projectOverview,
+      userUpdates,
       taskContext: classification?.mode !== "clarify" ? (classification?.context ?? "") : "",
-      sessionContext: item.sessionKey ? getLinearSessionContext(this.db, item.sessionKey) : "",
+      sessionContext,
       activities,
     });
   }
@@ -9453,8 +9561,8 @@ export class Orchestrator {
       itemId: item.id,
       sessionId,
       uploads: Boolean(this.options.files && evidence.root),
-      reviewed: (checkId) =>
-        this.visualReviewRequirements(item, this.itemHead(item).repo).some(
+      reviewed: async (checkId) =>
+        (await this.visualReviewRequirements(item, (await this.itemHead(item)).repo)).some(
           (requirement) => requirement.id === checkId,
         ),
       ...(linear ? { linear } : {}),
@@ -9503,8 +9611,11 @@ export class Orchestrator {
     });
   }
 
-  private visualReviewRequirements(item: WorkItemRecord, worktree: string): ResolvedEvidence[] {
-    const repository = this.repositoryForItem(item);
+  private async visualReviewRequirements(
+    item: WorkItemRecord,
+    worktree: string,
+  ): Promise<ResolvedEvidence[]> {
+    const repository = await this.repositoryForItem(item);
     if (!repository) return [];
     const required = visualReviewRequirements(
       worktree,
@@ -9529,7 +9640,7 @@ export class Orchestrator {
     const evidence = this.options.evidence;
     const sessionId = this.activitySession(item);
     if (!evidence || sessionId === null) return false;
-    const requirements = this.visualReviewRequirements(item, worktree);
+    const requirements = await this.visualReviewRequirements(item, worktree);
     if (requirements.length === 0) return false;
     const pending = await this.store.run((q) => pendingVisualReviewSteps(q, item));
     if (pending) {
@@ -9896,7 +10007,7 @@ export class Orchestrator {
   ): Promise<boolean> {
     const reviews = await this.store.run((q) => acceptedVisualReviewsSteps(q, item.id));
     if (reviews.length === 0) return false;
-    const requirements = this.visualReviewRequirements(item, worktree);
+    const requirements = await this.visualReviewRequirements(item, worktree);
     if (requirements.length === 0) return false;
     const checks = new Set(requirements.map((entry) => entry.id));
     const approvals = await this.store.run((q) =>
@@ -10000,12 +10111,12 @@ export class Orchestrator {
     return evidence?.root ? { root: evidence.root, objects: evidence.objects } : undefined;
   }
 
-  private blockConversation(itemId: string): void {
-    blockStoredConversation(this.db, itemId, this.now());
+  private async blockConversation(itemId: string): Promise<void> {
+    await this.store.run((q) => blockConversationSteps(q, itemId, this.now()));
   }
 
   private async prepareConversation(item: WorkItemRecord) {
-    const taskKey = this.parentTaskKey(item);
+    const taskKey = await this.parentTaskKey(item);
     const classification = taskKey
       ? await this.store.run((q) => getTaskClassificationSteps(q, taskKey))
       : null;
@@ -10067,7 +10178,7 @@ export class Orchestrator {
 
   private async agentDeps(item: WorkItemRecord): Promise<AcpAgentDeps> {
     const runId = item.currentRunId ?? item.id;
-    const repository = this.repositoryForItem(item);
+    const repository = await this.repositoryForItem(item);
     const profiles = () => this.profileSnapshot(runId);
     return {
       repository: repository ? `${repository.owner}/${repository.repo}` : undefined,
@@ -10098,7 +10209,7 @@ export class Orchestrator {
       agentRunner: this.remoteAgentForItem(item.id),
       ...(this.options.home ? { home: this.options.home } : {}),
       launch: this.launchAgent.bind(this),
-      brief: this.workContext(item),
+      brief: await this.workContext(item),
     };
   }
 
@@ -10184,19 +10295,20 @@ export class Orchestrator {
         this.options.journal,
       );
       const summary = error instanceof Error ? error.message : String(error);
-      closeActiveRun(this.db, runId, this.now());
+      await this.store.run((q) => closeActiveRunSteps(q, runId, this.now()));
       await this.post(item, "thought", summary, `${runId}:missing-candidate-identity`);
       const base = commits?.base ?? item.checkpoint?.baseSha ?? "";
       const head = commits?.head ?? item.checkpoint?.wipCommit ?? "";
       // Nothing was committed: a fresh implementation turn, once per human turn, not a question.
-      const jobKey = `restart:no-implementation:${item.id}:${latestHumanTurn(this.db, item.id)}`;
+      const humanTurn = await this.store.run((q) => latestHumanTurnSteps(q, item.id));
+      const jobKey = `restart:no-implementation:${item.id}:${humanTurn}`;
       if (
         summary === NO_SESSION_MODEL &&
         base !== "" &&
         base === head &&
-        (await jobStatusByKey(sqliteDb(this.db), jobKey)) === null
+        (await jobStatusByKey(this.store, jobKey)) === null
       ) {
-        restart(this.db, item, {
+        await restartAsync(this.store, item, {
           reason: "follow_up",
           body: "The earlier implementation run ended before it committed anything. Implement the task from the start.",
           jobKey,
@@ -10256,7 +10368,7 @@ export class Orchestrator {
       const saved = this.readProfileSnapshot(run.id);
       if (!saved) continue;
       const item = getWorkItem(this.db, run.itemId)!;
-      const repository = this.repositoryForItem(item);
+      const repository = getWorkItemRepository(this.db, item.id);
       const repoName = repository ? `${repository.owner}/${repository.repo}` : undefined;
       const profiles = withoutLabelProblems(
         resolveAgentProfiles(config, repoName, saved.profileLabels),
@@ -10312,7 +10424,7 @@ export class Orchestrator {
     const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
     const run = getRun(this.db, runId);
     const item = run === null ? null : getWorkItem(this.db, run.itemId);
-    const repository = item === null ? null : this.repositoryForItem(item);
+    const repository = item === null ? null : getWorkItemRepository(this.db, item.id);
     const repoName = repository ? `${repository.owner}/${repository.repo}` : undefined;
     const profiles = resolveAgentProfiles(config, repoName);
     mkdirSync(runDir(this.options.pawsRoot, runId), { recursive: true, mode: 0o700 });
@@ -10341,7 +10453,7 @@ export class Orchestrator {
     onRemoteEvent: (event: AcpEvent) => void,
   ): Promise<void> {
     const originalProfiles = JSON.stringify(profiles);
-    const repository = this.repositoryForItem(item);
+    const repository = await this.repositoryForItem(item);
     if (repository === null) throw new Error("The work item has no repository");
     await ensureBareMirror({
       ...repository,
@@ -10363,7 +10475,7 @@ export class Orchestrator {
         }
       : await createWorktree({
           ...placement,
-          checkoutExclusions: this.runCheckout(item).agent,
+          checkoutExclusions: (await this.runCheckout(item)).agent,
         }).then((created) => ({ path: created.path, repo: created.path }));
     const required = (this.options.reviewRequirements ?? reviewRequirements)(
       worktree.repo,
@@ -10418,7 +10530,7 @@ export class Orchestrator {
           { cause: error },
         );
       });
-      if (!result.agentExited) this.blockConversation(item.id);
+      if (!result.agentExited) await this.blockConversation(item.id);
       if (!result.identity || result.errorMessage)
         throw new Error(
           `${role} preparation failed: ${result.errorMessage ?? "it did not report a concrete session model"}`,
@@ -10469,15 +10581,15 @@ export class Orchestrator {
       | "reviewFindings"
     >
   > {
-    const repository = this.repositoryForItem(item);
+    const repository = await this.repositoryForItem(item);
     if (input.prepareOnly || !repository) return {};
     const mirror = !!this.options.remoteExecution;
-    const repo = mirror ? this.itemHead(item).repo : input.worktreePath;
+    const repo = mirror ? (await this.itemHead(item)).repo : input.worktreePath;
     const runtimes = {
       runtimes: () => this.runtimeList(item, repo, mirror ? "mirror" : "checkout"),
     };
     if (input.role !== "implementer") return runtimes;
-    const { home, policyRoot } = this.closeoutHome(item);
+    const { home, policyRoot } = await this.closeoutHome(item);
     const pull = await this.store.run((q) => getItemPullRequestSteps(q, item.id));
     const github = pull ? this.githubForRepository(repository) : null;
     const suggested = input.readOnly ? [] : await waitingSuggestions(this.store, item.id);
@@ -10573,26 +10685,38 @@ export class Orchestrator {
    * which Closeout folds into its policy digest. A `paws:full-checkout` label on the issue when
    * the task started leaves nothing out.
    */
-  private runCheckout(item: WorkItemRecord): CheckoutExclusions {
+  private runCheckout(item: WorkItemRecord): Promise<CheckoutExclusions> {
+    return this.store.transaction((q) => this.runCheckoutSteps(q, item));
+  }
+
+  private *runCheckoutSteps(q: Q, item: WorkItemRecord): Steps<CheckoutExclusions> {
+    const repository = yield* getWorkItemRepositorySteps(q, item.id);
+    const labels = issueLabels((yield* getTaskMergeSettingsSteps(q, item.id))?.resolved.labels);
     const resolve = (): CheckoutExclusions => {
-      const repository = this.repositoryForItem(item);
       if (!repository) return { agent: [], checks: [] };
       return checkoutExclusionsFor(
         loadConfigFile(join(this.options.pawsRoot, "config.toml")).checkoutProjects,
         `${repository.owner}/${repository.repo}`,
-        issueLabels(getTaskMergeSettings(this.db, item.id)?.resolved.labels),
+        labels,
       );
     };
-    const runId = getWorkItem(this.db, item.id)?.currentRunId ?? null;
-    return runId === null ? resolve() : pinRunCheckout(this.db, runId, resolve);
+    const runId = (yield* getWorkItemSteps(q, item.id))?.currentRunId ?? null;
+    return runId === null ? resolve() : yield* pinRunCheckoutSteps(q, runId, resolve);
   }
 
-  private closeoutHome(item: WorkItemRecord): {
+  private closeoutHome(item: WorkItemRecord) {
+    return this.store.run((q) => this.closeoutHomeSteps(q, item));
+  }
+
+  private *closeoutHomeSteps(
+    q: Q,
+    item: WorkItemRecord,
+  ): Steps<{
     home?: string;
     pawsHome: string;
     policyRoot?: string;
-  } {
-    const repository = this.repositoryForItem(item);
+  }> {
+    const repository = yield* getWorkItemRepositorySteps(q, item.id);
     const policyRoot = repository ? this.options.closeoutPolicyRoot?.(repository) : undefined;
     return {
       ...(policyRoot !== undefined ? { policyRoot } : {}),
@@ -10601,16 +10725,20 @@ export class Orchestrator {
     };
   }
 
-  private repositoryForItem(item: WorkItemRecord): RepositoryBinding | null {
-    return getWorkItemRepository(this.db, item.id);
+  private repositoryForItem(item: WorkItemRecord): Promise<RepositoryBinding | null> {
+    return this.store.run((q) => getWorkItemRepositorySteps(q, item.id));
   }
 
   /**
    * Where the item's head lives. A runner-backed item keeps no worktree on the control plane: its
    * head is its candidate ref in the bare mirror. Local execution reads the worktree's HEAD.
    */
-  private itemHead(item: WorkItemRecord): { repo: string; ref: string } {
-    const repository = this.repositoryForItem(item);
+  private itemHead(item: WorkItemRecord) {
+    return this.store.run((q) => this.itemHeadSteps(q, item));
+  }
+
+  private *itemHeadSteps(q: Q, item: WorkItemRecord): Steps<{ repo: string; ref: string }> {
+    const repository = yield* getWorkItemRepositorySteps(q, item.id);
     return this.options.remoteExecution && repository
       ? {
           repo: mirrorPath(this.options.pawsRoot, repository.owner, repository.repo),
@@ -10639,7 +10767,7 @@ export class Orchestrator {
   }
 
   private async restoreCandidate(item: WorkItemRecord, signal?: AbortSignal): Promise<void> {
-    const repository = this.repositoryForItem(item);
+    const repository = await this.repositoryForItem(item);
     const recorded = await this.store.run((q) => getItemCandidateSteps(q, item.id));
     if (!this.options.remoteExecution || !repository || !recorded) return;
     const owned = signal ?? AbortSignal.timeout(120_000);
@@ -10657,7 +10785,7 @@ export class Orchestrator {
   }
 
   private async legacyItemHead(item: WorkItemRecord): Promise<{ repo: string; ref: string }> {
-    const repository = this.repositoryForItem(item);
+    const repository = await this.repositoryForItem(item);
     if (this.options.remoteExecution && repository)
       await adoptLegacyCandidate({
         ...repository,
@@ -10665,7 +10793,7 @@ export class Orchestrator {
         pawsRoot: this.options.pawsRoot,
       });
     await this.restoreCandidate(item, this.signalForItem(item.id));
-    return this.itemHead(item);
+    return await this.itemHead(item);
   }
 
   /** Where a runner-backed run stages the agent's input files; it is no checkout. */
@@ -10691,7 +10819,7 @@ export class Orchestrator {
       ? await this.store.run((q) => getLinearSessionGenerationSteps(q, item.sessionKey!))
       : 0;
     const current = async () =>
-      !this.stopped(item.id) &&
+      !(await this.stopped(item.id)) &&
       (!item.sessionKey ||
         (await this.store.run((q) => getLinearSessionGenerationSteps(q, item.sessionKey!))) ===
           generation);
@@ -10705,7 +10833,7 @@ export class Orchestrator {
           !this.options.repositoryAccess ||
           (await this.options.repositoryAccess(bound, controller.signal, access));
         controller.signal.throwIfAborted();
-        if (this.stopped(item.id)) return false;
+        if (await this.stopped(item.id)) return false;
         if (!allowed) throw new Error("The selected repository is no longer accessible");
         return true;
       }
@@ -10731,7 +10859,7 @@ export class Orchestrator {
         )
           candidates.push(candidate);
       }
-      if (this.stopped(item.id)) return false;
+      if (await this.stopped(item.id)) return false;
       const savedAnswer = await this.store.run((q) => getWorkItemRepositoryAnswerSteps(q, item.id));
       const remembered = await this.store.run((q) => getWorkItemRepositoryChoiceSteps(q, item.id));
       let selected =
@@ -10764,7 +10892,7 @@ export class Orchestrator {
           onCleanupFailure: () => this.blockConversation(item.id),
         });
         controller.signal.throwIfAborted();
-        if (this.stopped(item.id)) return false;
+        if (await this.stopped(item.id)) return false;
       }
       const selectedIndex = selected
         ? candidates.findIndex(
@@ -10792,7 +10920,7 @@ export class Orchestrator {
           !this.options.repositoryAccess ||
           (await this.options.repositoryAccess(selected, controller.signal, access));
         controller.signal.throwIfAborted();
-        if (this.stopped(item.id)) return false;
+        if (await this.stopped(item.id)) return false;
         if (accessible) {
           await this.store.transaction((q) => bindWorkItemRepositorySteps(q, item.id, selected!));
           if (savedAnswer)
@@ -10937,7 +11065,7 @@ export class Orchestrator {
             this.now(),
           ),
         );
-      if (this.stopped(item.id)) return false;
+      if (await this.stopped(item.id)) return false;
       const choice =
         hinted && "bind" in hinted ? hinted : chooseRepository(pool, [...best.values()]);
       let ranked = "ask" in choice ? choice.ask : [];
@@ -11124,14 +11252,10 @@ function* closeActiveRunSteps(
   if (run && run.status === "active") yield* markRunSteps(q, runId, status, now);
 }
 
-function closeActiveRun(
-  db: Database,
-  runId: string,
-  now: number,
-  status: "ended" | "lost" = "ended",
-): void {
-  const run = getRun(db, runId);
-  if (run && run.status === "active") markRun(db, runId, status, now);
+type Deferred<T> = T | ((q: Q) => Steps<T>);
+
+function* deferredSteps<T>(q: Q, value: Deferred<T>): Steps<T> {
+  return typeof value === "function" ? yield* (value as (q: Q) => Steps<T>)(q) : value;
 }
 
 function inFlight(state: WorkItemRecord["state"]): boolean {

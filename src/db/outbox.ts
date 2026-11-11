@@ -139,14 +139,6 @@ export function* enqueueOutboxOnceSteps(q: Q, row: NewOutbox) {
   return existing.id;
 }
 
-/**
- * The highest number that follows `prefix` in a stored idempotency key, or 0. A counter that
- * starts from it after a restart does not reuse a key from before the restart.
- */
-export function lastOutboxSequence(db: Database, prefix: string): number {
-  return settled(sqliteDb(db).run((q) => lastOutboxSequenceSteps(q, prefix)));
-}
-
 export function* lastOutboxSequenceSteps(q: Q, prefix: string) {
   const { outbox } = q.t;
   // Byte order on both: Postgres compares text by the database collation unless told otherwise.
@@ -1172,14 +1164,6 @@ export function* linearSessionClosedSteps(q: Q, sessionId: string, generation: n
   return row !== undefined;
 }
 
-export function pullRequestReadyQueued(
-  db: Database,
-  sessionId: string,
-  generation: number,
-): boolean {
-  return settled(sqliteDb(db).run((q) => pullRequestReadyQueuedSteps(q, sessionId, generation)));
-}
-
 export function* pullRequestReadyQueuedSteps(q: Q, sessionId: string, generation: number) {
   const { outbox } = q.t;
   const row = yield* q.one(
@@ -1295,17 +1279,6 @@ export function* sessionHasFinalResponseSteps(
   return row !== undefined;
 }
 
-export function sessionHasFinalResponse(
-  db: Database,
-  sessionId: string,
-  generation: number,
-  rowId?: number,
-): boolean {
-  return settled(
-    sqliteDb(db).run((q) => sessionHasFinalResponseSteps(q, sessionId, generation, rowId)),
-  );
-}
-
 export function* sessionPullRequestOpenSteps(
   q: Q,
   sessionId: string,
@@ -1336,17 +1309,6 @@ export function* sessionPullRequestOpenSteps(
       .limit(1),
   );
   return row?.key.startsWith("pull-request-ready:") ?? false;
-}
-
-export function sessionPullRequestOpen(
-  db: Database,
-  sessionId: string,
-  generation: number,
-  rowId?: number,
-): boolean {
-  return settled(
-    sqliteDb(db).run((q) => sessionPullRequestOpenSteps(q, sessionId, generation, rowId)),
-  );
 }
 
 export function* outboxKeyExistsSteps(q: Q, idempotencyKey: string) {

@@ -17,7 +17,7 @@ export async function prepareRepositorySnapshot(options: {
   commit?: string;
   env?: NodeJS.ProcessEnv;
   maxArchiveBytes?: number;
-  onCleanupFailure?: () => void;
+  onCleanupFailure?: () => void | Promise<void>;
   networkGit?: (args: string[]) => Promise<string>;
 }): Promise<{ path: string; commit: string }> {
   options.signal.throwIfAborted();

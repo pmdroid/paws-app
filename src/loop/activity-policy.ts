@@ -1,14 +1,10 @@
 import {
-  pullRequestReadyQueued,
   pullRequestReadyQueuedSteps,
-  sessionHasFinalResponse,
   sessionHasFinalResponseSteps,
-  sessionPullRequestOpen,
   sessionPullRequestOpenSteps,
   type Q,
   type Steps,
 } from "../db";
-import type { Database } from "bun:sqlite";
 
 /**
  * Responses that may follow the PR response: the final merged, closed or stopped line, a
@@ -33,17 +29,6 @@ export const AFTER_PULL_REQUEST_RESPONSE =
 export const AFTER_PULL_REQUEST_THOUGHT =
   /^(risk-approval:|pull-feedback:|merge-conflict:|turn:ack:|fresh-budget:)/;
 
-export function hasPublishedPullRequest(
-  db: Database,
-  sessionId: string,
-  generation: number,
-): boolean {
-  return (
-    pullRequestReadyQueued(db, sessionId, generation) ||
-    sessionPullRequestOpen(db, sessionId, generation)
-  );
-}
-
 export function* hasPublishedPullRequestSteps(
   q: Q,
   sessionId: string,
@@ -64,17 +49,5 @@ export function* canReportProgressSteps(
   return (
     !(yield* sessionHasFinalResponseSteps(q, sessionId, generation, rowId)) &&
     !(yield* sessionPullRequestOpenSteps(q, sessionId, generation, rowId))
-  );
-}
-
-export function canReportProgress(
-  db: Database,
-  sessionId: string,
-  generation: number,
-  rowId?: number,
-): boolean {
-  return (
-    !sessionHasFinalResponse(db, sessionId, generation, rowId) &&
-    !sessionPullRequestOpen(db, sessionId, generation, rowId)
   );
 }

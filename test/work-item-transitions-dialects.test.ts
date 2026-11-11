@@ -27,6 +27,7 @@ import {
   type Job,
   type WorkItemRecord,
   sqliteDb,
+  syncSteps,
 } from "../src/db";
 import { forEachDialect, insertWorkItem, json, withoutForeignKeys } from "./dialects";
 import { tempDb } from "./helpers";
@@ -504,7 +505,10 @@ forEachDialect((open) => {
         completeMergedItemSteps(q, {
           itemId: "m",
           now: 9,
-          announce: (current) => seen.push(current.state),
+          announce: (_q, current) =>
+            syncSteps(() => {
+              seen.push(current.state);
+            }),
         }),
       );
       expect(merged).toMatchObject({ state: "merged" });
