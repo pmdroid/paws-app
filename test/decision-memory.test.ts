@@ -2,15 +2,9 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  changeDecision,
-  confirmDecisionSteps,
-  suggestDecisionsSteps,
-  listDecisions,
-  decisionAnswers,
-} from "../src/decisions";
-import { sqliteDb } from "../src/db";
-import { openQuestion, answer, ask } from "../src/questions";
+import { changeDecision, listDecisions, decisionAnswers } from "../src/decisions";
+import { openQuestion } from "../src/questions";
+import { answer, ask, confirmDecision, suggestDecisions } from "./questions";
 import { decisionFixture, probeDecisionMemory } from "./local/decision-memory";
 
 test("decision memory requires accessible confirmed human answers and never resumes on a search match", async () => {
@@ -24,12 +18,12 @@ test("decision memory requires accessible confirmed human answers and never resu
 
 test("only agent and clarification answers are offered as decisions", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-decisions-"));
-  const f = decisionFixture(root);
+  const f = await decisionFixture(root);
   try {
     const asker = { itemId: "controlled", runId: f.runId, sessionId: "session-controlled" };
     for (const kind of ["runner-wait", "repository", "clarification"] as const) {
-      ask(f.db, asker, kind, `${kind} question`, { now: Date.now() });
-      answer(f.db, {
+      await ask(f.db, asker, kind, `${kind} question`, { now: Date.now() });
+      await answer(f.db, {
         sessionId: "session-controlled",
         deliveryId: kind,
         body: `${kind} answer`,
@@ -49,7 +43,7 @@ test("only agent and clarification answers are offered as decisions", async () =
 
 test("two concurrent confirmations accept one suggestion once, with every read inside a transaction", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-confirm-decision-"));
-  const f = decisionFixture(root);
+  const f = await decisionFixture(root);
   const children: Bun.Subprocess<"pipe", "pipe", "pipe">[] = [];
   try {
     const actor = { workspaceId: "workspace", userId: "member", clientId: "client" };
@@ -64,14 +58,12 @@ test("two concurrent confirmations accept one suggestion once, with every read i
       },
       Date.now(),
     );
-    const pending = openQuestion(f.db, {
+    const pending = await openQuestion(f.db, {
       itemId: "controlled",
       sessionId: "session-controlled",
       body: "Which pagination format?",
     });
-    const suggestion = (
-      await sqliteDb(f.db).run((q) => suggestDecisionsSteps(q, pending.id, pending.body))
-    )[0]!;
+    const suggestion = (await suggestDecisions(f.db, pending.id, pending.body))[0]!;
     const prepare = f.db.prepare.bind(f.db);
     const transactions: boolean[] = [];
     f.db.prepare = ((...args: Parameters<typeof f.db.prepare>) => {
@@ -79,9 +71,7 @@ test("two concurrent confirmations accept one suggestion once, with every read i
       return prepare(...args);
     }) as typeof f.db.prepare;
     await expect(
-      sqliteDb(f.db).transaction((q) =>
-        confirmDecisionSteps(q, pending.id, suggestion.value, "inactive", Date.now()),
-      ),
+      confirmDecision(f.db, pending.id, suggestion.value, "inactive", Date.now()),
     ).rejects.toThrow();
     f.db.prepare = prepare;
     expect(transactions.length).toBeGreaterThan(0);
@@ -133,9 +123,7 @@ test("two concurrent confirmations accept one suggestion once, with every read i
     for (const reader of outputs) reader.releaseLock();
     expect((await listDecisions(f.db, actor))[0]?.accepted).toBe(1);
     await expect(
-      sqliteDb(f.db).transaction((q) =>
-        confirmDecisionSteps(q, pending.id, suggestion.value, "member", 300),
-      ),
+      confirmDecision(f.db, pending.id, suggestion.value, "member", 300),
     ).rejects.toThrow();
     const accepted = f.db
       .query<{ accepted_at: number }, []>(

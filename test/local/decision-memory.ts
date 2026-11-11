@@ -15,10 +15,11 @@ import {
   listDecisions,
   suggestDecisionsSteps,
 } from "../../src/decisions";
-import { answerQuestion, getQuestion, openQuestion } from "../../src/questions";
+import { getQuestion, openQuestion } from "../../src/questions";
+import { answerQuestion } from "../questions";
 import { createExecutionControlsFixture } from "./execution-controls";
 
-export function decisionFixture(root: string) {
+export async function decisionFixture(root: string) {
   const fixture = createExecutionControlsFixture(root);
   activateLinearItem(fixture.db, "session-controlled", "controlled");
   bindWorkItemRepository(fixture.db, "controlled", {
@@ -26,13 +27,13 @@ export function decisionFixture(root: string) {
     repo: "allowed",
     remoteUrl: "https://example.invalid/fixture/allowed",
   });
-  const question = openQuestion(fixture.db, {
+  const question = await openQuestion(fixture.db, {
     itemId: "controlled",
     sessionId: "session-controlled",
     body: "Which pagination format?",
     now: Date.now() - 2000,
   });
-  answerQuestion(fixture.db, question.id, {
+  await answerQuestion(fixture.db, question.id, {
     answer: "Use cursor pagination and the existing response format.",
     answeredBy: "member",
   });
@@ -40,7 +41,7 @@ export function decisionFixture(root: string) {
 }
 
 export async function probeDecisionMemory(root: string) {
-  const f = decisionFixture(root);
+  const f = await decisionFixture(root);
   const observations: string[] = [];
   const actor = { workspaceId: "workspace", userId: "member", clientId: "client" };
   const call = (body?: unknown, identity = "member", headers = {}) =>
@@ -70,7 +71,7 @@ export async function probeDecisionMemory(root: string) {
       [],
     );
     assert.equal((await listDecisions(f.db, actor, "pagination"))[0]?.id, id);
-    const pending = openQuestion(f.db, {
+    const pending = await openQuestion(f.db, {
       itemId: "controlled",
       sessionId: "session-controlled",
       body: "Which pagination format?",
@@ -133,8 +134,11 @@ export async function probeDecisionMemory(root: string) {
     observations.push(
       "Corrected decisions invalidate old choices without changing the waiting answer",
     );
-    answerQuestion(f.db, pending.id, { answer: "Use cursor pagination.", answeredBy: "member" });
-    const next = openQuestion(f.db, {
+    await answerQuestion(f.db, pending.id, {
+      answer: "Use cursor pagination.",
+      answeredBy: "member",
+    });
+    const next = await openQuestion(f.db, {
       itemId: "controlled",
       sessionId: "session-controlled",
       body: "Which pagination format?",
@@ -188,7 +192,7 @@ export async function probeDecisionMemory(root: string) {
       "Persisted choices survive reopening SQLite and one human confirmation schedules exactly one resume",
     );
     await changeDecision(f.db, actor, { id, revision: 2, retire: true }, Date.now());
-    const retired = openQuestion(f.db, {
+    const retired = await openQuestion(f.db, {
       itemId: "controlled",
       sessionId: "session-controlled",
       body: "pagination",
@@ -210,7 +214,7 @@ if (import.meta.main) {
   if (!root) throw new Error("Provide a disposable evidence directory.");
   mkdirSync(root, { recursive: true });
   if (process.argv.includes("--serve")) {
-    const f = decisionFixture(root);
+    const f = await decisionFixture(root);
     writeFileSync(
       join(root, "fixture.json"),
       JSON.stringify({ origin: f.origin, token: f.sessions["member"]!.token }),

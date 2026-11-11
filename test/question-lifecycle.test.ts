@@ -11,18 +11,11 @@ import {
   saveCloseoutRecovery,
   setCurrentRun,
   setJournalSink,
-  sqliteDb,
   syncSteps,
   type Q,
 } from "../src/db";
-import {
-  answer,
-  ask,
-  cancelItemQuestionsSteps,
-  findOpenQuestion,
-  getQuestion,
-  openQuestion,
-} from "../src/questions";
+import { findOpenQuestion, getQuestion, openQuestion } from "../src/questions";
+import { answer, ask, cancelItemQuestions } from "./questions";
 import { tempDb } from "./helpers";
 
 const NOW = 1_700_000_000_000;
@@ -47,9 +40,9 @@ const reply = (deliveryId: string, body: string, now = NOW + 100) => ({
   now,
 });
 
-test("a question asks at once when the session waits on nothing", () => {
+test("a question asks at once when the session waits on nothing", async () => {
   const { db, asker } = setup();
-  const asked = ask(db, asker, "runner-wait", "Move or keep waiting?", {
+  const asked = await ask(db, asker, "runner-wait", "Move or keep waiting?", {
     options: ["Move to another runner", "Keep waiting"],
     context: "Waiting: runner goldbox is paused.",
     now: NOW,
@@ -61,16 +54,16 @@ test("a question asks at once when the session waits on nothing", () => {
   expect(payload.body).toContain("Waiting: runner goldbox is paused.");
 });
 
-test("a second ask is queued and delivered in order once the open one is answered", () => {
+test("a second ask is queued and delivered in order once the open one is answered", async () => {
   const { db, asker } = setup();
-  const first = openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
-  const second = ask(db, asker, "agent", "Which format?", { now: NOW + 1 });
-  const third = ask(db, asker, "agent", "Which delimiter?", { now: NOW + 2 });
+  const first = await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
+  const second = await ask(db, asker, "agent", "Which format?", { now: NOW + 1 });
+  const third = await ask(db, asker, "agent", "Which delimiter?", { now: NOW + 2 });
   expect(second.status).toBe("queued");
   expect(third.status).toBe("queued");
   expect(elicitations(db)).toEqual([]);
 
-  const outcome = answer(db, reply("answer-1", "Yes"));
+  const outcome = await answer(db, reply("answer-1", "Yes"));
   expect(outcome).toMatchObject({ status: "answered", question: { id: first.id } });
   expect(outcome.status === "answered" && outcome.next?.id).toBe(second.question.id);
   expect(getQuestion(db, second.question.id)).toMatchObject({
@@ -81,30 +74,36 @@ test("a second ask is queued and delivered in order once the open one is answere
   expect(elicitations(db)).toEqual([second.question.id]);
 });
 
-test("a newer runner wait replaces a queued one of the same kind", () => {
+test("a newer runner wait replaces a queued one of the same kind", async () => {
   const { db, asker } = setup();
-  openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
-  const older = ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW + 1 });
-  const newer = ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW + 2 });
+  await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
+  const older = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW + 1 });
+  const newer = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW + 2 });
   expect(getQuestion(db, older.question.id)?.status).toBe("cancelled");
   expect(getQuestion(db, newer.question.id)?.status).toBe("queued");
 });
 
-test("a newer CI help replaces only its own task's queued CI help", () => {
+test("a newer CI help replaces only its own task's queued CI help", async () => {
   const { db, asker } = setup();
   const sibling = insertQueuedItem(db, { id: "ENG-8", sessionKey: "ses_1", title: "Import rows" });
-  openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
-  const older = ask(db, asker, "ci-help", "CI failed.", { now: NOW + 1 });
-  const other = ask(db, { ...asker, itemId: sibling.id, runId: null }, "ci-help", "CI failed.", {
-    now: NOW + 2,
-  });
-  const newer = ask(db, asker, "ci-help", "CI failed again.", { now: NOW + 3 });
+  await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
+  const older = await ask(db, asker, "ci-help", "CI failed.", { now: NOW + 1 });
+  const other = await ask(
+    db,
+    { ...asker, itemId: sibling.id, runId: null },
+    "ci-help",
+    "CI failed.",
+    {
+      now: NOW + 2,
+    },
+  );
+  const newer = await ask(db, asker, "ci-help", "CI failed again.", { now: NOW + 3 });
   expect(getQuestion(db, older.question.id)?.status).toBe("cancelled");
   expect(getQuestion(db, other.question.id)?.status).toBe("queued");
   expect(getQuestion(db, newer.question.id)?.status).toBe("queued");
 });
 
-function queuedCloseoutHelp() {
+async function queuedCloseoutHelp() {
   const { db, asker } = setup();
   saveCheckpoint(db, asker.itemId, {
     phase: "awaiting_input",
@@ -118,8 +117,8 @@ function queuedCloseoutHelp() {
     NOW,
     true,
   );
-  openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
-  const help = ask(db, asker, "closeout-help", "Closeout needs your help.", { now: NOW + 1 });
+  await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
+  const help = await ask(db, asker, "closeout-help", "Closeout needs your help.", { now: NOW + 1 });
   saveCloseoutRecovery(db, {
     questionId: help.question.id,
     taskId: "ENG-7",
@@ -134,34 +133,36 @@ function queuedCloseoutHelp() {
   return { db, asker, help: help.question };
 }
 
-function promote(db: Database): string[] {
+async function promote(db: Database): Promise<string[]> {
   const lines: string[] = [];
   const restore = setJournalSink((line) => lines.push(line));
   try {
-    answer(db, reply("answer-1", "Yes"));
+    await answer(db, reply("answer-1", "Yes"));
   } finally {
     restore();
   }
   return lines;
 }
 
-test("a queued Closeout help for the same candidate and policy is delivered", () => {
-  const { db, help } = queuedCloseoutHelp();
-  expect(promote(db)).toEqual([]);
+test("a queued Closeout help for the same candidate and policy is delivered", async () => {
+  const { db, help } = await queuedCloseoutHelp();
+  expect(await promote(db)).toEqual([]);
   expect(findOpenQuestion(db, "ses_1")?.id).toBe(help.id);
   expect(elicitations(db)).toEqual([help.id]);
 });
 
-test("a queued Closeout help is dropped once its candidate moved", () => {
-  const { db, asker, help } = queuedCloseoutHelp();
+test("a queued Closeout help is dropped once its candidate moved", async () => {
+  const { db, asker, help } = await queuedCloseoutHelp();
   saveCheckpoint(db, asker.itemId, { phase: "verifying", baseSha: "base", wipCommit: "head-2" });
-  expect(promote(db)).toEqual([`question ${help.id} dropped from the queue: its candidate moved`]);
+  expect(await promote(db)).toEqual([
+    `question ${help.id} dropped from the queue: its candidate moved`,
+  ]);
   expect(getQuestion(db, help.id)?.status).toBe("cancelled");
   expect(elicitations(db)).toEqual([]);
 });
 
-test("a queued Closeout help is dropped once the Closeout policy changed", () => {
-  const { db, asker, help } = queuedCloseoutHelp();
+test("a queued Closeout help is dropped once the Closeout policy changed", async () => {
+  const { db, asker, help } = await queuedCloseoutHelp();
   ensureCloseoutProgress(
     db,
     asker.itemId,
@@ -169,15 +170,15 @@ test("a queued Closeout help is dropped once the Closeout policy changed", () =>
     NOW + 50,
     true,
   );
-  expect(promote(db)).toEqual([
+  expect(await promote(db)).toEqual([
     `question ${help.id} dropped from the queue: its Closeout policy changed`,
   ]);
   expect(elicitations(db)).toEqual([]);
 });
 
-test("the answer is idempotent on the delivery id and runs its kind's effect once", () => {
+test("the answer is idempotent on the delivery id and runs its kind's effect once", async () => {
   const { db, asker } = setup();
-  const asked = ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW });
+  const asked = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW });
   const resumed: string[] = [];
   const effects = {
     "runner-wait": (_q: Q, question: { id: string }) =>
@@ -185,9 +186,9 @@ test("the answer is idempotent on the delivery id and runs its kind's effect onc
         resumed.push(question.id);
       }),
   };
-  expect(answer(db, reply("answer-1", "Keep waiting"), effects).status).toBe("answered");
-  expect(answer(db, reply("answer-1", "Keep waiting"), effects).status).toBe("duplicate");
-  expect(answer(db, reply("answer-2", "Keep waiting"), effects).status).toBe("unasked");
+  expect((await answer(db, reply("answer-1", "Keep waiting"), effects)).status).toBe("answered");
+  expect((await answer(db, reply("answer-1", "Keep waiting"), effects)).status).toBe("duplicate");
+  expect((await answer(db, reply("answer-2", "Keep waiting"), effects)).status).toBe("unasked");
   expect(resumed).toEqual([asked.question.id]);
   expect(getQuestion(db, asked.question.id)).toMatchObject({
     status: "answered",
@@ -196,15 +197,15 @@ test("the answer is idempotent on the delivery id and runs its kind's effect onc
   });
 });
 
-test("a queued question for a run that is no longer current is dropped with a journal entry", () => {
+test("a queued question for a run that is no longer current is dropped with a journal entry", async () => {
   const { db, asker } = setup();
-  openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
-  const stale = ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW + 1 });
+  await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
+  const stale = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW + 1 });
   setCurrentRun(db, asker.itemId, null);
   const lines: string[] = [];
   const restore = setJournalSink((line) => lines.push(line));
   try {
-    answer(db, reply("answer-1", "Yes"));
+    await answer(db, reply("answer-1", "Yes"));
   } finally {
     restore();
   }
@@ -218,9 +219,9 @@ test("a queued question for a run that is no longer current is dropped with a jo
 
 test("cancelling the task cancels its open and queued questions", async () => {
   const { db, asker } = setup();
-  const open = openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
-  const queued = ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW + 1 });
-  await sqliteDb(db).transaction((q) => cancelItemQuestionsSteps(q, asker.itemId, NOW + 2));
+  const open = await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
+  const queued = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW + 1 });
+  await cancelItemQuestions(db, asker.itemId, NOW + 2);
   expect(getQuestion(db, open.id)?.status).toBe("cancelled");
   expect(getQuestion(db, queued.question.id)?.status).toBe("cancelled");
   expect(elicitations(db)).toEqual([]);

@@ -11,9 +11,10 @@ import {
   migrate,
   openDatabase,
   type LinkAskRounds,
+  sqliteDb,
 } from "../db";
 import { getQuestion } from "../questions";
-import { saveSchedulingContext } from "../scheduler";
+import { saveSchedulingContextSteps } from "../scheduler";
 import { recoveryOptions } from "./closeout-recovery";
 import { decideLinkAsk, guideLinkAsk } from "./link-ask";
 import { askReviewRounds, reviewRoundLimit } from "./review-rounds";
@@ -45,7 +46,9 @@ async function asked(findings?: string) {
   beginImplementRun(db, item.id, NOW - 10);
   applyWorkItemEvent(db, item.id, "turn_ended");
   db.run("UPDATE work_item SET delegated_by = 'delegator' WHERE id = ?", [item.id]);
-  saveSchedulingContext(db, { itemId: item.id, projectId: "project", projectLeadId: "lead" });
+  await sqliteDb(db).run((q) =>
+    saveSchedulingContextSteps(q, { itemId: item.id, projectId: "project", projectLeadId: "lead" }),
+  );
   db.run("INSERT INTO workspace (id, linear_organization_id, name, created_at) VALUES (?,?,?,?)", [
     "ws",
     "org",

@@ -13,10 +13,11 @@ import {
   migrate,
   openDatabase,
   saveCheckpoint,
+  sqliteDb,
 } from "../db";
 import { bypassSummary } from "../closeout";
 import { findOpenQuestion, getQuestion } from "../questions";
-import { saveSchedulingContext } from "../scheduler";
+import { saveSchedulingContextSteps } from "../scheduler";
 import { askCloseoutHelp } from "./closeout-help";
 import { recoveryOptions } from "./closeout-recovery";
 import {
@@ -39,7 +40,9 @@ async function blocked(publicUrl: string | null = "https://paws.example") {
   applyWorkItemEvent(db, item.id, "turn_ended");
   saveCheckpoint(db, item.id, { phase: "verifying", baseSha: "base", wipCommit: HEAD });
   db.run("UPDATE work_item SET delegated_by = 'delegator' WHERE id = ?", [item.id]);
-  saveSchedulingContext(db, { itemId: item.id, projectId: "project", projectLeadId: "lead" });
+  await sqliteDb(db).run((q) =>
+    saveSchedulingContextSteps(q, { itemId: item.id, projectId: "project", projectLeadId: "lead" }),
+  );
   db.run("INSERT INTO workspace (id, linear_organization_id, name, created_at) VALUES (?,?,?,?)", [
     "ws",
     "org",

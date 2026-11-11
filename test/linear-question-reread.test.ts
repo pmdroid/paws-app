@@ -86,17 +86,24 @@ function linearWorld() {
   };
 }
 
-function setup(options: { reread?: boolean } = {}) {
+async function askedSession() {
   const db = tempDb();
   const item = insertQueuedItem(db, { id: "ENG-2", sessionKey: "ses_1", title: "Export rows" });
   beginImplementRun(db, item.id, NOW - 10);
   applyWorkItemEvent(db, item.id, "blocking_question");
-  const question = openQuestion(db, {
+  const question = await openQuestion(db, {
     itemId: item.id,
     sessionId: "ses_1",
     body: "Include archived rows?",
     now: NOW,
   });
+  return { db, item, question };
+}
+
+function setup(
+  { db, item, question }: Awaited<ReturnType<typeof askedSession>>,
+  options: { reread?: boolean } = {},
+) {
   const clock = new FakeClock(NOW + 1_000);
   const orchestrator = attachOrchestrator({
     db,
@@ -203,7 +210,7 @@ async function waitFor(check: () => boolean): Promise<void> {
 }
 
 test("the poll cursor starts where the cycle read activities, so a reply during a long cycle is read next", async () => {
-  const t = setup({ reread: false });
+  const t = setup(await askedSession(), { reread: false });
   try {
     await t.poller.pollNow();
     t.world.prompts.push({
@@ -232,7 +239,7 @@ test("the poll cursor starts where the cycle read activities, so a reply during 
 });
 
 test("a reply behind the poll cursor with no webhook answers the open question on the next poll", async () => {
-  const t = setup();
+  const t = setup(await askedSession());
   try {
     await t.poller.pollNow();
     t.reply({ at: t.at() + 1_000 });
@@ -254,7 +261,7 @@ test("a reply behind the poll cursor with no webhook answers the open question o
 });
 
 test("a reply delivered by both a webhook and the poll answers the question once", async () => {
-  const t = setup();
+  const t = setup(await askedSession());
   try {
     await t.poller.pollNow();
     await t.webhook(t.reply({ at: t.at() + 1_000 }));
@@ -270,7 +277,7 @@ test("a reply delivered by both a webhook and the poll answers the question once
 });
 
 test("a reply in another issue's thread does not touch the open question", async () => {
-  const t = setup();
+  const t = setup(await askedSession());
   try {
     await t.poller.pollNow();
     t.reply({ id: "other-reply", sessionId: "ses_other", issueId: "iss_other", at: t.at() + 1 });
@@ -286,7 +293,7 @@ test("a reply in another issue's thread does not touch the open question", async
 });
 
 test("an answered question's thread is no longer re-read", async () => {
-  const t = setup();
+  const t = setup(await askedSession());
   try {
     await t.poller.pollNow();
     expect(t.world.threadReads).toEqual(["ses_1"]);

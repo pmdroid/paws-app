@@ -15,7 +15,13 @@ const NOW = 30 * 24 * 60 * 60 * 1000;
 const TOOLKIT = "libs/acme/toolkit.py";
 const PROJECT = "pyproject.toml";
 
-function item(db: Database, id: string, state: string, position: number, paths: string[]): void {
+async function item(
+  db: Database,
+  id: string,
+  state: string,
+  position: number,
+  paths: string[],
+): Promise<void> {
   db.run(
     `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at)
      VALUES(?,?,?,?,?,?,?,?,0)`,
@@ -25,7 +31,7 @@ function item(db: Database, id: string, state: string, position: number, paths: 
     "INSERT INTO work_item_repository(item_id,owner,repo,remote_url) VALUES(?,'acme','app','https://github.com/acme/app.git')",
     [id],
   );
-  joinFakeWorkspace(db, id);
+  await joinFakeWorkspace(db, id);
   saveCandidatePaths(db, { itemId: id, head: `head-${id}`, paths, recordedAt: 1 });
 }
 
@@ -79,8 +85,13 @@ function holds(db: Database, id: string) {
     }));
 }
 
-function held(db: Database, id: string, reason: "conflict" | "ci", respondFirst = true): void {
-  item(db, id, "merge_queue", 2, [TOOLKIT, PROJECT]);
+async function held(
+  db: Database,
+  id: string,
+  reason: "conflict" | "ci",
+  respondFirst = true,
+): Promise<void> {
+  await item(db, id, "merge_queue", 2, [TOOLKIT, PROJECT]);
   if (respondFirst) respond(db, id);
   sendBack(db, id, reason);
 }
@@ -89,8 +100,8 @@ test("an item sent back to rebase and held behind another posts one line naming 
   const db = tempDb();
   try {
     hot(db, [TOOLKIT, PROJECT]);
-    item(db, "ACME-1", "running", 1, [TOOLKIT, PROJECT]);
-    held(db, "ACME-2", "conflict");
+    await item(db, "ACME-1", "running", 1, [TOOLKIT, PROJECT]);
+    await held(db, "ACME-2", "conflict");
 
     for (const offset of [0, 1, 2]) await workspaceDispatch(db, { now: NOW + offset });
 
@@ -111,9 +122,9 @@ test("two items held behind one blocker each get their own line", async () => {
   const db = tempDb();
   try {
     hot(db, [TOOLKIT, PROJECT]);
-    item(db, "ACME-1", "running", 1, [TOOLKIT, PROJECT]);
-    held(db, "ACME-2", "conflict");
-    held(db, "ACME-3", "conflict");
+    await item(db, "ACME-1", "running", 1, [TOOLKIT, PROJECT]);
+    await held(db, "ACME-2", "conflict");
+    await held(db, "ACME-3", "conflict");
 
     await workspaceDispatch(db, { now: NOW });
     await workspaceDispatch(db, { now: NOW + 1 });
@@ -129,9 +140,9 @@ test("a hold says nothing without a conflict restart or before the pull request 
   const db = tempDb();
   try {
     hot(db, [TOOLKIT]);
-    item(db, "ACME-1", "running", 1, [TOOLKIT]);
-    held(db, "ACME-2", "ci");
-    held(db, "ACME-3", "conflict", false);
+    await item(db, "ACME-1", "running", 1, [TOOLKIT]);
+    await held(db, "ACME-2", "ci");
+    await held(db, "ACME-3", "conflict", false);
 
     await workspaceDispatch(db, { now: NOW });
 

@@ -3,7 +3,6 @@ export {
   hintedPaths,
   projectLeadId,
   registerScheduler,
-  saveSchedulingContext,
   saveSchedulingContextSteps,
   schedulerPaths,
   type SchedulerOptions,

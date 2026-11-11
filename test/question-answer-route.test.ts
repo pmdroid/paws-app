@@ -27,12 +27,12 @@ const NOW = 1_700_000_000_000;
 const OPTIONS = ["Fix the policy", "Add script alias"];
 const principal = { workspaceId: "ws", userId: "user-1" };
 
-function setup(active = true) {
+async function setup(active = true) {
   const db = tempDb();
   const item = insertQueuedItem(db, { id: "PAS-1003", sessionKey: "ses_1", title: "Policy" });
   beginImplementRun(db, item.id, NOW - 10);
   applyWorkItemEvent(db, item.id, "blocking_question");
-  const question = openQuestion(db, {
+  const question = await openQuestion(db, {
     itemId: item.id,
     sessionId: "ses_1",
     body: "Which way?",
@@ -122,7 +122,7 @@ const pawsNotes = (db: ReturnType<typeof tempDb>) =>
     .filter((payload) => payload.body?.startsWith("Answered in Paws by"));
 
 test("signed out, another session or an answered question are refused", async () => {
-  const { db, question, submit } = setup();
+  const { db, question, submit } = await setup();
   try {
     const body = { questionId: question.id, answer: OPTIONS[0] };
     expect((await submit(body, null))?.status).toBe(401);
@@ -138,7 +138,7 @@ test("signed out, another session or an answered question are refused", async ()
 });
 
 test("a non-member gets 403 and an audit row", async () => {
-  const { db, question, submit } = setup(false);
+  const { db, question, submit } = await setup(false);
   try {
     expect((await submit({ questionId: question.id, answer: OPTIONS[0] }))?.status).toBe(403);
     expect(
@@ -155,10 +155,10 @@ test("a non-member gets 403 and an audit row", async () => {
 });
 
 test("a link ask is answered on the issue page", async () => {
-  const { db, question, submit } = setup();
+  const { db, question, submit } = await setup();
   try {
     db.run("UPDATE question SET status = 'answered' WHERE id = ?", [question.id]);
-    const { question: link } = openLinkAsk(db, {
+    const { question: link } = await openLinkAsk(db, {
       asker: { itemId: "PAS-1003", runId: null, sessionId: "ses_1" },
       kind: "risk",
       head: "7f65200aa",
@@ -176,8 +176,8 @@ test("a link ask is answered on the issue page", async () => {
 });
 
 test("an option answered in Paws restarts the item as a Linear reply does, once", async () => {
-  const paws = setup();
-  const linear = setup();
+  const paws = await setup();
+  const linear = await setup();
   try {
     const response = await paws.submit({ questionId: paws.question.id, answer: OPTIONS[0] });
     expect(response?.status).toBe(200);
@@ -223,7 +223,7 @@ test("an option answered in Paws restarts the item as a Linear reply does, once"
 });
 
 test("a rejected answer leaves the question open and a corrected answer closes it", async () => {
-  const { db, question, submit } = setup();
+  const { db, question, submit } = await setup();
   try {
     const rejected = await submit({ questionId: question.id, answer: "/paws decision expired" });
     expect(rejected?.status).toBe(409);
@@ -238,7 +238,7 @@ test("a rejected answer leaves the question open and a corrected answer closes i
 });
 
 test("a cancelled question is not answered and nothing restarts", async () => {
-  const { db, question, submit } = setup();
+  const { db, question, submit } = await setup();
   try {
     db.run("UPDATE question SET cancelled_at = ? WHERE id = ?", [NOW + 2, question.id]);
     expect((await submit({ questionId: question.id, answer: OPTIONS[0] }))?.status).toBe(409);
@@ -250,7 +250,7 @@ test("a cancelled question is not answered and nothing restarts", async () => {
 });
 
 test("a Linear reply racing a Paws answer answers the question once", async () => {
-  const { db, question, orchestrator } = setup();
+  const { db, question, orchestrator } = await setup();
   try {
     const [, paws] = await Promise.allSettled([
       orchestrator.onLinearEvent(linearReply(OPTIONS[1]!)),
@@ -276,7 +276,7 @@ test("a Linear reply racing a Paws answer answers the question once", async () =
 });
 
 test("the answer record reaches Linear after the pull request response", async () => {
-  const { db, question, submit } = setup();
+  const { db, question, submit } = await setup();
   try {
     for (const [key, kind] of [
       ["pull-request-ready:PAS-1003", "response"],

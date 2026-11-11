@@ -12,14 +12,8 @@ import {
   syncSteps,
 } from "../src/db";
 import { questionEffects } from "../src/loop";
-import {
-  answer,
-  ask,
-  elicitationBody,
-  handoffNote,
-  getQuestion,
-  openQuestion,
-} from "../src/questions";
+import { elicitationBody, handoffNote, getQuestion, openQuestion } from "../src/questions";
+import { answer, ask } from "./questions";
 import { tempDb } from "./helpers";
 
 test("elicitation keeps select options and a free-text reply", () => {
@@ -37,9 +31,13 @@ test.each([
     ["Code"],
     "Which outcome?\n\nContext.\n\nReply with one of the options, or answer in your own words.",
   ],
-])("only a question with options asks to reply with one of them", (options, body) => {
+])("only a question with options asks to reply with one of them", async (options, body) => {
   const { db, asker } = parked();
-  ask(db, asker, "clarification", "Which outcome?", { options, context: "Context.", now: NOW });
+  await ask(db, asker, "clarification", "Which outcome?", {
+    options,
+    context: "Context.",
+    now: NOW,
+  });
   expect(listOutbox(db)[0]?.payload).toMatchObject({ body });
 });
 
@@ -61,9 +59,9 @@ const reply = (body: string, deliveryId = "activity:ans") => ({
 
 const resumes = (db: Database) => listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
 
-test("an answered agent question restarts the same run with the handoff", () => {
+test("an answered agent question restarts the same run with the handoff", async () => {
   const { db, asker } = parked();
-  const asked = ask(db, asker, "agent", "Include archived rows?", {
+  const asked = await ask(db, asker, "agent", "Include archived rows?", {
     options: ["yes", "no"],
     now: NOW,
   });
@@ -71,7 +69,11 @@ test("an answered agent question restarts the same run with the handoff", () => 
     `question:${asked.question.id}`,
   ]);
 
-  const outcome = answer(db, reply("parquet, please"), questionEffects(db, { now: NOW + 100 }));
+  const outcome = await answer(
+    db,
+    reply("parquet, please"),
+    questionEffects(db, { now: NOW + 100 }),
+  );
 
   expect(outcome.status).toBe("answered");
   expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
@@ -91,50 +93,56 @@ test("an answered agent question restarts the same run with the handoff", () => 
       },
     }),
   ]);
-  expect(answer(db, reply("parquet, please"), questionEffects(db, { now: NOW + 100 })).status).toBe(
-    "duplicate",
-  );
+  expect(
+    (await answer(db, reply("parquet, please"), questionEffects(db, { now: NOW + 100 }))).status,
+  ).toBe("duplicate");
   expect(resumes(db)).toHaveLength(1);
 });
 
 test.each(["clarification", "repository"] as const)(
   "an answered %s question resumes the task like an agent question",
-  (kind) => {
+  async (kind) => {
     const { db, asker } = parked();
-    const asked = ask(db, asker, kind, "Which outcome?", { now: NOW });
-    answer(db, reply("Change the code"), questionEffects(db, { now: NOW + 100 }));
+    const asked = await ask(db, asker, kind, "Which outcome?", { now: NOW });
+    await answer(db, reply("Change the code"), questionEffects(db, { now: NOW + 100 }));
     expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
     expect(resumes(db).map((job) => job.jobKey)).toEqual([`resume:answer:${asked.question.id}`]);
   },
 );
 
-test("an answer while the asking run is still live leaves the resume to the end of that run", () => {
+test("an answer while the asking run is still live leaves the resume to the end of that run", async () => {
   const { db, asker } = parked();
-  ask(db, asker, "agent", "Include archived rows?", { now: NOW });
+  await ask(db, asker, "agent", "Include archived rows?", { now: NOW });
   const effects = questionEffects(db, { now: NOW + 100, asking: (runId) => runId === asker.runId });
-  expect(answer(db, reply("parquet"), effects).status).toBe("answered");
+  expect((await answer(db, reply("parquet"), effects)).status).toBe("answered");
   expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
   expect(resumes(db)).toHaveLength(1);
 });
 
-test("a redirecting answer resumes the task without a handoff job", () => {
+test("a redirecting answer resumes the task without a handoff job", async () => {
   const { db, asker } = parked();
-  ask(db, asker, "agent", "Include archived rows?", { now: NOW });
+  await ask(db, asker, "agent", "Include archived rows?", { now: NOW });
   const effects = questionEffects(db, { now: NOW + 100, redirect: true });
-  expect(answer(db, reply("parquet"), effects).status).toBe("answered");
+  expect((await answer(db, reply("parquet"), effects)).status).toBe("answered");
   expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
   expect(resumes(db)).toHaveLength(1);
 });
 
-test("an agent question queued behind another is delivered once that one is answered", () => {
+test("an agent question queued behind another is delivered once that one is answered", async () => {
   const { db, asker } = parked();
-  const waiting = ask(db, { ...asker, itemId: "other", runId: null }, "runner-wait", "Move?", {
-    now: NOW,
-  });
-  const queued = ask(db, asker, "agent", "Include archived rows?", { now: NOW + 1 });
+  const waiting = await ask(
+    db,
+    { ...asker, itemId: "other", runId: null },
+    "runner-wait",
+    "Move?",
+    {
+      now: NOW,
+    },
+  );
+  const queued = await ask(db, asker, "agent", "Include archived rows?", { now: NOW + 1 });
   expect(queued.status).toBe("queued");
 
-  const outcome = answer(db, reply("Keep waiting"), questionEffects(db, { now: NOW + 100 }));
+  const outcome = await answer(db, reply("Keep waiting"), questionEffects(db, { now: NOW + 100 }));
 
   expect(outcome).toMatchObject({
     status: "answered",
@@ -149,9 +157,9 @@ test("an agent question queued behind another is delivered once that one is answ
   ]);
 });
 
-test("an amended question delivers and keeps the added context and options", () => {
+test("an amended question delivers and keeps the added context and options", async () => {
   const { db, asker } = parked();
-  const asked = ask(db, asker, "agent", "Include archived rows?", {
+  const asked = await ask(db, asker, "agent", "Include archived rows?", {
     options: ["yes"],
     now: NOW,
     amend: (_q, question) =>
@@ -172,7 +180,7 @@ test("an amended question delivers and keeps the added context and options", () 
   });
 });
 
-test("structured choices persist their values and display their labels", () => {
+test("structured choices persist their values and display their labels", async () => {
   const db = tempDb();
   const item = insertQueuedItem(db, {
     id: "ENG-choices",
@@ -180,7 +188,7 @@ test("structured choices persist their values and display their labels", () => {
     title: "Choose",
   });
   const options = ["Other", { label: "Paws", value: "https://github.com/pmdroid/paws-app" }];
-  const question = openQuestion(db, {
+  const question = await openQuestion(db, {
     itemId: item.id,
     sessionId: "ses-choices",
     body: "Which?",

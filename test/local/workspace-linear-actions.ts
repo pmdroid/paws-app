@@ -37,7 +37,8 @@ import {
   type LinearMemberIdentity,
 } from "../../src/linear";
 import { attachOrchestrator } from "../../src/loop";
-import { answerQuestion, openQuestion, getQuestion } from "../../src/questions";
+import { openQuestion, getQuestion } from "../../src/questions";
+import { answerQuestion } from "../questions";
 
 type Observe = (name: string, passed: boolean, observed: unknown) => void;
 
@@ -123,7 +124,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     },
   });
   let serial = 0;
-  function task(actor: string | null, signal: string | null = null) {
+  async function task(actor: string | null, signal: string | null = null) {
     const id = `item-${++serial}`,
       sessionId = `session-${serial}`;
     const item = insertQueuedItem(db, { id, sessionKey: sessionId, title: "Export rows" });
@@ -138,7 +139,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     });
     beginImplementRun(db, item.id, now - 10);
     applyWorkItemEvent(db, item.id, "blocking_question");
-    const question = openQuestion(db, {
+    const question = await openQuestion(db, {
       itemId: item.id,
       sessionId,
       body: "Include archived rows?",
@@ -186,7 +187,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       .get()!.count;
   try {
     for (const actor of ["inactive", "guest", "outside", "wrong-org", "wrong-user", null]) {
-      const t = task(actor),
+      const t = await task(actor),
         before = audits();
       await loop.onLinearEvent(t.event);
       observe(
@@ -202,7 +203,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       );
     }
     identities.get("owner")!.teamIds = [];
-    const outsideOwner = task("owner");
+    const outsideOwner = await task("owner");
     await loop.onLinearEvent(outsideOwner.event);
     observe(
       "workspace ownership cannot bypass mapped Linear team membership",
@@ -210,7 +211,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       { role: workspaceMember(db, "workspace", "owner")?.role },
     );
     identities.get("owner")!.teamIds = ["team"];
-    const positive = task("new-member");
+    const positive = await task("new-member");
     await loop.onLinearEvent(positive.event);
     await loop.onLinearEvent(positive.event);
     observe(
@@ -220,7 +221,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
         workspaceMember(db, "workspace", "new-member") === null,
       { answer: getQuestion(db, positive.question.id)?.answeredBy, resumes: resumes() },
     );
-    const stop = task("inactive", "stop"),
+    const stop = await task("inactive", "stop"),
       beforeStop = audits();
     await loop.onLinearEvent(stop.event);
     observe(
@@ -231,7 +232,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     const entered = Promise.withResolvers<void>(),
       release = Promise.withResolvers<void>();
     delayed = { entered: entered.resolve, wait: release.promise };
-    const changed = task("member"),
+    const changed = await task("member"),
       pending = loop.onLinearEvent(changed.event);
     await entered.promise;
     now++;
@@ -253,7 +254,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
         role: workspaceMember(db, "workspace", "member")?.role,
       },
     );
-    const unavailable = task("new-member"),
+    const unavailable = await task("new-member"),
       beforeUnavailable = audits();
     lookupFails = true;
     let rejected = false;
@@ -296,7 +297,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
         teamIds: ["team"],
         now,
       });
-    const queued = task("owner");
+    const queued = await task("owner");
     let calls = 0;
     const queueLoop = attachOrchestrator({
       db,
@@ -324,8 +325,8 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     );
     await queueLoop.shutdown();
     restoreOwnerTeam();
-    const followup = task("owner");
-    answerQuestion(db, followup.question.id, {
+    const followup = await task("owner");
+    await answerQuestion(db, followup.question.id, {
       answer: "Earlier answer",
       answeredBy: "owner",
       eventKey: "earlier-answer",
@@ -566,7 +567,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     now,
   });
   let sequence = 0;
-  function task(actor: string, signal: string | null = null) {
+  async function task(actor: string, signal: string | null = null) {
     const id = `native-${++sequence}`,
       at = Date.now();
     const item = insertQueuedItem(db, { id, sessionKey: id, title: "Export rows" });
@@ -581,7 +582,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     });
     beginImplementRun(db, id, at - 10);
     applyWorkItemEvent(db, id, "blocking_question");
-    const question = openQuestion(db, {
+    const question = await openQuestion(db, {
       itemId: id,
       sessionId: id,
       body: "Include archived rows?",
@@ -658,7 +659,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   try {
-    const invalid = task("inactive");
+    const invalid = await task("inactive");
     const invalidStatus = await send(invalid.payload, false);
     observe(
       "normal protected HTTPS rejects an unsigned human action",
@@ -669,7 +670,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
       ["inactive", null],
       ["outside", "stop"],
     ] as const) {
-      const t = task(actor, signal),
+      const t = await task(actor, signal),
         before = denied();
       const status = await send(t.payload);
       await until(() => denied() > before);
@@ -685,7 +686,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
         },
       );
     }
-    const stopped = task("inactive", "stop"),
+    const stopped = await task("inactive", "stop"),
       before = denied();
     polled = [stopped.activity];
     await paws.catchUp();
@@ -700,7 +701,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
         commands: listJobs(db).filter((j) => j.queue === JOB_KIND.command).length,
       },
     );
-    const allowed = task("new-member");
+    const allowed = await task("new-member");
     polled = [allowed.activity];
     await paws.catchUp();
     await until(() => getQuestion(db, allowed.question.id)?.status === "answered");
@@ -719,7 +720,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
       },
     );
     await until(() => getWorkItem(db, allowed.item.id)?.state === "failed");
-    const permittedStop = task("new-member", "stop");
+    const permittedStop = await task("new-member", "stop");
     // A real item has its Linear snapshot, so the scheduler's sweep does not reconcile it mid-stop.
     await saveDependencySnapshot(sqliteDb(db), {
       itemId: permittedStop.item.id,

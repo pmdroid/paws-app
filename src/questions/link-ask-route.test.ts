@@ -5,7 +5,7 @@ import { handleLinkAskAnswer, LINK_ASK_ANSWER_PATH, type LinkAskAnswer } from ".
 
 const NOW = 1_700_000_000_000;
 
-function setup(active = true, kind: "risk" | "bypass" | "rule" = "risk") {
+async function setup(active = true, kind: "risk" | "bypass" | "rule" = "risk") {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "PAS-633", sessionKey: "ses_1" });
@@ -29,7 +29,7 @@ function setup(active = true, kind: "risk" | "bypass" | "rule" = "risk") {
     teamIds: [],
     now: NOW,
   });
-  const { question } = openLinkAsk(db, {
+  const { question } = await openLinkAsk(db, {
     asker: { itemId: "PAS-633", runId: null, sessionId: "ses_1" },
     kind,
     head: "7f65200aa",
@@ -50,7 +50,7 @@ const post = (body: unknown) =>
   });
 
 test("a decision goes to the loop with the signed-in person's Linear id", async () => {
-  const { db, questionId, calls } = setup();
+  const { db, questionId, calls } = await setup();
   const response = await handleLinkAskAnswer(post({ questionId, decision: "approve" }), {
     db,
     principal: { workspaceId: "ws", userId: "user-1" },
@@ -70,7 +70,7 @@ test("a decision goes to the loop with the signed-in person's Linear id", async 
 });
 
 test("someone the loop refuses gets 403 and an Audit history row", async () => {
-  const { db, questionId } = setup();
+  const { db, questionId } = await setup();
   const response = await handleLinkAskAnswer(post({ questionId, decision: "approve" }), {
     db,
     principal: { workspaceId: "ws", userId: "user-1" },
@@ -87,7 +87,7 @@ test("someone the loop refuses gets 403 and an Audit history row", async () => {
 });
 
 test("an inactive member is refused before the loop sees the decision", async () => {
-  const { db, questionId, calls } = setup(false);
+  const { db, questionId, calls } = await setup(false);
   const response = await handleLinkAskAnswer(post({ questionId, decision: "approve" }), {
     db,
     principal: { workspaceId: "ws", userId: "user-1" },
@@ -99,7 +99,7 @@ test("an inactive member is refused before the loop sees the decision", async ()
 });
 
 test("signed out, another session, a wrong decision or no note are refused", async () => {
-  const { db, questionId } = setup();
+  const { db, questionId } = await setup();
   const submit: LinkAskAnswer = async () => "answered";
   const principal = { workspaceId: "ws", userId: "user-1" };
   expect(
@@ -145,7 +145,7 @@ test("signed out, another session, a wrong decision or no note are refused", asy
 });
 
 test("a bypass approval sends each selected check with its reason", async () => {
-  const { db, questionId, calls } = setup(true, "bypass");
+  const { db, questionId, calls } = await setup(true, "bypass");
   const options = {
     db,
     principal: { workspaceId: "ws", userId: "user-1" },
@@ -189,8 +189,8 @@ test("a bypass approval sends each selected check with its reason", async () => 
 });
 
 test("a rounds ask takes Stop without a note and refuses Approve", async () => {
-  const { db, calls } = setup();
-  const { question } = openLinkAsk(db, {
+  const { db, calls } = await setup();
+  const { question } = await openLinkAsk(db, {
     asker: { itemId: "PAS-633", runId: null, sessionId: "ses_1" },
     kind: "rounds",
     head: "4b317d5aa",
@@ -226,7 +226,7 @@ test("a rounds ask takes Stop without a note and refuses Approve", async () => {
 
 test("Stop on the Risk card goes to the loop without a note; it does not fit other kinds", async () => {
   const principal = { workspaceId: "ws", userId: "user-1" };
-  const risk = setup();
+  const risk = await setup();
   const response = await handleLinkAskAnswer(
     post({ questionId: risk.questionId, decision: "stop" }),
     {
@@ -238,7 +238,7 @@ test("Stop on the Risk card goes to the loop without a note; it does not fit oth
   );
   expect(response?.status).toBe(200);
   expect(risk.calls).toMatchObject([{ decision: "stop", note: null, answeredBy: "linear-1" }]);
-  const bypass = setup(true, "bypass");
+  const bypass = await setup(true, "bypass");
   const refused = await handleLinkAskAnswer(
     post({ questionId: bypass.questionId, decision: "stop" }),
     {
@@ -253,7 +253,7 @@ test("Stop on the Risk card goes to the loop without a note; it does not fit oth
 });
 
 test("approving a rule break needs a reason, which goes to the loop as the note", async () => {
-  const { db, questionId, calls } = setup(true, "rule");
+  const { db, questionId, calls } = await setup(true, "rule");
   const options = {
     db,
     principal: { workspaceId: "ws", userId: "user-1" },

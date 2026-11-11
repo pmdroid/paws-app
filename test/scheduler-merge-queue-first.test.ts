@@ -11,8 +11,9 @@ import {
   putWorkspaceUser,
   restart,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
-import { saveSchedulingContext } from "../src/scheduler";
+import { saveSchedulingContextSteps } from "../src/scheduler";
 import { tempDb } from "./helpers";
 import { workspaceDispatch } from "./fake-workspace";
 
@@ -21,7 +22,7 @@ const BACKOFF = NOW + 4 * 60_000;
 
 // Runners A and B have one slot each, both held by busy work. N is queued with the highest Linear
 // priority. Merge-queue items join with `mergeItem`.
-function fixture() {
+async function fixture() {
   const db = tempDb();
   const userId = putWorkspaceUser(db, {
     id: "user-1",
@@ -59,12 +60,12 @@ function fixture() {
   }
 
   insertQueuedItem(db, { id: "N", now: 1 });
-  saveSchedulingContext(db, { itemId: "N", priority: 1 });
+  await sqliteDb(db).run((q) => saveSchedulingContextSteps(q, { itemId: "N", priority: 1 }));
 
   /** An item that Closeout accepted, ran on A and joined the merge queue at `readyAt`. */
-  const mergeItem = (id: string, readyAt: number) => {
+  const mergeItem = async (id: string, readyAt: number) => {
     insertQueuedItem(db, { id, now: 2 });
-    saveSchedulingContext(db, { itemId: id, priority: 4 });
+    await sqliteDb(db).run((q) => saveSchedulingContextSteps(q, { itemId: id, priority: 4 }));
     applyWorkItemEvent(db, id, "dispatched");
     const runId = insertRun(db, { itemId: id, now: 2, status: "ended" }).id;
     db.run("UPDATE work_item SET current_run_id=? WHERE id=?", [runId, id]);
@@ -102,9 +103,9 @@ function fixture() {
 }
 
 test("a freed slot goes to the merge-queue re-verify, not to a queued item with a higher priority", async () => {
-  const { db, mergeItem, reverify, runAt, free } = fixture();
+  const { db, mergeItem, reverify, runAt, free } = await fixture();
   try {
-    mergeItem("M", NOW - 120_000);
+    await mergeItem("M", NOW - 120_000);
     const job = reverify("M", ["A", "B"]);
     expect(await workspaceDispatch(db, { now: NOW })).toEqual([]);
     expect(runAt(job)).toBe(BACKOFF);
@@ -121,10 +122,10 @@ test("a freed slot goes to the merge-queue re-verify, not to a queued item with 
 });
 
 test("the first item in merge order gets the freed slot first", async () => {
-  const { db, mergeItem, reverify, runAt, free } = fixture();
+  const { db, mergeItem, reverify, runAt, free } = await fixture();
   try {
-    mergeItem("second", NOW - 60_000);
-    mergeItem("first", NOW - 120_000);
+    await mergeItem("second", NOW - 60_000);
+    await mergeItem("first", NOW - 120_000);
     const later = reverify("second", ["A", "B"]);
     const earlier = reverify("first", ["A", "B"]);
     free("A", NOW + 1);
@@ -140,9 +141,9 @@ test("the first item in merge order gets the freed slot first", async () => {
 });
 
 test("a pinned merge-queue wait keeps to its runner, ahead of a queued item with a higher priority", async () => {
-  const { db, mergeItem, reverify, runAt, free } = fixture();
+  const { db, mergeItem, reverify, runAt, free } = await fixture();
   try {
-    mergeItem("M", NOW - 120_000);
+    await mergeItem("M", NOW - 120_000);
     const job = reverify("M", ["A"]);
     // B frees: M's agent turn is pinned to A, so N may take B.
     free("B", NOW + 1);
@@ -155,9 +156,9 @@ test("a pinned merge-queue wait keeps to its runner, ahead of a queued item with
 });
 
 test("a conflict fix sent back from the merge queue is admitted before a queued item with a higher priority", async () => {
-  const { db, mergeItem, free } = fixture();
+  const { db, mergeItem, free } = await fixture();
   try {
-    mergeItem("M", NOW - 120_000);
+    await mergeItem("M", NOW - 120_000);
     // M's owner already runs both busy items; N's owner runs nothing.
     db.run("UPDATE work_item SET owner_user_id='user-1' WHERE id IN ('M','busy-A','busy-B')");
     restart(db, getWorkItem(db, "M")!, { reason: "conflict", body: "Resolve conflicts", now: NOW });
@@ -170,9 +171,9 @@ test("a conflict fix sent back from the merge queue is admitted before a queued 
 });
 
 test("findings from a merge-queue re-verify send the fix ahead of a queued item with a higher priority", async () => {
-  const { db, mergeItem, free } = fixture();
+  const { db, mergeItem, free } = await fixture();
   try {
-    mergeItem("M", NOW - 120_000);
+    await mergeItem("M", NOW - 120_000);
     applyWorkItemEvent(db, "M", "reverify_requested");
     restart(db, getWorkItem(db, "M")!, { reason: "findings", body: "Fix findings", now: NOW });
     free("A", NOW + 1);
@@ -183,10 +184,10 @@ test("findings from a merge-queue re-verify send the fix ahead of a queued item 
 });
 
 test("a fix sent back by a first Closeout keeps the usual order", async () => {
-  const { db, free } = fixture();
+  const { db, free } = await fixture();
   try {
     insertQueuedItem(db, { id: "F", now: 2 });
-    saveSchedulingContext(db, { itemId: "F", priority: 4 });
+    await sqliteDb(db).run((q) => saveSchedulingContextSteps(q, { itemId: "F", priority: 4 }));
     applyWorkItemEvent(db, "F", "dispatched");
     applyWorkItemEvent(db, "F", "turn_ended");
     restart(db, getWorkItem(db, "F")!, { reason: "findings", body: "Fix findings", now: NOW });

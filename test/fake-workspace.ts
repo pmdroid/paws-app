@@ -6,9 +6,12 @@ import {
   getConfirmedRemoteMerge,
   recordConfirmedRemoteMerge,
   recordLinearInstallation,
+  settled,
+  sqliteDb,
   type Q,
+  type Steps,
 } from "../src/db";
-import { itemDependenciesCurrent, recordItemDependencies } from "../src/intake";
+import { itemDependenciesCurrentSteps, recordItemDependenciesSteps } from "../src/intake";
 import { createAdmission, dispatch, type ItemAdmission } from "../src/scheduler";
 
 type AdmissionOptions = Omit<Parameters<typeof createAdmission>[0], "db">;
@@ -50,21 +53,28 @@ export function workspaceAdmission(db: Database, options: AdmissionOptions = {})
       .get(itemId)?.id;
   const joined =
     (delegationOf: (id: string) => string | undefined) =>
-    <R>(check: (id: string) => R) =>
-    (id: string): R => {
+    <R>(check: (id: string) => Promise<R>) =>
+    async (id: string): Promise<R> => {
       const delegationId = delegationOf(id);
-      if (delegationId !== undefined) joinFakeWorkspace(db, delegationId);
+      if (delegationId !== undefined) await joinFakeWorkspace(db, delegationId);
       return check(id);
     };
   const joinedSteps =
     (delegationOf: (id: string) => string | undefined) =>
-    <R>(check: (q: Q, id: string) => R) =>
-    (q: Q, id: string): R =>
-      joined(delegationOf)((joinedId) => check(q, joinedId))(id);
+    <R>(check: (q: Q, id: string) => Steps<R>) =>
+      function* (q: Q, id: string): Steps<R> {
+        const delegationId = delegationOf(id);
+        if (delegationId !== undefined) yield* joinFakeWorkspaceSteps(q, db, delegationId);
+        return yield* check(q, id);
+      };
   return {
     canDispatchDelegation: joined((id) => id)(admission.canDispatchDelegation),
     canStart: joined(ofItem)(admission.canStart),
-    canMerge: joined(ofItem)(admission.canMerge),
+    canMerge: (id: string) => {
+      const delegationId = ofItem(id);
+      if (delegationId !== undefined) settled(joinFakeWorkspace(db, delegationId));
+      return admission.canMerge(id);
+    },
     steps: {
       canDispatchDelegation: joinedSteps((id) => id)(admission.steps.canDispatchDelegation),
       canStart: joinedSteps(ofItem)(admission.steps.canStart),
@@ -80,7 +90,11 @@ export function workspaceDispatch(
   return dispatch(db, { ...options, admission: workspaceAdmission(db) });
 }
 
-export function joinFakeWorkspace(db: Database, delegationId: string): void {
+export function joinFakeWorkspace(db: Database, delegationId: string): Promise<void> {
+  return sqliteDb(db).run((q) => joinFakeWorkspaceSteps(q, db, delegationId));
+}
+
+function* joinFakeWorkspaceSteps(q: Q, db: Database, delegationId: string): Steps<void> {
   const fallback =
     db
       .query<{ org: string }, []>(
@@ -132,13 +146,17 @@ export function joinFakeWorkspace(db: Database, delegationId: string): void {
     currentInputs.set(db, current);
     if (
       saved?.linearStates === JSON.stringify([...fresh.states]) &&
-      (current.get(item.id) === inputs || itemDependenciesCurrent(db, target))
+      (current.get(item.id) === inputs || (yield* itemDependenciesCurrentSteps(q, target)))
     ) {
       if (inputs !== undefined) current.set(item.id, inputs);
       continue;
     }
     try {
-      recordItemDependencies(db, { ...target, expectedGeneration: saved?.generation ?? 0 }, fresh);
+      yield* recordItemDependenciesSteps(
+        q,
+        { ...target, expectedGeneration: saved?.generation ?? 0 },
+        fresh,
+      );
     } catch {
       continue;
     }
