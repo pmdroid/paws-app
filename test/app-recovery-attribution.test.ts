@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { createWorktree, ensureBareMirror, git, worktreePath } from "../src/acp";
 import { FakeClock, JOB_KIND } from "../src/core";
 import {
-  sqliteDb,
   beginImplementRun,
   getRun,
   getWorkItem,
@@ -70,12 +69,12 @@ for (const state of [
       options,
     );
     try {
-      await insertQueuedItem(paws.db, {
+      await insertQueuedItem(paws.store, {
         id: "legacy",
         branchName: "paws/legacy",
         now: clock.now(),
       });
-      const { run } = await beginImplementRun(sqliteDb(paws.db), "legacy", clock.now(), {
+      const { run } = await beginImplementRun(paws.store, "legacy", clock.now(), {
         phase: "running",
         wipCommit: before,
         baseSha: before,
@@ -91,30 +90,30 @@ for (const state of [
               : state === "merge_queue"
                 ? (["turn_ended", "closeout_accepted"] as const)
                 : [])
-        await applyWorkItemEvent(sqliteDb(paws.db), "legacy", event);
-      const held = (await getWorkItem(sqliteDb(paws.db), "legacy"))!;
-      const runStatus = (await getRun(sqliteDb(paws.db), run.id))?.status;
-      const outbox = (await listOutbox(sqliteDb(paws.db))).length;
+        await applyWorkItemEvent(paws.store, "legacy", event);
+      const held = (await getWorkItem(paws.store, "legacy"))!;
+      const runStatus = (await getRun(paws.store, run.id))?.status;
+      const outbox = (await listOutbox(paws.store)).length;
       clock.sleep(2 * 60 * 60_000 + 1);
-      for (let i = 0; i < 100 && paws.db.query("SELECT 1 FROM wake").get() === null; i++)
-        await Bun.sleep(10);
-      expect(paws.db.query("SELECT 1 FROM wake").get()).not.toBeNull();
+      const wakes = () => paws.store.run((q) => q.all(q.orm.select().from(q.t.wake)));
+      for (let i = 0; i < 100 && (await wakes()).length === 0; i++) await Bun.sleep(10);
+      expect(await wakes()).not.toEqual([]);
       expect(
-        (await listJobs(sqliteDb(paws.db))).some(
+        (await listJobs(paws.store)).some(
           (job) =>
             (job.queue === JOB_KIND.start || job.queue === JOB_KIND.resume) &&
             job.status === "pending",
         ),
       ).toBe(false);
-      expect(await getWorkItem(sqliteDb(paws.db), "legacy")).toMatchObject({
+      expect(await getWorkItem(paws.store, "legacy")).toMatchObject({
         state: held.state,
         currentRunId: run.id,
         checkpoint: held.checkpoint,
         acceptedHead: held.acceptedHead,
         branchName: "paws/legacy",
       });
-      expect((await getRun(sqliteDb(paws.db), run.id))?.status).toBe(runStatus);
-      expect(await listOutbox(sqliteDb(paws.db))).toHaveLength(outbox);
+      expect((await getRun(paws.store, run.id))?.status).toBe(runStatus);
+      expect(await listOutbox(paws.store)).toHaveLength(outbox);
       expect((await git(["-C", tree, "rev-parse", "HEAD"], { env })).trim()).toBe(before);
       expect(readFileSync(join(tree, "dirty"), "utf8")).toBe("preserve exact legacy WIP");
     } finally {

@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { and, eq, inArray, isNotNull, type SQL } from "drizzle-orm";
+import { seed } from "../dialects";
 import { generateKeyPairSync } from "node:crypto";
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -20,7 +22,7 @@ import {
   recordLinearInstallation,
   saveTaskMode,
   setJournalSink,
-  sqliteDb,
+  type Q,
 } from "../../src/db";
 import { JOB_KIND } from "../../src/core";
 import { loadConfigFile, resolveAgentProfiles } from "../../src/config";
@@ -129,23 +131,21 @@ let orchestrator!: ReturnType<typeof loop.attachOrchestrator>;
 const attach = loop.attachOrchestrator;
 spyOn(loop, "attachOrchestrator").mockImplementation((options) => {
   const { store, jobs, outbox } = options;
-  if (store.dialect !== "sqlite") throw new Error("The restart fixture runs on SQLite");
-  const db = store.orm.$client;
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: store,
     keyId: "fixture",
     privateKey: signing.privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
-  const results = createRunnerResults({ store: sqliteDb(db), work });
-  const health = createRunnerHealth({ store: sqliteDb(db), work });
+  const results = createRunnerResults({ store: store, work });
+  const health = createRunnerHealth({ store: store, work });
   services = { work, results, health };
   const backend = createRemoteAgentRunner({
-    store: sqliteDb(db),
+    store: store,
     work,
     results,
     health,
-    placement: createRunnerPlacement({ store: sqliteDb(db) }),
+    placement: createRunnerPlacement({ store: store }),
     pollIntervalMs: 5,
     async fetchCandidate(input) {
       await git(["-C", input.mirror, "fetch", origin, input.candidateSha]);
@@ -158,13 +158,13 @@ spyOn(loop, "attachOrchestrator").mockImplementation((options) => {
     },
   });
   orchestrator = attach({
-    store: sqliteDb(db),
+    store: store,
     jobs,
     outbox,
     pawsRoot: home,
     home,
     tracker,
-    admission: workspaceAdmission(db),
+    admission: workspaceAdmission(store),
     linearTaskModes: true,
     outboxWaitMs: 50,
     repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl }],
@@ -198,30 +198,28 @@ const start = () =>
   );
 let paws = await start();
 await paws.ready;
-const userId = await putWorkspaceUser(sqliteDb(paws.db), {
+const userId = await putWorkspaceUser(paws.store, {
   id: workspaceId(),
   linearUserId: "owner",
   name: "Owner",
   email: "owner@example.invalid",
 });
-const workspace = await consumeWorkspaceBootstrap(sqliteDb(paws.db), {
+const workspace = await consumeWorkspaceBootstrap(paws.store, {
   id: workspaceId(),
   organizationId: "org",
   name: "Fixture",
   userId,
-  tokenHash: workspaceTokenHash(
-    await issueWorkspaceBootstrap(sqliteDb(paws.db), "org", Date.now()),
-  ),
+  tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(paws.store, "org", Date.now())),
   now: Date.now(),
 });
-paws.db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-  workspace.id,
-  "pmdroid/paws-demo",
-  "team",
-]);
+await seed(paws.store, (q) =>
+  q.orm
+    .insert(q.t.workspaceRepository)
+    .values({ workspaceId: workspace.id, repository: "pmdroid/paws-demo", teamId: "team" }),
+);
 const issuer = join(root, "issuer");
 const control = createRunnerControl({
-  store: sqliteDb(paws.db),
+  store: paws.store,
   authority: await initializeRunnerAuthority(issuer),
   certificateRoot: issuer,
   disconnect() {},
@@ -242,13 +240,16 @@ const { runnerId } = await control.enroll({
     )
   ).token,
 });
-paws.db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
-paws.db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);
-for (const agent of ["claude", "codex"])
-  paws.db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,?,1)", [
-    runnerId,
-    agent,
-  ]);
+await seed(
+  paws.store,
+  (q) => q.orm.update(q.t.runner).set({ status: "active" }).where(eq(q.t.runner.id, runnerId)),
+  (q) => q.orm.insert(q.t.runnerPolicy).values({ runnerId }),
+  (q) =>
+    q.orm.insert(q.t.runnerAgentPolicy).values([
+      { runnerId, agent: "claude", ready: 1 },
+      { runnerId, agent: "codex", ready: 1 },
+    ]),
+);
 
 let down = false;
 let offlineCalls = 0;
@@ -434,7 +435,7 @@ const runtimeOptions: Parameters<typeof openRunnerRuntime>[0] = {
         preparing = true;
         await preparationGate;
       }
-      const item = (await listWorkItems(sqliteDb(paws.db))).find((i) => i.currentRunId === runId)!;
+      const item = (await listWorkItems(paws.store)).find((i) => i.currentRunId === runId)!;
       return {
         token: "fixture",
         expiresAt: Date.now() + 60_000,
@@ -467,6 +468,13 @@ let runtime = runnerRestart
   ? await runtimeProcess(runtimeOptions)
   : await openRunnerRuntime(runtimeOptions);
 
+async function commandRows(where: (q: Q) => SQL | undefined) {
+  const rows = await paws.store.run((q) =>
+    q.all(q.orm.select({ id: q.t.runnerCommand.id }).from(q.t.runnerCommand).where(where(q))),
+  );
+  return rows.length;
+}
+
 async function until(label: string, done: () => boolean | Promise<boolean>) {
   const deadline = performance.now() + 30_000;
   while (!(await done()) && performance.now() < deadline) {
@@ -475,13 +483,13 @@ async function until(label: string, done: () => boolean | Promise<boolean>) {
   }
   assert(
     await done(),
-    `${label}: ${JSON.stringify({ errors, items: await listWorkItems(sqliteDb(paws.db)), commands: [...commands.values()], activities: (await listOutbox(sqliteDb(paws.db))).map((row) => row.payload) })}`,
+    `${label}: ${JSON.stringify({ errors, items: await listWorkItems(paws.store), commands: [...commands.values()], activities: (await listOutbox(paws.store)).map((row) => row.payload) })}`,
   );
 }
 async function addItem(id: string, answer = false) {
   const sessionKey = `session-${id}`;
-  const item = await insertQueuedItem(paws.db, { id, sessionKey, now: Date.now() });
-  await recordLinearInstallation(sqliteDb(paws.db), {
+  const item = await insertQueuedItem(paws.store, { id, sessionKey, now: Date.now() });
+  await recordLinearInstallation(paws.store, {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",
@@ -489,19 +497,21 @@ async function addItem(id: string, answer = false) {
     teamId: "team",
     observedAtMs: Date.now(),
   });
-  await bindLinearSessionTask(sqliteDb(paws.db), sessionKey, item.delegationId, {
+  await bindLinearSessionTask(paws.store, sessionKey, item.delegationId, {
     actorId: "owner",
   });
-  paws.db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
-  if (answer) await saveTaskMode(sqliteDb(paws.db), id, "answer");
+  await seed(paws.store, (q) =>
+    q.orm.update(q.t.workItem).set({ ownerUserId: userId }).where(eq(q.t.workItem.id, id)),
+  );
+  if (answer) await saveTaskMode(paws.store, id, "answer");
   else
-    await bindWorkItemRepository(sqliteDb(paws.db), id, {
+    await bindWorkItemRepository(paws.store, id, {
       owner: "pmdroid",
       repo: "paws-demo",
       remoteUrl,
     });
-  const { run } = await beginImplementRun(sqliteDb(paws.db), id, Date.now());
-  await enqueueJob(sqliteDb(paws.db), {
+  const { run } = await beginImplementRun(paws.store, id, Date.now());
+  await enqueueJob(paws.store, {
     queue: JOB_KIND.resume,
     payload: { itemId: id, runId: run.id, freshSession: true },
   });
@@ -564,15 +574,18 @@ function finish(command: RunnerCommand) {
 async function restartMidTurn(command: RunnerCommand) {
   assert(command.type === "run" || command.type === "review" || command.type === "task");
   const execution = executions.get(command.id)!;
-  const consumed = () =>
-    paws.db
-      .query<{ n: number }, [string]>(
-        "SELECT consumed_sequence AS n FROM runner_work WHERE command_id=?",
-      )
-      .get(command.id)!.n;
-  const previous = consumed();
+  const consumed = async () =>
+    (await paws.store.run((q) =>
+      q.one(
+        q.orm
+          .select({ n: q.t.runnerWork.consumedSequence })
+          .from(q.t.runnerWork)
+          .where(eq(q.t.runnerWork.commandId, command.id)),
+      ),
+    ))!.n;
+  const previous = await consumed();
   say(command, `Before restart ${command.id}.`);
-  await until("activity consumed", () => consumed() > previous);
+  await until("activity consumed", async () => (await consumed()) > previous);
   await paws.stop();
   down = true;
   // Keep ticking the same runtime while its coordinator and database are closed.
@@ -593,7 +606,7 @@ async function restartMidTurn(command: RunnerCommand) {
   paws = await start();
   await paws.ready;
   down = false;
-  assert.equal((await getWorkItem(sqliteDb(paws.db), command.itemId))?.recoveryAttempts, 0);
+  assert.equal((await getWorkItem(paws.store, command.itemId))?.recoveryAttempts, 0);
   await until("original result accepted", () => accepted.some((r) => r.commandId === command.id));
   assert.equal(executions.get(command.id), execution);
   assert.equal(accepted.filter((r) => r.commandId === command.id).length, 1);
@@ -613,17 +626,19 @@ try {
     const old = [...commands.values()].find((c) => c.type === "run")!;
     assert(old.type === "run");
     const oldExecution = executions.get(old.id);
-    const branch = (await getWorkItem(sqliteDb(paws.db), code))?.branchName;
+    const branch = (await getWorkItem(paws.store, code))?.branchName;
     assert(
-      paws.db
-        .query("SELECT 1 FROM runner_command WHERE id=? AND acknowledged_at IS NOT NULL")
-        .get(old.id),
+      (await commandRows((q) =>
+        and(eq(q.t.runnerCommand.id, old.id), isNotNull(q.t.runnerCommand.acknowledgedAt)),
+      )) === 1,
     );
     // The turn has been running for longer than the grace Paws gives a fresh acknowledgment.
-    paws.db.run("UPDATE runner_command SET acknowledged_at=? WHERE id=?", [
-      Date.now() - 2 * RUNNER_LIVE_GRACE_MS,
-      old.id,
-    ]);
+    await seed(paws.store, (q) =>
+      q.orm
+        .update(q.t.runnerCommand)
+        .set({ acknowledgedAt: Date.now() - 2 * RUNNER_LIVE_GRACE_MS })
+        .where(eq(q.t.runnerCommand.id, old.id)),
+    );
     const beforeHeartbeat = heartbeats;
     const beforeExecutions = executions.size;
     const beforeAccepted = accepted.length;
@@ -668,19 +683,17 @@ try {
     );
     const replacement = activeCommand("run")!;
     assert(replacement.type === "run");
-    assert.equal((await getWorkItem(sqliteDb(paws.db), code))?.branchName, branch);
+    assert.equal((await getWorkItem(paws.store, code))?.branchName, branch);
     assert(!accepted.some((r) => r.commandId === old.id));
     assert(replacement.generation > old.generation);
-    assert.notEqual((await getWorkItem(sqliteDb(paws.db), code))?.state, "failed");
+    assert.notEqual((await getWorkItem(paws.store, code))?.state, "failed");
     if (oldExecution) assert(stops > 0, "old worker must be stopped before replacement");
     finish(replacement);
     await until("reviewer after recovery", () => !!activeCommand("review"));
     finish(activeCommand("review")!);
     await until("pull request after recovery", () => github.opened.length === 1);
-    assert.equal((await getWorkItem(sqliteDb(paws.db), code))?.acceptedHead, head);
-    const activities = (await listOutbox(sqliteDb(paws.db))).map((row) =>
-      JSON.stringify(row.payload),
-    );
+    assert.equal((await getWorkItem(paws.store, code))?.acceptedHead, head);
+    const activities = (await listOutbox(paws.store)).map((row) => JSON.stringify(row.payload));
     assert(activities.some((body) => body.includes("continuing from the branch")));
     assert(!activities.some((body) => body.includes("The runner stopped this run")));
     console.log("runner restart integration passed");
@@ -696,16 +709,15 @@ try {
     await restartMidTurn(activeCommand("task")!);
     await until(
       "answer completed",
-      async () => (await getWorkItem(sqliteDb(paws.db), answer))?.state === "completed",
+      async () => (await getWorkItem(paws.store, answer))?.state === "completed",
     );
     assert.equal(github.opened.length, 1);
-    assert.equal((await getWorkItem(sqliteDb(paws.db), code))?.acceptedHead, head);
+    assert.equal((await getWorkItem(paws.store, code))?.acceptedHead, head);
     assert.equal(stops, 0);
-    assert.equal(paws.db.query("SELECT 1 FROM runner_command WHERE kind='cancel'").all().length, 0);
+    assert.equal(await commandRows((q) => eq(q.t.runnerCommand.kind, "cancel")), 0);
     assert.equal(executions.size, 3);
     assert.equal(
-      paws.db.query("SELECT 1 FROM runner_command WHERE kind IN ('run','review','task')").all()
-        .length,
+      await commandRows((q) => inArray(q.t.runnerCommand.kind, ["run", "review", "task"])),
       3,
     );
     assert.equal(accepted.length, 3);
@@ -715,11 +727,20 @@ try {
       assert.equal(value.cancelled, false);
       assert.equal(value.agentExited, true);
       assert.equal(
-        paws.db.query("SELECT 1 FROM runner_result WHERE command_id=?").all(value.commandId).length,
+        (
+          await paws.store.run((q) =>
+            q.all(
+              q.orm
+                .select({ commandId: q.t.runnerResult.commandId })
+                .from(q.t.runnerResult)
+                .where(eq(q.t.runnerResult.commandId, value.commandId)),
+            ),
+          )
+        ).length,
         1,
       );
     }
-    const activities = (await listOutbox(sqliteDb(paws.db))).filter((row) => row.op === "activity");
+    const activities = (await listOutbox(paws.store)).filter((row) => row.op === "activity");
     for (const command of [...commands.values()].filter(
       (c) => executions.has(c.id) && c.type !== "review",
     )) {

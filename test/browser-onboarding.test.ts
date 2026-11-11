@@ -98,8 +98,10 @@ test("a fresh HTTPS instance refuses sign-in until its organization is configure
   const login = await paws.server.fetch(new Request("https://localhost:8787/auth/linear"));
   expect(login.status).toBe(503);
   expect(await login.text()).toContain("LINEAR_ORGANIZATION_ID");
-  expect(paws.db.query("SELECT 1 FROM workspace_oauth_request").get()).toBeNull();
-  expect(paws.db.query("SELECT 1 FROM workspace").get()).toBeNull();
+  expect(
+    await paws.store.run((q) => q.all(q.orm.select().from(q.t.workspaceOauthRequest))),
+  ).toEqual([]);
+  expect(await paws.store.run((q) => q.all(q.orm.select().from(q.t.workspace)))).toEqual([]);
 });
 
 import { existsSync } from "node:fs";

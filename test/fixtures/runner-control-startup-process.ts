@@ -14,7 +14,6 @@ import {
   bindLinearSessionTask,
   getWorkItem,
   listOutbox,
-  sqliteDb,
 } from "../../src/db";
 import type { EnvSource } from "../../src/config";
 import { startPaws } from "../../src/index";
@@ -60,7 +59,7 @@ if (mode === "invalid-execution") {
   await assert.rejects(() => startPaws(source), /remote runner/);
   source.PAWS_EXECUTION = "remtoe";
   await assert.rejects(() => startPaws(source), /PAWS_EXECUTION must be remote/);
-  assert(!existsSync(join(root, "paws.db")));
+  assert(!existsSync(join(root, "paws.db")) && !existsSync(join(root, "pglite")));
   observe("local and unknown execution modes fail before opening production state", {
     databaseOpened: false,
   });
@@ -114,7 +113,7 @@ if (mode === "transcripts-later") {
 if (mode === "invalid") {
   source.PAWS_RUNNER_HOST = "https://invalid.example/path";
   await assert.rejects(() => startPaws(source), /hostname or IP/);
-  assert(!existsSync(join(root, "paws.db")));
+  assert(!existsSync(join(root, "paws.db")) && !existsSync(join(root, "pglite")));
   observe("invalid runner hostname fails before opening production state", {
     databaseOpened: false,
   });
@@ -166,7 +165,7 @@ if (mode === "remote") {
       }),
     /configuration is missing or invalid/,
   );
-  assert(!existsSync(join(root, "paws.db")));
+  assert(!existsSync(join(root, "paws.db")) && !existsSync(join(root, "pglite")));
   rmSync(config);
 }
 const paws = await startPaws(source, {
@@ -277,21 +276,21 @@ try {
   } else {
     await paws.ready;
     const now = Date.now();
-    const userId = await putWorkspaceUser(sqliteDb(paws.db), {
+    const userId = await putWorkspaceUser(paws.store, {
       id: workspaceId(),
       linearUserId: "owner",
       name: "Owner",
       email: "owner@example.invalid",
     });
-    const workspace = await consumeWorkspaceBootstrap(sqliteDb(paws.db), {
+    const workspace = await consumeWorkspaceBootstrap(paws.store, {
       id: workspaceId(),
       organizationId: "org",
       name: "Fixture",
       userId,
-      tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(paws.db), "org", now)),
+      tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(paws.store, "org", now)),
       now,
     });
-    const issued = await issueWorkspaceSession(sqliteDb(paws.db), {
+    const issued = await issueWorkspaceSession(paws.store, {
       userId,
       workspaceId: workspace.id,
       now,
@@ -319,7 +318,7 @@ try {
       assert.equal((await call(browserPort, "/api/runners")).status, 401);
       const key = await createRunnerKey(join(root, "client"));
       const enrollPath = "/api/runners/enrollments";
-      await refreshRepositoryCatalog(sqliteDb(paws.db), async () => [
+      await refreshRepositoryCatalog(paws.store, async () => [
         {
           owner: "fixture",
           repo: "repository",
@@ -380,13 +379,13 @@ try {
           approved: true,
         },
       );
-      const memberId = await putWorkspaceUser(sqliteDb(paws.db), {
+      const memberId = await putWorkspaceUser(paws.store, {
         id: workspaceId(),
         linearUserId: "member",
         name: "Member",
         email: "member@example.invalid",
       });
-      await syncWorkspaceMember(sqliteDb(paws.db), {
+      await syncWorkspaceMember(paws.store, {
         workspaceId: workspace.id,
         userId: memberId,
         role: "member",
@@ -394,7 +393,7 @@ try {
         teamIds: [],
         now,
       });
-      const memberSession = await issueWorkspaceSession(sqliteDb(paws.db), {
+      const memberSession = await issueWorkspaceSession(paws.store, {
         userId: memberId,
         workspaceId: workspace.id,
         now,
@@ -476,12 +475,12 @@ try {
         observe("Production Paws startup wires the host sharing policy route", {
           hostPolicy: true,
         });
-        const controlled = await insertQueuedItem(paws.db, {
+        const controlled = await insertQueuedItem(paws.store, {
           id: "startup-controlled",
           sessionKey: "startup-controlled-session",
           now,
         });
-        await recordLinearInstallation(sqliteDb(paws.db), {
+        await recordLinearInstallation(paws.store, {
           sessionId: controlled.sessionKey!,
           organizationId: "org",
           teamId: "team",
@@ -489,11 +488,7 @@ try {
           appUserId: "app",
           observedAtMs: now,
         });
-        await bindLinearSessionTask(
-          sqliteDb(paws.db),
-          controlled.sessionKey!,
-          controlled.delegationId,
-        );
+        await bindLinearSessionTask(paws.store, controlled.sessionKey!, controlled.delegationId);
         const available = await call<{ available: boolean; actions: string[] }>(
           browserPort,
           `/api/execution-controls?itemId=${controlled.id}`,
@@ -512,9 +507,9 @@ try {
           headers,
         );
         assert.equal(stopResult.status, 200);
-        assert.equal((await getWorkItem(sqliteDb(paws.db), controlled.id))?.state, "cancelled");
+        assert.equal((await getWorkItem(paws.store, controlled.id))?.state, "cancelled");
         assert(
-          (await listOutbox(sqliteDb(paws.db), controlled.sessionKey!)).some(
+          (await listOutbox(paws.store, controlled.sessionKey!)).some(
             (row) =>
               row.delivery === "stop" &&
               (row.payload as { body?: string }).body?.startsWith("Stopped from Paws. ") === true,
@@ -562,7 +557,7 @@ try {
       });
       if (mode === "enabled")
         await probeExecutionRuntime({
-          db: paws.db,
+          store: paws.store,
           workspaceId: workspace.id,
           secret: source.LINEAR_WEBHOOK_SECRET!,
           catchUp: () => paws.catchUp(),
