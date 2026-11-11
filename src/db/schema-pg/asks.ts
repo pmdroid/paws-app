@@ -3,12 +3,12 @@ import {
   check,
   customType,
   index,
-  jsonb,
   pgTable,
   text,
   unique,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { jsonb } from "./types";
 import { sql } from "drizzle-orm";
 import { workspace, workspaceUser } from "./workspace";
 import { workItem } from "./items";

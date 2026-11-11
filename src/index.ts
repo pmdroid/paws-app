@@ -9,7 +9,7 @@ import { startBrowserOnboarding } from "./onboarding-start";
 import { createBrowserOnboarding } from "./onboarding";
 import { runRunnerCli } from "./runner-cli";
 import { createAccountManagement } from "./account-management";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { createOnboardingReadiness } from "./onboarding-readiness";
@@ -78,7 +78,6 @@ import {
   readQueueSettings,
   describeOverriddenSections,
   overriddenConfigSections,
-  useSavedSettingsReader,
   useSettingsStore,
   type EnvSource,
   type PawsEnv,
@@ -102,12 +101,11 @@ import {
   listReviewEscapesSteps,
   countLinearRequest,
   linearBudgetStore,
-  openDatabase,
   checkPostgres,
-  checkSqlite,
+  connectPglite,
   connectPostgres,
+  PgliteInUseError,
   type PostgresConnection,
-  readSavedSettings,
   readSettingSteps,
   updateSettingSteps,
   CONFIG_SETTINGS_KEY,
@@ -130,7 +128,6 @@ import {
   type Q,
   runnerHasCapacitySteps,
   workspaceMemberSteps,
-  sqliteDb,
   enabledRunnerIdsSteps,
   listWorkspaceIds,
   missingSnapshotTargetsSteps,
@@ -168,7 +165,7 @@ import {
   takeOverGoneRunsSteps,
   type Steps,
 } from "./db";
-import { doctorChecks, formatDoctor, realProbe } from "./doctor";
+import { DATABASE_HELD, doctorChecks, formatDoctor, realProbe, withSavedStore } from "./doctor";
 import { installHostMain } from "./install-host";
 import { runInstallCli } from "./installer";
 import {
@@ -859,6 +856,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         assignments,
         onboardingReadiness: createOnboardingReadiness(store),
         createVmAvailable,
+        secretsDir: paths.secretsDir,
         githubAttributionClient: (() => {
           try {
             const { clientId, clientSecret } = appActivation.template();
@@ -2554,22 +2552,7 @@ export async function dbCheckMain(
     return 1;
   }
   const url = runtime.databaseUrl;
-  if (url === null) {
-    const path = pawsPaths(runtime.env.home).db;
-    print("SQLite is in use: neither [database] url nor PAWS_DATABASE_URL is set.");
-    try {
-      const report = checkSqlite(path);
-      print(
-        report === null
-          ? `ok · SQLite ${path} · no database yet; migrations apply at start`
-          : `ok · SQLite ${path} · ${report.applied} of ${report.known} migrations applied`,
-      );
-      return 0;
-    } catch (error) {
-      fail(`paws db check failed on SQLite ${path}: ${(error as Error).message}`);
-      return 1;
-    }
-  }
+  if (url === null) return checkPglite(pawsPaths(runtime.env.home).pgliteDir, print, fail);
   const where = describeDatabaseUrl(url);
   let connection: PostgresConnection | null = null;
   try {
@@ -2582,6 +2565,35 @@ export async function dbCheckMain(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     fail(`paws db check failed on Postgres ${where}: ${redactDatabaseUrl(message, url)}`);
+    return 1;
+  } finally {
+    await connection?.close().catch(() => undefined);
+  }
+}
+
+async function checkPglite(
+  dir: string,
+  print: (line: string) => void,
+  fail: (line: string) => void,
+): Promise<number> {
+  if (!existsSync(dir)) {
+    print(`ok · PGlite ${dir} · no database yet; migrations apply at start`);
+    return 0;
+  }
+  let connection: PostgresConnection | null = null;
+  try {
+    connection = connectPglite(dir);
+    const report = await checkPostgres(connection);
+    print(
+      `ok · PGlite ${dir} · server ${report.serverVersion} · ${report.applied} of ${report.known} migrations applied`,
+    );
+    return 0;
+  } catch (error) {
+    if (error instanceof PgliteInUseError) {
+      fail("paws db check: Paws is running; stop it or set [database] url to check");
+      return 1;
+    }
+    fail(`paws db check failed on PGlite ${dir}: ${(error as Error).message}`);
     return 1;
   } finally {
     await connection?.close().catch(() => undefined);
@@ -2638,54 +2650,54 @@ async function probesMain(argv: string[]): Promise<number> {
   }
   const controller = new AbortController();
   process.once("SIGINT", () => controller.abort());
+  const print = (text: string) => console.log(text);
   try {
-    const runtime = loadRuntime(process.env);
-    const paths = pawsPaths(runtime.env.home);
-    ensureLayout(paths);
-    const repository = {
-      owner: command.owner,
-      repo: command.repo,
-      remoteUrl: githubHttpsUrl(command.owner, command.repo),
-    };
-    // The App the running Paws uses: the workspace's, else the environment's.
-    const db = existsSync(paths.db) ? openDatabase(paths.db) : null;
-    if (db) process.once("exit", () => db.close());
-    const appActivation = db
-      ? createWorkspaceGitHubActivation(sqliteDb(db), runtime.env.home, process.env)
-      : null;
-    const provider = authProvider(
-      runtime,
-      repository,
-      "read",
-      appActivation ? (name) => appActivation.resolve(name) : undefined,
-    );
-    if (!provider) throw new Error("The GitHub App is not configured. Run `paws doctor`.");
-    const print = (text: string) => console.log(text);
-    await collectProbes({
-      repository,
-      pawsRoot: paths.home,
-      since: command.since,
-      dryRun: command.dryRun,
-      out: command.out,
-      github: { client: createFetchGitHubClient(), tokenProvider: gitHostToken(provider) },
-      turn: runAgent,
-      networkGit: createRepositoryGit({
-        remoteUrl: repository.remoteUrl,
-        token: () => provider.token(),
-        signal: controller.signal,
-        assert: async () => undefined,
-        onCleanupFailure: () => undefined,
-      }),
-      findings: () =>
-        readStoredFindings({
-          home: paths.home,
-          dbPath: paths.db,
-          owner: command.owner,
-          repo: command.repo,
+    ensureLayout(pawsPaths(loadEnv(process.env).home));
+    await withSavedStore(process.env, async ({ store, held }) => {
+      if (held) print(`note: ${DATABASE_HELD}`);
+      const runtime = loadRuntime(process.env);
+      const paths = pawsPaths(runtime.env.home);
+      const repository = {
+        owner: command.owner,
+        repo: command.repo,
+        remoteUrl: githubHttpsUrl(command.owner, command.repo),
+      };
+      const appActivation = store
+        ? createWorkspaceGitHubActivation(store, runtime.env.home, process.env)
+        : null;
+      const provider = authProvider(
+        runtime,
+        repository,
+        "read",
+        appActivation ? (name) => appActivation.resolve(name) : undefined,
+      );
+      if (!provider) throw new Error("The GitHub App is not configured. Run `paws doctor`.");
+      await collectProbes({
+        repository,
+        pawsRoot: paths.home,
+        since: command.since,
+        dryRun: command.dryRun,
+        out: command.out,
+        github: { client: createFetchGitHubClient(), tokenProvider: gitHostToken(provider) },
+        turn: runAgent,
+        networkGit: createRepositoryGit({
+          remoteUrl: repository.remoteUrl,
+          token: () => provider.token(),
+          signal: controller.signal,
+          assert: async () => undefined,
+          onCleanupFailure: () => undefined,
         }),
-      keep: keepCandidates(command.keep, print),
-      print,
-      signal: controller.signal,
+        findings: () =>
+          readStoredFindings({
+            home: paths.home,
+            store,
+            owner: command.owner,
+            repo: command.repo,
+          }),
+        keep: keepCandidates(command.keep, print),
+        print,
+        signal: controller.signal,
+      });
     });
     return 0;
   } catch (error) {
@@ -2694,19 +2706,7 @@ async function probesMain(argv: string[]): Promise<number> {
   }
 }
 
-export function useSavedSettings(): () => void {
-  return useSavedSettingsReader((configPath) => {
-    try {
-      return readSavedSettings(join(dirname(configPath), "paws.db"));
-    } catch (error) {
-      journalCaught(error, "index.useSavedSettings", null);
-      return null;
-    }
-  });
-}
-
 if (import.meta.main) {
-  useSavedSettings();
   const argv = process.argv.slice(2);
   const command = argv[0];
   if (command === "probes") process.exit(await probesMain(argv.slice(1)));

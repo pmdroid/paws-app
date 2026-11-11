@@ -423,7 +423,7 @@ export function* dropProcessedFindingGroupMembersSteps(
   const members =
     q.dialect === "sqlite"
       ? sql`(SELECT json_group_array(value) FROM json_each(${group.memberIds}) WHERE value NOT IN (SELECT value FROM json_each(${done})) AND value IN (SELECT value FROM json_each(${open})))`
-      : sql`(SELECT COALESCE(jsonb_agg(member.value ORDER BY member.position), '[]'::jsonb) FROM jsonb_array_elements(${group.memberIds}) WITH ORDINALITY AS member(value, position) WHERE member.value NOT IN (SELECT jsonb_array_elements(${done}::jsonb)) AND member.value IN (SELECT jsonb_array_elements(${open}::jsonb)))`;
+      : sql`(SELECT COALESCE(jsonb_agg(member.value ORDER BY member.position), '[]'::jsonb) FROM jsonb_array_elements(${group.memberIds}) WITH ORDINALITY AS member(value, position) WHERE member.value NOT IN (SELECT jsonb_array_elements(${done}::text::jsonb)) AND member.value IN (SELECT jsonb_array_elements(${open}::text::jsonb)))`;
   yield* q.exec(
     q.orm.update(group).set({ memberIds: members }).where(untouchedGroups(q, workspaceId)),
   );
