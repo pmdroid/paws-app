@@ -79,7 +79,7 @@ async function setup(state: "running" | "verifying" | "merge_queue") {
     pullHead: async () => null,
     pullConflict: async () => conflict,
     leaveMergeQueue: async () => "not_queued",
-    fixRoundLimit: () => limit,
+    fixRoundLimit: () => syncSteps(() => limit),
     closeoutFindings: async () => [],
     session: (item) => item.sessionKey,
     flush: async () => {},

@@ -50,7 +50,7 @@ export async function interpretRepositoryAnswer(options: {
   signal: AbortSignal;
   launch: AgentLaunch;
   agentRunner?: typeof runAgent;
-  onCleanupFailure?: () => void;
+  onCleanupFailure?: () => void | Promise<void>;
 }): Promise<RepositoryBinding | null> {
   const names = options.candidates.map((candidate) => `${candidate.owner}/${candidate.repo}`);
   const offered = options.offered.map((candidate) => `${candidate.owner}/${candidate.repo}`);
@@ -111,7 +111,7 @@ export async function interpretRepositoryAnswer(options: {
         text += event.update.content.text;
     },
   });
-  if (!result.agentExited) options.onCleanupFailure?.();
+  if (!result.agentExited) await options.onCleanupFailure?.();
   options.signal.throwIfAborted();
   if (
     result.stopReason !== "end_turn" ||

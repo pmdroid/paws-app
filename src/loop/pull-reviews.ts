@@ -139,7 +139,7 @@ export type PullReviewCapabilities = {
   /** Unresolved review threads on the pull request. Throws when GitHub cannot be read. */
   threads(item: WorkItemRecord, pullNumber: number): Promise<ReviewThread[]>;
   pullConflict?(item: WorkItemRecord, pullNumber: number): Promise<PullConflict | null>;
-  fixRoundLimit(item: WorkItemRecord): number;
+  fixRoundLimit(q: Q, item: WorkItemRecord): Steps<number>;
   /** The item's stored Closeout review findings. Empty when none can be read. */
   closeoutFindings(item: WorkItemRecord): Promise<readonly StoredReviewFinding[]>;
   session(item: WorkItemRecord): string | null;
@@ -205,7 +205,7 @@ export async function handlePullReview(
     if (current === null || current.version !== item.version || current.state !== "merge_queue")
       return "wait";
     const rounds = yield* fixRoundsSteps(q, current.id);
-    const limit = caps.fixRoundLimit(current);
+    const limit = yield* caps.fixRoundLimit(q, current);
     // Comments that arrived with the review go to the agent in the same restart.
     const comments = (yield* pendingPullCommentsSteps(q, current.id)).filter(
       (comment) => comment.pullNumber === review.pullNumber,

@@ -35,7 +35,7 @@ function capabilities(overrides: Partial<MergeCapabilities> = {}) {
   const caps: MergeCapabilities = {
     ask,
     now: () => 10,
-    stopped: () => false,
+    stopped: async () => false,
     publish: unused("publish"),
     settings: unused("settings"),
     policyDigests: unused("policyDigests"),
@@ -45,12 +45,12 @@ function capabilities(overrides: Partial<MergeCapabilities> = {}) {
     askRiskApproval: unused("askRiskApproval"),
     session: () => "s-1",
     fetchMain: unused("fetchMain"),
-    ciFixAttempts: () => 3,
+    ciFixAttempts: async () => 3,
     feedbackWait: () => DEFAULT_PULL_FEEDBACK_WAIT,
     readPullCi: unused("readPullCi"),
     readPull: unused("readPull"),
     dependencyHold: () => syncSteps(() => null),
-    mergeLane: () => "",
+    mergeLane: async () => "",
     mergedOutsideLane: async () => null,
     completed: () => calls.push("completed"),
     voice: {

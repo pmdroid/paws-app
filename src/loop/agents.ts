@@ -64,7 +64,7 @@ export type AcpAgentDeps = {
   launch: AgentLaunch;
   brief?: string;
   signal?: AbortSignal;
-  onCleanupFailure?: () => void;
+  onCleanupFailure?: () => void | Promise<void>;
   promptRunner?: (options: RunAgentOptions) => Promise<RunAgentResult>;
   agentRunner?: (options: RunAgentOptions) => Promise<RunAgentResult>;
   timeoutMs?: number;
@@ -227,7 +227,7 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
           });
           if (attempt > 1 || !result.cancelled || deps.signal?.aborted) break;
         }
-        if (!result.agentExited) deps.onCleanupFailure?.();
+        if (!result.agentExited) await deps.onCleanupFailure?.();
         const refused = refusals.at(-1);
         if (result.cancelled && !result.timedOut && refused && !deps.signal?.aborted) {
           const tool = refused.name || refused.title || refused.kind || "a tool";
@@ -333,7 +333,7 @@ export function createReviewCommandReviewer(deps: AcpAgentDeps): CodexReviewer {
           if (event.update.content.type === "text") text += event.update.content.text ?? "";
         },
       });
-      if (!result.agentExited) deps.onCleanupFailure?.();
+      if (!result.agentExited) await deps.onCleanupFailure?.();
       if (result.authRequired) throw new Error(result.errorMessage ?? "Reviewer login is missing");
       if (
         result.cancelled ||
@@ -383,7 +383,7 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
         ...(deps.signal ? { signal: deps.signal } : {}),
         ...spawnOf(launch),
       });
-      if (!result.agentExited) deps.onCleanupFailure?.();
+      if (!result.agentExited) await deps.onCleanupFailure?.();
       if (result.cancelled) return { ok: false, reason: "fix cancelled" };
       if (result.authRequired || result.stopReason === "error" || result.stopReason === "timeout") {
         return { ok: false, reason: result.errorMessage ?? result.stopReason };

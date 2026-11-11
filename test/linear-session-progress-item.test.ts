@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { FakeClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, insertQueuedItem } from "../src/db";
+import { JobLoop, OutboxDispatcher, insertQueuedItem, sqliteDb } from "../src/db";
 import { createFakeTracker, currentLinearCaller } from "../src/linear";
 import { Orchestrator, createLinearSessionProgress } from "../src/loop";
 import { tempDb, tempHome } from "./helpers";
@@ -26,16 +26,16 @@ test("a session progress row sent by a plain outbox tick counts under its task",
   });
   try {
     const item = insertQueuedItem(db, { id: "task", now: 1_000, sessionKey: "session" });
-    const progress = createLinearSessionProgress(
-      db,
+    const progress = await createLinearSessionProgress(
+      sqliteDb(db),
       "session",
       item.linearIdentifier,
       () => clock.now(),
       "code",
       item.id,
     );
-    progress.phase("verifying");
-    progress.link("Pull request", "https://github.com/acme/app/pull/1");
+    await progress.phase("verifying");
+    await progress.link("Pull request", "https://github.com/acme/app/pull/1");
     while ((await outbox.tick()).length > 0) await outbox.idle();
     expect(credited.length).toBeGreaterThan(0);
     expect([...new Set(credited)]).toEqual(["task"]);

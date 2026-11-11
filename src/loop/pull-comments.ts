@@ -307,7 +307,7 @@ export async function handlePullComments(
     if (!hasFeedback(feedback)) return "done";
     const { comments, digest, failure } = feedback;
     const rounds = yield* fixRoundsSteps(q, current.id);
-    const limit = caps.fixRoundLimit(current);
+    const limit = yield* caps.fixRoundLimit(q, current);
     if (rounds < limit) {
       const first = comments[0];
       const jobKey = first

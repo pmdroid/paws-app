@@ -52,7 +52,7 @@ export {
   type QuestionReply,
 } from "./lifecycle";
 export {
-  findAskedQuestion,
+  findAskedQuestionSteps,
   findOpenQuestion,
   findOpenQuestionSteps,
   getQuestion,

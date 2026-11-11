@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { eq, sql, type SQL } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
 
 /** The Linear project an issue belongs to. A null name means the read did not include it. */
 export type WorkItemLinearProject = { id: string; name: string | null };
@@ -21,11 +20,6 @@ export function* getWorkItemLinearProjectIdSteps(q: Q, itemId: string) {
     q.orm.select({ id: workItem.linearProjectId }).from(workItem).where(eq(workItem.id, itemId)),
   );
   return row?.id ?? null;
-}
-
-/** The item's Linear project id, or null when the issue has none or Paws has not read it. */
-export function getWorkItemLinearProjectId(db: Database, itemId: string): string | null {
-  return settled(sqliteDb(db).run((q) => getWorkItemLinearProjectIdSteps(q, itemId)));
 }
 
 export function* saveWorkItemLinearProjectSteps(

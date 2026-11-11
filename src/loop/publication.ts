@@ -14,20 +14,20 @@ export function guardGitHubPublication(input: {
   repository: RepositoryBinding;
   signal: AbortSignal;
   gitExec?: GitExec;
-  onCleanupFailure(): void;
-  isCurrent(): boolean;
+  onCleanupFailure(): void | Promise<void>;
+  isCurrent(): Promise<boolean>;
   assert(purpose?: TokenPurpose, merging?: boolean): Promise<void>;
   /** Around each push: `before` may refuse it, `after` hears that it worked. */
   push?: { before(): Promise<void>; after(): Promise<void> };
 }): GitHubBinding & { gitExec: GitExec } {
-  const current = () => {
+  const current = async () => {
     input.signal.throwIfAborted();
-    if (!input.isCurrent()) throw new Error("The Linear publication was superseded.");
+    if (!(await input.isCurrent())) throw new Error("The Linear publication was superseded.");
   };
   const check = async (purpose?: TokenPurpose, merging = false) => {
-    current();
+    await current();
     await input.assert(purpose, merging);
-    current();
+    await current();
   };
   const client: GitHubClient = {
     async request(request) {
@@ -35,7 +35,7 @@ export function guardGitHubPublication(input: {
         const merging = mergesPullRequest(request);
         await check(merging ? "merge" : "pr", merging);
       }
-      current();
+      await current();
       return input.github.client.request({
         ...request,
         signal: request.signal ? AbortSignal.any([input.signal, request.signal]) : input.signal,
@@ -74,7 +74,7 @@ export function guardGitHubPublication(input: {
         await check("push");
         await input.push?.before();
       }
-      current();
+      await current();
       const result = await ownedGitExec(args, {
         ...options,
         signal: options.signal ? AbortSignal.any([input.signal, options.signal]) : input.signal,
@@ -86,10 +86,10 @@ export function guardGitHubPublication(input: {
       mode: provider.mode,
       async tokenFor(purpose) {
         await check(purpose);
-        current();
+        await current();
         const token = await provider.tokenFor(purpose);
         await check(purpose);
-        current();
+        await current();
         return token;
       },
     },

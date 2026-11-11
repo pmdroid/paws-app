@@ -24,6 +24,8 @@ import {
   setCurrentRun,
   type WorkItemRecord,
   sqliteDb,
+  syncSteps,
+  type Q,
 } from "../src/db";
 import { migratedDatabase, tempDb, tempHome } from "./helpers";
 
@@ -137,9 +139,10 @@ function announceMerge(_db: Database) {
   const announced: string[] = [];
   return {
     announced,
-    announce: (item: WorkItemRecord) => {
-      announced.push(item.id);
-    },
+    announce: (_q: Q, item: WorkItemRecord) =>
+      syncSteps(() => {
+        announced.push(item.id);
+      }),
   };
 }
 
@@ -217,7 +220,10 @@ test("an answer from a superseded run cannot complete the task", () => {
   let announced = 0;
   completeAnswerTask(db, item.id, "The total is 42.", 4, {
     runId: next.id,
-    announce: () => announced++,
+    announce: () =>
+      syncSteps(() => {
+        announced++;
+      }),
   });
   expect(getWorkItem(db, item.id)?.state).toBe("completed");
   expect(getRun(db, next.id)?.status).toBe("ended");

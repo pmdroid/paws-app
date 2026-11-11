@@ -96,7 +96,7 @@ async function seed() {
       home,
       pawsHome,
       maxFixAttempts: 0,
-      progress: createDbCloseoutProgress(db, "acme-1"),
+      progress: createDbCloseoutProgress(sqliteDb(db), "acme-1"),
       reviewer: {
         async review() {
           reviews += 1;

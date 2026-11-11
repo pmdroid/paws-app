@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   and,
   asc,
@@ -22,7 +21,7 @@ import {
   parentTaskKeySql,
   type WorkItemState,
 } from "../core";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { jsonText } from "./json-text";
 
 const FINISHED = ["completed", "merged", "cancelled"];
@@ -175,10 +174,6 @@ export function* stopSessionParentDelegationSteps(
       .set({ stoppedAt: now })
       .where(and(eq(parentDelegation.sessionId, sessionId), isNull(parentDelegation.stoppedAt))),
   );
-}
-
-export function stopSessionParentDelegation(db: Database, sessionId: string, now: number): void {
-  settled(sqliteDb(db).run((q) => stopSessionParentDelegationSteps(q, sessionId, now)));
 }
 
 type ActiveParentDelegation = {

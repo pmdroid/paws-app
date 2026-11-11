@@ -117,7 +117,7 @@ export type MergeCapabilities = OrderCapabilities & {
    * Closeout's policy digest for the item's worktree or mirror now, and the digest of its checks marked
    * `recheck: true`: `""` without a policy or such a check, null when the policy is unreadable.
    */
-  policyDigests(item: WorkItemRecord, worktree: string): PolicyRead;
+  policyDigests(item: WorkItemRecord, worktree: string): Promise<PolicyRead>;
   holdForPolicy?(
     item: WorkItemRecord,
     repository: string,
@@ -171,7 +171,7 @@ async function rerunCancelledCi(
   await caps.rerunCi(item, pullNumber, CANCELLED_CI_RERUN).catch((error: unknown) => {
     journalCaught(error, "advance.rerunCancelledCi", item.id);
   });
-  if (caps.stopped()) return { kind: "obsolete" };
+  if (await caps.stopped()) return { kind: "obsolete" };
   if (!(await store.run((q) => hasCiRerunSteps(q, item.id, head)))) return null;
   const message = `Re-ran cancelled CI jobs on ${head.slice(0, 7)}.`;
   await store.run((q) => caps.voice.status(q, item, message, `${item.id}:ci-rerun:${head}`));
@@ -221,7 +221,7 @@ export async function advanceMerge(
   if ("kind" in published) return published;
   // A high-risk head waits for a person in Paws before it joins any merge queue.
   const riskApproval = await caps.riskApproval(item, published);
-  if (caps.stopped()) return { kind: "obsolete" };
+  if (await caps.stopped()) return { kind: "obsolete" };
   if (riskApproval === "missing") return holdForRisk(store, item, caps, published);
   const { repository, github, pull } = published;
   const { voice } = caps;
@@ -260,7 +260,7 @@ export async function advanceMerge(
       return { kind: "returned" };
     }
     if (wait) return { kind: "wait", ...wait };
-    if (caps.stopped()) return { kind: "obsolete" };
+    if (await caps.stopped()) return { kind: "obsolete" };
   }
   const lane: SerialMergeInput = {
     publishedAt: async (head) => {
@@ -300,7 +300,7 @@ export async function advanceMerge(
     read: () => readPullFacts(lane),
     facts: async (facts) => {
       facts.readiness = await collectCiFailure(merge, pull.number, facts.head, facts.readiness);
-      mainPolicy = caps.policyDigests(item, published.worktree);
+      mainPolicy = await caps.policyDigests(item, published.worktree);
       return mergeFacts(store, item.id, facts, mainPolicy, mergeSettings.mainMoved, {
         head: published.head,
         approval: riskApproval,
@@ -351,13 +351,13 @@ export async function advanceMerge(
   if (turn.kind === "stopped" && turn.result.outcome === "unknown") return pendingMergeOutcome();
   // A review recorded during the turn stopped the squash or rebase; it goes to the agent first.
   // A turn that already rebased goes on to re-verify the pushed head.
-  if ((turn.kind === "stopped" || turn.kind === "blocked") && !caps.stopped()) {
+  if ((turn.kind === "stopped" || turn.kind === "blocked") && !(await caps.stopped())) {
     const late = await reviewHold(store, item.id, caps.now(), caps.feedbackWait());
     if (late) return late;
   }
   const rerun = await rerunCancelledCi(store, item, caps, turn, pull.number);
   if (rerun) return rerun;
-  const ciFixLimit = caps.ciFixAttempts(item);
+  const ciFixLimit = await caps.ciFixAttempts(item);
   const result = turn.kind === "merged" || turn.kind === "stopped" ? turn.result : null;
   const conflict: RebaseConflict = {
     base: result?.base ?? null,
@@ -392,7 +392,7 @@ export async function advanceMerge(
       }),
     );
   if (step.kind === "wait" && step.reason === "ci") {
-    if (caps.stopped()) return { kind: "obsolete" };
+    if (await caps.stopped()) return { kind: "obsolete" };
     if (turn.kind !== "blocked" || turn.block !== "ci_pending") return step;
     // GitHub runs no CI on a conflicting pull request: send it back instead of waiting forever.
     const returned = await waitConflict(merge, pull.number, { for: "CI", main: turn.pull.base });
@@ -422,7 +422,7 @@ export async function advanceMerge(
   // A deferred stop owns the next step after an unsent or unsuccessful squash.
   if (turn.kind !== "merged" && (await store.run((q) => mergeStopRequestedSteps(q, item.id))))
     return { kind: "obsolete" };
-  if (caps.stopped()) {
+  if (await caps.stopped()) {
     if (turn.kind === "merged") await completeMerged(store, item, caps);
     return { kind: "obsolete" };
   }
@@ -582,10 +582,10 @@ async function githubQueuePolicy(
       ...(watch ? { githubQueue: watch } : {}),
     };
   }
-  if (caps.stopped()) return { kind: "obsolete" };
+  if (await caps.stopped()) return { kind: "obsolete" };
   if (main === null) return undefined;
   const repository = queueName(published.repository);
-  const mainPolicy = caps.policyDigests(item, published.worktree);
+  const mainPolicy = await caps.policyDigests(item, published.worktree);
   if (mainPolicy && "ok" in mainPolicy) {
     if (watch?.queued && (await leaveGitHubQueue(published)) === "merged") return undefined;
     return {
@@ -602,7 +602,7 @@ async function githubQueuePolicy(
   });
   if (!broken) return undefined;
   if (watch?.queued && (await leaveGitHubQueue(published)) === "merged") return undefined;
-  return returnForPolicy(merge, broken, caps.ciFixAttempts(item));
+  return returnForPolicy(merge, broken, await caps.ciFixAttempts(item));
 }
 
 function leaveGitHubQueue(published: MergePublication) {
@@ -752,7 +752,7 @@ async function mergedOutsideLane(
   journal(
     `item ${item.linearIdentifier} merged outside the merge lane: #${merge.pullNumber} at ${merge.mergeSha ?? "unknown commit"}`,
   );
-  if (caps.stopped()) {
+  if (await caps.stopped()) {
     await completeMerged(store, item, caps);
     return { kind: "obsolete" };
   }
@@ -838,7 +838,7 @@ async function recheckChanged(
   if (acceptedHead === null) return false;
   const accepted = await store.run((q) => closeoutPolicyDigestsSteps(q, item.id, acceptedHead));
   if (accepted === null) return false;
-  const current = caps.policyDigests(item, worktree);
+  const current = await caps.policyDigests(item, worktree);
   if (current === null || "ok" in current || accepted.digest === current.digest) return false;
   return accepted.recheck !== current.recheck;
 }
