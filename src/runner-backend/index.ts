@@ -40,8 +40,8 @@ import {
   setRunnerWorkCursorSteps,
   usageLimitResetSteps,
   getTaskModeSteps,
-  closeFallbackAttempts,
-  fallbackHistory,
+  closeFallbackAttemptsSteps,
+  fallbackHistorySteps,
   legacyAgentAccountId,
   legacyAgentBindingId,
   getWorkItemSteps,
@@ -51,7 +51,7 @@ import {
   endAgentWait,
   pinnedSlotsReservedSteps,
   releasePinnedSlotSteps,
-  recordFallbackAttempt,
+  recordFallbackAttemptSteps,
   runnerHasCapacitySteps,
   runnerSlotsHeldBetweenCommandsSteps,
   saveCheckpoint,
@@ -2711,10 +2711,14 @@ export function createRemoteAgentRunner(options: {
           const callId = failoverCallId(input);
           const ledger: FailoverLedger | undefined = runId
             ? {
-                load: (policyKey) => fallbackHistory(db, runId, callId, policyKey),
-                record: (entry) =>
-                  void recordFallbackAttempt(db, { ...entry, runId, callId, now: now() }),
-                finish: () => closeFallbackAttempts(db, runId, callId, now()),
+                load: (policyKey) =>
+                  store.run((q) => fallbackHistorySteps(q, runId, callId, policyKey)),
+                record: async (entry) => {
+                  await store.transaction((q) =>
+                    recordFallbackAttemptSteps(q, { ...entry, runId, callId, now: now() }),
+                  );
+                },
+                finish: () => store.run((q) => closeFallbackAttemptsSteps(q, runId, callId, now())),
               }
             : undefined;
           return await runWithFailover(

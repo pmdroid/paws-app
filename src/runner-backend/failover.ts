@@ -74,14 +74,14 @@ export type UsageLimitWait = {
 };
 
 export type FailoverLedger = {
-  load(policyKey: string): FallbackHistory;
+  load(policyKey: string): Promise<FallbackHistory>;
   record(entry: {
     policyKey: string;
     outcome: FallbackOutcome;
     runnerId: string;
     excludedKey: string;
-  }): void;
-  finish(): void;
+  }): Promise<void>;
+  finish(): Promise<void>;
 };
 
 export const MAX_FAILOVER_FAILURES = 3;
@@ -134,7 +134,7 @@ export async function runWithFailover(
     profileKey(input.resolveProfiles()) !== configuredProfilesKey;
   let index = 0;
   if (ledger) {
-    const history = ledger.load(configuredProfilesKey);
+    const history = await ledger.load(configuredProfilesKey);
     excluded.push(...history.excluded);
     index = history.failures;
     usageLimitEvents = history.usageLimits;
@@ -160,7 +160,7 @@ export async function runWithFailover(
         excluded,
         limit,
       );
-      ledger?.finish();
+      await ledger?.finish();
       return result;
     } catch (error) {
       if (
@@ -200,7 +200,7 @@ export async function runWithFailover(
             configuredProfilesKey = latestKey;
             excluded.length = 0;
             if (ledger) {
-              const history = ledger.load(configuredProfilesKey);
+              const history = await ledger.load(configuredProfilesKey);
               excluded.push(...history.excluded);
               index = Math.max(index, history.failures);
               usageLimitEvents = Math.max(usageLimitEvents, history.usageLimits);
@@ -230,7 +230,7 @@ export async function runWithFailover(
           : error.restarted
             ? ""
             : (error.bindingId ?? error.runnerId);
-      ledger?.record({
+      await ledger?.record({
         policyKey: configuredProfilesKey,
         outcome: usageLimit ? "usage_limit" : error.handedOver ? "handed_over" : "failed",
         runnerId: error.runnerId,
