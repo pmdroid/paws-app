@@ -38,7 +38,7 @@ test("a command check reads the saved title and a 0600 body file that is gone af
   const events: CloseoutSessionEvent[] = [];
   const session = createCloseoutSession(root, {
     policy: async () => workspacePolicyFiles(root),
-    pullRequest: () => draft,
+    pullRequest: async () => draft,
     onProgress: (event) => events.push(event),
   });
   await session.report();
@@ -105,7 +105,7 @@ test("a new title makes the checks that name PAWS_PR_TITLE pending; others keep 
   let draft: PullRequestDraft | undefined = { title: "feat: one", body: "First." };
   const session = createCloseoutSession(root, {
     policy: async () => workspacePolicyFiles(root),
-    pullRequest: () => draft,
+    pullRequest: async () => draft,
   });
   await session.report();
   expect(await session.run("pr-title")).toBe("pr-title passed.");
@@ -142,7 +142,7 @@ test("the docs example passes a good title and fails a bad one with the script's
   let draft: PullRequestDraft | undefined = { title: "feat(acme): add the widget", body: "Body." };
   const session = createCloseoutSession(root, {
     policy: async () => workspacePolicyFiles(root),
-    pullRequest: () => draft,
+    pullRequest: async () => draft,
   });
   await session.report();
   expect(await session.run("pr-title")).toBe("pr-title passed.");
@@ -211,7 +211,7 @@ test("a new title probes the rules again instead of reusing the result for the o
   let draft: PullRequestDraft | undefined = { title: "Add the widget", body: "Body." };
   const session = createCloseoutSession(root, {
     policy: async () => workspacePolicyFiles(root),
-    pullRequest: () => draft,
+    pullRequest: async () => draft,
     rulesFirst: true,
   });
   expect(ruleExit(await session.report({ probes: true }))).toBe(1);

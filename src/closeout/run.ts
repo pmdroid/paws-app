@@ -80,7 +80,7 @@ export type EvaluateInput = {
   /** Command checks taken from green CI at `head` instead of running. */
   fromCi?: readonly CiResult[];
   fromTurn?: readonly TurnPass[];
-  pullRequest?: () => PullRequestDraft | undefined;
+  pullRequest?: () => Promise<PullRequestDraft | undefined>;
 };
 
 export type Evaluation = {
@@ -123,7 +123,7 @@ export type GateInput = {
   /** Command checks taken from green CI at the first head. A fixed head runs them again. */
   fromCi?: readonly CiResult[];
   fromTurn?: readonly TurnPass[];
-  pullRequest?: () => PullRequestDraft | undefined;
+  pullRequest?: () => Promise<PullRequestDraft | undefined>;
 };
 
 /**
@@ -254,7 +254,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
       ...(input.commandRunner ? { commandRunner: input.commandRunner } : {}),
       ...(input.fromCi ? { fromCi: input.fromCi } : {}),
       ...(input.fromTurn ? { fromTurn: input.fromTurn } : {}),
-      ...pullRequestOf(input),
+      ...(await pullRequestOf(input)),
     });
   } catch (error) {
     await early?.done.catch((caughtError1) => {
@@ -646,8 +646,8 @@ export function evidenceOnly(items: readonly CloseoutItem[]): boolean {
   return failed.length > 0 && failed.every((item) => item.kind === "evidence");
 }
 
-function pullRequestOf(input: EvaluateInput): { pullRequest?: PullRequestDraft } {
-  const draft = input.pullRequest?.();
+async function pullRequestOf(input: EvaluateInput): Promise<{ pullRequest?: PullRequestDraft }> {
+  const draft = await input.pullRequest?.();
   return draft ? { pullRequest: draft } : {};
 }
 

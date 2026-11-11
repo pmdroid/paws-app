@@ -3819,7 +3819,7 @@ export class Orchestrator {
         .filter((part) => part)
         .join("\n\n");
       const focus = await closeoutFocus(this.store, item.id, returned?.reason);
-      const draft = this.savedDraft(item.id);
+      const draft = await this.savedDraft(item.id);
       const prompt = implementPrompt({
         identifier: item.linearIdentifier,
         title: item.title,
@@ -4009,7 +4009,7 @@ export class Orchestrator {
           sessionCloseoutPath(this.options.pawsRoot, pathId),
           head,
           executed.run.closeoutReport,
-          pullRequestDraftKey(this.savedDraft(item.id)),
+          pullRequestDraftKey(await this.savedDraft(item.id)),
         );
       else await this.store.run((q) => closeActiveRunSteps(q, run.id, this.now()));
       const suggestionJob = await suggestionTurnRunning(this.store, item.id);
@@ -4494,12 +4494,12 @@ export class Orchestrator {
         };
     }
     const sessionPath = sessionCloseoutPath(this.options.pawsRoot, itemPathId(item));
-    const savedReport = (commit: string, argv: readonly string[] = []) => {
+    const savedReport = async (commit: string, argv: readonly string[] = []) => {
       const saved = readSessionCloseout(sessionPath);
       if (saved?.head !== commit) return undefined;
       if (
         usesPullRequestDraft(argv) &&
-        saved.draft !== pullRequestDraftKey(this.savedDraft(item.id))
+        saved.draft !== pullRequestDraftKey(await this.savedDraft(item.id))
       )
         return undefined;
       return saved.report;
@@ -4535,27 +4535,30 @@ export class Orchestrator {
           runLogged: async (request: Parameters<typeof loggedSessionCloseout>[1]) => {
             await assertCurrent();
             const commit = request.expectedHead;
-            if (!sessionCloseoutResult(savedReport(commit, request.argv), request))
+            if (!sessionCloseoutResult(await savedReport(commit, request.argv), request))
               await runnerResults(commit, request.itemId);
             await assertCurrent();
-            const broken = rulesFirst ? brokenRuleOf(savedReport(commit)) : undefined;
-            if (broken && !sessionCloseoutResult(savedReport(commit, request.argv), request)) {
+            const broken = rulesFirst ? brokenRuleOf(await savedReport(commit)) : undefined;
+            if (
+              broken &&
+              !sessionCloseoutResult(await savedReport(commit, request.argv), request)
+            ) {
               stoppedOnRule = broken;
               throw new Error(`Rule ${broken} broke before the checks ran.`);
             }
             if (
               !rerunHeads.has(commit) &&
-              !sessionCloseoutResult(savedReport(commit, request.argv), request)
+              !sessionCloseoutResult(await savedReport(commit, request.argv), request)
             ) {
               rerunHeads.add(commit);
               report(
-                `Closeout has no result for ${request.itemId ?? "a check"} on ${commit.slice(0, 7)}: ${missingResultReason(savedReport(commit, request.argv), request)}. Running the checks once more.`,
+                `Closeout has no result for ${request.itemId ?? "a check"} on ${commit.slice(0, 7)}: ${missingResultReason(await savedReport(commit, request.argv), request)}. Running the checks once more.`,
               );
               runnerChecks.delete(commit);
               await runnerResults(commit, request.itemId, true);
               await assertCurrent();
             }
-            const result = loggedSessionCloseout(savedReport(commit, request.argv), request);
+            const result = loggedSessionCloseout(await savedReport(commit, request.argv), request);
             await assertCurrent();
             return result;
           },
@@ -4726,7 +4729,7 @@ export class Orchestrator {
         input.report(
           `Running the Closeout checks for ${item.linearIdentifier} on its runner at ${short}.`,
         );
-      const draft = this.savedDraft(item.id);
+      const draft = await this.savedDraft(item.id);
       const checksRunId = `checks-${itemPathId(item)}-${short}-${input.again ? "again-" : ""}${attempt}`;
       try {
         const options: RunAgentOptions = {
@@ -8174,8 +8177,8 @@ export class Orchestrator {
     };
   }
 
-  private savedDraft(itemId: string): PullRequestDraft | undefined {
-    const draft = getPullRequestDraft(this.db, itemId);
+  private async savedDraft(itemId: string): Promise<PullRequestDraft | undefined> {
+    const draft = await getPullRequestDraft(this.store, itemId);
     return draft ? { title: draft.title, body: draft.body } : undefined;
   }
 
