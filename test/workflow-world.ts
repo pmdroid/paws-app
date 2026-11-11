@@ -448,7 +448,7 @@ export async function factsOf(db: Database, id: string): Promise<ItemFacts> {
       .sort(),
     questions: actionableQuestions(db, id),
     restartHold: (await restartHold(sqliteDb(db), item)) !== null,
-    mergeCall: mergeCallInFlight(db, id),
+    mergeCall: await mergeCallInFlight(sqliteDb(db), id),
   };
 }
 
@@ -523,7 +523,7 @@ export async function violations(
     );
     const questions = actionableQuestions(db, item.id);
     const hold = (await restartHold(sqliteDb(db), item)) !== null;
-    const merging = mergeCallInFlight(db, item.id);
+    const merging = await mergeCallInFlight(sqliteDb(db), item.id);
 
     for (const queues of [AGENT_QUEUES, [JOB_KIND.reverify], [JOB_KIND.merge]]) {
       const open = progress.filter((job) => job.status === "pending" && queues.includes(job.queue));

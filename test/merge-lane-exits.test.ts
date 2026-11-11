@@ -102,7 +102,7 @@ test("a stop during a successful squash waits for completion and answers already
     "merged",
   );
   expect(await completeMergedItem(sqliteDb(db), { itemId: "holder", now: 1_021 })).toBeNull();
-  expect(mergeCallInFlight(db, "holder")).toBe(false);
+  expect(await mergeCallInFlight(sqliteDb(db), "holder")).toBe(false);
   drainCommands(db, bus, 2_010);
   drainCommands(db, bus, 3_010);
   expect(emitted).toEqual([]);

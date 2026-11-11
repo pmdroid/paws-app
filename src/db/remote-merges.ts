@@ -114,8 +114,8 @@ export function* mergeCallInFlightSteps(q: Q, itemId: string) {
   return row !== undefined;
 }
 
-export function mergeCallInFlight(db: Database, itemId: string): boolean {
-  return settled(sqliteDb(db).run((q) => mergeCallInFlightSteps(q, itemId)));
+export async function mergeCallInFlight(store: Db, itemId: string): Promise<boolean> {
+  return store.run((q) => mergeCallInFlightSteps(q, itemId));
 }
 
 export function* mergeStopRequestedSteps(q: Q, itemId: string) {

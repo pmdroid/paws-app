@@ -61,7 +61,7 @@ test("a missing pull record with a durable marker reports an error instead of pa
     expect(await f.read()).toBeNull();
     beginMergeCall(f.db, "item", "h", 1_000);
     await expect(f.read()).rejects.toThrow("pull request record is missing");
-    expect(mergeCallInFlight(f.db, "item")).toBe(true);
+    expect(await mergeCallInFlight(sqliteDb(f.db), "item")).toBe(true);
   } finally {
     await f.cleanup();
   }
@@ -84,10 +84,10 @@ test.each([404, 403, 502, "timeout"])(
         return { status: failure as number, body: {} };
       });
       expect(await f.read()).toBe("unknown");
-      expect(mergeCallInFlight(f.db, "item")).toBe(true);
+      expect(await mergeCallInFlight(sqliteDb(f.db), "item")).toBe(true);
       f.respond(async () => ({ status: 200, body: { merged: false } }));
       expect(await f.read()).toBeNull();
-      expect(mergeCallInFlight(f.db, "item")).toBe(true);
+      expect(await mergeCallInFlight(sqliteDb(f.db), "item")).toBe(true);
     } finally {
       await f.cleanup();
     }

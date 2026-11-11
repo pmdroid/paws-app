@@ -79,7 +79,7 @@ describe("a Paws restart and the merge queue", () => {
           throw error;
       };
       await expect(h.pass(item.id)).rejects.toThrow("preparation failed");
-      expect(mergeCallInFlight(h.db, item.id)).toBe(false);
+      expect(await mergeCallInFlight(sqliteDb(h.db), item.id)).toBe(false);
       expect(getWorkItem(h.db, item.id)?.state).toBe("merge_queue");
       expect(reverifies(h)).toEqual([]);
       expect(h.github.merged).toEqual([]);
@@ -102,7 +102,7 @@ describe("a Paws restart and the merge queue", () => {
       kind: "failed",
       message: "merge failed with status 403",
     });
-    expect(mergeCallInFlight(h.db, item.id)).toBe(false);
+    expect(await mergeCallInFlight(sqliteDb(h.db), item.id)).toBe(false);
     expect(h.github.merged).toEqual([]);
   });
 
@@ -142,7 +142,7 @@ describe("a Paws restart and the merge queue", () => {
     });
     expect(h.github.merged).toHaveLength(1);
     expect(getConfirmedRemoteMerge(h.db, item.id)).toBeNull();
-    expect(mergeCallInFlight(h.db, item.id)).toBe(true);
+    expect(await mergeCallInFlight(sqliteDb(h.db), item.id)).toBe(true);
 
     restart(h);
 
@@ -156,7 +156,7 @@ describe("a Paws restart and the merge queue", () => {
       mergeSha: `fake-merge-${item.accepted}`,
     });
     // The call stays fenced until local completion commits.
-    expect(mergeCallInFlight(h.db, item.id)).toBe(true);
+    expect(await mergeCallInFlight(sqliteDb(h.db), item.id)).toBe(true);
 
     expect(await h.pass(item.id, payload)).toEqual({ kind: "obsolete" });
     expect(h.completed).toEqual([item.id]);
@@ -184,7 +184,7 @@ describe("a Paws restart and the merge queue", () => {
           kind: "wait",
           reason: "merge_outcome",
         });
-        expect(mergeCallInFlight(h.db, item.id)).toBe(true);
+        expect(await mergeCallInFlight(sqliteDb(h.db), item.id)).toBe(true);
         expect(listMergeQueues(h.db)).toEqual(queue);
         expect(getConfirmedRemoteMerge(h.db, item.id)).toBeNull();
         expect(getWorkItem(h.db, item.id)?.state).toBe("merge_queue");
@@ -197,7 +197,7 @@ describe("a Paws restart and the merge queue", () => {
       expect(await h.pass(item.id, { itemId: item.id })).toEqual({ kind: "obsolete" });
       expect(h.completed).toEqual([item.id]);
       expect(h.github.merged).toHaveLength(1);
-      expect(mergeCallInFlight(h.db, item.id)).toBe(false);
+      expect(await mergeCallInFlight(sqliteDb(h.db), item.id)).toBe(false);
     },
   );
 
@@ -224,13 +224,13 @@ describe("a Paws restart and the merge queue", () => {
       kind: "wait",
       reason: "merge_outcome",
     });
-    expect(mergeCallInFlight(h.db, first.id)).toBe(true);
+    expect(await mergeCallInFlight(sqliteDb(h.db), first.id)).toBe(true);
     expect(reverifies(h)).toEqual([]);
     h.state.mergeReadUnknown = false;
     expect(await h.pass(first.id, { itemId: first.id })).toEqual({ kind: "returned" });
     expect(getWorkItem(h.db, first.id)?.state).toBe("verifying");
     expect(reverifies(h).map((job) => job.payload)).toEqual([{ itemId: first.id }]);
-    expect(mergeCallInFlight(h.db, first.id)).toBe(false);
+    expect(await mergeCallInFlight(sqliteDb(h.db), first.id)).toBe(false);
     expect(getWorkItem(h.db, second.id)?.state).toBe("merge_queue");
     expect(listMergeQueues(h.db).map((entry) => entry.itemId)).toEqual([first.id, second.id]);
     expect(h.github.merged).toEqual([]);
@@ -261,7 +261,7 @@ test("a stop after the last squash guard defers until the remote merge completes
   release();
   expect(await turn).toEqual({ kind: "merged" });
   expect(h.github.merged).toHaveLength(1);
-  expect(mergeCallInFlight(h.db, item.id)).toBe(true);
+  expect(await mergeCallInFlight(sqliteDb(h.db), item.id)).toBe(true);
   // A retry in the gap between the remote response and local completion still waits.
   h.clock.advance(1_000);
   drainCommands(h.db, new CommandBus(), h.clock.now());
