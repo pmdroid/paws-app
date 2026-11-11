@@ -666,8 +666,8 @@ export function* extendJobLeaseSteps(q: Q, job: Job, now: number, leaseMs: numbe
   return (yield* updateLeasedSteps(q, job, { lockedUntil: now + leaseMs })) > 0;
 }
 
-export function extendJobLease(db: Database, job: Job, now: number, leaseMs: number): boolean {
-  return settled(sqliteDb(db).run((q) => extendJobLeaseSteps(q, job, now, leaseMs)));
+export function extendJobLease(db: Db, job: Job, now: number, leaseMs: number): Promise<boolean> {
+  return db.run((q) => extendJobLeaseSteps(q, job, now, leaseMs));
 }
 
 export function* parkLeasedJobSteps(

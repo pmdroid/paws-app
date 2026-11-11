@@ -7513,7 +7513,7 @@ export class Orchestrator {
         const held: JobContext = {
           signal,
           isCurrent: () => !signal.aborted,
-          extendLease: () => true,
+          extendLease: async () => true,
         };
         for (const itemId of itemIds) this.jobContexts.set(itemId, held);
         try {

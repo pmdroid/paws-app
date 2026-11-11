@@ -184,7 +184,7 @@ for (const scenario of ["reclaimed", "cancelled"] as const) {
     const replacement = getJob(db, id);
     expect(context.isCurrent()).toBe(false);
     expect(context.signal.aborted).toBe(true);
-    expect(context.extendLease()).toBe(false);
+    expect(await context.extendLease()).toBe(false);
     finish();
     await running;
     expect(getJob(db, id)).toEqual(replacement);
@@ -241,7 +241,7 @@ test("a renewal after a pause keeps the job when nobody claimed it in the meanti
   await started;
   clock.advance(45_000);
   expect(context.isCurrent()).toBe(true);
-  expect(context.extendLease()).toBe(true);
+  expect(await context.extendLease()).toBe(true);
   expect(claimNextJob(db, { workerId: "other", queues: ["work"], now: clock.now() })).toBeNull();
   finish();
   await running;

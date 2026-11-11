@@ -80,7 +80,7 @@ async function fixture(mergeable: boolean | null) {
   const context = {
     signal: new AbortController().signal,
     isCurrent: () => true,
-    extendLease: () => true,
+    extendLease: async () => true,
   };
   return {
     db,

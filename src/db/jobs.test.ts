@@ -528,7 +528,7 @@ for (const operation of ["complete", "fail", "extend"] as const) {
           ? completeJob(db, first, clock.now())
           : operation === "fail"
             ? await failJob(sqliteDb(db), first, new Error("stale failure"), { now: clock.now() })
-            : extendJobLease(db, first, clock.now(), 60_000);
+            : await extendJobLease(sqliteDb(db), first, clock.now(), 60_000);
       expect(changed).toBe(operation === "fail" ? null : false);
       expect(getJob(db, id)).toEqual(before);
       db.close();
@@ -547,7 +547,7 @@ for (const operation of ["complete", "fail", "extend"] as const) {
         ? completeJob(db, first, clock.now())
         : operation === "fail"
           ? await failJob(sqliteDb(db), first, new Error("late failure"), { now: clock.now() })
-          : extendJobLease(db, first, clock.now(), 60_000);
+          : await extendJobLease(sqliteDb(db), first, clock.now(), 60_000);
     expect(changed).toBeTruthy();
     expect(getJob(db, id)?.status).toBe(
       operation === "complete" ? "done" : operation === "fail" ? "pending" : "running",
