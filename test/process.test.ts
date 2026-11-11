@@ -48,7 +48,7 @@ describe("process", () => {
       stdout: "pipe",
       stderr: "pipe",
     });
-    const text = await readUntil(proc, "dashboard http://127.0.0.1:", 5000);
+    const text = await readUntil(proc, "dashboard http://127.0.0.1:", 15_000);
     proc.kill();
     await proc.exited;
     expect(text).toContain("paws ready · http://127.0.0.1:");

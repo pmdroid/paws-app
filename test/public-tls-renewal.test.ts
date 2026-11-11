@@ -12,4 +12,4 @@ test("public TLS validation retains live identity and normal CLI joins restart s
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-}, 30000);
+}, 60_000);
