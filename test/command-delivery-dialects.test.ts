@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import type { LinearCommand } from "../src/core";
 import {
   commandDeliveryQueue,
-  drainInstanceCommandsAsync,
+  drainInstanceCommands,
   enqueueJob,
   forwardCommandAsync,
   forwardCommandSteps,
@@ -109,7 +109,7 @@ forEachDialect((open) => {
       now: 100_000,
     });
     const delivered: unknown[] = [];
-    const count = await drainInstanceCommandsAsync(
+    const count = await drainInstanceCommands(
       db,
       "peer",
       (delivery) => delivered.push(delivery),
@@ -118,6 +118,6 @@ forEachDialect((open) => {
     expect(count).toBe(1);
     expect(delivered).toEqual([{ command: stop, stoppedAtVersion: 0 }]);
     expect(await db.run((q) => getJobSteps(q, malformed))).toMatchObject({ status: "done" });
-    expect(await drainInstanceCommandsAsync(db, "peer", () => {}, 100_000)).toBe(0);
+    expect(await drainInstanceCommands(db, "peer", () => {}, 100_000)).toBe(0);
   });
 });

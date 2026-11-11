@@ -51,7 +51,7 @@ async function fixture(remote: boolean) {
     };
   };
   const planner = createTaskPlanner({
-    db,
+    store: sqliteDb(db),
     home,
     pawsRoot,
     launch: remote
@@ -179,7 +179,7 @@ test("unavailable selected helper fails before local launch or classification pe
   await ensureLinearSession(sqliteDb(db), { sessionId: "session" });
   let localLaunches = 0;
   const planner = createTaskPlanner({
-    db,
+    store: sqliteDb(db),
     pawsRoot: home,
     home,
     profile: () => ({ agent: "codex", model: null }),

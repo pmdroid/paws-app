@@ -59,7 +59,7 @@ async function fixture(
   };
   const lines: string[] = [];
   const reader = new RiskDisplayReader({
-    db,
+    store: sqliteDb(db),
     configPath: "/tmp/pas934-no-config",
     readSettings: () => {
       settingsReads++;
@@ -325,7 +325,7 @@ test("hand edits to config are observed outside the status read path", async () 
   writeFileSync(path, "[merge]\nauto_approve_high_risk = true\n");
   let reads = 0;
   const reader = new RiskDisplayReader({
-    db: f.db,
+    store: sqliteDb(f.db),
     configPath: path,
     publicUrl: "https://paws.example",
     readSettings: () => {
@@ -364,7 +364,7 @@ test("policy file edits invalidate display evidence, including across a reader r
   );
   f.reader.close();
   const restarted = new RiskDisplayReader({
-    db: f.db,
+    store: sqliteDb(f.db),
     configPath: "/tmp/pas934-no-config",
     publicUrl: "https://paws.example",
     readSettings: () => f.settings,

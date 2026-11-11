@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
 import { jsonValue, parsedJson } from "./json-text";
 
 export type CiRerun = {
@@ -22,8 +21,8 @@ export function* hasCiRerunSteps(q: Q, itemId: string, head: string) {
   return row !== undefined;
 }
 
-export function hasCiRerun(db: Database, itemId: string, head: string): boolean {
-  return settled(sqliteDb(db).run((q) => hasCiRerunSteps(q, itemId, head)));
+export async function hasCiRerun(db: Db, itemId: string, head: string): Promise<boolean> {
+  return await db.run((q) => hasCiRerunSteps(q, itemId, head));
 }
 
 export function* recordCiRerunSteps(q: Q, rerun: CiRerun) {

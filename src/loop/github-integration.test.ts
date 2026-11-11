@@ -35,7 +35,7 @@ function fixture(path = ":memory:") {
     identity: () => syncSteps(() => authority),
   };
   const auth = new GitHubInstallationCheck(
-    db,
+    sqliteDb(db),
     integration,
     () => 1000,
     () => syncSteps(() => allowed),
@@ -146,7 +146,7 @@ test("App hold survives restart, notifies only administrators and revalidates ex
   f.db.close();
   const reopened = openDatabase(path);
   f.ready();
-  const recovered = new GitHubInstallationCheck(reopened, f.integration, () => 1000000);
+  const recovered = new GitHubInstallationCheck(sqliteDb(reopened), f.integration, () => 1000000);
   try {
     await Promise.all([recovered.recover(), recovered.recover()]);
     await recovered.recover();
@@ -305,7 +305,7 @@ for (const source of ["local", "live"] as const) {
     const f = fixture();
     const item = await f.item("denied");
     const auth = new GitHubInstallationCheck(
-      f.db,
+      sqliteDb(f.db),
       {
         ...f.integration,
         current: () => syncSteps(() => source !== "local"),

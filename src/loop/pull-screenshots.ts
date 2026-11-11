@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { readEvidenceBytes, type EvidenceStorage } from "../evidence";
-import { listEvidenceSteps, sqliteDb, type StoredEvidence } from "../db";
+import { listEvidenceSteps, type StoredEvidence, type Db } from "../db";
 import type { StoredEvidenceFiles } from "../github";
 import { journalCaught } from "../journal";
 import { rejectedEvidenceIdsSteps } from "../questions";
@@ -16,10 +15,9 @@ const EXTENSIONS: Record<string, string> = {
 };
 
 export async function pullRequestScreenshotRows(
-  db: Database,
+  store: Db,
   itemId: string,
 ): Promise<StoredEvidence[]> {
-  const store = sqliteDb(db);
   const rejected = await store.run((q) => rejectedEvidenceIdsSteps(q, itemId));
   const latest = new Map<string, StoredEvidence>();
   for (const row of await store.run((q) => listEvidenceSteps(q, itemId)))
@@ -35,7 +33,7 @@ export async function pullRequestScreenshotRows(
 }
 
 export async function pullRequestScreenshots(input: {
-  db: Database;
+  db: Db;
   itemId: string;
   storage: EvidenceStorage | undefined;
   owner: string;
@@ -75,11 +73,11 @@ export async function pullRequestScreenshots(input: {
 }
 
 async function readEvidence(
-  db: Database,
+  store: Db,
   storage: EvidenceStorage,
   row: StoredEvidence,
 ): Promise<Uint8Array> {
-  const bytes = await readEvidenceBytes(sqliteDb(db), storage, row.id);
+  const bytes = await readEvidenceBytes(store, storage, row.id);
   if (
     bytes.byteLength !== row.sizeBytes ||
     createHash("sha256").update(bytes).digest("hex") !== row.sha256

@@ -50,7 +50,7 @@ function fakeGitHub(runs: Run[], rerunStatus = 201) {
 function rerun(
   client: GitHubClient,
   options: {
-    alreadyRerun?: (head: string) => boolean;
+    alreadyRerun?: (head: string) => Promise<boolean>;
     tokenFor?: (purpose: TokenPurpose) => Promise<string>;
   } = {},
 ) {
@@ -59,7 +59,7 @@ function rerun(
     owner: "owner",
     repo: "repo",
     prNumber: 7,
-    alreadyRerun: options.alreadyRerun ?? (() => false),
+    alreadyRerun: options.alreadyRerun ?? (async () => false),
     tokenProvider: {
       mode: "token",
       tokenFor: options.tokenFor ?? (async (purpose) => `token-${purpose}`),
@@ -87,7 +87,7 @@ test("a re-run posts rerun-failed-jobs for the head commit's failed workflow run
 
 test("a commit already re-run is refused before GitHub is asked again", async () => {
   const github = fakeGitHub([failedRun]);
-  const result = await rerun(github.client, { alreadyRerun: (sha) => sha === head });
+  const result = await rerun(github.client, { alreadyRerun: async (sha) => sha === head });
   expect(result).toEqual({ answer: CI_ALREADY_RERUN });
   expect(github.requests.some((request) => request.method === "POST")).toBe(false);
 });

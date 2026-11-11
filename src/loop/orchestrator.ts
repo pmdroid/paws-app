@@ -966,7 +966,7 @@ export class Orchestrator {
   constructor(private readonly options: OrchestratorOptions) {
     this.store = options.store ?? sqliteDb(options.db);
     this.riskDisplayReader = new RiskDisplayReader({
-      db: options.db,
+      store: this.store,
       configPath: join(options.pawsRoot, "config.toml"),
       readSettings: () => this.readMergePolicy(),
       publicUrl: options.publicUrl,
@@ -976,22 +976,21 @@ export class Orchestrator {
     this.admission = options.admission ?? createAdmission({ db: options.db });
     this.githubAuth = options.githubInstallation
       ? new GitHubInstallationCheck(
-          options.db,
+          this.store,
           options.githubInstallation,
           () => this.now(),
           (q, item) => this.sessionAccessAllowedSteps(q, item),
-          this.store,
         )
       : null;
     this.inputLoader = options.files
       ? createLinearInputLoader({
-          db: options.db,
+          store: this.store,
           files: options.files,
           cacheDir: join(options.secretsDir ?? join(options.pawsRoot, "secrets"), "linear-inputs"),
         })
       : null;
     this.taskPlanner = createTaskPlanner({
-      db: options.db,
+      store: this.store,
       pawsRoot: options.pawsRoot,
       home: options.home,
       launch: (input) => this.launchAgent(input),
@@ -1003,7 +1002,9 @@ export class Orchestrator {
     });
     this.catchUpFn = options.catchUp ?? (() => Promise.resolve());
     this.bus.subscribe((command) => {
-      this.githubAuth?.revoke(command.itemId);
+      void this.githubAuth
+        ?.revoke(command.itemId)
+        .catch((error: unknown) => journalCaught(error, "orchestrator.bus.revoke", command.itemId));
       this.abortItem(command.itemId);
     });
     this.register();
@@ -1268,7 +1269,7 @@ export class Orchestrator {
 
   async interruptLinearSession(sessionId: string): Promise<void> {
     const items = await this.itemsForSession(sessionId);
-    for (const item of items) this.githubAuth?.revoke(item.id);
+    for (const item of items) await this.githubAuth?.revoke(item.id);
     const owned = [...this.live.values()].filter((live) =>
       items.some((item) => item.id === live.itemId),
     );
@@ -5802,7 +5803,7 @@ export class Orchestrator {
     const github = repository ? this.githubForRepository(repository) : null;
     if (!repository || !github) return "no GitHub binding for the item";
     return rerunItemCi({
-      db: this.db,
+      store: this.store,
       itemId: item.id,
       label: item.linearIdentifier,
       reason,
@@ -6003,7 +6004,7 @@ export class Orchestrator {
     if (newPublication) await (await this.sessionProgress(item))?.phase("publishing");
     const draft = await this.store.run((q) => getPullRequestDraftSteps(q, item.id));
     const screenshots = await pullRequestScreenshots({
-      db: this.db,
+      db: this.store,
       itemId: item.id,
       storage: this.evidenceStorage(),
       owner: repository.owner,
@@ -7412,11 +7413,11 @@ export class Orchestrator {
     return { armed: restarted?.armed ?? false };
   }
 
-  deliverInstanceCommands(): number {
+  async deliverInstanceCommands(): Promise<number> {
     const self = this.options.instanceId;
     if (self === undefined) return 0;
-    return drainInstanceCommands(
-      this.db,
+    return await drainInstanceCommands(
+      this.store,
       self,
       ({ command, stoppedAtVersion }) => {
         const live = [...this.live.values()].filter((entry) => entry.itemId === command.itemId);
@@ -7431,7 +7432,10 @@ export class Orchestrator {
         });
       },
       this.now(),
-    );
+    ).catch((error: unknown) => {
+      journalCaught(error, "orchestrator.deliverInstanceCommands.drain", null);
+      return 0;
+    });
   }
 
   async interruptItem(itemId: string): Promise<void> {
@@ -7454,7 +7458,7 @@ export class Orchestrator {
     const affected = new Set(itemIds);
     const owned = [...this.live.values()].filter((live) => affected.has(live.itemId));
     for (const itemId of affected) {
-      this.githubAuth?.revoke(itemId);
+      await this.githubAuth?.revoke(itemId);
       this.abortItem(itemId);
     }
     const joined = await Promise.allSettled([
@@ -10099,7 +10103,7 @@ export class Orchestrator {
         : undefined;
     const storage = this.evidenceStorage();
     if (!storage) return linear;
-    const marks = createReviewMarkLoader({ db: this.db, storage, itemId: item.id, turnId });
+    const marks = createReviewMarkLoader({ store: this.store, storage, itemId: item.id, turnId });
     return async (input: { workspace: string; prompt: string; signal: AbortSignal }) => {
       const marked = await marks(input);
       if (!linear) return marked;
@@ -10630,7 +10634,7 @@ export class Orchestrator {
         ? {
             ciRerun: (reason: string) =>
               rerunItemCi({
-                db: this.db,
+                store: this.store,
                 itemId: item.id,
                 label: item.linearIdentifier,
                 reason,

@@ -179,7 +179,7 @@ for (const [name, decide, response] of [
     const current = await item();
     const integration = new FakeGitHubIntegration();
     integration.permitted = await decide(db, current);
-    const check = new GitHubInstallationCheck(db, integration, () => 1000);
+    const check = new GitHubInstallationCheck(sqliteDb(db), integration, () => 1000);
     try {
       expect(await check.ensure(current, "initial", new AbortController().signal)).toBe(false);
       expect(getWorkItem(db, current.id)?.state).toBe("cancelled");
@@ -203,7 +203,7 @@ test("a denial without a reason still ends with the default response", async () 
   const current = await item();
   const integration = new FakeGitHubIntegration();
   integration.permitted = false;
-  const check = new GitHubInstallationCheck(db, integration, () => 1000);
+  const check = new GitHubInstallationCheck(sqliteDb(db), integration, () => 1000);
   try {
     expect(await check.ensure(current, "initial", new AbortController().signal)).toBe(false);
     expect(getWorkItem(db, current.id)?.state).toBe("cancelled");
@@ -221,7 +221,7 @@ test("a membership lost while held cancels on recovery with the member reason", 
   const current = await item();
   const integration = new FakeGitHubIntegration();
   integration.installed = false;
-  const check = new GitHubInstallationCheck(db, integration, () => 1000);
+  const check = new GitHubInstallationCheck(sqliteDb(db), integration, () => 1000);
   try {
     expect(await check.ensure(current, "initial", new AbortController().signal)).toBe(false);
     expect(getWorkItem(db, current.id)?.state).toBe("awaiting_input");
@@ -242,7 +242,7 @@ test("a local membership check that fails explains without reading GitHub or Lin
   const integration = new FakeGitHubIntegration({
     current: (q, subject) => teamMemberDenialSteps(q, subject),
   });
-  const check = new GitHubInstallationCheck(db, integration, () => 1000);
+  const check = new GitHubInstallationCheck(sqliteDb(db), integration, () => 1000);
   try {
     expect(await check.ensure(current, "initial", new AbortController().signal)).toBe(false);
     expect(await stopResponses(db)).toEqual(["You're not a member of Pascal in Paws."]);

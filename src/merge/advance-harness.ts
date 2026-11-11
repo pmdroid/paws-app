@@ -604,7 +604,7 @@ export async function mergeHarness(
           owner: "acme",
           repo: "app",
           prNumber,
-          alreadyRerun: (head) => hasCiRerun(db, current.id, head),
+          alreadyRerun: (head) => hasCiRerun(store, current.id, head),
           tokenProvider: { mode: "app", tokenFor: async () => "ghs_test" },
         });
         const { rerun } = result;

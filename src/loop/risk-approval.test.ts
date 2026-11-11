@@ -1166,7 +1166,7 @@ for (const scenario of ["clean", "P2", "missing security", "rules change", "off"
   test(`the sole PR response uses the shared risk explanation for ${scenario}`, async () => {
     const f = await cleanRiskFixture();
     const display = new RiskDisplayReader({
-      db: f.db,
+      store: sqliteDb(f.db),
       configPath: "/tmp/pas934-no-config",
       readSettings: () => ({ autoApproveHighRisk: scenario !== "off", repositories: {} }),
       publicUrl: PUBLIC_URL,
@@ -1245,7 +1245,7 @@ for (const scenario of ["clean", "P2", "missing security", "rules change", "off"
 test("a corrupt risk row cannot prevent the sole pull-request response", async () => {
   const f = await cleanRiskFixture();
   const display = new RiskDisplayReader({
-    db: f.db,
+    store: sqliteDb(f.db),
     configPath: "/tmp/pas934-no-config",
     publicUrl: PUBLIC_URL,
     readSettings: () => ({ autoApproveHighRisk: true, repositories: {} }),

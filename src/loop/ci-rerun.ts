@@ -1,9 +1,8 @@
-import type { Database } from "bun:sqlite";
-import { hasCiRerun, recordCiRerunSteps, sqliteDb } from "../db";
+import { hasCiRerun, recordCiRerunSteps, type Db } from "../db";
 import { CI_ALREADY_RERUN, rerunFailedCi, type CiRerunInput } from "../github";
 
 export async function rerunItemCi(options: {
-  db: Database;
+  store: Db;
   itemId: string;
   label: string;
   reason: string;
@@ -14,7 +13,7 @@ export async function rerunItemCi(options: {
 }): Promise<string> {
   const result = await rerunFailedCi({
     ...options.github,
-    alreadyRerun: (head) => hasCiRerun(options.db, options.itemId, head),
+    alreadyRerun: (head) => hasCiRerun(options.store, options.itemId, head),
   });
   if (!result.rerun) return result.answer;
   const rerun = {
@@ -24,7 +23,7 @@ export async function rerunItemCi(options: {
     reason: options.reason,
     at: options.now(),
   };
-  const recorded = await sqliteDb(options.db).run((q) => recordCiRerunSteps(q, rerun));
+  const recorded = await options.store.run((q) => recordCiRerunSteps(q, rerun));
   if (!recorded) return CI_ALREADY_RERUN;
   options.journal?.(
     `item ${options.label} CI re-run requested by ${options.requestedBy ?? "the agent"} on ${result.rerun.head.slice(0, 7)}, workflow run ${result.rerun.runIds.join(", ")}: ${JSON.stringify(options.reason)}`,

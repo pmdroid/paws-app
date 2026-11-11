@@ -112,7 +112,7 @@ export async function probeStandaloneAttribution(root: string) {
     { preconnect: realFetch.preconnect },
   ) as typeof fetch;
   const auth = new GitHubInstallationCheck(
-    db,
+    sqliteDb(db),
     {
       check: async () => true,
       identity: () => syncSteps(() => "workspace-repository"),
