@@ -31,6 +31,7 @@ import {
   getCloseoutProgress,
   listCloseoutProgress,
   saveCheckpoint,
+  sqliteDb,
 } from "../db";
 import { findOpenQuestion, LINK_ASK_REMINDER_MS } from "../questions";
 import { saveSchedulingContext } from "../scheduler";
@@ -39,7 +40,12 @@ import { deliverLinearOutbox } from "./dispatch";
 import { decideLinkAsk, guideLinkAsk } from "./link-ask";
 import { mergeable } from "../merge";
 import { classifyPathsRisk } from "./candidate-risk";
-import { askRiskApproval, riskApprovalFor, RISK_REPLY_NOTE, riskApprovals } from "./risk-approval";
+import {
+  askRiskApproval,
+  riskApprovalFor,
+  RISK_REPLY_NOTE,
+  riskApprovalsSteps,
+} from "./risk-approval";
 
 import { createDbCloseoutProgress } from "./closeout-progress";
 
@@ -394,7 +400,7 @@ test("a Linear reply requests changes and never approves, even when it says appr
     }),
   ).toBe(true);
   expect(await approval(db, heads.s)).toBe("missing");
-  expect(riskApprovals(db, itemId)).toEqual([]);
+  expect(await sqliteDb(db).run((q) => riskApprovalsSteps(q, itemId))).toEqual([]);
   expect(getLinkAsk(db, question.id)).toMatchObject({ decision: null, closedReason: "guidance" });
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
   expect(resumes(db)).toEqual([
@@ -768,7 +774,7 @@ test("opt-in clean reviews at S pass mergeable without a question, writes or app
   expect(f.db.query<{ total: number }, []>("SELECT total_changes() AS total").get()!.total).toBe(
     before,
   );
-  expect(riskApprovals(f.db, f.itemId)).toEqual([]);
+  expect(await sqliteDb(f.db).run((q) => riskApprovalsSteps(q, f.itemId))).toEqual([]);
   expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
   f.db.close();
 });

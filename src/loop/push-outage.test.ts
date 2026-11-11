@@ -12,6 +12,7 @@ import {
   listOutbox,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../db";
 import { PushOutageError } from "../github";
 import { findOpenQuestion, getQuestion } from "../questions";
@@ -65,9 +66,9 @@ async function attempt(
   const job = claim(db, now);
   if (!job) return null;
   try {
-    holdPush(db, REPOSITORY, job.id);
+    await holdPush(sqliteDb(db), REPOSITORY, job.id);
     if (pushes(job.id) === "refused") throw new PushOutageError(["push"], DENIED);
-    pushWorked(db, REPOSITORY, now);
+    await pushWorked(sqliteDb(db), REPOSITORY, now);
     db.run("UPDATE job SET status = 'done' WHERE id = ?", [job.id]);
     return { id: job.id, pushed: true };
   } catch (error) {

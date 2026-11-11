@@ -8,8 +8,6 @@ import {
   markRunSteps,
   reportReviewRepliesSteps,
   restartsSinceHumanTurnSteps,
-  settled,
-  sqliteDb,
   unpostedReviewRepliesSteps,
   unreportedReviewRepliesSteps,
   type Db,
@@ -149,18 +147,17 @@ type ReplyCheck = {
   now: number;
 };
 
-export function checkReviewReplies(
-  db: Database,
+export async function checkReviewReplies(
+  store: Db,
   input: ReplyCheck,
-): "complete" | "sent_back" | "asked" | "stale" {
+): Promise<"complete" | "sent_back" | "asked" | "stale"> {
   const { item } = input;
-  const store = sqliteDb(db);
   // Most turn ends have no reply list: skip the write transaction for them.
-  if (settled(store.run((q) => unreportedReviewRepliesSteps(q, item.id))).length === 0)
+  if ((await store.run((q) => unreportedReviewRepliesSteps(q, item.id))).length === 0)
     return "complete";
   try {
-    const checked = settled(store.transaction((q) => checkOpenRepliesSteps(q, input)));
-    if (checked.armed) emitJobReady(db);
+    const checked = await store.transaction((q) => checkOpenRepliesSteps(q, input));
+    if (checked.armed) emitJobReady(store);
     return checked.outcome;
   } catch (error) {
     if (error instanceof StaleTurnEnd) return "stale";

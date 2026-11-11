@@ -89,7 +89,7 @@ function parkedForTurn(db: ReturnType<typeof openDatabase>, id: number, now: num
 
 test("a Merge answer that ends a hung turn's job no longer parks the merge behind it", async () => {
   const { db, clock, jobs, lines, resumeId } = await hungTurn();
-  expect(mergeAcceptedWork(db, ITEM, { now: clock.now() })).toBe(true);
+  expect(await mergeAcceptedWork(sqliteDb(db), ITEM, { now: clock.now() })).toBe(true);
   expect(getJob(db, resumeId)?.status).toBe("cancelled");
   expect(getWorkItem(db, ITEM)?.state).toBe("merge_queue");
   const merge = db

@@ -252,7 +252,7 @@ import {
   type RepositoryBinding,
   type GitHubDenial,
   type GitHubIntegration,
-  teamMemberDenial,
+  teamMemberDenialSteps,
   teamRepositoryDenial,
   riskGateOn,
   RISK_GATE_NEEDS_PUBLIC_URL,
@@ -1757,7 +1757,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
               !canAct({ id: actorId, identity, member: latest, teamId: session.teamId }, "github")
                 .allowed
             )
-              return deny(teamMemberDenial(db, item));
+              return deny(await store.run((q) => teamMemberDenialSteps(q, item)));
             const repositoryDenial = await teamRepositoryDenial(
               db,
               item,
@@ -1779,7 +1779,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             const member = yield* workspaceLinearMemberSteps(q, currentWorkspace.id, actorId);
             return (
               canAct({ id: actorId, member, teamId: session.teamId }, "github").allowed ||
-              teamMemberDenial(db, item)
+              (yield* teamMemberDenialSteps(q, item))
             );
           },
           *integrationIdentity(q, item) {

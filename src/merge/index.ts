@@ -26,6 +26,7 @@ export {
 } from "./orders";
 export {
   mainMoved,
+  mainMovedSteps,
   queueConflictSweep,
   returnQueuedConflicts,
   type QueueConflictCapabilities,
@@ -35,7 +36,6 @@ export { ciFixHandoff, ciFixQuestion, ciFixRoundLine, type FailedCiCheck } from 
 export { RETRY_MERGE, retriesMerge } from "./merge-denied";
 export {
   askMergeHelp,
-  postMergeConflict,
   postMergeConflictSteps,
   ciFixes,
   latestUserTurn,

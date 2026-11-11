@@ -23,8 +23,8 @@ export {
 } from "./github-integration";
 export { FakeGitHubIntegration } from "./fake-installation";
 export {
-  issueTeamName,
-  teamMemberDenial,
+  issueTeamNameSteps,
+  teamMemberDenialSteps,
   teamRepositoryDenial,
   workspaceAdministratorNames,
   type TeamScope,
