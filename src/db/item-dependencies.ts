@@ -114,7 +114,7 @@ export function* readDependencyScopeSteps(
         identifier: sql<string | null>`i.linear_identifier`,
         title: sql<string>`i.title`,
         state: sql<WorkItemState>`i.state`,
-        cancelRequested: sql<number>`i.cancel_requested`,
+        cancelRequested: sql<number>`i.cancel_requested`.mapWith(Number),
         mode: sql<TaskMode | null>`t.mode`,
         brief: sql<unknown>`i.brief`,
         delegationIssueId: sql<string>`${sql.raw(parentIssueIdSql("i", q.dialect))}`,

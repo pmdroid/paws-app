@@ -2,7 +2,7 @@ import { describe } from "bun:test";
 import { sql } from "drizzle-orm";
 import { postgresDb, sqliteDb, type Db, type Q } from "../src/db";
 import { tempDb } from "./helpers";
-import { pgliteDb } from "./pglite";
+import { pgliteDb, serverPostgres } from "./pglite";
 
 export type DialectDb = { db: Db; close(): Promise<void> };
 
@@ -19,6 +19,11 @@ const DIALECTS: readonly Dialect[] = [
   {
     name: "postgres",
     open: async () => {
+      const base = process.env.PAWS_TEST_DATABASE_URL;
+      if (base) {
+        const server = await serverPostgres(base, 1);
+        return { db: server.store, close: server.close };
+      }
       const pg = await pgliteDb();
       return { db: postgresDb(pg), close: () => pg.$client.close() };
     },
