@@ -229,7 +229,9 @@ test("a queued stop forwards to the run's owner through the store the orchestrat
     expect((await jobs.tick([JOB_KIND.command]))?.queue).toBe(JOB_KIND.command);
     expect(orchestrator.store).toBe(store);
     expect(getWorkItem(db, "acme-5")?.state).toBe("cancelled");
-    const deliveries = listJobs(db).filter((job) => job.queue === commandDeliveryQueue(a.id));
+    const deliveries = (await listJobs(sqliteDb(db))).filter(
+      (job) => job.queue === commandDeliveryQueue(a.id),
+    );
     expect(deliveries.map((job) => job.status)).toEqual(["pending"]);
   } finally {
     a.close();
