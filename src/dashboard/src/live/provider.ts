@@ -47,7 +47,7 @@ import {
   blockerCheckedAtSteps,
   describeLinearWebhookWarning,
   getCandidateRiskSteps,
-  getCloseoutRecovery,
+  getCloseoutRecoverySteps,
   getConfirmedRemoteMergeSteps,
   getConversationSteps,
   getEvidenceSteps,
@@ -68,9 +68,9 @@ import {
   listAgentCloseoutSteps,
   listCiRerunsSteps,
   listCiRoundsSteps,
-  listCloseoutBypassChecks,
+  listCloseoutBypassChecksSteps,
   listCloseoutProgressSteps,
-  listCloseoutRounds,
+  listCloseoutRoundsSteps,
   listDeadDeliveriesSteps,
   listEvidenceSteps,
   listIntakeQueueSteps,
@@ -81,9 +81,7 @@ import {
   listMergeQueuesSteps,
   listOpenQuestionsSteps,
   listOutboxSteps,
-  listPolicyRunnerWarnings,
   listPolicyRunnerWarningsSteps,
-  listPushOutages,
   listPushOutagesSteps,
   listQueuePositions,
   listRunsSteps,
@@ -99,7 +97,6 @@ import {
   runnerCapacityWait,
   runnerWorkActiveSteps,
   runRunnerNameSteps,
-  sessionRepositoriesAllowed,
   sessionRepositoriesAllowedSteps,
   sqliteDb,
   usagePauseSteps,
@@ -831,26 +828,17 @@ export async function readPolicyRunnerWarnings(
   };
 }
 
-export function visibleDiagnosticRepositories(
+export async function visibleDiagnosticRepositories(
   db: Database,
   options: Pick<LiveStatusOptions, "sessionIds">,
-): string[] {
-  const rows = [...listPushOutages(db), ...listPolicyRunnerWarnings(db)];
-  return [...new Set(visibleDiagnostics(db, options, rows).map((row) => row.repository))].sort();
-}
-
-function visibleDiagnostics<T extends { repository: string }>(
-  db: Database,
-  options: Pick<LiveStatusOptions, "sessionIds">,
-  rows: T[],
-): T[] {
-  if (options.sessionIds === undefined) return rows;
-  const allowed = sessionRepositoriesAllowed(
-    db,
-    options.sessionIds,
-    rows.map((row) => row.repository),
-  );
-  return rows.filter((row) => allowed.has(row.repository));
+): Promise<string[]> {
+  const store = sqliteDb(db);
+  const rows = [
+    ...(await store.run(listPushOutagesSteps)),
+    ...(await store.run(listPolicyRunnerWarningsSteps)),
+  ];
+  const visible = await visibleDiagnosticsAsync(db, options, rows);
+  return [...new Set(visible.map((row) => row.repository))].sort();
 }
 
 async function visibleDiagnosticsAsync<T extends { repository: string }>(
@@ -1060,7 +1048,7 @@ async function readIssueScope(
     });
   }
   const progress = await store.run(listCloseoutProgressSteps);
-  const rounds = listCloseoutRounds(db);
+  const rounds = await store.run((q) => listCloseoutRoundsSteps(q));
   const merge: Pick<IssueScope, "mergeQueue" | "mergeHistory"> = issuesOnly
     ? { mergeQueue: [] }
     : await mergeQueueFor(db, {
@@ -1831,8 +1819,10 @@ async function withBypassChecks(
 ): Promise<StatusQuestion> {
   const ask = question.linkAsk;
   if (ask?.kind !== "bypass" && ask?.kind !== "rule") return question;
-  const recovery = getCloseoutRecovery(db, question.id);
+  const store = sqliteDb(db);
+  const recovery = await store.run((q) => getCloseoutRecoverySteps(q, question.id));
   if (recovery === null) return question;
+  const bypassChecks = await store.run((q) => listCloseoutBypassChecksSteps(q, question.id));
   const verdict = verdicts.find(
     (entry) => entry.itemId === question.itemId && entry.headSha === recovery.head,
   );
@@ -1846,7 +1836,7 @@ async function withBypassChecks(
       bypass: {
         policyDigest: recovery.policyDigest,
         passed: shown.filter((check) => check.state === "passed").map((check) => check.id),
-        checks: listCloseoutBypassChecks(db, question.id).map((stored) => {
+        checks: bypassChecks.map((stored) => {
           const check = shown.find((entry) => entry.id === stored.checkId);
           return {
             id: stored.checkId,
