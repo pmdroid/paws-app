@@ -40,8 +40,8 @@ export async function probeCurrentRunStartup(root: string) {
         mode: "clarify",
         question: "Which page?",
       });
-      const previous = beginImplementRun(db, item.id, clock.now());
-      markRun(db, previous.run.id, "ended", clock.now());
+      const previous = await beginImplementRun(sqliteDb(db), item.id, clock.now());
+      await markRun(sqliteDb(db), previous.run.id, "ended", clock.now());
     } else await saveTaskMode(sqliteDb(db), item.id, mode, 0, mode === "artifact");
     const repository = {
       owner: "fixture",
@@ -107,7 +107,7 @@ export async function probeCurrentRunStartup(root: string) {
     try {
       if (mode !== "clarified-artifact") await workspaceDispatch(db, { now: clock.now() });
       else
-        enqueueJob(db, {
+        await enqueueJob(sqliteDb(db), {
           queue: mode === "clarified-artifact" ? JOB_KIND.resume : JOB_KIND.start,
           payload: {
             itemId: item.id,

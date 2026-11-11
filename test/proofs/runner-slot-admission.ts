@@ -40,7 +40,7 @@ export default {
     proof.expect("a repository refused everywhere stays queued", (await pass()).length === 0);
     proof.expect(
       "no refused start can be claimed",
-      claimNextJob(db, { now: NOW, queues: [JOB_KIND.start] }) === null,
+      (await claimNextJob(sqliteDb(db), { now: NOW, queues: [JOB_KIND.start] })) === null,
     );
     const agentbox = await pair("agentbox", 2, [REPOSITORY]);
     const admitted = await pass();
@@ -50,17 +50,20 @@ export default {
       (await schedulerRunnerSlots(sqliteDb(db), NOW)).length === 2 &&
         (await schedulerRunnerSlots(sqliteDb(db), NOW)).every((slot) => slot.runnerId === agentbox),
     );
-    const claims = Array.from({ length: 2 }, (_, i) =>
-      claimNextJob(db, {
-        workerId: `proof-${i}`,
-        now: NOW,
-        leaseMs: 60_000,
-        queues: [JOB_KIND.start],
-      }),
-    );
+    const claims = [];
+    for (let i = 0; i < 2; i++)
+      claims.push(
+        await claimNextJob(sqliteDb(db), {
+          workerId: `proof-${i}`,
+          now: NOW,
+          leaseMs: 60_000,
+          queues: [JOB_KIND.start],
+        }),
+      );
     proof.expect(
       "only admitted starts can be claimed",
-      claims.every(Boolean) && claimNextJob(db, { now: NOW, queues: [JOB_KIND.start] }) === null,
+      claims.every(Boolean) &&
+        (await claimNextJob(sqliteDb(db), { now: NOW, queues: [JOB_KIND.start] })) === null,
     );
     proof.expect(
       "the wait reason names the rejected host",

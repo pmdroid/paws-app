@@ -77,14 +77,14 @@ async function fixture() {
     linearTaskModes: true,
     linearAccess: gate,
   });
-  const enqueue = (op: "activity" | "status", stop = false) =>
+  const enqueue = async (op: "activity" | "status", stop = false) =>
     enqueueOutboxOnce(db, {
       target: "linear",
       op,
       orderingKey: "session",
       delivery: stop ? "stop" : "terminal",
       idempotencyKey: "delivery",
-      generation: getLinearSessionGeneration(db, "session"),
+      generation: await getLinearSessionGeneration(sqliteDb(db), "session"),
       payload: {
         sessionId: "session",
         itemId: item.id,
@@ -138,7 +138,7 @@ test.each(["workflow states", "credential acquisition"])(
       ),
     );
     try {
-      f.enqueue("status");
+      await f.enqueue("status");
       await f.outbox.tick();
       await started.promise;
       await advanceLinearSessionGeneration(sqliteDb(f.db), "session", { stop: true, now: 10 });
@@ -165,8 +165,8 @@ test("a queued final response verifies live access and survives the task's own c
       "closeout_accepted",
       "merge_accepted",
     ] as const)
-      applyWorkItemEvent(f.db, f.item.id, event);
-    f.enqueue("activity");
+      await applyWorkItemEvent(sqliteDb(f.db), f.item.id, event);
+    await f.enqueue("activity");
     await f.outbox.tick();
     await f.outbox.idle();
     expect(f.tracker.progress.map((update) => update.body)).toEqual(["Confirmed result."]);
@@ -189,7 +189,7 @@ test("access removed during a fresh publication read prevents the queued mutatio
     return original(id, options);
   };
   try {
-    f.enqueue("status");
+    await f.enqueue("status");
     await f.outbox.tick();
     await started.promise;
     await revokeLinearInstallation(sqliteDb(f.db), {
@@ -213,10 +213,10 @@ test("access removed during a fresh publication read prevents the queued mutatio
 test("a stopped task can acknowledge removal of delegation while installation access remains valid", async () => {
   const f = await fixture();
   try {
-    applyWorkItemEvent(f.db, f.item.id, "cancel");
+    await applyWorkItemEvent(sqliteDb(f.db), f.item.id, "cancel");
     await advanceLinearSessionGeneration(sqliteDb(f.db), "session", { stop: true, now: 10 });
     f.lifecycle.issue.delegateId = "different-app";
-    f.enqueue("activity", true);
+    await f.enqueue("activity", true);
     await f.outbox.tick();
     await f.outbox.idle();
     expect(f.tracker.progress.map((update) => update.body)).toEqual(["Confirmed result."]);
@@ -231,7 +231,7 @@ test("a stopped task can acknowledge removal of delegation while installation ac
 test("fresh delegation removal prevents a final response without workflow mutation", async () => {
   const f = await fixture();
   try {
-    f.enqueue("activity");
+    await f.enqueue("activity");
     f.lifecycle.issue.delegateId = null;
     await f.outbox.tick();
     await f.outbox.idle();

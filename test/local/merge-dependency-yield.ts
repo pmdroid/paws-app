@@ -67,7 +67,11 @@ export async function probeMergeDependencyYield(
       }),
     });
     try {
-      enqueueJob(db, { queue: JOB_KIND.merge, payload: { itemId: "item" }, now: clock.now() });
+      await enqueueJob(sqliteDb(db), {
+        queue: JOB_KIND.merge,
+        payload: { itemId: "item" },
+        now: clock.now(),
+      });
       await jobs.tick();
       const successor = db.query("SELECT queue,status FROM job WHERE status='pending'").get();
       observe(

@@ -115,6 +115,7 @@ function references(decl: FunctionDeclaration | VariableDeclaration | MethodDecl
     .findReferencesAsNodes()
     .filter(
       (ref) =>
+        ref !== decl.getNameNode() &&
         !ref.getFirstAncestor(
           (n) => Node.isImportDeclaration(n) || Node.isExportDeclaration(n) || Node.isTypeQuery(n),
         ),

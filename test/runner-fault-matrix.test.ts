@@ -520,7 +520,7 @@ async function runRemoteFault(fault: Fault) {
       await resumeUsagePauseNow(sqliteDb(db), paused.runId, Date.now());
       return;
     }
-    const deferred = listJobs(db).find(
+    const deferred = (await listJobs(sqliteDb(db))).find(
       (job) =>
         job.queue === JOB_KIND.resume ||
         (job.status === "pending" &&
@@ -810,7 +810,7 @@ async function runRemoteFault(fault: Fault) {
       state: getWorkItem(db, item.id)?.state ?? null,
       thoughts: progress("thought"),
       errors: progress("error"),
-      retries: listJobs(db)
+      retries: (await listJobs(sqliteDb(db)))
         .filter((job) => job.queue === JOB_KIND.resume)
         .map((job) => (job.payload as { retry?: number }).retry ?? 0),
       runs: (await listRuns(sqliteDb(db))).map((run) => `${run.kind}:${run.status}`),
@@ -825,7 +825,9 @@ async function runRemoteFault(fault: Fault) {
       detail: JSON.stringify({
         state: getWorkItem(db, item.id)?.state,
         runs: (await listRuns(sqliteDb(db))).map((run) => `${run.kind}:${run.status}`),
-        jobs: listJobs(db).map((job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`),
+        jobs: (await listJobs(sqliteDb(db))).map(
+          (job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`,
+        ),
         progress: tracker.progress.map((update) => `${update.kind}: ${update.body}`),
         faultedAttempts: runner.faultedAttempts,
       }),

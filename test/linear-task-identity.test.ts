@@ -205,7 +205,7 @@ test("prompt before hydration persists, ordered duplicates apply once and Stop f
     expect(
       await advanceLinearSessionGeneration(sqliteDb(db), "session", { stop: true, now: 30 }),
     ).toBe(1);
-    expect(getLinearSessionGeneration(db, "session")).toBe(1);
+    expect(await getLinearSessionGeneration(sqliteDb(db), "session")).toBe(1);
     expect(await listPendingLinearTurns(sqliteDb(db), "session")).toEqual([]);
     await recordLinearTurn(sqliteDb(db), turn("after-stop", 40));
     expect(

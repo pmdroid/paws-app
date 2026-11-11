@@ -111,7 +111,7 @@ async function fixture(agentRead?: AgentRead) {
     [runnerId, now],
   );
   const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
-  const { run } = beginImplementRun(db, item.id, now);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
   await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app",
@@ -128,7 +128,7 @@ async function fixture(agentRead?: AgentRead) {
   });
   db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, item.id]);
   // The agent's turn ended and Closeout is checking its candidate.
-  applyWorkItemEvent(db, item.id, "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
   saveCheckpoint(db, item.id, { phase: "verifying", baseSha: base, wipCommit: head });
 
   const keys = generateKeyPairSync("ed25519");
@@ -350,7 +350,9 @@ async function restartWithRunnerHolding(f: Fixture) {
   expect(await recoverOnStartup(sqliteDb(f.db))).toEqual([{ type: "reverify" }]);
   expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "verifying", recoveryAttempts: 0 });
   expect(
-    listJobs(f.db).filter((job) => job.queue === "run.reverify" && job.status === "pending"),
+    (await listJobs(sqliteDb(f.db))).filter(
+      (job) => job.queue === "run.reverify" && job.status === "pending",
+    ),
   ).toHaveLength(1);
 }
 
@@ -504,14 +506,14 @@ test("a verifying item whose runner lease ran past its grace re-verifies as befo
       { type: "reverify", resumed: true },
     ]);
     expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "verifying", recoveryAttempts: 1 });
-    const open = listJobs(f.db).filter((job) => job.status === "pending");
+    const open = (await listJobs(sqliteDb(f.db))).filter((job) => job.status === "pending");
     expect(open.map((job) => job.queue)).toEqual(["run.reverify"]);
     expect(open[0]!.payload).toMatchObject({ itemId: f.item.id, recheckHead: true });
     f.restart();
     expect(await recoverOnStartup(sqliteDb(f.db), later + 1_000)).toEqual([
       { type: "ask_restart" },
     ]);
-    expect(listJobs(f.db).some((job) => job.queue === "run.resume")).toBe(false);
+    expect((await listJobs(sqliteDb(f.db))).some((job) => job.queue === "run.resume")).toBe(false);
   } finally {
     await f.close();
   }

@@ -125,7 +125,7 @@ test("the stopped and closed responses carry the open findings of the last publi
           )
         ).applied,
       ).toBe(true);
-      const body = listOutbox(db)
+      const body = (await listOutbox(sqliteDb(db)))
         .filter((row) => row.orderingKey === `session-${id}` && row.op === "activity")
         .map((row) => (row.payload as { body: string }).body)
         .at(-1);

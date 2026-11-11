@@ -135,8 +135,8 @@ export async function probeBoundaries(
       wipCommit: "b".repeat(40),
     };
     const recovering = insertQueuedItem(db, { id: "recovering-item", now: clock.now() });
-    beginImplementRun(db, recovering.id, clock.now());
-    enterMergeQueue(db, recovering.id, checkpoint);
+    await beginImplementRun(sqliteDb(db), recovering.id, clock.now());
+    await enterMergeQueue(sqliteDb(db), recovering.id, checkpoint);
     const original = await enqueueVerifiedMerge(db, {
       itemId: recovering.id,
       head: checkpoint.wipCommit,
@@ -145,8 +145,11 @@ export async function probeBoundaries(
     });
     await recoverOnStartup(sqliteDb(db), clock.now());
     if (getWorkItem(db, recovering.id)?.state === "verifying")
-      applyWorkItemEvent(db, recovering.id, "closeout_accepted");
-    const reverification = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.reverify] });
+      await applyWorkItemEvent(sqliteDb(db), recovering.id, "closeout_accepted");
+    const reverification = await claimNextJob(sqliteDb(db), {
+      now: clock.now(),
+      queues: [JOB_KIND.reverify],
+    });
     if (reverification === null) throw new Error("Recovery did not schedule re-verification");
     const retry = await enqueueVerifiedMerge(db, {
       itemId: recovering.id,
@@ -155,8 +158,11 @@ export async function probeBoundaries(
       now: clock.now(),
       reverifyJobId: reverification.id,
     });
-    completeJob(db, reverification, clock.now());
-    const runnable = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] });
+    await completeJob(sqliteDb(db), reverification, clock.now());
+    const runnable = await claimNextJob(sqliteDb(db), {
+      now: clock.now(),
+      queues: [JOB_KIND.merge],
+    });
     observe(
       "reverified merge schedules a runnable retry",
       runnable?.id === retry && retry !== original,
@@ -164,7 +170,11 @@ export async function probeBoundaries(
         original,
         retry,
         claimedRetry: runnable?.id ?? null,
-        jobs: listJobs(db).map(({ id, queue, status }) => ({ id, queue, status })),
+        jobs: (await listJobs(sqliteDb(db))).map(({ id, queue, status }) => ({
+          id,
+          queue,
+          status,
+        })),
       },
     );
   } finally {

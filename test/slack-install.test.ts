@@ -14,7 +14,7 @@ import {
 } from "../src/slack";
 import { writeCredential } from "../src/credentials";
 import { startServer } from "../src/server";
-import { listJobs } from "../src/db";
+import { sqliteDb, listJobs } from "../src/db";
 import { tempDb, tempHome } from "./helpers";
 
 const homes: string[] = [];
@@ -236,7 +236,7 @@ test("rotating Slack bot tokens use one durable refresh job and retain installat
     scope: SLACK_BOT_SCOPES,
     refreshToken: "synthetic-slack-refresh-next",
   });
-  expect(listJobs(db).map((job) => job.status)).toEqual(["done"]);
+  expect((await listJobs(sqliteDb(db))).map((job) => job.status)).toEqual(["done"]);
 });
 
 test("Slack front door verifies raw-body HMAC and a five-minute timestamp window before returning its challenge", async () => {

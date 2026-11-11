@@ -82,7 +82,7 @@ for (const [body, existing] of [
     try {
       intake = Promise.resolve(linear.webhook.onEvent!(created()));
       const signal = await ready.promise;
-      const row = listOutbox(db).find(
+      const row = (await listOutbox(sqliteDb(db))).find(
         (entry) => (entry.payload as { body?: string }).body === body,
       )!;
       expect((row.payload as { id: string }).id).toMatch(
@@ -105,7 +105,9 @@ for (const [body, existing] of [
       await outbox.tick();
       await outbox.idle();
       expect(tracker.progress.some((update) => update.body === body)).toBe(false);
-      expect(listOutbox(db).find((entry) => entry.id === row.id)?.status).toBe("dropped");
+      expect((await listOutbox(sqliteDb(db))).find((entry) => entry.id === row.id)?.status).toBe(
+        "dropped",
+      );
       const terminal = tracker.progress.findIndex((update) => update.kind === "response");
       expect(terminal).toBeGreaterThanOrEqual(0);
       expect(tracker.progress.slice(terminal + 1)).toEqual([]);
@@ -148,7 +150,7 @@ test("acknowledgement retry and duplicate replay preserve one activity UUID", as
     await orchestrator.sessionProgressReporter(created())(update);
     await orchestrator.sessionProgressReporter(created())(update);
     expect(ids).toHaveLength(0);
-    expect(listOutbox(db)[0]?.notBefore).toBe(6_000);
+    expect((await listOutbox(sqliteDb(db)))[0]?.notBefore).toBe(6_000);
     clock.advance(5_000);
     await outbox.tick();
     await outbox.idle();
@@ -160,8 +162,8 @@ test("acknowledgement retry and duplicate replay preserve one activity UUID", as
     expect(ids).toHaveLength(2);
     expect(ids[0]).toBe(ids[1]);
     expect(ids[0]).toBeString();
-    expect(listOutbox(db)).toHaveLength(1);
-    expect(listOutbox(db)[0]?.status).toBe("sent");
+    expect(await listOutbox(sqliteDb(db))).toHaveLength(1);
+    expect((await listOutbox(sqliteDb(db)))[0]?.status).toBe("sent");
   } finally {
     db.close();
   }
@@ -201,7 +203,9 @@ test("an old prompted intake failure cannot terminate a newer session generation
     release.resolve();
     await old;
     expect(tracker.progress).toEqual([]);
-    const error = listOutbox(db).find((row) => (row.payload as { kind?: string }).kind === "error");
+    const error = (await listOutbox(sqliteDb(db))).find(
+      (row) => (row.payload as { kind?: string }).kind === "error",
+    );
     expect(error?.generation).toBe(generation - 1);
     expect(error?.status).toBe("dropped");
     await orchestrator.sessionProgressReporter({ ...created(), dedupeKey: "new-prompt" })({
@@ -284,7 +288,7 @@ test.each([false, true])(
       release.resolve();
       await old;
       await next;
-      const error = listOutbox(db).find(
+      const error = (await listOutbox(sqliteDb(db))).find(
         (row) => (row.payload as { kind?: string }).kind === "error",
       );
       expect(error?.generation).toBe(1);
@@ -335,7 +339,7 @@ test("item Stop delivery retains one UUID through failure, reopen and duplicate 
       updatedAtMs: 1_000,
     };
     await orchestrator.onLinearEvent(stop);
-    const row = listOutbox(db).find((entry) => entry.delivery === "stop")!;
+    const row = (await listOutbox(sqliteDb(db))).find((entry) => entry.delivery === "stop")!;
     const id = (row.payload as { id: string }).id;
     expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(ids).toEqual([id]);
@@ -350,10 +354,12 @@ test("item Stop delivery retains one UUID through failure, reopen and duplicate 
     await outbox.tick();
     await outbox.idle();
     expect(ids).toEqual([id, id]);
-    expect(listOutbox(db).find((entry) => entry.id === row.id)?.status).toBe("sent");
+    expect((await listOutbox(sqliteDb(db))).find((entry) => entry.id === row.id)?.status).toBe(
+      "sent",
+    );
     await orchestrator.onLinearEvent(stop);
     expect(ids).toEqual([id, id]);
-    expect(listOutbox(db).map((entry) => entry.op)).toEqual(["activity"]);
+    expect((await listOutbox(sqliteDb(db))).map((entry) => entry.op)).toEqual(["activity"]);
   } finally {
     await orchestrator.shutdown();
     await outbox.idle();
@@ -388,7 +394,9 @@ test("a merged item settles its delegation without a delegation summary", async 
       db.query<{ state: string }, [string]>("SELECT state FROM work_item WHERE id = ?").get(item.id)
         ?.state,
     ).toBe("merged");
-    expect(listOutbox(db).some((row) => row.idempotencyKey.startsWith("epic-done:"))).toBe(false);
+    expect(
+      (await listOutbox(sqliteDb(db))).some((row) => row.idempotencyKey.startsWith("epic-done:")),
+    ).toBe(false);
     expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(false);
     expect(tracker.progress.some((update) => update.body.includes("Epic abandoned"))).toBe(false);
   } finally {

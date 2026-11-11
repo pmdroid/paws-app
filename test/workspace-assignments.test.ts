@@ -355,14 +355,14 @@ async function fixture({
     },
   });
   const local = `http://127.0.0.1:${server.port}`;
-  function link() {
-    const row = listOutbox(db).at(-1)!;
+  async function link() {
+    const row = (await listOutbox(sqliteDb(db))).at(-1)!;
     const payload = row.payload as { auth: { url: string; userId: string } };
     expect(payload.auth.userId).toBe("member");
     return payload.auth.url;
   }
-  async function begin(url = link(), headers: Record<string, string> = {}) {
-    const target = new URL(url);
+  async function begin(url?: string, headers: Record<string, string> = {}) {
+    const target = new URL(url ?? (await link()));
     return fetch(`${local}${target.pathname}${target.search}`, { redirect: "manual", headers });
   }
   async function callback(start: Response, user = "member", headers: Record<string, string> = {}) {
@@ -376,7 +376,7 @@ async function fixture({
   const delivered = new Set<number>();
   /** Sends every queued Linear write to the fake tracker, as the outbox would. */
   async function deliver() {
-    for (const row of listOutbox(db))
+    for (const row of await listOutbox(sqliteDb(db)))
       if (row.status === "pending" && !delivered.has(row.id)) {
         delivered.add(row.id);
         await deliverLinearOutbox(row, tracker, async () => {}, undefined, db);
@@ -480,7 +480,7 @@ test("first assignment holds without manufacturing membership and resumes once a
     expect(await f.assignments.authorize({ ...f.event, deliveryId: "duplicate" })).toMatchObject({
       outcome: "refused",
     });
-    expect(listOutbox(f.db)).toHaveLength(1);
+    expect(await listOutbox(sqliteDb(f.db))).toHaveLength(1);
     expect(
       f.db.query("SELECT 1 FROM workspace_user WHERE linear_user_id='member'").get(),
     ).toBeNull();
@@ -491,14 +491,18 @@ test("first assignment holds without manufacturing membership and resumes once a
     await f.restart();
     expect((await f.callback(start)).status).toBe(303);
     expect((await f.callback(start)).status).toBe(400);
-    expect(listJobs(f.db).filter((job) => job.queue === "workspace.assignment")).toHaveLength(1);
+    expect(
+      (await listJobs(sqliteDb(f.db))).filter((job) => job.queue === "workspace.assignment"),
+    ).toHaveLength(1);
     await f.restart();
     const jobs = f.jobs();
     await jobs.tick();
     await jobs.tick();
     expect(f.calls).toBe(1);
     expect(listWorkItems(f.db)).toHaveLength(1);
-    expect(listJobs(f.db).filter((job) => job.queue === "item.start")).toHaveLength(1);
+    expect(
+      (await listJobs(sqliteDb(f.db))).filter((job) => job.queue === "item.start"),
+    ).toHaveLength(1);
     expect(f.continuations).toEqual([f.event.dedupeKey]);
     expect(await f.assignments.authorize(f.event)).toMatchObject({ outcome: "refused" });
     expect(
@@ -522,7 +526,7 @@ for (const identity of ["wrong", "outsider"])
       if (identity === "wrong")
         expect(await refused.text()).toContain("This link belongs to Morgan Member.");
       expect(refused.headers.get("location")).toBeNull();
-      expect(listJobs(f.db)).toHaveLength(0);
+      expect(await listJobs(sqliteDb(f.db))).toHaveLength(0);
       expect(
         f.db.query("SELECT status,completed_at AS completedAt FROM workspace_assignment").get(),
       ).toEqual({ status: "pending", completedAt: null });
@@ -584,7 +588,7 @@ test("held prompts cannot become initial delegation; waiting writes nothing; Sto
   const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
-    const original = f.link();
+    const original = await f.link();
     expect(
       await f.assignments.authorize({
         ...f.event,
@@ -599,8 +603,8 @@ test("held prompts cannot become initial delegation; waiting writes nothing; Sto
     f.clock.advance(600_001);
     await f.restart();
     await f.jobs().tick();
-    expect(listOutbox(f.db)).toHaveLength(1);
-    expect(f.link()).toBe(original);
+    expect(await listOutbox(sqliteDb(f.db))).toHaveLength(1);
+    expect(await f.link()).toBe(original);
     const start = await f.begin(original);
     expect(start.status).toBe(303);
     expect(
@@ -631,7 +635,7 @@ test("linked members avoid a new-issue sign-in hold while removed members do not
       now: f.clock.now(),
     });
     expect(await f.assignments.authorize(f.event)).toEqual({ outcome: "accepted" });
-    expect(listOutbox(f.db)).toHaveLength(0);
+    expect(await listOutbox(sqliteDb(f.db))).toHaveLength(0);
     f.db.run("UPDATE workspace_member SET active=0 WHERE user_id='member'");
     expect(await f.assignments.authorize(f.event)).toMatchObject({ outcome: "refused" });
     expect((await getLinearSession(sqliteDb(f.db), "session"))!.creatorId).toBe("member");
@@ -804,7 +808,7 @@ test("concurrent delegations from the same member are all accepted", async () =>
     const second = await f.assignments.authorize({ ...f.event, dedupeKey: "second" });
     release();
     expect([await first, second]).toEqual([{ outcome: "accepted" }, { outcome: "accepted" }]);
-    expect(listOutbox(f.db)).toHaveLength(0);
+    expect(await listOutbox(sqliteDb(f.db))).toHaveLength(0);
   } finally {
     await f.close();
   }
@@ -817,7 +821,9 @@ test("an interrupted canonical continuation retries from durable acceptance with
     await f.callback(await f.begin());
     f.failContinue();
     await f.jobs().tick();
-    const job = listJobs(f.db).find((value) => value.queue === "workspace.assignment")!;
+    const job = (await listJobs(sqliteDb(f.db))).find(
+      (value) => value.queue === "workspace.assignment",
+    )!;
     expect(job.status).toBe("pending");
     await f.restart();
     f.clock.advance(60_000);
@@ -838,9 +844,14 @@ test("two workers cannot claim the same durable continuation", async () => {
   try {
     await f.assignments.authorize(f.event);
     await f.callback(await f.begin());
-    const first = claimNextJob(f.db, { queues: ["workspace.assignment"], now: f.clock.now() })!;
-    expect(claimNextJob(f.db, { queues: ["workspace.assignment"], now: f.clock.now() })).toBeNull();
-    expect(completeJob(f.db, first, f.clock.now())).toBe(true);
+    const first = (await claimNextJob(sqliteDb(f.db), {
+      queues: ["workspace.assignment"],
+      now: f.clock.now(),
+    }))!;
+    expect(
+      await claimNextJob(sqliteDb(f.db), { queues: ["workspace.assignment"], now: f.clock.now() }),
+    ).toBeNull();
+    expect(await completeJob(sqliteDb(f.db), first, f.clock.now())).toBe(true);
   } finally {
     await f.close();
   }
@@ -865,8 +876,8 @@ test("the resume reuses the stored snapshot and reads only the issue and the mem
   }
 });
 
-const errors = (f: Awaited<ReturnType<typeof fixture>>) =>
-  listOutbox(f.db)
+const errors = async (f: Awaited<ReturnType<typeof fixture>>) =>
+  (await listOutbox(sqliteDb(f.db)))
     .map((row) => row.payload as { kind?: string; body?: string })
     .filter((payload) => payload.kind === "error")
     .map((payload) => payload.body);
@@ -904,12 +915,14 @@ for (const [change, reason, apply] of [
       await jobs.tick();
       expect(f.calls).toBe(0);
       expect(listWorkItems(f.db)).toHaveLength(0);
-      expect(errors(f)).toEqual([`Paws did not start this work. ${reason}`]);
+      expect(await errors(f)).toEqual([`Paws did not start this work. ${reason}`]);
       expect(f.db.query("SELECT status FROM workspace_assignment").get()).toEqual({
         status: "invalid",
       });
       expect(
-        listJobs(f.db).filter((job) => job.queue === "workspace.assignment" && job.lastError),
+        (await listJobs(sqliteDb(f.db))).filter(
+          (job) => job.queue === "workspace.assignment" && job.lastError,
+        ),
       ).toEqual([]);
     } finally {
       await f.close();
@@ -933,7 +946,9 @@ for (const change of ["spec", "repository", "membership"])
       });
       await f.jobs().tick();
       expect(listWorkItems(f.db)).toHaveLength(0);
-      expect(listJobs(f.db).filter((job) => job.queue === "item.start")).toHaveLength(0);
+      expect(
+        (await listJobs(sqliteDb(f.db))).filter((job) => job.queue === "item.start"),
+      ).toHaveLength(0);
     } finally {
       await f.close();
     }
@@ -943,13 +958,13 @@ test("a new canonical generation does not reuse an obsolete onboarding hold", as
   const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
-    const previous = f.link();
+    const previous = await f.link();
     await advanceLinearSessionGeneration(sqliteDb(f.db), "session", { now: f.clock.now() });
     expect(
       await f.assignments.authorize({ ...f.event, dedupeKey: "new-assignment" }),
     ).toMatchObject({ outcome: "refused" });
-    expect(listOutbox(f.db)).toHaveLength(2);
-    expect(f.link()).not.toBe(previous);
+    expect(await listOutbox(sqliteDb(f.db))).toHaveLength(2);
+    expect(await f.link()).not.toBe(previous);
     expect((await f.begin(previous)).status).toBe(404);
     expect((await f.callback(await f.begin())).status).toBe(303);
   } finally {
@@ -964,7 +979,7 @@ test("browser callback cannot accept a hold after losing the issue team", async 
     const start = await f.begin();
     f.setTeams([]);
     expect((await f.callback(start)).status).toBe(400);
-    expect(listJobs(f.db)).toHaveLength(0);
+    expect(await listJobs(sqliteDb(f.db))).toHaveLength(0);
   } finally {
     await f.close();
   }
@@ -973,8 +988,8 @@ test("browser callback cannot accept a hold after losing the issue team", async 
 const SIGN_IN_BODY =
   "Welcome to Paws. Sign in with Linear so I can start TEST-1. I'll start on my own once you're set up. You can Stop this anytime.\n\nOptional: link GitHub on the next page so your commits credit you.";
 
-const elicitations = (f: Awaited<ReturnType<typeof fixture>>) =>
-  listOutbox(f.db).filter((row) => row.op === "elicitation");
+const elicitations = async (f: Awaited<ReturnType<typeof fixture>>) =>
+  (await listOutbox(sqliteDb(f.db))).filter((row) => row.op === "elicitation");
 
 test("an unknown delegator sees the first thought, then one sign-in action, and waiting writes nothing", async () => {
   const f = await fixture();
@@ -1016,7 +1031,7 @@ test("an unknown delegator sees the first thought, then one sign-in action, and 
     await f.deliver();
     expect(f.tracker.progress).toHaveLength(1);
     expect(f.tracker.questions).toHaveLength(1);
-    expect(listOutbox(f.db)).toHaveLength(1);
+    expect(await listOutbox(sqliteDb(f.db))).toHaveLength(1);
 
     const start = await f.begin(question.auth!.url);
     expect(start.status).toBe(303);
@@ -1044,7 +1059,7 @@ test("the creator's link sign-in resumes the held session and lands on its onboa
   const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
-    const link = f.link();
+    const link = await f.link();
     const done = await f.callback(await f.begin(link));
     expect(done.status).toBe(303);
     expect(done.headers.get("location")).toBe(onboardPath(link));
@@ -1092,18 +1107,18 @@ test("the creator's link sign-in resumes the held session and lands on its onboa
     await jobs.tick();
     expect(f.continuations).toEqual([f.event.dedupeKey]);
     expect(listWorkItems(f.db)).toHaveLength(1);
-    expect(elicitations(f)).toHaveLength(1);
+    expect(await elicitations(f)).toHaveLength(1);
 
     // Reopening after a restart shows the current state from SQLite.
     await f.restart();
-    const outbox = listOutbox(f.db).length;
+    const outbox = (await listOutbox(sqliteDb(f.db))).length;
     const reopened = await fetch(`${f.local}${onboardPath(link)}`, {
       redirect: "manual",
       headers: { cookie },
     });
     expect(reopened.status).toBe(200);
     expect(await reopened.text()).toContain("Welcome, member");
-    expect(listOutbox(f.db)).toHaveLength(outbox);
+    expect(await listOutbox(sqliteDb(f.db))).toHaveLength(outbox);
   } finally {
     await f.close();
   }
@@ -1138,7 +1153,7 @@ test("the runner step uses the issue's project lead's shared runner, never anoth
     // A colleague who does not lead the project shares a runner; it does not count.
     addRunner("colleague-box", "colleague", 1);
     await f.assignments.authorize(f.event);
-    const link = f.link();
+    const link = await f.link();
     const done = await f.callback(await f.begin(link));
     const cookie = sessionCookie(done);
     const open = async () =>
@@ -1151,12 +1166,12 @@ test("the runner step uses the issue's project lead's shared runner, never anoth
     );
     expect(needed).not.toContain("colleague-box");
     // The lead shares a runner: the step is ready on the next load, without restarting anything.
-    const outbox = listOutbox(f.db).length;
+    const outbox = (await listOutbox(sqliteDb(f.db))).length;
     addRunner("lead-box", "lead", 1);
     expect(await open()).toMatch(
       /<h2>Runner<\/h2><p class="detail">Lena Lead&#39;s shared runner lead-box-host will run this task\.<\/p><\/div><span class="label">Ready<\/span>/,
     );
-    expect(listOutbox(f.db)).toHaveLength(outbox);
+    expect(await listOutbox(sqliteDb(f.db))).toHaveLength(outbox);
   } finally {
     await f.close();
   }
@@ -1166,7 +1181,7 @@ test("the runner step offers Create VM when Paws can create one", async () => {
   const f = await fixture({ createVm: true });
   try {
     await f.assignments.authorize(f.event);
-    const link = f.link();
+    const link = await f.link();
     const done = await f.callback(await f.begin(link));
     const html = await (
       await fetch(`${f.local}${onboardPath(link)}`, {
@@ -1187,7 +1202,7 @@ test("the onboarding page reads no Linear data and is gone once the member loses
   const f = await fixture({ createVm: true });
   try {
     await f.assignments.authorize(f.event);
-    const link = f.link();
+    const link = await f.link();
     const done = await f.callback(await f.begin(link));
     const cookie = sessionCookie(done);
     let memberReads = 0;
@@ -1221,7 +1236,7 @@ test("a finished link opened without a Paws session is 404, even for its creator
   const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
-    const link = f.link();
+    const link = await f.link();
     await f.callback(await f.begin(link));
     const opened = await f.begin(link);
     expect(opened.status).toBe(404);
@@ -1245,7 +1260,7 @@ test("another member opening the onboarding link sees nothing about the issue", 
   const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
-    const link = f.link();
+    const link = await f.link();
     await f.callback(await f.begin(link));
     const dashboard = await f.callback(
       await fetch(`${f.local}/auth/linear`, { redirect: "manual" }),
@@ -1274,7 +1289,7 @@ test("a stopped session closes its onboarding page", async () => {
   const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
-    const link = f.link();
+    const link = await f.link();
     const cookie = sessionCookie(await f.callback(await f.begin(link)));
     await advanceLinearSessionGeneration(sqliteDb(f.db), "session", {
       stop: true,
@@ -1303,7 +1318,7 @@ test("signing in from the dashboard instead of the link releases the hold", asyn
     await jobs.tick();
     await jobs.tick();
     expect(f.continuations).toEqual([f.event.dedupeKey]);
-    expect(elicitations(f)).toHaveLength(1);
+    expect(await elicitations(f)).toHaveLength(1);
   } finally {
     await f.close();
   }
@@ -1322,7 +1337,7 @@ test("a member row for the creator lets the hold continue on the next sweep with
     await jobs.tick();
     await jobs.tick();
     expect(f.continuations).toEqual([f.event.dedupeKey]);
-    expect(elicitations(f)).toHaveLength(1);
+    expect(await elicitations(f)).toHaveLength(1);
   } finally {
     await f.close();
   }
@@ -1360,8 +1375,8 @@ test("at deploy a pending hold without a link gets one link and one new-form act
     f.jobs();
     await f.restart();
     await f.jobs().tick();
-    expect(elicitations(f)).toHaveLength(1);
-    const link = f.link();
+    expect(await elicitations(f)).toHaveLength(1);
+    const link = await f.link();
     expect(link).toMatch(/^https:\/\/paws\.example\.invalid\/onboard\/[A-Za-z0-9]{26}$/);
     const hold = f.db
       .query<{ linkId: string; tokenHash: string; linkExpiresAt: number }, []>(
@@ -1382,7 +1397,7 @@ test("at deploy a pending hold without a link gets one link and one new-form act
 /** Signs the creator in through their link and lets the held session resume. */
 async function onboarded(f: Awaited<ReturnType<typeof fixture>>) {
   await f.assignments.authorize(f.event);
-  const link = f.link();
+  const link = await f.link();
   const done = await f.callback(await f.begin(link));
   expect(done.status).toBe(303);
   const jobs = f.jobs();
@@ -1555,7 +1570,7 @@ test("a pending hold past one day posts one final response, ends the session and
   const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
-    const link = f.link();
+    const link = await f.link();
     const start = await f.begin(link);
     await f.deliver();
     expect(f.tracker.questions).toHaveLength(1);
@@ -1563,7 +1578,7 @@ test("a pending hold past one day posts one final response, ends the session and
     f.clock.advance(ONBOARDING_HOLD_MS - 60_000);
     await jobs.tick();
     expect(holdStatus(f)).toBe("pending");
-    expect(listOutbox(f.db)).toHaveLength(1);
+    expect(await listOutbox(sqliteDb(f.db))).toHaveLength(1);
 
     f.clock.advance(2 * 60_000);
     for (let minute = 0; minute < 5; minute++) {
@@ -1586,7 +1601,9 @@ test("a pending hold past one day posts one final response, ends the session and
     await jobs.tick();
     await jobs.tick();
     expect(f.continuations).toEqual([]);
-    expect(listOutbox(f.db).filter((row) => row.status !== "dropped")).toHaveLength(1);
+    expect(
+      (await listOutbox(sqliteDb(f.db))).filter((row) => row.status !== "dropped"),
+    ).toHaveLength(1);
     expect(holdStatus(f)).toBe("invalid");
   } finally {
     await f.close();
@@ -1597,7 +1614,7 @@ test("a completed link shows the task only to its creator and is 404 for anyone 
   const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
-    const link = f.link();
+    const link = await f.link();
     const done = await f.callback(await f.begin(link));
     expect(done.status).toBe(303);
     const creator = sessionCookie(done);
@@ -1634,8 +1651,8 @@ test("onboarding starts are limited per client IP and per link, and a 429 writes
   const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
-    const link = f.link();
-    const outbox = listOutbox(f.db).length;
+    const link = await f.link();
+    const outbox = (await listOutbox(sqliteDb(f.db))).length;
     const linear = f.linearRequests;
     const ip = { "x-test-ip": "203.0.113.7" };
     for (let attempt = 0; attempt < 10; attempt++)
@@ -1662,7 +1679,7 @@ test("onboarding starts are limited per client IP and per link, and a 429 writes
     expect(Number(perLink.headers.get("retry-after"))).toBeGreaterThan(60);
     expect(Number(perLink.headers.get("retry-after"))).toBeLessThanOrEqual(24 * 60 * 60);
 
-    expect(listOutbox(f.db)).toHaveLength(outbox);
+    expect(await listOutbox(sqliteDb(f.db))).toHaveLength(outbox);
     expect(f.linearRequests).toBe(linear);
     expect(f.tracker.questions).toHaveLength(0);
     expect(f.tracker.progress).toHaveLength(0);
@@ -1681,7 +1698,7 @@ test("five failed callbacks from one IP in ten minutes block the sixth without a
   try {
     await f.assignments.authorize(f.event);
     const ip = { "x-test-ip": "203.0.113.9" };
-    const start = await f.begin(f.link(), ip);
+    const start = await f.begin(await f.link(), ip);
     for (let attempt = 0; attempt < 5; attempt++) {
       const failed = await fetch(`${f.local}/auth/linear/callback?state=bad${attempt}&code=bad`, {
         redirect: "manual",
@@ -1689,21 +1706,23 @@ test("five failed callbacks from one IP in ten minutes block the sixth without a
       });
       expect(failed.status).toBe(400);
     }
-    const outbox = listOutbox(f.db).length;
+    const outbox = (await listOutbox(sqliteDb(f.db))).length;
     const linear = f.linearRequests;
     const limited = await f.callback(start, "member", ip);
     expect(limited.status).toBe(429);
     expect(Number(limited.headers.get("retry-after"))).toBeGreaterThanOrEqual(1);
     expect(Number(limited.headers.get("retry-after"))).toBeLessThanOrEqual(600);
     expect(f.linearRequests).toBe(linear);
-    expect(listOutbox(f.db)).toHaveLength(outbox);
-    expect(listJobs(f.db).filter((job) => job.queue === "workspace.assignment")).toHaveLength(0);
+    expect(await listOutbox(sqliteDb(f.db))).toHaveLength(outbox);
+    expect(
+      (await listJobs(sqliteDb(f.db))).filter((job) => job.queue === "workspace.assignment"),
+    ).toHaveLength(0);
     expect(holdStatus(f)).toBe("pending");
     expect(f.logs).toEqual(["Paws rate limit reached: linear.callback.failed.ip"]);
 
     // The state stays unused, so the same start completes once the window has passed.
     f.clock.advance(5 * 60_000);
-    const later = await f.begin(f.link(), ip);
+    const later = await f.begin(await f.link(), ip);
     f.clock.advance(5 * 60_000 + 1);
     expect((await f.callback(later, "member", ip)).status).toBe(303);
   } finally {
@@ -1724,7 +1743,7 @@ test("no log line contains the link path, an OAuth code or state, or a cookie va
   const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
-    const link = f.link();
+    const link = await f.link();
     const path = new URL(link).pathname;
     const secrets = [path, path.slice("/onboard/".length)];
     const ip = { "x-test-ip": "203.0.113.10" };
@@ -1839,7 +1858,7 @@ test("the creator's replies before sign-in reach the first agent prompt in order
   const f = await fixture({ agent: recorder.agent });
   try {
     expect(await f.assignments.authorize(f.event)).toMatchObject({ outcome: "refused" });
-    const outbox = listOutbox(f.db).length;
+    const outbox = (await listOutbox(sqliteDb(f.db))).length;
     expect(
       await f.orchestrator.onLinearEvent(
         heldReply(f, "first", "member", "HELD_REPLY_ONE use the blue button"),
@@ -1859,7 +1878,7 @@ test("the creator's replies before sign-in reach the first agent prompt in order
       (await listPendingLinearTurns(sqliteDb(f.db), "session")).map((turn) => turn.body),
     ).toEqual(["HELD_REPLY_ONE use the blue button", "HELD_REPLY_TWO and keep the footer"]);
     expect(f.db.query("SELECT 1 FROM linear_turn WHERE actor_id='someone-else'").get()).toBeNull();
-    expect(listOutbox(f.db)).toHaveLength(outbox);
+    expect(await listOutbox(sqliteDb(f.db))).toHaveLength(outbox);
     expect(f.tracker.progress).toEqual([]);
     expect(f.tracker.questions).toEqual([]);
     expect(f.tracker.sessionUpdates).toEqual([]);
@@ -1894,7 +1913,7 @@ test("Stop before sign-in discards the creator's held replies", async () => {
   const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
-    const link = f.link();
+    const link = await f.link();
     expect(await f.orchestrator.onLinearEvent(heldReply(f, "first", "member", "Held reply"))).toBe(
       false,
     );
@@ -1996,7 +2015,7 @@ test("a held delegation revoked during continuation retains its final response",
     await jobs.tick();
     await jobs.tick();
     expect(
-      listJobs(f.db)
+      (await listJobs(sqliteDb(f.db)))
         .filter((job) => job.queue === "workspace.assignment" && job.lastError)
         .map((job) => job.lastError),
     ).toEqual([]);

@@ -26,7 +26,7 @@ test("only a newer accepted turn can change a non-code task outcome and code sta
   try {
     await ensureLinearSession(sqliteDb(db), { sessionId: "session" });
     const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-    applyWorkItemEvent(db, item.id, "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
     await expect(selectTaskModeForTurn(sqliteDb(db), item.id, "answer", 1)).rejects.toThrow(
       "changed",
     );
@@ -48,8 +48,8 @@ test("only a newer accepted turn can change a non-code task outcome and code sta
     expect(await selectTaskModeForTurn(sqliteDb(db), item.id, "code", third)).toBe("code");
     const fourth = await advanceLinearSessionGeneration(sqliteDb(db), "session");
     expect(await selectTaskModeForTurn(sqliteDb(db), item.id, "answer", fourth)).toBe("code");
-    expect(getTaskMode(db, item.id)).toBe("code");
-    applyWorkItemEvent(db, item.id, "cancel");
+    expect(await getTaskMode(sqliteDb(db), item.id)).toBe("code");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "cancel");
     await expect(selectTaskModeForTurn(sqliteDb(db), item.id, "answer", fourth)).rejects.toThrow(
       "changed",
     );
@@ -63,7 +63,7 @@ test("artifact completion requires uploaded deliverables and survives database r
   const db = openDatabase(file);
   migrate(db);
   const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-  const run = beginImplementRun(db, item.id, 1).run;
+  const run = (await beginImplementRun(sqliteDb(db), item.id, 1)).run;
   await saveTaskMode(sqliteDb(db), item.id, "artifact");
   await expect(completeArtifactTask(sqliteDb(db), item.id, "Done")).rejects.toThrow(
     "uploaded deliverable",
@@ -97,14 +97,14 @@ test("artifact completion requires uploaded deliverables and survives database r
   const restored = openDatabase(file);
   try {
     expect(getWorkItem(restored, item.id)?.state).toBe("completed");
-    expect(listOutbox(restored, "session").map((row) => row.payload)).toEqual([
+    expect((await listOutbox(sqliteDb(restored), "session")).map((row) => row.payload)).toEqual([
       { sessionId: "session", kind: "response", body: "Here is the complete report." },
       { itemId: item.id, linearIssueId: item.linearIssueId, stateType: "completed" },
     ]);
     await expect(completeArtifactTask(sqliteDb(restored), item.id, "Duplicate")).rejects.toThrow(
       "no longer running",
     );
-    expect(listOutbox(restored, "session")).toHaveLength(2);
+    expect(await listOutbox(sqliteDb(restored), "session")).toHaveLength(2);
   } finally {
     restored.close();
   }

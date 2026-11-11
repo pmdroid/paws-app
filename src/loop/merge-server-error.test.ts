@@ -70,8 +70,12 @@ async function fixture(mergeable: boolean | null) {
     repo: "monorepo",
     remoteUrl: "https://github.com/acme/monorepo.git",
   });
-  beginImplementRun(db, "DEP-661", clock.now());
-  enterMergeQueue(db, "DEP-661", { phase: "merge_queue", baseSha: MAIN, wipCommit: HEAD });
+  await beginImplementRun(sqliteDb(db), "DEP-661", clock.now());
+  await enterMergeQueue(sqliteDb(db), "DEP-661", {
+    phase: "merge_queue",
+    baseSha: MAIN,
+    wipCommit: HEAD,
+  });
   await recordItemPullRequest(sqliteDb(db), {
     itemId: "DEP-661",
     pullNumber: 6496,
@@ -94,7 +98,8 @@ async function fixture(mergeable: boolean | null) {
         new GitHubHttpError({ status, body: {} }),
         context,
       ),
-    resumes: () => listJobs(db).filter((job) => job.queue === JOB_KIND.resume),
+    resumes: async () =>
+      (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume),
     cleanup: async () => {
       await orchestrator.shutdown();
       db.close();
@@ -109,7 +114,7 @@ test("a merge attempt that gets HTTP 500 on a conflicting pull request goes back
     expect(await f.failed(500)).toBe(true);
     expect(f.reads).toEqual(["GET /repos/acme/monorepo/pulls/6496"]);
     expect(getWorkItem(f.db, "DEP-661")?.state).not.toBe("merge_queue");
-    const [resume] = f.resumes();
+    const [resume] = await f.resumes();
     const payload = resume?.payload as { reason: string; handoff: string };
     expect(payload.reason).toBe("conflict");
     expect(payload.handoff.startsWith(REBASE_CONFLICT_INSTRUCTION)).toBe(true);
@@ -137,7 +142,7 @@ test("an HTTP 500 on a conflicting pull request with the rebase budget spent ask
         recordedAt: 1_000,
       });
     expect(await f.failed(500)).toBe(true);
-    expect(f.resumes()).toEqual([]);
+    expect(await f.resumes()).toEqual([]);
     expect(getWorkItem(f.db, "DEP-661")?.state).toBe("awaiting_input");
     expect(findOpenQuestion(f.db, "ses-1")).toMatchObject({ reason: "rebase_budget_spent" });
   } finally {
@@ -152,7 +157,7 @@ test.each([true, null])(
     try {
       expect(await f.failed(502)).toBe(false);
       expect(f.reads).toHaveLength(1);
-      expect(f.resumes()).toEqual([]);
+      expect(await f.resumes()).toEqual([]);
       expect(getWorkItem(f.db, "DEP-661")?.state).toBe("merge_queue");
     } finally {
       await f.cleanup();

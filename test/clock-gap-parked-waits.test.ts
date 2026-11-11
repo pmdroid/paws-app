@@ -55,7 +55,7 @@ async function park(
 ): Promise<number> {
   insertQueuedItem(db, { id: "eng-9", sessionKey: "linear-session", now });
   const saved = withCheckpoint ? checkpoint : undefined;
-  const { item } = beginImplementRun(db, "eng-9", now, saved);
+  const { item } = await beginImplementRun(sqliteDb(db), "eng-9", now, saved);
   if (wait === "transient backoff") {
     await deferWorkItem(sqliteDb(db), item, {
       retry: 2,
@@ -65,8 +65,9 @@ async function park(
       now,
     });
   } else {
-    if (wait === "resume capacity wait") applyWorkItemEvent(db, "eng-9", "lease_expired");
-    enqueueJob(db, {
+    if (wait === "resume capacity wait")
+      await applyWorkItemEvent(sqliteDb(db), "eng-9", "lease_expired");
+    await enqueueJob(sqliteDb(db), {
       queue: wait === "first-start capacity wait" ? JOB_KIND.start : JOB_KIND.resume,
       runAt: now + SLOT_POLL_MS,
       payload: {
@@ -76,12 +77,12 @@ async function park(
       now,
     });
   }
-  const [job] = executions(db);
+  const [job] = await executions(db);
   return job!.id;
 }
 
-function executions(db: Database, itemId = "eng-9"): Job[] {
-  return listJobs(db).filter(
+async function executions(db: Database, itemId = "eng-9"): Promise<Job[]> {
+  return (await listJobs(sqliteDb(db))).filter(
     (job) =>
       EXECUTION.includes(job.queue) &&
       (job.status === "pending" || job.status === "running") &&
@@ -89,7 +90,7 @@ function executions(db: Database, itemId = "eng-9"): Job[] {
   );
 }
 
-function snapshot(db: Database, itemId = "eng-9") {
+async function snapshot(db: Database, itemId = "eng-9") {
   const item = getWorkItem(db, itemId)!;
   return {
     item: {
@@ -104,7 +105,7 @@ function snapshot(db: Database, itemId = "eng-9") {
       cancelRequested: item.cancelRequested,
     },
     run: item.currentRunId === null ? null : getRun(db, item.currentRunId)?.status,
-    jobs: executions(db, itemId).map(
+    jobs: (await executions(db, itemId)).map(
       ({ id, queue, status, runAt, attempts, maxAttempts, payload }) => ({
         id,
         queue,
@@ -118,8 +119,8 @@ function snapshot(db: Database, itemId = "eng-9") {
   };
 }
 
-function activities(db: Database) {
-  return listOutbox(db).filter((message) => message.op === "activity");
+async function activities(db: Database) {
+  return (await listOutbox(sqliteDb(db))).filter((message) => message.op === "activity");
 }
 
 async function observe(db: Database, host: HostSupervisor, now: number): Promise<void> {
@@ -139,28 +140,35 @@ describe("a clock gap during a parked wait", () => {
           try {
             const owner = await park(db, clock.now(), wait, withCheckpoint);
             await host.tick();
-            const before = snapshot(db);
+            const before = await snapshot(db);
 
             clock.sleep(gapMs);
             await observe(db, host, clock.now());
 
             expect(db.query("SELECT slept_ms FROM wake").all()).toEqual([{ slept_ms: gapMs }]);
-            expect(snapshot(db)).toEqual(before);
-            expect(activities(db)).toEqual([]);
+            expect(await snapshot(db)).toEqual(before);
+            expect(await activities(db)).toEqual([]);
 
             const due = before.jobs[0]!.runAt;
             if (due > clock.now()) {
-              expect(claimNextJob(db, { now: clock.now(), queues: [...EXECUTION] })).toBeNull();
+              expect(
+                await claimNextJob(sqliteDb(db), { now: clock.now(), queues: [...EXECUTION] }),
+              ).toBeNull();
               clock.advance(due - clock.now());
               await observe(db, host, clock.now());
             }
-            const claimed = claimNextJob(db, { now: clock.now(), queues: [...EXECUTION] });
+            const claimed = await claimNextJob(sqliteDb(db), {
+              now: clock.now(),
+              queues: [...EXECUTION],
+            });
             expect(claimed?.id).toBe(owner);
             expect(await jobVersionCurrent(sqliteDb(db), claimed!)).toBe(true);
-            expect(claimNextJob(db, { now: clock.now(), queues: [...EXECUTION] })).toBeNull();
+            expect(
+              await claimNextJob(sqliteDb(db), { now: clock.now(), queues: [...EXECUTION] }),
+            ).toBeNull();
             expect(await dispatch(db, { now: clock.now() })).toEqual([]);
-            expect(executions(db).map((job) => job.id)).toEqual([owner]);
-            expect(completeJob(db, claimed!, clock.now())).toBe(true);
+            expect((await executions(db)).map((job) => job.id)).toEqual([owner]);
+            expect(await completeJob(sqliteDb(db), claimed!, clock.now())).toBe(true);
           } finally {
             host.stop();
             db.close();
@@ -175,7 +183,7 @@ describe("a clock gap during a parked wait", () => {
         try {
           const owner = await park(db, clock.now(), wait, withCheckpoint);
           await host.tick();
-          const before = snapshot(db);
+          const before = await snapshot(db);
 
           await prepareShutdown(sqliteDb(db), clock.now());
           host.stop();
@@ -187,9 +195,13 @@ describe("a clock gap during a parked wait", () => {
           next.stop();
 
           expect(db.query("SELECT 1 FROM wake").all()).toEqual([]);
-          expect(snapshot(db)).toEqual(before);
-          expect(claimNextJob(db, { now: clock.now(), queues: [...EXECUTION] })?.id).toBe(owner);
-          expect(claimNextJob(db, { now: clock.now(), queues: [...EXECUTION] })).toBeNull();
+          expect(await snapshot(db)).toEqual(before);
+          expect(
+            (await claimNextJob(sqliteDb(db), { now: clock.now(), queues: [...EXECUTION] }))?.id,
+          ).toBe(owner);
+          expect(
+            await claimNextJob(sqliteDb(db), { now: clock.now(), queues: [...EXECUTION] }),
+          ).toBeNull();
         } finally {
           db.close();
         }
@@ -203,25 +215,29 @@ describe("a clock gap during a parked wait", () => {
       try {
         const owner = await park(db, wall.now, wait, false);
         await host.tick();
-        const before = snapshot(db);
+        const before = await snapshot(db);
 
         wall.now += 3 * 60 * 60_000 + 1_000;
         wall.mono += 1_000;
         await observe(db, host, wall.now);
-        expect(snapshot(db)).toEqual(before);
+        expect(await snapshot(db)).toEqual(before);
 
         wall.now -= 3 * 60 * 60_000;
         wall.mono += 1_000;
         await observe(db, host, wall.now);
-        expect(snapshot(db)).toEqual(before);
+        expect(await snapshot(db)).toEqual(before);
         expect(db.query("SELECT slept_ms FROM wake").all()).toEqual([
           { slept_ms: 3 * 60 * 60_000 },
         ]);
         const due = before.jobs[0]!.runAt;
-        expect(claimNextJob(db, { now: due - 1, queues: [...EXECUTION] })).toBeNull();
-        expect(claimNextJob(db, { now: due, queues: [...EXECUTION] })?.id).toBe(owner);
-        expect(claimNextJob(db, { now: due, queues: [...EXECUTION] })).toBeNull();
-        expect(activities(db)).toEqual([]);
+        expect(
+          await claimNextJob(sqliteDb(db), { now: due - 1, queues: [...EXECUTION] }),
+        ).toBeNull();
+        expect((await claimNextJob(sqliteDb(db), { now: due, queues: [...EXECUTION] }))?.id).toBe(
+          owner,
+        );
+        expect(await claimNextJob(sqliteDb(db), { now: due, queues: [...EXECUTION] })).toBeNull();
+        expect(await activities(db)).toEqual([]);
       } finally {
         host.stop();
         db.close();
@@ -254,7 +270,7 @@ describe("ownership a clock gap does not invent", () => {
         expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([
           { type: "resume", freshSession: true, checkpoint: null },
         ]);
-        const resumes = executions(db).filter((job) => job.id !== owner);
+        const resumes = (await executions(db)).filter((job) => job.id !== owner);
         expect(resumes).toHaveLength(1);
         expect(await jobVersionCurrent(sqliteDb(db), resumes[0]!)).toBe(true);
         expect(getWorkItem(db, "eng-9")).toMatchObject({
@@ -273,11 +289,15 @@ describe("ownership a clock gap does not invent", () => {
     test(`a ${how} transient retry does not keep the orphan sweep from picking the work up`, async () => {
       const { clock, db, host, owner } = await abandoned(how);
       try {
-        enqueueJob(db, { queue: JOB_KIND.command, payload: { itemId: "eng-9" }, now: 0 });
+        await enqueueJob(sqliteDb(db), {
+          queue: JOB_KIND.command,
+          payload: { itemId: "eng-9" },
+          now: 0,
+        });
         db.run("UPDATE job SET status='done', finished_at=0 WHERE queue=?", [JOB_KIND.command]);
         expect(await dispatch(db, { now: clock.now() })).toEqual([]);
         await dispatch(db, { now: clock.now() });
-        const resumes = executions(db).filter((job) => job.id !== owner);
+        const resumes = (await executions(db)).filter((job) => job.id !== owner);
         expect(resumes).toMatchObject([
           { queue: JOB_KIND.resume, payload: { reason: "orphaned" } },
         ]);
@@ -313,8 +333,8 @@ describe("repeated clock gaps with holds and parked waits side by side", () => {
     try {
       await park(db, clock.now(), "transient backoff", true);
       insertQueuedItem(db, { id: "eng-10", sessionKey: "session-10", now: clock.now() });
-      beginImplementRun(db, "eng-10", clock.now());
-      enqueueJob(db, {
+      await beginImplementRun(sqliteDb(db), "eng-10", clock.now());
+      await enqueueJob(sqliteDb(db), {
         queue: JOB_KIND.start,
         runAt: clock.now() + SLOT_POLL_MS,
         payload: {
@@ -331,15 +351,16 @@ describe("repeated clock gaps with holds and parked waits side by side", () => {
         now: clock.now(),
       });
       insertQueuedItem(db, { id: "eng-12", sessionKey: "session-12", now: clock.now() });
-      beginImplementRun(db, "eng-12", clock.now(), checkpoint);
-      applyWorkItemEvent(db, "eng-12", "blocking_question");
+      await beginImplementRun(sqliteDb(db), "eng-12", clock.now(), checkpoint);
+      await applyWorkItemEvent(sqliteDb(db), "eng-12", "blocking_question");
       db.run("UPDATE work_item SET recovery_attempts=1 WHERE id IN ('eng-9','eng-10')");
 
       await host.tick();
       const ids = ["eng-9", "eng-10", "eng-11", "eng-12"];
-      const before = ids.map((id) => snapshot(db, id));
+      const before = [];
+      for (const id of ids) before.push(await snapshot(db, id));
       const hold = await getRunnerSetupHold(sqliteDb(db), "eng-11");
-      const outbox = listOutbox(db).length;
+      const outbox = (await listOutbox(sqliteDb(db))).length;
 
       for (const gapMs of [5 * 60_000, TWO_HOURS, TWO_HOURS + 1]) {
         clock.sleep(gapMs);
@@ -348,18 +369,25 @@ describe("repeated clock gaps with holds and parked waits side by side", () => {
         await host.tick();
       }
 
-      expect(ids.map((id) => snapshot(db, id))).toEqual(before);
+      const after = [];
+      for (const id of ids) after.push(await snapshot(db, id));
+      expect(after).toEqual(before);
       expect(await getRunnerSetupHold(sqliteDb(db), "eng-11")).toEqual(hold);
       expect(getWorkItem(db, "eng-12")?.state).toBe("awaiting_input");
-      expect(listOutbox(db)).toHaveLength(outbox);
+      expect(await listOutbox(sqliteDb(db))).toHaveLength(outbox);
       expect(db.query("SELECT COUNT(*) AS n FROM wake").get()).toEqual({ n: 3 });
-      expect(listJobs(db).filter((job) => job.queue === JOB_KIND.catchup)).toHaveLength(3);
-      expect(executions(db, "eng-11")).toEqual([]);
-      expect(executions(db, "eng-12")).toEqual([]);
+      expect(
+        (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.catchup),
+      ).toHaveLength(3);
+      expect(await executions(db, "eng-11")).toEqual([]);
+      expect(await executions(db, "eng-12")).toEqual([]);
       const claimed: string[] = [];
-      for (let job = claimNextJob(db, { now: clock.now(), queues: [...EXECUTION] }); job;) {
+      for (
+        let job = await claimNextJob(sqliteDb(db), { now: clock.now(), queues: [...EXECUTION] });
+        job;
+      ) {
         claimed.push((job.payload as { itemId: string }).itemId);
-        job = claimNextJob(db, { now: clock.now(), queues: [...EXECUTION] });
+        job = await claimNextJob(sqliteDb(db), { now: clock.now(), queues: [...EXECUTION] });
       }
       expect(claimed.sort()).toEqual(["eng-10", "eng-9"]);
     } finally {

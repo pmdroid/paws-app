@@ -56,7 +56,7 @@ test("orchestrator resumes the session item through session_key alone", async ()
     });
     expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(2);
     expect(
-      listJobs(db)
+      (await listJobs(sqliteDb(db)))
         .filter((job) => job.queue === JOB_KIND.resume)
         .map((job) => (job.payload as { itemId?: string }).itemId),
     ).toEqual(["older-live"]);

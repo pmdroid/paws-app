@@ -106,8 +106,8 @@ type OutboxClaimOptions = {
  * Insert in the same transaction as the transition that caused the effect.
  * A duplicate idempotency key throws; wake notes use {@link enqueueOutboxOnce}.
  */
-export function enqueueOutbox(db: Database, row: NewOutbox): number {
-  return settled(sqliteDb(db).transaction((q) => enqueueOutboxSteps(q, row)));
+export async function enqueueOutbox(store: Db, row: NewOutbox): Promise<number> {
+  return store.transaction((q) => enqueueOutboxSteps(q, row));
 }
 
 export function* enqueueOutboxSteps(q: Q, row: NewOutbox) {
@@ -161,8 +161,8 @@ export function* getOutboxSteps(q: Q, id: number) {
   return row === undefined ? null : mapOutbox(q, row);
 }
 
-export function listOutbox(db: Database, orderingKey?: string): OutboxRow[] {
-  return settled(sqliteDb(db).run((q) => listOutboxSteps(q, orderingKey)));
+export async function listOutbox(store: Db, orderingKey?: string): Promise<OutboxRow[]> {
+  return store.run((q) => listOutboxSteps(q, orderingKey));
 }
 
 export function* listOutboxSteps(q: Q, orderingKey?: string) {

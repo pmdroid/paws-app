@@ -866,7 +866,7 @@ describe("linear intake poll", () => {
         const result = await intakeDelegatedIssue(db, tracker, { linearIssueId: event.issueId });
         if (result.ok)
           for (const item of result.items)
-            configureWorkItem(db, item.id, { sessionKey: "ses_stop" });
+            await configureWorkItem(sqliteDb(db), item.id, { sessionKey: "ses_stop" });
       },
       submitCommand: async (command) => {
         commands.push({ type: command.type, itemId: command.itemId });
@@ -915,7 +915,7 @@ describe("linear intake poll", () => {
         const result = await intakeDelegatedIssue(db, tracker, { linearIssueId: event.issueId });
         if (result.ok)
           for (const item of result.items)
-            configureWorkItem(db, item.id, { sessionKey: "ses_stop" });
+            await configureWorkItem(sqliteDb(db), item.id, { sessionKey: "ses_stop" });
       },
       submitCommand: async (command) => {
         commands.push({ type: command.type, itemId: command.itemId });

@@ -37,8 +37,8 @@ async function start(settings: Parameters<typeof mergeHarness>[0] = {}) {
   return harness;
 }
 
-function resumes(h: MergeHarness) {
-  return listJobs(h.db)
+async function resumes(h: MergeHarness) {
+  return (await listJobs(sqliteDb(h.db)))
     .filter((job) => job.queue === JOB_KIND.resume)
     .map((job) => job.payload as { handoff: string; reason: string });
 }
@@ -52,13 +52,13 @@ async function onMovedMain(h: MergeHarness, head: string, main: string): Promise
 
 async function backInQueue(h: MergeHarness, id: string): Promise<void> {
   const item = getWorkItem(h.db, id)!;
-  if (item.state === "queued") applyWorkItemEvent(h.db, id, "dispatched");
-  applyWorkItemEvent(h.db, id, "turn_ended");
+  if (item.state === "queued") await applyWorkItemEvent(sqliteDb(h.db), id, "dispatched");
+  await applyWorkItemEvent(sqliteDb(h.db), id, "turn_ended");
   await h.closeout(id);
 }
 
-function reverifyJobs(h: MergeHarness): string[] {
-  return listJobs(h.db)
+async function reverifyJobs(h: MergeHarness): Promise<string[]> {
+  return (await listJobs(sqliteDb(h.db)))
     .filter((job) => job.queue === JOB_KIND.reverify)
     .map((job) => job.jobKey ?? "");
 }
@@ -132,7 +132,7 @@ describe("advanceMerge: the lane only merges mergeable(S)", () => {
     expect(rebased).not.toBe(item.accepted);
     expect(await onMovedMain(h, rebased, main)).toBe(true);
     expect(getWorkItem(h.db, "ENG-1")?.state).toBe("verifying");
-    expect(reverifyJobs(h)).toEqual([`reverify:ENG-1:${rebased}:merge:1`]);
+    expect(await reverifyJobs(h)).toEqual([`reverify:ENG-1:${rebased}:merge:1`]);
     expect(h.github.merged).toEqual([]);
     // After the pull request only the title moves.
     expect(h.bodies("status")).toEqual([`Rebased onto main ${main.slice(0, 7)}, re-verifying.`]);
@@ -154,7 +154,7 @@ describe("advanceMerge: the lane only merges mergeable(S)", () => {
     const head = await h.git(item.worktree, "rev-parse", "HEAD");
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
     expect(getWorkItem(h.db, "ENG-1")?.state).toBe("verifying");
-    expect(reverifyJobs(h)).toEqual([`reverify:ENG-1:${head}:merge:1`]);
+    expect(await reverifyJobs(h)).toEqual([`reverify:ENG-1:${head}:merge:1`]);
     expect(h.github.merged).toEqual([]);
     expect(h.bodies()).toEqual([]);
   });
@@ -165,7 +165,7 @@ describe("advanceMerge: the lane only merges mergeable(S)", () => {
     h.state.policyDigest = "sha256:changed-policy";
     expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
     expect(h.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([item.accepted]);
-    expect(reverifyJobs(h)).toEqual([]);
+    expect(await reverifyJobs(h)).toEqual([]);
     expect(h.verified).toEqual([]);
   });
 
@@ -180,7 +180,7 @@ describe("advanceMerge: the lane only merges mergeable(S)", () => {
       h.state.recheckDigest = change.recheck;
       expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
       expect(getWorkItem(h.db, "ENG-1")?.state).toBe("verifying");
-      expect(reverifyJobs(h)).toEqual([`reverify:ENG-1:${item.accepted}:merge:1`]);
+      expect(await reverifyJobs(h)).toEqual([`reverify:ENG-1:${item.accepted}:merge:1`]);
       expect(h.github.merged).toEqual([]);
       await h.cleanup();
       harness = undefined;
@@ -199,7 +199,7 @@ describe("advanceMerge: the lane only merges mergeable(S)", () => {
     });
     expect(getWorkItem(h.db, "ENG-1")?.state).toBe("merge_queue");
     expect(await h.remoteHead("ENG-1")).toBe(item.accepted);
-    expect(reverifyJobs(h)).toEqual([]);
+    expect(await reverifyJobs(h)).toEqual([]);
     expect(h.github.merged).toEqual([]);
   });
 
@@ -219,7 +219,7 @@ describe("advanceMerge and a pull request merged outside the lane", () => {
   test("a hand merge on GitHub merges the item without publishing or squashing again", async () => {
     const h = await start({ settings: { order: "queue" } });
     await h.addItem("ENG-1");
-    const later = enqueueJob(h.db, {
+    const later = await enqueueJob(sqliteDb(h.db), {
       queue: JOB_KIND.merge,
       jobKey: "merge:ENG-1:later",
       payload: { itemId: "ENG-1" },
@@ -238,7 +238,9 @@ describe("advanceMerge and a pull request merged outside the lane", () => {
     // What the job runner does with a merged step: the item is merged and its merge work stops.
     await completeMergedItem(sqliteDb(h.db), { itemId: "ENG-1", now: h.clock.now() });
     expect(getWorkItem(h.db, "ENG-1")?.state).toBe("merged");
-    expect(listJobs(h.db).find((job) => job.id === later)?.status).toBe("cancelled");
+    expect((await listJobs(sqliteDb(h.db))).find((job) => job.id === later)?.status).toBe(
+      "cancelled",
+    );
   });
 
   test("a hand merge during the turn merges the item instead of failing it", async () => {
@@ -278,7 +280,7 @@ describe("advanceMerge on a rebase conflict", () => {
     const item = getWorkItem(h.db, "ENG-1")!;
     expect(item.state).toBe("queued");
     expect(item.checkpoint?.phase).toBe("running");
-    expect(resumes(h)).toEqual([
+    expect(await resumes(h)).toEqual([
       {
         itemId: "ENG-1",
         runId: item.currentRunId,
@@ -315,7 +317,7 @@ describe("advanceMerge on a rebase conflict", () => {
         `Main commits: ${main.slice(0, 7)}. Conflicting files: ok.txt.`,
       ),
     });
-    expect(resumes(h).map((payload) => payload.handoff)).toEqual([
+    expect((await resumes(h)).map((payload) => payload.handoff)).toEqual([
       REBASE_CONFLICT_INSTRUCTION,
       REBASE_CONFLICT_INSTRUCTION,
       REBASE_CONFLICT_INSTRUCTION,
@@ -330,7 +332,7 @@ describe("advanceMerge on a rebase conflict", () => {
     }
     await h.moveMain("ok.txt", "from-main-again\n");
     expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
-    expect(resumes(h)).toHaveLength(3);
+    expect(await resumes(h)).toHaveLength(3);
   });
 
   test("a person's reply after the returns ran out returns the next conflict to the agent", async () => {
@@ -339,7 +341,7 @@ describe("advanceMerge on a rebase conflict", () => {
       await h.pass("ENG-1");
       await backInQueue(h, "ENG-1");
     }
-    enqueueJob(h.db, {
+    await enqueueJob(sqliteDb(h.db), {
       queue: JOB_KIND.resume,
       jobKey: "linear-turn:ses-ENG-1:1",
       payload: { itemId: "ENG-1", handoff: "retry" },
@@ -347,7 +349,7 @@ describe("advanceMerge on a rebase conflict", () => {
     });
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
     expect(
-      resumes(h).filter((payload) => payload.handoff === REBASE_CONFLICT_INSTRUCTION),
+      (await resumes(h)).filter((payload) => payload.handoff === REBASE_CONFLICT_INSTRUCTION),
     ).toHaveLength(4);
   });
 
@@ -364,7 +366,7 @@ describe("advanceMerge on a rebase conflict", () => {
       reason: "merge",
       message: "rebase failed",
     });
-    expect(resumes(h)).toEqual([]);
+    expect(await resumes(h)).toEqual([]);
     expect(h.github.merged).toEqual([]);
   });
 });
@@ -390,7 +392,7 @@ describe('advanceMerge and "When main moved before the merge"', () => {
     h.state.ci = () => undefined;
     expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
     expect(h.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([head]);
-    expect(reverifyJobs(h)).toEqual([]);
+    expect(await reverifyJobs(h)).toEqual([]);
     expect(h.verified).toEqual([]);
   });
 
@@ -405,7 +407,7 @@ describe('advanceMerge and "When main moved before the merge"', () => {
     expect(await onMovedMain(h, head, main)).toBe(true);
     expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
     expect(h.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([head]);
-    expect(reverifyJobs(h)).toEqual([]);
+    expect(await reverifyJobs(h)).toEqual([]);
   });
 
   test("ci: a `recheck: true` check that changed since Closeout accepted sends the rebased head to Closeout", async () => {
@@ -418,7 +420,7 @@ describe('advanceMerge and "When main moved before the merge"', () => {
     h.state.recheckDigest = "sha256:changed-recheck";
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
     expect(getWorkItem(h.db, "ENG-1")?.state).toBe("verifying");
-    expect(reverifyJobs(h)).toEqual([`reverify:ENG-1:${head}:merge:2`]);
+    expect(await reverifyJobs(h)).toEqual([`reverify:ENG-1:${head}:merge:2`]);
     expect(h.github.merged).toEqual([]);
   });
 
@@ -428,7 +430,7 @@ describe('advanceMerge and "When main moved before the merge"', () => {
     await h.moveMain("side.txt", "side\n");
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
     const head = await h.remoteHead("ENG-1");
-    expect(reverifyJobs(h)).toEqual([`reverify:ENG-1:${head}:merge:1`]);
+    expect(await reverifyJobs(h)).toEqual([`reverify:ENG-1:${head}:merge:1`]);
     expect(h.github.merged).toEqual([]);
     await h.closeout("ENG-1");
     expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
@@ -442,7 +444,7 @@ describe('advanceMerge and "When main moved before the merge"', () => {
     expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
     expect(await h.remoteHead("ENG-1")).toBe(item.accepted);
     expect(h.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([item.accepted]);
-    expect(reverifyJobs(h)).toEqual([]);
+    expect(await reverifyJobs(h)).toEqual([]);
     expect(h.verified).toEqual([]);
   });
 
@@ -459,7 +461,7 @@ describe('advanceMerge and "When main moved before the merge"', () => {
     ]);
     expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
     expect(h.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([head]);
-    expect(reverifyJobs(h)).toEqual([]);
+    expect(await reverifyJobs(h)).toEqual([]);
   });
 
   test("green: main changed the same package, and the accepted head still merges without a rebase", async () => {
@@ -470,7 +472,7 @@ describe('advanceMerge and "When main moved before the merge"', () => {
     expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
     expect(await h.remoteHead("ENG-1")).toBe(item.accepted);
     expect(h.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([item.accepted]);
-    expect(reverifyJobs(h)).toEqual([]);
+    expect(await reverifyJobs(h)).toEqual([]);
   });
 
   test("green: GitHub's up-to-date rule still updates the branch and waits for CI", async () => {
@@ -493,7 +495,7 @@ describe('advanceMerge and "When main moved before the merge"', () => {
     expect(h.bodies("status")[0]).toContain("GitHub requires branches to be up to date");
     expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
     expect(h.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([head]);
-    expect(reverifyJobs(h)).toEqual([]);
+    expect(await reverifyJobs(h)).toEqual([]);
   });
 });
 
@@ -501,8 +503,8 @@ for (const changedIdentity of [false, true]) {
   test(`latest rejection blocks a stale accepted head with ${changedIdentity ? "a newer" : "an overwritten"} identity`, async () => {
     const h = await start();
     const item = await h.addItem("ENG-1");
-    finishCloseoutProgress(
-      h.db,
+    await finishCloseoutProgress(
+      sqliteDb(h.db),
       item.id,
       {
         taskId: item.id,
@@ -528,7 +530,7 @@ describe("advanceMerge on a conflicting pull request waiting for CI", () => {
     const h = await start({ settings: { order: "queue" } });
     for (const id of ["ENG-1", "ENG-2"]) {
       await h.addItem(id);
-      enqueueJob(h.db, {
+      await enqueueJob(sqliteDb(h.db), {
         queue: JOB_KIND.merge,
         jobKey: `merge:${id}`,
         payload: { itemId: id, head: getWorkItem(h.db, id)!.checkpoint!.wipCommit },
@@ -547,11 +549,13 @@ describe("advanceMerge on a conflicting pull request waiting for CI", () => {
     h.state.mergeState = "dirty";
     h.state.ci = () => [];
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
-    expect(resumes(h)).toEqual([
+    expect(await resumes(h)).toEqual([
       expect.objectContaining({ handoff: REBASE_CONFLICT_INSTRUCTION, reason: "conflict" }),
     ]);
     expect(
-      listOutbox(h.db).filter((row) => row.idempotencyKey.startsWith("merge-conflict:")),
+      (await listOutbox(sqliteDb(h.db))).filter((row) =>
+        row.idempotencyKey.startsWith("merge-conflict:"),
+      ),
     ).toHaveLength(1);
     expect(listMergeQueues(h.db).map((entry) => entry.itemId)).toEqual(["ENG-2"]);
     h.state.mergeState = null;
@@ -565,7 +569,7 @@ describe("advanceMerge on a conflicting pull request waiting for CI", () => {
     expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "ci" });
     expect(await h.pass("ENG-2")).toMatchObject({ kind: "wait", reason: "ahead" });
     expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "ci" });
-    expect(resumes(h)).toEqual([]);
+    expect(await resumes(h)).toEqual([]);
     expect(listMergeQueues(h.db).map((entry) => entry.itemId)).toEqual(["ENG-1", "ENG-2"]);
   });
 });

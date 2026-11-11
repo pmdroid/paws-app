@@ -98,8 +98,8 @@ export async function probeLinearActivityBudget(
   }
   let outbox = dispatcher();
   let sequence = 0;
-  function activity(sessionId: string, kind: string, itemId?: string) {
-    return enqueueOutbox(db, {
+  async function activity(sessionId: string, kind: string, itemId?: string) {
+    return await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: kind === "elicitation" ? "elicitation" : "activity",
       orderingKey: sessionId,
@@ -110,23 +110,23 @@ export async function probeLinearActivityBudget(
   }
   try {
     const item = insertQueuedItem(db, { id: "chatty", sessionKey: "chatty" });
-    const original = beginImplementRun(db, item.id, clock.now());
-    const reporter = createAcpActivityReporter((payload) =>
-      enqueueOutbox(db, {
+    const original = await beginImplementRun(sqliteDb(db), item.id, clock.now());
+    const reporter = createAcpActivityReporter((payload) => {
+      void enqueueOutbox(sqliteDb(db), {
         target: "linear",
         op: "activity",
         orderingKey: "chatty",
         idempotencyKey: `chatty:${sequence++}`,
         payload: { ...payload, sessionId: "chatty", itemId: item.id },
         now: clock.now(),
-      }),
-    );
+      });
+    });
     immediate(db, () => {
       for (let n = 0; n < eventCount; n++) {
         reporter.onEvent({ type: "progress", text: `Checked ${n}.` });
       }
     });
-    const final = activity("chatty", "response", item.id);
+    const final = await activity("chatty", "response", item.id);
     for (let n = 0; n < 61; n++) {
       await outbox.tick();
       await outbox.idle();
@@ -161,7 +161,7 @@ export async function probeLinearActivityBudget(
       noClockAdvance: true,
     });
     clock.advance(600_000);
-    const keepalive = enqueueOutbox(db, {
+    const keepalive = await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: "chatty-keepalive",
@@ -181,15 +181,15 @@ export async function probeLinearActivityBudget(
     observe("Keepalives remain deliverable alongside complete public history", true, {
       keepaliveSent: true,
     });
-    const nextRun = insertRun(db, {
+    const nextRun = await insertRun(sqliteDb(db), {
       itemId: item.id,
       status: "active",
       kind: "implement",
       agent: "cursor",
       now: clock.now(),
     });
-    setCurrentRun(db, item.id, nextRun.id);
-    const nextId = activity("next-run-session", "thought", item.id);
+    await setCurrentRun(sqliteDb(db), item.id, nextRun.id);
+    const nextId = await activity("next-run-session", "thought", item.id);
     await outbox.tick();
     await outbox.idle();
     assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, nextId)))?.status, "sent");
@@ -197,11 +197,11 @@ export async function probeLinearActivityBudget(
     observe("A new canonical run gets its first update without replaying stale progress", true, {
       runChanged: true,
     });
-    const question = activity("question-session", "elicitation", item.id);
+    const question = await activity("question-session", "elicitation", item.id);
     await outbox.tick();
     await outbox.idle();
     assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, question)))?.status, "sent");
-    const questionFinal = activity("question-session", "response", item.id);
+    const questionFinal = await activity("question-session", "response", item.id);
     await outbox.tick();
     await outbox.idle();
     assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, questionFinal)))?.status, "sent");
@@ -214,14 +214,14 @@ export async function probeLinearActivityBudget(
       },
     );
     limited = true;
-    const critical = activity("rate-limited", "thought");
+    const critical = await activity("rate-limited", "thought");
     for (let n = 0; n < 7; n++) {
       await outbox.tick();
       await outbox.idle();
       assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, critical)))?.status, "pending");
       const before = requests;
-      activity(`other-${n}`, "thought");
-      const slack = enqueueOutbox(db, {
+      await activity(`other-${n}`, "thought");
+      const slack = await enqueueOutbox(sqliteDb(db), {
         target: "slack",
         op: "message",
         idempotencyKey: `slack:${n}`,
@@ -254,8 +254,8 @@ export async function probeLinearActivityBudget(
       },
     );
     const reserve = insertQueuedItem(db, { id: "reservation" });
-    beginImplementRun(db, reserve.id, clock.now());
-    for (let n = 0; n < 80; n++) activity(`parallel-${n}`, "thought", reserve.id);
+    await beginImplementRun(sqliteDb(db), reserve.id, clock.now());
+    for (let n = 0; n < 80; n++) await activity(`parallel-${n}`, "thought", reserve.id);
     const second = openDatabase(path);
     try {
       const first = await claimOutboxHeads(sqliteDb(db), {

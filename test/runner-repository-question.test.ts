@@ -117,8 +117,8 @@ function questions(db: Database) {
     .all();
 }
 
-function elicitations(db: Database): number {
-  return listOutbox(db).filter((row) => row.op === "elicitation").length;
+async function elicitations(db: Database): Promise<number> {
+  return (await listOutbox(sqliteDb(db))).filter((row) => row.op === "elicitation").length;
 }
 
 async function start(jobs: JobLoop) {
@@ -168,7 +168,7 @@ test("the only runner's host list lacks the repository: one question names the r
       "runner-1 allows only acme/monorepo in its host config (`/etc/paws-runner/config.json`, `allowedRepositories`). Add acme/cli there and restart `paws-runner.service`",
     );
     expect(question!.body).toContain(`${RUNNERS_URL}/runner-1`);
-    const asked = elicitations(db);
+    const asked = await elicitations(db);
     expect(asked).toBe(1);
 
     clock.advance(60_000);
@@ -176,7 +176,7 @@ test("the only runner's host list lacks the repository: one question names the r
     await paws.reconcileExecution();
     await start(jobs);
     expect(questions(db)).toHaveLength(1);
-    expect(elicitations(db)).toBe(asked);
+    expect(await elicitations(db)).toBe(asked);
     expect(startJobs(db)).toBe(0);
   });
 });

@@ -39,7 +39,7 @@ async function seed(db: Database): Promise<void> {
     repo: "repo",
     remoteUrl: "https://example.invalid/repo.git",
   });
-  beginImplementRun(db, "item", 1);
+  await beginImplementRun(sqliteDb(db), "item", 1);
   saveCheckpoint(db, "item", { phase: "running", baseSha: "base", wipCommit: "head" });
   db.run("UPDATE work_item SET recovery_attempts=1, resumed_at=1 WHERE id='item'");
 }
@@ -50,16 +50,16 @@ async function fixture(): Promise<Database> {
   return db;
 }
 
-function asks(db: Database) {
-  return listJobs(db).filter((job) => job.queue === "item.ask");
+async function asks(db: Database) {
+  return (await listJobs(sqliteDb(db))).filter((job) => job.queue === "item.ask");
 }
 
-function liveAsks(db: Database) {
-  return asks(db).filter((job) => job.status === "pending" || job.status === "running");
+async function liveAsks(db: Database) {
+  return (await asks(db)).filter((job) => job.status === "pending" || job.status === "running");
 }
 
-function executions(db: Database) {
-  return listJobs(db).filter(
+async function executions(db: Database) {
+  return (await listJobs(sqliteDb(db))).filter(
     (job) =>
       [JOB_KIND.resume, JOB_KIND.start, JOB_KIND.reverify].includes(job.queue as never) &&
       (job.status === "pending" || job.status === "running"),
@@ -120,8 +120,8 @@ describe("restart hold", () => {
         "ask_restart",
       ]);
       expect(await restartHold(sqliteDb(db), getWorkItem(db, "item")!)).not.toBeNull();
-      expect(liveAsks(db)).toHaveLength(1);
-      expect(executions(db)).toEqual([]);
+      expect(await liveAsks(db)).toHaveLength(1);
+      expect(await executions(db)).toEqual([]);
       db.close();
     }
   });
@@ -133,13 +133,13 @@ describe("restart hold", () => {
       await recoverOnStartup(sqliteDb(db), 100);
       if (delivery !== "pending") await loseDelivery(db, delivery, 150);
       expect(await requeueOrphanedWork(sqliteDb(db), ORPHAN_LATER)).toEqual([]);
-      expect(executions(db)).toEqual([]);
-      expect(liveAsks(db)).toHaveLength(1);
+      expect(await executions(db)).toEqual([]);
+      expect(await liveAsks(db)).toHaveLength(1);
       if (delivery !== "pending") await loseDelivery(db, delivery, ORPHAN_LATER + 1);
       await recoverOnStartup(sqliteDb(db), ORPHAN_LATER + LATER);
       expect(getWorkItem(db, "item")?.state).toBe("recovering");
-      expect(executions(db)).toEqual([]);
-      expect(liveAsks(db)).toHaveLength(1);
+      expect(await executions(db)).toEqual([]);
+      expect(await liveAsks(db)).toHaveLength(1);
       db.close();
     },
   );
@@ -153,9 +153,9 @@ describe("restart hold", () => {
       await recoverOnStartup(sqliteDb(db), now);
       expect(await requeueOrphanedWork(sqliteDb(db), now + ORPHAN_LATER)).toEqual([]);
     }
-    expect(liveAsks(db)).toEqual([]);
+    expect(await liveAsks(db)).toEqual([]);
     expect(actionableQuestions(db)).toHaveLength(1);
-    expect(executions(db)).toEqual([]);
+    expect(await executions(db)).toEqual([]);
 
     const reply = {
       sessionId: "session",
@@ -183,8 +183,8 @@ describe("restart hold", () => {
     expect(item).toMatchObject({ state: "queued", recoveryAttempts: 1 });
     expect(await restartHold(sqliteDb(db), item)).toBeNull();
     expect(db.query("SELECT 1 FROM restart_hold").all()).toEqual([]);
-    expect(executions(db)).toHaveLength(1);
-    expect(executions(db)[0]?.jobKey).toStartWith("resume:answer:");
+    expect(await executions(db)).toHaveLength(1);
+    expect((await executions(db))[0]?.jobKey).toStartWith("resume:answer:");
     db.close();
   });
 
@@ -195,10 +195,10 @@ describe("restart hold", () => {
     db.run("UPDATE question SET cancelled_at=250 WHERE reason='restart'");
     const reply = { sessionId: "session", deliveryId: "late", body: "Go", answeredBy: "lead" };
     expect((await answer(db, reply, questionEffects(db, { now: 300 }))).status).toBe("unasked");
-    expect(executions(db)).toEqual([]);
+    expect(await executions(db)).toEqual([]);
     await recoverOnStartup(sqliteDb(db), LATER);
-    expect(liveAsks(db)).toHaveLength(1);
-    expect(executions(db)).toEqual([]);
+    expect(await liveAsks(db)).toHaveLength(1);
+    expect(await executions(db)).toEqual([]);
     db.close();
   });
 
@@ -206,16 +206,16 @@ describe("restart hold", () => {
     const db = await fixture();
     await recoverOnStartup(sqliteDb(db), 100);
     const runs = (await listRuns(sqliteDb(db), "item")).length;
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.resume,
       jobKey: "stray",
       payload: { itemId: "item", freshSession: true, reason: "agent_dead" },
       now: 150,
     });
     await orchestrate(db, 200).tick([JOB_KIND.resume]);
-    expect(listWorkItemEventRows(db, "item").map((event) => event.event)).not.toContain(
-      "recovered",
-    );
+    expect(
+      (await listWorkItemEventRows(sqliteDb(db), "item")).map((event) => event.event),
+    ).not.toContain("recovered");
     expect(await restartHold(sqliteDb(db), getWorkItem(db, "item")!)).not.toBeNull();
     expect(await listRuns(sqliteDb(db), "item")).toHaveLength(runs);
     db.close();
@@ -226,7 +226,7 @@ describe("restart hold", () => {
     await recoverOnStartup(sqliteDb(db), 100);
     await orchestrate(db, 200).tick(["item.ask"]);
     await applyDecision(sqliteDb(db), getWorkItem(db, "item")!, { type: "ask_restart" }, 300);
-    expect(liveAsks(db)).toEqual([]);
+    expect(await liveAsks(db)).toEqual([]);
     expect(actionableQuestions(db)).toHaveLength(1);
     expect(findOpenQuestion(db, "session")?.reason).toBe("restart");
     db.close();
@@ -246,7 +246,7 @@ describe("restart hold", () => {
     await seed(db);
     db.run("UPDATE work_item SET state='recovering' WHERE id='item'");
     const version = getWorkItem(db, "item")!.version;
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: "item.ask",
       jobKey: `restart-ask:item:${version}`,
       payload: { itemId: "item", reason: "restart" },
@@ -258,8 +258,8 @@ describe("restart hold", () => {
       sessionId: "session",
     });
     await recoverOnStartup(sqliteDb(db), LATER);
-    expect(executions(db)).toEqual([]);
-    expect(liveAsks(db)).toHaveLength(1);
+    expect(await executions(db)).toEqual([]);
+    expect(await liveAsks(db)).toHaveLength(1);
     db.close();
   });
 });

@@ -471,7 +471,7 @@ async function until(label: string, done: () => boolean) {
   }
   assert(
     done(),
-    `${label}: ${JSON.stringify({ errors, items: listWorkItems(paws.db), commands: [...commands.values()], activities: listOutbox(paws.db).map((row) => row.payload) })}`,
+    `${label}: ${JSON.stringify({ errors, items: listWorkItems(paws.db), commands: [...commands.values()], activities: (await listOutbox(sqliteDb(paws.db))).map((row) => row.payload) })}`,
   );
 }
 async function addItem(id: string, answer = false) {
@@ -496,8 +496,8 @@ async function addItem(id: string, answer = false) {
       repo: "paws-demo",
       remoteUrl,
     });
-  const { run } = beginImplementRun(paws.db, id, Date.now());
-  enqueueJob(paws.db, {
+  const { run } = await beginImplementRun(sqliteDb(paws.db), id, Date.now());
+  await enqueueJob(sqliteDb(paws.db), {
     queue: JOB_KIND.resume,
     payload: { itemId: id, runId: run.id, freshSession: true },
   });
@@ -674,7 +674,9 @@ try {
     finish(activeCommand("review")!);
     await until("pull request after recovery", () => github.opened.length === 1);
     assert.equal(getWorkItem(paws.db, code)?.acceptedHead, head);
-    const activities = listOutbox(paws.db).map((row) => JSON.stringify(row.payload));
+    const activities = (await listOutbox(sqliteDb(paws.db))).map((row) =>
+      JSON.stringify(row.payload),
+    );
     assert(activities.some((body) => body.includes("continuing from the branch")));
     assert(!activities.some((body) => body.includes("The runner stopped this run")));
     console.log("runner restart integration passed");
@@ -710,7 +712,7 @@ try {
         1,
       );
     }
-    const activities = listOutbox(paws.db).filter((row) => row.op === "activity");
+    const activities = (await listOutbox(sqliteDb(paws.db))).filter((row) => row.op === "activity");
     for (const command of [...commands.values()].filter(
       (c) => executions.has(c.id) && c.type !== "review",
     )) {

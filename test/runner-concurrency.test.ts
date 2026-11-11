@@ -222,7 +222,7 @@ test("lowering concurrency below running work holds back new placement", async (
         runner.now,
       ],
     );
-    const run = insertRun(runner.db, {
+    const run = await insertRun(sqliteDb(runner.db), {
       itemId: `item-${index}`,
       now: runner.now,
       status: "active",

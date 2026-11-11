@@ -115,7 +115,7 @@ test("a missing installation holds the item before Git and a reply cannot releas
     expect(existsSync(join(f.home, "worktrees"))).toBe(false);
     expect(f.tracker.statuses).toEqual([]);
     expect(
-      listOutbox(f.db)
+      (await listOutbox(sqliteDb(f.db)))
         .filter((row) => row.op === "elicitation")
         .map((row) => row.payload),
     ).toEqual([
@@ -126,7 +126,9 @@ test("a missing installation holds the item before Git and a reply cannot releas
     ]);
     await f.orchestrator.onLinearEvent(prompt("linear-owner", "text-claim"));
     expect((await getQuestion(sqliteDb(f.db), question.id))?.status).toBe("open");
-    expect(listJobs(f.db).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
+    expect((await listJobs(sqliteDb(f.db))).filter((job) => job.queue === JOB_KIND.resume)).toEqual(
+      [],
+    );
     expect(turns(f.db)[0]?.state).toBe("cancelled");
   } finally {
     await f.orchestrator.shutdown();
@@ -145,9 +147,13 @@ test("the item resumes once by itself when the installation returns", async () =
     await f.orchestrator.recoverGitHubAuth();
     expect((await getQuestion(sqliteDb(f.db), question.id))?.answeredBy).toBe("paws");
     expect(getWorkItem(f.db, f.item.id)?.state).toBe("running");
-    expect(listJobs(f.db).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(1);
+    expect(
+      (await listJobs(sqliteDb(f.db))).filter((job) => job.queue === JOB_KIND.resume),
+    ).toHaveLength(1);
     await f.orchestrator.recoverGitHubAuth();
-    expect(listJobs(f.db).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(1);
+    expect(
+      (await listJobs(sqliteDb(f.db))).filter((job) => job.queue === JOB_KIND.resume),
+    ).toHaveLength(1);
   } finally {
     await f.orchestrator.shutdown();
     f.db.close();
@@ -164,7 +170,9 @@ test("Stop prevents a returning installation from resuming the item", async () =
     await f.orchestrator.recoverGitHubAuth();
     expect((await getQuestion(sqliteDb(f.db), question.id))?.status).toBe("open");
     expect(getWorkItem(f.db, f.item.id)?.state).toBe("paused");
-    expect(listJobs(f.db).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
+    expect((await listJobs(sqliteDb(f.db))).filter((job) => job.queue === JOB_KIND.resume)).toEqual(
+      [],
+    );
   } finally {
     await f.orchestrator.shutdown();
     f.db.close();
@@ -204,7 +212,7 @@ test.each(["pending", "rejected"] as const)(
       void recovering.catch(() => undefined);
       await reading.promise;
       const writer = insertQueuedItem(f.db, { id: "ENG-2", sessionKey: "writer" });
-      applyWorkItemEvent(f.db, writer.id, "dispatched");
+      await applyWorkItemEvent(sqliteDb(f.db), writer.id, "dispatched");
       await saveTaskMode(sqliteDb(f.db), writer.id, "answer");
       enqueueJobOnce(f.db, {
         queue: JOB_KIND.resume,

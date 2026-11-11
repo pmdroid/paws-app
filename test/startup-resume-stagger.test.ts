@@ -144,7 +144,7 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
     }
     await until(
       () => implementations.length === 4,
-      () => detail(db),
+      async () => await detail(db),
     );
     firstStop.abort();
     await first.orchestrator.shutdown().catch(() => undefined);
@@ -152,7 +152,7 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
     await prepareShutdown(sqliteDb(db));
     expect(
       listWorkItems(db).map((item) => item.state),
-      detail(db),
+      await detail(db),
     ).toEqual(ISSUES.map(() => "recovering"));
 
     implementations.length = 0;
@@ -174,22 +174,23 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
     await recoverOnStartup(sqliteDb(db), clock.now());
     second = attach(clock);
     secondLoop = second.jobs.run(secondStop.signal, () => Bun.sleep(5));
-    const claimed = () =>
-      listJobs(db).filter((job) => job.queue === JOB_KIND.resume && job.status !== "pending")
-        .length;
+    const claimed = async () =>
+      (await listJobs(sqliteDb(db))).filter(
+        (job) => job.queue === JOB_KIND.resume && job.status !== "pending",
+      ).length;
     await until(
-      () => {
+      async () => {
         if (implementations.length === 4) return true;
-        if (inFlight === 0 && implementations.length >= claimed()) clock.advance(1_000);
+        if (inFlight === 0 && implementations.length >= (await claimed())) clock.advance(1_000);
         return false;
       },
-      () => detail(db),
+      async () => await detail(db),
     );
 
     expect(reads).toEqual(ISSUES.flatMap((id) => [`start:${id}`, `end:${id}`]));
     expect(
       listWorkItems(db).map((item) => getWorkItem(db, item.id)?.state),
-      detail(db),
+      await detail(db),
     ).toEqual(ISSUES.map(() => "running"));
   } finally {
     firstStop.abort();
@@ -201,18 +202,21 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
   }
 }, 90_000);
 
-async function until(done: () => boolean, describe: () => string): Promise<void> {
+async function until(
+  done: () => boolean | Promise<boolean>,
+  describe: () => Promise<string>,
+): Promise<void> {
   const deadline = Date.now() + 60_000;
-  while (!done()) {
-    if (Date.now() > deadline) throw new Error(describe());
+  while (!(await done())) {
+    if (Date.now() > deadline) throw new Error(await describe());
     await Bun.sleep(10);
   }
 }
 
-function detail(db: ReturnType<typeof openDatabase>): string {
+async function detail(db: ReturnType<typeof openDatabase>): Promise<string> {
   return JSON.stringify({
     items: listWorkItems(db).map((item) => `${item.linearIdentifier}:${item.state}`),
-    jobs: listJobs(db).map(
+    jobs: (await listJobs(sqliteDb(db))).map(
       (job) => `${job.queue}:${job.status}:${job.runAt}:${job.lastError ?? ""}`,
     ),
   });

@@ -114,8 +114,13 @@ export function reapFencedJobs(db: Database, now: number): number {
   ).changes;
 }
 
-export function claimedJob(db: Database, queue: string, payload: object, now: number): number {
-  const id = enqueueJob(db, { queue, payload, now });
+export async function claimedJob(
+  db: Database,
+  queue: string,
+  payload: object,
+  now: number,
+): Promise<number> {
+  const id = await enqueueJob(sqliteDb(db), { queue, payload, now });
   db.run("UPDATE job SET status='running', attempts=1, locked_by=?, locked_until=? WHERE id=?", [
     `worker:${id}`,
     now + JOB_LEASE_MS,
@@ -137,7 +142,7 @@ function identity(itemId: string, head: string, base = "base") {
 }
 
 async function accept(db: Database, id: string, now: number, head = "head"): Promise<void> {
-  finishCloseoutProgress(db, id, identity(id, head), "accepted", now);
+  await finishCloseoutProgress(sqliteDb(db), id, identity(id, head), "accepted", now);
   await markCloseoutAccepted(sqliteDb(db), id, head);
 }
 
@@ -158,21 +163,21 @@ export async function seedFixture(
     ),
   );
   if (fixture === "queued") return;
-  const { run } = beginImplementRun(db, id, now, RUNNING);
+  const { run } = await beginImplementRun(sqliteDb(db), id, now, RUNNING);
   if (fixture.startsWith("running") || fixture.startsWith("verifying"))
-    claimedJob(db, JOB_KIND.start, { itemId: id, runId: run.id }, now);
-  const toVerifying = () => {
-    applyWorkItemEvent(db, id, "turn_ended", { now });
+    await claimedJob(db, JOB_KIND.start, { itemId: id, runId: run.id }, now);
+  const toVerifying = async () => {
+    await applyWorkItemEvent(sqliteDb(db), id, "turn_ended", { now });
     saveCheckpoint(db, id, CANDIDATE);
   };
   const toMergeQueue = async (runEnded = true) => {
-    toVerifying();
+    await toVerifying();
     await accept(db, id, now);
-    applyWorkItemEvent(db, id, "closeout_accepted", { now });
+    await applyWorkItemEvent(sqliteDb(db), id, "closeout_accepted", { now });
     saveCheckpoint(db, id, MERGING);
     await joinMergeQueue(sqliteDb(db), { itemId: id, repository: "owner/repo", now });
-    if (runEnded) markRun(db, run.id, "ended", now);
-    enqueueJob(db, {
+    if (runEnded) await markRun(sqliteDb(db), run.id, "ended", now);
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       jobKey: `merge:${id}:head:accepted`,
       payload: { itemId: id, head: "head", summary: "Closeout accepted." },
@@ -189,24 +194,30 @@ export async function seedFixture(
       db.run("UPDATE work_item SET recovery_attempts=1, resumed_at=? WHERE id=?", [now, id]);
       return;
     case "verifying_candidate":
-      toVerifying();
+      await toVerifying();
       return;
     case "verifying_bare":
-      applyWorkItemEvent(db, id, "turn_ended", { now });
+      await applyWorkItemEvent(sqliteDb(db), id, "turn_ended", { now });
       return;
     case "verifying_leased":
-      toVerifying();
+      await toVerifying();
       leaseRunnerWork(db, run.id, now);
       return;
     case "verifying_rejected":
-      toVerifying();
+      await toVerifying();
       await accept(db, id, now);
-      finishCloseoutProgress(db, id, identity(id, "head", "newer"), "rejected", now + 1);
+      await finishCloseoutProgress(
+        sqliteDb(db),
+        id,
+        identity(id, "head", "newer"),
+        "rejected",
+        now + 1,
+      );
       return;
     case "recovering":
-      applyWorkItemEvent(db, id, "lease_expired", { now });
-      markRun(db, run.id, "lost", now);
-      enqueueJob(db, {
+      await applyWorkItemEvent(sqliteDb(db), id, "lease_expired", { now });
+      await markRun(sqliteDb(db), run.id, "lost", now);
+      await enqueueJob(sqliteDb(db), {
         queue: JOB_KIND.resume,
         jobKey: `orphan:${id}:${now}`,
         payload: { itemId: id, runId: run.id, freshSession: true, reason: "orphaned" },
@@ -243,7 +254,7 @@ export async function seedFixture(
       await toMergeQueue(false);
       return;
     case "paused":
-      applyWorkItemEvent(db, id, "pause", { now });
+      await applyWorkItemEvent(sqliteDb(db), id, "pause", { now });
       return;
     case "awaiting_input":
       await sqliteDb(db).transaction((q) =>
@@ -274,26 +285,26 @@ export async function seedFixture(
       );
       return;
     case "manual":
-      applyWorkItemEvent(db, id, "run_failed", { now });
-      applyWorkItemEvent(db, id, "take_over", { now });
+      await applyWorkItemEvent(sqliteDb(db), id, "run_failed", { now });
+      await applyWorkItemEvent(sqliteDb(db), id, "take_over", { now });
       return;
     case "failed":
-      applyWorkItemEvent(db, id, "run_failed", { now });
-      markRun(db, run.id, "ended", now);
+      await applyWorkItemEvent(sqliteDb(db), id, "run_failed", { now });
+      await markRun(sqliteDb(db), run.id, "ended", now);
       return;
     case "completed":
-      applyWorkItemEvent(db, id, "answer_completed", { now });
-      markRun(db, run.id, "ended", now);
+      await applyWorkItemEvent(sqliteDb(db), id, "answer_completed", { now });
+      await markRun(sqliteDb(db), run.id, "ended", now);
       return;
     case "merged":
       await toMergeQueue();
-      applyWorkItemEvent(db, id, "merge_accepted", { now });
+      await applyWorkItemEvent(sqliteDb(db), id, "merge_accepted", { now });
       finishItemJobs(db, id, now);
       return;
     case "cancelled":
-      applyWorkItemEvent(db, id, "cancel", { now });
+      await applyWorkItemEvent(sqliteDb(db), id, "cancel", { now });
       db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [id]);
-      markRun(db, run.id, "lost", now);
+      await markRun(sqliteDb(db), run.id, "lost", now);
       return;
     default: {
       const exhaustive: never = fixture;
@@ -325,29 +336,27 @@ export class World {
     migrate(this.db);
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     this.trace.push("stop");
-    settled(sqliteDb(this.db).transaction((q) => prepareShutdownSteps(q, this.now, undefined)));
+    await sqliteDb(this.db).transaction((q) => prepareShutdownSteps(q, this.now, undefined));
     this.db.close();
     this.db = openDatabase(this.path);
     migrate(this.db);
   }
 
-  start(): void {
+  async start(): Promise<void> {
     this.trace.push(`start@${this.now - T0}`);
     const wake = { armed: false };
-    settled(
-      sqliteDb(this.db).transaction((q) =>
-        recoverOnStartupSteps(q, this.now, undefined, undefined, wake),
-      ),
+    await sqliteDb(this.db).transaction((q) =>
+      recoverOnStartupSteps(q, this.now, undefined, undefined, wake),
     );
   }
 
   async sweep(): Promise<void> {
     this.trace.push(`sweep@${this.now - T0}`);
     reapFencedJobs(this.db, this.now);
-    settled(sqliteDb(this.db).transaction((q) => closeExpiredRunnerLeasesSteps(q, this.now)));
-    settled(sqliteDb(this.db).run((q) => requeueOrphanedWorkSteps(q, this.now)));
+    await sqliteDb(this.db).transaction((q) => closeExpiredRunnerLeasesSteps(q, this.now));
+    await sqliteDb(this.db).run((q) => requeueOrphanedWorkSteps(q, this.now));
   }
 
   async settle(): Promise<void> {
@@ -391,15 +400,19 @@ export type ItemFacts = {
   mergeCall: boolean;
 };
 
-function liveJobsOf(db: Database, item: WorkItemRecord): Job[] {
-  return listJobs(db).filter(
+async function liveJobsOf(db: Database, item: WorkItemRecord): Promise<Job[]> {
+  return (await listJobs(sqliteDb(db))).filter(
     (job) =>
       (job.payload as { itemId?: unknown } | null)?.itemId === item.id &&
       (job.status === "running" || job.status === "pending"),
   );
 }
 
-export function progressJobs(db: Database, item: WorkItemRecord, now: number): Job[] {
+export async function progressJobs(
+  db: Database,
+  item: WorkItemRecord,
+  now: number,
+): Promise<Job[]> {
   const current = new Set(
     db
       .query<{ id: number }, [string, number, number]>(
@@ -411,7 +424,7 @@ export function progressJobs(db: Database, item: WorkItemRecord, now: number): J
       .all(item.id, item.version, now)
       .map((row) => row.id),
   );
-  return liveJobsOf(db, item).filter((job) => current.has(job.id));
+  return (await liveJobsOf(db, item)).filter((job) => current.has(job.id));
 }
 
 function actionableQuestions(db: Database, itemId: string): number {
@@ -453,9 +466,7 @@ export async function factsOf(db: Database, id: string): Promise<ItemFacts> {
     checkpoint: item.checkpoint,
     runStatus: item.currentRunId === null ? null : (getRun(db, item.currentRunId)?.status ?? null),
     cancelRequested: item.cancelRequested,
-    liveJobs: liveJobsOf(db, item)
-      .map((job) => `${job.queue}:${job.status}`)
-      .sort(),
+    liveJobs: (await liveJobsOf(db, item)).map((job) => `${job.queue}:${job.status}`).sort(),
     questions: actionableQuestions(db, id),
     restartHold: (await restartHold(sqliteDb(db), item)) !== null,
     mergeCall: await mergeCallInFlight(sqliteDb(db), id),
@@ -526,9 +537,9 @@ export async function violations(
   const found: string[] = [];
   for (const item of listWorkItems(db)) {
     const say = (message: string) => found.push(`${item.id} (${item.state}): ${message}`);
-    const live = liveJobsOf(db, item);
+    const live = await liveJobsOf(db, item);
     const execution = live.filter((job) => EXECUTION_QUEUES.includes(job.queue));
-    const progress = progressJobs(db, item, now).filter((job) =>
+    const progress = (await progressJobs(db, item, now)).filter((job) =>
       EXECUTION_QUEUES.includes(job.queue),
     );
     const questions = actionableQuestions(db, item.id);
@@ -573,7 +584,8 @@ export async function violations(
     if (item.state === "merge_queue") {
       if (item.acceptedHead === null) say("in the merge queue without an accepted head");
       else {
-        const verdict = closeoutPolicyDigests(db, item.id, item.acceptedHead)?.decision ?? null;
+        const verdict =
+          (await closeoutPolicyDigests(sqliteDb(db), item.id, item.acceptedHead))?.decision ?? null;
         if (verdict !== null && verdict !== "accepted")
           say(`in the merge queue at a head whose latest verdict is ${verdict}`);
       }

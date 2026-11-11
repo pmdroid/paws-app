@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, inArray, isNull, lte, sql } from "drizzle-orm";
 import { delegationIssueIdSql } from "../core";
-import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
+import { type Db, type Q, type Steps } from "./db";
 import type { WorkItemRecord } from "./items";
 import { enqueueOutboxOnceSteps } from "./outbox";
 
@@ -32,12 +31,12 @@ export function* getLinearTaskDelegationSteps(
   return row ?? null;
 }
 
-export function getLinearTaskDelegation(
-  db: Database,
+export async function getLinearTaskDelegation(
+  store: Db,
   itemId: string,
   issueId: string,
-): LinearTaskDelegation | null {
-  return settled(sqliteDb(db).run((q) => getLinearTaskDelegationSteps(q, itemId, issueId)));
+): Promise<LinearTaskDelegation | null> {
+  return store.run((q) => getLinearTaskDelegationSteps(q, itemId, issueId));
 }
 
 /**

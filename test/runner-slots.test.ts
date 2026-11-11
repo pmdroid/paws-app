@@ -52,7 +52,7 @@ async function fixture(now: number) {
         now,
       ],
     );
-    const run = insertRun(db, {
+    const run = await insertRun(sqliteDb(db), {
       itemId: `item-${index}`,
       now: options.startedAt ?? now,
       status: "active",
@@ -75,7 +75,7 @@ test("the runner overview reports used and total slots like placement counts the
   });
   db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,3)", ["runner-1"]);
   await work(0, now + 60_000);
-  markRun(db, await work(1, now - RUNNER_LEASE_GRACE_MS - 1), "ended", now);
+  await markRun(sqliteDb(db), await work(1, now - RUNNER_LEASE_GRACE_MS - 1), "ended", now);
   expect((await listRunnerOverview(sqliteDb(db), "ws-1", now))[0]?.slots).toEqual({
     used: 1,
     total: 3,
@@ -100,8 +100,8 @@ test("the runner overview lists each live session with its issue and phase", asy
     [now - 20_000, now - 20_000, now - 20_000],
   );
   const merging = await work(3, lease, { state: "merge_queue", startedAt: now - 20_000 });
-  markRun(
-    db,
+  await markRun(
+    sqliteDb(db),
     await work(4, now - RUNNER_LEASE_GRACE_MS - 1, { startedAt: now - 10_000 }),
     "ended",
     now,

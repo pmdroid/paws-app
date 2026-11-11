@@ -211,8 +211,10 @@ async function setup(options: { members?: string[]; agents?: string[] } = {}) {
     deliver: () => deliverLinearComments(db, "eng-1", caps),
     comment: async (id: string) =>
       (await getLinearComment(sqliteDb(db), id)) as LinearCommentRecord,
-    commentJobs: () => listJobs(db).filter((job) => job.queue === JOB_KIND.linearComments),
-    resumeJobs: () => listJobs(db).filter((job) => job.queue === JOB_KIND.resume),
+    commentJobs: async () =>
+      (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.linearComments),
+    resumeJobs: async () =>
+      (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume),
     onLeave: (record: (pullNumber: number) => void) => {
       const original = orchestrator["linearCommentCapabilities"].bind(orchestrator);
       Object.assign(orchestrator, {
@@ -226,14 +228,14 @@ async function setup(options: { members?: string[]; agents?: string[] } = {}) {
       });
     },
     resumedBrief: async () => {
-      const job = listJobs(db).find((entry) => entry.queue === JOB_KIND.resume);
+      const job = (await listJobs(sqliteDb(db))).find((entry) => entry.queue === JOB_KIND.resume);
       const restartBody = (job?.payload as { handoff?: string } | undefined)?.handoff ?? "";
       return [restartBody, (await turnBrief(db, getWorkItem(db, "eng-1")!, caps)) ?? ""].join(
         "\n\n",
       );
     },
-    thoughts: () =>
-      listOutbox(db, SESSION)
+    thoughts: async () =>
+      (await listOutbox(sqliteDb(db), SESSION))
         .filter((row) => row.idempotencyKey.startsWith("linear-comment:"))
         .map((row) => (row.payload as { body: string }).body),
     setBusy: (value: boolean) => {
@@ -253,9 +255,13 @@ async function setup(options: { members?: string[]; agents?: string[] } = {}) {
   };
 }
 
-function toMergeQueue(db: Awaited<ReturnType<typeof setup>>["db"]) {
-  beginImplementRun(db, "eng-1", T0);
-  enterMergeQueue(db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
+async function toMergeQueue(db: Awaited<ReturnType<typeof setup>>["db"]) {
+  await beginImplementRun(sqliteDb(db), "eng-1", T0);
+  await enterMergeQueue(sqliteDb(db), "eng-1", {
+    phase: "merge_queue",
+    baseSha: "b",
+    wipCommit: "h",
+  });
 }
 
 describe("receiving ordinary Linear comments", () => {
@@ -290,7 +296,7 @@ describe("receiving ordinary Linear comments", () => {
   test("an authorized comment is recorded once, acknowledged once and gathered by one job", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       const raw = webhookComment({ id: "c-1", body: "Rename the flag to `strict`." });
       expect(await f.receive(fromWebhook(raw, "d-1"))).toBe(true);
       expect(await f.receive(fromWebhook(raw, "d-1"))).toBe(true);
@@ -304,11 +310,11 @@ describe("receiving ordinary Linear comments", () => {
         authority: "person",
       });
       expect(f.authorized).toEqual([PASCAL]);
-      expect(f.thoughts()).toEqual([
+      expect(await f.thoughts()).toEqual([
         "Received a comment on eng-1. Paws hands it to the agent at its next turn.",
       ]);
-      expect(f.commentJobs()).toHaveLength(1);
-      expect(f.commentJobs()[0]!.runAt).toBe(T0 + 60_000);
+      expect(await f.commentJobs()).toHaveLength(1);
+      expect((await f.commentJobs())[0]!.runAt).toBe(T0 + 60_000);
     } finally {
       await f.close();
     }
@@ -317,18 +323,18 @@ describe("receiving ordinary Linear comments", () => {
   test("idle merge-queue work wakes once and the comment is in the resumed brief", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Use the v2 endpoint." })));
       const before = latestHumanTurn(f.db, "eng-1");
       expect(await f.deliver()).toBe("restarted");
       expect(await f.deliver()).toBe("done");
       expect(getWorkItem(f.db, "eng-1")!.state).toBe("queued");
-      const resumes = f.resumeJobs();
+      const resumes = await f.resumeJobs();
       expect(resumes).toHaveLength(1);
       expect((resumes[0]!.payload as { reason: string }).reason).toBe("follow_up");
       expect((resumes[0]!.payload as { handoff: string }).handoff).toBe(LINEAR_COMMENT_RESTART);
       expect((await f.comment("c-1")).state).toBe("queued");
-      expect(f.thoughts().at(-1)).toBe(
+      expect((await f.thoughts()).at(-1)).toBe(
         "Sent eng-1 back to the agent for the comment. The agent reads it when its next turn starts.",
       );
       const handoff = await f.resumedBrief();
@@ -347,7 +353,7 @@ describe("receiving ordinary Linear comments", () => {
   test("an edit, deletion or revocation after the wake still applies before the agent reads it", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Use red." })));
       await f.receive(
         fromWebhook(webhookComment({ id: "c-2", body: "Drop this.", createdAt: T0 + 2_000 })),
@@ -400,11 +406,11 @@ describe("receiving ordinary Linear comments", () => {
   test("the loop's own capabilities wake idle work once for a webhook comment", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Ship it behind a flag." })));
       expect(await f.deliverWithLoop()).toBe("restarted");
       expect(await f.deliverWithLoop()).toBe("done");
-      expect(f.resumeJobs()).toHaveLength(1);
+      expect(await f.resumeJobs()).toHaveLength(1);
       expect(await f.resumedBrief()).toContain("Ship it behind a flag.");
     } finally {
       await f.close();
@@ -416,7 +422,7 @@ describe("receiving ordinary Linear comments", () => {
     try {
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Keep the old API too." })));
       expect(await f.deliver()).toBe("done");
-      expect(f.resumeJobs()).toHaveLength(0);
+      expect(await f.resumeJobs()).toHaveLength(0);
       const item = getWorkItem(f.db, "eng-1")!;
       const offered = await linearCommentBrief(sqliteDb(f.db), item, f.caps);
       expect(offered?.text).toContain("Keep the old API too.");
@@ -439,18 +445,22 @@ describe("receiving ordinary Linear comments", () => {
   test("a running agent is not interrupted; the comment waits for the turn to end", async () => {
     const f = await setup();
     try {
-      beginImplementRun(f.db, "eng-1", T0);
+      await beginImplementRun(sqliteDb(f.db), "eng-1", T0);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Skip the migration." })));
-      expect(f.thoughts()).toEqual([
+      expect(await f.thoughts()).toEqual([
         "Received a comment on eng-1. Paws hands it to the agent once its current turn ends.",
       ]);
       expect(await f.deliver()).toBe("wait");
       expect((await f.comment("c-1")).state).toBe("queued");
       expect(getWorkItem(f.db, "eng-1")!.state).toBe("running");
-      expect(f.resumeJobs()).toHaveLength(0);
-      enterMergeQueue(f.db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
+      expect(await f.resumeJobs()).toHaveLength(0);
+      await enterMergeQueue(sqliteDb(f.db), "eng-1", {
+        phase: "merge_queue",
+        baseSha: "b",
+        wipCommit: "h",
+      });
       expect(await f.deliver()).toBe("restarted");
-      expect(f.resumeJobs()).toHaveLength(1);
+      expect(await f.resumeJobs()).toHaveLength(1);
       expect(await f.resumedBrief()).toContain("Skip the migration.");
     } finally {
       await f.close();
@@ -462,7 +472,7 @@ describe("who may comment", () => {
   test("an allowlisted external agent on behalf of a member is authorized as an agent", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       const raw = webhookComment({
         id: "c-1",
         body: "Cyrus here: the flaky test is in rank.test.ts.",
@@ -500,7 +510,7 @@ describe("who may comment", () => {
         ),
       );
       expect(await f.comment("c-1")).toMatchObject({ state: "rejected", reason: "on_behalf_of" });
-      expect(f.commentJobs()).toHaveLength(0);
+      expect(await f.commentJobs()).toHaveLength(0);
     } finally {
       await f.close();
     }
@@ -541,8 +551,8 @@ describe("who may comment", () => {
       expect(await f.comment("gh")).toMatchObject({ state: "ignored", reason: "bot" });
       expect(await f.comment("claim")).toMatchObject({ state: "ignored", reason: "bot" });
       expect(f.authorized).toEqual([]);
-      expect(f.commentJobs()).toHaveLength(0);
-      expect(f.thoughts()).toEqual([]);
+      expect(await f.commentJobs()).toHaveLength(0);
+      expect(await f.thoughts()).toEqual([]);
     } finally {
       await f.close();
     }
@@ -609,9 +619,11 @@ describe("routing to the right work", () => {
         ),
       );
       expect(await f.comment("c-1")).toMatchObject({ state: "rejected", reason: "parent_issue" });
-      expect(f.commentJobs()).toHaveLength(0);
+      expect(await f.commentJobs()).toHaveLength(0);
       expect(
-        listOutbox(f.db, "ses-parent").map((row) => (row.payload as { body: string }).body),
+        (await listOutbox(sqliteDb(f.db), "ses-parent")).map(
+          (row) => (row.payload as { body: string }).body,
+        ),
       ).toEqual([
         "A comment on this parent issue was not passed on: each sub-issue runs in its own session. Comment on the sub-issue whose work it is about.",
       ]);
@@ -638,12 +650,12 @@ describe("routing to the right work", () => {
   test("a stop or a new session after receipt keeps the comment from the old generation", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "First." })));
       await acceptLinearStop(sqliteDb(f.db), SESSION, "stop-1", T0 + 2_000);
       expect(await f.deliver()).toBe("done");
       expect(await f.comment("c-1")).toMatchObject({ state: "ignored", reason: "session_stopped" });
-      expect(f.resumeJobs()).toHaveLength(0);
+      expect(await f.resumeJobs()).toHaveLength(0);
     } finally {
       await f.close();
     }
@@ -652,7 +664,7 @@ describe("routing to the right work", () => {
   test("a comment queued for a session the item no longer belongs to is superseded", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "First." })));
       f.db.run("UPDATE work_item SET session_key = 'ses-new' WHERE id = 'eng-1'");
       expect(await f.deliver()).toBe("done");
@@ -667,7 +679,7 @@ describe("edits, deletions and restarts", () => {
   test("an edit before delivery replaces the body; an older update is ignored", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Use red." })));
       await f.receive(
         fromWebhook(
@@ -703,7 +715,7 @@ describe("edits, deletions and restarts", () => {
   test("a deletion before delivery retires the comment and catch-up cannot revive it", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Oops." })));
       await f.receive(
         fromWebhook(
@@ -713,7 +725,7 @@ describe("edits, deletions and restarts", () => {
       await f.receive(polled({ id: "c-1", body: "Oops.", updatedAtMs: T0 + 4_000 }));
       expect(await f.comment("c-1")).toMatchObject({ state: "removed", reason: "deleted" });
       expect(await f.deliver()).toBe("done");
-      expect(f.resumeJobs()).toHaveLength(0);
+      expect(await f.resumeJobs()).toHaveLength(0);
     } finally {
       await f.close();
     }
@@ -737,7 +749,7 @@ describe("edits, deletions and restarts", () => {
   test("a restart between receipt and routing routes the comment on redelivery", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       f.db.run(
         `INSERT INTO linear_comment (comment_id, issue_id, organization_id, team_id, author_id,
            actor_type, body, created_at_ms, updated_at_ms, received_at, source)
@@ -746,7 +758,7 @@ describe("edits, deletions and restarts", () => {
       );
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Left behind." })));
       expect((await f.comment("c-1")).state).toBe("queued");
-      expect(f.commentJobs()).toHaveLength(1);
+      expect(await f.commentJobs()).toHaveLength(1);
     } finally {
       await f.close();
     }
@@ -758,14 +770,14 @@ describe("holds, questions and gates", () => {
     for (const hold of ["paused", "manual", "failed"] as const) {
       const f = await setup();
       try {
-        beginImplementRun(f.db, "eng-1", T0);
+        await beginImplementRun(sqliteDb(f.db), "eng-1", T0);
         f.db.run("UPDATE work_item SET state = ? WHERE id = 'eng-1'", [hold]);
         await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Carry on." })));
         expect(await f.deliver()).toBe("done");
         expect(getWorkItem(f.db, "eng-1")!.state).toBe(hold);
         expect((await f.comment("c-1")).state).toBe("queued");
-        expect(f.resumeJobs()).toHaveLength(0);
-        expect(f.thoughts()[0]).toContain("waits with it");
+        expect(await f.resumeJobs()).toHaveLength(0);
+        expect((await f.thoughts())[0]).toContain("waits with it");
       } finally {
         await f.close();
       }
@@ -780,7 +792,7 @@ describe("holds, questions and gates", () => {
         await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Reopen this." })));
         expect(await f.comment("c-1")).toMatchObject({ state: "ignored", reason: "ended" });
         expect(getWorkItem(f.db, "eng-1")!.state).toBe(ended);
-        expect(f.commentJobs()).toHaveLength(0);
+        expect(await f.commentJobs()).toHaveLength(0);
       } finally {
         await f.close();
       }
@@ -790,7 +802,7 @@ describe("holds, questions and gates", () => {
   test("teardown uncertainty keeps a queued comment queued until the item settles", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Later." })));
       f.setBusy(true);
       expect(await f.deliver()).toBe("wait");
@@ -823,7 +835,7 @@ describe("holds, questions and gates", () => {
     for (const kind of gates) {
       const f = await setup();
       try {
-        const { run } = beginImplementRun(f.db, "eng-1", T0);
+        const { run } = await beginImplementRun(sqliteDb(f.db), "eng-1", T0);
         const item = getWorkItem(f.db, "eng-1")!;
         const asked = await sqliteDb(f.db).transaction((q) =>
           askSteps(
@@ -840,7 +852,7 @@ describe("holds, questions and gates", () => {
         expect(findOpenQuestion(f.db, SESSION)?.id).toBe(asked.question.id);
         expect(getWorkItem(f.db, "eng-1")!.state).toBe("awaiting_input");
         expect((await f.comment("c-1")).state).toBe("queued");
-        expect(f.thoughts().at(-1)).toBe(
+        expect((await f.thoughts()).at(-1)).toBe(
           "Paws keeps the comment on the issue as context for the agent. The open question here still needs an answer in this session.",
         );
       } finally {
@@ -852,7 +864,7 @@ describe("holds, questions and gates", () => {
   test("two comments while a question is open are context, not an answer", async () => {
     const f = await setup();
     try {
-      const { run } = beginImplementRun(f.db, "eng-1", T0);
+      const { run } = await beginImplementRun(sqliteDb(f.db), "eng-1", T0);
       const item = getWorkItem(f.db, "eng-1")!;
       await sqliteDb(f.db).transaction((q) =>
         askSteps(
@@ -879,7 +891,7 @@ describe("batching with pull request feedback", () => {
   test("a burst of comments moves the one job inside the quiet window and maximum wait", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       for (let index = 0; index < 8; index++) {
         f.clock.advance(50_000);
         await f.receive(
@@ -892,11 +904,11 @@ describe("batching with pull request feedback", () => {
           ),
         );
       }
-      const jobs = f.commentJobs();
+      const jobs = await f.commentJobs();
       expect(jobs).toHaveLength(1);
       expect(jobs[0]!.runAt).toBe(jobs[0]!.createdAt + 300_000);
       expect(await f.deliver()).toBe("restarted");
-      expect(f.resumeJobs()).toHaveLength(1);
+      expect(await f.resumeJobs()).toHaveLength(1);
       const handoff = await f.resumedBrief();
       for (let index = 0; index < 8; index++) expect(handoff).toContain(`Note ${index}.`);
     } finally {
@@ -907,7 +919,7 @@ describe("batching with pull request feedback", () => {
   test("pending pull request comments and CI keep their wait and carry the Linear comment in one restart", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await recordPullComment(sqliteDb(f.db), {
         source: "conversation",
         commentId: 99,
@@ -920,18 +932,22 @@ describe("batching with pull request feedback", () => {
         line: null,
         receivedAt: T0,
       });
-      const pullJob = listJobs(f.db).find((job) => job.queue === JOB_KIND.pullComments)!;
+      const pullJob = (await listJobs(sqliteDb(f.db))).find(
+        (job) => job.queue === JOB_KIND.pullComments,
+      )!;
       const pullRunAt = pullJob.runAt;
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "And rename it." })));
-      expect(listJobs(f.db).find((job) => job.id === pullJob.id)!.runAt).toBe(pullRunAt);
+      expect((await listJobs(sqliteDb(f.db))).find((job) => job.id === pullJob.id)!.runAt).toBe(
+        pullRunAt,
+      );
       expect(await f.deliver()).toBe("wait");
-      expect(f.resumeJobs()).toHaveLength(0);
+      expect(await f.resumeJobs()).toHaveLength(0);
       const item = getWorkItem(f.db, "eng-1")!;
       restart(f.db, item, { reason: "review", body: "pull comments", jobKey: "review:x", now: T0 });
       expect(await f.deliver()).toBe("done");
       const brief = await turnBrief(f.db, getWorkItem(f.db, "eng-1")!, f.caps);
       expect(brief).toContain("And rename it.");
-      expect(f.resumeJobs()).toHaveLength(1);
+      expect(await f.resumeJobs()).toHaveLength(1);
     } finally {
       await f.close();
     }
@@ -964,7 +980,7 @@ describe("review findings", () => {
   test("a batch takes only the comments that fit; the rest wait for the next handoff", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       for (let index = 0; index < 4; index++)
         await f.receive(
           fromWebhook(
@@ -976,7 +992,7 @@ describe("review findings", () => {
           ),
         );
       expect(await f.deliver()).toBe("restarted");
-      expect(f.resumeJobs()).toHaveLength(1);
+      expect(await f.resumeJobs()).toHaveLength(1);
       const first = (await turnBrief(f.db, getWorkItem(f.db, "eng-1")!, f.caps))!;
       expect(first.length).toBeLessThanOrEqual(12_000);
       expect(first).toContain(LINEAR_COMMENT_INSTRUCTION);
@@ -984,7 +1000,7 @@ describe("review findings", () => {
       expect((await f.comment("big-1")).state).toBe("delivered");
       expect(first).not.toContain("3".repeat(3_900));
       expect((await f.comment("big-3")).state).toBe("queued");
-      expect(f.commentJobs().filter((job) => job.status === "pending")).toHaveLength(1);
+      expect((await f.commentJobs()).filter((job) => job.status === "pending")).toHaveLength(1);
       const brief = await turnBrief(f.db, getWorkItem(f.db, "eng-1")!, f.caps);
       expect(brief).toContain("3".repeat(3_900));
       expect(await f.comment("big-3")).toMatchObject({ state: "delivered", via: "brief" });
@@ -996,11 +1012,11 @@ describe("review findings", () => {
   test("while the member checker is unavailable recovered comments wait instead of passing", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "After restart." })));
       f.setCheckerReady(false);
       expect(await f.deliver()).toBe("wait");
-      expect(f.resumeJobs()).toHaveLength(0);
+      expect(await f.resumeJobs()).toHaveLength(0);
       expect(await turnBrief(f.db, getWorkItem(f.db, "eng-1")!, f.caps)).toBeNull();
       expect((await f.comment("c-1")).state).toBe("queued");
       f.members.delete(PASCAL);
@@ -1015,7 +1031,7 @@ describe("review findings", () => {
   test("a session reply whose source comment was already handed off is not delivered again", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Use tabs." })));
       expect(await f.deliver()).toBe("restarted");
       expect(await f.resumedBrief()).toContain("Use tabs.");
@@ -1040,7 +1056,7 @@ describe("review findings", () => {
       };
       await f.receive(prompted);
       expect(f.db.query("SELECT count(*) AS n FROM linear_turn").get()).toEqual({ n: 0 });
-      expect(f.resumeJobs()).toHaveLength(1);
+      expect(await f.resumeJobs()).toHaveLength(1);
     } finally {
       await f.close();
     }
@@ -1049,7 +1065,7 @@ describe("review findings", () => {
   test("the restart leaves GitHub's merge queue first, and a merged pull request is not restarted", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await recordItemPullRequest(sqliteDb(f.db), {
         itemId: "eng-1",
         pullNumber: 7,
@@ -1060,7 +1076,7 @@ describe("review findings", () => {
       f.setQueueResult("merged");
       expect(await f.deliver()).toBe("wait");
       expect(f.leftQueue).toEqual([7]);
-      expect(f.resumeJobs()).toHaveLength(0);
+      expect(await f.resumeJobs()).toHaveLength(0);
       expect((await f.comment("c-1")).state).toBe("queued");
       f.setQueueResult("left");
       expect(await f.deliver()).toBe("restarted");
@@ -1087,7 +1103,7 @@ describe("review findings", () => {
       const item = getWorkItem(f.db, "eng-1")!;
       await turnBrief(f.db, item, f.caps);
       expect((await f.comment("big-4")).state).toBe("queued");
-      expect(f.commentJobs().filter((job) => job.status === "pending")).toHaveLength(1);
+      expect((await f.commentJobs()).filter((job) => job.status === "pending")).toHaveLength(1);
     } finally {
       await f.close();
     }
@@ -1096,7 +1112,7 @@ describe("review findings", () => {
   test("a comment takes the pull request out of GitHub's merge queue on receipt", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await recordItemPullRequest(sqliteDb(f.db), {
         itemId: "eng-1",
         pullNumber: 7,
@@ -1116,7 +1132,7 @@ describe("review findings", () => {
   test("a pull request closed without merging settles the comments so the item is not held", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await recordItemPullRequest(sqliteDb(f.db), {
         itemId: "eng-1",
         pullNumber: 7,
@@ -1127,8 +1143,8 @@ describe("review findings", () => {
       f.setQueueResult("closed");
       expect(await f.deliver()).toBe("done");
       expect(await f.comment("c-1")).toMatchObject({ state: "ignored", reason: "pull_closed" });
-      expect(f.resumeJobs()).toHaveLength(0);
-      expect(f.thoughts().at(-1)).toBe(
+      expect(await f.resumeJobs()).toHaveLength(0);
+      expect((await f.thoughts()).at(-1)).toBe(
         "Pull request #7 was closed without merging, so Paws did not pass the comment on eng-1 to the agent.",
       );
     } finally {

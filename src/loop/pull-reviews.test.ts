@@ -62,8 +62,12 @@ async function setup(threads = THREADS, options: { commentsPerPage?: number } = 
     repo: "one",
     remoteUrl: "https://github.com/acme/one.git",
   });
-  beginImplementRun(db, "eng-1", 1);
-  enterMergeQueue(db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
+  await beginImplementRun(sqliteDb(db), "eng-1", 1);
+  await enterMergeQueue(sqliteDb(db), "eng-1", {
+    phase: "merge_queue",
+    baseSha: "b",
+    wipCommit: "h",
+  });
   const github = createFakeReviewThreads(threads, options);
   const queue = createFakeMergeQueue();
   const client: GitHubClient = {
@@ -148,12 +152,12 @@ async function setup(threads = THREADS, options: { commentsPerPage?: number } = 
   };
 }
 
-const reviewJobs = (db: Awaited<ReturnType<typeof setup>>["db"]) =>
-  listJobs(db).filter((job) => job.queue === JOB_KIND.pullReview);
-const resumeJobs = (db: Awaited<ReturnType<typeof setup>>["db"]) =>
-  listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
-const feedbackActivities = (db: Awaited<ReturnType<typeof setup>>["db"]) =>
-  listOutbox(db)
+const reviewJobs = async (db: Awaited<ReturnType<typeof setup>>["db"]) =>
+  (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.pullReview);
+const resumeJobs = async (db: Awaited<ReturnType<typeof setup>>["db"]) =>
+  (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
+const feedbackActivities = async (db: Awaited<ReturnType<typeof setup>>["db"]) =>
+  (await listOutbox(sqliteDb(db)))
     .filter((row) => row.op === "activity" && row.idempotencyKey.startsWith("pull-feedback:"))
     .map((row) => {
       const payload = row.payload as { kind: string; body: string };
@@ -165,14 +169,14 @@ describe("changes-requested reviews", () => {
     const { db, caps, deliver, github } = await setup();
     await deliver({ id: 501, state: "changes_requested", body: "Please fix the ranking." });
     await deliver({ id: 501, state: "changes_requested", body: "Please fix the ranking." });
-    expect(reviewJobs(db).map((job) => [job.jobKey, job.payload])).toEqual([
+    expect((await reviewJobs(db)).map((job) => [job.jobKey, job.payload])).toEqual([
       ["pull-review:501", { reviewId: 501 }],
     ]);
 
     expect(await handlePullReview(db, 501, caps)).toBe("restarted");
     expect(getWorkItem(db, "eng-1")?.state).toBe("queued");
     expect(fixRounds(db, "eng-1")).toBe(1);
-    const [resume] = resumeJobs(db);
+    const [resume] = await resumeJobs(db);
     expect(resume?.jobKey).toBe("review:eng-1:501");
     const payload = resume?.payload as { reason: string; handoff: string };
     expect(payload.reason).toBe("review");
@@ -186,7 +190,7 @@ describe("changes-requested reviews", () => {
     expect(payload.handoff).toContain(`${REVIEW_FIX_INSTRUCTION}\n\nReply list.`);
     expect((await getPullReview(sqliteDb(db), 501))?.outcome).toBe("restarted");
     // The Linear session wakes with a thought the post-PR activity gate lets through.
-    expect(feedbackActivities(db)).toEqual([
+    expect(await feedbackActivities(db)).toEqual([
       {
         key: "pull-feedback:review:eng-1:501",
         kind: "thought",
@@ -197,9 +201,9 @@ describe("changes-requested reviews", () => {
     // A redelivered webhook after the restart does nothing.
     expect(await deliver({ id: 501, state: "changes_requested" })).toBe(true);
     expect(await handlePullReview(db, 501, caps)).toBe("done");
-    expect(reviewJobs(db)).toHaveLength(1);
-    expect(resumeJobs(db)).toHaveLength(1);
-    expect(feedbackActivities(db)).toHaveLength(1);
+    expect(await reviewJobs(db)).toHaveLength(1);
+    expect(await resumeJobs(db)).toHaveLength(1);
+    expect(await feedbackActivities(db)).toHaveLength(1);
     expect(github.reads).toBe(1);
   });
 
@@ -217,7 +221,7 @@ describe("changes-requested reviews", () => {
     ]);
     await deliver({ id: 501, state: "changes_requested", body: "Please fix the ranking." });
     expect(await handlePullReview(db, 501, caps)).toBe("restarted");
-    const { handoff } = resumeJobs(db)[0]!.payload as { handoff: string };
+    const { handoff } = (await resumeJobs(db))[0]!.payload as { handoff: string };
     expect(handoff).toContain("- open, P2 at `src/rank.ts:14`: Ties must keep insertion order.");
     expect(handoff).toContain(
       '- @rev at `src/rank.ts:12`: "This sorts the wrong way round."\n  Closeout (open) at `src/rank.ts:14`: "Ties must keep insertion order."',
@@ -253,7 +257,7 @@ describe("changes-requested reviews", () => {
     await deliver({ id: 501, state: "changes_requested" });
     expect(await handlePullReview(db, 501, caps)).toBe("wait");
 
-    applyWorkItemEvent(db, "eng-1", "closeout_accepted");
+    await applyWorkItemEvent(sqliteDb(db), "eng-1", "closeout_accepted");
     expect(getWorkItem(db, "eng-1")?.state).toBe("merge_queue");
     setBusy(true);
     expect(await handlePullReview(db, 501, caps)).toBe("wait");
@@ -267,7 +271,7 @@ describe("changes-requested reviews", () => {
 
     setBusy(false);
     expect(await handlePullReview(db, 501, caps)).toBe("restarted");
-    expect(resumeJobs(db)).toHaveLength(1);
+    expect(await resumeJobs(db)).toHaveLength(1);
   });
 
   test("take the pull request out of GitHub's merge queue before anything else", async () => {
@@ -300,7 +304,7 @@ describe("changes-requested reviews", () => {
     queue.merge(7);
     await deliver({ id: 501, state: "changes_requested" });
     expect(await handlePullReview(db, 501, caps)).toBe("dropped");
-    expect(resumeJobs(db)).toHaveLength(0);
+    expect(await resumeJobs(db)).toHaveLength(0);
   });
 
   test("a spent fix budget asks the team instead of restarting", async () => {
@@ -308,9 +312,9 @@ describe("changes-requested reviews", () => {
     setLimit(0);
     await deliver({ id: 501, state: "changes_requested", body: "Rename it." });
     expect(await handlePullReview(db, 501, caps)).toBe("asked");
-    expect(feedbackActivities(db)).toEqual([]);
+    expect(await feedbackActivities(db)).toEqual([]);
     expect(getWorkItem(db, "eng-1")?.state).toBe("awaiting_input");
-    expect(resumeJobs(db)).toHaveLength(0);
+    expect(await resumeJobs(db)).toHaveLength(0);
     const question = findOpenQuestion(db, "s-1");
     expect(question?.kind).toBe("ci-help");
     expect(question?.body).toContain("all 0 fix rounds are spent");
@@ -323,7 +327,7 @@ describe("changes-requested reviews", () => {
     await deliver({ id: 501, state: "changes_requested" });
     db.run("UPDATE work_item SET state='cancelled' WHERE id='eng-1'");
     expect(await handlePullReview(db, 501, caps)).toBe("dropped");
-    expect(resumeJobs(db)).toHaveLength(0);
+    expect(await resumeJobs(db)).toHaveLength(0);
   });
 });
 
@@ -332,7 +336,7 @@ describe("other reviews", () => {
     const { db, deliver } = await setup();
     await deliver({ id: 777, state: "commented" });
     expect(await getPullReview(sqliteDb(db), 777)).toBeNull();
-    expect(reviewJobs(db)).toHaveLength(0);
+    expect(await reviewJobs(db)).toHaveLength(0);
     expect(
       (await pendingPullComments(sqliteDb(db), "eng-1")).map((comment) => comment.commentId),
     ).toEqual([777]);
@@ -343,7 +347,7 @@ describe("other reviews", () => {
     await deliver({ id: 1, state: "approved" });
     await deliver({ id: 2, state: "changes_requested", action: "edited" });
     await deliver({ id: 3, state: "changes_requested", branch: "someone/else" });
-    expect(reviewJobs(db)).toHaveLength(0);
+    expect(await reviewJobs(db)).toHaveLength(0);
   });
 
   test("a fork's pull request with the same branch name, or another pull request, is ignored", async () => {
@@ -357,7 +361,7 @@ describe("other reviews", () => {
       openedAt: 1,
     });
     await deliver({ id: 6, state: "changes_requested", pull: 8 });
-    expect(reviewJobs(db)).toHaveLength(0);
+    expect(await reviewJobs(db)).toHaveLength(0);
     await deliver({ id: 7, state: "changes_requested" });
     expect(await getPullReview(sqliteDb(db), 7)).toMatchObject({ itemId: "eng-1", pullNumber: 7 });
   });

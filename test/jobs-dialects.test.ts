@@ -11,7 +11,7 @@ import {
   cancelPendingItemJobsSteps,
   claimNextJobSteps,
   completeJobSteps,
-  enqueueJobAsync,
+  enqueueJob,
   enqueueJobOnceAsync,
   enqueueJobOnceSteps,
   enqueueJobSteps,
@@ -355,7 +355,7 @@ forEachDialect((open) => {
         if (source === db) woken += 1;
       });
       try {
-        const id = await enqueueJobAsync(db, { queue: "work", now: 0 });
+        const id = await enqueueJob(db, { queue: "work", now: 0 });
         expect(woken).toBe(1);
         const keyed = await enqueueJobOnceAsync(db, { queue: "work", jobKey: "k", now: 0 });
         expect(woken).toBe(2);

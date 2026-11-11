@@ -55,8 +55,8 @@ async function hot(db: Database, files: string[]): Promise<void> {
   });
 }
 
-function respond(db: Database, id: string): void {
-  enqueueOutbox(db, {
+async function respond(db: Database, id: string): Promise<void> {
+  await enqueueOutbox(sqliteDb(db), {
     target: "linear",
     op: "activity",
     orderingKey: `session-${id}`,
@@ -75,8 +75,8 @@ function sendBack(db: Database, id: string, reason: "conflict" | "ci"): void {
   });
 }
 
-function holds(db: Database, id: string) {
-  return listOutbox(db, `session-${id}`)
+async function holds(db: Database, id: string) {
+  return (await listOutbox(sqliteDb(db), `session-${id}`))
     .filter((row) => row.idempotencyKey.startsWith("merge-hold:"))
     .map((row) => ({
       key: row.idempotencyKey,
@@ -93,7 +93,7 @@ async function held(
   respondFirst = true,
 ): Promise<void> {
   await item(db, id, "merge_queue", 2, [TOOLKIT, PROJECT]);
-  if (respondFirst) respond(db, id);
+  if (respondFirst) await respond(db, id);
   sendBack(db, id, reason);
 }
 
@@ -106,7 +106,7 @@ test("an item sent back to rebase and held behind another posts one line naming 
 
     for (const offset of [0, 1, 2]) await workspaceDispatch(db, { now: NOW + offset });
 
-    expect(holds(db, "ACME-2")).toEqual([
+    expect(await holds(db, "ACME-2")).toEqual([
       {
         key: "merge-hold:0:ACME-1:ACME-2",
         delivery: "ordered",
@@ -130,8 +130,8 @@ test("two items held behind one blocker each get their own line", async () => {
     await workspaceDispatch(db, { now: NOW });
     await workspaceDispatch(db, { now: NOW + 1 });
 
-    expect(holds(db, "ACME-2")).toHaveLength(1);
-    expect(holds(db, "ACME-3")).toHaveLength(1);
+    expect(await holds(db, "ACME-2")).toHaveLength(1);
+    expect(await holds(db, "ACME-3")).toHaveLength(1);
   } finally {
     db.close();
   }
@@ -147,8 +147,8 @@ test("a hold says nothing without a conflict restart or before the pull request 
 
     await workspaceDispatch(db, { now: NOW });
 
-    expect(holds(db, "ACME-2")).toEqual([]);
-    expect(holds(db, "ACME-3")).toEqual([]);
+    expect(await holds(db, "ACME-2")).toEqual([]);
+    expect(await holds(db, "ACME-3")).toEqual([]);
   } finally {
     db.close();
   }

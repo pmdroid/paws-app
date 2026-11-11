@@ -39,15 +39,21 @@ export default {
     const held = proof.heldWork();
     proof.expect(
       "the item waits for input with no run or slot held",
-      proof.itemState() === "awaiting_input" && held.activeRuns === 0 && held.reservations === 0,
-      { state: proof.itemState(), held },
+      (await proof.itemState()) === "awaiting_input" &&
+        held.activeRuns === 0 &&
+        held.reservations === 0,
+      { state: await proof.itemState(), held },
     );
     await proof.answerInLinear("Use the default");
     await proof.waitFor(
       "default profile completes the issue",
-      () => proof.itemState() === "merged",
+      async () => (await proof.itemState()) === "merged",
       120_000,
     );
-    proof.expect("default answer allows merge", proof.itemState() === "merged", proof.itemState());
+    proof.expect(
+      "default answer allows merge",
+      (await proof.itemState()) === "merged",
+      await proof.itemState(),
+    );
   },
 } satisfies Proof;

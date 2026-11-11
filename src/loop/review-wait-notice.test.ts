@@ -38,9 +38,9 @@ async function fixture() {
     pawsRoot: root,
   });
   insertQueuedItem(db, { id: "ENG-7", sessionKey: "ses_1", now: clock.now() });
-  beginImplementRun(db, "ENG-7", clock.now());
-  applyWorkItemEvent(db, "ENG-7", "turn_ended");
-  applyWorkItemEvent(db, "ENG-7", "closeout_accepted");
+  await beginImplementRun(sqliteDb(db), "ENG-7", clock.now());
+  await applyWorkItemEvent(sqliteDb(db), "ENG-7", "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), "ENG-7", "closeout_accepted");
   enqueueOutboxOnce(db, {
     target: "linear",
     op: "activity",
@@ -94,8 +94,10 @@ async function fixture() {
         await delivery.idle();
       }
     },
-    notices: () =>
-      listOutbox(db, "ses_1").filter((row) => row.idempotencyKey.startsWith("merge-review:")),
+    notices: async () =>
+      (await listOutbox(sqliteDb(db), "ses_1")).filter((row) =>
+        row.idempotencyKey.startsWith("merge-review:"),
+      ),
     posted: () => tracker.progress.map((update) => update.body),
     cleanup: async () => {
       await orchestrator.shutdown();
@@ -110,7 +112,7 @@ test("a required review after the pull request response posts one notice with th
   try {
     await f.deliver();
     expect(await f.wake("h1")).toMatchObject({ reason: "review", queued: true });
-    const [notice] = f.notices();
+    const [notice] = await f.notices();
     expect(notice).toMatchObject({
       idempotencyKey: "merge-review:ENG-7:0:required:h1",
       status: "pending",
@@ -126,7 +128,7 @@ test("a required review after the pull request response posts one notice with th
 
     for (let wake = 0; wake < 3; wake++) await f.wake("h1");
     await f.deliver();
-    expect(f.notices()).toHaveLength(1);
+    expect(await f.notices()).toHaveLength(1);
     expect(f.tracker.progress).toHaveLength(2);
   } finally {
     await f.cleanup();
@@ -143,7 +145,7 @@ test("changes requested and a new head each post their own notice, in order", as
     f.review("REVIEW_REQUIRED");
     await f.wake("h2");
     await f.deliver();
-    expect(f.notices().map((row) => row.idempotencyKey)).toEqual([
+    expect((await f.notices()).map((row) => row.idempotencyKey)).toEqual([
       "merge-review:ENG-7:0:required:h1",
       "merge-review:ENG-7:0:changes_requested:h1",
       "merge-review:ENG-7:0:required:h2",
@@ -167,7 +169,7 @@ test("other progress after the pull request response stays quiet", async () => {
     );
     await f.wake("h1");
     await f.deliver();
-    expect(listOutbox(f.db, "ses_1").map((row) => row.idempotencyKey)).toEqual([
+    expect((await listOutbox(sqliteDb(f.db), "ses_1")).map((row) => row.idempotencyKey)).toEqual([
       "pull-request-ready:ENG-7:0",
       "merge-review:ENG-7:0:required:h1",
     ]);
@@ -188,7 +190,7 @@ test("a cancelled item or a superseded generation hears no stale notice", async 
 
     f.db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", ["ENG-7"]);
     await f.wake("h2");
-    expect(f.notices().map((row) => row.idempotencyKey)).toEqual([
+    expect((await f.notices()).map((row) => row.idempotencyKey)).toEqual([
       "merge-review:ENG-7:0:required:h1",
     ]);
   } finally {
@@ -208,12 +210,12 @@ test("a failed delivery retries the same notice, with the same activity id, befo
     await f.wake("h1");
     f.clock.advance(60_000);
     await f.deliver();
-    const [first, second] = f.notices();
+    const [first, second] = await f.notices();
     expect(f.tracker.progress.slice(1).map((update) => update.id)).toEqual([
       (first!.payload as { id: string }).id,
       (second!.payload as { id: string }).id,
     ]);
-    expect(f.notices()).toHaveLength(2);
+    expect(await f.notices()).toHaveLength(2);
     expect(f.tracker.progress).toHaveLength(3);
   } finally {
     await f.cleanup();

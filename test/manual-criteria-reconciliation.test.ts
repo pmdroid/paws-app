@@ -142,8 +142,8 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
         }),
       );
     const original = getWorkItem(db, manualId)!;
-    const notices = () =>
-      listOutbox(db).filter((row) =>
+    const notices = async () =>
+      (await listOutbox(sqliteDb(db))).filter((row) =>
         row.idempotencyKey.startsWith(`criteria-changed:${manualId}:`),
       );
     const jobs = () => db.query("SELECT * FROM job").all();
@@ -181,9 +181,9 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
         issue: { ...original.brief!.issue, description: "Updated criteria" },
       },
     });
-    expect(notices()).toHaveLength(1);
+    expect(await notices()).toHaveLength(1);
     expect(getWorkItem(db, ids.removed!)!.state).toBe("cancelled");
-    expect((notices()[0]!.payload as { body: string }).body).toContain("manual");
+    expect(((await notices())[0]!.payload as { body: string }).body).toContain("manual");
     expect(
       db.query("SELECT 1 FROM job WHERE json_extract(payload,'$.itemId')=?").get(manualId),
     ).toBeNull();
@@ -223,7 +223,7 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
     }
     const afterJobs = jobs();
     await reconciler.reconcile({ itemId: manualId, workspaceId: "workspace" });
-    expect(notices()).toHaveLength(1);
+    expect(await notices()).toHaveLength(1);
     expect(jobs()).toEqual(afterJobs);
     // Another edit needs another activity even though manual ownership keeps version 7.
     tracker.epics
@@ -233,10 +233,10 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
     await reconciler.reconcile({ itemId: manualId, workspaceId: "workspace" });
     expect(getWorkItem(db, manualId)!.brief!.issue.description).toBe("Latest manual criteria");
     expect(getWorkItem(db, manualId)!.version).toBe(7);
-    expect(notices()).toHaveLength(2);
+    expect(await notices()).toHaveLength(2);
     expect(jobs()).toEqual(afterJobs);
     await advanceLinearSessionGeneration(sqliteDb(db), "session", { now: clock.now() });
-    enqueueOutbox(db, {
+    await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: "session",
@@ -250,7 +250,7 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
       "Criteria after PR";
     await reconciler.reconcile({ itemId: manualId, workspaceId: "workspace" });
     expect(getWorkItem(db, manualId)!.brief!.issue.description).toBe("Criteria after PR");
-    expect(notices()).toHaveLength(2);
+    expect(await notices()).toHaveLength(2);
     expect(transition("manual", "restart").ok).toBe(false);
     expect(transition("manual", "resume").ok).toBe(false);
   } finally {
@@ -290,7 +290,7 @@ test.each(["all", "criteria"] as const)(
         now: 1001,
       });
       expect(queued.question.status).toBe("queued");
-      const before = listOutbox(db);
+      const before = await listOutbox(sqliteDb(db));
       await expect(
         sqliteDb(db).transaction(function* (q) {
           yield* cancelItemQuestionsSteps(q, item.id, 1002, scope);
@@ -299,7 +299,7 @@ test.each(["all", "criteria"] as const)(
       ).rejects.toThrow("rollback cleanup");
       expect(await openLinkAsks(sqliteDb(db), item.id)).toHaveLength(2);
       expect((await getQuestion(sqliteDb(db), open.question.id))!.status).toBe("open");
-      expect(listOutbox(db)).toEqual(before);
+      expect(await listOutbox(sqliteDb(db))).toEqual(before);
       await sqliteDb(db).transaction((q) => cancelItemQuestionsSteps(q, item.id, 1003, scope));
       expect(await openLinkAsks(sqliteDb(db), item.id)).toEqual([]);
       for (const { question } of [open, queued]) {
@@ -309,19 +309,19 @@ test.each(["all", "criteria"] as const)(
         });
         expect((await getQuestion(sqliteDb(db), question.id))!.status).toBe("cancelled");
         expect(
-          listOutbox(db).find(
+          (await listOutbox(sqliteDb(db))).find(
             (row) => row.idempotencyKey === `link-ask-url-removed:${question.id}`,
           ),
         ).toBeDefined();
       }
       expect(
-        listOutbox(db)
+        (await listOutbox(sqliteDb(db)))
           .filter((row) => row.op === "elicitation")
           .map((row) => row.status),
       ).toEqual(["dropped"]);
-      const after = listOutbox(db);
+      const after = await listOutbox(sqliteDb(db));
       await sqliteDb(db).transaction((q) => cancelItemQuestionsSteps(q, item.id, 1004, scope));
-      expect(listOutbox(db)).toEqual(after);
+      expect(await listOutbox(sqliteDb(db))).toEqual(after);
     } finally {
       db.close();
     }

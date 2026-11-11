@@ -36,8 +36,8 @@ async function blocked(publicUrl: string | null = "https://paws.example") {
   const db = openDatabase(":memory:");
   migrate(db);
   const item = insertQueuedItem(db, { id: "PAS-633", sessionKey: "ses_1", title: "Signed URLs" });
-  beginImplementRun(db, item.id, NOW - 10);
-  applyWorkItemEvent(db, item.id, "turn_ended");
+  await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
+  await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
   saveCheckpoint(db, item.id, { phase: "verifying", baseSha: "base", wipCommit: HEAD });
   db.run("UPDATE work_item SET delegated_by = 'delegator' WHERE id = ?", [item.id]);
   await sqliteDb(db).run((q) =>
@@ -141,11 +141,11 @@ test("bypassing from the page writes the rows and verifies the same head again",
     state: "verifying",
     checkpoint: { phase: "verifying", baseSha: "base", wipCommit: HEAD },
   });
-  expect(listJobs(db).map((job) => [job.queue, job.jobKey])).toContainEqual([
+  expect((await listJobs(sqliteDb(db))).map((job) => [job.queue, job.jobKey])).toContainEqual([
     JOB_KIND.reverify,
     `closeout-bypass:${question.id}`,
   ]);
-  expect(listJobs(db).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
+  expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
   expect((await listCloseoutBypassChecks(sqliteDb(db), question.id))[0]).toMatchObject({
     checkId: "independent-review",
     reason: "Smoke run moved to PAS-744.",
@@ -255,9 +255,11 @@ test("a /paws bypass reply in Linear is guidance and gets the link back once", a
     closedReason: "guidance",
   });
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
-  expect(listJobs(db).some((job) => job.queue === JOB_KIND.reverify)).toBe(false);
+  expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.reverify)).toBe(false);
   expect(await recoveryOptions(db, itemId)).toEqual({ retryBaseline: ["test:1"], bypasses: [] });
-  const notes = listOutbox(db).filter((row) => row.idempotencyKey.startsWith("link-ask-guidance:"));
+  const notes = (await listOutbox(sqliteDb(db))).filter((row) =>
+    row.idempotencyKey.startsWith("link-ask-guidance:"),
+  );
   expect(notes.map((row) => (row.payload as { body: string }).body)).toEqual([
     `${BYPASS_REPLY_NOTE} ${LINK}`,
   ]);
@@ -280,7 +282,7 @@ test("guidance from the page restarts the agent and authorizes a new round", asy
     ),
   ).toBe("answered");
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
-  const resume = listJobs(db).find((job) => job.queue === JOB_KIND.resume)!;
+  const resume = (await listJobs(sqliteDb(db))).find((job) => job.queue === JOB_KIND.resume)!;
   expect((resume.payload as { handoff: string }).handoff).toContain(
     "Record the smoke run instead.",
   );

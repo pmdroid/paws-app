@@ -196,7 +196,7 @@ test("a lone issue hydrates its session context and classifies at start", async 
       f.db,
       (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!,
     )!;
-    expect(getTaskMode(f.db, item.id)).toBe("answer");
+    expect(await getTaskMode(sqliteDb(f.db), item.id)).toBe("answer");
     expect(item.state).toBe("completed");
   } finally {
     f.db.close();
@@ -216,7 +216,7 @@ test("a parent with open sub-issues still classifies at intake", async () => {
       (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!,
     )!;
     expect(item.linearIssueId).toBe("solo");
-    expect(getTaskMode(f.db, item.id)).toBe("answer");
+    expect(await getTaskMode(sqliteDb(f.db), item.id)).toBe("answer");
   } finally {
     f.db.close();
   }
@@ -230,7 +230,10 @@ const pull = (state: string, ref: string, repository = "acme/app") => ({
 async function startedMode(f: ReturnType<typeof setup>) {
   await f.intake();
   await f.jobs.tick();
-  return getTaskMode(f.db, (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!);
+  return await getTaskMode(
+    sqliteDb(f.db),
+    (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!,
+  );
 }
 
 test("an open pull request on the issue's Paws branch saves code without classifying", async () => {

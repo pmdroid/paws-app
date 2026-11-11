@@ -117,7 +117,9 @@ test("asking ends the run and an answer resumes through verification", async () 
     expect(fixture.tracker.questions[0]?.options).toEqual(["yes", "no"]);
 
     await fixture.orchestrator.onLinearEvent(prompted("parquet"));
-    const resume = listJobs(fixture.db).find((job) => job.queue === JOB_KIND.resume);
+    const resume = (await listJobs(sqliteDb(fixture.db))).find(
+      (job) => job.queue === JOB_KIND.resume,
+    );
     expect(resume?.status).toBe("pending");
     expect(resume?.payload).toMatchObject({
       itemId: item.id,
@@ -161,10 +163,14 @@ test("startup leaves an open question parked and its answer resumes the run", as
     const item = listWorkItems(fixture.db)[0]!;
     const open = findOpenQuestion(fixture.db, "ses_1");
     expect(open?.status).toBe("open");
-    const jobsBefore = listJobs(fixture.db).filter((job) => job.queue === JOB_KIND.resume);
+    const jobsBefore = (await listJobs(sqliteDb(fixture.db))).filter(
+      (job) => job.queue === JOB_KIND.resume,
+    );
     expect(await recoverOnStartup(sqliteDb(fixture.db))).toEqual([{ type: "none" }]);
     expect(getWorkItem(fixture.db, item.id)?.state).toBe("awaiting_input");
-    expect(listJobs(fixture.db).filter((job) => job.queue === JOB_KIND.resume)).toEqual(jobsBefore);
+    expect(
+      (await listJobs(sqliteDb(fixture.db))).filter((job) => job.queue === JOB_KIND.resume),
+    ).toEqual(jobsBefore);
     expect(getRun(fixture.db, item.currentRunId!)?.status).toBe("ended");
 
     await fixture.orchestrator.onLinearEvent(prompted("parquet"));
@@ -172,7 +178,7 @@ test("startup leaves an open question parked and its answer resumes the run", as
       state: "queued",
       recoveryAttempts: 0,
     });
-    const resume = listJobs(fixture.db).find(
+    const resume = (await listJobs(sqliteDb(fixture.db))).find(
       (job) => job.queue === JOB_KIND.resume && job.status === "pending",
     );
     expect(resume?.jobKey).toBe(`resume:answer:${open!.id}`);
@@ -201,7 +207,9 @@ test("an answer that arrives before the asking turn ends resumes once after the 
     const item = listWorkItems(fixture.db)[0]!;
     expect(fixture.resumeJobsDuringTurn).toEqual([1]);
     expect(getRun(fixture.db, item.currentRunId!)?.status).toBe("ended");
-    const resumes = listJobs(fixture.db).filter((job) => job.queue === JOB_KIND.resume);
+    const resumes = (await listJobs(sqliteDb(fixture.db))).filter(
+      (job) => job.queue === JOB_KIND.resume,
+    );
     expect(resumes).toHaveLength(1);
     expect(resumes[0]?.payload).toMatchObject({
       itemId: item.id,
@@ -384,9 +392,9 @@ async function askOnce(answerDuringTurn?: string): Promise<{
     tracker.askQuestion = async (question, options) => {
       await ask(question, options);
       setImmediate(() => {
-        answered = orchestrator.onLinearEvent(prompted(answerDuringTurn)).then(() => {
+        answered = orchestrator.onLinearEvent(prompted(answerDuringTurn)).then(async () => {
           resumeJobsDuringTurn.push(
-            listJobs(db).filter((job) => job.queue === JOB_KIND.resume).length,
+            (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume).length,
           );
         });
       });
@@ -499,7 +507,7 @@ async function drive(
     const state = getWorkItem(fixture.db, listWorkItems(fixture.db)[0]!.id)?.state;
     if (state && states.includes(state)) return;
     if (state === "failed") {
-      throw new Error(JSON.stringify(listJobs(fixture.db)));
+      throw new Error(JSON.stringify(await listJobs(sqliteDb(fixture.db))));
     }
     await workspaceDispatch(fixture.db, { now: Date.now() });
     const job = await fixture.jobs.tick();

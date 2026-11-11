@@ -8,6 +8,7 @@ import { runDir } from "../src/acp";
 import { writeAgentSettings } from "../src/config";
 import { systemClock } from "../src/core";
 import {
+  sqliteDb,
   openDatabase,
   migrate,
   JobLoop,
@@ -40,7 +41,7 @@ const original = {
 const files: string[] = [];
 for (let index = 0; index < 3; index++) {
   const item = insertQueuedItem(db, { id: `waiting-${index}` });
-  const { run } = beginImplementRun(db, item.id, Date.now());
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, Date.now());
   db.run("UPDATE work_item SET state='awaiting_input' WHERE id=?", [item.id]);
   mkdirSync(runDir(root, run.id), { recursive: true });
   const file = join(runDir(root, run.id), "agent-profile.json");

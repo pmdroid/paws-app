@@ -89,7 +89,8 @@ items:
     await proof.delegate();
     const merged = await proof.waitFor(
       "the item is merged",
-      () => ["merged", "failed", "manual", "cancelled"].includes(proof.itemState() ?? ""),
+      async () =>
+        ["merged", "failed", "manual", "cancelled"].includes((await proof.itemState()) ?? ""),
       120_000,
     );
     await proof.waitFor("queued Linear activity is delivered", () => false, 1_000);
@@ -100,8 +101,10 @@ items:
       turns.length >= 2 &&
         turns[0]!.purpose === "implement" &&
         !turns[0]!.prompt.includes(FAILURE) &&
-        proof.transitions().some((row) => row.from === "verifying" && row.event === "restart"),
-      { purposes, transitions: proof.transitions() },
+        (await proof.transitions()).some(
+          (row) => row.from === "verifying" && row.event === "restart",
+        ),
+      { purposes, transitions: await proof.transitions() },
     );
     proof.expect(
       "the fix turn sees the failure text in its prompt",
@@ -132,8 +135,8 @@ items:
     );
     proof.expect(
       "the item is merged, not failed",
-      merged && proof.itemState() === "merged",
-      proof.itemState(),
+      merged && (await proof.itemState()) === "merged",
+      await proof.itemState(),
     );
   },
 } satisfies Proof;

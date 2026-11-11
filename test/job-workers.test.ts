@@ -42,7 +42,9 @@ test("Paws runs more task starts at once than the four workers it used to have",
   for (let attempt = 0; attempt < 400 && held.length < ids.length; attempt++) await Bun.sleep(5);
   expect(held.sort()).toEqual([...ids].sort());
   expect(
-    listJobs(db).filter((job) => job.queue === JOB_KIND.start && job.status === "running"),
+    (await listJobs(sqliteDb(db))).filter(
+      (job) => job.queue === JOB_KIND.start && job.status === "running",
+    ),
   ).toHaveLength(ids.length);
   release();
   controller.abort();

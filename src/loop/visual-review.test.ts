@@ -28,17 +28,17 @@ import { askForVisualReviewSteps, VISUAL_REVIEW_NEEDS_LINK } from "./visual-revi
 
 const NOW = 1_700_000_000_000;
 
-function verifying() {
+async function verifying() {
   const db = openDatabase(":memory:");
   migrate(db);
   const item = insertQueuedItem(db, { id: "ENG-3", sessionKey: "ses_1", title: "Hint" });
-  const { run } = beginImplementRun(db, item.id, NOW - 10);
-  applyWorkItemEvent(db, item.id, "turn_ended");
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
+  await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
   return { db, itemId: item.id, runId: run.id };
 }
 
 test("a Paws without an https dashboard link asks nothing in Linear and says why once", async () => {
-  const { db, itemId, runId } = verifying();
+  const { db, itemId, runId } = await verifying();
   const input = {
     item: getWorkItem(db, itemId)!,
     runId,
@@ -56,8 +56,8 @@ test("a Paws without an https dashboard link asks nothing in Linear and says why
     await store.transaction((q) => askForVisualReviewSteps(q, { ...input, now: NOW + 1 })),
   ).toBe(false);
   expect(findOpenQuestion(db, "ses_1")).toBeNull();
-  expect(listOutbox(db).filter((row) => row.op === "elicitation")).toEqual([]);
-  const notes = listOutbox(db).filter((row) => row.op === "activity");
+  expect((await listOutbox(sqliteDb(db))).filter((row) => row.op === "elicitation")).toEqual([]);
+  const notes = (await listOutbox(sqliteDb(db))).filter((row) => row.op === "activity");
   expect(notes.map((row) => (row.payload as { body: string }).body)).toEqual([
     VISUAL_REVIEW_NEEDS_LINK,
   ]);
@@ -67,7 +67,7 @@ test("a Paws without an https dashboard link asks nothing in Linear and says why
 
 /** A review question Linear asked with options before the link ask, still open. */
 async function askedBefore() {
-  const { db, itemId, runId } = verifying();
+  const { db, itemId, runId } = await verifying();
   const { question } = await sqliteDb(db).transaction((q) =>
     openVisualReviewSteps(q, {
       ask: (reads, asker, ...rest) => askSteps(reads, { ...asker, pending: true }, ...rest),
@@ -102,10 +102,12 @@ test("Accept on a question asked before the link ask requests changes and never 
     feedback: "Accept",
   });
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
-  const [resume] = listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
+  const [resume] = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
   expect(resume).toMatchObject({ jobKey: `resume:answer:${question.id}` });
   expect((resume!.payload as { reason: string }).reason).toBe("review");
-  expect(listJobs(db).filter((job) => job.queue === JOB_KIND.reverify)).toEqual([]);
+  expect((await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.reverify)).toEqual(
+    [],
+  );
 });
 
 test("Request changes restarts the item for review with the feedback", async () => {
@@ -115,7 +117,7 @@ test("Request changes restarts the item for review with the feedback", async () 
   );
   expect((await getVisualReview(sqliteDb(db), question.id))?.outcome).toBe("changes_requested");
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
-  const [resume] = listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
+  const [resume] = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
   expect((resume!.payload as { handoff: string }).handoff).toContain("Make the hint shorter");
 });
 
@@ -153,5 +155,5 @@ test("the round-limit question waits behind a sibling's queued question", async 
     options: [...VISUAL_REVIEW_CONTINUE_OPTIONS],
   });
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
-  expect(listJobs(db).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
+  expect((await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
 });

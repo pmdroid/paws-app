@@ -28,9 +28,13 @@ const PULL_URL = "https://github.com/acme/app/pull/7";
 async function itemWithReport(report: Record<string, unknown>) {
   const db = tempDb();
   databases.push(db);
-  const { item } = beginImplementRun(db, insertQueuedItem(db, { id: "ACME-1" }).id, 1);
-  enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: item.id }, now: 1 });
-  enterMergeQueue(db, item.id, { phase: "merge_queue" });
+  const { item } = await beginImplementRun(
+    sqliteDb(db),
+    insertQueuedItem(db, { id: "ACME-1" }).id,
+    1,
+  );
+  await enqueueJob(sqliteDb(db), { queue: JOB_KIND.resume, payload: { itemId: item.id }, now: 1 });
+  await enterMergeQueue(sqliteDb(db), item.id, { phase: "merge_queue" });
   await savePullRequestDraft(sqliteDb(db), item.id, parsePullRequest(report), 2);
   const tracker = createFakeTracker([
     {
@@ -58,7 +62,9 @@ async function merge(db: Database, itemId: string) {
 }
 
 async function deliverAll(db: Database, tracker: ReturnType<typeof createFakeTracker>) {
-  for (const row of listOutbox(db).filter((message) => message.target === "linear"))
+  for (const row of (await listOutbox(sqliteDb(db))).filter(
+    (message) => message.target === "linear",
+  ))
     await deliverLinearOutbox(row, tracker, async () => {}, undefined, db);
 }
 
@@ -74,7 +80,9 @@ test("two parts left for later become two delegated sub-issues after the merge, 
   expect((await getPullRequestDraft(sqliteDb(db), item.id))?.remaining).toHaveLength(2);
 
   await deliverAll(db, tracker);
-  expect(listOutbox(db).filter((row) => row.op === "linear.remaining_issues")).toEqual([]);
+  expect(
+    (await listOutbox(sqliteDb(db))).filter((row) => row.op === "linear.remaining_issues"),
+  ).toEqual([]);
   expect(tracker.subIssueRequests).toEqual([]);
 
   await merge(db, item.id);
@@ -108,7 +116,9 @@ test("a report without remaining files nothing after the merge", async () => {
   });
   await merge(db, item.id);
   await deliverAll(db, tracker);
-  expect(listOutbox(db).filter((row) => row.op === "linear.remaining_issues")).toEqual([]);
+  expect(
+    (await listOutbox(sqliteDb(db))).filter((row) => row.op === "linear.remaining_issues"),
+  ).toEqual([]);
   expect(tracker.subIssueRequests).toEqual([]);
 });
 

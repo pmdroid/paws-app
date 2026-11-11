@@ -107,7 +107,7 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
         remoteUrl: `https://example.invalid/fixture/${repo}`,
       });
     }
-    const run = insertRun(db, { itemId: id, now, status: "active" });
+    const run = await insertRun(sqliteDb(db), { itemId: id, now, status: "active" });
     runIds[id] = run.id;
     db.run(
       `INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until)

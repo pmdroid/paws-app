@@ -18,8 +18,14 @@ test.each(["done", "cancelled", "dead"] as const)(
         now: 3_000,
       });
       expect(again).toBe(first);
-      expect(getJob(db, again)).toMatchObject({ status: "pending", attempts: 0, runAt: 3_000 });
-      expect(getJob(db, again)?.payload).toMatchObject({ summary: "accepted again" });
+      expect(await getJob(sqliteDb(db), again)).toMatchObject({
+        status: "pending",
+        attempts: 0,
+        runAt: 3_000,
+      });
+      expect((await getJob(sqliteDb(db), again))?.payload).toMatchObject({
+        summary: "accepted again",
+      });
     } finally {
       db.close();
     }

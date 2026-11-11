@@ -116,7 +116,7 @@ async function setup(options: { version?: string; conversations?: number } = {})
       teamId: TEAM,
       observedAtMs: T0,
     });
-    const { run } = beginImplementRun(db, id, T0);
+    const { run } = await beginImplementRun(sqliteDb(db), id, T0);
     const command = `command-${id}`;
     const payload = Buffer.from(
       JSON.stringify({
@@ -145,7 +145,11 @@ async function setup(options: { version?: string; conversations?: number } = {})
       [run.id, command, JSON.stringify({ stopReason: "end_turn", sessionId: `claude-${id}` }), T0],
     );
     if (state === "merge_queue")
-      enterMergeQueue(db, id, { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
+      await enterMergeQueue(sqliteDb(db), id, {
+        phase: "merge_queue",
+        baseSha: "b",
+        wipCommit: "h",
+      });
     if (state === "queued") db.run("UPDATE work_item SET state='queued' WHERE id=?", [id]);
     return { id, session, runId: run.id };
   }
@@ -249,11 +253,12 @@ async function setup(options: { version?: string; conversations?: number } = {})
         ...(result.replies ? { replies: result.replies } : {}),
         ...(result.startWork ? { startWork: result.startWork } : {}),
       }),
-    responses: (session: string) =>
-      listOutbox(db, session)
+    responses: async (session: string) =>
+      (await listOutbox(sqliteDb(db), session))
         .filter((row) => (row.payload as { kind: string }).kind === "response")
         .map((row) => (row.payload as { body: string }).body),
-    resumes: async () => listJobs(db).filter((job) => job.queue === JOB_KIND.resume),
+    resumes: async () =>
+      (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume),
     taskSlots: async () => await runnerTaskSlots(sqliteDb(db), clock.now(), clock.now() - 60_000),
   };
 }
@@ -286,7 +291,7 @@ test("with every work slot busy, a message on an idle item starts a conversation
     replies: ["The gateway retries once on a network timeout; Paws does not retry."],
   });
   expect(await f.deliver("acme-1")).toBe("done");
-  expect(f.responses(acme.session)).toEqual([
+  expect(await f.responses(acme.session)).toEqual([
     "The gateway retries once on a network timeout; Paws does not retry.",
   ]);
   expect(await f.conversations()).toEqual([]);
@@ -312,7 +317,7 @@ test("a turn that ends without a reply posts its final message as the reply", as
   expect(await f.deliver("acme-1")).toBe("wait");
   await f.answer((await f.conversations())[0]!.id, { text: "It is src/checkout/form.tsx." });
   expect(await f.deliver("acme-1")).toBe("done");
-  expect(f.responses(acme.session)).toEqual(["It is src/checkout/form.tsx."]);
+  expect(await f.responses(acme.session)).toEqual(["It is src/checkout/form.tsx."]);
   expect(getWorkItem(f.db, "acme-1")!.state).toBe("queued");
 });
 
@@ -350,7 +355,7 @@ test("a timeout posts the timeout reply once and keeps the session", async () =>
   await f.answer((await f.conversations())[0]!.id, { text: "Still reading", timedOut: true });
   expect(await f.deliver("acme-1")).toBe("done");
   expect(await f.deliver("acme-1")).toBe("done");
-  expect(f.responses(acme.session)).toEqual([CONVERSATION_TIMEOUT_REPLY]);
+  expect(await f.responses(acme.session)).toEqual([CONVERSATION_TIMEOUT_REPLY]);
   expect((await getLinearSession(sqliteDb(f.db), acme.session))!.stoppedAt).toBeNull();
   expect(getWorkItem(f.db, "acme-1")!.state).toBe("merge_queue");
 });
@@ -364,7 +369,7 @@ test("a helper that expires without a result posts the timeout reply once", asyn
   f.clock.advance(RUNNER_CONVERSATION_MS);
   expect(await f.deliver("acme-1")).toBe("done");
   expect(await f.deliver("acme-1")).toBe("done");
-  expect(f.responses(acme.session)).toEqual([CONVERSATION_TIMEOUT_REPLY]);
+  expect(await f.responses(acme.session)).toEqual([CONVERSATION_TIMEOUT_REPLY]);
   expect((await getLinearSession(sqliteDb(f.db), acme.session))!.stoppedAt).toBeNull();
 });
 
@@ -397,7 +402,7 @@ test("a queued item's start job waits while a conversation runs on its session",
   await f.say("acme-1", "c-1", "What is left to do?");
   expect(await f.deliver("acme-1")).toBe("wait");
   const [started] = await f.conversations();
-  const jobId = enqueueJob(f.db, {
+  const jobId = await enqueueJob(sqliteDb(f.db), {
     queue: JOB_KIND.start,
     payload: { itemId: "acme-1" },
     now: f.clock.now(),
@@ -410,10 +415,13 @@ test("a queued item's start job waits while a conversation runs on its session",
     sessionId: null,
     now: f.clock.now(),
   });
-  const job = claimNextJob(f.db, { now: f.clock.now(), queues: [JOB_KIND.start] })!;
+  const job = (await claimNextJob(sqliteDb(f.db), {
+    now: f.clock.now(),
+    queues: [JOB_KIND.start],
+  }))!;
   const current = { isCurrent: async () => true };
   expect(await f.orchestrator["waitingForConversation"](job, current)).toBe(true);
-  expect(listJobs(f.db).find((entry) => entry.id === job.id)).toMatchObject({
+  expect((await listJobs(sqliteDb(f.db))).find((entry) => entry.id === job.id)).toMatchObject({
     status: "pending",
     attempts: job.attempts - 1,
   });
@@ -422,7 +430,10 @@ test("a queued item's start job waits while a conversation runs on its session",
   await f.answer(started!.id, { text: "Only the tests." });
   expect(await f.deliver("acme-1")).toBe("done");
   f.clock.advance(60_000);
-  const again = claimNextJob(f.db, { now: f.clock.now(), queues: [JOB_KIND.start] })!;
+  const again = (await claimNextJob(sqliteDb(f.db), {
+    now: f.clock.now(),
+    queues: [JOB_KIND.start],
+  }))!;
   expect(await f.orchestrator["waitingForConversation"](again, current)).toBe(false);
 });
 
@@ -464,7 +475,7 @@ test("start_work in a conversation on a 0.1.77 runner restarts the item with the
   expect(await f.deliver("acme-1")).toBe("done");
   expect(await f.deliver("acme-1")).toBe("done");
 
-  expect(f.responses(acme.session)).toEqual([
+  expect(await f.responses(acme.session)).toEqual([
     "I will add that test.",
     `${START_WORK_RESPONSE}${plan}`,
   ]);
@@ -488,7 +499,7 @@ test("start_work after the item moved on posts that the work did not start", asy
   await f.answer(started!.id, { text: "", startWork: "Rename the flag." });
   expect(await f.deliver("acme-1")).toBe("done");
   expect(await f.resumes()).toEqual([]);
-  expect(f.responses(acme.session)).toEqual([
+  expect(await f.responses(acme.session)).toEqual([
     "I could not start the work: the item moved on while we talked. Reply to try again.",
   ]);
 });

@@ -51,8 +51,8 @@ export async function probeLinearSessionStop(root: string) {
   try {
     for (const field of ["dismissedAt", "archivedAt", "stopping"] as const) {
       const old = insertQueuedItem(db, { id: `old-${field}`, sessionKey: `old-${field}` });
-      beginImplementRun(db, old.id, clock.now());
-      applyWorkItemEvent(db, old.id, "blocking_question");
+      await beginImplementRun(sqliteDb(db), old.id, clock.now());
+      await applyWorkItemEvent(sqliteDb(db), old.id, "blocking_question");
       const replacement = insertQueuedItem(db, { id: `new-${field}`, sessionKey: `new-${field}` });
       await ensureLinearSession(sqliteDb(db), {
         sessionId: old.sessionKey!,
@@ -159,14 +159,18 @@ export async function probeLinearSessionStop(root: string) {
       const old = insertQueuedItem(db, { id: `webhook-${field}`, sessionKey: `webhook-${field}` });
       // The item waits in the merge queue with an open pull request.
       for (const step of ["dispatched", "turn_ended", "closeout_accepted"] as const)
-        applyWorkItemEvent(db, old.id, step);
+        await applyWorkItemEvent(sqliteDb(db), old.id, step);
       await recordItemPullRequest(sqliteDb(db), {
         itemId: old.id,
         pullNumber: 42,
         pullUrl: null,
         openedAt: 1,
       });
-      enqueueJob(db, { queue: JOB_KIND.merge, payload: { itemId: old.id }, now: clock.now() });
+      await enqueueJob(sqliteDb(db), {
+        queue: JOB_KIND.merge,
+        payload: { itemId: old.id },
+        now: clock.now(),
+      });
       const replacement = insertQueuedItem(db, {
         id: `webhook-new-${field}`,
         sessionKey: `webhook-new-${field}`,
@@ -226,16 +230,18 @@ export async function probeLinearSessionStop(root: string) {
         assert.equal(getWorkItem(db, replacement.id)?.state, "queued");
         // A stop or archive from Linear leaves the pull request and the issue status alone.
         assert.ok(
-          !listJobs(db).some(
+          !(await listJobs(sqliteDb(db))).some(
             (job) =>
               job.queue === JOB_KIND.closeStoppedPull &&
               (job.payload as { itemId?: string }).itemId === old.id,
           ),
         );
-        const sessionRows = listOutbox(db).filter((row) => row.orderingKey === old.sessionKey);
+        const sessionRows = (await listOutbox(sqliteDb(db))).filter(
+          (row) => row.orderingKey === old.sessionKey,
+        );
         assert.ok(!sessionRows.some((row) => row.op === "status"));
         assert.ok(
-          listOutbox(db).every(
+          (await listOutbox(sqliteDb(db))).every(
             (row) => row.op !== "status" || (row.payload as { itemId?: string }).itemId !== old.id,
           ),
         );
@@ -247,7 +253,7 @@ export async function probeLinearSessionStop(root: string) {
           ),
         );
         assert.ok(
-          !listJobs(db).some(
+          !(await listJobs(sqliteDb(db))).some(
             (job) =>
               job.queue === JOB_KIND.merge &&
               job.status === "pending" &&

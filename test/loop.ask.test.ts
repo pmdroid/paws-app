@@ -33,20 +33,20 @@ test.each([
     "Which outcome?\n\nContext.\n\nReply with one of the options, or answer in your own words.",
   ],
 ])("only a question with options asks to reply with one of them", async (options, body) => {
-  const { db, asker } = parked();
+  const { db, asker } = await parked();
   await ask(db, asker, "clarification", "Which outcome?", {
     options,
     context: "Context.",
     now: NOW,
   });
-  expect(listOutbox(db)[0]?.payload).toMatchObject({ body });
+  expect((await listOutbox(sqliteDb(db)))[0]?.payload).toMatchObject({ body });
 });
 
-function parked() {
+async function parked() {
   const db = tempDb();
   const item = insertQueuedItem(db, { id: "ENG-2", sessionKey: "ses_1", title: "Export rows" });
-  const { run } = beginImplementRun(db, item.id, NOW - 10);
-  applyWorkItemEvent(db, item.id, "blocking_question");
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
+  await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
   return { db, asker: { itemId: item.id, runId: run.id, sessionId: "ses_1" } };
 }
 
@@ -58,15 +58,16 @@ const reply = (body: string, deliveryId = "activity:ans") => ({
   now: NOW + 100,
 });
 
-const resumes = (db: Database) => listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
+const resumes = async (db: Database) =>
+  (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
 
 test("an answered agent question restarts the same run with the handoff", async () => {
-  const { db, asker } = parked();
+  const { db, asker } = await parked();
   const asked = await ask(db, asker, "agent", "Include archived rows?", {
     options: ["yes", "no"],
     now: NOW,
   });
-  expect(listOutbox(db).map((row) => row.idempotencyKey)).toEqual([
+  expect((await listOutbox(sqliteDb(db))).map((row) => row.idempotencyKey)).toEqual([
     `question:${asked.question.id}`,
   ]);
 
@@ -78,7 +79,7 @@ test("an answered agent question restarts the same run with the handoff", async 
 
   expect(outcome.status).toBe("answered");
   expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
-  expect(resumes(db)).toEqual([
+  expect(await resumes(db)).toEqual([
     expect.objectContaining({
       jobKey: `resume:answer:${asked.question.id}`,
       status: "pending",
@@ -97,40 +98,42 @@ test("an answered agent question restarts the same run with the handoff", async 
   expect(
     (await answer(db, reply("parquet, please"), questionEffects(db, { now: NOW + 100 }))).status,
   ).toBe("duplicate");
-  expect(resumes(db)).toHaveLength(1);
+  expect(await resumes(db)).toHaveLength(1);
 });
 
 test.each(["clarification", "repository"] as const)(
   "an answered %s question resumes the task like an agent question",
   async (kind) => {
-    const { db, asker } = parked();
+    const { db, asker } = await parked();
     const asked = await ask(db, asker, kind, "Which outcome?", { now: NOW });
     await answer(db, reply("Change the code"), questionEffects(db, { now: NOW + 100 }));
     expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
-    expect(resumes(db).map((job) => job.jobKey)).toEqual([`resume:answer:${asked.question.id}`]);
+    expect((await resumes(db)).map((job) => job.jobKey)).toEqual([
+      `resume:answer:${asked.question.id}`,
+    ]);
   },
 );
 
 test("an answer while the asking run is still live leaves the resume to the end of that run", async () => {
-  const { db, asker } = parked();
+  const { db, asker } = await parked();
   await ask(db, asker, "agent", "Include archived rows?", { now: NOW });
   const effects = questionEffects(db, { now: NOW + 100, asking: (runId) => runId === asker.runId });
   expect((await answer(db, reply("parquet"), effects)).status).toBe("answered");
   expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
-  expect(resumes(db)).toHaveLength(1);
+  expect(await resumes(db)).toHaveLength(1);
 });
 
 test("a redirecting answer resumes the task without a handoff job", async () => {
-  const { db, asker } = parked();
+  const { db, asker } = await parked();
   await ask(db, asker, "agent", "Include archived rows?", { now: NOW });
   const effects = questionEffects(db, { now: NOW + 100, redirect: true });
   expect((await answer(db, reply("parquet"), effects)).status).toBe("answered");
   expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
-  expect(resumes(db)).toHaveLength(1);
+  expect(await resumes(db)).toHaveLength(1);
 });
 
 test("an agent question queued behind another is delivered once that one is answered", async () => {
-  const { db, asker } = parked();
+  const { db, asker } = await parked();
   const waiting = await ask(
     db,
     { ...asker, itemId: "other", runId: null },
@@ -151,15 +154,15 @@ test("an agent question queued behind another is delivered once that one is answ
     next: { id: queued.question.id, status: "open" },
   });
   expect(getWorkItem(db, asker.itemId)?.state).toBe("awaiting_input");
-  expect(resumes(db)).toEqual([]);
-  expect(listOutbox(db).map((row) => row.idempotencyKey)).toEqual([
+  expect(await resumes(db)).toEqual([]);
+  expect((await listOutbox(sqliteDb(db))).map((row) => row.idempotencyKey)).toEqual([
     `question:${waiting.question.id}`,
     `question:${queued.question.id}`,
   ]);
 });
 
 test("an amended question delivers and keeps the added context and options", async () => {
-  const { db, asker } = parked();
+  const { db, asker } = await parked();
   const asked = await ask(db, asker, "agent", "Include archived rows?", {
     options: ["yes"],
     now: NOW,
@@ -173,7 +176,7 @@ test("an amended question delivers and keeps the added context and options", asy
     context: "Saved decision: archive rows stay out",
     options: ["yes", { label: "Use saved decision", value: "/paws decision 1" }],
   });
-  expect(listOutbox(db)[0]?.payload).toMatchObject({
+  expect((await listOutbox(sqliteDb(db)))[0]?.payload).toMatchObject({
     body: elicitationBody("Include archived rows?", "Saved decision: archive rows stay out", [
       "yes",
     ]),

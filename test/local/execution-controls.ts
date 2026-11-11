@@ -127,7 +127,7 @@ export async function createExecutionControlsFixture(
     repositories: [{ repository: "fixture/allowed", teamId: "team" }],
     now,
   });
-  const run = beginImplementRun(db, item.id, now).run;
+  const run = (await beginImplementRun(sqliteDb(db), item.id, now)).run;
   const clock = new FakeClock(now);
   const orchestrator = new Orchestrator({
     db,

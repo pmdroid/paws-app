@@ -3,7 +3,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { FakeScript } from "../src/acp/testing/script";
 import { FakeClock } from "../src/core";
-import { JobLoop, listOutbox, migrate, openDatabase, OutboxDispatcher } from "../src/db";
+import { sqliteDb, JobLoop, listOutbox, migrate, openDatabase, OutboxDispatcher } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator, KEEPALIVE_MS, LINEAR_STALE_MS } from "../src/loop";
 import { emptyReview, repoLayout, stateOf } from "./e2e-harness";
@@ -120,8 +120,8 @@ test("the running keepalive names the agent's current plan step, never a bare Wo
   });
   const thoughts = () =>
     tracker.progress.filter((update) => update.kind === "thought").map((update) => update.body);
-  const hasPlan = () =>
-    listOutbox(db).some(
+  const hasPlan = async () =>
+    (await listOutbox(sqliteDb(db))).some(
       (row) =>
         row.op === "linear.session.plan" &&
         JSON.stringify(row.payload).includes("rank runners by load share"),
@@ -147,15 +147,15 @@ test("the running keepalive names the agent's current plan step, never a bare Wo
     ]);
 
     writeFileSync(planned, "go");
-    for (let i = 0; i < 1_000 && !hasPlan(); i++) await Bun.sleep(10);
-    expect(hasPlan()).toBe(true);
+    for (let i = 0; i < 1_000 && !(await hasPlan()); i++) await Bun.sleep(10);
+    expect(await hasPlan()).toBe(true);
     clock.advance(KEEPALIVE_MS);
     ticks[0]!();
     await orchestrator.flushPosts();
     while ((await outbox.tick()).length > 0) await outbox.idle();
     expect(thoughts().at(-1)).toBe("Step 3 of 5: rank runners by load share.");
     expect(thoughts()).not.toContain("Working on ENG-25.");
-    const keepalives = listOutbox(db).filter(
+    const keepalives = (await listOutbox(sqliteDb(db))).filter(
       (row) => row.op === "activity" && row.idempotencyKey.includes(":keep:"),
     );
     expect(keepalives.map((row) => (row.payload as { ephemeral?: boolean }).ephemeral)).toEqual([

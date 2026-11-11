@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { JOB_KIND } from "../src/core";
 import {
+  sqliteDb,
   enqueueJob,
   JOB_PROGRESS_STALE_MS,
   migrate,
@@ -417,7 +418,7 @@ describe("server health", () => {
     const db = openDatabase(":memory:");
     migrate(db);
     const dueAt = NOW - JOB_PROGRESS_STALE_MS;
-    enqueueJob(db, { queue: "work", runAt: dueAt, now: dueAt });
+    await enqueueJob(sqliteDb(db), { queue: "work", runAt: dueAt, now: dueAt });
     const live = {
       polling: true,
       lastTickAt: NOW,
@@ -479,7 +480,7 @@ describe("server health", () => {
     const db = openDatabase(":memory:");
     migrate(db);
     const dueAt = NOW - JOB_PROGRESS_STALE_MS;
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.start,
       payload: { itemId: "unreserved" },
       runAt: dueAt,

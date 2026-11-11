@@ -292,7 +292,7 @@ describe("roles", () => {
   test("a web instance's outbox claims nothing, even on a direct tick", async () => {
     const db = openDatabase(":memory:");
     migrate(db);
-    enqueueOutbox(db, {
+    await enqueueOutbox(sqliteDb(db), {
       target: OUTBOX_ACTIVITY.target,
       op: OUTBOX_ACTIVITY.op,
       orderingKey: "acme-session",

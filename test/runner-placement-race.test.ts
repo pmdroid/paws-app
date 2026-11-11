@@ -267,7 +267,7 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
       runnerId,
       runs: [...runs],
       state: getWorkItem(db, item.id)?.state,
-      events: listWorkItemEventRows(db, item.id).map((row) => row.event),
+      events: (await listWorkItemEventRows(sqliteDb(db), item.id)).map((row) => row.event),
     };
   } finally {
     controller.abort();

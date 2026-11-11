@@ -36,16 +36,16 @@ afterEach(() => {
 });
 
 /** Three items waiting to merge, each with a merge job in queue order. */
-function lane() {
+async function lane() {
   const db = openDatabase(":memory:");
   migrate(db);
   open.push(db);
   const jobs = [];
   for (const [index, name] of ["a", "b", "c"].entries()) {
     insertQueuedItem(db, { id: `item-${name}`, sessionKey: `ses-${name}`, now: 0 });
-    beginImplementRun(db, `item-${name}`, 1);
+    await beginImplementRun(sqliteDb(db), `item-${name}`, 1);
     jobs.push(
-      enqueueJob(db, {
+      await enqueueJob(sqliteDb(db), {
         queue: JOB_KIND.merge,
         jobKey: `merge:item-${name}`,
         payload: { itemId: `item-${name}` },
@@ -56,8 +56,13 @@ function lane() {
   return { db, jobs: jobs as [number, number, number] };
 }
 
-function claim(db: Database, now: number) {
-  return claimNextJob(db, { workerId: "worker", leaseMs: MINUTE, now, queues: [JOB_KIND.merge] });
+async function claim(db: Database, now: number) {
+  return await claimNextJob(sqliteDb(db), {
+    workerId: "worker",
+    leaseMs: MINUTE,
+    now,
+    queues: [JOB_KIND.merge],
+  });
 }
 
 /** Runs the next due merge job the way the orchestrator does with a push outage. */
@@ -66,7 +71,7 @@ async function attempt(
   now: number,
   pushes: (jobId: number) => "refused" | "works",
 ): Promise<{ id: number; pushed: boolean; held?: boolean } | null> {
-  const job = claim(db, now);
+  const job = await claim(db, now);
   if (!job) return null;
   try {
     await holdPush(sqliteDb(db), REPOSITORY, job.id);
@@ -90,7 +95,7 @@ async function attempt(
 
 describe("a push outage", () => {
   test("a denied push holds every merge push, fails nothing and asks nothing", async () => {
-    const { db, jobs } = lane();
+    const { db, jobs } = await lane();
     const first = await attempt(db, 100, () => "refused");
     expect(first).toEqual({ id: jobs[0], pushed: false, held: false });
     // The jobs behind it reach their push and wait without trying it.
@@ -113,7 +118,7 @@ describe("a push outage", () => {
       lastError: DENIED,
     });
     for (const id of jobs) {
-      const job = getJob(db, id)!;
+      const job = (await getJob(sqliteDb(db), id))!;
       expect(job.status).toBe("pending");
       expect(job.attempts).toBe(0);
       expect(job.payload).toMatchObject({
@@ -125,11 +130,11 @@ describe("a push outage", () => {
       expect(getWorkItem(db, `item-${name}`)?.state).toBe("running");
       expect(findOpenQuestion(db, `ses-${name}`)).toBeNull();
     }
-    expect(listOutbox(db).filter((row) => row.op === "elicitation")).toEqual([]);
+    expect((await listOutbox(sqliteDb(db))).filter((row) => row.op === "elicitation")).toEqual([]);
   });
 
   test("one probe retries after 1, 2 and 5 minutes, then every 10 minutes", async () => {
-    const { db, jobs } = lane();
+    const { db, jobs } = await lane();
     await attempt(db, 100, () => "refused");
     await attempt(db, 101, () => "works");
     await attempt(db, 102, () => "works");
@@ -138,7 +143,7 @@ describe("a push outage", () => {
     for (let index = 0; index < 5; index++) {
       now = (await getPushOutage(sqliteDb(db), REPOSITORY))!.nextProbeAt;
       // Only the probe is due; the held jobs wait for the outage to end.
-      expect(claim(db, now - 1)).toBeNull();
+      expect(await claim(db, now - 1)).toBeNull();
       const tried = await attempt(db, now, () => "refused");
       expect(tried).toMatchObject({ id: jobs[0], pushed: false, held: false });
       probes.push(now);
@@ -148,7 +153,7 @@ describe("a push outage", () => {
   });
 
   test("the first push that works ends it and the held pushes run in queue order", async () => {
-    const { db, jobs } = lane();
+    const { db, jobs } = await lane();
     await attempt(db, 100, () => "refused");
     await attempt(db, 101, () => "works");
     await attempt(db, 102, () => "works");
@@ -166,7 +171,7 @@ describe("a push outage", () => {
   });
 
   test("a held job takes the probe over when the probe's item stopped", async () => {
-    const { db, jobs } = lane();
+    const { db, jobs } = await lane();
     await attempt(db, 100, () => "refused");
     await attempt(db, 101, () => "works");
     db.run("UPDATE job SET status = 'cancelled' WHERE id = ?", [jobs[0]]);
@@ -176,7 +181,7 @@ describe("a push outage", () => {
   });
 
   test("the workspace question opens after an hour and closes when pushes work again", async () => {
-    const { db, jobs } = lane();
+    const { db, jobs } = await lane();
     const hour = 100 + PUSH_OUTAGE_QUESTION_MS;
     await attempt(db, 100, () => "refused");
     await attempt(db, 101, () => "works");
@@ -194,7 +199,7 @@ describe("a push outage", () => {
     for (const name of ["b", "c"]) expect(findOpenQuestion(db, `ses-${name}`)).toBeNull();
     expect(getWorkItem(db, "item-a")?.state).toBe("running");
     expect(
-      listOutbox(db)
+      (await listOutbox(sqliteDb(db)))
         .filter((row) => row.op === "elicitation")
         .map((row) => row.idempotencyKey),
     ).toEqual([`question:${question.id}`]);

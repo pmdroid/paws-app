@@ -44,13 +44,15 @@ for (const state of ["completed", "merged", "cancelled"] as const)
       { repository: expect.objectContaining(REPOSITORY), ref: "refs/paws/checkpoints/paws/item" },
     ]);
     expect(ended()).toEqual([]);
-    expect(listJobs(db)).toEqual([]);
+    expect(await listJobs(sqliteDb(db))).toEqual([]);
   });
 
 test("a Stop records the deletion without closeStoppedPull", async () => {
   const { db, item, ended } = await setup();
-  applyWorkItemEvent(db, item.id, "cancel", { now: 2 });
-  expect(listJobs(db).some((job) => job.queue === JOB_KIND.closeStoppedPull)).toBe(false);
+  await applyWorkItemEvent(sqliteDb(db), item.id, "cancel", { now: 2 });
+  expect(
+    (await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.closeStoppedPull),
+  ).toBe(false);
   expect(ended()).toEqual([item.id]);
 });
 
@@ -131,7 +133,7 @@ test("a continuation two steps on that still runs keeps the shared checkpoint", 
 
 test("a stop whose runner is still publishing its checkpoint waits for the next sweep", async () => {
   const { db, item, removed, remove, ended } = await setup();
-  const { run } = beginImplementRun(db, item.id, 2);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, 2);
   db.run("PRAGMA foreign_keys=OFF");
   db.run(
     "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,?,?,?,?)",

@@ -28,10 +28,10 @@ test("each head of an item is ordered by when Closeout first evaluated it", asyn
     policyDigest,
     policyPath: null,
   });
-  ensureCloseoutProgress(db, "eng-1", identity("h1"), 10, false);
-  ensureCloseoutProgress(db, "eng-1", identity("h2"), 20, false);
-  ensureCloseoutProgress(db, "eng-1", identity("h1", "q"), 30, false);
-  ensureCloseoutProgress(db, "eng-2", identity("h3"), 5, false);
+  await ensureCloseoutProgress(sqliteDb(db), "eng-1", identity("h1"), 10, false);
+  await ensureCloseoutProgress(sqliteDb(db), "eng-1", identity("h2"), 20, false);
+  await ensureCloseoutProgress(sqliteDb(db), "eng-1", identity("h1", "q"), 30, false);
+  await ensureCloseoutProgress(sqliteDb(db), "eng-2", identity("h3"), 5, false);
   expect(await closeoutHeadsStarted(sqliteDb(db), "eng-1")).toEqual(
     new Map([
       ["h1", 10],
@@ -46,17 +46,17 @@ for (const changedIdentity of [false, true]) {
     migrate(db);
     insertQueuedItem(db, { id: "item" });
     const identity = { taskId: "task", base: "b", head: "s", policyDigest: "p", policyPath: null };
-    finishCloseoutProgress(db, "item", identity, "accepted", 10);
+    await finishCloseoutProgress(sqliteDb(db), "item", identity, "accepted", 10);
     await markCloseoutAccepted(sqliteDb(db), "item", "s");
-    finishCloseoutProgress(
-      db,
+    await finishCloseoutProgress(
+      sqliteDb(db),
       "item",
       { ...identity, policyDigest: changedIdentity ? "q" : "p" },
       "rejected",
       20,
     );
     expect(getWorkItem(db, "item")?.acceptedHead).toBeNull();
-    expect(closeoutPolicyDigests(db, "item", "s")?.decision).toBe("rejected");
+    expect((await closeoutPolicyDigests(sqliteDb(db), "item", "s"))?.decision).toBe("rejected");
     expect(await acceptedCloseoutReviews(sqliteDb(db), "item", "s")).toBeNull();
     db.close();
   });
@@ -68,9 +68,9 @@ for (const decision of ["exhausted", "blocked"] as const) {
     migrate(db);
     insertQueuedItem(db, { id: "item" });
     const identity = { taskId: "task", base: "b", head: "s", policyDigest: "p", policyPath: null };
-    finishCloseoutProgress(db, "item", identity, "accepted", 10);
+    await finishCloseoutProgress(sqliteDb(db), "item", identity, "accepted", 10);
     await markCloseoutAccepted(sqliteDb(db), "item", "s");
-    finishCloseoutProgress(db, "item", { ...identity, base: "c" }, decision, 20);
+    await finishCloseoutProgress(sqliteDb(db), "item", { ...identity, base: "c" }, decision, 20);
     expect(getWorkItem(db, "item")?.acceptedHead).toBe(decision === "exhausted" ? null : "s");
     // Either way the older acceptance is not resurrected by the newer identity's row.
     expect(await acceptedCloseoutReviews(sqliteDb(db), "item", "s")).toBeNull();
@@ -90,8 +90,8 @@ test("rejecting a carried head retires its source acceptance", async () => {
     base: "new-main",
     now: 10,
   });
-  finishCloseoutProgress(
-    db,
+  await finishCloseoutProgress(
+    sqliteDb(db),
     "item",
     { taskId: "task", base: "new-main", head: "rebased", policyDigest: "p", policyPath: null },
     "rejected",

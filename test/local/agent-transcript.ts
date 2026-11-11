@@ -1,6 +1,6 @@
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { openDatabase, migrate, insertQueuedItem, beginImplementRun } from "../../src/db";
+import { sqliteDb, openDatabase, migrate, insertQueuedItem, beginImplementRun } from "../../src/db";
 import { createLiveStatusProvider, handleStatusRequest } from "../../src/dashboard";
 
 const root = process.argv[2]!;
@@ -8,7 +8,7 @@ mkdirSync(root, { recursive: true, mode: 0o700 });
 const db = openDatabase(join(root, "paws.db"));
 migrate(db);
 const item = insertQueuedItem(db, { id: "PAS-306", sessionKey: "transcript-session" });
-const { run } = beginImplementRun(db, item.id, Date.now());
+const { run } = await beginImplementRun(sqliteDb(db), item.id, Date.now());
 const directory = join(root, "runs", run.id);
 mkdirSync(directory, { recursive: true, mode: 0o700 });
 const file = join(directory, "acp.jsonl");

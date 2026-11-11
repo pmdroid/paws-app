@@ -115,13 +115,13 @@ test("artifact publication persists immutable bytes privately and a durable inli
   for (const filename of await readdir(directory))
     expect((await stat(join(directory, filename))).mode & 0o777).toBe(0o600);
   expect(new Uint8Array(await readFile(join(directory, `${rows[0]!.id}.bytes`)))).toEqual(bytes);
-  expect(listOutbox(env.db, "session")[0]?.payload).toMatchObject({
+  expect((await listOutbox(sqliteDb(env.db), "session"))[0]?.payload).toMatchObject({
     body: `![proof.png](<${URL}>)`,
   });
   expect(await (await env.publisher()).publish(artifact, context)).toMatchObject({ url: URL });
   expect(env.prepares()).toBe(1);
   expect(env.uploads()).toBe(1);
-  expect(listOutbox(env.db, "session")).toHaveLength(1);
+  expect(await listOutbox(sqliteDb(env.db), "session")).toHaveLength(1);
   env.db.close();
 });
 
@@ -170,7 +170,7 @@ test("restart reconciles an uploaded asset after losing the PUT response", async
   );
   expect((await listArtifacts(sqliteDb(env.db), "item"))[0]?.state).toBe("failed");
   expect(await artifactPublicationReady(sqliteDb(env.db), "item")).toBe(false);
-  expect(listOutbox(env.db, "session")).toHaveLength(0);
+  expect(await listOutbox(sqliteDb(env.db), "session")).toHaveLength(0);
   env.db.close();
   const reopened = openDatabase(databasePath);
   migrate(reopened);
@@ -202,7 +202,7 @@ test("failed uploads remain incomplete and never publish a link", async () => {
   const env = setup({ fail: true });
   await expect((await env.publisher()).publish(artifact, context)).rejects.toThrow("HTTP 503");
   expect(await artifactPublicationReady(sqliteDb(env.db), "item")).toBe(false);
-  expect(listOutbox(env.db, "session")).toHaveLength(0);
+  expect(await listOutbox(sqliteDb(env.db), "session")).toHaveLength(0);
   env.db.close();
 });
 
@@ -211,7 +211,7 @@ test("Stop fences a captured artifact callback from posting a late success", asy
   const publisher = await env.publisher();
   await stopOutboxSession(sqliteDb(env.db), "linear", "session", 1);
   await publisher.publish(artifact, context);
-  expect(listOutbox(env.db, "session")[0]?.status).toBe("dropped");
+  expect((await listOutbox(sqliteDb(env.db), "session"))[0]?.status).toBe("dropped");
   env.db.close();
 });
 
@@ -255,14 +255,14 @@ test("a successful replacement resolves a failed artifact at the same path", asy
 test("a pending artifact link survives final response and is delivered first", async () => {
   const env = setup();
   await (await env.publisher()).publish(artifact, context);
-  enqueueOutbox(env.db, {
+  await enqueueOutbox(sqliteDb(env.db), {
     target: "linear",
     op: "activity",
     orderingKey: "session",
     idempotencyKey: "final",
     payload: { sessionId: "session", kind: "response", body: "Done" },
   });
-  const pending = listOutbox(env.db, "session");
+  const pending = await listOutbox(sqliteDb(env.db), "session");
   expect(pending[0]?.status).toBe("pending");
   expect((await claimOutboxHeads(sqliteDb(env.db), { now: Date.now() }))[0]?.id).toBe(
     pending[0]?.id,
@@ -277,30 +277,30 @@ test.each([false, true])(
     try {
       await (await env.publisher()).publish(artifact, context);
       env.db.run("UPDATE outbox SET max_attempts = 1");
-      const final = () =>
-        enqueueOutbox(env.db, {
+      const final = async () =>
+        await enqueueOutbox(sqliteDb(env.db), {
           target: "linear",
           op: "activity",
           orderingKey: "session",
           idempotencyKey: "final",
           payload: { sessionId: "session", kind: "response", body: "Done" },
         });
-      if (finalAlreadyQueued) final();
+      if (finalAlreadyQueued) await final();
       const dispatcher = new OutboxDispatcher(env.db, { now: Date.now, mono: Date.now });
       dispatcher.setHandler(async () => {
         throw new Error("delivery exhausted");
       });
       await dispatcher.tick();
       await dispatcher.idle();
-      if (!finalAlreadyQueued) final();
-      enqueueOutbox(env.db, {
+      if (!finalAlreadyQueued) await final();
+      await enqueueOutbox(sqliteDb(env.db), {
         target: "linear",
         op: "status",
         orderingKey: "session",
         idempotencyKey: "completed-status",
         payload: { sessionId: "session", stateType: "completed" },
       });
-      expect(listOutbox(env.db, "session")[0]?.status).toBe("dead");
+      expect((await listOutbox(sqliteDb(env.db), "session"))[0]?.status).toBe("dead");
       const response = (await claimOutboxHeads(sqliteDb(env.db)))[0]!;
       expect(response.idempotencyKey).toBe("final");
       expect(await completeOutbox(sqliteDb(env.db), response)).toBe(true);

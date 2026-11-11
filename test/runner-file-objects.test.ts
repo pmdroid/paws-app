@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beginImplementRun, insertQueuedItem, migrate, openDatabase } from "../src/db";
+import { sqliteDb, beginImplementRun, insertQueuedItem, migrate, openDatabase } from "../src/db";
 import { createFakeRunFileObjects, createSealedRunnerFiles } from "../src/run-files";
 import { createRunnerArtifactStore, RUNNER_ARTIFACT_CHUNK_BYTES } from "../src/runner-artifacts";
 import { createRunnerInputStore } from "../src/runner-inputs";
@@ -13,12 +13,12 @@ import type { RunnerWork } from "../src/runner-work";
 const DAY = 24 * 60 * 60 * 1000;
 const KEY = Buffer.alloc(32, 9);
 
-function fixture() {
+async function fixture() {
   const db = openDatabase(":memory:");
   migrate(db);
   let clock = Date.parse("2026-11-07T06:00:00Z");
   const item = insertQueuedItem(db, { id: "acme-item", now: clock, sessionKey: "acme-session" });
-  const { run } = beginImplementRun(db, item.id, clock);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, clock);
   const command = { type: "run", id: "acme-command", runId: run.id } as Extract<
     RunnerCommand,
     { type: "run" }
@@ -59,7 +59,7 @@ const attachment = Buffer.from("Acme quarterly report: private attachment\n".rep
 
 describe("runner inputs and artifacts in the shared store", () => {
   test("an input staged through instance A is served to the runner by instance B", async () => {
-    const { command, access, instance } = fixture();
+    const { command, access, instance } = await fixture();
     const a = instance();
     const b = instance();
     command.inputFiles = await a.inputs.stage(
@@ -91,7 +91,7 @@ describe("runner inputs and artifacts in the shared store", () => {
   });
 
   test("stored inputs are ciphertext, and a read returns the plaintext", async () => {
-    const { command, access, objects, instance } = fixture();
+    const { command, access, objects, instance } = await fixture();
     const a = instance();
     const secret = Buffer.from("acme-private-attachment-contents");
     command.inputFiles = await a.inputs.stage(
@@ -116,7 +116,7 @@ describe("runner inputs and artifacts in the shared store", () => {
   });
 
   test("an artifact uploaded through instance A is published by instance B", async () => {
-    const { access, objects, instance } = fixture();
+    const { access, objects, instance } = await fixture();
     const a = instance();
     const b = instance();
     const bytes = Buffer.alloc(RUNNER_ARTIFACT_CHUNK_BYTES + 19, 65);
@@ -170,7 +170,7 @@ describe("runner inputs and artifacts in the shared store", () => {
   });
 
   test("inputs are pruned 7 days after the run ends", async () => {
-    const { db, run, command, access, objects, instance, advance, now } = fixture();
+    const { db, run, command, access, objects, instance, advance, now } = await fixture();
     const a = instance();
     command.inputFiles = await a.inputs.stage(
       command.id,
@@ -190,7 +190,7 @@ describe("runner inputs and artifacts in the shared store", () => {
   });
 
   test("without the shared store, inputs and artifacts stay on local disk as before", async () => {
-    const { command, access, work } = fixture();
+    const { command, access, work } = await fixture();
     const root = mkdtempSync(join(tmpdir(), "paws-acme-local-"));
     const inputs = createRunnerInputStore({ root: join(root, "inputs"), work });
     command.inputFiles = await inputs.stage(
@@ -210,7 +210,7 @@ describe("runner inputs and artifacts in the shared store", () => {
   });
 
   test("an input staged on local disk before the store was configured still reads", async () => {
-    const { command, access, work, instance } = fixture();
+    const { command, access, work, instance } = await fixture();
     const a = instance();
     const local = createRunnerInputStore({ root: join(a.root, "inputs"), work });
     command.inputFiles = await local.stage(command.id, [
@@ -226,7 +226,7 @@ describe("runner inputs and artifacts in the shared store", () => {
   });
 
   test("files staged on local disk before S3 was configured are uploaded once at startup", async () => {
-    const { command, access, work, objects, instance } = fixture();
+    const { command, access, work, objects, instance } = await fixture();
     const root = mkdtempSync(join(tmpdir(), "paws-acme-before-"));
     const local = createRunnerInputStore({ root: join(root, "inputs"), work });
     const localArtifacts = createRunnerArtifactStore({ root: join(root, "artifacts"), work });
@@ -279,7 +279,7 @@ describe("runner inputs and artifacts in the shared store", () => {
   });
 
   test("an artifact chunk retried with other bytes of the same length is refused", async () => {
-    const { access, objects, instance } = fixture();
+    const { access, objects, instance } = await fixture();
     const a = instance();
     const b = instance();
     const bytes = Buffer.from("acme-one");
@@ -307,7 +307,7 @@ describe("runner inputs and artifacts in the shared store", () => {
   });
 
   test("the database keeps no plain hash of a stored chunk", async () => {
-    const { db, command, access, instance } = fixture();
+    const { db, command, access, instance } = await fixture();
     const a = instance();
     const secret = Buffer.from("acme-short-secret");
     command.inputFiles = await a.inputs.stage(
@@ -321,7 +321,7 @@ describe("runner inputs and artifacts in the shared store", () => {
   });
 
   test("an artifact upload during a storage outage answers 503, not a refusal", async () => {
-    const { db, work, access } = fixture();
+    const { db, work, access } = await fixture();
     const objects = createFakeRunFileObjects();
     objects.write = async () => {
       throw Object.assign(new Error("acme bucket unreachable"), { code: "ECONNRESET" });

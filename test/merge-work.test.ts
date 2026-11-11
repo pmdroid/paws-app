@@ -15,6 +15,7 @@ import {
   recordCiRound,
   recordRebaseReturn,
   sqliteDb,
+  type NewJob,
 } from "../src/db";
 import { legacyTempDb } from "./helpers";
 
@@ -51,7 +52,7 @@ test("the merge-work SQL classifies every job as isMergeWork does", () => {
 test("cancelling the merge lane cancels a merge job", async () => {
   const db = legacyTempDb();
   try {
-    enqueueJob(db, { queue: JOB_KIND.merge, payload: {}, now: 1 });
+    await enqueueJob(sqliteDb(db), { queue: JOB_KIND.merge, payload: {}, now: 1 });
     expect(await cancelOpenJobs(sqliteDb(db), { reason: "stop", mergeLane: true, now: 2 })).toBe(1);
   } finally {
     db.close();
@@ -65,8 +66,8 @@ function insertItem(db: Database, id: string): void {
   );
 }
 
-function userTurn(db: Database, itemId: string, now: number): number {
-  return enqueueJob(db, {
+async function userTurn(db: Database, itemId: string, now: number): Promise<number> {
+  return await enqueueJob(sqliteDb(db), {
     queue: JOB_KIND.resume,
     jobKey: `linear-turn:${itemId}:${now}`,
     payload: { itemId },
@@ -78,14 +79,18 @@ test("rebase returns are counted from rebase_return rows after the latest user t
   const db = legacyTempDb();
   try {
     insertItem(db, "item");
-    const before = enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "item" }, now: 1 });
+    const before = await enqueueJob(sqliteDb(db), {
+      queue: JOB_KIND.resume,
+      payload: { itemId: "item" },
+      now: 1,
+    });
     await recordRebaseReturn(sqliteDb(db), {
       itemId: "item",
       jobId: before,
       candidate: "a1",
       reason: "merge",
     });
-    const turn = userTurn(db, "item", 2);
+    const turn = await userTurn(db, "item", 2);
     expect(await countRebaseReturns(sqliteDb(db), "item", turn)).toBe(0);
     await recordRebaseReturn(sqliteDb(db), {
       itemId: "item",
@@ -93,7 +98,11 @@ test("rebase returns are counted from rebase_return rows after the latest user t
       candidate: null,
       reason: "linear",
     });
-    const after = enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "item" }, now: 3 });
+    const after = await enqueueJob(sqliteDb(db), {
+      queue: JOB_KIND.resume,
+      payload: { itemId: "item" },
+      now: 3,
+    });
     await recordRebaseReturn(sqliteDb(db), {
       itemId: "item",
       jobId: after,
@@ -111,7 +120,11 @@ test("a rebase return keeps the main commit, files and time it conflicted on", a
   const db = legacyTempDb();
   try {
     insertItem(db, "item");
-    const first = enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "item" }, now: 1 });
+    const first = await enqueueJob(sqliteDb(db), {
+      queue: JOB_KIND.resume,
+      payload: { itemId: "item" },
+      now: 1,
+    });
     await recordRebaseReturn(sqliteDb(db), {
       itemId: "item",
       jobId: first,
@@ -121,7 +134,11 @@ test("a rebase return keeps the main commit, files and time it conflicted on", a
       files: ["src/index.ts"],
       recordedAt: 10,
     });
-    const second = enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "item" }, now: 2 });
+    const second = await enqueueJob(sqliteDb(db), {
+      queue: JOB_KIND.resume,
+      payload: { itemId: "item" },
+      now: 2,
+    });
     await recordRebaseReturn(sqliteDb(db), {
       itemId: "item",
       jobId: second,
@@ -158,7 +175,7 @@ test("CI fixes are counted from the CI rounds recorded after the latest user tur
     expect(await countCiFixes(sqliteDb(db), "item", 0)).toBe(2);
     await round("h2", 3, 30);
     expect(await countCiFixes(sqliteDb(db), "item", 0)).toBe(3);
-    const turn = userTurn(db, "item", 40);
+    const turn = await userTurn(db, "item", 40);
     expect(await countCiFixes(sqliteDb(db), "item", turn)).toBe(0);
     await round("h3", 1, 50);
     await round("h4", null, 60);
@@ -181,7 +198,7 @@ test("the rebase_return migration backfills rebase-conflict returns so budgets s
       db.run("INSERT INTO schema_migration (id, applied_at) VALUES (?, 0)", [migration.id]);
     }
     insertItem(db, "item");
-    const legacyJob: typeof enqueueJob = (legacy, input) =>
+    const legacyJob = (legacy: Database, input: NewJob) =>
       legacy
         .query<{ id: number }, [string, string | null, string, number]>(
           "INSERT INTO job(queue,job_key,payload,priority,run_at,max_attempts,created_at) VALUES(?,?,?,5,?,10,0) RETURNING id",
@@ -221,7 +238,7 @@ test("the rebase_return migration backfills rebase-conflict returns so budgets s
       { job_id: linear, item_id: "item", candidate: null, reason: "linear" },
     ]);
     expect(await countRebaseReturns(sqliteDb(db), "item", 0)).toBe(2);
-    expect(listJobs(db)).toHaveLength(4);
+    expect(await listJobs(sqliteDb(db))).toHaveLength(4);
   } finally {
     db.close();
   }

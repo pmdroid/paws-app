@@ -36,8 +36,12 @@ async function setup() {
     repo: "one",
     remoteUrl: "https://github.com/acme/one.git",
   });
-  beginImplementRun(db, "eng-1", 1);
-  enterMergeQueue(db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
+  await beginImplementRun(sqliteDb(db), "eng-1", 1);
+  await enterMergeQueue(sqliteDb(db), "eng-1", {
+    phase: "merge_queue",
+    baseSha: "b",
+    wipCommit: "h",
+  });
   await recordItemPullRequest(sqliteDb(db), {
     itemId: "eng-1",
     pullNumber: 7,
@@ -65,7 +69,7 @@ async function setup() {
     restart(db, getWorkItem(db, "eng-1")!, { reason, body, jobKey, now: clock.now() });
   };
   const turnStarts = async () => {
-    const job = listJobs(db).find((entry) => entry.queue === JOB_KIND.resume)!;
+    const job = (await listJobs(sqliteDb(db))).find((entry) => entry.queue === JOB_KIND.resume)!;
     await sqliteDb(db).transaction((q) => fixRoundNoticeSteps(q, job, clock.now()));
     while ((await outbox.tick()).length > 0) await outbox.idle();
   };

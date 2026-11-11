@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { isBlockerSatisfied, type WorkItemState } from "../src/core";
 import {
   bindLinearSessionTaskSteps,
-  getTaskMode,
+  getTaskModeSteps,
   getConfirmedRemoteMergeSteps,
   recordConfirmedRemoteMerge,
   recordLinearInstallationSteps,
@@ -206,16 +206,16 @@ function* readsSteps(q: Q, db: Database, itemId: string) {
     const blocker = db
       .query<{ id: string; state: WorkItemState }, [string, string]>(
         `SELECT i.id,i.state FROM work_item i
-           WHERE i.linear_issue_id=? AND ${PRESENT}
-           AND i.delegation_id=(SELECT delegation_id FROM work_item WHERE id=?)
-           ORDER BY i.position DESC,i.rowid DESC LIMIT 1`,
+         WHERE i.linear_issue_id=? AND ${PRESENT}
+         AND i.delegation_id=(SELECT delegation_id FROM work_item WHERE id=?)
+         ORDER BY i.position DESC,i.rowid DESC LIMIT 1`,
       )
       .get(id, itemId);
     const satisfied =
       !blocker ||
       isBlockerSatisfied({
         ...blocker,
-        mode: getTaskMode(db, blocker.id),
+        mode: yield* getTaskModeSteps(q, blocker.id),
         mergeSha: (yield* getConfirmedRemoteMergeSteps(q, blocker.id))?.mergeSha ?? null,
       });
     states.set(id, satisfied ? "completed" : "started");

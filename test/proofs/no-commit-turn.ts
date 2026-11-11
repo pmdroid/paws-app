@@ -26,11 +26,16 @@ export default {
     await proof.delegate();
     const settled = await proof.waitFor(
       "the turn ends and the item settles",
-      () => !["queued", "running", "verifying", "recovering"].includes(proof.itemState() ?? ""),
+      async () =>
+        !["queued", "running", "verifying", "recovering"].includes((await proof.itemState()) ?? ""),
     );
     await proof.waitFor("queued Linear activity is delivered", () => false, 1_000);
-    proof.expect("the item settles after the turn", settled, proof.itemState());
-    proof.expect("the item is not failed", proof.itemState() !== "failed", proof.itemState());
+    proof.expect("the item settles after the turn", settled, await proof.itemState());
+    proof.expect(
+      "the item is not failed",
+      (await proof.itemState()) !== "failed",
+      await proof.itemState(),
+    );
     proof.expect(
       "the implementer turn ran",
       proof.launches.some((launch) => launch.purpose === "implement"),

@@ -52,7 +52,7 @@ test("Stop aborts active Linear HTTP delivery before its final acknowledgement s
   dispatcher.setHandler((message, context) =>
     deliverLinearOutbox(message, tracker, async () => {}, context),
   );
-  const progress = enqueueOutbox(db, {
+  const progress = await enqueueOutbox(sqliteDb(db), {
     target: "linear",
     op: "activity",
     orderingKey: "session",
@@ -63,7 +63,7 @@ test("Stop aborts active Linear HTTP delivery before its final acknowledgement s
     await dispatcher.tick();
     await active;
     const generation = await stopOutboxSession(sqliteDb(db), "linear", "session");
-    const ack = enqueueOutbox(db, {
+    const ack = await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: "session",

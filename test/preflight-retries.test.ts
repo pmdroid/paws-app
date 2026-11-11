@@ -7,7 +7,15 @@ import { runAgent, runDir, type RunAgentOptions } from "../src/acp";
 import { reviewRequirements } from "../src/closeout";
 import { writeAgentSettings } from "../src/config";
 import { JOB_KIND, MAX_TRANSIENT_RETRIES, systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, listJobs, listOutbox, migrate, openDatabase } from "../src/db";
+import {
+  sqliteDb,
+  JobLoop,
+  OutboxDispatcher,
+  listJobs,
+  listOutbox,
+  migrate,
+  openDatabase,
+} from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
 import { RemotePreparationTimeout } from "../src/runner-backend";
@@ -273,7 +281,10 @@ async function runPreflight(fault: {
       }
     }
     const drainBy = Date.now() + 10_000;
-    while (Date.now() < drainBy && listOutbox(db).some((row) => row.status === "pending")) {
+    while (
+      Date.now() < drainBy &&
+      (await listOutbox(sqliteDb(db))).some((row) => row.status === "pending")
+    ) {
       await outbox.tick();
       await outbox.idle();
       await Bun.sleep(10);
@@ -297,14 +308,16 @@ async function runPreflight(fault: {
       state: stateOf(db, "ENG-7"),
       implemented,
       preparations,
-      retries: listJobs(db)
+      retries: (await listJobs(sqliteDb(db)))
         .filter((job) => job.queue === JOB_KIND.resume)
         .map((job) => (job.payload as { retry?: number }).retry ?? 0)
         .filter((retry) => retry > 0),
       questions: tracker.questions.map((question) => question.body),
       detail: JSON.stringify({
         items: db.query("SELECT linear_identifier, state FROM work_item").all(),
-        jobs: listJobs(db).map((job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`),
+        jobs: (await listJobs(sqliteDb(db))).map(
+          (job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`,
+        ),
         progress: tracker.progress.map((update) => `${update.kind}: ${update.body}`),
       }),
     };

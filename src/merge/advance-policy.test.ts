@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { JOB_KIND } from "../core";
-import { getWorkItem, listJobs } from "../db";
+import { sqliteDb, getWorkItem, listJobs } from "../db";
 import { mergeHarness, type MergeHarness } from "./advance-harness";
 
 let harness: MergeHarness | undefined;
@@ -18,8 +18,8 @@ const BROKEN = {
   commit: "b".repeat(40),
 };
 
-function reverifyJobs(h: MergeHarness): (string | null)[] {
-  return listJobs(h.db)
+async function reverifyJobs(h: MergeHarness): Promise<(string | null)[]> {
+  return (await listJobs(sqliteDb(h.db)))
     .filter((job) => job.queue === JOB_KIND.reverify)
     .map((job) => job.jobKey);
 }
@@ -39,7 +39,7 @@ describe("advanceMerge when the Closeout policy on main does not load", () => {
       head: item.accepted,
     });
     expect(getWorkItem(h.db, "ENG-1")?.state).toBe("merge_queue");
-    expect(reverifyJobs(h)).toEqual([]);
+    expect(await reverifyJobs(h)).toEqual([]);
     expect(h.verified).toEqual([]);
     expect(h.github.merged).toEqual([]);
     expect(h.state.policyHolds).toEqual([{ id: "ENG-1", repository: "acme/app", message }]);
@@ -53,7 +53,7 @@ describe("advanceMerge when the Closeout policy on main does not load", () => {
     h.state.mainPolicy = BROKEN;
     expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "policy" });
     expect(await h.remoteHead("ENG-1")).toBe(item.accepted);
-    expect(reverifyJobs(h)).toEqual([]);
+    expect(await reverifyJobs(h)).toEqual([]);
   });
 
   test("main fixed with the same recheck digest: the lane settles the hold and merges without Closeout", async () => {
@@ -66,7 +66,7 @@ describe("advanceMerge when the Closeout policy on main does not load", () => {
     expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
     expect(h.state.policyLoads).toEqual(["acme/app"]);
     expect(h.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([item.accepted]);
-    expect(reverifyJobs(h)).toEqual([]);
+    expect(await reverifyJobs(h)).toEqual([]);
     expect(h.verified).toEqual([]);
   });
 
@@ -80,7 +80,7 @@ describe("advanceMerge when the Closeout policy on main does not load", () => {
     h.state.recheckDigest = "sha256:changed-recheck";
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
     expect(getWorkItem(h.db, "ENG-1")?.state).toBe("verifying");
-    expect(reverifyJobs(h)).toEqual([`reverify:ENG-1:${item.accepted}:merge:2`]);
+    expect(await reverifyJobs(h)).toEqual([`reverify:ENG-1:${item.accepted}:merge:2`]);
     expect(h.github.merged).toEqual([]);
   });
 

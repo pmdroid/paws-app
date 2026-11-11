@@ -82,7 +82,7 @@ async function twoInstances(poll = true) {
 
 async function runningItem(db: Database, id: string, owner: string): Promise<void> {
   insertQueuedItem(db, { id, sessionKey: `${id}-session`, now: Date.now() });
-  const { run } = beginImplementRun(db, id, Date.now());
+  const { run } = await beginImplementRun(sqliteDb(db), id, Date.now());
   await claimRun(sqliteDb(db), run.id, owner);
 }
 
@@ -115,9 +115,13 @@ test("a stop received by instance B aborts the turn on instance A, which owns th
       turn.controller.signal.addEventListener("abort", () => resolve(), { once: true }),
     );
     expect(performance.now() - started).toBeLessThan(2_000);
-    const deliveries = listJobs(a.db).filter((job) => job.queue === commandDeliveryQueue(a.id));
+    const deliveries = (await listJobs(sqliteDb(a.db))).filter(
+      (job) => job.queue === commandDeliveryQueue(a.id),
+    );
     expect(deliveries.map((job) => job.status)).toEqual(["done"]);
-    expect(listJobs(a.db).some((job) => job.queue === commandDeliveryQueue(b.id))).toBe(false);
+    expect(
+      (await listJobs(sqliteDb(a.db))).some((job) => job.queue === commandDeliveryQueue(b.id)),
+    ).toBe(false);
   } finally {
     a.close();
     b.close();
@@ -133,7 +137,7 @@ test("a stop for a run on the receiving instance aborts its turn at once and add
     expect(await stop(a.db, a.orchestrator, "acme-2")).toEqual({ applied: true });
     expect(turn.controller.signal.aborted).toBe(true);
     expect(
-      listJobs(a.db).filter(
+      (await listJobs(sqliteDb(a.db))).filter(
         (job) =>
           job.queue === commandDeliveryQueue(a.id) || job.queue === commandDeliveryQueue(b.id),
       ),
@@ -155,7 +159,9 @@ test("the owner's delivery row commits with the stop itself, before any bus emit
       requestedAt: Date.now(),
     };
     expect(await applyLinearCommand(sqliteDb(b.db), command)).toEqual({ applied: true });
-    const delivery = listJobs(a.db).filter((job) => job.queue === commandDeliveryQueue(a.id));
+    const delivery = (await listJobs(sqliteDb(a.db))).filter(
+      (job) => job.queue === commandDeliveryQueue(a.id),
+    );
     expect(delivery.map((job) => job.status)).toEqual(["pending"]);
     expect(delivery[0]?.payload).toEqual({
       command,
@@ -174,7 +180,7 @@ test("a delayed stop aborts the turn it stopped and leaves a turn started after 
     const stopped = await a.startTurn("acme-4", "acme-4-old");
     expect(await stop(b.db, b.orchestrator, "acme-4", "linear")).toEqual({ applied: true });
     expect(getWorkItem(b.db, "acme-4")?.state).toBe("paused");
-    applyWorkItemEvent(b.db, "acme-4", "resume");
+    await applyWorkItemEvent(sqliteDb(b.db), "acme-4", "resume");
     const replacement = await a.startTurn("acme-4", "acme-4-new");
 
     expect(a.orchestrator.deliverInstanceCommands()).toBe(1);

@@ -112,25 +112,25 @@ test("answer mode and full prepared response survive reopen as a terminal comple
   const db = openDatabase(file);
   migrate(db);
   const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-  beginImplementRun(db, item.id, 1);
+  await beginImplementRun(sqliteDb(db), item.id, 1);
   await saveTaskMode(sqliteDb(db), item.id, "answer");
   const response = "Full public answer. ".repeat(1_000);
   await completeAnswerTask(sqliteDb(db), item.id, response);
   db.close();
   const restored = openDatabase(file);
   try {
-    expect(getTaskMode(restored, item.id)).toBe("answer");
+    expect(await getTaskMode(sqliteDb(restored), item.id)).toBe("answer");
     expect(getWorkItem(restored, item.id)?.state).toBe("completed");
     expect(isTerminalWorkItemState(getWorkItem(restored, item.id)!.state)).toBe(true);
     const dashboard = await createLiveStatusProvider(restored).issues();
     expect(dashboard.issues[0]?.state).toBe("completed");
     expect(dashboard.runs[0]?.state).toBe("done");
-    expect(listOutbox(restored, "session")[0]?.payload).toEqual({
+    expect((await listOutbox(sqliteDb(restored), "session"))[0]?.payload).toEqual({
       sessionId: "session",
       kind: "response",
       body: response,
     });
-    expect(() => applyWorkItemEvent(restored, item.id, "restart")).toThrow();
+    await expect(applyWorkItemEvent(sqliteDb(restored), item.id, "restart")).rejects.toThrow();
   } finally {
     restored.close();
   }
@@ -142,13 +142,13 @@ test.each(["code", "artifact"] as const)(
     const db = tempDb();
     try {
       const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-      applyWorkItemEvent(db, item.id, "dispatched");
+      await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
       await saveTaskMode(sqliteDb(db), item.id, mode);
       await expect(completeAnswerTask(sqliteDb(db), item.id, "Done")).rejects.toThrow(
         "Only answer tasks",
       );
       expect(getWorkItem(db, item.id)?.state).toBe("running");
-      expect(listOutbox(db)).toEqual([]);
+      expect(await listOutbox(sqliteDb(db))).toEqual([]);
       await expect(saveTaskMode(sqliteDb(db), item.id, "answer")).rejects.toThrow(
         "already selected",
       );
@@ -162,16 +162,16 @@ test("Stop and empty responses cannot complete an answer task", async () => {
   const db = tempDb();
   try {
     const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-    applyWorkItemEvent(db, item.id, "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
     await saveTaskMode(sqliteDb(db), item.id, "answer");
     await expect(completeAnswerTask(sqliteDb(db), item.id, " ")).rejects.toThrow(
       "prepared response",
     );
-    applyWorkItemEvent(db, item.id, "cancel");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "cancel");
     await expect(completeAnswerTask(sqliteDb(db), item.id, "Done")).rejects.toThrow(
       "no longer running",
     );
-    expect(listOutbox(db)).toEqual([]);
+    expect(await listOutbox(sqliteDb(db))).toEqual([]);
   } finally {
     db.close();
   }

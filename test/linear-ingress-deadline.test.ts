@@ -233,7 +233,7 @@ function fixture() {
         teamId: "team",
         observedAtMs: Date.now(),
       });
-      enqueueOutbox(db, {
+      await enqueueOutbox(sqliteDb(db), {
         target: "linear",
         op: "activity",
         orderingKey: "other",
@@ -361,19 +361,19 @@ test("a deadline aborts the held acknowledgement transport and its retry keeps t
     expect(f.followedUp).toBe(1);
     await f.releaseHeld();
     const signal = await f.activityStarted.promise;
-    const original = listOutbox(f.db)[0]!;
+    const original = (await listOutbox(sqliteDb(f.db)))[0]!;
     f.deadlines[0]!.abort(new Error("Initial acknowledgement deadline expired"));
     expect(signal.aborted).toBe(true);
     f.activityRelease.resolve();
     await f.outbox.idle();
     expect(f.sent).toEqual([]);
-    expect(listOutbox(f.db)[0]?.status).toBe("pending");
+    expect((await listOutbox(sqliteDb(f.db)))[0]?.status).toBe("pending");
     await f.releaseHeld();
     await f.outbox.idle();
     expect(f.sent).toEqual([
       { id: (original.payload as { id: string }).id, body: "Picked up this issue." },
     ]);
-    expect(listOutbox(f.db)).toHaveLength(1);
+    expect(await listOutbox(sqliteDb(f.db))).toHaveLength(1);
   } finally {
     await f.close();
   }
@@ -386,7 +386,7 @@ test("Stop during delayed ingress prevents the first acknowledgement after its d
     await f.deliver();
     await f.teamStarted.promise;
     await f.stop();
-    expect(getLinearSessionGeneration(f.db, "session")).toBe(1);
+    expect(await getLinearSessionGeneration(sqliteDb(f.db), "session")).toBe(1);
     f.deadlines[0]!.abort(new Error("Initial acknowledgement deadline expired"));
     f.teamRelease.resolve();
     await f.outcome();
@@ -437,7 +437,7 @@ test("another session delivery cannot hold the first acknowledgement's intake op
     expect(outcome).toBeNull();
     expect(otherSettled).toBe(false);
     expect(f.followedUp).toBe(1);
-    const original = listOutbox(f.db, "session")[0]!;
+    const original = (await listOutbox(sqliteDb(f.db), "session"))[0]!;
     expect(original.status).toBe("pending");
     f.otherRelease.resolve();
     await others;
@@ -462,7 +462,7 @@ test("a signed created acknowledgement bypasses and retains dead public history 
       await f.outbox.tick();
       await f.outbox.idle();
     }
-    const progress = listOutbox(f.db, "session").find(
+    const progress = (await listOutbox(sqliteDb(f.db), "session")).find(
       (row) => (row.payload as { body: string }).body === "Picked up ENG-1.",
     )!;
     expect(progress.status).toBe("dead");
@@ -475,7 +475,9 @@ test("a signed created acknowledgement bypasses and retains dead public history 
       "Received your update.",
       "Picked up this issue.",
     ]);
-    expect(listOutbox(f.db, "session").find((row) => row.id === progress.id)?.status).toBe("dead");
+    expect(
+      (await listOutbox(sqliteDb(f.db), "session")).find((row) => row.id === progress.id)?.status,
+    ).toBe("dead");
     const acknowledgement = f.sent[1]!;
     await Bun.sleep(0);
     await f.deliver();
@@ -496,7 +498,7 @@ test("Stop aborts a critical first acknowledgement and prevents its later retry"
     expect(await f.outcome()).toBeNull();
     await f.releaseHeld();
     const signal = await f.activityStarted.promise;
-    expect(listOutbox(f.db, "session")[0]?.delivery).toBe("critical");
+    expect((await listOutbox(sqliteDb(f.db), "session"))[0]?.delivery).toBe("critical");
     await f.stop();
     expect(signal.aborted).toBe(true);
     f.activityRelease.resolve();
@@ -506,7 +508,7 @@ test("Stop aborts a critical first acknowledgement and prevents its later retry"
     expect(f.db.query("SELECT count(*) AS n FROM work_item").get()).toEqual({ n: 0 });
     expect(f.sent).toHaveLength(1);
     expect(f.sent[0]?.body).toMatch(/stopp/i);
-    expect(listOutbox(f.db, "session")[0]?.status).toBe("dropped");
+    expect((await listOutbox(sqliteDb(f.db), "session"))[0]?.status).toBe("dropped");
     f.db.run("UPDATE outbox SET not_before = 0");
     await f.outbox.tick();
     await f.outbox.idle();

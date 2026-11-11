@@ -80,8 +80,8 @@ async function fixture(
   await reader.remember(item.id, "head", context);
   for (const id of ["security-review", "independent-review"]) {
     if (id === "security-review" && scenario === "missing security") continue;
-    upsertCloseoutStep(
-      db,
+    await upsertCloseoutStep(
+      sqliteDb(db),
       item.id,
       identity,
       {
@@ -107,7 +107,7 @@ async function fixture(
       now,
     );
   }
-  finishCloseoutProgress(db, item.id, identity, "accepted", now);
+  await finishCloseoutProgress(sqliteDb(db), item.id, identity, "accepted", now);
   if (scenario === "unreadable")
     db.run("UPDATE candidate_paths SET paths = '{}' WHERE item_id = ?", [item.id]);
   const provider = createLiveStatusProvider(db, {

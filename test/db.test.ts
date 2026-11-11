@@ -79,15 +79,15 @@ describe("sqlite", () => {
     db.close();
   });
 
-  test("enqueueJob round-trips and claim takes the due row", () => {
+  test("enqueueJob round-trips and claim takes the due row", async () => {
     const db = openTemp();
-    const id = enqueueJob(db, {
+    const id = await enqueueJob(sqliteDb(db), {
       queue: "run",
       jobKey: "item-1",
       payload: { itemId: "i1" },
       priority: 1,
     });
-    expect(getJob(db, id)).toMatchObject({
+    expect(await getJob(sqliteDb(db), id)).toMatchObject({
       id,
       queue: "run",
       jobKey: "item-1",
@@ -95,7 +95,7 @@ describe("sqlite", () => {
       status: "pending",
       priority: 1,
     });
-    expect(claimNextJob(db, { workerId: "test" })?.id).toBe(id);
+    expect((await claimNextJob(sqliteDb(db), { workerId: "test" }))?.id).toBe(id);
     expect(() =>
       db.run("INSERT INTO job (queue, payload, run_at, created_at) VALUES ('q', '{', 0, 0)"),
     ).toThrow();
@@ -104,7 +104,7 @@ describe("sqlite", () => {
 
   test("enqueueOutbox round-trips, rejects a duplicate key, and dispatch marks it sent", async () => {
     const db = openTemp();
-    const id = enqueueOutbox(db, {
+    const id = await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
       idempotencyKey: "act-1",
@@ -120,9 +120,9 @@ describe("sqlite", () => {
       payload: { body: "Starting" },
       status: "pending",
     });
-    expect(() =>
-      enqueueOutbox(db, { target: "linear", op: "activity", idempotencyKey: "act-1" }),
-    ).toThrow();
+    await expect(
+      enqueueOutbox(sqliteDb(db), { target: "linear", op: "activity", idempotencyKey: "act-1" }),
+    ).rejects.toThrow();
     const delivered: number[] = [];
     await dispatchOutbox(sqliteDb(db), {
       deliver: (row) => {

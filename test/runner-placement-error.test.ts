@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import { tempDb } from "./helpers";
-import { beginImplementRun, insertQueuedItem } from "../src/db";
+import { sqliteDb, beginImplementRun, insertQueuedItem } from "../src/db";
 import { createRunnerWork } from "../src/runner-work";
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerHealth } from "../src/runner-health";
@@ -11,7 +11,7 @@ test("unavailable placement names the saved agent and why no runner can take it"
   const db = tempDb();
   try {
     const queued = insertQueuedItem(db, { id: "unavailable-agent" });
-    const { item, run } = beginImplementRun(db, queued.id, Date.now());
+    const { item, run } = await beginImplementRun(sqliteDb(db), queued.id, Date.now());
     const work = createRunnerWork({
       db,
       keyId: "fixture",

@@ -11,8 +11,8 @@ export default {
     await proof.delegate();
     const waiting = await proof.waitFor(
       "the lane reads failed and running CI",
-      () =>
-        proof.itemState() === "merge_queue" &&
+      async () =>
+        (await proof.itemState()) === "merge_queue" &&
         proof.github.calls.filter((c) => c.path === "/graphql").length >= 2,
     );
     proof.expect(
@@ -30,13 +30,13 @@ export default {
     proof.github.ci.failed = false;
     const merged = await proof.waitFor(
       "the fixed pull merges",
-      () => proof.itemState() === "merged",
+      async () => (await proof.itemState()) === "merged",
       120_000,
     );
     proof.expect(
       "the item merges after exactly one fix",
       merged && proof.launches.length === 2,
-      proof.itemState(),
+      await proof.itemState(),
     );
   },
 } satisfies Proof;

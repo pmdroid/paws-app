@@ -110,7 +110,7 @@ test("admin revoke atomically ends sessions, runners, queued and running work; s
     for (const id of ["controlled", "other", "unmapped"])
       expect(getWorkItem(db, id)?.state).toBe("cancelled");
     expect(getWorkItem(db, "foreign")?.state).toBe("queued");
-    const responses = listOutbox(db)
+    const responses = (await listOutbox(sqliteDb(db)))
       .map((row) => row.payload as { body?: string; sessionId?: string })
       .filter((payload) => payload.body === WORKSPACE_REVOKED_RESPONSE);
     expect(new Set(responses.map((payload) => payload.sessionId))).toEqual(
@@ -284,7 +284,7 @@ test("revocation uses resolved delegator ownership, not the session creator", as
       expect(getWorkItem(db, id)?.state).toBe(stop ? "cancelled" : "queued");
       if (stop) expect(await delegatedLinearUserId(sqliteDb(db), id)).toBe("linear-member");
     }
-    const responses = listOutbox(db)
+    const responses = (await listOutbox(sqliteDb(db)))
       .map((row) => row.payload as { body?: string; sessionId?: string })
       .filter((p) => p.body === WORKSPACE_REVOKED_RESPONSE);
     expect(new Set(responses.map((p) => p.sessionId))).toEqual(
@@ -316,7 +316,7 @@ test("revocation stops accepted work without closing its pull request", async ()
       db.query("SELECT pull_number FROM item_pull_request WHERE item_id='controlled'").get(),
     ).toEqual({ pull_number: 87 });
     expect(
-      listOutbox(db).some(
+      (await listOutbox(sqliteDb(db))).some(
         (row) => (row.payload as { body?: string }).body === WORKSPACE_REVOKED_RESPONSE,
       ),
     ).toBe(true);
@@ -440,7 +440,7 @@ test("revocation stops explicit owners and delegators without session metadata",
           appUserId: "app",
           observedAtMs: now,
         });
-      if (running) beginImplementRun(db, id, now);
+      if (running) await beginImplementRun(sqliteDb(db), id, now);
     }
     const stopped = await changeWorkspaceRevocation(sqliteDb(db), {
       workspaceId: "workspace",
@@ -453,7 +453,7 @@ test("revocation stops explicit owners and delegators without session metadata",
     expect(new Set(stopped)).toEqual(new Set(expected.map((c) => c[0])));
     for (const [id, , , , stop] of cases)
       expect(getWorkItem(db, id)?.state).toBe(stop ? "cancelled" : "queued");
-    const responses = listOutbox(db)
+    const responses = (await listOutbox(sqliteDb(db)))
       .map((row) => row.payload as { body?: string; sessionId?: string })
       .filter((row) => row.body === WORKSPACE_REVOKED_RESPONSE);
     expect(new Set(responses.map((row) => row.sessionId))).toEqual(

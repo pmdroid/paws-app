@@ -112,7 +112,7 @@ test("code preparation starts canonical parent and child while preserving human 
   expect(f.lifecycle.issue.assigneeId).toBe("human-assignee");
   expect(f.lifecycle.issues.get("child")?.assigneeId).toBe("other-human");
   for (const issueId of ["child", "parent"])
-    expect(getLinearTaskDelegation(f.db, f.item.id, issueId)).toMatchObject({
+    expect(await getLinearTaskDelegation(sqliteDb(f.db), f.item.id, issueId)).toMatchObject({
       appUserId: "app",
       humanActorId: "human",
     });
@@ -145,7 +145,7 @@ test("automation without a delegate does not change status or claim delegation",
   expect(await f.gate.prepare(f.item, new AbortController().signal)).toEqual([]);
   expect(f.lifecycle.issue.stateType).toBe("unstarted");
   expect(f.lifecycle.issue.delegateId).toBeNull();
-  expect(getLinearTaskDelegation(f.db, f.item.id, "parent")).toBeNull();
+  expect(await getLinearTaskDelegation(sqliteDb(f.db), f.item.id, "parent")).toBeNull();
 });
 
 test("human reassignment keeps a delegated code task running but removal stops every child via its session", async () => {
@@ -179,7 +179,7 @@ test.each(["unknown", "rejected"])(
         if (query.includes("CodeTaskActor")) return { user: { id: "human", app: false } };
         if (query.includes("StartDelegatedIssue")) {
           mutations++;
-          expect(getLinearTaskDelegation(f.db, f.item.id, "parent")).toMatchObject({
+          expect(await getLinearTaskDelegation(sqliteDb(f.db), f.item.id, "parent")).toMatchObject({
             humanActorId: "human",
             teamId: "parent-team",
           });
@@ -216,7 +216,9 @@ test.each(["unknown", "rejected"])(
       "removed",
     );
     expect(mutations).toBe(1);
-    expect(getLinearTaskDelegation(reopened, f.item.id, "parent")?.humanActorId).toBe("human");
+    expect(
+      (await getLinearTaskDelegation(sqliteDb(reopened), f.item.id, "parent"))?.humanActorId,
+    ).toBe("human");
   },
 );
 

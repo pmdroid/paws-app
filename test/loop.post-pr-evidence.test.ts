@@ -90,7 +90,7 @@ test("16 screenshots of a check post one thought with the count and the link, on
   try {
     const head = "a".repeat(40);
     for (let index = 0; index < 16; index++) await f.publish(index, head);
-    expect(listOutbox(f.db)).toHaveLength(0);
+    expect(await listOutbox(sqliteDb(f.db))).toHaveLength(0);
     for (let round = 0; round < 2; round++)
       for (const { key, body } of await evidenceThoughts(sqliteDb(f.db), {
         itemId: "item",
@@ -123,7 +123,7 @@ test("16 screenshots of a check post one thought with the count and the link, on
 test("after the PR response the issue gets one evidence card, and a new head updates it", async () => {
   const f = setup();
   try {
-    enqueueOutbox(f.db, {
+    await enqueueOutbox(sqliteDb(f.db), {
       target: "linear",
       op: "activity",
       orderingKey: "session",
@@ -178,7 +178,7 @@ test("a closed response fences later activities even without a PR response in it
       ["closed:item:0", "response"],
       ["late", "thought"],
     ])
-      enqueueOutbox(db, {
+      await enqueueOutbox(sqliteDb(db), {
         target: "linear",
         op: "activity",
         orderingKey: "session",

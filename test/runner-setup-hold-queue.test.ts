@@ -118,8 +118,8 @@ function orchestrator(
   });
 }
 
-function thoughts(db: Database): string[] {
-  return listOutbox(db)
+async function thoughts(db: Database): Promise<string[]> {
+  return (await listOutbox(sqliteDb(db)))
     .map((row) => row.payload as { kind?: string; body?: string })
     .filter((payload) => payload.kind === "thought")
     .map((payload) => payload.body ?? "");
@@ -146,21 +146,21 @@ test("a delegator without a runner, beside another member's free runner, is held
       reason: "no-runner",
       ownerUserId: users.me,
     });
-    expect(thoughts(db)).toEqual([
+    expect(await thoughts(db)).toEqual([
       `You don't have a runner Paws can use yet. Create a VM or add a host here: ${RUNNERS_URL}. I'll start on my own once it's ready.`,
     ]);
     expect(itemJobs(db, "mine")).toBe(0);
 
     // A fake day later, with the other runner still online and free: no new write, no job, no
     // failure.
-    const outbox = listOutbox(db).length;
+    const outbox = (await listOutbox(sqliteDb(db))).length;
     for (const step of [60_000, 60 * 60_000, DAY]) {
       clock.advance(step);
       db.run("UPDATE runner SET last_seen_at=?", [clock.now()]);
       await paws.reconcileExecution();
     }
     expect(getWorkItem(db, "mine")?.state).toBe("queued");
-    expect(listOutbox(db).length).toBe(outbox);
+    expect((await listOutbox(sqliteDb(db))).length).toBe(outbox);
     expect(itemJobs(db, "mine")).toBe(0);
 
     // The scheduler tick alone never ends the hold. The delegator's own runner queues a check,
@@ -189,8 +189,8 @@ test("a delegator whose own runner needs its agent signed in hears the runner an
       reason: "agent-not-signed-in",
       runnerId: "member-vm",
     });
-    expect(thoughts(db)).toHaveLength(1);
-    expect(thoughts(db)[0]).toMatch(
+    expect(await thoughts(db)).toHaveLength(1);
+    expect((await thoughts(db))[0]).toMatch(
       /^Your runner member-vm needs (Claude|Codex) signed in\. Sign in on the \[Runners page\]\(https:\/\/paws\.example\/dashboard\/runners\); I'll start right after\.$/,
     );
   } finally {
@@ -328,7 +328,7 @@ for (const trigger of TRIGGERS)
       expect(checkJobs(db)).toEqual([users.me!]);
       expect(await fixture.runChecks()).toBe(1);
       expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toBeNull();
-      expect(thoughts(db)).toEqual([HOLD_LINE, `Starting PAS-1 on ${trigger.runner}.`]);
+      expect(await thoughts(db)).toEqual([HOLD_LINE, `Starting PAS-1 on ${trigger.runner}.`]);
       expect(itemJobs(db, "mine")).toBe(1);
     } finally {
       await fixture.close();
@@ -351,7 +351,7 @@ test("a runner that becomes usable for another member leaves this member's hold 
     expect(checkJobs(db)).toEqual([users.me!]);
     await fixture.runChecks();
     expect(await getRunnerSetupHold(sqliteDb(db), "mine")).not.toBeNull();
-    expect(thoughts(db)).toEqual([HOLD_LINE]);
+    expect(await thoughts(db)).toEqual([HOLD_LINE]);
     expect(itemJobs(db, "mine")).toBe(0);
   } finally {
     await fixture.close();
@@ -393,7 +393,7 @@ test("two triggers at once resume the item once", async () => {
     ]);
     expect(checkJobs(db)).toEqual([]);
     expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toBeNull();
-    expect(thoughts(db)).toEqual([HOLD_LINE, "Starting PAS-1 on own."]);
+    expect(await thoughts(db)).toEqual([HOLD_LINE, "Starting PAS-1 on own."]);
     expect(itemJobs(db, "mine")).toBe(1);
   } finally {
     await fixture.close();
@@ -469,8 +469,8 @@ test("a labelled Acme issue is held for its labelled agent and resumes when that
     expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toMatchObject({
       reason: "agent-not-signed-in",
     });
-    expect(thoughts(db)).toHaveLength(1);
-    expect(thoughts(db)[0]).toContain("Codex");
+    expect(await thoughts(db)).toHaveLength(1);
+    expect((await thoughts(db))[0]).toContain("Codex");
     await paws.reconcileExecution();
     await Bun.sleep(0);
     expect(counted.reads).toBe(1);

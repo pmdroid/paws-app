@@ -34,8 +34,8 @@ async function reply(h: MergeHarness, id: string, body: string): Promise<void> {
   );
 }
 
-function mergeJob(h: MergeHarness, id: string): Record<string, unknown> {
-  const job = listJobs(h.db).find(
+async function mergeJob(h: MergeHarness, id: string): Promise<Record<string, unknown>> {
+  const job = (await listJobs(sqliteDb(h.db))).find(
     (row) =>
       row.queue === JOB_KIND.merge &&
       row.status === "pending" &&
@@ -45,8 +45,8 @@ function mergeJob(h: MergeHarness, id: string): Record<string, unknown> {
   return job!.payload as Record<string, unknown>;
 }
 
-function agentJobs(h: MergeHarness) {
-  return listJobs(h.db).filter(
+async function agentJobs(h: MergeHarness) {
+  return (await listJobs(sqliteDb(h.db))).filter(
     (job) => job.queue === JOB_KIND.start || job.queue === JOB_KIND.resume,
   );
 }
@@ -75,10 +75,12 @@ describe("a merge GitHub refuses", () => {
     await h.pass(item.id);
     await reply(h, item.id, RETRY_MERGE);
     expect(getWorkItem(h.db, item.id)?.state).toBe("merge_queue");
-    expect(agentJobs(h)).toEqual([]);
-    expect(listJobs(h.db).filter((job) => job.queue === JOB_KIND.reverify)).toEqual([]);
+    expect(await agentJobs(h)).toEqual([]);
+    expect(
+      (await listJobs(sqliteDb(h.db))).filter((job) => job.queue === JOB_KIND.reverify),
+    ).toEqual([]);
     h.state.mergeDenial = null;
-    expect(await h.pass(item.id, mergeJob(h, item.id))).toEqual({ kind: "merged" });
+    expect(await h.pass(item.id, await mergeJob(h, item.id))).toEqual({ kind: "merged" });
     expect(h.github.merged).toHaveLength(1);
   });
 
@@ -88,7 +90,7 @@ describe("a merge GitHub refuses", () => {
     refuse(h);
     await h.pass(item.id);
     await reply(h, item.id, "Squash merges are off; enable them in the repository settings first.");
-    expect(agentJobs(h).map((job) => job.queue)).toEqual([JOB_KIND.resume]);
+    expect((await agentJobs(h)).map((job) => job.queue)).toEqual([JOB_KIND.resume]);
   });
 
   test("the third refusal of the same head fails the item with GitHub's reason", async () => {
@@ -97,9 +99,9 @@ describe("a merge GitHub refuses", () => {
     refuse(h);
     expect(await h.pass(item.id)).toEqual({ kind: "asked" });
     await reply(h, item.id, "retry");
-    expect(await h.pass(item.id, mergeJob(h, item.id))).toEqual({ kind: "asked" });
+    expect(await h.pass(item.id, await mergeJob(h, item.id))).toEqual({ kind: "asked" });
     await reply(h, item.id, RETRY_MERGE);
-    const failed = await h.pass(item.id, mergeJob(h, item.id));
+    const failed = await h.pass(item.id, await mergeJob(h, item.id));
     expect(failed).toMatchObject({ kind: "failed", reason: "merge" });
     expect((failed as { message: string }).message).toContain("status 405");
     expect((failed as { message: string }).message).toContain(REFUSED);
@@ -125,7 +127,7 @@ describe("a merge GitHub refuses", () => {
     expect(await h.pass(item.id)).toMatchObject({ kind: "wait", reason: "ci" });
     expect(await h.remoteHead(item.id)).not.toBe(item.accepted);
     expect(await h.pass(item.id)).toEqual({ kind: "merged" });
-    expect(agentJobs(h)).toEqual([]);
+    expect(await agentJobs(h)).toEqual([]);
   });
 
   test("a 403 keeps failing the item", async () => {

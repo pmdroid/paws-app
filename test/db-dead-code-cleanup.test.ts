@@ -25,25 +25,33 @@ test("migrating drops the tables no code reads or writes", () => {
 test("the cleanup renames linear.activity rows and cancels linear.epic.reconcile jobs", async () => {
   const db = tempDb();
   try {
-    const legacy = enqueueOutbox(db, {
+    const legacy = await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "linear.activity",
       idempotencyKey: "legacy",
       payload: { kind: "thought", body: "hello" },
     });
-    const elicitation = enqueueOutbox(db, {
+    const elicitation = await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "elicitation",
       idempotencyKey: "ask",
       payload: {},
     });
-    const epic = enqueueJob(db, { queue: "linear.epic.reconcile", payload: {}, now: 1 });
-    const sweep = enqueueJob(db, { queue: "linear.epics.reconcile", payload: {}, now: 1 });
+    const epic = await enqueueJob(sqliteDb(db), {
+      queue: "linear.epic.reconcile",
+      payload: {},
+      now: 1,
+    });
+    const sweep = await enqueueJob(sqliteDb(db), {
+      queue: "linear.epics.reconcile",
+      payload: {},
+      now: 1,
+    });
     db.run(migration.sql);
     expect((await sqliteDb(db).run((q) => getOutboxSteps(q, legacy)))?.op).toBe("activity");
     expect((await sqliteDb(db).run((q) => getOutboxSteps(q, elicitation)))?.op).toBe("elicitation");
-    expect(getJob(db, epic)?.status).toBe("cancelled");
-    expect(getJob(db, sweep)?.status).toBe("pending");
+    expect((await getJob(sqliteDb(db), epic))?.status).toBe("cancelled");
+    expect((await getJob(sqliteDb(db), sweep))?.status).toBe("pending");
   } finally {
     db.close();
   }

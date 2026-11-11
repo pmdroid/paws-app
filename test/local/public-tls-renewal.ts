@@ -359,7 +359,8 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
     insertQueuedItem(db, { id: itemId, branchName: "paws/tls-1", now: Date.now() });
     await saveRunCommitPolicy(
       sqliteDb(db),
-      beginImplementRun(db, itemId, Date.now(), { phase: "running", turn: 1 }).run.id,
+      (await beginImplementRun(sqliteDb(db), itemId, Date.now(), { phase: "running", turn: 1 })).run
+        .id,
       APP_POLICY,
     );
     db.close();

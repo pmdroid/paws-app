@@ -3,7 +3,7 @@ import type { LinearCommand } from "../src/core";
 import {
   commandDeliveryQueue,
   drainInstanceCommandsAsync,
-  enqueueJobAsync,
+  enqueueJob,
   forwardCommandAsync,
   forwardCommandSteps,
   getJobSteps,
@@ -103,7 +103,7 @@ forEachDialect((open) => {
     const { db } = handle;
     await owned(db);
     await db.transaction((q) => forwardCommandSteps(q, "self", stop, 100_000));
-    const malformed = await enqueueJobAsync(db, {
+    const malformed = await enqueueJob(db, {
       queue: commandDeliveryQueue("peer"),
       payload: { command: { type: "nonsense" } },
       now: 100_000,

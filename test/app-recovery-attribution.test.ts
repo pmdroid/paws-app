@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createWorktree, ensureBareMirror, git, worktreePath } from "../src/acp";
 import { FakeClock, JOB_KIND } from "../src/core";
 import {
+  sqliteDb,
   beginImplementRun,
   getRun,
   getWorkItem,
@@ -70,7 +71,7 @@ for (const state of [
     );
     try {
       insertQueuedItem(paws.db, { id: "legacy", branchName: "paws/legacy", now: clock.now() });
-      const { run } = beginImplementRun(paws.db, "legacy", clock.now(), {
+      const { run } = await beginImplementRun(sqliteDb(paws.db), "legacy", clock.now(), {
         phase: "running",
         wipCommit: before,
         baseSha: before,
@@ -86,16 +87,16 @@ for (const state of [
               : state === "merge_queue"
                 ? (["turn_ended", "closeout_accepted"] as const)
                 : [])
-        applyWorkItemEvent(paws.db, "legacy", event);
+        await applyWorkItemEvent(sqliteDb(paws.db), "legacy", event);
       const held = getWorkItem(paws.db, "legacy")!;
       const runStatus = getRun(paws.db, run.id)?.status;
-      const outbox = listOutbox(paws.db).length;
+      const outbox = (await listOutbox(sqliteDb(paws.db))).length;
       clock.sleep(2 * 60 * 60_000 + 1);
       for (let i = 0; i < 100 && paws.db.query("SELECT 1 FROM wake").get() === null; i++)
         await Bun.sleep(10);
       expect(paws.db.query("SELECT 1 FROM wake").get()).not.toBeNull();
       expect(
-        listJobs(paws.db).some(
+        (await listJobs(sqliteDb(paws.db))).some(
           (job) =>
             (job.queue === JOB_KIND.start || job.queue === JOB_KIND.resume) &&
             job.status === "pending",
@@ -109,7 +110,7 @@ for (const state of [
         branchName: "paws/legacy",
       });
       expect(getRun(paws.db, run.id)?.status).toBe(runStatus);
-      expect(listOutbox(paws.db)).toHaveLength(outbox);
+      expect(await listOutbox(sqliteDb(paws.db))).toHaveLength(outbox);
       expect((await git(["-C", tree, "rev-parse", "HEAD"], { env })).trim()).toBe(before);
       expect(readFileSync(join(tree, "dirty"), "utf8")).toBe("preserve exact legacy WIP");
     } finally {

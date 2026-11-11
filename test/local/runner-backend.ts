@@ -294,7 +294,7 @@ export async function probeRunnerBackend(
       sessionId = `session-${sequence}`;
     await finishRuns();
     const record = insertQueuedItem(db, { id, now, sessionKey: sessionId });
-    const { run } = beginImplementRun(db, id, now);
+    const { run } = await beginImplementRun(sqliteDb(db), id, now);
     const linked = Bun.spawnSync([
       "/usr/bin/git",
       "--git-dir",
@@ -1066,7 +1066,7 @@ export async function probeRunnerBackend(
         publishArtifact: {
           async publish() {
             replayPublications++;
-            enqueueOutbox(db, {
+            await enqueueOutbox(sqliteDb(db), {
               target: "linear",
               op: "activity",
               orderingKey: `session-${replayed.id}`,
@@ -1139,7 +1139,7 @@ export async function probeRunnerBackend(
     const fetchedBeforeReplay = fetched;
     const replayResult = await afterReplay;
     fetched = fetchedBeforeReplay;
-    const replayRows = listOutbox(db, `session-${replayed.id}`).length;
+    const replayRows = (await listOutbox(sqliteDb(db), `session-${replayed.id}`)).length;
     const replayAnswer = db
       .query<{ answer: string }, [string]>(
         "SELECT answer FROM runner_question_answer WHERE run_id=? AND sequence=1",
@@ -2097,7 +2097,7 @@ export async function probeRunnerBackend(
             assert.equal(request.question, "Include archived rows?");
             assert.deepEqual(request.options, [{ label: "Include", value: "yes" }]);
             assert.equal(request.context, undefined);
-            applyWorkItemEvent(db, asked.id, "blocking_question");
+            await applyWorkItemEvent(sqliteDb(db), asked.id, "blocking_question");
             const question = await openQuestion(db, {
               itemId: asked.id,
               runId: asked.run.id,
@@ -2108,7 +2108,7 @@ export async function probeRunnerBackend(
             opened = true;
             await delay(10, undefined, { signal: context.signal });
             await answerQuestion(db, question.id, { answer: "yes", answeredBy: "owner", now });
-            applyWorkItemEvent(db, asked.id, "answer_received");
+            await applyWorkItemEvent(sqliteDb(db), asked.id, "answer_received");
             return { answer: "yes" };
           },
         },
@@ -2872,7 +2872,7 @@ export async function probeRunnerBackend(
         },
         askTeam: {
           async ask(request, context) {
-            applyWorkItemEvent(db, artifactItem.id, "blocking_question");
+            await applyWorkItemEvent(sqliteDb(db), artifactItem.id, "blocking_question");
             const question = await openQuestion(db, {
               itemId: artifactItem.id,
               runId: artifactItem.run.id,
@@ -2888,7 +2888,7 @@ export async function probeRunnerBackend(
               answeredBy: "owner",
               now,
             });
-            applyWorkItemEvent(db, artifactItem.id, "answer_received");
+            await applyWorkItemEvent(sqliteDb(db), artifactItem.id, "answer_received");
             return { answer: continuationState.answer };
           },
         },

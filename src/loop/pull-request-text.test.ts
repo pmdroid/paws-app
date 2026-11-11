@@ -110,7 +110,7 @@ async function fixture(
       1,
     );
   if (options.savedDescription)
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId, summary: "## Closeout", head: "474f2d1b" },
       now: 1,

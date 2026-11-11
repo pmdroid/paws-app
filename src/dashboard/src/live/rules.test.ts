@@ -50,8 +50,8 @@ async function seed(): Promise<{ db: Database; home: string }> {
   const home = mkdtempSync(join(tmpdir(), "paws-rules-"));
   homes.push(home);
   const item = insertQueuedItem(db, { id: "ENG-7", title: "Rules", sessionKey: "ses_7", now: NOW });
-  beginImplementRun(db, item.id, NOW);
-  applyWorkItemEvent(db, item.id, "blocking_question");
+  await beginImplementRun(sqliteDb(db), item.id, NOW);
+  await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
   const identity = {
     taskId: item.id,
     base: BASE,
@@ -96,7 +96,7 @@ async function seed(): Promise<{ db: Database; home: string }> {
     step("test", "passed", 4, false, 0),
   ];
   for (const entry of steps) {
-    upsertCloseoutStep(db, item.id, identity, entry, NOW);
+    await upsertCloseoutStep(sqliteDb(db), item.id, identity, entry, NOW);
     if (entry.evidencePath === null) continue;
     const file = join(home, "closeout", "evidence", item.id, ...entry.evidencePath.split("/"));
     mkdirSync(dirname(file), { recursive: true });
@@ -114,8 +114,8 @@ async function seed(): Promise<{ db: Database; home: string }> {
       }),
     );
   }
-  finishCloseoutProgress(db, item.id, identity, "exhausted", NOW + 2_000);
-  enqueueOutbox(db, {
+  await finishCloseoutProgress(sqliteDb(db), item.id, identity, "exhausted", NOW + 2_000);
+  await enqueueOutbox(sqliteDb(db), {
     target: "linear",
     op: "activity",
     orderingKey: "ses_7",

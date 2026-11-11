@@ -89,27 +89,27 @@ test("the position reads like the run page", () => {
 test("a fix sent back from the merge queue or its re-verify counts as merge-queue work", async () => {
   const db = tempDb();
   try {
-    const accepted = (id: string) => {
+    const accepted = async (id: string) => {
       insertQueuedItem(db, { id, now: 1 });
-      applyWorkItemEvent(db, id, "dispatched");
-      applyWorkItemEvent(db, id, "turn_ended");
+      await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
+      await applyWorkItemEvent(sqliteDb(db), id, "turn_ended");
     };
-    accepted("conflict");
-    applyWorkItemEvent(db, "conflict", "closeout_accepted");
+    await accepted("conflict");
+    await applyWorkItemEvent(sqliteDb(db), "conflict", "closeout_accepted");
     await joinMergeQueue(sqliteDb(db), { itemId: "conflict", repository: "acme/app", now: 2 });
     expect(await inMergeQueue(sqliteDb(db), "conflict")).toBe(true);
     restart(db, getWorkItem(db, "conflict")!, { reason: "conflict", body: "Rebase", now: 3 });
     expect(await inMergeQueue(sqliteDb(db), "conflict")).toBe(false);
-    applyWorkItemEvent(db, "conflict", "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), "conflict", "dispatched");
     expect(await restartedFromMergeQueue(sqliteDb(db), "conflict")).toBe(true);
 
-    accepted("reverify");
-    applyWorkItemEvent(db, "reverify", "closeout_accepted");
-    applyWorkItemEvent(db, "reverify", "reverify_requested");
+    await accepted("reverify");
+    await applyWorkItemEvent(sqliteDb(db), "reverify", "closeout_accepted");
+    await applyWorkItemEvent(sqliteDb(db), "reverify", "reverify_requested");
     restart(db, getWorkItem(db, "reverify")!, { reason: "findings", body: "Fix", now: 4 });
     expect(await restartedFromMergeQueue(sqliteDb(db), "reverify")).toBe(true);
 
-    accepted("first");
+    await accepted("first");
     restart(db, getWorkItem(db, "first")!, { reason: "findings", body: "Fix", now: 5 });
     expect(await restartedFromMergeQueue(sqliteDb(db), "first")).toBe(false);
   } finally {

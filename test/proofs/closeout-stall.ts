@@ -1,5 +1,6 @@
 import { FakeClock, JOB_KIND } from "../../src/core";
 import {
+  sqliteDb,
   applyWorkItemEvent,
   beginImplementRun,
   claimNextJob,
@@ -31,15 +32,15 @@ export default {
       migrate(db);
       const clock = new FakeClock(Date.now() + 1000);
       insertQueuedItem(db, { id: "quiet", sessionKey: "quiet-session", now: clock.now() });
-      beginImplementRun(db, "quiet", clock.now());
-      applyWorkItemEvent(db, "quiet", "turn_ended", { now: clock.now() });
+      await beginImplementRun(sqliteDb(db), "quiet", clock.now());
+      await applyWorkItemEvent(sqliteDb(db), "quiet", "turn_ended", { now: clock.now() });
       saveCheckpoint(db, "quiet", { phase: "verifying", baseSha: "base", wipCommit: "head" });
-      const oldJob = enqueueJob(db, {
+      const oldJob = await enqueueJob(sqliteDb(db), {
         queue: JOB_KIND.reverify,
         payload: { itemId: "quiet" },
         now: clock.now(),
       });
-      claimNextJob(db, { now: clock.now(), leaseMs: 60 * 60_000 });
+      await claimNextJob(sqliteDb(db), { now: clock.now(), leaseMs: 60 * 60_000 });
       const lines: string[] = [];
       for (let attempt = 0; attempt < 2; attempt++) {
         clock.advance(31 * 60_000);
@@ -50,8 +51,8 @@ export default {
         });
         if (attempt === 0) {
           // The real re-verify closes the quiet run and opens a new one on the same head.
-          markRun(db, getWorkItem(db, "quiet")!.currentRunId!, "lost", clock.now());
-          const rerun = insertRun(db, {
+          await markRun(sqliteDb(db), getWorkItem(db, "quiet")!.currentRunId!, "lost", clock.now());
+          const rerun = await insertRun(sqliteDb(db), {
             itemId: "quiet",
             kind: "recheck",
             agent: "cursor",
@@ -59,16 +60,18 @@ export default {
             freshSession: true,
             now: clock.now(),
           });
-          setCurrentRun(db, "quiet", rerun.id);
+          await setCurrentRun(sqliteDb(db), "quiet", rerun.id);
         }
       }
       proof.expect(
         "only one automatic retry was queued",
-        listJobs(db).filter((j) => j.queue === JOB_KIND.reverify && j.id !== oldJob).length === 1,
+        (await listJobs(sqliteDb(db))).filter(
+          (j) => j.queue === JOB_KIND.reverify && j.id !== oldJob,
+        ).length === 1,
       );
       proof.expect(
         "the leased quiet job was cancelled",
-        listJobs(db).find((job) => job.id === oldJob)?.status === "cancelled",
+        (await listJobs(sqliteDb(db))).find((job) => job.id === oldJob)?.status === "cancelled",
       );
       proof.expect("one retry journal line", lines.length === 1, lines);
       proof.expect(

@@ -21,8 +21,8 @@ function harness() {
   const requests = () =>
     tracker.progress.length + tracker.questions.length + tracker.sessionUpdates.length;
   let key = 0;
-  const activity = (payload: Record<string, unknown>) =>
-    enqueueOutbox(db, {
+  const activity = async (payload: Record<string, unknown>) =>
+    await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: "session",
@@ -40,12 +40,12 @@ test("a run producing 50 progress events in a minute sends at most a few Linear 
   );
   for (let index = 0; index < 50; index++) {
     if (index % 5 === 4) {
-      activity({ kind: "thought", body: `Working ${index}`, ephemeral: true });
+      await activity({ kind: "thought", body: `Working ${index}`, ephemeral: true });
     } else if (index % 7 === 3) {
       await progress.plan([{ content: `Step ${index}`, status: "inProgress" }]);
       await progress.phase(index % 2 === 0 ? "implementing" : "verifying");
     } else {
-      activity({ kind: "thought", body: `Thought ${index}` });
+      await activity({ kind: "thought", body: `Thought ${index}` });
     }
     await flush();
     clock.advance(1_200);
@@ -63,10 +63,10 @@ test("a run producing 50 progress events in a minute sends at most a few Linear 
 
 test("questions, errors and links go out at once and keep their order", async () => {
   const { db, clock, tracker, flush, activity } = harness();
-  activity({ kind: "thought", body: "First" });
+  await activity({ kind: "thought", body: "First" });
   await flush();
-  activity({ kind: "thought", body: "Second" });
-  enqueueOutbox(db, {
+  await activity({ kind: "thought", body: "Second" });
+  await enqueueOutbox(sqliteDb(db), {
     target: "linear",
     op: "elicitation",
     orderingKey: "session",
@@ -77,8 +77,8 @@ test("questions, errors and links go out at once and keep their order", async ()
   await flush();
   expect(tracker.progress.map((update) => update.body)).toEqual(["First", "Second"]);
   expect(tracker.questions.map((question) => question.body)).toEqual(["Which one?"]);
-  activity({ kind: "thought", body: "Third" });
-  activity({ kind: "error", body: "Failed" });
+  await activity({ kind: "thought", body: "Third" });
+  await activity({ kind: "error", body: "Failed" });
   await flush();
   expect(tracker.progress.map((update) => update.body)).toEqual([
     "First",

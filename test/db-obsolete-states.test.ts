@@ -1,15 +1,21 @@
 import { expect, test } from "bun:test";
 import { WORK_ITEM_STATES } from "../src/core";
-import { beginImplementRun, insertQueuedItem, legacyMigrate, openDatabase } from "../src/db";
+import {
+  sqliteDb,
+  beginImplementRun,
+  insertQueuedItem,
+  legacyMigrate,
+  openDatabase,
+} from "../src/db";
 
 const PREVIOUS = "147_job_item_version_and_question_reason";
 
-test("removing obsolete states preserves work items, references, indexes and setup triggers", () => {
+test("removing obsolete states preserves work items, references, indexes and setup triggers", async () => {
   const db = openDatabase(":memory:");
   try {
     legacyMigrate(db, { until: PREVIOUS });
     insertQueuedItem(db, { id: "spent" });
-    const { run } = beginImplementRun(db, "spent", 100);
+    const { run } = await beginImplementRun(sqliteDb(db), "spent", 100);
     db.run(`UPDATE work_item SET state='exhausted', task_key='task', accepted_head='head',
       linear_project_id='project', agent_ms=123, checkpoint='{"phase":"verifying"}' WHERE id='spent'`);
     insertQueuedItem(db, { id: "held" });

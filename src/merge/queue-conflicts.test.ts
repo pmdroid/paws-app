@@ -33,14 +33,14 @@ function queued(h: MergeHarness): string[] {
   return listMergeQueues(h.db).map((entry) => entry.itemId);
 }
 
-function restarts(h: MergeHarness) {
-  return listJobs(h.db)
+async function restarts(h: MergeHarness) {
+  return (await listJobs(sqliteDb(h.db)))
     .filter((job) => job.queue === JOB_KIND.resume)
     .map((job) => job.payload as { itemId: string; handoff: string; reason: string });
 }
 
-function sweeps(h: MergeHarness) {
-  return listJobs(h.db).filter((job) => job.queue === JOB_KIND.queueConflicts);
+async function sweeps(h: MergeHarness) {
+  return (await listJobs(sqliteDb(h.db))).filter((job) => job.queue === JOB_KIND.queueConflicts);
 }
 
 /** Three tasks in the acme/app queue; the third changes the file main is about to change. */
@@ -81,11 +81,11 @@ describe("queued pull requests that conflict with main", () => {
     const main = await h.moveMain("ok.txt", "main moved\n");
     h.state.lazyMergeable.set(3, 2);
     await mainMoved(sqliteDb(h.db), { repository: "acme/app", main, now: h.clock.now() });
-    expect(sweeps(h)).toHaveLength(1);
+    expect(await sweeps(h)).toHaveLength(1);
     expect(await h.sweep(main)).toEqual(["ENG-3"]);
 
     expect(getWorkItem(h.db, "ENG-3")?.state).toBe("queued");
-    expect(restarts(h)).toEqual([
+    expect(await restarts(h)).toEqual([
       expect.objectContaining({
         itemId: "ENG-3",
         reason: "conflict",
@@ -110,11 +110,11 @@ describe("queued pull requests that conflict with main", () => {
     const main = await h.moveMain("ok.txt", "main moved\n");
     await mainMoved(sqliteDb(h.db), { repository: "acme/app", main, now: h.clock.now() });
     await mainMoved(sqliteDb(h.db), { repository: "acme/app", main, now: h.clock.now() + 5 });
-    expect(sweeps(h)).toHaveLength(1);
+    expect(await sweeps(h)).toHaveLength(1);
 
     expect(await h.sweep(main)).toEqual(["ENG-3"]);
     expect(await h.sweep(main)).toEqual([]);
-    expect(restarts(h).map((payload) => payload.itemId)).toEqual(["ENG-3"]);
+    expect((await restarts(h)).map((payload) => payload.itemId)).toEqual(["ENG-3"]);
 
     // Back in the queue on the same head: main moves again and it still conflicts.
     await h.requeue("ENG-3");
@@ -122,7 +122,7 @@ describe("queued pull requests that conflict with main", () => {
     const again = await h.moveMain("README.md", "main again\n");
     expect(await h.sweep(again)).toEqual([]);
     expect(getWorkItem(h.db, "ENG-3")?.state).toBe("merge_queue");
-    expect(restarts(h).map((payload) => payload.itemId)).toEqual(["ENG-3"]);
+    expect((await restarts(h)).map((payload) => payload.itemId)).toEqual(["ENG-3"]);
     expect(h.bodies("thought")).toEqual([REBASE_CONFLICT_THOUGHT]);
   });
 
@@ -133,7 +133,7 @@ describe("queued pull requests that conflict with main", () => {
     expect(await h.sweep(main)).toEqual(["ENG-3"]);
     expect(await h.sweep(main)).toEqual([]);
 
-    const notices = listOutbox(h.db, "ses-ENG-3").filter((row) =>
+    const notices = (await listOutbox(sqliteDb(h.db), "ses-ENG-3")).filter((row) =>
       row.idempotencyKey.startsWith("merge-conflict:"),
     );
     expect(notices).toHaveLength(1);
@@ -187,9 +187,9 @@ describe("queued pull requests that conflict with main", () => {
       });
     await h.moveMain("ok.txt", "main moved\n");
     await h.git(h.bare, "update-ref", "refs/heads/paws/ENG-2", "refs/heads/paws/ENG-3");
-    h.state.onPullRead = (number) => {
+    h.state.onPullRead = async (number) => {
       const itemId = `ENG-${number}`;
-      const id = enqueueJob(h.db, {
+      const id = await enqueueJob(sqliteDb(h.db), {
         queue: JOB_KIND.merge,
         payload: { itemId },
         now: h.clock.now(),
@@ -197,7 +197,7 @@ describe("queued pull requests that conflict with main", () => {
       h.db.run("UPDATE job SET status = 'running' WHERE id = ?", [id]);
     };
     expect(await h.sweep(null)).toEqual([]);
-    expect(restarts(h)).toEqual([]);
+    expect(await restarts(h)).toEqual([]);
     expect(findOpenQuestion(h.db, "ses-ENG-2")).toBeNull();
     expect(getWorkItem(h.db, "ENG-2")?.state).toBe("merge_queue");
     expect(getWorkItem(h.db, "ENG-3")?.state).toBe("merge_queue");
@@ -219,7 +219,7 @@ describe("queued pull requests that conflict with main", () => {
       });
     const main = await h.moveMain("ok.txt", "main moved\n");
     expect(await h.sweep(main)).toEqual(["ENG-3"]);
-    expect(restarts(h)).toEqual([]);
+    expect(await restarts(h)).toEqual([]);
     expect(getWorkItem(h.db, "ENG-3")?.state).toBe("awaiting_input");
     expect(findOpenQuestion(h.db, "ses-ENG-3")?.body).toContain(
       `The branch still conflicts with main after ${MAX_REBASE_RETURNS} attempts`,
@@ -237,6 +237,6 @@ describe("queued pull requests that conflict with main", () => {
       main: "a".repeat(40),
       now: h.clock.now(),
     });
-    expect(sweeps(h)).toEqual([]);
+    expect(await sweeps(h)).toEqual([]);
   });
 });

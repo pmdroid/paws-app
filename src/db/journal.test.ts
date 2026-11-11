@@ -35,19 +35,19 @@ function database() {
   return db;
 }
 
-function claim(db: ReturnType<typeof database>, queue: string) {
-  const job = claimNextJob(db, { workerId: "w", now: 1_000, queues: [queue] });
+async function claim(db: ReturnType<typeof database>, queue: string) {
+  const job = await claimNextJob(sqliteDb(db), { workerId: "w", now: 1_000, queues: [queue] });
   if (job === null) throw new Error(`no ${queue} job`);
   return job;
 }
 
 describe("journal", () => {
-  test("writes one line per work item transition", () => {
+  test("writes one line per work item transition", async () => {
     const db = database();
     insertQueuedItem(db, { id: "PAS-1" });
-    beginImplementRun(db, "PAS-1", 1_000);
-    enterMergeQueue(db, "PAS-1", { phase: "merge_queue" });
-    applyWorkItemEvent(db, "PAS-1", "merge_accepted");
+    await beginImplementRun(sqliteDb(db), "PAS-1", 1_000);
+    await enterMergeQueue(sqliteDb(db), "PAS-1", { phase: "merge_queue" });
+    await applyWorkItemEvent(sqliteDb(db), "PAS-1", "merge_accepted");
     expect(lines).toEqual([
       "transition PAS-1 queued --dispatched--> running v1",
       "transition PAS-1 running --turn_ended--> verifying v2",
@@ -56,14 +56,14 @@ describe("journal", () => {
     ]);
   });
 
-  test("writes the reason when a work item fails", () => {
+  test("writes the reason when a work item fails", async () => {
     const db = database();
     insertQueuedItem(db, { id: "PAS-2", sessionKey: "s" });
-    beginImplementRun(db, "PAS-2", 1_000);
+    await beginImplementRun(sqliteDb(db), "PAS-2", 1_000);
     const item = getWorkItem(db, "PAS-2");
     if (item === null) throw new Error("missing item");
     lines = [];
-    failWorkItem(db, item, "start_timeout", "secret prompt text", 2_000);
+    await failWorkItem(sqliteDb(db), item, "start_timeout", "secret prompt text", 2_000);
     expect(lines).toContain("item PAS-2 failed: start_timeout");
     expect(lines.join("\n")).not.toContain("secret prompt text");
   });
@@ -72,7 +72,7 @@ describe("journal", () => {
     const db = database();
     insertQueuedItem(db, { id: "PAS-3", maxAwakeMs: 1_000 });
     db.run("UPDATE work_item SET session_key = NULL WHERE id = 'PAS-3'");
-    beginImplementRun(db, "PAS-3", 1_000);
+    await beginImplementRun(sqliteDb(db), "PAS-3", 1_000);
     await accrueAwake(sqliteDb(db), "PAS-3", 0, 1_000, undefined, true);
     lines = [];
     await accrueAwake(sqliteDb(db), "PAS-3", 1_000, 2_000, undefined, true);
@@ -83,18 +83,18 @@ describe("journal", () => {
 
   test("writes done, dead and cancelled outcomes for item jobs", async () => {
     const db = database();
-    enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "a" }, now: 0 });
-    completeJob(db, claim(db, JOB_KIND.resume), 1_000);
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), { queue: JOB_KIND.resume, payload: { itemId: "a" }, now: 0 });
+    await completeJob(sqliteDb(db), await claim(db, JOB_KIND.resume), 1_000);
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "b" },
       maxAttempts: 1,
       now: 0,
     });
-    await failJob(sqliteDb(db), claim(db, JOB_KIND.merge), new Error("merge\nconflict"), {
+    await failJob(sqliteDb(db), await claim(db, JOB_KIND.merge), new Error("merge\nconflict"), {
       now: 1_000,
     });
-    enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "c" }, now: 0 });
+    await enqueueJob(sqliteDb(db), { queue: JOB_KIND.resume, payload: { itemId: "c" }, now: 0 });
     await cancelOpenJobs(sqliteDb(db), { itemId: "c", reason: "stopped", now: 1_000 });
     expect(lines.filter((line) => line.startsWith("job "))).toEqual([
       "job 1 run.resume done item=a attempts=1/10",
@@ -105,10 +105,12 @@ describe("journal", () => {
 
   test("leaves other queues and retried jobs out", async () => {
     const db = database();
-    enqueueJob(db, { queue: JOB_KIND.catchup, now: 0 });
-    completeJob(db, claim(db, JOB_KIND.catchup), 1_000);
-    enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "a" }, now: 0 });
-    await failJob(sqliteDb(db), claim(db, JOB_KIND.resume), new Error("busy"), { now: 1_000 });
+    await enqueueJob(sqliteDb(db), { queue: JOB_KIND.catchup, now: 0 });
+    await completeJob(sqliteDb(db), await claim(db, JOB_KIND.catchup), 1_000);
+    await enqueueJob(sqliteDb(db), { queue: JOB_KIND.resume, payload: { itemId: "a" }, now: 0 });
+    await failJob(sqliteDb(db), await claim(db, JOB_KIND.resume), new Error("busy"), {
+      now: 1_000,
+    });
     expect(lines.filter((line) => line.startsWith("job "))).toEqual([]);
   });
 });

@@ -231,10 +231,10 @@ export type ProofContext = {
   linear: FakeTracker;
   github: ReturnType<typeof fixtureGitHub>;
   launches: LaunchInput[];
-  itemState(): string | null;
-  itemBranch(): string | null;
-  itemRunId(): string | null;
-  transitions(): { from: string; to: string; event: string }[];
+  itemState(): Promise<string | null>;
+  itemBranch(): Promise<string | null>;
+  itemRunId(): Promise<string | null>;
+  transitions(): Promise<{ from: string; to: string; event: string }[]>;
   originMainFiles(): Promise<string[]>;
   originMainLog(): Promise<string[]>;
   /** Someone else pushes a commit to origin main. */
@@ -343,16 +343,14 @@ export async function runProof(name: string, proof: Proof, dir: string) {
   });
   const actions: { at: string; action: string }[] = [];
   const assertions: Assertion[] = [];
-  const items = () => listWorkItemsByStates(db, WORK_ITEM_STATES);
-  const transitions = () =>
-    items().flatMap((item) =>
-      listWorkItemEventRows(db, item.id).map((row) => ({
-        item: item.id,
-        from: row.fromState,
-        to: row.toState,
-        event: row.event,
-      })),
-    );
+  const items = async () => await listWorkItemsByStates(sqliteDb(db), WORK_ITEM_STATES);
+  const transitions = async () => {
+    const rows = [];
+    for (const item of await items())
+      for (const row of await listWorkItemEventRows(sqliteDb(db), item.id))
+        rows.push({ item: item.id, from: row.fromState, to: row.toState, event: row.event });
+    return rows;
+  };
   const count = (query: string) => (db.query(query).get() as { n: number }).n;
   const event = (action: "created" | "prompted", extra: Partial<AcceptedLinearEvent> = {}) =>
     orchestrator.onLinearEvent({
@@ -378,9 +376,9 @@ export async function runProof(name: string, proof: Proof, dir: string) {
     linear,
     github,
     launches,
-    itemState: () => items()[0]?.state ?? null,
-    itemBranch: () => items()[0]?.branchName ?? null,
-    itemRunId: () => items()[0]?.currentRunId ?? null,
+    itemState: async () => (await items())[0]?.state ?? null,
+    itemBranch: async () => (await items())[0]?.branchName ?? null,
+    itemRunId: async () => (await items())[0]?.currentRunId ?? null,
     transitions,
     async originMainFiles() {
       return (await git("-C", bare, "ls-tree", "-r", "--name-only", "main")).split("\n");
@@ -409,7 +407,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
       runningJobs: count("SELECT count(*) AS n FROM job WHERE status = 'running'"),
     }),
     async ageCandidate() {
-      const item = items()[0];
+      const item = (await items())[0];
       const candidate = item && (await getItemCandidate(sqliteDb(db), item.id));
       if (!candidate) return false;
       await recordItemCandidate(sqliteDb(db), {
@@ -498,7 +496,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
       sessionUpdates: linear.sessionUpdates,
     },
     github: github.calls,
-    transitions: transitions(),
+    transitions: await transitions(),
     assertions,
   };
   db.close();

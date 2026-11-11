@@ -19,14 +19,27 @@ export default {
     await proof.delegate();
     const queued = await proof.waitFor(
       "the pull request is open and the item waits in the merge queue",
-      () => proof.itemState() === "merge_queue" && proof.github.calls.some(isOpenPull),
+      async () =>
+        (await proof.itemState()) === "merge_queue" && proof.github.calls.some(isOpenPull),
     );
-    proof.expect("the item reaches the merge queue with an open PR", queued, proof.itemState());
+    proof.expect(
+      "the item reaches the merge queue with an open PR",
+      queued,
+      await proof.itemState(),
+    );
     const statusesBefore = proof.linear.statuses.length;
     await proof.stopInLinear();
-    await proof.waitFor("the stop is applied", () => proof.itemState() === "paused", 15_000);
+    await proof.waitFor(
+      "the stop is applied",
+      async () => (await proof.itemState()) === "paused",
+      15_000,
+    );
     await proof.waitFor("queued Linear activity is delivered", () => false, 1_000);
-    proof.expect("the stop pauses the item", proof.itemState() === "paused", proof.itemState());
+    proof.expect(
+      "the stop pauses the item",
+      (await proof.itemState()) === "paused",
+      await proof.itemState(),
+    );
     const changes = proof.linear.statuses.slice(statusesBefore);
     proof.expect(
       "the Linear issue status stays as it was",

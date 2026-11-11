@@ -22,7 +22,7 @@ export default {
     await proof.delegate();
     await proof.waitFor(
       "the fresh published head waits",
-      () => proof.itemState() === "merge_queue",
+      async () => (await proof.itemState()) === "merge_queue",
     );
     proof.expect(
       "a fresh head has not merged",
@@ -34,7 +34,8 @@ export default {
     );
     const merged = await proof.waitFor(
       "the item is merged",
-      () => ["merged", "failed", "manual", "cancelled"].includes(proof.itemState() ?? ""),
+      async () =>
+        ["merged", "failed", "manual", "cancelled"].includes((await proof.itemState()) ?? ""),
       120_000,
     );
     await proof.waitFor("queued Linear activity is delivered", () => false, 1_000);
@@ -42,7 +43,7 @@ export default {
     proof.expect("the implement turn ran once", turns.length === 1, {
       purposes: proof.launches.map((launch) => launch.purpose),
     });
-    const branch = proof.itemBranch();
+    const branch = await proof.itemBranch();
     const pulls = proof.github.calls.filter(
       (call) => call.method === "POST" && call.path.endsWith("/pulls"),
     );
@@ -56,7 +57,7 @@ export default {
         opened[0]!.base === "main",
       { pulls, opened, branch },
     );
-    const transitions = proof.transitions();
+    const transitions = await proof.transitions();
     proof.expect(
       "Closeout accepted the head",
       transitions.some((row) => row.event === "closeout_accepted"),
@@ -73,8 +74,8 @@ export default {
     );
     proof.expect(
       "the item is merged, not failed",
-      merged && proof.itemState() === "merged",
-      proof.itemState(),
+      merged && (await proof.itemState()) === "merged",
+      await proof.itemState(),
     );
     const final = proof.linear.progress.at(-1);
     proof.expect(

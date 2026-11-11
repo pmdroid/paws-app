@@ -186,7 +186,7 @@ async function remoteFixture(
               },
               askTeam: {
                 async ask(request, context) {
-                  applyWorkItemEvent(db, "controlled", "blocking_question");
+                  await applyWorkItemEvent(sqliteDb(db), "controlled", "blocking_question");
                   await openQuestion(db, {
                     itemId: "controlled",
                     runId,
@@ -352,7 +352,7 @@ export async function probeExecutionStopStates(root: string) {
         }),
       });
       ready.resolve(access);
-      const pending = enqueueJob(db, {
+      const pending = await enqueueJob(sqliteDb(db), {
         queue: state === "merge_queue" ? "github.merge" : "run.resume",
         payload: { itemId: "controlled" },
       });
