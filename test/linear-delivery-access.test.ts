@@ -27,7 +27,7 @@ import {
 import { attachOrchestrator, LinearTaskAccess } from "../src/loop";
 import { tempDb, tempHome } from "./helpers";
 
-function fixture() {
+async function fixture() {
   const db = tempDb();
   const item = insertQueuedItem(db);
   const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
@@ -51,7 +51,7 @@ function fixture() {
     delegateId: "app",
     stateType: "completed",
   });
-  requireLinearTaskDelegation(db, {
+  await requireLinearTaskDelegation(sqliteDb(db), {
     itemId: item.id,
     issueId: item.linearIssueId,
     teamId: "team",
@@ -99,7 +99,7 @@ function fixture() {
 test.each(["workflow states", "credential acquisition"])(
   "Stop while awaiting %s prevents the actual Linear mutation before any dispatcher tick",
   async (boundary) => {
-    const f = fixture();
+    const f = await fixture();
     const started = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     const queries: string[] = [];
@@ -156,7 +156,7 @@ test.each(["workflow states", "credential acquisition"])(
 );
 
 test("a queued final response verifies live access and survives the task's own completed issue", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     for (const event of [
       "dispatched",
@@ -178,7 +178,7 @@ test("a queued final response verifies live access and survives the task's own c
 });
 
 test("access removed during a fresh publication read prevents the queued mutation", async () => {
-  const f = fixture();
+  const f = await fixture();
   const started = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   const original = f.access.adapter.session;
@@ -210,7 +210,7 @@ test("access removed during a fresh publication read prevents the queued mutatio
 });
 
 test("a stopped task can acknowledge removal of delegation while installation access remains valid", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     applyWorkItemEvent(f.db, f.item.id, "cancel");
     await advanceLinearSessionGeneration(sqliteDb(f.db), "session", { stop: true, now: 10 });
@@ -228,7 +228,7 @@ test("a stopped task can acknowledge removal of delegation while installation ac
 });
 
 test("fresh delegation removal prevents a final response without workflow mutation", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     f.enqueue("activity");
     f.lifecycle.issue.delegateId = null;

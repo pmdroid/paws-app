@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { asc, desc, eq, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
 
 /**
@@ -85,13 +84,13 @@ export function* saveHumanRetryWindowSteps(
   );
 }
 
-export function saveHumanRetryWindow(
-  db: Database,
+export async function saveHumanRetryWindow(
+  store: Db,
   itemId: string,
   jobId: number,
   baseline: readonly string[],
-): void {
-  settled(sqliteDb(db).run((q) => saveHumanRetryWindowSteps(q, itemId, jobId, baseline)));
+): Promise<void> {
+  await store.run((q) => saveHumanRetryWindowSteps(q, itemId, jobId, baseline));
 }
 
 export function* humanRetryBaselineSteps(q: Q, itemId: string) {
@@ -107,6 +106,6 @@ export function* humanRetryBaselineSteps(q: Q, itemId: string) {
   return row ? (JSON.parse(row.baseline) as string[]) : [];
 }
 
-export function humanRetryBaseline(db: Database, itemId: string): string[] {
-  return settled(sqliteDb(db).run((q) => humanRetryBaselineSteps(q, itemId)));
+export async function humanRetryBaseline(store: Db, itemId: string): Promise<string[]> {
+  return store.run((q) => humanRetryBaselineSteps(q, itemId));
 }

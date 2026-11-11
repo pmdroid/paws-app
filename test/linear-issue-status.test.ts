@@ -58,11 +58,11 @@ test("a cancel from the issue closing in Linear enqueues no status", () => {
   }
 });
 
-test("an issue delegated without a human actor gets no status change", () => {
+test("an issue delegated without a human actor gets no status change", async () => {
   const db = tempDb();
   try {
     const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-    requireLinearTaskDelegation(db, {
+    await requireLinearTaskDelegation(sqliteDb(db), {
       itemId: item.id,
       issueId: item.linearIssueId,
       teamId: "team",

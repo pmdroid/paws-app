@@ -11,6 +11,7 @@ import {
   recordLinearInstallation,
   requireLinearTaskDelegation,
   setJournalSink,
+  sqliteDb,
 } from "../../src/db";
 import { startPaws } from "../../src/index";
 import { intakeDelegatedIssue } from "../../src/intake";
@@ -57,7 +58,7 @@ db.run("UPDATE work_item SET state = 'awaiting_input' WHERE id = ?", [itemId]);
 const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
 recordLinearInstallation(db, { ...scope, sessionId: "session", teamId: "team", observedAtMs: 1 });
 bindLinearSessionTask(db, "session", task.delegation.id, { actorId: "human" });
-requireLinearTaskDelegation(db, {
+await requireLinearTaskDelegation(sqliteDb(db), {
   itemId,
   issueId: "issue",
   teamId: "team",

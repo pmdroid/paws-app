@@ -102,7 +102,7 @@ describe("merge returns", () => {
     expect(rebaseReturns(db, "eng-1")).toBe(0);
   });
 
-  test("findings, CI and review share one budget until a person replies", () => {
+  test("findings, CI and review share one budget until a person replies", async () => {
     const db = queued();
     try {
       for (const reason of ["findings", "ci", "review"]) {
@@ -122,9 +122,9 @@ describe("merge returns", () => {
         payload: { itemId: "eng-1" },
         now: 4,
       });
-      saveHumanRetryWindow(db, "eng-1", reply, ["failed-evidence"]);
-      saveHumanRetryWindow(db, "eng-1", reply, ["redispatched-evidence"]);
-      expect(humanRetryBaseline(db, "eng-1")).toEqual(["failed-evidence"]);
+      await saveHumanRetryWindow(sqliteDb(db), "eng-1", reply, ["failed-evidence"]);
+      await saveHumanRetryWindow(sqliteDb(db), "eng-1", reply, ["redispatched-evidence"]);
+      expect(await humanRetryBaseline(sqliteDb(db), "eng-1")).toEqual(["failed-evidence"]);
       expect(fixRounds(db, "eng-1")).toBe(0);
       enqueueJob(db, {
         queue: JOB_KIND.resume,
