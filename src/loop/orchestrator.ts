@@ -3989,7 +3989,7 @@ export class Orchestrator {
       // A fix turn for pull request comments must reply to each one it was handed before Closeout.
       // Not complete: restart() or ask() has ended the run, or another writer moved the item on
       // (`stale`, nothing stored). Closeout does not start.
-      const replies = checkReviewReplies(this.db, {
+      const replies = await checkReviewReplies(this.store, {
         item: finished,
         runId: run.id,
         sessionId: this.activitySession(finished),
