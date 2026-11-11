@@ -1,8 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { and, eq, inArray, isNull, or } from "drizzle-orm";
-import { type Q, type Db } from "./db";
-import { orm } from "./orm";
-import { closeoutEvidenceObject, evidence, evidenceObject } from "./schema";
+import { settled, sqliteDb, type Q, type Db } from "./db";
+import { closeoutEvidenceObject, evidenceObject } from "./schema";
 
 export type EvidenceMediaType =
   | "video/webm"
@@ -33,8 +32,7 @@ export function* saveEvidenceSteps(q: Q, row: StoredEvidence) {
 }
 
 export function saveEvidence(db: Database, row: StoredEvidence): void {
-  const { assetUrl: _, ...values } = row;
-  orm(db).insert(evidence).values(values).run();
+  settled(sqliteDb(db).run((q) => saveEvidenceSteps(q, row)));
 }
 
 export function* getEvidenceSteps(q: Q, id: string) {
@@ -58,12 +56,7 @@ export async function getEvidence(store: Db, id: string): Promise<StoredEvidence
 }
 
 export function listEvidence(db: Database, itemId: string): StoredEvidence[] {
-  return orm(db)
-    .select()
-    .from(evidence)
-    .where(eq(evidence.itemId, itemId))
-    .orderBy(evidence.createdAt, evidence.id)
-    .all() as StoredEvidence[];
+  return settled(sqliteDb(db).run((q) => listEvidenceSteps(q, itemId)));
 }
 
 export function latestEvidence(rows: readonly StoredEvidence[]): StoredEvidence[] {

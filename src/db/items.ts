@@ -215,7 +215,7 @@ export function listWorkItemsByStates(
 }
 
 export function listInFlightItems(db: Database): WorkItemRecord[] {
-  return listWorkItemsByStates(db, IN_FLIGHT_ITEM_STATES);
+  return settled(sqliteDb(db).run((q) => listInFlightItemsSteps(q)));
 }
 
 export function* listInFlightItemsSteps(q: Q): Steps<WorkItemRecord[]> {

@@ -1,9 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { asc, eq, sql } from "drizzle-orm";
-import { type Q, type Steps, type Db } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
-import { orm } from "./orm";
-import { closeoutRecovery, question } from "./schema";
 
 export type CloseoutRecovery = {
   questionId: string;
@@ -69,26 +67,7 @@ export function* listCloseoutRecoveriesSteps(q: Q, itemId: string): Steps<Closeo
 }
 
 export function listCloseoutRecoveries(db: Database, itemId: string): CloseoutRecovery[] {
-  return orm(db)
-    .select({ row: closeoutRecovery, answer: question.answer, answeredBy: question.answeredBy })
-    .from(closeoutRecovery)
-    .innerJoin(question, eq(question.id, closeoutRecovery.questionId))
-    .where(eq(closeoutRecovery.itemId, itemId))
-    .orderBy(question.createdAt, sql`question.rowid`)
-    .all()
-    .map(({ row, answer, answeredBy }) => ({
-      questionId: row.questionId,
-      taskId: row.taskId,
-      itemId: row.itemId,
-      base: row.base,
-      head: row.head,
-      policyDigest: row.policyDigest,
-      failedChecks: JSON.parse(row.failedChecks) as string[],
-      retryBaseline: JSON.parse(row.retryBaseline) as string[],
-      summary: row.summary,
-      answer,
-      answeredBy,
-    }));
+  return settled(sqliteDb(db).run((q) => listCloseoutRecoveriesSteps(q, itemId)));
 }
 
 /** The candidate a Closeout help question was asked about, by its question. */
