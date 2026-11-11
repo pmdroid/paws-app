@@ -59,7 +59,7 @@ describe("a question whose elicitation died twice", () => {
   test("is asked again through ask() with a fresh delivery", async () => {
     const { db, question, job } = await waitingItem();
     expect(getWorkItem(db, "item-q")?.state).toBe("awaiting_input");
-    expect(listDeadDeliveries(db, "item-q")).toHaveLength(1);
+    expect(await listDeadDeliveries(sqliteDb(db), "item-q")).toHaveLength(1);
 
     const again = await reaskDeadQuestion(db, {
       itemId: "item-q",
@@ -82,7 +82,7 @@ describe("a question whose elicitation died twice", () => {
       [`question:${question.id}`, "dropped"],
       [`question:${again}`, "pending"],
     ]);
-    expect(listDeadDeliveries(db, "item-q")).toEqual([]);
+    expect(await listDeadDeliveries(sqliteDb(db), "item-q")).toEqual([]);
     // The job remembers the question it produced, so that question shares this allowance.
     expect(getJob(db, job)?.payload).toMatchObject({ questionId: question.id, reaskedAs: again });
   });
@@ -106,7 +106,7 @@ describe("a question whose elicitation died twice", () => {
       [`question:${question.id}:reask`, "pending"],
     ]);
     expect(listOutbox(db, "ses-q")[1]?.payload).toEqual(listOutbox(db, "ses-q")[0]?.payload);
-    expect(listDeadDeliveries(db, "item-q")).toEqual([]);
+    expect(await listDeadDeliveries(sqliteDb(db), "item-q")).toEqual([]);
     expect(getJob(db, job)?.payload).toMatchObject({ reaskedAs: question.id });
   });
 
@@ -121,7 +121,7 @@ describe("a question whose elicitation died twice", () => {
         now: 3_000,
       }),
     ).toBeNull();
-    expect(listDeadDeliveries(moved.db, "item-q")).toHaveLength(1);
+    expect(await listDeadDeliveries(sqliteDb(moved.db), "item-q")).toHaveLength(1);
 
     const answered = await waitingItem();
     answered.db.run("UPDATE question SET status = 'answered' WHERE id = ?", [answered.question.id]);

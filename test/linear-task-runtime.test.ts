@@ -16,6 +16,7 @@ import {
   listOutbox,
   JobLoop,
   OutboxDispatcher,
+  sqliteDb,
 } from "../src/db";
 import {
   createFakeTracker,
@@ -696,7 +697,7 @@ test.each(["ok", "fail", "omit"] as const)(
       if (upload === "ok") {
         expect(f.uploads()).toBe(1);
         expect(getWorkItem(f.db, itemId)?.state).toBe("completed");
-        expect(listArtifacts(f.db, itemId)[0]?.state).toBe("uploaded");
+        expect((await listArtifacts(sqliteDb(f.db), itemId))[0]?.state).toBe("uploaded");
         expect(responses).toHaveLength(1);
         expect(responses[0]?.body).toContain(f.answer.trim());
         expect(responses[0]?.body).toContain(

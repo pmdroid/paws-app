@@ -842,8 +842,8 @@ test("a bound two-item delegation asks, verifies and merges in its repository af
     const artifactItem = db
       .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_issue_id = ?")
       .get("iss-2")!;
-    expect(listArtifacts(db, artifactItem.id)).toHaveLength(1);
-    expect(listArtifacts(db, artifactItem.id)[0]?.state).toBe("uploaded");
+    expect(await listArtifacts(sqliteDb(db), artifactItem.id)).toHaveLength(1);
+    expect((await listArtifacts(sqliteDb(db), artifactItem.id))[0]?.state).toBe("uploaded");
     const artifactIndex = tracker.progress.findIndex((update) =>
       update.body.includes("https://uploads.linear.app/workspace/result"),
     );
@@ -5092,8 +5092,8 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
     );
     expect(artifactIndex).toBeGreaterThanOrEqual(0);
     expect(tracker.progress[artifactIndex]?.kind).toBe("thought");
-    expect(listArtifacts(db, task.id)).toHaveLength(1);
-    expect(listArtifacts(db, task.id)[0]).toMatchObject({
+    expect(await listArtifacts(sqliteDb(db), task.id)).toHaveLength(1);
+    expect((await listArtifacts(sqliteDb(db), task.id))[0]).toMatchObject({
       state: "uploaded",
       mimeType: "image/png",
       displayName: "chart.png",

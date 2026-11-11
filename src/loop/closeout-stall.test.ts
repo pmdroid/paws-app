@@ -140,7 +140,7 @@ test("a usage pause is not a stall, and one failed cancel leaves the other items
     migrate(db);
     const clock = new FakeClock(Date.now() + 1000);
     for (const id of ["paused", "broken", "quiet"]) verifyingItem(id, db, clock.now());
-    startUsagePause(db, {
+    await startUsagePause(sqliteDb(db), {
       runId: getWorkItem(db, "paused")!.currentRunId!,
       itemId: "paused",
       agent: "cursor",

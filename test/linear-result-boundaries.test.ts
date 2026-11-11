@@ -48,7 +48,7 @@ test("only a newer accepted turn can change a non-code task outcome and code sta
   }
 });
 
-test("artifact completion requires uploaded deliverables and survives database reopen", () => {
+test("artifact completion requires uploaded deliverables and survives database reopen", async () => {
   const file = join(tempHome(), "paws.db");
   const db = openDatabase(file);
   migrate(db);
@@ -56,8 +56,8 @@ test("artifact completion requires uploaded deliverables and survives database r
   const run = beginImplementRun(db, item.id, 1).run;
   saveTaskMode(db, item.id, "artifact");
   expect(() => completeArtifactTask(db, item.id, "Done")).toThrow("uploaded deliverable");
-  saveArtifact(
-    db,
+  await saveArtifact(
+    sqliteDb(db),
     {
       id: "artifact",
       itemId: item.id,
@@ -73,9 +73,9 @@ test("artifact completion requires uploaded deliverables and survives database r
     2,
   );
   expect(() => completeArtifactTask(db, item.id, "Done")).toThrow("uploaded deliverable");
-  markArtifact(db, "artifact", null);
+  await markArtifact(sqliteDb(db), "artifact", null);
   expect(() => completeArtifactTask(db, item.id, "Done")).toThrow("uploaded deliverable");
-  markArtifact(db, "artifact", "https://uploads.linear.app/report.txt");
+  await markArtifact(sqliteDb(db), "artifact", "https://uploads.linear.app/report.txt");
   completeArtifactTask(db, item.id, "Here is the complete report.", 3);
   db.close();
   const restored = openDatabase(file);

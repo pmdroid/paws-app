@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { and, asc, desc, eq, inArray, isNull, min, notInArray, or, sql } from "drizzle-orm";
 import { JOB_KIND, parentIssueIdSql } from "../core";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { jsonValue } from "./json-text";
 
 const DONE_STATES = ["completed", "merged", "cancelled"];
@@ -26,8 +26,10 @@ export function* openQuestionThreadsSteps(q: Q) {
   return rows.map((row) => ({ session_id: row.session_id!, created_at: row.created_at! }));
 }
 
-export function openQuestionThreads(db: Database): { session_id: string; created_at: number }[] {
-  return settled(sqliteDb(db).run((q) => openQuestionThreadsSteps(q)));
+export async function openQuestionThreads(
+  store: Db,
+): Promise<{ session_id: string; created_at: number }[]> {
+  return store.run((q) => openQuestionThreadsSteps(q));
 }
 
 function* anyItemSteps(q: Q, where: ReturnType<typeof and>): Steps<boolean> {
@@ -160,9 +162,9 @@ export function* persistStopJobSteps(
   );
 }
 
-export function persistStopJob(
-  db: Database,
+export async function persistStopJob(
+  store: Db,
   command: { type: string; itemId: string; requestedAt: number },
-): void {
-  settled(sqliteDb(db).run((q) => persistStopJobSteps(q, command)));
+): Promise<void> {
+  await store.run((q) => persistStopJobSteps(q, command));
 }

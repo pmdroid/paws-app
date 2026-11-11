@@ -185,7 +185,8 @@ export function openLinear(options: {
             teamId: settings.teamId,
             appUserId: settings.appUserId,
             submitCommand:
-              options.submitCommand ?? (async (command) => persistStopCommand(options.db, command)),
+              options.submitCommand ??
+              (async (command) => await persistStopCommand(options.db, command)),
           })
         : null;
       if (poller !== null) intake?.queue.wake();

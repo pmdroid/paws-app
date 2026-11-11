@@ -53,7 +53,7 @@ async function seed(): Promise<Database> {
       [session!, org!, team!],
     );
   for (const repository of REPOSITORIES) {
-    recordPushOutage(db, {
+    await recordPushOutage(sqliteDb(db), {
       repository,
       error: `Synthetic diagnostic for ${repository}`,
       jobId: null,

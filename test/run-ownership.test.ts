@@ -21,6 +21,7 @@ import {
   RUN_TAKEOVER_MS,
   runOwner,
   takeOverGoneRuns,
+  sqliteDb,
 } from "../src/db";
 import { tempHome } from "./helpers";
 
@@ -113,7 +114,7 @@ describe("run ownership", () => {
       let takenAt: number | null = null;
       while (clock.now() <= 120_000) {
         for (const [index, loop] of loops.entries()) {
-          heartbeatInstance(live[index]!.db, live[index]!.id, clock.now());
+          await heartbeatInstance(sqliteDb(live[index]!.db), live[index]!.id, clock.now());
           await loop.tick([RUN_TAKEOVER_JOB]);
         }
         if (takenAt === null && decisions.length > 0) takenAt = clock.now();

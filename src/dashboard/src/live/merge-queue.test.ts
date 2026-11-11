@@ -111,7 +111,7 @@ test("the merge queue reads queue facts, issue summaries and banners for the rea
   queued(db, "ENG-2", "ses_mine", 2);
   queued(db, "ENG-3", "ses_other", 3);
   insertQueuedItem(db, { id: "ENG-4", title: "Not merging", sessionKey: "ses_mine", now: 4 });
-  recordPushOutage(db, {
+  await recordPushOutage(sqliteDb(db), {
     repository: "acme/platform",
     error: "denied",
     jobId: null,

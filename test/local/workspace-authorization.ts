@@ -127,8 +127,8 @@ export async function probeWorkspaceAuthorization(
   });
   const ids = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"];
   for (const [index, itemId] of ["own", "foreign"].entries())
-    saveArtifact(
-      db,
+    await saveArtifact(
+      sqliteDb(db),
       {
         id: ids[index]!,
         itemId,

@@ -2766,8 +2766,9 @@ export async function probeRunnerBackend(
       }
     }
     // An online pin waits out its quota instead of taking the idle third runner.
-    for (let poll = 0; poll < 500 && !usagePause(db, failoverItem.run.id); poll++) await delay(1);
-    const pinnedPause = usagePause(db, failoverItem.run.id);
+    for (let poll = 0; poll < 500 && !(await usagePause(sqliteDb(db), failoverItem.run.id)); poll++)
+      await delay(1);
+    const pinnedPause = await usagePause(sqliteDb(db), failoverItem.run.id);
     assert(pinnedPause);
     assert.equal((await work.commands(hostIds[2]!)).length, 0);
     now = pinnedPause.resumeAt;
@@ -3200,8 +3201,9 @@ export async function probeRunnerBackend(
       };
       for (const hostId of hostIds) await work.heartbeat(hostId);
       const paused = async (runId: string) => {
-        for (let attempt = 0; attempt < 500 && !usagePause(db, runId); attempt++) await delay(2);
-        return usagePause(db, runId);
+        for (let attempt = 0; attempt < 500 && !(await usagePause(sqliteDb(db), runId)); attempt++)
+          await delay(2);
+        return await usagePause(sqliteDb(db), runId);
       };
       const limited = await item();
       const limitAbort = new AbortController();
@@ -3239,7 +3241,7 @@ export async function probeRunnerBackend(
       db.run("UPDATE workspace_member SET checked_at=? WHERE user_id=?", [now, principal.userId]);
       const placedOn = await dispatched();
       assert(placedOn);
-      assert.equal(usagePause(db, limitedPause!.runId), null);
+      assert.equal(await usagePause(sqliteDb(db), limitedPause!.runId), null);
       assert.equal(lines.length, 2);
       limitAbort.abort();
       await limitedRun.catch(() => undefined);
@@ -3263,7 +3265,7 @@ export async function probeRunnerBackend(
       for (const hostId of hostIds) while ((await work.commands(hostId)).length) await next(hostId);
       await delay(20);
       for (const hostId of hostIds) assert.equal((await work.commands(hostId)).length, 0);
-      assert.equal(resumeUsagePauseNow(db, exhaustedRunId, now), true);
+      assert.equal(await resumeUsagePauseNow(sqliteDb(db), exhaustedRunId, now), true);
       assert(await dispatched());
       exhaustedAbort.abort();
       await exhaustedRun.catch(() => undefined);

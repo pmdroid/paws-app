@@ -163,7 +163,7 @@ describe("what an item does now", () => {
   test("an item with a usage pause shows Paused with the reset time", async () => {
     const db = database();
     const runId = running(db, "paused");
-    startUsagePause(db, {
+    await startUsagePause(sqliteDb(db), {
       runId,
       itemId: "paused",
       agent: "claude",

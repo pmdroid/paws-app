@@ -140,9 +140,9 @@ describe("dead outbox rows and jobs", () => {
       "outbox 2 linear.elicitation dead item=item-q attempts=5/5 error=Linear is down",
       "outbox 2 elicitation dead again item=item-q; re-asking question q-item-q",
     ]);
-    expect(listDeadDeliveries(db, "item-q").map((dead) => [dead.kind, dead.id])).toEqual([
-      ["outbox", 2],
-    ]);
+    expect(
+      (await listDeadDeliveries(sqliteDb(db), "item-q")).map((dead) => [dead.kind, dead.id]),
+    ).toEqual([["outbox", 2]]);
     const reask = listJobs(db).filter((job) => job.queue === JOB_KIND.reaskQuestion);
     expect(reask.map((job) => [job.jobKey, job.payload])).toEqual([
       [`${JOB_KIND.reaskQuestion}:q-item-q`, { itemId: "item-q", questionId: "q-item-q" }],
@@ -193,7 +193,7 @@ describe("dead outbox rows and jobs", () => {
 
     // The loop re-asked q2 as q3. When q3 dies twice too, it shares q2's allowance.
     const q2Job = listJobs(db).find((job) => job.jobKey === `${JOB_KIND.reaskQuestion}:q2`)!;
-    recordQuestionReask(db, q2Job.id, "q3");
+    await recordQuestionReask(sqliteDb(db), q2Job.id, "q3");
     settle("q2");
     question("q3");
     lines = [];
@@ -283,18 +283,28 @@ describe("dead outbox rows and jobs", () => {
     enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "item-q" }, maxAttempts: 1 });
     const job = claimNextJob(db, { workerId: "w", queues: [JOB_KIND.resume] });
     await failJob(sqliteDb(db), job!, new Error("runner lost"));
-    expect(listDeadDeliveries(db, "item-q").map((dead) => [dead.kind, dead.name])).toEqual([
+    expect(
+      (await listDeadDeliveries(sqliteDb(db), "item-q")).map((dead) => [dead.kind, dead.name]),
+    ).toEqual([
       ["outbox", "linear.elicitation"],
       ["job", JOB_KIND.resume],
     ]);
 
-    expect(retryDeadDelivery(db, "other", { kind: "job", id: job!.id })).toBe(false);
-    expect(listDeadDeliveries(db, "item-q").map((dead) => dead.retryable)).toEqual([true, true]);
-    expect(retryDeadDelivery(db, "item-q", { kind: "job", id: job!.id })).toBe(true);
+    expect(await retryDeadDelivery(sqliteDb(db), "other", { kind: "job", id: job!.id })).toBe(
+      false,
+    );
+    expect(
+      (await listDeadDeliveries(sqliteDb(db), "item-q")).map((dead) => dead.retryable),
+    ).toEqual([true, true]);
+    expect(await retryDeadDelivery(sqliteDb(db), "item-q", { kind: "job", id: job!.id })).toBe(
+      true,
+    );
     expect(getJob(db, job!.id)?.status).toBe("pending");
     expect(jobVersionCurrent(db, job!)).toBe(true);
-    expect(retryDeadDelivery(db, "item-q", { kind: "outbox", id: 1 }, clock.now())).toBe(true);
-    expect(listDeadDeliveries(db, "item-q")).toEqual([]);
+    expect(
+      await retryDeadDelivery(sqliteDb(db), "item-q", { kind: "outbox", id: 1 }, clock.now()),
+    ).toBe(true);
+    expect(await listDeadDeliveries(sqliteDb(db), "item-q")).toEqual([]);
 
     dispatcher.setHandler(() => {});
     await deliverAll(dispatcher, clock, 1);
@@ -311,10 +321,12 @@ describe("dead outbox rows and jobs", () => {
     // A restart, answer or stop moved the item on; the job's payload is now obsolete.
     db.run("UPDATE work_item SET version = version + 1 WHERE id = 'item-q'");
 
-    expect(listDeadDeliveries(db, "item-q").map((dead) => [dead.kind, dead.retryable])).toEqual([
-      ["job", false],
-    ]);
-    expect(retryDeadDelivery(db, "item-q", { kind: "job", id: job!.id })).toBe(false);
+    expect(
+      (await listDeadDeliveries(sqliteDb(db), "item-q")).map((dead) => [dead.kind, dead.retryable]),
+    ).toEqual([["job", false]]);
+    expect(await retryDeadDelivery(sqliteDb(db), "item-q", { kind: "job", id: job!.id })).toBe(
+      false,
+    );
     expect(getJob(db, job!.id)?.status).toBe("dead");
     expect(jobVersionCurrent(db, job!)).toBe(false);
   });
@@ -335,7 +347,7 @@ describe("dead outbox rows and jobs", () => {
     expect(columns).toEqual(QUESTION_LINKS.map(({ table, column }) => `${table}.${column}`).sort());
   });
 
-  test("a question delivered again after the PR keeps its ordered delivery past the PR response", () => {
+  test("a question delivered again after the PR keeps its ordered delivery past the PR response", async () => {
     const { db } = harness();
     waiting(db, "item-q", "ses-q");
     // The PR response is a terminal activity; later critical elicitations are fenced off.
@@ -356,7 +368,7 @@ describe("dead outbox rows and jobs", () => {
     });
     db.run("UPDATE outbox SET status = 'dead', error = 'Linear is down' WHERE id = ?", [dead]);
 
-    const id = redeliverQuestion(db, "q-item-q", 9_000);
+    const id = await redeliverQuestion(sqliteDb(db), "q-item-q", 9_000);
 
     expect(id).not.toBeNull();
     expect(getOutbox(db, id!)).toMatchObject({
@@ -365,10 +377,10 @@ describe("dead outbox rows and jobs", () => {
       idempotencyKey: `question:q-item-q${ELICITATION_REASK_SUFFIX}`,
     });
     expect(getOutbox(db, dead)?.status).toBe("dropped");
-    expect(listDeadDeliveries(db, "item-q")).toEqual([]);
+    expect(await listDeadDeliveries(sqliteDb(db), "item-q")).toEqual([]);
   });
 
-  test("a redelivery the session fence rejects leaves the dead row listed for a retry", () => {
+  test("a redelivery the session fence rejects leaves the dead row listed for a retry", async () => {
     const { db } = harness();
     waiting(db, "item-q", "ses-q");
     const dead = elicit(db, "item-q", "ses-q");
@@ -384,17 +396,20 @@ describe("dead outbox rows and jobs", () => {
     db.run("UPDATE outbox SET status = 'dead' WHERE id = ?", [dead]);
     lines = [];
 
-    expect(redeliverQuestion(db, "q-item-q", 9_000)).toBeNull();
+    expect(await redeliverQuestion(sqliteDb(db), "q-item-q", 9_000)).toBeNull();
     expect(getOutbox(db, dead)?.status).toBe("dead");
-    expect(listDeadDeliveries(db, "item-q").map((entry) => [entry.id, entry.retryable])).toEqual([
-      [dead, true],
-    ]);
+    expect(
+      (await listDeadDeliveries(sqliteDb(db), "item-q")).map((entry) => [
+        entry.id,
+        entry.retryable,
+      ]),
+    ).toEqual([[dead, true]]);
     expect(lines.at(-1)).toMatch(
       /^question q-item-q could not be delivered again: .*retry it from the issue page$/,
     );
   });
 
-  test("only a dead final Stop delivery counts as one for a stopped session", () => {
+  test("only a dead final Stop delivery counts as one for a stopped session", async () => {
     const { db } = harness();
     waiting(db, "item-q", "ses-q");
     const question = elicit(db, "item-q", "ses-q");
@@ -407,8 +422,10 @@ describe("dead outbox rows and jobs", () => {
       payload: { itemId: "item-q", kind: "response", body: "Stopped." },
     });
     db.run("UPDATE outbox SET status = 'dead' WHERE id IN (?, ?)", [question, stop]);
-    expect(deadDeliveryIsFinalStop(db, { kind: "outbox", id: stop })).toBe(true);
-    expect(deadDeliveryIsFinalStop(db, { kind: "outbox", id: question })).toBe(false);
-    expect(deadDeliveryIsFinalStop(db, { kind: "job", id: stop })).toBe(false);
+    expect(await deadDeliveryIsFinalStop(sqliteDb(db), { kind: "outbox", id: stop })).toBe(true);
+    expect(await deadDeliveryIsFinalStop(sqliteDb(db), { kind: "outbox", id: question })).toBe(
+      false,
+    );
+    expect(await deadDeliveryIsFinalStop(sqliteDb(db), { kind: "job", id: stop })).toBe(false);
   });
 });

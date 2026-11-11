@@ -367,11 +367,11 @@ export function* getLinearSessionInstallationSteps(
   };
 }
 
-export function getLinearSessionInstallation(
-  db: Database,
+export async function getLinearSessionInstallation(
+  store: Db,
   sessionId: string,
-): LinearSessionInstallation | null {
-  return settled(sqliteDb(db).run((q) => getLinearSessionInstallationSteps(q, sessionId)));
+): Promise<LinearSessionInstallation | null> {
+  return store.run((q) => getLinearSessionInstallationSteps(q, sessionId));
 }
 
 export function* getLinearSessionAccessSteps(q: Q, sessionId: string): Steps<LinearSessionAccess> {
@@ -411,11 +411,11 @@ export function* getLinearTeamAccessSteps(
   return team === undefined ? "unknown" : team.allowed === 0 ? "removed" : "allowed";
 }
 
-export function getLinearTeamAccess(
-  db: Database,
+export async function getLinearTeamAccess(
+  store: Db,
   input: LinearInstallationScope & { teamId: string },
-): LinearTeamAccess {
-  return settled(sqliteDb(db).run((q) => getLinearTeamAccessSteps(q, input)));
+): Promise<LinearTeamAccess> {
+  return store.run((q) => getLinearTeamAccessSteps(q, input));
 }
 
 type LinearAppIdentity = { oauthClientId: string | null; appUserId: string | null };
@@ -531,8 +531,10 @@ export function* listLinearInstallationRevocationsSteps(
   return revocations;
 }
 
-export function listLinearInstallationRevocations(db: Database): LinearInstallationRevocation[] {
-  return settled(sqliteDb(db).run((q) => listLinearInstallationRevocationsSteps(q)));
+export async function listLinearInstallationRevocations(
+  store: Db,
+): Promise<LinearInstallationRevocation[]> {
+  return store.run((q) => listLinearInstallationRevocationsSteps(q));
 }
 
 type LinearInstallationRestore = LinearInstallationScope & {
@@ -581,8 +583,11 @@ export function* restoreLinearInstallationSteps(
   return restored;
 }
 
-export function restoreLinearInstallation(db: Database, input: LinearInstallationRestore): boolean {
-  return settled(sqliteDb(db).transaction((q) => restoreLinearInstallationSteps(q, input)));
+export async function restoreLinearInstallation(
+  store: Db,
+  input: LinearInstallationRestore,
+): Promise<boolean> {
+  return store.transaction((q) => restoreLinearInstallationSteps(q, input));
 }
 
 function* recordEventSteps(q: Q, eventKey: string, createdAtMs: number): Steps<boolean> {

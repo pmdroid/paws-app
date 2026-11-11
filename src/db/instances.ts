@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, desc, eq, gt, isNull, max } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { ulid } from "./ulid";
 
 export const INSTANCE_HEARTBEAT_MS = 10_000;
@@ -71,8 +71,8 @@ export function* heartbeatInstanceSteps(q: Q, id: string, now: number) {
   return updated.length > 0;
 }
 
-export function heartbeatInstance(db: Database, id: string, now: number): boolean {
-  return settled(sqliteDb(db).run((q) => heartbeatInstanceSteps(q, id, now)));
+export async function heartbeatInstance(store: Db, id: string, now: number): Promise<boolean> {
+  return store.run((q) => heartbeatInstanceSteps(q, id, now));
 }
 
 export function* stopInstanceSteps(q: Q, id: string, now: number) {
@@ -97,8 +97,8 @@ export function* lastInstanceHeartbeatSteps(q: Q) {
 }
 
 /** The latest heartbeat of any instance, stopped or not, or null when none registered. */
-export function lastInstanceHeartbeat(db: Database): number | null {
-  return settled(sqliteDb(db).run(lastInstanceHeartbeatSteps));
+export async function lastInstanceHeartbeat(store: Db): Promise<number | null> {
+  return store.run((q) => lastInstanceHeartbeatSteps(q));
 }
 
 export function* liveInstancesSteps(q: Q, now: number) {
@@ -113,8 +113,8 @@ export function* liveInstancesSteps(q: Q, now: number) {
   return rows as Instance[];
 }
 
-export function liveInstances(db: Database, now: number): Instance[] {
-  return settled(sqliteDb(db).run((q) => liveInstancesSteps(q, now)));
+export async function liveInstances(store: Db, now: number): Promise<Instance[]> {
+  return store.run((q) => liveInstancesSteps(q, now));
 }
 
 export function* ownerGoneSteps(q: Q, self: string, now: number) {
@@ -140,8 +140,12 @@ export function* ownerGoneSteps(q: Q, self: string, now: number) {
   return (owner: string) => owner !== self && !live.has(owner);
 }
 
-export function ownerGone(db: Database, self: string, now: number): (owner: string) => boolean {
-  return settled(sqliteDb(db).run((q) => ownerGoneSteps(q, self, now)));
+export async function ownerGone(
+  store: Db,
+  self: string,
+  now: number,
+): Promise<(owner: string) => boolean> {
+  return store.run((q) => ownerGoneSteps(q, self, now));
 }
 
 function processRuns(pid: number): boolean {
@@ -159,10 +163,10 @@ export function* jobInstanceElsewhereSteps(q: Q, selfId: string | undefined, now
   return live.some((entry) => entry.id !== selfId && roleRunsJobs(entry.role));
 }
 
-export function jobInstanceElsewhere(
-  db: Database,
+export async function jobInstanceElsewhere(
+  store: Db,
   selfId: string | undefined,
   now: number,
-): boolean {
-  return settled(sqliteDb(db).run((q) => jobInstanceElsewhereSteps(q, selfId, now)));
+): Promise<boolean> {
+  return store.run((q) => jobInstanceElsewhereSteps(q, selfId, now));
 }

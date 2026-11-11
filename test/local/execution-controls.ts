@@ -21,6 +21,7 @@ import {
   replaceWorkspaceRepositories,
   syncWorkspaceMember,
   workspaceSessionIds,
+  sqliteDb,
 } from "../../src/db";
 import { createExecutionControls } from "../../src/execution-controls";
 import { createFakeTracker, createLinearMembershipReads } from "../../src/linear";
@@ -248,7 +249,7 @@ export async function probeExecutionControls(root: string) {
       { admin: 200, member: 200, denied: 5 },
     );
     const resetsAt = Date.now() + 3_600_000;
-    startUsagePause(db, {
+    await startUsagePause(sqliteDb(db), {
       runId: fixture.runId,
       itemId: "controlled",
       agent: "claude",
@@ -263,7 +264,7 @@ export async function probeExecutionControls(root: string) {
     ]);
     assert.equal((await call("resume_now", "inactive")).status, 401);
     assert.equal((await call("resume_now")).status, 200);
-    assert(usagePause(db, fixture.runId)!.resumeAt <= Date.now());
+    assert((await usagePause(sqliteDb(db), fixture.runId))!.resumeAt <= Date.now());
     assert.equal(getWorkItem(db, "controlled")!.state, "running");
     db.run("DELETE FROM usage_pause");
     assert.equal((await call("resume_now")).status, 409);

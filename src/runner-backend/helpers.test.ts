@@ -690,8 +690,9 @@ test("a session item waits in a usage pause and places the helper once the coold
     () => (settled = true),
     () => (settled = true),
   );
-  for (let attempt = 0; attempt < 500 && !usagePause(f.db, run.id); attempt++) await Bun.sleep(1);
-  expect(usagePause(f.db, run.id)).toMatchObject({
+  for (let attempt = 0; attempt < 500 && !(await usagePause(sqliteDb(f.db), run.id)); attempt++)
+    await Bun.sleep(1);
+  expect(await usagePause(sqliteDb(f.db), run.id)).toMatchObject({
     itemId: "item",
     agent: "codex",
     runnerId: "runner",
@@ -707,7 +708,7 @@ test("a session item waits in a usage pause and places the helper once the coold
   )
     await Bun.sleep(1);
   expect((await f.current()).runnerId).toBe("runner");
-  expect(usagePause(f.db, run.id)).toBeNull();
+  expect(await usagePause(sqliteDb(f.db), run.id)).toBeNull();
   await f.reply();
   expect((await pending).stopReason).toBe("end_turn");
   expect(f.db.query<{ state: string }, []>("SELECT state FROM work_item").get()!.state).toBe(

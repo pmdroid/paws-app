@@ -373,7 +373,8 @@ async function usageLimitScenario(
           sim.policyAtPause = policy();
           pauseObservedAt = Date.now();
           if (switchProfiles) selectedAgent = "codex";
-          else if (wake === "resume") resumeUsagePauseNow(db, pause.runId, Date.now());
+          else if (wake === "resume")
+            await resumeUsagePauseNow(sqliteDb(db), pause.runId, Date.now());
           else if (wake === "cooldown")
             db.run(
               "UPDATE runner_agent_policy SET cooldown_until=0 WHERE runner_id=? AND agent='claude'",

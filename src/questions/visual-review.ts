@@ -327,8 +327,8 @@ export function* markVisualReviewStaleSteps(q: Q, questionId: string) {
   yield* markVisualReviewRowStaleSteps(q, questionId);
 }
 
-export function markVisualReviewStale(db: Database, questionId: string): void {
-  markVisualReviewRowStale(db, questionId);
+export async function markVisualReviewStale(db: Database, questionId: string): Promise<void> {
+  await markVisualReviewRowStale(sqliteDb(db), questionId);
 }
 
 export function* acceptedVisualReviewsSteps(q: Q, itemId: string) {
