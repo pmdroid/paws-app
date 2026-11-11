@@ -1,4 +1,13 @@
-import { pullRequestReadyQueued, sessionHasFinalResponse, sessionPullRequestOpen } from "../db";
+import {
+  pullRequestReadyQueued,
+  pullRequestReadyQueuedSteps,
+  sessionHasFinalResponse,
+  sessionHasFinalResponseSteps,
+  sessionPullRequestOpen,
+  sessionPullRequestOpenSteps,
+  type Q,
+  type Steps,
+} from "../db";
 import type { Database } from "bun:sqlite";
 
 /**
@@ -32,6 +41,29 @@ export function hasPublishedPullRequest(
   return (
     pullRequestReadyQueued(db, sessionId, generation) ||
     sessionPullRequestOpen(db, sessionId, generation)
+  );
+}
+
+export function* hasPublishedPullRequestSteps(
+  q: Q,
+  sessionId: string,
+  generation: number,
+): Steps<boolean> {
+  return (
+    (yield* pullRequestReadyQueuedSteps(q, sessionId, generation)) ||
+    (yield* sessionPullRequestOpenSteps(q, sessionId, generation))
+  );
+}
+
+export function* canReportProgressSteps(
+  q: Q,
+  sessionId: string,
+  generation: number,
+  rowId?: number,
+): Steps<boolean> {
+  return (
+    !(yield* sessionHasFinalResponseSteps(q, sessionId, generation, rowId)) &&
+    !(yield* sessionPullRequestOpenSteps(q, sessionId, generation, rowId))
   );
 }
 

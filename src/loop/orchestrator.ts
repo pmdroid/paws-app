@@ -88,6 +88,7 @@ import {
   AFTER_PULL_REQUEST_RESPONSE,
   canReportProgress as canReportSessionProgress,
   hasPublishedPullRequest,
+  hasPublishedPullRequestSteps as hasPublishedPullRequestPolicySteps,
 } from "./activity-policy";
 import { reaskDeadQuestion } from "./dead-question";
 import { createHash, randomUUID } from "node:crypto";
@@ -303,7 +304,6 @@ import {
   completeArtifactTask,
   getTaskClassification,
   accrueAwake,
-  enqueueJobOnce,
   enqueueOutboxOnce,
   lastOutboxSequence,
   getOutbox,
@@ -362,15 +362,13 @@ import {
   listLinearTurnsForItem,
   getWorkItemRepository,
   getWorkItemRepositoryAnswer,
-  saveWorkItemRepositoryQuestion,
+  saveWorkItemRepositoryQuestionSteps,
   getWorkItem,
   getPullRequestDraft,
-  immediate,
   drainInstanceCommands,
   runRunnerAvailability,
   setRunningCloseoutStepDetail,
   markRun,
-  releaseRunCapacity,
   saveVisualReviewMarksSteps,
   type VisualReviewMark,
   listRunsSteps,
@@ -532,6 +530,7 @@ import {
   cancelQuestion,
   findAskedQuestion,
   findOpenQuestion,
+  findOpenQuestionSteps,
   handoffNote,
   acceptedVisualReviews,
   getQuestion,
@@ -540,7 +539,7 @@ import {
   pawsAnswerNote,
   getVisualReview,
   parseVisualReviewAnswer,
-  markVisualReviewStale,
+  markVisualReviewStaleSteps,
   questionReplyConsumed,
   visualReviewStaleHandoff,
   VISUAL_REVIEW_ANSWERERS,
@@ -8209,6 +8208,57 @@ export class Orchestrator {
     }
   }
 
+  private *postSteps(
+    q: Q,
+    item: WorkItemRecord,
+    kind: "thought" | "action" | "response" | "error",
+    body: string,
+    key: string,
+  ): Steps<number | undefined> {
+    if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return;
+    const current = yield* getWorkItemSteps(q, item.id);
+    if (current === null || current.state === "cancelled") return;
+    const sessionId = this.activitySession(current);
+    if (sessionId === null || body.trim() === "") return;
+    if (
+      !(yield* this.canReportProgressSteps(q, item.id)) &&
+      (kind === "thought" ||
+        kind === "action" ||
+        (yield* this.hasPublishedPullRequestSteps(q, sessionId))) &&
+      !(kind === "response" && AFTER_PULL_REQUEST_RESPONSE.test(key))
+    )
+      return;
+    return yield* enqueueOutboxOnceSteps(q, {
+      target: "linear",
+      op: "activity",
+      orderingKey: sessionId,
+      idempotencyKey: key,
+      payload: { sessionId, itemId: item.id, issueId: item.linearIssueId, kind, body },
+      now: this.now(),
+    });
+  }
+
+  private *canReportProgressSteps(q: Q, itemId: string): Steps<boolean> {
+    if (!(this.jobContexts.get(itemId)?.isCurrent() ?? true)) return false;
+    const item = yield* getWorkItemSteps(q, itemId);
+    if (item === null || item.cancelRequested) return false;
+    if (!["running", "verifying", "merge_queue"].includes(item.state)) return false;
+    const sessionId = this.activitySession(item);
+    return (
+      sessionId === null ||
+      ((yield* findOpenQuestionSteps(q, sessionId)) === null &&
+        !(yield* this.hasPublishedPullRequestSteps(q, sessionId)))
+    );
+  }
+
+  private *hasPublishedPullRequestSteps(q: Q, sessionId: string): Steps<boolean> {
+    return yield* hasPublishedPullRequestPolicySteps(
+      q,
+      sessionId,
+      yield* getLinearSessionGenerationSteps(q, sessionId),
+    );
+  }
+
   private canReportProgress(itemId: string): boolean {
     if (!(this.jobContexts.get(itemId)?.isCurrent() ?? true)) return false;
     const item = getWorkItem(this.db, itemId);
@@ -9720,12 +9770,15 @@ export class Orchestrator {
     );
     if (outdated.length === 0) return false;
     const checkIds = [...new Set(outdated.map((review) => review.checkId))];
-    const resumed = immediate(this.db, () => {
-      const current = getWorkItem(this.db, item.id);
+    const now = this.now();
+    const post = (q: Q, current: WorkItemRecord, body: string, key: string) =>
+      this.postSteps(q, current, "thought", body, key);
+    const resumed = await this.store.transaction(function* (q) {
+      const current = yield* getWorkItemSteps(q, item.id);
       if (current?.state !== "running" || current.cancelRequested) return false;
-      for (const review of outdated) markVisualReviewStale(this.db, review.questionId);
-      if (current.currentRunId) releaseRunCapacity(this.db, current.currentRunId, this.now());
-      enqueueJobOnce(this.db, {
+      for (const review of outdated) yield* markVisualReviewStaleSteps(q, review.questionId);
+      if (current.currentRunId) yield* releaseRunCapacitySteps(q, current.currentRunId, now);
+      yield* enqueueJobOnceSteps(q, {
         queue: JOB_KIND.resume,
         jobKey: `visual-review-outdated:${outdated[0]!.questionId}`,
         payload: {
@@ -9734,16 +9787,17 @@ export class Orchestrator {
           handoff: checkIds.map(visualReviewStaleHandoff).join("\n\n"),
           reason: "visual-review",
         },
-        now: this.now(),
+        now,
       });
-      this.post(
+      yield* post(
+        q,
         current,
-        "thought",
         `Files under the paths of ${checkIds.join(", ")} changed after the visual review was accepted. The agent publishes new screenshots, then Paws asks again.`,
         `visual-review-outdated:${outdated[0]!.questionId}`,
       );
       return true;
     });
+    if (resumed) emitJobReady(this.store);
     if (resumed) await this.flush();
     return resumed;
   }
@@ -10773,9 +10827,10 @@ export class Orchestrator {
       }
       const sessionId = this.activitySession(item);
       if (sessionId === null) throw new Error("Repository selection has no tracker session");
-      immediate(this.db, () => {
-        const { question } = ask(
-          this.db,
+      const now = this.now();
+      await this.store.transaction(function* (q) {
+        const { question } = yield* askSteps(
+          q,
           { itemId: item.id, runId: null, sessionId, version: item.version },
           "repository",
           "Which repository should I use? Choose one of the configured repositories or describe your choice.",
@@ -10783,10 +10838,10 @@ export class Orchestrator {
             options: ranked.map(
               (candidate) => `https://github.com/${candidate.owner}/${candidate.repo}`,
             ),
-            now: this.now(),
+            now,
           },
         );
-        saveWorkItemRepositoryQuestion(this.db, item.id, question.id, ranked);
+        yield* saveWorkItemRepositoryQuestionSteps(q, item.id, question.id, ranked);
       });
       await this.flush();
       return false;
