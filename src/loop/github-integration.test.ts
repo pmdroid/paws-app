@@ -71,7 +71,7 @@ test("ready: two members use one App installation and proceed without any questi
       expect(await f.auth.ensure(await f.item(id), "initial", f.signal)).toBe(true);
     expect(await f.auth.ensure(await f.item("publisher"), "publication", f.signal)).toBe(true);
     expect(listJobs(f.db)).toHaveLength(0);
-    expect(listOutbox(f.db)).toHaveLength(0);
+    expect(await listOutbox(sqliteDb(f.db))).toHaveLength(0);
     expect(f.db.query("SELECT * FROM question").all()).toHaveLength(0);
   } finally {
     f.auth.close();
@@ -86,7 +86,7 @@ test("missing installation: the waiting message shows once and the item resumes 
     expect(await f.auth.ensure(item, "initial", f.signal)).toBe(false);
     expect(await f.auth.ensure(getWorkItem(f.db, item.id)!, "initial", f.signal)).toBe(false);
     await f.auth.recover();
-    const waiting = listOutbox(f.db).filter(
+    const waiting = (await listOutbox(sqliteDb(f.db))).filter(
       (entry) =>
         entry.op === "activity" &&
         JSON.stringify(entry.payload).includes("Waiting for a workspace admin"),
@@ -115,11 +115,7 @@ test("an App hold is asked as the github-auth kind and posts no question of its 
     expect(await getQuestion(sqliteDb(f.db), hold.question_id)).toMatchObject({
       kind: "github-auth",
     });
-    expect(
-      listOutbox(f.db)
-        .map((row) => row.idempotencyKey)
-        .sort(),
-    ).toEqual([
+    expect((await listOutbox(sqliteDb(f.db))).map((row) => row.idempotencyKey).sort()).toEqual([
       `github-integration:admin:${hold.question_id}:admin`,
       `github-integration:admin:${hold.question_id}:lead`,
       `github-integration:waiting:${hold.question_id}`,
@@ -137,7 +133,7 @@ test("App hold survives restart, notifies only administrators and revalidates ex
   const item = await f.item("member");
   expect(await f.auth.ensure(item, "initial", f.signal)).toBe(false);
   expect(await f.auth.ensure(getWorkItem(f.db, item.id)!, "initial", f.signal)).toBe(false);
-  const prompts = listOutbox(f.db).filter((entry) => entry.op === "elicitation");
+  const prompts = (await listOutbox(sqliteDb(f.db))).filter((entry) => entry.op === "elicitation");
   expect(prompts).toHaveLength(2);
   expect(
     prompts.map((entry) => (entry.payload as { auth: { userId: string } }).auth.userId).sort(),
@@ -237,7 +233,9 @@ test("unavailable: a failed check holds the item with the retry message and no a
     expect(f.db.query<{ body: string }, []>("SELECT body FROM question").get()?.body).toContain(
       "could not be checked",
     );
-    expect(listOutbox(f.db).filter((entry) => entry.op === "elicitation")).toHaveLength(0);
+    expect(
+      (await listOutbox(sqliteDb(f.db))).filter((entry) => entry.op === "elicitation"),
+    ).toHaveLength(0);
   } finally {
     f.auth.close();
     f.db.close();
@@ -316,7 +314,9 @@ for (const source of ["local", "live"] as const) {
       expect(getWorkItem(f.db, item.id)?.state).toBe("cancelled");
       expect(getWorkItem(f.db, item.id)?.cancelRequested).toBe(true);
       expect(f.db.query("SELECT * FROM github_integration_hold").all()).toHaveLength(0);
-      expect(listOutbox(f.db).some((entry) => entry.delivery === "stop")).toBe(true);
+      expect((await listOutbox(sqliteDb(f.db))).some((entry) => entry.delivery === "stop")).toBe(
+        true,
+      );
     } finally {
       auth.close();
       f.auth.close();
@@ -347,7 +347,9 @@ test("recovery replaces an unavailable message with the current installation blo
     await f.auth.recover();
     expect(question().body).toContain(blocker);
     expect(
-      listOutbox(f.db).filter((entry) => JSON.stringify(entry.payload).includes(blocker)),
+      (await listOutbox(sqliteDb(f.db))).filter((entry) =>
+        JSON.stringify(entry.payload).includes(blocker),
+      ),
     ).toHaveLength(1);
     expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
     expect(listJobs(f.db).filter((job) => job.queue === "run.resume")).toHaveLength(0);
@@ -377,7 +379,7 @@ test("a check that fails briefly is retried quietly before the task is held", as
     expect(await f.auth.ensure(item, "initial", f.signal)).toBe(true);
     expect(getWorkItem(f.db, item.id)?.state).toBe("running");
     expect(f.db.query("SELECT * FROM github_integration_hold").all()).toHaveLength(0);
-    expect(listOutbox(f.db)).toHaveLength(0);
+    expect(await listOutbox(sqliteDb(f.db))).toHaveLength(0);
   } finally {
     f.auth.close();
     f.db.close();
@@ -408,7 +410,7 @@ test("a rate-limited check keeps retrying quietly and posts nothing in Linear", 
     expect(await f.auth.ensure(item, "initial", f.signal)).toBe(true);
     expect(getWorkItem(f.db, item.id)?.state).toBe("running");
     expect(f.db.query("SELECT * FROM github_integration_hold").all()).toHaveLength(0);
-    expect(listOutbox(f.db)).toHaveLength(0);
+    expect(await listOutbox(sqliteDb(f.db))).toHaveLength(0);
   } finally {
     f.auth.close();
     f.db.close();

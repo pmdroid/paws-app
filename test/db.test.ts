@@ -104,7 +104,7 @@ describe("sqlite", () => {
 
   test("enqueueOutbox round-trips, rejects a duplicate key, and dispatch marks it sent", async () => {
     const db = openTemp();
-    const id = enqueueOutbox(db, {
+    const id = await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
       idempotencyKey: "act-1",
@@ -120,9 +120,9 @@ describe("sqlite", () => {
       payload: { body: "Starting" },
       status: "pending",
     });
-    expect(() =>
-      enqueueOutbox(db, { target: "linear", op: "activity", idempotencyKey: "act-1" }),
-    ).toThrow();
+    await expect(
+      enqueueOutbox(sqliteDb(db), { target: "linear", op: "activity", idempotencyKey: "act-1" }),
+    ).rejects.toThrow();
     const delivered: number[] = [];
     await dispatchOutbox(sqliteDb(db), {
       deliver: (row) => {

@@ -25,13 +25,13 @@ test("migrating drops the tables no code reads or writes", () => {
 test("the cleanup renames linear.activity rows and cancels linear.epic.reconcile jobs", async () => {
   const db = tempDb();
   try {
-    const legacy = enqueueOutbox(db, {
+    const legacy = await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "linear.activity",
       idempotencyKey: "legacy",
       payload: { kind: "thought", body: "hello" },
     });
-    const elicitation = enqueueOutbox(db, {
+    const elicitation = await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "elicitation",
       idempotencyKey: "ask",

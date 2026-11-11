@@ -298,7 +298,9 @@ test("a planning request proposes sub-issues, takes an edit, and files them once
     expect(tracker.subIssues.get("parent")).toHaveLength(2);
     expect(responses()).toHaveLength(1);
     expect(
-      listOutbox(db).filter((row) => row.idempotencyKey.startsWith("plan-create:")),
+      (await listOutbox(sqliteDb(db))).filter((row) =>
+        row.idempotencyKey.startsWith("plan-create:"),
+      ),
     ).toHaveLength(1);
   } finally {
     await orchestrator.shutdown();

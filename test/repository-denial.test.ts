@@ -80,8 +80,8 @@ async function seed() {
   return { db, item };
 }
 
-function stopResponses(db: ReturnType<typeof tempDb>): string[] {
-  return listOutbox(db)
+async function stopResponses(db: ReturnType<typeof tempDb>): Promise<string[]> {
+  return (await listOutbox(sqliteDb(db)))
     .filter((entry) => entry.delivery === "stop" && entry.op === "activity")
     .map((entry) => (entry.payload as { body: string }).body);
 }
@@ -183,14 +183,14 @@ for (const [name, decide, response] of [
     try {
       expect(await check.ensure(current, "initial", new AbortController().signal)).toBe(false);
       expect(getWorkItem(db, current.id)?.state).toBe("cancelled");
-      expect(stopResponses(db)).toEqual([response]);
+      expect(await stopResponses(db)).toEqual([response]);
       expect(integration.checks.map((entry) => entry.kind)).toEqual(["installation", "member"]);
       expect(db.query("SELECT * FROM github_integration_hold").all()).toHaveLength(0);
       expect(db.query("SELECT * FROM question").all()).toHaveLength(0);
       expect(
         await check.ensure(getWorkItem(db, current.id)!, "initial", new AbortController().signal),
       ).toBe(false);
-      expect(stopResponses(db)).toEqual([response]);
+      expect(await stopResponses(db)).toEqual([response]);
     } finally {
       check.close();
       db.close();
@@ -207,7 +207,7 @@ test("a denial without a reason still ends with the default response", async () 
   try {
     expect(await check.ensure(current, "initial", new AbortController().signal)).toBe(false);
     expect(getWorkItem(db, current.id)?.state).toBe("cancelled");
-    expect(stopResponses(db)).toEqual([
+    expect(await stopResponses(db)).toEqual([
       "Cancelled from Linear. Branch paws/PAS-677 has no commits; no PR was opened. Re-delegate to continue.",
     ]);
   } finally {
@@ -229,7 +229,7 @@ test("a membership lost while held cancels on recovery with the member reason", 
     integration.permitted = await sqliteDb(db).run((q) => teamMemberDenialSteps(q, current));
     await check.recover();
     expect(getWorkItem(db, current.id)?.state).toBe("cancelled");
-    expect(stopResponses(db)).toEqual(["You're not a member of Pascal in Paws."]);
+    expect(await stopResponses(db)).toEqual(["You're not a member of Pascal in Paws."]);
   } finally {
     check.close();
     db.close();
@@ -245,7 +245,7 @@ test("a local membership check that fails explains without reading GitHub or Lin
   const check = new GitHubInstallationCheck(db, integration, () => 1000);
   try {
     expect(await check.ensure(current, "initial", new AbortController().signal)).toBe(false);
-    expect(stopResponses(db)).toEqual(["You're not a member of Pascal in Paws."]);
+    expect(await stopResponses(db)).toEqual(["You're not a member of Pascal in Paws."]);
     expect(integration.checks).toEqual([]);
   } finally {
     check.close();

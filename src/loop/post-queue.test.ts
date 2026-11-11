@@ -45,7 +45,8 @@ async function fixture() {
   await beginImplementRun(sqliteDb(db), "ENG-7", clock.now());
   const item = getWorkItem(db, "ENG-7")!;
   const post = (key: string) => orchestrator["post"](item, "response", `Body ${key}.`, key);
-  const keys = () => listOutbox(db, "ses_1").map((row) => row.idempotencyKey);
+  const keys = async () =>
+    (await listOutbox(sqliteDb(db), "ses_1")).map((row) => row.idempotencyKey);
   return {
     orchestrator,
     gate,
@@ -64,10 +65,10 @@ test("posts issued back to back land in call order", async () => {
     void f.post("first");
     void f.post("second");
     void f.post("third");
-    expect(f.keys()).toEqual([]);
+    expect(await f.keys()).toEqual([]);
     release();
     await f.orchestrator.flushPosts();
-    expect(f.keys()).toEqual(["first", "second", "third"]);
+    expect(await f.keys()).toEqual(["first", "second", "third"]);
   } finally {
     await f.cleanup();
   }
@@ -83,7 +84,7 @@ test("a failing post is journalled and the next post still lands", async () => {
     void f.post("after");
     await f.orchestrator.flushPosts();
     expect(await failed).toBeUndefined();
-    expect(f.keys()).toEqual(["after"]);
+    expect(await f.keys()).toEqual(["after"]);
     expect(f.journal.some((line) => line.includes("post broke"))).toBe(true);
   } finally {
     await f.cleanup();
@@ -96,7 +97,7 @@ test("shutdown waits for queued posts", async () => {
     f.gate.held = new Promise<void>((resolve) => setTimeout(resolve, 20));
     void f.post("queued");
     await f.orchestrator.shutdown();
-    expect(f.keys()).toEqual(["queued"]);
+    expect(await f.keys()).toEqual(["queued"]);
   } finally {
     await f.cleanup();
   }

@@ -156,8 +156,8 @@ const reviewJobs = (db: Awaited<ReturnType<typeof setup>>["db"]) =>
   listJobs(db).filter((job) => job.queue === JOB_KIND.pullReview);
 const resumeJobs = (db: Awaited<ReturnType<typeof setup>>["db"]) =>
   listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
-const feedbackActivities = (db: Awaited<ReturnType<typeof setup>>["db"]) =>
-  listOutbox(db)
+const feedbackActivities = async (db: Awaited<ReturnType<typeof setup>>["db"]) =>
+  (await listOutbox(sqliteDb(db)))
     .filter((row) => row.op === "activity" && row.idempotencyKey.startsWith("pull-feedback:"))
     .map((row) => {
       const payload = row.payload as { kind: string; body: string };
@@ -190,7 +190,7 @@ describe("changes-requested reviews", () => {
     expect(payload.handoff).toContain(`${REVIEW_FIX_INSTRUCTION}\n\nReply list.`);
     expect((await getPullReview(sqliteDb(db), 501))?.outcome).toBe("restarted");
     // The Linear session wakes with a thought the post-PR activity gate lets through.
-    expect(feedbackActivities(db)).toEqual([
+    expect(await feedbackActivities(db)).toEqual([
       {
         key: "pull-feedback:review:eng-1:501",
         kind: "thought",
@@ -203,7 +203,7 @@ describe("changes-requested reviews", () => {
     expect(await handlePullReview(db, 501, caps)).toBe("done");
     expect(reviewJobs(db)).toHaveLength(1);
     expect(resumeJobs(db)).toHaveLength(1);
-    expect(feedbackActivities(db)).toHaveLength(1);
+    expect(await feedbackActivities(db)).toHaveLength(1);
     expect(github.reads).toBe(1);
   });
 
@@ -312,7 +312,7 @@ describe("changes-requested reviews", () => {
     setLimit(0);
     await deliver({ id: 501, state: "changes_requested", body: "Rename it." });
     expect(await handlePullReview(db, 501, caps)).toBe("asked");
-    expect(feedbackActivities(db)).toEqual([]);
+    expect(await feedbackActivities(db)).toEqual([]);
     expect(getWorkItem(db, "eng-1")?.state).toBe("awaiting_input");
     expect(resumeJobs(db)).toHaveLength(0);
     const question = findOpenQuestion(db, "s-1");

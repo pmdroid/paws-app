@@ -179,7 +179,7 @@ test("agent change announces once at session start, including after a new run", 
   await internal.remoteAgentForItem(waiting.item.id)(input);
   await internal.remoteAgentForItem(waiting.item.id)(input);
   expect(f.calls.map((c) => c.profile)).toEqual([profiles.implementer, profiles.implementer]);
-  const lines = listOutbox(f.db).filter((row) =>
+  const lines = (await listOutbox(sqliteDb(f.db))).filter((row) =>
     (row.payload as { body?: string }).body?.startsWith("Switched to"),
   );
   expect(lines.map((row) => (row.payload as { body: string }).body)).toEqual([
@@ -430,7 +430,8 @@ async function labelled() {
     });
   const snapshot = (id: string) =>
     JSON.parse(readFileSync(join(runDir(f.root, id), "agent-profile.json"), "utf8"));
-  const bodies = () => listOutbox(f.db).map((row) => (row.payload as { body?: string }).body ?? "");
+  const bodies = async () =>
+    (await listOutbox(sqliteDb(f.db))).map((row) => (row.payload as { body?: string }).body ?? "");
   const lose = (id: string) => f.db.run("UPDATE run SET status='lost' WHERE id=?", [id]);
   return { ...f, item, gate, label, snapshot, bodies, lose };
 }
@@ -443,7 +444,7 @@ test("an Implementer label starts the run with its preset and names the source o
   expect(f.snapshot(run.id).profiles.labelProblems).toBeUndefined();
   expect(await f.gate.checkProfileLabels(f.item(), run.id)).toBe(true);
   expect(await f.gate.checkProfileLabels(f.item(), run.id)).toBe(true);
-  expect(f.bodies().filter((body) => body === "Implementer: Opus (label)")).toHaveLength(1);
+  expect((await f.bodies()).filter((body) => body === "Implementer: Opus (label)")).toHaveLength(1);
   await f.gate.remoteAgentForItem(f.item().id)({
     role: "implementer",
     runId: run.id,
@@ -473,7 +474,9 @@ test("a label that changes the agent is announced by the next run", async () => 
     prompt: "Implement acme",
     profile: presets.Codex,
   });
-  expect(f.bodies()).toContain("Switched to codex acme-codex from the Implementer label Codex.");
+  expect(await f.bodies()).toContain(
+    "Switched to codex acme-codex from the Implementer label Codex.",
+  );
 });
 
 test("an unknown label asks, starts nothing, and Use the default holds for the item", async () => {
@@ -510,7 +513,7 @@ test("I fixed the label reads the corrected label before the run goes on", async
   f.db.run("UPDATE work_item SET state='running' WHERE id=?", [f.item().id]);
   expect(await f.gate.checkProfileLabels(f.item(), run.id)).toBe(true);
   expect(f.snapshot(run.id).profiles.implementer).toEqual(presets.Opus);
-  expect(f.bodies()).toContain("Implementer: Opus (label)");
+  expect(await f.bodies()).toContain("Implementer: Opus (label)");
 });
 
 test("a reviewer label equal to the implementer asks the same question", async () => {
@@ -550,5 +553,5 @@ test("without labels a new run saves the Settings profiles and asks nothing", as
   expect(await f.gate.checkProfileLabels(f.item(), run.id)).toBe(true);
   expect(f.snapshot(run.id).profiles).toEqual(oldProfiles);
   expect(findOpenQuestion(f.db, "acme-session")).toBeNull();
-  expect(f.bodies().filter((body) => body.includes("(label)"))).toEqual([]);
+  expect((await f.bodies()).filter((body) => body.includes("(label)"))).toEqual([]);
 });

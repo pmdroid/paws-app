@@ -28,8 +28,8 @@ async function setup() {
   return { db, asker: { itemId: item.id, runId: run.id, sessionId: "ses_1" } };
 }
 
-const elicitations = (db: Database) =>
-  listOutbox(db)
+const elicitations = async (db: Database) =>
+  (await listOutbox(sqliteDb(db)))
     .filter((row) => row.op === "elicitation")
     .map((row) => (row.payload as { questionId: string }).questionId);
 
@@ -50,8 +50,8 @@ test("a question asks at once when the session waits on nothing", async () => {
   });
   expect(asked.status).toBe("asked");
   expect(asked.question).toMatchObject({ kind: "runner-wait", status: "open" });
-  expect(elicitations(db)).toEqual([asked.question.id]);
-  const payload = listOutbox(db)[0]?.payload as { body: string };
+  expect(await elicitations(db)).toEqual([asked.question.id]);
+  const payload = (await listOutbox(sqliteDb(db)))[0]?.payload as { body: string };
   expect(payload.body).toContain("Waiting: runner goldbox is paused.");
 });
 
@@ -62,7 +62,7 @@ test("a second ask is queued and delivered in order once the open one is answere
   const third = await ask(db, asker, "agent", "Which delimiter?", { now: NOW + 2 });
   expect(second.status).toBe("queued");
   expect(third.status).toBe("queued");
-  expect(elicitations(db)).toEqual([]);
+  expect(await elicitations(db)).toEqual([]);
 
   const outcome = await answer(db, reply("answer-1", "Yes"));
   expect(outcome).toMatchObject({ status: "answered", question: { id: first.id } });
@@ -72,7 +72,7 @@ test("a second ask is queued and delivered in order once the open one is answere
     createdAt: NOW + 100,
   });
   expect((await getQuestion(sqliteDb(db), third.question.id))?.status).toBe("queued");
-  expect(elicitations(db)).toEqual([second.question.id]);
+  expect(await elicitations(db)).toEqual([second.question.id]);
 });
 
 test("a newer runner wait replaces a queued one of the same kind", async () => {
@@ -149,7 +149,7 @@ test("a queued Closeout help for the same candidate and policy is delivered", as
   const { db, help } = await queuedCloseoutHelp();
   expect(await promote(db)).toEqual([]);
   expect(findOpenQuestion(db, "ses_1")?.id).toBe(help.id);
-  expect(elicitations(db)).toEqual([help.id]);
+  expect(await elicitations(db)).toEqual([help.id]);
 });
 
 test("a queued Closeout help is dropped once its candidate moved", async () => {
@@ -159,7 +159,7 @@ test("a queued Closeout help is dropped once its candidate moved", async () => {
     `question ${help.id} dropped from the queue: its candidate moved`,
   ]);
   expect((await getQuestion(sqliteDb(db), help.id))?.status).toBe("cancelled");
-  expect(elicitations(db)).toEqual([]);
+  expect(await elicitations(db)).toEqual([]);
 });
 
 test("a queued Closeout help is dropped once the Closeout policy changed", async () => {
@@ -174,7 +174,7 @@ test("a queued Closeout help is dropped once the Closeout policy changed", async
   expect(await promote(db)).toEqual([
     `question ${help.id} dropped from the queue: its Closeout policy changed`,
   ]);
-  expect(elicitations(db)).toEqual([]);
+  expect(await elicitations(db)).toEqual([]);
 });
 
 test("the answer is idempotent on the delivery id and runs its kind's effect once", async () => {
@@ -215,7 +215,7 @@ test("a queued question for a run that is no longer current is dropped with a jo
   expect(lines).toEqual([
     `question ${stale.question.id} dropped from the queue: its run is no longer current`,
   ]);
-  expect(elicitations(db)).toEqual([]);
+  expect(await elicitations(db)).toEqual([]);
 });
 
 test("cancelling the task cancels its open and queued questions", async () => {
@@ -225,7 +225,7 @@ test("cancelling the task cancels its open and queued questions", async () => {
   await cancelItemQuestions(db, asker.itemId, NOW + 2);
   expect((await getQuestion(sqliteDb(db), open.id))?.status).toBe("cancelled");
   expect((await getQuestion(sqliteDb(db), queued.question.id))?.status).toBe("cancelled");
-  expect(elicitations(db)).toEqual([]);
+  expect(await elicitations(db)).toEqual([]);
 });
 
 test("the migration classifies an open runner wait and leaves every other row an agent question", () => {

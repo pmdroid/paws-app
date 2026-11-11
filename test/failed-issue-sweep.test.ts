@@ -56,8 +56,8 @@ async function fixture() {
       readIssueClosures: tracker.readIssueClosures,
       notify: (command) => notified.push(command.itemId),
     });
-  const responses = () =>
-    listOutbox(db)
+  const responses = async () =>
+    (await listOutbox(sqliteDb(db)))
       .filter((row) => (row.payload as { kind?: string }).kind === "response")
       .map((row) => (row.payload as { body: string }).body);
   return { db, tracker, item, journal, notified, sweep, responses };
@@ -77,11 +77,11 @@ test("a failed item whose issue is Done is cancelled once, and a second round do
   expect(await f.sweep()).toEqual([{ itemId: f.item.id, outcome: "cancelled" }]);
   expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
   expect(f.notified).toEqual([f.item.id]);
-  expect(f.responses()).toEqual([ISSUE_CLOSED_RESPONSE.completed]);
+  expect(await f.responses()).toEqual([ISSUE_CLOSED_RESPONSE.completed]);
 
   expect(await f.sweep()).toEqual([]);
   expect(f.tracker.issueClosureReads).toEqual([["issue"]]);
-  expect(f.responses()).toEqual([ISSUE_CLOSED_RESPONSE.completed]);
+  expect(await f.responses()).toEqual([ISSUE_CLOSED_RESPONSE.completed]);
 });
 
 test("a failed item whose open issue is archived is cancelled", async () => {

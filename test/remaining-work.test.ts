@@ -62,7 +62,9 @@ async function merge(db: Database, itemId: string) {
 }
 
 async function deliverAll(db: Database, tracker: ReturnType<typeof createFakeTracker>) {
-  for (const row of listOutbox(db).filter((message) => message.target === "linear"))
+  for (const row of (await listOutbox(sqliteDb(db))).filter(
+    (message) => message.target === "linear",
+  ))
     await deliverLinearOutbox(row, tracker, async () => {}, undefined, db);
 }
 
@@ -78,7 +80,9 @@ test("two parts left for later become two delegated sub-issues after the merge, 
   expect(getPullRequestDraft(db, item.id)?.remaining).toHaveLength(2);
 
   await deliverAll(db, tracker);
-  expect(listOutbox(db).filter((row) => row.op === "linear.remaining_issues")).toEqual([]);
+  expect(
+    (await listOutbox(sqliteDb(db))).filter((row) => row.op === "linear.remaining_issues"),
+  ).toEqual([]);
   expect(tracker.subIssueRequests).toEqual([]);
 
   await merge(db, item.id);
@@ -109,7 +113,9 @@ test("a report without remaining files nothing after the merge", async () => {
   expect(getPullRequestDraft(db, item.id)).toEqual({ title: "Fix acme", body: "Fixed it." });
   await merge(db, item.id);
   await deliverAll(db, tracker);
-  expect(listOutbox(db).filter((row) => row.op === "linear.remaining_issues")).toEqual([]);
+  expect(
+    (await listOutbox(sqliteDb(db))).filter((row) => row.op === "linear.remaining_issues"),
+  ).toEqual([]);
   expect(tracker.subIssueRequests).toEqual([]);
 });
 

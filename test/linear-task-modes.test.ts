@@ -125,7 +125,7 @@ test("answer mode and full prepared response survive reopen as a terminal comple
     const dashboard = await createLiveStatusProvider(restored).issues();
     expect(dashboard.issues[0]?.state).toBe("completed");
     expect(dashboard.runs[0]?.state).toBe("done");
-    expect(listOutbox(restored, "session")[0]?.payload).toEqual({
+    expect((await listOutbox(sqliteDb(restored), "session"))[0]?.payload).toEqual({
       sessionId: "session",
       kind: "response",
       body: response,
@@ -148,7 +148,7 @@ test.each(["code", "artifact"] as const)(
         "Only answer tasks",
       );
       expect(getWorkItem(db, item.id)?.state).toBe("running");
-      expect(listOutbox(db)).toEqual([]);
+      expect(await listOutbox(sqliteDb(db))).toEqual([]);
       await expect(saveTaskMode(sqliteDb(db), item.id, "answer")).rejects.toThrow(
         "already selected",
       );
@@ -171,7 +171,7 @@ test("Stop and empty responses cannot complete an answer task", async () => {
     await expect(completeAnswerTask(sqliteDb(db), item.id, "Done")).rejects.toThrow(
       "no longer running",
     );
-    expect(listOutbox(db)).toEqual([]);
+    expect(await listOutbox(sqliteDb(db))).toEqual([]);
   } finally {
     db.close();
   }

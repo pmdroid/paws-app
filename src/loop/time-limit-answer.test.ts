@@ -135,7 +135,9 @@ test("Continue at the time limit starts a fresh budget and resumes it", async ()
     fixMs: 0,
     maxAwakeMs: 3 * 60 * MINUTE,
   });
-  const fresh = listOutbox(db).filter((row) => row.idempotencyKey.startsWith("fresh-budget:"));
+  const fresh = (await listOutbox(sqliteDb(db))).filter((row) =>
+    row.idempotencyKey.startsWith("fresh-budget:"),
+  );
   expect(fresh.map((row) => row.payload)).toEqual([
     {
       sessionId: "ses",
@@ -174,7 +176,7 @@ test("Stop at the time limit ends the task and names the accepted branch", async
   expect((await reply(db, "Stop", clock.now())).status).toBe("answered");
   expect(getWorkItem(db, item.id)?.state).toBe("failed");
   expect(listJobs(db).some((job) => job.queue === "run.resume")).toBe(false);
-  expect(listOutbox(db).at(-1)?.payload).toMatchObject({
+  expect((await listOutbox(sqliteDb(db))).at(-1)?.payload).toMatchObject({
     kind: "error",
     body: expect.stringMatching(
       /^Stopped at the time limit, as asked in Linear\. The accepted work is on branch `.+`\.$/,
@@ -231,7 +233,9 @@ test("Continue with new instructions at the time limit starts a fresh budget", a
     "answered",
   );
   expect(getWorkItem(db, item.id)).toMatchObject({ fixMs: 0, maxAwakeMs: 3 * 60 * MINUTE });
-  expect(listOutbox(db).some((row) => row.idempotencyKey.startsWith("fresh-budget:"))).toBe(true);
+  expect(
+    (await listOutbox(sqliteDb(db))).some((row) => row.idempotencyKey.startsWith("fresh-budget:")),
+  ).toBe(true);
 });
 
 for (const state of ["running", "verifying"] as const) {
@@ -251,9 +255,11 @@ for (const state of ["running", "verifying"] as const) {
       `${state === "running" ? "Implementation" : "Closeout"} reached its 30 min limit; continue or stop?`,
     );
     expect(question.body).not.toContain("accepted");
-    expect(listOutbox(db).some((row) => (row.payload as { kind?: string }).kind === "error")).toBe(
-      false,
-    );
+    expect(
+      (await listOutbox(sqliteDb(db))).some(
+        (row) => (row.payload as { kind?: string }).kind === "error",
+      ),
+    ).toBe(false);
   });
 }
 
@@ -293,7 +299,7 @@ test("Stop at the time limit without an accepted head names the branch with the 
   const { clock, db, item } = await askedBeforeAcceptance("verifying");
   expect((await reply(db, "Stop", clock.now())).status).toBe("answered");
   expect(getWorkItem(db, item.id)?.state).toBe("failed");
-  expect(listOutbox(db).at(-1)?.payload).toMatchObject({
+  expect((await listOutbox(sqliteDb(db))).at(-1)?.payload).toMatchObject({
     kind: "error",
     body: expect.stringMatching(
       /^Stopped at the time limit, as asked in Linear\. The work is on branch `.+`\.$/,

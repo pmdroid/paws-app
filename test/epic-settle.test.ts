@@ -60,8 +60,8 @@ function itemStates(db: Database, id: string): string[] {
     .map((row) => row.state);
 }
 
-function summaryActivities(db: Database): number {
-  return listOutbox(db).filter((row) => {
+async function summaryActivities(db: Database): Promise<number> {
+  return (await listOutbox(sqliteDb(db))).filter((row) => {
     const body = JSON.stringify(row.payload);
     return (
       row.idempotencyKey.startsWith("epic-done:") ||
@@ -77,7 +77,7 @@ test("when a delegation's only item merges, that item stays merged and no delega
     seed(db, clock.now(), "merged", ["merged"]);
     await orchestrator.reconcileExecution();
     expect(itemStates(db, "merged")).toEqual(["merged"]);
-    expect(summaryActivities(db)).toBe(0);
+    expect(await summaryActivities(db)).toBe(0);
   } finally {
     await orchestrator.shutdown();
     db.close();
@@ -108,7 +108,7 @@ test("a held item no longer produces a stall question after ten minutes", async 
         "SELECT COUNT(*) AS n FROM question WHERE body LIKE '%made no progress%'",
       )
       .get()!.n;
-    const notices = listOutbox(db).filter((row) =>
+    const notices = (await listOutbox(sqliteDb(db))).filter((row) =>
       JSON.stringify(row.payload).includes("made no progress"),
     ).length;
     expect(itemStates(db, "held")).toEqual(["failed"]);

@@ -549,7 +549,9 @@ describe("advanceMerge on a conflicting pull request waiting for CI", () => {
       expect.objectContaining({ handoff: REBASE_CONFLICT_INSTRUCTION, reason: "conflict" }),
     ]);
     expect(
-      listOutbox(h.db).filter((row) => row.idempotencyKey.startsWith("merge-conflict:")),
+      (await listOutbox(sqliteDb(h.db))).filter((row) =>
+        row.idempotencyKey.startsWith("merge-conflict:"),
+      ),
     ).toHaveLength(1);
     expect(listMergeQueues(h.db).map((entry) => entry.itemId)).toEqual(["ENG-2"]);
     h.state.mergeState = null;

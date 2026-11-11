@@ -24,8 +24,8 @@ function harness() {
   const flush = async () => {
     while ((await dispatcher.tick()).length > 0) await dispatcher.idle();
   };
-  const post = (key: string, kind: "thought" | "action" | "response", ordered = false) =>
-    enqueueOutbox(db, {
+  const post = async (key: string, kind: "thought" | "action" | "response", ordered = false) =>
+    await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: "session",
@@ -51,12 +51,12 @@ const PROGRESS = [
 
 test("a CI send-back in a later generation of an open pull request posts no progress", async () => {
   const { db, tracker, flush, post } = harness();
-  post(`pull-request-ready:${ITEM}:0`, "response", true);
+  await post(`pull-request-ready:${ITEM}:0`, "response", true);
   await flush();
   await advanceLinearSessionGeneration(sqliteDb(db), "session");
-  for (const key of PROGRESS) post(key, "thought");
-  post("pull-feedback:restart:ci:1", "thought");
-  post("merge-conflict:1:e51458c", "thought");
+  for (const key of PROGRESS) await post(key, "thought");
+  await post("pull-feedback:restart:ci:1", "thought");
+  await post("merge-conflict:1:e51458c", "thought");
   await flush();
   expect(tracker.progress.map((update) => update.body)).toEqual([
     `pull-request-ready:${ITEM}:0`,
@@ -68,11 +68,11 @@ test("a CI send-back in a later generation of an open pull request posts no prog
 
 test("progress opens again in a later generation once the pull request merged", async () => {
   const { db, tracker, flush, post } = harness();
-  post(`pull-request-ready:${ITEM}:0`, "response", true);
-  post(`merged:${ITEM}:0`, "response", true);
+  await post(`pull-request-ready:${ITEM}:0`, "response", true);
+  await post(`merged:${ITEM}:0`, "response", true);
   await flush();
   await advanceLinearSessionGeneration(sqliteDb(db), "session");
-  post(`update:${ITEM}:${RUN}:2:1`, "thought");
+  await post(`update:${ITEM}:${RUN}:2:1`, "thought");
   await flush();
   expect(tracker.progress.at(-1)?.body).toBe(`update:${ITEM}:${RUN}:2:1`);
   db.close();
@@ -84,7 +84,7 @@ test("after the PR the title moves once to waiting to merge and once more to mer
     clock.now(),
   );
   await progress.phase("publishing");
-  post(`pull-request-ready:${ITEM}:0`, "response", true);
+  await post(`pull-request-ready:${ITEM}:0`, "response", true);
   await progress.phase("merging");
   await flush();
   for (const step of [
@@ -110,7 +110,7 @@ test("after the PR a restart names its phase once, without the round", async () 
   const progress = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1", () =>
     clock.now(),
   );
-  post(`pull-request-ready:${ITEM}:0`, "response", true);
+  await post(`pull-request-ready:${ITEM}:0`, "response", true);
   await progress.phase("merging");
   await flush();
   clock.advance(130_000);

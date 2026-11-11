@@ -101,7 +101,7 @@ test("one elicitation without options names the recurring bug class and links to
     kind: "rounds",
     rounds: ROUNDS,
   });
-  const elicitations = listOutbox(db).filter((row) => row.op === "elicitation");
+  const elicitations = (await listOutbox(sqliteDb(db))).filter((row) => row.op === "elicitation");
   expect(elicitations).toHaveLength(1);
   const payload = elicitations[0]!.payload as { body: string; options: unknown[] };
   expect(payload.options).toEqual([]);
@@ -112,7 +112,7 @@ test("one elicitation without options names the recurring bug class and links to
       "A reply here asks the agent to rethink the approach, with your reply as the note and the open findings.",
     ].join("\n\n"),
   );
-  const links = listOutbox(db).filter((row) => row.op === "linear.session.links");
+  const links = (await listOutbox(sqliteDb(db))).filter((row) => row.op === "linear.session.links");
   expect(links.map((row) => row.payload)).toEqual([
     {
       sessionId: "ses_1",
@@ -132,8 +132,11 @@ test("the question lists the open findings' text without changing the dashboard 
   const findings =
     "- review independent-review P1 at src/auth/session.ts:42: unchecked null: the session is read before the check. (session.ts:42)";
   const { db, question } = await asked(findings);
-  const body = (listOutbox(db).find((row) => row.op === "elicitation")!.payload as { body: string })
-    .body;
+  const body = (
+    (await listOutbox(sqliteDb(db))).find((row) => row.op === "elicitation")!.payload as {
+      body: string;
+    }
+  ).body;
   expect(body).toContain(findings);
   expect(body.indexOf(findings)).toBeLessThan(body.indexOf("Decide in Paws:"));
   expect((await getLinkAsk(sqliteDb(db), question.id))?.detail).not.toContain(findings);
@@ -202,7 +205,9 @@ test("Keep going restarts the item with four more rounds", async () => {
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
   expect(handoff(db)).toContain("A person allowed 4 more review rounds: fix the open findings.");
   expect((await recoveryOptions(db, itemId)).retryBaseline).toEqual(BASELINE);
-  const notes = listOutbox(db).filter((row) => row.idempotencyKey.startsWith("link-ask-decided:"));
+  const notes = (await listOutbox(sqliteDb(db))).filter((row) =>
+    row.idempotencyKey.startsWith("link-ask-decided:"),
+  );
   expect(notes.map((row) => (row.payload as { body: string }).body)).toEqual([
     "Lea allowed 4 more review rounds in Paws.",
   ]);
@@ -222,7 +227,7 @@ test("Stop ends the item as asked and sends nothing back to the agent", async ()
   ).toBe("answered");
   expect(getWorkItem(db, itemId)?.state).toBe("failed");
   expect(listJobs(db).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
-  const failure = listOutbox(db).find((row) =>
+  const failure = (await listOutbox(sqliteDb(db))).find((row) =>
     row.idempotencyKey.includes(":closeout:review_rounds"),
   )!;
   expect((failure.payload as { body: string }).body).toContain(
@@ -289,7 +294,9 @@ test("a reply in Linear is Rethink the approach with the reply as the note", asy
   );
   expect(body).toContain(ROUNDS.handoff);
   expect((await recoveryOptions(db, itemId)).retryBaseline).toEqual(BASELINE);
-  const notes = listOutbox(db).filter((row) => row.idempotencyKey.startsWith("link-ask-guidance:"));
+  const notes = (await listOutbox(sqliteDb(db))).filter((row) =>
+    row.idempotencyKey.startsWith("link-ask-guidance:"),
+  );
   expect(notes.map((row) => (row.payload as { body: string }).body)).toEqual([
     "Sent your reply to the agent: it rethinks the approach with the open findings and a new round budget.",
   ]);

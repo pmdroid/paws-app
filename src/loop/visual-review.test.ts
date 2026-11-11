@@ -56,8 +56,8 @@ test("a Paws without an https dashboard link asks nothing in Linear and says why
     await store.transaction((q) => askForVisualReviewSteps(q, { ...input, now: NOW + 1 })),
   ).toBe(false);
   expect(findOpenQuestion(db, "ses_1")).toBeNull();
-  expect(listOutbox(db).filter((row) => row.op === "elicitation")).toEqual([]);
-  const notes = listOutbox(db).filter((row) => row.op === "activity");
+  expect((await listOutbox(sqliteDb(db))).filter((row) => row.op === "elicitation")).toEqual([]);
+  const notes = (await listOutbox(sqliteDb(db))).filter((row) => row.op === "activity");
   expect(notes.map((row) => (row.payload as { body: string }).body)).toEqual([
     VISUAL_REVIEW_NEEDS_LINK,
   ]);

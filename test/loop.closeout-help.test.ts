@@ -112,8 +112,8 @@ const help = (summary: string) => ({
   summary,
 });
 
-const delivered = (db: ReturnType<typeof tempDb>) =>
-  listOutbox(db)
+const delivered = async (db: ReturnType<typeof tempDb>) =>
+  (await listOutbox(sqliteDb(db)))
     .filter((row) => row.op === "elicitation")
     .map((row) => row.payload as { questionId: string; body: string });
 
@@ -126,12 +126,12 @@ test("a Closeout stall asked while another question is open is delivered after i
     kind: "closeout-help",
     status: "queued",
   });
-  expect(delivered(db).map((payload) => payload.questionId)).toEqual([open.question.id]);
+  expect((await delivered(db)).map((payload) => payload.questionId)).toEqual([open.question.id]);
 
   await answer(db, reply("Keep waiting"), questionEffects(db, { now: NOW + 100 }));
 
   expect(findOpenQuestion(db, "ses_1")?.id).toBe(queued.questionId);
-  expect(delivered(db).at(-1)?.body).toContain("Closeout needs your help.");
+  expect((await delivered(db)).at(-1)?.body).toContain("Closeout needs your help.");
 });
 
 test("a policy field this Paws does not know asks for a Paws update", async () => {
@@ -144,7 +144,7 @@ test("a policy field this Paws does not know asks for a Paws update", async () =
     ),
     { now: NOW },
   );
-  expect(delivered(db)[0]?.body).toContain(
+  expect((await delivered(db))[0]?.body).toContain(
     "The Closeout policy on origin/main uses `maxFailedReviewAttempts`, which this version of Paws does not support. Update Paws, then reply retry.",
   );
 });
@@ -154,8 +154,8 @@ test("other blocked policies keep the usual Closeout question", async () => {
   await askCloseoutHelp(db, "ses_1", help("Closeout: blocked\nMessage: invalid YAML"), {
     now: NOW,
   });
-  expect(delivered(db)[0]?.body).not.toContain("Update Paws");
-  expect(delivered(db)[0]?.body).toContain("Reply with guidance");
+  expect((await delivered(db))[0]?.body).not.toContain("Update Paws");
+  expect((await delivered(db))[0]?.body).toContain("Reply with guidance");
 });
 
 test("the Closeout help question names the task as its Linear identifier", async () => {
@@ -173,7 +173,7 @@ test("the Closeout help question names the task as its Linear identifier", async
     decision: null,
   });
   await askCloseoutHelp(db, "ses_1", { ...help(summary), taskId: pathId }, { now: NOW });
-  const body = delivered(db)[0]?.body ?? "";
+  const body = (await delivered(db))[0]?.body ?? "";
   expect(body).toContain("Task: PAS-367\n");
   expect(body).not.toContain("01M5NDWPQZ0JQ91E1MFMVEY6EP");
 });
@@ -213,7 +213,7 @@ for (const body of ["Retry Closeout", "  RETRY "])
   test(`${JSON.stringify(body)} on a question blocked on an unreadable policy re-verifies the head without the agent`, async () => {
     const { db, asker, question } = await askedAbout([]);
     expect(question.options).toEqual(["Retry Closeout"]);
-    expect(delivered(db)[0]?.body).toContain("Choose Retry Closeout, or reply retry");
+    expect((await delivered(db))[0]?.body).toContain("Choose Retry Closeout, or reply retry");
     await answer(db, reply(body), questionEffects(db, { now: NOW + 100 }));
     expect(getWorkItem(db, asker.itemId)?.state).toBe("verifying");
     expect(jobs(db)).toEqual([
@@ -255,7 +255,7 @@ test("a check failing on the code offers no Retry Closeout, and retry restarts t
     { id: "test", kind: "command", state: "failed", message: "command exited 1" },
   ]);
   expect(question.options).toEqual([]);
-  expect(delivered(db)[0]?.body).not.toContain("Retry Closeout");
+  expect((await delivered(db))[0]?.body).not.toContain("Retry Closeout");
   await answer(db, reply("retry"), questionEffects(db, { now: NOW + 100 }));
   expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
   expect(jobs(db).map((job) => job.jobKey)).toEqual([`closeout-guidance:${question.id}`]);

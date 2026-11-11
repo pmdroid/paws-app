@@ -218,18 +218,18 @@ test.each([false, true, "cap"] as const)(
       expect(existsSync(entered), debug(layout, db)).toBe(true);
       // Plan and summary are throttled to one request per 30 seconds, so check the newest
       // version queued for Linear rather than waiting for it to be sent.
-      const metadata = (op: string) =>
-        listOutbox(db).findLast((row) => row.op === op && row.status !== "dropped")?.payload as
-          | SessionUpdate
-          | undefined;
+      const metadata = async (op: string) =>
+        (await listOutbox(sqliteDb(db))).findLast(
+          (row) => row.op === op && row.status !== "dropped",
+        )?.payload as SessionUpdate | undefined;
       const progressDeadline = performance.now() + 10_000;
       while (
         performance.now() < progressDeadline &&
         (!tracker.progress.some((update) => /fix attempt 1 of 2/i.test(update.body)) ||
-          metadata("linear.session.summary")?.summary !==
+          (await metadata("linear.session.summary"))?.summary !==
             "ENG-302: fixing Closeout findings (1 of 2)" ||
-          metadata("linear.session.plan")?.plan?.[0]?.status !== "inProgress" ||
-          metadata("linear.session.plan")?.plan?.[0]?.content !== "Repair missing output")
+          (await metadata("linear.session.plan"))?.plan?.[0]?.status !== "inProgress" ||
+          (await metadata("linear.session.plan"))?.plan?.[0]?.content !== "Repair missing output")
       ) {
         while ((await outbox.tick()).length > 0) await outbox.idle();
         await new Promise<void>((resolve) => setImmediate(resolve));
@@ -239,10 +239,10 @@ test.each([false, true, "cap"] as const)(
       );
       expect(tracker.progress.map((update) => update.body)).not.toContain("Write repaired output");
       expect(tracker.progress.some((update) => /fix attempt 1 of 2/i.test(update.body))).toBe(true);
-      expect(metadata("linear.session.summary")?.summary).toBe(
+      expect((await metadata("linear.session.summary"))?.summary).toBe(
         "ENG-302: fixing Closeout findings (1 of 2)",
       );
-      expect(metadata("linear.session.plan")?.plan?.[0]).toEqual({
+      expect((await metadata("linear.session.plan"))?.plan?.[0]).toEqual({
         content: "Repair missing output",
         status: "inProgress",
       });
@@ -1576,7 +1576,7 @@ for (const recovery of [
           listJobs(db).filter((job) => job.status === "pending" && job.queue === JOB_KIND.resume),
         ).toHaveLength(1);
         expect(
-          listOutbox(db).some((row) =>
+          (await listOutbox(sqliteDb(db))).some((row) =>
             JSON.stringify(row.payload).includes(
               "Bypass a check with a reason on the item page in Paws: https://paws.example/dashboard/issues/ENG-8#closeout",
             ),
@@ -4715,14 +4715,14 @@ for (const race of ["token", "merge", "followup"] as const) {
         db.run("UPDATE job SET run_at=0 WHERE queue=? AND status='pending'", [JOB_KIND.command]);
         await tickWithRestarts(jobs, orchestrator, db);
         expect(
-          listOutbox(db).filter(
+          (await listOutbox(sqliteDb(db))).filter(
             (row) =>
               row.status !== "dropped" &&
               String((row.payload as { body?: string }).body).includes("was already merged"),
           ),
         ).toHaveLength(1);
         expect(
-          listOutbox(db).filter(
+          (await listOutbox(sqliteDb(db))).filter(
             (row) =>
               row.status !== "dropped" &&
               String((row.payload as { body?: string }).body).startsWith("Merged #"),

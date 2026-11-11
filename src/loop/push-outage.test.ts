@@ -125,7 +125,7 @@ describe("a push outage", () => {
       expect(getWorkItem(db, `item-${name}`)?.state).toBe("running");
       expect(findOpenQuestion(db, `ses-${name}`)).toBeNull();
     }
-    expect(listOutbox(db).filter((row) => row.op === "elicitation")).toEqual([]);
+    expect((await listOutbox(sqliteDb(db))).filter((row) => row.op === "elicitation")).toEqual([]);
   });
 
   test("one probe retries after 1, 2 and 5 minutes, then every 10 minutes", async () => {
@@ -194,7 +194,7 @@ describe("a push outage", () => {
     for (const name of ["b", "c"]) expect(findOpenQuestion(db, `ses-${name}`)).toBeNull();
     expect(getWorkItem(db, "item-a")?.state).toBe("running");
     expect(
-      listOutbox(db)
+      (await listOutbox(sqliteDb(db)))
         .filter((row) => row.op === "elicitation")
         .map((row) => row.idempotencyKey),
     ).toEqual([`question:${question.id}`]);

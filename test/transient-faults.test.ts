@@ -592,7 +592,10 @@ async function runWithFault(fault: {
       if (fault.clock) await host.tick();
     }
     const drainBy = Date.now() + 10_000;
-    while (Date.now() < drainBy && listOutbox(db).some((row) => row.status === "pending")) {
+    while (
+      Date.now() < drainBy &&
+      (await listOutbox(sqliteDb(db))).some((row) => row.status === "pending")
+    ) {
       await outbox.tick();
       await outbox.idle();
       await Bun.sleep(10);

@@ -468,7 +468,7 @@ async function firstDelegation(
     expect(response.status).toBe(200);
     await linear.webhook.intake!.idle();
     await settle();
-    const elicitation = listOutbox(db).find((row) => row.op === "elicitation");
+    const elicitation = (await listOutbox(sqliteDb(db))).find((row) => row.op === "elicitation");
     expect(elicitation, server.operations.join(", ")).toBeDefined();
     const held = server.total;
 
@@ -502,7 +502,7 @@ async function firstDelegation(
         server,
         refused: true as const,
         resume: resumed - signedIn,
-        errors: listOutbox(db)
+        errors: (await listOutbox(sqliteDb(db)))
           .map((row) => row.payload as { kind?: string; body?: string })
           .filter((payload) => payload.kind === "error")
           .map((payload) => payload.body),

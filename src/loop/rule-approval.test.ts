@@ -177,7 +177,9 @@ test("Approve records who and why and verifies the same head again", async () =>
       },
     ],
   );
-  const notes = listOutbox(db).filter((row) => row.idempotencyKey.startsWith("link-ask-decided:"));
+  const notes = (await listOutbox(sqliteDb(db))).filter((row) =>
+    row.idempotencyKey.startsWith("link-ask-decided:"),
+  );
   expect(notes.map((row) => (row.payload as { body: string }).body)).toEqual([
     "Lea Lead approved the rule break on 7f65200 in Paws: The contract change is intended for v2.",
   ]);
@@ -266,7 +268,9 @@ test("a reply in Linear sends the finding back and approves nothing", async () =
   expect(handoff).toContain("removed field Task.title");
   expect((await listCloseoutBypassChecks(sqliteDb(db), question.id))[0]?.approvedAt).toBeNull();
   expect((await recoveryOptions(db, itemId)).bypasses).toEqual([]);
-  const notes = listOutbox(db).filter((row) => row.idempotencyKey.startsWith("link-ask-guidance:"));
+  const notes = (await listOutbox(sqliteDb(db))).filter((row) =>
+    row.idempotencyKey.startsWith("link-ask-guidance:"),
+  );
   expect(notes.map((row) => (row.payload as { body: string }).body)).toEqual([
     `${RULE_REPLY_NOTE} ${LINK}`,
   ]);

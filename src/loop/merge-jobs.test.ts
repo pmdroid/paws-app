@@ -709,7 +709,7 @@ describe("slow CI question", () => {
       .query<{ event: string }, []>("SELECT event FROM work_item_event ORDER BY id DESC LIMIT 1")
       .get();
     expect(event?.event).toBe("answer_stopped");
-    expect(listOutbox(db).at(-1)?.payload).toMatchObject({
+    expect((await listOutbox(sqliteDb(db))).at(-1)?.payload).toMatchObject({
       kind: "error",
       body: expect.stringMatching(
         /^Stopped while GitHub CI was pending, as asked in Linear\. The accepted work is on branch `.+`\.$/,

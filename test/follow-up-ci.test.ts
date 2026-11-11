@@ -391,7 +391,9 @@ test("a person's follow-up on accepted work starts with a fresh time budget and 
       awakeMs: 0,
       maxAwakeMs: DEFAULT_MAX_AWAKE_MS,
     });
-    const notes = listOutbox(f.db).filter((row) => row.idempotencyKey.startsWith("fresh-budget:"));
+    const notes = (await listOutbox(sqliteDb(f.db))).filter((row) =>
+      row.idempotencyKey.startsWith("fresh-budget:"),
+    );
     expect(notes.map((row) => (row.payload as { body: string }).body)).toEqual([
       "Starting on your request with a fresh 3-hour time limit.",
     ]);

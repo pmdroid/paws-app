@@ -57,7 +57,7 @@ async function queued(db: Database, id: string, session: string, at: number) {
     baseSha: head,
     wipCommit: head,
   });
-  enqueueOutbox(db, {
+  await enqueueOutbox(sqliteDb(db), {
     target: "linear",
     op: "activity",
     orderingKey: session,

@@ -100,7 +100,7 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
       options: ["yes", "no"],
       now: NOW,
     });
-    enqueueOutbox(db, {
+    await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "elicitation",
       orderingKey: "ses_1",
@@ -112,7 +112,7 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
       },
       now: NOW,
     });
-    enqueueOutbox(db, {
+    await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: "ses_1",
@@ -154,7 +154,7 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
         warnings: [],
       },
     });
-    enqueueOutbox(db, {
+    await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: "ses_1",
@@ -168,7 +168,7 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
       payload: { itemId: merging.id, summary: `${summary}\nCaller attempt: 2`, head: HEAD },
       now: NOW,
     });
-    enqueueOutbox(db, {
+    await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: "ses_1",

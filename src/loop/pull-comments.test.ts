@@ -263,8 +263,8 @@ const resumeJobs = (db: Awaited<ReturnType<typeof setup>>["db"]) =>
   listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
 const handoff = (db: Awaited<ReturnType<typeof setup>>["db"]) =>
   (resumeJobs(db)[0]?.payload as { handoff: string; reason: string } | undefined) ?? null;
-const feedbackThoughts = (db: Awaited<ReturnType<typeof setup>>["db"]) =>
-  listOutbox(db)
+const feedbackThoughts = async (db: Awaited<ReturnType<typeof setup>>["db"]) =>
+  (await listOutbox(sqliteDb(db)))
     .filter((row) => row.op === "activity" && row.idempotencyKey.startsWith("pull-feedback:"))
     .map((row) => (row.payload as { kind: string; body: string }).body);
 
@@ -306,7 +306,7 @@ describe("pull request comments restart the item", () => {
     expect((await getPullComment(sqliteDb(db), "inline", 9001))?.outcome).toBe("restarted");
     expect((await getPullComment(sqliteDb(db), "review", 601))?.outcome).toBe("restarted");
     // The Linear session wakes and says why the agent is back.
-    expect(feedbackThoughts(db)).toEqual([
+    expect(await feedbackThoughts(db)).toEqual([
       "@pascal commented on pull request #7. The agent is working on the comments.",
     ]);
 
@@ -320,7 +320,7 @@ describe("pull request comments restart the item", () => {
     expect(await pendingPullComments(sqliteDb(db), "eng-1")).toHaveLength(0);
     expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
     expect(resumeJobs(db)).toHaveLength(1);
-    expect(feedbackThoughts(db)).toHaveLength(1);
+    expect(await feedbackThoughts(db)).toHaveLength(1);
   });
 
   test("a Bugbot inline finding restarts once with the finding", async () => {

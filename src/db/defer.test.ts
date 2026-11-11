@@ -47,7 +47,7 @@ test("deferring a running item loses its run, moves it to recovering, and schedu
       },
     },
   ]);
-  expect(listOutbox(db).map((row) => row.payload)).toContainEqual(
+  expect((await listOutbox(sqliteDb(db))).map((row) => row.payload)).toContainEqual(
     expect.objectContaining({
       sessionId: "ses_1",
       kind: "thought",
@@ -157,5 +157,5 @@ test("a Closeout fault re-verifies the same version once per faulted job and car
       payload: { closeoutFaults: { head: "head", reasons: ["lost", "lost again"] } },
     },
   ]);
-  expect(listOutbox(db)).toHaveLength(2);
+  expect(await listOutbox(sqliteDb(db))).toHaveLength(2);
 });

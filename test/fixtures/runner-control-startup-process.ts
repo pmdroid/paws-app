@@ -510,7 +510,7 @@ try {
         assert.equal(stopResult.status, 200);
         assert.equal(getWorkItem(paws.db, controlled.id)?.state, "cancelled");
         assert(
-          listOutbox(paws.db, controlled.sessionKey!).some(
+          (await listOutbox(sqliteDb(paws.db), controlled.sessionKey!)).some(
             (row) =>
               row.delivery === "stop" &&
               (row.payload as { body?: string }).body?.startsWith("Stopped from Paws. ") === true,

@@ -102,14 +102,16 @@ for (const shutdown of ["application", "linear"] as const) {
       expect(await store.listUnhandled()).toHaveLength(1);
       expect(tracker.progress).toEqual([]);
       expect(
-        listOutbox(db).filter(
+        (await listOutbox(sqliteDb(db))).filter(
           (entry) =>
             entry.status === "pending" &&
             (entry.payload as { body?: string }).body === "Picked up this issue.",
         ),
       ).toHaveLength(1);
       expect(
-        listOutbox(db).some((entry) => (entry.payload as { kind?: string }).kind === "error"),
+        (await listOutbox(sqliteDb(db))).some(
+          (entry) => (entry.payload as { kind?: string }).kind === "error",
+        ),
       ).toBe(false);
       db.close();
       db = openDatabase(path);
@@ -140,7 +142,9 @@ for (const shutdown of ["application", "linear"] as const) {
         expect(
           tracker.progress.filter((update) => update.body.startsWith("Picked up")),
         ).toHaveLength(1);
-        expect(listOutbox(db).filter((entry) => entry.status === "dropped")).toHaveLength(0);
+        expect(
+          (await listOutbox(sqliteDb(db))).filter((entry) => entry.status === "dropped"),
+        ).toHaveLength(0);
       } finally {
         await recovered.start().stop();
         await orchestrator.shutdown();

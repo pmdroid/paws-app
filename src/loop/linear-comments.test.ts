@@ -231,8 +231,8 @@ async function setup(options: { members?: string[]; agents?: string[] } = {}) {
         "\n\n",
       );
     },
-    thoughts: () =>
-      listOutbox(db, SESSION)
+    thoughts: async () =>
+      (await listOutbox(sqliteDb(db), SESSION))
         .filter((row) => row.idempotencyKey.startsWith("linear-comment:"))
         .map((row) => (row.payload as { body: string }).body),
     setBusy: (value: boolean) => {
@@ -307,7 +307,7 @@ describe("receiving ordinary Linear comments", () => {
         authority: "person",
       });
       expect(f.authorized).toEqual([PASCAL]);
-      expect(f.thoughts()).toEqual([
+      expect(await f.thoughts()).toEqual([
         "Received a comment on eng-1. Paws hands it to the agent at its next turn.",
       ]);
       expect(f.commentJobs()).toHaveLength(1);
@@ -331,7 +331,7 @@ describe("receiving ordinary Linear comments", () => {
       expect((resumes[0]!.payload as { reason: string }).reason).toBe("follow_up");
       expect((resumes[0]!.payload as { handoff: string }).handoff).toBe(LINEAR_COMMENT_RESTART);
       expect((await f.comment("c-1")).state).toBe("queued");
-      expect(f.thoughts().at(-1)).toBe(
+      expect((await f.thoughts()).at(-1)).toBe(
         "Sent eng-1 back to the agent for the comment. The agent reads it when its next turn starts.",
       );
       const handoff = await f.resumedBrief();
@@ -444,7 +444,7 @@ describe("receiving ordinary Linear comments", () => {
     try {
       await beginImplementRun(sqliteDb(f.db), "eng-1", T0);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Skip the migration." })));
-      expect(f.thoughts()).toEqual([
+      expect(await f.thoughts()).toEqual([
         "Received a comment on eng-1. Paws hands it to the agent once its current turn ends.",
       ]);
       expect(await f.deliver()).toBe("wait");
@@ -549,7 +549,7 @@ describe("who may comment", () => {
       expect(await f.comment("claim")).toMatchObject({ state: "ignored", reason: "bot" });
       expect(f.authorized).toEqual([]);
       expect(f.commentJobs()).toHaveLength(0);
-      expect(f.thoughts()).toEqual([]);
+      expect(await f.thoughts()).toEqual([]);
     } finally {
       await f.close();
     }
@@ -618,7 +618,9 @@ describe("routing to the right work", () => {
       expect(await f.comment("c-1")).toMatchObject({ state: "rejected", reason: "parent_issue" });
       expect(f.commentJobs()).toHaveLength(0);
       expect(
-        listOutbox(f.db, "ses-parent").map((row) => (row.payload as { body: string }).body),
+        (await listOutbox(sqliteDb(f.db), "ses-parent")).map(
+          (row) => (row.payload as { body: string }).body,
+        ),
       ).toEqual([
         "A comment on this parent issue was not passed on: each sub-issue runs in its own session. Comment on the sub-issue whose work it is about.",
       ]);
@@ -772,7 +774,7 @@ describe("holds, questions and gates", () => {
         expect(getWorkItem(f.db, "eng-1")!.state).toBe(hold);
         expect((await f.comment("c-1")).state).toBe("queued");
         expect(f.resumeJobs()).toHaveLength(0);
-        expect(f.thoughts()[0]).toContain("waits with it");
+        expect((await f.thoughts())[0]).toContain("waits with it");
       } finally {
         await f.close();
       }
@@ -847,7 +849,7 @@ describe("holds, questions and gates", () => {
         expect(findOpenQuestion(f.db, SESSION)?.id).toBe(asked.question.id);
         expect(getWorkItem(f.db, "eng-1")!.state).toBe("awaiting_input");
         expect((await f.comment("c-1")).state).toBe("queued");
-        expect(f.thoughts().at(-1)).toBe(
+        expect((await f.thoughts()).at(-1)).toBe(
           "Paws keeps the comment on the issue as context for the agent. The open question here still needs an answer in this session.",
         );
       } finally {
@@ -1135,7 +1137,7 @@ describe("review findings", () => {
       expect(await f.deliver()).toBe("done");
       expect(await f.comment("c-1")).toMatchObject({ state: "ignored", reason: "pull_closed" });
       expect(f.resumeJobs()).toHaveLength(0);
-      expect(f.thoughts().at(-1)).toBe(
+      expect((await f.thoughts()).at(-1)).toBe(
         "Pull request #7 was closed without merging, so Paws did not pass the comment on eng-1 to the agent.",
       );
     } finally {

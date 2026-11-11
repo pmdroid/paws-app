@@ -117,8 +117,8 @@ const resumes = (db: ReturnType<typeof tempDb>) =>
     .filter((job) => job.queue === JOB_KIND.resume)
     .map((job) => ({ ...(job.payload as object), runId: undefined }));
 
-const pawsNotes = (db: ReturnType<typeof tempDb>) =>
-  listOutbox(db)
+const pawsNotes = async (db: ReturnType<typeof tempDb>) =>
+  (await listOutbox(sqliteDb(db)))
     .map((row) => row.payload as { kind?: string; body?: string })
     .filter((payload) => payload.body?.startsWith("Answered in Paws by"));
 
@@ -212,13 +212,13 @@ test("an option answered in Paws restarts the item as a Linear reply does, once"
     expect(resumes(paws.db)).toHaveLength(1);
     expect(history(paws.db, paws.item.id)).toEqual(history(linear.db, linear.item.id));
 
-    expect(pawsNotes(paws.db)).toEqual([
+    expect(await pawsNotes(paws.db)).toEqual([
       expect.objectContaining({
         kind: "response",
         body: "Answered in Paws by Sam: Fix the policy",
       }),
     ]);
-    expect(pawsNotes(linear.db)).toEqual([]);
+    expect(await pawsNotes(linear.db)).toEqual([]);
   } finally {
     paws.db.close();
     linear.db.close();
@@ -272,7 +272,7 @@ test("a Linear reply racing a Paws answer answers the question once", async () =
     expect(stored.status).toBe("answered");
     expect(stored.answer).toBe(answered ? OPTIONS[0]! : OPTIONS[1]!);
     expect(resumes(db)).toHaveLength(1);
-    expect(pawsNotes(db)).toHaveLength(answered ? 1 : 0);
+    expect(await pawsNotes(db)).toHaveLength(answered ? 1 : 0);
     expect(
       db.query("SELECT state FROM linear_turn WHERE event_key LIKE 'paws-answer:%'").all(),
     ).toHaveLength(answered ? 1 : 0);
@@ -301,7 +301,7 @@ test("the answer record reaches Linear after the pull request response", async (
     );
     expect((await submit({ questionId: question.id, answer: OPTIONS[0] }))?.status).toBe(200);
     const tracker = createFakeTracker();
-    for (const row of listOutbox(db).filter((entry) => entry.status !== "sent"))
+    for (const row of (await listOutbox(sqliteDb(db))).filter((entry) => entry.status !== "sent"))
       await deliverLinearOutbox(row, tracker, async () => {}, undefined, db);
     expect(tracker.progress.map((update) => update.body)).toEqual([
       "Answered in Paws by Sam: Fix the policy",

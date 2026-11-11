@@ -11,7 +11,7 @@ test("an item gets at most one disk-full thought per hour", async () => {
     const post = async (itemId: string, now: number) => {
       const key = await sqliteDb(db).run((q) => hostDiskFullThoughtKeySteps(q, itemId, now));
       if (key !== null)
-        enqueueOutbox(db, {
+        await enqueueOutbox(sqliteDb(db), {
           target: "linear",
           op: "activity",
           orderingKey: `ses-${itemId}`,

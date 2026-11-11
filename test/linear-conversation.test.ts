@@ -610,7 +610,7 @@ test("an unhandled Stop replay after reopen preserves a newer explicit task", as
     await f.orchestrator.onLinearEvent(event("later-request", "NEW_REQUEST", 4));
     const current = await f.item();
     const session = await getLinearSession(sqliteDb(f.db), "session");
-    const outbox = listOutbox(f.db);
+    const outbox = await listOutbox(sqliteDb(f.db));
     expect(current.state).toBe("queued");
     f.reopen();
     const store = createInboxStore(sqliteDb(f.db));
@@ -626,7 +626,7 @@ test("an unhandled Stop replay after reopen preserves a newer explicit task", as
     }
     expect(await f.item()).toEqual(current);
     expect(await getLinearSession(sqliteDb(f.db), "session")).toEqual(session);
-    expect(listOutbox(f.db)).toEqual(outbox);
+    expect(await listOutbox(sqliteDb(f.db))).toEqual(outbox);
     expect(await store.listUnhandled()).toEqual([]);
   } finally {
     await f.close();
@@ -639,7 +639,7 @@ test("a failed Stop transaction leaves no receipt, generation or partial pause",
     await f.orchestrator.onLinearEvent(event("created", null, 1));
     const item = await f.item();
     const session = await getLinearSession(sqliteDb(f.db), "session");
-    const outbox = listOutbox(f.db);
+    const outbox = await listOutbox(sqliteDb(f.db));
     const originalItems = f.db.query("SELECT * FROM work_item ORDER BY position").all();
     let emitted = 0;
     f.orchestrator.bus.subscribe(() => {
@@ -654,7 +654,7 @@ test("a failed Stop transaction leaves no receipt, generation or partial pause",
     expect(f.db.query("SELECT * FROM work_item ORDER BY position").all()).toEqual(originalItems);
     expect(emitted).toBe(0);
     expect(await getLinearSession(sqliteDb(f.db), "session")).toEqual(session);
-    expect(listOutbox(f.db)).toEqual(outbox);
+    expect(await listOutbox(sqliteDb(f.db))).toEqual(outbox);
     expect(f.db.query("SELECT * FROM linear_stop_receipt").all()).toEqual([]);
     f.db.exec("DROP TRIGGER reject_stop");
     await f.orchestrator.onLinearEvent(stop);

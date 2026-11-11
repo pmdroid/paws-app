@@ -257,7 +257,9 @@ test("a /paws bypass reply in Linear is guidance and gets the link back once", a
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
   expect(listJobs(db).some((job) => job.queue === JOB_KIND.reverify)).toBe(false);
   expect(await recoveryOptions(db, itemId)).toEqual({ retryBaseline: ["test:1"], bypasses: [] });
-  const notes = listOutbox(db).filter((row) => row.idempotencyKey.startsWith("link-ask-guidance:"));
+  const notes = (await listOutbox(sqliteDb(db))).filter((row) =>
+    row.idempotencyKey.startsWith("link-ask-guidance:"),
+  );
   expect(notes.map((row) => (row.payload as { body: string }).body)).toEqual([
     `${BYPASS_REPLY_NOTE} ${LINK}`,
   ]);

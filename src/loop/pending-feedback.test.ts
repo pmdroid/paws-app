@@ -169,8 +169,8 @@ type Db = Awaited<ReturnType<typeof setup>>["db"];
 const resumeJobs = (db: Db) => listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
 const handoffs = (db: Db) =>
   resumeJobs(db).map((job) => job.payload as { handoff: string; reason: string });
-const feedbackThoughts = (db: Db) =>
-  listOutbox(db)
+const feedbackThoughts = async (db: Db) =>
+  (await listOutbox(sqliteDb(db)))
     .filter((row) => row.op === "activity" && row.idempotencyKey.startsWith("pull-feedback:"))
     .map((row) => (row.payload as { body: string }).body);
 const BOT_FINDING = "Medium: the cache key ignores the tenant.";
@@ -201,7 +201,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
     expect(handoff.indexOf(COMMENT_FIX_INSTRUCTION)).toBeGreaterThan(digest);
     expect(replies).toBeGreaterThan(digest);
     expect((await getPullComment(sqliteDb(h.db), "inline", 9001))?.outcome).toBe("restarted");
-    expect(feedbackThoughts(h.db)).toEqual([
+    expect(await feedbackThoughts(h.db)).toEqual([
       "@cursor[bot] commented on pull request #7. The agent is working on the comments.",
     ]);
     expect(fixRounds(h.db, "eng-1")).toBe(1);
@@ -277,7 +277,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
     await h.sendBack("conflict", REBASE_CONFLICT_INSTRUCTION);
     expect(handoffs(h.db)[0]?.handoff).toBe(REBASE_CONFLICT_INSTRUCTION);
     expect(fixRounds(h.db, "eng-1")).toBe(0);
-    expect(feedbackThoughts(h.db)).toEqual([]);
+    expect(await feedbackThoughts(h.db)).toEqual([]);
   });
 });
 

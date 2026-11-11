@@ -115,7 +115,7 @@ test("a missing installation holds the item before Git and a reply cannot releas
     expect(existsSync(join(f.home, "worktrees"))).toBe(false);
     expect(f.tracker.statuses).toEqual([]);
     expect(
-      listOutbox(f.db)
+      (await listOutbox(sqliteDb(f.db)))
         .filter((row) => row.op === "elicitation")
         .map((row) => row.payload),
     ).toEqual([

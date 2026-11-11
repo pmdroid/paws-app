@@ -208,7 +208,7 @@ test("a rejected second-child cancellation rolls back signed revocation before n
   expect(
     f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM linear_app_revocation").get()?.n,
   ).toBe(0);
-  expect(listOutbox(f.db, "session")).toEqual([]);
+  expect(await listOutbox(sqliteDb(f.db), "session")).toEqual([]);
   expect(f.notifications).toEqual([]);
   expect(f.interrupted).toEqual([]);
   expect(f.owned.signal.aborted).toBe(false);
@@ -229,12 +229,14 @@ test("a rejected second-child cancellation rolls back signed revocation before n
   expect(f.interrupted).toEqual(["session"]);
   expect(f.owned.signal.aborted).toBe(true);
   expect(getLinearSessionAccess(f.db, "session")).toBe("revoked");
-  expect(listOutbox(f.db, "session").every((row) => row.status === "dropped")).toBe(true);
+  expect(
+    (await listOutbox(sqliteDb(f.db), "session")).every((row) => row.status === "dropped"),
+  ).toBe(true);
 });
 
 test("signed revocation stops owned work and fences active, queued and delayed responses across verified reconnect", async () => {
   const f = await fixture();
-  const progress = enqueueOutbox(f.db, {
+  const progress = await enqueueOutbox(sqliteDb(f.db), {
     target: "linear",
     op: "activity",
     orderingKey: "session",
@@ -247,11 +249,13 @@ test("signed revocation stops owned work and fences active, queued and delayed r
   expect(getLinearSessionAccess(f.db, "session")).toBe("revoked");
   expect(getWorkItem(f.db, f.task.items[0]!.id)?.state).toBe("cancelled");
   expect(f.owned.signal.aborted).toBe(true);
-  expect(listOutbox(f.db, "session").every((row) => row.status === "dropped")).toBe(true);
+  expect(
+    (await listOutbox(sqliteDb(f.db), "session")).every((row) => row.status === "dropped"),
+  ).toBe(true);
   await f.dispatcher.tick();
   await f.dispatcher.idle();
   expect((await sqliteDb(f.db).run((q) => getOutboxSteps(q, progress)))?.status).toBe("dropped");
-  const late = enqueueOutbox(f.db, {
+  const late = await enqueueOutbox(sqliteDb(f.db), {
     target: "linear",
     op: "activity",
     orderingKey: "session",

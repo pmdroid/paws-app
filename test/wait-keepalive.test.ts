@@ -16,8 +16,8 @@ function item(db: Database, id: string, delegation: string, state: string) {
   );
 }
 
-function activities(db: Database, sessionId: string) {
-  return listOutbox(db, sessionId)
+async function activities(db: Database, sessionId: string) {
+  return (await listOutbox(sqliteDb(db), sessionId))
     .filter((row) => row.op === "activity")
     .map((row) => ({
       key: row.idempotencyKey,
@@ -78,19 +78,19 @@ test("a blocked item gets one thought, then an ephemeral at each 25-minute mark 
         blockers: ["PAS-618"],
       },
     ]);
-    expect(activities(db, session)).toEqual([
+    expect(await activities(db, session)).toEqual([
       expect.objectContaining({ body: "Waiting for PAS-618 before starting.", ephemeral: false }),
     ]);
 
     // Ticks inside the first 25 minutes add nothing.
     await tick(1);
     await tick(24);
-    expect(activities(db, session)).toHaveLength(1);
+    expect(await activities(db, session)).toHaveLength(1);
 
     await tick(25);
     await tick(25);
     await tick(30);
-    expect(activities(db, session).filter((row) => row.ephemeral)).toEqual([
+    expect((await activities(db, session)).filter((row) => row.ephemeral)).toEqual([
       expect.objectContaining({
         body: "Still waiting for PAS-618. Paws checks blockers in Linear every minute while it waits.",
         status: "pending",
@@ -99,13 +99,13 @@ test("a blocked item gets one thought, then an ephemeral at each 25-minute mark 
 
     // Delivery is down: the next mark replaces the pending one instead of queueing a second.
     await tick(50);
-    const ephemerals = activities(db, session).filter((row) => row.ephemeral);
+    const ephemerals = (await activities(db, session)).filter((row) => row.ephemeral);
     expect(ephemerals.map((row) => row.status)).toEqual(["dropped", "pending"]);
     expect(ephemerals[1]!.key).toEndWith(":keep:2");
 
     // A restart of Paws replays the same mark under the same key.
     await tick(55);
-    expect(activities(db, session).filter((row) => row.ephemeral)).toHaveLength(2);
+    expect((await activities(db, session)).filter((row) => row.ephemeral)).toHaveLength(2);
 
     db.run("UPDATE work_item SET state='merged' WHERE id='PAS-618'");
     await recordConfirmedRemoteMerge(sqliteDb(db), {
@@ -121,9 +121,9 @@ test("a blocked item gets one thought, then an ephemeral at each 25-minute mark 
     expect(waits.at(-1)).toEqual([]);
     await tick(75);
     await tick(100);
-    expect(activities(db, session).filter((row) => row.ephemeral)).toHaveLength(2);
+    expect((await activities(db, session)).filter((row) => row.ephemeral)).toHaveLength(2);
     expect(
-      activities(db, session).filter(
+      (await activities(db, session)).filter(
         (row) => row.ephemeral && row.status === "pending" && row.body.startsWith("Still"),
       ),
     ).toHaveLength(1);
@@ -165,10 +165,10 @@ test("a runner-queued item says its place in line every 25 minutes", async () =>
       ["PAS-3", 2],
     ]);
     await tick(25);
-    expect(activities(db, "session-third").map((row) => row.body)).toEqual([
+    expect((await activities(db, "session-third")).map((row) => row.body)).toEqual([
       "Still 2nd in line for a runner.",
     ]);
-    expect(activities(db, "session-second").map((row) => row.body)).toEqual([
+    expect((await activities(db, "session-second")).map((row) => row.body)).toEqual([
       "Still 1st in line for a runner.",
     ]);
     expect(WAIT_KEEPALIVE_MS).toBe(25 * MINUTE);
@@ -206,8 +206,8 @@ test("a sibling at work keeps its session's face, and a paused item posts no eph
     expect(waits.at(-1)).toEqual([
       expect.objectContaining({ identifier: "PAS-12", kind: "paused", by: "Pascal" }),
     ]);
-    expect(activities(db, "session-alone")).toEqual([]);
-    expect(activities(db, "session-shared").filter((row) => row.ephemeral)).toEqual([]);
+    expect(await activities(db, "session-alone")).toEqual([]);
+    expect((await activities(db, "session-shared")).filter((row) => row.ephemeral)).toEqual([]);
   } finally {
     db.close();
   }

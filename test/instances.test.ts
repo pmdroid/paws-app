@@ -145,7 +145,7 @@ describe("instances", () => {
       now: Date.now(),
     });
     enqueueJob(db, { queue: "acme.work", now: Date.now() });
-    enqueueOutbox(db, {
+    await enqueueOutbox(sqliteDb(db), {
       target: OUTBOX_ACTIVITY.target,
       op: OUTBOX_ACTIVITY.op,
       orderingKey: "acme-session",

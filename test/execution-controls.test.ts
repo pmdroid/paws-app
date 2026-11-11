@@ -75,7 +75,7 @@ test("Retry puts a dead job of an authorized item back to pending and refuses ev
 
     // Once the session is stopped, only its dead final Stop delivery can be retried.
     const session = getWorkItem(db, "controlled")!.sessionKey!;
-    const stop = enqueueOutbox(db, {
+    const stop = await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: session,

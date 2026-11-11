@@ -467,7 +467,7 @@ describe("live status provider", () => {
       "- adversarial-review (review): passed — no failing findings",
       "- docs-lint (command): skipped — no changed path matches",
     ].join("\n");
-    enqueueOutbox(db, {
+    await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: "ses_1",
@@ -475,7 +475,7 @@ describe("live status provider", () => {
       payload: { sessionId: "ses_1", kind: "thought", body: "Need a product decision." },
       now,
     });
-    enqueueOutbox(db, {
+    await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "elicitation",
       orderingKey: "ses_1",
@@ -487,7 +487,7 @@ describe("live status provider", () => {
       },
       now,
     });
-    enqueueOutbox(db, {
+    await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: "ses_1",
@@ -495,7 +495,7 @@ describe("live status provider", () => {
       payload: { sessionId: "ses_1", kind: "response", body: summary },
       now,
     });
-    enqueueOutbox(db, {
+    await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: "ses_1",
@@ -583,7 +583,7 @@ describe("live status provider", () => {
     const item = insertQueuedItem(db, { id: "ENG-2", sessionKey: "ses_1", now });
     await beginImplementRun(sqliteDb(db), item.id, now);
     applyWorkItemEvent(db, item.id, "blocking_question");
-    enqueueOutbox(db, {
+    await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "elicitation",
       orderingKey: "ses_1",
@@ -799,7 +799,7 @@ describe("live status provider", () => {
         payload: { itemId: item.id, head },
         now: at,
       });
-      enqueueOutbox(db, {
+      await enqueueOutbox(sqliteDb(db), {
         target: "linear",
         op: "activity",
         orderingKey: "ses_q",

@@ -1066,7 +1066,7 @@ export async function probeRunnerBackend(
         publishArtifact: {
           async publish() {
             replayPublications++;
-            enqueueOutbox(db, {
+            await enqueueOutbox(sqliteDb(db), {
               target: "linear",
               op: "activity",
               orderingKey: `session-${replayed.id}`,
@@ -1139,7 +1139,7 @@ export async function probeRunnerBackend(
     const fetchedBeforeReplay = fetched;
     const replayResult = await afterReplay;
     fetched = fetchedBeforeReplay;
-    const replayRows = listOutbox(db, `session-${replayed.id}`).length;
+    const replayRows = (await listOutbox(sqliteDb(db), `session-${replayed.id}`)).length;
     const replayAnswer = db
       .query<{ answer: string }, [string]>(
         "SELECT answer FROM runner_question_answer WHERE run_id=? AND sequence=1",

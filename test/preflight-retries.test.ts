@@ -7,7 +7,15 @@ import { runAgent, runDir, type RunAgentOptions } from "../src/acp";
 import { reviewRequirements } from "../src/closeout";
 import { writeAgentSettings } from "../src/config";
 import { JOB_KIND, MAX_TRANSIENT_RETRIES, systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, listJobs, listOutbox, migrate, openDatabase } from "../src/db";
+import {
+  sqliteDb,
+  JobLoop,
+  OutboxDispatcher,
+  listJobs,
+  listOutbox,
+  migrate,
+  openDatabase,
+} from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
 import { RemotePreparationTimeout } from "../src/runner-backend";
@@ -273,7 +281,10 @@ async function runPreflight(fault: {
       }
     }
     const drainBy = Date.now() + 10_000;
-    while (Date.now() < drainBy && listOutbox(db).some((row) => row.status === "pending")) {
+    while (
+      Date.now() < drainBy &&
+      (await listOutbox(sqliteDb(db))).some((row) => row.status === "pending")
+    ) {
       await outbox.tick();
       await outbox.idle();
       await Bun.sleep(10);

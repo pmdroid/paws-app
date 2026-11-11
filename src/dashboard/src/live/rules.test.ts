@@ -115,7 +115,7 @@ async function seed(): Promise<{ db: Database; home: string }> {
     );
   }
   await finishCloseoutProgress(sqliteDb(db), item.id, identity, "exhausted", NOW + 2_000);
-  enqueueOutbox(db, {
+  await enqueueOutbox(sqliteDb(db), {
     target: "linear",
     op: "activity",
     orderingKey: "ses_7",

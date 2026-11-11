@@ -53,8 +53,14 @@ function identify(db: Database, id: string, identifier: string, issueId = "lin-3
   ]);
 }
 
-function activity(db: Database, runId: string, sessionId: string, body: string, at: number): void {
-  enqueueOutbox(db, {
+async function activity(
+  db: Database,
+  runId: string,
+  sessionId: string,
+  body: string,
+  at: number,
+): Promise<void> {
+  await enqueueOutbox(sqliteDb(db), {
     target: "linear",
     op: "activity",
     orderingKey: sessionId,
@@ -77,9 +83,9 @@ async function threeRuns(db: Database): Promise<string[]> {
   const second = await insertRun(sqliteDb(db), { itemId: ITEM, now: T0 + 60_000, agent: "claude" });
   const third = await insertRun(sqliteDb(db), { itemId: ITEM, now: T0 + 120_000, agent: "claude" });
   setCurrentRun(db, ITEM, third.id);
-  activity(db, first.id, SESSION, "First turn read the issue.", T0 + 2_000);
-  activity(db, second.id, SESSION, "Second turn after the restart.", T0 + 61_000);
-  activity(
+  await activity(db, first.id, SESSION, "First turn read the issue.", T0 + 2_000);
+  await activity(db, second.id, SESSION, "Second turn after the restart.", T0 + 61_000);
+  await activity(
     db,
     third.id,
     SESSION,
@@ -209,7 +215,7 @@ describe("one page per issue", () => {
     });
     identify(db, EARLIER, "PAS-367");
     const old = (await beginImplementRun(sqliteDb(db), EARLIER, T0 - 7_200_000)).run;
-    activity(db, old.id, "earlier-session", "Earlier session turn.", T0 - 7_100_000);
+    await activity(db, old.id, "earlier-session", "Earlier session turn.", T0 - 7_100_000);
     db.run("UPDATE work_item SET state = 'cancelled' WHERE id = ?", [EARLIER]);
     db.run("UPDATE run SET status = 'ended', updated_at = ? WHERE id = ?", [
       T0 - 3_600_000,
@@ -307,7 +313,7 @@ describe("one page per issue", () => {
     await threeRuns(db);
     insertQueuedItem(db, { id: "other", title: "Other", sessionKey: "other-session", now: T0 });
     identify(db, "other", "PAS-368", "lin-368");
-    const elicitation = enqueueOutbox(db, {
+    const elicitation = await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "elicitation",
       orderingKey: SESSION,

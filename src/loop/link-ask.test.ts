@@ -76,7 +76,7 @@ test("a link ask opens one elicitation without options and puts the link on the 
     link: "https://paws.example/dashboard/issues/PAS-633#closeout",
     answerers: ["delegator", "lead"],
   });
-  const elicitations = listOutbox(db).filter((row) => row.op === "elicitation");
+  const elicitations = (await listOutbox(sqliteDb(db))).filter((row) => row.op === "elicitation");
   expect(elicitations).toHaveLength(1);
   expect(elicitations[0]!.payload).toEqual({
     id: question.id,
@@ -89,7 +89,7 @@ test("a link ask opens one elicitation without options and puts the link on the 
       "Reply here to send the agent guidance instead. A reply here cannot bypass a check.",
     ].join("\n\n"),
   });
-  const links = listOutbox(db).filter((row) => row.op === "linear.session.links");
+  const links = (await listOutbox(sqliteDb(db))).filter((row) => row.op === "linear.session.links");
   expect(links.map((row) => row.payload)).toEqual([
     {
       sessionId: "ses_1",
@@ -149,7 +149,9 @@ test("the project lead decides on the item page: audit row, decided note, back t
     },
   ]);
   // A risk approval comes after the pull request response, so it is a response, not a thought.
-  const notes = listOutbox(db).filter((row) => row.idempotencyKey.startsWith("risk-approval:"));
+  const notes = (await listOutbox(sqliteDb(db))).filter((row) =>
+    row.idempotencyKey.startsWith("risk-approval:"),
+  );
   expect(notes.map((row) => row.payload as { kind: string; body: string })).toMatchObject([
     {
       kind: "response",
@@ -157,7 +159,7 @@ test("the project lead decides on the item page: audit row, decided note, back t
     },
   ]);
   expect(
-    listOutbox(db).some(
+    (await listOutbox(sqliteDb(db))).some(
       (row) =>
         row.op === "linear.session.links" &&
         JSON.stringify(row.payload).includes('"removedExternalUrls"'),
@@ -216,7 +218,7 @@ test("the reminder fires once after 24 hours", async () => {
   expect(job.runAt).toBe(NOW + LINK_ASK_REMINDER_MS);
   expect(await remindLinkAsk(db, question.id, NOW + LINK_ASK_REMINDER_MS)).toBe(true);
   expect(await remindLinkAsk(db, question.id, NOW + 2 * LINK_ASK_REMINDER_MS)).toBe(false);
-  const reminders = listOutbox(db).filter((row) =>
+  const reminders = (await listOutbox(sqliteDb(db))).filter((row) =>
     row.idempotencyKey.startsWith("link-ask-reminder:"),
   );
   expect(reminders).toHaveLength(1);

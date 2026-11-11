@@ -97,14 +97,14 @@ test("artifact completion requires uploaded deliverables and survives database r
   const restored = openDatabase(file);
   try {
     expect(getWorkItem(restored, item.id)?.state).toBe("completed");
-    expect(listOutbox(restored, "session").map((row) => row.payload)).toEqual([
+    expect((await listOutbox(sqliteDb(restored), "session")).map((row) => row.payload)).toEqual([
       { sessionId: "session", kind: "response", body: "Here is the complete report." },
       { itemId: item.id, linearIssueId: item.linearIssueId, stateType: "completed" },
     ]);
     await expect(completeArtifactTask(sqliteDb(restored), item.id, "Duplicate")).rejects.toThrow(
       "no longer running",
     );
-    expect(listOutbox(restored, "session")).toHaveLength(2);
+    expect(await listOutbox(sqliteDb(restored), "session")).toHaveLength(2);
   } finally {
     restored.close();
   }

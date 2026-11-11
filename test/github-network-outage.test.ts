@@ -96,7 +96,8 @@ async function scene() {
     item: () => getWorkItem(db, "PAS-1055")!,
     signal: new AbortController().signal,
     questions: () => db.query<{ status: string }, []>("SELECT status FROM question").all(),
-    elicitations: () => listOutbox(db).filter((entry) => entry.op === "elicitation"),
+    elicitations: async () =>
+      (await listOutbox(sqliteDb(db))).filter((entry) => entry.op === "elicitation"),
     close() {
       auth.close();
       db.close();
@@ -117,7 +118,7 @@ test("a DNS failure posts no github-auth question, and the item proceeds once Gi
     expect(await s.auth.ensure(s.item(), "initial", s.signal)).toBe(true);
     expect(s.item().state).toBe("running");
     expect(s.questions()).toHaveLength(0);
-    expect(listOutbox(s.db)).toHaveLength(0);
+    expect(await listOutbox(sqliteDb(s.db))).toHaveLength(0);
   } finally {
     s.close();
   }
@@ -130,7 +131,7 @@ test("a 404 for the repository installation still posts the admin question", asy
     expect(await s.auth.ensure(s.item(), "initial", s.signal)).toBe(false);
     expect(s.item().state).toBe("awaiting_input");
     expect(s.questions()).toEqual([{ status: "open" }]);
-    expect(s.elicitations()).toHaveLength(1);
+    expect(await s.elicitations()).toHaveLength(1);
   } finally {
     s.close();
   }
@@ -165,11 +166,11 @@ test("an outage past ten minutes posts one network status line and no admin ques
   };
   try {
     expect(await s.auth.ensure(s.item(), "initial", s.signal)).toBe(true);
-    const lines = listOutbox(s.db).map((entry) => JSON.stringify(entry.payload));
+    const lines = (await listOutbox(sqliteDb(s.db))).map((entry) => JSON.stringify(entry.payload));
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain(`Can't reach GitHub: ${DNS}`);
     expect(s.questions()).toHaveLength(0);
-    expect(s.elicitations()).toHaveLength(0);
+    expect(await s.elicitations()).toHaveLength(0);
   } finally {
     s.close();
   }

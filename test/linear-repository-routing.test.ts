@@ -862,7 +862,7 @@ test("a bound repository outside the team's new links is explained once, not can
       false,
     );
     expect(getWorkItem(f.db, id)?.state).toBe("cancelled");
-    const responses = listOutbox(f.db)
+    const responses = (await listOutbox(sqliteDb(f.db)))
       .filter((entry) => entry.delivery === "stop")
       .map((entry) => (entry.payload as { body: string }).body);
     expect(responses).toEqual(["acme/four isn't mapped to ENG in Paws."]);

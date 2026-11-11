@@ -253,8 +253,8 @@ async function setup(options: { version?: string; conversations?: number } = {})
         ...(result.replies ? { replies: result.replies } : {}),
         ...(result.startWork ? { startWork: result.startWork } : {}),
       }),
-    responses: (session: string) =>
-      listOutbox(db, session)
+    responses: async (session: string) =>
+      (await listOutbox(sqliteDb(db), session))
         .filter((row) => (row.payload as { kind: string }).kind === "response")
         .map((row) => (row.payload as { body: string }).body),
     resumes: async () => listJobs(db).filter((job) => job.queue === JOB_KIND.resume),
@@ -290,7 +290,7 @@ test("with every work slot busy, a message on an idle item starts a conversation
     replies: ["The gateway retries once on a network timeout; Paws does not retry."],
   });
   expect(await f.deliver("acme-1")).toBe("done");
-  expect(f.responses(acme.session)).toEqual([
+  expect(await f.responses(acme.session)).toEqual([
     "The gateway retries once on a network timeout; Paws does not retry.",
   ]);
   expect(await f.conversations()).toEqual([]);
@@ -316,7 +316,7 @@ test("a turn that ends without a reply posts its final message as the reply", as
   expect(await f.deliver("acme-1")).toBe("wait");
   await f.answer((await f.conversations())[0]!.id, { text: "It is src/checkout/form.tsx." });
   expect(await f.deliver("acme-1")).toBe("done");
-  expect(f.responses(acme.session)).toEqual(["It is src/checkout/form.tsx."]);
+  expect(await f.responses(acme.session)).toEqual(["It is src/checkout/form.tsx."]);
   expect(getWorkItem(f.db, "acme-1")!.state).toBe("queued");
 });
 
@@ -354,7 +354,7 @@ test("a timeout posts the timeout reply once and keeps the session", async () =>
   await f.answer((await f.conversations())[0]!.id, { text: "Still reading", timedOut: true });
   expect(await f.deliver("acme-1")).toBe("done");
   expect(await f.deliver("acme-1")).toBe("done");
-  expect(f.responses(acme.session)).toEqual([CONVERSATION_TIMEOUT_REPLY]);
+  expect(await f.responses(acme.session)).toEqual([CONVERSATION_TIMEOUT_REPLY]);
   expect((await getLinearSession(sqliteDb(f.db), acme.session))!.stoppedAt).toBeNull();
   expect(getWorkItem(f.db, "acme-1")!.state).toBe("merge_queue");
 });
@@ -368,7 +368,7 @@ test("a helper that expires without a result posts the timeout reply once", asyn
   f.clock.advance(RUNNER_CONVERSATION_MS);
   expect(await f.deliver("acme-1")).toBe("done");
   expect(await f.deliver("acme-1")).toBe("done");
-  expect(f.responses(acme.session)).toEqual([CONVERSATION_TIMEOUT_REPLY]);
+  expect(await f.responses(acme.session)).toEqual([CONVERSATION_TIMEOUT_REPLY]);
   expect((await getLinearSession(sqliteDb(f.db), acme.session))!.stoppedAt).toBeNull();
 });
 
@@ -468,7 +468,7 @@ test("start_work in a conversation on a 0.1.77 runner restarts the item with the
   expect(await f.deliver("acme-1")).toBe("done");
   expect(await f.deliver("acme-1")).toBe("done");
 
-  expect(f.responses(acme.session)).toEqual([
+  expect(await f.responses(acme.session)).toEqual([
     "I will add that test.",
     `${START_WORK_RESPONSE}${plan}`,
   ]);
@@ -492,7 +492,7 @@ test("start_work after the item moved on posts that the work did not start", asy
   await f.answer(started!.id, { text: "", startWork: "Rename the flag." });
   expect(await f.deliver("acme-1")).toBe("done");
   expect(await f.resumes()).toEqual([]);
-  expect(f.responses(acme.session)).toEqual([
+  expect(await f.responses(acme.session)).toEqual([
     "I could not start the work: the item moved on while we talked. Reply to try again.",
   ]);
 });

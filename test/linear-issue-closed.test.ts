@@ -180,7 +180,7 @@ test("a failed task whose issue moves to Done leaves Needs a person and complete
   while ((await dispatcher.tick()).length > 0) await dispatcher.idle();
   expect(requests.map((request) => request.body)).toEqual([ISSUE_CLOSED_RESPONSE.completed]);
   expect(requests.every((request) => request.query.trim().startsWith("mutation"))).toBe(true);
-  const responses = listOutbox(f.db).filter(
+  const responses = (await listOutbox(sqliteDb(f.db))).filter(
     (row) => (row.payload as { kind?: string }).kind === "response",
   );
   expect(responses).toHaveLength(1);
@@ -203,7 +203,7 @@ test("an issue moved to Canceled cancels a queued task", async () => {
   expect(outcomes).toEqual([{ itemId: f.item.id, outcome: "cancelled" }]);
   expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
   expect(notified).toEqual([f.item.id]);
-  const responses = listOutbox(f.db).filter(
+  const responses = (await listOutbox(sqliteDb(f.db))).filter(
     (row) => (row.payload as { kind?: string }).kind === "response",
   );
   expect(responses.map((row) => (row.payload as { body: string }).body)).toEqual([
@@ -224,7 +224,7 @@ test("a failed task whose issue moves to Duplicate is cancelled with the cancele
     { itemId: f.item.id, outcome: "cancelled" },
   ]);
   expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
-  const responses = listOutbox(f.db).filter(
+  const responses = (await listOutbox(sqliteDb(f.db))).filter(
     (row) => (row.payload as { kind?: string }).kind === "response",
   );
   expect(responses.map((row) => (row.payload as { body: string }).body)).toEqual([
@@ -264,7 +264,7 @@ test("Done cancels a merge-queue task without a confirmed merge and completes it
     { itemId: f.item.id, outcome: "cancelled" },
   ]);
   expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
-  const responses = listOutbox(f.db).filter(
+  const responses = (await listOutbox(sqliteDb(f.db))).filter(
     (row) => (row.payload as { kind?: string }).kind === "response",
   );
   expect(responses.map((row) => (row.payload as { body: string }).body)).toEqual([

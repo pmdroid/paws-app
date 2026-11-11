@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { systemClock } from "../src/core";
 import {
+  sqliteDb,
   JobLoop,
   OutboxDispatcher,
   enqueueOutbox,
@@ -57,8 +58,8 @@ function fixture(outboxWaitMs?: number) {
       kind: "thought",
       body: `Working on ${sessionId}.`,
     });
-  const status = (sessionId: string) =>
-    listOutbox(db).find((row) => row.orderingKey === sessionId)?.status;
+  const status = async (sessionId: string) =>
+    (await listOutbox(sqliteDb(db))).find((row) => row.orderingKey === sessionId)?.status;
   return { db, tracker, outbox, orchestrator, entered, held, report, status };
 }
 
@@ -70,11 +71,11 @@ test("a held Linear delivery for one session does not hold another session's pro
     const fast = f.report("fast").then(() => "delivered");
     expect(await Promise.race([fast, Bun.sleep(1000).then(() => "blocked")])).toBe("delivered");
     expect(f.tracker.progress.map((update) => update.sessionId)).toEqual(["fast"]);
-    expect(f.status("fast")).toBe("sent");
-    expect(f.status("slow")).toBe("pending");
+    expect(await f.status("fast")).toBe("sent");
+    expect(await f.status("slow")).toBe("pending");
     f.held.resolve();
     await slow;
-    expect(f.status("slow")).toBe("sent");
+    expect(await f.status("slow")).toBe("sent");
   } finally {
     f.held.resolve();
     await f.outbox.idle();
@@ -89,10 +90,10 @@ test("a transport that ignores abort cannot hold its own workflow step past the 
     const slow = f.report("slow").then(() => "returned");
     await f.entered.promise;
     expect(await Promise.race([slow, Bun.sleep(1000).then(() => "blocked")])).toBe("returned");
-    expect(f.status("slow")).toBe("pending");
+    expect(await f.status("slow")).toBe("pending");
     f.held.resolve();
     await f.outbox.idle();
-    expect(f.status("slow")).toBe("sent");
+    expect(await f.status("slow")).toBe("sent");
   } finally {
     f.held.resolve();
     await f.outbox.idle();
@@ -110,22 +111,23 @@ test("the dispatcher settles one session while another session's transport stays
     if (row.orderingKey === "A") await held.promise;
   });
   for (const key of ["A", "B"])
-    enqueueOutbox(db, {
+    await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: key,
       idempotencyKey: key,
       payload: { sessionId: key, kind: "thought", body: key },
     });
-  const status = (key: string) => listOutbox(db).find((row) => row.orderingKey === key)?.status;
+  const status = async (key: string) =>
+    (await listOutbox(sqliteDb(db))).find((row) => row.orderingKey === key)?.status;
   try {
     expect(await dispatcher.tick()).toHaveLength(2);
     await dispatcher.idle((row) => row.orderingKey === "B");
-    expect(status("B")).toBe("sent");
-    expect(status("A")).toBe("pending");
+    expect(await status("B")).toBe("sent");
+    expect(await status("A")).toBe("pending");
     held.resolve();
     await dispatcher.idle();
-    expect(status("A")).toBe("sent");
+    expect(await status("A")).toBe("sent");
   } finally {
     held.resolve();
     await dispatcher.idle();

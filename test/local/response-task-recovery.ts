@@ -129,7 +129,7 @@ export async function probeResponseTaskRecovery(root: string) {
       assert.equal(launches, 1);
       const trace = JSON.parse(readFileSync(tracePath, "utf8"));
       assert.match(JSON.stringify(trace.prompts), /The user answered: use the Create VM page/);
-      const responses = listOutbox(db)
+      const responses = (await listOutbox(sqliteDb(db)))
         .map((row) => row.payload as { kind?: string; body?: string })
         .filter((payload) => payload.kind === "response");
       assert.equal(responses.length, 1);

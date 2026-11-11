@@ -118,7 +118,7 @@ test("migration 059 drops the old block tables and task_block holds each depende
       parentCanceled: false,
     });
     expect(
-      listOutbox(db).some((row) => {
+      (await listOutbox(sqliteDb(db))).some((row) => {
         const body = (row.payload as { body?: string }).body ?? "";
         return body.includes("notice-1") && body.includes("remain held");
       }),

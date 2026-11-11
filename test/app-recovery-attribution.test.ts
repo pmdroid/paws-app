@@ -90,7 +90,7 @@ for (const state of [
         applyWorkItemEvent(paws.db, "legacy", event);
       const held = getWorkItem(paws.db, "legacy")!;
       const runStatus = getRun(paws.db, run.id)?.status;
-      const outbox = listOutbox(paws.db).length;
+      const outbox = (await listOutbox(sqliteDb(paws.db))).length;
       clock.sleep(2 * 60 * 60_000 + 1);
       for (let i = 0; i < 100 && paws.db.query("SELECT 1 FROM wake").get() === null; i++)
         await Bun.sleep(10);
@@ -110,7 +110,7 @@ for (const state of [
         branchName: "paws/legacy",
       });
       expect(getRun(paws.db, run.id)?.status).toBe(runStatus);
-      expect(listOutbox(paws.db)).toHaveLength(outbox);
+      expect(await listOutbox(sqliteDb(paws.db))).toHaveLength(outbox);
       expect((await git(["-C", tree, "rev-parse", "HEAD"], { env })).trim()).toBe(before);
       expect(readFileSync(join(tree, "dirty"), "utf8")).toBe("preserve exact legacy WIP");
     } finally {

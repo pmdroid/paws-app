@@ -103,7 +103,7 @@ function actionableQuestions(db: Database) {
     .all();
 }
 
-function snapshot(db: Database) {
+async function snapshot(db: Database) {
   const item = getWorkItem(db, "item")!;
   return {
     item: {
@@ -122,7 +122,9 @@ function snapshot(db: Database) {
     questions: db
       .query("SELECT id, status, cancelled_at FROM question WHERE item_id='item' ORDER BY id")
       .all(),
-    activities: listOutbox(db).filter((message) => message.op !== "linear.catchup").length,
+    activities: (await listOutbox(sqliteDb(db))).filter(
+      (message) => message.op !== "linear.catchup",
+    ).length,
   };
 }
 
@@ -171,11 +173,11 @@ describe("clock gaps preserve human holds", () => {
           try {
             const clock = new FakeClock(1_000_000);
             await hold(db, clock.now(), kind, merging);
-            const before = snapshot(db);
+            const before = await snapshot(db);
 
             await observeGaps(db, clock, gapMs);
 
-            expect(snapshot(db)).toEqual(before);
+            expect(await snapshot(db)).toEqual(before);
             expect(executions(db)).toEqual([]);
             expect(actionableQuestions(db)).toHaveLength(kind === "awaiting_input" ? 1 : 0);
             if (kind === "awaiting_input") expect(findOpenQuestion(db, "session")).not.toBeNull();
@@ -233,12 +235,12 @@ describe("clock gaps preserve human holds", () => {
       await hold(db, clock.now(), "awaiting_input", true);
       await observeGaps(db, clock, TWO_HOURS);
       db.run("UPDATE question SET cancelled_at=? WHERE item_id='item'", [clock.now()]);
-      const before = snapshot(db);
+      const before = await snapshot(db);
       const reply = { sessionId: "session", deliveryId: "late", body: "Go", answeredBy: "lead" };
       expect((await answer(db, reply, questionEffects(db, { now: clock.now() }))).status).toBe(
         "unasked",
       );
-      expect(snapshot(db)).toEqual(before);
+      expect(await snapshot(db)).toEqual(before);
       expect(executions(db)).toEqual([]);
     } finally {
       db.close();

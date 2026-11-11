@@ -126,7 +126,7 @@ test("the visual review is a link ask without options, reminded once from the sh
     (await sqliteDb(db).run((q) => pendingVisualReviewSteps(q, getWorkItem(db, itemId)!)))?.question
       .id,
   ).toBe(question.id);
-  const elicitations = listOutbox(db).filter((row) => row.op === "elicitation");
+  const elicitations = (await listOutbox(sqliteDb(db))).filter((row) => row.op === "elicitation");
   expect(elicitations).toHaveLength(1);
   const payload = elicitations[0]!.payload as { options: unknown[]; body: string };
   expect(payload.options).toEqual([]);
@@ -169,7 +169,7 @@ test("Approve on the page passes the check for that head and those files", async
   // The evaluation still running on S picks the approval up; nothing restarts.
   expect(getWorkItem(db, itemId)?.state).toBe("verifying");
   expect(listJobs(db).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
-  const notes = listOutbox(db).filter((row) => row.op === "activity");
+  const notes = (await listOutbox(sqliteDb(db))).filter((row) => row.op === "activity");
   expect(notes.map((row) => (row.payload as { body: string }).body)).toContain(
     "Lea accepted the screens of 4b317d5 in Paws.",
   );
@@ -275,7 +275,7 @@ test("a Linear reply that says approve requests changes and never approves", asy
   expect((resume!.payload as { handoff: string }).handoff).toContain(
     "The reviewer requested changes in the visual review of check visual-proof:\napprove",
   );
-  const notes = listOutbox(db).filter((row) => row.op === "activity");
+  const notes = (await listOutbox(sqliteDb(db))).filter((row) => row.op === "activity");
   expect(notes.map((row) => (row.payload as { body: string }).body)).toContain(
     VISUAL_REVIEW_REPLY_NOTE,
   );

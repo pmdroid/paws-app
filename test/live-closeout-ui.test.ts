@@ -139,8 +139,14 @@ async function seedVerifying(db: Database, id: string, head: string, now: number
   saveCheckpoint(db, id, { phase: "verifying", baseSha: sha("c"), wipCommit: head });
 }
 
-function acceptVerdict(db: Database, id: string, head: string, body: string, now: number): void {
-  enqueueOutbox(db, {
+async function acceptVerdict(
+  db: Database,
+  id: string,
+  head: string,
+  body: string,
+  now: number,
+): Promise<void> {
+  await enqueueOutbox(sqliteDb(db), {
     target: "linear",
     op: "activity",
     orderingKey: "session",
@@ -253,7 +259,7 @@ describe("live closeout ui", () => {
     const head = sha("b");
     insertQueuedItem(db, { id, title: "Live closeout", now });
     await seedVerifying(db, id, head, now);
-    enqueueOutbox(db, {
+    await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: "session",
@@ -338,7 +344,7 @@ describe("live closeout ui", () => {
       "Items:",
       "- stale-check (command): passed attempt 1 — previous candidate",
     ].join("\n");
-    acceptVerdict(db, id, oldHead, accepted, now + 1);
+    await acceptVerdict(db, id, oldHead, accepted, now + 1);
     const previous = identity(id, oldHead, policy("a"));
     await ensureCloseoutProgress(sqliteDb(db), id, previous, now + 1, true);
     await upsertCloseoutStep(sqliteDb(db), id, previous, step("stale-check", "passed"), now + 2);
@@ -461,7 +467,7 @@ describe("live closeout ui", () => {
       "Items:",
       "- stale-check (command): passed attempt 1 — old head",
     ].join("\n");
-    acceptVerdict(db, id, oldHead, accepted, now + 1);
+    await acceptVerdict(db, id, oldHead, accepted, now + 1);
     const stale = identity(id, oldHead, policy("a"));
     await ensureCloseoutProgress(sqliteDb(db), id, stale, now + 10, true);
     await upsertCloseoutStep(sqliteDb(db), id, stale, step("stale-check", "passed"), now + 11);

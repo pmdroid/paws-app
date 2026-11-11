@@ -333,8 +333,8 @@ const resumes = (db: Awaited<ReturnType<typeof setup>>["db"]) =>
     .filter((job) => job.queue === JOB_KIND.resume)
     .map((job) => job.payload as { handoff: string; reason: string });
 
-const thoughts = (db: Awaited<ReturnType<typeof setup>>["db"]) =>
-  listOutbox(db)
+const thoughts = async (db: Awaited<ReturnType<typeof setup>>["db"]) =>
+  (await listOutbox(sqliteDb(db)))
     .filter((row) => row.idempotencyKey.startsWith("pull-feedback:"))
     .map((row) => (row.payload as { body: string }).body);
 
@@ -377,7 +377,9 @@ describe("failed CI while a pull request waits for review", () => {
     expect(await listCiRounds(sqliteDb(h.db), "eng-1")).toMatchObject([
       { head: HEAD, next: "agent", fix: 1, fixLimit: 3 },
     ]);
-    expect(thoughts(h.db)).toEqual(["CI: `test` failed. Sent back to the agent, fix 1 of 3."]);
+    expect(await thoughts(h.db)).toEqual([
+      "CI: `test` failed. Sent back to the agent, fix 1 of 3.",
+    ]);
 
     expect(h.mergeJob().status).toBe("cancelled");
     await h.checkRun();
@@ -578,7 +580,7 @@ describe("failed CI while a pull request waits for review", () => {
     await h.checkRun();
     h.tick(60_000);
     expect(await h.runDue()).toEqual([]);
-    const asks = listOutbox(h.db).filter((row) => row.op === "elicitation");
+    const asks = (await listOutbox(sqliteDb(h.db))).filter((row) => row.op === "elicitation");
     expect(asks).toHaveLength(1);
     expect(resumes(h.db)).toEqual([]);
   });

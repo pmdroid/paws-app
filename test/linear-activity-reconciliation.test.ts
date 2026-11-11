@@ -89,7 +89,7 @@ test.each(["response", "select", "auth"])(
     const clock = new FakeClock(1_000);
     const api = remote();
     const body = "Full useful response. ".repeat(1_000);
-    const id = enqueueOutbox(db, {
+    const id = await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: kind === "response" ? "activity" : "elicitation",
       orderingKey: "session",
@@ -147,7 +147,7 @@ test.each(["mismatch", "incomplete", "unavailable", "malformed metadata", "nonob
     try {
       const clock = new FakeClock(1_000);
       const api = remote();
-      enqueueOutbox(db, {
+      await enqueueOutbox(sqliteDb(db), {
         target: "linear",
         op: "activity",
         orderingKey: "session",
@@ -173,7 +173,7 @@ test.each(["mismatch", "incomplete", "unavailable", "malformed metadata", "nonob
       clock.advance(2_000);
       await outbox.tick();
       await outbox.idle();
-      expect(listOutbox(db)[0]?.status).toBe("pending");
+      expect((await listOutbox(sqliteDb(db)))[0]?.status).toBe("pending");
       expect(api.created).toHaveLength(1);
     } finally {
       db.close();
@@ -186,7 +186,7 @@ test("Stop during an empty reconciliation fences the subsequent mutation before 
   try {
     const clock = new FakeClock(1_000);
     const api = remote();
-    enqueueOutbox(db, {
+    await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: "session",
@@ -210,7 +210,7 @@ test("Stop during an empty reconciliation fences the subsequent mutation before 
     pending.resolve({ agentActivities: { nodes: [], pageInfo: { hasNextPage: false } } });
     await outbox.idle();
     expect(api.created).toHaveLength(1);
-    expect(listOutbox(db)[0]?.status).toBe("dropped");
+    expect((await listOutbox(sqliteDb(db)))[0]?.status).toBe("dropped");
   } finally {
     db.close();
   }
@@ -251,7 +251,7 @@ test.each(["credentials", "reconciliation"])(
           },
         }),
       );
-      enqueueOutbox(db, {
+      await enqueueOutbox(sqliteDb(db), {
         target: "linear",
         op: "activity",
         orderingKey: "session",
@@ -275,7 +275,7 @@ test.each(["credentials", "reconciliation"])(
       await outbox.idle();
       expect(queries.some((query) => query.includes("mutation"))).toBe(false);
       expect(queries).toHaveLength(boundary === "credentials" ? 0 : 1);
-      expect(listOutbox(db)[0]?.status).toBe("dropped");
+      expect((await listOutbox(sqliteDb(db)))[0]?.status).toBe("dropped");
     } finally {
       release.resolve();
       db.close();

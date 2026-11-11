@@ -39,7 +39,7 @@ test.each([
     context: "Context.",
     now: NOW,
   });
-  expect(listOutbox(db)[0]?.payload).toMatchObject({ body });
+  expect((await listOutbox(sqliteDb(db)))[0]?.payload).toMatchObject({ body });
 });
 
 async function parked() {
@@ -66,7 +66,7 @@ test("an answered agent question restarts the same run with the handoff", async 
     options: ["yes", "no"],
     now: NOW,
   });
-  expect(listOutbox(db).map((row) => row.idempotencyKey)).toEqual([
+  expect((await listOutbox(sqliteDb(db))).map((row) => row.idempotencyKey)).toEqual([
     `question:${asked.question.id}`,
   ]);
 
@@ -152,7 +152,7 @@ test("an agent question queued behind another is delivered once that one is answ
   });
   expect(getWorkItem(db, asker.itemId)?.state).toBe("awaiting_input");
   expect(resumes(db)).toEqual([]);
-  expect(listOutbox(db).map((row) => row.idempotencyKey)).toEqual([
+  expect((await listOutbox(sqliteDb(db))).map((row) => row.idempotencyKey)).toEqual([
     `question:${waiting.question.id}`,
     `question:${queued.question.id}`,
   ]);
@@ -173,7 +173,7 @@ test("an amended question delivers and keeps the added context and options", asy
     context: "Saved decision: archive rows stay out",
     options: ["yes", { label: "Use saved decision", value: "/paws decision 1" }],
   });
-  expect(listOutbox(db)[0]?.payload).toMatchObject({
+  expect((await listOutbox(sqliteDb(db)))[0]?.payload).toMatchObject({
     body: elicitationBody("Include archived rows?", "Saved decision: archive rows stay out", [
       "yes",
     ]),

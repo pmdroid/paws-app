@@ -62,7 +62,7 @@ describe("restart recovery", () => {
     ]);
     expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
     expect(getRun(db, run.id)?.status).toBe("active");
-    expect(listOutbox(db)).toHaveLength(0);
+    expect(await listOutbox(sqliteDb(db))).toHaveLength(0);
     const resume = listJobs(db).find((job) => job.queue === "run.resume");
     expect(resume?.status).toBe("pending");
     expect(resume?.payload).toMatchObject({ freshSession: true, runId: run.id, checkpoint });
@@ -78,7 +78,7 @@ describe("restart recovery", () => {
       kind: "agent",
       options: ["Start again"],
     });
-    expect(listOutbox(db)).toHaveLength(0);
+    expect(await listOutbox(sqliteDb(db))).toHaveLength(0);
   });
 
   test("a second restart without a Linear session fails the item", async () => {
@@ -89,7 +89,7 @@ describe("restart recovery", () => {
     await recoverOnStartup(sqliteDb(db), clock.now());
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([{ type: "ask_restart" }]);
     expect(getWorkItem(db, item.id)?.state).toBe("failed");
-    expect(listOutbox(db)[0]?.payload).toMatchObject({
+    expect((await listOutbox(sqliteDb(db)))[0]?.payload).toMatchObject({
       kind: "error",
       body: "Stopped after a restart because this run was already resumed once.",
     });
@@ -121,7 +121,7 @@ describe("restart recovery", () => {
     expect(resume?.payload).toMatchObject({
       handoff: expect.stringContaining("from the branch paws/eng-2"),
     });
-    expect(listOutbox(db)).toHaveLength(0);
+    expect(await listOutbox(sqliteDb(db))).toHaveLength(0);
   });
 
   test("a restart long after the earlier resume resumes the task again", async () => {
@@ -135,7 +135,7 @@ describe("restart recovery", () => {
       { type: "resume", freshSession: true, checkpoint },
     ]);
     expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
-    expect(listOutbox(db)).toHaveLength(0);
+    expect(await listOutbox(sqliteDb(db))).toHaveLength(0);
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([{ type: "ask_restart" }]);
   });
 
@@ -174,7 +174,7 @@ describe("restart recovery", () => {
         expect(getRun(db, run.id)?.status).toBe("active");
         expect(listJobs(db).filter((job) => job.status === "pending")).toMatchObject([{ id }]);
         expect(claimNextJob(db, { now: clock.now(), queues: [queue] })?.id).toBe(id);
-        expect(listOutbox(db)).toEqual([]);
+        expect(await listOutbox(sqliteDb(db))).toEqual([]);
         db.close();
       });
     }
@@ -356,7 +356,7 @@ describe("restart recovery", () => {
     expect(getRun(db, run.id)?.status).toBe("ended");
     expect(getJob(db, merge)?.status).toBe("pending");
     expect(listJobs(db).map((job) => job.queue)).toEqual(["github.merge"]);
-    expect(listOutbox(db)).toHaveLength(0);
+    expect(await listOutbox(sqliteDb(db))).toHaveLength(0);
   });
 
   for (const order of ["keep-first", "reverify-first"] as const) {
@@ -569,7 +569,7 @@ describe("restart recovery", () => {
     expect(getRun(second, run.id)?.status).toBe("active");
     expect(getRun(second, run.id)?.checkpoint?.resultBody).toBe("Implemented and checked locally.");
     expect(recovery).toEqual([{ type: "resume", freshSession: true, checkpoint }]);
-    expect(listOutbox(second)).toHaveLength(0);
+    expect(await listOutbox(sqliteDb(second))).toHaveLength(0);
     expect(listJobs(second).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(1);
     second.close();
   });
@@ -587,7 +587,7 @@ describe("hard caps", () => {
       (await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true)).capped,
     ).toBe(false);
     expect(getWorkItem(db, item.id)?.state).toBe("running");
-    expect(listOutbox(db)).toHaveLength(0);
+    expect(await listOutbox(sqliteDb(db))).toHaveLength(0);
   });
 
   test("awake time counts monotonic time and ignores a wall-clock sleep", async () => {
@@ -608,7 +608,7 @@ describe("hard caps", () => {
       (await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true)).capped,
     ).toBe(true);
     expect(getWorkItem(db, item.id)?.state).toBe("failed");
-    expect(listOutbox(db)[0]?.payload).toEqual({
+    expect((await listOutbox(sqliteDb(db)))[0]?.payload).toEqual({
       sessionId: item.id,
       kind: "error",
       body: "Implementation reached its 1 min limit. Counted: implementation under 1 min.",
@@ -740,7 +740,7 @@ describe("linear commands", () => {
     expect(seen).toEqual(["stop"]);
     expect(getWorkItem(db, "eng-2")).toMatchObject({ state: "paused", cancelRequested: false });
     expect(getRun(db, run.id)?.status).not.toBe("active");
-    expect(listOutbox(db).find((row) => row.op === "activity")?.payload).toEqual({
+    expect((await listOutbox(sqliteDb(db))).find((row) => row.op === "activity")?.payload).toEqual({
       sessionId: "ses",
       kind: "response",
       body: "Paused. Reply here or re-delegate to continue.",
@@ -759,7 +759,7 @@ describe("linear commands", () => {
       itemId: "eng-2",
       requestedAt: clock.now() + 1,
     });
-    expect(listOutbox(db).map((row) => row.op)).toEqual(["activity"]);
+    expect((await listOutbox(sqliteDb(db))).map((row) => row.op)).toEqual(["activity"]);
 
     expect(
       (
@@ -819,7 +819,7 @@ describe("linear commands", () => {
       itemId: "eng-5",
       requestedAt: clock.now(),
     });
-    const rows = listOutbox(db);
+    const rows = await listOutbox(sqliteDb(db));
     expect(rows.map((row) => row.delivery)).toEqual(["stop", "stop"]);
     expect(rows.some((row) => row.op === "status")).toBe(false);
     expect(rows.find((row) => row.op === "activity")?.payload).toMatchObject({
@@ -860,7 +860,7 @@ describe("linear commands", () => {
       itemId: "eng-6",
       requestedAt: clock.now(),
     });
-    const stop = listOutbox(db).filter((row) => row.delivery === "stop");
+    const stop = (await listOutbox(sqliteDb(db))).filter((row) => row.delivery === "stop");
     expect(stop.find((row) => row.op === "activity")?.payload).toMatchObject({
       kind: "response",
       body: "Stopped from Paws. Branch paws/eng-6 has no commits; no PR was opened. Re-delegate to continue.",
@@ -897,7 +897,7 @@ describe("linear commands", () => {
         "Closed: the issue was canceled in Linear.",
       );
     expect(
-      listOutbox(db)
+      (await listOutbox(sqliteDb(db)))
         .filter((row) => row.op === "activity")
         .map((row) => (row.payload as { body: string }).body),
     ).toEqual([
@@ -918,7 +918,7 @@ describe("linear commands", () => {
     expect((await takeOverItem(sqliteDb(db), "eng-9", "Ada", clock.now())).applied).toBe(true);
     expect(getWorkItem(db, "eng-9")).toMatchObject({ state: "manual" });
     expect(getWorkItem(db, "eng-9")!.version).toBeGreaterThan(version + 1);
-    const stop = listOutbox(db).filter((row) => row.delivery === "stop");
+    const stop = (await listOutbox(sqliteDb(db))).filter((row) => row.delivery === "stop");
     expect(stop.find((row) => row.op === "activity")?.payload).toMatchObject({
       kind: "response",
       body: `Taken over by Ada. Paws will not restart, verify or merge ${identifier}.`,
@@ -941,7 +941,7 @@ describe("linear commands", () => {
         requestedAt: clock.now(),
       });
     }
-    const activities = listOutbox(db).filter((row) => row.op === "activity");
+    const activities = (await listOutbox(sqliteDb(db))).filter((row) => row.op === "activity");
     expect(activities).toHaveLength(1);
     expect(activities[0]?.payload).toMatchObject({ kind: "response", sessionId: "ses" });
     db.close();

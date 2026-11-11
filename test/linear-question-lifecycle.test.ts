@@ -135,7 +135,7 @@ test("an answer racing delivery suppresses the unsent elicitation", async () => 
     });
     await orchestrator.onLinearEvent(prompt());
     expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("answered");
-    expect(listOutbox(db)[0]?.status).toBe("dropped");
+    expect((await listOutbox(sqliteDb(db)))[0]?.status).toBe("dropped");
     expect(listJobs(db).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(1);
   } finally {
     db.close();
@@ -175,7 +175,7 @@ test("an answer aborts an elicitation currently being delivered", async () => {
     await orchestrator.onLinearEvent(prompt());
     expect(aborted).toBe(true);
     expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("answered");
-    expect(listOutbox(db)[0]?.status).toBe("dropped");
+    expect((await listOutbox(sqliteDb(db)))[0]?.status).toBe("dropped");
   } finally {
     db.close();
   }
@@ -263,9 +263,9 @@ test("a Linear Stop pauses the item with its question open, and a reply restarts
     await orchestrator.onLinearEvent({ ...prompt(), body: null, signal: "stop" });
     expect(getWorkItem(db, item.id)?.state).toBe("paused");
     expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
-    expect(listOutbox(db).map((row) => (row.payload as { body?: string }).body)).toContain(
-      "Paused. Reply here or re-delegate to continue.",
-    );
+    expect(
+      (await listOutbox(sqliteDb(db))).map((row) => (row.payload as { body?: string }).body),
+    ).toContain("Paused. Reply here or re-delegate to continue.");
 
     await orchestrator.onLinearEvent(prompt(NOW + 500, "reply-1"));
     expect(getWorkItem(db, item.id)?.state).toBe("queued");

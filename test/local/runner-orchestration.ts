@@ -305,9 +305,10 @@ export async function probeRunnerOrchestration(
              JOIN closeout_progress p ON p.id=s.progress_id WHERE p.item_id=? AND s.state='running'`,
           )
           .all(itemId);
-      const thoughts = () =>
-        listOutbox(db).filter((row) => (row.payload as { body?: string }).body === waitReason)
-          .length;
+      const thoughts = async () =>
+        (await listOutbox(sqliteDb(db))).filter(
+          (row) => (row.payload as { body?: string }).body === waitReason,
+        ).length;
       await until("the waiting step shows its reason", () =>
         waiting().some((step) => step.detail === waitReason),
       );
@@ -323,7 +324,7 @@ export async function probeRunnerOrchestration(
       assert(question.body.includes("Runner goldbox has been unavailable"), question.body);
       assert.deepEqual(question.options, ["Move to another runner", "Keep waiting"]);
       assert(
-        listOutbox(db).some(
+        (await listOutbox(sqliteDb(db))).some(
           (row) =>
             row.op === "elicitation" &&
             (row.payload as { questionId?: string }).questionId === question.id,
@@ -352,7 +353,7 @@ export async function probeRunnerOrchestration(
       const held = waiting();
       assert(held.some((step) => step.detail === waitReason && step.attempt <= 1));
       assert.equal(calls.filter((call) => call.checks).length, 0);
-      assert.equal(thoughts(), 1, "one Linear thought for the wait");
+      assert.equal(await thoughts(), 1, "one Linear thought for the wait");
       runnerResumed = true;
       db.run("UPDATE runner SET status='active',last_seen_at=? WHERE id='runner-1'", [clock.now()]);
       release();

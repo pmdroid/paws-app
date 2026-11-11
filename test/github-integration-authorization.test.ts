@@ -56,9 +56,13 @@ test("transient production authorization persists a wait, survives restart and r
   try {
     expect(await auth.ensure(first, "initial", signal)).toBe(false);
     expect(getWorkItem(db, first.id)?.state).toBe("awaiting_input");
-    expect(listOutbox(db).filter((entry) => entry.op === "elicitation")).toHaveLength(0);
     expect(
-      listOutbox(db).some((entry) => JSON.stringify(entry.payload).includes("retry automatically")),
+      (await listOutbox(sqliteDb(db))).filter((entry) => entry.op === "elicitation"),
+    ).toHaveLength(0);
+    expect(
+      (await listOutbox(sqliteDb(db))).some((entry) =>
+        JSON.stringify(entry.payload).includes("retry automatically"),
+      ),
     ).toBe(true);
     await auth.recover();
     expect(getWorkItem(db, first.id)?.state).toBe("awaiting_input");
@@ -200,7 +204,9 @@ test("an App task with a selected repository starts without an attribution wait"
     ).toBe(true);
     expect(getWorkItem(db, item.id)?.state).toBe("running");
     expect(
-      listOutbox(db).some((entry) => JSON.stringify(entry.payload).includes("commit policy")),
+      (await listOutbox(sqliteDb(db))).some((entry) =>
+        JSON.stringify(entry.payload).includes("commit policy"),
+      ),
     ).toBe(false);
   } finally {
     auth.close();

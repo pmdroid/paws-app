@@ -52,8 +52,8 @@ const close = (db: Awaited<ReturnType<typeof itemIn>>["db"], stateType: "complet
     { notify: () => {}, now: () => 10 },
   );
 
-const responses = (db: Awaited<ReturnType<typeof itemIn>>["db"]) =>
-  listOutbox(db)
+const responses = async (db: Awaited<ReturnType<typeof itemIn>>["db"]) =>
+  (await listOutbox(sqliteDb(db)))
     .filter((row) => (row.payload as { kind?: string }).kind === "response")
     .map((row) => (row.payload as { body: string }).body);
 
@@ -68,7 +68,9 @@ for (const state of ["running", "verifying", "awaiting_input", "merge_queue"] as
     expect(await close(db, "canceled")).toEqual([{ itemId: ITEM, outcome: "cancelled" }]);
     expect(getWorkItem(db, ITEM)?.state).toBe("cancelled");
     if (state === "running") expect(getRun(db, runId)?.status).toBe("lost");
-    expect(responses(db)).toEqual(["Canceled in Linear. PR #42 was closed; the branch is kept."]);
+    expect(await responses(db)).toEqual([
+      "Canceled in Linear. PR #42 was closed; the branch is kept.",
+    ]);
     expect(closeJobs(db)).toEqual([
       {
         itemId: ITEM,
@@ -105,7 +107,9 @@ test("a Duplicate issue arrives as canceled and closes the PR the same way", asy
   const closed = parseLinearIssueClosed(event)!;
   expect(closed.stateType).toBe("canceled");
   await closeClosedIssueTasks(db, closed, { notify: () => {}, now: () => 10 });
-  expect(responses(db)).toEqual(["Canceled in Linear. PR #42 was closed; the branch is kept."]);
+  expect(await responses(db)).toEqual([
+    "Canceled in Linear. PR #42 was closed; the branch is kept.",
+  ]);
   expect(closeJobs(db)).toHaveLength(1);
   db.close();
 });
@@ -123,7 +127,7 @@ test("Done without a merge cancels the item and leaves its PR open", async () =>
   const { db } = await itemIn("running");
   expect(await close(db, "completed")).toEqual([{ itemId: ITEM, outcome: "cancelled" }]);
   expect(closeJobs(db)).toEqual([]);
-  expect(responses(db)).toEqual([
+  expect(await responses(db)).toEqual([
     "Closed: the issue was completed outside this task. Branch paws/ACME-12 has no commits; PR #42 stays open.",
   ]);
   db.close();

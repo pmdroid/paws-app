@@ -133,7 +133,7 @@ describe("queued pull requests that conflict with main", () => {
     expect(await h.sweep(main)).toEqual(["ENG-3"]);
     expect(await h.sweep(main)).toEqual([]);
 
-    const notices = listOutbox(h.db, "ses-ENG-3").filter((row) =>
+    const notices = (await listOutbox(sqliteDb(h.db), "ses-ENG-3")).filter((row) =>
       row.idempotencyKey.startsWith("merge-conflict:"),
     );
     expect(notices).toHaveLength(1);

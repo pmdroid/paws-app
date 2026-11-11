@@ -116,8 +116,8 @@ function verifyingJob(db: ReturnType<typeof boot>["db"], clock: FakeClock) {
   })!;
 }
 
-function activities(db: ReturnType<typeof boot>["db"]) {
-  return listOutbox(db).filter((message) => message.op === "activity");
+async function activities(db: ReturnType<typeof boot>["db"]) {
+  return (await listOutbox(sqliteDb(db))).filter((message) => message.op === "activity");
 }
 
 describe("supervisor accrual writes", () => {
@@ -316,7 +316,7 @@ describe("host suspension and clock gaps", () => {
 
           // No reset, no new implementer, no cancelled job and no rewritten hold.
           expect(snapshot(db, run.id)).toEqual(before);
-          expect(activities(db)).toEqual([]);
+          expect(await activities(db)).toEqual([]);
           expect(listJobs(db).filter((job) => job.queue === JOB_KIND.catchup)).toHaveLength(1);
           expect(db.query("SELECT slept_ms FROM wake").all()).toEqual([{ slept_ms: gapMs }]);
           if (held === "merge_queue" || held === "merge_call") {
@@ -351,7 +351,7 @@ describe("host suspension and clock gaps", () => {
       expect(snapshot(db, run.id)).toEqual(before);
       expect(getWorkItem(db, "eng-9")?.agentMs).toBe(2_000);
       expect(db.query("SELECT slept_ms FROM wake").all()).toEqual([{ slept_ms: 3 * 60 * 60_000 }]);
-      expect(activities(db)).toEqual([]);
+      expect(await activities(db)).toEqual([]);
     } finally {
       host.stop();
       db.close();
@@ -485,7 +485,7 @@ describe("host suspension and clock gaps", () => {
     await host.tick();
     clock.sleep(5 * 60_000);
     await host.tick();
-    expect(activities(db)).toHaveLength(0);
+    expect(await activities(db)).toHaveLength(0);
     expect(listJobs(db).filter((job) => job.queue === "linear.catchup")).toHaveLength(1);
   });
 

@@ -53,7 +53,7 @@ test("one Linear session shows as one run with every attempt in its timeline", a
       [review.id, NOW + 2_500, "Review found one issue."],
       [reply.id, NOW + 3_500, "Fixed the issue."],
     ] as const)
-      enqueueOutbox(db, {
+      await enqueueOutbox(sqliteDb(db), {
         target: "linear",
         op: "activity",
         orderingKey: "ses_7",
@@ -135,7 +135,7 @@ test("a reply in the Linear session shows in the run's timeline with its author,
       [NOW + 500, "Closeout needs your help."],
       [NOW + 2_500, "Running Closeout again."],
     ] as const)
-      enqueueOutbox(db, {
+      await enqueueOutbox(sqliteDb(db), {
         target: "linear",
         op: "activity",
         orderingKey: "ses_8",

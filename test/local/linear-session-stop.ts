@@ -232,10 +232,12 @@ export async function probeLinearSessionStop(root: string) {
               (job.payload as { itemId?: string }).itemId === old.id,
           ),
         );
-        const sessionRows = listOutbox(db).filter((row) => row.orderingKey === old.sessionKey);
+        const sessionRows = (await listOutbox(sqliteDb(db))).filter(
+          (row) => row.orderingKey === old.sessionKey,
+        );
         assert.ok(!sessionRows.some((row) => row.op === "status"));
         assert.ok(
-          listOutbox(db).every(
+          (await listOutbox(sqliteDb(db))).every(
             (row) => row.op !== "status" || (row.payload as { itemId?: string }).itemId !== old.id,
           ),
         );

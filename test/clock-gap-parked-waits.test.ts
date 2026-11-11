@@ -118,8 +118,8 @@ function snapshot(db: Database, itemId = "eng-9") {
   };
 }
 
-function activities(db: Database) {
-  return listOutbox(db).filter((message) => message.op === "activity");
+async function activities(db: Database) {
+  return (await listOutbox(sqliteDb(db))).filter((message) => message.op === "activity");
 }
 
 async function observe(db: Database, host: HostSupervisor, now: number): Promise<void> {
@@ -146,7 +146,7 @@ describe("a clock gap during a parked wait", () => {
 
             expect(db.query("SELECT slept_ms FROM wake").all()).toEqual([{ slept_ms: gapMs }]);
             expect(snapshot(db)).toEqual(before);
-            expect(activities(db)).toEqual([]);
+            expect(await activities(db)).toEqual([]);
 
             const due = before.jobs[0]!.runAt;
             if (due > clock.now()) {
@@ -221,7 +221,7 @@ describe("a clock gap during a parked wait", () => {
         expect(claimNextJob(db, { now: due - 1, queues: [...EXECUTION] })).toBeNull();
         expect(claimNextJob(db, { now: due, queues: [...EXECUTION] })?.id).toBe(owner);
         expect(claimNextJob(db, { now: due, queues: [...EXECUTION] })).toBeNull();
-        expect(activities(db)).toEqual([]);
+        expect(await activities(db)).toEqual([]);
       } finally {
         host.stop();
         db.close();
@@ -339,7 +339,7 @@ describe("repeated clock gaps with holds and parked waits side by side", () => {
       const ids = ["eng-9", "eng-10", "eng-11", "eng-12"];
       const before = ids.map((id) => snapshot(db, id));
       const hold = await getRunnerSetupHold(sqliteDb(db), "eng-11");
-      const outbox = listOutbox(db).length;
+      const outbox = (await listOutbox(sqliteDb(db))).length;
 
       for (const gapMs of [5 * 60_000, TWO_HOURS, TWO_HOURS + 1]) {
         clock.sleep(gapMs);
@@ -351,7 +351,7 @@ describe("repeated clock gaps with holds and parked waits side by side", () => {
       expect(ids.map((id) => snapshot(db, id))).toEqual(before);
       expect(await getRunnerSetupHold(sqliteDb(db), "eng-11")).toEqual(hold);
       expect(getWorkItem(db, "eng-12")?.state).toBe("awaiting_input");
-      expect(listOutbox(db)).toHaveLength(outbox);
+      expect(await listOutbox(sqliteDb(db))).toHaveLength(outbox);
       expect(db.query("SELECT COUNT(*) AS n FROM wake").get()).toEqual({ n: 3 });
       expect(listJobs(db).filter((job) => job.queue === JOB_KIND.catchup)).toHaveLength(3);
       expect(executions(db, "eng-11")).toEqual([]);

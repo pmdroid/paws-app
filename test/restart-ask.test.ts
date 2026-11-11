@@ -269,7 +269,7 @@ describe("restart and ask", () => {
     expect(await jobVersionCurrent(sqliteDb(db), old)).toBe(false);
     const before = {
       events: listWorkItemEventRows(db, item.id),
-      outbox: listOutbox(db),
+      outbox: await listOutbox(sqliteDb(db)),
       jobs: listJobs(db),
     };
     expect(
@@ -299,7 +299,7 @@ describe("restart and ask", () => {
     ).rejects.toThrow("stale");
     expect({
       events: listWorkItemEventRows(db, item.id),
-      outbox: listOutbox(db),
+      outbox: await listOutbox(sqliteDb(db)),
       jobs: listJobs(db),
     }).toEqual(before);
     // Even a replay of the persisted old job is ignored at the orchestrator boundary.
@@ -316,7 +316,7 @@ describe("restart and ask", () => {
     await jobs.tick([JOB_KIND.reverify]);
     expect(getWorkItem(db, item.id)?.state).toBe("queued");
     expect(findOpenQuestion(db, "session")).toBeNull();
-    expect(listOutbox(db)).toEqual(before.outbox);
+    expect(await listOutbox(sqliteDb(db))).toEqual(before.outbox);
     db.close();
   });
 

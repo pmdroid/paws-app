@@ -41,7 +41,7 @@ test("a turn announcement and activity UUID survive restart without advancing tw
   try {
     await turn(db, "first");
     expect(await announceLinearTurn(sqliteDb(db), "session", "first", 2)).toBe(true);
-    const original = listOutbox(db)[0]!;
+    const original = (await listOutbox(sqliteDb(db)))[0]!;
     expect(original.generation).toBe(1);
     expect(original.delivery).toBe("critical");
     expect((original.payload as { id: string }).id).toMatch(/^[0-9a-f-]{36}$/);
@@ -50,7 +50,7 @@ test("a turn announcement and activity UUID survive restart without advancing tw
     migrate(db);
     expect(await announceLinearTurn(sqliteDb(db), "session", "first", 3)).toBe(false);
     expect((await getLinearSession(sqliteDb(db), "session"))?.generation).toBe(1);
-    expect(listOutbox(db)).toEqual([original]);
+    expect(await listOutbox(sqliteDb(db))).toEqual([original]);
     expect(
       await getLinearTurnGeneration(sqliteDb(db), "session", "duplicate-key", "activity:first"),
     ).toBe(1);
@@ -61,7 +61,7 @@ test("a turn announcement and activity UUID survive restart without advancing tw
     expect(await announceLinearTurn(sqliteDb(db), "session", "second", 5)).toBe(true);
     expect(await getLinearTurnGeneration(sqliteDb(db), "session", "first", null)).toBe(1);
     expect(await getLinearTurnGeneration(sqliteDb(db), "session", "second", null)).toBe(2);
-    expect(listOutbox(db)[0]?.status).toBe("dropped");
+    expect((await listOutbox(sqliteDb(db)))[0]?.status).toBe("dropped");
   } finally {
     db.close();
   }

@@ -197,8 +197,10 @@ test("onboarded authoritative creator resumes once with current App and no perso
     ).toMatchObject({ outcome: "refused" });
     expect(dbApi.workspaceLinearMember(db, "workspace", "creator")).toBeNull();
     expect(dbApi.listWorkItems(db)).toHaveLength(0);
-    expect(dbApi.listOutbox(db)).toHaveLength(1);
-    const prompt = dbApi.listOutbox(db)[0]!.payload as { auth: { url: string; userId: string } };
+    expect(await dbApi.listOutbox(sqliteDb(db))).toHaveLength(1);
+    const prompt = (await dbApi.listOutbox(sqliteDb(db)))[0]!.payload as {
+      auth: { url: string; userId: string };
+    };
     expect(prompt.auth.userId).toBe("creator");
     const started = (await runtime.access.handle(new Request(prompt.auth.url)))!;
     expect(started.status).toBe(303);

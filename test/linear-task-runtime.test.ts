@@ -319,7 +319,7 @@ test("a clarification asked while the session waits on another question queues b
     expect((await questionOf(f.db, itemId)).status).toBe("open");
     const asked = await questionOf(f.db, itemId);
     expect(
-      listOutbox(f.db).filter(
+      (await listOutbox(sqliteDb(f.db))).filter(
         (row) => row.op === "elicitation" && row.idempotencyKey.endsWith(asked.id),
       ),
     ).toHaveLength(1);
@@ -864,14 +864,14 @@ test("Stop fences pending answer plans and prevents completed session metadata",
     for (
       let i = 0;
       i < 1000 &&
-      !listOutbox(f.db, "session").some((row) =>
+      !(await listOutbox(sqliteDb(f.db), "session")).some((row) =>
         JSON.stringify(row.payload).includes("Read the reference"),
       );
       i++
     )
       await Bun.sleep(1);
     expect(
-      listOutbox(f.db, "session").some((row) =>
+      (await listOutbox(sqliteDb(f.db), "session")).some((row) =>
         JSON.stringify(row.payload).includes("Read the reference"),
       ),
     ).toBe(true);
@@ -882,7 +882,7 @@ test("Stop fences pending answer plans and prevents completed session metadata",
       signal: "stop",
     });
     await running;
-    const metadata = listOutbox(f.db, "session").filter((row) =>
+    const metadata = (await listOutbox(sqliteDb(f.db), "session")).filter((row) =>
       row.op.startsWith("linear.session."),
     );
     expect(

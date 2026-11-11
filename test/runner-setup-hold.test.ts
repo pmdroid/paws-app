@@ -325,8 +325,8 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     tracker,
     linearWhileHeld,
     linearCalls,
-    thoughts: () =>
-      listOutbox(db, "session-1")
+    thoughts: async () =>
+      (await listOutbox(sqliteDb(db), "session-1"))
         .map((row) => row.payload as { kind?: string; body?: string })
         .filter((payload) => payload.kind === "thought")
         .map((payload) => payload.body),
@@ -351,7 +351,7 @@ test("a delegator without a runner gets one thought and a quiet hold that takes 
     const detail = JSON.stringify({
       item: getWorkItem(db, itemId),
       jobs: fixture.itemJobs().map((job) => `${job.queue}:${job.status}`),
-      thoughts: fixture.thoughts(),
+      thoughts: await fixture.thoughts(),
     });
     expect(getWorkItem(db, itemId)!.state, detail).toBe("queued");
     expect(await getRunnerSetupHold(sqliteDb(db), itemId), detail).toMatchObject({
@@ -359,7 +359,7 @@ test("a delegator without a runner gets one thought and a quiet hold that takes 
       ownerUserId: fixture.memberId,
       notifiedAt: expect.any(Number),
     });
-    expect(fixture.thoughts(), detail).toEqual([
+    expect(await fixture.thoughts(), detail).toEqual([
       `You don't have a runner Paws can use yet. Create a VM or add a host here: ${RUNNERS_URL}. I'll start on my own once it's ready.`,
     ]);
     // No runner slot is held: nothing on any runner, no admission, no live run.
@@ -376,7 +376,7 @@ test("a delegator without a runner gets one thought and a quiet hold that takes 
 
     // A day later the scheduler neither starts it nor counts it as waiting, so no queue notice,
     // no start timeout and no retry job.
-    const outboxBefore = listOutbox(db).length;
+    const outboxBefore = (await listOutbox(sqliteDb(db))).length;
     const waiting: string[] = [];
     for (const offset of [60_000, 2 * 60 * 60_000, DAY_MS, DAY_MS + 60_000]) {
       const admitted = await dispatch(db, {
@@ -395,8 +395,10 @@ test("a delegator without a runner gets one thought and a quiet hold that takes 
         .map((job) => job.queue),
     ).toEqual([JOB_KIND.resume]);
     expect(getWorkItem(db, itemId)!.state).toBe("queued");
-    expect(listOutbox(db).length).toBe(outboxBefore);
-    expect(fixture.thoughts().join("\n")).not.toMatch(/Stopped after|couldn't start|Queued:/);
+    expect((await listOutbox(sqliteDb(db))).length).toBe(outboxBefore);
+    expect((await fixture.thoughts()).join("\n")).not.toMatch(
+      /Stopped after|couldn't start|Queued:/,
+    );
   } finally {
     await fixture.close();
   }
@@ -412,7 +414,7 @@ test("a delegator whose runner needs its agent signed in hears the runner and th
       runnerId: fixture.memberRunner,
       agent: "claude",
     });
-    expect(fixture.thoughts()).toEqual([
+    expect(await fixture.thoughts()).toEqual([
       `Your runner member-vm needs Claude signed in. Sign in on the [Runners page](${RUNNERS_URL}); I'll start right after.`,
     ]);
   } finally {
@@ -442,7 +444,7 @@ test("a delegator whose runner is only busy still waits for capacity", async () 
         online: expect.any(Array),
       },
     ]);
-    expect(fixture.thoughts().join("\n")).not.toContain("runner Paws can use");
+    expect((await fixture.thoughts()).join("\n")).not.toContain("runner Paws can use");
   } finally {
     await fixture.close();
   }
@@ -465,7 +467,7 @@ test("a delegator whose own runner is offline waits for it instead of hearing th
     ).toEqual([
       { since: expect.any(Number), attempt: 0, runnerIds: [], online: expect.any(Array) },
     ]);
-    expect(fixture.thoughts().join("\n")).not.toContain("runner Paws can use");
+    expect((await fixture.thoughts()).join("\n")).not.toContain("runner Paws can use");
   } finally {
     await fixture.close();
   }
@@ -523,11 +525,13 @@ test("signing the agent in resumes the held item in the same run and session, wi
     expect(resumed.currentRunId).toBe(hold.runId);
     expect(resumed.sessionKey).toBe("session-1");
     expect(db.query("SELECT count(*) AS n FROM run WHERE item_id=?").get(itemId)).toEqual({ n: 1 });
-    expect(fixture.thoughts().slice(0, 2)).toEqual([
+    expect((await fixture.thoughts()).slice(0, 2)).toEqual([
       `Your runner member-vm needs Claude signed in. Sign in on the [Runners page](${RUNNERS_URL}); I'll start right after.`,
       "Starting ENG-1 on member-vm.",
     ]);
-    expect(fixture.thoughts().filter((body) => body?.startsWith("Starting "))).toHaveLength(1);
+    expect((await fixture.thoughts()).filter((body) => body?.startsWith("Starting "))).toHaveLength(
+      1,
+    );
     // The counting fake saw the intake's calls, and none while the item was held.
     expect(fixture.linearCalls.length).toBeGreaterThan(0);
     expect(fixture.linearWhileHeld).toEqual([]);

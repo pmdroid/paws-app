@@ -268,7 +268,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     const verifying = await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now());
     expect(verifying.capped).toBe(false);
     expect(verifying.item.state).toBe("verifying");
-    expect(listOutbox(db).filter((row) => row.op === "elicitation")).toEqual([]);
+    expect((await listOutbox(sqliteDb(db))).filter((row) => row.op === "elicitation")).toEqual([]);
   });
 
   test("a resumed agent at the cap asks in Linear instead of failing", async () => {
@@ -303,9 +303,11 @@ describe("awake-time cap after Closeout accepted the work", () => {
       options: ["Merge the accepted work", "Continue", "Stop"],
       body: expect.stringContaining("Implementation reached its 30 min limit"),
     });
-    expect(listOutbox(db).some((row) => (row.payload as { kind?: string }).kind === "error")).toBe(
-      false,
-    );
+    expect(
+      (await listOutbox(sqliteDb(db))).some(
+        (row) => (row.payload as { kind?: string }).kind === "error",
+      ),
+    ).toBe(false);
   });
 
   test("without an accepted candidate or a session the cap fails and says how the time was spent", async () => {
@@ -324,7 +326,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     expect(
       (await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true)).capped,
     ).toBe(true);
-    expect(listOutbox(db).at(-1)?.payload).toMatchObject({
+    expect((await listOutbox(sqliteDb(db))).at(-1)?.payload).toMatchObject({
       kind: "error",
       body: "Implementation reached its 30 min limit. Counted: implementation 30 min. Not counted: waiting 1 h 30 min.",
     });
@@ -743,10 +745,12 @@ describe("awake-time cap after Closeout accepted the work", () => {
       maxAwakeMs: 30 * MINUTE + 60 * MINUTE,
     });
     expect(getRun(db, run.id)?.status).toBe("ended");
-    expect(listOutbox(db).some((row) => (row.payload as { kind?: string }).kind === "error")).toBe(
-      false,
-    );
-    expect(listOutbox(db).at(-1)?.payload).toMatchObject({
+    expect(
+      (await listOutbox(sqliteDb(db))).some(
+        (row) => (row.payload as { kind?: string }).kind === "error",
+      ),
+    ).toBe(false);
+    expect((await listOutbox(sqliteDb(db))).at(-1)?.payload).toMatchObject({
       kind: "thought",
       body: expect.stringMatching(
         /^Paused at the time limit: Implementation reached its 30 min limit\. /,

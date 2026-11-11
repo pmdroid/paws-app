@@ -16,8 +16,8 @@ import { createFakeTracker, createLinearTracker, type LinearClient } from "../sr
 import { deliverLinearOutbox } from "../src/loop";
 import { tempDb } from "./helpers";
 
-const statusRows = (db: ReturnType<typeof tempDb>) =>
-  listOutbox(db).filter((row) => row.target === "linear" && row.op === "status");
+const statusRows = async (db: ReturnType<typeof tempDb>) =>
+  (await listOutbox(sqliteDb(db))).filter((row) => row.target === "linear" && row.op === "status");
 
 for (const [type, source] of [
   ["stop", "linear"],
@@ -30,7 +30,7 @@ for (const [type, source] of [
       await beginImplementRun(sqliteDb(db), item.id, 1);
       const command = { type, source, itemId: item.id, requestedAt: 5 };
       expect((await applyLinearCommand(sqliteDb(db), command, 5)).applied).toBe(true);
-      expect(statusRows(db)).toEqual([]);
+      expect(await statusRows(db)).toEqual([]);
       // Deliver everything the stop queued, as the outbox worker does.
       const tracker = createFakeTracker();
       for (let round = 0; round < 10; round += 1)
@@ -54,7 +54,7 @@ test("a cancel from the issue closing in Linear enqueues no status", async () =>
     expect(
       (await applyLinearCommand(sqliteDb(db), command, 5, "Closed: the issue was closed.")).applied,
     ).toBe(true);
-    expect(statusRows(db)).toEqual([]);
+    expect(await statusRows(db)).toEqual([]);
   } finally {
     db.close();
   }
@@ -78,7 +78,7 @@ test("an issue delegated without a human actor gets no status change", async () 
       requestedAt: 5,
     } as const;
     expect((await applyLinearCommand(sqliteDb(db), command, 5)).applied).toBe(true);
-    expect(statusRows(db)).toEqual([]);
+    expect(await statusRows(db)).toEqual([]);
   } finally {
     db.close();
   }
@@ -91,7 +91,7 @@ test("an answer task completing leaves the issue status alone", async () => {
     await beginImplementRun(sqliteDb(db), item.id, 1);
     await saveTaskMode(sqliteDb(db), item.id, "answer");
     await completeAnswerTask(sqliteDb(db), item.id, "The answer.", 3);
-    expect(statusRows(db)).toEqual([]);
+    expect(await statusRows(db)).toEqual([]);
   } finally {
     db.close();
   }

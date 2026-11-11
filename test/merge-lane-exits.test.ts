@@ -107,7 +107,9 @@ test("a stop during a successful squash waits for completion and answers already
   await drainCommands(sqliteDb(db), bus, 3_010);
   expect(emitted).toEqual([]);
   expect(getWorkItem(db, "holder")?.state).toBe("merged");
-  const bodies = listOutbox(db).map((row) => String((row.payload as { body?: string }).body));
+  const bodies = (await listOutbox(sqliteDb(db))).map((row) =>
+    String((row.payload as { body?: string }).body),
+  );
   expect(bodies.filter((b) => b.startsWith("Merged #1"))).toHaveLength(1);
   expect(bodies.filter((b) => b.includes("was already merged"))).toHaveLength(1);
   expect(bodies.some((b) => b.startsWith("Stopped"))).toBe(false);
@@ -133,7 +135,7 @@ test("a deferred stop cancels when the squash did not succeed", async () => {
   expect(getWorkItem(db, "holder")?.state).toBe("cancelled");
   expect(listJobs(db).some((j) => j.queue === JOB_KIND.closeStoppedPull)).toBe(false);
   expect(
-    listOutbox(db).some((row) =>
+    (await listOutbox(sqliteDb(db))).some((row) =>
       String((row.payload as { body?: string }).body).startsWith("Stopped by test."),
     ),
   ).toBe(true);

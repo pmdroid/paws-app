@@ -277,7 +277,7 @@ test("a stop after the last squash guard defers until the remote merge completes
   await drainCommands(sqliteDb(h.db), new CommandBus(), h.clock.now());
   expect(getWorkItem(h.db, item.id)?.state).toBe("merged");
   expect(
-    listOutbox(h.db).filter((row) =>
+    (await listOutbox(sqliteDb(h.db))).filter((row) =>
       String((row.payload as { body?: string }).body).includes("was already merged"),
     ),
   ).toHaveLength(1);
