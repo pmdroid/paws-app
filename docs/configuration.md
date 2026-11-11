@@ -83,6 +83,7 @@ order = "ci-green"
 - **`main_moved`**: what the merge lane does when `main` moved before the merge. Set it in `[merge]`, `[merge.projects.*]` or `[[merge.rules]]`, or in Settings › Merging as "When main moved before the merge".
   - `"ci"` (default, and what a missing key means): rebase onto `main`, and the new head merges once its CI is green. Closeout does not run again; the new head carries Closeout's acceptance of the head it was rebased from.
   - `"overlap"`: when main's new commits touch none of the pull request's files, grouped by the repository's `packages` roots, merge without a rebase. When they do, or when GitHub requires branches to be up to date before merging, rebase and wait for CI as with `"ci"`.
+  - `"green"`: a pull request behind main merges once its own CI is green. Paws doesn't rebase it and doesn't compare main's new commits with its files. When GitHub requires branches to be up to date before merging, the branch is updated first, as with `"overlap"`. Main's new commits aren't tested together with the change before it merges; GitHub still refuses a pull request that conflicts. In Settings › Merging it is "Merge on green CI without updating the branch onto main".
   - `"closeout"`: rebase and run Closeout again on the new head before it can merge.
 
   A changed Closeout policy sends a carried head back through Closeout under every value.
