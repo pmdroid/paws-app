@@ -586,6 +586,7 @@ export function createRunnerWork(options: {
     supportsAgent(runnerId: string, agent: string) {
       return read((q) => supportsAgentSteps(q, runnerId, agent));
     },
+    supportsAgentSteps,
     identity(runnerId: string) {
       return read((q) => runnerSteps(q, runnerId));
     },
