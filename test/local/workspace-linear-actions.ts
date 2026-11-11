@@ -192,11 +192,11 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       await loop.onLinearEvent(t.event);
       observe(
         `Linear actor ${actor ?? "missing"} cannot answer or resume`,
-        getQuestion(db, t.question.id)?.status === "open" &&
+        (await getQuestion(sqliteDb(db), t.question.id))?.status === "open" &&
           resumes() === 0 &&
           audits() === before + 1,
         {
-          question: getQuestion(db, t.question.id)?.status,
+          question: (await getQuestion(sqliteDb(db), t.question.id))?.status,
           resumes: resumes(),
           audits: audits() - before,
         },
@@ -207,7 +207,8 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     await loop.onLinearEvent(outsideOwner.event);
     observe(
       "workspace ownership cannot bypass mapped Linear team membership",
-      getQuestion(db, outsideOwner.question.id)?.status === "open" && resumes() === 0,
+      (await getQuestion(sqliteDb(db), outsideOwner.question.id))?.status === "open" &&
+        resumes() === 0,
       { role: workspaceMember(db, "workspace", "owner")?.role },
     );
     identities.get("owner")!.teamIds = ["team"];
@@ -216,18 +217,22 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     await loop.onLinearEvent(positive.event);
     observe(
       "verified in-team Linear actor answers once without a Paws browser identity",
-      getQuestion(db, positive.question.id)?.answeredBy === "new-member" &&
+      (await getQuestion(sqliteDb(db), positive.question.id))?.answeredBy === "new-member" &&
         resumes() === 1 &&
         workspaceMember(db, "workspace", "new-member") === null,
-      { answer: getQuestion(db, positive.question.id)?.answeredBy, resumes: resumes() },
+      {
+        answer: (await getQuestion(sqliteDb(db), positive.question.id))?.answeredBy,
+        resumes: resumes(),
+      },
     );
     const stop = await task("inactive", "stop"),
       beforeStop = audits();
     await loop.onLinearEvent(stop.event);
     observe(
       "an inactive member's stop signal cannot cancel canonical work",
-      getQuestion(db, stop.question.id)?.status === "open" && audits() === beforeStop + 1,
-      { question: getQuestion(db, stop.question.id)?.status },
+      (await getQuestion(sqliteDb(db), stop.question.id))?.status === "open" &&
+        audits() === beforeStop + 1,
+      { question: (await getQuestion(sqliteDb(db), stop.question.id))?.status },
     );
     const entered = Promise.withResolvers<void>(),
       release = Promise.withResolvers<void>();
@@ -248,9 +253,9 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     await pending;
     observe(
       "membership demotion during verified actor lookup prevents answer",
-      getQuestion(db, changed.question.id)?.status === "open" && resumes() === 1,
+      (await getQuestion(sqliteDb(db), changed.question.id))?.status === "open" && resumes() === 1,
       {
-        question: getQuestion(db, changed.question.id)?.status,
+        question: (await getQuestion(sqliteDb(db), changed.question.id))?.status,
         role: workspaceMember(db, "workspace", "member")?.role,
       },
     );
@@ -267,14 +272,15 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     observe(
       "transient membership failure leaves the same answer retryable",
       rejected &&
-        getQuestion(db, unavailable.question.id)?.status === "open" &&
+        (await getQuestion(sqliteDb(db), unavailable.question.id))?.status === "open" &&
         audits() === beforeUnavailable,
       { rejected },
     );
     await loop.onLinearEvent(unavailable.event);
     observe(
       "repaired membership lookup accepts exact retry once",
-      getQuestion(db, unavailable.question.id)?.status === "answered" && resumes() === 2,
+      (await getQuestion(sqliteDb(db), unavailable.question.id))?.status === "answered" &&
+        resumes() === 2,
       { resumes: resumes() },
     );
     const removeOwnerTeam = () => {
@@ -318,10 +324,14 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     observe(
       "queued execution rechecks stored membership after one Linear authorization",
       calls === 1 &&
-        getQuestion(db, queued.question.id)?.status === "open" &&
+        (await getQuestion(sqliteDb(db), queued.question.id))?.status === "open" &&
         resumes() === 2 &&
         (await listPendingLinearTurns(sqliteDb(db), queued.event.sessionId!)).length === 0,
-      { calls, question: getQuestion(db, queued.question.id)?.status, resumes: resumes() },
+      {
+        calls,
+        question: (await getQuestion(sqliteDb(db), queued.question.id))?.status,
+        resumes: resumes(),
+      },
     );
     await queueLoop.shutdown();
     restoreOwnerTeam();
@@ -636,9 +646,9 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
       req.on("error", reject);
       req.end(body);
     });
-  const until = async (check: () => boolean) => {
+  const until = async (check: () => boolean | Promise<boolean>) => {
     const deadline = Date.now() + 3000;
-    while (!check()) {
+    while (!(await check())) {
       if (Date.now() > deadline) throw new Error("Expected local event did not settle");
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
@@ -663,7 +673,8 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     const invalidStatus = await send(invalid.payload, false);
     observe(
       "normal protected HTTPS rejects an unsigned human action",
-      invalidStatus === 401 && getQuestion(db, invalid.question.id)?.status === "open",
+      invalidStatus === 401 &&
+        (await getQuestion(sqliteDb(db), invalid.question.id))?.status === "open",
       { status: invalidStatus },
     );
     for (const [actor, signal] of [
@@ -677,11 +688,11 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
       observe(
         `normal signed HTTPS denies ${actor} ${signal ?? "answer"} semantically without retrying delivery`,
         status === 200 &&
-          getQuestion(db, t.question.id)?.status === "open" &&
+          (await getQuestion(sqliteDb(db), t.question.id))?.status === "open" &&
           listJobs(db).filter((j) => j.queue === JOB_KIND.resume).length === 0,
         {
           status,
-          question: getQuestion(db, t.question.id)?.status,
+          question: (await getQuestion(sqliteDb(db), t.question.id))?.status,
           denialAudits: denied() - before,
         },
       );
@@ -693,10 +704,10 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     observe(
       "normal catch-up denial cannot reach the poller stop fallback",
       denied() === before + 1 &&
-        getQuestion(db, stopped.question.id)?.status === "open" &&
+        (await getQuestion(sqliteDb(db), stopped.question.id))?.status === "open" &&
         listJobs(db).filter((j) => j.queue === JOB_KIND.command).length === 0,
       {
-        question: getQuestion(db, stopped.question.id)?.status,
+        question: (await getQuestion(sqliteDb(db), stopped.question.id))?.status,
         denials: denied() - before,
         commands: listJobs(db).filter((j) => j.queue === JOB_KIND.command).length,
       },
@@ -704,17 +715,19 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     const allowed = await task("new-member");
     polled = [allowed.activity];
     await paws.catchUp();
-    await until(() => getQuestion(db, allowed.question.id)?.status === "answered");
+    await until(
+      async () => (await getQuestion(sqliteDb(db), allowed.question.id))?.status === "answered",
+    );
     polled = [allowed.activity];
     await paws.catchUp();
     observe(
       "normal catch-up permits a verified teammate without a browser identity exactly once",
-      getQuestion(db, allowed.question.id)?.answeredBy === "new-member" &&
+      (await getQuestion(sqliteDb(db), allowed.question.id))?.answeredBy === "new-member" &&
         listJobs(db).filter((j) => j.jobKey === `resume:answer:${allowed.question.id}`).length ===
           1 &&
         workspaceMember(db, "workspace", "new-member") === null,
       {
-        answeredBy: getQuestion(db, allowed.question.id)?.answeredBy,
+        answeredBy: (await getQuestion(sqliteDb(db), allowed.question.id))?.answeredBy,
         resumes: listJobs(db).filter((j) => j.jobKey === `resume:answer:${allowed.question.id}`)
           .length,
       },
@@ -734,10 +747,10 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     await paws.catchUp();
     observe(
       "normal catch-up retains canonical Stop for an authorized teammate",
-      getQuestion(db, permittedStop.question.id)?.status === "open" &&
+      (await getQuestion(sqliteDb(db), permittedStop.question.id))?.status === "open" &&
         getWorkItem(db, permittedStop.item.id)?.state === "paused",
       {
-        question: getQuestion(db, permittedStop.question.id)?.status,
+        question: (await getQuestion(sqliteDb(db), permittedStop.question.id))?.status,
         state: getWorkItem(db, permittedStop.item.id)?.state,
       },
     );

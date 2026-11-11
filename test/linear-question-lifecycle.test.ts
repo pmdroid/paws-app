@@ -10,6 +10,7 @@ import {
   insertQueuedItem,
   listJobs,
   listOutbox,
+  sqliteDb,
 } from "../src/db";
 import {
   createInboxStore,
@@ -93,7 +94,7 @@ test("Linear answers preserve their human author through persisted inbox replay"
     expect(replayed.actorId).toBe("human-1");
     expect(replayed.activityCreatedAtMs).toBe(NOW + 1);
     await orchestrator.onLinearEvent(replayed);
-    expect(getQuestion(db, question.id)?.answeredBy).toBe("human-1");
+    expect((await getQuestion(sqliteDb(db), question.id))?.answeredBy).toBe("human-1");
     expect(listJobs(db).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(1);
     await orchestrator.onLinearEvent(replayed);
     expect(listJobs(db).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(1);
@@ -108,7 +109,7 @@ test.each([NOW - 1, NOW])(
     const { db, question, orchestrator } = await setup();
     try {
       await orchestrator.onLinearEvent(prompt(at));
-      expect(getQuestion(db, question.id)?.status).toBe("open");
+      expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
       expect(listJobs(db)).toHaveLength(0);
     } finally {
       db.close();
@@ -133,7 +134,7 @@ test("an answer racing delivery suppresses the unsent elicitation", async () => 
       now: NOW,
     });
     await orchestrator.onLinearEvent(prompt());
-    expect(getQuestion(db, question.id)?.status).toBe("answered");
+    expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("answered");
     expect(listOutbox(db)[0]?.status).toBe("dropped");
     expect(listJobs(db).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(1);
   } finally {
@@ -173,7 +174,7 @@ test("an answer aborts an elicitation currently being delivered", async () => {
     await outbox.tick();
     await orchestrator.onLinearEvent(prompt());
     expect(aborted).toBe(true);
-    expect(getQuestion(db, question.id)?.status).toBe("answered");
+    expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("answered");
     expect(listOutbox(db)[0]?.status).toBe("dropped");
   } finally {
     db.close();
@@ -184,7 +185,7 @@ test("an activity ID alone does not establish a human respondent", async () => {
   const { db, question, orchestrator } = await setup();
   try {
     await orchestrator.onLinearEvent(prompt(NOW + 1, "anonymous-activity", null));
-    expect(getQuestion(db, question.id)?.status).toBe("open");
+    expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
     expect(listJobs(db)).toHaveLength(0);
   } finally {
     db.close();
@@ -195,7 +196,7 @@ test("a webhook without an activity creation time cannot answer from delivery ti
   const { db, question, orchestrator } = await setup();
   try {
     await orchestrator.onLinearEvent({ ...prompt(), activityCreatedAtMs: null });
-    expect(getQuestion(db, question.id)?.status).toBe("open");
+    expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
     expect(listJobs(db)).toHaveLength(0);
   } finally {
     db.close();
@@ -216,8 +217,8 @@ test("a consumed activity cannot answer the next question in its session", async
       now: NOW + 50,
     });
     await orchestrator.onLinearEvent(event);
-    expect(getQuestion(db, question.id)?.status).toBe("answered");
-    expect(getQuestion(db, next.id)?.status).toBe("open");
+    expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("answered");
+    expect((await getQuestion(sqliteDb(db), next.id))?.status).toBe("open");
   } finally {
     db.close();
   }
@@ -246,11 +247,11 @@ test("a continuation write failure rolls back the answer and state transition", 
     db.run(`CREATE TRIGGER reject_resume BEFORE INSERT ON job
       WHEN NEW.queue = 'run.resume' BEGIN SELECT RAISE(ABORT, 'resume unavailable'); END`);
     await expect(orchestrator.onLinearEvent(prompt())).rejects.toThrow("resume unavailable");
-    expect(getQuestion(db, question.id)?.status).toBe("open");
+    expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
     expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
     db.run("DROP TRIGGER reject_resume");
     await orchestrator.onLinearEvent(prompt());
-    expect(getQuestion(db, question.id)?.status).toBe("answered");
+    expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("answered");
   } finally {
     db.close();
   }
@@ -261,14 +262,14 @@ test("a Linear Stop pauses the item with its question open, and a reply restarts
   try {
     await orchestrator.onLinearEvent({ ...prompt(), body: null, signal: "stop" });
     expect(getWorkItem(db, item.id)?.state).toBe("paused");
-    expect(getQuestion(db, question.id)?.status).toBe("open");
+    expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
     expect(listOutbox(db).map((row) => (row.payload as { body?: string }).body)).toContain(
       "Paused. Reply here or re-delegate to continue.",
     );
 
     await orchestrator.onLinearEvent(prompt(NOW + 500, "reply-1"));
     expect(getWorkItem(db, item.id)?.state).toBe("queued");
-    expect(getQuestion(db, question.id)?.answer).toBeNull();
+    expect((await getQuestion(sqliteDb(db), question.id))?.answer).toBeNull();
     expect(findOpenQuestion(db, "ses_1")).toBeNull();
     const resume = listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
     expect(resume).toHaveLength(1);
@@ -370,8 +371,8 @@ test("a polled prompt reaches answer delivery with normalized actor and creation
   });
   try {
     await delivered.promise;
-    expect(getQuestion(db, question.id)?.answeredBy).toBe("human-1");
-    expect(getQuestion(db, question.id)?.answer).toBe("Yes");
+    expect((await getQuestion(sqliteDb(db), question.id))?.answeredBy).toBe("human-1");
+    expect((await getQuestion(sqliteDb(db), question.id))?.answer).toBe("Yes");
   } finally {
     poller.stop();
     await poller.settled;
@@ -393,7 +394,7 @@ test("a runner wait asked before a restart is answered by the next process witho
     );
     expect(wait.status).toBe("asked");
     await orchestrator.onLinearEvent(prompt(NOW + 1, "keep-waiting"));
-    expect(getQuestion(db, wait.question.id)).toMatchObject({
+    expect(await getQuestion(sqliteDb(db), wait.question.id)).toMatchObject({
       status: "answered",
       answeredBy: "human-1",
     });

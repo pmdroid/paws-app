@@ -14,6 +14,7 @@ import {
   listJobs,
   listOutbox,
   saveTaskMode,
+  sqliteDb,
 } from "../src/db";
 import { createFakeTracker, parseAgentEvent } from "../src/linear";
 import { FakeGitHubIntegration, attachOrchestrator, type AgentLaunch } from "../src/loop";
@@ -118,7 +119,7 @@ test("a missing installation holds the item before Git and a reply cannot releas
       }),
     ]);
     await f.orchestrator.onLinearEvent(prompt("linear-owner", "text-claim"));
-    expect(getQuestion(f.db, question.id)?.status).toBe("open");
+    expect((await getQuestion(sqliteDb(f.db), question.id))?.status).toBe("open");
     expect(listJobs(f.db).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
     expect(turns(f.db)[0]?.state).toBe("cancelled");
   } finally {
@@ -136,7 +137,7 @@ test("the item resumes once by itself when the installation returns", async () =
     expect(getWorkItem(f.db, f.item.id)?.state).toBe("awaiting_input");
     f.host.installed = true;
     await f.orchestrator.recoverGitHubAuth();
-    expect(getQuestion(f.db, question.id)?.answeredBy).toBe("paws");
+    expect((await getQuestion(sqliteDb(f.db), question.id))?.answeredBy).toBe("paws");
     expect(getWorkItem(f.db, f.item.id)?.state).toBe("running");
     expect(listJobs(f.db).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(1);
     await f.orchestrator.recoverGitHubAuth();
@@ -155,7 +156,7 @@ test("Stop prevents a returning installation from resuming the item", async () =
     await f.orchestrator.onLinearEvent({ ...prompt("linear-owner", "stop"), signal: "stop" });
     f.host.installed = true;
     await f.orchestrator.recoverGitHubAuth();
-    expect(getQuestion(f.db, question.id)?.status).toBe("open");
+    expect((await getQuestion(sqliteDb(f.db), question.id))?.status).toBe("open");
     expect(getWorkItem(f.db, f.item.id)?.state).toBe("paused");
     expect(listJobs(f.db).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
   } finally {

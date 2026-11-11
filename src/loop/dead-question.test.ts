@@ -70,12 +70,12 @@ describe("a question whose elicitation died twice", () => {
 
     expect(again).not.toBeNull();
     expect(again).not.toBe(question.id);
-    expect(getQuestion(db, again!)).toMatchObject({
+    expect(await getQuestion(sqliteDb(db), again!)).toMatchObject({
       body: "Which repository?",
       options: ["paws-app", "paws-runner"],
       kind: "agent",
     });
-    expect(getQuestion(db, question.id)?.cancelledAt).toBe(3_000);
+    expect((await getQuestion(sqliteDb(db), question.id))?.cancelledAt).toBe(3_000);
     expect(findOpenQuestion(db, "ses-q")?.id).toBe(again!);
     expect(getWorkItem(db, "item-q")?.state).toBe("awaiting_input");
     expect(listOutbox(db, "ses-q").map((row) => [row.idempotencyKey, row.status])).toEqual([
@@ -98,9 +98,9 @@ describe("a question whose elicitation died twice", () => {
     });
 
     expect(again).toBe(question.id);
-    expect(getQuestion(db, question.id)?.status).toBe("open");
+    expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
     expect(findOpenQuestion(db, "ses-q")?.id).toBe(question.id);
-    expect(getVisualReview(db, question.id)).not.toBeNull();
+    expect(await getVisualReview(sqliteDb(db), question.id)).not.toBeNull();
     expect(listOutbox(db, "ses-q").map((row) => [row.idempotencyKey, row.status])).toEqual([
       [`question:${question.id}`, "dropped"],
       [`question:${question.id}:reask`, "pending"],

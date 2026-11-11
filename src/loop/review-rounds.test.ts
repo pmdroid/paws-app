@@ -278,7 +278,7 @@ test("a reply in Linear is Rethink the approach with the reply as the note", asy
     decidedBy: "delegator",
     closedReason: "decided",
   });
-  expect(getQuestion(db, question.id)?.answer).toBe(
+  expect((await getQuestion(sqliteDb(db), question.id))?.answer).toBe(
     "rethink: Stop patching; move the check into the middleware.",
   );
   expect(getWorkItem(db, itemId)?.state).toBe("queued");

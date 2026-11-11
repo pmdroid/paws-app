@@ -207,7 +207,7 @@ test("Approve needs a reason and a person who may decide", async () => {
       effects,
     ),
   ).toBe("forbidden");
-  expect(getQuestion(db, question.id)?.status).toBe("open");
+  expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
   expect((await recoveryOptions(db, itemId)).bypasses).toEqual([]);
 });

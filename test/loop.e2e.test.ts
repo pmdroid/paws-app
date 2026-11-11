@@ -1555,7 +1555,7 @@ for (const recovery of [
         };
         await runtime.orchestrator.onLinearEvent(event);
         await runtime.orchestrator.onLinearEvent(event);
-        expect(getQuestion(db, question.id)?.answeredBy).toBe("pascal");
+        expect((await getQuestion(sqliteDb(db), question.id))?.answeredBy).toBe("pascal");
       } else if (recovery === "refused bypass") {
         expect(await decide("someone-else", [{ checkId: "test", reason }])).toBe("forbidden");
       } else if (recovery === "missing bypass reason") {
@@ -1589,7 +1589,7 @@ for (const recovery of [
         recovery === "unfailed bypass check"
       ) {
         expect(stateOf(db, "ENG-8"), debug(layout, db)).toBe("awaiting_input");
-        expect(getQuestion(db, question.id)?.status).toBe("open");
+        expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
         expect(
           listJobs(db).filter(
             (job) =>
@@ -4984,11 +4984,11 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
       earlyAnswer = sendEvent("color-answer", "blue");
       for (
         let attempt = 0;
-        attempt < 100 && getQuestion(db, earlyQuestionId)?.status !== "answered";
+        attempt < 100 && (await getQuestion(sqliteDb(db), earlyQuestionId))?.status !== "answered";
         attempt++
       )
         await Bun.sleep(1);
-      earlyAnswerState = getQuestion(db, earlyQuestionId)?.status;
+      earlyAnswerState = (await getQuestion(sqliteDb(db), earlyQuestionId))?.status;
     }
   };
   const waitFor = async (condition: () => boolean) => {
@@ -5014,7 +5014,7 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
     await waitFor(() => tracker.questions.length === 2);
     await earlyAnswer;
     expect(earlyAnswerState).toBe("answered");
-    expect(getQuestion(db, earlyQuestionId!)).toMatchObject({
+    expect(await getQuestion(sqliteDb(db), earlyQuestionId!)).toMatchObject({
       answer: "blue",
       answeredBy: "pascal",
     });
@@ -5037,14 +5037,14 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
       { label: "Compact labels", value: "compact" },
     ]);
     const recoveredQuestionId = findOpenQuestion(db, "ses_1")!.id;
-    expect(getQuestion(db, earlyQuestionId!)).toMatchObject({
+    expect(await getQuestion(sqliteDb(db), earlyQuestionId!)).toMatchObject({
       answer: "blue",
       answeredBy: "pascal",
     });
     await sendEvent("color-answer", "blue");
     expect(findOpenQuestion(db, "ses_1")?.id).toBe(recoveredQuestionId);
     await sendEvent("label-answer", "Use larger labels and keep the blue color.");
-    expect(getQuestion(db, recoveredQuestionId)).toMatchObject({
+    expect(await getQuestion(sqliteDb(db), recoveredQuestionId)).toMatchObject({
       answer: "Use larger labels and keep the blue color.",
       answeredBy: "pascal",
       status: "answered",
@@ -5100,7 +5100,7 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
       sizeBytes: Buffer.from(png, "base64").byteLength,
       assetUrl: "https://uploads.linear.app/chart.png",
     });
-    expect(getQuestion(db, earlyQuestionId!)).toMatchObject({
+    expect(await getQuestion(sqliteDb(db), earlyQuestionId!)).toMatchObject({
       status: "answered",
       answer: "blue",
     });

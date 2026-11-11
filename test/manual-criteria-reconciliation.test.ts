@@ -164,9 +164,11 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
     expect(getWorkItem(db, ids.running!)!.state).toBe("running");
     expect(jobs()).toEqual(originalJobs);
     expect(getWorkItem(db, ids.removed!)!.state).toBe("queued");
-    expect(questions.map((q) => getQuestion(db, q.id)!.cancelledAt)).toEqual(
-      questions.map(() => null),
-    );
+    expect(
+      await Promise.all(
+        questions.map(async (q) => (await getQuestion(sqliteDb(db), q.id))!.cancelledAt),
+      ),
+    ).toEqual(questions.map(() => null));
     db.run("DROP TRIGGER fail_criteria_activity");
 
     await reconciler.reconcile({ itemId: manualId, workspaceId: "workspace" });
@@ -185,11 +187,11 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
     ).toBeNull();
     for (const question of questions) {
       if (obsolete.includes(question.kind)) {
-        expect(getQuestion(db, question.id)!.status).toBe("cancelled");
+        expect((await getQuestion(sqliteDb(db), question.id))!.status).toBe("cancelled");
         expect(
           await answerQuestion(db, question.id, { answer: "approve", answeredBy: "owner" }),
         ).toBeNull();
-      } else expect(getQuestion(db, question.id)!.cancelledAt).toBeNull();
+      } else expect((await getQuestion(sqliteDb(db), question.id))!.cancelledAt).toBeNull();
     }
     expect((await openLinkAsks(sqliteDb(db), manualId)).map((link) => link.kind)).toEqual([
       "question",
@@ -198,7 +200,7 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
       const stored = (await getLinkAsk(sqliteDb(db), link.question.id))!;
       expect(stored.closedAt).toBe(link.linkAsk.kind === "question" ? null : clock.now());
       expect(stored.closedReason).toBe(link.linkAsk.kind === "question" ? null : "cancelled");
-      expect(getQuestion(db, link.question.id)!.cancelledAt === null).toBe(
+      expect((await getQuestion(sqliteDb(db), link.question.id))!.cancelledAt === null).toBe(
         link.linkAsk.kind === "question",
       );
       if (link.linkAsk.kind !== "question")
@@ -294,7 +296,7 @@ test.each(["all", "criteria"] as const)(
         }),
       ).rejects.toThrow("rollback cleanup");
       expect(await openLinkAsks(sqliteDb(db), item.id)).toHaveLength(2);
-      expect(getQuestion(db, open.question.id)!.status).toBe("open");
+      expect((await getQuestion(sqliteDb(db), open.question.id))!.status).toBe("open");
       expect(listOutbox(db)).toEqual(before);
       await sqliteDb(db).transaction((q) => cancelItemQuestionsSteps(q, item.id, 1003, scope));
       expect(await openLinkAsks(sqliteDb(db), item.id)).toEqual([]);
@@ -303,7 +305,7 @@ test.each(["all", "criteria"] as const)(
           closedReason: "cancelled",
           closedAt: 1003,
         });
-        expect(getQuestion(db, question.id)!.status).toBe("cancelled");
+        expect((await getQuestion(sqliteDb(db), question.id))!.status).toBe("cancelled");
         expect(
           listOutbox(db).find(
             (row) => row.idempotencyKey === `link-ask-url-removed:${question.id}`,

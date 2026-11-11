@@ -8,12 +8,12 @@ import {
   markVisualReviewRowStale,
   markVisualReviewRowStaleSteps,
   recordVisualReviewAnswerRowSteps,
-  settled,
   sqliteDb,
   visualReviewRoundCountsSteps,
   visualReviewRowSteps,
   type Q,
   type Steps,
+  type Db,
 } from "../db";
 import { askSteps } from "./lifecycle";
 import type { StoredQuestion } from "./store";
@@ -277,8 +277,11 @@ export function* getVisualReviewSteps(q: Q, questionId: string): Steps<StoredVis
   return row === undefined ? null : mapVisualReview(row);
 }
 
-export function getVisualReview(db: Database, questionId: string): StoredVisualReview | null {
-  return settled(sqliteDb(db).run((q) => getVisualReviewSteps(q, questionId)));
+export async function getVisualReview(
+  store: Db,
+  questionId: string,
+): Promise<StoredVisualReview | null> {
+  return store.run((q) => getVisualReviewSteps(q, questionId));
 }
 
 type ContinueInput = {

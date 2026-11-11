@@ -835,7 +835,7 @@ describe("holds, questions and gates", () => {
         );
         await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Approved, ship it." })));
         expect(await f.deliver()).toBe("done");
-        expect(getQuestion(f.db, asked.question.id)!.status).toBe("open");
+        expect((await getQuestion(sqliteDb(f.db), asked.question.id))!.status).toBe("open");
         expect(findOpenQuestion(f.db, SESSION)?.id).toBe(asked.question.id);
         expect(getWorkItem(f.db, "eng-1")!.state).toBe("awaiting_input");
         expect((await f.comment("c-1")).state).toBe("queued");

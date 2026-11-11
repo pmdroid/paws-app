@@ -117,7 +117,7 @@ test("the visual review is a link ask without options, reminded once from the sh
     detail:
       "2 changed screens for visual-proof: Settings · Audit · 1440px, Settings · Audit · 390px.",
   });
-  expect(getVisualReview(db, question.id)).toMatchObject({
+  expect(await getVisualReview(sqliteDb(db), question.id)).toMatchObject({
     evidenceIds: ["ev-1", "ev-2"],
     headCommit: HEAD,
     outcome: null,
@@ -150,7 +150,7 @@ test("Approve on the page passes the check for that head and those files", async
     now: NOW + 100,
   });
   expect(outcome).toBe("answered");
-  expect(getVisualReview(db, question.id)).toMatchObject({
+  expect(await getVisualReview(sqliteDb(db), question.id)).toMatchObject({
     outcome: "accepted",
     answeredBy: "lead",
     headCommit: HEAD,
@@ -209,7 +209,7 @@ test("someone else cannot approve on the page", async () => {
       now: NOW + 100,
     }),
   ).toBe("forbidden");
-  expect(getVisualReview(db, question.id)?.outcome).toBeNull();
+  expect((await getVisualReview(sqliteDb(db), question.id))?.outcome).toBeNull();
 });
 
 test("Request changes on the page restarts the item with the marks and the note", async () => {
@@ -234,7 +234,7 @@ test("Request changes on the page restarts the item with the marks and the note"
     now: NOW + 100,
   });
   expect(outcome).toBe("answered");
-  expect(getVisualReview(db, question.id)).toMatchObject({
+  expect(await getVisualReview(sqliteDb(db), question.id)).toMatchObject({
     outcome: "changes_requested",
     feedback: "The Retry button wraps under the row.",
   });
@@ -259,7 +259,7 @@ test("a Linear reply that says approve requests changes and never approves", asy
     now: NOW + 100,
   });
   expect(guided).toBe(true);
-  expect(getVisualReview(db, question.id)).toMatchObject({
+  expect(await getVisualReview(sqliteDb(db), question.id)).toMatchObject({
     outcome: "changes_requested",
     feedback: "approve",
   });

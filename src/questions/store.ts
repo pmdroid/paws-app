@@ -12,6 +12,7 @@ import {
   type Q,
   type QuestionRow,
   type Steps,
+  type Db,
 } from "../db";
 import type { QuestionOption } from "./channel";
 
@@ -104,8 +105,8 @@ export function* getQuestionSteps(q: Q, id: string): Steps<StoredQuestion | null
   return row === null ? null : mapQuestion(row);
 }
 
-export function getQuestion(db: Database, id: string): StoredQuestion | null {
-  return settled(sqliteDb(db).run((q) => getQuestionSteps(q, id)));
+export async function getQuestion(store: Db, id: string): Promise<StoredQuestion | null> {
+  return store.run((q) => getQuestionSteps(q, id));
 }
 
 export function* findOpenQuestionSteps(q: Q, sessionId: string): Steps<StoredQuestion | null> {

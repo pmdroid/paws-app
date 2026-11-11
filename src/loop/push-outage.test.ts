@@ -198,7 +198,7 @@ describe("a push outage", () => {
 
     db.run("UPDATE job SET run_at = 0 WHERE id = ?", [jobs[0]]);
     await attempt(db, hour + 11 * MINUTE, () => "works");
-    expect(getQuestion(db, question.id)?.cancelledAt).toBe(hour + 11 * MINUTE);
+    expect((await getQuestion(sqliteDb(db), question.id))?.cancelledAt).toBe(hour + 11 * MINUTE);
     expect(findOpenQuestion(db, "ses-a")).toBeNull();
   });
 });

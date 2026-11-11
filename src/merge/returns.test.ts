@@ -172,7 +172,10 @@ describe("merge returns", () => {
     const queuedHelp = db
       .query<{ id: string }, []>("SELECT id FROM question WHERE item_id = 'eng-1'")
       .get()!;
-    expect(getQuestion(db, queuedHelp.id)).toMatchObject({ kind: "ci-help", status: "queued" });
+    expect(await getQuestion(sqliteDb(db), queuedHelp.id)).toMatchObject({
+      kind: "ci-help",
+      status: "queued",
+    });
   });
 
   test("asking again while a question is open, or without a session, asks nothing", async () => {

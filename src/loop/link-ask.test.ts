@@ -117,7 +117,7 @@ test("an answer from someone who did not delegate and does not lead the project 
       now: NOW + 100,
     }),
   ).toBe("forbidden");
-  expect(getQuestion(db, question.id)?.status).toBe("open");
+  expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
   expect((await getLinkAsk(sqliteDb(db), question.id))?.closedAt).toBeNull();
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
 });
@@ -247,7 +247,7 @@ test("a new head closes the open ask", async () => {
     closedReason: "head_moved",
     decision: null,
   });
-  expect(getQuestion(db, question.id)?.status).toBe("cancelled");
+  expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("cancelled");
   expect(findOpenQuestion(db, "ses_1")).toBeNull();
   expect(await remindLinkAsk(db, question.id, NOW + LINK_ASK_REMINDER_MS)).toBe(false);
   expect(

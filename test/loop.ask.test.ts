@@ -195,7 +195,7 @@ test("structured choices persist their values and display their labels", async (
     body: "Which?",
     options,
   });
-  expect(getQuestion(db, question.id)?.options).toEqual(options);
+  expect((await getQuestion(sqliteDb(db), question.id))?.options).toEqual(options);
   expect((await listOpenQuestions(sqliteDb(db)))[0]?.options).toEqual(["Other", "Paws"]);
   db.close();
 });
