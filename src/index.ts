@@ -98,6 +98,7 @@ import {
 import {
   workspaceMemberUsable,
   enqueueCommand,
+  enqueueCommandSteps,
   getLinearSession,
   getWorkItem,
   getItemRunCommitPolicy,
@@ -623,6 +624,14 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     }
     submitCommand(db, orchestrator.bus, command);
   };
+  const submitAsync = async (command: LinearCommand): Promise<void> => {
+    if (orchestrator === null) {
+      const { inserted } = await store.run((q) => enqueueCommandSteps(q, command));
+      if (inserted) emitJobReady(store);
+      return;
+    }
+    await submitCommandAsync(store, orchestrator.bus, command, commandInstance(db));
+  };
 
   let linearTaskAccess: LinearTaskAccess | null = null;
   const invalidateAuthorization = (scope: { sessionId?: string; issueId?: string } = {}): void => {
@@ -775,7 +784,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       if (orchestrator === null) throw new Error("loop is not attached");
       return orchestrator.sessionProgressReporter(event);
     },
-    submitCommand: submit,
+    submitCommand: submitAsync,
   });
 
   if (linear !== null)

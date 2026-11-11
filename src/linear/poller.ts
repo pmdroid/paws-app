@@ -151,7 +151,7 @@ export function startCatchUpPoller(options: {
   onEvent: (event: AcceptedLinearEvent) => Promise<void | boolean> | void | boolean;
   /** Takes `created` and `prompted` events. The poller records them and wakes it. */
   intake?: IntakeQueue;
-  submitCommand?: (command: LinearCommand) => void;
+  submitCommand?: (command: LinearCommand) => Promise<void>;
   db?: Database;
   sleeper?: Sleeper;
   timer?: boolean;
@@ -337,18 +337,18 @@ export function startCatchUpPoller(options: {
       options.store.markHandled(event.dedupeKey);
       return;
     }
-    if (accepted !== false && event.signal === "stop") submitStops(event);
+    if (accepted !== false && event.signal === "stop") await submitStops(event);
     options.store.markHandled(event.dedupeKey);
   }
 
-  function submitStops(event: AcceptedLinearEvent): void {
+  async function submitStops(event: AcceptedLinearEvent): Promise<void> {
     const submit = options.submitCommand;
     if (submit === undefined) return;
     const targets = stopTargets(options.db, event.issueId, event.sessionId);
     const requestedAt = event.updatedAtMs > 0 ? event.updatedAtMs : now();
     for (const itemId of targets) {
       try {
-        submit({ type: "stop", itemId, source: "linear", requestedAt });
+        await submit({ type: "stop", itemId, source: "linear", requestedAt });
       } catch (error) {
         if (!isUnique(error)) throw error;
         journalCaught(error, "poller.submitStops.submit", itemId, "duplicate stop command");

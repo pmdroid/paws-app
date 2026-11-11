@@ -82,7 +82,7 @@ export function openLinear(options: {
   beforeEvent?: (event: AcceptedLinearEvent, request?: TrackerRequestOptions) => Promise<boolean>;
   progressReporter?: (event: AcceptedLinearEvent) => TrackerAdapter["postProgress"];
   /** Applies `{ type: 'stop' }`. Default enqueues the command job for the loop to drain. */
-  submitCommand?: (command: LinearCommand) => void;
+  submitCommand?: (command: LinearCommand) => Promise<void>;
   countItemRequest?: (itemId: string, caller: string) => void | Promise<void>;
   budget?: LinearSharedBudget;
   fetch?: FetchLike;
@@ -184,7 +184,7 @@ export function openLinear(options: {
             teamId: settings.teamId,
             appUserId: settings.appUserId,
             submitCommand:
-              options.submitCommand ?? ((command) => persistStopCommand(options.db, command)),
+              options.submitCommand ?? (async (command) => persistStopCommand(options.db, command)),
           })
         : null;
       if (poller !== null) intake?.queue.wake();
@@ -220,7 +220,7 @@ function startPoller(options: {
   db: Database;
   teamId: string | null;
   appUserId: string | null;
-  submitCommand: (command: LinearCommand) => void;
+  submitCommand: (command: LinearCommand) => Promise<void>;
 }): CatchUpPoller | null {
   if (!options.auth.hasToken() || options.onEvent === undefined) return null;
   const client = createLinearClient({
