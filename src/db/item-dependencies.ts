@@ -122,7 +122,7 @@ export function* readDependencyScopeSteps(
         organizationId: sql<string>`s.organization_id`,
         clientId: sql<string>`s.oauth_client_id`,
         appUserId: sql<string>`s.app_user_id`,
-        sessionGeneration: sql<number>`s.generation`,
+        sessionGeneration: sql<number>`s.generation`.mapWith(Number),
         teamId: sql<string>`s.team_id`,
         ownerActorId: sql<string | null>`COALESCE((SELECT u.linear_user_id FROM workspace_user u
          JOIN work_item oi ON oi.owner_user_id=u.id
