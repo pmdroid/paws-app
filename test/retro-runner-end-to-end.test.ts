@@ -220,13 +220,15 @@ test.skipIf(!nonRootLinux)(
     roots.push(root);
     const control = { dispatcher: w.open(w.db) };
     await control.dispatcher.tick();
-    expect(control.dispatcher.generation("r1")).toMatchObject({ state: "waiting_for_runner" });
+    expect(await control.dispatcher.generation("r1")).toMatchObject({
+      state: "waiting_for_runner",
+    });
 
     addRunner(w.db, { id: "R1" });
     const seen = () => w.db.run("UPDATE runner SET last_seen_at=? WHERE id='R1'", [w.clock.now]);
     seen();
     await control.dispatcher.tick();
-    expect(control.dispatcher.generation("r1")).toMatchObject({
+    expect(await control.dispatcher.generation("r1")).toMatchObject({
       state: "generating",
       diagnostic: "dispatched",
     });
@@ -261,7 +263,7 @@ test.skipIf(!nonRootLinux)(
     expect((await getRetro(sqliteDb(reopened), "r1"))?.state).toBe("published");
     const items = listRetroItems(reopened, "r1").length;
     expect(items).toBeGreaterThan(0);
-    expect(control.dispatcher.generation("r1")).toMatchObject({ state: "ready" });
+    expect(await control.dispatcher.generation("r1")).toMatchObject({ state: "ready" });
 
     const result = JSON.parse(
       readFileSync(join(host.results.root, host.starts[0]!, "retro-result.json"), "utf8"),
@@ -270,7 +272,7 @@ test.skipIf(!nonRootLinux)(
     await runtime.tick();
     expect(host.starts).toHaveLength(1);
     expect(listRetroItems(reopened, "r1")).toHaveLength(items);
-    expect(control.dispatcher.generation("r1")).toMatchObject({ state: "ready" });
+    expect(await control.dispatcher.generation("r1")).toMatchObject({ state: "ready" });
     await runtime.stop();
   },
 );
@@ -299,7 +301,7 @@ test.skipIf(!nonRootLinux)(
     await runtime.tick();
     expect(calls).toEqual(["ack", "input:digest", "input:prompt", "released"]);
     expect(runtime.status().active).toEqual([]);
-    expect(control.dispatcher.generation("r1")).toMatchObject({
+    expect(await control.dispatcher.generation("r1")).toMatchObject({
       state: "failed",
       diagnostic: "failed",
       retry: null,
@@ -336,13 +338,16 @@ test.skipIf(!nonRootLinux)(
     expect(errors).toEqual(["worker start failed", "termination timed out"]);
     expect(runtime.status().active).toMatchObject([{ phase: "preparing" }]);
     expect(calls).toEqual(["ack", "input:digest", "input:prompt"]);
-    expect(control.dispatcher.generation("r1")).toMatchObject({ state: "generating" });
+    expect(await control.dispatcher.generation("r1")).toMatchObject({ state: "generating" });
 
     await runtime.tick();
     expect(host.stops).toHaveLength(2);
     expect(calls).toEqual(["ack", "input:digest", "input:prompt", "released"]);
     expect(runtime.status().active).toEqual([]);
-    expect(control.dispatcher.generation("r1")).toMatchObject({ state: "failed", retry: null });
+    expect(await control.dispatcher.generation("r1")).toMatchObject({
+      state: "failed",
+      retry: null,
+    });
     await runtime.tick();
     expect(host.starts).toHaveLength(1);
     await runtime.stop();

@@ -16,7 +16,6 @@ import {
   getRetroSteps,
   latestRetroDispatchSteps,
   retroGenerationSteps,
-  settled as settledValue,
   listRetroAttemptsSteps,
   listWorkspaceMembersSteps,
   liveAccountBindingSteps,
@@ -221,10 +220,6 @@ export function* retroGenerationViewSteps(
     digestSha256: retro.digestSha256,
     error: retro.error,
   };
-}
-
-export function retroGenerationView(db: Database, retroId: string): RetroGenerationView | null {
-  return settledValue(sqliteDb(db).run((q) => retroGenerationViewSteps(q, retroId)));
 }
 
 type Candidate = EligibleRunner & { occupied: number; capacity: number; free: boolean };
@@ -854,7 +849,7 @@ export function createRetroDispatcher(options: {
       }
       await note(retroId, "failed", reason);
     },
-    generation: (retroId: string) => retroGenerationView(db, retroId),
+    generation: (retroId: string) => store.run((q) => retroGenerationViewSteps(q, retroId)),
     async commands(runnerId: string): Promise<SignedRunnerCommand[]> {
       const envelopes: SignedRunnerCommand[] = [];
       for (const listed of await store.run((q) => deliverableRetroDispatchesSteps(q, runnerId))) {
