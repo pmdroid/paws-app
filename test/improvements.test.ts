@@ -353,7 +353,7 @@ describe("daily findings and retros share one inbox", () => {
       now: 5,
     });
     await ingestDailyFindings(db, "ws", { now: 6 });
-    const { revision } = saveRetroSettingsRevision(db, {
+    const { revision } = await saveRetroSettingsRevision(sqliteDb(db), {
       workspaceId: "ws",
       prompt: "Review {{digest}}",
       agentProfile: {},
@@ -373,8 +373,8 @@ describe("daily findings and retros share one inbox", () => {
       settingsRevision: revision,
       now: 1,
     });
-    beginRetroCollection(db, { retroId: "r1", now: 2 });
-    recordRetroEvidence(db, "r1", [
+    await beginRetroCollection(sqliteDb(db), { retroId: "r1", now: 2 });
+    await recordRetroEvidence(sqliteDb(db), "r1", [
       {
         evidenceId: "e1",
         repository: REPO,

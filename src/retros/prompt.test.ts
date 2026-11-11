@@ -178,7 +178,7 @@ async function queuedRetro(
     }),
   );
   if (!frozen.ok) throw new Error(frozen.message);
-  expect(beginRetroCollection(db, { retroId: input.id, now: 1 }).ok).toBe(true);
+  expect((await beginRetroCollection(sqliteDb(db), { retroId: input.id, now: 1 })).ok).toBe(true);
   const digest = input.digest ?? digestFor(frozen.retro.repositories[0]!);
   const write = (kind: "digest" | "manifest", value: unknown) =>
     writeRetroArtifact(db, root, {
@@ -189,7 +189,7 @@ async function queuedRetro(
     });
   write("digest", digest);
   write("manifest", { prompt: { maxChars: input.maxChars ?? RETRO_PROMPT_DIGEST_CHARS } });
-  freezeRetroInput(db, {
+  await freezeRetroInput(sqliteDb(db), {
     retroId: input.id,
     endCursors: Object.fromEntries(
       frozen.retro.repositories.map((name) => [name, start + 5 * DAY]),

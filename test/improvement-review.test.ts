@@ -35,7 +35,7 @@ import {
 
 describe("improvement decisions", () => {
   test("two reviewers: the second conflicting decision returns the first one with 409", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     const first = await w.api("ada", `/api/improvements/${id}/decision`, accept());
     expect(first.status).toBe(200);
@@ -57,7 +57,7 @@ describe("improvement decisions", () => {
   });
 
   test("a repeated accept must match the frozen criterion and accepts the issue identifier", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     const path = `/api/improvements/${id}/decision`;
     const link = { kind: "link", issue: "PAS-60" };
@@ -81,7 +81,7 @@ describe("improvement decisions", () => {
   });
 
   test("reject then accept: rejection records the reason and no delivery", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     const rejected = await w.api("bea", `/api/improvements/${id}/decision`, reject());
     expect(rejected.body.item).toMatchObject({
@@ -95,7 +95,7 @@ describe("improvement decisions", () => {
   });
 
   test("duplicate clicks return the existing result without a second delivery", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     const [one, two] = await Promise.all([
       w.api("ada", `/api/improvements/${id}/decision`, accept()),
@@ -109,7 +109,7 @@ describe("improvement decisions", () => {
   });
 
   test("filing in flight: reject and reopen cannot undo an accepted issue", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     await w.api("ada", `/api/improvements/${id}/decision`, accept());
     const [delivery] = listImprovementDeliveries(w.db, id);
@@ -129,7 +129,7 @@ describe("improvement decisions", () => {
   });
 
   test("a filing failure stays accepted and retry reuses the same delivery", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     await w.api("ada", `/api/improvements/${id}/decision`, accept());
     const [delivery] = listImprovementDeliveries(w.db, id);
@@ -180,7 +180,7 @@ describe("improvement decisions", () => {
   });
 
   test("an unfiled create chooses another mapped team; an uncertain one only reconciles", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     await w.api("ada", `/api/improvements/${id}/decision`, accept());
     const [delivery] = listImprovementDeliveries(w.db, id);
@@ -251,7 +251,7 @@ describe("improvement decisions", () => {
   });
 
   test("a blocked link reopens for a new choice; a stranded evidence comment can be cancelled", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     const decision = `/api/improvements/${id}/decision`;
     const settle = async (
@@ -327,7 +327,7 @@ describe("improvement decisions", () => {
   });
 
   test("link revalidates the issue; a link alone posts no comment", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     const decide = (intent: unknown) =>
       w.api("ada", `/api/improvements/${id}/decision`, accept(1, intent));
@@ -358,7 +358,7 @@ describe("improvement decisions", () => {
   });
 
   test("a proposal that changes while Linear is read is not accepted", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     const ada = w.people["ada"]!;
     const outcome = await decideInboxItem(w.db, {
@@ -394,7 +394,7 @@ describe("improvement decisions", () => {
   });
 
   test("link and add evidence freezes an explicit comment intent; closed needs explicit consent", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     const linked = await w.api(
       "ada",
@@ -411,7 +411,7 @@ describe("improvement decisions", () => {
   });
 
   test("create must name a destination the reviewer is authorized for", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     const refused = await w.api(
       "ada",
@@ -427,7 +427,7 @@ describe("improvement decisions", () => {
   });
 
   test("access revoked during the Linear lookup refuses the link", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     const decideWhile = async (revoke: () => void) => {
       const http = createImprovementsHttp({
@@ -468,7 +468,7 @@ describe("improvement decisions", () => {
   });
 
   test("revoked membership loses reads and decisions; another workspace sees nothing", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     syncWorkspaceMember(w.db, {
       workspaceId: "ws",
@@ -489,7 +489,7 @@ describe("improvement decisions", () => {
   });
 
   test("an admin-revoked member loses reads and decisions", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     changeWorkspaceRevocation(w.db, {
       workspaceId: "ws",
@@ -505,7 +505,7 @@ describe("improvement decisions", () => {
   });
 
   test("responses are no-store and missing ids are recoverable 404s", async () => {
-    const w = world();
+    const w = await world();
     const list = await w.api("ada", "/api/improvements");
     expect(list.headers.get("cache-control")).toBe("no-store");
     const missing = await w.api("ada", "/api/improvements/01MISSING/decision", accept());
@@ -518,7 +518,7 @@ describe("improvement decisions", () => {
 
 describe("daily findings share legacy claims", () => {
   test("new daily acceptance needs a criterion stored as an annotation", async () => {
-    const w = world();
+    const w = await world();
     await seedDaily(w.db);
     const list = await w.api("ada", "/api/improvements?source=daily");
     const [daily] = list.body.items;
@@ -549,7 +549,7 @@ describe("daily findings share legacy claims", () => {
   });
 
   test("legacy File after inbox Create is refused, and inbox Create after a legacy claim conflicts", async () => {
-    const w = world();
+    const w = await world();
     const { groupId } = await seedDaily(w.db);
     const [daily] = (await w.api("ada", "/api/improvements?source=daily")).body.items;
     const done = await w.api(
@@ -582,7 +582,7 @@ describe("daily findings share legacy claims", () => {
     expect(legacy!.status).toBe(409);
     expect(files).toEqual([]);
 
-    const other = world();
+    const other = await world();
     const seeded = await seedDaily(other.db);
     other.db.run("UPDATE finding_group SET action='file' WHERE id=?", [seeded.groupId]);
     const [claimed] = (await other.api("ada", "/api/improvements?source=daily")).body.items;
@@ -601,7 +601,7 @@ describe("daily findings share legacy claims", () => {
 
 describe("legacy dismissal after an inbox accept", () => {
   test("neither a group nor a single finding can be dismissed once the inbox accepted it", async () => {
-    const w = world();
+    const w = await world();
     const { groupId, findings } = await seedDaily(w.db);
     const [daily] = (await w.api("ada", "/api/improvements?source=daily")).body.items;
     const done = await w.api(
@@ -635,7 +635,7 @@ describe("legacy dismissal after an inbox accept", () => {
 
 describe("individual finding issues share the inbox claim", () => {
   const ORIGIN = "https://paws.example";
-  function route(w: ReturnType<typeof world>, file: () => Promise<void> = async () => {}) {
+  function route(w: Awaited<ReturnType<typeof world>>, file: () => Promise<void> = async () => {}) {
     const filed: string[] = [];
     const handle = createFindingIssueRoute({
       db: w.db,
@@ -701,7 +701,7 @@ describe("individual finding issues share the inbox claim", () => {
       );
     return { post, filed };
   }
-  const acceptDaily = async (w: ReturnType<typeof world>) => {
+  const acceptDaily = async (w: Awaited<ReturnType<typeof world>>) => {
     const [daily] = (await w.api("ada", "/api/improvements?source=daily")).body.items;
     return w.api(
       "ada",
@@ -714,7 +714,7 @@ describe("individual finding issues share the inbox claim", () => {
   };
 
   test("an inbox accept blocks filing the same finding individually", async () => {
-    const w = world();
+    const w = await world();
     await seedDaily(w.db);
     expect((await acceptDaily(w)).body.status).toBe("decided");
     const { post, filed } = route(w);
@@ -724,7 +724,7 @@ describe("individual finding issues share the inbox claim", () => {
   });
 
   test("an individual filing, finished or in flight, blocks the inbox accept", async () => {
-    const w = world();
+    const w = await world();
     await seedDaily(w.db);
     let release = () => {};
     const gate = new Promise<void>((resolve) => (release = resolve));
@@ -746,7 +746,7 @@ describe("individual finding issues share the inbox claim", () => {
   });
 
   test("an individual filing after a dismissed group still blocks the inbox Create", async () => {
-    const w = world();
+    const w = await world();
     const { groupId } = await seedDaily(w.db);
     const dismissed = await handleFindingGroupsRequest(
       new Request("http://paws.test/api/finding-groups", {
@@ -767,7 +767,7 @@ describe("individual finding issues share the inbox claim", () => {
 
 describe("partial repository access", () => {
   test("a member who reads only one of two repositories sees only that repository", async () => {
-    const w = world();
+    const w = await world();
     const list = await w.api("ada", "/api/improvements");
     expect(list.body.items.map((i: { id: string }) => i.id)).toEqual([w.retro.a]);
     expect(list.body.counts).toMatchObject({ total: 1, weekly: 1 });
@@ -821,7 +821,7 @@ describe("partial repository access", () => {
   });
 
   test("readable sessions do not replace repository permission for downloads", async () => {
-    const w = world();
+    const w = await world();
     for (const file of ["digest", "report", "prompt"])
       expect((await w.retroApi("ada", `/api/retros/reports/r1/${file}`, ALL)).status).toBe(403);
     const report = (await (
@@ -834,7 +834,7 @@ describe("partial repository access", () => {
   });
 
   test("full access downloads the digest, report and rendered prompt", async () => {
-    const w = world();
+    const w = await world();
     const digest = await w.retroApi("admin", "/api/retros/reports/r1/digest");
     expect(digest.status).toBe(200);
     expect(digest.headers.get("content-disposition")).toContain("attachment");

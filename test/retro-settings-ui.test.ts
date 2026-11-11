@@ -455,7 +455,7 @@ test("a workspace switch or lost permission clears the draft and preview", async
 });
 
 test("a report shows the prompt and profile its retro froze", async () => {
-  const w = world();
+  const w = await world();
   const handle = createRetroPreviewHttp({ db: w.db, artifactRoot: w.root });
   const controller = createRetroSettings({
     fetch: async (url: string) =>

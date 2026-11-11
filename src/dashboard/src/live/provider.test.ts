@@ -664,7 +664,7 @@ describe("live status provider", () => {
       answerers: ["delegator"],
       createdAt: now,
     });
-    saveCandidateRisk(db, {
+    await saveCandidateRisk(sqliteDb(db), {
       itemId: item.id,
       head,
       base: "base",
@@ -709,7 +709,7 @@ describe("live status provider", () => {
       answerers: ["delegator"],
       createdAt: now,
     });
-    saveCandidateRisk(db, {
+    await saveCandidateRisk(sqliteDb(db), {
       itemId: item.id,
       head,
       base: "base",
@@ -741,8 +741,8 @@ describe("live status provider", () => {
     const db = database();
     const now = 1_700_000_000_000;
     const item = insertQueuedItem(db, { id: "ENG-7", sessionKey: "ses_1", now });
-    const risk = (head: string, at: number) =>
-      saveCandidateRisk(db, {
+    const risk = async (head: string, at: number) =>
+      await saveCandidateRisk(sqliteDb(db), {
         itemId: item.id,
         head,
         base: "base",
@@ -750,7 +750,7 @@ describe("live status provider", () => {
         paths: ["src/auth/session.ts"],
         classifiedAt: at,
       });
-    risk("9c1d2e3ff0", now);
+    await risk("9c1d2e3ff0", now);
     await saveRiskFix(sqliteDb(db), {
       itemId: item.id,
       head: "9c1d2e3ff0",
@@ -772,7 +772,7 @@ describe("live status provider", () => {
     );
     expect(parsed.ok && parsed.response.issues[0]?.riskCarryOver).toEqual(carried);
     // A newer head has not been compared yet, so the old carry-over no longer shows.
-    risk("aaaa111122", now + 1);
+    await risk("aaaa111122", now + 1);
     expect((await createLiveStatusProvider(db).issues()).issues[0]?.riskCarryOver).toBeUndefined();
   });
 
@@ -1376,7 +1376,7 @@ describe("live status provider", () => {
     });
     upsertCloseoutStep(db, item.id, identity(item.id), review("passed", null), now);
     finishCloseoutProgress(db, item.id, identity(item.id), "accepted", now);
-    saveCandidateRisk(db, {
+    await saveCandidateRisk(sqliteDb(db), {
       itemId: item.id,
       head,
       base,
@@ -1396,7 +1396,7 @@ describe("live status provider", () => {
       now,
     );
     finishCloseoutProgress(db, docs.id, identity(docs.id), "accepted", now);
-    saveCandidateRisk(db, {
+    await saveCandidateRisk(sqliteDb(db), {
       itemId: docs.id,
       head,
       base,

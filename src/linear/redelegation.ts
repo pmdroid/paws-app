@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { issueHasItemOutside, latestOpenIssueSession, sessionHasWorkItem } from "../db";
+import { issueHasItemOutside, latestOpenIssueSession, sessionHasWorkItem, sqliteDb } from "../db";
 import type { AcceptedLinearEvent } from "./events";
 import type { InboxStore } from "./inbox";
 import type { LinearIssueOwnership } from "./issue-lifecycle";
@@ -20,11 +20,11 @@ export async function checkRedelegation(
 ): Promise<boolean> {
   const { db, store } = options;
   if (store.getCursor(`delegated:${target.issueId}`) !== target.delegatedAtMs) return false;
-  const event = reusedSessionEvent(db, target);
+  const event = await reusedSessionEvent(db, target);
   if (event === null || store.get(event.dedupeKey) !== null) return false;
   const issue = await options.inspect(target.issueId);
   if (options.appUserId === null || issue.delegateId !== options.appUserId) return false;
-  const current = reusedSessionEvent(db, target);
+  const current = await reusedSessionEvent(db, target);
   if (current === null || store.get(current.dedupeKey) !== null) return false;
   store.commit(current);
   await options.onEvent(current);
@@ -32,12 +32,12 @@ export async function checkRedelegation(
   return true;
 }
 
-function reusedSessionEvent(
+async function reusedSessionEvent(
   db: Database,
   target: { issueId: string; delegatedAtMs: number },
-): AcceptedLinearEvent | null {
+): Promise<AcceptedLinearEvent | null> {
   if (issueHasItemOutside(db, target.issueId, CLOSED_STATES)) return null;
-  const session = latestOpenIssueSession(db, target.issueId);
+  const session = await latestOpenIssueSession(sqliteDb(db), target.issueId);
   if (session === null || session.createdAt > target.delegatedAtMs - NEW_SESSION_MARGIN_MS)
     return null;
   if (sessionHasWorkItem(db, session.sessionId)) return null;

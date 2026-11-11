@@ -21,7 +21,7 @@ function seeded() {
 describe("candidate risk", () => {
   test("stores the tier and matched paths for each candidate head", async () => {
     const db = seeded();
-    saveCandidateRisk(db, {
+    await saveCandidateRisk(sqliteDb(db), {
       itemId: "item",
       head: "aaa",
       base: "base",
@@ -30,7 +30,7 @@ describe("candidate risk", () => {
       matches: [{ path: "src/auth/session.ts", lists: ["settings", "file"] }],
       classifiedAt: 10,
     });
-    saveCandidateRisk(db, {
+    await saveCandidateRisk(sqliteDb(db), {
       itemId: "item",
       head: "bbb",
       base: "base",

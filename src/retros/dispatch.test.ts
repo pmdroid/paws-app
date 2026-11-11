@@ -336,14 +336,16 @@ describe("placement", () => {
       agentProfile: first.agentProfile,
       now: clock.now,
     });
-    expect(beginRetroCollection(db, { retroId: "r2", now: clock.now }).ok).toBe(true);
+    expect((await beginRetroCollection(sqliteDb(db), { retroId: "r2", now: clock.now })).ok).toBe(
+      true,
+    );
     const padded = Buffer.concat([digest, Buffer.alloc(8_718_484 - digest.length, " ")]);
     for (const [kind, bytes] of [
       ["digest", padded],
       ["manifest", manifest],
     ] as const)
       writeRetroArtifact(db, root, { retroId: "r2", kind, bytes, now: clock.now });
-    freezeRetroInput(db, {
+    await freezeRetroInput(sqliteDb(db), {
       retroId: "r2",
       endCursors: { [FIXTURE_REPO]: FIXTURE_END },
       now: clock.now,

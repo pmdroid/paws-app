@@ -1036,7 +1036,7 @@ export async function collectRetroDigest(
   const retro = await getRetro(sqliteDb(db), input.retroId);
   if (retro === null || retro.state !== "collecting")
     return { ok: false, reason: "not_collecting" };
-  const begun = beginRetroCollection(db, {
+  const begun = await beginRetroCollection(sqliteDb(db), {
     retroId: retro.id,
     initialCursors: Object.fromEntries(
       retro.repositories.map((repository) => [repository, retro.windowStart]),
@@ -1062,8 +1062,8 @@ export async function collectRetroDigest(
     collectedAt: input.now,
     ...(input.secrets === undefined ? {} : { secrets: input.secrets }),
   });
-  recordRetroEvidence(
-    db,
+  await recordRetroEvidence(
+    sqliteDb(db),
     retro.id,
     digest.records.map((record) => ({
       evidenceId: record.evidenceId,
@@ -1099,7 +1099,7 @@ export async function collectRetroDigest(
     bytes: new TextEncoder().encode(JSON.stringify(manifest)),
     now: input.now,
   });
-  const frozen = freezeRetroInput(db, {
+  const frozen = await freezeRetroInput(sqliteDb(db), {
     retroId: retro.id,
     endCursors: Object.fromEntries(windows.map((window) => [window.repository, window.end])),
     now: input.now,

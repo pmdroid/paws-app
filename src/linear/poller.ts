@@ -340,7 +340,7 @@ export function startCatchUpPoller(options: {
   async function submitStops(event: AcceptedLinearEvent): Promise<void> {
     const submit = options.submitCommand;
     if (submit === undefined) return;
-    const targets = stopTargets(options.db, event.issueId, event.sessionId);
+    const targets = await stopTargets(options.db, event.issueId, event.sessionId);
     const requestedAt = event.updatedAtMs > 0 ? event.updatedAtMs : now();
     for (const itemId of targets) {
       try {
@@ -650,15 +650,15 @@ function rank(eventRow: AcceptedLinearEvent): number {
   return eventRow.signal === "stop" ? 1 : 0;
 }
 
-function stopTargets(
+async function stopTargets(
   db: Database | undefined,
   linearIssueId: string | null,
   sessionId: string | null,
-): string[] {
+): Promise<string[]> {
   if (db === undefined) return linearIssueId === null ? [] : [linearIssueId];
   const ids: string[] = [];
   try {
-    ids.push(...openStopTargets(db, linearIssueId, sessionId));
+    ids.push(...(await openStopTargets(sqliteDb(db), linearIssueId, sessionId)));
   } catch (caughtError2) {
     journalCaught(caughtError2, "poller.stopTargets.all", null);
     return linearIssueId === null || sessionId !== null ? [] : [linearIssueId];

@@ -125,7 +125,7 @@ async function harness() {
     starts.push(target.id);
     return { id: `session-${starts.length}`, url: null };
   };
-  const w = world({ linear, startSession, dashboardUrl: "https://paws.test/" });
+  const w = await world({ linear, startSession, dashboardUrl: "https://paws.test/" });
   await seedDaily(w.db);
   const retros = createRetroReviewHttp({ db: w.db, artifactRoot: w.root, now: w.now });
   const requests: { method: string; path: string }[] = [];

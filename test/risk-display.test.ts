@@ -38,7 +38,7 @@ async function fixture(
     policyDigest: "policy",
     policyPath: null,
   };
-  saveCandidateRisk(db, {
+  await saveCandidateRisk(sqliteDb(db), {
     itemId: item.id,
     head: "head",
     base: "base",

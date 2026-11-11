@@ -45,7 +45,11 @@ function sessions() {
 async function linked(options: { delegated?: boolean; stateType?: string } = {}) {
   const linear = createFakeImprovementLinear();
   const starter = sessions();
-  const w = world({ linear, startSession: starter.start, dashboardUrl: "https://paws.test/" });
+  const w = await world({
+    linear,
+    startSession: starter.start,
+    dashboardUrl: "https://paws.test/",
+  });
   const id = w.retro.a;
   const decided = await w.api("ada", `/api/improvements/${id}/decision`, accept());
   expect(decided.body.status).toBe("decided");
@@ -319,7 +323,7 @@ describe("lost, duplicate and out-of-order events", () => {
 describe("daily findings", () => {
   test("a finding that disappears does not verify; a recurrence after verification is stale", async () => {
     const linear = createFakeImprovementLinear();
-    const w = world({ linear });
+    const w = await world({ linear });
     const { findings } = await seedDaily(w.db);
     const [daily] = (await w.api("ada", "/api/improvements?source=daily")).body.items;
     const id: string = daily.id;
@@ -678,7 +682,7 @@ describe("one bound work item", () => {
     const lookup = createFakeIssueLookup([
       { id: ISSUE, identifier: "PAS-70", url: null, teamId: "team-a", state: "open" },
     ]);
-    const w = world({
+    const w = await world({
       linear,
       startSession: starter.start,
       dashboardUrl: "https://paws.test/",
@@ -1069,7 +1073,7 @@ describe("attention and activity", () => {
   });
 
   test("a failed filing is a filing error entry", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     await w.api("ada", `/api/improvements/${id}/decision`, accept());
     const delivery = listImprovementDeliveries(w.db, id)[0]!;

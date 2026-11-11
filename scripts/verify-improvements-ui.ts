@@ -24,7 +24,7 @@ const startSession: StartIssueSession = async (target) => {
   starts.push(target.id);
   return { id: `session-${starts.length}`, url: null };
 };
-const w = world({ linear, startSession, dashboardUrl: "http://127.0.0.1/" });
+const w = await world({ linear, startSession, dashboardUrl: "http://127.0.0.1/" });
 await seedDaily(w.db);
 const retro = w.retro.a;
 createRetro(w.db, {

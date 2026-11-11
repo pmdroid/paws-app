@@ -112,12 +112,12 @@ export function* openStopTargetsSteps(
   return ids;
 }
 
-export function openStopTargets(
-  db: Database,
+export async function openStopTargets(
+  store: Db,
   linearIssueId: string | null,
   sessionId: string | null,
-): string[] {
-  return settled(sqliteDb(db).run((q) => openStopTargetsSteps(q, linearIssueId, sessionId)));
+): Promise<string[]> {
+  return store.run((q) => openStopTargetsSteps(q, linearIssueId, sessionId));
 }
 
 export function* latestOpenIssueSessionSteps(q: Q, issueId: string) {
@@ -133,11 +133,11 @@ export function* latestOpenIssueSessionSteps(q: Q, issueId: string) {
   return row ?? null;
 }
 
-export function latestOpenIssueSession(
-  db: Database,
+export async function latestOpenIssueSession(
+  store: Db,
   issueId: string,
-): { sessionId: string; createdAt: number } | null {
-  return settled(sqliteDb(db).run((q) => latestOpenIssueSessionSteps(q, issueId)));
+): Promise<{ sessionId: string; createdAt: number } | null> {
+  return store.run((q) => latestOpenIssueSessionSteps(q, issueId));
 }
 
 export function* persistStopJobSteps(
