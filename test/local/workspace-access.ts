@@ -166,9 +166,11 @@ export async function probeWorkspaceAccess(
   });
   const day = 24 * 60 * 60_000;
   const liveBeforeIdleLimit =
-    requestWorkspaceSession(restored, idleRequest, now + 30 * day - 1) !== null;
-  const extendedByUse = requestWorkspaceSession(restored, idleRequest, now + 59 * day) !== null;
-  const idleExpiry = requestWorkspaceSession(restored, idleRequest, now + 90 * day) === null;
+    (await requestWorkspaceSession(sqliteDb(restored), idleRequest, now + 30 * day - 1)) !== null;
+  const extendedByUse =
+    (await requestWorkspaceSession(sqliteDb(restored), idleRequest, now + 59 * day)) !== null;
+  const idleExpiry =
+    (await requestWorkspaceSession(sqliteDb(restored), idleRequest, now + 90 * day)) === null;
   observe(
     "browser sessions extend on each use and expire after thirty idle days",
     liveBeforeIdleLimit && extendedByUse && idleExpiry,
@@ -184,7 +186,7 @@ export async function probeWorkspaceAccess(
   });
   observe(
     "membership removal invalidates an existing browser session",
-    requestWorkspaceSession(restored, request, now + 2) === null,
+    (await requestWorkspaceSession(sqliteDb(restored), request, now + 2)) === null,
     {
       member: await workspaceMember(sqliteDb(restored), workspace.id, userId),
       remainingSessions: restored.query("SELECT count(*) AS count FROM workspace_session").get(),
@@ -239,20 +241,24 @@ export async function probeWorkspaceAccess(
   const returnedRequest = new Request(request.url, {
     headers: { cookie: `${WORKSPACE_COOKIE}=${returned.token}` },
   });
-  const returnedPrincipal = requestWorkspaceSession(restored, returnedRequest, now + 4)?.principal;
+  const returnedPrincipal = (
+    await requestWorkspaceSession(sqliteDb(restored), returnedRequest, now + 4)
+  )?.principal;
   observe(
     "verified membership restoration retains the manually granted owner role",
     returnedPrincipal?.role === "admin" &&
-      requestWorkspaceSession(restored, request, now + 4) === null,
+      (await requestWorkspaceSession(sqliteDb(restored), request, now + 4)) === null,
     {
       role: returnedPrincipal?.role,
-      oldSessionRevoked: requestWorkspaceSession(restored, request, now + 4) === null,
+      oldSessionRevoked:
+        (await requestWorkspaceSession(sqliteDb(restored), request, now + 4)) === null,
     },
   );
   let liveWhileUsed = true;
   for (let days = 20; days <= 120; days += 20)
     liveWhileUsed &&=
-      requestWorkspaceSession(restored, returnedRequest, now + 4 + days * day) !== null;
+      (await requestWorkspaceSession(sqliteDb(restored), returnedRequest, now + 4 + days * day)) !==
+      null;
   observe("regularly used browser sessions stay signed in beyond thirty days", liveWhileUsed, {
     liveWhileUsed,
   });

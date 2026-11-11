@@ -361,7 +361,7 @@ export async function probeExecutionControls(root: string) {
       headers: fixture.headers(),
       body: JSON.stringify({ itemId: "controlled", action: "stop" }),
     });
-    const verified = requestWorkspaceSession(db, stopRequest)!;
+    const verified = (await requestWorkspaceSession(sqliteDb(db), stopRequest))!;
     const allowed = await workspaceSessionIds(
       sqliteDb(db),
       verified.principal.workspaceId,

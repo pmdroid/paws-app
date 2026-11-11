@@ -139,8 +139,8 @@ test("admin revoke atomically ends sessions, runners, queued and running work; s
       issueWorkspaceSession(db, { workspaceId: "workspace", userId: "member", now }),
     ).rejects.toThrow(WORKSPACE_REVOKED_SIGN_IN);
     expect(
-      requestWorkspaceSession(
-        db,
+      await requestWorkspaceSession(
+        sqliteDb(db),
         new Request(f.origin, {
           headers: { cookie: `${WORKSPACE_COOKIE}=${f.sessions["member"]!.token}` },
         }),
