@@ -57,7 +57,7 @@ async function held(publicUrl: string | null = "https://paws.example") {
     "lea@example.com",
   ]);
   await askCloseoutHelp(
-    db,
+    sqliteDb(db),
     "ses_1",
     {
       itemId: item.id,
@@ -128,7 +128,7 @@ test("Approve records who and why and verifies the same head again", async () =>
   const { db, itemId, question } = await held();
   expect(
     await decideLinkAsk(
-      db,
+      sqliteDb(db),
       {
         questionId: question.id,
         decision: "approve",
@@ -156,7 +156,7 @@ test("Approve records who and why and verifies the same head again", async () =>
     approvedAt: NOW + 100,
   });
   // Bound to the task, base, head and policy; applyBypasses passes it for that head only.
-  expect((await recoveryOptions(db, itemId)).bypasses).toEqual([
+  expect((await recoveryOptions(sqliteDb(db), itemId)).bypasses).toEqual([
     {
       questionId: question.id,
       taskId: "PAS-633",
@@ -190,14 +190,14 @@ test("Approve needs a reason and a person who may decide", async () => {
   for (const note of [null, "  "])
     expect(
       await decideLinkAsk(
-        db,
+        sqliteDb(db),
         { questionId: question.id, decision: "approve", note, answeredBy: "lead", actor, now: NOW },
         effects,
       ),
     ).toBe("rejected");
   expect(
     await decideLinkAsk(
-      db,
+      sqliteDb(db),
       {
         questionId: question.id,
         decision: "approve",
@@ -211,14 +211,14 @@ test("Approve needs a reason and a person who may decide", async () => {
   ).toBe("forbidden");
   expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
-  expect((await recoveryOptions(db, itemId)).bypasses).toEqual([]);
+  expect((await recoveryOptions(sqliteDb(db), itemId)).bypasses).toEqual([]);
 });
 
 test("Send back restarts the agent with the finding", async () => {
   const { db, itemId, question } = await held();
   expect(
     await decideLinkAsk(
-      db,
+      sqliteDb(db),
       {
         questionId: question.id,
         decision: "changes",
@@ -240,7 +240,7 @@ test("Send back restarts the agent with the finding", async () => {
   expect(handoff).toContain("removed field Task.title");
   expect(handoff).toContain("api-contract (rule): failed");
   expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.reverify)).toBe(false);
-  expect(await recoveryOptions(db, itemId)).toEqual({
+  expect(await recoveryOptions(sqliteDb(db), itemId)).toEqual({
     retryBaseline: ["api-contract:1"],
     bypasses: [],
   });
@@ -249,7 +249,7 @@ test("Send back restarts the agent with the finding", async () => {
 test("a reply in Linear sends the finding back and approves nothing", async () => {
   const { db, itemId, question } = await held();
   expect(
-    await guideLinkAsk(db, {
+    await guideLinkAsk(sqliteDb(db), {
       questionId: question.id,
       eventKey: "activity:approve",
       body: "Approved, ship it",
@@ -271,7 +271,7 @@ test("a reply in Linear sends the finding back and approves nothing", async () =
   expect(handoff).toContain("The reply is guidance and approves nothing");
   expect(handoff).toContain("removed field Task.title");
   expect((await listCloseoutBypassChecks(sqliteDb(db), question.id))[0]?.approvedAt).toBeNull();
-  expect((await recoveryOptions(db, itemId)).bypasses).toEqual([]);
+  expect((await recoveryOptions(sqliteDb(db), itemId)).bypasses).toEqual([]);
   const notes = (await listOutbox(sqliteDb(db))).filter((row) =>
     row.idempotencyKey.startsWith("link-ask-guidance:"),
   );

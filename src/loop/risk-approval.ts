@@ -1,5 +1,4 @@
 import { automaticRiskApprovalSteps } from "./automatic-risk-approval";
-import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { JOB_KIND, riskLine } from "../core";
 import {
@@ -16,7 +15,6 @@ import {
   openLinkAsksSteps,
   saveCheckpointSteps,
   saveRiskFixSteps,
-  sqliteDb,
   type CandidateRisk,
   type Db,
   type LinkAsk,
@@ -65,7 +63,7 @@ export type FixRisk = { changed: string[]; paths: string[] };
  * carried over, or the high-risk paths the next ask lists.
  */
 export async function riskApprovalFor(
-  db: Database,
+  store: Db,
   input: {
     itemId: string;
     head: string;
@@ -85,7 +83,6 @@ export async function riskApprovalFor(
   },
 ): Promise<RiskApproval> {
   if (!riskGateOn(input.publicUrl)) return "not_required";
-  const store = sqliteDb(db);
   const humanApproved = (head: string, kind: "exact" | "same_patch" | "fix") => {
     try {
       input.onHumanApproval?.(head, kind);
@@ -220,14 +217,13 @@ export function riskAskDetail(risk: CandidateRisk | null, fix: RiskFix | null = 
  * the session while it is open, and one reminder after 24 hours. Asks bound to other heads close.
  */
 export async function askRiskApproval(
-  db: Database,
+  store: Db,
   input: { item: WorkItemRecord; head: string; publicUrl: string | null; now: number },
 ): Promise<"asked" | "unavailable"> {
-  const store = sqliteDb(db);
   const item = await store.run((q) => getWorkItemSteps(q, input.item.id));
   if (item === null || item.cancelRequested || item.state !== "merge_queue") return "unavailable";
   if (!riskGateOn(input.publicUrl) || item.sessionKey === null) return "unavailable";
-  await closeLinkAsksOnHead(db, item.id, input.head, input.now);
+  await closeLinkAsksOnHead(store, item.id, input.head, input.now);
   if ((await openRiskAsk(store, item.id)) !== null) return "asked";
   const risk = await store.run((q) => getCandidateRiskSteps(q, item.id, input.head));
   const fix = await store.run((q) => getRiskFixSteps(q, item.id, input.head));

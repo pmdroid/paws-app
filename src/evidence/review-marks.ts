@@ -108,7 +108,7 @@ export async function handleVisualReviewChanges(
   try {
     for (const file of files) {
       const id = ulid(now);
-      await writeEvidenceFile(db, options, file.evidence, id, file.bytes, now);
+      await writeEvidenceFile(sqliteDb(db), options, file.evidence, id, file.bytes, now);
       marks.push({
         id,
         questionId,
@@ -150,5 +150,5 @@ async function removeMarks(
   storage: EvidenceStorage,
   marks: readonly VisualReviewMark[],
 ): Promise<void> {
-  await Promise.all(marks.map((mark) => removeEvidenceFile(db, storage, mark.id)));
+  await Promise.all(marks.map((mark) => removeEvidenceFile(sqliteDb(db), storage, mark.id)));
 }

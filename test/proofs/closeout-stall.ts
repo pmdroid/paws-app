@@ -44,7 +44,7 @@ export default {
       const lines: string[] = [];
       for (let attempt = 0; attempt < 2; attempt++) {
         clock.advance(31 * 60_000);
-        await recoverStalledCloseout(db, {
+        await recoverStalledCloseout(sqliteDb(db), {
           now: clock.now(),
           cancel: async () => {},
           journal: (line) => lines.push(line),
@@ -88,7 +88,7 @@ export default {
           answeredBy: "pascal",
           now: clock.now(),
         },
-        questionEffects(db, { now: clock.now() }),
+        questionEffects(sqliteDb(db), { now: clock.now() }),
       );
       proof.expect(
         "person retries verification on the same head",

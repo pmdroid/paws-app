@@ -85,7 +85,7 @@ export async function probePublicationReadiness(root: string) {
     });
     for (const id of ["issue", "free", "manual", "outside"])
       lifecycle.issues.set(id, { ...lifecycle.issue, id });
-    const intake = await intakeDelegatedIssue(db, tracker, {
+    const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: withChildren ? "parent" : "issue",
       now: clock.now(),
     });

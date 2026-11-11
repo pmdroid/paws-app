@@ -207,8 +207,12 @@ async function setup(options: { members?: string[]; agents?: string[] } = {}) {
     caps,
     receive: (event: AcceptedLinearEvent) => orchestrator.onLinearEvent(event),
     deliverWithLoop: () =>
-      deliverLinearComments(db, "eng-1", orchestrator["linearCommentCapabilities"](policy)),
-    deliver: () => deliverLinearComments(db, "eng-1", caps),
+      deliverLinearComments(
+        sqliteDb(db),
+        "eng-1",
+        orchestrator["linearCommentCapabilities"](policy),
+      ),
+    deliver: () => deliverLinearComments(sqliteDb(db), "eng-1", caps),
     comment: async (id: string) =>
       (await getLinearComment(sqliteDb(db), id)) as LinearCommentRecord,
     commentJobs: async () =>

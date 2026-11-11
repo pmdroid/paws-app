@@ -77,7 +77,10 @@ test.each(["session", null])(
           acknowledgeNewSession(tracker, accepted, async () => {
             attempts += 1;
             if (fail) throw new Error("scripted intake failure");
-            await intakeDelegatedIssue(db, tracker, { linearIssueId: "issue", sessionId });
+            await intakeDelegatedIssue(sqliteDb(db), tracker, {
+              linearIssueId: "issue",
+              sessionId,
+            });
           }),
       });
       await paused;

@@ -83,7 +83,7 @@ async function scene() {
     identity: () => syncSteps(() => "member:acme/widgets"),
     unavailableRetryMs: [0],
   };
-  const auth = new GitHubInstallationCheck(db, integration, () => clock.now);
+  const auth = new GitHubInstallationCheck(sqliteDb(db), integration, () => clock.now);
   insertQueuedItem(db, { id: "PAS-1055", sessionKey: "session-1055", title: "PAS-1055" });
   await beginImplementRun(sqliteDb(db), "PAS-1055", 1_000);
   return {

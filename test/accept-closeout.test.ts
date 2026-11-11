@@ -42,7 +42,7 @@ async function accept(
   expected: { version: number; runId: string | null },
   extra = {},
 ) {
-  return await acceptCloseout(db, {
+  return await acceptCloseout(sqliteDb(db), {
     itemId: "item",
     expected,
     base,

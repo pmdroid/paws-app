@@ -70,10 +70,10 @@ function help(id: string): CloseoutHelp {
 
 async function blockedOnMain(db: Database, id: string, repository = REPOSITORY) {
   await parked(db, id);
-  await askCloseoutHelp(db, `ses-${id}`, help(id), {
+  await askCloseoutHelp(sqliteDb(db), `ses-${id}`, help(id), {
     now: NOW,
     reason: "blocked_check",
-    error: await policyOutageNote(db, repository, id, null, BROKEN),
+    error: await policyOutageNote(sqliteDb(db), repository, id, null, BROKEN),
     checks: [],
     policyBlock: { repository, unreadable: BROKEN },
   });
@@ -93,7 +93,12 @@ const reverifies = async (db: Database) =>
     .map((job) => job.jobKey);
 
 const retry = async (db: Database, policy: Parameters<typeof retryPolicyBlocks>[1]["policy"]) =>
-  await retryPolicyBlocks(db, { repository: REPOSITORY, main: FIXED, policy, now: NOW + 100 });
+  await retryPolicyBlocks(sqliteDb(db), {
+    repository: REPOSITORY,
+    main: FIXED,
+    policy,
+    now: NOW + 100,
+  });
 
 describe("a closeout-help question blocked by an unreadable policy on main", () => {
   test("records the cause and says Paws retries by itself", async () => {
@@ -139,7 +144,7 @@ describe("a closeout-help question blocked by an unreadable policy on main", () 
     expect((await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume)).toEqual(
       [],
     );
-    expect((await recoveryOptions(db, "ENG-1")).retryBaseline).toEqual([]);
+    expect((await recoveryOptions(sqliteDb(db), "ENG-1")).retryBaseline).toEqual([]);
     expect(await policyBlockedRepositories(sqliteDb(db))).toEqual([]);
   });
 
@@ -160,7 +165,7 @@ describe("a closeout-help question blocked by an unreadable policy on main", () 
     await retry(db, LOADS);
     await applyWorkItemEvent(sqliteDb(db), "ENG-1", "blocking_question");
     await askCloseoutHelp(
-      db,
+      sqliteDb(db),
       "ses-ENG-1",
       { ...help("ENG-1"), summary: "Closeout: blocked\nMessage: runner lost" },
       {
@@ -191,7 +196,7 @@ describe("a closeout-help question blocked by an unreadable policy on main", () 
   test("a closeout-help question with another cause is never answered by Paws", async () => {
     const db = database();
     await parked(db, "ENG-1");
-    await askCloseoutHelp(db, "ses-ENG-1", help("ENG-1"), {
+    await askCloseoutHelp(sqliteDb(db), "ses-ENG-1", help("ENG-1"), {
       now: NOW,
       reason: "blocked_check",
       checks: [],

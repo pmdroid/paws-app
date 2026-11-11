@@ -141,7 +141,7 @@ test("the visual review is a link ask without options, reminded once from the sh
 
 test("Approve on the page passes the check for that head and those files", async () => {
   const { db, itemId, question } = await reviewing();
-  const outcome = await decideLinkAsk(db, {
+  const outcome = await decideLinkAsk(sqliteDb(db), {
     questionId: question.id,
     decision: "approve",
     note: null,
@@ -181,7 +181,7 @@ test("Approve after the other checks finished completes the evaluation of the sa
     awaitQuestionSteps(q, getWorkItem(db, itemId)!, question, NOW + 50),
   );
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
-  await decideLinkAsk(db, {
+  await decideLinkAsk(sqliteDb(db), {
     questionId: question.id,
     decision: "approve",
     note: null,
@@ -200,7 +200,7 @@ test("Approve after the other checks finished completes the evaluation of the sa
 test("someone else cannot approve on the page", async () => {
   const { db, question } = await reviewing();
   expect(
-    await decideLinkAsk(db, {
+    await decideLinkAsk(sqliteDb(db), {
       questionId: question.id,
       decision: "approve",
       note: null,
@@ -224,7 +224,7 @@ test("Request changes on the page restarts the item with the marks and the note"
       createdAt: NOW + 90,
     },
   ];
-  const outcome = await decideLinkAsk(db, {
+  const outcome = await decideLinkAsk(sqliteDb(db), {
     questionId: question.id,
     decision: "changes",
     note: "The Retry button wraps under the row.",
@@ -251,7 +251,7 @@ test("Request changes on the page restarts the item with the marks and the note"
 
 test("a Linear reply that says approve requests changes and never approves", async () => {
   const { db, itemId, question } = await reviewing();
-  const guided = await guideLinkAsk(db, {
+  const guided = await guideLinkAsk(sqliteDb(db), {
     questionId: question.id,
     eventKey: "activity:reply",
     body: "approve",
@@ -283,9 +283,11 @@ test("a Linear reply that says approve requests changes and never approves", asy
 
 test("a new head closes the open ask unless it has the same patch", async () => {
   const { db, itemId, question } = await reviewing();
-  expect(await closeLinkAsksOnHead(db, itemId, "rebased", NOW + 10, [question.id])).toBe(0);
+  expect(await closeLinkAsksOnHead(sqliteDb(db), itemId, "rebased", NOW + 10, [question.id])).toBe(
+    0,
+  );
   expect((await getLinkAsk(sqliteDb(db), question.id))?.closedAt).toBeNull();
-  expect(await closeLinkAsksOnHead(db, itemId, "different", NOW + 20)).toBe(1);
+  expect(await closeLinkAsksOnHead(sqliteDb(db), itemId, "different", NOW + 20)).toBe(1);
   expect((await getLinkAsk(sqliteDb(db), question.id))?.closedReason).toBe("head_moved");
   expect(await findOpenQuestion(sqliteDb(db), "ses_1")).toBeNull();
 });
@@ -319,7 +321,7 @@ test("a later commit with a different patch asks again", async () => {
   const approved = commit("retry button on one line");
   const { db, itemId, question } = await reviewing();
   db.run("UPDATE link_ask SET head_commit = ? WHERE question_id = ?", [approved, question.id]);
-  await decideLinkAsk(db, {
+  await decideLinkAsk(sqliteDb(db), {
     questionId: question.id,
     decision: "approve",
     note: null,

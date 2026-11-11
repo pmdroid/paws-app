@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { eq, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
 
 export function* blockLinearSessionCleanupSteps(q: Q, sessionId: string) {
   yield* q.exec(
@@ -8,8 +7,8 @@ export function* blockLinearSessionCleanupSteps(q: Q, sessionId: string) {
   );
 }
 
-export function blockLinearSessionCleanup(db: Database, sessionId: string): void {
-  settled(sqliteDb(db).run((q) => blockLinearSessionCleanupSteps(q, sessionId)));
+export async function blockLinearSessionCleanup(db: Db, sessionId: string): Promise<void> {
+  await db.run((q) => blockLinearSessionCleanupSteps(q, sessionId));
 }
 
 export function* assertLinearSessionCleanupSteps(q: Q, sessionId?: string) {

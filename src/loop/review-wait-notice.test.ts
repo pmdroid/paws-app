@@ -83,7 +83,7 @@ async function fixture() {
     },
     wake: (head: string) =>
       mergeQueueTurn(
-        { db, store: sqliteDb(db), item: getWorkItem(db, "ENG-7")!, caps },
+        { store: sqliteDb(db), item: getWorkItem(db, "ENG-7")!, caps },
         { owner: "acme", repo: "app" },
         github,
         { number: 7, url: PULL_URL, head },

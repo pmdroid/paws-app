@@ -33,7 +33,7 @@ export type CiRerunInput = {
   owner: string;
   repo: string;
   prNumber: number;
-  alreadyRerun: (head: string) => boolean;
+  alreadyRerun: (head: string) => Promise<boolean>;
   tokenProvider?: GitHubTokenProvider;
   appId?: string;
   installationId?: string;
@@ -80,7 +80,7 @@ async function rerunOnce(input: CiRerunInput): Promise<CiRerunResult> {
     return { answer: `Paws could not read pull request #${input.prNumber}` };
   if (pull.data.state !== "open") return { answer: `Pull request #${input.prNumber} is not open` };
   const head = pull.data.head.sha;
-  if (input.alreadyRerun(head)) return { answer: CI_ALREADY_RERUN };
+  if (await input.alreadyRerun(head)) return { answer: CI_ALREADY_RERUN };
   const runs: z.infer<typeof checkRunsSchema>["check_runs"] = [];
   for (let page = 1; page <= CHECK_RUN_PAGES; page++) {
     const response = await request("GET", `/commits/${head}/check-runs?per_page=100&page=${page}`);

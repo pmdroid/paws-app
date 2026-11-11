@@ -1,6 +1,5 @@
 import { askSteps } from "./operations";
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import { isTransient, JOB_KIND, sleep } from "../core";
 import { LinearRateLimitError } from "../linear";
 import {
@@ -12,7 +11,6 @@ import {
   enqueueOutboxOnceSteps,
   getLinearSession,
   getLinearSessionGenerationSteps,
-  getWorkItem,
   getWorkItemSteps,
   githubIntegrationHoldStatus,
   githubIntegrationHoldStatusSteps,
@@ -21,7 +19,6 @@ import {
   setGithubIntegrationHoldStatus,
   setGithubIntegrationHoldStatusSteps,
   setOpenQuestionBodySteps,
-  sqliteDb,
   syncSteps,
   type Db,
   type Q,
@@ -136,16 +133,15 @@ export class GitHubInstallationCheck {
   >();
 
   constructor(
-    private readonly db: Database,
+    private readonly store: Db,
     private readonly integration: GitHubIntegration,
     private readonly now: () => number,
     private readonly allowed: (q: Q, item: WorkItemRecord) => Steps<boolean> = () =>
       syncSteps(() => true),
-    private readonly store: Db = sqliteDb(db),
   ) {}
 
   async owns(questionId: string): Promise<boolean> {
-    return (await githubIntegrationHoldStatus(sqliteDb(this.db), questionId)) !== null;
+    return (await githubIntegrationHoldStatus(this.store, questionId)) !== null;
   }
 
   close(): void {
@@ -154,22 +150,21 @@ export class GitHubInstallationCheck {
 
   async invalidate(scope: { sessionId?: string; issueId?: string } = {}): Promise<void> {
     for (const [itemId, ready] of this.lastReady) {
-      const item = getWorkItem(this.db, itemId);
+      const item = await this.store.run((q) => getWorkItemSteps(q, itemId));
       if (
         item === null ||
         ((scope.sessionId === undefined || item.sessionKey === scope.sessionId) &&
           (scope.issueId === undefined ||
             item.linearIssueId === scope.issueId ||
             (item.sessionKey !== null &&
-              (await getLinearSession(sqliteDb(this.db), item.sessionKey))?.issueId ===
-                scope.issueId)))
+              (await getLinearSession(this.store, item.sessionKey))?.issueId === scope.issueId)))
       )
         ready.reusable = false;
     }
   }
 
-  revoke(itemId: string): void {
-    setGithubIntegrationHoldStatus(this.db, { itemId }, "revoked");
+  async revoke(itemId: string): Promise<void> {
+    await setGithubIntegrationHoldStatus(this.store, { itemId }, "revoked");
   }
 
   async ensure(
@@ -520,7 +515,7 @@ export class GitHubInstallationCheck {
       this.now(),
       reason ?? undefined,
       {},
-      commandInstance(this.db),
+      commandInstance(this.store),
       notifications,
     );
     yield* setGithubIntegrationHoldStatusSteps(q, { itemId }, "revoked");
@@ -580,7 +575,7 @@ export class GitHubInstallationCheck {
         this.now(),
         undefined,
         {},
-        commandInstance(this.db),
+        commandInstance(this.store),
         notifications,
       );
   }

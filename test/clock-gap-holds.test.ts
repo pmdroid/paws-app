@@ -209,7 +209,7 @@ describe("clock gaps preserve human holds", () => {
           answeredBy: "lead",
           now: clock.now(),
         };
-        const effects = () => questionEffects(db, { now: reply.now });
+        const effects = () => questionEffects(sqliteDb(db), { now: reply.now });
         expect((await answer(db, reply, effects())).status).toBe("answered");
         const released = getWorkItem(db, "item")!;
         expect(released.state).toBe("queued");
@@ -238,9 +238,9 @@ describe("clock gaps preserve human holds", () => {
       db.run("UPDATE question SET cancelled_at=? WHERE item_id='item'", [clock.now()]);
       const before = await snapshot(db);
       const reply = { sessionId: "session", deliveryId: "late", body: "Go", answeredBy: "lead" };
-      expect((await answer(db, reply, questionEffects(db, { now: clock.now() }))).status).toBe(
-        "unasked",
-      );
+      expect(
+        (await answer(db, reply, questionEffects(sqliteDb(db), { now: clock.now() }))).status,
+      ).toBe("unasked");
       expect(await snapshot(db)).toEqual(before);
       expect(await executions(db)).toEqual([]);
     } finally {

@@ -48,7 +48,10 @@ export async function probeDependencySnapshots(
   lifecycle.issues.set("b", { ...lifecycle.issue, id: "b" });
   lifecycle.issues.set("outside", { ...lifecycle.issue, id: "outside", stateType: "completed" });
   try {
-    const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent", now: 1000 });
+    const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+      linearIssueId: "parent",
+      now: 1000,
+    });
     assert(intake.ok);
     const ids = new Map(intake.items.map((item) => [item.linearIssueId, item.id]));
     const workspaceId = "workspace";

@@ -53,7 +53,7 @@ async function fixture() {
     onAccepted?: (q: Q, result: IntakeResult) => Steps<void>,
     taskKey = sessionId,
   ) =>
-    intakeDelegatedIssue(db, tracker, {
+    intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "issue",
       sessionId,
       taskKey,
@@ -138,7 +138,7 @@ test.each(["run", "checkpoint", "job", "conversation", "cleanup", "parent", "sib
     if (held === "job")
       await enqueueJob(sqliteDb(db), { queue: "item.start", payload: { itemId: id } });
     if (held === "conversation") await saveConversation(sqliteDb(db), id, "[]", null, true);
-    if (held === "cleanup") blockLinearSessionCleanup(db, "old");
+    if (held === "cleanup") await blockLinearSessionCleanup(sqliteDb(db), "old");
     if (held === "parent")
       db.run("UPDATE work_item SET brief = json_set(brief, '$.epic', json(?)) WHERE id = ?", [
         '{"issueId":"parent"}',
@@ -275,7 +275,7 @@ test("concurrent deliveries of the same task share admission after session recon
   const ready = Promise.withResolvers<void>();
   let arrivals = 0;
   const admit = () =>
-    intakeDelegatedIssue(db, tracker, {
+    intakeDelegatedIssue(sqliteDb(db), tracker, {
       linearIssueId: "issue",
       sessionId: "new",
       taskKey: "same-task",

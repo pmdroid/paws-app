@@ -65,7 +65,7 @@ function rerun(
   requestedBy?: string,
 ) {
   return rerunItemCi({
-    db,
+    store: sqliteDb(db),
     itemId: "item",
     label: "PAS-1",
     reason,

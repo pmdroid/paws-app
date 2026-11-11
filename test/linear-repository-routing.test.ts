@@ -842,7 +842,7 @@ test("a bound repository outside the team's new links is explained once, not can
     },
   });
   integration = teamRepositoryIntegration(f.db);
-  const check = new GitHubInstallationCheck(f.db, integration, () => f.clock.now());
+  const check = new GitHubInstallationCheck(sqliteDb(f.db), integration, () => f.clock.now());
   try {
     await refreshRepositoryCatalog(f.db, async () => [
       {

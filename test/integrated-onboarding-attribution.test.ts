@@ -303,7 +303,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
       credit: await workspace.delegatorCommitCredit(db, current().id),
     });
     auth = new GitHubInstallationCheck(
-      db,
+      sqliteDb(db),
       {
         check: (_item, signal) => installation("acme/widgets", "write", signal),
         administrators: () => syncSteps(() => ["owner"]),

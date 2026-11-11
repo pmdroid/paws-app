@@ -215,12 +215,7 @@ async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 
   const evaluate = async (): Promise<MergeStep> => {
     jobs += 1;
     const job = (await getJob(sqliteDb(db), mergeJob))!;
-    return advanceMerge(
-      db,
-      sqliteDb(db),
-      { itemId: "eng-1", payload: job.payload, jobId: jobs },
-      lane,
-    );
+    return advanceMerge(sqliteDb(db), { itemId: "eng-1", payload: job.payload, jobId: jobs }, lane);
   };
   const finished = new Set<number>();
   const feedbackJobs = async () =>
@@ -238,8 +233,8 @@ async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 
       db.run("UPDATE job SET status = 'running' WHERE id = ?", [job.id]);
       const step =
         payload.reviewId !== undefined
-          ? await handlePullReview(db, payload.reviewId, feedback)
-          : await handlePullComments(db, payload.pullCommentsFor!, feedback);
+          ? await handlePullReview(sqliteDb(db), payload.reviewId, feedback)
+          : await handlePullComments(sqliteDb(db), payload.pullCommentsFor!, feedback);
       if (step === "wait") db.run("UPDATE job SET status = 'pending' WHERE id = ?", [job.id]);
       else finished.add(job.id);
       steps.push(step);

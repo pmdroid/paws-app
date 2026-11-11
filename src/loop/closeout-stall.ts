@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import { JOB_KIND, journalCaught } from "../core";
 import {
   cancelOpenJobsSteps,
@@ -12,8 +11,8 @@ import {
   listJobsSteps,
   listLastWorkItemEventTimesSteps,
   saveCloseoutRecoverySteps,
-  sqliteDb,
   type WorkItemRecord,
+  type Db,
 } from "../db";
 import { RETRY_CLOSEOUT } from "./closeout-recovery";
 import { askSteps } from "./operations";
@@ -25,14 +24,13 @@ const QUIET_MS = 30 * 60_000;
  * same head, and the key must still find its one automatic retry after that and after a restart.
  */
 export async function recoverStalledCloseout(
-  db: Database,
+  store: Db,
   input: {
     now: number;
     cancel: (itemId: string) => Promise<void>;
     journal: (line: string) => void;
   },
 ): Promise<void> {
-  const store = sqliteDb(db);
   const items = await store.run(function* (q) {
     const stalled: WorkItemRecord[] = [];
     for (const id of yield* listItemIdsSteps(q, false)) {

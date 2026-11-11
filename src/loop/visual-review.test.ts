@@ -94,7 +94,7 @@ const reply = (body: string) => ({
 test("Accept on a question asked before the link ask requests changes and never approves", async () => {
   const { db, itemId, question } = await askedBefore();
   const outcome = await sqliteDb(db).transaction((q) =>
-    answerSteps(q, reply("Accept"), questionEffects(db, { now: NOW + 100 })),
+    answerSteps(q, reply("Accept"), questionEffects(sqliteDb(db), { now: NOW + 100 })),
   );
   expect(outcome.status).toBe("answered");
   expect(await getVisualReview(sqliteDb(db), question.id)).toMatchObject({
@@ -113,7 +113,11 @@ test("Accept on a question asked before the link ask requests changes and never 
 test("Request changes restarts the item for review with the feedback", async () => {
   const { db, itemId, question } = await askedBefore();
   await sqliteDb(db).transaction((q) =>
-    answerSteps(q, reply("Make the hint shorter"), questionEffects(db, { now: NOW + 100 })),
+    answerSteps(
+      q,
+      reply("Make the hint shorter"),
+      questionEffects(sqliteDb(db), { now: NOW + 100 }),
+    ),
   );
   expect((await getVisualReview(sqliteDb(db), question.id))?.outcome).toBe("changes_requested");
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
@@ -138,7 +142,11 @@ test("the round-limit question waits behind a sibling's queued question", async 
   expect(ci.status).toBe("queued");
 
   await sqliteDb(db).transaction((q) =>
-    answerSteps(q, reply("Make the hint shorter"), questionEffects(db, { now: NOW + 100 })),
+    answerSteps(
+      q,
+      reply("Make the hint shorter"),
+      questionEffects(sqliteDb(db), { now: NOW + 100 }),
+    ),
   );
 
   expect((await getVisualReview(sqliteDb(db), question.id))?.outcome).toBe("changes_requested");

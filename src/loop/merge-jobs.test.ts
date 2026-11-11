@@ -324,7 +324,7 @@ describe("merge job retries", () => {
     });
     const loop = new JobLoop(db, clock, { leaseMs: 60_000 });
     loop.register(JOB_KIND.merge, async (job) => {
-      await waitForMergeTurn(db, job, clock.now());
+      await waitForMergeTurn(sqliteDb(db), job, clock.now());
     });
     for (let pass = 0; pass < 5; pass++) {
       await loop.tick();
@@ -347,7 +347,13 @@ describe("merge job retries", () => {
     });
     const loop = new JobLoop(db, clock, { leaseMs: 60_000 });
     loop.register(JOB_KIND.merge, async (job) => {
-      await retryMergeLater(db, job, clock.now(), 30_000, new Error("GitHub returned 502"));
+      await retryMergeLater(
+        sqliteDb(db),
+        job,
+        clock.now(),
+        30_000,
+        new Error("GitHub returned 502"),
+      );
     });
     await loop.tick();
     expect(await getJob(sqliteDb(db), id)).toMatchObject({
@@ -677,8 +683,8 @@ describe("slow CI question", () => {
     expect(await parkMerge(sqliteDb(db), again, clock.now(), { reason: "ci", head: "h" })).toBe(
       "ask",
     );
-    expect(await askAboutSlowCi(db, "eng-1", { checks, now: clock.now() })).toBe(true);
-    expect(await askAboutSlowCi(db, "eng-1", { checks, now: clock.now() })).toBe(false);
+    expect(await askAboutSlowCi(sqliteDb(db), "eng-1", { checks, now: clock.now() })).toBe(true);
+    expect(await askAboutSlowCi(sqliteDb(db), "eng-1", { checks, now: clock.now() })).toBe(false);
     await completeJob(sqliteDb(db), again, clock.now());
     return { db, clock };
   }
@@ -689,7 +695,7 @@ describe("slow CI question", () => {
         answerSteps(
           q,
           { sessionId: "ses", deliveryId: `reply:${body}`, body, answeredBy: "pascal", now },
-          questionEffects(db, { now }),
+          questionEffects(sqliteDb(db), { now }),
         ),
       )
     ).status;

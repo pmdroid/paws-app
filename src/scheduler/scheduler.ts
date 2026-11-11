@@ -256,8 +256,8 @@ export function* saveSchedulingContextSteps(q: Q, input: SchedulingContext): Ste
 }
 
 /** Linear user id of the item's project lead as last saved from Linear, or null. */
-export async function projectLeadId(db: Database, itemId: string): Promise<string | null> {
-  return await schedulingProjectLead(sqliteDb(db), itemId);
+export async function projectLeadId(store: Db, itemId: string): Promise<string | null> {
+  return await schedulingProjectLead(store, itemId);
 }
 
 export function hintedPaths(brief: string | null): string[] {

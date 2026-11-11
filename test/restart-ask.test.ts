@@ -284,7 +284,7 @@ describe("restart and ask", () => {
       jobs: await listJobs(sqliteDb(db)),
     };
     expect(
-      await acceptCloseout(db, {
+      await acceptCloseout(sqliteDb(db), {
         itemId: item.id,
         expected: { version: verifying.version, runId: verifying.currentRunId },
         base: "base",
@@ -360,13 +360,13 @@ describe("restart and ask", () => {
     await answer(
       db,
       { sessionId: "session", deliveryId: "one", body: "Use A", answeredBy: "lead", now: 4 },
-      questionEffects(db, { now: 4 }),
+      questionEffects(sqliteDb(db), { now: 4 }),
     );
     expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
     await answer(
       db,
       { sessionId: "session", deliveryId: "two", body: "Continue", answeredBy: "lead", now: 5 },
-      questionEffects(db, { now: 5 }),
+      questionEffects(sqliteDb(db), { now: 5 }),
     );
     expect(getWorkItem(db, item.id)).toMatchObject({
       state: "queued",

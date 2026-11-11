@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   releasePushOutageJobsSteps,
   endPushOutageSteps,
@@ -9,7 +8,6 @@ import {
   parkLeasedJobSteps,
   recordPushOutageSteps,
   setPushOutageQuestionSteps,
-  sqliteDb,
   takePushOutageProbeSteps,
   type Db,
   type Q,
@@ -58,7 +56,7 @@ export async function holdPush(store: Db, repository: string, jobId: number | nu
  * outage that held it, or null when that outage has ended since.
  */
 export async function pushRefused(
-  db: Database,
+  store: Db,
   input: {
     repository: string;
     error: PushOutageError;
@@ -67,7 +65,7 @@ export async function pushRefused(
     now: number;
   },
 ): Promise<PushOutage | null> {
-  return await sqliteDb(db).transaction(function* (q) {
+  return await store.transaction(function* (q) {
     const current = yield* getPushOutageSteps(q, input.repository);
     if (input.error.held) return current;
     const outage = yield* recordPushOutageSteps(q, {
@@ -89,7 +87,7 @@ export async function pushRefused(
  * probe time; every other job waits for the outage to end.
  */
 export async function parkForPushOutage(
-  db: Database,
+  store: Db,
   job: Job,
   outage: PushOutage,
   now: number,
@@ -102,7 +100,7 @@ export async function parkForPushOutage(
   const message = probe
     ? `${pushOutageBanner(outage)} Next try at ${new Date(outage.nextProbeAt).toISOString()}.`
     : pushOutageBanner(outage);
-  const parked = await sqliteDb(db).run((q) =>
+  const parked = await store.run((q) =>
     parkLeasedJobSteps(q, job, {
       runAt: probe ? outage.nextProbeAt : now + PUSH_OUTAGE_HOLD_MS,
       payload: {
@@ -143,11 +141,11 @@ export async function pushWorked(
  * another outage's question is open, or again after a person answered it.
  */
 export async function askAboutPushOutage(
-  db: Database,
+  store: Db,
   repository: string,
   now: number,
 ): Promise<"asked" | "not_yet" | "already" | "no_session"> {
-  return await sqliteDb(db).transaction(function* (q) {
+  return await store.transaction(function* (q) {
     const outage = yield* getPushOutageSteps(q, repository);
     if (outage === null || now - outage.startedAt < PUSH_OUTAGE_QUESTION_MS) return "not_yet";
     if (outage.questionId !== null) return "already";

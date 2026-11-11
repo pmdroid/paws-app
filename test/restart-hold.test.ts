@@ -164,18 +164,18 @@ describe("restart hold", () => {
       answeredBy: "lead",
       now: LATER * 3,
     };
-    expect((await answer(db, reply, questionEffects(db, { now: reply.now }))).status).toBe(
-      "answered",
-    );
-    expect((await answer(db, reply, questionEffects(db, { now: reply.now }))).status).toBe(
-      "duplicate",
-    );
+    expect(
+      (await answer(db, reply, questionEffects(sqliteDb(db), { now: reply.now }))).status,
+    ).toBe("answered");
+    expect(
+      (await answer(db, reply, questionEffects(sqliteDb(db), { now: reply.now }))).status,
+    ).toBe("duplicate");
     expect(
       (
         await answer(
           db,
           { ...reply, deliveryId: "reply-2" },
-          questionEffects(db, { now: reply.now }),
+          questionEffects(sqliteDb(db), { now: reply.now }),
         )
       ).status,
     ).toBe("unasked");
@@ -194,7 +194,9 @@ describe("restart hold", () => {
     await orchestrate(db, 200).tick(["item.ask"]);
     db.run("UPDATE question SET cancelled_at=250 WHERE reason='restart'");
     const reply = { sessionId: "session", deliveryId: "late", body: "Go", answeredBy: "lead" };
-    expect((await answer(db, reply, questionEffects(db, { now: 300 }))).status).toBe("unasked");
+    expect((await answer(db, reply, questionEffects(sqliteDb(db), { now: 300 }))).status).toBe(
+      "unasked",
+    );
     expect(await executions(db)).toEqual([]);
     await recoverOnStartup(sqliteDb(db), LATER);
     expect(await liveAsks(db)).toHaveLength(1);

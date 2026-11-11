@@ -61,7 +61,7 @@ async function asked(findings?: string) {
     "Lea",
     "lea@example.com",
   ]);
-  const question = (await askReviewRounds(db, {
+  const question = (await askReviewRounds(sqliteDb(db), {
     item: getWorkItem(db, item.id)!,
     help: {
       itemId: item.id,
@@ -125,7 +125,7 @@ test("one elicitation without options names the recurring bug class and links to
     },
   ]);
   // Nobody answered yet, so no new round budget.
-  expect((await recoveryOptions(db, itemId)).retryBaseline).toEqual([]);
+  expect((await recoveryOptions(sqliteDb(db), itemId)).retryBaseline).toEqual([]);
 });
 
 test("the question lists the open findings' text without changing the dashboard detail", async () => {
@@ -145,7 +145,7 @@ test("the question lists the open findings' text without changing the dashboard 
 test("Rethink the approach restarts the item with the findings, the note and a new round budget", async () => {
   const { db, itemId, question } = await asked();
   expect(
-    await decideLinkAsk(db, {
+    await decideLinkAsk(sqliteDb(db), {
       questionId: question.id,
       decision: "rethink",
       note: "Validate the session once at the boundary.",
@@ -165,7 +165,7 @@ test("Rethink the approach restarts the item with the findings, the note and a n
   expect(body).toContain("(most are unchecked null)");
   expect(body).toContain("Note from the person: Validate the session once at the boundary.");
   expect(body).toContain(ROUNDS.handoff);
-  expect((await recoveryOptions(db, itemId)).retryBaseline).toEqual(BASELINE);
+  expect((await recoveryOptions(sqliteDb(db), itemId)).retryBaseline).toEqual(BASELINE);
   expect(
     db
       .query("SELECT action FROM workspace_access_audit")
@@ -177,7 +177,7 @@ test("Rethink the approach restarts the item with the findings, the note and a n
 test("Rethink the approach needs no note", async () => {
   const { db, itemId, question } = await asked();
   expect(
-    await decideLinkAsk(db, {
+    await decideLinkAsk(sqliteDb(db), {
       questionId: question.id,
       decision: "rethink",
       note: null,
@@ -193,7 +193,7 @@ test("Rethink the approach needs no note", async () => {
 test("Keep going restarts the item with four more rounds", async () => {
   const { db, itemId, question } = await asked();
   expect(
-    await decideLinkAsk(db, {
+    await decideLinkAsk(sqliteDb(db), {
       questionId: question.id,
       decision: "continue",
       note: null,
@@ -206,7 +206,7 @@ test("Keep going restarts the item with four more rounds", async () => {
   expect(await handoff(db)).toContain(
     "A person allowed 4 more review rounds: fix the open findings.",
   );
-  expect((await recoveryOptions(db, itemId)).retryBaseline).toEqual(BASELINE);
+  expect((await recoveryOptions(sqliteDb(db), itemId)).retryBaseline).toEqual(BASELINE);
   const notes = (await listOutbox(sqliteDb(db))).filter((row) =>
     row.idempotencyKey.startsWith("link-ask-decided:"),
   );
@@ -218,7 +218,7 @@ test("Keep going restarts the item with four more rounds", async () => {
 test("Stop ends the item as asked and sends nothing back to the agent", async () => {
   const { db, itemId, question } = await asked();
   expect(
-    await decideLinkAsk(db, {
+    await decideLinkAsk(sqliteDb(db), {
       questionId: question.id,
       decision: "stop",
       note: null,
@@ -241,7 +241,7 @@ test("a decision of another kind does not fit a rounds ask", async () => {
   const { db, itemId, question } = await asked();
   for (const decision of ["approve", "changes", "answer"] as const)
     expect(
-      await decideLinkAsk(db, {
+      await decideLinkAsk(sqliteDb(db), {
         questionId: question.id,
         decision,
         note: "note",
@@ -256,7 +256,7 @@ test("a decision of another kind does not fit a rounds ask", async () => {
 test("someone who did not delegate and does not lead the project cannot stop the item", async () => {
   const { db, itemId, question } = await asked();
   expect(
-    await decideLinkAsk(db, {
+    await decideLinkAsk(sqliteDb(db), {
       questionId: question.id,
       decision: "stop",
       note: null,
@@ -271,7 +271,7 @@ test("someone who did not delegate and does not lead the project cannot stop the
 test("a reply in Linear is Rethink the approach with the reply as the note", async () => {
   const { db, itemId, question } = await asked();
   expect(
-    await guideLinkAsk(db, {
+    await guideLinkAsk(sqliteDb(db), {
       questionId: question.id,
       eventKey: "activity:reply",
       body: "Stop patching; move the check into the middleware.",
@@ -295,7 +295,7 @@ test("a reply in Linear is Rethink the approach with the reply as the note", asy
     "Note from the person: Stop patching; move the check into the middleware.",
   );
   expect(body).toContain(ROUNDS.handoff);
-  expect((await recoveryOptions(db, itemId)).retryBaseline).toEqual(BASELINE);
+  expect((await recoveryOptions(sqliteDb(db), itemId)).retryBaseline).toEqual(BASELINE);
   const notes = (await listOutbox(sqliteDb(db))).filter((row) =>
     row.idempotencyKey.startsWith("link-ask-guidance:"),
   );
@@ -304,7 +304,7 @@ test("a reply in Linear is Rethink the approach with the reply as the note", asy
   ]);
   // The page cannot decide again once the reply did.
   expect(
-    await decideLinkAsk(db, {
+    await decideLinkAsk(sqliteDb(db), {
       questionId: question.id,
       decision: "stop",
       note: null,

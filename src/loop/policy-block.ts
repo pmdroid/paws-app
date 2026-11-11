@@ -1,11 +1,4 @@
-import type { Database } from "bun:sqlite";
-import {
-  emitJobReady,
-  enqueueOutboxOnceSteps,
-  listOpenPolicyBlocksSteps,
-  sqliteDb,
-  type Db,
-} from "../db";
+import { emitJobReady, enqueueOutboxOnceSteps, listOpenPolicyBlocksSteps, type Db } from "../db";
 import { journal } from "../journal";
 import { answerQuestionSteps, shortCommit } from "../questions";
 import { POLICY_LOADS_ANSWER } from "./closeout-recovery";
@@ -24,7 +17,7 @@ export async function policyBlockedRepositories(
 }
 
 export async function retryPolicyBlocks(
-  db: Database,
+  store: Db,
   input: {
     repository: string;
     main: string;
@@ -34,7 +27,6 @@ export async function retryPolicyBlocks(
 ): Promise<string[]> {
   if (input.policy === null || "ok" in input.policy) return [];
   const answer = `${POLICY_LOADS_ANSWER} ${shortCommit(input.main)}.`;
-  const store = sqliteDb(db);
   const answered = await store.transaction(function* (q) {
     const retried: string[] = [];
     for (const block of yield* listOpenPolicyBlocksSteps(q, input.repository)) {

@@ -183,7 +183,7 @@ test("a delayed stop aborts the turn it stopped and leaves a turn started after 
     await applyWorkItemEvent(sqliteDb(b.db), "acme-4", "resume");
     const replacement = await a.startTurn("acme-4", "acme-4-new");
 
-    expect(a.orchestrator.deliverInstanceCommands()).toBe(1);
+    expect(await a.orchestrator.deliverInstanceCommands()).toBe(1);
     expect(stopped.controller.signal.aborted).toBe(true);
     expect(replacement.controller.signal.aborted).toBe(false);
   } finally {

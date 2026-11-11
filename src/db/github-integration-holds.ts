@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 
 export type GitHubIntegrationHoldRow = {
   question_id: string;
@@ -48,12 +47,12 @@ export function* setGithubIntegrationHoldStatusSteps(
   );
 }
 
-export function setGithubIntegrationHoldStatus(
-  db: Database,
+export async function setGithubIntegrationHoldStatus(
+  db: Db,
   match: { itemId: string } | { questionId: string },
   status: "revoked" | "verified",
-): void {
-  settled(sqliteDb(db).run((q) => setGithubIntegrationHoldStatusSteps(q, match, status)));
+): Promise<void> {
+  await db.run((q) => setGithubIntegrationHoldStatusSteps(q, match, status));
 }
 
 export type NewGitHubIntegrationHold = {

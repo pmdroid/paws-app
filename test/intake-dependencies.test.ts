@@ -57,7 +57,10 @@ async function dependencyEpic() {
     delegateId: null,
   });
   lifecycle.issues.set("outside", { ...lifecycle.issue, id: "outside", stateType: "completed" });
-  const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent", now: 1000 });
+  const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    linearIssueId: "parent",
+    now: 1000,
+  });
   if (!intake.ok) throw new Error("Intake failed");
   const workspaceId = "workspace";
   const ids = new Map(intake.items.map((item) => [item.linearIssueId, item.id]));
@@ -160,7 +163,10 @@ test("an item with a satisfied and an unsatisfied external blocker stays held", 
   });
   lifecycle.issues.set("open", { ...lifecycle.issue, id: "open", stateType: "started" });
   try {
-    const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "item", now: 1000 });
+    const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+      linearIssueId: "item",
+      now: 1000,
+    });
     if (!intake.ok) throw new Error("Intake failed");
     const itemId = intake.items[0]!.id;
     const target = { itemId, workspaceId: "workspace" };
@@ -248,7 +254,10 @@ test("a held item tells Linear which blockers it waits for, once", async () => {
     stateType: "started",
   });
   try {
-    const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "item", now: 1000 });
+    const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+      linearIssueId: "item",
+      now: 1000,
+    });
     if (!intake.ok) throw new Error("Intake failed");
     const target = { itemId: intake.items[0]!.id, workspaceId: "workspace" };
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");

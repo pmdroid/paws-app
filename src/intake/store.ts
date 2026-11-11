@@ -20,6 +20,7 @@ import {
   type Q,
   type Steps,
   type WorkItemLinearProject,
+  type Db,
 } from "../db";
 import type { DependencyEdge } from "../linear";
 import type { OrderNode } from "./order";
@@ -47,11 +48,11 @@ export type StoredWorkItem = {
 };
 
 export function findAcceptedIntake(
-  db: Database,
+  store: Db,
   linearIssueId: string,
   taskKey: string,
 ): Promise<{ delegation: StoredDelegation; items: StoredWorkItem[] } | null> {
-  return sqliteDb(db).run((q) => findAcceptedIntakeSteps(q, linearIssueId, taskKey));
+  return store.run((q) => findAcceptedIntakeSteps(q, linearIssueId, taskKey));
 }
 
 export function* findAcceptedIntakeSteps(

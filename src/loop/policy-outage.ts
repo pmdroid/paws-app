@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import { dashboardPath, dashboardUrl } from "../dashboard-links";
 import {
   endPolicyOutageSteps,
@@ -6,7 +5,6 @@ import {
   getWorkItemSteps,
   recordPolicyOutageSteps,
   setPolicyOutageQuestionSteps,
-  sqliteDb,
   type Db,
   type Q,
   type Steps,
@@ -103,20 +101,20 @@ export function policyLoadFailed(decision: DecisionDocument | null | undefined):
 }
 
 export async function policyOutageNote(
-  db: Database,
+  store: Db,
   repository: string,
   itemId: string,
   publicUrl: string | null,
   unreadable: MainPolicyError | null = null,
 ): Promise<string> {
-  const outage = await sqliteDb(db).run((q) => getPolicyOutageSteps(q, repository));
+  const outage = await store.run((q) => getPolicyOutageSteps(q, repository));
   const changedBy = unreadable?.commit ?? outage?.changedBy ?? null;
   const changed = changedBy
     ? ` Commit ${changedBy} last changed \`${unreadable?.path ?? outage?.policyPath}\`.`
     : "";
   if (outage === null)
     return `The Closeout policy on main doesn't load, so every task in this repository waits for one fix on main.${changed}`;
-  const link = await sqliteDb(db).run((q) => questionLinkSteps(q, outage, itemId, publicUrl));
+  const link = await store.run((q) => questionLinkSteps(q, outage, itemId, publicUrl));
   return `The Closeout policy on main is broken for the whole repository.${changed}${link ? ` One fix on main unblocks every task: [open question](${link}).` : ""}`;
 }
 

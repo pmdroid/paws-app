@@ -1,5 +1,4 @@
-import type { Database } from "bun:sqlite";
-import { emitJobReady, getWorkItemSteps, recordRebaseReturnSteps, sqliteDb } from "../db";
+import { emitJobReady, getWorkItemSteps, recordRebaseReturnSteps, type Db } from "../db";
 import { rebaseBudgetForSteps } from "../merge";
 import { askSteps, restartSteps } from "./operations";
 
@@ -15,11 +14,10 @@ export function pushConflictHandoff(branch: string, files: readonly string[]): s
  * question opens until the shared rebase budget is spent. Returns false for stale owners.
  */
 export async function restartForPushConflict(
-  db: Database,
+  store: Db,
   itemId: string,
   input: { branch: string; files: readonly string[]; now: number },
 ): Promise<boolean> {
-  const store = sqliteDb(db);
   let armed = false;
   const handled = await store.transaction(function* (q) {
     const item = yield* getWorkItemSteps(q, itemId);

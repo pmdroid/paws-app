@@ -30,7 +30,7 @@ async function reply(h: MergeHarness, id: string, body: string): Promise<void> {
   await answer(
     h.db,
     { sessionId: `ses-${id}`, deliveryId: `reply:${++replies}`, body, answeredBy: "acme-dev", now },
-    questionEffects(h.db, { now }),
+    questionEffects(sqliteDb(h.db), { now }),
   );
 }
 

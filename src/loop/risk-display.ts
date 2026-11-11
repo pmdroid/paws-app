@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   watch,
   watchFile,
@@ -16,11 +15,11 @@ import {
   latestCandidateRiskSteps,
   getRiskAutoContextSteps,
   saveRiskAutoContextSteps,
-  listRiskAutoContexts,
-  sqliteDb,
+  listRiskAutoContextsSteps,
   type Q,
   type RiskAutoContext,
   type Steps,
+  type Db,
 } from "../db";
 import { journalCaught } from "../journal";
 import { automaticRiskApprovalSteps } from "./automatic-risk-approval";
@@ -46,7 +45,7 @@ export class RiskDisplayReader {
 
   constructor(
     private readonly options: {
-      db: Database;
+      store: Db;
       configPath: string;
       readSettings: () => Pick<MergeSettings, "autoApproveHighRisk" | "repositories">;
       publicUrl?: string | null;
@@ -57,11 +56,16 @@ export class RiskDisplayReader {
     try {
       watchFile(options.configPath, { persistent: false, interval: 1000 }, this.changed);
       this.watchConfig();
-      for (const saved of listRiskAutoContexts(options.db))
-        this.watchPolicy(saved.itemId, saved.head, saved.context);
     } catch (error) {
       this.caught(error, "watch", null);
     }
+    void this.restorePolicyWatches().catch((error: unknown) => this.caught(error, "watch", null));
+  }
+
+  private async restorePolicyWatches(): Promise<void> {
+    const saved = await this.options.store.run((q) => listRiskAutoContextsSteps(q));
+    if (this.closed) return;
+    for (const entry of saved) this.watchPolicy(entry.itemId, entry.head, entry.context);
   }
 
   close(): void {
@@ -205,7 +209,7 @@ export class RiskDisplayReader {
   async remember(itemId: string, head: string, context: RiskAutoContext): Promise<void> {
     this.heads.set(itemId, head);
     try {
-      const store = sqliteDb(this.options.db);
+      const store = this.options.store;
       const risk = await store.run((q) => getCandidateRiskSteps(q, itemId, head));
       if (risk?.tier === "normal") {
         this.policyWatches.get(itemId)?.close();
@@ -223,7 +227,7 @@ export class RiskDisplayReader {
   /** Reads only cached settings and stored rows; never grants or persists approval. */
   async read(itemId: string, head?: string): Promise<RiskDisplay | null> {
     try {
-      return await sqliteDb(this.options.db).run((q) => this.readSteps(q, itemId, head));
+      return await this.options.store.run((q) => this.readSteps(q, itemId, head));
     } catch (error) {
       this.caught(error, "read", itemId);
       return head ? { head, detail: "Manual approval required" } : null;

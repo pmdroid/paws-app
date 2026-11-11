@@ -37,7 +37,10 @@ async function delegated(snapshot: EpicSnapshot) {
   const db = openDatabase(":memory:");
   migrate(db);
   const tracker = createFakeTracker([snapshot]);
-  const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "issue", now: 1000 });
+  const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    linearIssueId: "issue",
+    now: 1000,
+  });
   if (!intake.ok) throw new Error("intake failed");
   const projectOf = async () =>
     (await createLiveStatusProvider(db).issues()).issues.find((item) => item.id === "PAS-608")

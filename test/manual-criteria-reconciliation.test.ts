@@ -80,7 +80,10 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
     onChanges: (q, changes) => orchestrator.applyDelegationChangesSteps(q, changes),
   });
   try {
-    const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent", now: 1000 });
+    const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+      linearIssueId: "parent",
+      now: 1000,
+    });
     expect(intake.ok).toBe(true);
     if (!intake.ok) return;
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");

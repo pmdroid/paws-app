@@ -31,7 +31,7 @@ export default {
           subIssues: [],
         },
       ]);
-      await intakeDelegatedIssue(db, tracker, {
+      await intakeDelegatedIssue(sqliteDb(db), tracker, {
         linearIssueId: "issue",
         sessionId: "original",
         taskKey: "original",
@@ -76,7 +76,7 @@ export default {
         log: () => {},
         followUp: async (input) => {
           if (input.dedupeKey === "refused") {
-            await intakeDelegatedIssue(db, tracker, {
+            await intakeDelegatedIssue(sqliteDb(db), tracker, {
               linearIssueId: "issue",
               sessionId: "new",
               taskKey: "refused",
@@ -129,7 +129,7 @@ export default {
           "settled delegation never starts when original work ends",
           db.query("SELECT id FROM work_item").all().length === 1,
         );
-        await intakeDelegatedIssue(db, tracker, {
+        await intakeDelegatedIssue(sqliteDb(db), tracker, {
           linearIssueId: "issue",
           sessionId: "new",
           taskKey: "fresh-input",

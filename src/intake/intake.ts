@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import type { IssueBrief } from "../core";
-import { issueHasUnfinishedItemSteps, sqliteDb, type Q, type Steps } from "../db";
+import { issueHasUnfinishedItemSteps, type Q, type Steps, type Db } from "../db";
 import { LinearIntakeRefusedError, type TrackerAdapter } from "../linear";
 import type { DependencyEdge, EpicSnapshot } from "../linear";
 import { orderByBlocks, type OrderNode } from "./order";
@@ -64,7 +63,7 @@ export function cycleMessage(identifiers: readonly string[]): string {
  * a lone issue is a queue of one. A blocks cycle is reported and nothing is queued.
  */
 export async function intakeDelegatedIssue(
-  db: Database,
+  store: Db,
   tracker: TrackerAdapter,
   input: {
     linearIssueId: string;
@@ -89,10 +88,9 @@ export async function intakeDelegatedIssue(
     ) => Steps<boolean>;
   },
 ): Promise<IntakeResult> {
-  const store = sqliteDb(db);
   const now = input.now ?? Date.now();
   const taskKey = input.taskKey ?? `initial:${input.linearIssueId}`;
-  const existing = await findAcceptedIntake(db, input.linearIssueId, taskKey);
+  const existing = await findAcceptedIntake(store, input.linearIssueId, taskKey);
   if (existing !== null) {
     const result = { ok: true as const, ...existing, alreadyExisted: true as const };
     if (input.onAccepted) await store.transaction((q) => input.onAccepted!(q, result));
@@ -117,7 +115,7 @@ export async function intakeDelegatedIssue(
     await input.reconcileSessions?.(ordered.ordered.map((node) => node.linearIssueId));
   if (input.isCurrent && !(await input.isCurrent()))
     throw new Error("Delegated intake was superseded");
-  const accepted = await findAcceptedIntake(db, input.linearIssueId, taskKey);
+  const accepted = await findAcceptedIntake(store, input.linearIssueId, taskKey);
   if (accepted !== null) {
     const result = { ok: true as const, ...accepted, alreadyExisted: true as const };
     if (input.onAccepted) await store.transaction((q) => input.onAccepted!(q, result));
@@ -125,7 +123,7 @@ export async function intakeDelegatedIssue(
   }
   const continuations =
     ordered.ok && !input.startFresh && input.inspectBranch
-      ? await continuedBranches(db, ordered.ordered, input.inspectBranch)
+      ? await continuedBranches(store, ordered.ordered, input.inspectBranch)
       : new Map<string, EarlierAttempt>();
   if (input.isCurrent && !(await input.isCurrent()))
     throw new Error("Delegated intake was superseded");
@@ -258,11 +256,10 @@ function* activeElsewhereSteps(q: Q, nodes: readonly OrderNode[]): Steps<OrderNo
  * so its branch is not read.
  */
 async function continuedBranches(
-  db: Database,
+  store: Db,
   nodes: readonly OrderNode[],
   inspect: (earlier: EarlierAttempt) => Promise<EarlierBranch>,
 ): Promise<Map<string, EarlierAttempt>> {
-  const store = sqliteDb(db);
   const continued = new Map<string, EarlierAttempt>();
   if (await store.run((q) => activeElsewhereSteps(q, nodes))) return continued;
   for (const node of nodes) {

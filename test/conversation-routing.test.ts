@@ -197,7 +197,7 @@ async function setup(options: { version?: string; conversations?: number } = {})
     say: async (itemId: string, id: string, body: string) => {
       expect(await orchestrator.onLinearEvent(comment(itemId, id, body))).toBe(true);
     },
-    deliver: (itemId: string) => deliverLinearComments(db, itemId, caps()),
+    deliver: (itemId: string) => deliverLinearComments(sqliteDb(db), itemId, caps()),
     turn: async (session: string, key: string, body: string) =>
       await recordLinearTurn(sqliteDb(db), {
         eventKey: key,

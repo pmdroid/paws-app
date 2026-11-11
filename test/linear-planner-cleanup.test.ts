@@ -48,7 +48,7 @@ test.skipIf(process.platform !== "linux")(
     await ensureLinearSession(sqliteDb(db), { sessionId: "session" });
     const planner = () =>
       createTaskPlanner({
-        db,
+        store: sqliteDb(db),
         home,
         pawsRoot: join(home, "paws"),
         launch,
@@ -323,7 +323,7 @@ for (const operation of ["shutdown", "interrupt"] as const)
         const work = jobs.tick();
         const writer = await waitFamily(liveRoot);
         process.kill(classifier.anchor, "SIGKILL");
-        if (operation === "interrupt") blockLinearSessionCleanup(db, "live");
+        if (operation === "interrupt") await blockLinearSessionCleanup(sqliteDb(db), "live");
         await expect(
           operation === "shutdown"
             ? orchestrator.shutdown()

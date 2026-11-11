@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import type { runAgent } from "../acp";
 import type { AgentProfile } from "../config";
@@ -8,21 +7,21 @@ import {
   getLinearSessionSteps,
   getTaskClassificationSteps,
   saveTaskClassificationSteps,
-  sqliteDb,
+  type Db,
   type StoredTaskClassification,
 } from "../db";
 import type { AgentLaunch } from "./agents";
 import { classifyTask } from "./task-classifier";
 
 export function createTaskPlanner(options: {
-  db: Database;
+  store: Db;
   pawsRoot: string;
   home?: string;
   launch: AgentLaunch;
   agentForSession?: (sessionId: string) => typeof runAgent;
   profile: () => AgentProfile;
 }) {
-  const store = sqliteDb(options.db);
+  const store = options.store;
   let stopVersion = 0;
   const sessionStopVersions = new Map<string, number>();
   const active = new Map<
@@ -91,7 +90,7 @@ export function createTaskPlanner(options: {
           signal: controller.signal,
           launch: options.launch,
           agentRunner: options.agentForSession?.(input.sessionId),
-          onCleanupFailure: () => blockLinearSessionCleanup(options.db, input.sessionId),
+          onCleanupFailure: () => blockLinearSessionCleanup(store, input.sessionId),
         });
         await current();
         await store.run((q) => saveTaskClassificationSteps(q, input.taskKey, classification));

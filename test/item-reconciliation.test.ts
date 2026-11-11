@@ -138,7 +138,10 @@ test("a spec change on the item's issue is reconciled through the item", async (
       delegateId: "app",
     });
     lifecycle.issues.set("child", { ...lifecycle.issue, id: "child" });
-    const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent", now: 1000 });
+    const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+      linearIssueId: "parent",
+      now: 1000,
+    });
     expect(intake.ok).toBe(true);
     if (!intake.ok) return;
     const itemId = intake.items[0]!.id;
@@ -209,7 +212,7 @@ test("a reconcile handed the intake's reads writes the scheduler rows without re
       stateType: "unstarted",
       subIssues: [],
     };
-    const intake = await intakeDelegatedIssue(db, createFakeTracker([snapshot]), {
+    const intake = await intakeDelegatedIssue(sqliteDb(db), createFakeTracker([snapshot]), {
       linearIssueId: "issue",
       now: 1000,
     });

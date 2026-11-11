@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
-import { getWorkItem, legacyMigrate, migrations } from "../src/db";
+import { getWorkItem, legacyMigrate, migrations, sqliteDb } from "../src/db";
 import { intakeDelegatedIssue } from "../src/intake";
 import { createFakeTracker, type EpicSnapshot } from "../src/linear";
 import { tempDb } from "./helpers";
@@ -29,7 +29,7 @@ import { tempDb } from "./helpers";
     };
     const tracker = createFakeTracker([snapshot]);
     try {
-      const result = await intakeDelegatedIssue(db, tracker, { linearIssueId: parentId });
+      const result = await intakeDelegatedIssue(sqliteDb(db), tracker, { linearIssueId: parentId });
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       const item = getWorkItem(db, result.items[0]!.id)!;
@@ -52,7 +52,7 @@ import { tempDb } from "./helpers";
         },
       });
       tracker.epics.clear();
-      const replay = await intakeDelegatedIssue(db, tracker, { linearIssueId: parentId });
+      const replay = await intakeDelegatedIssue(sqliteDb(db), tracker, { linearIssueId: parentId });
       expect(replay.ok && replay.alreadyExisted).toBe(true);
       expect(getWorkItem(db, item.id)?.brief).toEqual(item.brief);
     } finally {
@@ -73,7 +73,7 @@ test("lone issues preserve body acceptance criteria without duplicating the issu
         subIssues: [],
       },
     ]);
-    const result = await intakeDelegatedIssue(db, tracker, { linearIssueId: "only" });
+    const result = await intakeDelegatedIssue(sqliteDb(db), tracker, { linearIssueId: "only" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(getWorkItem(db, result.items[0]!.id)?.brief).toMatchObject({

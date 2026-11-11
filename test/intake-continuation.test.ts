@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { getWorkItem } from "../src/db";
+import { getWorkItem, sqliteDb } from "../src/db";
 import { openPullRequest, readBranchWork, type GitHubClient } from "../src/github";
 import {
   asksForFreshStart,
@@ -46,7 +46,7 @@ function fakeClient(
 /** The first delegation's item ran on its own branch and then ended with `state`. */
 async function earlierAttempt(db: Database, state: string): Promise<string> {
   const tracker = createFakeTracker([issue]);
-  const first = await intakeDelegatedIssue(db, tracker, {
+  const first = await intakeDelegatedIssue(sqliteDb(db), tracker, {
     linearIssueId: "only",
     sessionId: "ses_1",
     taskKey: "session:ses_1",
@@ -68,7 +68,7 @@ async function redelegate(
   options: { startFresh?: boolean } = {},
 ) {
   const inspected: EarlierAttempt[] = [];
-  const result = await intakeDelegatedIssue(db, createFakeTracker([issue]), {
+  const result = await intakeDelegatedIssue(sqliteDb(db), createFakeTracker([issue]), {
     linearIssueId: "only",
     sessionId: "ses_2",
     taskKey: "session:ses_2",
@@ -222,7 +222,7 @@ describe("re-delegating an issue", () => {
     const tracker = createFakeTracker([issue]);
     let inspected = 0;
     await expect(
-      intakeDelegatedIssue(db, tracker, {
+      intakeDelegatedIssue(sqliteDb(db), tracker, {
         linearIssueId: "only",
         sessionId: "ses_2",
         taskKey: "session:ses_2",
