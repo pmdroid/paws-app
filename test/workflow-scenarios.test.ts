@@ -132,9 +132,9 @@ describe("combined recovery scenarios", () => {
       for (let n = 0; n < 2; n++) {
         w.crash();
         w.start();
-        expect(mergeAcceptedWork(w.db, id, { now: w.now })).toBe(false);
+        expect(await mergeAcceptedWork(sqliteDb(w.db), id, { now: w.now })).toBe(false);
         await markCloseoutAccepted(sqliteDb(w.db), id, "head");
-        expect(mergeAcceptedWork(w.db, id, { now: w.now })).toBe(false);
+        expect(await mergeAcceptedWork(sqliteDb(w.db), id, { now: w.now })).toBe(false);
         await markCloseoutAccepted(sqliteDb(w.db), id, null as unknown as string);
       }
       w.settle();

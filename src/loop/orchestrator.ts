@@ -736,7 +736,7 @@ import {
 import type { RuntimeList } from "../runtimes";
 import { createRuntimeLists } from "./runtime-lists";
 import { startFreshBudgetSteps } from "./time-budget";
-import { HOST_DISK_FULL_THOUGHT, hostDiskFullThoughtKey } from "./disk-full";
+import { HOST_DISK_FULL_THOUGHT, hostDiskFullThoughtKeySteps } from "./disk-full";
 import { questionEffects } from "./question-effects";
 import { GitHubInstallationCheck, type GitHubIntegration } from "./github-integration";
 import {
@@ -3139,7 +3139,8 @@ export class Orchestrator {
   private async noteHostDiskFull(itemId: string | null, error: unknown): Promise<void> {
     if (itemId === null || !isHostDiskFull(error)) return;
     const item = await this.store.run((q) => getWorkItemSteps(q, itemId));
-    const key = item && hostDiskFullThoughtKey(this.db, item.id, this.now());
+    const key =
+      item && (await this.store.run((q) => hostDiskFullThoughtKeySteps(q, item.id, this.now())));
     if (item && key) this.post(item, "thought", HOST_DISK_FULL_THOUGHT, key);
   }
 
@@ -4037,7 +4038,10 @@ export class Orchestrator {
       if (
         suggestionJob !== null &&
         head === (await this.store.run((q) => getWorkItemSteps(q, item.id)))?.acceptedHead &&
-        mergeAcceptedWork(this.db, item.id, { now: this.now(), exceptJobId: suggestionJob })
+        (await mergeAcceptedWork(this.store, item.id, {
+          now: this.now(),
+          exceptJobId: suggestionJob,
+        }))
       ) {
         await this.flush();
         return;
@@ -6706,7 +6710,7 @@ export class Orchestrator {
       return null;
     });
     if (remote === null) return false;
-    return await settleRejectedPush(this.db, item.id, {
+    return await settleRejectedPush(this.store, item.id, {
       remoteHead: remote.head,
       containsAccepted: remote.contains,
       now: this.now(),
@@ -6760,7 +6764,7 @@ export class Orchestrator {
         reason,
         handoff: readString(job.payload, "handoff"),
       }) ||
-      !mergeAcceptedWork(this.db, item.id, { now: this.now(), exceptJobId: job.id })
+      !(await mergeAcceptedWork(this.store, item.id, { now: this.now(), exceptJobId: job.id }))
     )
       return false;
     await this.flush();
