@@ -263,7 +263,7 @@ A reply in Linear sends the finding back to the agent with the reply and never a
 When Closeout accepts head S, it writes an accept row: S, the policy digest it ran under, and any bypass rows for S. The item enters `merge_queue`. The merge lane takes the repository lock, reads the pull request and checks one predicate, `mergeable(S)`:
 
 1. The pull request head is still S.
-2. S contains the current `main`. Under `[merge] main_moved = "overlap"`, a head whose files main's new commits do not touch also counts.
+2. S contains the current `main`. Under `[merge] main_moved = "overlap"`, a head whose files main's new commits do not touch also counts. Under `main_moved = "green"`, any head counts.
 3. An accept row exists for S under the current policy digest. Under `main_moved = "ci"` or `"overlap"`, a head the lane rebased from the accepted head carries that head's row.
 4. A high-risk head satisfies the risk approval gate: a manual approval, or the opt-in clean-review check described under [`auto_approve_high_risk`](configuration.md#merge). Automatic approval requires both named reviews at exactly S, even after a rebase, and never carries to another head. Changes to the risk rules or agent instructions always need a person.
 5. CI is green for S: no check on S failed, every check that started on S finished as success, skipped or neutral, and every check the branch rules require has reported. A check that ran on `main` but never started on S does not count, so a job that path filters skip is never waited for.
