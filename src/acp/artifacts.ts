@@ -73,7 +73,10 @@ export interface PublishedArtifact {
 }
 
 export interface PublishArtifactHook {
-  begin?(request: PublishArtifactRequest, context: PublishArtifactContext): { complete(): void };
+  begin?(
+    request: PublishArtifactRequest,
+    context: PublishArtifactContext,
+  ): Promise<{ complete(): Promise<void> }>;
   publish(artifact: ArtifactSnapshot, context: PublishArtifactContext): Promise<PublishedArtifact>;
 }
 

@@ -76,7 +76,7 @@ test("the turn summary reads only what the turn appended to acp.jsonl", async ()
   expect(await readTurnSummary(join(path, "missing"), 0, "item")).toBeNull();
 });
 
-test("the pull request response starts with the agent's capped summary and ends with the link and findings", () => {
+test("the pull request response starts with the agent's capped summary and ends with the link and findings", async () => {
   const response = (summary: string) =>
     pullRequestReadyResponse({
       itemId: "item",
@@ -86,16 +86,16 @@ test("the pull request response starts with the agent's capped summary and ends 
       openLine: "Open findings: none.",
       summary,
     });
-  const short = response("Added the turn summary.\n\nVerified with bun test.");
+  const short = await response("Added the turn summary.\n\nVerified with bun test.");
   expect(short).toStartWith(
     "Added the turn summary.\n\nVerified with bun test.\n\nOpened https://github.com/o/r/pull/7.",
   );
   expect(short).toEndWith("\n\nOpen findings: none.");
 
-  const long = response("x".repeat(PULL_REQUEST_SUMMARY_LIMIT * 2));
+  const long = await response("x".repeat(PULL_REQUEST_SUMMARY_LIMIT * 2));
   const [summary] = long.split("\n\nOpened ");
   expect(summary).toHaveLength(PULL_REQUEST_SUMMARY_LIMIT);
   expect(summary).toEndWith("…");
   expect(long).toEndWith("Open findings: none.");
-  expect(response("  ")).toStartWith("Opened https://github.com/o/r/pull/7.");
+  expect(await response("  ")).toStartWith("Opened https://github.com/o/r/pull/7.");
 });

@@ -18,7 +18,7 @@ import {
   saveHumanRetryWindow,
   humanRetryBaseline,
 } from "../db";
-import { ask as askNow, askSteps, findOpenQuestion, getQuestion } from "../questions";
+import { askSteps, findOpenQuestion, getQuestion } from "../questions";
 import { askMergeHelp, ciFixes, rebaseReturns, returnToAgent } from "./returns";
 
 function queued() {
@@ -155,7 +155,9 @@ describe("merge returns", () => {
   test("CI help asked while another task's question is open waits its turn", async () => {
     const db = queued();
     insertQueuedItem(db, { id: "eng-2", now: 1, sessionKey: "s-1" });
-    const open = askNow(db, { itemId: "eng-2", runId: null, sessionId: "s-1" }, "agent", "Which?");
+    const open = await sqliteDb(db).transaction((q) =>
+      askSteps(q, { itemId: "eng-2", runId: null, sessionId: "s-1" }, "agent", "Which?"),
+    );
     expect(
       await askMergeHelp(sqliteDb(db), {
         ask,

@@ -27,9 +27,16 @@ import {
   saveCheckpoint,
   sqliteDb,
 } from "../src/db";
-import { acceptCloseout, ask, attachOrchestrator, questionEffects, restart } from "../src/loop";
+import {
+  acceptCloseout,
+  askSteps,
+  attachOrchestrator,
+  questionEffects,
+  restart,
+} from "../src/loop";
 import { itemReadiness } from "../src/intake";
-import { ask as rawAsk, answer, findOpenQuestion } from "../src/questions";
+import { findOpenQuestion } from "../src/questions";
+import { ask as rawAsk, answer } from "./questions";
 import { workspaceAdmission, workspaceDispatch } from "./fake-workspace";
 import { tempDb, tempHome } from "./helpers";
 
@@ -208,11 +215,11 @@ describe("restart and ask", () => {
 
   test.each(["open", "queued"] as const)(
     "startup retains an existing %s restart question even when its ask job is done",
-    (status) => {
+    async (status) => {
       const { db, item } = fixture();
       const owner = { itemId: item.id, runId: item.currentRunId, sessionId: "session" };
-      if (status === "queued") rawAsk(db, owner, "agent", "First question", { now: 2 });
-      rawAsk(db, owner, "agent", "Restart?", { reason: "restart", now: 3 });
+      if (status === "queued") await rawAsk(db, owner, "agent", "First question", { now: 2 });
+      await rawAsk(db, owner, "agent", "Restart?", { reason: "restart", now: 3 });
       const id = enqueueJob(db, {
         queue: "item.ask",
         jobKey: `restart-ask:${item.id}:${item.version}`,
@@ -275,19 +282,21 @@ describe("restart and ask", () => {
         now: 3,
       }),
     ).toBeNull();
-    expect(() =>
-      ask(
-        db,
-        {
-          itemId: item.id,
-          runId: verifying.currentRunId,
-          sessionId: "session",
-          version: verifying.version,
-        },
-        "agent",
-        "stale?",
+    await expect(
+      sqliteDb(db).transaction((q) =>
+        askSteps(
+          q,
+          {
+            itemId: item.id,
+            runId: verifying.currentRunId,
+            sessionId: "session",
+            version: verifying.version,
+          },
+          "agent",
+          "stale?",
+        ),
       ),
-    ).toThrow("stale");
+    ).rejects.toThrow("stale");
     expect({
       events: listWorkItemEventRows(db, item.id),
       outbox: listOutbox(db),
@@ -311,21 +320,25 @@ describe("restart and ask", () => {
     db.close();
   });
 
-  test("questions queue once, record their reason, and their answer restarts the same run", () => {
+  test("questions queue once, record their reason, and their answer restarts the same run", async () => {
     const { db, item } = fixture();
-    ask(
-      db,
-      { itemId: item.id, runId: item.currentRunId, sessionId: "session" },
-      "agent",
-      "Which direction?",
-      { now: 2 },
+    await sqliteDb(db).transaction((q) =>
+      askSteps(
+        q,
+        { itemId: item.id, runId: item.currentRunId, sessionId: "session" },
+        "agent",
+        "Which direction?",
+        { now: 2 },
+      ),
     );
-    const next = ask(
-      db,
-      { itemId: item.id, runId: item.currentRunId, sessionId: "session" },
-      "agent",
-      "Start again?",
-      { now: 3 },
+    const next = await sqliteDb(db).transaction((q) =>
+      askSteps(
+        q,
+        { itemId: item.id, runId: item.currentRunId, sessionId: "session" },
+        "agent",
+        "Start again?",
+        { now: 3 },
+      ),
     );
     expect(next.status).toBe("queued");
     expect(
@@ -333,13 +346,13 @@ describe("restart and ask", () => {
         .filter((event) => event.kind === "ask")
         .map((event) => event.reason),
     ).toEqual(["agent", "agent"]);
-    answer(
+    await answer(
       db,
       { sessionId: "session", deliveryId: "one", body: "Use A", answeredBy: "lead", now: 4 },
       questionEffects(db, { now: 4 }),
     );
     expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
-    answer(
+    await answer(
       db,
       { sessionId: "session", deliveryId: "two", body: "Continue", answeredBy: "lead", now: 5 },
       questionEffects(db, { now: 5 }),
@@ -358,12 +371,14 @@ describe("restart and ask", () => {
 
   test("a repeated-recovery question queues behind the existing question instead of failing", async () => {
     const { db, item } = fixture();
-    ask(
-      db,
-      { itemId: item.id, runId: item.currentRunId, sessionId: "session" },
-      "agent",
-      "Which direction?",
-      { now: 2 },
+    await sqliteDb(db).transaction((q) =>
+      askSteps(
+        q,
+        { itemId: item.id, runId: item.currentRunId, sessionId: "session" },
+        "agent",
+        "Which direction?",
+        { now: 2 },
+      ),
     );
     applyDecision(db, getWorkItem(db, item.id)!, { type: "ask_restart" }, 3);
     const clock = new FakeClock(4);
@@ -384,14 +399,16 @@ describe("restart and ask", () => {
     db.close();
   });
 
-  test("startup keeps awaiting-input items and schedules a catch-up read", () => {
+  test("startup keeps awaiting-input items and schedules a catch-up read", async () => {
     const { db, item } = fixture();
-    ask(
-      db,
-      { itemId: item.id, runId: item.currentRunId, sessionId: "session" },
-      "agent",
-      "Continue?",
-      { now: 2 },
+    await sqliteDb(db).transaction((q) =>
+      askSteps(
+        q,
+        { itemId: item.id, runId: item.currentRunId, sessionId: "session" },
+        "agent",
+        "Continue?",
+        { now: 2 },
+      ),
     );
     recoverOnStartup(db, 3);
     expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");

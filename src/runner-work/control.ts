@@ -57,7 +57,6 @@ import {
   runnerWorkStillReportedSteps,
   runTeardownOwnerSteps,
   setRunnerWorkLastSequenceSteps,
-  settled as settledValue,
   sqliteDb,
   storedRunnerEventSteps,
   taskRequiresRepositorySteps,
@@ -580,9 +579,6 @@ export function createRunnerWork(options: {
   }
   return {
     supportsAgentSteps,
-    supportsAgent(runnerId: string, agent: string) {
-      return settledValue(store.run((q) => supportsAgentSteps(q, runnerId, agent)));
-    },
     identity(runnerId: string) {
       return store.run((q) => runnerSteps(q, runnerId));
     },

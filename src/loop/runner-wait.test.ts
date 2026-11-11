@@ -53,7 +53,9 @@ function harness(
           const index = asks.push(now) - 1;
           return {
             answer: () => answers[index] ?? null,
-            cancel: () => cancelled.push(index),
+            cancel: () => {
+              cancelled.push(index);
+            },
           };
         },
         ...(asked === undefined ? {} : { asked }),

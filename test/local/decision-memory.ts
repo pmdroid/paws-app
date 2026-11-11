@@ -7,17 +7,19 @@ import {
   bindWorkItemRepository,
   getWorkItem,
   openDatabase,
+  sqliteDb,
 } from "../../src/db";
 import {
   changeDecision,
-  confirmDecision,
+  confirmDecisionSteps,
   listDecisions,
-  suggestDecisions,
+  suggestDecisionsSteps,
 } from "../../src/decisions";
-import { answerQuestion, getQuestion, openQuestion } from "../../src/questions";
+import { getQuestion, openQuestion } from "../../src/questions";
+import { answerQuestion } from "../questions";
 import { createExecutionControlsFixture } from "./execution-controls";
 
-export function decisionFixture(root: string) {
+export async function decisionFixture(root: string) {
   const fixture = createExecutionControlsFixture(root);
   activateLinearItem(fixture.db, "session-controlled", "controlled");
   bindWorkItemRepository(fixture.db, "controlled", {
@@ -25,13 +27,13 @@ export function decisionFixture(root: string) {
     repo: "allowed",
     remoteUrl: "https://example.invalid/fixture/allowed",
   });
-  const question = openQuestion(fixture.db, {
+  const question = await openQuestion(fixture.db, {
     itemId: "controlled",
     sessionId: "session-controlled",
     body: "Which pagination format?",
     now: Date.now() - 2000,
   });
-  answerQuestion(fixture.db, question.id, {
+  await answerQuestion(fixture.db, question.id, {
     answer: "Use cursor pagination and the existing response format.",
     answeredBy: "member",
   });
@@ -39,7 +41,7 @@ export function decisionFixture(root: string) {
 }
 
 export async function probeDecisionMemory(root: string) {
-  const f = decisionFixture(root);
+  const f = await decisionFixture(root);
   const observations: string[] = [];
   const actor = { workspaceId: "workspace", userId: "member", clientId: "client" };
   const call = (body?: unknown, identity = "member", headers = {}) =>
@@ -69,7 +71,7 @@ export async function probeDecisionMemory(root: string) {
       [],
     );
     assert.equal((await listDecisions(f.db, actor, "pagination"))[0]?.id, id);
-    const pending = openQuestion(f.db, {
+    const pending = await openQuestion(f.db, {
       itemId: "controlled",
       sessionId: "session-controlled",
       body: "Which pagination format?",
@@ -77,18 +79,20 @@ export async function probeDecisionMemory(root: string) {
       now: Date.now() - 1000,
     });
     applyWorkItemEvent(f.db, "controlled", "blocking_question");
-    const options = suggestDecisions(f.db, pending.id, pending.body);
+    const suggest = (questionId: string, body: string) =>
+      sqliteDb(f.db).run((q) => suggestDecisionsSteps(q, questionId, body));
+    const confirm = (questionId: string, value: string, userId: string) =>
+      sqliteDb(f.db).transaction((q) =>
+        confirmDecisionSteps(q, questionId, value, userId, Date.now()),
+      );
+    const options = await suggest(pending.id, pending.body);
     assert.equal(options.length, 1);
     assert.equal(getQuestion(f.db, pending.id)?.status, "open");
     assert.equal(getWorkItem(f.db, "controlled")?.state, "awaiting_input");
     assert.equal(f.db.query("SELECT * FROM job WHERE queue='run.resume'").all().length, 0);
     observations.push("Search and persisted suggestions leave work awaiting human input");
-    assert.throws(() =>
-      confirmDecision(f.db, pending.id, options[0]!.value, "inactive", Date.now()),
-    );
-    assert.throws(() =>
-      confirmDecision(f.db, pending.id, options[0]!.value, "outside", Date.now()),
-    );
+    await assert.rejects(confirm(pending.id, options[0]!.value, "inactive"));
+    await assert.rejects(confirm(pending.id, options[0]!.value, "outside"));
     await changeDecision(
       f.db,
       actor,
@@ -101,7 +105,7 @@ export async function probeDecisionMemory(root: string) {
       },
       Date.now(),
     );
-    assert.throws(() => confirmDecision(f.db, pending.id, options[0]!.value, "member", Date.now()));
+    await assert.rejects(confirm(pending.id, options[0]!.value, "member"));
     await f.orchestrator.onLinearEvent({
       deliveryId: "stale-decision-delivery",
       source: "webhook",
@@ -130,34 +134,35 @@ export async function probeDecisionMemory(root: string) {
     observations.push(
       "Corrected decisions invalidate old choices without changing the waiting answer",
     );
-    answerQuestion(f.db, pending.id, { answer: "Use cursor pagination.", answeredBy: "member" });
-    const next = openQuestion(f.db, {
+    await answerQuestion(f.db, pending.id, {
+      answer: "Use cursor pagination.",
+      answeredBy: "member",
+    });
+    const next = await openQuestion(f.db, {
       itemId: "controlled",
       sessionId: "session-controlled",
       body: "Which pagination format?",
       now: Date.now() - 500,
     });
-    assert.equal(suggestDecisions(f.db, next.id, next.body).length, 0);
+    assert.equal((await suggest(next.id, next.body)).length, 0);
     f.db.run("UPDATE work_item SET brief=? WHERE id='controlled'", [
       JSON.stringify({ issue: { description: "paths: src/api/pagination.ts" } }),
     ]);
     f.db.run("INSERT INTO work_item_scheduling(item_id,project_known) VALUES('controlled',0)");
-    assert.equal(suggestDecisions(f.db, next.id, next.body).length, 1);
+    assert.equal((await suggest(next.id, next.body)).length, 1);
     f.db.run("UPDATE work_item_scheduling SET paths=? WHERE item_id='controlled'", [
       JSON.stringify(["src/dashboard/index.ts"]),
     ]);
-    assert.equal(suggestDecisions(f.db, next.id, next.body).length, 0);
+    assert.equal((await suggest(next.id, next.body)).length, 0);
     f.db.run("UPDATE work_item_scheduling SET paths=? WHERE item_id='controlled'", [
       JSON.stringify(["src/api/pagination.ts"]),
     ]);
-    const suggestion = suggestDecisions(f.db, next.id, next.body)[0]!;
-    assert.throws(() =>
-      f.db
-        .transaction(() => {
-          confirmDecision(f.db, next.id, suggestion.value, "member", Date.now());
-          throw new Error("rollback");
-        })
-        .immediate(),
+    const suggestion = (await suggest(next.id, next.body))[0]!;
+    await assert.rejects(
+      sqliteDb(f.db).transaction(function* (q) {
+        yield* confirmDecisionSteps(q, next.id, suggestion.value, "member", Date.now());
+        throw new Error("rollback");
+      }),
     );
     assert.equal((await listDecisions(f.db, actor))[0]?.accepted, 0);
     const second = openDatabase(join(root, "controls.sqlite"));
@@ -187,12 +192,12 @@ export async function probeDecisionMemory(root: string) {
       "Persisted choices survive reopening SQLite and one human confirmation schedules exactly one resume",
     );
     await changeDecision(f.db, actor, { id, revision: 2, retire: true }, Date.now());
-    const retired = openQuestion(f.db, {
+    const retired = await openQuestion(f.db, {
       itemId: "controlled",
       sessionId: "session-controlled",
       body: "pagination",
     });
-    assert.equal(suggestDecisions(f.db, retired.id, retired.body).length, 0);
+    assert.equal((await suggest(retired.id, retired.body)).length, 0);
     assert.equal((await listDecisions(f.db, actor))[0]?.retiredAt !== null, true);
     observations.push("Retired decisions remain auditable and are excluded from suggestions");
     f.db.run("DELETE FROM workspace_repository WHERE workspace_id='workspace'");
@@ -209,7 +214,7 @@ if (import.meta.main) {
   if (!root) throw new Error("Provide a disposable evidence directory.");
   mkdirSync(root, { recursive: true });
   if (process.argv.includes("--serve")) {
-    const f = decisionFixture(root);
+    const f = await decisionFixture(root);
     writeFileSync(
       join(root, "fixture.json"),
       JSON.stringify({ origin: f.origin, token: f.sessions["member"]!.token }),

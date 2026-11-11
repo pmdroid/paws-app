@@ -10,7 +10,7 @@ import {
   sqliteDb,
   syncSteps,
 } from "../src/db";
-import { recordItemDependencies } from "../src/intake";
+import { recordItemDependenciesSteps } from "../src/intake";
 import { createAdmission, dispatch, type ItemAdmission } from "../src/scheduler";
 import { createLiveStatusProvider } from "../src/dashboard";
 import { joinFakeWorkspace, workspaceAdmission, workspaceDispatch } from "./fake-workspace";
@@ -72,9 +72,9 @@ test("a blocked item names its blocker once in the journal and once more when it
   }
 });
 
-function externalBlocker(db: Database, state: string) {
+async function externalBlocker(db: Database, state: string) {
   item(db, "PAS-840");
-  joinFakeWorkspace(db, "delegation");
+  await joinFakeWorkspace(db, "delegation");
   const workspaceId = db.query<{ id: string }, []>("SELECT id FROM workspace").get()!.id;
   const generation =
     db
@@ -82,14 +82,16 @@ function externalBlocker(db: Database, state: string) {
         "SELECT generation FROM item_dependency_snapshot WHERE item_id=?",
       )
       .get("PAS-840")?.generation ?? 0;
-  recordItemDependencies(
-    db,
-    { itemId: "PAS-840", workspaceId, expectedGeneration: generation },
-    {
-      edges: [{ blockerLinearIssueId: "issue-OPS-12", blockedLinearIssueId: "issue-PAS-840" }],
-      states: new Map([["issue-OPS-12", state]]),
-      identifiers: new Map([["issue-OPS-12", "OPS-12"]]),
-    },
+  await sqliteDb(db).transaction((q) =>
+    recordItemDependenciesSteps(
+      q,
+      { itemId: "PAS-840", workspaceId, expectedGeneration: generation },
+      {
+        edges: [{ blockerLinearIssueId: "issue-OPS-12", blockedLinearIssueId: "issue-PAS-840" }],
+        states: new Map([["issue-OPS-12", state]]),
+        identifiers: new Map([["issue-OPS-12", "OPS-12"]]),
+      },
+    ),
   );
 }
 
@@ -99,7 +101,7 @@ for (const state of ["started", "unstarted"])
     const journaled: string[] = [];
     const restore = setJournalSink((line) => journaled.push(line));
     try {
-      externalBlocker(db, state);
+      await externalBlocker(db, state);
       const { lines, log } = journal();
       expect(await dispatch(db, { now: 1, log, admission: createAdmission({ db }) })).toEqual([]);
       expect(await listItemHolds(sqliteDb(db))).toEqual([
@@ -126,6 +128,7 @@ test("a blocked hold without an open blocker is journaled as an inconsistency", 
       steps: {
         canDispatchDelegation: () => syncSteps(() => true),
         canStart: () => syncSteps(() => ({ ok: false, held: "blocked" })),
+        canMerge: () => syncSteps(() => ({ ok: false, held: "blocked" })),
       },
     };
     const { lines, log } = journal();
@@ -268,7 +271,7 @@ test("migration 124 keeps the stored holds and accepts the workspace reason", ()
 test("an item blocked only by an issue canceled in Linear is not held", async () => {
   const db = tempDb();
   try {
-    externalBlocker(db, "canceled");
+    await externalBlocker(db, "canceled");
     const { lines, log } = journal();
     await dispatch(db, { now: 1, log, admission: createAdmission({ db }) });
     expect(await listItemHolds(sqliteDb(db))).toEqual([]);

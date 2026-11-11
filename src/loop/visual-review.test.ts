@@ -12,8 +12,8 @@ import {
   sqliteDb,
 } from "../db";
 import {
-  answer,
-  ask,
+  answerSteps,
+  askSteps as askQuestionSteps,
   findOpenQuestion,
   getQuestion,
   getVisualReview,
@@ -93,7 +93,9 @@ const reply = (body: string) => ({
 
 test("Accept on a question asked before the link ask requests changes and never approves", async () => {
   const { db, itemId, question } = await askedBefore();
-  const outcome = answer(db, reply("Accept"), questionEffects(db, { now: NOW + 100 }));
+  const outcome = await sqliteDb(db).transaction((q) =>
+    answerSteps(q, reply("Accept"), questionEffects(db, { now: NOW + 100 })),
+  );
   expect(outcome.status).toBe("answered");
   expect(getVisualReview(db, question.id)).toMatchObject({
     outcome: "changes_requested",
@@ -108,7 +110,9 @@ test("Accept on a question asked before the link ask requests changes and never 
 
 test("Request changes restarts the item for review with the feedback", async () => {
   const { db, itemId, question } = await askedBefore();
-  answer(db, reply("Make the hint shorter"), questionEffects(db, { now: NOW + 100 }));
+  await sqliteDb(db).transaction((q) =>
+    answerSteps(q, reply("Make the hint shorter"), questionEffects(db, { now: NOW + 100 })),
+  );
   expect(getVisualReview(db, question.id)?.outcome).toBe("changes_requested");
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
   const [resume] = listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
@@ -124,12 +128,16 @@ test("the round-limit question waits behind a sibling's queued question", async 
       [`old-${round}`, itemId, NOW - round],
     );
   const sibling = insertQueuedItem(db, { id: "ENG-4", sessionKey: "ses_1", title: "Other" });
-  const ci = ask(db, { itemId: sibling.id, runId: null, sessionId: "ses_1" }, "ci-help", "CI?", {
-    now: NOW + 1,
-  });
+  const ci = await sqliteDb(db).transaction((q) =>
+    askQuestionSteps(q, { itemId: sibling.id, runId: null, sessionId: "ses_1" }, "ci-help", "CI?", {
+      now: NOW + 1,
+    }),
+  );
   expect(ci.status).toBe("queued");
 
-  answer(db, reply("Make the hint shorter"), questionEffects(db, { now: NOW + 100 }));
+  await sqliteDb(db).transaction((q) =>
+    answerSteps(q, reply("Make the hint shorter"), questionEffects(db, { now: NOW + 100 })),
+  );
 
   expect(getVisualReview(db, question.id)?.outcome).toBe("changes_requested");
   expect(findOpenQuestion(db, "ses_1")?.id).toBe(ci.question.id);

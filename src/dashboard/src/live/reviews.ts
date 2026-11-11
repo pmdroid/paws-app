@@ -2,10 +2,11 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
-  getWorkItemRepository,
-  listCloseoutProgress,
-  reviewFindingIssues,
+  getWorkItemRepositorySteps,
+  listCloseoutProgressSteps,
+  reviewFindingIssuesSteps,
   reviewFindingKey,
+  sqliteDb,
   type CloseoutProgressRecord,
   type CloseoutStepRecord,
 } from "../../../db";
@@ -100,19 +101,22 @@ export function reviewsOf(
  * The reviews of work item `itemId`, each pre-existing finding with the Linear issue filed from
  * it on any item. Reads the database only; Linear is called when someone files an issue.
  */
-export function itemReviews(
+export async function itemReviews(
   db: Database,
   itemId: string,
   pawsHome: string,
   env: NodeJS.ProcessEnv,
-  progress: readonly CloseoutProgressRecord[] = listCloseoutProgress(db),
-): StatusReview[] {
+  progress?: readonly CloseoutProgressRecord[],
+): Promise<StatusReview[]> {
+  const store = sqliteDb(db);
   const reviews = reviewsOf(
-    progress.filter((row) => row.itemId === itemId),
+    (progress ?? (await store.run(listCloseoutProgressSteps))).filter(
+      (row) => row.itemId === itemId,
+    ),
     pawsHome,
     env,
   );
-  const bound = getWorkItemRepository(db, itemId);
+  const bound = await store.run((q) => getWorkItemRepositorySteps(q, itemId));
   if (bound === null || reviews.length === 0) return reviews;
   const repository = `${bound.owner}/${bound.repo}`;
   const keyOf = (finding: StatusReviewFinding) =>
@@ -122,9 +126,11 @@ export function itemReviews(
   const all = reviews.flatMap((review) =>
     review.rounds.flatMap((round) => [...round.findings, ...round.fixed]),
   );
-  const filed = reviewFindingIssues(
-    db,
-    all.map(keyOf).filter((key) => key !== null),
+  const filed = await store.run((q) =>
+    reviewFindingIssuesSteps(
+      q,
+      all.map(keyOf).filter((key) => key !== null),
+    ),
   );
   if (filed.size === 0) return reviews;
   const mark = (finding: StatusReviewFinding): StatusReviewFinding => {

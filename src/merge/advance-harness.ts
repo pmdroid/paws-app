@@ -513,12 +513,13 @@ export async function mergeHarness(
       },
       readPull: (_, prNumber) => readPull(prNumber),
       mergeLane: (current) => state.lanes.get(current.id) ?? "",
-      dependencyHold: (itemId) => {
-        const open = (state.blockedBy.get(itemId) ?? []).filter(
-          (blocker) => getConfirmedRemoteMerge(db, blocker) === null,
-        );
-        return open.length ? open : null;
-      },
+      dependencyHold: (_q, itemId) =>
+        syncSteps(() => {
+          const open = (state.blockedBy.get(itemId) ?? []).filter(
+            (blocker) => getConfirmedRemoteMerge(db, blocker) === null,
+          );
+          return open.length ? open : null;
+        }),
       voice: {
         thought: (_q, _, body, key) => syncSteps(() => say("thought", body, key)),
         status: (_q, _, body, key) => syncSteps(() => say("status", body, key)),

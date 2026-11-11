@@ -24,7 +24,8 @@ import {
   sqliteDb,
 } from "../src/db";
 import { attachOrchestrator, questionEffects } from "../src/loop";
-import { answer, findOpenQuestion } from "../src/questions";
+import { findOpenQuestion } from "../src/questions";
+import { answer } from "./questions";
 import { workspaceAdmission } from "./fake-workspace";
 import { legacyMigratedDatabase, legacyTempDb, tempHome } from "./helpers";
 
@@ -154,11 +155,20 @@ describe("restart hold", () => {
       answeredBy: "lead",
       now: LATER * 3,
     };
-    expect(answer(db, reply, questionEffects(db, { now: reply.now })).status).toBe("answered");
-    expect(answer(db, reply, questionEffects(db, { now: reply.now })).status).toBe("duplicate");
+    expect((await answer(db, reply, questionEffects(db, { now: reply.now }))).status).toBe(
+      "answered",
+    );
+    expect((await answer(db, reply, questionEffects(db, { now: reply.now }))).status).toBe(
+      "duplicate",
+    );
     expect(
-      answer(db, { ...reply, deliveryId: "reply-2" }, questionEffects(db, { now: reply.now }))
-        .status,
+      (
+        await answer(
+          db,
+          { ...reply, deliveryId: "reply-2" },
+          questionEffects(db, { now: reply.now }),
+        )
+      ).status,
     ).toBe("unasked");
     const item = getWorkItem(db, "item")!;
     expect(item).toMatchObject({ state: "queued", recoveryAttempts: 1 });
@@ -175,7 +185,7 @@ describe("restart hold", () => {
     await orchestrate(db, 200).tick(["item.ask"]);
     db.run("UPDATE question SET cancelled_at=250 WHERE reason='restart'");
     const reply = { sessionId: "session", deliveryId: "late", body: "Go", answeredBy: "lead" };
-    expect(answer(db, reply, questionEffects(db, { now: 300 })).status).toBe("unasked");
+    expect((await answer(db, reply, questionEffects(db, { now: 300 }))).status).toBe("unasked");
     expect(executions(db)).toEqual([]);
     recoverOnStartup(db, LATER);
     expect(liveAsks(db)).toHaveLength(1);

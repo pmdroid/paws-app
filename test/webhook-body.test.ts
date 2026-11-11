@@ -27,7 +27,7 @@ function endpoints(store: InboxStore): Endpoint[] {
         "x-github-delivery": "body-delivery",
         "x-github-event": "ping",
       }),
-      handle: (request, key) => handleGitHubWebhook(request, key, { accept() {} }),
+      handle: (request, key) => handleGitHubWebhook(request, key, { async accept() {} }),
     },
     {
       name: "linear",

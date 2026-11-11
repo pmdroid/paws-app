@@ -7,9 +7,10 @@ import {
   insertQueuedItem,
   JobLoop,
   listJobs,
+  sqliteDb,
 } from "../src/db";
 import { FakeClock, JOB_KIND } from "../src/core";
-import { saveSchedulingContext } from "../src/scheduler";
+import { saveSchedulingContextSteps } from "../src/scheduler";
 import { tempDb } from "./helpers";
 
 const repository = { owner: "owner", repo: "repo", remoteUrl: "https://example.invalid/repo.git" };
@@ -21,7 +22,9 @@ test("reconciliation runs while every execution worker holds a handler open", as
   for (const [index, id] of ids.entries()) {
     insertQueuedItem(db, { id, now: index });
     bindWorkItemRepository(db, id, repository);
-    saveSchedulingContext(db, { itemId: id, projectId: "project", paths: [`src/${id}.ts`] });
+    await sqliteDb(db).run((q) =>
+      saveSchedulingContextSteps(q, { itemId: id, projectId: "project", paths: [`src/${id}.ts`] }),
+    );
   }
   expect(await workspaceDispatch(db, { now: clock.now() })).toEqual(ids);
   const loop = new JobLoop(db, clock, { concurrency: 4, pollMs: 1 });

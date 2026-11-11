@@ -38,7 +38,7 @@ import {
   type LinearCommentCapabilities,
   type LinearCommentPolicy,
 } from "./linear-comments";
-import { ask, restart } from "./operations";
+import { askSteps, restart } from "./operations";
 import { Orchestrator } from "./orchestrator";
 
 const ORG = "org-1";
@@ -824,12 +824,14 @@ describe("holds, questions and gates", () => {
       try {
         const { run } = beginImplementRun(f.db, "eng-1", T0);
         const item = getWorkItem(f.db, "eng-1")!;
-        const asked = ask(
-          f.db,
-          { itemId: item.id, runId: run.id, sessionId: SESSION, version: item.version },
-          kind,
-          "Approve?",
-          { now: T0 },
+        const asked = await sqliteDb(f.db).transaction((q) =>
+          askSteps(
+            q,
+            { itemId: item.id, runId: run.id, sessionId: SESSION, version: item.version },
+            kind,
+            "Approve?",
+            { now: T0 },
+          ),
         );
         await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Approved, ship it." })));
         expect(await f.deliver()).toBe("done");
@@ -851,12 +853,14 @@ describe("holds, questions and gates", () => {
     try {
       const { run } = beginImplementRun(f.db, "eng-1", T0);
       const item = getWorkItem(f.db, "eng-1")!;
-      ask(
-        f.db,
-        { itemId: item.id, runId: run.id, sessionId: SESSION, version: item.version },
-        "agent",
-        "Which?",
-        { now: T0 },
+      await sqliteDb(f.db).transaction((q) =>
+        askSteps(
+          q,
+          { itemId: item.id, runId: run.id, sessionId: SESSION, version: item.version },
+          "agent",
+          "Which?",
+          { now: T0 },
+        ),
       );
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Unrelated note." })));
       await f.receive(

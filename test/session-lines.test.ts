@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import {
+  sqliteDb,
   beginImplementRun,
   enqueueOutbox,
   enqueueOutboxOnce,
@@ -17,7 +18,7 @@ import {
   sessionHasItemInFlight,
   type AcceptedLinearEvent,
 } from "../src/linear";
-import { ask } from "../src/loop";
+import { askSteps } from "../src/loop";
 
 const open: Database[] = [];
 afterEach(() => {
@@ -93,16 +94,18 @@ describe("lifecycle lines", () => {
 });
 
 describe("a waiting question", () => {
-  function waiting(db: Database) {
+  async function waiting(db: Database) {
     insertQueuedItem(db, { id: "item-q", sessionKey: "ses-1", now: 0 });
     beginImplementRun(db, "item-q", 1_000);
     const item = getWorkItem(db, "item-q")!;
-    ask(
-      db,
-      { itemId: item.id, runId: item.currentRunId, sessionId: "ses-1", version: item.version },
-      "agent",
-      "Which repository?",
-      { options: ["paws-app", "paws-runner"], now: 2_000 },
+    await sqliteDb(db).transaction((q) =>
+      askSteps(
+        q,
+        { itemId: item.id, runId: item.currentRunId, sessionId: "ses-1", version: item.version },
+        "agent",
+        "Which repository?",
+        { options: ["paws-app", "paws-runner"], now: 2_000 },
+      ),
     );
     expect(getWorkItem(db, "item-q")?.state).toBe("awaiting_input");
   }
@@ -116,17 +119,17 @@ describe("a waiting question", () => {
       payload: { sessionId: "ses-1", kind: "error", body: "Paws could not start work." },
     });
 
-  test("a critical error does not drop its elicitation while the item still waits", () => {
+  test("a critical error does not drop its elicitation while the item still waits", async () => {
     const db = database();
-    waiting(db);
+    await waiting(db);
     errorActivity(db, "error:1");
     const elicitation = listOutbox(db, "ses-1").find((row) => row.op === "elicitation");
     expect(elicitation?.status).toBe("pending");
   });
 
-  test("an elicitation whose item stopped waiting is still superseded", () => {
+  test("an elicitation whose item stopped waiting is still superseded", async () => {
     const db = database();
-    waiting(db);
+    await waiting(db);
     db.run("UPDATE work_item SET state = 'failed' WHERE id = 'item-q'");
     errorActivity(db, "error:1");
     expect(listOutbox(db, "ses-1").find((row) => row.op === "elicitation")?.status).toBe("dropped");

@@ -26,7 +26,6 @@ import {
   recordPullCiFailureSteps,
   recordRebaseReturnSteps,
   resetOtherLaneCiFailuresSteps,
-  settled,
   settlePullCiFailuresSteps,
   syncSteps,
   wakePullReviewsSteps,
@@ -221,18 +220,16 @@ export async function observeHeldCi(
 }
 
 /** Whether the merge call must not be made now: stopped, artifacts missing, or a review pending. */
-export function mergeHeld({ store, item, caps }: MergeContext): boolean {
+export async function mergeHeld({ store, item, caps }: MergeContext): Promise<boolean> {
   return (
     caps.stopped() ||
-    settled(
-      store.run(function* (q): Steps<boolean> {
-        return (
-          (yield* mergeStopRequestedSteps(q, item.id)) ||
-          !(yield* artifactPublicationReadySteps(q, item.id)) ||
-          (yield* feedbackPendingSteps(q, item.id))
-        );
-      }),
-    )
+    (await store.run(function* (q): Steps<boolean> {
+      return (
+        (yield* mergeStopRequestedSteps(q, item.id)) ||
+        !(yield* artifactPublicationReadySteps(q, item.id)) ||
+        (yield* feedbackPendingSteps(q, item.id))
+      );
+    }))
   );
 }
 
@@ -278,7 +275,7 @@ export type OrderCapabilities = {
    * Null when the task's Linear dependencies let it merge. Otherwise the identifiers of the
    * blockers it waits for, empty when none can be named. A held task takes no place in the queue.
    */
-  dependencyHold(itemId: string): readonly string[] | null;
+  dependencyHold(q: Q, itemId: string): Steps<readonly string[] | null>;
   /**
    * The merge-queue lane the task joins in its repository: its Linear project id, or `''` for the
    * repository-wide lane.
@@ -395,7 +392,9 @@ export async function mergeQueueTurn(
 ): Promise<MergeWait | Extract<MergeStep, { kind: "returned" | "asked" }> | undefined> {
   const prNumber = pull.number;
   const name = `${repository.owner}/${repository.repo}`;
-  const held = (itemId: string) => caps.dependencyHold(itemId) !== null;
+  const held = function* (q: Q, itemId: string): Steps<boolean> {
+    return (yield* caps.dependencyHold(q, itemId)) !== null;
+  };
   const review = await readPullReview({
     client: github.client,
     owner: repository.owner,

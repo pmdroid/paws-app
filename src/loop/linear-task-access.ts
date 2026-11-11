@@ -15,7 +15,6 @@ import {
   listWorkItemsSteps,
   recordLinearInstallationSteps,
   requireLinearTaskDelegationSteps,
-  settled,
   sqliteDb,
   type Db,
   type Q,
@@ -385,16 +384,14 @@ export class LinearTaskAccess {
           signal,
           issue,
           beforeStart: (verifiedIssue) =>
-            settled(
-              this.store.run((q) =>
-                this.beforeStartSteps(q, currentSteps, {
-                  item,
-                  sessionId,
-                  access,
-                  issue: verifiedIssue,
-                  actorId,
-                }),
-              ),
+            this.store.run((q) =>
+              this.beforeStartSteps(q, currentSteps, {
+                item,
+                sessionId,
+                access,
+                issue: verifiedIssue,
+                actorId,
+              }),
             ),
         },
       );

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { listOutbox, recordConfirmedRemoteMerge } from "../src/db";
-import { recordItemDependencies } from "../src/intake";
+import { listOutbox, recordConfirmedRemoteMerge, sqliteDb } from "../src/db";
+import { recordItemDependenciesSteps } from "../src/intake";
 import { WAIT_KEEPALIVE_MS, type ItemWait } from "../src/scheduler";
 import { joinFakeWorkspace, workspaceDispatch } from "./fake-workspace";
 import { tempDb } from "./helpers";
@@ -27,13 +27,13 @@ function activities(db: Database, sessionId: string) {
     }));
 }
 
-function blockedFixture() {
+async function blockedFixture() {
   const db = tempDb();
   item(db, "PAS-618", "first", "running");
   item(db, "PAS-619", "second", "queued");
   db.run("INSERT INTO task_block VALUES('issue-PAS-618','issue-PAS-619')");
-  joinFakeWorkspace(db, "first");
-  joinFakeWorkspace(db, "second");
+  await joinFakeWorkspace(db, "first");
+  await joinFakeWorkspace(db, "second");
   const workspaceId = db.query<{ id: string }, []>("SELECT id FROM workspace").get()!.id;
   const generation =
     db
@@ -41,20 +41,22 @@ function blockedFixture() {
         "SELECT generation FROM item_dependency_snapshot WHERE item_id=?",
       )
       .get("PAS-619")?.generation ?? 0;
-  recordItemDependencies(
-    db,
-    { itemId: "PAS-619", workspaceId, expectedGeneration: generation },
-    {
-      edges: [{ blockerLinearIssueId: "issue-PAS-618", blockedLinearIssueId: "issue-PAS-619" }],
-      states: new Map([["issue-PAS-618", "started"]]),
-      identifiers: new Map([["issue-PAS-618", "PAS-618"]]),
-    },
+  await sqliteDb(db).transaction((q) =>
+    recordItemDependenciesSteps(
+      q,
+      { itemId: "PAS-619", workspaceId, expectedGeneration: generation },
+      {
+        edges: [{ blockerLinearIssueId: "issue-PAS-618", blockedLinearIssueId: "issue-PAS-619" }],
+        states: new Map([["issue-PAS-618", "started"]]),
+        identifiers: new Map([["issue-PAS-618", "PAS-618"]]),
+      },
+    ),
   );
   return db;
 }
 
 test("a blocked item gets one thought, then an ephemeral at each 25-minute mark until it starts", async () => {
-  const db = blockedFixture();
+  const db = await blockedFixture();
   try {
     const session = "session-second";
     const start = Date.now();
@@ -139,7 +141,7 @@ test("a runner-queued item says its place in line every 25 minutes", async () =>
     item(db, "PAS-2", "second", "queued");
     item(db, "PAS-3", "third", "queued");
     db.run("UPDATE work_item SET created_at=1 WHERE id='PAS-3'");
-    for (const delegation of ["first", "second", "third"]) joinFakeWorkspace(db, delegation);
+    for (const delegation of ["first", "second", "third"]) await joinFakeWorkspace(db, delegation);
     db.run("PRAGMA foreign_keys=OFF");
     db.run(
       "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('runner','ws','owner','Runner','active',0,?)",
@@ -183,8 +185,8 @@ test("a sibling at work keeps its session's face, and a paused item posts no eph
     db.run("UPDATE work_item SET position=1 WHERE id='PAS-11'");
     db.run("INSERT INTO task_block VALUES('issue-PAS-10','issue-PAS-11')");
     item(db, "PAS-12", "alone", "paused");
-    joinFakeWorkspace(db, "shared");
-    joinFakeWorkspace(db, "alone");
+    await joinFakeWorkspace(db, "shared");
+    await joinFakeWorkspace(db, "alone");
     db.run(
       "INSERT INTO workspace_user(id,linear_user_id,name,email) VALUES('u','lu','Pascal','p@x')",
     );

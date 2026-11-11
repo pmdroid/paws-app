@@ -1,11 +1,9 @@
-import type { Database } from "bun:sqlite";
 import {
   activeItemQuestionsSteps,
   amendQuestionRowSteps,
   cancelQueuedQuestionsSteps,
   closeLinkAskSteps,
   dropQuestionElicitationsSteps,
-  emitJobReady,
   enqueueOutboxOnceSteps,
   getLinkAskSteps,
   getWorkItemSteps,
@@ -15,8 +13,6 @@ import {
   markQuestionAnsweredSteps,
   promoteQuestionRowSteps,
   setQuestionCancelledSteps,
-  settled,
-  sqliteDb,
   type Q,
   type Steps,
   type WorkItemRecord,
@@ -86,7 +82,10 @@ type AskInput = {
   options?: readonly QuestionOption[];
   context?: string;
   now?: number;
-  amend?: (question: StoredQuestion) => { context: string; options: QuestionOption[] } | null;
+  amend?: (
+    q: Q,
+    question: StoredQuestion,
+  ) => Steps<{ context: string; options: QuestionOption[] } | null>;
 };
 
 export function* askSteps(
@@ -116,22 +115,12 @@ export function* askSteps(
     status: waits ? "queued" : "open",
     now,
   });
-  const amended = input.amend?.(inserted) ?? null;
+  const amended = input.amend ? yield* input.amend(q, inserted) : null;
   if (amended !== null) yield* amendQuestionRowSteps(q, inserted.id, amended);
   const question = amended === null ? inserted : (yield* getQuestionSteps(q, inserted.id))!;
   if (waits) return { status: "queued", question };
   yield* deliverSteps(q, question, now);
   return { status: "asked", question };
-}
-
-export function ask(
-  db: Database,
-  asker: QuestionAsker,
-  kind: QuestionKind,
-  body: string,
-  input: AskInput = {},
-): Asked {
-  return settled(sqliteDb(db).transaction((q) => askSteps(q, asker, kind, body, input)));
 }
 
 export function* answerSteps(
@@ -159,16 +148,6 @@ export function* answerSteps(
   };
 }
 
-export function answer(
-  db: Database,
-  reply: QuestionReply,
-  effects: AnswerEffects = {},
-): AnswerOutcome {
-  const outcome = settled(sqliteDb(db).transaction((q) => answerSteps(q, reply, effects)));
-  emitJobReady(db);
-  return outcome;
-}
-
 type AnswerInput = { answer: string; answeredBy: string; eventKey?: string; now?: number };
 
 export function* answerQuestionSteps(
@@ -190,24 +169,11 @@ export function* answerQuestionSteps(
   return answered;
 }
 
-/** Mark the open question answered. A second delivery does not overwrite it. */
-export function answerQuestion(
-  db: Database,
-  id: string,
-  input: AnswerInput,
-): StoredQuestion | null {
-  return settled(sqliteDb(db).transaction((q) => answerQuestionSteps(q, id, input)));
-}
-
 export function* cancelQuestionSteps(q: Q, id: string, now = Date.now()): Steps<void> {
   const question = yield* getQuestionSteps(q, id);
   if (question?.status !== "open" && question?.status !== "queued") return;
   yield* setQuestionCancelledSteps(q, id, now);
   yield* promoteNextSteps(q, question.sessionId, now);
-}
-
-export function cancelQuestion(db: Database, id: string, now = Date.now()): void {
-  settled(sqliteDb(db).transaction((q) => cancelQuestionSteps(q, id, now)));
 }
 
 // Opaque agent questions and infrastructure/human holds are not known to be obsolete.
@@ -265,15 +231,6 @@ export function* cancelItemQuestionsSteps(
   }
   for (const sessionId of new Set(questions.map((question) => question.sessionId)))
     yield* promoteNextSteps(q, sessionId, now);
-}
-
-export function cancelItemQuestions(
-  db: Database,
-  itemId: string,
-  now = Date.now(),
-  scope: "all" | "criteria" = "all",
-): void {
-  settled(sqliteDb(db).transaction((q) => cancelItemQuestionsSteps(q, itemId, now, scope)));
 }
 
 function* promoteNextSteps(q: Q, sessionId: string, now: number): Steps<void> {

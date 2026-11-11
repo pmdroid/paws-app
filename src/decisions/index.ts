@@ -14,7 +14,6 @@ import {
   replaceDecisionSearchSteps,
   retireDecisionMemorySteps,
   searchDecisionRowsSteps,
-  settled,
   sqliteDb,
   unsavedDecisionAnswersSteps,
   workspaceLinearMemberSteps,
@@ -206,9 +205,6 @@ export async function changeDecision(
     return id;
   });
 }
-export function suggestDecisions(db: Database, questionId: string, text: string) {
-  return settled(sqliteDb(db).run((q) => suggestDecisionsSteps(q, questionId, text)));
-}
 export function* suggestDecisionsSteps(q: Q, questionId: string, text: string) {
   const target = yield* decisionScopeSteps(q, questionId);
   const query = terms(text);
@@ -259,19 +255,6 @@ export function* suggestDecisionsSteps(q: Q, questionId: string, text: string) {
     suggestions.push({ ...decision, value: `/paws decision ${suggestionId}` });
   }
   return suggestions;
-}
-export function confirmDecision(
-  db: Database,
-  questionId: string,
-  command: string,
-  linearUserId: string,
-  now: number,
-): string | null {
-  return settled(
-    sqliteDb(db).transaction((q) =>
-      confirmDecisionSteps(q, questionId, command, linearUserId, now),
-    ),
-  );
 }
 export function* confirmDecisionSteps(
   q: Q,

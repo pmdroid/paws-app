@@ -36,7 +36,7 @@ import {
   type WorkItemRecord,
   sqliteDb,
 } from "../src/db";
-import { ask } from "../src/loop";
+import { askSteps } from "../src/loop";
 import { RUNNER_LEASE_GRACE_MS } from "../src/runner-protocol";
 import { migratedDatabase, tempHome } from "./helpers";
 
@@ -241,16 +241,32 @@ export async function seedFixture(
       applyWorkItemEvent(db, id, "pause", { now });
       return;
     case "awaiting_input":
-      ask(db, { itemId: id, runId: run.id, sessionId: `session-${id}` }, "agent", "Which API?", {
-        now,
-      });
+      await sqliteDb(db).transaction((q) =>
+        askSteps(
+          q,
+          { itemId: id, runId: run.id, sessionId: `session-${id}` },
+          "agent",
+          "Which API?",
+          {
+            now,
+          },
+        ),
+      );
       return;
     case "awaiting_merge_help":
       await toMergeQueue();
       finishItemJobs(db, id, now);
-      ask(db, { itemId: id, runId: null, sessionId: `session-${id}` }, "ci-help", "CI failed.", {
-        now,
-      });
+      await sqliteDb(db).transaction((q) =>
+        askSteps(
+          q,
+          { itemId: id, runId: null, sessionId: `session-${id}` },
+          "ci-help",
+          "CI failed.",
+          {
+            now,
+          },
+        ),
+      );
       return;
     case "manual":
       applyWorkItemEvent(db, id, "run_failed", { now });

@@ -11,8 +11,8 @@ import {
   openDatabase,
   sqliteDb,
 } from "../db";
-import { answer } from "../questions";
-import { ask } from "./operations";
+import { answerSteps } from "../questions";
+import { askSteps } from "./operations";
 import { questionEffects } from "./question-effects";
 
 test("an answer restarts the task with a fresh transient-retry count", async () => {
@@ -33,25 +33,31 @@ test("an answer restarts the task with a fresh transient-retry count", async () 
   db.run("UPDATE job SET status='done' WHERE id=?", [deferred.id]);
   applyWorkItemEvent(db, item.id, "recovered");
   const running = getWorkItem(db, item.id)!;
-  ask(
-    db,
-    { itemId: item.id, runId: running.currentRunId, sessionId: "ses" },
-    "clarification",
-    "Which widget should the acme report count?",
-    { now: clock.now() },
+  await sqliteDb(db).transaction((q) =>
+    askSteps(
+      q,
+      { itemId: item.id, runId: running.currentRunId, sessionId: "ses" },
+      "clarification",
+      "Which widget should the acme report count?",
+      { now: clock.now() },
+    ),
   );
   clock.advance(60_000);
   expect(
-    answer(
-      db,
-      {
-        sessionId: "ses",
-        deliveryId: "reply:widgets",
-        body: "Count blue widgets.",
-        answeredBy: "pascal",
-        now: clock.now(),
-      },
-      questionEffects(db, { now: clock.now() }),
+    (
+      await sqliteDb(db).transaction((q) =>
+        answerSteps(
+          q,
+          {
+            sessionId: "ses",
+            deliveryId: "reply:widgets",
+            body: "Count blue widgets.",
+            answeredBy: "pascal",
+            now: clock.now(),
+          },
+          questionEffects(db, { now: clock.now() }),
+        ),
+      )
     ).status,
   ).toBe("answered");
   expect(getWorkItem(db, item.id)?.state).toBe("queued");

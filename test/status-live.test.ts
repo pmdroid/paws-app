@@ -84,7 +84,7 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
     joinMergeQueue(db, { itemId: merging.id, repository: "pmdroid/paws-demo", now: 1 });
     const open = getWorkItem(db, waiting.id);
     expect(open?.state).toBe("awaiting_input");
-    const question = openQuestion(db, {
+    const question = await openQuestion(db, {
       itemId: waiting.id,
       runId: parked.run.id,
       sessionId: "ses_1",

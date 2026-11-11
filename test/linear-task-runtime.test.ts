@@ -27,12 +27,8 @@ import {
   type PolledActivity,
 } from "../src/linear";
 import { attachOrchestrator, type AgentLaunch } from "../src/loop";
-import {
-  answer as answerAsked,
-  elicitationBody,
-  findOpenQuestion,
-  getQuestion,
-} from "../src/questions";
+import { elicitationBody, findOpenQuestion, getQuestion } from "../src/questions";
+import { answer as answerAsked } from "./questions";
 import { workspaceAdmission } from "./fake-workspace";
 import { tempDb, tempHome } from "./helpers";
 
@@ -310,7 +306,7 @@ test("a clarification asked while the session waits on another question queues b
     expect(getWorkItem(f.db, itemId)?.state).toBe("awaiting_input");
     expect(questionOf(f.db, itemId)).toMatchObject({ kind: "clarification", status: "queued" });
     expect(f.tracker.questions).toEqual([]);
-    answerAsked(f.db, {
+    await answerAsked(f.db, {
       sessionId: "session",
       deliveryId: "keep-waiting",
       body: "Keep waiting",

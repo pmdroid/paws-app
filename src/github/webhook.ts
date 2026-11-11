@@ -10,7 +10,7 @@ export type SignatureCheck =
     };
 
 export type GitHubWebhook = {
-  accept: (delivery: { deliveryId: string; event: string; payload: string }) => void;
+  accept: (delivery: { deliveryId: string; event: string; payload: string }) => Promise<unknown>;
 };
 
 export function checkGitHubSignature(input: {
@@ -59,7 +59,7 @@ export async function handleGitHubWebhook(
   }
   if (!inbox) return Response.json({ ok: false, reason: "inbox_unavailable" }, { status: 503 });
   try {
-    inbox.accept({ deliveryId, event, payload });
+    await inbox.accept({ deliveryId, event, payload });
   } catch (caughtError2) {
     journalCaught(caughtError2, "webhook.handleGitHubWebhook.accept", null);
     return Response.json({ ok: false, reason: "inbox_unavailable" }, { status: 503 });

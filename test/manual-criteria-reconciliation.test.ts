@@ -18,13 +18,13 @@ import { createItemReconciler, intakeDelegatedIssue } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
 import { Orchestrator } from "../src/loop";
 import {
-  answerQuestion,
-  ask,
-  cancelItemQuestions,
+  cancelItemQuestionsSteps,
   getQuestion,
   openLinkAsk,
   type QuestionKind,
+  type StoredQuestion,
 } from "../src/questions";
+import { answerQuestion, ask } from "./questions";
 import { workspaceAdmission } from "./fake-workspace";
 import { tempDb, tempHome } from "./helpers";
 
@@ -109,23 +109,27 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
       "push-outage",
       "policy-outage",
     ];
-    const questions = [...obsolete, ...unrelated].map(
-      (kind) =>
-        ask(
-          db,
-          {
-            itemId: manualId,
-            runId: null,
-            sessionId: "session",
-          },
-          kind,
-          `Waiting for ${kind}`,
-          { now: 1000 },
+    const questions: StoredQuestion[] = [];
+    for (const kind of [...obsolete, ...unrelated])
+      questions.push(
+        (
+          await ask(
+            db,
+            {
+              itemId: manualId,
+              runId: null,
+              sessionId: "session",
+            },
+            kind,
+            `Waiting for ${kind}`,
+            { now: 1000 },
+          )
         ).question,
-    );
-    const links = (["bypass", "screenshots", "risk", "rounds", "rule", "question"] as const).map(
-      (kind) =>
-        openLinkAsk(db, {
+      );
+    const links: Awaited<ReturnType<typeof openLinkAsk>>[] = [];
+    for (const kind of ["bypass", "screenshots", "risk", "rounds", "rule", "question"] as const)
+      links.push(
+        await openLinkAsk(db, {
           asker: { itemId: manualId, runId: null, sessionId: "session" },
           kind,
           head: "candidate",
@@ -134,7 +138,7 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
           answerers: ["owner"],
           now: 1000,
         }),
-    );
+      );
     const original = getWorkItem(db, manualId)!;
     const notices = () =>
       listOutbox(db).filter((row) =>
@@ -183,7 +187,7 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
       if (obsolete.includes(question.kind)) {
         expect(getQuestion(db, question.id)!.status).toBe("cancelled");
         expect(
-          answerQuestion(db, question.id, { answer: "approve", answeredBy: "owner" }),
+          await answerQuestion(db, question.id, { answer: "approve", answeredBy: "owner" }),
         ).toBeNull();
       } else expect(getQuestion(db, question.id)!.cancelledAt).toBeNull();
     }
@@ -197,7 +201,7 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
       );
       if (link.linkAsk.kind !== "question")
         expect(
-          answerQuestion(db, link.question.id, { answer: "approve", answeredBy: "owner" }),
+          await answerQuestion(db, link.question.id, { answer: "approve", answeredBy: "owner" }),
         ).toBeNull();
     }
     for (const state of states) {
@@ -252,7 +256,7 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
 
 test.each(["all", "criteria"] as const)(
   "%s cancellation closes link asks and drops undelivered prompts atomically",
-  (scope) => {
+  async (scope) => {
     const db = tempDb();
     try {
       const item = insertQueuedItem(db, {
@@ -260,7 +264,7 @@ test.each(["all", "criteria"] as const)(
         title: "Manual edit",
         sessionKey: "session",
       });
-      const open = openLinkAsk(db, {
+      const open = await openLinkAsk(db, {
         asker: { itemId: item.id, runId: null, sessionId: "session" },
         kind: "risk",
         head: "candidate",
@@ -270,7 +274,7 @@ test.each(["all", "criteria"] as const)(
         now: 1000,
       });
       db.run("UPDATE outbox SET status='dead' WHERE op='elicitation'");
-      const queued = openLinkAsk(db, {
+      const queued = await openLinkAsk(db, {
         asker: { itemId: item.id, runId: null, sessionId: "session" },
         kind: "bypass",
         head: "candidate",
@@ -281,18 +285,16 @@ test.each(["all", "criteria"] as const)(
       });
       expect(queued.question.status).toBe("queued");
       const before = listOutbox(db);
-      expect(() =>
-        db
-          .transaction(() => {
-            cancelItemQuestions(db, item.id, 1002, scope);
-            throw new Error("rollback cleanup");
-          })
-          .immediate(),
-      ).toThrow("rollback cleanup");
+      await expect(
+        sqliteDb(db).transaction(function* (q) {
+          yield* cancelItemQuestionsSteps(q, item.id, 1002, scope);
+          throw new Error("rollback cleanup");
+        }),
+      ).rejects.toThrow("rollback cleanup");
       expect(openLinkAsks(db, item.id)).toHaveLength(2);
       expect(getQuestion(db, open.question.id)!.status).toBe("open");
       expect(listOutbox(db)).toEqual(before);
-      cancelItemQuestions(db, item.id, 1003, scope);
+      await sqliteDb(db).transaction((q) => cancelItemQuestionsSteps(q, item.id, 1003, scope));
       expect(openLinkAsks(db, item.id)).toEqual([]);
       for (const { question } of [open, queued]) {
         expect(getLinkAsk(db, question.id)).toMatchObject({
@@ -312,7 +314,7 @@ test.each(["all", "criteria"] as const)(
           .map((row) => row.status),
       ).toEqual(["dropped"]);
       const after = listOutbox(db);
-      cancelItemQuestions(db, item.id, 1004, scope);
+      await sqliteDb(db).transaction((q) => cancelItemQuestionsSteps(q, item.id, 1004, scope));
       expect(listOutbox(db)).toEqual(after);
     } finally {
       db.close();

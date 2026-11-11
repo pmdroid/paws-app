@@ -3,22 +3,22 @@ import { journalCaught } from "../journal";
 import { pullRequestSummary } from "./turn-summary";
 
 /** The single PR response, posted through the usual activity gate. */
-export function pullRequestReadyResponse(input: {
+export async function pullRequestReadyResponse(input: {
   itemId: string;
   head: string;
   pull: { number: number; url?: string | null };
   risk: RiskClassification | null;
   openLine: string;
   summary?: string;
-  riskApproval?: () => string;
+  riskApproval?: () => Promise<string>;
   journal?: (line: string) => void;
-}): string {
+}): Promise<string> {
   const risk = input.risk;
   let automatic = "";
   if (risk?.tier === "high") {
     automatic = "Manual approval required";
     try {
-      automatic = input.riskApproval?.() ?? automatic;
+      automatic = (await input.riskApproval?.()) ?? automatic;
     } catch (error) {
       journalCaught(
         error,

@@ -35,7 +35,8 @@ import { createRunnerHelpers } from "../../src/runner-helpers";
 import { createRemoteAgentRunner } from "../../src/runner-backend";
 import { createRunnerHealth } from "../../src/runner-health";
 import { createRunnerResults } from "../../src/runner-results";
-import { openQuestion, answerQuestion } from "../../src/questions";
+import { openQuestion } from "../../src/questions";
+import { answerQuestion } from "../questions";
 import {
   issueWorkspaceBootstrap,
   workspaceId,
@@ -395,7 +396,7 @@ export async function probeRunnerWork(
     applyWorkItemEvent(db, item.id, "blocking_question");
     await assert.rejects(work.authorizeAsync(event), /matching open question/);
     assert.equal((await work.heartbeat(firstRunner)).leases.length, 1);
-    const question = openQuestion(db, {
+    const question = await openQuestion(db, {
       itemId: item.id,
       runId: run.id,
       sessionId: "fixture-session",
@@ -404,7 +405,7 @@ export async function probeRunnerWork(
     });
     assert.equal((await work.authorizeAsync(event)).command.id, command.id);
     assert.equal((await work.heartbeat(firstRunner)).leases.length, 1);
-    answerQuestion(db, question.id, { answer: "Yes", answeredBy: "owner", now: now + 1 });
+    await answerQuestion(db, question.id, { answer: "Yes", answeredBy: "owner", now: now + 1 });
     assert.equal((await work.event(event)).duplicate, true);
     await assert.rejects(work.event({ ...event, sequence: 2 }), /matching open question/);
     await assert.rejects(work.authorizeAsync(event), /matching open question/);

@@ -34,7 +34,7 @@ import {
   sqliteDb,
 } from "../db";
 import { findOpenQuestion, LINK_ASK_REMINDER_MS } from "../questions";
-import { saveSchedulingContext } from "../scheduler";
+import { saveSchedulingContextSteps } from "../scheduler";
 import { createFakeTracker } from "../linear";
 import { deliverLinearOutbox } from "./dispatch";
 import { decideLinkAsk, guideLinkAsk } from "./link-ask";
@@ -121,7 +121,7 @@ beforeAll(() => {
 afterAll(() => rmSync(repo, { recursive: true, force: true }));
 
 /** Closeout accepted high-risk head S, its pull request is open, and the lane holds it. */
-function held(head = heads.s, base = heads.base) {
+async function held(head = heads.s, base = heads.base) {
   const db = openDatabase(":memory:");
   migrate(db);
   const item = insertQueuedItem(db, {
@@ -134,7 +134,9 @@ function held(head = heads.s, base = heads.base) {
   applyWorkItemEvent(db, item.id, "closeout_accepted");
   saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: base, wipCommit: head });
   db.run("UPDATE work_item SET delegated_by = 'delegator' WHERE id = ?", [item.id]);
-  saveSchedulingContext(db, { itemId: item.id, projectId: "project", projectLeadId: "lead" });
+  await sqliteDb(db).run((q) =>
+    saveSchedulingContextSteps(q, { itemId: item.id, projectId: "project", projectLeadId: "lead" }),
+  );
   db.run("INSERT INTO workspace (id, linear_organization_id, name, created_at) VALUES (?,?,?,?)", [
     "ws",
     "org",
@@ -173,7 +175,7 @@ function classify(db: ReturnType<typeof openDatabase>, head: string, base: strin
 }
 
 async function asked(head = heads.s) {
-  const fixture = held(head);
+  const fixture = await held(head);
   const outcome = await askRiskApproval(fixture.db, {
     item: getWorkItem(fixture.db, fixture.itemId)!,
     head,
@@ -294,7 +296,7 @@ test("a high-risk head is asked with a link: Markdown, no options, the link on t
 });
 
 test("a normal-tier head, or a Paws without an https link, needs no approval", async () => {
-  const { db } = held();
+  const { db } = await held();
   saveCandidateRisk(db, {
     itemId: "ENG-106",
     head: heads.s,
@@ -655,8 +657,8 @@ test("a rebase that changed the patch asks again, even when the change is only a
 });
 
 /** Stored results, as reported through Closeout's real progress adapter. */
-function cleanRiskFixture() {
-  const fixture = held();
+async function cleanRiskFixture() {
+  const fixture = await held();
   const { db, itemId } = fixture;
   saveCandidatePaths(db, { itemId, head: heads.s, paths: ["session.ts"], recordedAt: NOW });
   const identity = {
@@ -740,7 +742,7 @@ function cleanRiskFixture() {
   return { ...fixture, identity, progress, step, read, report };
 }
 
-async function automaticMerge(f: ReturnType<typeof cleanRiskFixture>) {
+async function automaticMerge(f: Awaited<ReturnType<typeof cleanRiskFixture>>) {
   const riskApproval = await f.read();
   const verdict = mergeable({
     head: heads.s,
@@ -768,7 +770,7 @@ async function automaticMerge(f: ReturnType<typeof cleanRiskFixture>) {
 }
 
 test("opt-in clean reviews at S pass mergeable without a question, writes or approval", async () => {
-  const f = cleanRiskFixture();
+  const f = await cleanRiskFixture();
   const before = f.db.query<{ total: number }, []>("SELECT total_changes() AS total").get()!.total;
   expect(await automaticMerge(f)).toEqual({ ok: true });
   expect(f.db.query<{ total: number }, []>("SELECT total_changes() AS total").get()!.total).toBe(
@@ -781,14 +783,14 @@ test("opt-in clean reviews at S pass mergeable without a question, writes or app
 
 for (const review of ["security-review", "independent-review"]) {
   test(`a P2 finding in ${review} asks even when Closeout passed it`, async () => {
-    const f = cleanRiskFixture();
+    const f = await cleanRiskFixture();
     f.step(review, "Display text is not a severity source", ["P2"]);
     f.report(review, "P2");
     expect(await automaticMerge(f)).toEqual({ ok: false, block: "risk_approval" });
     f.db.close();
   });
   test(`missing ${review} asks`, async () => {
-    const f = cleanRiskFixture();
+    const f = await cleanRiskFixture();
     f.db.run("DELETE FROM closeout_step WHERE step_id = ?", [review]);
     expect(await automaticMerge(f)).toEqual({ ok: false, block: "risk_approval" });
     f.db.close();
@@ -814,7 +816,7 @@ for (const policyPath of [
   "tools/rules.ts",
 ]) {
   test(`changing ${policyPath} always asks`, async () => {
-    const f = cleanRiskFixture();
+    const f = await cleanRiskFixture();
     // The policy file deliberately matches no high-risk glob. Only session.ts is in risk.paths.
     saveCandidatePaths(f.db, {
       itemId: f.itemId,
@@ -828,7 +830,7 @@ for (const policyPath of [
 }
 
 test("a new head, policy, base or unfinished run loses automatic eligibility", async () => {
-  const f = cleanRiskFixture();
+  const f = await cleanRiskFixture();
   expect(await f.read()).toBe("approved");
   classify(f.db, heads.changed, heads.base);
   expect(await f.read({ head: heads.changed })).toBe("missing");
@@ -851,7 +853,7 @@ test("a new head, policy, base or unfinished run loses automatic eligibility", a
 });
 
 test("a failed rule probe asks even if the run was accepted", async () => {
-  const f = cleanRiskFixture();
+  const f = await cleanRiskFixture();
   f.step("rule-probe");
   f.db.run(
     "UPDATE closeout_step SET kind = 'command', state = 'failed' WHERE step_id = 'rule-probe'",
@@ -861,7 +863,7 @@ test("a failed rule probe asks even if the run was accepted", async () => {
 });
 
 test("P3 snapshots pass before the shared finding import, regardless of display text", async () => {
-  const f = cleanRiskFixture();
+  const f = await cleanRiskFixture();
   f.step("security-review", "P3 session.ts:12: Notes\nP1 and P10 are terms in the explanation", [
     "P3",
   ]);
@@ -873,7 +875,7 @@ test("P3 snapshots pass before the shared finding import, regardless of display 
 });
 
 test("legacy, malformed and wrong-attempt review snapshots fail closed", async () => {
-  const f = cleanRiskFixture();
+  const f = await cleanRiskFixture();
   for (const findings of [
     null,
     "P3 legacy text",
@@ -889,7 +891,7 @@ test("legacy, malformed and wrong-attempt review snapshots fail closed", async (
 });
 
 test("review snapshots use the row's resolved attempt and hide invalid envelopes", async () => {
-  const f = cleanRiskFixture();
+  const f = await cleanRiskFixture();
   const step = getCloseoutProgress(f.db, f.itemId, heads.s)!.steps.find(
     (s) => s.id === "security-review",
   )!;
@@ -918,7 +920,7 @@ test("review snapshots use the row's resolved attempt and hide invalid envelopes
 });
 
 test("a later clean attempt clears prior findings even without a running update", async () => {
-  const f = cleanRiskFixture();
+  const f = await cleanRiskFixture();
   f.step("security-review", "Old P2", ["P2"]);
   expect(await f.read()).toBe("missing");
   f.step("security-review", null, [], 2);
@@ -930,7 +932,7 @@ test("a later clean attempt clears prior findings even without a running update"
 });
 
 test("a cached review keeps only the snapshot of its unchanged attempt", async () => {
-  const f = cleanRiskFixture();
+  const f = await cleanRiskFixture();
   f.step("security-review", "P3 notes", ["P3"]);
   const cached = getCloseoutProgress(f.db, f.itemId, heads.s)!.steps.find(
     (s) => s.id === "security-review",
@@ -969,7 +971,7 @@ test("a cached review keeps only the snapshot of its unchanged attempt", async (
 
 for (const severity of ["P2", "P3"] as const) {
   test(`shared reports can veto but cannot authorize this head's ${severity} review`, async () => {
-    const f = cleanRiskFixture();
+    const f = await cleanRiskFixture();
     f.step("security-review", "Original report", [severity]);
     f.report("security-review", severity, "Same finding");
     insertQueuedItem(f.db, { id: "other-item", sessionKey: "other-session", title: "Other" });
@@ -998,7 +1000,7 @@ for (const severity of ["P2", "P3"] as const) {
 
 for (const severity of ["P0", "P1", "P2"] as const) {
   test(`structured ${severity} in a passed review blocks regardless of display format or dismissal`, async () => {
-    const f = cleanRiskFixture();
+    const f = await cleanRiskFixture();
     f.step("independent-review", "P3 misleading display text", [severity]);
     f.report("independent-review", severity);
     expect(await f.read()).toBe("missing");
@@ -1016,7 +1018,7 @@ for (const severity of ["P0", "P1", "P2"] as const) {
 }
 
 test("unknown or malformed candidate paths never reuse another head's path list", async () => {
-  const f = cleanRiskFixture();
+  const f = await cleanRiskFixture();
   f.db.run("DELETE FROM candidate_paths");
   saveCandidatePaths(f.db, {
     itemId: f.itemId,
@@ -1040,7 +1042,7 @@ test("unknown or malformed candidate paths never reuse another head's path list"
 });
 
 test("a carried acceptance after rebase does not substitute for exact-head reviews", async () => {
-  const f = cleanRiskFixture();
+  const f = await cleanRiskFixture();
   classify(f.db, heads.rebased, heads.newMain);
   saveCandidatePaths(f.db, {
     itemId: f.itemId,
@@ -1067,14 +1069,14 @@ test("a carried acceptance after rebase does not substitute for exact-head revie
 });
 
 test("differently named reviews do not substitute for the two required reviews", async () => {
-  const f = cleanRiskFixture();
+  const f = await cleanRiskFixture();
   f.db.run("UPDATE closeout_step SET step_id = 'review' WHERE step_id = 'security-review'");
   expect(await f.read()).toBe("missing");
   f.db.close();
 });
 
-test("the exact-head progress reader selects the latest run and preserves the unfiltered reader", () => {
-  const f = cleanRiskFixture();
+test("the exact-head progress reader selects the latest run and preserves the unfiltered reader", async () => {
+  const f = await cleanRiskFixture();
   expect(getCloseoutProgress(f.db, f.itemId, heads.s)).toEqual(listCloseoutProgress(f.db)[0]!);
   expect(getCloseoutProgress(f.db, f.itemId, heads.rebased)).toBeNull();
   expect(getCloseoutProgress(f.db, "another-item", heads.s)).toBeNull();
@@ -1087,7 +1089,7 @@ test("the exact-head progress reader selects the latest run and preserves the un
 });
 
 test("a new or reopened finding at S revokes automatic eligibility", async () => {
-  const f = cleanRiskFixture();
+  const f = await cleanRiskFixture();
   expect(await f.read()).toBe("approved");
   f.report("security-review", "P2", "Unsafe reuse");
   expect(await f.read()).toBe("missing");
@@ -1107,7 +1109,7 @@ test("a new or reopened finding at S revokes automatic eligibility", async () =>
 
 for (const enabled of [undefined, false]) {
   test(`automatic approval ${enabled === undefined ? "defaults to off" : "off"} asks with clean evidence`, async () => {
-    const f = cleanRiskFixture();
+    const f = await cleanRiskFixture();
     expect(await f.read({ autoApproveHighRisk: enabled })).toBe("missing");
     expect(
       await askRiskApproval(f.db, {
@@ -1123,7 +1125,7 @@ for (const enabled of [undefined, false]) {
 
 for (const scenario of ["clean", "P2", "missing security", "rules change", "off"] as const) {
   test(`the sole PR response uses the shared risk explanation for ${scenario}`, async () => {
-    const f = cleanRiskFixture();
+    const f = await cleanRiskFixture();
     const display = new RiskDisplayReader({
       db: f.db,
       configPath: "/tmp/pas934-no-config",
@@ -1153,12 +1155,12 @@ for (const scenario of ["clean", "P2", "missing security", "rules change", "off"
         "rules change": "Manual approval required: changes the risk rules",
         off: "Manual approval required: automatic approval is off",
       }[scenario];
-      expect(display.read(f.itemId)?.detail).toBe(expected);
-      const body = pullRequestReadyResponse({
+      expect((await display.read(f.itemId))?.detail).toBe(expected);
+      const body = await pullRequestReadyResponse({
         itemId: f.itemId,
         head: heads.s,
         pull: { number: 1 },
-        riskApproval: () => display.read(f.itemId, heads.s)!.detail,
+        riskApproval: async () => (await display.read(f.itemId, heads.s))!.detail,
         risk: getCandidateRisk(f.db, f.itemId, heads.s),
         openLine: "",
       });
@@ -1202,7 +1204,7 @@ for (const scenario of ["clean", "P2", "missing security", "rules change", "off"
 }
 
 test("a corrupt risk row cannot prevent the sole pull-request response", async () => {
-  const f = cleanRiskFixture();
+  const f = await cleanRiskFixture();
   const display = new RiskDisplayReader({
     db: f.db,
     configPath: "/tmp/pas934-no-config",
@@ -1218,24 +1220,24 @@ test("a corrupt risk row cannot prevent the sole pull-request response", async (
     f.db.run("PRAGMA ignore_check_constraints=ON");
     f.db.run("PRAGMA ignore_check_constraints=ON");
     f.db.run("UPDATE candidate_risk SET paths = '{' WHERE item_id = ?", [f.itemId]);
-    const body = pullRequestReadyResponse({
+    const body = await pullRequestReadyResponse({
       itemId: f.itemId,
       head: heads.s,
       pull: { number: 1 },
       risk: { tier: "high", paths: ["session.ts"] },
       openLine: "",
-      riskApproval: () => display.read(f.itemId, heads.s)!.detail,
+      riskApproval: async () => (await display.read(f.itemId, heads.s))!.detail,
     });
     expect(body).toStartWith("Opened pull request #1.");
     expect(body).toContain("Manual approval required");
     expect(
-      pullRequestReadyResponse({
+      await pullRequestReadyResponse({
         itemId: f.itemId,
         head: heads.s,
         pull: { number: 1 },
         risk: { tier: "high", paths: [] },
         openLine: "",
-        riskApproval: () => {
+        riskApproval: async () => {
           throw new Error("unreadable display");
         },
       }),

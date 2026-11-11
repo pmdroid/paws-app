@@ -92,14 +92,7 @@ import {
 } from "./activity-policy";
 import { reaskDeadQuestion } from "./dead-question";
 import { createHash, randomUUID } from "node:crypto";
-import {
-  ask,
-  askSteps,
-  restart,
-  restartSteps,
-  awaitQuestion,
-  awaitQuestionSteps,
-} from "./operations";
+import { askSteps, restart, restartSteps, awaitQuestionSteps } from "./operations";
 import {
   RUNNER_REPOSITORY_REASON,
   RUNNER_REPOSITORY_RETRY,
@@ -129,7 +122,7 @@ import {
 } from "../db";
 import { journal, journalCaught } from "../journal";
 import { rerunItemCi } from "./ci-rerun";
-import { confirmDecision, suggestDecisions } from "../decisions";
+import { confirmDecisionSteps, suggestDecisionsSteps } from "../decisions";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -307,11 +300,9 @@ import {
   enqueueOutboxOnce,
   lastOutboxSequence,
   getOutbox,
-  failWorkItem,
   getQueuePosition,
   clearQueueWait,
   queueWaitSince,
-  settled,
   sqliteDb,
   syncSteps,
   activeRunnerIdsSteps,
@@ -404,7 +395,6 @@ import {
   bumpItemVersionSteps,
   cancelItemPendingJobsSteps,
   clearItemRecoverySteps,
-  hasOpenItemJob,
   itemOwnerUserIdSteps,
   itemParentTaskKey,
   itemSpecificationRevisionSteps,
@@ -473,6 +463,7 @@ import {
 } from "../github";
 import {
   asksForFreshStart,
+  blockingIssuesSteps,
   intakeDelegatedIssue,
   stopAdoptedParent,
   type EarlierAttempt,
@@ -486,7 +477,6 @@ import {
   type ItemAdmission,
   type ItemWait,
   overlapLine,
-  openBlockers,
   type SchedulerOptions,
 } from "../scheduler";
 import type {
@@ -526,22 +516,20 @@ import {
   type QuestionReply,
   answerer,
   canAnswer,
-  cancelItemQuestions,
   cancelItemQuestionsSteps,
-  cancelQuestion,
+  cancelQuestionSteps,
   findAskedQuestion,
   findOpenQuestion,
   findOpenQuestionSteps,
   handoffNote,
-  acceptedVisualReviews,
-  getQuestion,
+  acceptedVisualReviewsSteps,
   getQuestionSteps,
   isPawsAnswerKind,
   pawsAnswerNote,
-  getVisualReview,
+  getVisualReviewSteps,
   parseVisualReviewAnswer,
   markVisualReviewStaleSteps,
-  questionReplyConsumed,
+  questionReplyConsumedSteps,
   visualReviewStaleHandoff,
   VISUAL_REVIEW_ANSWERERS,
   VISUAL_REVIEW_DESCRIBE,
@@ -550,21 +538,17 @@ import {
 } from "../questions";
 import {
   askForVisualReviewSteps,
-  cancelVisualReviewQuestion,
+  cancelVisualReviewQuestionSteps,
   carryVisualReviewSteps,
-  dueVisualReview,
   dueVisualReviewSteps,
-  pendingVisualReview,
   pendingVisualReviewSteps,
   planVisualReviewCarry,
-  postNote,
   postNoteSteps,
   remindVisualReview,
   reviewable,
-  visualReviewApprovals,
   visualReviewApprovalsSteps,
   visualReviewPullRequestNote,
-  visualReviewHandoff,
+  visualReviewHandoffSteps,
 } from "./visual-review";
 import {
   closeLinkAsksOnHead,
@@ -986,7 +970,7 @@ export class Orchestrator {
   private readonly riskDisplayReader: RiskDisplayReader;
 
   /** The dashboard reads through this callback without importing the loop or loading config. */
-  riskDisplay(itemId: string, head?: string): RiskDisplay | null {
+  riskDisplay(itemId: string, head?: string): Promise<RiskDisplay | null> {
     return this.riskDisplayReader.read(itemId, head);
   }
 
@@ -1088,7 +1072,7 @@ export class Orchestrator {
       event.action === "prompted" &&
       event.sessionId &&
       event.body !== null &&
-      (!findOpenQuestion(this.db, event.sessionId) ||
+      (!(await this.store.run((q) => findOpenQuestionSteps(q, event.sessionId!))) ||
         this.hasPublishedPullRequest(event.sessionId) ||
         (await this.sessionPaused(event.sessionId)))
     ) {
@@ -1141,7 +1125,9 @@ export class Orchestrator {
             );
           return false;
         }
-        const open = event.sessionId ? findOpenQuestion(this.db, event.sessionId) : null;
+        const open = event.sessionId
+          ? await this.store.run((q) => findOpenQuestionSteps(q, event.sessionId!))
+          : null;
         const questionDelegationId = open
           ? (await this.store.run((q) => getWorkItemSteps(q, open.itemId)))?.delegationId
           : null;
@@ -1377,7 +1363,7 @@ export class Orchestrator {
     if (event.action === "prompted") {
       const question =
         event.sessionId && !(await this.sessionPaused(event.sessionId))
-          ? findOpenQuestion(this.db, event.sessionId)
+          ? await this.store.run((q) => findOpenQuestionSteps(q, event.sessionId!))
           : null;
       const questionItem = question
         ? await this.store.run((q) => getWorkItemSteps(q, question.itemId))
@@ -1933,21 +1919,24 @@ export class Orchestrator {
         body: string;
         options: string[];
       };
-      ask(
-        this.db,
-        {
-          itemId: item.id,
-          runId: item.currentRunId,
-          sessionId: item.sessionKey,
-          version: item.version,
-        },
-        payload.kind,
-        payload.body,
-        {
-          options: payload.options,
-          ...(payload.reason ? { reason: payload.reason } : {}),
-          now: this.now(),
-        },
+      const sessionId = item.sessionKey;
+      await this.store.transaction((q) =>
+        askSteps(
+          q,
+          {
+            itemId: item.id,
+            runId: item.currentRunId,
+            sessionId,
+            version: item.version,
+          },
+          payload.kind,
+          payload.body,
+          {
+            options: payload.options,
+            ...(payload.reason ? { reason: payload.reason } : {}),
+            now: this.now(),
+          },
+        ),
       );
       const heldRunId = item.currentRunId;
       if (heldRunId) await this.store.run((q) => releaseRunCapacitySteps(q, heldRunId, this.now()));
@@ -2994,8 +2983,8 @@ export class Orchestrator {
       if (run && (run.status === "active" || run.status === "provisioning"))
         yield* markRunSteps(q, run.id, "lost", now);
     }
-    ask(
-      this.db,
+    yield* askSteps(
+      q,
       { itemId: current.id, runId: current.currentRunId, sessionId, version: current.version },
       "runner-repository",
       runnerRepositoryQuestion(refused.repository, refused.refusals, runnersUrl),
@@ -3477,8 +3466,8 @@ export class Orchestrator {
     const current = yield* getWorkItemSteps(q, item.id);
     if (current?.state !== "running" || current.cancelRequested)
       throw new Error("The task changed before clarification");
-    ask(
-      this.db,
+    yield* askSteps(
+      q,
       { itemId: item.id, runId, sessionId, version: item.version },
       "clarification",
       body,
@@ -3710,8 +3699,8 @@ export class Orchestrator {
     const current = yield* getWorkItemSteps(q, item.id);
     if (current?.state !== "running" || current.cancelRequested || current.currentRunId !== runId)
       throw new Error("The task changed before its plan could be proposed");
-    const asked = ask(
-      this.db,
+    const asked = yield* askSteps(
+      q,
       { itemId: item.id, runId, sessionId, version: current.version },
       "plan-approval",
       planProposalBody(item.linearIdentifier, plan),
@@ -4299,7 +4288,7 @@ export class Orchestrator {
         this.reviewerFaults.set(item.id, verdict.result.reviewerFault);
         return;
       }
-      if (this.cancelVisualReview(after))
+      if (await this.cancelVisualReview(after))
         this.post(
           after,
           "thought",
@@ -4634,7 +4623,8 @@ export class Orchestrator {
       checkoutExclusions,
       candidate,
       published: () => publishedEvidence(this.db, item.id),
-      approvals: () => visualReviewApprovals(this.db, item.id, itemPathId(item)),
+      approvals: () =>
+        this.store.run((q) => visualReviewApprovalsSteps(q, item.id, itemPathId(item))),
       ...(fromCi.length > 0 ? { fromCi } : {}),
       ...(fromTurn.length > 0 ? { fromTurn } : {}),
       ...(commands ? { commandRunner: commands } : {}),
@@ -4899,28 +4889,32 @@ export class Orchestrator {
       );
   }
 
-  private askRunnerWait(
+  private async askRunnerWait(
     item: WorkItemRecord,
     runId: string,
     runnerName: string,
     reason: string,
-  ): RunnerWaitQuestion {
+  ): Promise<RunnerWaitQuestion> {
     const sessionId = this.activitySession(item);
     if (sessionId === null) return { answer: () => null, cancel() {} };
     const minutes = Math.round((this.options.runnerWait?.askAfterMs ?? 30 * 60_000) / 60_000);
     const body = `Runner ${runnerName} has been unavailable for ${minutes} minutes, so Closeout for ${item.linearIdentifier} has not started. Move the task to another runner, or keep waiting?`;
     this.assertJobCurrent(item.id);
-    const { question } = ask(
-      this.db,
-      { itemId: item.id, runId, sessionId, version: getWorkItem(this.db, item.id)?.version },
-      "runner-wait",
-      body,
-      {
-        options: [MOVE_TO_ANOTHER_RUNNER, KEEP_WAITING],
-        context: reason,
-        now: this.now(),
-      },
-    );
+    const now = this.now();
+    const { question } = await this.store.transaction(function* (q) {
+      const version = (yield* getWorkItemSteps(q, item.id))?.version;
+      return yield* askSteps(
+        q,
+        { itemId: item.id, runId, sessionId, version },
+        "runner-wait",
+        body,
+        {
+          options: [MOVE_TO_ANOTHER_RUNNER, KEEP_WAITING],
+          context: reason,
+          now,
+        },
+      );
+    });
     void this.flush().catch((caughtError5) => {
       journalCaught(
         caughtError5,
@@ -4935,11 +4929,11 @@ export class Orchestrator {
 
   private runnerWaitQuestion(id: string): RunnerWaitQuestion {
     return {
-      answer: () => {
-        const question = getQuestion(this.db, id);
+      answer: async () => {
+        const question = await this.store.run((q) => getQuestionSteps(q, id));
         return question?.status === "answered" ? question.answer : null;
       },
-      cancel: () => cancelQuestion(this.db, id, this.now()),
+      cancel: () => this.store.transaction((q) => cancelQuestionSteps(q, id, this.now())),
     };
   }
 
@@ -6124,7 +6118,7 @@ export class Orchestrator {
     this.post(
       item,
       "response",
-      pullRequestReadyResponse({
+      await pullRequestReadyResponse({
         itemId: item.id,
         head: published.head,
         pull: published.pull,
@@ -6132,8 +6126,8 @@ export class Orchestrator {
         openLine,
         summary: runs.findLast((stored) => stored.checkpoint?.resultBody?.trim())?.checkpoint
           ?.resultBody,
-        riskApproval: () =>
-          this.riskDisplay(item.id, published.head)?.detail ?? "Manual approval required",
+        riskApproval: async () =>
+          (await this.riskDisplay(item.id, published.head))?.detail ?? "Manual approval required",
         journal: this.options.journal,
       }),
       `pull-request-ready:${item.id}:${generation}`,
@@ -6331,6 +6325,7 @@ export class Orchestrator {
   }
 
   private orderCapabilities(itemId: string): OrderCapabilities {
+    const admission = this.admission.steps;
     return {
       ask: askSteps,
       now: () => this.now(),
@@ -6356,12 +6351,11 @@ export class Orchestrator {
       readPull: (item, pullNumber) =>
         this.readItemPull(item, pullNumber, this.signalForItem(item.id)),
       restart: (q, item, handoff) => this.restartWithStoredFeedbackSteps(q, item, handoff),
-      dependencyHold: (id) => {
+      dependencyHold: function* (q, id) {
         // Only unmet dependencies; a pending reconciliation keeps its own retry in mergeAttempt.
-        // Stays sync: the merge queue calls this as a predicate inside listMergeQueuesSteps.
-        const admitted = settled(this.admission.canMerge(id));
+        const admitted = yield* admission.canMerge(q, id);
         if (admitted.ok || admitted.held !== "blocked") return null;
-        return openBlockers(this.db, id);
+        return yield* blockingIssuesSteps(q, id);
       },
       mergeLane: (item) =>
         mergeLaneKey(getWorkItemLinearProjectId(this.db, item.id), this.readMergePolicy()),
@@ -6639,16 +6633,16 @@ export class Orchestrator {
     sessionId: string,
     request: Parameters<AskTeamHook["ask"]>[0],
   ): Steps<void> {
-    ask(
-      this.db,
+    yield* askSteps(
+      q,
       { itemId: item.id, runId, sessionId, version: item.version },
       "agent",
       [request.question.trim(), request.context?.trim()].filter(Boolean).join("\n\n"),
       {
         options: request.options ?? [],
         now: this.now(),
-        amend: (question) => {
-          const suggestions = suggestDecisions(this.db, question.id, question.body);
+        amend: function* (reads, question) {
+          const suggestions = yield* suggestDecisionsSteps(reads, question.id, question.body);
           if (suggestions.length === 0) return null;
           return {
             context: suggestions
@@ -6785,7 +6779,7 @@ export class Orchestrator {
         itemId: answered.itemId,
         freshSession: true,
         handoff:
-          visualReviewHandoff(this.db, answered.id) ??
+          (await this.store.run((q) => visualReviewHandoffSteps(q, answered.id))) ??
           handoffNote({
             question: answered.body,
             options:
@@ -6810,9 +6804,11 @@ export class Orchestrator {
     if (
       current.state === "running" &&
       sessionId !== null &&
-      findOpenQuestion(this.db, sessionId)?.runId === runId
+      (await this.store.run((q) => findOpenQuestionSteps(q, sessionId)))?.runId === runId
     ) {
-      awaitQuestion(this.db, current, findOpenQuestion(this.db, sessionId)!, this.now());
+      const open = (await this.store.run((q) => findOpenQuestionSteps(q, sessionId)))!;
+      const adopted = current;
+      await this.store.transaction((q) => awaitQuestionSteps(q, adopted, open, this.now()));
       current = await this.store.run((q) => getWorkItemSteps(q, itemId));
       if (!current) return;
     }
@@ -6871,8 +6867,9 @@ export class Orchestrator {
     const sessionId = event.sessionId;
     let answer = event.body?.trim() ?? "";
     if (sessionId === null || answer === "") return "rejected";
-    if (questionReplyConsumed(this.db, sessionId, event.dedupeKey)) return "rejected";
-    const open = findOpenQuestion(this.db, sessionId);
+    if (await this.store.run((q) => questionReplyConsumedSteps(q, sessionId, event.dedupeKey)))
+      return "rejected";
+    const open = await this.store.run((q) => findOpenQuestionSteps(q, sessionId));
     if (open === null) return "rejected";
     const createdAt =
       event.activityCreatedAtMs === undefined ? event.updatedAtMs : event.activityCreatedAtMs;
@@ -6905,17 +6902,19 @@ export class Orchestrator {
     const user = answerer(answeredBy);
     if (user === null) return "rejected";
     if (open.kind === "visual-review") {
-      const review = getVisualReview(this.db, open.id);
+      const review = await this.store.run((q) => getVisualReviewSteps(q, open.id));
       const item = await this.store.run((q) => getWorkItemSteps(q, open.itemId));
       if (review === null || item === null) return "rejected";
       if (!(await this.canAnswerVisualReview(item, answeredBy))) {
-        postNote(
-          this.db,
-          sessionId,
-          item,
-          VISUAL_REVIEW_ANSWERERS,
-          `visual-review-refused:${event.dedupeKey}`,
-          this.now(),
+        await this.store.run((q) =>
+          postNoteSteps(
+            q,
+            sessionId,
+            item,
+            VISUAL_REVIEW_ANSWERERS,
+            `visual-review-refused:${event.dedupeKey}`,
+            this.now(),
+          ),
         );
         await this.flush();
         return "rejected";
@@ -6945,13 +6944,15 @@ export class Orchestrator {
             }),
           );
         else
-          postNote(
-            this.db,
-            sessionId,
-            item,
-            VISUAL_REVIEW_ANSWERERS,
-            `visual-review-refused:${event.dedupeKey}`,
-            this.now(),
+          await this.store.run((q) =>
+            postNoteSteps(
+              q,
+              sessionId,
+              item,
+              VISUAL_REVIEW_ANSWERERS,
+              `visual-review-refused:${event.dedupeKey}`,
+              this.now(),
+            ),
           );
         await this.flush();
         return "rejected";
@@ -7021,7 +7022,9 @@ export class Orchestrator {
       if (item?.state !== "awaiting_input") return "rejected" as const;
       if (answer.startsWith("/paws decision")) {
         try {
-          const confirmed = confirmDecision(db, open.id, answer, answeredBy, now());
+          const confirmed = yield* q.transaction((savepoint) =>
+            confirmDecisionSteps(savepoint, open.id, answer, answeredBy, now()),
+          );
           if (confirmed === null)
             throw new Error("This suggestion is invalid. Answer this question in your own words.");
           answer = confirmed;
@@ -7245,7 +7248,7 @@ export class Orchestrator {
         }
         if (item.state === "manual") {
           // Intake saved the new brief in this transaction. Human ownership keeps its fence.
-          cancelItemQuestions(this.db, itemId, this.now(), "criteria");
+          yield* cancelItemQuestionsSteps(q, itemId, this.now(), "criteria");
           if (
             !canReportSessionProgress(
               this.db,
@@ -7269,7 +7272,7 @@ export class Orchestrator {
           });
           continue;
         }
-        cancelItemQuestions(this.db, itemId, this.now());
+        yield* cancelItemQuestionsSteps(q, itemId, this.now());
         if (item.state === "failed") {
           yield* clearItemRecoverySteps(q, itemId);
           yield* resetAwakeTimeSteps(q, itemId);
@@ -7370,7 +7373,7 @@ export class Orchestrator {
     const session = item.sessionKey ? yield* getLinearSessionSteps(q, item.sessionKey) : null;
     if (session?.stoppedAt != null)
       yield* advanceLinearSessionGenerationSteps(q, session.sessionId, { now: this.now() });
-    cancelItemQuestions(this.db, item.id, this.now());
+    yield* cancelItemQuestionsSteps(q, item.id, this.now());
     restart(this.db, item, {
       reason: "follow_up",
       body: "Continue the task from its branch.",
@@ -7834,42 +7837,46 @@ export class Orchestrator {
     }
   }
 
-  private noteQueued(itemIds: readonly string[]): void {
+  private async noteQueued(itemIds: readonly string[]): Promise<void> {
     const now = this.now();
     const hours = this.queueStartTimeoutHours();
     for (const id of itemIds) {
-      const item = getWorkItem(this.db, id);
+      const item = await this.store.run((q) => getWorkItemSteps(q, id));
       if (!item || item.state !== "queued" || item.cancelRequested) continue;
-      if (hasOpenItemJob(this.db, JOB_KIND.start, item.id)) continue;
+      if (await this.store.run((q) => hasOpenItemJobSteps(q, JOB_KIND.start, item.id))) continue;
       const name = item.linearIdentifier ?? "this issue";
       if (
-        now - settled(queueWaitSince(sqliteDb(this.db), item.id, item.version, now)) >=
+        now - (await queueWaitSince(this.store, item.id, item.version, now)) >=
         hours * 3_600_000
       ) {
-        failWorkItem(
-          this.db,
-          item,
-          "start_timeout",
-          `Paws couldn't start ${name} within ${hours === 1 ? "1 hour" : `${hours} hours`} because every runner slot stayed busy. Delegate it again to retry.`,
-          now,
+        await this.store.transaction((q) =>
+          failWorkItemSteps(
+            q,
+            item,
+            "start_timeout",
+            `Paws couldn't start ${name} within ${hours === 1 ? "1 hour" : `${hours} hours`} because every runner slot stayed busy. Delegate it again to retry.`,
+            now,
+          ),
         );
         continue;
       }
       const sessionId = this.activitySession(item);
       if (sessionId === null) continue;
-      const position = settled(getQueuePosition(sqliteDb(this.db), item.id));
-      enqueueOutboxOnce(this.db, {
-        target: OUTBOX_ACTIVITY.target,
-        op: OUTBOX_ACTIVITY.op,
-        orderingKey: sessionId,
-        idempotencyKey: `queued:${item.id}:${item.version}`,
-        payload: {
-          sessionId,
-          kind: "thought",
-          body: `${position ? queueLine(position) : "Queued: every runner slot is busy."} Paws starts ${name} when a slot frees.`,
-        },
-        now,
-      });
+      const position = await getQueuePosition(this.store, item.id);
+      await this.store.transaction((q) =>
+        enqueueOutboxOnceSteps(q, {
+          target: OUTBOX_ACTIVITY.target,
+          op: OUTBOX_ACTIVITY.op,
+          orderingKey: sessionId,
+          idempotencyKey: `queued:${item.id}:${item.version}`,
+          payload: {
+            sessionId,
+            kind: "thought",
+            body: `${position ? queueLine(position) : "Queued: every runner slot is busy."} Paws starts ${name} when a slot frees.`,
+          },
+          now,
+        }),
+      );
     }
   }
 
@@ -7979,7 +7986,9 @@ export class Orchestrator {
     const repo = repository ? `${repository.owner}/${repository.repo}` : undefined;
     let resolved = resolveAgentProfiles(config, repo, saved.profileLabels);
     let answered = false;
-    const question = saved.profileQuestion ? getQuestion(this.db, saved.profileQuestion) : null;
+    const question = saved.profileQuestion
+      ? await this.store.run((q) => getQuestionSteps(q, saved.profileQuestion!))
+      : null;
     if (resolved.labelProblems?.length && question?.status === "answered") {
       answered = true;
       if (question.answer === USE_THE_DEFAULT) {
@@ -9156,7 +9165,7 @@ export class Orchestrator {
       this.shuttingDown ||
       item.cancelRequested ||
       sessionId === null ||
-      findOpenQuestion(this.db, sessionId) !== null ||
+      (await this.store.run((q) => findOpenQuestionSteps(q, sessionId))) !== null ||
       (await this.store.run((q) => listPendingLinearTurnsSteps(q, sessionId))).length > 0 ||
       (await this.store.run((q) => hasOpenItemJobSteps(q, JOB_KIND.reverify, item.id, job.id)));
     if (moving) return;
@@ -9468,16 +9477,18 @@ export class Orchestrator {
     if (!evidence || sessionId === null) return false;
     const requirements = this.visualReviewRequirements(item, worktree);
     if (requirements.length === 0) return false;
-    const pending = pendingVisualReview(this.db, item);
+    const pending = await this.store.run((q) => pendingVisualReviewSteps(q, item));
     if (pending) {
       const reviewed = pending.review.headCommit;
       if (reviewed && (await samePatch(worktree, reviewed, head, base))) return true;
-      cancelVisualReviewQuestion(this.db, pending.question.id, "head_moved", this.now());
+      await this.store.transaction((q) =>
+        cancelVisualReviewQuestionSteps(q, pending.question.id, "head_moved", this.now()),
+      );
     }
     const approvals = await approvalsAtHead(
       worktree,
       head,
-      visualReviewApprovals(this.db, item.id, itemPathId(item)),
+      await this.store.run((q) => visualReviewApprovalsSteps(q, item.id, itemPathId(item))),
       requirements,
       undefined,
       base,
@@ -9485,7 +9496,9 @@ export class Orchestrator {
     let carriedOver = false;
     // A check whose screens all carried an approval over passes; the next check may still be due.
     for (let pass = 0; pass <= requirements.length; pass++) {
-      const due = dueVisualReview(this.db, item.id, requirements, approvals);
+      const due = await this.store.run((q) =>
+        dueVisualReviewSteps(q, item.id, requirements, approvals),
+      );
       if (due === null) break;
       const plan = await planVisualReviewCarry(
         this.db,
@@ -9561,7 +9574,7 @@ export class Orchestrator {
     base: string,
     head: string,
   ): Promise<boolean> {
-    if (pendingVisualReview(this.db, item) === null)
+    if ((await this.store.run((q) => pendingVisualReviewSteps(q, item))) === null)
       await this.openVisualReviewCheck(item, worktree, base, head);
     const now = this.now();
     const waiting = await this.store.transaction(function* (q) {
@@ -9586,9 +9599,12 @@ export class Orchestrator {
    * Another check failed on head S, so its pending-human check is moot.
    * Returns whether a review was open; its verdict thoughts were held back.
    */
-  private cancelVisualReview(item: WorkItemRecord): boolean {
-    const pending = pendingVisualReview(this.db, item);
-    if (pending) cancelVisualReviewQuestion(this.db, pending.question.id, "cancelled", this.now());
+  private async cancelVisualReview(item: WorkItemRecord): Promise<boolean> {
+    const pending = await this.store.run((q) => pendingVisualReviewSteps(q, item));
+    if (pending)
+      await this.store.transaction((q) =>
+        cancelVisualReviewQuestionSteps(q, pending.question.id, "cancelled", this.now()),
+      );
     return pending !== null;
   }
 
@@ -9602,7 +9618,7 @@ export class Orchestrator {
     base: string,
     head: string,
   ): Promise<string[]> {
-    const pending = pendingVisualReview(this.db, item);
+    const pending = await this.store.run((q) => pendingVisualReviewSteps(q, item));
     const reviewed = pending?.review.headCommit;
     if (pending?.question.kind !== "link" || !reviewed || reviewed === head) return [];
     return (await samePatch(worktree, reviewed, head, base)) ? [pending.question.id] : [];
@@ -9613,7 +9629,7 @@ export class Orchestrator {
     input: Omit<Parameters<typeof decideLinkAsk>[1], "now">,
     effects: LinkAskEffects = {},
   ): Promise<"answered" | "forbidden" | "rejected"> {
-    const itemId = getQuestion(this.db, input.questionId)?.itemId;
+    const itemId = (await this.store.run((q) => getQuestionSteps(q, input.questionId)))?.itemId;
     if (itemId && (await this.store.run((q) => getWorkItemSteps(q, itemId)))?.state === "paused")
       return "rejected";
     const outcome = await decideLinkAsk(
@@ -9645,10 +9661,12 @@ export class Orchestrator {
   }): Promise<"answered" | "rejected"> {
     const waiting = async () => {
       if (this.shuttingDown) return null;
-      const open = getQuestion(this.db, input.questionId);
+      const open = await this.store.run((q) => getQuestionSteps(q, input.questionId));
       const item = open ? await this.store.run((q) => getWorkItemSteps(q, open.itemId)) : null;
       if (open?.status !== "open" || !isPawsAnswerKind(open.kind) || item === null) return null;
-      return findOpenQuestion(this.db, open.sessionId)?.id === open.id ? { open, item } : null;
+      return (await this.store.run((q) => findOpenQuestionSteps(q, open.sessionId)))?.id === open.id
+        ? { open, item }
+        : null;
     };
     const sessionId = (await waiting())?.open.sessionId;
     if (sessionId === undefined) return "rejected";
@@ -9680,7 +9698,10 @@ export class Orchestrator {
           updatedAtMs: at,
           payload: JSON.stringify({ questionId: open.id, answeredBy: input.answeredBy }),
         });
-        if (getQuestion(this.db, open.id)?.answerEventKey !== dedupeKey) return false;
+        if (
+          (await this.store.run((q) => getQuestionSteps(q, open.id)))?.answerEventKey !== dedupeKey
+        )
+          return false;
         await this.store.transaction((q) =>
           enqueueOutboxOnceSteps(q, {
             target: "linear",
@@ -9718,8 +9739,8 @@ export class Orchestrator {
     marks: readonly VisualReviewMark[];
     actor?: { workspaceId: string; userId: string; name: string };
   }): Promise<"answered" | "forbidden" | "rejected"> {
-    const open = getQuestion(this.db, input.questionId);
-    const review = open ? getVisualReview(this.db, open.id) : null;
+    const open = await this.store.run((q) => getQuestionSteps(q, input.questionId));
+    const review = open ? await this.store.run((q) => getVisualReviewSteps(q, open.id)) : null;
     if (open?.status !== "open" || review?.kind !== "review") return "rejected";
     // A visual review asked with a link is decided like every link ask, with the marks.
     if (open.kind === "link")
@@ -9819,12 +9840,14 @@ export class Orchestrator {
     base: string,
     head: string,
   ): Promise<boolean> {
-    const reviews = acceptedVisualReviews(this.db, item.id);
+    const reviews = await this.store.run((q) => acceptedVisualReviewsSteps(q, item.id));
     if (reviews.length === 0) return false;
     const requirements = this.visualReviewRequirements(item, worktree);
     if (requirements.length === 0) return false;
     const checks = new Set(requirements.map((entry) => entry.id));
-    const approvals = visualReviewApprovals(this.db, item.id, itemPathId(item));
+    const approvals = await this.store.run((q) =>
+      visualReviewApprovalsSteps(q, item.id, itemPathId(item)),
+    );
     const valid = new Set(
       await approvalsAtHead(worktree, head, approvals, requirements, undefined, base),
     );

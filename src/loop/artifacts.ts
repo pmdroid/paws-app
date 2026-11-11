@@ -23,7 +23,6 @@ import {
   listEvidenceSteps,
   markArtifactSteps,
   saveArtifactSteps,
-  settled,
   sqliteDb,
   type Db,
   type Q,
@@ -59,8 +58,11 @@ export function createLinearArtifactReader(options: { db: Database; secretsDir: 
   };
 }
 
-export function publishedEvidence(db: Database, itemId: string): PublishedEvidence[] {
-  return settled(sqliteDb(db).run((q) => publishedEvidenceSteps(q, itemId)));
+export async function publishedEvidence(
+  db: Database,
+  itemId: string,
+): Promise<PublishedEvidence[]> {
+  return await sqliteDb(db).run((q) => publishedEvidenceSteps(q, itemId));
 }
 
 export function* publishedEvidenceSteps(q: Q, itemId: string): Steps<PublishedEvidence[]> {
@@ -209,10 +211,10 @@ export async function createEvidenceArtifactPublisher(options: {
   const generation = await store.run((q) => linearSessionGenerationSteps(q, options.sessionId));
   const inflight = new Map<string, Promise<PublishedArtifact>>();
   return {
-    begin(request, context) {
-      if (context.evidence) return { complete() {} };
+    async begin(request, context) {
+      if (context.evidence) return { async complete() {} };
       if (!options.linear) throw new Error("Linear file uploads are unavailable");
-      return options.linear.begin?.(request, context) ?? { complete() {} };
+      return (await options.linear.begin?.(request, context)) ?? { async complete() {} };
     },
     publish(artifact, context) {
       const evidence = context.evidence;
@@ -291,25 +293,21 @@ export async function createLinearArtifactPublisher(options: {
   const generation = await store.run((q) => linearSessionGenerationSteps(q, options.sessionId));
   const inflight = new Map<string, Promise<PublishedArtifact>>();
   return {
-    begin(request, context) {
+    async begin(request, context) {
       context.signal.throwIfAborted();
       const identityHash = publicationIdentity(request);
       if (request.attachToIssue === true && !options.issueId)
         throw new Error("Issue attachment is unavailable");
-      const version = settled(
-        store.transaction(function* (q) {
-          const nextVersion = yield* beginArtifactAttemptSteps(q, options.itemId, identityHash);
-          if (request.attachToIssue === true)
-            yield* requestArtifactAttachmentSteps(q, options.itemId, identityHash);
-          return nextVersion;
-        }),
-      );
+      const version = await store.transaction(function* (q) {
+        const nextVersion = yield* beginArtifactAttemptSteps(q, options.itemId, identityHash);
+        if (request.attachToIssue === true)
+          yield* requestArtifactAttachmentSteps(q, options.itemId, identityHash);
+        return nextVersion;
+      });
       return {
-        complete() {
-          settled(
-            store.run((q) =>
-              completeArtifactAttemptSteps(q, options.itemId, identityHash, version),
-            ),
+        async complete() {
+          await store.run((q) =>
+            completeArtifactAttemptSteps(q, options.itemId, identityHash, version),
           );
         },
       };

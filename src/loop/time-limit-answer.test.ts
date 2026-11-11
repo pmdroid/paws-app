@@ -1,4 +1,4 @@
-import { ask } from "./operations";
+import { askSteps } from "./operations";
 import { expect, test } from "bun:test";
 import { FakeClock, JOB_KIND } from "../core";
 import {
@@ -17,7 +17,7 @@ import {
   saveCheckpoint,
   sqliteDb,
 } from "../db";
-import { answer } from "../questions";
+import { answerSteps } from "../questions";
 import { questionEffects } from "./question-effects";
 
 const MINUTE = 60_000;
@@ -54,12 +54,14 @@ async function askedAtTimeLimit(pendingHandoff?: string) {
     body: string;
     options: string[];
   };
-  ask(
-    db,
-    { itemId: item.id, runId: getWorkItem(db, item.id)!.currentRunId, sessionId: "ses" },
-    "time-limit",
-    request.body,
-    { options: request.options, now: clock.now() },
+  await sqliteDb(db).transaction((q) =>
+    askSteps(
+      q,
+      { itemId: item.id, runId: getWorkItem(db, item.id)!.currentRunId, sessionId: "ses" },
+      "time-limit",
+      request.body,
+      { options: request.options, now: clock.now() },
+    ),
   );
   return { clock, db, item };
 }
@@ -98,32 +100,36 @@ async function askedBeforeAcceptance(state: "running" | "verifying") {
     options: string[];
     reason: string;
   };
-  ask(
-    db,
-    { itemId: item.id, runId: getWorkItem(db, item.id)!.currentRunId, sessionId: "ses" },
-    "time-limit",
-    request.body,
-    { options: request.options, reason: request.reason, now: clock.now() },
+  await sqliteDb(db).transaction((q) =>
+    askSteps(
+      q,
+      { itemId: item.id, runId: getWorkItem(db, item.id)!.currentRunId, sessionId: "ses" },
+      "time-limit",
+      request.body,
+      { options: request.options, reason: request.reason, now: clock.now() },
+    ),
   );
   return { clock, db, item };
 }
 
-function reply(
+async function reply(
   db: Awaited<ReturnType<typeof askedAtTimeLimit>>["db"],
   body: string,
   now: number,
   asking?: (runId: string) => boolean,
 ) {
-  return answer(
-    db,
-    { sessionId: "ses", deliveryId: `reply:${body}`, body, answeredBy: "pascal", now },
-    questionEffects(db, { now, ...(asking ? { asking } : {}) }),
+  return await sqliteDb(db).transaction((q) =>
+    answerSteps(
+      q,
+      { sessionId: "ses", deliveryId: `reply:${body}`, body, answeredBy: "pascal", now },
+      questionEffects(db, { now, ...(asking ? { asking } : {}) }),
+    ),
   );
 }
 
 test("Continue at the time limit starts a fresh budget and resumes it", async () => {
   const { clock, db, item } = await askedAtTimeLimit();
-  expect(reply(db, "Continue", clock.now()).status).toBe("answered");
+  expect((await reply(db, "Continue", clock.now())).status).toBe("answered");
   expect(getWorkItem(db, item.id)).toMatchObject({
     state: "queued",
     fixMs: 0,
@@ -154,7 +160,7 @@ test("Continue hands over a review the time limit cut off before the agent start
   const { clock, db, item } = await askedAtTimeLimit(review);
   const question = db.query<{ body: string }, []>("SELECT body FROM question").get()!;
   expect(question.body).toContain("The agent had not started on the latest feedback yet");
-  expect(reply(db, "Continue", clock.now()).status).toBe("answered");
+  expect((await reply(db, "Continue", clock.now())).status).toBe("answered");
   const resumes = listJobs(db).filter((job) => job.queue === "run.resume");
   expect(resumes.map((job) => job.status)).toEqual(["cancelled", "pending"]);
   const handoff = (resumes[1]!.payload as { handoff: string }).handoff;
@@ -165,7 +171,7 @@ test("Continue hands over a review the time limit cut off before the agent start
 
 test("Stop at the time limit ends the task and names the accepted branch", async () => {
   const { clock, db, item } = await askedAtTimeLimit();
-  expect(reply(db, "Stop", clock.now()).status).toBe("answered");
+  expect((await reply(db, "Stop", clock.now())).status).toBe("answered");
   expect(getWorkItem(db, item.id)?.state).toBe("failed");
   expect(listJobs(db).some((job) => job.queue === "run.resume")).toBe(false);
   expect(listOutbox(db).at(-1)?.payload).toMatchObject({
@@ -179,7 +185,7 @@ test("Stop at the time limit ends the task and names the accepted branch", async
 test("Continue while the stopped run is still finishing queues one fenced restart", async () => {
   const { clock, db, item } = await askedAtTimeLimit();
   const runId = getWorkItem(db, item.id)!.currentRunId!;
-  expect(reply(db, "Continue", clock.now(), (id) => id === runId).status).toBe("answered");
+  expect((await reply(db, "Continue", clock.now(), (id) => id === runId)).status).toBe("answered");
   expect(getWorkItem(db, item.id)).toMatchObject({
     state: "queued",
     fixMs: 0,
@@ -203,7 +209,7 @@ test("the time-limit question for accepted work offers Merge, Continue and Stop"
 
 test("Merge the accepted work at the time limit goes to the merge queue without a turn", async () => {
   const { clock, db, item } = await askedAtTimeLimit();
-  expect(reply(db, "Merge the accepted work", clock.now()).status).toBe("answered");
+  expect((await reply(db, "Merge the accepted work", clock.now())).status).toBe("answered");
   expect(getWorkItem(db, item.id)).toMatchObject({ state: "merge_queue" });
   expect(getWorkItem(db, item.id)?.checkpoint).toMatchObject({
     phase: "merge_queue",
@@ -221,7 +227,9 @@ test("Merge the accepted work at the time limit goes to the merge queue without 
 
 test("Continue with new instructions at the time limit starts a fresh budget", async () => {
   const { clock, db, item } = await askedAtTimeLimit();
-  expect(reply(db, "Continue, but fix the acme lint first", clock.now()).status).toBe("answered");
+  expect((await reply(db, "Continue, but fix the acme lint first", clock.now())).status).toBe(
+    "answered",
+  );
   expect(getWorkItem(db, item.id)).toMatchObject({ fixMs: 0, maxAwakeMs: 3 * 60 * MINUTE });
   expect(listOutbox(db).some((row) => row.idempotencyKey.startsWith("fresh-budget:"))).toBe(true);
 });
@@ -251,7 +259,7 @@ for (const state of ["running", "verifying"] as const) {
 
 test("Continue after the time limit stopped Closeout checks the same head again with a fresh budget", async () => {
   const { clock, db, item } = await askedBeforeAcceptance("verifying");
-  expect(reply(db, "Continue", clock.now()).status).toBe("answered");
+  expect((await reply(db, "Continue", clock.now())).status).toBe("answered");
   expect(getWorkItem(db, item.id)).toMatchObject({
     state: "verifying",
     closeoutMs: 0,
@@ -270,7 +278,7 @@ test("Continue after the time limit stopped Closeout checks the same head again 
 
 test("Continue after the time limit stopped an agent without an accepted head resumes it", async () => {
   const { clock, db, item } = await askedBeforeAcceptance("running");
-  expect(reply(db, "Continue", clock.now()).status).toBe("answered");
+  expect((await reply(db, "Continue", clock.now())).status).toBe("answered");
   expect(getWorkItem(db, item.id)).toMatchObject({
     state: "queued",
     implementMs: 0,
@@ -283,7 +291,7 @@ test("Continue after the time limit stopped an agent without an accepted head re
 
 test("Stop at the time limit without an accepted head names the branch with the work", async () => {
   const { clock, db, item } = await askedBeforeAcceptance("verifying");
-  expect(reply(db, "Stop", clock.now()).status).toBe("answered");
+  expect((await reply(db, "Stop", clock.now())).status).toBe("answered");
   expect(getWorkItem(db, item.id)?.state).toBe("failed");
   expect(listOutbox(db).at(-1)?.payload).toMatchObject({
     kind: "error",

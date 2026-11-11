@@ -1,8 +1,14 @@
 import { workspaceDispatch } from "./fake-workspace";
 import { expect, test } from "bun:test";
-import { bindWorkItemRepository, insertQueuedItem, listJobs, startLoops } from "../src/db";
+import {
+  bindWorkItemRepository,
+  insertQueuedItem,
+  listJobs,
+  startLoops,
+  sqliteDb,
+} from "../src/db";
 import { JOB_KIND } from "../src/core";
-import { saveSchedulingContext } from "../src/scheduler";
+import { saveSchedulingContextSteps } from "../src/scheduler";
 import { tempDb } from "./helpers";
 
 const repository = { owner: "owner", repo: "repo", remoteUrl: "https://example.invalid/repo.git" };
@@ -13,7 +19,9 @@ test("Paws runs more task starts at once than the four workers it used to have",
   for (const [index, id] of ids.entries()) {
     insertQueuedItem(db, { id, now: index });
     bindWorkItemRepository(db, id, repository);
-    saveSchedulingContext(db, { itemId: id, projectId: "project", paths: [`src/${id}.ts`] });
+    await sqliteDb(db).run((q) =>
+      saveSchedulingContextSteps(q, { itemId: id, projectId: "project", paths: [`src/${id}.ts`] }),
+    );
   }
   expect(await workspaceDispatch(db, { now: Date.now() })).toEqual(ids);
   const controller = new AbortController();

@@ -14,6 +14,7 @@ import {
   releaseMergeQueuePlaceSteps,
   restartedFromMergeQueueSteps,
   returnToMergeQueueSteps,
+  syncSteps,
   wakeMergesBehindSteps,
   type Db,
 } from "../src/db";
@@ -93,7 +94,9 @@ forEachDialect((open) => {
         },
       ]);
       expect(
-        (await db.run((q) => listMergeQueuesSteps(q, (id) => id === "a"))).map((p) => p.itemId),
+        (await db.run((q) => listMergeQueuesSteps(q, (_q, id) => syncSteps(() => id === "a")))).map(
+          (p) => p.itemId,
+        ),
       ).toEqual(["b", "c"]);
       expect(
         (await db.run(mergeQueueReadyTimesSteps)).sort((x, y) => x.readyAt - y.readyAt),

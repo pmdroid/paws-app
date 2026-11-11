@@ -21,7 +21,7 @@ import {
   startUsagePause,
   sqliteDb,
 } from "../db";
-import { answer, findOpenQuestion } from "../questions";
+import { answerSteps, findOpenQuestion } from "../questions";
 import { questionEffects } from "./question-effects";
 import { recoverStalledCloseout } from "./closeout-stall";
 
@@ -106,16 +106,18 @@ test("quiet verification retries once across restart, then asks a person", async
     expect(
       listJobs(db).filter((j) => j.queue === JOB_KIND.reverify && j.id !== oldJob),
     ).toHaveLength(1);
-    answer(
-      db,
-      {
-        sessionId: "ses",
-        deliveryId: "retry",
-        body: "Retry Closeout",
-        answeredBy: "person",
-        now: clock.now(),
-      },
-      questionEffects(db, { now: clock.now() }),
+    await sqliteDb(db).transaction((q) =>
+      answerSteps(
+        q,
+        {
+          sessionId: "ses",
+          deliveryId: "retry",
+          body: "Retry Closeout",
+          answeredBy: "person",
+          now: clock.now(),
+        },
+        questionEffects(db, { now: clock.now() }),
+      ),
     );
     expect(getWorkItem(db, "stalled")?.state).toBe("verifying");
     expect(getWorkItem(db, "stalled")?.checkpoint?.wipCommit).toBe("head");

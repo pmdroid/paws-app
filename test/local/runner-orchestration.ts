@@ -44,7 +44,7 @@ import { findOpenQuestion } from "../../src/questions";
 import { intakeDelegatedIssue } from "../../src/intake";
 import { fakeMergeReadiness, fakeRequiredChecks } from "../../src/github";
 import { attachOrchestrator, itemPathId } from "../../src/loop";
-import { saveSchedulingContext } from "../../src/scheduler";
+import { saveSchedulingContextSteps } from "../../src/scheduler";
 import { cloneRunner, migratedDatabase } from "../helpers";
 import { workspaceAdmission } from "../fake-workspace";
 
@@ -805,11 +805,13 @@ export async function probeRunnerOrchestration(
           repo: "fixture",
           remoteUrl: origin,
         });
-        saveSchedulingContext(db, {
-          itemId: queued.id,
-          projectId: "project",
-          paths: ["src/shared"],
-        });
+        await sqliteDb(db).run((q) =>
+          saveSchedulingContextSteps(q, {
+            itemId: queued.id,
+            projectId: "project",
+            paths: ["src/shared"],
+          }),
+        );
         await orchestrator.reconcileExecution();
       }
       if (scenario === "resume-lease") {
@@ -928,11 +930,13 @@ export async function probeRunnerOrchestration(
             repo: "fixture",
             remoteUrl: origin,
           });
-          saveSchedulingContext(db, {
-            itemId: "new-blocker",
-            projectId: "project",
-            paths: ["src/shared"],
-          });
+          await sqliteDb(db).run((q) =>
+            saveSchedulingContextSteps(q, {
+              itemId: "new-blocker",
+              projectId: "project",
+              paths: ["src/shared"],
+            }),
+          );
           db.run(
             "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES(?,?)",
             ["new-blocker", item.linearIssueId],

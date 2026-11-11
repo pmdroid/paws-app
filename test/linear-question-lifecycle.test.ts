@@ -21,14 +21,8 @@ import {
   type TrackerAdapter,
 } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
-import {
-  answerQuestion,
-  ask,
-  findOpenQuestion,
-  getQuestion,
-  handoffNote,
-  openQuestion,
-} from "../src/questions";
+import { findOpenQuestion, getQuestion, handoffNote, openQuestion } from "../src/questions";
+import { answerQuestion, ask } from "./questions";
 import { tempDb } from "./helpers";
 
 const NOW = 1_700_000_000_000;
@@ -45,12 +39,12 @@ test("question handoff preserves selection labels and their values for freeform 
   expect(handoff).toContain("The library, please");
 });
 
-function setup(tracker: TrackerAdapter | null = null) {
+async function setup(tracker: TrackerAdapter | null = null) {
   const db = tempDb();
   const item = insertQueuedItem(db, { id: "ENG-2", sessionKey: "ses_1", title: "Export rows" });
   beginImplementRun(db, item.id, NOW - 10);
   applyWorkItemEvent(db, item.id, "blocking_question");
-  const question = openQuestion(db, {
+  const question = await openQuestion(db, {
     itemId: item.id,
     sessionId: "ses_1",
     body: "Include archived rows?",
@@ -89,7 +83,7 @@ function prompt(createdAt = NOW + 1, id = "answer-1", userId: string | null = "h
 }
 
 test("Linear answers preserve their human author through persisted inbox replay", async () => {
-  const { db, question, orchestrator } = setup();
+  const { db, question, orchestrator } = await setup();
   try {
     const inbox = createInboxStore(db);
     const event = prompt();
@@ -111,7 +105,7 @@ test("Linear answers preserve their human author through persisted inbox replay"
 test.each([NOW - 1, NOW])(
   "an activity at %d cannot answer a question without later creation",
   async (at) => {
-    const { db, question, orchestrator } = setup();
+    const { db, question, orchestrator } = await setup();
     try {
       await orchestrator.onLinearEvent(prompt(at));
       expect(getQuestion(db, question.id)?.status).toBe("open");
@@ -123,7 +117,7 @@ test.each([NOW - 1, NOW])(
 );
 
 test("an answer racing delivery suppresses the unsent elicitation", async () => {
-  const { db, question, orchestrator } = setup();
+  const { db, question, orchestrator } = await setup();
   try {
     enqueueOutboxOnce(db, {
       target: "linear",
@@ -161,7 +155,7 @@ test("an answer aborts an elicitation currently being delivered", async () => {
         { once: true },
       );
     });
-  const { db, question, orchestrator, outbox } = setup(tracker);
+  const { db, question, orchestrator, outbox } = await setup(tracker);
   try {
     enqueueOutboxOnce(db, {
       target: "linear",
@@ -187,7 +181,7 @@ test("an answer aborts an elicitation currently being delivered", async () => {
 });
 
 test("an activity ID alone does not establish a human respondent", async () => {
-  const { db, question, orchestrator } = setup();
+  const { db, question, orchestrator } = await setup();
   try {
     await orchestrator.onLinearEvent(prompt(NOW + 1, "anonymous-activity", null));
     expect(getQuestion(db, question.id)?.status).toBe("open");
@@ -198,7 +192,7 @@ test("an activity ID alone does not establish a human respondent", async () => {
 });
 
 test("a webhook without an activity creation time cannot answer from delivery time", async () => {
-  const { db, question, orchestrator } = setup();
+  const { db, question, orchestrator } = await setup();
   try {
     await orchestrator.onLinearEvent({ ...prompt(), activityCreatedAtMs: null });
     expect(getQuestion(db, question.id)?.status).toBe("open");
@@ -209,13 +203,13 @@ test("a webhook without an activity creation time cannot answer from delivery ti
 });
 
 test("a consumed activity cannot answer the next question in its session", async () => {
-  const { db, item, question, orchestrator } = setup();
+  const { db, item, question, orchestrator } = await setup();
   try {
     const event = prompt(NOW + 100);
     await orchestrator.onLinearEvent(event);
     applyWorkItemEvent(db, item.id, "dispatched");
     applyWorkItemEvent(db, item.id, "blocking_question");
-    const next = openQuestion(db, {
+    const next = await openQuestion(db, {
       itemId: item.id,
       sessionId: "ses_1",
       body: "Use CSV?",
@@ -229,17 +223,17 @@ test("a consumed activity cannot answer the next question in its session", async
   }
 });
 
-test("only one blocking question may be open on a session", () => {
-  const { db, item, question } = setup();
+test("only one blocking question may be open on a session", async () => {
+  const { db, item, question } = await setup();
   try {
-    expect(() =>
+    await expect(
       openQuestion(db, {
         itemId: item.id,
         sessionId: "ses_1",
         body: "Use CSV?",
         now: NOW + 1,
       }),
-    ).toThrow("already has an unanswered question");
+    ).rejects.toThrow("already has an unanswered question");
     expect(findOpenQuestion(db, "ses_1")?.id).toBe(question.id);
   } finally {
     db.close();
@@ -247,7 +241,7 @@ test("only one blocking question may be open on a session", () => {
 });
 
 test("a continuation write failure rolls back the answer and state transition", async () => {
-  const { db, item, question, orchestrator } = setup();
+  const { db, item, question, orchestrator } = await setup();
   try {
     db.run(`CREATE TRIGGER reject_resume BEFORE INSERT ON job
       WHEN NEW.queue = 'run.resume' BEGIN SELECT RAISE(ABORT, 'resume unavailable'); END`);
@@ -263,7 +257,7 @@ test("a continuation write failure rolls back the answer and state transition", 
 });
 
 test("a Linear Stop pauses the item with its question open, and a reply restarts it", async () => {
-  const { db, item, question, orchestrator } = setup(createFakeTracker([]));
+  const { db, item, question, orchestrator } = await setup(createFakeTracker([]));
   try {
     await orchestrator.onLinearEvent({ ...prompt(), body: null, signal: "stop" });
     expect(getWorkItem(db, item.id)?.state).toBe("paused");
@@ -326,7 +320,7 @@ test("polling keeps activity creation and human identity distinct from viewer an
 });
 
 test("a polled prompt reaches answer delivery with normalized actor and creation time", async () => {
-  const { db, question, orchestrator } = setup();
+  const { db, question, orchestrator } = await setup();
   const inbox = createInboxStore(db);
   const delivered = Promise.withResolvers<void>();
   let wake = () => {};
@@ -386,11 +380,11 @@ test("a polled prompt reaches answer delivery with normalized actor and creation
 });
 
 test("a runner wait asked before a restart is answered by the next process without a resume", async () => {
-  const { db, item, question, orchestrator } = setup();
+  const { db, item, question, orchestrator } = await setup();
   try {
-    answerQuestion(db, question.id, { answer: "No", answeredBy: "human-1", now: NOW });
+    await answerQuestion(db, question.id, { answer: "No", answeredBy: "human-1", now: NOW });
     applyWorkItemEvent(db, item.id, "answer_received");
-    const wait = ask(
+    const wait = await ask(
       db,
       { itemId: item.id, runId: getWorkItem(db, item.id)!.currentRunId, sessionId: "ses_1" },
       "runner-wait",

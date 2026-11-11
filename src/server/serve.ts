@@ -153,7 +153,7 @@ export type ServerOptions = {
   slackSigningSecret?: string | null;
   linearWebhook?: LinearWebhookDeps;
   linearUsage?: () => LinearUsage;
-  riskApproval?: (itemId: string) => { head: string; detail: string } | null;
+  riskApproval?: (itemId: string) => Promise<{ head: string; detail: string } | null>;
   riskSettingsChanged?: () => void;
   /**
    * Webhook routes. Default follows `LINEAR_WEBHOOKS` via `webhookChecksNeeded`.

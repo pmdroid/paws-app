@@ -2,14 +2,9 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  changeDecision,
-  confirmDecision,
-  suggestDecisions,
-  listDecisions,
-  decisionAnswers,
-} from "../src/decisions";
-import { openQuestion, answer, ask } from "../src/questions";
+import { changeDecision, listDecisions, decisionAnswers } from "../src/decisions";
+import { openQuestion } from "../src/questions";
+import { answer, ask, confirmDecision, suggestDecisions } from "./questions";
 import { decisionFixture, probeDecisionMemory } from "./local/decision-memory";
 
 test("decision memory requires accessible confirmed human answers and never resumes on a search match", async () => {
@@ -23,12 +18,12 @@ test("decision memory requires accessible confirmed human answers and never resu
 
 test("only agent and clarification answers are offered as decisions", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-decisions-"));
-  const f = decisionFixture(root);
+  const f = await decisionFixture(root);
   try {
     const asker = { itemId: "controlled", runId: f.runId, sessionId: "session-controlled" };
     for (const kind of ["runner-wait", "repository", "clarification"] as const) {
-      ask(f.db, asker, kind, `${kind} question`, { now: Date.now() });
-      answer(f.db, {
+      await ask(f.db, asker, kind, `${kind} question`, { now: Date.now() });
+      await answer(f.db, {
         sessionId: "session-controlled",
         deliveryId: kind,
         body: `${kind} answer`,
@@ -48,7 +43,7 @@ test("only agent and clarification answers are offered as decisions", async () =
 
 test("two concurrent confirmations accept one suggestion once, with every read inside a transaction", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-confirm-decision-"));
-  const f = decisionFixture(root);
+  const f = await decisionFixture(root);
   const children: Bun.Subprocess<"pipe", "pipe", "pipe">[] = [];
   try {
     const actor = { workspaceId: "workspace", userId: "member", clientId: "client" };
@@ -63,33 +58,36 @@ test("two concurrent confirmations accept one suggestion once, with every read i
       },
       Date.now(),
     );
-    const pending = openQuestion(f.db, {
+    const pending = await openQuestion(f.db, {
       itemId: "controlled",
       sessionId: "session-controlled",
       body: "Which pagination format?",
     });
-    const suggestion = suggestDecisions(f.db, pending.id, pending.body)[0]!;
+    const suggestion = (await suggestDecisions(f.db, pending.id, pending.body))[0]!;
     const prepare = f.db.prepare.bind(f.db);
     const transactions: boolean[] = [];
     f.db.prepare = ((...args: Parameters<typeof f.db.prepare>) => {
       if (/^\s*select\b/i.test(args[0])) transactions.push(f.db.inTransaction);
       return prepare(...args);
     }) as typeof f.db.prepare;
-    expect(() =>
+    await expect(
       confirmDecision(f.db, pending.id, suggestion.value, "inactive", Date.now()),
-    ).toThrow();
+    ).rejects.toThrow();
     f.db.prepare = prepare;
     expect(transactions.length).toBeGreaterThan(0);
     expect(transactions.every(Boolean)).toBe(true);
     const script = `
       import { Database } from "bun:sqlite";
-      import { confirmDecision } from ${JSON.stringify(join(process.cwd(), "src/decisions/index.ts"))};
+      import { confirmDecisionSteps } from ${JSON.stringify(join(process.cwd(), "src/decisions/index.ts"))};
+      import { sqliteDb } from ${JSON.stringify(join(process.cwd(), "src/db/index.ts"))};
       const db = new Database(process.argv[1]);
       db.run("PRAGMA busy_timeout=5000");
       console.log("ready");
       for await (const _ of Bun.stdin.stream()) break;
       try {
-        confirmDecision(db, process.argv[2], process.argv[3], "member", Number(process.argv[4]));
+        await sqliteDb(db).transaction((q) =>
+          confirmDecisionSteps(q, process.argv[2], process.argv[3], "member", Number(process.argv[4])),
+        );
         console.log("accepted");
       } catch (error) { console.log(error.message); process.exitCode = 2; }
       finally { db.close(); }
@@ -124,7 +122,9 @@ test("two concurrent confirmations accept one suggestion once, with every read i
     expect((await Promise.all(children.map((child) => child.exited))).sort()).toEqual([0, 2]);
     for (const reader of outputs) reader.releaseLock();
     expect((await listDecisions(f.db, actor))[0]?.accepted).toBe(1);
-    expect(() => confirmDecision(f.db, pending.id, suggestion.value, "member", 300)).toThrow();
+    await expect(
+      confirmDecision(f.db, pending.id, suggestion.value, "member", 300),
+    ).rejects.toThrow();
     const accepted = f.db
       .query<{ accepted_at: number }, []>(
         "SELECT accepted_at FROM decision_suggestion WHERE accepted_at IS NOT NULL",

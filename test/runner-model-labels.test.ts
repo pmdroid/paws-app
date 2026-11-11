@@ -59,7 +59,7 @@ function fixture() {
   return { db, now, runnerId, userId, principal: { workspaceId: workspace, userId } };
 }
 
-test("the catalog lists the 1M entry next to its standard model", () => {
+test("the catalog lists the 1M entry next to its standard model", async () => {
   const { db, principal } = fixture();
   const work = createRunnerWork({
     db,
@@ -67,7 +67,7 @@ test("the catalog lists the 1M entry next to its standard model", () => {
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
-  const [catalog] = createRunnerModels({ db, work }).read(principal);
+  const [catalog] = await createRunnerModels({ db, work }).read(principal);
   expect(catalog?.models.map(({ id, name, longContext }) => ({ id, name, longContext }))).toEqual([
     { id: "opus", name: "Opus 5.5", longContext: false },
     { id: "opus[1m]", name: "Opus 5.5 · 1M context", longContext: true },
@@ -116,7 +116,7 @@ test("a runner's history names the issue each execution worked on", async () => 
   ]);
 });
 
-test("the catalog reports the agent's default model and effort", () => {
+test("the catalog reports the agent's default model and effort", async () => {
   const { db, runnerId, principal } = fixture();
   const result = (model: string, effort: string) =>
     JSON.stringify({
@@ -146,7 +146,7 @@ test("the catalog reports the agent's default model and effort", () => {
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
-  const [catalog] = createRunnerModels({ db, work }).read(principal);
+  const [catalog] = await createRunnerModels({ db, work }).read(principal);
   expect(catalog?.defaultModel).toBe("opus");
   expect(catalog?.models.find((model) => model.id === "opus")?.defaultEffort).toBe("high");
 });

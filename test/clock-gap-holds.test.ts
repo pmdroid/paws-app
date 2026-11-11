@@ -19,8 +19,9 @@ import {
   sqliteDb,
 } from "../src/db";
 import { HostSupervisor, WakeDetector } from "../src/host";
-import { ask, attachOrchestrator, questionEffects } from "../src/loop";
-import { answer, findOpenQuestion } from "../src/questions";
+import { attachOrchestrator, questionEffects } from "../src/loop";
+import { findOpenQuestion } from "../src/questions";
+import { answer, loopAsk } from "./questions";
 import { workspaceAdmission } from "./fake-workspace";
 import { tempDb, tempHome } from "./helpers";
 
@@ -59,13 +60,25 @@ async function hold(db: Database, now: number, kind: Hold, merging: boolean): Pr
       applyWorkItemEvent(db, "item", "turn_ended", { now });
       applyWorkItemEvent(db, "item", "closeout_accepted", { now });
       await markCloseoutAccepted(sqliteDb(db), "item", "wip");
-      ask(db, { itemId: "item", runId: null, sessionId: "session" }, "ci-help", "CI failed.", {
-        now,
-      });
+      await loopAsk(
+        db,
+        { itemId: "item", runId: null, sessionId: "session" },
+        "ci-help",
+        "CI failed.",
+        {
+          now,
+        },
+      );
     } else {
-      ask(db, { itemId: "item", runId: run.id, sessionId: "session" }, "agent", "Archived?", {
-        now,
-      });
+      await loopAsk(
+        db,
+        { itemId: "item", runId: run.id, sessionId: "session" },
+        "agent",
+        "Archived?",
+        {
+          now,
+        },
+      );
     }
   }
   if (merging) {
@@ -194,15 +207,17 @@ describe("clock gaps preserve human holds", () => {
           now: clock.now(),
         };
         const effects = () => questionEffects(db, { now: reply.now });
-        expect(answer(db, reply, effects()).status).toBe("answered");
+        expect((await answer(db, reply, effects())).status).toBe("answered");
         const released = getWorkItem(db, "item")!;
         expect(released.state).toBe("queued");
         expect(executions(db).map((job) => job.jobKey)).toEqual([
           expect.stringMatching(/^resume:answer:/),
         ]);
 
-        expect(answer(db, reply, effects()).status).toBe("duplicate");
-        expect(answer(db, { ...reply, deliveryId: "reply-2" }, effects()).status).toBe("unasked");
+        expect((await answer(db, reply, effects())).status).toBe("duplicate");
+        expect((await answer(db, { ...reply, deliveryId: "reply-2" }, effects())).status).toBe(
+          "unasked",
+        );
         await observeGaps(db, clock, TWO_HOURS + 1);
         expect(getWorkItem(db, "item")?.version).toBe(released.version);
         expect(executions(db)).toHaveLength(1);
@@ -220,7 +235,9 @@ describe("clock gaps preserve human holds", () => {
       db.run("UPDATE question SET cancelled_at=? WHERE item_id='item'", [clock.now()]);
       const before = snapshot(db);
       const reply = { sessionId: "session", deliveryId: "late", body: "Go", answeredBy: "lead" };
-      expect(answer(db, reply, questionEffects(db, { now: clock.now() })).status).toBe("unasked");
+      expect((await answer(db, reply, questionEffects(db, { now: clock.now() }))).status).toBe(
+        "unasked",
+      );
       expect(snapshot(db)).toEqual(before);
       expect(executions(db)).toEqual([]);
     } finally {

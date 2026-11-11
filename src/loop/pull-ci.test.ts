@@ -165,7 +165,7 @@ async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 
         tokenProvider,
       }),
     readPull: async () => null,
-    dependencyHold: () => null,
+    dependencyHold: () => syncSteps(() => null),
     mergeLane: () => "",
     voice: {
       thought: () => syncSteps(() => {}),
@@ -338,9 +338,9 @@ describe("failed CI while a pull request waits for review", () => {
   test("a failing check_run wakes the merge job, is recorded, and is repaired once at the batch deadline", async () => {
     const h = await setup();
     const observed = h.now();
-    expect(h.checkRun(HEAD, undefined, "check-1")).toBe(true);
+    expect(await h.checkRun(HEAD, undefined, "check-1")).toBe(true);
     expect(h.mergeJob().runAt).toBe(observed);
-    expect(h.checkRun(HEAD, undefined, "check-1")).toBe(false);
+    expect(await h.checkRun(HEAD, undefined, "check-1")).toBe(false);
 
     expect(await h.evaluate()).toMatchObject({ kind: "wait", reason: "review", queued: true });
     expect(getPullCiFailure(h.db, "eng-1", HEAD)).toMatchObject({
@@ -352,7 +352,7 @@ describe("failed CI while a pull request waits for review", () => {
 
     for (const step of [10_000, 20_000, 29_999]) {
       h.tick(step - (h.now() - observed));
-      h.checkRun();
+      await h.checkRun();
       expect(await h.evaluate()).toMatchObject({ kind: "wait", reason: "review" });
       expect(await h.runDue()).toEqual([]);
     }
@@ -376,7 +376,7 @@ describe("failed CI while a pull request waits for review", () => {
     expect(thoughts(h.db)).toEqual(["CI: `test` failed. Sent back to the agent, fix 1 of 3."]);
 
     expect(h.mergeJob().status).toBe("cancelled");
-    h.checkRun();
+    await h.checkRun();
     h.tick(400_000);
     expect(await h.runDue()).toEqual([]);
     expect(resumes(h.db)).toHaveLength(1);
@@ -387,7 +387,7 @@ describe("failed CI while a pull request waits for review", () => {
     const h = await setup();
     h.state.ci = () => [{ name: "test", conclusion: "SUCCESS", detailsUrl: null }];
     const parked = h.mergeJob().runAt;
-    h.checkRun("b".repeat(40), "someone-else");
+    await h.checkRun("b".repeat(40), "someone-else");
     expect(h.mergeJob().runAt).toBe(parked);
     expect(await h.evaluate()).toMatchObject({ kind: "wait", reason: "review" });
     expect(h.state.ciReads).toEqual([HEAD]);
@@ -416,9 +416,9 @@ describe("failed CI while a pull request waits for review", () => {
     const start = h.now();
     await h.evaluate();
     h.tick(20_000);
-    h.conversation(1, "pascal", "Rename the helper.");
+    await h.conversation(1, "pascal", "Rename the helper.");
     h.tick(20_000);
-    h.conversation(2, "rev", "Also add a test for ties.");
+    await h.conversation(2, "rev", "Also add a test for ties.");
     expect(h.feedbackJobs().map((job) => job.runAt)).toEqual([start + 100_000]);
     h.tick(59_999);
     await h.evaluate();
@@ -440,14 +440,14 @@ describe("failed CI while a pull request waits for review", () => {
   test("CI during a burst of comments extends the quiet time, never past the longest wait", async () => {
     const h = await setup();
     const start = h.now();
-    h.conversation(1, "pascal", "First note.");
+    await h.conversation(1, "pascal", "First note.");
     h.tick(30_000);
     expect(await h.evaluate()).toMatchObject({ kind: "wait", reason: "review" });
     expect(pendingPullCiFailures(h.db, "eng-1")).toHaveLength(1);
     expect(h.feedbackJobs().map((job) => job.runAt)).toEqual([start + 90_000]);
     for (let at = 80_000; at <= 280_000; at += 50_000) {
       h.tick(start + at - h.now());
-      h.conversation(at, "rev", `Note at ${at}.`);
+      await h.conversation(at, "rev", `Note at ${at}.`);
       await h.evaluate();
       expect(await h.runDue()).toEqual([]);
     }
@@ -463,12 +463,12 @@ describe("failed CI while a pull request waits for review", () => {
   test("CI after the comments still lets the feedback settle under custom wait settings", async () => {
     const h = await setup({ quietMs: 10_000, maxMs: 30_000 });
     const start = h.now();
-    h.conversation(1, "pascal", "Rename the helper.");
+    await h.conversation(1, "pascal", "Rename the helper.");
     h.state.ci = () => [{ name: "test", conclusion: null, detailsUrl: null }];
     await h.evaluate();
     h.tick(8_000);
     h.state.ci = failing;
-    h.checkRun();
+    await h.checkRun();
     await h.evaluate();
     expect(h.feedbackJobs().map((job) => job.runAt)).toEqual([start + 18_000]);
     h.tick(9_999);
@@ -484,14 +484,14 @@ describe("failed CI while a pull request waits for review", () => {
     const h = await setup();
     h.state.review = "CHANGES_REQUESTED";
     const start = h.now();
-    h.changesRequested(601, "Please fix the ordering.");
+    await h.changesRequested(601, "Please fix the ordering.");
     expect(h.mergeJob().runAt).toBe(start);
     expect(await h.evaluate()).toMatchObject({ kind: "wait", reason: "review" });
     const reviewJob = () => h.feedbackJobs().find((job) => job.queue === JOB_KIND.pullReview);
     expect(reviewJob()?.runAt).toBe(start + 60_000);
     expect(pendingPullCiFailures(h.db, "eng-1")).toHaveLength(1);
     h.tick(30_000);
-    h.checkRun();
+    await h.checkRun();
     await h.evaluate();
     expect(reviewJob()?.runAt).toBe(start + 60_000);
     expect(await h.runDue()).toEqual([]);
@@ -563,7 +563,7 @@ describe("failed CI while a pull request waits for review", () => {
     expect(question?.body).toContain("- test (https://ci.example/1)");
     expect(listCiRounds(h.db, "eng-1")).toMatchObject([{ head: HEAD, next: "asked", fix: null }]);
 
-    h.checkRun();
+    await h.checkRun();
     h.tick(60_000);
     expect(await h.runDue()).toEqual([]);
     const asks = listOutbox(h.db).filter((row) => row.op === "elicitation");
@@ -621,7 +621,7 @@ describe("failed CI while a pull request waits for review", () => {
   test("a failure recorded while a due comment batch reads GitHub waits for its own window", async () => {
     const h = await setup();
     h.state.ci = () => [{ name: "test", conclusion: null, detailsUrl: null }];
-    h.conversation(1, "pascal", "Rename the helper.");
+    await h.conversation(1, "pascal", "Rename the helper.");
     await h.evaluate();
     expect(pendingPullCiFailures(h.db, "eng-1")).toEqual([]);
     h.tick(60_000);
@@ -650,7 +650,7 @@ describe("failed CI while a pull request waits for review", () => {
     const h = await setup();
     h.state.review = "CHANGES_REQUESTED";
     h.state.ci = () => [{ name: "test", conclusion: null, detailsUrl: null }];
-    h.changesRequested(601, "Please fix the ordering.");
+    await h.changesRequested(601, "Please fix the ordering.");
     await h.evaluate();
     h.tick(60_000);
     h.state.ci = failing;

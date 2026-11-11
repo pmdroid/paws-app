@@ -120,7 +120,7 @@ test("a green check_suite delivery for the pull request's head merges it before 
     expect(parked, stateOf(db, "ENG-9") ?? "").toBeDefined();
     const head = (parked!.payload as { ciWaitHead: string }).ciWaitHead;
     green = true;
-    acceptGitHubDelivery(
+    await acceptGitHubDelivery(
       db,
       {
         deliveryId: "delivery-1",

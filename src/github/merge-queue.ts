@@ -340,7 +340,7 @@ export type GitHubQueueMergeInput = {
   tokenProvider?: GitHubTokenProvider;
   /** This merge pass already saw the pull request in the queue, so a removal is news. */
   queued: boolean;
-  isCancelled?: () => boolean;
+  isCancelled?: () => Promise<boolean>;
   now?: () => Date;
   signal?: AbortSignal;
 };
@@ -365,7 +365,7 @@ export type GitHubQueueMergeResult =
 export async function githubQueueMerge(
   input: GitHubQueueMergeInput,
 ): Promise<GitHubQueueMergeResult> {
-  if (input.isCancelled?.()) return { outcome: "blocked", message: "merge cancelled" };
+  if (await input.isCancelled?.()) return { outcome: "blocked", message: "merge cancelled" };
   const token = await acquireOperationToken(
     {
       tokenProvider: input.tokenProvider,
@@ -427,7 +427,7 @@ export async function githubQueueMerge(
       return { outcome: "unreadable", message: readiness.message };
     return { outcome: readiness.outcome, message: readiness.message };
   }
-  if (input.isCancelled?.()) return { outcome: "blocked", message: "merge cancelled" };
+  if (await input.isCancelled?.()) return { outcome: "blocked", message: "merge cancelled" };
   const queued = await enqueuePullRequest({
     ...base,
     pullRequestId: entry.pullRequestId,

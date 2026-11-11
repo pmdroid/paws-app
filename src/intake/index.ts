@@ -10,15 +10,14 @@ export type { SummaryIssue, SummarySubIssue } from "./parent-summary";
 export type { EarlierAttempt, StoredDelegation, StoredWorkItem } from "./store";
 export {
   hasPendingDelegationChanges,
-  itemDependenciesCurrent,
-  recordItemDependencies,
+  itemDependenciesCurrentSteps,
+  recordItemDependenciesSteps,
   readyItemsSteps,
   syncItemDependencies,
   delegationSnapshotsComplete,
 } from "./dependencies";
 export type { DependencyReadiness, DependencyReads } from "./dependencies";
 export {
-  blockingIssues,
   blockingIssuesSteps,
   delegationReadinessSteps,
   itemReadiness,

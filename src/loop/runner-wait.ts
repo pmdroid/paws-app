@@ -22,7 +22,10 @@ export function movesToAnotherRunner(answer: string): boolean {
   return /\b(move|another runner)\b/i.test(answer);
 }
 
-export type RunnerWaitQuestion = { answer(): string | null; cancel(): void };
+export type RunnerWaitQuestion = {
+  answer(): string | null | Promise<string | null>;
+  cancel(): void | Promise<void>;
+};
 
 /**
  * Holds Closeout before it sends work to a paused, revoked or offline runner.
@@ -36,7 +39,7 @@ export async function waitForRunner(input: {
   /** The reason to show on the waiting step, or null once the wait ends. */
   waiting(reason: string | null): void;
   notify(reason: string): void;
-  ask(runner: RunnerAvailability, reason: string): RunnerWaitQuestion;
+  ask(runner: RunnerAvailability, reason: string): RunnerWaitQuestion | Promise<RunnerWaitQuestion>;
   asked?(): RunnerWaitQuestion | null;
   askAfterMs?: number;
   pollMs?: number;
@@ -57,18 +60,18 @@ export async function waitForRunner(input: {
         input.waiting(reason);
         input.notify(reason);
       }
-      const answer = question?.answer() ?? null;
+      const answer = (await question?.answer()) ?? null;
       if (answer !== null) {
         if (movesToAnotherRunner(answer)) return "move";
         question = undefined;
         since = input.now();
       }
       if (question === undefined && input.now() - since >= askAfterMs)
-        question = input.ask(runner, reason);
+        question = await input.ask(runner, reason);
       await input.sleep(pollMs);
     }
   } finally {
     if (shown !== null) input.waiting(null);
-    if (question !== undefined && question.answer() === null) question.cancel();
+    if (question !== undefined && (await question.answer()) === null) await question.cancel();
   }
 }

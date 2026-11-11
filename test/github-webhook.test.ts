@@ -37,7 +37,7 @@ test("GitHub signature verification matches its published HMAC test vector", () 
 test("GitHub webhook rejects unsigned, changed or invalid payloads before accepting a delivery", async () => {
   const accepted: unknown[] = [];
   const inbox = {
-    accept: (value: unknown) => {
+    accept: async (value: unknown) => {
       accepted.push(value);
     },
   };
@@ -63,7 +63,7 @@ test("GitHub webhook does not acknowledge a verified event until its inbox accep
   const body = JSON.stringify({ action: "opened" });
   expect((await handleGitHubWebhook(request(body), secret)).status).toBe(503);
   const response = await handleGitHubWebhook(request(body), secret, {
-    accept() {
+    async accept() {
       throw new Error(secret);
     },
   });

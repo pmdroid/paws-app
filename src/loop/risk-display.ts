@@ -17,7 +17,6 @@ import {
   getRiskAutoContextSteps,
   saveRiskAutoContextSteps,
   listRiskAutoContexts,
-  settled,
   sqliteDb,
   type Q,
   type RiskAutoContext,
@@ -222,9 +221,9 @@ export class RiskDisplayReader {
   }
 
   /** Reads only cached settings and stored rows; never grants or persists approval. */
-  read(itemId: string, head?: string): RiskDisplay | null {
+  async read(itemId: string, head?: string): Promise<RiskDisplay | null> {
     try {
-      return settled(sqliteDb(this.options.db).run((q) => this.readSteps(q, itemId, head)));
+      return await sqliteDb(this.options.db).run((q) => this.readSteps(q, itemId, head));
     } catch (error) {
       this.caught(error, "read", itemId);
       return head ? { head, detail: "Manual approval required" } : null;

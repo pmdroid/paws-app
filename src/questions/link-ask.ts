@@ -2,8 +2,8 @@ import type { Database } from "bun:sqlite";
 import {
   enqueueOutboxOnceSteps,
   getLinkAskSteps,
-  insertLinkAsk,
   insertLinkAskSteps,
+  sqliteDb,
   type Q,
   type Steps,
   type LinkAsk,
@@ -11,7 +11,7 @@ import {
   type LinkAskKind,
   type LinkAskRounds,
 } from "../db";
-import { ask as askQuestion, askSteps as askQuestionSteps, type QuestionAsker } from "./lifecycle";
+import { askSteps as askQuestionSteps, type QuestionAsker } from "./lifecycle";
 import { getQuestionSteps, type StoredQuestion } from "./store";
 
 /** The button on the overview's Needs you list and the session link label. */
@@ -251,56 +251,11 @@ export function* openLinkAskSteps(
   return { question, linkAsk };
 }
 
-/**
- * Opens one link ask: an elicitation with a Markdown body and no options, bound
- * to `head`, answered on the item page by one of `answerers`. Call inside a transaction.
- */
 export function openLinkAsk(
   db: Database,
-  input: {
-    ask?: typeof askQuestion;
-    asker: QuestionAsker;
-    kind: LinkAskKind;
-    head: string;
-    link: string;
-    title?: string;
-    detail: string;
-    answerers: readonly string[];
-    rounds?: LinkAskRounds;
-    findings?: string;
-    now: number;
-  },
-): { question: StoredQuestion; linkAsk: LinkAsk } {
-  const title = input.title ?? linkAskTitle(input.kind, input.head);
-  const { question } = (input.ask ?? askQuestion)(
-    db,
-    input.asker,
-    "link",
-    linkAskBody({
-      kind: input.kind,
-      title,
-      detail: [input.detail, input.findings].filter(Boolean).join("\n"),
-      link: input.link,
-    }),
-    {
-      reason: `link:${input.kind}`,
-      context: JSON.stringify({ link: input.link, label: LINK_ASK_ACTIONS[input.kind] }),
-      now: input.now,
-    },
-  );
-  const linkAsk = insertLinkAsk(db, {
-    questionId: question.id,
-    itemId: input.asker.itemId,
-    kind: input.kind,
-    headCommit: input.head,
-    link: input.link,
-    title,
-    detail: input.detail,
-    answerers: [...new Set(input.answerers.filter((id) => id.trim() !== ""))],
-    createdAt: input.now,
-    ...(input.rounds === undefined ? {} : { rounds: input.rounds }),
-  });
-  return { question, linkAsk };
+  input: OpenLinkAsk & { ask?: LinkAskSteps },
+): Promise<{ question: StoredQuestion; linkAsk: LinkAsk }> {
+  return sqliteDb(db).transaction((q) => openLinkAskSteps(q, input));
 }
 
 /** Adds the ask's link to the session while it is open. */

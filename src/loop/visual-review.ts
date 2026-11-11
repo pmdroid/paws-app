@@ -24,7 +24,6 @@ import {
   listVisualReviewsSteps,
   saveCheckpointSteps,
   saveVisualReviewMarksSteps,
-  settled,
   sqliteDb,
   type Db,
   type Q,
@@ -65,15 +64,6 @@ import {
 } from "../questions";
 
 type DueReview = { requirement: ResolvedEvidence; evidenceIds: string[] } | null;
-
-export function dueVisualReview(
-  db: Database,
-  itemId: string,
-  requirements: readonly ResolvedEvidence[],
-  approvals: readonly EvidenceApproval[],
-): DueReview {
-  return settled(sqliteDb(db).run((q) => dueVisualReviewSteps(q, itemId, requirements, approvals)));
-}
 
 export function* dueVisualReviewSteps(
   q: Q,
@@ -217,10 +207,6 @@ export function* carryVisualReviewSteps(q: Q, input: CarryInput): Steps<StoredVi
  */
 type PendingReview = { question: StoredQuestion; review: StoredVisualReview } | null;
 
-export function pendingVisualReview(db: Database, item: WorkItemRecord): PendingReview {
-  return settled(sqliteDb(db).run((q) => pendingVisualReviewSteps(q, item)));
-}
-
 export function* pendingVisualReviewSteps(q: Q, item: WorkItemRecord): Steps<PendingReview> {
   if (item.sessionKey === null) return null;
   const question = yield* findOpenQuestionSteps(q, item.sessionKey);
@@ -231,17 +217,6 @@ export function* pendingVisualReviewSteps(q: Q, item: WorkItemRecord): Steps<Pen
 }
 
 /** Cancels the open review question, and closes its link ask and takes the link off the session. */
-export function cancelVisualReviewQuestion(
-  db: Database,
-  questionId: string,
-  reason: "head_moved" | "cancelled",
-  now: number,
-): void {
-  settled(
-    sqliteDb(db).transaction((q) => cancelVisualReviewQuestionSteps(q, questionId, reason, now)),
-  );
-}
-
 export function* cancelVisualReviewQuestionSteps(
   q: Q,
   questionId: string,
@@ -369,17 +344,6 @@ export async function remindVisualReview(
 }
 
 /** A thought on the session while the task waits, when progress posts are held back. */
-export function postNote(
-  db: Database,
-  sessionId: string,
-  item: WorkItemRecord,
-  body: string,
-  key: string,
-  now: number,
-): void {
-  settled(sqliteDb(db).run((q) => postNoteSteps(q, sessionId, item, body, key, now)));
-}
-
 export function* postNoteSteps(
   q: Q,
   sessionId: string,
@@ -540,10 +504,6 @@ export function* decideVisualReviewSteps(
   return true;
 }
 
-export function visualReviewHandoff(db: Database, questionId: string): string | null {
-  return settled(sqliteDb(db).run((q) => visualReviewHandoffSteps(q, questionId)));
-}
-
 export function* visualReviewHandoffSteps(q: Q, questionId: string): Steps<string | null> {
   const review = yield* getVisualReviewSteps(q, questionId);
   if (review === null) return null;
@@ -581,14 +541,6 @@ function* markedFilesSteps(q: Q, itemId: string, questionId: string) {
         ]
       : [];
   });
-}
-
-export function visualReviewApprovals(
-  db: Database,
-  itemId: string,
-  task: string,
-): EvidenceApproval[] {
-  return settled(sqliteDb(db).run((q) => visualReviewApprovalsSteps(q, itemId, task)));
 }
 
 export function* visualReviewApprovalsSteps(

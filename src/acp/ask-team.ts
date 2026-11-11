@@ -576,7 +576,7 @@ async function handleConnection(
         signal: options.signal,
         ...(evidence ? { evidence } : {}),
       };
-      const attempt = options.publishArtifact.begin?.(request, context);
+      const attempt = await options.publishArtifact.begin?.(request, context);
       if (request.attachToIssue !== undefined && typeof request.attachToIssue !== "boolean") {
         throw new Error("attachToIssue must be a boolean");
       }
@@ -633,7 +633,7 @@ async function handleConnection(
         throw new Error("artifact upload returned an invalid display name");
       }
       options.signal.throwIfAborted();
-      attempt?.complete();
+      await attempt?.complete();
       const label = name.replace(/[\\[\]]/g, "\\$&");
       const image = artifact.mimeType.startsWith("image/") && !evidence;
       const link = `${image ? "!" : ""}[${label}](<${url.href}>)`;

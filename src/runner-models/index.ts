@@ -1,7 +1,5 @@
 import {
-  agentModelSources,
   agentModelSourcesSteps,
-  cachedAgentModels,
   cachedAgentModelsSteps,
   finishAgentModelProbeSteps,
   insertAgentModelProbeSteps,
@@ -12,7 +10,7 @@ import {
   runnerStandingSteps,
   saveAgentModelCatalogSteps,
   sqliteDb,
-  workspaceMember,
+  workspaceMemberSteps,
   workspaceMemberUsable,
   type AgentModelSource,
   type Q,
@@ -50,10 +48,11 @@ export function createRunnerModels(options: {
   const { db, work } = options;
   const store = sqliteDb(db);
   const now = options.now ?? Date.now;
-  const sources = (at = now()) =>
-    agentModelSources(db, at).filter((source) => work.supportsAgent(source.runnerId, source.agent));
-  function cached(source: Source) {
-    return cachedAgentModels(db, source).map((row) => ({ ...source, ...row }));
+  function* sourcesSteps(q: Q, at: number): Steps<Source[]> {
+    const usable: Source[] = [];
+    for (const source of yield* agentModelSourcesSteps(q, at))
+      if (yield* work.supportsAgentSteps(q, source.runnerId, source.agent)) usable.push(source);
+    return usable;
   }
   async function receive() {
     const pending = await store.run((q) => pendingAgentModelProbesSteps(q));
@@ -88,9 +87,8 @@ export function createRunnerModels(options: {
   }
   function* availableSteps(q: Q): Steps<Source[]> {
     const ranked: Array<{ source: Source; lastAt: number }> = [];
-    for (const source of yield* agentModelSourcesSteps(q, now()))
-      if (yield* work.supportsAgentSteps(q, source.runnerId, source.agent))
-        ranked.push({ source, lastAt: yield* lastAgentModelProbeAtSteps(q, source) });
+    for (const source of yield* sourcesSteps(q, now()))
+      ranked.push({ source, lastAt: yield* lastAgentModelProbeAtSteps(q, source) });
     return ranked.sort((a, b) => a.lastAt - b.lastAt).map(({ source }) => source);
   }
   function* dueSteps(q: Q, source: Source): Steps<string | undefined> {
@@ -153,16 +151,22 @@ export function createRunnerModels(options: {
       });
     });
   }
-  function read(principal: { workspaceId: string; userId: string }): AgentModelCatalog[] {
-    if (!workspaceMemberUsable(workspaceMember(db, principal.workspaceId, principal.userId)))
-      throw new Error("Workspace access is unavailable.");
-    const rows = sources(Number.MAX_SAFE_INTEGER)
-      .filter(
-        (source) =>
-          source.workspaceId === principal.workspaceId && source.userId === principal.userId,
+  function* readSteps(
+    q: Q,
+    principal: { workspaceId: string; userId: string },
+  ): Steps<AgentModelCatalog[]> {
+    if (
+      !workspaceMemberUsable(
+        yield* workspaceMemberSteps(q, principal.workspaceId, principal.userId),
       )
-      .flatMap((source) => cached(source))
-      .sort((a, b) => b.updatedAt - a.updatedAt);
+    )
+      throw new Error("Workspace access is unavailable.");
+    const rows: Array<Source & { model: string; resultJson: string; updatedAt: number }> = [];
+    for (const source of yield* sourcesSteps(q, Number.MAX_SAFE_INTEGER))
+      if (source.workspaceId === principal.workspaceId && source.userId === principal.userId)
+        for (const row of yield* cachedAgentModelsSteps(q, source))
+          rows.push({ ...source, ...row });
+    rows.sort((a, b) => b.updatedAt - a.updatedAt);
     const catalogs: AgentModelCatalog[] = [];
     for (const agent of ["claude", "codex", "grok", "opencode"] as const) {
       const header = rows.find((row) => row.agent === agent && row.model === "");
@@ -194,13 +198,15 @@ export function createRunnerModels(options: {
   }
   return {
     refresh,
-    read,
+    readSteps,
+    read: (principal: { workspaceId: string; userId: string }) =>
+      store.run((q) => readSteps(q, principal)),
     async browser(request: Request, principal: { workspaceId: string; userId: string }) {
       if (new URL(request.url).pathname !== "/api/runners/models") return null;
       if (request.method !== "GET") return Response.json({ error: "Use GET." }, { status: 405 });
       try {
         return Response.json(
-          { catalogs: read(principal) },
+          { catalogs: await store.run((q) => readSteps(q, principal)) },
           { headers: { "cache-control": "no-store" } },
         );
       } catch (caughtError1) {

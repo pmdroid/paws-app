@@ -45,7 +45,6 @@ import {
   saveQueuePositionsSteps,
   sqliteDb,
   savePinnedSlotsSteps,
-  settled,
   type Db,
   RUNNER_FULL,
   type ItemHold,
@@ -57,7 +56,7 @@ import {
   type Steps,
   repositoryKey,
 } from "../db";
-import { blockingIssues, blockingIssuesSteps, readyItemsSteps } from "../intake";
+import { blockingIssuesSteps, readyItemsSteps } from "../intake";
 import { createAdmission, type Admission as StartAdmission, type ItemAdmission } from "./admission";
 import {
   itemWaitsSteps,
@@ -82,7 +81,7 @@ export type SchedulerOptions = {
   store?: Db;
   handoffForItem?: (q: Q, itemId: string) => Steps<string | undefined>;
   sessionFor?: (q: Q, itemId: string) => Steps<string | null>;
-  onWaiting?: (itemIds: readonly string[]) => void;
+  onWaiting?: (itemIds: readonly string[]) => unknown;
   /**
    * Whether the item's owner has a runner they may use. False keeps the item out of the slot
    * line: no runner slot would ever be theirs, so it waits for runner setup instead. Null or
@@ -203,14 +202,6 @@ function* overlapGate(q: Q, now: number, waiters: readonly Item[]) {
   };
 }
 
-/**
- * Identifiers of the Linear issues that hold `itemId` as blocked, by the rules readiness uses.
- * Empty means readiness and the blockers disagree; the scheduler journals that as an inconsistency.
- */
-export function openBlockers(db: Database, itemId: string): string[] {
-  return blockingIssues(db, itemId);
-}
-
 export function schedulerPaths(paths: readonly string[]): string[] {
   if (!paths.length) return ["*"];
   return [
@@ -244,10 +235,6 @@ type SchedulingContext = {
   priority?: number;
   paths?: readonly string[] | null;
 };
-
-export function saveSchedulingContext(db: Database, input: SchedulingContext): void {
-  settled(sqliteDb(db).run((q) => saveSchedulingContextSteps(q, input)));
-}
 
 export function* saveSchedulingContextSteps(q: Q, input: SchedulingContext): Steps<void> {
   if (input.projectId != null && !input.projectId.trim()) throw new Error("Invalid Linear project");
@@ -882,7 +869,7 @@ async function admit(
   });
   if (result.armed) emitJobReady(store);
   if (options.log) for (const line of result.changes) options.log(line);
-  options.onWaiting?.(result.waiting);
+  await options.onWaiting?.(result.waiting);
   await options.onRunnerSetup?.(result.setup);
   options.onWaits?.(result.waits);
   options.onRunnerHostRefusals?.(result.hostRefusals, now);

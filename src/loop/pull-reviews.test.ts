@@ -162,8 +162,8 @@ const feedbackActivities = (db: ReturnType<typeof setup>["db"]) =>
 describe("changes-requested reviews", () => {
   test("restart the item once per review id with the review and its unresolved threads", async () => {
     const { db, caps, deliver, github } = setup();
-    deliver({ id: 501, state: "changes_requested", body: "Please fix the ranking." });
-    deliver({ id: 501, state: "changes_requested", body: "Please fix the ranking." });
+    await deliver({ id: 501, state: "changes_requested", body: "Please fix the ranking." });
+    await deliver({ id: 501, state: "changes_requested", body: "Please fix the ranking." });
     expect(reviewJobs(db).map((job) => [job.jobKey, job.payload])).toEqual([
       ["pull-review:501", { reviewId: 501 }],
     ]);
@@ -194,7 +194,7 @@ describe("changes-requested reviews", () => {
     ]);
 
     // A redelivered webhook after the restart does nothing.
-    expect(deliver({ id: 501, state: "changes_requested" })).toBe(true);
+    expect(await deliver({ id: 501, state: "changes_requested" })).toBe(true);
     expect(await handlePullReview(db, 501, caps)).toBe("done");
     expect(reviewJobs(db)).toHaveLength(1);
     expect(resumeJobs(db)).toHaveLength(1);
@@ -214,7 +214,7 @@ describe("changes-requested reviews", () => {
         status: "open",
       },
     ]);
-    deliver({ id: 501, state: "changes_requested", body: "Please fix the ranking." });
+    await deliver({ id: 501, state: "changes_requested", body: "Please fix the ranking." });
     expect(await handlePullReview(db, 501, caps)).toBe("restarted");
     const { handoff } = resumeJobs(db)[0]!.payload as { handoff: string };
     expect(handoff).toContain("- open, P2 at `src/rank.ts:14`: Ties must keep insertion order.");
@@ -229,11 +229,11 @@ describe("changes-requested reviews", () => {
   test("a review fix on an accepted head is one candidate review escape, even redelivered", async () => {
     const { db, caps, deliver } = setup();
     await markCloseoutAccepted(sqliteDb(db), "eng-1", "h");
-    deliver({ id: 501, state: "changes_requested", body: "The ranking is reversed." });
-    deliver({ id: 501, state: "changes_requested", body: "The ranking is reversed." });
+    await deliver({ id: 501, state: "changes_requested", body: "The ranking is reversed." });
+    await deliver({ id: 501, state: "changes_requested", body: "The ranking is reversed." });
     expect(await handlePullReview(db, 501, caps)).toBe("restarted");
     expect(await handlePullReview(db, 501, caps)).toBe("done");
-    deliver({ id: 501, state: "changes_requested", body: "The ranking is reversed." });
+    await deliver({ id: 501, state: "changes_requested", body: "The ranking is reversed." });
     expect(await handlePullReview(db, 501, caps)).toBe("done");
     expect(listReviewEscapes(db)).toEqual([
       expect.objectContaining({
@@ -249,7 +249,7 @@ describe("changes-requested reviews", () => {
   test("wait for a running turn or evaluation, and hold the merge until the restart", async () => {
     const { db, caps, deliver, setBusy } = setup();
     db.run("UPDATE work_item SET state='verifying' WHERE id='eng-1'");
-    deliver({ id: 501, state: "changes_requested" });
+    await deliver({ id: 501, state: "changes_requested" });
     expect(await handlePullReview(db, 501, caps)).toBe("wait");
 
     applyWorkItemEvent(db, "eng-1", "closeout_accepted");
@@ -275,7 +275,7 @@ describe("changes-requested reviews", () => {
     queue.move(7, 1, "AWAITING_CHECKS");
     queue.calls.length = 0;
     setBusy(true);
-    deliver({ id: 501, state: "changes_requested" });
+    await deliver({ id: 501, state: "changes_requested" });
     expect(await handlePullReview(db, 501, caps)).toBe("wait");
     expect(queue.calls).toEqual(["entry", "dequeue"]);
     expect(queue.isQueued(7)).toBe(false);
@@ -297,7 +297,7 @@ describe("changes-requested reviews", () => {
   test("a pull request GitHub already merged drops the review", async () => {
     const { db, caps, deliver, queue } = setup();
     queue.merge(7);
-    deliver({ id: 501, state: "changes_requested" });
+    await deliver({ id: 501, state: "changes_requested" });
     expect(await handlePullReview(db, 501, caps)).toBe("dropped");
     expect(resumeJobs(db)).toHaveLength(0);
   });
@@ -305,7 +305,7 @@ describe("changes-requested reviews", () => {
   test("a spent fix budget asks the team instead of restarting", async () => {
     const { db, caps, deliver, setLimit } = setup();
     setLimit(0);
-    deliver({ id: 501, state: "changes_requested", body: "Rename it." });
+    await deliver({ id: 501, state: "changes_requested", body: "Rename it." });
     expect(await handlePullReview(db, 501, caps)).toBe("asked");
     expect(feedbackActivities(db)).toEqual([]);
     expect(getWorkItem(db, "eng-1")?.state).toBe("awaiting_input");
@@ -319,7 +319,7 @@ describe("changes-requested reviews", () => {
 
   test("a review of an ended item is dropped", async () => {
     const { db, caps, deliver } = setup();
-    deliver({ id: 501, state: "changes_requested" });
+    await deliver({ id: 501, state: "changes_requested" });
     db.run("UPDATE work_item SET state='cancelled' WHERE id='eng-1'");
     expect(await handlePullReview(db, 501, caps)).toBe("dropped");
     expect(resumeJobs(db)).toHaveLength(0);
@@ -327,30 +327,30 @@ describe("changes-requested reviews", () => {
 });
 
 describe("other reviews", () => {
-  test("a comment-only review is a comment, not a change request", () => {
+  test("a comment-only review is a comment, not a change request", async () => {
     const { db, deliver } = setup();
-    deliver({ id: 777, state: "commented" });
+    await deliver({ id: 777, state: "commented" });
     expect(getPullReview(db, 777)).toBeNull();
     expect(reviewJobs(db)).toHaveLength(0);
     expect(pendingPullComments(db, "eng-1").map((comment) => comment.commentId)).toEqual([777]);
   });
 
-  test("approvals, edits and other branches record nothing", () => {
+  test("approvals, edits and other branches record nothing", async () => {
     const { db, deliver } = setup();
-    deliver({ id: 1, state: "approved" });
-    deliver({ id: 2, state: "changes_requested", action: "edited" });
-    deliver({ id: 3, state: "changes_requested", branch: "someone/else" });
+    await deliver({ id: 1, state: "approved" });
+    await deliver({ id: 2, state: "changes_requested", action: "edited" });
+    await deliver({ id: 3, state: "changes_requested", branch: "someone/else" });
     expect(reviewJobs(db)).toHaveLength(0);
   });
 
-  test("a fork's pull request with the same branch name, or another pull request, is ignored", () => {
+  test("a fork's pull request with the same branch name, or another pull request, is ignored", async () => {
     const { db, deliver } = setup();
-    deliver({ id: 4, state: "changes_requested", headRepository: 99 });
-    deliver({ id: 5, state: "changes_requested", headRepository: null });
+    await deliver({ id: 4, state: "changes_requested", headRepository: 99 });
+    await deliver({ id: 5, state: "changes_requested", headRepository: null });
     recordItemPullRequest(db, { itemId: "eng-1", pullNumber: 7, pullUrl: null, openedAt: 1 });
-    deliver({ id: 6, state: "changes_requested", pull: 8 });
+    await deliver({ id: 6, state: "changes_requested", pull: 8 });
     expect(reviewJobs(db)).toHaveLength(0);
-    deliver({ id: 7, state: "changes_requested" });
+    await deliver({ id: 7, state: "changes_requested" });
     expect(getPullReview(db, 7)).toMatchObject({ itemId: "eng-1", pullNumber: 7 });
   });
 });
