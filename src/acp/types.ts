@@ -148,7 +148,7 @@ export interface RunAgentOptions {
   commitPolicy?: GitCommitPolicy;
   closeoutPolicy?: () => Promise<PolicyFilesLoad>;
   githubRead?: { prompt: string };
-  redactTranscript?: (line: string) => string;
+  serializeTranscript?: (record: unknown) => string;
   ghConfigDir?: string;
   ciRerun?: (reason: string) => Promise<string>;
   /**

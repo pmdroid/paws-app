@@ -118,7 +118,7 @@ function publicValue(value: unknown, depth = 0): unknown {
   );
 }
 
-const GITHUB_TOKENS = /(?:github_pat_|gh[pousr]_)[^\s"'`<>,;()[\]{}]{20,}/g;
+const GITHUB_TOKENS = /(?:github_pat_|gh[pousr]_)[^\s"'`<>,;()[\]{}\\]{20,}/g;
 
 export function redactGitHubTokens(text: string, exact: readonly string[] = []): string {
   return exact
@@ -127,6 +127,12 @@ export function redactGitHubTokens(text: string, exact: readonly string[] = []):
       text,
     )
     .replace(GITHUB_TOKENS, "[redacted]");
+}
+
+export function redactedJson(value: unknown, exact: readonly string[] = []): string {
+  return JSON.stringify(value, (_key, entry: unknown) =>
+    typeof entry === "string" ? redactGitHubTokens(entry, exact) : entry,
+  );
 }
 
 function publicText(text: string): string {

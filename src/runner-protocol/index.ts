@@ -98,7 +98,12 @@ export {
   type RunnerLoginInput,
 } from "./login";
 
-export { RunnerActivitySchema, RunnerPermissionSchema, redactGitHubTokens } from "./activity";
+export {
+  RunnerActivitySchema,
+  RunnerPermissionSchema,
+  redactGitHubTokens,
+  redactedJson,
+} from "./activity";
 export { RUNNER_TOKEN_MAX_LENGTH, RunnerTokenSchema, isRunnerToken } from "./token";
 
 export {

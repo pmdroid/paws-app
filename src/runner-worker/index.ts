@@ -10,6 +10,7 @@ import {
 import { runProviderLogin } from "../runner-login-worker";
 import {
   redactGitHubTokens,
+  redactedJson,
   runnerCommandAccount,
   type RunnerLoginUpdate,
   isRunnerToken,
@@ -866,8 +867,8 @@ export async function executeRunnerCommand(
       ? (text: string) => redactGitHubTokens(text, githubRead?.tokens())
       : undefined;
   function emit(event: RunnerWorkerEvent): void {
-    const serialized = JSON.stringify({ ...event, t: new Date().toISOString() });
-    const line = `${command.type === "run" && command.githubRead ? redactGitHubTokens(serialized, githubRead?.tokens()) : serialized}\n`;
+    const stamped = { ...event, t: new Date().toISOString() };
+    const line = `${command.type === "run" && command.githubRead ? redactedJson(stamped, githubRead?.tokens()) : JSON.stringify(stamped)}\n`;
     const length = Buffer.byteLength(line);
     if (event.type === "acp" && journalSize + length > ACTIVITY_JOURNAL_LIMIT) {
       if (activityOmitted) return;
@@ -1337,7 +1338,7 @@ export async function executeRunnerCommand(
       ...(command.type === "run" && command.hooks?.length ? { workspaceHooks: command.hooks } : {}),
       env: agentEnv,
       ...(command.type === "run" && command.githubRead
-        ? { redactTranscript: (line: string) => redactGitHubTokens(line, githubRead?.tokens()) }
+        ? { serializeTranscript: (record: unknown) => redactedJson(record, githubRead?.tokens()) }
         : {}),
       ...(githubRead ? { ghConfigDir: githubRead.directory } : {}),
       ...(installed.binPaths.length ? { runtimeBinPaths: installed.binPaths } : {}),
