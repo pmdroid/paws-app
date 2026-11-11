@@ -239,7 +239,7 @@ test("background sign-in checks run once per agent per interval and never while 
   expect(f.db.query("SELECT 1 FROM runner_command WHERE kind='probe'").get()).toBeNull();
 
   const inFlight = f.checks().length;
-  f.work.enqueue({
+  await f.work.enqueue({
     id: crypto.randomUUID(),
     type: "login_check",
     runnerId,
@@ -575,7 +575,7 @@ test("a sign-in goes to the runner before sign-in checks queued ahead of it", as
   const runnerId = f.runner();
   const login = createRunnerLogin({ db: f.db, work: f.work, now: f.now });
   for (const agent of ["codex", "grok"] as const)
-    f.work.enqueue({
+    await f.work.enqueue({
       id: crypto.randomUUID(),
       type: "login_check",
       runnerId,

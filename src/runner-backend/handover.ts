@@ -114,17 +114,18 @@ export function createRemoteHandover(options: {
       const events = result
         ? []
         : (
-            await store.run((q) =>
-              runnerEventsAfterSteps(q, {
+            await store.run(function* (q) {
+              const opened: RunnerEvent[] = [];
+              for (const row of yield* runnerEventsAfterSteps(q, {
                 runId: request.runId,
                 generation: request.generation,
                 after: request.after,
                 types: ["handover", "handover_interrupted"],
-              }),
-            )
-          )
-            .map((row) => work.openEvent(row))
-            .filter((event) => event.type === "handover" || event.type === "handover_interrupted");
+              }))
+                opened.push(yield* work.openEventSteps(q, row));
+              return opened;
+            })
+          ).filter((event) => event.type === "handover" || event.type === "handover_interrupted");
       const failure = events.find(
         (event): event is Extract<RunnerEvent, { type: "handover" }> =>
           event.type === "handover" && !event.handedOver,

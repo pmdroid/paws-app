@@ -229,7 +229,7 @@ if (mode === "agent") {
         baseSha,
       };
       if (repository) bindWorkItemRepository(db, item.id, binding);
-      const scope = service.work.scopeTask(run.id, workspace.id);
+      const scope = await service.work.scopeTask(run.id, workspace.id);
       const command: Task = {
         type: "task",
         id: workspaceId(),
@@ -252,7 +252,7 @@ if (mode === "agent") {
         { path: inputPath, mimeType: "application/octet-stream", bytes: inputBytes },
       ]);
       command.promptContext = await service.inputs.stagePrompt(command.id, fullPrompt);
-      service.work.assign(command);
+      await service.work.assign(command);
       configuration.commands.push(command);
     }
   writeFileSync(join(root, "config.json"), JSON.stringify(configuration));

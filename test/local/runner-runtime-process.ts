@@ -223,7 +223,7 @@ if (mode === "prepare") {
         ]);
         command.promptContext = await coordinator.inputs.stagePrompt(command.id, fullPrompt);
       }
-      coordinator.work.assign(command);
+      await coordinator.work.assign(command);
       config.commands.push(command);
     }
     writeFileSync(join(root, "fixture.json"), JSON.stringify(config));

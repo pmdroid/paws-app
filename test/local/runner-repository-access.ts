@@ -177,7 +177,7 @@ export async function probeRunnerRepositoryAccess(
       profile: { agent: "codex", model: "scripted" },
       prompt: "Use the assigned repository.",
     };
-    work.assign(command);
+    await work.assign(command);
     const grant = await work.issueGrant({
       runnerId: targetRunner,
       runId: run.id,
@@ -438,7 +438,7 @@ export async function probeRunnerRepositoryAccess(
         "replaced generation",
         async ({ command }) => {
           await work.finish(command.runId, command.generation);
-          work.assign({ ...command, id: workspaceId(), generation: 2 });
+          await work.assign({ ...command, id: workspaceId(), generation: 2 });
         },
       ],
       [

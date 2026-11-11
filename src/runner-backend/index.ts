@@ -118,6 +118,7 @@ import {
   SESSION_RESUME_RUNNER_VERSION,
   HIDDEN_CHECKPOINT_RUNNER_VERSION,
   type RunnerCommand,
+  type RunnerEvent,
   type RunnerResult,
   type RunnerVersion,
 } from "../runner-protocol";
@@ -650,8 +651,13 @@ export function createRemoteAgentRunner(options: {
             return ": the run is already being placed";
           const mode = yield* getTaskModeSteps(q, itemId);
           if (isResponseTaskMode(mode))
-            work.scopeTask(item.currentRunId!, runner.workspaceId, work.identity(runner.id).userId);
-          else work.scope(item.currentRunId!, runner.workspaceId);
+            yield* work.scopeTaskSteps(
+              q,
+              item.currentRunId!,
+              runner.workspaceId,
+              (yield* work.identitySteps(q, runner.id)).userId,
+            );
+          else yield* work.scopeSteps(q, item.currentRunId!, runner.workspaceId);
           yield* releasePinnedSlotSteps(q, itemId);
           return null;
         });
@@ -947,10 +953,10 @@ export function createRemoteAgentRunner(options: {
         };
         try {
           const taskScope = responseTask
-            ? work.scopeTask(
+            ? await work.scopeTask(
                 selected.runId,
                 selected.workspaceId,
-                work.identity(selected.id).userId,
+                (await work.identity(selected.id)).userId,
               )
             : undefined;
           mkdirSync(runDir(input.pawsRoot, input.runId), { recursive: true, mode: 0o700 });
@@ -993,12 +999,12 @@ export function createRemoteAgentRunner(options: {
             while (now() < issuedAt + 120_000) {
               signal.throwIfAborted();
               if (taskScope)
-                work.scopeTask(
+                await work.scopeTask(
                   selected.runId,
                   selected.workspaceId,
-                  work.identity(selected.id).userId,
+                  (await work.identity(selected.id)).userId,
                 );
-              else work.scope(selected.runId, selected.workspaceId);
+              else await work.scope(selected.runId, selected.workspaceId);
               const result = await health.read(selected.id, id);
               if (result) {
                 const disposition = await store.transaction(function* (q) {
@@ -1044,7 +1050,7 @@ export function createRemoteAgentRunner(options: {
           const importCheckpoint = async (
             networkGit: (args: string[]) => Promise<string>,
           ): Promise<{ sha: string; branch: string } | undefined> => {
-            const scoped = work.scope(selected.runId, selected.workspaceId);
+            const scoped = await work.scope(selected.runId, selected.workspaceId);
             if (!scoped.repository) return;
             const { mirror, ref } = itemCandidate(scoped.repository);
             if (scoped.item.branchName)
@@ -1183,7 +1189,7 @@ export function createRemoteAgentRunner(options: {
           const placed =
             attached ??
             (await (async () => {
-              const scoped = taskScope ?? work.scope(selected.runId, selected.workspaceId);
+              const scoped = taskScope ?? (await work.scope(selected.runId, selected.workspaceId));
               // A runner's saved WIP comes first; then the head it gives must be on GitHub.
               let restoreCheckpoint =
                 !taskScope && input.role === "implementer" && input.networkGit
@@ -1783,7 +1789,7 @@ export function createRemoteAgentRunner(options: {
             })());
           const { assigned, baseSha, mainSha, deadline } = placed;
           let restore = "restore" in placed ? placed.restore : undefined;
-          const scoped = taskScope ?? work.scope(selected.runId, selected.workspaceId);
+          const scoped = taskScope ?? (await work.scope(selected.runId, selected.workspaceId));
           command = assigned;
           let cursor = attached?.cursor ?? 0;
           let complete: RunnerResult | null = null;
@@ -1838,7 +1844,7 @@ export function createRemoteAgentRunner(options: {
           while (now() < deadline) {
             signal.throwIfAborted();
             try {
-              work.current(assigned.runId, assigned.generation);
+              await work.currentAsync(assigned.runId, assigned.generation);
             } catch (error) {
               if (!(error instanceof RunnerWorkFencedError) || !options.placement) throw error;
               signal.throwIfAborted();
@@ -2236,7 +2242,7 @@ export function createRemoteAgentRunner(options: {
                     unansweredRunnerQuestionsSteps(q, currentCommand, ["question"]),
                   );
                   for (const pending of unanswered) {
-                    const replay = scrub(work.openEvent(pending));
+                    const replay = scrub(await work.openEvent(pending));
                     if (replay.type !== "question" || replay.text !== event.text) continue;
                     await results.answer({
                       runId: currentCommand.runId,
@@ -2344,14 +2350,14 @@ export function createRemoteAgentRunner(options: {
           if (assigned.type === "task" && (complete.candidateSha || complete.reviewText))
             throw new Error("Remote response task returned code work");
           if (options.transcripts) {
-            work.current(assigned.runId, assigned.generation);
+            await work.currentAsync(assigned.runId, assigned.generation);
             const bytes = await options.transcripts.download(
               assigned.runId,
               assigned.generation,
               complete.executionId,
             );
             signal.throwIfAborted();
-            work.current(assigned.runId, assigned.generation);
+            await work.currentAsync(assigned.runId, assigned.generation);
             if (bytes.length > 16_777_216 || (bytes.length && bytes[bytes.length - 1] !== 10))
               throw new Error("Remote transcript is incomplete");
             const pending = `${transcript}.${randomUUID()}.pending`;
@@ -2433,7 +2439,7 @@ export function createRemoteAgentRunner(options: {
               signal,
             });
             signal.throwIfAborted();
-            work.current(assigned.runId, assigned.generation);
+            await work.currentAsync(assigned.runId, assigned.generation);
             if ((await candidateHead(assigned.repository)) !== complete.candidateSha)
               throw new Error("Fetched runner candidate HEAD does not match");
             await assertDescendsFromAny(
@@ -2441,7 +2447,7 @@ export function createRemoteAgentRunner(options: {
               mainSha ? [baseSha!, mainSha] : [baseSha!],
               complete.candidateSha,
             );
-            work.current(assigned.runId, assigned.generation);
+            await work.currentAsync(assigned.runId, assigned.generation);
             const candidate = {
               itemId,
               sha: complete.candidateSha,
@@ -2504,16 +2510,18 @@ export function createRemoteAgentRunner(options: {
           // final stop checkpoint delivered for this generation before consuming the retry.
           const stopCheckpoint = complete.interrupted
             ? (
-                await store.run((q) =>
-                  runnerEventsAfterSteps(q, {
+                await store.run(function* (q) {
+                  const opened: RunnerEvent[] = [];
+                  for (const row of yield* runnerEventsAfterSteps(q, {
                     runId: assigned.runId,
                     generation: assigned.generation,
                     after: 0,
                     types: ["checkpoint"],
-                  }),
-                )
+                  }))
+                    opened.push(yield* work.openEventSteps(q, row));
+                  return opened;
+                })
               )
-                .map((row) => work.openEvent(row))
                 .filter((event) => event.type === "checkpoint" && event.reason === "stop")
                 .at(-1)
             : undefined;
@@ -2568,7 +2576,7 @@ export function createRemoteAgentRunner(options: {
           if (assigned.type === "task") {
             const history = await recoverAcpConversation(transcript, previousTranscript.length);
             signal.throwIfAborted();
-            work.current(assigned.runId, assigned.generation);
+            await work.currentAsync(assigned.runId, assigned.generation);
             const text = history
               .filter((entry) => entry.kind === "response")
               .map((entry) => entry.body)
@@ -2580,7 +2588,7 @@ export function createRemoteAgentRunner(options: {
                 update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
               });
             signal.throwIfAborted();
-            work.current(assigned.runId, assigned.generation);
+            await work.currentAsync(assigned.runId, assigned.generation);
           }
           // Keep the handoff through cancellation, lost runners and failed candidate imports.
           // Only a successfully completed implementer command proves the agent received it.

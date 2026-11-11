@@ -150,7 +150,7 @@ export async function probeRunnerSessionHelpers(
     };
     assert.equal(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()!.n, 0);
     const first = await coordinator.helpers.dispatch(input);
-    assert.throws(() => coordinator.work.enqueue(first.command), /session assignment/);
+    await assert.rejects(coordinator.work.enqueue(first.command), /session assignment/);
     const queued = await call("/v1/helper-commands");
     assert.equal(queued.status, 200);
     assert(Array.isArray(queued.body.commands));
@@ -270,9 +270,9 @@ export async function probeRunnerSessionHelpers(
       profile: input.profile,
       prompt: "Implement task",
     };
-    assert.throws(() => coordinator.work.assign(workCommand), /occupied by active work/);
+    await assert.rejects(coordinator.work.assign(workCommand), /occupied by active work/);
     coordinator.helpers.finish(selected.command.id);
-    coordinator.work.assign(workCommand);
+    await coordinator.work.assign(workCommand);
     await assert.rejects(coordinator.helpers.dispatch(input), /busy/);
     await coordinator.work.finish(run.id, 1);
     observe("helper and repository execution cannot claim the same runner simultaneously", true, {

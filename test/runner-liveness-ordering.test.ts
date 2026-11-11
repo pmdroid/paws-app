@@ -143,7 +143,7 @@ test("a delayed heartbeat sampled before the acknowledgement cannot fence the wo
     const before = await f.heartbeat([], 0);
     expect(before.observedAt).toBe(f.clock.now);
     f.clock.now += 1_000;
-    f.work.assign(f.command(1));
+    await f.work.assign(f.command(1));
     f.clock.now += 1_000;
     await f.work.acknowledge("box", "work-1");
     f.clock.now += 2 * RUNNER_LIVE_GRACE_MS;
@@ -181,7 +181,7 @@ test("a sample that names the work confirms it, and out-of-order older samples n
   try {
     const first = await f.heartbeat([], 0);
     f.clock.now += 1_000;
-    f.work.assign(f.command(1));
+    await f.work.assign(f.command(1));
     await f.work.acknowledge("box", "work-1");
     f.clock.now += 1_000;
     const named = await f.heartbeat([{ runId: f.runId, generation: 1 }], first.observedAt);
@@ -201,7 +201,7 @@ test("a sample that names the work confirms it, and out-of-order older samples n
 test("a runner without a cursor keeps the grace rule", async () => {
   const f = fixture();
   try {
-    f.work.assign(f.command(1));
+    await f.work.assign(f.command(1));
     await f.work.acknowledge("box", "work-1");
     f.clock.now += RUNNER_LIVE_GRACE_MS - 1;
     const early = await f.heartbeat([]);
@@ -219,7 +219,7 @@ test("a new generation inherits neither confirmation nor loss, and an old report
   try {
     const first = await f.heartbeat([], 0);
     f.clock.now += 1_000;
-    f.work.assign(f.command(1));
+    await f.work.assign(f.command(1));
     await f.work.acknowledge("box", "work-1");
     f.clock.now += 1_000;
     const named = await f.heartbeat([{ runId: f.runId, generation: 1 }], first.observedAt);
@@ -234,7 +234,7 @@ test("a new generation inherits neither confirmation nor loss, and an old report
     expect(f.row().teardownAt).not.toBeNull();
 
     f.clock.now += 1_000;
-    f.work.assign(f.command(2));
+    await f.work.assign(f.command(2));
     expect(f.row()).toEqual({
       generation: 2,
       endedAt: null,

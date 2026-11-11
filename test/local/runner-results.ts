@@ -128,7 +128,7 @@ export async function probeRunnerResults(root: string, observe: Observe) {
         profile: { agent: "codex", model: "scripted" },
         prompt: "Result fixture",
       };
-      const assignment = work.assign(command);
+      const assignment = await work.assign(command);
       assert.equal(verify(assignment.envelope).type, type);
       const access = {
         runnerId,

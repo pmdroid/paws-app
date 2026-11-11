@@ -153,7 +153,7 @@ export function createRemoteCheckpoint(options: {
       );
       for (const row of rows) {
         cursor = row.sequence;
-        const event = work.openEvent(row);
+        const event = await work.openEvent(row);
         if (event.type !== "checkpoint") continue;
         await recordRunnerCheckpoint(store, {
           itemId: command.itemId,

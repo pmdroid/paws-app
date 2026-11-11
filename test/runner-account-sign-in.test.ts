@@ -313,7 +313,7 @@ test("a named sign-in check does not change the default sign-in's readiness or u
     await fixture();
   expect(await heartbeat([{ bindingId: binding.id, agent: "codex" }])).toBe(200);
   const target = { accountId: account.id, bindingId: binding.id };
-  work.enqueue({
+  await work.enqueue({
     id: "named-check",
     type: "login_check",
     runnerId,
