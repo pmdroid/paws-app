@@ -1,18 +1,21 @@
 import {
-  agentModelSources,
-  cachedAgentModels,
-  finishAgentModelProbe,
-  immediate,
-  insertAgentModelProbe,
-  lastAgentModelProbeAt,
-  pendingAgentModelProbes,
-  runnerHasOpenWork,
-  runnerHealthCommandOutstanding,
-  runnerStanding,
-  saveAgentModelCatalog,
-  workspaceMember,
+  agentModelSourcesSteps,
+  cachedAgentModelsSteps,
+  finishAgentModelProbeSteps,
+  insertAgentModelProbeSteps,
+  lastAgentModelProbeAtSteps,
+  pendingAgentModelProbesSteps,
+  runnerHasOpenWorkSteps,
+  runnerHealthCommandOutstandingSteps,
+  runnerStandingSteps,
+  saveAgentModelCatalogSteps,
+  settled,
+  sqliteDb,
+  workspaceMemberSteps,
   workspaceMemberUsable,
   type AgentModelSource,
+  type Q,
+  type Steps,
 } from "../db";
 import { journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
@@ -44,17 +47,24 @@ export function createRunnerModels(options: {
   now?: () => number;
 }) {
   const { db, work } = options;
+  const store = sqliteDb(db);
+  const transaction = <T>(body: (q: Q) => Steps<T>) => settled(store.transaction(body));
+  const run = <T>(body: (q: Q) => Steps<T>) => settled(store.run(body));
   const now = options.now ?? Date.now;
-  const sources = (at = now()) =>
-    agentModelSources(db, at).filter((source) => work.supportsAgent(source.runnerId, source.agent));
-  function cached(source: Source) {
-    return cachedAgentModels(db, source).map((row) => ({ ...source, ...row }));
+  function* sourcesSteps(q: Q, at = now()) {
+    const supported: Source[] = [];
+    for (const source of yield* agentModelSourcesSteps(q, at))
+      if (yield* work.supportsAgentSteps(q, source.runnerId, source.agent)) supported.push(source);
+    return supported;
+  }
+  function* cachedSteps(q: Q, source: Source) {
+    return (yield* cachedAgentModelsSteps(q, source)).map((row) => ({ ...source, ...row }));
   }
   function receive() {
-    const pending = pendingAgentModelProbes(db);
+    const pending = run(pendingAgentModelProbesSteps);
     for (const probe of pending) {
       if (!probe.resultJson && probe.expiresAt > now()) continue;
-      immediate(db, () => {
+      transaction(function* (q) {
         if (probe.resultJson) {
           const result = RunnerHealthResultSchema.parse(JSON.parse(probe.resultJson));
           if (
@@ -67,7 +77,7 @@ export function createRunnerModels(options: {
             result.models?.length &&
             (!probe.model || result.identity?.model === probe.model)
           ) {
-            saveAgentModelCatalog(db, {
+            yield* saveAgentModelCatalogSteps(q, {
               runnerId: probe.runnerId,
               userId: probe.userId,
               agent: probe.agent,
@@ -77,25 +87,25 @@ export function createRunnerModels(options: {
             });
           }
         }
-        finishAgentModelProbe(db, probe.commandId, now());
+        yield* finishAgentModelProbeSteps(q, probe.commandId, now());
       });
     }
   }
   function refresh() {
     receive();
-    const available = sources().sort((a, b) => lastRequest(a) - lastRequest(b));
+    const available = run((q) => sourcesSteps(q)).sort((a, b) => lastRequest(a) - lastRequest(b));
     for (const source of available) {
       const { runnerId, userId, agent } = source;
-      const standing = runnerStanding(db, runnerId);
+      const standing = run((q) => runnerStandingSteps(q, runnerId));
       if (
         standing?.status !== "active" ||
         standing.lastSeenAt === null ||
         standing.lastSeenAt <= now() - 60_000
       )
         continue;
-      if (runnerHasOpenWork(db, runnerId, now())) continue;
-      if (runnerHealthCommandOutstanding(db, runnerId, now())) continue;
-      const rows = cached(source);
+      if (run((q) => runnerHasOpenWorkSteps(q, runnerId, now()))) continue;
+      if (run((q) => runnerHealthCommandOutstandingSteps(q, runnerId, now()))) continue;
+      const rows = run((q) => cachedSteps(q, source));
       const header = rows.find((row) => row.model === "");
       const catalog = header ? RunnerHealthResultSchema.parse(JSON.parse(header.resultJson)) : null;
       const due = ["", ...(catalog?.models ?? []).map((model) => model.id).filter(concrete)].find(
@@ -110,9 +120,9 @@ export function createRunnerModels(options: {
         },
       );
       if (due === undefined) continue;
-      immediate(db, () => {
+      transaction(function* (q) {
         const commandId = randomUUID();
-        work.enqueue({
+        yield* work.enqueueSteps(q, {
           id: commandId,
           runnerId,
           workspaceId: source.workspaceId,
@@ -121,7 +131,7 @@ export function createRunnerModels(options: {
           issuedAt: now(),
           expiresAt: now() + 120_000,
         });
-        insertAgentModelProbe(db, {
+        yield* insertAgentModelProbeSteps(q, {
           commandId,
           runnerId,
           userId,
@@ -134,18 +144,22 @@ export function createRunnerModels(options: {
     }
   }
   function lastRequest(source: Source, model?: string): number {
-    return lastAgentModelProbeAt(db, source, model);
+    return run((q) => lastAgentModelProbeAtSteps(q, source, model));
   }
   function read(principal: { workspaceId: string; userId: string }): AgentModelCatalog[] {
-    if (!workspaceMemberUsable(workspaceMember(db, principal.workspaceId, principal.userId)))
-      throw new Error("Workspace access is unavailable.");
-    const rows = sources(Number.MAX_SAFE_INTEGER)
-      .filter(
-        (source) =>
-          source.workspaceId === principal.workspaceId && source.userId === principal.userId,
+    const rows = run(function* (q) {
+      if (
+        !workspaceMemberUsable(
+          yield* workspaceMemberSteps(q, principal.workspaceId, principal.userId),
+        )
       )
-      .flatMap((source) => cached(source))
-      .sort((a, b) => b.updatedAt - a.updatedAt);
+        throw new Error("Workspace access is unavailable.");
+      const owned = [];
+      for (const source of yield* sourcesSteps(q, Number.MAX_SAFE_INTEGER))
+        if (source.workspaceId === principal.workspaceId && source.userId === principal.userId)
+          owned.push(...(yield* cachedSteps(q, source)));
+      return owned;
+    }).sort((a, b) => b.updatedAt - a.updatedAt);
     const catalogs: AgentModelCatalog[] = [];
     for (const agent of ["claude", "codex", "grok", "opencode"] as const) {
       const header = rows.find((row) => row.agent === agent && row.model === "");
