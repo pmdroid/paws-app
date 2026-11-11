@@ -1,55 +1,65 @@
 import type { Database } from "bun:sqlite";
 import {
-  chargeRunnerAgent,
-  delegationProjectLeadIds,
-  finishRunnerExecutionUsage,
-  insertRunnerExecutionUsage,
-  itemOwnerUserId,
-  lastSuccessfulImplementation,
-  linearSessionInstallation,
-  quotaRecheckAt,
-  runnerAgentQuota,
-  runnerExecutionHistory,
-  runnerExecutionReceipt,
-  runnerIdentity,
-  runnerPlacementPolicy,
-  sessionRepositoriesAllowed,
-  setRunnerAgentCooldown,
-  settleRunnerAgent,
-  workspaceForOrganization,
-  workspaceUserIdForLinearUser,
-  workspaceMemberUsable,
-  getLinearSession,
-  getLinearSessionAccess,
-  getWorkItem,
-  getWorkItemRepository,
-  immediate,
-  runnerHasCapacity,
-  pinnedSlotsReserved,
-  schedulerRunnerSlots,
-  setSchedulerRunnerSlot,
-  runnerHelperAvailability,
-  runnerOccupancy,
-  runnerSlotsHeldBetweenCommands,
-  delegatedLinearUserId,
-  workspaceMember,
-  workspaceSessionIds,
-  findingGroupingAdmins,
-  commandAccount,
+  chargeRunnerAgentSteps,
+  commandAccountSteps,
+  delegatedLinearUserIdSteps,
+  delegationProjectLeadIdsSteps,
+  findingGroupingAdminsSteps,
+  finishRunnerExecutionUsageSteps,
+  getLinearSessionAccessSteps,
+  getLinearSessionSteps,
+  getWorkItemRepositorySteps,
+  getWorkItemSteps,
+  insertRunnerExecutionUsageSteps,
+  itemOwnerUserIdSteps,
+  lastSuccessfulImplementationSteps,
   legacyAgentBindingId,
-  recordAccountObservation,
+  linearSessionInstallationSteps,
+  pinnedSlotsReservedSteps,
+  quotaRecheckAtSteps,
+  recordAccountObservationSteps,
+  runnerAgentQuotaSteps,
+  runnerExecutionHistorySteps,
+  runnerExecutionReceiptSteps,
+  runnerHasCapacitySteps,
+  runnerHelperAvailabilitySteps,
+  runnerIdentitySteps,
+  runnerOccupancySteps,
+  runnerPlacementPolicySteps,
+  runnerSlotsHeldBetweenCommandsSteps,
+  schedulerRunnerSlotsSteps,
+  sessionRepositoriesAllowedSteps,
+  setRunnerAgentCooldownSteps,
+  setSchedulerRunnerSlotSteps,
+  settleRunnerAgentSteps,
+  settled,
+  sqliteDb,
+  syncSteps,
+  workspaceForOrganizationSteps,
+  workspaceMemberSteps,
+  workspaceMemberUsable,
+  workspaceSessionIdsSteps,
+  workspaceUserIdForLinearUserSteps,
   type AccountObservation,
+  type Q,
+  type Steps,
 } from "../db";
 import type { RunnerCodingAgent } from "../runner-protocol";
-import type { PlacementAccount, PlacementReason, PlacementRequest, RunnerPlacement } from "./index";
+import type {
+  EligibleRunner,
+  PlacementAccount,
+  PlacementReason,
+  PlacementRequest,
+  RunnerPlacement,
+} from "./index";
 import {
-  eligibleRunners,
-  itemRepositoryRefusals,
-  runnerSetupNeed,
+  eligibleRunnersSteps,
+  itemRepositoryRefusalsSteps,
+  runnerSetupNeedSteps,
   RUNNER_ONLINE_MS,
 } from "./eligible";
 import { classifyAgentFailure } from "./account-health";
-import { repositoryRejection, signInFit } from "./fit";
+import { repositoryRejectionSteps, signInFitSteps } from "./fit";
 
 /** Receipt outcomes whose first `finished()` call returned `retryable: true`. */
 const RETRYABLE_OUTCOMES = new Set([
@@ -88,6 +98,7 @@ export function createRunnerPlacement(options: {
   now?: () => number;
 }): RunnerPlacement {
   const { db } = options;
+  const store = sqliteDb(db);
   const now = options.now ?? Date.now;
   const admissions = new Map<
     string,
@@ -118,44 +129,45 @@ export function createRunnerPlacement(options: {
       input.profile,
     ]);
   }
-  function policy(id: string, agent?: string) {
-    return JSON.stringify(runnerPlacementPolicy(db, id, agent));
+  function* policySteps(q: Q, id: string, agent?: string) {
+    return JSON.stringify(yield* runnerPlacementPolicySteps(q, id, agent));
   }
-  function scope(input: PlacementRequest) {
-    const item = input.itemId ? getWorkItem(db, input.itemId) : null;
+  function* scopeSteps(q: Q, input: PlacementRequest) {
+    const item = input.itemId ? yield* getWorkItemSteps(q, input.itemId) : null;
     if (input.itemId && (!item || item.cancelRequested))
       throw new PlacementUnavailableError("Runner task is unavailable");
     const sessionId = input.sessionId ?? item?.sessionKey ?? null;
-    const session = sessionId ? getLinearSession(db, sessionId) : null;
+    const session = sessionId ? yield* getLinearSessionSteps(q, sessionId) : null;
     if (
       !session ||
       (session.stoppedAt !== null && !(input.findingGroups && input.purpose === "helper")) ||
       !session.organizationId ||
-      getLinearSessionAccess(db, session.sessionId) !== "allowed"
+      (yield* getLinearSessionAccessSteps(q, session.sessionId)) !== "allowed"
     )
       throw new PlacementUnavailableError("Runner session authority is unavailable");
     if (input.sessionId && item && item.sessionKey !== input.sessionId)
       throw new PlacementUnavailableError("Runner task session changed");
-    const found = workspaceForOrganization(db, session.organizationId);
+    const found = yield* workspaceForOrganizationSteps(q, session.organizationId);
     if (!found) throw new PlacementUnavailableError("Runner workspace is unavailable");
     const workspace = { id: found.id };
-    const repository = item ? getWorkItemRepository(db, item.id) : null;
+    const repository = item ? yield* getWorkItemRepositorySteps(q, item.id) : null;
     const issueId =
       item?.linearIssueId ?? session.issueId ?? (input.findingGroups ? session.sessionId : null);
     if (!issueId) throw new PlacementUnavailableError("Runner issue authority is unavailable");
     const placement = item
       ? {
-          ownerUserId: itemOwnerUserId(db, item.id),
+          ownerUserId: yield* itemOwnerUserIdSteps(q, item.id),
           // The leads of the Linear projects across the item's delegation lend their shared runners.
-          leadUserIds: delegationProjectLeadIds(db, item.delegationId),
+          leadUserIds: yield* delegationProjectLeadIdsSteps(q, item.delegationId),
         }
       : null;
     const ownership = item
-      ? delegatedLinearUserId(db, item.id)
+      ? yield* delegatedLinearUserIdSteps(q, item.id)
       : (options.sessionActor?.(session.sessionId) ?? session.creatorId);
     return { item, session, workspace, repository, issueId, ownership, placement };
   }
-  function authority(current: ReturnType<typeof scope>) {
+  type Scope = ReturnType<typeof scopeSteps> extends Steps<infer T> ? T : never;
+  function* authoritySteps(q: Q, current: Scope) {
     const item = current.item;
     return JSON.stringify({
       item: item
@@ -176,7 +188,7 @@ export function createRunnerPlacement(options: {
       repository: current.repository,
       issueId: current.issueId,
       ownership: current.ownership,
-      installation: linearSessionInstallation(db, current.session.sessionId),
+      installation: yield* linearSessionInstallationSteps(q, current.session.sessionId),
     });
   }
   /**
@@ -185,48 +197,51 @@ export function createRunnerPlacement(options: {
    * executions that finished within LOAD_HISTORY_MS, decayed by age, so a runner that has just
    * worked long turns yields to one that has been idle even when both are free right now.
    */
-  function runnerLoad(
+  function* runnerLoadSteps(
+    q: Q,
     runnerIds: readonly string[],
     at: number,
     reserved?: ReadonlyMap<string, number>,
   ) {
     const from = at - LOAD_HISTORY_MS;
-    return new Map(
-      runnerIds.map((id) => {
-        const { capacity, occupied } = runnerOccupancy(db, id, at);
-        const slots = Math.max(capacity, 1);
-        const held = runnerSlotsHeldBetweenCommands(db, id, at);
-        let busy = 0;
-        for (const row of runnerExecutionHistory(db, id, from, at))
-          busy +=
-            Math.max(0, row.endedAt - Math.max(row.startedAt, from)) *
-            0.5 ** ((at - row.endedAt) / LOAD_HALF_LIFE_MS);
-        return [
-          id,
-          {
-            current: (occupied + held + (reserved?.get(id) ?? 0)) / slots,
-            recent: busy / slots / LOAD_HISTORY_MS,
-          },
-        ];
-      }),
-    );
+    const load = new Map<string, { current: number; recent: number }>();
+    for (const id of runnerIds) {
+      const { capacity, occupied } = yield* runnerOccupancySteps(q, id, at);
+      const slots = Math.max(capacity, 1);
+      const held = yield* runnerSlotsHeldBetweenCommandsSteps(q, id, at);
+      let busy = 0;
+      for (const row of yield* runnerExecutionHistorySteps(q, id, from, at))
+        busy +=
+          Math.max(0, row.endedAt - Math.max(row.startedAt, from)) *
+          0.5 ** ((at - row.endedAt) / LOAD_HALF_LIFE_MS);
+      load.set(id, {
+        current: (occupied + held + (reserved?.get(id) ?? 0)) / slots,
+        recent: busy / slots / LOAD_HISTORY_MS,
+      });
+    }
+    return load;
   }
   /** Who the work belongs to and where, for `eligibleRunners`. Throws when nobody may run it. */
-  function eligibility(current: ReturnType<typeof scope>) {
-    const teamId = linearSessionInstallation(db, current.session.sessionId)?.teamId;
+  function* eligibilitySteps(q: Q, current: Scope) {
+    const teamId = (yield* linearSessionInstallationSteps(q, current.session.sessionId))?.teamId;
     if (!teamId) throw new PlacementUnavailableError("Runner issue team is unavailable");
     const repository = current.repository
       ? `${current.repository.owner}/${current.repository.repo}`.toLowerCase()
       : null;
     if (
       repository !== null &&
-      !sessionRepositoriesAllowed(db, [current.session.sessionId], [repository]).has(repository)
+      !(yield* sessionRepositoriesAllowedSteps(q, [current.session.sessionId], [repository])).has(
+        repository,
+      )
     )
       throw new PlacementUnavailableError("Runner repository is outside workspace access");
     const requester = current.ownership
-      ? workspaceUserIdForLinearUser(db, current.ownership)
+      ? yield* workspaceUserIdForLinearUserSteps(q, current.ownership)
       : null;
-    if (!requester || !workspaceMemberUsable(workspaceMember(db, current.workspace.id, requester)))
+    if (
+      !requester ||
+      !workspaceMemberUsable(yield* workspaceMemberSteps(q, current.workspace.id, requester))
+    )
       throw new PlacementUnavailableError("Runner requester is not an active workspace member");
     return {
       workspaceId: current.workspace.id,
@@ -235,7 +250,8 @@ export function createRunnerPlacement(options: {
       leadUserIds: current.placement?.leadUserIds ?? [],
     };
   }
-  function observeAccount(
+  function* observeAccountSteps(
+    q: Q,
     commandId: string,
     input: {
       classified: ReturnType<typeof classifyAgentFailure>;
@@ -244,8 +260,8 @@ export function createRunnerPlacement(options: {
       startedAt: number;
       prepare: boolean;
     },
-  ): number | null {
-    const owner = commandAccount(db, commandId);
+  ): Steps<number | null> {
+    const owner = yield* commandAccountSteps(q, commandId);
     if (!owner) return null;
     const base = {
       bindingId: owner.bindingId,
@@ -274,25 +290,26 @@ export function createRunnerPlacement(options: {
             : ["auth", "provider", "model", "quota"],
       });
     if (quota?.state === "low" && kind !== "quota") observations.push({ ...base, state: "low" });
-    for (const observation of observations) recordAccountObservation(db, observation);
+    for (const observation of observations) yield* recordAccountObservationSteps(q, observation);
     if (kind !== "quota") return null;
-    return quotaRecheckAt(db, commandId, owner.workspaceId);
+    return yield* quotaRecheckAtSteps(q, commandId, owner.workspaceId);
   }
-  function admit(
+  function* admitSteps(
+    q: Q,
     input: Parameters<RunnerPlacement["started"]>[0],
     account: PlacementAccount,
     workspaceId: string,
   ) {
     const agent = input.profile!.agent as RunnerCodingAgent;
-    const recorded = commandAccount(db, input.commandId);
+    const recorded = yield* commandAccountSteps(q, input.commandId);
     if (
       recorded &&
       (recorded.bindingId !== account.bindingId || recorded.accountId !== account.accountId)
     )
       throw new PlacementRaceError("The command does not carry the sign-in placement chose");
-    const runner = runnerAgentQuota(db, input.runnerId, agent);
-    const fit = signInFit(
-      db,
+    const runner = yield* runnerAgentQuotaSteps(q, input.runnerId, agent);
+    const fit = yield* signInFitSteps(
+      q,
       {
         id: input.runnerId,
         cooldownUntil: runner?.cooldownUntil ?? 0,
@@ -307,15 +324,18 @@ export function createRunnerPlacement(options: {
     if (fit.account.bindingId !== account.bindingId)
       throw new PlacementRaceError("The agent sign-in changed before assignment");
   }
-  function select(input: PlacementRequest, preview = false) {
+  function* selectSteps(q: Q, input: PlacementRequest, preview = false) {
     input.signal?.throwIfAborted();
     if (!input.profile) throw new Error("Runner agent profile is required");
-    const current = scope(input);
-    const admissionRunner =
-      !preview && input.purpose === "work" && input.role === "implementer" && input.itemId
-        ? schedulerRunnerSlots(db, now()).find((row) => row.itemId === input.itemId)?.runnerId
-        : null;
-    const binding = authority(current);
+    const current = yield* scopeSteps(q, input);
+    let admissionRunner: string | null | undefined = null;
+    if (!preview && input.purpose === "work" && input.role === "implementer" && input.itemId)
+      for (const row of yield* schedulerRunnerSlotsSteps(q, now()))
+        if (row.itemId === input.itemId) {
+          admissionRunner = row.runnerId;
+          break;
+        }
+    const binding = yield* authoritySteps(q, current);
     const at = now();
     // A task runs on the runners of the person who delegated it, then on the shared runners
     // of its Linear project leads.
@@ -323,7 +343,7 @@ export function createRunnerPlacement(options: {
     const pinnedRunnerId = input.purpose === "prepare" ? undefined : input.pinnedRunnerId;
     const pinned =
       pinnedRunnerId && pinnedRunnerId !== input.handedOverFrom
-        ? runnerIdentity(db, pinnedRunnerId)
+        ? yield* runnerIdentitySteps(q, pinnedRunnerId)
         : null;
     const pinnedOnline =
       pinned !== null &&
@@ -333,80 +353,99 @@ export function createRunnerPlacement(options: {
       pinned.lastSeenAt > at - RUNNER_ONLINE_MS;
     const groupingSession =
       input.findingGroups && input.purpose === "helper"
-        ? linearSessionInstallation(db, current.session.sessionId)
+        ? yield* linearSessionInstallationSteps(q, current.session.sessionId)
         : null;
     if (input.findingGroups && !groupingSession?.teamId)
       throw new PlacementUnavailableError("Runner issue team is unavailable");
-    const scopes =
-      input.findingGroups && input.purpose === "helper"
-        ? findingGroupingAdmins(db, current.workspace.id).flatMap((admin) =>
-            groupingSession?.clientId &&
-            workspaceSessionIds(
-              db,
-              current.workspace.id,
-              admin.userId,
-              groupingSession.clientId,
-            ).includes(current.session.sessionId)
-              ? [
-                  {
-                    workspaceId: current.workspace.id,
-                    teamId: groupingSession.teamId!,
-                    ownerUserId: admin.userId,
-                    leadUserIds: [] as string[],
-                  },
-                ]
-              : [],
-          )
-        : [eligibility(current)];
+    const scopes: {
+      workspaceId: string;
+      teamId: string;
+      ownerUserId: string | null;
+      leadUserIds: readonly string[];
+    }[] = [];
+    if (input.findingGroups && input.purpose === "helper") {
+      for (const admin of yield* findingGroupingAdminsSteps(q, current.workspace.id))
+        if (
+          groupingSession?.clientId &&
+          (yield* workspaceSessionIdsSteps(
+            q,
+            current.workspace.id,
+            admin.userId,
+            groupingSession.clientId,
+          )).includes(current.session.sessionId)
+        )
+          scopes.push({
+            workspaceId: current.workspace.id,
+            teamId: groupingSession.teamId!,
+            ownerUserId: admin.userId,
+            leadUserIds: [],
+          });
+    } else scopes.push(yield* eligibilitySteps(q, current));
     const agent = input.profile.agent as RunnerCodingAgent;
-    const rows = scopes
-      .flatMap((owner) =>
-        eligibleRunners(db, {
-          ...owner,
-          agent,
-          purpose: input.findingGroups ? "work" : input.purpose,
-          now: at,
-          includeRevoked: true,
-        }).map((runner) => ({
-          ...runner,
-          own: runner.eligible ? runner.reason === "own" : runner.ownerId === owner.ownerUserId,
-          signedIn: runner.eligible,
-        })),
-      )
-      .filter((runner) => {
+    const rows: (EligibleRunner & { own: boolean; signedIn: boolean })[] = [];
+    for (const owner of scopes)
+      for (const runner of yield* eligibleRunnersSteps(q, {
+        ...owner,
+        agent,
+        purpose: input.findingGroups ? "work" : input.purpose,
+        now: at,
+        includeRevoked: true,
+      })) {
         const reason = !runner.eligible
           ? runner.reason
           : pinnedOnline && runner.id !== pinnedRunnerId
             ? "run pinned to another online runner"
             : null;
         if (reason) input.onRejected?.(runner.id, reason);
-        return reason === null;
-      });
-    const lastImplementation = input.itemId ? lastSuccessfulImplementation(db, input.itemId) : null;
-    const ranked = rows.flatMap((runner) => {
-      const reject = (reason: string) => {
-        input.onRejected?.(runner.id, reason);
-        return [];
-      };
+        else
+          rows.push({
+            ...runner,
+            own: runner.eligible ? runner.reason === "own" : runner.ownerId === owner.ownerUserId,
+            signedIn: runner.eligible,
+          });
+      }
+    const lastImplementation = input.itemId
+      ? yield* lastSuccessfulImplementationSteps(q, input.itemId)
+      : null;
+    const ranked: {
+      runner: (typeof rows)[number];
+      account: PlacementAccount;
+      low: boolean;
+      rank: number;
+      extra: boolean;
+    }[] = [];
+    for (const runner of rows) {
+      const reject = (reason: string) => input.onRejected?.(runner.id, reason);
       const helper =
         input.purpose === "helper"
-          ? runnerHelperAvailability(db, runner.id, at, !input.findingGroups)
+          ? yield* runnerHelperAvailabilitySteps(q, runner.id, at, !input.findingGroups)
           : null;
-      if (helper && !helper.available) return reject("helper already running or no free capacity");
-      if (runner.id === input.handedOverFrom) return reject("handed the session over");
+      if (helper && !helper.available) {
+        reject("helper already running or no free capacity");
+        continue;
+      }
+      if (runner.id === input.handedOverFrom) {
+        reject("handed the session over");
+        continue;
+      }
       const repositoryRefusal =
         current.repository &&
-        repositoryRejection(
-          db,
+        (yield* repositoryRejectionSteps(
+          q,
           runner.id,
           `${current.repository.owner}/${current.repository.repo}`,
-        );
-      if (repositoryRefusal) return reject(repositoryRefusal);
+        ));
+      if (repositoryRefusal) {
+        reject(repositoryRefusal);
+        continue;
+      }
       // Retry exclusions avoid failed hosts for unpinned work. A live run retries a fresh
       // session on its pinned host instead of moving its checkout and held slot.
-      if (input.excludeRunnerIds?.includes(runner.id) && !pinnedOnline)
-        return reject("excluded after failed attempt");
-      const fit = signInFit(db, runner, current.workspace.id, {
+      if (input.excludeRunnerIds?.includes(runner.id) && !pinnedOnline) {
+        reject("excluded after failed attempt");
+        continue;
+      }
+      const fit = yield* signInFitSteps(q, runner, current.workspace.id, {
         agent,
         model: input.profile?.model,
         purpose: input.purpose,
@@ -414,7 +453,7 @@ export function createRunnerPlacement(options: {
       });
       if ("reason" in fit) {
         input.onRejected?.(runner.id, fit.reason, ...(fit.until !== undefined ? [fit.until] : []));
-        return [];
+        continue;
       }
       // Preparation must probe fresh identities; preflight compares them against each other.
       // A fresh session may correct a reported model mismatch. The work receipt still rejects
@@ -425,13 +464,15 @@ export function createRunnerPlacement(options: {
         input.role === "reviewer" &&
         lastImplementation?.model &&
         (input.profile?.model ?? runner.resolvedModel) === lastImplementation.model
-      )
-        return reject("reviewer model matches implementation model");
+      ) {
+        reject("reviewer model matches implementation model");
+        continue;
+      }
       const reviewRank =
         input.role === "reviewer" && lastImplementation?.runnerId === runner.id ? 1 : 0;
       const rank = (helper?.preempts ? 1000 : 0) + reviewRank * 10 + (runner.own ? 0 : 1);
-      return [{ runner, ...fit, rank, extra: runner.quotaState === "spent_extra" }];
-    });
+      ranked.push({ runner, ...fit, rank, extra: runner.quotaState === "spent_extra" });
+    }
     // A run leaving its pinned runner goes first to a free runner that can restore its saved
     // agent session, the agent version that wrote it ahead of other versions. It never waits
     // for a busy one: the others follow, and the restore falls back there with its reason.
@@ -444,16 +485,17 @@ export function createRunnerPlacement(options: {
       const runId = current.item?.currentRunId ?? "";
       for (const entry of ranked) {
         const id = entry.runner.id;
-        const target = restore(id, entry.account);
+        const target = yield* restore(q, id, entry.account);
         const free =
           target &&
-          runnerHasCapacity(
-            db,
+          (yield* runnerHasCapacitySteps(
+            q,
             id,
             at,
             runId,
-            (input.reserved?.get(id) ?? 0) + runnerSlotsHeldBetweenCommands(db, id, at, runId),
-          );
+            (input.reserved?.get(id) ?? 0) +
+              (yield* runnerSlotsHeldBetweenCommandsSteps(q, id, at, runId)),
+          ));
         entry.rank += !free ? 200 : target.sameVersion ? 0 : 100;
         if (free) restorers.add(`${id}:${entry.account.bindingId}`);
       }
@@ -471,10 +513,10 @@ export function createRunnerPlacement(options: {
     if (holder && input.itemId) {
       const runId = current.item?.currentRunId ?? "";
       const held =
-        runnerSlotsHeldBetweenCommands(db, holder.runner.id, at, runId) +
+        (yield* runnerSlotsHeldBetweenCommandsSteps(q, holder.runner.id, at, runId)) +
         (input.reserved?.get(holder.runner.id) ?? 0) +
-        pinnedSlotsReserved(db, holder.runner.id, input.itemId, at);
-      if (runnerHasCapacity(db, holder.runner.id, at, runId, held)) {
+        (yield* pinnedSlotsReservedSteps(q, holder.runner.id, input.itemId, at));
+      if (yield* runnerHasCapacitySteps(q, holder.runner.id, at, runId, held)) {
         holder.rank = -1;
         sessionWaits.delete(input.itemId);
       } else {
@@ -488,7 +530,8 @@ export function createRunnerPlacement(options: {
       }
     } else if (session && input.itemId) sessionWaits.delete(input.itemId);
     if (heldForSession) ranked.splice(0, ranked.length, holder!);
-    const load = runnerLoad(
+    const load = yield* runnerLoadSteps(
+      q,
       ranked.map(({ runner }) => runner.id),
       at,
       input.reserved,
@@ -506,19 +549,32 @@ export function createRunnerPlacement(options: {
     );
     if (admissionRunner) {
       const runId = current.item?.currentRunId ?? "";
-      const free = (id: string) =>
-        runnerHasCapacity(
-          db,
+      function* freeSteps(id: string) {
+        return yield* runnerHasCapacitySteps(
+          q,
           id,
           at,
           runId,
-          runnerSlotsHeldBetweenCommands(db, id, at, runId) +
+          (yield* runnerSlotsHeldBetweenCommandsSteps(q, id, at, runId)) +
             (input.reserved?.get(id) ?? 0) +
-            pinnedSlotsReserved(db, id, input.itemId!, at),
+            (yield* pinnedSlotsReservedSteps(q, id, input.itemId!, at)),
         );
-      const chosen = ranked.find(({ runner }) => runner.id === admissionRunner && free(runner.id));
-      const replacement = chosen ?? ranked.find(({ runner }) => free(runner.id));
-      if (!chosen) setSchedulerRunnerSlot(db, input.itemId!, replacement?.runner.id ?? null);
+      }
+      let chosen: (typeof ranked)[number] | undefined;
+      for (const entry of ranked)
+        if (entry.runner.id === admissionRunner && (yield* freeSteps(entry.runner.id))) {
+          chosen = entry;
+          break;
+        }
+      let replacement = chosen;
+      if (!replacement)
+        for (const entry of ranked)
+          if (yield* freeSteps(entry.runner.id)) {
+            replacement = entry;
+            break;
+          }
+      if (!chosen)
+        yield* setSchedulerRunnerSlotSteps(q, input.itemId!, replacement?.runner.id ?? null);
       if (replacement) ranked.splice(0, ranked.length, replacement);
     }
     for (const [key, admission] of admissions)
@@ -528,7 +584,7 @@ export function createRunnerPlacement(options: {
         request: input,
         account,
         scope: binding,
-        policy: policy(runner.id, input.profile?.agent),
+        policy: yield* policySteps(q, runner.id, input.profile?.agent),
         reason: restorers.has(`${runner.id}:${account.bindingId}`)
           ? "session_restore"
           : extra
@@ -542,176 +598,182 @@ export function createRunnerPlacement(options: {
       account,
     }));
   }
-  return {
-    preview: (input) => select(input, true),
-    candidates: async (input) => select(input),
-    setupNeed(input) {
-      if (!input.profile) return null;
-      const current = scope(input);
-      const owner = eligibility(current);
-      const runners = eligibleRunners(db, {
-        ...owner,
+  function* startedSteps(q: Q, input: Parameters<RunnerPlacement["started"]>[0]) {
+    const key = admissionKey(
+      input.runnerId,
+      input,
+      input.account?.bindingId ??
+        (input.profile
+          ? legacyAgentBindingId(input.runnerId, input.profile.agent as RunnerCodingAgent)
+          : null),
+    );
+    const admission = admissions.get(key);
+    if (
+      !admission ||
+      (input.account && input.account.accountId !== admission.account.accountId) ||
+      admission.expiresAt <= now() ||
+      admission.request.itemId !== input.itemId ||
+      admission.request.role !== input.role ||
+      JSON.stringify(admission.request.profile) !== JSON.stringify(input.profile) ||
+      admission.scope !== (yield* authoritySteps(q, yield* scopeSteps(q, admission.request))) ||
+      admission.policy !== (yield* policySteps(q, input.runnerId, input.profile?.agent))
+    )
+      throw new PlacementRaceError("Runner selection authority changed before assignment");
+    const runner = yield* runnerIdentitySteps(q, input.runnerId);
+    if (!runner || runner.status !== "active" || runner.revokedAt !== null)
+      throw new PlacementRaceError("Runner identity changed before assignment");
+    if (input.profile) yield* admitSteps(q, input, admission.account, runner.workspaceId);
+    if (input.profile)
+      yield* chargeRunnerAgentSteps(q, {
+        runnerId: input.runnerId,
         agent: input.profile.agent,
-        purpose: "work",
-        now: now(),
+        at: input.startedAt,
       });
-      return runnerSetupNeed(db, runners, owner, input.profile.agent);
-    },
-    repositoryRefusals(input) {
-      return input.itemId ? itemRepositoryRefusals(db, { itemId: input.itemId, now: now() }) : null;
-    },
-    started(input) {
-      immediate(db, () => {
-        const key = admissionKey(
-          input.runnerId,
-          input,
-          input.account?.bindingId ??
-            (input.profile
-              ? legacyAgentBindingId(input.runnerId, input.profile.agent as RunnerCodingAgent)
-              : null),
-        );
-        const admission = admissions.get(key);
-        if (
-          !admission ||
-          (input.account && input.account.accountId !== admission.account.accountId) ||
-          admission.expiresAt <= now() ||
-          admission.request.itemId !== input.itemId ||
-          admission.request.role !== input.role ||
-          JSON.stringify(admission.request.profile) !== JSON.stringify(input.profile) ||
-          admission.scope !== authority(scope(admission.request)) ||
-          admission.policy !== policy(input.runnerId, input.profile?.agent)
-        )
-          throw new PlacementRaceError("Runner selection authority changed before assignment");
-        const runner = runnerIdentity(db, input.runnerId);
-        if (!runner || runner.status !== "active" || runner.revokedAt !== null)
-          throw new PlacementRaceError("Runner identity changed before assignment");
-        if (input.profile) admit(input, admission.account, runner.workspaceId);
-        if (input.profile)
-          chargeRunnerAgent(db, {
-            runnerId: input.runnerId,
-            agent: input.profile.agent,
-            at: input.startedAt,
-          });
-        insertRunnerExecutionUsage(db, {
-          commandId: input.commandId,
-          runnerId: input.runnerId,
-          ownerUserId: runner.ownerId,
-          itemId: input.itemId ?? null,
-          runId: input.runId ?? null,
-          agent: input.profile?.agent ?? null,
-          model: input.profile?.model ?? null,
-          role: input.role,
-          purpose: input.purpose,
-          startedAt: input.startedAt,
-          placementReason: admission.reason,
+    yield* insertRunnerExecutionUsageSteps(q, {
+      commandId: input.commandId,
+      runnerId: input.runnerId,
+      ownerUserId: runner.ownerId,
+      itemId: input.itemId ?? null,
+      runId: input.runId ?? null,
+      agent: input.profile?.agent ?? null,
+      model: input.profile?.model ?? null,
+      role: input.role,
+      purpose: input.purpose,
+      startedAt: input.startedAt,
+      placementReason: admission.reason,
+    });
+    admissions.delete(key);
+  }
+  function* finishedSteps(
+    q: Q,
+    input: Parameters<RunnerPlacement["finished"]>[0],
+  ): Steps<ReturnType<RunnerPlacement["finished"]>> {
+    const usage = yield* runnerExecutionReceiptSteps(q, input.commandId, input.runnerId);
+    if (!usage) throw new Error("Runner usage receipt is not bound to an assignment");
+    const result = input.result;
+    if ((!result && !input.failure) || (result && result.commandId !== input.commandId))
+      throw new Error("Runner result is not bound to its command");
+    // A replay after a restart repeats the recorded decision without counting usage again.
+    if (usage.endedAt !== null)
+      return {
+        retryable: RETRYABLE_OUTCOMES.has(usage.outcome ?? ""),
+        ...(usage.outcome === "quota_exhausted"
+          ? { usageLimit: { resetsAt: usage.resetsAt } }
+          : {}),
+      };
+    const classified = classifyAgentFailure({
+      ...(result ? { result } : {}),
+      ...(input.failure ? { failure: input.failure } : {}),
+      now: input.finishedAt,
+    });
+    const quota = classified.quota;
+    const retryable =
+      input.failure === "heartbeat_lost" ||
+      result?.authRequired === true ||
+      quota?.state === "exhausted";
+    const success =
+      !input.failure &&
+      !retryable &&
+      (!result ||
+        (result.stopReason === "end_turn" &&
+          !result.cancelled &&
+          !result.timedOut &&
+          !result.errorMessage));
+    const model = result?.identity?.model ?? null;
+    const latestImplementation = usage.itemId
+      ? yield* lastSuccessfulImplementationSteps(q, usage.itemId)
+      : null;
+    const modelConflict =
+      success &&
+      usage.purpose === "work" &&
+      usage.role === "reviewer" &&
+      model !== null &&
+      model === latestImplementation?.model;
+    yield* finishRunnerExecutionUsageSteps(q, {
+      commandId: input.commandId,
+      endedAt: input.finishedAt,
+      outcome: modelConflict
+        ? "model_conflict"
+        : success
+          ? "success"
+          : result?.authRequired
+            ? "auth_required"
+            : quota?.state === "exhausted"
+              ? "quota_exhausted"
+              : (input.failure ?? "error"),
+      resolvedModel: model,
+      outputBytes:
+        result && "text" in result
+          ? Buffer.byteLength(result.text)
+          : result?.reviewText
+            ? Buffer.byteLength(result.reviewText)
+            : 0,
+      resetsAt: quota?.state === "exhausted" ? quota.resetsAt : null,
+    });
+    const runsAsDefault = (yield* commandAccountSteps(q, input.commandId))?.named !== true;
+    if (usage.agent && runsAsDefault)
+      yield* settleRunnerAgentSteps(q, {
+        runnerId: input.runnerId,
+        agent: usage.agent,
+        authRequired: result?.authRequired === true,
+        success,
+        quota,
+        clearQuota: success && usage.purpose !== "prepare",
+        model,
+      });
+    const recheckAt = yield* observeAccountSteps(q, input.commandId, {
+      classified,
+      model: input.profile?.model ?? model,
+      observedAt: input.finishedAt,
+      startedAt: usage.startedAt,
+      prepare: usage.purpose === "prepare",
+    });
+    if (
+      usage.agent &&
+      runsAsDefault &&
+      quota?.state === "exhausted" &&
+      quota.resetsAt === null &&
+      recheckAt
+    )
+      yield* setRunnerAgentCooldownSteps(q, input.runnerId, usage.agent, recheckAt);
+    return {
+      retryable: retryable || modelConflict,
+      ...(quota?.state === "exhausted"
+        ? {
+            usageLimit: {
+              resetsAt: quota.resetsAt,
+              ...(quota.resetsAt === null && recheckAt ? { recheckAt } : {}),
+            },
+          }
+        : {}),
+    };
+  }
+  return {
+    preview: (input) => settled(store.run((q) => selectSteps(q, input, true))),
+    candidates: (input) => store.run((q) => selectSteps(q, input)),
+    setupNeed: (input) =>
+      store.run(function* (q) {
+        if (!input.profile) return null;
+        const owner = yield* eligibilitySteps(q, yield* scopeSteps(q, input));
+        const runners = yield* eligibleRunnersSteps(q, {
+          ...owner,
+          agent: input.profile.agent,
+          purpose: "work",
+          now: now(),
         });
-        admissions.delete(key);
-      });
+        return yield* runnerSetupNeedSteps(q, runners, owner, input.profile.agent);
+      }),
+    repositoryRefusals: (input) =>
+      store.run((q) =>
+        input.itemId
+          ? itemRepositoryRefusalsSteps(q, { itemId: input.itemId, now: now() })
+          : syncSteps(() => null),
+      ),
+    started(input) {
+      settled(store.transaction((q) => startedSteps(q, input)));
       if (input.itemId && input.role === "implementer" && input.purpose === "work")
         sessionWaits.delete(input.itemId);
     },
-    finished(input) {
-      return immediate(db, () => {
-        const usage = runnerExecutionReceipt(db, input.commandId, input.runnerId);
-        if (!usage) throw new Error("Runner usage receipt is not bound to an assignment");
-        const result = input.result;
-        if ((!result && !input.failure) || (result && result.commandId !== input.commandId))
-          throw new Error("Runner result is not bound to its command");
-        // A replay after a restart repeats the recorded decision without counting usage again.
-        if (usage.endedAt !== null)
-          return {
-            retryable: RETRYABLE_OUTCOMES.has(usage.outcome ?? ""),
-            ...(usage.outcome === "quota_exhausted"
-              ? { usageLimit: { resetsAt: usage.resetsAt } }
-              : {}),
-          };
-        const classified = classifyAgentFailure({
-          ...(result ? { result } : {}),
-          ...(input.failure ? { failure: input.failure } : {}),
-          now: input.finishedAt,
-        });
-        const quota = classified.quota;
-        const retryable =
-          input.failure === "heartbeat_lost" ||
-          result?.authRequired === true ||
-          quota?.state === "exhausted";
-        const success =
-          !input.failure &&
-          !retryable &&
-          (!result ||
-            (result.stopReason === "end_turn" &&
-              !result.cancelled &&
-              !result.timedOut &&
-              !result.errorMessage));
-        const model = result?.identity?.model ?? null;
-        const latestImplementation = usage.itemId
-          ? lastSuccessfulImplementation(db, usage.itemId)
-          : null;
-        const modelConflict =
-          success &&
-          usage.purpose === "work" &&
-          usage.role === "reviewer" &&
-          model !== null &&
-          model === latestImplementation?.model;
-        finishRunnerExecutionUsage(db, {
-          commandId: input.commandId,
-          endedAt: input.finishedAt,
-          outcome: modelConflict
-            ? "model_conflict"
-            : success
-              ? "success"
-              : result?.authRequired
-                ? "auth_required"
-                : quota?.state === "exhausted"
-                  ? "quota_exhausted"
-                  : (input.failure ?? "error"),
-          resolvedModel: model,
-          outputBytes:
-            result && "text" in result
-              ? Buffer.byteLength(result.text)
-              : result?.reviewText
-                ? Buffer.byteLength(result.reviewText)
-                : 0,
-          resetsAt: quota?.state === "exhausted" ? quota.resetsAt : null,
-        });
-        const runsAsDefault = commandAccount(db, input.commandId)?.named !== true;
-        if (usage.agent && runsAsDefault)
-          settleRunnerAgent(db, {
-            runnerId: input.runnerId,
-            agent: usage.agent,
-            authRequired: result?.authRequired === true,
-            success,
-            quota,
-            clearQuota: success && usage.purpose !== "prepare",
-            model,
-          });
-        const recheckAt = observeAccount(input.commandId, {
-          classified,
-          model: input.profile?.model ?? model,
-          observedAt: input.finishedAt,
-          startedAt: usage.startedAt,
-          prepare: usage.purpose === "prepare",
-        });
-        if (
-          usage.agent &&
-          runsAsDefault &&
-          quota?.state === "exhausted" &&
-          quota.resetsAt === null &&
-          recheckAt
-        )
-          setRunnerAgentCooldown(db, input.runnerId, usage.agent, recheckAt);
-        return {
-          retryable: retryable || modelConflict,
-          ...(quota?.state === "exhausted"
-            ? {
-                usageLimit: {
-                  resetsAt: quota.resetsAt,
-                  ...(quota.resetsAt === null && recheckAt ? { recheckAt } : {}),
-                },
-              }
-            : {}),
-        };
-      });
-    },
+    finished: (input) => settled(store.transaction((q) => finishedSteps(q, input))),
   };
 }

@@ -16,6 +16,8 @@ import {
   recordRunnerRepositories,
   syncWorkspaceMember,
   sqliteDb,
+  syncSteps,
+  type Q,
 } from "../src/db";
 import {
   createRunnerPlacement,
@@ -781,12 +783,11 @@ async function movingRun() {
   placed.db.run("UPDATE work_item SET current_run_id=? WHERE id='item'", [run.id]);
   const asked: string[] = [];
   /** A fake restore check: the listed runners may restore, `same` with the snapshot's version. */
-  const restore =
-    (eligible: Record<string, "same" | "other">) =>
-    (runnerId: string): { sameVersion: boolean } | null => {
+  const restore = (eligible: Record<string, "same" | "other">) => (_q: Q, runnerId: string) =>
+    syncSteps((): { sameVersion: boolean } | null => {
       asked.push(runnerId);
       return eligible[runnerId] ? { sameVersion: eligible[runnerId] === "same" } : null;
-    };
+    });
   return { ...placed, run, asked, restore, pinnedRunnerId: "gone" };
 }
 

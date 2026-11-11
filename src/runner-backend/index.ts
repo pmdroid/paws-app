@@ -403,11 +403,11 @@ export function createRemoteAgentRunner(options: {
     // holds the task until the delegator sets a runner up. Later runs wait as before.
     const refused =
       offered.length === 0 && placement.role === "implementer" && placement.purpose !== "helper"
-        ? (options.placement?.repositoryRefusals?.(placement) ?? null)
+        ? ((await options.placement?.repositoryRefusals?.(placement)) ?? null)
         : null;
     if (refused) throw new RunnerRepositoryRefused(refused.repository, refused.refusals);
     if (offered.length === 0 && options.placement?.setupNeed && !(await startedWork(itemId))) {
-      const need = options.placement.setupNeed(placement);
+      const need = await options.placement.setupNeed(placement);
       if (need) throw new RunnerSetupRequired(need);
     }
     const agent = placement.profile?.agent;
@@ -846,13 +846,15 @@ export function createRemoteAgentRunner(options: {
           input.role === "implementer" &&
           input.checkpoint !== false
             ? {
-                restore: (runnerId: string, account?: PlacementAccount) => {
-                  const plan = planSessionRestore(db, {
-                    runId,
-                    agent: profile.agent,
-                    targetRunnerId: runnerId,
-                    ...(account ? { targetAccount: account } : {}),
-                  });
+                restore: function* (_q: Q, runnerId: string, account?: PlacementAccount) {
+                  const plan = yield* syncSteps(() =>
+                    planSessionRestore(db, {
+                      runId,
+                      agent: profile.agent,
+                      targetRunnerId: runnerId,
+                      ...(account ? { targetAccount: account } : {}),
+                    }),
+                  );
                   return plan.eligible
                     ? { sameVersion: plan.restoreSession.agentVersion === plan.targetVersion }
                     : null;

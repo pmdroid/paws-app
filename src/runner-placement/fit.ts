@@ -44,14 +44,6 @@ export function* repositoryRejectionSteps(
     : "repository not allowed in the runner's host config";
 }
 
-export function repositoryRejection(
-  db: Database,
-  runnerId: string,
-  repository: string,
-): string | null {
-  return settled(sqliteDb(db).run((q) => repositoryRejectionSteps(q, runnerId, repository)));
-}
-
 export function* signInFitSteps(
   q: Q,
   runner: SignInRunner,
@@ -81,15 +73,6 @@ export function* signInFitSteps(
     account: { accountId: legacyAgentAccountId(workspaceId, agent), bindingId, named: false },
     low: runner.quotaState === "low",
   };
-}
-
-export function signInFit(
-  db: Database,
-  runner: SignInRunner,
-  workspaceId: string,
-  input: SignInInput,
-): AccountFit | AccountRefusal {
-  return settled(sqliteDb(db).run((q) => signInFitSteps(q, runner, workspaceId, input)));
 }
 
 function* runnerVerdictsSteps(

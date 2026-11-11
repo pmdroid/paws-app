@@ -134,9 +134,9 @@ test("no runner signed in to the reviewer's agent: placement offers none and wai
     { runnerId: "acme-1", reason: "agent-not-signed-in" },
     { runnerId: "acme-2", reason: "agent-not-signed-in" },
   ]);
-  expect(f.placement.setupNeed!({ itemId: f.item.id, purpose: "work", ...reviewer })).toMatchObject(
-    { reason: "agent-not-signed-in", runnerId: "acme-1", agent: "codex" },
-  );
+  expect(
+    await f.placement.setupNeed!({ itemId: f.item.id, purpose: "work", ...reviewer }),
+  ).toMatchObject({ reason: "agent-not-signed-in", runnerId: "acme-1", agent: "codex" });
   expect(itemOwnerHasEligibleRunner(f.db, { itemId: f.item.id, agent: "codex", now: f.now })).toBe(
     false,
   );

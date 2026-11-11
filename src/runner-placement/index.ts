@@ -1,3 +1,4 @@
+import type { Q, Steps } from "../db";
 import type { RunnerProfile, RunnerResult, RunnerHelperResult } from "../runner-protocol";
 
 export { quotaSignal, type QuotaSignal } from "../core";
@@ -105,7 +106,11 @@ export type PlacementRequest = {
    * sealed session snapshot, and whether it runs the agent version that wrote it. Null when it
    * may not, or there is no snapshot.
    */
-  restore?: (runnerId: string, account?: PlacementAccount) => { sameVersion: boolean } | null;
+  restore?: (
+    q: Q,
+    runnerId: string,
+    account?: PlacementAccount,
+  ) => Steps<{ sameVersion: boolean } | null>;
   /** Slots the caller holds per runner for runs it placed but has not assigned yet. */
   reserved?: ReadonlyMap<string, number>;
   /** Reports policy and ranking rejections for this selection, without credentials. */
@@ -117,12 +122,12 @@ export type RunnerPlacement = {
   preview?(input: PlacementRequest): readonly PlacementCandidate[];
   /**
    * Why the person who owns the work has no runner Paws may use, or null when one is eligible
-   * (busy or not) or one of theirs is only offline or paused. Reads SQLite only.
+   * (busy or not) or one of theirs is only offline or paused.
    */
-  setupNeed?(input: PlacementRequest): RunnerSetupNeed | null;
+  setupNeed?(input: PlacementRequest): Promise<RunnerSetupNeed | null>;
   repositoryRefusals?(
     input: PlacementRequest,
-  ): { repository: string; refusals: RepositoryRefusal[] } | null;
+  ): Promise<{ repository: string; refusals: RepositoryRefusal[] } | null>;
   started(input: {
     commandId: string;
     runnerId: string;
