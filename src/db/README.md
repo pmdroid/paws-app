@@ -1,6 +1,6 @@
 # Database
 
-Paws keeps its state in one SQLite file opened by `openDatabase()` in `src/db/open.ts`. The schema is the Drizzle schema in `src/db/schema/`, and drizzle-kit migrations in [drizzle/](drizzle/) create and change it. `migrate(db)` applies the ones a database has not recorded in `__drizzle_migrations`, starting with `0000_baseline` on a new database.
+Paws keeps its state in Postgres: PGlite in `~/.paws/pglite`, or the server at `[database] url` ([Database](../../docs/postgres.md)). Tests and `paws db check` still open SQLite files with `openDatabase()` in `src/db/open.ts`. The SQLite schema is the Drizzle schema in `src/db/schema/`, and drizzle-kit migrations in [drizzle/](drizzle/) create and change it. `migrate(db)` applies the ones a database has not recorded in `__drizzle_migrations`, starting with `0000_baseline` on a new database.
 
 ## Drizzle
 
@@ -36,7 +36,7 @@ The hand-written migrations (`src/db/migrations.ts` and the files in `src/db/mig
 
 ## Postgres
 
-Postgres is an option next to SQLite; SQLite stays the default. `openPostgres(url)` (`postgres.ts`) opens a Drizzle database on Bun's Postgres client, and `paws db check` uses it to apply the Postgres migrations and report; Paws itself does not run on Postgres yet ([Postgres (preview)](../../docs/postgres.md)). `src/db/schema-pg/` (pg-core) mirrors `src/db/schema/` file for file and table for table: the same column names in the same order, nullability, defaults, primary, foreign and unique keys, indexes, partial indexes and `CHECK`s. Its migrations are in [drizzle-pg/](drizzle-pg/), generated with their own config:
+`openPostgres(url)` (`postgres.ts`) opens a Drizzle database on Bun's Postgres client, with the pool size from the URL's `max` parameter (default 10), and `paws db check` uses it to apply the Postgres migrations and report. `src/db/schema-pg/` (pg-core) mirrors `src/db/schema/` file for file and table for table: the same column names in the same order, nullability, defaults, primary, foreign and unique keys, indexes, partial indexes and `CHECK`s. Its migrations are in [drizzle-pg/](drizzle-pg/), generated with their own config:
 
 ```sh
 bun x drizzle-kit generate --config drizzle.pg.config.ts --name pull_comment_author
@@ -64,11 +64,12 @@ Triggers and `STRICT` have no Postgres counterpart yet. The `decision_memory_sea
 
 ## The async `Db` interface
 
-Paws moves to Postgres: embedded PGlite on a single host, a Postgres server through `[database] url` for a multi-process install. Until startup switches, SQLite stays the running database, so the database layer becomes async one module at a time and each query is written once, against the Postgres schema. A converted module takes a `Db` from `src/db/db.ts` instead of a `bun:sqlite` `Database`:
+Paws runs on Postgres: embedded PGlite on a single host, a Postgres server through `[database] url` for a multi-process install. Each query is written once, against the Postgres schema, and a module takes a `Db` from `src/db/db.ts` instead of a `bun:sqlite` `Database`:
 
 - `sqliteDb(database)` wraps today's database, one per connection.
 - `postgresDb(pg)` wraps a Drizzle Postgres database: `postgresDb(openPostgres(url))`, `postgresDb(await openPglite(dir))`, or in-memory PGlite in tests. `openPglite(dir)` opens a persistent PGlite directory and applies the Postgres migrations it has not applied yet.
-- `openPawsStore({ url, pgliteDir })` (`postgres.ts`) opens the store startup will run on: the Postgres at `url`, migrated, or PGlite in `pgliteDir` (`~/.paws/pglite`, `pgliteDir` in `pawsPaths()`) when `url` is null. `setAsideSqliteDatabase(path)` (`migrate.ts`) renames an existing SQLite `paws.db` and its `-wal` and `-shm` to `paws.db.pre-postgres-<UTC timestamp>`, writes one journal line naming it, and does nothing when there is no `paws.db`. Startup doesn't call either yet.
+- `openPawsStore({ url, pgliteDir })` (`postgres.ts`) opens the store startup will run on: the Postgres at `url`, migrated, or PGlite in `pgliteDir` (`~/.paws/pglite`, `pgliteDir` in `pawsPaths()`) when `url` is null. `setAsideSqliteDatabase(path)` (`migrate.ts`) renames an existing SQLite `paws.db` and its `-wal` and `-shm` to `paws.db.pre-postgres-<UTC timestamp>`, writes one journal line naming it, and does nothing when there is no `paws.db`. Startup calls it, then `openPawsStore()`.
+- `storeOf(source)` takes a `Database` or a `Db` and returns the `Db`: a holder that tests still give a `Database` accepts either.
 
 A converted function is a generator that `db.run()` drives:
 
@@ -95,7 +96,7 @@ export function clearQueueWait(db: Db, itemId: string): Promise<void> {
 
 ### The store
 
-Startup (`startPaws()` in `src/index.ts`) opens the database and creates one `Db` over it, `store = sqliteDb(db)`, and passes it beside `db` to every holder of the database: `PawsProcess.store`, `startLoops()` (`JobLoop.store`, `OutboxDispatcher.store`), `attachOrchestrator()` (`Orchestrator.store`), `startServer()` (`store` in the route context, from `serverStore()`) and `createRemoteAgentRunner()` (its `store`). A holder given only `db`, as most tests do, takes `sqliteDb(db)`, which is the same handle because `sqliteDb()` keeps one per connection. Converted code reaches the database through its holder's `store` (`await this.store.run((q) => fooSteps(q, …))`, `this.store.transaction(…)`) and does not call `sqliteDb()` itself; when startup runs on Postgres, `store` is the Postgres handle.
+Startup (`startPaws()` in `src/index.ts`) sets aside an old `paws.db`, opens the store with `openPawsStore()` and passes it to every holder of the database: `PawsProcess.store`, `startLoops()` (`JobLoop.store`, `OutboxDispatcher.store`), `attachOrchestrator()` (`Orchestrator.store`), `startServer()` (`store` in the route context, from `serverStore()`) and `createRemoteAgentRunner()` (its `store`). A holder given only a SQLite `db`, as most tests do, takes `sqliteDb(db)`, which is the same handle because `sqliteDb()` keeps one per connection. Code reaches the database through its holder's `store` (`await this.store.run((q) => fooSteps(q, …))`, `this.store.transaction(…)`) and does not call `sqliteDb()` itself.
 
 ### Converting a module
 
