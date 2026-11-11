@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { CommandBus, JOB_KIND } from "../src/core";
-import { ask } from "../src/loop";
+import { askSteps } from "../src/loop";
 import {
   applyLinearCommand,
   applyWorkItemEvent,
@@ -39,7 +39,7 @@ const command = {
 };
 
 for (const exit of ["cancel", "ask", "fail"] as const) {
-  test(`${exit} wakes parked followers immediately`, () => {
+  test(`${exit} wakes parked followers immediately`, async () => {
     const db = setup();
     for (const reason of ["ahead", "dependencies", "ci"])
       enqueueJob(db, {
@@ -51,9 +51,17 @@ for (const exit of ["cancel", "ask", "fail"] as const) {
       });
     if (exit === "cancel") applyLinearCommand(db, command, 10);
     if (exit === "ask")
-      ask(db, { itemId: "holder", runId: null, sessionId: "session" }, "ci-help", "Need guidance", {
-        now: 10,
-      });
+      await sqliteDb(db).transaction((q) =>
+        askSteps(
+          q,
+          { itemId: "holder", runId: null, sessionId: "session" },
+          "ci-help",
+          "Need guidance",
+          {
+            now: 10,
+          },
+        ),
+      );
     if (exit === "fail") {
       applyWorkItemEvent(db, "holder", "lease_expired", { now: 10 });
       applyWorkItemEvent(db, "holder", "closeout_infra_failed", { now: 10 });

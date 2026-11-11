@@ -46,9 +46,7 @@ export {
   answerQuestionSteps,
   ask,
   askSteps,
-  cancelItemQuestions,
   cancelItemQuestionsSteps,
-  cancelQuestion,
   cancelQuestionSteps,
   type AnswerEffects,
   type AnswerOutcome,
@@ -63,12 +61,11 @@ export {
   getQuestion,
   getQuestionSteps,
   openQuestion,
-  questionReplyConsumed,
+  questionReplyConsumedSteps,
   type QuestionKind,
   type StoredQuestion,
 } from "./store";
 export {
-  acceptedVisualReviews,
   acceptedVisualReviewsSteps,
   approvalTime,
   carriedInFull,

@@ -9,6 +9,7 @@ import {
   listJobs,
   listOpenQuestions,
   listOutbox,
+  syncSteps,
 } from "../src/db";
 import { questionEffects } from "../src/loop";
 import {
@@ -153,10 +154,11 @@ test("an amended question delivers and keeps the added context and options", () 
   const asked = ask(db, asker, "agent", "Include archived rows?", {
     options: ["yes"],
     now: NOW,
-    amend: (question) => ({
-      context: "Saved decision: archive rows stay out",
-      options: [...question.options, { label: "Use saved decision", value: "/paws decision 1" }],
-    }),
+    amend: (_q, question) =>
+      syncSteps(() => ({
+        context: "Saved decision: archive rows stay out",
+        options: [...question.options, { label: "Use saved decision", value: "/paws decision 1" }],
+      })),
   });
   expect(asked.question).toMatchObject({
     context: "Saved decision: archive rows stay out",

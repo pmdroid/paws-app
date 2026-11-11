@@ -86,7 +86,10 @@ type AskInput = {
   options?: readonly QuestionOption[];
   context?: string;
   now?: number;
-  amend?: (question: StoredQuestion) => { context: string; options: QuestionOption[] } | null;
+  amend?: (
+    q: Q,
+    question: StoredQuestion,
+  ) => Steps<{ context: string; options: QuestionOption[] } | null>;
 };
 
 export function* askSteps(
@@ -116,7 +119,7 @@ export function* askSteps(
     status: waits ? "queued" : "open",
     now,
   });
-  const amended = input.amend?.(inserted) ?? null;
+  const amended = input.amend ? yield* input.amend(q, inserted) : null;
   if (amended !== null) yield* amendQuestionRowSteps(q, inserted.id, amended);
   const question = amended === null ? inserted : (yield* getQuestionSteps(q, inserted.id))!;
   if (waits) return { status: "queued", question };
@@ -206,10 +209,6 @@ export function* cancelQuestionSteps(q: Q, id: string, now = Date.now()): Steps<
   yield* promoteNextSteps(q, question.sessionId, now);
 }
 
-export function cancelQuestion(db: Database, id: string, now = Date.now()): void {
-  settled(sqliteDb(db).transaction((q) => cancelQuestionSteps(q, id, now)));
-}
-
 // Opaque agent questions and infrastructure/human holds are not known to be obsolete.
 const CRITERIA_QUESTIONS: Record<QuestionKind, boolean> = {
   agent: false,
@@ -265,15 +264,6 @@ export function* cancelItemQuestionsSteps(
   }
   for (const sessionId of new Set(questions.map((question) => question.sessionId)))
     yield* promoteNextSteps(q, sessionId, now);
-}
-
-export function cancelItemQuestions(
-  db: Database,
-  itemId: string,
-  now = Date.now(),
-  scope: "all" | "criteria" = "all",
-): void {
-  settled(sqliteDb(db).transaction((q) => cancelItemQuestionsSteps(q, itemId, now, scope)));
 }
 
 function* promoteNextSteps(q: Q, sessionId: string, now: number): Steps<void> {

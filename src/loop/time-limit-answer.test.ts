@@ -1,4 +1,4 @@
-import { ask } from "./operations";
+import { askSteps } from "./operations";
 import { expect, test } from "bun:test";
 import { FakeClock, JOB_KIND } from "../core";
 import {
@@ -54,12 +54,14 @@ async function askedAtTimeLimit(pendingHandoff?: string) {
     body: string;
     options: string[];
   };
-  ask(
-    db,
-    { itemId: item.id, runId: getWorkItem(db, item.id)!.currentRunId, sessionId: "ses" },
-    "time-limit",
-    request.body,
-    { options: request.options, now: clock.now() },
+  await sqliteDb(db).transaction((q) =>
+    askSteps(
+      q,
+      { itemId: item.id, runId: getWorkItem(db, item.id)!.currentRunId, sessionId: "ses" },
+      "time-limit",
+      request.body,
+      { options: request.options, now: clock.now() },
+    ),
   );
   return { clock, db, item };
 }
@@ -98,12 +100,14 @@ async function askedBeforeAcceptance(state: "running" | "verifying") {
     options: string[];
     reason: string;
   };
-  ask(
-    db,
-    { itemId: item.id, runId: getWorkItem(db, item.id)!.currentRunId, sessionId: "ses" },
-    "time-limit",
-    request.body,
-    { options: request.options, reason: request.reason, now: clock.now() },
+  await sqliteDb(db).transaction((q) =>
+    askSteps(
+      q,
+      { itemId: item.id, runId: getWorkItem(db, item.id)!.currentRunId, sessionId: "ses" },
+      "time-limit",
+      request.body,
+      { options: request.options, reason: request.reason, now: clock.now() },
+    ),
   );
   return { clock, db, item };
 }

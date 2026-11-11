@@ -20,7 +20,7 @@ import { Orchestrator } from "../src/loop";
 import {
   answerQuestion,
   ask,
-  cancelItemQuestions,
+  cancelItemQuestionsSteps,
   getQuestion,
   openLinkAsk,
   type QuestionKind,
@@ -252,7 +252,7 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
 
 test.each(["all", "criteria"] as const)(
   "%s cancellation closes link asks and drops undelivered prompts atomically",
-  (scope) => {
+  async (scope) => {
     const db = tempDb();
     try {
       const item = insertQueuedItem(db, {
@@ -281,18 +281,16 @@ test.each(["all", "criteria"] as const)(
       });
       expect(queued.question.status).toBe("queued");
       const before = listOutbox(db);
-      expect(() =>
-        db
-          .transaction(() => {
-            cancelItemQuestions(db, item.id, 1002, scope);
-            throw new Error("rollback cleanup");
-          })
-          .immediate(),
-      ).toThrow("rollback cleanup");
+      await expect(
+        sqliteDb(db).transaction(function* (q) {
+          yield* cancelItemQuestionsSteps(q, item.id, 1002, scope);
+          throw new Error("rollback cleanup");
+        }),
+      ).rejects.toThrow("rollback cleanup");
       expect(openLinkAsks(db, item.id)).toHaveLength(2);
       expect(getQuestion(db, open.question.id)!.status).toBe("open");
       expect(listOutbox(db)).toEqual(before);
-      cancelItemQuestions(db, item.id, 1003, scope);
+      await sqliteDb(db).transaction((q) => cancelItemQuestionsSteps(q, item.id, 1003, scope));
       expect(openLinkAsks(db, item.id)).toEqual([]);
       for (const { question } of [open, queued]) {
         expect(getLinkAsk(db, question.id)).toMatchObject({
@@ -312,7 +310,7 @@ test.each(["all", "criteria"] as const)(
           .map((row) => row.status),
       ).toEqual(["dropped"]);
       const after = listOutbox(db);
-      cancelItemQuestions(db, item.id, 1004, scope);
+      await sqliteDb(db).transaction((q) => cancelItemQuestionsSteps(q, item.id, 1004, scope));
       expect(listOutbox(db)).toEqual(after);
     } finally {
       db.close();

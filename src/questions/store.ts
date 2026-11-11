@@ -137,10 +137,6 @@ export function* questionReplyConsumedSteps(q: Q, sessionId: string, eventKey: s
   return yield* questionEventConsumedSteps(q, sessionId, eventKey);
 }
 
-export function questionReplyConsumed(db: Database, sessionId: string, eventKey: string): boolean {
-  return settled(sqliteDb(db).run((q) => questionReplyConsumedSteps(q, sessionId, eventKey)));
-}
-
 function mapQuestion(row: QuestionRow): StoredQuestion {
   const kind = row.kind as QuestionKind;
   return {

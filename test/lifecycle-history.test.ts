@@ -20,7 +20,7 @@ import {
   saveTaskMode,
   sqliteDb,
 } from "../src/db";
-import { ask, questionEffects, restart } from "../src/loop";
+import { askSteps, questionEffects, restart } from "../src/loop";
 import { answer } from "../src/questions";
 import { parseIssueListResponse } from "../src/dashboard";
 import { createLiveStatusProvider } from "../src/dashboard/src/live/provider";
@@ -76,12 +76,14 @@ async function askedAtTimeLimit() {
     body: string;
     options: string[];
   };
-  ask(
-    db,
-    { itemId: item.id, runId: getWorkItem(db, item.id)!.currentRunId, sessionId: "ses" },
-    "time-limit",
-    request.body,
-    { options: request.options, now: clock.now() },
+  await sqliteDb(db).transaction((q) =>
+    askSteps(
+      q,
+      { itemId: item.id, runId: getWorkItem(db, item.id)!.currentRunId, sessionId: "ses" },
+      "time-limit",
+      request.body,
+      { options: request.options, now: clock.now() },
+    ),
   );
   const asked = getWorkItem(db, item.id)!;
   expect(asked.state).toBe("awaiting_input");
@@ -114,17 +116,19 @@ test("Stop at the time limit records answer_stopped from the wait, not a run fai
   expect(history(db, itemId, askedAt)).toEqual(["awaiting_input -answer_stopped-> failed"]);
 });
 
-test("an answered runner wait re-verifies without passing through running", () => {
+test("an answered runner wait re-verifies without passing through running", async () => {
   const db = database();
   const item = insertQueuedItem(db, { id: "eng-8", sessionKey: "ses", now: 1_000 });
   const { run } = beginImplementRun(db, item.id, 1_000);
   applyWorkItemEvent(db, item.id, "turn_ended");
-  ask(
-    db,
-    { itemId: item.id, runId: run.id, sessionId: "ses" },
-    "runner-wait",
-    "The runner is paused. Keep waiting or move?",
-    { options: ["Keep waiting", "Move"], now: 2_000 },
+  await sqliteDb(db).transaction((q) =>
+    askSteps(
+      q,
+      { itemId: item.id, runId: run.id, sessionId: "ses" },
+      "runner-wait",
+      "The runner is paused. Keep waiting or move?",
+      { options: ["Keep waiting", "Move"], now: 2_000 },
+    ),
   );
   const askedAt = getWorkItem(db, item.id)!.version;
   expect(reply(db, "Keep waiting", 3_000).status).toBe("answered");
@@ -132,17 +136,19 @@ test("an answered runner wait re-verifies without passing through running", () =
   expect(listJobs(db).some((job) => job.queue === "run.reverify")).toBe(true);
 });
 
-test("Discarding a plan completes it from the wait with one answer_completed", () => {
+test("Discarding a plan completes it from the wait with one answer_completed", async () => {
   const db = database();
   const item = insertQueuedItem(db, { id: "eng-9", sessionKey: "ses", now: 1_000 });
   saveTaskMode(db, item.id, "plan");
   const { run } = beginImplementRun(db, item.id, 1_000);
-  const asked = ask(
-    db,
-    { itemId: item.id, runId: run.id, sessionId: "ses" },
-    "plan-approval",
-    "File these sub-issues?",
-    { options: ["Create", "Edit", "Discard"], now: 2_000 },
+  const asked = await sqliteDb(db).transaction((q) =>
+    askSteps(
+      q,
+      { itemId: item.id, runId: run.id, sessionId: "ses" },
+      "plan-approval",
+      "File these sub-issues?",
+      { options: ["Create", "Edit", "Discard"], now: 2_000 },
+    ),
   );
   savePlanProposal(db, {
     questionId: asked.question.id,

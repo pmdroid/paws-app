@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
+  sqliteDb,
   beginImplementRun,
   enqueueJob,
   getJob,
@@ -14,26 +15,28 @@ import {
 } from "../db";
 import { findOpenQuestion, getQuestion, getVisualReview } from "../questions";
 import { reaskDeadQuestion } from "./dead-question";
-import { ask } from "./operations";
+import { askSteps } from "./operations";
 
 const open: Database[] = [];
 afterEach(() => {
   for (const db of open.splice(0)) db.close();
 });
 
-function waitingItem(kind: "agent" | "visual-review" = "agent") {
+async function waitingItem(kind: "agent" | "visual-review" = "agent") {
   const db = openDatabase(":memory:");
   migrate(db);
   open.push(db);
   insertQueuedItem(db, { id: "item-q", sessionKey: "ses-q", now: 0 });
   beginImplementRun(db, "item-q", 1_000);
   const item = getWorkItem(db, "item-q")!;
-  const asked = ask(
-    db,
-    { itemId: item.id, runId: item.currentRunId, sessionId: "ses-q", version: item.version },
-    kind,
-    "Which repository?",
-    { options: ["paws-app", "paws-runner"], now: 2_000 },
+  const asked = await sqliteDb(db).transaction((q) =>
+    askSteps(
+      q,
+      { itemId: item.id, runId: item.currentRunId, sessionId: "ses-q", version: item.version },
+      kind,
+      "Which repository?",
+      { options: ["paws-app", "paws-runner"], now: 2_000 },
+    ),
   );
   if (kind === "visual-review")
     db.run(
@@ -54,7 +57,7 @@ function waitingItem(kind: "agent" | "visual-review" = "agent") {
 
 describe("a question whose elicitation died twice", () => {
   test("is asked again through ask() with a fresh delivery", async () => {
-    const { db, question, job } = waitingItem();
+    const { db, question, job } = await waitingItem();
     expect(getWorkItem(db, "item-q")?.state).toBe("awaiting_input");
     expect(listDeadDeliveries(db, "item-q")).toHaveLength(1);
 
@@ -85,7 +88,7 @@ describe("a question whose elicitation died twice", () => {
   });
 
   test("a visual review keeps its question and review, and is delivered again", async () => {
-    const { db, question, job } = waitingItem("visual-review");
+    const { db, question, job } = await waitingItem("visual-review");
 
     const again = await reaskDeadQuestion(db, {
       itemId: "item-q",
@@ -108,7 +111,7 @@ describe("a question whose elicitation died twice", () => {
   });
 
   test("changes nothing once the item stopped waiting or the question was answered", async () => {
-    const moved = waitingItem();
+    const moved = await waitingItem();
     moved.db.run("UPDATE work_item SET state = 'running' WHERE id = 'item-q'");
     expect(
       await reaskDeadQuestion(moved.db, {
@@ -120,7 +123,7 @@ describe("a question whose elicitation died twice", () => {
     ).toBeNull();
     expect(listDeadDeliveries(moved.db, "item-q")).toHaveLength(1);
 
-    const answered = waitingItem();
+    const answered = await waitingItem();
     answered.db.run("UPDATE question SET status = 'answered' WHERE id = ?", [answered.question.id]);
     expect(
       await reaskDeadQuestion(answered.db, {

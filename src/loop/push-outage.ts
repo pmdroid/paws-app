@@ -20,7 +20,7 @@ import {
 import { PushOutageError, pushOutageProbeDelayMs } from "../github";
 import { journal } from "../journal";
 import { cancelQuestionSteps, getQuestionSteps } from "../questions";
-import { ask } from "./operations";
+import { askSteps } from "./operations";
 
 /** After this long in an outage, Paws asks one workspace question to check the App installation. */
 export const PUSH_OUTAGE_QUESTION_MS = 60 * 60_000;
@@ -164,8 +164,8 @@ export async function askAboutPushOutage(
         : null;
     const item = itemId ? yield* getWorkItemSteps(q, itemId) : null;
     if (!item?.sessionKey || item.cancelRequested) return "no_session";
-    const asked = ask(
-      db,
+    const asked = yield* askSteps(
+      q,
       {
         itemId: item.id,
         runId: item.currentRunId,

@@ -337,10 +337,6 @@ export function* acceptedVisualReviewsSteps(q: Q, itemId: string) {
   ).map(mapVisualReview);
 }
 
-export function acceptedVisualReviews(db: Database, itemId: string): StoredVisualReview[] {
-  return settled(sqliteDb(db).run((q) => acceptedVisualReviewsSteps(q, itemId)));
-}
-
 export function* rejectedEvidenceIdsSteps(q: Q, itemId: string): Steps<Set<string>> {
   const rows = (yield* itemVisualReviewRowsSteps(
     q,

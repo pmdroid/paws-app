@@ -19,7 +19,7 @@ import {
   sqliteDb,
 } from "../src/db";
 import { HostSupervisor, WakeDetector } from "../src/host";
-import { ask, attachOrchestrator, questionEffects } from "../src/loop";
+import { askSteps, attachOrchestrator, questionEffects } from "../src/loop";
 import { answer, findOpenQuestion } from "../src/questions";
 import { workspaceAdmission } from "./fake-workspace";
 import { tempDb, tempHome } from "./helpers";
@@ -59,13 +59,23 @@ async function hold(db: Database, now: number, kind: Hold, merging: boolean): Pr
       applyWorkItemEvent(db, "item", "turn_ended", { now });
       applyWorkItemEvent(db, "item", "closeout_accepted", { now });
       await markCloseoutAccepted(sqliteDb(db), "item", "wip");
-      ask(db, { itemId: "item", runId: null, sessionId: "session" }, "ci-help", "CI failed.", {
-        now,
-      });
+      await sqliteDb(db).transaction((q) =>
+        askSteps(
+          q,
+          { itemId: "item", runId: null, sessionId: "session" },
+          "ci-help",
+          "CI failed.",
+          {
+            now,
+          },
+        ),
+      );
     } else {
-      ask(db, { itemId: "item", runId: run.id, sessionId: "session" }, "agent", "Archived?", {
-        now,
-      });
+      await sqliteDb(db).transaction((q) =>
+        askSteps(q, { itemId: "item", runId: run.id, sessionId: "session" }, "agent", "Archived?", {
+          now,
+        }),
+      );
     }
   }
   if (merging) {

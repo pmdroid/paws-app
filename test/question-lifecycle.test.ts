@@ -11,13 +11,14 @@ import {
   saveCloseoutRecovery,
   setCurrentRun,
   setJournalSink,
+  sqliteDb,
   syncSteps,
   type Q,
 } from "../src/db";
 import {
   answer,
   ask,
-  cancelItemQuestions,
+  cancelItemQuestionsSteps,
   findOpenQuestion,
   getQuestion,
   openQuestion,
@@ -215,11 +216,11 @@ test("a queued question for a run that is no longer current is dropped with a jo
   expect(elicitations(db)).toEqual([]);
 });
 
-test("cancelling the task cancels its open and queued questions", () => {
+test("cancelling the task cancels its open and queued questions", async () => {
   const { db, asker } = setup();
   const open = openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
   const queued = ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW + 1 });
-  cancelItemQuestions(db, asker.itemId, NOW + 2);
+  await sqliteDb(db).transaction((q) => cancelItemQuestionsSteps(q, asker.itemId, NOW + 2));
   expect(getQuestion(db, open.id)?.status).toBe("cancelled");
   expect(getQuestion(db, queued.question.id)?.status).toBe("cancelled");
   expect(elicitations(db)).toEqual([]);

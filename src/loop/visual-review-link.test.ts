@@ -21,13 +21,13 @@ import {
 import { findOpenQuestion, getVisualReview, LINK_ASK_REMINDER_MS } from "../questions";
 import { saveSchedulingContext } from "../scheduler";
 import { closeLinkAsksOnHead, decideLinkAsk, guideLinkAsk } from "./link-ask";
-import { awaitQuestion } from "./operations";
+import { awaitQuestionSteps } from "./operations";
 import {
   askForVisualReviewSteps,
-  dueVisualReview,
-  pendingVisualReview,
+  dueVisualReviewSteps,
+  pendingVisualReviewSteps,
   VISUAL_REVIEW_REPLY_NOTE,
-  visualReviewApprovals,
+  visualReviewApprovalsSteps,
 } from "./visual-review";
 
 const NOW = 1_700_000_000_000;
@@ -120,7 +120,10 @@ test("the visual review is a link ask without options, reminded once from the sh
     headCommit: HEAD,
     outcome: null,
   });
-  expect(pendingVisualReview(db, getWorkItem(db, itemId)!)?.question.id).toBe(question.id);
+  expect(
+    (await sqliteDb(db).run((q) => pendingVisualReviewSteps(q, getWorkItem(db, itemId)!)))?.question
+      .id,
+  ).toBe(question.id);
   const elicitations = listOutbox(db).filter((row) => row.op === "elicitation");
   expect(elicitations).toHaveLength(1);
   const payload = elicitations[0]!.payload as { options: unknown[]; body: string };
@@ -150,11 +153,16 @@ test("Approve on the page passes the check for that head and those files", async
     answeredBy: "lead",
     headCommit: HEAD,
   });
-  expect(visualReviewApprovals(db, itemId, "ENG-103")).toMatchObject([
+  expect(
+    await sqliteDb(db).run((q) => visualReviewApprovalsSteps(q, itemId, "ENG-103")),
+  ).toMatchObject([
     { checkId: "visual-proof", evidenceIds: ["ev-1", "ev-2"], approvedBy: "lead", commit: HEAD },
   ]);
   expect(
-    dueVisualReview(db, itemId, [REQUIREMENT], visualReviewApprovals(db, itemId, "ENG-103")),
+    await sqliteDb(db).run(function* (q) {
+      const approvals = yield* visualReviewApprovalsSteps(q, itemId, "ENG-103");
+      return yield* dueVisualReviewSteps(q, itemId, [REQUIREMENT], approvals);
+    }),
   ).toBeNull();
   // The evaluation still running on S picks the approval up; nothing restarts.
   expect(getWorkItem(db, itemId)?.state).toBe("verifying");
@@ -167,7 +175,9 @@ test("Approve on the page passes the check for that head and those files", async
 
 test("Approve after the other checks finished completes the evaluation of the same head", async () => {
   const { db, itemId, question } = await reviewing();
-  awaitQuestion(db, getWorkItem(db, itemId)!, question, NOW + 50);
+  await sqliteDb(db).transaction((q) =>
+    awaitQuestionSteps(q, getWorkItem(db, itemId)!, question, NOW + 50),
+  );
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
   await decideLinkAsk(db, {
     questionId: question.id,
@@ -249,7 +259,9 @@ test("a Linear reply that says approve requests changes and never approves", asy
     outcome: "changes_requested",
     feedback: "approve",
   });
-  expect(visualReviewApprovals(db, itemId, "ENG-103")).toEqual([]);
+  expect(await sqliteDb(db).run((q) => visualReviewApprovalsSteps(q, itemId, "ENG-103"))).toEqual(
+    [],
+  );
   expect(getLinkAsk(db, question.id)).toMatchObject({ closedReason: "guidance", decision: null });
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
   const [resume] = listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
@@ -308,12 +320,15 @@ test("a later commit with a different patch asks again", async () => {
     actor,
     now: NOW + 100,
   });
-  const approvals = visualReviewApprovals(db, itemId, "ENG-103");
+  const approvals = await sqliteDb(db).run((q) => visualReviewApprovalsSteps(q, itemId, "ENG-103"));
   expect(await approvalsAtHead(dir, approved, approvals, [REQUIREMENT], undefined, base)).toEqual(
     approvals,
   );
   const changed = commit("retry button wraps again");
   const kept = await approvalsAtHead(dir, changed, approvals, [REQUIREMENT], undefined, base);
   expect(kept).toEqual([]);
-  expect(dueVisualReview(db, itemId, [REQUIREMENT], kept)?.evidenceIds).toEqual(["ev-1", "ev-2"]);
+  expect(
+    (await sqliteDb(db).run((q) => dueVisualReviewSteps(q, itemId, [REQUIREMENT], kept)))
+      ?.evidenceIds,
+  ).toEqual(["ev-1", "ev-2"]);
 });

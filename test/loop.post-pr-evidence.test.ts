@@ -14,7 +14,7 @@ import {
 import { createEvidenceStore } from "../src/evidence";
 import { createFakeTracker } from "../src/linear";
 import {
-  ask,
+  askSteps,
   createEvidenceArtifactPublisher,
   deliverLinearOutbox,
   enqueueEvidenceCard,
@@ -154,9 +154,11 @@ test("after the PR response the issue gets one evidence card, and a new head upd
       ]);
     }
     expect(f.tracker.progress.map(({ kind }) => kind)).toEqual(["response"]);
-    ask(f.db, { itemId: "item", runId: null, sessionId: "session" }, "agent", "Which layout?", {
-      options: ["Wide", "Narrow"],
-    });
+    await sqliteDb(f.db).transaction((q) =>
+      askSteps(q, { itemId: "item", runId: null, sessionId: "session" }, "agent", "Which layout?", {
+        options: ["Wide", "Narrow"],
+      }),
+    );
     await f.flush();
     expect(f.tracker.questions).toHaveLength(1);
   } finally {
