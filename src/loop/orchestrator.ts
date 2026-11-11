@@ -87,7 +87,6 @@ import type { ItemRunnerVerdicts, RunnerHostRefusal } from "../db";
 import {
   AFTER_PULL_REQUEST_RESPONSE,
   canReportProgress as canReportSessionProgress,
-  hasPublishedPullRequest,
   hasPublishedPullRequestSteps as hasPublishedPullRequestPolicySteps,
 } from "./activity-policy";
 import { reaskDeadQuestion } from "./dead-question";
@@ -299,7 +298,7 @@ import {
   accrueAwake,
   enqueueOutboxOnce,
   lastOutboxSequence,
-  getOutbox,
+  settled,
   getQueuePosition,
   clearQueueWait,
   queueWaitSince,
@@ -956,6 +955,8 @@ export class Orchestrator {
   private shuttingDown = false;
   private readonly admissionLabelReads = new Set<string>();
   private readonly activitySeqs = new Map<string, number>();
+  private readonly posts: (() => Promise<void>)[] = [];
+  private posting: Promise<void> | null = null;
   private waitFaces = new Map<string, string>();
   private readonly activityRequests = new Map<number, AbortSignal>();
   private readonly updates = createUpdateLimiter(() => this.now());
@@ -1073,14 +1074,14 @@ export class Orchestrator {
       event.sessionId &&
       event.body !== null &&
       (!(await this.store.run((q) => findOpenQuestionSteps(q, event.sessionId!))) ||
-        this.hasPublishedPullRequest(event.sessionId) ||
+        (await this.store.run((q) => this.hasPublishedPullRequestSteps(q, event.sessionId!))) ||
         (await this.sessionPaused(event.sessionId)))
     ) {
       const turn = await this.recordTurn(event);
       if (turn) turnEventKey = turn.eventKey;
       if (
         turn?.state === "pending" &&
-        !this.hasPublishedPullRequest(event.sessionId) &&
+        !(await this.store.run((q) => this.hasPublishedPullRequestSteps(q, event.sessionId!))) &&
         (await this.forwardFollowUp(event.sessionId, turn))
       )
         return;
@@ -1319,6 +1320,7 @@ export class Orchestrator {
       ...owned.map((live) => live.done),
     ]);
     await Promise.allSettled([...this.sessionEvents.values(), ...this.stopEvents.values()]);
+    await this.flushPosts();
     for (const item of this.allItems(true))
       if ((await this.store.run((q) => getConversationSteps(q, item.id))).blocked)
         throw new Error("ACP process cleanup could not be verified");
@@ -3136,7 +3138,7 @@ export class Orchestrator {
     const item = await this.store.run((q) => getWorkItemSteps(q, itemId));
     const key =
       item && (await this.store.run((q) => hostDiskFullThoughtKeySteps(q, item.id, this.now())));
-    if (item && key) this.post(item, "thought", HOST_DISK_FULL_THOUGHT, key);
+    if (item && key) await this.post(item, "thought", HOST_DISK_FULL_THOUGHT, key);
   }
 
   private async pushWorked(repository: string): Promise<void> {
@@ -3495,12 +3497,8 @@ export class Orchestrator {
     sessionProgress?.phase("working");
     const activity = createAcpActivityReporter(
       (update, origin) => {
-        if (
-          !controller.signal.aborted &&
-          this.canReportProgress(item.id) &&
-          update.kind !== "elicitation"
-        )
-          this.post(
+        if (!controller.signal.aborted && update.kind !== "elicitation")
+          void this.postWhileReporting(
             item,
             update.kind,
             update.body,
@@ -3513,14 +3511,11 @@ export class Orchestrator {
       },
     );
     const keepAlive = setInterval(() => {
-      if (this.canReportProgress(item.id)) {
-        this.postKeepalive(item, `${run.id}:keep:${this.now()}`, [
-          sessionProgress?.keepalive(live.progress),
-          sessionProgress?.keepalive(null),
-          "Preparing the requested answer.",
-        ]);
-        void this.flush();
-      }
+      void this.postKeepalive(item, `${run.id}:keep:${this.now()}`, [
+        sessionProgress?.keepalive(live.progress),
+        sessionProgress?.keepalive(null),
+        "Preparing the requested answer.",
+      ]).then((posted) => (posted ? this.flush() : undefined));
     }, KEEPALIVE_MS);
     keepAlive.unref?.();
     try {
@@ -3738,47 +3733,38 @@ export class Orchestrator {
     let posted = true;
     const sessionProgress = this.sessionProgress(item);
     const first = setTimeout(() => {
-      if (posted || !this.canReportProgress(item.id)) return;
-      posted = true;
+      if (posted) return;
       const working = `Working on ${item.linearIdentifier}.`;
-      this.post(
+      void this.postWhileReporting(
         item,
         "thought",
         sessionProgress?.keepalive(working) ?? working,
         `${run.id}:first`,
-        {
-          ephemeral: true,
-        },
-      );
-      void this.flush();
+        { ephemeral: true },
+        () => (posted = true),
+      ).then((allowed) => (allowed ? this.flush() : undefined));
     }, FIRST_ACTIVITY_MS);
     const keepAlive = setInterval(() => {
-      if (this.live.get(run.id) !== live || !this.canReportProgress(item.id)) return;
-      this.postKeepalive(item, `${run.id}:keep:${this.now()}`, [
+      if (this.live.get(run.id) !== live) return;
+      void this.postKeepalive(item, `${run.id}:keep:${this.now()}`, [
         sessionProgress?.keepalive(live.progress) ?? live.progress,
         sessionProgress?.keepalive(null),
         `Working on ${item.linearIdentifier}.`,
-      ]);
-      void this.flush();
+      ]).then((allowed) => (allowed ? this.flush() : undefined));
     }, KEEPALIVE_MS);
     first.unref?.();
     keepAlive.unref?.();
     const askTeam = this.askHook(item, run.id);
     const activity = createAcpActivityReporter(
       (update, origin) => {
-        if (
-          controller.signal.aborted ||
-          !this.canReportProgress(item.id) ||
-          update.kind === "elicitation"
-        )
-          return;
-        posted = true;
-        this.post(
+        if (controller.signal.aborted || update.kind === "elicitation") return;
+        void this.postWhileReporting(
           item,
           update.kind,
           update.body,
           this.activityKey(`${run.id}:acp`, origin),
           update,
+          () => (posted = true),
         );
       },
       (steps) => {
@@ -3793,7 +3779,7 @@ export class Orchestrator {
       const auth = this.authorization(item);
       if (auth && !(await auth.ensure(item, "initial", controller.signal))) return;
       await this.taskAccess()?.prepare(item, controller.signal);
-      const working = this.post(
+      const working = await this.post(
         item,
         "action",
         `Working on ${item.linearIdentifier}.`,
@@ -3822,7 +3808,7 @@ export class Orchestrator {
           returned.reason === "conflict"
             ? `Resolving merge conflicts for ${item.linearIdentifier}.`
             : `Fixing ${label} for ${item.linearIdentifier}, fix attempt ${round} of ${limit}.`;
-        this.post(item, "thought", live.progress, `${item.id}:fix:${item.version}`);
+        await this.post(item, "thought", live.progress, `${item.id}:fix:${item.version}`);
       }
       if (working !== undefined) await this.startPost(working);
       if (!this.taskAccess()) this.postStatus(item, "started");
@@ -3871,7 +3857,7 @@ export class Orchestrator {
         );
         await this.store.run((q) => closeActiveRunSteps(q, run.id, this.now()));
         const summary = `Closeout: blocked\n${error instanceof Error ? error.message : String(error)}`;
-        this.post(item, "thought", summary, `${run.id}:profile-preflight`);
+        await this.post(item, "thought", summary, `${run.id}:profile-preflight`);
         await this.askCloseoutHelp(item, undefined, summary);
         return;
       }
@@ -3970,8 +3956,7 @@ export class Orchestrator {
       }
       activity.flush();
       const worked = await readTurnSummary(transcript, turnStart, item.id, this.options.journal);
-      if (worked && this.canReportProgress(item.id))
-        this.post(item, "thought", worked, `${run.id}:worked:${turnStart}`);
+      if (worked) await this.post(item, "thought", worked, `${run.id}:worked:${turnStart}`);
       if (!(await this.store.run((q) => artifactPublicationReadySteps(q, item.id))))
         throw new Error("A requested artifact has not been uploaded successfully");
       await this.store.run((q) => saveRunResultSteps(q, run.id, activity.resultBody(), this.now()));
@@ -4289,7 +4274,7 @@ export class Orchestrator {
         return;
       }
       if (await this.cancelVisualReview(after))
-        this.post(
+        await this.post(
           after,
           "thought",
           verdict.summary,
@@ -4584,19 +4569,21 @@ export class Orchestrator {
     const live = [...this.live.values()].find((entry) => entry.itemId === item.id);
     const key = `${item.currentRunId ?? item.id}:closeout:${crypto.randomUUID()}`;
     const report = (body: string) => {
-      if (deps.signal?.aborted || !this.canReportProgress(item.id)) return;
-      if (live) live.progress = body;
-      this.post(item, "thought", body, this.activityKey(key));
+      if (deps.signal?.aborted) return;
+      void this.postWhileReporting(item, "thought", body, this.activityKey(key), {}, () => {
+        if (live) live.progress = body;
+      });
     };
     const activity = createAcpActivityReporter(
       (update, origin) => {
-        if (
-          deps.signal?.aborted ||
-          !this.canReportProgress(item.id) ||
-          update.kind === "elicitation"
-        )
-          return;
-        this.post(item, update.kind, update.body, this.activityKey(`${key}:acp`, origin), update);
+        if (deps.signal?.aborted || update.kind === "elicitation") return;
+        void this.postWhileReporting(
+          item,
+          update.kind,
+          update.body,
+          this.activityKey(`${key}:acp`, origin),
+          update,
+        );
       },
       (steps) => {
         if (!deps.signal?.aborted && !this.stopped(item.id)) sessionProgress?.plan(steps);
@@ -4653,7 +4640,7 @@ export class Orchestrator {
             (stoppedOnRule !== undefined && verdict.decision === null)
           )
             return;
-          this.post(
+          await this.post(
             item,
             "thought",
             verdict.summary,
@@ -4972,7 +4959,12 @@ export class Orchestrator {
   private async askPreparationHelp(item: WorkItemRecord, summary: string): Promise<void> {
     const current = await this.store.run((q) => getWorkItemSteps(q, item.id));
     if (!current) return;
-    this.post(current, "thought", summary, `${current.currentRunId ?? current.id}:preparation`);
+    await this.post(
+      current,
+      "thought",
+      summary,
+      `${current.currentRunId ?? current.id}:preparation`,
+    );
     await this.askCloseoutHelp(current, undefined, summary);
   }
 
@@ -6115,7 +6107,7 @@ export class Orchestrator {
       ? await this.store.run((q) => getLinearSessionGenerationSteps(q, sessionKey))
       : 0;
     const runs = await this.store.run((q) => listRunsSteps(q, item.id));
-    this.post(
+    await this.post(
       item,
       "response",
       await pullRequestReadyResponse({
@@ -6385,8 +6377,22 @@ export class Orchestrator {
 
   /** Progress is quiet once the pull request is open, so this posts like the pull request note. */
   private postAfterPullRequest(item: WorkItemRecord, body: string, key: string): void {
-    if (this.stopped(item.id)) return;
-    this.post(item, "response", body, key, { id: randomUUID() }, "ordered");
+    if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return;
+    const details = { id: randomUUID() };
+    void this.queuePost(item.id, (q) =>
+      this.postAfterPullRequestSteps(q, item, body, key, details),
+    );
+  }
+
+  private *postAfterPullRequestSteps(
+    q: Q,
+    item: WorkItemRecord,
+    body: string,
+    key: string,
+    details: Pick<ProgressUpdate, "id">,
+  ): Steps<number | undefined> {
+    if (yield* this.stoppedSteps(q, item.id)) return;
+    return yield* this.postSteps(q, item, "response", body, key, details, "ordered");
   }
 
   /** `[queue] start_timeout_hours`, read on every dispatch. Missing or unreadable means 24. */
@@ -8040,7 +8046,7 @@ export class Orchestrator {
       ([role, label]) => `${role === "implementer" ? "Implementer" : "Reviewer"}: ${label} (label)`,
     );
     if (sources.length > 0)
-      this.post(item, "thought", sources.join("\n"), `${runId}:profile-labels`);
+      await this.post(item, "thought", sources.join("\n"), `${runId}:profile-labels`);
     return true;
   }
 
@@ -8083,7 +8089,7 @@ export class Orchestrator {
       )
         await this.store.run((q) => releaseRunCapacitySteps(q, current.currentRunId!, this.now()));
     } else {
-      this.post(current, "error", text, `fail:${current.id}:${current.version}:${reason}`);
+      await this.post(current, "error", text, `fail:${current.id}:${current.version}:${reason}`);
     }
     await this.dispatch();
   }
@@ -8150,7 +8156,7 @@ export class Orchestrator {
   private updateHook(item: WorkItemRecord): PostUpdateHook {
     return {
       post: async (text, origin) => {
-        if (!this.canReportProgress(item.id))
+        if (!(await this.store.run((q) => this.canReportProgressSteps(q, item.id))))
           throw new Error("Progress updates are closed for this run");
         const allowed = this.updates.take(item.id);
         if (allowed.posted) {
@@ -8159,7 +8165,7 @@ export class Orchestrator {
           const key = origin
             ? `update:${item.id}:${origin.runId}:${origin.generation}:${origin.sequence}`
             : `update:${item.id}:${this.now()}`;
-          this.post(item, "thought", line, key);
+          await this.post(item, "thought", line, key);
           await this.flush();
         }
         return allowed;
@@ -8181,7 +8187,7 @@ export class Orchestrator {
         const key = origin
           ? `reply:${item.id}:${origin.runId}:${origin.generation}:${origin.sequence}`
           : this.activityKey(`reply:${item.id}`);
-        this.post(item, "response", publicToolText(text), key, {}, "ordered");
+        await this.post(item, "response", publicToolText(text), key, {}, "ordered");
         await this.flush();
         return { posted: true };
       },
@@ -8223,46 +8229,106 @@ export class Orchestrator {
     key: string,
     details: Pick<ProgressUpdate, "id" | "ephemeral" | "action"> = {},
     delivery?: "critical" | "ordered",
-  ): number | undefined {
-    if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return;
-    const current = getWorkItem(this.db, item.id);
-    if (current === null || current.state === "cancelled") return;
-    const sessionId = this.activitySession(current);
-    if (sessionId === null || body.trim() === "") return;
-    if (
-      !this.canReportProgress(item.id) &&
-      (kind === "thought" || kind === "action" || this.hasPublishedPullRequest(sessionId)) &&
-      !(kind === "response" && AFTER_PULL_REQUEST_RESPONSE.test(key))
-    )
-      return;
-    return enqueueOutboxOnce(this.db, {
-      target: "linear",
-      op: "activity",
-      orderingKey: sessionId,
-      idempotencyKey: key,
-      delivery,
-      payload: { ...details, sessionId, itemId: item.id, issueId: item.linearIssueId, kind, body },
-      now: this.now(),
+  ): Promise<number | undefined> {
+    if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return Promise.resolve(undefined);
+    return this.queuePost(item.id, (q) =>
+      this.postSteps(q, item, kind, body, key, details, delivery),
+    );
+  }
+
+  private async postWhileReporting(
+    item: WorkItemRecord,
+    kind: "thought" | "action" | "response" | "error",
+    body: string,
+    key: string,
+    details: Pick<ProgressUpdate, "id" | "ephemeral" | "action"> = {},
+    allowed?: () => void,
+  ): Promise<boolean> {
+    return (
+      (await this.queuePost(item.id, (q) =>
+        this.postWhileReportingSteps(q, item, kind, body, key, details, allowed),
+      )) === true
+    );
+  }
+
+  private *postWhileReportingSteps(
+    q: Q,
+    item: WorkItemRecord,
+    kind: "thought" | "action" | "response" | "error",
+    body: string,
+    key: string,
+    details: Pick<ProgressUpdate, "id" | "ephemeral" | "action">,
+    allowed?: () => void,
+  ): Steps<boolean> {
+    if (!(yield* this.canReportProgressSteps(q, item.id))) return false;
+    allowed?.();
+    yield* this.postSteps(q, item, kind, body, key, details);
+    return true;
+  }
+
+  private queuePost<T>(itemId: string, body: (q: Q) => Steps<T>): Promise<T | undefined> {
+    return new Promise((resolve) => {
+      this.posts.push(async () => {
+        try {
+          resolve(await this.store.transaction(body));
+        } catch (error) {
+          journalCaught(error, "orchestrator.post", itemId, undefined, this.options.journal);
+          resolve(undefined);
+        }
+      });
+      this.posting ??= this.drainPosts();
     });
+  }
+
+  private async drainPosts(): Promise<void> {
+    await Promise.resolve();
+    for (let next = this.posts.shift(); next; next = this.posts.shift()) await next();
+    this.posting = null;
+  }
+
+  flushPosts(): Promise<void> {
+    return this.posting ?? Promise.resolve();
   }
 
   /**
    * The ephemeral keepalive. The outbox does not store a line that repeats the session's last
    * thought, so the next line is tried, and the session still hears from Paws in time.
    */
-  private postKeepalive(
+  private async postKeepalive(
     item: WorkItemRecord,
     key: string,
     lines: readonly (string | null | undefined)[],
-  ): void {
+  ): Promise<boolean> {
+    return (
+      (await this.queuePost(item.id, (q) => this.postKeepaliveSteps(q, item, key, lines))) === true
+    );
+  }
+
+  private *postKeepaliveSteps(
+    q: Q,
+    item: WorkItemRecord,
+    key: string,
+    lines: readonly (string | null | undefined)[],
+  ): Steps<boolean> {
+    if (!(yield* this.canReportProgressSteps(q, item.id))) return false;
     const tried = new Set<string>();
     for (const line of lines) {
       if (!line?.trim() || tried.has(line)) continue;
       const idempotencyKey = tried.size === 0 ? key : `${key}:${tried.size}`;
       tried.add(line);
-      const id = this.post(item, "thought", line, idempotencyKey, { ephemeral: true }, "critical");
-      if (id === undefined || getOutbox(this.db, id)?.idempotencyKey === idempotencyKey) return;
+      const id = yield* this.postSteps(
+        q,
+        item,
+        "thought",
+        line,
+        idempotencyKey,
+        { ephemeral: true },
+        "critical",
+      );
+      if (id === undefined || (yield* getOutboxSteps(q, id))?.idempotencyKey === idempotencyKey)
+        break;
     }
+    return true;
   }
 
   private *postSteps(
@@ -8271,6 +8337,8 @@ export class Orchestrator {
     kind: "thought" | "action" | "response" | "error",
     body: string,
     key: string,
+    details: Pick<ProgressUpdate, "id" | "ephemeral" | "action"> = {},
+    delivery?: "critical" | "ordered",
   ): Steps<number | undefined> {
     if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return;
     const current = yield* getWorkItemSteps(q, item.id);
@@ -8290,7 +8358,8 @@ export class Orchestrator {
       op: "activity",
       orderingKey: sessionId,
       idempotencyKey: key,
-      payload: { sessionId, itemId: item.id, issueId: item.linearIssueId, kind, body },
+      delivery,
+      payload: { ...details, sessionId, itemId: item.id, issueId: item.linearIssueId, kind, body },
       now: this.now(),
     });
   }
@@ -8313,26 +8382,6 @@ export class Orchestrator {
       q,
       sessionId,
       yield* getLinearSessionGenerationSteps(q, sessionId),
-    );
-  }
-
-  private canReportProgress(itemId: string): boolean {
-    if (!(this.jobContexts.get(itemId)?.isCurrent() ?? true)) return false;
-    const item = getWorkItem(this.db, itemId);
-    if (item === null || item.cancelRequested) return false;
-    if (!["running", "verifying", "merge_queue"].includes(item.state)) return false;
-    const sessionId = this.activitySession(item);
-    return (
-      sessionId === null ||
-      (findOpenQuestion(this.db, sessionId) === null && !this.hasPublishedPullRequest(sessionId))
-    );
-  }
-
-  private hasPublishedPullRequest(sessionId: string): boolean {
-    return hasPublishedPullRequest(
-      this.db,
-      sessionId,
-      getLinearSessionGeneration(this.db, sessionId),
     );
   }
 
@@ -9075,6 +9124,7 @@ export class Orchestrator {
   }
 
   private async flush(signal?: AbortSignal, session?: string | null): Promise<void> {
+    await this.flushPosts();
     const claimed = new Set<number>();
     const needed = (row: OutboxRow) =>
       session ? row.orderingKey === session : claimed.has(row.id);
@@ -9108,7 +9158,11 @@ export class Orchestrator {
   }
 
   private stopped(itemId: string): boolean {
-    const current = getWorkItem(this.db, itemId);
+    return settled(this.store.run((q) => this.stoppedSteps(q, itemId)));
+  }
+
+  private *stoppedSteps(q: Q, itemId: string): Steps<boolean> {
+    const current = yield* getWorkItemSteps(q, itemId);
     return (
       this.shuttingDown ||
       this.signalForItem(itemId)?.aborted === true ||
@@ -9426,7 +9480,7 @@ export class Orchestrator {
       head: verdict.head,
       link,
     }))
-      this.post(item, "thought", body, key);
+      await this.post(item, "thought", body, key);
   }
 
   /** The issue's one "Closeout evidence" card once the pull request response exists. */
@@ -10131,7 +10185,7 @@ export class Orchestrator {
       );
       const summary = error instanceof Error ? error.message : String(error);
       closeActiveRun(this.db, runId, this.now());
-      this.post(item, "thought", summary, `${runId}:missing-candidate-identity`);
+      await this.post(item, "thought", summary, `${runId}:missing-candidate-identity`);
       const base = commits?.base ?? item.checkpoint?.baseSha ?? "";
       const head = commits?.head ?? item.checkpoint?.wipCommit ?? "";
       // Nothing was committed: a fresh implementation turn, once per human turn, not a question.
@@ -10237,7 +10291,7 @@ export class Orchestrator {
     if (!item?.currentRunId) return;
     const saved = this.readProfileSnapshot(item.currentRunId);
     if (!saved?.settingsSwitch || saved.profiles.implementer.agent !== profile.agent) return;
-    const posted = this.post(
+    const posted = await this.post(
       item,
       "thought",
       `Switched to ${profile.agent} ${model ?? profile.model ?? "agent default"} ${saved.profileLabels?.implementer ? `from the Implementer label ${saved.profileLabels.implementer}` : "as set in Settings"}.`,
@@ -10897,7 +10951,7 @@ export class Orchestrator {
           await this.store.transaction((q) => bindWorkItemRepositorySteps(q, item.id, choice.bind));
           // A runner posts its own start line naming the repository.
           if (!this.options.remoteExecution)
-            this.post(
+            await this.post(
               item,
               "thought",
               `Working in ${choice.bind.owner}/${choice.bind.repo}.`,

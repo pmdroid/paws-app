@@ -7,7 +7,7 @@ import {
   OutboxDispatcher,
   QUESTION_LINKS,
   deadDeliveryIsFinalStop,
-  getOutbox,
+  getOutboxSteps,
   redeliverQuestion,
   claimNextJob,
   enqueueJob,
@@ -335,7 +335,7 @@ describe("dead outbox rows and jobs", () => {
     expect(columns).toEqual(QUESTION_LINKS.map(({ table, column }) => `${table}.${column}`).sort());
   });
 
-  test("a question delivered again after the PR keeps its ordered delivery past the PR response", () => {
+  test("a question delivered again after the PR keeps its ordered delivery past the PR response", async () => {
     const { db } = harness();
     waiting(db, "item-q", "ses-q");
     // The PR response is a terminal activity; later critical elicitations are fenced off.
@@ -359,16 +359,16 @@ describe("dead outbox rows and jobs", () => {
     const id = redeliverQuestion(db, "q-item-q", 9_000);
 
     expect(id).not.toBeNull();
-    expect(getOutbox(db, id!)).toMatchObject({
+    expect(await sqliteDb(db).run((q) => getOutboxSteps(q, id!))).toMatchObject({
       status: "pending",
       delivery: "ordered",
       idempotencyKey: `question:q-item-q${ELICITATION_REASK_SUFFIX}`,
     });
-    expect(getOutbox(db, dead)?.status).toBe("dropped");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, dead)))?.status).toBe("dropped");
     expect(listDeadDeliveries(db, "item-q")).toEqual([]);
   });
 
-  test("a redelivery the session fence rejects leaves the dead row listed for a retry", () => {
+  test("a redelivery the session fence rejects leaves the dead row listed for a retry", async () => {
     const { db } = harness();
     waiting(db, "item-q", "ses-q");
     const dead = elicit(db, "item-q", "ses-q");
@@ -385,7 +385,7 @@ describe("dead outbox rows and jobs", () => {
     lines = [];
 
     expect(redeliverQuestion(db, "q-item-q", 9_000)).toBeNull();
-    expect(getOutbox(db, dead)?.status).toBe("dead");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, dead)))?.status).toBe("dead");
     expect(listDeadDeliveries(db, "item-q").map((entry) => [entry.id, entry.retryable])).toEqual([
       [dead, true],
     ]);

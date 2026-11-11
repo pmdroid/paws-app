@@ -247,7 +247,8 @@ test.each([false, true, "cap"] as const)(
         status: "inProgress",
       });
       for (const heartbeat of heartbeats) heartbeat();
-      await outbox.idle();
+      await orchestrator.flushPosts();
+      while ((await outbox.tick()).length > 0) await outbox.idle();
       // The keepalive names the agent's current step ahead of the fix-round line.
       expect(tracker.progress.at(-1)?.body).toBe("Step 1 of 1: Repair missing output.");
       const response = await handleStatusRequest(
