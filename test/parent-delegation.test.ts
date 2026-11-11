@@ -148,7 +148,7 @@ test("a delegated parent records its sub-issues and each sub-issue runs alone in
     await jobs.tick();
     expect(started).toEqual(["child-a"]);
     expect(
-      parents.progress(admitted.delegation.id).find((sub) => sub.issueId === "child-b"),
+      (await parents.progress(admitted.delegation.id)).find((sub) => sub.issueId === "child-b"),
     ).toMatchObject({ sessionId: null, waitingFor: ["PAR-2"] });
     const merged = db
       .query<{ id: string }, []>("SELECT id FROM work_item WHERE linear_issue_id='child-a'")

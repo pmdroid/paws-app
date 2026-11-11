@@ -77,8 +77,10 @@ function deliverIssue(f: Fixture, issueId: string, identifier: string, stateType
   );
 }
 
-function waiting(f: Fixture, parent: string) {
-  return Object.fromEntries(f.parents.progress(parent).map((sub) => [sub.issueId, sub.waitingFor]));
+async function waiting(f: Fixture, parent: string) {
+  return Object.fromEntries(
+    (await f.parents.progress(parent)).map((sub) => [sub.issueId, sub.waitingFor]),
+  );
 }
 
 test("a chain of sub-issues opens each Linear session only after its blocker merges", async () => {
@@ -89,7 +91,7 @@ test("a chain of sub-issues opens each Linear session only after its blocker mer
     const parent = await delegate(f, [child("a", "CH-1"), child("b", "CH-2"), child("c", "CH-3")]);
     await f.jobs.tick();
     expect(f.started).toEqual(["a"]);
-    expect(waiting(f, parent)).toEqual({ a: [], b: ["CH-1"], c: ["CH-2"] });
+    expect(await waiting(f, parent)).toEqual({ a: [], b: ["CH-1"], c: ["CH-2"] });
 
     await pass(f);
     expect(f.started).toEqual(["a"]);
@@ -97,7 +99,7 @@ test("a chain of sub-issues opens each Linear session only after its blocker mer
     merge(f, "a");
     await pass(f);
     expect(f.started).toEqual(["a", "b"]);
-    expect(waiting(f, parent)).toEqual({ a: [], b: [], c: ["CH-2"] });
+    expect(await waiting(f, parent)).toEqual({ a: [], b: [], c: ["CH-2"] });
 
     await pass(f);
     expect(f.started).toEqual(["a", "b"]);
@@ -118,7 +120,7 @@ test("a sub-issue blocked by an issue Paws does not manage opens once Linear say
     const parent = await delegate(f, [child("a", "CH-1")]);
     await f.jobs.tick();
     expect(f.started).toEqual([]);
-    expect(waiting(f, parent)).toEqual({ a: ["OUT-1"] });
+    expect(await waiting(f, parent)).toEqual({ a: ["OUT-1"] });
 
     f.clock.advance(1);
     deliverIssue(f, "outside", "OUT-1", "completed");
