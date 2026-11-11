@@ -313,6 +313,7 @@ import {
   queueWaitSince,
   settled,
   sqliteDb,
+  syncSteps,
   activeRunnerIdsSteps,
   announceLinearTurnSteps,
   applyLinearCommandAsync,
@@ -587,7 +588,8 @@ import { readReviewChecks, withReviewWait } from "./review-checks";
 import {
   readPendingFeedback,
   restartWithFeedback,
-  storedFeedbackReads,
+  restartWithFeedbackSteps,
+  storedFeedbackReadsSteps,
   type FeedbackReads,
 } from "./pending-feedback";
 import {
@@ -633,6 +635,7 @@ import {
   queueConflictSweep,
   askMergeHelp,
   rebaseBudgetFor,
+  rebaseBudgetForSteps,
   returnQueuedConflicts,
   wakeMergesBehind,
   postMergeConflict,
@@ -2145,13 +2148,13 @@ export class Orchestrator {
     jobs.register(JOB_KIND.queueConflicts, async (job, context) => {
       const sweep = queueConflictSweep(job.payload);
       if (sweep === null || !context.isCurrent()) return;
-      await returnQueuedConflicts(this.db, this.store, sweep, {
-        ask,
-        restart: (item, handoff) => this.restartWithStoredFeedback(item, handoff),
+      await returnQueuedConflicts(this.store, sweep, {
+        ask: askSteps,
+        restart: (q, item, handoff) => this.restartWithStoredFeedbackSteps(q, item, handoff),
         now: () => this.now(),
         session: (item) => this.activitySession(item),
         voice: {
-          thought: (item, body, key) => this.post(item, "thought", body, key),
+          thought: (q, item, body, key) => this.postSteps(q, item, "thought", body, key),
           flush: () => this.flush(),
         },
         readPull: (item, pullNumber) => this.readItemPull(item, pullNumber, context.signal),
@@ -2483,17 +2486,19 @@ export class Orchestrator {
     const found = `merge attempt got ${error.message}; pull request #${pull.pullNumber} at ${read.head.slice(0, 7)}`;
     if (await this.sendBackForConflict(item, read.head, found)) return true;
     const base = await this.fetchUpstreamMain(item).catch(() => null);
-    const budget = rebaseBudgetFor(this.db, item.id, { base, files: null }, this.now());
+    const budget = await this.store.run((q) =>
+      rebaseBudgetForSteps(q, item.id, { base, files: null }, this.now()),
+    );
     if (
       budget.allowed ||
-      !askMergeHelp(this.db, {
+      !(await askMergeHelp(this.store, {
         itemId: item.id,
         body: `${budget.message} Reply with guidance to continue, or stop the task.`,
         reason: "rebase_budget_spent",
         now: this.now(),
         session: (current) => this.activitySession(current),
-        ask,
-      })
+        ask: askSteps,
+      }))
     )
       return false;
     this.options.journal?.(
@@ -5164,14 +5169,18 @@ export class Orchestrator {
     });
   }
 
-  private restartWithStoredFeedback(item: WorkItemRecord, handoff: RestartHandoff): number | null {
-    return restartWithFeedback(this.db, item, {
+  private *restartWithStoredFeedbackSteps(
+    q: Q,
+    item: WorkItemRecord,
+    handoff: RestartHandoff,
+  ): Steps<{ id: number; armed: boolean } | null> {
+    return yield* restartWithFeedbackSteps(q, item, {
       reason: handoff.reason,
       now: handoff.now,
       ...(handoff.jobKey === undefined ? {} : { jobKey: handoff.jobKey }),
       ...(handoff.limit === undefined ? {} : { limit: handoff.limit }),
       lead: [handoff.body],
-      reads: storedFeedbackReads(this.db, item, handoff.now),
+      reads: yield* storedFeedbackReadsSteps(q, item, handoff.now),
       ci: false,
       fixRoundLimit: this.fixRoundLimit(item),
       sessionId: this.activitySession(item),
@@ -6296,7 +6305,7 @@ export class Orchestrator {
 
   private orderCapabilities(itemId: string): OrderCapabilities {
     return {
-      ask,
+      ask: askSteps,
       now: () => this.now(),
       stopped: () => this.stopped(itemId),
       session: (item) => this.activitySession(item),
@@ -6319,7 +6328,7 @@ export class Orchestrator {
       },
       readPull: (item, pullNumber) =>
         this.readItemPull(item, pullNumber, this.signalForItem(item.id)),
-      restart: (item, handoff) => this.restartWithStoredFeedback(item, handoff),
+      restart: (q, item, handoff) => this.restartWithStoredFeedbackSteps(q, item, handoff),
       dependencyHold: (id) => {
         // Only unmet dependencies; a pending reconciliation keeps its own retry in mergeAttempt.
         // Stays sync: the merge queue calls this as a predicate inside listMergeQueuesSteps.
@@ -6330,18 +6339,18 @@ export class Orchestrator {
       mergeLane: (item) =>
         mergeLaneKey(getWorkItemLinearProjectId(this.db, item.id), this.readMergePolicy()),
       voice: {
-        thought: (item, body, key) => this.post(item, "thought", body, key),
-        status: (item, body) => this.statusAfterPullRequest(item, body),
+        thought: (q, item, body, key) => this.postSteps(q, item, "thought", body, key),
+        status: (q, item, body) => this.statusAfterPullRequestSteps(q, item, body),
         afterPullRequest: (item, body, key) => this.postAfterPullRequest(item, body, key),
         flush: () => this.flush(),
       },
     };
   }
 
-  private statusAfterPullRequest(item: WorkItemRecord, body: string): void {
+  private *statusAfterPullRequestSteps(q: Q, item: WorkItemRecord, body: string): Steps<void> {
     if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return;
-    if (getWorkItem(this.db, item.id)?.state === "cancelled") return;
-    this.sessionProgress(item)?.mergeStatus(body);
+    if ((yield* getWorkItemSteps(q, item.id))?.state === "cancelled") return;
+    yield* syncSteps(() => this.sessionProgress(item)?.mergeStatus(body));
     void this.flush().catch((caughtError10) => {
       journalCaught(
         caughtError10,

@@ -23,7 +23,7 @@ import {
   REBASE_CONFLICT_THOUGHT,
   type OrderCapabilities,
 } from "./orders";
-import { askMergeHelpSteps, askThrough, rebaseBudgetForSteps, returnToAgent } from "./returns";
+import { askMergeHelpSteps, rebaseBudgetForSteps, returnToAgent } from "./returns";
 
 export type QueueConflictCapabilities = Pick<
   OrderCapabilities,
@@ -80,7 +80,6 @@ export function queueConflictSweep(payload: unknown): QueueConflictSweep | null 
  * Each head goes back once. The ids sent back or asked about.
  */
 export async function returnQueuedConflicts(
-  db: Database,
   store: Db,
   sweep: QueueConflictSweep,
   caps: QueueConflictCapabilities,
@@ -104,7 +103,7 @@ export async function returnQueuedConflicts(
       handled.push(item.id);
       continue;
     }
-    if (await askSpentBudget(db, store, item, conflict, caps, owned)) handled.push(item.id);
+    if (await askSpentBudget(store, item, conflict, caps, owned)) handled.push(item.id);
   }
   if (handled.length > 0) await caps.voice.flush();
   return handled;
@@ -132,7 +131,7 @@ function returnConflict(
     keepPlace: true,
     conflict: { sessionId: caps.session(item), pullNumber, head },
     ...(caps.restart ? { restart: caps.restart } : {}),
-    announce: (running, _, key) => caps.voice.thought(running, REBASE_CONFLICT_THOUGHT, key),
+    announce: (q, running, _, key) => caps.voice.thought(q, running, REBASE_CONFLICT_THOUGHT, key),
     record: (q, jobId) =>
       recordRebaseReturnSteps(q, {
         itemId: item.id,
@@ -146,7 +145,6 @@ function returnConflict(
 }
 
 function askSpentBudget(
-  db: Database,
   store: Db,
   item: WorkItemRecord,
   conflict: RebaseConflict,
@@ -164,7 +162,7 @@ function askSpentBudget(
         reason: "rebase_budget_spent",
         now: caps.now(),
         session: caps.session,
-        ask: askThrough(db, caps.ask),
+        ask: caps.ask,
       }))
     );
   });

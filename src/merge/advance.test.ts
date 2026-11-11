@@ -1,13 +1,14 @@
-import { ask as rawAsk } from "../questions";
+import { askSteps as rawAsk } from "../questions";
 import { describe, expect, test } from "bun:test";
 import {
-  applyWorkItemEvent,
+  applyWorkItemEventSteps,
   beginMergeCall,
   DEFAULT_PULL_FEEDBACK_WAIT,
   mergeCallInFlight,
   beginImplementRun,
   enterMergeQueue,
   getWorkItem,
+  getWorkItemSteps,
   insertQueuedItem,
   migrate,
   openDatabase,
@@ -152,9 +153,9 @@ describe("advanceMerge", () => {
   });
 });
 
-const ask: typeof rawAsk = (db, asker, ...args) => {
-  const result = rawAsk(db, asker, ...args);
-  if (getWorkItem(db, asker.itemId)?.state !== "awaiting_input")
-    applyWorkItemEvent(db, asker.itemId, "blocking_question");
+const ask: typeof rawAsk = function* (q, asker, ...args) {
+  const result = yield* rawAsk(q, asker, ...args);
+  if ((yield* getWorkItemSteps(q, asker.itemId))?.state !== "awaiting_input")
+    yield* applyWorkItemEventSteps(q, asker.itemId, "blocking_question");
   return result;
 };

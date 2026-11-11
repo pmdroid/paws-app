@@ -88,14 +88,6 @@ export async function readPendingFeedback(
   };
 }
 
-export function storedFeedbackReads(
-  db: Database,
-  item: WorkItemRecord,
-  now: number,
-): FeedbackReads | null {
-  return settled(sqliteDb(db).run((q) => storedFeedbackReadsSteps(q, item, now)));
-}
-
 export function* storedFeedbackReadsSteps(
   q: Q,
   item: WorkItemRecord,

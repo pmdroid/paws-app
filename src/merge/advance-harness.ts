@@ -1,4 +1,4 @@
-import { ask as rawAsk } from "../questions";
+import { askSteps as rawAsk } from "../questions";
 import type { Database } from "bun:sqlite";
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -7,7 +7,6 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { FakeClock } from "../core";
 import {
-  applyWorkItemEvent,
   applyWorkItemEventSteps,
   beginImplementRun,
   enterMergeQueue,
@@ -28,6 +27,7 @@ import {
   type PullFeedbackWait,
   type TaskMergeSettings,
   sqliteDb,
+  syncSteps,
 } from "../db";
 import {
   createFakeGitHub,
@@ -520,8 +520,8 @@ export async function mergeHarness(
         return open.length ? open : null;
       },
       voice: {
-        thought: (_, body, key) => say("thought", body, key),
-        status: (_, body, key) => say("status", body, key),
+        thought: (_q, _, body, key) => syncSteps(() => say("thought", body, key)),
+        status: (_q, _, body, key) => syncSteps(() => say("status", body, key)),
         afterPullRequest: (_, body, key) => say("afterPullRequest", body, key),
         flush: async () => {},
       },
@@ -644,7 +644,6 @@ export async function mergeHarness(
   /** The queue conflict sweep for main's commit `main`, as its job runs it. */
   function sweep(main: string | null): Promise<string[]> {
     return returnQueuedConflicts(
-      db,
       store,
       { repository: "acme/app", main },
       {
@@ -652,7 +651,7 @@ export async function mergeHarness(
         now: () => clock.now(),
         session: (current) => current.sessionKey,
         voice: {
-          thought: (_, body, key) => say("thought", body, key),
+          thought: (_q, _, body, key) => syncSteps(() => say("thought", body, key)),
           flush: async () => {},
         },
         readPull: (_, prNumber) => readPull(prNumber),
@@ -693,9 +692,9 @@ export async function mergeHarness(
 
 export type MergeHarness = Awaited<ReturnType<typeof mergeHarness>>;
 
-const ask: typeof rawAsk = (db, asker, ...args) => {
-  const result = rawAsk(db, asker, ...args);
-  if (getWorkItem(db, asker.itemId)?.state !== "awaiting_input")
-    applyWorkItemEvent(db, asker.itemId, "blocking_question");
+const ask: typeof rawAsk = function* (q, asker, ...args) {
+  const result = yield* rawAsk(q, asker, ...args);
+  if ((yield* getWorkItemSteps(q, asker.itemId))?.state !== "awaiting_input")
+    yield* applyWorkItemEventSteps(q, asker.itemId, "blocking_question");
   return result;
 };

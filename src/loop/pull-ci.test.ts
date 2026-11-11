@@ -9,6 +9,9 @@ import {
   getJob,
   getPullCiFailure,
   getWorkItem,
+  getWorkItemSteps,
+  applyWorkItemEventSteps,
+  syncSteps,
   insertQueuedItem,
   listCiRounds,
   listJobs,
@@ -36,7 +39,7 @@ import {
   type GitHubResponse,
 } from "../github";
 import { advanceMerge, type MergeCapabilities, type MergeStep } from "../merge";
-import { ask as rawAsk, findOpenQuestion } from "../questions";
+import { askSteps as rawAsk, findOpenQuestion } from "../questions";
 import { acceptGitHubDelivery, enqueueVerifiedMerge } from "./merge-jobs";
 import { CI_REVIEW_WAIT_SOURCE } from "./pull-ci";
 import { handlePullComments, type PullCommentFilter } from "./pull-comments";
@@ -165,8 +168,8 @@ async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 
     dependencyHold: () => null,
     mergeLane: () => "",
     voice: {
-      thought: () => {},
-      status: () => {},
+      thought: () => syncSteps(() => {}),
+      status: () => syncSteps(() => {}),
       afterPullRequest: () => {},
       flush: async () => {},
     },
@@ -314,10 +317,10 @@ function FILTER(wait: PullFeedbackWait): PullCommentFilter {
   };
 }
 
-const ask: typeof rawAsk = (db, asker, ...args) => {
-  const result = rawAsk(db, asker, ...args);
-  if (getWorkItem(db, asker.itemId)?.state !== "awaiting_input")
-    applyWorkItemEvent(db, asker.itemId, "blocking_question");
+const ask: typeof rawAsk = function* (q, asker, ...args) {
+  const result = yield* rawAsk(q, asker, ...args);
+  if ((yield* getWorkItemSteps(q, asker.itemId))?.state !== "awaiting_input")
+    yield* applyWorkItemEventSteps(q, asker.itemId, "blocking_question");
   return result;
 };
 

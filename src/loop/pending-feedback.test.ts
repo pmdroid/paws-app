@@ -28,7 +28,8 @@ import {
   REBASED_LINES_NOTE,
   readPendingFeedback,
   restartWithFeedback,
-  storedFeedbackReads,
+  restartWithFeedbackSteps,
+  storedFeedbackReadsSteps,
   type FeedbackCapabilities,
 } from "./pending-feedback";
 import {
@@ -309,18 +310,19 @@ test("the merge lane's rebase return carries the stored comment", async () => {
     handoff: REBASE_CONFLICT_INSTRUCTION,
     now: 2_000,
     record: () => syncSteps(() => {}),
-    announce: () => {},
-    restart: (item, handoff) =>
-      restartWithFeedback(h.db, item, {
+    announce: () => syncSteps(() => {}),
+    restart: function* (q, item, handoff) {
+      return yield* restartWithFeedbackSteps(q, item, {
         reason: handoff.reason,
         now: handoff.now,
         ...(handoff.jobKey === undefined ? {} : { jobKey: handoff.jobKey }),
         lead: [handoff.body],
-        reads: storedFeedbackReads(h.db, item, handoff.now),
+        reads: yield* storedFeedbackReadsSteps(q, item, handoff.now),
         ci: false,
         fixRoundLimit: 3,
         sessionId: item.sessionKey,
-      }),
+      });
+    },
   });
   expect(returned).toBe(true);
   const [restarted] = handoffs(h.db);

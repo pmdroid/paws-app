@@ -1,4 +1,4 @@
-import type { ask } from "../questions";
+import type { askSteps } from "../questions";
 import { journal, journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { mergeQueueLine, type RepositoryBinding } from "../core";
@@ -51,7 +51,6 @@ import { ciFixHandoff, ciFixQuestion, ciFixRoundLine, type FailedCiCheck } from 
 import type { RebaseConflict } from "./budget";
 import {
   askMergeHelpSteps,
-  askThrough,
   rebaseBudgetForSteps,
   returnToAgent,
   type MergeRestart,
@@ -257,14 +256,14 @@ function* pullFeedbackPendingSteps(q: Q, itemId: string): Steps<boolean> {
 }
 
 export type MergeVoice = {
-  thought(item: WorkItemRecord, body: string, key: string): void;
-  status(item: WorkItemRecord, body: string, key: string): void;
+  thought(q: Q, item: WorkItemRecord, body: string, key: string): Steps<unknown>;
+  status(q: Q, item: WorkItemRecord, body: string, key: string): Steps<unknown>;
   afterPullRequest(item: WorkItemRecord, body: string, key: string): void;
   flush(): Promise<void>;
 };
 
 export type OrderCapabilities = {
-  ask: typeof ask;
+  ask: typeof askSteps;
   now(): number;
   stopped(): boolean;
   session(item: WorkItemRecord): string | null;
@@ -328,15 +327,15 @@ export function sendBack(
     ...(report.pullNumber !== undefined ? { pullNumber: report.pullNumber } : {}),
     ...(report.conflict ? { conflict: { ...report.conflict, sessionId: caps.session(item) } } : {}),
     ...(caps.restart ? { restart: caps.restart } : {}),
-    announce: (running, attempt, key) => {
-      if (reason === "ci-failed") caps.voice.status(running, report.thought(attempt), key);
-      else caps.voice.thought(running, report.thought(attempt), key);
-    },
+    announce: (q, running, attempt, key) =>
+      reason === "ci-failed"
+        ? caps.voice.status(q, running, report.thought(attempt), key)
+        : caps.voice.thought(q, running, report.thought(attempt), key),
   });
 }
 
 export function askHelp(
-  { db, store, item, caps }: MergeContext,
+  { store, item, caps }: MergeContext,
   body: string,
   reason = "merge_help",
   options?: readonly string[],
@@ -349,7 +348,7 @@ export function askHelp(
       ...(options ? { options } : {}),
       now: caps.now(),
       session: caps.session,
-      ask: askThrough(db, caps.ask),
+      ask: caps.ask,
     }),
   );
 }
@@ -453,7 +452,9 @@ export async function mergeQueueTurn(
   ) {
     const line = mergeQueueLine(place);
     const body = place.nextItemId === null ? `${line}. Merging next.` : `${line}. ${first}`;
-    caps.voice.status(item, body, `${item.id}:merge-queue:${place.readyAt}:${place.position}`);
+    await store.run((q) =>
+      caps.voice.status(q, item, body, `${item.id}:merge-queue:${place.readyAt}:${place.position}`),
+    );
     await store.run((q) => markMergeQueueNotifiedSteps(q, item.id, place.position));
   }
   if (place.nextItemId === null) return undefined;
@@ -583,10 +584,13 @@ export async function mergeThroughGitHubQueue(
   }
   switch (result.outcome) {
     case "no_queue":
-      caps.voice.status(
-        item,
-        `${result.message} Paws merges the pull request itself when its CI is green.`,
-        `${item.id}:github-queue:none:${head}`,
+      await store.run((q) =>
+        caps.voice.status(
+          q,
+          item,
+          `${result.message} Paws merges the pull request itself when its CI is green.`,
+          `${item.id}:github-queue:none:${head}`,
+        ),
       );
       return "no_queue";
     case "checks_pending":
@@ -595,16 +599,22 @@ export async function mergeThroughGitHubQueue(
     case "queued": {
       const line = githubQueueLine(name, result.position, result.state);
       if (!watch.queued)
-        caps.voice.status(
-          item,
-          `Added ${pull.url ?? `pull request #${pull.number}`} to the GitHub merge queue. ${line}`,
-          `${item.id}:github-queue:added:${head}`,
+        await store.run((q) =>
+          caps.voice.status(
+            q,
+            item,
+            `Added ${pull.url ?? `pull request #${pull.number}`} to the GitHub merge queue. ${line}`,
+            `${item.id}:github-queue:added:${head}`,
+          ),
         );
       else if (watch.position !== result.position || watch.state !== result.state)
-        caps.voice.status(
-          item,
-          line,
-          `${item.id}:github-queue:${head}:${result.position}:${result.state}`,
+        await store.run((q) =>
+          caps.voice.status(
+            q,
+            item,
+            line,
+            `${item.id}:github-queue:${head}:${result.position}:${result.state}`,
+          ),
         );
       await caps.voice.flush();
       return {
