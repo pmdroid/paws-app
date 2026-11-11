@@ -125,7 +125,9 @@ async function replicas() {
       teamId: "acme-team",
       observedAtMs: clock,
     });
-    bindLinearSessionTask(db, sessionId, record.delegationId, { actorId: "acme-owner" });
+    await bindLinearSessionTask(sqliteDb(db), sessionId, record.delegationId, {
+      actorId: "acme-owner",
+    });
     db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
     bindWorkItemRepository(db, id, {
       owner: "acme",

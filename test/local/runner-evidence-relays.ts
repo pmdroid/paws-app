@@ -188,7 +188,9 @@ export async function probeRunnerEvidenceRelays(
       teamId: "team",
       observedAtMs: now,
     });
-    bindLinearSessionTask(db, "relay-session", item.delegationId, { actorId: "relay-owner" });
+    await bindLinearSessionTask(sqliteDb(db), "relay-session", item.delegationId, {
+      actorId: "relay-owner",
+    });
     const repository = {
       owner: "fixture",
       repo: "repository",

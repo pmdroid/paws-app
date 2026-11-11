@@ -515,7 +515,7 @@ async function startScenario(input: {
     teamId: "team",
     observedAtMs: now,
   });
-  bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
   bindWorkItemRepository(db, item.id, { owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL });
   db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, item.id]);
   // Paws recorded the last fetched commit as the item's head.

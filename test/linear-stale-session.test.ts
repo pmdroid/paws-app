@@ -98,7 +98,7 @@ async function fixture() {
     });
   let orchestrator = makeOrchestrator();
   await orchestrator.onLinearEvent(created("old"));
-  const oldId = getLinearSession(db, "old")!.activeItemId!;
+  const oldId = (await getLinearSession(sqliteDb(db), "old"))!.activeItemId!;
   beginImplementRun(db, oldId, 11);
   applyWorkItemEvent(db, oldId, "blocking_question");
   const snapshot: LinearSessionSnapshot = {
@@ -172,8 +172,8 @@ test.each(["dismissed", "ended", "complete", "error", "stopping"])(
     f.snapshot.status = ["dismissed", "ended"].includes(state) ? "awaitingInput" : state;
     try {
       await f.orchestrator.onLinearEvent(created("new"));
-      expect(getLinearSession(f.db, "old")?.stoppedAt).not.toBeNull();
-      expect(getLinearSession(f.db, "new")!.activeItemId).toBe(f.oldId);
+      expect((await getLinearSession(sqliteDb(f.db), "old"))?.stoppedAt).not.toBeNull();
+      expect((await getLinearSession(sqliteDb(f.db), "new"))!.activeItemId).toBe(f.oldId);
       expect(getWorkItem(f.db, f.oldId)).toMatchObject({ state: "queued", sessionKey: "new" });
       await f.orchestrator.onLinearEvent(created("new"));
       expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(1);
@@ -197,7 +197,7 @@ test("re-delegating an issue a Linear Stop paused resumes the same item", async 
     await f.orchestrator.onLinearEvent(created("new"));
     expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(1);
     expect(getWorkItem(f.db, f.oldId)).toMatchObject({ state: "queued", sessionKey: "new" });
-    expect(getLinearSession(f.db, "new")?.activeItemId).toBe(f.oldId);
+    expect((await getLinearSession(sqliteDb(f.db), "new"))?.activeItemId).toBe(f.oldId);
   } finally {
     await f.close();
   }

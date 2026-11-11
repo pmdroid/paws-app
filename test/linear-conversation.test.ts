@@ -228,7 +228,7 @@ function fixture(
       return orchestrator;
     },
     async item() {
-      return getWorkItem(db, getLinearSession(db, "session")!.activeItemId!)!;
+      return getWorkItem(db, (await getLinearSession(sqliteDb(db), "session"))!.activeItemId!)!;
     },
     prompts() {
       return existsSync(evidence)
@@ -607,7 +607,7 @@ test("an unhandled Stop replay after reopen preserves a newer explicit task", as
     await f.orchestrator.onLinearEvent(stop);
     await f.orchestrator.onLinearEvent(event("later-request", "NEW_REQUEST", 4));
     const current = await f.item();
-    const session = getLinearSession(f.db, "session");
+    const session = await getLinearSession(sqliteDb(f.db), "session");
     const outbox = listOutbox(f.db);
     expect(current.state).toBe("queued");
     f.reopen();
@@ -623,7 +623,7 @@ test("an unhandled Stop replay after reopen preserves a newer explicit task", as
       store.markHandled(row.dedupeKey);
     }
     expect(await f.item()).toEqual(current);
-    expect(getLinearSession(f.db, "session")).toEqual(session);
+    expect(await getLinearSession(sqliteDb(f.db), "session")).toEqual(session);
     expect(listOutbox(f.db)).toEqual(outbox);
     expect(store.listUnhandled()).toEqual([]);
   } finally {
@@ -636,7 +636,7 @@ test("a failed Stop transaction leaves no receipt, generation or partial pause",
   try {
     await f.orchestrator.onLinearEvent(event("created", null, 1));
     const item = await f.item();
-    const session = getLinearSession(f.db, "session");
+    const session = await getLinearSession(sqliteDb(f.db), "session");
     const outbox = listOutbox(f.db);
     const originalItems = f.db.query("SELECT * FROM work_item ORDER BY position").all();
     let emitted = 0;
@@ -651,7 +651,7 @@ test("a failed Stop transaction leaves no receipt, generation or partial pause",
     expect(await f.item()).toEqual(item);
     expect(f.db.query("SELECT * FROM work_item ORDER BY position").all()).toEqual(originalItems);
     expect(emitted).toBe(0);
-    expect(getLinearSession(f.db, "session")).toEqual(session);
+    expect(await getLinearSession(sqliteDb(f.db), "session")).toEqual(session);
     expect(listOutbox(f.db)).toEqual(outbox);
     expect(f.db.query("SELECT * FROM linear_stop_receipt").all()).toEqual([]);
     f.db.exec("DROP TRIGGER reject_stop");
@@ -671,11 +671,11 @@ test("administrative interruption joins a zero-item classifier without a Linear 
       .onLinearEvent(event("created", null, 1))
       .catch((error: unknown) => error);
     await until(() => f.starts.includes("classify"));
-    const session = getLinearSession(f.db, "session");
+    const session = await getLinearSession(sqliteDb(f.db), "session");
     await f.orchestrator.interruptLinearSession("session");
     expect(await original).toMatchObject({ name: "AbortError" });
     expect(f.db.query("SELECT id FROM work_item").all()).toEqual([]);
-    expect(getLinearSession(f.db, "session")).toEqual(session);
+    expect(await getLinearSession(sqliteDb(f.db), "session")).toEqual(session);
     expect(f.tracker.progress.filter((row) => row.kind === "response")).toEqual([]);
     expect(f.db.query("SELECT * FROM linear_stop_receipt").all()).toEqual([]);
   } finally {

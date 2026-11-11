@@ -59,7 +59,7 @@ async function fixture() {
     teamId: "team",
     observedAtMs: clock.now,
   });
-  bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
   const repository = {
     owner: "fixture",
     repo: "repository",

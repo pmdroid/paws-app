@@ -97,7 +97,8 @@ async function placeItem(bindTask = true) {
     teamId: "team",
     observedAtMs: now,
   });
-  if (bindTask) bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+  if (bindTask)
+    await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
   db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [owner, item.id]);
   for (const [id, userId, sharing] of [
     ["own", owner, 0],

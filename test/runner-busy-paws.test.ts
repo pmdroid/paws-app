@@ -84,7 +84,7 @@ async function fixture() {
     teamId: "team",
     observedAtMs: now(),
   });
-  bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
   bindWorkItemRepository(db, item.id, repository);
   const keys = generateKeyPairSync("ed25519");
   const work = createRunnerWork({

@@ -70,7 +70,7 @@ async function dependencyEpic() {
     teamId: "team",
     observedAtMs: 1000,
   });
-  bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "owner" });
+  await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, { actorId: "owner" });
   const readyIds = async () => {
     const ready: string[] = [];
     for (const item of intake.items)
@@ -173,7 +173,9 @@ test("an item with a satisfied and an unsatisfied external blocker stays held", 
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, {
+      actorId: "owner",
+    });
     tracker.deps.set("item", [
       { blockerLinearIssueId: "done", blockedLinearIssueId: "item" },
       { blockerLinearIssueId: "open", blockedLinearIssueId: "item" },
@@ -258,7 +260,9 @@ test("a held item tells Linear which blockers it waits for, once", async () => {
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, {
+      actorId: "owner",
+    });
     tracker.deps.set("item", [
       { blockerLinearIssueId: "done", blockedLinearIssueId: "item" },
       { blockerLinearIssueId: "open", blockedLinearIssueId: "item" },

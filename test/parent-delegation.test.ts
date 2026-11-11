@@ -67,7 +67,7 @@ test("a delegated parent records its sub-issues and each sub-issue runs alone in
     tracker.deps.set("child-b", [
       { blockerLinearIssueId: "child-a", blockedLinearIssueId: "child-b" },
     ]);
-    ensureLinearSession(db, {
+    await ensureLinearSession(sqliteDb(db), {
       sessionId: "parent-session",
       issueId: "parent",
       organizationId: "org",
@@ -230,7 +230,7 @@ test("a cycle between sub-issues reports the cycle and adopts nothing", async ()
       { blockerLinearIssueId: "c1", blockedLinearIssueId: "c2" },
       { blockerLinearIssueId: "c2", blockedLinearIssueId: "c1" },
     ]);
-    ensureLinearSession(fixture.db, {
+    await ensureLinearSession(sqliteDb(fixture.db), {
       sessionId: "cycle-session",
       issueId: "cycle-parent",
       organizationId: "org",
@@ -271,7 +271,7 @@ test("a reserved sub-issue keeps the multi-item delegation", async () => {
       `INSERT INTO parent_delegation_issue(parent_delegation_id,workspace_id,issue_id,identifier,title,position)
        VALUES('existing','workspace','child-a','PAR-2','First child',0)`,
     );
-    ensureLinearSession(fixture.db, {
+    await ensureLinearSession(sqliteDb(fixture.db), {
       sessionId: "parent-session",
       issueId: "parent",
       organizationId: "org",
@@ -302,7 +302,7 @@ test("a follow-up on an adopted parent session does not queue its sub-issues aga
   const fixture = createParentFixture();
   try {
     publish(fixture.tracker, parent);
-    ensureLinearSession(fixture.db, {
+    await ensureLinearSession(sqliteDb(fixture.db), {
       sessionId: "parent-session",
       issueId: "parent",
       organizationId: "org",
@@ -329,7 +329,7 @@ test("stopping the parent session stops its adoption so the parent can be delega
   const fixture = createParentFixture();
   try {
     publish(fixture.tracker, parent);
-    ensureLinearSession(fixture.db, {
+    await ensureLinearSession(sqliteDb(fixture.db), {
       sessionId: "parent-session",
       issueId: "parent",
       organizationId: "org",
@@ -371,7 +371,7 @@ test("a message on an adopted parent session is answered instead of failing inta
   const fixture = createParentFixture();
   try {
     publish(fixture.tracker, parent);
-    ensureLinearSession(fixture.db, {
+    await ensureLinearSession(sqliteDb(fixture.db), {
       sessionId: "parent-session",
       issueId: "parent",
       organizationId: "org",
@@ -418,7 +418,7 @@ test("a sub-issue already managed in another session is rejected", async () => {
   const fixture = createParentFixture();
   try {
     publish(fixture.tracker, parent);
-    ensureLinearSession(fixture.db, {
+    await ensureLinearSession(sqliteDb(fixture.db), {
       sessionId: "child-session",
       issueId: "child-a",
       organizationId: "org",
@@ -429,7 +429,7 @@ test("a sub-issue already managed in another session is rejected", async () => {
       `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key)
        VALUES('other-item','other-epic','child-a','PAR-2','Child A','running','paws/par-2',0,0,'child-session')`,
     );
-    ensureLinearSession(fixture.db, {
+    await ensureLinearSession(sqliteDb(fixture.db), {
       sessionId: "parent-session",
       issueId: "parent",
       organizationId: "org",
@@ -459,7 +459,7 @@ test("without Linear session starts a delegated parent runs its sub-issues in it
   const fixture = createParentFixture(":memory:", { startSessions: false });
   try {
     publish(fixture.tracker, parent);
-    ensureLinearSession(fixture.db, {
+    await ensureLinearSession(sqliteDb(fixture.db), {
       sessionId: "parent-session",
       issueId: "parent",
       organizationId: "org",
@@ -515,7 +515,7 @@ test("a delegated parent leaves its finished sub-issues out and still starts the
     tracker.deps.set("child-b", [
       { blockerLinearIssueId: "child-a", blockedLinearIssueId: "child-b" },
     ]);
-    ensureLinearSession(db, {
+    await ensureLinearSession(sqliteDb(db), {
       sessionId: "parent-session",
       issueId: "parent",
       organizationId: "org",
@@ -619,7 +619,7 @@ test("a delegated parent with a chain of sub-issues ends its session with one su
       identifier: "PAS-300",
       stateType: "completed",
     });
-    ensureLinearSession(db, {
+    await ensureLinearSession(sqliteDb(db), {
       sessionId: "parent-session",
       issueId: "chain",
       organizationId: "org",

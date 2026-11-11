@@ -119,7 +119,9 @@ async function fixture(root: string) {
       teamId: "team",
       observedAtMs: now,
     });
-    bindLinearSessionTask(db, `${name}-session`, item.delegationId, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), `${name}-session`, item.delegationId, {
+      actorId: "owner",
+    });
     bindWorkItemRepository(db, item.id, repository);
     return { itemId: item.id, runId: run.id };
   }

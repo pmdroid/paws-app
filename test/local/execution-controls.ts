@@ -96,7 +96,7 @@ export async function createExecutionControlsFixture(
       appUserId: "app",
       observedAtMs: now,
     });
-    bindLinearSessionTask(db, item.sessionKey!, item.delegationId);
+    await bindLinearSessionTask(sqliteDb(db), item.sessionKey!, item.delegationId);
   }
   const item = getWorkItem(db, "controlled")!;
   db.run(

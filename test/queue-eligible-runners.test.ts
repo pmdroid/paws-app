@@ -52,7 +52,7 @@ async function workspace(db: Database) {
   db.run("UPDATE work_item SET linear_identifier='PAS-1',owner_user_id=? WHERE id='mine'", [
     users.me!,
   ]);
-  ensureLinearSession(db, {
+  await ensureLinearSession(sqliteDb(db), {
     sessionId: "session",
     issueId: item.linearIssueId,
     organizationId: "org",
@@ -67,7 +67,7 @@ async function workspace(db: Database) {
     teamId: "team",
     observedAtMs: 0,
   });
-  bindLinearSessionTask(db, "session", item.delegationId);
+  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId);
   return users;
 }
 

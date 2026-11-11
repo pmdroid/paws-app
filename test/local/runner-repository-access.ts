@@ -155,7 +155,9 @@ export async function probeRunnerRepositoryAccess(
       teamId: "fixture-team",
       observedAtMs: now,
     });
-    bindLinearSessionTask(db, sessionId, item.delegationId, { actorId: "fixture-owner" });
+    await bindLinearSessionTask(sqliteDb(db), sessionId, item.delegationId, {
+      actorId: "fixture-owner",
+    });
     const repository = {
       owner: "fixture",
       repo: "repository",

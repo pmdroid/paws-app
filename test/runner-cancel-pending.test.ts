@@ -73,7 +73,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       teamId: "team",
       observedAtMs: now,
     });
-    bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
     const repository = {
       owner: "fixture",
       repo: "repository",
@@ -242,7 +242,9 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       teamId: "team",
       observedAtMs: now,
     });
-    bindLinearSessionTask(db, "session-2", other.delegationId, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), "session-2", other.delegationId, {
+      actorId: "owner",
+    });
     bindWorkItemRepository(db, other.id, repository);
     const undelivered = {
       ...command,

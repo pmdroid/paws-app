@@ -94,7 +94,9 @@ export async function probePublicationReadiness(root: string) {
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "human" });
+    await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, {
+      actorId: "human",
+    });
     const itemId = intake.items.find((item) => item.linearIssueId === "issue")!.id;
     const target = { delegationId: intake.delegation.id, workspaceId: "workspace" };
     let onChanges = (_changes: ItemChanges) => {};

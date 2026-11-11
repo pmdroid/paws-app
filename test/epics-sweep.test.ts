@@ -41,7 +41,7 @@ async function sweepFixture() {
     teamId: "team",
     observedAtMs: 1000,
   });
-  bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "human" });
+  await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, { actorId: "human" });
   let clock = 10_000;
   let reads = 0;
   let failNext = false;

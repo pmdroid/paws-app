@@ -134,7 +134,7 @@ test("session ownership is immutable and old team observations cannot move the p
 
 test("incomplete installation provenance fails closed and invalid changes roll back deduplication", async () => {
   const db = database();
-  ensureLinearSession(db, { sessionId: "legacy" });
+  await ensureLinearSession(sqliteDb(db), { sessionId: "legacy" });
   expect(getLinearSessionAccess(db, "missing")).toBe("unknown");
   expect(getLinearSessionAccess(db, "legacy")).toBe("unknown");
   expect(await getLinearSessionInstallation(sqliteDb(db), "legacy")).toBeNull();

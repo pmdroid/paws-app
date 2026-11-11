@@ -32,7 +32,7 @@ async function install(db: ReturnType<typeof tempDb>, delegationId: string): Pro
     teamId: "team",
     observedAtMs: 1000,
   });
-  bindLinearSessionTask(db, "session", delegationId, { actorId: "linear-person" });
+  await bindLinearSessionTask(sqliteDb(db), "session", delegationId, { actorId: "linear-person" });
 }
 
 test("a delegation whose only item is cancelled is no longer treated as running by reconciliation and readiness", async () => {

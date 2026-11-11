@@ -62,7 +62,7 @@ await recordLinearInstallation(sqliteDb(db), {
   teamId: "team",
   observedAtMs: 1,
 });
-bindLinearSessionTask(db, "session", task.delegation.id, { actorId: "human" });
+await bindLinearSessionTask(sqliteDb(db), "session", task.delegation.id, { actorId: "human" });
 await requireLinearTaskDelegation(sqliteDb(db), {
   itemId,
   issueId: "issue",

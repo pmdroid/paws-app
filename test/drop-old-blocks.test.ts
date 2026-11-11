@@ -154,7 +154,9 @@ test("migration 059 drops the old block tables and task_block holds each depende
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, {
+      actorId: "owner",
+    });
     const blocked = intake.items.find((item) => item.linearIssueId === "b");
     expect(blocked).toBeDefined();
     db.run(

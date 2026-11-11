@@ -230,11 +230,11 @@ test("created events replace a failed start, bind the new session and fence repl
   });
   try {
     await orchestrator.onLinearEvent(created("old"));
-    const originalId = getLinearSession(db, "old")!.activeItemId!;
+    const originalId = (await getLinearSession(sqliteDb(db), "old"))!.activeItemId!;
     applyWorkItemEvent(db, originalId, "dispatched");
     failWorkItem(db, getWorkItem(db, originalId)!, "no_repository", "No repository accessible", 10);
     await orchestrator.onLinearEvent(created("new"));
-    const replacementId = getLinearSession(db, "new")!.activeItemId!;
+    const replacementId = (await getLinearSession(sqliteDb(db), "new"))!.activeItemId!;
     expect(replacementId).not.toBe(originalId);
     expect(getWorkItem(db, replacementId)).toMatchObject({ state: "queued", sessionKey: "new" });
     expect(getWorkItem(db, originalId)?.state).toBe("cancelled");
@@ -250,7 +250,7 @@ test("created events replace a failed start, bind the new session and fence repl
       }),
     ).rejects.toThrow("PAS-372");
     expect(getWorkItem(db, originalId)?.state).toBe("cancelled");
-    expect(getLinearSession(db, "new")!.activeItemId).toBe(replacementId);
+    expect((await getLinearSession(sqliteDb(db), "new"))!.activeItemId).toBe(replacementId);
     expect(db.query("SELECT id FROM work_item").all()).toHaveLength(2);
   } finally {
     await orchestrator.shutdown();

@@ -278,7 +278,9 @@ export async function probeRunnerTaskAuthority(
           teamId: "team",
           observedAtMs: now,
         });
-        bindLinearSessionTask(db, sessionId, item.delegationId, { actorId: "task-owner" });
+        await bindLinearSessionTask(sqliteDb(db), sessionId, item.delegationId, {
+          actorId: "task-owner",
+        });
         await saveTaskMode(sqliteDb(db), item.id, purpose, 0, withRepository);
         if (withRepository) bindWorkItemRepository(db, item.id, repository);
         const scope = await coordinator.work.scopeTask(run.id, workspace.id);

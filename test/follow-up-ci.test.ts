@@ -146,7 +146,7 @@ async function waitingTask(
     }),
   });
   await orchestrator.onLinearEvent(linearEvent("created", null));
-  itemId = getLinearSession(db, "session")!.activeItemId!;
+  itemId = (await getLinearSession(sqliteDb(db), "session"))!.activeItemId!;
   bindWorkItemRepository(db, itemId, {
     owner: "acme",
     repo: "one",

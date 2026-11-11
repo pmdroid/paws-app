@@ -95,7 +95,7 @@ export async function probeStandaloneAttribution(root: string) {
     teamId: "team",
     observedAtMs: now,
   });
-  bindLinearSessionTask(db, "session", item.delegationId, { actorId: "steerer" });
+  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "steerer" });
   const { run } = beginImplementRun(db, item.id, now);
   const bot = { appId: "99", id: 88, login: "paws-test[bot]" };
   const policyForItem = async (): Promise<GitCommitPolicy> => ({

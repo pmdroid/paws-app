@@ -311,7 +311,7 @@ export async function probeRunnerBackend(
       teamId: "fixture-team",
       observedAtMs: now,
     });
-    bindLinearSessionTask(db, sessionId, record.delegationId, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), sessionId, record.delegationId, { actorId: "owner" });
     db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
     bindWorkItemRepository(db, id, {
       owner: "fixture",

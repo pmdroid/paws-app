@@ -641,9 +641,11 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   };
 
   let linearTaskAccess: LinearTaskAccess | null = null;
-  const invalidateAuthorization = (scope: { sessionId?: string; issueId?: string } = {}): void => {
+  const invalidateAuthorization = async (
+    scope: { sessionId?: string; issueId?: string } = {},
+  ): Promise<void> => {
     linearTaskAccess?.invalidate(scope);
-    orchestrator?.invalidateGitHubAuthorization(scope);
+    await orchestrator?.invalidateGitHubAuthorization(scope);
   };
   let workspace: ReturnType<typeof startWorkspaceAccess> | undefined;
   let assignments: ReturnType<typeof createWorkspaceAssignments> | undefined;
@@ -676,11 +678,11 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             applyLinearUserChangeSteps(q, { ...userChange, now: Date.now() }),
           )
         )
-          invalidateAuthorization();
+          await invalidateAuthorization();
         return false;
       }
       const issueEvent = acceptedIssueChange(event);
-      if (issueEvent) invalidateAuthorization({ issueId: issueEvent.issueId });
+      if (issueEvent) await invalidateAuthorization({ issueId: issueEvent.issueId });
       const projectChange = parseLinearIssueProjectChange(event);
       if (projectChange)
         await store.run((q) =>
@@ -727,7 +729,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           },
           revalidate: async (sessionIds) => {
             if (linearTaskAccess === null) throw new Error("Linear is not connected.");
-            for (const sessionId of sessionIds) invalidateAuthorization({ sessionId });
+            for (const sessionId of sessionIds) await invalidateAuthorization({ sessionId });
             await linearTaskAccess.revalidateSessions(sessionIds);
           },
           reconcile: (notification) =>
@@ -751,7 +753,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
                   issueId: notification.issueId,
                   organizationId: notification.organizationId,
                 });
-              invalidateAuthorization({ issueId: notification.issueId });
+              await invalidateAuthorization({ issueId: notification.issueId });
               await linearTaskAccess.reconcile(notification.issueId);
               await orchestrator?.reconcileExecution();
               await refreshLinearNotificationContext(store, linear?.tracker ?? null, notification);
@@ -764,7 +766,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       ) {
         const administration = parseLinearAdministration(event);
         if (administration?.kind === "revoked" || administration?.kind === "teams")
-          invalidateAuthorization();
+          await invalidateAuthorization();
         if (
           workspace !== undefined &&
           administration?.kind === "teams" &&

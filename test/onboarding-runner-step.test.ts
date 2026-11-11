@@ -235,7 +235,7 @@ async function fixture({
   const heldItem = async () => {
     const item = insertQueuedItem(db, { id: "held", now: clock.now(), sessionKey: "session" });
     db.run("UPDATE work_item SET owner_user_id=? WHERE id='held'", [userId]);
-    ensureLinearSession(db, {
+    await ensureLinearSession(sqliteDb(db), {
       sessionId: "session",
       issueId: item.linearIssueId,
       organizationId: "org",
@@ -250,7 +250,7 @@ async function fixture({
       teamId: "team",
       observedAtMs: clock.now(),
     });
-    bindLinearSessionTask(db, "session", item.delegationId);
+    await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId);
     return () =>
       sqliteDb(db).run((q) =>
         itemOwnerHasEligibleRunnerSteps(q, { itemId: "held", agent: "claude", now: clock.now() }),

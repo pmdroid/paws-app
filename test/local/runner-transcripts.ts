@@ -97,7 +97,9 @@ export async function probeRunnerTranscripts(
     teamId: "team",
     observedAtMs: now,
   });
-  bindLinearSessionTask(db, "transcript-session", item.delegationId, { actorId: "owner" });
+  await bindLinearSessionTask(sqliteDb(db), "transcript-session", item.delegationId, {
+    actorId: "owner",
+  });
   const repository = {
     owner: "fixture",
     repo: "repository",

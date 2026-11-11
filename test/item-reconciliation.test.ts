@@ -154,7 +154,9 @@ test("a spec change on the item's issue is reconciled through the item", async (
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "linear-person" });
+    await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, {
+      actorId: "linear-person",
+    });
     const changed: string[][] = [];
     const reconciler = createItemReconciler({
       db,
@@ -223,7 +225,7 @@ test("a reconcile handed the intake's reads writes the scheduler rows without re
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", intake.delegation.id);
+    await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id);
     const unread = async (): Promise<never> => {
       throw new Error("The intake's reads must not be repeated");
     };

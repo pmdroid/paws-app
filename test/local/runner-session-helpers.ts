@@ -247,7 +247,7 @@ export async function probeRunnerSessionHelpers(
     assert.equal(selected.command.purpose, "select_repository");
     const item = insertQueuedItem(db, { id: "task", sessionKey: "session", now });
     const { run } = beginImplementRun(db, item.id, now);
-    bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
     const repository = {
       owner: "acme",
       repo: "app",

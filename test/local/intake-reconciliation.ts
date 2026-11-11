@@ -90,7 +90,9 @@ export async function probeEpicReconciliation(root: string) {
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "human" });
+    await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, {
+      actorId: "human",
+    });
     const delegationId = intake.delegation.id;
     const target = { itemId: intake.items[0]!.id, workspaceId: "workspace" };
     const recorded: ItemChanges[] = [];

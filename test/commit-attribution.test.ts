@@ -65,7 +65,7 @@ async function fixture() {
     teamId: "team",
     observedAtMs: now,
   });
-  bindLinearSessionTask(db, "session", item.delegationId, { actorId: "steerer" });
+  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "steerer" });
   db.run(
     "INSERT INTO work_item_scheduling(item_id,project_id,project_known,priority,project_lead_id) VALUES(?,?,1,0,'lead')",
     [item.id, "project"],

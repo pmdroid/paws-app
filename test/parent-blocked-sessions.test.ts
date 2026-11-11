@@ -1,6 +1,6 @@
 import { confirmFakeMerge } from "./fake-workspace";
 import { expect, test } from "bun:test";
-import { ensureLinearSession } from "../src/db";
+import { ensureLinearSession, sqliteDb } from "../src/db";
 import type { EpicSnapshot } from "../src/linear";
 import { createParentFixture } from "./local/parent-fixture";
 
@@ -32,7 +32,7 @@ async function delegate(f: Fixture, subIssues: EpicSnapshot["subIssues"]) {
       description: issue.description ?? null,
       subIssues: [],
     });
-  ensureLinearSession(f.db, {
+  await ensureLinearSession(sqliteDb(f.db), {
     sessionId: "parent-session",
     issueId: "parent",
     organizationId: "org",

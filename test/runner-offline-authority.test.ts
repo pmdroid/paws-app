@@ -116,7 +116,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
     teamId: "team",
     observedAtMs: pawsNow(),
   });
-  bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
   bindWorkItemRepository(db, item.id, repository);
   const start = async () =>
     await registerInstance(sqliteDb(db), {

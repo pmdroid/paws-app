@@ -167,7 +167,7 @@ async function fixture({
       },
     }),
   };
-  ensureLinearSession(db, { sessionId: "session", issueId: "issue" });
+  await ensureLinearSession(sqliteDb(db), { sessionId: "session", issueId: "issue" });
   const install = async () =>
     await recordLinearInstallation(sqliteDb(db), {
       sessionId: "session",
@@ -228,7 +228,7 @@ async function fixture({
         await beforeContinuationIntake?.(value);
         beforeContinuationIntake = undefined;
         await orchestrator.onLinearEvent(value);
-        const delegationId = getLinearSession(db, "session")!.delegationId!;
+        const delegationId = (await getLinearSession(sqliteDb(db), "session"))!.delegationId!;
         const itemIds = db
           .query<{ id: string }, [string]>(
             "SELECT id FROM work_item WHERE delegation_id=? ORDER BY position,id",
@@ -634,7 +634,7 @@ test("linked members avoid a new-issue sign-in hold while removed members do not
     expect(listOutbox(f.db)).toHaveLength(0);
     f.db.run("UPDATE workspace_member SET active=0 WHERE user_id='member'");
     expect(await f.assignments.authorize(f.event)).toMatchObject({ outcome: "refused" });
-    expect(getLinearSession(f.db, "session")!.creatorId).toBe("member");
+    expect((await getLinearSession(sqliteDb(f.db), "session"))!.creatorId).toBe("member");
   } finally {
     await f.close();
   }
@@ -1572,7 +1572,7 @@ test("a pending hold past one day posts one final response, ends the session and
     const responses = f.tracker.progress.filter((update) => update.kind === "response");
     expect(responses.map((update) => update.body)).toEqual([ONBOARDING_EXPIRED_BODY]);
     expect(f.tracker.questions).toHaveLength(1);
-    expect(getLinearSession(f.db, "session")!.stoppedAt).not.toBeNull();
+    expect((await getLinearSession(sqliteDb(f.db), "session"))!.stoppedAt).not.toBeNull();
     expect(holdStatus(f)).toBe("invalid");
     expect(listWorkItems(f.db)).toHaveLength(0);
 

@@ -164,14 +164,14 @@ export async function probeExecutionLifecycle(
     db.run(
       "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('external-workspace','external-org','External workspace',1)",
     );
-    ensureLinearSession(db, {
+    await ensureLinearSession(sqliteDb(db), {
       sessionId: "external-session",
       issueId: "external-parent",
       organizationId: "external-org",
       appUserId: "external-app",
       creatorId: "external-human",
     });
-    bindLinearSessionTask(db, "external-session", "external");
+    await bindLinearSessionTask(sqliteDb(db), "external-session", "external");
     await recordLinearInstallation(sqliteDb(db), {
       sessionId: "external-session",
       organizationId: "external-org",

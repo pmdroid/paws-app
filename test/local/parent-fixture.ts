@@ -98,7 +98,7 @@ export function createParentFixture(
       payload: "{}",
     };
     await accept!(event);
-    ensureLinearSession(db, { sessionId, issueId: target.id, creatorId: "app" });
+    await ensureLinearSession(sqliteDb(db), { sessionId, issueId: target.id, creatorId: "app" });
     await recordLinearInstallation(sqliteDb(db), {
       sessionId,
       organizationId: "org",

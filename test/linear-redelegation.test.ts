@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ensureLinearSession, insertQueuedItem, migrate, openDatabase } from "../src/db";
+import { ensureLinearSession, insertQueuedItem, migrate, openDatabase, sqliteDb } from "../src/db";
 import { checkRedelegation, createInboxStore } from "../src/linear";
 import type { AcceptedLinearEvent } from "../src/linear";
 
@@ -33,7 +33,7 @@ function fixture(delegateId: string | null = "paws-app") {
     );
   };
   const session = async (sessionId: string, issueId: string, now: number) =>
-    ensureLinearSession(db, { sessionId, issueId, appUserId: "paws-app", now });
+    await ensureLinearSession(sqliteDb(db), { sessionId, issueId, appUserId: "paws-app", now });
   return { db, store, delivered, check, session };
 }
 

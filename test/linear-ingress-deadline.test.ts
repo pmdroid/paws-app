@@ -225,7 +225,7 @@ function fixture() {
       delaySession = true;
     },
     async blockOtherSession() {
-      ensureLinearSession(db, { sessionId: "other", issueId: "issue" });
+      await ensureLinearSession(sqliteDb(db), { sessionId: "other", issueId: "issue" });
       await recordLinearInstallation(sqliteDb(db), {
         ...scope,
         sessionId: "other",

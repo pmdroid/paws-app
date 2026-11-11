@@ -242,7 +242,7 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
       teamId: "team",
       observedAtMs: now,
     });
-    bindLinearSessionTask(db, "session-1", item.delegationId, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), "session-1", item.delegationId, { actorId: "owner" });
     db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, item.id]);
     await syncItemDependencies(db, {
       itemId: item.id,

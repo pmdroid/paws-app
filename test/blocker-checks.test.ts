@@ -60,7 +60,9 @@ async function blockedFixture(options: { blocked?: boolean; lowBudget?: boolean 
     teamId: "acme-team",
     observedAtMs: 1000,
   });
-  bindLinearSessionTask(db, "acme-session", intake.delegation.id, { actorId: "acme-human" });
+  await bindLinearSessionTask(sqliteDb(db), "acme-session", intake.delegation.id, {
+    actorId: "acme-human",
+  });
   if (options.blocked !== false) tracker.deps.set("acme-child", BLOCKED_BY_B);
   let epicReads = 0;
   const reconciler = createItemReconciler({

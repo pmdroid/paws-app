@@ -485,7 +485,9 @@ async function addItem(id: string, answer = false) {
     teamId: "team",
     observedAtMs: Date.now(),
   });
-  bindLinearSessionTask(paws.db, sessionKey, item.delegationId, { actorId: "owner" });
+  await bindLinearSessionTask(sqliteDb(paws.db), sessionKey, item.delegationId, {
+    actorId: "owner",
+  });
   paws.db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
   if (answer) await saveTaskMode(sqliteDb(paws.db), id, "answer");
   else bindWorkItemRepository(paws.db, id, { owner: "pmdroid", repo: "paws-demo", remoteUrl });

@@ -80,7 +80,9 @@ export async function probeRunnerResults(root: string, observe: Observe) {
       teamId: "team",
       observedAtMs: now,
     });
-    bindLinearSessionTask(db, "result-session", item.delegationId, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), "result-session", item.delegationId, {
+      actorId: "owner",
+    });
     const repository = {
       owner: "fixture",
       repo: "repository",

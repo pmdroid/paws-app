@@ -779,7 +779,7 @@ async function runRemoteFault(fault: Fault) {
       teamId: "team",
       observedAtMs: now,
     });
-    bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
     db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, item.id]);
     await syncItemDependencies(db, {
       itemId: item.id,

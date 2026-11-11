@@ -367,7 +367,7 @@ async function runnerWorld() {
     teamId: "team",
     observedAtMs: w.now,
   });
-  bindLinearSessionTask(w.db, "session", item.delegationId, { actorId: "owner" });
+  await bindLinearSessionTask(sqliteDb(w.db), "session", item.delegationId, { actorId: "owner" });
   const repository = {
     owner: "fixture",
     repo: "repository",

@@ -72,7 +72,9 @@ export async function probeDependencySnapshots(
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, {
+      actorId: "owner",
+    });
     await saveTaskMode(sqliteDb(db), ids.get("a")!, "code");
     const refresh = async () => {
       for (const itemId of ids.values())

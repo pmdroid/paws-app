@@ -41,7 +41,7 @@ export async function probeMergeDependencyYield(
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", "epic");
+    await bindLinearSessionTask(sqliteDb(db), "session", "epic");
     const jobs = new JobLoop(db, clock);
     let gitHubCalls = 0;
     const orchestrator = new Orchestrator({

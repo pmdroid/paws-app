@@ -146,8 +146,12 @@ export async function probePublicationStop(
     db.run(
       "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('item','epic','issue','STOP-1','Stop','merge_queue','paws/stop-1',0,1,'session')",
     );
-    ensureLinearSession(db, { sessionId: "session", issueId: "issue", now: clock.now() });
-    bindLinearSessionTask(db, "session", "epic");
+    await ensureLinearSession(sqliteDb(db), {
+      sessionId: "session",
+      issueId: "issue",
+      now: clock.now(),
+    });
+    await bindLinearSessionTask(sqliteDb(db), "session", "epic");
     bindWorkItemRepository(db, "item", repository);
     branch = getWorkItem(db, "item")!.branchName;
     enqueueJob(db, {
@@ -319,8 +323,8 @@ export async function probePublicationStop(
     db.run(
       "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('pending-item','pending','pending','PEND-1','Pending','merge_queue','paws/pending',0,1,'pending-session')",
     );
-    ensureLinearSession(db, { sessionId: "pending-session", issueId: "pending" });
-    bindLinearSessionTask(db, "pending-session", "pending");
+    await ensureLinearSession(sqliteDb(db), { sessionId: "pending-session", issueId: "pending" });
+    await bindLinearSessionTask(sqliteDb(db), "pending-session", "pending");
     bindWorkItemRepository(db, "pending-item", repository);
     pendingEpics.add("pending");
     const pendingJob = enqueueJob(db, {
@@ -389,14 +393,14 @@ export async function probePublicationStop(
     db.run(
       "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('cycle-workspace','cycle-org','Cycle workspace',1)",
     );
-    ensureLinearSession(db, {
+    await ensureLinearSession(sqliteDb(db), {
       sessionId: "cycle-session",
       issueId: "cycle-parent",
       organizationId: "cycle-org",
       appUserId: "cycle-app",
       creatorId: "cycle-human",
     });
-    bindLinearSessionTask(db, "cycle-session", "cycle");
+    await bindLinearSessionTask(sqliteDb(db), "cycle-session", "cycle");
     await recordLinearInstallation(sqliteDb(db), {
       sessionId: "cycle-session",
       organizationId: "cycle-org",
@@ -544,8 +548,11 @@ export async function probePublicationStop(
     db.run(
       "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('owned-refresh-item','owned-refresh','owned-refresh','OWN-1','Owned','merge_queue','paws/owned-refresh',0,1,'owned-refresh-session')",
     );
-    ensureLinearSession(db, { sessionId: "owned-refresh-session", issueId: "owned-refresh" });
-    bindLinearSessionTask(db, "owned-refresh-session", "owned-refresh");
+    await ensureLinearSession(sqliteDb(db), {
+      sessionId: "owned-refresh-session",
+      issueId: "owned-refresh",
+    });
+    await bindLinearSessionTask(sqliteDb(db), "owned-refresh-session", "owned-refresh");
     bindWorkItemRepository(db, "owned-refresh-item", repository);
     const ownedRun = insertRun(db, {
       itemId: "owned-refresh-item",

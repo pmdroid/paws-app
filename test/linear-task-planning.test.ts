@@ -15,12 +15,12 @@ import { runAgent } from "../src/acp";
 import { createTaskPlanner, type AgentLaunch } from "../src/loop";
 import { tempDb, tempHome } from "./helpers";
 
-function fixture(remote: boolean) {
+async function fixture(remote: boolean) {
   const db = tempDb();
   const home = tempHome();
   const pawsRoot = join(home, "paws");
   mkdirSync(pawsRoot);
-  ensureLinearSession(db, { sessionId: "session" });
+  await ensureLinearSession(sqliteDb(db), { sessionId: "session" });
   const traces: string[] = [];
   const launch: AgentLaunch = () => {
     const first = traces.length === 0;
@@ -95,7 +95,7 @@ function fixture(remote: boolean) {
 test.each([false, true])(
   "replacement planning joins one classifier and reuses its result with remote=%s",
   async (remote) => {
-    const f = fixture(remote);
+    const f = await fixture(remote);
     try {
       const first = f.plan("first").catch((error: unknown) => error);
       await f.waitForFirst();
@@ -120,7 +120,7 @@ test.each([false, true])(
 test.each([false, true])(
   "Stop joins classification and rejects waiting replacement with remote=%s",
   async (remote) => {
-    const f = fixture(remote);
+    const f = await fixture(remote);
     try {
       const first = f.plan("first").catch((error: unknown) => error);
       await f.waitForFirst();
@@ -176,7 +176,7 @@ test("a clarification resolution preserves its child-task redirect and guidance 
 test("unavailable selected helper fails before local launch or classification persistence", async () => {
   const db = tempDb();
   const home = tempHome();
-  ensureLinearSession(db, { sessionId: "session" });
+  await ensureLinearSession(sqliteDb(db), { sessionId: "session" });
   let localLaunches = 0;
   const planner = createTaskPlanner({
     db,

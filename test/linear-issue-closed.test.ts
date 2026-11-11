@@ -69,7 +69,7 @@ async function fixture() {
     teamId: "team",
     observedAtMs: 1,
   });
-  bindLinearSessionTask(db, "session", task.delegation.id, { actorId: "human" });
+  await bindLinearSessionTask(sqliteDb(db), "session", task.delegation.id, { actorId: "human" });
   const journal: string[] = [];
   const restore = setJournalSink((line) => journal.push(line));
   cleanup.push(restore);

@@ -92,7 +92,9 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, {
+      actorId: "owner",
+    });
     const ids = Object.fromEntries(intake.items.map((item) => [item.linearIssueId, item.id]));
     const manualId = ids.manual!;
     await reconciler.reconcile({ itemId: manualId, workspaceId: "workspace" });

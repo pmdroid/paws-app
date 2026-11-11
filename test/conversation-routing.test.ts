@@ -351,7 +351,7 @@ test("a timeout posts the timeout reply once and keeps the session", async () =>
   expect(await f.deliver("acme-1")).toBe("done");
   expect(await f.deliver("acme-1")).toBe("done");
   expect(f.responses(acme.session)).toEqual([CONVERSATION_TIMEOUT_REPLY]);
-  expect(getLinearSession(f.db, acme.session)!.stoppedAt).toBeNull();
+  expect((await getLinearSession(sqliteDb(f.db), acme.session))!.stoppedAt).toBeNull();
   expect(getWorkItem(f.db, "acme-1")!.state).toBe("merge_queue");
 });
 
@@ -365,7 +365,7 @@ test("a helper that expires without a result posts the timeout reply once", asyn
   expect(await f.deliver("acme-1")).toBe("done");
   expect(await f.deliver("acme-1")).toBe("done");
   expect(f.responses(acme.session)).toEqual([CONVERSATION_TIMEOUT_REPLY]);
-  expect(getLinearSession(f.db, acme.session)!.stoppedAt).toBeNull();
+  expect((await getLinearSession(sqliteDb(f.db), acme.session))!.stoppedAt).toBeNull();
 });
 
 test("a message while a work turn runs is delivered at the turn boundary, as today", async () => {

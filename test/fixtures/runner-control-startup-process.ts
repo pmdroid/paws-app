@@ -485,7 +485,11 @@ try {
           appUserId: "app",
           observedAtMs: now,
         });
-        bindLinearSessionTask(paws.db, controlled.sessionKey!, controlled.delegationId);
+        await bindLinearSessionTask(
+          sqliteDb(paws.db),
+          controlled.sessionKey!,
+          controlled.delegationId,
+        );
         const available = await call<{ available: boolean; actions: string[] }>(
           browserPort,
           `/api/execution-controls?itemId=${controlled.id}`,

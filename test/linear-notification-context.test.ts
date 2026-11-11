@@ -37,7 +37,7 @@ test("child notifications refresh only their installation sessions and retain co
     teamId: "team",
     observedAtMs: 1,
   });
-  bindLinearSessionTask(db, "session", task.delegation.id);
+  await bindLinearSessionTask(sqliteDb(db), "session", task.delegation.id);
   tracker.issueContexts.set("child", {
     id: "child",
     teamId: "team",

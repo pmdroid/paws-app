@@ -120,7 +120,7 @@ test("a reconcile after the issue moved in Linear stores the new project", async
     teamId: "team",
     observedAtMs: 1000,
   });
-  bindLinearSessionTask(db, "session", intake.delegation.id);
+  await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id);
   const lifecycle = createFakeLinearIssueLifecycle({
     id: "issue",
     teamId: "team",

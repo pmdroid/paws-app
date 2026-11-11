@@ -99,7 +99,7 @@ async function fixture() {
     teamId: "team",
     observedAtMs: now,
   });
-  bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
   db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, item.id]);
   await saveTaskMode(sqliteDb(db), item.id, "answer");
   const worktree = join(root, "task");

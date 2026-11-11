@@ -4,7 +4,13 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { systemClock } from "../src/core";
 import { createInboxStore, createFakeTracker, openLinear, writeStoredToken } from "../src/linear";
-import { getLinearSession, isLinearAppRevoked, JobLoop, OutboxDispatcher } from "../src/db";
+import {
+  getLinearSession,
+  isLinearAppRevoked,
+  JobLoop,
+  OutboxDispatcher,
+  sqliteDb,
+} from "../src/db";
 import { attachOrchestrator, handleLinearAdministration, LinearTaskAccess } from "../src/loop";
 import { startServer } from "../src/server";
 import { tempDb, tempHome } from "./helpers";
@@ -119,7 +125,7 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
       oauthClientId: "client",
       appUserId: "app",
       stopSession: async () => {
-        expect(getLinearSession(db, "session")?.stoppedAt).not.toBeNull();
+        expect((await getLinearSession(sqliteDb(db), "session"))?.stoppedAt).not.toBeNull();
       },
       interruptSession: async (sessionId) => {
         await orchestrator.interruptLinearSession(sessionId);
@@ -184,7 +190,7 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
         expect(joined).toBe(true);
         expect(launches).toBe(0);
         expect(requests.every((query) => !query.includes("mutation"))).toBe(true);
-        expect(getLinearSession(db, "session")?.stoppedAt).not.toBeNull();
+        expect((await getLinearSession(sqliteDb(db), "session"))?.stoppedAt).not.toBeNull();
         expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(0);
         return;
       }
@@ -226,8 +232,8 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
         await Bun.sleep(5);
       }
       expect(joined).toBe(true);
-      expect(getLinearSession(db, "session")?.stoppedAt).not.toBeNull();
-      expect(getLinearSession(db, "session")?.generation).toBe(1);
+      expect((await getLinearSession(sqliteDb(db), "session"))?.stoppedAt).not.toBeNull();
+      expect((await getLinearSession(sqliteDb(db), "session"))?.generation).toBe(1);
       expect(JSON.parse(readFileSync(trace, "utf8")).methods).toContain("session/cancel");
       if (mode === "revoked") expect(requests).toHaveLength(before);
       else expect(requests.slice(before).every((query) => !query.includes("mutation"))).toBe(true);

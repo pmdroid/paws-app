@@ -43,7 +43,7 @@ async function relationsFixture(options: { batched?: boolean } = {}) {
     teamId: "team",
     observedAtMs: 1000,
   });
-  bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "human" });
+  await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, { actorId: "human" });
   let epicReads = 0;
   const depReads: string[] = [];
   const reconciler = createItemReconciler({

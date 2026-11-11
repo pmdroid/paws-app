@@ -7,6 +7,7 @@ import {
   insertQueuedItem,
   migrations,
   openDatabase,
+  sqliteDb,
 } from "../src/db";
 import { registerScheduler } from "../src/scheduler";
 import { tempDb } from "./helpers";
@@ -18,7 +19,11 @@ test("one scheduler tick requeues an orphan and admits its resume in the same pa
   const db = tempDb();
   const clock = new FakeClock(1_000_000);
   try {
-    ensureLinearSession(db, { sessionId: "orphan-session", issueId: "orphan-parent", now: 1 });
+    await ensureLinearSession(sqliteDb(db), {
+      sessionId: "orphan-session",
+      issueId: "orphan-parent",
+      now: 1,
+    });
     insertQueuedItem(db, { id: "orphan", now: 1, sessionKey: "orphan-session" });
     db.run("UPDATE work_item SET state='running' WHERE id='orphan'");
     const finished = enqueueJob(db, {

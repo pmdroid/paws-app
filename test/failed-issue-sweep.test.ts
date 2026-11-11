@@ -44,7 +44,7 @@ async function fixture() {
     teamId: "team",
     observedAtMs: 1,
   });
-  bindLinearSessionTask(db, "session", task.delegation.id, { actorId: "human" });
+  await bindLinearSessionTask(sqliteDb(db), "session", task.delegation.id, { actorId: "human" });
   const item = task.items[0]!;
   applyWorkItemEvent(db, item.id, "start_timed_out");
   expect(getWorkItem(db, item.id)?.state).toBe("failed");

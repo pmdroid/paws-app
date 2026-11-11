@@ -214,12 +214,14 @@ test("host credentials reach real host clone and fetch without reaching reposito
     const db = tempDb();
     const orchestratedRoot = join(home, "orchestrated-paws");
     const item = insertQueuedItem(db, { id: "repository-answer", sessionKey: "host-git-session" });
-    ensureLinearSession(db, {
+    await ensureLinearSession(sqliteDb(db), {
       sessionId: item.sessionKey!,
       issueId: item.linearIssueId,
       now: Date.now(),
     });
-    bindLinearSessionTask(db, item.sessionKey!, item.delegationId, { actorId: "human" });
+    await bindLinearSessionTask(sqliteDb(db), item.sessionKey!, item.delegationId, {
+      actorId: "human",
+    });
     await saveTaskMode(sqliteDb(db), item.id, "answer", 0, true);
     const installation = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
     await recordLinearInstallation(sqliteDb(db), {

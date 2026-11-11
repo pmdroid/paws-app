@@ -43,7 +43,7 @@ async function delegate(f: Fixture, blocked = false) {
       ],
     );
   }
-  ensureLinearSession(f.db, {
+  await ensureLinearSession(sqliteDb(f.db), {
     sessionId: "parent-session",
     issueId: "parent",
     organizationId: "org",
@@ -59,7 +59,7 @@ async function delegate(f: Fixture, blocked = false) {
 /** Someone delegates the sub-issue again in Linear, which opens another session on it. */
 async function created(f: Fixture, sessionId: string): Promise<AcceptedLinearEvent> {
   if (!f.db.query("SELECT 1 FROM linear_session WHERE session_id=?").get(sessionId)) {
-    ensureLinearSession(f.db, { sessionId, issueId: "a", creatorId: "actor" });
+    await ensureLinearSession(sqliteDb(f.db), { sessionId, issueId: "a", creatorId: "actor" });
     await recordLinearInstallation(sqliteDb(f.db), {
       sessionId,
       organizationId: "org",

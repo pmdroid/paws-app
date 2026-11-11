@@ -85,7 +85,7 @@ async function assignedPreview(runnerVersion: string) {
       teamId: "team",
       observedAtMs: now(),
     });
-    bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
     bindWorkItemRepository(db, item.id, repository);
     const work = createRunnerWork({
       db,

@@ -50,7 +50,7 @@ async function workspace(db: Database) {
   addRunner(db, "runner-1", START);
   const item = insertQueuedItem(db, { id: "cli", now: START, sessionKey: "session" });
   db.run("UPDATE work_item SET linear_identifier='DEP-12',owner_user_id='me' WHERE id='cli'");
-  ensureLinearSession(db, {
+  await ensureLinearSession(sqliteDb(db), {
     sessionId: "session",
     issueId: item.linearIssueId,
     organizationId: "org",
@@ -65,7 +65,7 @@ async function workspace(db: Database) {
     teamId: "team",
     observedAtMs: 0,
   });
-  bindLinearSessionTask(db, "session", item.delegationId);
+  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId);
   bindWorkItemRepository(db, "cli", {
     owner: "acme",
     repo: "cli",

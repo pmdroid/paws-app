@@ -65,7 +65,7 @@ export async function workspaceWithRunners(db: Database) {
       observedAtMs: NOW,
     });
     const delegationId = getWorkItem(db, id)!.delegationId;
-    bindLinearSessionTask(db, sessionKey, delegationId, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), sessionKey, delegationId, { actorId: "owner" });
     db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
   };
   const pass = (reported: RunnerHostRefusal[][] = []) =>

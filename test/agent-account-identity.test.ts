@@ -63,7 +63,7 @@ async function fixture() {
     observedAtMs: clock,
   });
   const item = insertQueuedItem(db, { id: "item", now: clock, sessionKey: "session" });
-  bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
   db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [owner, item.id]);
   for (const id of ["R1", "R2"]) {
     db.run(

@@ -45,7 +45,7 @@ test.skipIf(process.platform !== "linux")(
     };
     let db = openDatabase(database);
     migrate(db);
-    ensureLinearSession(db, { sessionId: "session" });
+    await ensureLinearSession(sqliteDb(db), { sessionId: "session" });
     const planner = () =>
       createTaskPlanner({
         db,
@@ -206,7 +206,7 @@ test.skipIf(process.platform !== "linux")(
       process.kill(family!.anchor, "SIGKILL");
       await expect(orchestrator.interruptLinearSession("session")).rejects.toThrow("cleanup");
       await work;
-      const itemId = getLinearSession(db, "session")!.activeItemId!;
+      const itemId = (await getLinearSession(sqliteDb(db), "session"))!.activeItemId!;
       expect((await getConversation(sqliteDb(db), itemId)).blocked).toBe(true);
       expect(getWorkItem(db, itemId)?.state).not.toBe("completed");
       await expect(orchestrator.shutdown()).rejects.toThrow("cleanup");

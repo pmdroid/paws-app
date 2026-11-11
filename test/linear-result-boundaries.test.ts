@@ -24,7 +24,7 @@ import { tempDb, tempHome } from "./helpers";
 test("only a newer accepted turn can change a non-code task outcome and code stays selected", async () => {
   const db = tempDb();
   try {
-    ensureLinearSession(db, { sessionId: "session" });
+    await ensureLinearSession(sqliteDb(db), { sessionId: "session" });
     const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
     applyWorkItemEvent(db, item.id, "dispatched");
     await expect(selectTaskModeForTurn(sqliteDb(db), item.id, "answer", 1)).rejects.toThrow(

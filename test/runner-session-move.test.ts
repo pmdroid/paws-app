@@ -194,7 +194,9 @@ async function setup() {
       teamId: "fixture-team",
       observedAtMs: now,
     });
-    bindLinearSessionTask(db, sessionKey, record.delegationId, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), sessionKey, record.delegationId, {
+      actorId: "owner",
+    });
     db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
     bindWorkItemRepository(db, id, {
       owner: "fixture",

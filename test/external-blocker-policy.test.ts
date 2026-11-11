@@ -50,7 +50,9 @@ async function fixture() {
     teamId: "team",
     observedAtMs: 1000,
   });
-  bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "linear-person" });
+  await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, {
+    actorId: "linear-person",
+  });
   const itemId = intake.items[0]!.id;
   const target = { workspaceId: "workspace", itemId };
   const refresh = async () =>
@@ -119,7 +121,7 @@ test("Managed blockers in another delegation require canonical delivery", async 
       teamId: "team",
       observedAtMs: 2000,
     });
-    bindLinearSessionTask(f.db, "other-session", intake.delegation.id, {
+    await bindLinearSessionTask(sqliteDb(f.db), "other-session", intake.delegation.id, {
       actorId: "linear-person",
     });
     const item = intake.items[0]!;
@@ -162,7 +164,7 @@ test("A blocker whose Paws tasks were all cancelled follows its Linear state", a
       teamId: "team",
       observedAtMs: 2000,
     });
-    bindLinearSessionTask(f.db, "other-session", intake.delegation.id, {
+    await bindLinearSessionTask(sqliteDb(f.db), "other-session", intake.delegation.id, {
       actorId: "linear-person",
     });
     f.db.run("UPDATE work_item SET state='cancelled' WHERE id=?", [intake.items[0]!.id]);
@@ -196,7 +198,7 @@ test("Re-delegated managed blockers follow the latest active item", async () => 
       teamId: "team",
       observedAtMs: 2000,
     });
-    bindLinearSessionTask(f.db, "other-session", intake.delegation.id, {
+    await bindLinearSessionTask(sqliteDb(f.db), "other-session", intake.delegation.id, {
       actorId: "linear-person",
     });
     const newer = intake.items[0]!;
