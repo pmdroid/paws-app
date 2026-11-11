@@ -19,7 +19,7 @@ export function runnerRepositoryQuestion(
       : "allows no repository";
     const page = `${runnersUrl.replace(/\/$/, "")}/${encodeURIComponent(refusal.runnerId)}`;
     return refusal.code === "repository_host"
-      ? `${refusal.runnerName} ${allows} in its host config (\`${RUNNER_HOST_CONFIG}\`, \`allowedRepositories\`). Add ${repository} there and restart \`paws-runner.service\`, or allow it on the [runner's page](${page}) in Paws.`
+      ? `${refusal.runnerName} ${allows} in its host config (\`${RUNNER_HOST_CONFIG}\`, \`allowedRepositories\`). Add ${repository} there, or remove \`allowedRepositories\` so the [runner's page](${page}) in Paws decides, then restart \`paws-runner.service\`.`
       : `${refusal.runnerName} ${allows} on its [runner's page](${page}) in Paws. Allow ${repository} there.`;
   });
   return [
