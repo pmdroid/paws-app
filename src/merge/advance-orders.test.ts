@@ -273,7 +273,11 @@ describe("advanceMerge in the repository merge queue", () => {
     for (const id of ids) await h.addItem(id);
     h.state.blockedBy.set("ENG-131", ["ENG-132"]);
     // ENG-131 joined before Linear's `blocks` relation reached Paws, and keeps its place.
-    joinMergeQueue(h.db, { itemId: "ENG-131", repository: "acme/app", now: h.clock.now() });
+    await joinMergeQueue(sqliteDb(h.db), {
+      itemId: "ENG-131",
+      repository: "acme/app",
+      now: h.clock.now(),
+    });
     h.clock.advance(1_000);
     const waiting = enqueueJob(h.db, {
       queue: JOB_KIND.merge,
@@ -349,7 +353,11 @@ describe("advanceMerge in the repository merge queue", () => {
     const ids = ["ENG-141", "ENG-142"];
     for (const id of ids) await h.addItem(id);
     h.state.blockedBy.set("ENG-141", ["ENG-140"]);
-    joinMergeQueue(h.db, { itemId: "ENG-141", repository: "acme/app", now: h.clock.now() });
+    await joinMergeQueue(sqliteDb(h.db), {
+      itemId: "ENG-141",
+      repository: "acme/app",
+      now: h.clock.now(),
+    });
     h.clock.advance(1_000);
 
     expect(await h.pass("ENG-141")).toMatchObject({ kind: "wait", reason: "dependencies" });

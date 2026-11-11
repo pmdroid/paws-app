@@ -40,7 +40,7 @@ test("a turn announcement and activity UUID survive restart without advancing tw
   migrate(db);
   try {
     await turn(db, "first");
-    expect(announceLinearTurn(db, "session", "first", 2)).toBe(true);
+    expect(await announceLinearTurn(sqliteDb(db), "session", "first", 2)).toBe(true);
     const original = listOutbox(db)[0]!;
     expect(original.generation).toBe(1);
     expect(original.delivery).toBe("critical");
@@ -48,7 +48,7 @@ test("a turn announcement and activity UUID survive restart without advancing tw
     db.close();
     db = openDatabase(path);
     migrate(db);
-    expect(announceLinearTurn(db, "session", "first", 3)).toBe(false);
+    expect(await announceLinearTurn(sqliteDb(db), "session", "first", 3)).toBe(false);
     expect(getLinearSession(db, "session")?.generation).toBe(1);
     expect(listOutbox(db)).toEqual([original]);
     expect(
@@ -58,7 +58,7 @@ test("a turn announcement and activity UUID survive restart without advancing tw
       await getLinearTurnGeneration(sqliteDb(db), "other", "first", "activity:first"),
     ).toBeNull();
     await turn(db, "second", 4);
-    expect(announceLinearTurn(db, "session", "second", 5)).toBe(true);
+    expect(await announceLinearTurn(sqliteDb(db), "session", "second", 5)).toBe(true);
     expect(await getLinearTurnGeneration(sqliteDb(db), "session", "first", null)).toBe(1);
     expect(await getLinearTurnGeneration(sqliteDb(db), "session", "second", null)).toBe(2);
     expect(listOutbox(db)[0]?.status).toBe("dropped");
@@ -71,17 +71,19 @@ test("Stop rejects delayed prior turns and a later turn starts a new generation"
   const db = tempDb();
   try {
     await turn(db, "first", 1);
-    announceLinearTurn(db, "session", "first", 2);
+    await announceLinearTurn(sqliteDb(db), "session", "first", 2);
     await advanceLinearSessionGeneration(sqliteDb(db), "session", { stop: true, now: 3 });
     await turn(db, "delayed", 2);
-    expect(announceLinearTurn(db, "session", "delayed", 4)).toBe(false);
-    expect(listPendingLinearTurns(db, "session")).toEqual([]);
+    expect(await announceLinearTurn(sqliteDb(db), "session", "delayed", 4)).toBe(false);
+    expect(await listPendingLinearTurns(sqliteDb(db), "session")).toEqual([]);
     expect(getLinearSession(db, "session")?.stoppedAt).toBe(3);
     await turn(db, "later", 4);
-    expect(announceLinearTurn(db, "session", "later", 5)).toBe(true);
+    expect(await announceLinearTurn(sqliteDb(db), "session", "later", 5)).toBe(true);
     expect(getLinearSession(db, "session")?.stoppedAt).toBeNull();
     expect(await getLinearTurnGeneration(sqliteDb(db), "session", "later", null)).toBe(3);
-    expect(listPendingLinearTurns(db, "session").map((entry) => entry.eventKey)).toEqual(["later"]);
+    expect(
+      (await listPendingLinearTurns(sqliteDb(db), "session")).map((entry) => entry.eventKey),
+    ).toEqual(["later"]);
   } finally {
     db.close();
   }
@@ -94,16 +96,16 @@ test("discarding rejected replies is session-scoped, idempotent and preserves ap
     for (const key of ["applied", "rejected", "pending"]) await turn(db, key);
     bindLinearSessionTask(db, "session", item.delegationId);
     activateLinearItem(db, "session", item.id);
-    applyLinearTurns(db, "session", ["applied"], item.id);
+    await applyLinearTurns(sqliteDb(db), "session", ["applied"], item.id);
     await discardLinearTurns(sqliteDb(db), "other", ["pending"]);
     await discardLinearTurns(sqliteDb(db), "session", ["applied", "rejected"]);
     await discardLinearTurns(sqliteDb(db), "session", ["rejected"]);
-    expect(listPendingLinearTurns(db, "session").map((entry) => entry.eventKey)).toEqual([
-      "pending",
-    ]);
+    expect(
+      (await listPendingLinearTurns(sqliteDb(db), "session")).map((entry) => entry.eventKey),
+    ).toEqual(["pending"]);
     expect(listLinearTurnsForItem(db, item.id).map((entry) => entry.eventKey)).toEqual(["applied"]);
     expect(listLinearTurnsForItem(db, "other")).toEqual([]);
-    expect(announceLinearTurn(db, "session", "rejected")).toBe(false);
+    expect(await announceLinearTurn(sqliteDb(db), "session", "rejected")).toBe(false);
   } finally {
     db.close();
   }

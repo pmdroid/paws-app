@@ -10,6 +10,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../../src/db";
 import {
   createRunnerControl,
@@ -211,9 +212,9 @@ export async function probeRunnerEnrollment(
     assert.equal(identity.authority, authority.certificate);
     const peer = describeRunnerCertificate(identity.certificate);
     assert.equal((await control.authenticate(peer)).id, identity.runnerId);
-    assert.equal(getRunner(db, identity.runnerId)!.ownerUserId, member.userId);
-    assert.equal(getRunner(db, identity.runnerId)!.name, "member-host");
-    assert.equal(getRunner(db, identity.runnerId)!.status, "paused");
+    assert.equal((await getRunner(sqliteDb(db), identity.runnerId))!.ownerUserId, member.userId);
+    assert.equal((await getRunner(sqliteDb(db), identity.runnerId))!.name, "member-host");
+    assert.equal((await getRunner(sqliteDb(db), identity.runnerId))!.status, "paused");
     observe(
       "one POST with token, name and CSR returns the identity of a member-owned runner",
       true,

@@ -6304,7 +6304,7 @@ export class Orchestrator {
       }),
     );
     if (!merged) return;
-    wakeMergesBehind(this.db, this.now());
+    await wakeMergesBehind(sqliteDb(this.db), this.now());
     await (this.options.remoteExecution ? removeCandidateRef : removeWorktree)({
       owner: repository.owner,
       repo: repository.repo,
@@ -9894,7 +9894,7 @@ export class Orchestrator {
       {
         kind: "visual-review",
         delegatorId: await this.store.run((q) => delegatedLinearUserIdSteps(q, item.id)),
-        leadId: projectLeadId(this.db, item.id),
+        leadId: await projectLeadId(this.db, item.id),
       },
       { id: actorId },
     );

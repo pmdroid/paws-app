@@ -924,7 +924,7 @@ test("Request changes while the commands still run restarts the item for review"
     expect(f.github.opened).toHaveLength(0);
     gate.next = pendingHuman("");
     // The runner settles the stopped work, and the scheduler places the restarted item.
-    releaseRunCapacity(f.db, getWorkItem(f.db, item.id)!.currentRunId!, Date.now());
+    await releaseRunCapacity(sqliteDb(f.db), getWorkItem(f.db, item.id)!.currentRunId!, Date.now());
     await f.orchestrator.reconcileExecution();
     await f.driveUntil(() => f.prompts.length === 2);
     expect(f.prompts[1]).toContain("Make the hint under Model shorter");

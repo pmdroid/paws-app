@@ -24,7 +24,7 @@ import {
 import { acceptGitHubDelivery } from "./merge-jobs";
 import { worktreeBranch } from "./sources";
 
-function setup(file = ":memory:") {
+async function setup(file = ":memory:") {
   const db = openDatabase(file);
   migrate(db);
   for (const id of ["first", "second"]) {
@@ -36,7 +36,11 @@ function setup(file = ":memory:") {
     });
     beginImplementRun(db, id, 1);
     enterMergeQueue(db, id, { phase: "merge_queue", baseSha: "base", wipCommit: "head" });
-    joinMergeQueue(db, { itemId: id, repository: "acme/one", now: id === "first" ? 1 : 2 });
+    await joinMergeQueue(sqliteDb(db), {
+      itemId: id,
+      repository: "acme/one",
+      now: id === "first" ? 1 : 2,
+    });
     recordItemPullRequest(db, {
       itemId: id,
       pullNumber: id === "first" ? 7 : 8,
@@ -116,7 +120,7 @@ const failures = [
 ];
 for (const [name, point, kind] of failures) {
   test(`delivery retries atomically after failure at ${name}`, async () => {
-    const { db, delivery } = setup();
+    const { db, delivery } = await setup();
     try {
       const before = listJobs(db);
       db.run(
@@ -161,7 +165,7 @@ for (const [name, point, kind] of failures) {
   });
 }
 test("failure after receipt insertion leaves the delivery retryable", async () => {
-  const { db, delivery } = setup();
+  const { db, delivery } = await setup();
   try {
     db.run(
       "INSERT INTO github_delivery (delivery_id, event, payload, received_at) VALUES ('expired', 'push', '{}', -300000000)",
@@ -187,7 +191,7 @@ for (const kind of ["review", "comment", "main"]) {
     const root = mkdtempSync(join(tmpdir(), "paws-delivery-crash-"));
     const file = join(root, "paws.db");
     try {
-      const { db, delivery } = setup(file);
+      const { db, delivery } = await setup(file);
       const before = listJobs(db);
       const input = delivery(kind);
       db.close();
@@ -234,7 +238,7 @@ for (const kind of ["review", "comment", "main"]) {
   });
 }
 test("filter and identity refresh callbacks run outside the write transaction, never for duplicates", async () => {
-  const { db, delivery } = setup();
+  const { db, delivery } = await setup();
   const calls: string[] = [];
   const check = (name: string) => {
     expect(db.inTransaction).toBe(false);

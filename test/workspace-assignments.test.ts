@@ -1848,10 +1848,9 @@ test("the creator's replies before sign-in reach the first agent prompt in order
         heldReply(f, "second", "member", "HELD_REPLY_TWO and keep the footer"),
       ),
     ).toBe(false);
-    expect(listPendingLinearTurns(f.db, "session").map((turn) => turn.body)).toEqual([
-      "HELD_REPLY_ONE use the blue button",
-      "HELD_REPLY_TWO and keep the footer",
-    ]);
+    expect(
+      (await listPendingLinearTurns(sqliteDb(f.db), "session")).map((turn) => turn.body),
+    ).toEqual(["HELD_REPLY_ONE use the blue button", "HELD_REPLY_TWO and keep the footer"]);
     expect(f.db.query("SELECT 1 FROM linear_turn WHERE actor_id='someone-else'").get()).toBeNull();
     expect(listOutbox(f.db)).toHaveLength(outbox);
     expect(f.tracker.progress).toEqual([]);
@@ -1875,7 +1874,7 @@ test("the creator's replies before sign-in reach the first agent prompt in order
       first!.prompt.indexOf("HELD_REPLY_TWO"),
     );
     expect(first?.prompt).not.toContain("HELD_REPLY_INTRUDER");
-    expect(listPendingLinearTurns(f.db, "session")).toEqual([]);
+    expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toEqual([]);
     await f.orchestrator.shutdown();
     await running.catch(() => undefined);
   } finally {
@@ -1892,7 +1891,7 @@ test("Stop before sign-in discards the creator's held replies", async () => {
     expect(await f.orchestrator.onLinearEvent(heldReply(f, "first", "member", "Held reply"))).toBe(
       false,
     );
-    expect(listPendingLinearTurns(f.db, "session")).toHaveLength(1);
+    expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toHaveLength(1);
     f.clock.advance(1_000);
     await f.orchestrator.onLinearEvent({
       ...f.event,
@@ -1904,7 +1903,7 @@ test("Stop before sign-in discards the creator's held replies", async () => {
       signal: "stop",
       updatedAtMs: f.clock.now(),
     });
-    expect(listPendingLinearTurns(f.db, "session")).toEqual([]);
+    expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toEqual([]);
     expect(
       f.db.query("SELECT state FROM linear_turn WHERE event_key='activity:first'").get(),
     ).toEqual({ state: "cancelled" });

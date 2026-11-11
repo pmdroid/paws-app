@@ -57,7 +57,7 @@ describe("restart and ask", () => {
   test("a durable merge marker fences restart until the lane settles the merge call", async () => {
     const { db } = fixture();
     db.run("UPDATE work_item SET state='merge_queue' WHERE id='item'");
-    joinMergeQueue(db, { itemId: "item", repository: "owner/repo", now: 2 });
+    await joinMergeQueue(sqliteDb(db), { itemId: "item", repository: "owner/repo", now: 2 });
     const jobs = listJobs(db).length;
     const queue = listMergeQueues(db);
     beginMergeCall(db, "item", "head", 3);
@@ -104,7 +104,7 @@ describe("restart and ask", () => {
         payload: { itemId: item.id },
         now: 1,
       });
-      joinMergeQueue(db, { itemId: item.id, repository: "owner/repo", now: 1 });
+      await joinMergeQueue(sqliteDb(db), { itemId: item.id, repository: "owner/repo", now: 1 });
       const jobId = restart(db, item, { reason, body: "Keep the branch and fix this.", now: 2 });
       const queued = getWorkItem(db, item.id)!;
       expect(queued).toMatchObject({

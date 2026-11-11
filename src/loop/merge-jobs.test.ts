@@ -161,7 +161,11 @@ describe("merge CI wait", () => {
     });
     beginImplementRun(db, "eng-2", clock.now());
     enterMergeQueue(db, "eng-2", { phase: "merge_queue", wipCommit: "h" });
-    joinMergeQueue(db, { itemId: "eng-2", repository: "acme/one", now: clock.now() });
+    await joinMergeQueue(sqliteDb(db), {
+      itemId: "eng-2",
+      repository: "acme/one",
+      now: clock.now(),
+    });
     enqueueJob(db, {
       queue: JOB_KIND.merge,
       payload: { itemId: "eng-1" },
@@ -487,13 +491,13 @@ describe("main moving", () => {
   const main = "c".repeat(40);
   const repository = { full_name: "acme/app", default_branch: "main" };
 
-  function twoQueued() {
+  async function twoQueued() {
     const { db, clock } = queue();
     for (const id of ["eng-1", "eng-2"]) {
       insertQueuedItem(db, { id, now: clock.now() });
       beginImplementRun(db, id, clock.now());
       enterMergeQueue(db, id, { phase: "merge_queue", baseSha: "b".repeat(40), wipCommit: id });
-      joinMergeQueue(db, { itemId: id, repository: "acme/app", now: clock.now() });
+      await joinMergeQueue(sqliteDb(db), { itemId: id, repository: "acme/app", now: clock.now() });
       clock.advance(1_000);
     }
     return { db, clock };
@@ -506,7 +510,7 @@ describe("main moving", () => {
   }
 
   test("a push to the default branch, its redelivery and the merged pull request check the queue once", async () => {
-    const { db, clock } = twoQueued();
+    const { db, clock } = await twoQueued();
     const push = { ref: "refs/heads/main", after: main, repository };
     await acceptGitHubDelivery(
       db,
@@ -540,7 +544,7 @@ describe("main moving", () => {
   });
 
   test("a push to another branch or a closed unmerged pull request checks nothing", async () => {
-    const { db, clock } = twoQueued();
+    const { db, clock } = await twoQueued();
     await acceptGitHubDelivery(
       db,
       {

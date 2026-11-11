@@ -22,7 +22,7 @@ import {
   parentTaskKeySql,
   type WorkItemState,
 } from "../core";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { jsonText } from "./json-text";
 
 const FINISHED = ["completed", "merged", "cancelled"];
@@ -73,12 +73,12 @@ export function* readDelegatedIntakeSteps(
   );
 }
 
-export function readDelegatedIntake(
-  db: Database,
+export async function readDelegatedIntake(
+  store: Db,
   linearIssueId: string,
   taskKey: string,
-): { delegationId: string; linearIdentifier: string; title: string } | null {
-  return settled(sqliteDb(db).run((q) => readDelegatedIntakeSteps(q, linearIssueId, taskKey)));
+): Promise<{ delegationId: string; linearIdentifier: string; title: string } | null> {
+  return store.run((q) => readDelegatedIntakeSteps(q, linearIssueId, taskKey));
 }
 
 export function* listDelegationItemsSteps(q: Q, delegationId: string): Steps<IntakeItemRow[]> {
@@ -102,8 +102,11 @@ export function* listDelegationItemsSteps(q: Q, delegationId: string): Steps<Int
   );
 }
 
-export function listDelegationItems(db: Database, delegationId: string): IntakeItemRow[] {
-  return settled(sqliteDb(db).run((q) => listDelegationItemsSteps(q, delegationId)));
+export async function listDelegationItems(
+  store: Db,
+  delegationId: string,
+): Promise<IntakeItemRow[]> {
+  return store.run((q) => listDelegationItemsSteps(q, delegationId));
 }
 
 type IntakeItem = Omit<IntakeItemRow, "state" | "version"> & {
@@ -119,8 +122,8 @@ export function* insertIntakeItemSteps(q: Q, item: IntakeItem): Steps<void> {
   yield* q.exec(q.orm.insert(q.t.workItem).values({ ...item, brief, state: "queued", version: 0 }));
 }
 
-export function insertIntakeItem(db: Database, item: IntakeItem): void {
-  settled(sqliteDb(db).run((q) => insertIntakeItemSteps(q, item)));
+export async function insertIntakeItem(store: Db, item: IntakeItem): Promise<void> {
+  await store.run((q) => insertIntakeItemSteps(q, item));
 }
 
 export function* insertItemContinuationSteps(
@@ -132,13 +135,13 @@ export function* insertItemContinuationSteps(
   yield* q.exec(q.orm.insert(q.t.itemContinuation).values({ itemId, previousItemId, branch }));
 }
 
-export function insertItemContinuation(
-  db: Database,
+export async function insertItemContinuation(
+  store: Db,
   itemId: string,
   previousItemId: string,
   branch: string,
-): void {
-  settled(sqliteDb(db).run((q) => insertItemContinuationSteps(q, itemId, previousItemId, branch)));
+): Promise<void> {
+  await store.run((q) => insertItemContinuationSteps(q, itemId, previousItemId, branch));
 }
 
 export function* stopSessionParentDelegationSteps(
@@ -212,11 +215,11 @@ export function* readActiveParentDelegationSteps(
   );
 }
 
-export function readActiveParentDelegation(
-  db: Database,
+export async function readActiveParentDelegation(
+  store: Db,
   parentIssueId: string,
-): ActiveParentDelegation | null {
-  return settled(sqliteDb(db).run((q) => readActiveParentDelegationSteps(q, parentIssueId)));
+): Promise<ActiveParentDelegation | null> {
+  return store.run((q) => readActiveParentDelegationSteps(q, parentIssueId));
 }
 
 type UnlandedAttempt = { id: string; linearIdentifier: string; branchName: string };
@@ -254,8 +257,11 @@ export function* readUnlandedAttemptSteps(
   );
 }
 
-export function readUnlandedAttempt(db: Database, linearIssueId: string): UnlandedAttempt | null {
-  return settled(sqliteDb(db).run((q) => readUnlandedAttemptSteps(q, linearIssueId)));
+export async function readUnlandedAttempt(
+  store: Db,
+  linearIssueId: string,
+): Promise<UnlandedAttempt | null> {
+  return store.run((q) => readUnlandedAttemptSteps(q, linearIssueId));
 }
 
 export function* emptyFailedAttemptsSteps(
@@ -347,8 +353,12 @@ export function* emptyFailedAttemptsSteps(
   return rows.map((row) => row.id);
 }
 
-export function emptyFailedAttempts(db: Database, issueId: string, sessionId: string): string[] {
-  return settled(sqliteDb(db).run((q) => emptyFailedAttemptsSteps(q, issueId, sessionId)));
+export async function emptyFailedAttempts(
+  store: Db,
+  issueId: string,
+  sessionId: string,
+): Promise<string[]> {
+  return store.run((q) => emptyFailedAttemptsSteps(q, issueId, sessionId));
 }
 
 export function* issueHasUnfinishedItemSteps(q: Q, linearIssueId: string): Steps<boolean> {
@@ -363,8 +373,8 @@ export function* issueHasUnfinishedItemSteps(q: Q, linearIssueId: string): Steps
   return row !== undefined;
 }
 
-export function issueHasUnfinishedItem(db: Database, linearIssueId: string): boolean {
-  return settled(sqliteDb(db).run((q) => issueHasUnfinishedItemSteps(q, linearIssueId)));
+export async function issueHasUnfinishedItem(store: Db, linearIssueId: string): Promise<boolean> {
+  return store.run((q) => issueHasUnfinishedItemSteps(q, linearIssueId));
 }
 
 type ItemDelegation = { delegationId: string; issueId: string; cancelRequested: number };
@@ -385,8 +395,11 @@ export function* readItemDelegationSteps(q: Q, itemId: string): Steps<ItemDelega
   );
 }
 
-export function readItemDelegation(db: Database, itemId: string): ItemDelegation | null {
-  return settled(sqliteDb(db).run((q) => readItemDelegationSteps(q, itemId)));
+export async function readItemDelegation(
+  store: Db,
+  itemId: string,
+): Promise<ItemDelegation | null> {
+  return store.run((q) => readItemDelegationSteps(q, itemId));
 }
 
 export function* delegationWorkspaceIdSteps(q: Q, delegationId: string): Steps<string | undefined> {
@@ -403,8 +416,11 @@ export function* delegationWorkspaceIdSteps(q: Q, delegationId: string): Steps<s
   return row?.id;
 }
 
-export function delegationWorkspaceId(db: Database, delegationId: string): string | undefined {
-  return settled(sqliteDb(db).run((q) => delegationWorkspaceIdSteps(q, delegationId)));
+export async function delegationWorkspaceId(
+  store: Db,
+  delegationId: string,
+): Promise<string | undefined> {
+  return store.run((q) => delegationWorkspaceIdSteps(q, delegationId));
 }
 
 export type PublicationIdentity = {
@@ -483,6 +499,9 @@ export function* readPublicationIdentitySteps(
   return (row as PublicationIdentity | undefined) ?? null;
 }
 
-export function readPublicationIdentity(db: Database, itemId: string): PublicationIdentity | null {
-  return settled(sqliteDb(db).run((q) => readPublicationIdentitySteps(q, itemId)));
+export async function readPublicationIdentity(
+  store: Db,
+  itemId: string,
+): Promise<PublicationIdentity | null> {
+  return store.run((q) => readPublicationIdentitySteps(q, itemId));
 }

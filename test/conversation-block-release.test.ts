@@ -161,7 +161,7 @@ test("a blocked reply waits, then is delivered once after the restarted runner r
     await f.orchestrator.onLinearEvent(linearEvent("reply-1", "Please continue"));
     await f.orchestrator.onLinearEvent(linearEvent("reply-2", "And add a test"));
     // The replies wait instead of failing; the session hears why once.
-    expect(listPendingLinearTurns(f.db, "session")).toHaveLength(2);
+    expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toHaveLength(2);
     expect(f.restarts()).toEqual([]);
     expect(f.notices()).toBe(1);
     expect((await getConversation(sqliteDb(f.db), f.itemId)).blocked).toBe(true);
@@ -192,7 +192,7 @@ test("a runner that still reports the command keeps the block", async () => {
     await f.heartbeat(live);
     await f.orchestrator.releaseCleanupBlocks();
     expect((await getConversation(sqliteDb(f.db), f.itemId)).blocked).toBe(true);
-    expect(listPendingLinearTurns(f.db, "session")).toHaveLength(1);
+    expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toHaveLength(1);
     expect(f.restarts()).toEqual([]);
 
     // Once a later report leaves it out, the old agent is gone.

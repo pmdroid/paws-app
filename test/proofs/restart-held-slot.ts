@@ -28,7 +28,8 @@ export default {
     proof.expect("unrelated work stays queued", getWorkItem(db, "a-unrelated")?.state === "queued");
     proof.expect(
       "the restart retains its runner",
-      schedulerRunnerSlots(db, NOW).find((row) => row.itemId === "b-resume")?.runnerId === pinned,
+      (await schedulerRunnerSlots(sqliteDb(db), NOW)).find((row) => row.itemId === "b-resume")
+        ?.runnerId === pinned,
     );
     const offered = await createRunnerPlacement({ store: sqliteDb(db), now: () => NOW }).candidates(
       {

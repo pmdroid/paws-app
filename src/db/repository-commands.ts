@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, gt, inArray, lte, ne, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 
 type RepositoryCommandSettlement =
   | { state: "pending" | "delivered" }
@@ -39,12 +38,12 @@ export function* repositoryCommandSettlementSteps(
   return { state: "expired" };
 }
 
-export function repositoryCommandSettlement(
-  db: Database,
+export async function repositoryCommandSettlement(
+  store: Db,
   id: string,
   at: number,
-): RepositoryCommandSettlement | null {
-  return settled(sqliteDb(db).run((q) => repositoryCommandSettlementSteps(q, id, at)));
+): Promise<RepositoryCommandSettlement | null> {
+  return store.run((q) => repositoryCommandSettlementSteps(q, id, at));
 }
 
 export type RepositoryCommandRow = {
@@ -78,8 +77,11 @@ export function* repositoryCommandRowSteps(q: Q, id: string): Steps<RepositoryCo
   return (row as RepositoryCommandRow | undefined) ?? null;
 }
 
-export function repositoryCommandRow(db: Database, id: string): RepositoryCommandRow | null {
-  return settled(sqliteDb(db).run((q) => repositoryCommandRowSteps(q, id)));
+export async function repositoryCommandRow(
+  store: Db,
+  id: string,
+): Promise<RepositoryCommandRow | null> {
+  return store.run((q) => repositoryCommandRowSteps(q, id));
 }
 
 /** Expires every open command whose deadline has passed and returns their ids. */
@@ -95,8 +97,8 @@ export function* expireDueRepositoryCommandsSteps(q: Q, at: number): Steps<strin
   return rows.map((row) => row.id);
 }
 
-export function expireDueRepositoryCommands(db: Database, at: number): string[] {
-  return settled(sqliteDb(db).run((q) => expireDueRepositoryCommandsSteps(q, at)));
+export async function expireDueRepositoryCommands(store: Db, at: number): Promise<string[]> {
+  return store.run((q) => expireDueRepositoryCommandsSteps(q, at));
 }
 
 /** At a command's deadline: an open command expires, and any command loses its grant. */
@@ -115,8 +117,8 @@ export function* expireRepositoryCommandSteps(q: Q, id: string): Steps<string | 
   return row?.state ?? null;
 }
 
-export function expireRepositoryCommand(db: Database, id: string): string | null {
-  return settled(sqliteDb(db).run((q) => expireRepositoryCommandSteps(q, id)));
+export async function expireRepositoryCommand(store: Db, id: string): Promise<string | null> {
+  return store.run((q) => expireRepositoryCommandSteps(q, id));
 }
 
 /** Expires the command if it is still open, and says whether it was. */
@@ -132,8 +134,8 @@ export function* cancelOpenRepositoryCommandSteps(q: Q, id: string): Steps<boole
   return rows.length > 0;
 }
 
-export function cancelOpenRepositoryCommand(db: Database, id: string): boolean {
-  return settled(sqliteDb(db).run((q) => cancelOpenRepositoryCommandSteps(q, id)));
+export async function cancelOpenRepositoryCommand(store: Db, id: string): Promise<boolean> {
+  return store.run((q) => cancelOpenRepositoryCommandSteps(q, id));
 }
 
 type NewRepositoryCommand = {
@@ -149,8 +151,8 @@ export function* insertRepositoryCommandSteps(q: Q, row: NewRepositoryCommand) {
   yield* q.exec(q.orm.insert(q.t.runnerRepositoryCommand).values({ ...row, state: "pending" }));
 }
 
-export function insertRepositoryCommand(db: Database, row: NewRepositoryCommand): void {
-  settled(sqliteDb(db).run((q) => insertRepositoryCommandSteps(q, row)));
+export async function insertRepositoryCommand(store: Db, row: NewRepositoryCommand): Promise<void> {
+  await store.run((q) => insertRepositoryCommandSteps(q, row));
 }
 
 export function* pendingRepositoryCommandsSteps(
@@ -176,13 +178,13 @@ export function* pendingRepositoryCommandsSteps(
   );
 }
 
-export function pendingRepositoryCommands(
-  db: Database,
+export async function pendingRepositoryCommands(
+  store: Db,
   runnerId: string,
   at: number,
   limit: number,
-): { id: string; payload: string }[] {
-  return settled(sqliteDb(db).run((q) => pendingRepositoryCommandsSteps(q, runnerId, at, limit)));
+): Promise<{ id: string; payload: string }[]> {
+  return store.run((q) => pendingRepositoryCommandsSteps(q, runnerId, at, limit));
 }
 
 export function* markRepositoryCommandDeliveredSteps(q: Q, id: string, at: number) {
@@ -192,8 +194,12 @@ export function* markRepositoryCommandDeliveredSteps(q: Q, id: string, at: numbe
   );
 }
 
-export function markRepositoryCommandDelivered(db: Database, id: string, at: number): void {
-  settled(sqliteDb(db).run((q) => markRepositoryCommandDeliveredSteps(q, id, at)));
+export async function markRepositoryCommandDelivered(
+  store: Db,
+  id: string,
+  at: number,
+): Promise<void> {
+  await store.run((q) => markRepositoryCommandDeliveredSteps(q, id, at));
 }
 
 export function* setRepositoryCommandGrantSteps(
@@ -206,15 +212,13 @@ export function* setRepositoryCommandGrantSteps(
   yield* q.exec(q.orm.update(command).set({ grantHash, grantExpiresAt }).where(eq(command.id, id)));
 }
 
-export function setRepositoryCommandGrant(
-  db: Database,
+export async function setRepositoryCommandGrant(
+  store: Db,
   id: string,
   grantHash: string,
   grantExpiresAt: number,
-): void {
-  settled(
-    sqliteDb(db).run((q) => setRepositoryCommandGrantSteps(q, id, grantHash, grantExpiresAt)),
-  );
+): Promise<void> {
+  await store.run((q) => setRepositoryCommandGrantSteps(q, id, grantHash, grantExpiresAt));
 }
 
 export function* completeRepositoryCommandSteps(q: Q, id: string, result: string, at: number) {
@@ -227,13 +231,13 @@ export function* completeRepositoryCommandSteps(q: Q, id: string, result: string
   );
 }
 
-export function completeRepositoryCommand(
-  db: Database,
+export async function completeRepositoryCommand(
+  store: Db,
   id: string,
   result: string,
   at: number,
-): void {
-  settled(sqliteDb(db).run((q) => completeRepositoryCommandSteps(q, id, result, at)));
+): Promise<void> {
+  await store.run((q) => completeRepositoryCommandSteps(q, id, result, at));
 }
 
 /** Whether the command belongs to this runner and has left the pending state. */
@@ -252,10 +256,10 @@ export function* repositoryCommandReachedRunnerSteps(
   return row !== undefined;
 }
 
-export function repositoryCommandReachedRunner(
-  db: Database,
+export async function repositoryCommandReachedRunner(
+  store: Db,
   id: string,
   runnerId: string,
-): boolean {
-  return settled(sqliteDb(db).run((q) => repositoryCommandReachedRunnerSteps(q, id, runnerId)));
+): Promise<boolean> {
+  return store.run((q) => repositoryCommandReachedRunnerSteps(q, id, runnerId));
 }

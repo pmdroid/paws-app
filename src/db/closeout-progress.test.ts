@@ -16,7 +16,7 @@ import {
   sqliteDb,
 } from "./index";
 
-test("each head of an item is ordered by when Closeout first evaluated it", () => {
+test("each head of an item is ordered by when Closeout first evaluated it", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
@@ -32,7 +32,7 @@ test("each head of an item is ordered by when Closeout first evaluated it", () =
   ensureCloseoutProgress(db, "eng-1", identity("h2"), 20, false);
   ensureCloseoutProgress(db, "eng-1", identity("h1", "q"), 30, false);
   ensureCloseoutProgress(db, "eng-2", identity("h3"), 5, false);
-  expect(closeoutHeadsStarted(db, "eng-1")).toEqual(
+  expect(await closeoutHeadsStarted(sqliteDb(db), "eng-1")).toEqual(
     new Map([
       ["h1", 10],
       ["h2", 20],
@@ -57,7 +57,7 @@ for (const changedIdentity of [false, true]) {
     );
     expect(getWorkItem(db, "item")?.acceptedHead).toBeNull();
     expect(closeoutPolicyDigests(db, "item", "s")?.decision).toBe("rejected");
-    expect(acceptedCloseoutReviews(db, "item", "s")).toBeNull();
+    expect(await acceptedCloseoutReviews(sqliteDb(db), "item", "s")).toBeNull();
     db.close();
   });
 }
@@ -73,7 +73,7 @@ for (const decision of ["exhausted", "blocked"] as const) {
     finishCloseoutProgress(db, "item", { ...identity, base: "c" }, decision, 20);
     expect(getWorkItem(db, "item")?.acceptedHead).toBe(decision === "exhausted" ? null : "s");
     // Either way the older acceptance is not resurrected by the newer identity's row.
-    expect(acceptedCloseoutReviews(db, "item", "s")).toBeNull();
+    expect(await acceptedCloseoutReviews(sqliteDb(db), "item", "s")).toBeNull();
     db.close();
   });
 }

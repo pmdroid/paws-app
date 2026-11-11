@@ -121,7 +121,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
   const start = () =>
     registerInstance(db, { role: "all", host: "acme", version: null, now: pawsNow() });
   let instance = start();
-  claimRun(db, run.id, instance.id);
+  await claimRun(sqliteDb(db), run.id, instance.id);
   const keys = generateKeyPairSync("ed25519");
   const open = () => {
     const work = createRunnerWork({

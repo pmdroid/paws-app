@@ -1260,8 +1260,8 @@ export function* linearSessionGenerationSteps(q: Q, sessionId: string) {
   return (yield* getFenceSteps(q, "linear", sessionId)).generation;
 }
 
-export function linearSessionGeneration(db: Database, sessionId: string): number {
-  return settled(sqliteDb(db).run((q) => linearSessionGenerationSteps(q, sessionId)));
+export async function linearSessionGeneration(store: Db, sessionId: string): Promise<number> {
+  return store.run((q) => linearSessionGenerationSteps(q, sessionId));
 }
 
 /**
@@ -1385,6 +1385,10 @@ export function* dropQuestionElicitationsSteps(q: Q, questionId: string, error: 
   );
 }
 
-export function dropQuestionElicitations(db: Database, questionId: string, error: string): void {
-  settled(sqliteDb(db).run((q) => dropQuestionElicitationsSteps(q, questionId, error)));
+export async function dropQuestionElicitations(
+  store: Db,
+  questionId: string,
+  error: string,
+): Promise<void> {
+  await store.run((q) => dropQuestionElicitationsSteps(q, questionId, error));
 }

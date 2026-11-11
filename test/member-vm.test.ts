@@ -186,7 +186,7 @@ describe("member VM", () => {
     const health = await drive(f, loop, (row) => row.step === "health" || row.failure !== null);
     expect(health.failure).toBeNull();
     expect(health.runnerId).not.toBeNull();
-    const runner = getRunner(f.db, health.runnerId!)!;
+    const runner = (await getRunner(sqliteDb(f.db), health.runnerId!))!;
     expect(runner.ownerUserId).toBe(f.member.userId);
     expect(runner.workspaceId).toBe(f.workspace.id);
     expect(runner.name).toBe("ada-lovelace-paws");
@@ -338,7 +338,7 @@ describe("member VM", () => {
     await retryMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
     const row = await drive(f, loop, (value) => value.step === "health" || !!value.failure);
     expect(row.failure).toBeNull();
-    expect(getRunner(f.db, row.runnerId!)!.ownerUserId).toBe(f.member.userId);
+    expect((await getRunner(sqliteDb(f.db), row.runnerId!))!.ownerUserId).toBe(f.member.userId);
   });
 
   test("the runner's enroll cause reaches the Runners page", async () => {
@@ -399,7 +399,7 @@ describe("member VM", () => {
     expect(steps.filter((step) => step === "stageToken")).toHaveLength(1);
     expect(steps.indexOf("stageToken")).toBeLessThan(steps.indexOf("enroll"));
     expect(f.bootstrap.tokens).toHaveLength(2);
-    expect(getRunner(f.db, row.runnerId!)!.ownerUserId).toBe(f.member.userId);
+    expect((await getRunner(sqliteDb(f.db), row.runnerId!))!.ownerUserId).toBe(f.member.userId);
   });
 
   test("a VM that cannot join the tailnet fails before enrollment with a tailnet message", async () => {
@@ -465,7 +465,7 @@ describe("member VM", () => {
     const again = await drive(f, loop, (row) => row.step === "health" || !!row.failure);
     expect(again.failure).toBeNull();
     expect(again.runnerId).not.toBe(ready.runnerId);
-    expect(getRunner(f.db, again.runnerId!)!.ownerUserId).toBe(f.member.userId);
+    expect((await getRunner(sqliteDb(f.db), again.runnerId!))!.ownerUserId).toBe(f.member.userId);
     expect(f.exeDev.calls.filter((call) => call.operation === "createVm")).toHaveLength(1);
     expect(f.bootstrap.calls.filter((call) => call.step === "startInstall")).toHaveLength(1);
     expect(f.bootstrap.calls.slice(before).map((call) => call.step)).toEqual([

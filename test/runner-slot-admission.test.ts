@@ -257,9 +257,10 @@ test("an admission reserves only its chosen runner and placement honors that cho
   ).not.toBeNull();
   expect(await pass()).toEqual(["a-flexible", "b-exclusive"]);
   expect(await pass()).toEqual([]);
-  expect(schedulerRunnerSlots(db, NOW).find((row) => row.itemId === "a-flexible")?.runnerId).toBe(
-    other,
-  );
+  expect(
+    (await schedulerRunnerSlots(sqliteDb(db), NOW)).find((row) => row.itemId === "a-flexible")
+      ?.runnerId,
+  ).toBe(other);
   const placement = createRunnerPlacement({ store: sqliteDb(db), now: () => NOW });
   const offered = await placement.candidates({
     itemId: "a-flexible",
@@ -400,7 +401,7 @@ test("two flexible slow starts reserve different runner slots", async () => {
   queue("a");
   queue("b");
   expect(await pass()).toEqual(["a", "b"]);
-  const slots = schedulerRunnerSlots(db, NOW);
+  const slots = await schedulerRunnerSlots(sqliteDb(db), NOW);
   expect(new Set(slots.map((row) => row.runnerId)).size).toBe(2);
   expect(await pass()).toEqual([]);
   const placement = createRunnerPlacement({ store: sqliteDb(db), now: () => NOW });
@@ -426,7 +427,7 @@ for (const failure of ["offline", "repository", "excluded"] as const)
     db.run("UPDATE runner_agent_policy SET virtual_finish=100 WHERE runner_id=?", [second]);
     queue("item");
     expect(await pass()).toEqual(["item"]);
-    expect(schedulerRunnerSlots(db, NOW)[0]!.runnerId).toBe(first);
+    expect((await schedulerRunnerSlots(sqliteDb(db), NOW))[0]!.runnerId).toBe(first);
     if (failure === "offline") db.run("UPDATE runner SET status='paused' WHERE id=?", [first]);
     if (failure === "repository")
       await recordRunnerRepositories(sqliteDb(db), first, ["other/repo"], NOW);
@@ -440,7 +441,7 @@ for (const failure of ["offline", "repository", "excluded"] as const)
       },
     );
     expect(offered.map((r) => r.id)).toEqual([second]);
-    expect(schedulerRunnerSlots(db, NOW)[0]!.runnerId).toBe(second);
+    expect((await schedulerRunnerSlots(sqliteDb(db), NOW))[0]!.runnerId).toBe(second);
   });
 
 test("admission preserves placement quota ranking over free slot count", async () => {
@@ -451,7 +452,7 @@ test("admission preserves placement quota ranking over free slot count", async (
   db.run("UPDATE runner_agent_policy SET quota_state='spent_extra' WHERE runner_id=?", [extra]);
   queue("item");
   expect(await pass()).toEqual(["item"]);
-  expect(schedulerRunnerSlots(db, NOW)[0]!.runnerId).toBe(normal);
+  expect((await schedulerRunnerSlots(sqliteDb(db), NOW))[0]!.runnerId).toBe(normal);
 });
 
 test("a queued resume keeps its online pin and reservation past historical ended work", async () => {
@@ -469,9 +470,9 @@ test("a queued resume keeps its online pin and reservation past historical ended
   // An ended implementation run has no live occupancy, but the next turn retains its pin.
   db.run("UPDATE run SET status='ended' WHERE id=?", [run.id]);
   expect(await pass()).toEqual(["resume"]);
-  expect(schedulerRunnerSlots(db, NOW)[0]!.runnerId).toBe(pinned);
+  expect((await schedulerRunnerSlots(sqliteDb(db), NOW))[0]!.runnerId).toBe(pinned);
   applyWorkItemEvent(db, "resume", "dispatched");
-  expect(schedulerRunnerSlots(db, NOW)[0]!.runnerId).toBe(pinned);
+  expect((await schedulerRunnerSlots(sqliteDb(db), NOW))[0]!.runnerId).toBe(pinned);
   const offered = await createRunnerPlacement({ store: sqliteDb(db), now: () => NOW }).candidates({
     itemId: "resume",
     role: "implementer",
@@ -512,9 +513,10 @@ test("a queued restart reuses its active run's held slot without admitting unrel
   );
   expect(await pass()).toEqual(["b-resume"]);
   expect(getWorkItem(db, "a-unrelated")?.state).toBe("queued");
-  expect(schedulerRunnerSlots(db, NOW).find((row) => row.itemId === "b-resume")?.runnerId).toBe(
-    pinned,
-  );
+  expect(
+    (await schedulerRunnerSlots(sqliteDb(db), NOW)).find((row) => row.itemId === "b-resume")
+      ?.runnerId,
+  ).toBe(pinned);
   const offered = await createRunnerPlacement({ store: sqliteDb(db), now: () => NOW }).candidates({
     itemId: "b-resume",
     role: "implementer",
@@ -594,7 +596,7 @@ test("admission fails over from a busy session runner once session grace ends", 
     expect(await pass(NOW + waited)).toEqual([]);
 
   expect(await pass(NOW + SESSION_GRACE_MS)).toEqual(["resumes"]);
-  expect(schedulerRunnerSlots(db, NOW + SESSION_GRACE_MS)).toContainEqual(
+  expect(await schedulerRunnerSlots(sqliteDb(db), NOW + SESSION_GRACE_MS)).toContainEqual(
     expect.objectContaining({ itemId: "resumes", runnerId: other }),
   );
 });

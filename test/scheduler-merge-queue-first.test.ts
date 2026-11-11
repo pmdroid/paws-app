@@ -72,7 +72,7 @@ async function fixture() {
     work(runId, "A", NOW - 1);
     applyWorkItemEvent(db, id, "turn_ended");
     applyWorkItemEvent(db, id, "closeout_accepted");
-    joinMergeQueue(db, { itemId: id, repository: "acme/app", now: readyAt });
+    await joinMergeQueue(sqliteDb(db), { itemId: id, repository: "acme/app", now: readyAt });
     return runId;
   };
   /** The item re-verifies; its job waits for a slot on `runnerIds`, all busy. */

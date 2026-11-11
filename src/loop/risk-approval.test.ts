@@ -902,7 +902,7 @@ test("legacy, malformed and wrong-attempt review snapshots fail closed", async (
 
 test("review snapshots use the row's resolved attempt and hide invalid envelopes", async () => {
   const f = await cleanRiskFixture();
-  const step = getCloseoutProgress(f.db, f.itemId, heads.s)!.steps.find(
+  const step = (await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.s))!.steps.find(
     (s) => s.id === "security-review",
   )!;
   f.progress.step(f.identity, {
@@ -912,7 +912,9 @@ test("review snapshots use the row's resolved attempt and hide invalid envelopes
     findingSeverities: ["P3"],
   });
   expect(
-    getCloseoutProgress(f.db, f.itemId, heads.s)!.steps.find((s) => s.id === "security-review"),
+    (await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.s))!.steps.find(
+      (s) => s.id === "security-review",
+    ),
   ).toMatchObject({ attempt: 1, findings: "Current notes", findingSeverities: ["P3"] });
   for (const findings of [
     "{broken",
@@ -921,8 +923,9 @@ test("review snapshots use the row's resolved attempt and hide invalid envelopes
   ]) {
     f.db.run("UPDATE closeout_step SET findings = ? WHERE step_id = 'security-review'", [findings]);
     expect(
-      getCloseoutProgress(f.db, f.itemId, heads.s)!.steps.find((s) => s.id === "security-review")!
-        .findings,
+      (await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.s))!.steps.find(
+        (s) => s.id === "security-review",
+      )!.findings,
     ).toBe(findings === "{broken" ? findings : null);
     expect(await f.read()).toBe("missing");
   }
@@ -935,7 +938,9 @@ test("a later clean attempt clears prior findings even without a running update"
   expect(await f.read()).toBe("missing");
   f.step("security-review", null, [], 2);
   expect(
-    getCloseoutProgress(f.db, f.itemId, heads.s)?.steps.find((s) => s.id === "security-review"),
+    (await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.s))?.steps.find(
+      (s) => s.id === "security-review",
+    ),
   ).toMatchObject({ attempt: 2, findings: null, findingSeverities: [] });
   expect(await f.read()).toBe("approved");
   f.db.close();
@@ -944,7 +949,7 @@ test("a later clean attempt clears prior findings even without a running update"
 test("a cached review keeps only the snapshot of its unchanged attempt", async () => {
   const f = await cleanRiskFixture();
   f.step("security-review", "P3 notes", ["P3"]);
-  const cached = getCloseoutProgress(f.db, f.itemId, heads.s)!.steps.find(
+  const cached = (await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.s))!.steps.find(
     (s) => s.id === "security-review",
   )!;
   f.db.run("UPDATE closeout_step SET findings = ? WHERE step_id = 'security-review'", [
@@ -952,8 +957,9 @@ test("a cached review keeps only the snapshot of its unchanged attempt", async (
   ]);
   f.progress.step(f.identity, { ...cached, findings: null, findingSeverities: undefined });
   expect(
-    getCloseoutProgress(f.db, f.itemId, heads.s)!.steps.find((s) => s.id === "security-review")!
-      .findings,
+    (await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.s))!.steps.find(
+      (s) => s.id === "security-review",
+    )!.findings,
   ).toBe('{"example":1}');
   expect(await f.read()).toBe("missing");
   f.step("security-review", "P3 notes", ["P3"]);
@@ -1087,14 +1093,18 @@ test("differently named reviews do not substitute for the two required reviews",
 
 test("the exact-head progress reader selects the latest run and preserves the unfiltered reader", async () => {
   const f = await cleanRiskFixture();
-  expect(getCloseoutProgress(f.db, f.itemId, heads.s)).toEqual(listCloseoutProgress(f.db)[0]!);
-  expect(getCloseoutProgress(f.db, f.itemId, heads.rebased)).toBeNull();
-  expect(getCloseoutProgress(f.db, "another-item", heads.s)).toBeNull();
+  expect(await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.s)).toEqual(
+    listCloseoutProgress(f.db)[0]!,
+  );
+  expect(await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.rebased)).toBeNull();
+  expect(await getCloseoutProgress(sqliteDb(f.db), "another-item", heads.s)).toBeNull();
   f.progress.begin({ ...f.identity, policyDigest: "other-policy" });
   f.db.run("UPDATE closeout_progress SET updated_at = ? WHERE policy_digest = 'other-policy'", [
     NOW + 1,
   ]);
-  expect(getCloseoutProgress(f.db, f.itemId, heads.s)?.policyDigest).toBe("other-policy");
+  expect((await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.s))?.policyDigest).toBe(
+    "other-policy",
+  );
   f.db.close();
 });
 

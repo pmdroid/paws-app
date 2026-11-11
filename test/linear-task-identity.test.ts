@@ -182,26 +182,27 @@ test("prompt before hydration persists, ordered duplicates apply once and Stop f
     await recordLinearTurn(sqliteDb(db), turn("earlier", 10));
     await recordLinearTurn(sqliteDb(db), { ...turn("later", 20), body: "Edited comment" });
     expect(getLinearSession(db, "session")?.delegationId).toBeNull();
-    expect(listPendingLinearTurns(db, "session").map((entry) => entry.body)).toEqual([
-      "earlier",
-      "later",
-    ]);
+    expect(
+      (await listPendingLinearTurns(sqliteDb(db), "session")).map((entry) => entry.body),
+    ).toEqual(["earlier", "later"]);
     const result = await task(db);
     bindLinearSessionTask(db, "session", result.delegation.id, { actorId: "human" });
     const itemId = result.items[0]!.id;
     activateLinearItem(db, "session", itemId);
-    applyLinearTurns(db, "session", ["earlier"], itemId);
-    applyLinearTurns(db, "session", ["earlier"], itemId);
-    expect(listPendingLinearTurns(db, "session").map((entry) => entry.eventKey)).toEqual(["later"]);
+    await applyLinearTurns(sqliteDb(db), "session", ["earlier"], itemId);
+    await applyLinearTurns(sqliteDb(db), "session", ["earlier"], itemId);
+    expect(
+      (await listPendingLinearTurns(sqliteDb(db), "session")).map((entry) => entry.eventKey),
+    ).toEqual(["later"]);
     expect(
       await advanceLinearSessionGeneration(sqliteDb(db), "session", { stop: true, now: 30 }),
     ).toBe(1);
     expect(getLinearSessionGeneration(db, "session")).toBe(1);
-    expect(listPendingLinearTurns(db, "session")).toEqual([]);
+    expect(await listPendingLinearTurns(sqliteDb(db), "session")).toEqual([]);
     await recordLinearTurn(sqliteDb(db), turn("after-stop", 40));
-    expect(listPendingLinearTurns(db, "session").map((entry) => entry.eventKey)).toEqual([
-      "after-stop",
-    ]);
+    expect(
+      (await listPendingLinearTurns(sqliteDb(db), "session")).map((entry) => entry.eventKey),
+    ).toEqual(["after-stop"]);
   } finally {
     db.close();
   }
@@ -253,10 +254,12 @@ test("a second session for an active issue is rejected and a prompt still hydrat
       activityId: "early",
       body: "Do this after hydration",
     });
-    expect(listPendingLinearTurns(db, "before-created")[0]?.body).toBe("Do this after hydration");
+    expect((await listPendingLinearTurns(sqliteDb(db), "before-created"))[0]?.body).toBe(
+      "Do this after hydration",
+    );
     await orchestrator.onLinearEvent(created("before-created"));
     expect(getLinearSession(db, "before-created")?.activeItemId).not.toBeNull();
-    expect(listPendingLinearTurns(db, "before-created")).toHaveLength(1);
+    expect(await listPendingLinearTurns(sqliteDb(db), "before-created")).toHaveLength(1);
     expect(delegatedLinearUserId(db, getLinearSession(db, "before-created")!.activeItemId!)).toBe(
       "human",
     );

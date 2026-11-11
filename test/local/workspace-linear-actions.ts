@@ -320,7 +320,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       calls === 1 &&
         getQuestion(db, queued.question.id)?.status === "open" &&
         resumes() === 2 &&
-        listPendingLinearTurns(db, queued.event.sessionId!).length === 0,
+        (await listPendingLinearTurns(sqliteDb(db), queued.event.sessionId!)).length === 0,
       { calls, question: getQuestion(db, queued.question.id)?.status, resumes: resumes() },
     );
     await queueLoop.shutdown();
@@ -356,7 +356,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       "a follow-up revoked before queued execution cannot survive as pending steering",
       followupCalls === 1 &&
         turn?.state === "cancelled" &&
-        listPendingLinearTurns(db, followup.event.sessionId!).length === 0,
+        (await listPendingLinearTurns(sqliteDb(db), followup.event.sessionId!)).length === 0,
       { calls: followupCalls, turn },
     );
     await followupLoop.shutdown();

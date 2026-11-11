@@ -295,10 +295,9 @@ for (const phase of ["implement", "review"] as const) {
       await Promise.all([first, updates]);
       const original = f.item();
       expect(original.state).toBe("queued");
-      expect(listPendingLinearTurns(f.db, "session").map((turn) => turn.body)).toEqual([
-        "FIRST_UPDATE",
-        "SECOND_UPDATE",
-      ]);
+      expect(
+        (await listPendingLinearTurns(sqliteDb(f.db), "session")).map((turn) => turn.body),
+      ).toEqual(["FIRST_UPDATE", "SECOND_UPDATE"]);
       if (phase === "implement")
         expect(running(Number(readFileSync(f.evidence + ".descendant", "utf8")))).toBe(false);
       expect((await getConversation(sqliteDb(f.db), original.id)).entries).not.toContain(
@@ -323,7 +322,7 @@ for (const phase of ["implement", "review"] as const) {
           existsSync(join(worktreePath(f.pawsRoot, itemPathId(original)), "old-writes.txt")),
         ).toBe(true);
       }
-      expect(listPendingLinearTurns(f.db, "session")).toEqual([]);
+      expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toEqual([]);
       const count = f.starts.length;
       await f.orchestrator.onLinearEvent(event("update-two", "SECOND_UPDATE", 3));
       expect(f.starts.length).toBe(count);
@@ -388,7 +387,7 @@ test("Stop wins over an interrupted turn, quiesces descendants and keeps complet
     await Promise.all([tick, update, stop, duplicate]);
     expect(f.item().state).toBe("paused");
     expect(running(Number(readFileSync(f.evidence + ".descendant", "utf8")))).toBe(false);
-    expect(listPendingLinearTurns(f.db, "session")).toEqual([]);
+    expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toEqual([]);
     expect(await tickWithRestarts(f.jobs, f.orchestrator, f.db)).toBeNull();
     await f.orchestrator.onLinearEvent(event("after-stop", "NEW_REQUEST", 4));
     expect(f.item().state).toBe("queued");
@@ -450,7 +449,7 @@ test("prompt before creation recovers the authoritative issue and reuses its tas
     expect(f.prompts().find((row) => row.purpose === "implement")?.prompt).toContain(
       "EARLY_REQUEST",
     );
-    expect(listPendingLinearTurns(f.db, "session")).toEqual([]);
+    expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toEqual([]);
   } finally {
     await f.close();
   }
@@ -462,9 +461,9 @@ test("unresolved early prompt remains durable until creation supplies its issue"
     await expect(
       f.orchestrator.onLinearEvent({ ...event("early", "PENDING_REQUEST", 2), issueId: null }),
     ).rejects.toThrow("user update remains pending");
-    expect(listPendingLinearTurns(f.db, "session").map((turn) => turn.body)).toEqual([
-      "PENDING_REQUEST",
-    ]);
+    expect(
+      (await listPendingLinearTurns(sqliteDb(f.db), "session")).map((turn) => turn.body),
+    ).toEqual(["PENDING_REQUEST"]);
     f.reopen();
     await f.orchestrator.onLinearEvent(event("created", null, 1));
     await tickWithRestarts(f.jobs, f.orchestrator, f.db);
@@ -472,7 +471,7 @@ test("unresolved early prompt remains durable until creation supplies its issue"
     expect(f.prompts().find((row) => row.purpose === "implement")?.prompt).toContain(
       "PENDING_REQUEST",
     );
-    expect(listPendingLinearTurns(f.db, "session")).toEqual([]);
+    expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toEqual([]);
   } finally {
     await f.close();
   }
@@ -507,7 +506,7 @@ test("an accepted answer question redirects through classification before code e
     expect(implementation).toContain("ANSWER_OBSERVATION");
     expect(implementation).not.toContain("PRIVATE_ANSWER_HIDDEN");
     expect((await getConversation(sqliteDb(f.db), task)).entries).toContain("ANSWER_OBSERVATION");
-    expect(listPendingLinearTurns(f.db, "session")).toHaveLength(0);
+    expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toHaveLength(0);
   } finally {
     await f.close();
   }
@@ -527,9 +526,9 @@ test("a prompt interrupts intake classification and is routed once after the old
     expect(f.starts).toEqual(["classify", "classify"]);
     expect(getTaskMode(f.db, f.item().id)).toBe("answer");
     expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(1);
-    expect(listPendingLinearTurns(f.db, "session").map((turn) => turn.body)).toEqual([
-      "Explain the updated request",
-    ]);
+    expect(
+      (await listPendingLinearTurns(sqliteDb(f.db), "session")).map((turn) => turn.body),
+    ).toEqual(["Explain the updated request"]);
   } finally {
     await f.close();
   }

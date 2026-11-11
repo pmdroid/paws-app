@@ -81,7 +81,11 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
     applyWorkItemEvent(db, waiting.id, "blocking_question");
     beginImplementRun(db, merging.id, NOW);
     enterMergeQueue(db, merging.id, { phase: "merge_queue", baseSha: BASE, wipCommit: HEAD });
-    joinMergeQueue(db, { itemId: merging.id, repository: "pmdroid/paws-demo", now: 1 });
+    await joinMergeQueue(sqliteDb(db), {
+      itemId: merging.id,
+      repository: "pmdroid/paws-demo",
+      now: 1,
+    });
     const open = getWorkItem(db, waiting.id);
     expect(open?.state).toBe("awaiting_input");
     const question = await openQuestion(db, {
@@ -298,7 +302,11 @@ test("a merge-queue item whose re-verify waits for a runner slot says it is next
     db.run("UPDATE work_item SET linear_identifier = ? WHERE id = ?", ["ENG-3", merging.id]);
     beginImplementRun(db, merging.id, NOW);
     enterMergeQueue(db, merging.id, { phase: "merge_queue", baseSha: BASE, wipCommit: HEAD });
-    joinMergeQueue(db, { itemId: merging.id, repository: "pmdroid/paws-demo", now: 1 });
+    await joinMergeQueue(sqliteDb(db), {
+      itemId: merging.id,
+      repository: "pmdroid/paws-demo",
+      now: 1,
+    });
     applyWorkItemEvent(db, merging.id, "reverify_requested");
     enqueueJob(db, {
       queue: "run.reverify",

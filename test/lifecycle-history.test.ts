@@ -105,7 +105,7 @@ test("Merge at the time limit records one acceptance, no agent turn, and no runn
   expect(ms.merge_queue).toBe(5 * MINUTE);
 
   restart(db, getWorkItem(db, itemId)!, { reason: "ci", body: "CI failed", now: clock.now() });
-  expect(restartedFromMergeQueue(db, itemId)).toBe(true);
+  expect(await restartedFromMergeQueue(sqliteDb(db), itemId)).toBe(true);
 });
 
 test("Stop at the time limit records answer_stopped from the wait, not a run failure", async () => {

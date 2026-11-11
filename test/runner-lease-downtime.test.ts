@@ -104,7 +104,7 @@ async function fixture() {
   const start = () =>
     registerInstance(db, { role: "all", host: "acme", version: null, now: now() });
   let instance = start();
-  claimRun(db, run.id, instance.id);
+  await claimRun(sqliteDb(db), run.id, instance.id);
   recordLinearInstallation(db, {
     organizationId: "org",
     oauthClientId: "app",
