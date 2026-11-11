@@ -404,7 +404,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
     async pawsOutage(ms: number) {
       link = "paws-down";
       await prepareShutdown(sqliteDb(db), clock.at, undefined, instance.id);
-      stopInstance(db, instance.id, clock.at);
+      await stopInstance(sqliteDb(db), instance.id, clock.at);
       db.close();
       await this.advance(ms, false);
       db = openDatabase(path);

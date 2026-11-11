@@ -29,18 +29,18 @@ test("repository binding survives restart and rejects a different binding", asyn
   try {
     migrate(db);
     const item = insertQueuedItem(db);
-    expect(getWorkItemRepository(db, item.id)).toBeNull();
+    expect(await getWorkItemRepository(sqliteDb(db), item.id)).toBeNull();
     expect(await bindWorkItemRepository(sqliteDb(db), item.id, repository)).toEqual(repository);
     expect(await bindWorkItemRepository(sqliteDb(db), item.id, repository)).toEqual(repository);
     db.close();
     db = openDatabase(filename);
     migrate(db);
-    expect(getWorkItemRepository(db, item.id)).toEqual(repository);
+    expect(await getWorkItemRepository(sqliteDb(db), item.id)).toEqual(repository);
     expect(
       async () =>
         await bindWorkItemRepository(sqliteDb(db), item.id, { ...repository, repo: "other" }),
     ).toThrow("cannot change");
-    expect(getWorkItemRepository(db, item.id)).toEqual(repository);
+    expect(await getWorkItemRepository(sqliteDb(db), item.id)).toEqual(repository);
     expect(async () => await bindWorkItemRepository(sqliteDb(db), "missing", repository)).toThrow();
     expect(
       async () =>
@@ -90,7 +90,7 @@ test("an interpreted offered repository survives restart without changing the an
     db = openDatabase(filename);
     migrate(db);
     expect(await getWorkItemRepositoryChoice(sqliteDb(db), item.id)).toEqual(repositories[1]!);
-    expect(getWorkItemRepository(db, item.id)).toBeNull();
+    expect(await getWorkItemRepository(sqliteDb(db), item.id)).toBeNull();
     expect((await getWorkItemRepositoryAnswer(sqliteDb(db), item.id))?.answer).toBe(
       "Use the second repository for this change.",
     );

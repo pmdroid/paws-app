@@ -234,12 +234,7 @@ export function* fixRoundsSteps(q: Q, itemId: string): Steps<number> {
   return row!.count;
 }
 
-/** Fix restarts since the latest human turn, including repeated uses of one job row. */
-export function fixRounds(db: Database, itemId: string): number {
-  return settled(sqliteDb(db).run((q) => fixRoundsSteps(q, itemId)));
-}
-
-export async function fixRoundsAsync(store: Db, itemId: string): Promise<number> {
+export async function fixRounds(store: Db, itemId: string): Promise<number> {
   return store.run((q) => fixRoundsSteps(q, itemId));
 }
 

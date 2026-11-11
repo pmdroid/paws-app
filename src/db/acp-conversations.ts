@@ -122,8 +122,8 @@ export function* blockConversationSteps(q: Q, itemId: string, now: number) {
   );
 }
 
-export function blockConversation(db: Database, itemId: string, now: number): void {
-  settled(sqliteDb(db).run((q) => blockConversationSteps(q, itemId, now)));
+export async function blockConversation(store: Db, itemId: string, now: number): Promise<void> {
+  await store.run((q) => blockConversationSteps(q, itemId, now));
 }
 
 /**

@@ -158,7 +158,7 @@ describe("restart and ask", () => {
     const jobKey = "ci-failed:item:recheck:head";
     const first = restart(db, item, { reason: "ci", body: "first failure", jobKey, now: 2 })!;
     expect(restart(db, item, { reason: "ci", body: "first failure", jobKey, now: 2 })).toBeNull();
-    expect(fixRounds(db, item.id)).toBe(1);
+    expect(await fixRounds(sqliteDb(db), item.id)).toBe(1);
     db.run("UPDATE job SET status='done', attempts=4, finished_at=3 WHERE id=?", [first]);
     await beginImplementRun(sqliteDb(db), item.id, 4);
     const secondItem = (await getWorkItem(sqliteDb(db), item.id))!;
@@ -177,11 +177,11 @@ describe("restart and ask", () => {
       payload: { handoff: "second failure", reason: "ci" },
     });
     expect(await jobVersionCurrent(sqliteDb(db), (await getJob(sqliteDb(db), second))!)).toBe(true);
-    expect(fixRounds(db, item.id)).toBe(2);
+    expect(await fixRounds(sqliteDb(db), item.id)).toBe(2);
     expect(
       restart(db, secondItem, { reason: "ci", body: "second failure", jobKey, now: 5 }),
     ).toBeNull();
-    expect(fixRounds(db, item.id)).toBe(2);
+    expect(await fixRounds(sqliteDb(db), item.id)).toBe(2);
     expect(await listJobs(sqliteDb(db))).toHaveLength(1);
 
     restart(db, (await getWorkItem(sqliteDb(db), item.id))!, {
@@ -189,7 +189,7 @@ describe("restart and ask", () => {
       body: "try again",
       now: 6,
     });
-    expect(fixRounds(db, item.id)).toBe(0);
+    expect(await fixRounds(sqliteDb(db), item.id)).toBe(0);
     await beginImplementRun(sqliteDb(db), item.id, 7);
     restart(db, (await getWorkItem(sqliteDb(db), item.id))!, {
       reason: "ci",
@@ -197,7 +197,7 @@ describe("restart and ask", () => {
       jobKey,
       now: 8,
     });
-    expect(fixRounds(db, item.id)).toBe(1);
+    expect(await fixRounds(sqliteDb(db), item.id)).toBe(1);
     db.close();
   });
 

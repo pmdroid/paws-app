@@ -74,7 +74,7 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
       db,
       secretsDir: join(root, "secrets"),
       env: { LINEAR_CLIENT_ID: "client", LINEAR_APP_USER_ID: "app" },
-      isAuthorized: async () => !isLinearAppRevoked(db, scope),
+      isAuthorized: async () => !(await isLinearAppRevoked(sqliteDb(db), scope)),
       beforeEvent: async (event) => {
         if (
           await handleLinearAdministration(db, event, {
@@ -84,7 +84,7 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
             },
             revalidate: (sessionIds) => gate.revalidateSessions(sessionIds),
             interrupt: async (sessionId) => {
-              expect(isLinearAppRevoked(db, scope)).toBe(true);
+              expect(await isLinearAppRevoked(sqliteDb(db), scope)).toBe(true);
               await orchestrator.interruptLinearSession(sessionId);
               joined = true;
             },

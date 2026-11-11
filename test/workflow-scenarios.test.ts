@@ -74,7 +74,7 @@ describe("combined recovery scenarios", () => {
         jobKey,
         now: w.now,
       })!;
-      expect(fixRounds(w.db, id)).toBe(1);
+      expect(await fixRounds(sqliteDb(w.db), id)).toBe(1);
       await workspaceDispatch(w.db, { now: w.now });
       const claimed = await claimNextJob(sqliteDb(w.db), { now: w.now, queues: [JOB_KIND.resume] });
       expect(claimed?.id).toBe(first);
@@ -105,7 +105,7 @@ describe("combined recovery scenarios", () => {
         status: "pending",
         payload: { handoff: "second failure", reason: "ci" },
       });
-      expect(fixRounds(w.db, id)).toBe(2);
+      expect(await fixRounds(sqliteDb(w.db), id)).toBe(2);
 
       w.crash();
       await w.start();

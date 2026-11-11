@@ -344,7 +344,7 @@ test.each([
       const old = (await getWorkItem(sqliteDb(f.db), f.oldId))!;
       const now = Date.now();
       // The run failed on agentbox with a cleanup error, then the item was cancelled.
-      blockConversation(f.db, f.oldId, now);
+      await blockConversation(sqliteDb(f.db), f.oldId, now);
       f.db.run("UPDATE work_item SET state = 'cancelled' WHERE id = ?", [f.oldId]);
       // The runner's first heartbeat after its restart. Foreign keys are off only for its rows.
       const reported = now + RUNNER_LIVE_GRACE_MS;

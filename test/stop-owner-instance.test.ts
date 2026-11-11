@@ -219,7 +219,7 @@ test("a queued stop forwards to the run's owner through the store the orchestrat
   });
   try {
     await runningItem(a.db, "acme-5", a.id);
-    enqueueCommand(db, {
+    await enqueueCommand(sqliteDb(db), {
       type: "stop",
       source: "dashboard",
       itemId: "acme-5",

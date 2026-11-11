@@ -43,13 +43,13 @@ export function* enqueueCommandSteps(q: Q, command: LinearCommand, now = command
   });
 }
 
-export function enqueueCommand(
-  db: Database,
+export async function enqueueCommand(
+  store: Db,
   command: LinearCommand,
   now = command.requestedAt,
-): number {
-  const { id, inserted } = settled(sqliteDb(db).run((q) => enqueueCommandSteps(q, command, now)));
-  if (inserted) emitJobReady(db);
+): Promise<number> {
+  const { id, inserted } = await store.run((q) => enqueueCommandSteps(q, command, now));
+  if (inserted) emitJobReady(store);
   return id;
 }
 

@@ -120,7 +120,7 @@ async function blockedAfterCleanupFailure() {
     [run.id, workspace.id, now + 60_000],
   );
   await applyWorkItemEvent(sqliteDb(db), itemId, "run_failed");
-  blockConversation(db, itemId, now);
+  await blockConversation(sqliteDb(db), itemId, now);
   const keys = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
     db,

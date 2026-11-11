@@ -70,8 +70,8 @@ const RESTART_REASONS = {
   "policy-invalid": "findings",
 } as const;
 
-export function ciFixes(db: Database, itemId: string): number {
-  return fixRounds(db, itemId);
+export async function ciFixes(db: Database, itemId: string): Promise<number> {
+  return await fixRounds(sqliteDb(db), itemId);
 }
 
 /** The pull request a conflict return is about, for the line in the item's Linear session. */

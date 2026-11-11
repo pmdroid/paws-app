@@ -145,7 +145,7 @@ export async function probeLinearSessionStop(root: string) {
       });
     }
     const queued = insertQueuedItem(db, { id: "queued-stop" });
-    enqueueCommand(db, {
+    await enqueueCommand(sqliteDb(db), {
       type: "stop",
       source: "linear",
       itemId: queued.id,

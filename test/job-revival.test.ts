@@ -138,7 +138,7 @@ test.each(["linear", "answer"] as const)(
       reason: "linear",
     });
     await admit("same-head-ci", "ci");
-    expect(fixRounds(db, "item")).toBe(1);
+    expect(await fixRounds(sqliteDb(db), "item")).toBe(1);
     const second = await admit(key(2), reason);
     await saveHumanRetryWindow(sqliteDb(db), "item", second, ["second"]);
     await recordRebaseReturn(sqliteDb(db), {
@@ -148,10 +148,10 @@ test.each(["linear", "answer"] as const)(
       reason: "linear",
     });
     await admit("same-head-ci", "ci");
-    expect(fixRounds(db, "item")).toBe(1);
+    expect(await fixRounds(sqliteDb(db), "item")).toBe(1);
     const owner = (await getWorkItem(sqliteDb(db), "item"))!;
     expect(await admit(key(1), reason)).toBe(first);
-    expect(fixRounds(db, "item")).toBe(0);
+    expect(await fixRounds(sqliteDb(db), "item")).toBe(0);
     expect(await rebaseReturns(db, "item")).toBe(0);
     expect((await getJob(sqliteDb(db), first))!.activationId).toBeGreaterThan(
       (await getJob(sqliteDb(db), second))!.activationId,
@@ -187,7 +187,7 @@ test.each(["linear", "answer"] as const)(
     expect(restart(db, owner, { reason, body: "replay", jobKey: key(1), now })).toBeNull();
     expect(await rebaseReturns(db, "item")).toBe(1);
     await admit("same-head-ci", "ci");
-    expect(fixRounds(db, "item")).toBe(1);
+    expect(await fixRounds(sqliteDb(db), "item")).toBe(1);
     db.close();
   },
 );

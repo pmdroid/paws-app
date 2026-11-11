@@ -48,7 +48,7 @@ async function fixture() {
     secretsDir,
     token,
     revoke,
-    allowed: async () => !isLinearAppRevoked(db, scope),
+    allowed: async () => !(await isLinearAppRevoked(sqliteDb(db), scope)),
   };
 }
 
@@ -178,8 +178,12 @@ test("revocation for another client or app user does not block the configured in
     createdAtMs: 2,
   });
   expect(await f.allowed()).toBe(true);
-  expect(isLinearAppRevoked(f.db, { oauthClientId: "other-client", appUserId: "app" })).toBe(true);
-  expect(isLinearAppRevoked(f.db, { oauthClientId: "client", appUserId: "other-app" })).toBe(false);
+  expect(
+    await isLinearAppRevoked(sqliteDb(f.db), { oauthClientId: "other-client", appUserId: "app" }),
+  ).toBe(true);
+  expect(
+    await isLinearAppRevoked(sqliteDb(f.db), { oauthClientId: "client", appUserId: "other-app" }),
+  ).toBe(false);
   const auth = createLinearAuth({
     db: f.db,
     secretsDir: f.secretsDir,
@@ -193,15 +197,27 @@ test("revocation for another client or app user does not block the configured in
 test("incomplete configured identity cannot bypass a possibly matching revocation", async () => {
   const f = await fixture();
   await f.revoke();
-  expect(isLinearAppRevoked(f.db, { oauthClientId: "client", appUserId: null })).toBe(true);
-  expect(isLinearAppRevoked(f.db, { oauthClientId: null, appUserId: "app" })).toBe(true);
-  expect(isLinearAppRevoked(f.db, { oauthClientId: null, appUserId: null })).toBe(true);
-  expect(isLinearAppRevoked(f.db, { oauthClientId: "client", appUserId: "not-yet-known" })).toBe(
+  expect(
+    await isLinearAppRevoked(sqliteDb(f.db), { oauthClientId: "client", appUserId: null }),
+  ).toBe(true);
+  expect(await isLinearAppRevoked(sqliteDb(f.db), { oauthClientId: null, appUserId: "app" })).toBe(
     true,
   );
-  expect(isLinearAppRevoked(f.db, { oauthClientId: "different-client", appUserId: null })).toBe(
-    false,
+  expect(await isLinearAppRevoked(sqliteDb(f.db), { oauthClientId: null, appUserId: null })).toBe(
+    true,
   );
+  expect(
+    await isLinearAppRevoked(sqliteDb(f.db), {
+      oauthClientId: "client",
+      appUserId: "not-yet-known",
+    }),
+  ).toBe(true);
+  expect(
+    await isLinearAppRevoked(sqliteDb(f.db), {
+      oauthClientId: "different-client",
+      appUserId: null,
+    }),
+  ).toBe(false);
 });
 
 test("the production startup guard uses persisted revocation when the configured app user is absent", async () => {

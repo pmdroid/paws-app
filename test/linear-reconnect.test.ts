@@ -68,7 +68,7 @@ test("verified host reconnection persists a new credential and restores the same
   const reopened = openDatabase(join(f.home, "paws.db"));
   try {
     expect(await getLinearSessionAccess(sqliteDb(reopened), "session")).toBe("allowed");
-    expect(isLinearAppRevoked(reopened, scope)).toBe(false);
+    expect(await isLinearAppRevoked(sqliteDb(reopened), scope)).toBe(false);
     expect(await listLinearInstallationRevocations(sqliteDb(reopened))).toEqual([]);
     expect(reopened.query("SELECT * FROM linear_app_revocation").get()).toMatchObject({
       revoked_at: 10,
@@ -112,7 +112,9 @@ test("a claimed OAuth client without a verified app user cannot restore a revoke
     "verified installation",
   );
   expect(readStoredToken(f.db, f.secretsDir)).toEqual(f.previous);
-  expect(isLinearAppRevoked(f.db, { oauthClientId: "client", appUserId: null })).toBe(true);
+  expect(
+    await isLinearAppRevoked(sqliteDb(f.db), { oauthClientId: "client", appUserId: null }),
+  ).toBe(true);
 });
 
 test.each(["human", "other-app", "unauthorized", "errors", "missing"])(
@@ -241,7 +243,7 @@ test("a refresh started before revocation cannot overwrite the verified host rec
     secretsDir: f.secretsDir,
     clientId: "client",
     clientSecret: "fake-secret",
-    isAuthorized: async () => !isLinearAppRevoked(f.db, scope),
+    isAuthorized: async () => !(await isLinearAppRevoked(sqliteDb(f.db), scope)),
     fetch: async () => {
       started.resolve();
       return released.promise;

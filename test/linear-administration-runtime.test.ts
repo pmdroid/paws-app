@@ -83,7 +83,7 @@ async function fixture(token = true, children = false) {
     db,
     secretsDir: join(home, "secrets"),
     env: { LINEAR_CLIENT_ID: "client", LINEAR_APP_USER_ID: "app" },
-    isAuthorized: async () => !isLinearAppRevoked(db, scope),
+    isAuthorized: async () => !(await isLinearAppRevoked(sqliteDb(db), scope)),
     beforeEvent: async (event) =>
       !(await handleLinearAdministration(db, event, {
         ...scope,
@@ -324,7 +324,7 @@ test("team removal keeps the authorized stopped response while human unassignmen
     ).status,
   ).toBe(200);
   expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("team_removed");
-  expect(isLinearAppRevoked(f.db, scope)).toBe(false);
+  expect(await isLinearAppRevoked(sqliteDb(f.db), scope)).toBe(false);
   await f.dispatcher.tick();
   await f.dispatcher.idle();
   expect(f.requests).toEqual([
@@ -423,7 +423,7 @@ test("notification dedupe follows successful reconciliation and serializes overl
   await Promise.all([a, b]);
   await handleLinearAdministration(f.db, second, options);
   expect(calls).toBe(2);
-  expect(isLinearAppRevoked(f.db, scope)).toBe(false);
+  expect(await isLinearAppRevoked(sqliteDb(f.db), scope)).toBe(false);
   expect((await getWorkItem(sqliteDb(f.db), f.task.items[0]!.id))?.state).toBe("queued");
 });
 

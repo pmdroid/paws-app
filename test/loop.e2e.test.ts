@@ -860,7 +860,7 @@ test("a bound two-item delegation asks, verifies and merges in its repository af
     expect(tracker.progress[artifactIndex]?.kind).toBe("thought");
     expect(selectedRepositories).toHaveLength(4);
     for (const item of await listWorkItems(sqliteDb(db))) {
-      expect(getWorkItemRepository(db, item.id)).toEqual(repository);
+      expect(await getWorkItemRepository(sqliteDb(db), item.id)).toEqual(repository);
     }
     const completedUpdates = tracker.progress.length;
     for (const tick of keepAliveTicks) tick();

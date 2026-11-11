@@ -295,7 +295,7 @@ test.each(
       }
       await f.jobs.tick();
       expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("completed");
-      expect(getWorkItemRepository(db, itemId)).toEqual(repository);
+      expect(await getWorkItemRepository(sqliteDb(db), itemId)).toEqual(repository);
       expect(await taskRequiresRepository(sqliteDb(db), itemId)).toBe(true);
       expect(purposes).toEqual(
         scenario === "clarify"

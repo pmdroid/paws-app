@@ -19,8 +19,11 @@ export function* getWorkItemRepositorySteps(q: Q, itemId: string): Steps<Reposit
   return row ?? null;
 }
 
-export function getWorkItemRepository(db: Database, itemId: string): RepositoryBinding | null {
-  return settled(sqliteDb(db).run((q) => getWorkItemRepositorySteps(q, itemId)));
+export async function getWorkItemRepository(
+  store: Db,
+  itemId: string,
+): Promise<RepositoryBinding | null> {
+  return store.run((q) => getWorkItemRepositorySteps(q, itemId));
 }
 
 export function bindWorkItemRepository(

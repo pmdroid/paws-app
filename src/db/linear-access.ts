@@ -471,8 +471,8 @@ export function* isLinearAppRevokedSteps(q: Q, input: LinearAppIdentity): Steps<
   return row !== undefined;
 }
 
-export function isLinearAppRevoked(db: Database, input: LinearAppIdentity): boolean {
-  return settled(sqliteDb(db).run((q) => isLinearAppRevokedSteps(q, input)));
+export async function isLinearAppRevoked(store: Db, input: LinearAppIdentity): Promise<boolean> {
+  return store.run((q) => isLinearAppRevokedSteps(q, input));
 }
 
 function* unrestoredSteps(q: Q, organizationId: string, oauthClientId: string): Steps<boolean> {

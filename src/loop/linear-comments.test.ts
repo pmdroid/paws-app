@@ -348,7 +348,7 @@ describe("receiving ordinary Linear comments", () => {
       expect(handoff).toContain(LINEAR_COMMENT_INSTRUCTION);
       expect(await f.comment("c-1")).toMatchObject({ state: "delivered", via: "brief" });
       expect(latestHumanTurn(f.db, "eng-1")).toBe(before);
-      expect(fixRounds(f.db, "eng-1")).toBe(0);
+      expect(await fixRounds(sqliteDb(f.db), "eng-1")).toBe(0);
       expect(
         await turnBrief(f.db, (await getWorkItem(sqliteDb(f.db), "eng-1"))!, f.caps),
       ).toBeNull();
