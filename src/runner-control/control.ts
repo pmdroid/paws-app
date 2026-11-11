@@ -138,11 +138,16 @@ export function createRunnerControl(options: {
       for (const { fingerprint } of settled(store.run((q) => expiredFingerprintsSteps(q, at))))
         options.disconnect(fingerprint);
     },
+    async expireConnectionsAsync() {
+      const at = now();
+      for (const { fingerprint } of await store.run((q) => expiredFingerprintsSteps(q, at)))
+        options.disconnect(fingerprint);
+    },
     authenticate(peer: RunnerPeer) {
       return authorized(peer);
     },
-    revoked(peer: RunnerPeer): boolean {
-      return settled(store.run((q) => fingerprintRevokedSteps(q, peer.fingerprint)));
+    revoked(peer: RunnerPeer): Promise<boolean> {
+      return store.run((q) => fingerprintRevokedSteps(q, peer.fingerprint));
     },
     async list(principal: WorkspacePrincipal, sessionIds: readonly string[]) {
       if (
