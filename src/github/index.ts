@@ -133,6 +133,7 @@ export type {
   GitHubClient,
   GitHubResponse,
   OpenedPull,
+  PullRequestMember,
   PublishResult,
   SerialMergeResult,
   CiCheck,

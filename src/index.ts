@@ -311,6 +311,7 @@ import {
   isWorkspaceAdmin,
   startWorkspaceAccess,
   delegatorCommitCredit,
+  delegatorPullRequestToken,
   createWorkspaceAssignments,
   type WorkspacePrincipal,
 } from "./workspace";
@@ -1809,6 +1810,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           },
         }),
         commitPolicyForItem,
+        pullRequestMember: async (item) =>
+          commentAccess
+            ? delegatorPullRequestToken(store, item.id, commentAccess.githubUserToken)
+            : null,
         files: linear?.files,
         secretsDir: paths.secretsDir,
         closeoutEvidenceObjects: evidenceObjects,
