@@ -100,7 +100,11 @@ for (const delivered of [true, false, "completed"] as const)
       const item = listWorkItems(db)[0]!;
       for (let attempt = 0; attempt < 500; attempt++) {
         const current = listWorkItems(db)[0]!;
-        if (current.currentRunId && getRun(db, current.currentRunId)?.status === "active") break;
+        if (
+          current.currentRunId &&
+          (await getRun(sqliteDb(db), current.currentRunId))?.status === "active"
+        )
+          break;
         await Bun.sleep(10);
       }
       const runId = listWorkItems(db)[0]!.currentRunId!;
@@ -122,7 +126,7 @@ for (const delivered of [true, false, "completed"] as const)
       );
       const resumes = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
       if (delivered === true) {
-        expect(getRun(db, runId)?.status).toBe("active");
+        expect((await getRun(sqliteDb(db), runId))?.status).toBe("active");
         expect(listWorkItems(db)[0]!.currentRunId).toBe(runId);
         expect(resumes).toHaveLength(0);
         await orchestrator.onLinearEvent({ ...event("prompted", null), signal: "stop" });

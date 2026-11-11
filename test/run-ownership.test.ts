@@ -215,9 +215,9 @@ describe("run ownership", () => {
 
       await prepareShutdown(sqliteDb(a), 1_000, undefined, acme.id);
 
-      expect(getRun(a, mine)?.status).toBe("lost");
+      expect((await getRun(sqliteDb(a), mine))?.status).toBe("lost");
       expect(getWorkItem(a, "acme-1")?.state).toBe("recovering");
-      expect(getRun(a, theirs)?.status).toBe("active");
+      expect((await getRun(sqliteDb(a), theirs))?.status).toBe("active");
       expect(getWorkItem(a, "acme-2")?.state).toBe("running");
     } finally {
       b.close();
@@ -278,9 +278,9 @@ describe("run ownership across two Paws processes", () => {
       first.kill("SIGTERM");
       expect(await first.exited).toBe(0);
 
-      expect(getRun(db, aRun)?.status).toBe("lost");
+      expect((await getRun(sqliteDb(db), aRun))?.status).toBe("lost");
       expect(getWorkItem(db, "acme-1")?.state).toBe("recovering");
-      expect(getRun(db, bRun)?.status).toBe("active");
+      expect((await getRun(sqliteDb(db), bRun))?.status).toBe("active");
       expect(getWorkItem(db, "acme-2")?.state).toBe("running");
     } finally {
       first.kill("SIGKILL");

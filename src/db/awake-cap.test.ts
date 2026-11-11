@@ -323,7 +323,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
       "item.ask": "pending",
     });
     expect(result.item).toMatchObject({ state: "running", cancelRequested: false });
-    expect(getRun(db, run.id)?.status).toBe("ended");
+    expect((await getRun(sqliteDb(db), run.id))?.status).toBe("ended");
     const request = (await listJobs(sqliteDb(db))).find((job) => job.queue === "item.ask")?.payload;
     expect(request).toMatchObject({
       kind: "time-limit",
@@ -792,7 +792,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
       cancelRequested: false,
       maxAwakeMs: 30 * MINUTE + 60 * MINUTE,
     });
-    expect(getRun(db, run.id)?.status).toBe("ended");
+    expect((await getRun(sqliteDb(db), run.id))?.status).toBe("ended");
     expect(
       (await listOutbox(sqliteDb(db))).some(
         (row) => (row.payload as { kind?: string }).kind === "error",

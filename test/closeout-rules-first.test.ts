@@ -216,7 +216,7 @@ async function originWithPolicy(root: string, checkMark: string): Promise<string
 async function attachRunnerLease(db: Database): Promise<void> {
   for (let attempt = 0; attempt < 2000; attempt += 1) {
     const item = listWorkItems(db)[0];
-    const run = item?.currentRunId ? getRun(db, item.currentRunId) : null;
+    const run = item?.currentRunId ? await getRun(sqliteDb(db), item.currentRunId) : null;
     if (run?.status === "active") {
       const now = Date.now();
       const userId = await putWorkspaceUser(sqliteDb(db), {

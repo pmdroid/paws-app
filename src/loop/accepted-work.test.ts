@@ -69,7 +69,7 @@ test("an accepted head that is the pull request head goes to the merge queue wit
   const item = getWorkItem(db, itemId)!;
   expect(item).toMatchObject({ state: "merge_queue", currentRunId: runId });
   expect(item.checkpoint).toMatchObject({ phase: "merge_queue", wipCommit: ACCEPTED });
-  expect(getRun(db, runId)?.status).toBe("ended");
+  expect((await getRun(sqliteDb(db), runId))?.status).toBe("ended");
   expect((await listJobs(sqliteDb(db))).find((job) => job.id === resume)?.status).toBe("cancelled");
   expect(await implementTurns(db)).toEqual([]);
   expect((await mergeJobs(db)).map((job) => job.payload)).toEqual([

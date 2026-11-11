@@ -117,7 +117,7 @@ export async function probeResponseTaskRecovery(root: string) {
         { type: "resume", freshSession: true, checkpoint: null },
       ]);
       assert.equal(getWorkItem(db, item.id)?.recoveryAttempts, 1);
-      assert.equal(getRun(db, run.id)?.status, "active");
+      assert.equal((await getRun(sqliteDb(db), run.id))?.status, "active");
       assert.equal(
         (await listJobs(sqliteDb(db))).filter(
           (job) => job.queue === JOB_KIND.resume && job.status === "pending",

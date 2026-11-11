@@ -104,7 +104,8 @@ async function snapshot(db: Database, itemId = "eng-9") {
       agentMs: item.agentMs,
       cancelRequested: item.cancelRequested,
     },
-    run: item.currentRunId === null ? null : getRun(db, item.currentRunId)?.status,
+    run:
+      item.currentRunId === null ? null : (await getRun(sqliteDb(db), item.currentRunId))?.status,
     jobs: (await executions(db, itemId)).map(
       ({ id, queue, status, runAt, attempts, maxAttempts, payload }) => ({
         id,

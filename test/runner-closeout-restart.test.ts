@@ -343,7 +343,7 @@ async function restartWithRunnerHolding(f: Fixture) {
   expect(f.commandCount("cancel")).toBe(0);
   await prepareShutdown(sqliteDb(f.db));
   expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "verifying", recoveryAttempts: 0 });
-  expect(getRun(f.db, f.run.id)?.status).toBe("active");
+  expect((await getRun(sqliteDb(f.db), f.run.id))?.status).toBe("active");
   f.restart();
   expect(await recoverOnStartup(sqliteDb(f.db))).toEqual([{ type: "reverify" }]);
   // A second start before the re-verify ran does not queue another one.
@@ -500,7 +500,7 @@ test("a verifying item whose runner lease ran past its grace re-verifies as befo
       state: "verifying",
       checkpoint: { phase: "verifying", wipCommit: f.head },
     });
-    expect(getRun(f.db, f.run.id)?.status).toBe("lost");
+    expect((await getRun(sqliteDb(f.db), f.run.id))?.status).toBe("lost");
     f.restart();
     expect(await recoverOnStartup(sqliteDb(f.db), later)).toEqual([
       { type: "reverify", resumed: true },

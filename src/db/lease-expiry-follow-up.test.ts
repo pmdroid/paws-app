@@ -74,7 +74,7 @@ describe("follow-up after an expired runner lease", () => {
     expect(await closeExpiredRunnerLeases(sqliteDb(db), at)).toEqual([run.id]);
     const current = getWorkItem(db, item.id)!;
     expect(current.state).toBe("recovering");
-    expect(getRun(db, run.id)?.status).toBe("lost");
+    expect((await getRun(sqliteDb(db), run.id))?.status).toBe("lost");
     expect(runnerWork(db, run.id)?.endedAt).toBe(at);
     const [job] = await pending(db);
     expect(await pending(db)).toHaveLength(1);
@@ -161,7 +161,7 @@ describe("follow-up after an expired runner lease", () => {
       queues: [JOB_KIND.resume],
     });
     expect(await closeExpiredRunnerLeases(sqliteDb(db), START + PAST)).toEqual([]);
-    expect(getRun(db, run.id)?.status).toBe("active");
+    expect((await getRun(sqliteDb(db), run.id))?.status).toBe("active");
     expect(await pending(db)).toEqual([]);
   });
 
@@ -196,7 +196,7 @@ describe("follow-up after an expired runner lease", () => {
     const { db, item, run } = await leased();
     await setCurrentRun(sqliteDb(db), item.id, "newer-run");
     expect(await closeExpiredRunnerLeases(sqliteDb(db), START + PAST)).toEqual([run.id]);
-    expect(getRun(db, run.id)?.status).toBe("lost");
+    expect((await getRun(sqliteDb(db), run.id))?.status).toBe("lost");
     expect(getWorkItem(db, item.id)?.state).toBe("running");
     expect(await pending(db)).toEqual([]);
   });
@@ -282,7 +282,7 @@ describe("follow-up after an expired runner lease", () => {
 
     const second = openDatabase(path);
     expect(getWorkItem(second, "item")?.state).toBe("running");
-    expect(getRun(second, first.run.id)?.status).toBe("active");
+    expect((await getRun(sqliteDb(second), first.run.id))?.status).toBe("active");
     expect(runnerWork(second, first.run.id)?.endedAt).toBeNull();
     second.run("DROP TRIGGER fail_follow_up");
     expect(await closeExpiredRunnerLeases(sqliteDb(second), START + PAST)).toEqual([first.run.id]);
@@ -290,7 +290,7 @@ describe("follow-up after an expired runner lease", () => {
 
     const third = openDatabase(path);
     expect(getWorkItem(third, "item")?.state).toBe("recovering");
-    expect(getRun(third, first.run.id)?.status).toBe("lost");
+    expect((await getRun(sqliteDb(third), first.run.id))?.status).toBe("lost");
     expect(runnerWork(third, first.run.id)?.endedAt).toBe(START + PAST);
     expect(await pending(third)).toMatchObject([
       { queue: JOB_KIND.resume, payload: { reason: "transient_failure", retry: 1 } },

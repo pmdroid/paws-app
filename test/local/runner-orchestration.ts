@@ -499,7 +499,7 @@ export async function probeRunnerOrchestration(
               }
               if (reverifying) laterDispatches++;
               const item = getWorkItem(db, itemId)!;
-              assert.equal(getRun(db, item.currentRunId!)?.status, "active");
+              assert.equal((await getRun(sqliteDb(db), item.currentRunId!))?.status, "active");
               const checks = options.runId.startsWith("checks-");
               calls.push({
                 role: options.role,
@@ -657,7 +657,7 @@ export async function probeRunnerOrchestration(
               if (reverifying && reviewing) {
                 assert.equal(item.state, "verifying");
                 assert.notEqual(item.currentRunId, originalRunId);
-                assert.equal(getRun(db, item.currentRunId!)?.kind, "recheck");
+                assert.equal((await getRun(sqliteDb(db), item.currentRunId!))?.kind, "recheck");
                 reviewRunId = item.currentRunId!;
                 if (implementationCount === 2)
                   assert.deepEqual(
@@ -852,7 +852,7 @@ export async function probeRunnerOrchestration(
       if (initialLease) {
         assert.equal(item.state, "running");
         assert.equal(item.currentRunId, replacementRunId);
-        assert.equal(getRun(db, replacementRunId)?.status, "active");
+        assert.equal((await getRun(sqliteDb(db), replacementRunId))?.status, "active");
         assert.equal((await getJob(sqliteDb(db), reclaimedJobId))?.status, "running");
         assert(leaseAborted);
         assert.equal(witnessCalls, 0);
@@ -892,7 +892,7 @@ export async function probeRunnerOrchestration(
         assert.equal(fix.networkGit, implementation.networkGit);
         assert.equal(witnessCalls, 0);
       }
-      assert.equal(getRun(db, item.currentRunId!)?.status, "ended");
+      assert.equal((await getRun(sqliteDb(db), item.currentRunId!))?.status, "ended");
       assert.equal(existsSync(join(home, "local-agent")), false);
       if (runnerWait) {
         await runnerWatch;
@@ -931,7 +931,7 @@ export async function probeRunnerOrchestration(
           } else await markRun(sqliteDb(db), originalRunId, "active", Date.now());
           assert.deepEqual(await recoverOnStartup(sqliteDb(db)), [{ type: "reverify" }]);
           assert.equal(getWorkItem(db, item.id)?.state, "verifying");
-          assert.equal(getRun(db, foreignRunId)?.status, "active");
+          assert.equal((await getRun(sqliteDb(db), foreignRunId))?.status, "active");
         }
         if (mergeDependencyYield) {
           db.run(
@@ -1148,8 +1148,8 @@ export async function probeRunnerOrchestration(
           assert(leaseAborted);
           assert.equal(verified.currentRunId, replacementRunId);
           assert.equal(verified.state, "verifying");
-          assert.equal(getRun(db, replacementRunId)?.status, "active");
-          assert.equal(getRun(db, reviewRunId)?.status, "ended");
+          assert.equal((await getRun(sqliteDb(db), replacementRunId))?.status, "active");
+          assert.equal((await getRun(sqliteDb(db), reviewRunId))?.status, "ended");
           assert.equal((await getJob(sqliteDb(db), reclaimedJobId))?.status, "running");
           observe(
             "selected verification transport aborts on job reclaim without accepting stale result: " +
@@ -1168,9 +1168,9 @@ export async function probeRunnerOrchestration(
           assert.notEqual(reviewRunId, "");
           assert.equal(verified.currentRunId, reviewRunId);
           assert.equal(verified.state, "merge_queue");
-          assert.equal(getRun(db, foreignRunId)?.status, "lost");
-          assert.equal(getRun(db, reviewRunId)?.status, "ended");
-          assert.equal(getRun(db, reviewRunId)?.kind, "recheck");
+          assert.equal((await getRun(sqliteDb(db), foreignRunId))?.status, "lost");
+          assert.equal((await getRun(sqliteDb(db), reviewRunId))?.status, "ended");
+          assert.equal((await getRun(sqliteDb(db), reviewRunId))?.kind, "recheck");
           assert.deepEqual(
             readFileSync(join(home, "runs", reviewRunId, "agent-profile.json")),
             originalProfile,
@@ -1190,14 +1190,14 @@ export async function probeRunnerOrchestration(
             {
               foreignRunId,
               state: verified.state,
-              status: getRun(db, foreignRunId)?.status,
+              status: (await getRun(sqliteDb(db), foreignRunId))?.status,
               laterDispatches,
             },
           );
         } else {
           assert.notEqual(reviewRunId, "");
-          assert.equal(getRun(db, reviewRunId)?.status, "ended");
-          assert.equal(getRun(db, originalRunId)?.status, "ended");
+          assert.equal((await getRun(sqliteDb(db), reviewRunId))?.status, "ended");
+          assert.equal((await getRun(sqliteDb(db), originalRunId))?.status, "ended");
           if (scenario === "success") {
             assert.equal(
               (await listJobs(sqliteDb(db))).find((job) => job.id === reverifyId)?.status,
@@ -1217,7 +1217,7 @@ export async function probeRunnerOrchestration(
             assert.equal(verified.state, "verifying");
             if (scenario === "reassigned") {
               assert.notEqual(verified.currentRunId, reviewRunId);
-              assert.equal(getRun(db, verified.currentRunId!)?.status, "active");
+              assert.equal((await getRun(sqliteDb(db), verified.currentRunId!))?.status, "active");
             }
           }
           if (mergeDependencyYield) {

@@ -305,7 +305,7 @@ test("an answer task mid-turn keeps running through a Paws restart and finishes 
 
     await prepareShutdown(sqliteDb(f.db));
     expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "running", recoveryAttempts: 0 });
-    expect(getRun(f.db, f.run.id)?.status).toBe("active");
+    expect((await getRun(sqliteDb(f.db), f.run.id))?.status).toBe("active");
     f.restart();
     expect(await recoverOnStartup(sqliteDb(f.db))).toEqual([
       { type: "resume", freshSession: true, checkpoint: null, reattach: true },

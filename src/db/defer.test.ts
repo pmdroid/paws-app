@@ -33,7 +33,7 @@ test("deferring a running item loses its run, moves it to recovering, and schedu
   restore();
   expect(lines).toContain("item item-1 deferred: retry 2 in 5000 ms");
   expect(getWorkItem(db, "item-1")?.state).toBe("recovering");
-  expect(getRun(db, run.id)?.status).toBe("lost");
+  expect((await getRun(sqliteDb(db), run.id))?.status).toBe("lost");
   expect(
     (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume),
   ).toMatchObject([
@@ -92,7 +92,7 @@ test("deferring verification of a recorded candidate keeps it verifying and re-v
     version: verifying.version,
     checkpoint: { phase: "verifying", wipCommit: "head" },
   });
-  expect(getRun(db, run.id)?.status).toBe("lost");
+  expect((await getRun(sqliteDb(db), run.id))?.status).toBe("lost");
   const jobs = (await listJobs(sqliteDb(db))).filter((job) => job.status === "pending");
   expect(jobs).toMatchObject([
     {

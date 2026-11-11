@@ -587,7 +587,7 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
     const final = "## Review replies\nR1 fixed: Sorted descending.\nR3 not changed: A fresh read.";
     const runId = getWorkItem(db, "eng-1")!.currentRunId!;
     expect(await turnEnds(db, final)).toBe("sent_back");
-    expect(getRun(db, runId)!.status).toBe("ended");
+    expect((await getRun(sqliteDb(db), runId))!.status).toBe("ended");
     const sentBack = await latestHandoff(db);
     expect(sentBack.reason).toBe("follow_up");
     expect(sentBack.handoff).toContain("R2. Review by @pascal: Fix the ranking.");
@@ -609,7 +609,9 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
     expect(await turnEnds(db, "I fixed everything.")).toBe("sent_back");
     expect(await turnEnds(db, "All comments are addressed.")).toBe("asked");
     expect(getWorkItem(db, "eng-1")!.state).toBe("awaiting_input");
-    expect(getRun(db, getWorkItem(db, "eng-1")!.currentRunId!)!.status).toBe("ended");
+    expect((await getRun(sqliteDb(db), getWorkItem(db, "eng-1")!.currentRunId!))!.status).toBe(
+      "ended",
+    );
     const question = findOpenQuestion(db, "s-1")!;
     expect(question.body).toContain("R2. Review by @pascal: Fix the ranking.");
     expect(question.body).not.toContain("R1.");

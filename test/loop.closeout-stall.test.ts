@@ -499,7 +499,7 @@ for (const scenario of ["imported", "retry", "terminal", "mismatch", "question",
       const verify = f.gate.run;
       f.gate.run = async (input) => {
         expect(getWorkItem(f.db, item.id)?.currentRunId).toBe(runId);
-        expect(getRun(f.db, runId)?.status).toBe("active");
+        expect((await getRun(sqliteDb(f.db), runId))?.status).toBe("active");
         expect(
           f.db.query("SELECT 1 FROM runner_work WHERE run_id=? AND ended_at IS NULL").get(runId),
         ).not.toBeNull();
@@ -522,7 +522,7 @@ for (const scenario of ["imported", "retry", "terminal", "mismatch", "question",
       await f.tickReverify();
       if (scenario === "reader") {
         expect(f.gate.runs).toHaveLength(1);
-        expect(getRun(f.db, runId)?.status).toBe("active");
+        expect((await getRun(sqliteDb(f.db), runId))?.status).toBe("active");
         expect((await listJobs(sqliteDb(f.db))).find((j) => j.id === jobId)?.status).toBe(
           "pending",
         );
@@ -534,10 +534,10 @@ for (const scenario of ["imported", "retry", "terminal", "mismatch", "question",
       const current = getWorkItem(f.db, item.id)!;
       if (scenario === "terminal") {
         expect(current.state).toBe("failed");
-        expect(getRun(f.db, runId)?.status).toBe("lost");
+        expect((await getRun(sqliteDb(f.db), runId))?.status).toBe("lost");
       } else if (scenario === "question") {
         expect(current.state).toBe("awaiting_input");
-        expect(getRun(f.db, runId)?.status).toBe("active");
+        expect((await getRun(sqliteDb(f.db), runId))?.status).toBe("active");
       } else {
         expect((await listJobs(sqliteDb(f.db))).find((job) => job.id === jobId)?.status).toBe(
           importResult ? "done" : "pending",
@@ -546,7 +546,9 @@ for (const scenario of ["imported", "retry", "terminal", "mismatch", "question",
           state: importResult || scenario === "mismatch" ? "merge_queue" : "verifying",
           currentRunId: runId,
         });
-        expect(getRun(f.db, runId)?.status).toBe(importResult ? "ended" : "active");
+        expect((await getRun(sqliteDb(f.db), runId))?.status).toBe(
+          importResult ? "ended" : "active",
+        );
       }
       expect(
         f.db.query("SELECT 1 FROM runner_work WHERE run_id=? AND ended_at IS NULL").get(runId) !==
@@ -852,7 +854,7 @@ for (const state of ["verifying", "merge_queue"] as const)
         });
         if (waiting) {
           expect(f.gate.runs).toHaveLength(1);
-          expect(getRun(f.db, runId)?.status).toBe("active");
+          expect((await getRun(sqliteDb(f.db), runId))?.status).toBe("active");
           expect(getWorkItem(f.db, item.id)).toMatchObject({ state, currentRunId: runId });
           // The same durable request must take over promptly once the lease expires.
           f.db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [
@@ -870,14 +872,14 @@ for (const state of ["verifying", "merge_queue"] as const)
         {
           expect(f.gate.runs).toHaveLength(2);
           expect(rounds).toBe(state === "merge_queue" ? 1 : 0);
-          expect(getRun(f.db, runId)?.status).toBe("lost");
+          expect((await getRun(sqliteDb(f.db), runId))?.status).toBe("lost");
           expect(
             f.db.query("SELECT 1 FROM runner_work WHERE run_id=? AND ended_at IS NULL").all(runId),
           ).toEqual([]);
           const current = getWorkItem(f.db, item.id)!;
           expect(current.state).toBe("merge_queue");
           expect(current.currentRunId).not.toBe(runId);
-          expect(getRun(f.db, current.currentRunId!)).toMatchObject({
+          expect(await getRun(sqliteDb(f.db), current.currentRunId!)).toMatchObject({
             kind: "recheck",
             status: "ended",
           });
@@ -1207,7 +1209,7 @@ async function verifyingWithHeldGate(options: { publicUrl?: string; remote?: boo
 async function attachRunnerLease(db: Database): Promise<void> {
   for (let attempt = 0; attempt < 2000; attempt += 1) {
     const item = listWorkItems(db)[0];
-    const run = item?.currentRunId ? getRun(db, item.currentRunId) : null;
+    const run = item?.currentRunId ? await getRun(sqliteDb(db), item.currentRunId) : null;
     if (run?.status === "active") {
       const now = Date.now();
       const userId = await putWorkspaceUser(sqliteDb(db), {

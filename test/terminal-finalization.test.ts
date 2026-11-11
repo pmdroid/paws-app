@@ -63,7 +63,7 @@ test("a fault after the failed state is written rolls the whole failure back", a
     failWorkItem(sqliteDb(db), item, "run_error", "The agent crashed.", 2),
   ).rejects.toThrow("injected fault");
   expect(getWorkItem(db, item.id)).toMatchObject({ state: "running", cancelRequested: false });
-  expect(getRun(db, run.id)?.status).toBe("active");
+  expect((await getRun(sqliteDb(db), run.id))?.status).toBe("active");
   expect((await getJob(sqliteDb(db), jobId))?.status).toBe("pending");
 });
 
@@ -78,7 +78,7 @@ test("a failure inside a caller's transaction rolls back with the caller", async
     }),
   ).rejects.toThrow("caller failed");
   expect(getWorkItem(db, item.id)?.state).toBe("running");
-  expect(getRun(db, run.id)?.status).toBe("active");
+  expect((await getRun(sqliteDb(db), run.id))?.status).toBe("active");
   expect((await getJob(sqliteDb(db), jobId))?.status).toBe("pending");
   expect(await listOutbox(sqliteDb(db), "session")).toEqual([]);
 });
@@ -95,8 +95,8 @@ test("a delayed failure cannot fail the run that superseded it", async () => {
     false,
   );
   expect(getWorkItem(db, item.id)).toMatchObject({ state: "running", currentRunId: next.id });
-  expect(getRun(db, run.id)?.status).toBe("active");
-  expect(getRun(db, next.id)?.status).toBe("active");
+  expect((await getRun(sqliteDb(db), run.id))?.status).toBe("active");
+  expect((await getRun(sqliteDb(db), next.id))?.status).toBe("active");
   expect(await listOutbox(sqliteDb(db), "session")).toEqual([]);
 });
 
@@ -120,7 +120,7 @@ test("a committed failure survives a restart and is not repeated", async () => {
   databases.push(restored);
   const failed = getWorkItem(restored, item.id)!;
   expect(failed).toMatchObject({ state: "failed", cancelRequested: true });
-  expect(getRun(restored, run.id)?.status).toBe("lost");
+  expect((await getRun(sqliteDb(restored), run.id))?.status).toBe("lost");
   expect((await getJob(sqliteDb(restored), jobId))?.status).toBe("cancelled");
   expect((await listOutbox(sqliteDb(restored), "session")).map((row) => row.payload)).toEqual([
     { sessionId: "session", kind: "error", body: "The agent crashed." },
@@ -174,7 +174,7 @@ test("a confirmed merge commits its state, run, jobs and notice together and onl
   const restored = openDatabase(file);
   databases.push(restored);
   expect(getWorkItem(restored, item.id)?.state).toBe("merged");
-  expect(getRun(restored, run.id)?.status).toBe("ended");
+  expect((await getRun(sqliteDb(restored), run.id))?.status).toBe("ended");
   expect((await getJob(sqliteDb(restored), jobId))?.status).toBe("cancelled");
   expect(await listOutbox(sqliteDb(restored), "session")).toHaveLength(1);
   expect((await listOutbox(sqliteDb(restored), "session"))[0]).toMatchObject({
@@ -199,7 +199,7 @@ test("a fault in the merge notice leaves the task in the merge queue", async () 
     completeMergedItem(sqliteDb(db), { itemId: item.id, now: 4, announce }),
   ).rejects.toThrow("injected fault");
   expect(getWorkItem(db, item.id)?.state).toBe("merge_queue");
-  expect(getRun(db, run.id)?.status).toBe("active");
+  expect((await getRun(sqliteDb(db), run.id))?.status).toBe("active");
   expect((await getJob(sqliteDb(db), jobId))?.status).toBe("pending");
 });
 
@@ -242,7 +242,7 @@ test("an answer from a superseded run cannot complete the task", async () => {
       }),
   });
   expect(getWorkItem(db, item.id)?.state).toBe("completed");
-  expect(getRun(db, next.id)?.status).toBe("ended");
+  expect((await getRun(sqliteDb(db), next.id))?.status).toBe("ended");
   expect((await getJob(sqliteDb(db), jobId))?.status).toBe("cancelled");
   expect(announced).toBe(1);
 });
@@ -261,7 +261,7 @@ test("a fault in the answer's session update rolls the completion back", async (
     }),
   ).rejects.toThrow("session update failed");
   expect(getWorkItem(db, item.id)?.state).toBe("running");
-  expect(getRun(db, run.id)?.status).toBe("active");
+  expect((await getRun(sqliteDb(db), run.id))?.status).toBe("active");
   expect(await listOutbox(sqliteDb(db), "session")).toEqual([]);
 });
 

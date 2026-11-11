@@ -106,7 +106,7 @@ test("two screenshots published 10 s apart end the turn with one link ask that n
     const item = listWorkItems(f.db)[0]!;
     expect(item.state).toBe("awaiting_input");
     expect(item.checkpoint?.phase).toBe("awaiting_input");
-    expect(getRun(f.db, item.currentRunId!)?.status).toBe("ended");
+    expect((await getRun(sqliteDb(f.db), item.currentRunId!))?.status).toBe("ended");
     expect(await runnerHasCapacity(sqliteDb(f.db), f.runnerId, Date.now())).toBe(true);
     const [first, second] = await listEvidence(sqliteDb(f.db), item.id);
     expect(second!.createdAt - first!.createdAt).toBeGreaterThanOrEqual(10_000);
@@ -1365,7 +1365,7 @@ function leaseActiveRun(db: Database): Promise<string> {
   return (async () => {
     for (let attempt = 0; attempt < 2000; attempt += 1) {
       const item = listWorkItems(db)[0];
-      const run = item?.currentRunId ? getRun(db, item.currentRunId) : null;
+      const run = item?.currentRunId ? await getRun(sqliteDb(db), item.currentRunId) : null;
       if (run?.status === "active") return await attachLease(db, run.id);
       await Bun.sleep(10);
     }

@@ -367,9 +367,10 @@ test("onboarded authoritative creator resumes once with current App and no perso
     await saveRunCommitPolicy(sqliteDb(db), current().currentRunId!, captured);
     const persisted = dbApi.openDatabase(path);
     try {
-      expect(dbApi.getRun(persisted, current().currentRunId!)!.checkpoint!.commitPolicy).toEqual(
-        captured,
-      );
+      expect(
+        (await dbApi.getRun(sqliteDb(persisted), current().currentRunId!))!.checkpoint!
+          .commitPolicy,
+      ).toEqual(captured);
     } finally {
       persisted.close();
     }

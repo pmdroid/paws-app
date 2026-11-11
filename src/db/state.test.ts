@@ -61,7 +61,7 @@ describe("restart recovery", () => {
       { type: "resume", freshSession: true, checkpoint },
     ]);
     expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
-    expect(getRun(db, run.id)?.status).toBe("active");
+    expect((await getRun(sqliteDb(db), run.id))?.status).toBe("active");
     expect(await listOutbox(sqliteDb(db))).toHaveLength(0);
     const resume = (await listJobs(sqliteDb(db))).find((job) => job.queue === "run.resume");
     expect(resume?.status).toBe("pending");
@@ -70,7 +70,7 @@ describe("restart recovery", () => {
 
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([{ type: "ask_restart" }]);
     expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
-    expect(getRun(db, run.id)?.status).toBe("ended");
+    expect((await getRun(sqliteDb(db), run.id))?.status).toBe("ended");
     expect((await listJobs(sqliteDb(db))).find((job) => job.queue === "run.resume")?.status).toBe(
       "cancelled",
     );
@@ -175,7 +175,7 @@ describe("restart recovery", () => {
           awakeMs: 0,
           waitingMs: 60 * 60_000,
         });
-        expect(getRun(db, run.id)?.status).toBe("active");
+        expect((await getRun(sqliteDb(db), run.id))?.status).toBe("active");
         expect(
           (await listJobs(sqliteDb(db))).filter((job) => job.status === "pending"),
         ).toMatchObject([{ id }]);
@@ -203,7 +203,7 @@ describe("restart recovery", () => {
     }
     expect({
       item: getWorkItem(db, item.id),
-      run: getRun(db, run.id)?.status,
+      run: (await getRun(sqliteDb(db), run.id))?.status,
     }).toMatchObject({ item: { state: "running", recoveryAttempts: 0 }, run: "active" });
   });
 
@@ -331,11 +331,11 @@ describe("restart recovery", () => {
     const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
     await prepareShutdown(sqliteDb(db), clock.now());
     expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 0 });
-    expect(getRun(db, run.id)?.status).toBe("lost");
+    expect((await getRun(sqliteDb(db), run.id))?.status).toBe("lost");
 
     await recoverOnStartup(sqliteDb(db), clock.now());
     expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
-    expect(getRun(db, run.id)?.status).toBe("active");
+    expect((await getRun(sqliteDb(db), run.id))?.status).toBe("active");
 
     await prepareShutdown(sqliteDb(db), clock.now());
     expect(getWorkItem(db, item.id)?.recoveryAttempts).toBe(1);
@@ -371,7 +371,7 @@ describe("restart recovery", () => {
       state: "merge_queue",
       checkpoint: { phase: "merge_queue" },
     });
-    expect(getRun(db, run.id)?.status).toBe("ended");
+    expect((await getRun(sqliteDb(db), run.id))?.status).toBe("ended");
     expect((await getJob(sqliteDb(db), merge))?.status).toBe("pending");
     expect((await listJobs(sqliteDb(db))).map((job) => job.queue)).toEqual(["github.merge"]);
     expect(await listOutbox(sqliteDb(db))).toHaveLength(0);
@@ -469,7 +469,7 @@ describe("restart recovery", () => {
     await enterMergeQueue(sqliteDb(db), item.id, checkpoint);
 
     await prepareShutdown(sqliteDb(db), clock.now());
-    expect(getRun(db, run.id)?.status).toBe("lost");
+    expect((await getRun(sqliteDb(db), run.id))?.status).toBe("lost");
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([{ type: "reverify" }]);
     expect(getWorkItem(db, item.id)?.state).toBe("verifying");
   });
@@ -539,7 +539,7 @@ describe("restart recovery", () => {
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([{ type: "none" }]);
     expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
     expect(getWorkItem(db, item.id)?.recoveryAttempts).toBe(0);
-    expect(getRun(db, run.id)?.status).toBe("ended");
+    expect((await getRun(sqliteDb(db), run.id))?.status).toBe("ended");
     expect((await listJobs(sqliteDb(db))).map((job) => job.queue)).toEqual([JOB_KIND.catchup]);
   });
 
@@ -591,8 +591,10 @@ describe("restart recovery", () => {
       state: "recovering",
       recoveryAttempts: 1,
     });
-    expect(getRun(second, run.id)?.status).toBe("active");
-    expect(getRun(second, run.id)?.checkpoint?.resultBody).toBe("Implemented and checked locally.");
+    expect((await getRun(sqliteDb(second), run.id))?.status).toBe("active");
+    expect((await getRun(sqliteDb(second), run.id))?.checkpoint?.resultBody).toBe(
+      "Implemented and checked locally.",
+    );
     expect(recovery).toEqual([{ type: "resume", freshSession: true, checkpoint }]);
     expect(await listOutbox(sqliteDb(second))).toHaveLength(0);
     expect(
@@ -769,7 +771,7 @@ describe("linear commands", () => {
     expect(result.applied).toBe(true);
     expect(seen).toEqual(["stop"]);
     expect(getWorkItem(db, "eng-2")).toMatchObject({ state: "paused", cancelRequested: false });
-    expect(getRun(db, run.id)?.status).not.toBe("active");
+    expect((await getRun(sqliteDb(db), run.id))?.status).not.toBe("active");
     expect((await listOutbox(sqliteDb(db))).find((row) => row.op === "activity")?.payload).toEqual({
       sessionId: "ses",
       kind: "response",

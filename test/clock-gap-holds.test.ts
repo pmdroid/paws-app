@@ -115,7 +115,7 @@ async function snapshot(db: Database) {
       recoveryAttempts: item.recoveryAttempts,
       cancelRequested: item.cancelRequested,
     },
-    run: item.currentRunId ? getRun(db, item.currentRunId)?.status : null,
+    run: item.currentRunId ? (await getRun(sqliteDb(db), item.currentRunId))?.status : null,
     jobs: (await listJobs(sqliteDb(db)))
       .filter((job) => job.queue !== JOB_KIND.catchup)
       .map((job) => ({ id: job.id, queue: job.queue, status: job.status, runAt: job.runAt })),

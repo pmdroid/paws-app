@@ -495,7 +495,7 @@ describe("runner control across Paws restarts", () => {
       expect((await controller().currentAsync(run.id, 1)).command.id).toBe("work-1");
       w.advance(10 * MINUTE + RUNNER_LEASE_GRACE_MS);
       await w.sweep();
-      expect(getRun(w.db, run.id)?.status).toBe("lost");
+      expect((await getRun(sqliteDb(w.db), run.id))?.status).toBe("lost");
       expect((await factsOf(w.db, "item")).state).toBe("recovering");
       for (const restartWith of ["crash", "stop"] as const) {
         if (restartWith === "crash") w.crash();

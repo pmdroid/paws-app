@@ -164,7 +164,7 @@ export async function probeStandaloneAttribution(root: string) {
     await saveRunCommitPolicy(sqliteDb(db), run.id, policy);
     const reopened = openDatabase(dbPath);
     try {
-      assert.deepEqual(getItemRunCommitPolicy(reopened, item.id), policy);
+      assert.deepEqual(await getItemRunCommitPolicy(sqliteDb(reopened), item.id), policy);
     } finally {
       reopened.close();
     }

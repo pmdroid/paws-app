@@ -67,7 +67,7 @@ for (const state of ["running", "verifying", "awaiting_input", "merge_queue"] as
     const { db, runId } = await itemIn(state);
     expect(await close(db, "canceled")).toEqual([{ itemId: ITEM, outcome: "cancelled" }]);
     expect(getWorkItem(db, ITEM)?.state).toBe("cancelled");
-    if (state === "running") expect(getRun(db, runId)?.status).toBe("lost");
+    if (state === "running") expect((await getRun(sqliteDb(db), runId))?.status).toBe("lost");
     expect(await responses(db)).toEqual([
       "Canceled in Linear. PR #42 was closed; the branch is kept.",
     ]);

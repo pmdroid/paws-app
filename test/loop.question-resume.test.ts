@@ -90,7 +90,7 @@ test("asking ends the run and an answer resumes through verification", async () 
     });
     expect(item.checkpoint).toMatchObject({ phase: "awaiting_input", wipCommit: head });
     expect(item.state).toBe("awaiting_input");
-    expect(getRun(fixture.db, item.currentRunId!)?.status).toBe("ended");
+    expect((await getRun(sqliteDb(fixture.db), item.currentRunId!))?.status).toBe("ended");
     expect(
       fixture.results
         .map(
@@ -148,7 +148,7 @@ test("asking ends the run and an answer resumes through verification", async () 
     expect(fixture.resumeHeads).toEqual([head]);
     const resumed = getWorkItem(fixture.db, item.id)!;
     expect(resumed.currentRunId).toBe(item.currentRunId);
-    const status = getRun(fixture.db, resumed.currentRunId!)?.status ?? "";
+    const status = (await getRun(sqliteDb(fixture.db), resumed.currentRunId!))?.status ?? "";
     expect(["active", "ended"]).toContain(status);
   } finally {
     await fixture.orchestrator.shutdown();
@@ -171,7 +171,7 @@ test("startup leaves an open question parked and its answer resumes the run", as
     expect(
       (await listJobs(sqliteDb(fixture.db))).filter((job) => job.queue === JOB_KIND.resume),
     ).toEqual(jobsBefore);
-    expect(getRun(fixture.db, item.currentRunId!)?.status).toBe("ended");
+    expect((await getRun(sqliteDb(fixture.db), item.currentRunId!))?.status).toBe("ended");
 
     await fixture.orchestrator.onLinearEvent(prompted("parquet"));
     expect(getWorkItem(fixture.db, item.id)).toMatchObject({
@@ -206,7 +206,7 @@ test("an answer that arrives before the asking turn ends resumes once after the 
   try {
     const item = listWorkItems(fixture.db)[0]!;
     expect(fixture.resumeJobsDuringTurn).toEqual([1]);
-    expect(getRun(fixture.db, item.currentRunId!)?.status).toBe("ended");
+    expect((await getRun(sqliteDb(fixture.db), item.currentRunId!))?.status).toBe("ended");
     const resumes = (await listJobs(sqliteDb(fixture.db))).filter(
       (job) => job.queue === JOB_KIND.resume,
     );
@@ -455,7 +455,7 @@ function leaseActiveRun(db: Database): Promise<string> {
   return (async () => {
     for (let attempt = 0; attempt < 2000; attempt += 1) {
       const item = listWorkItems(db)[0];
-      const run = item?.currentRunId ? getRun(db, item.currentRunId) : null;
+      const run = item?.currentRunId ? await getRun(sqliteDb(db), item.currentRunId) : null;
       if (run?.status === "active") return await attachLease(db, run.id);
       await Bun.sleep(10);
     }

@@ -114,7 +114,7 @@ describe("restart and ask", () => {
       });
       expect(queued.version).toBeGreaterThan(item.version);
       expect(await listRuns(sqliteDb(db), item.id)).toHaveLength(1);
-      expect(getRun(db, item.currentRunId!)?.status).toBe("ended");
+      expect((await getRun(sqliteDb(db), item.currentRunId!))?.status).toBe("ended");
       expect((await getJob(sqliteDb(db), prior))?.status).toBe("cancelled");
       expect(db.query("SELECT 1 FROM merge_queue_entry WHERE item_id=?").get(item.id)).toBeNull();
       const event = (await listWorkItemEventRows(sqliteDb(db), item.id)).at(-1)!;
@@ -184,7 +184,7 @@ describe("restart and ask", () => {
       restart(db, item, { reason: "ci", body: "fix", jobKey: "blocked", now: 2 }),
     ).toThrow("pending resume");
     expect(getWorkItem(db, item.id)).toEqual(item);
-    expect(getRun(db, item.currentRunId!)?.status).toBe("active");
+    expect((await getRun(sqliteDb(db), item.currentRunId!))?.status).toBe("active");
     expect(
       (await listWorkItemEventRows(sqliteDb(db), item.id)).filter(
         (event) => event.kind === "restart",
@@ -262,7 +262,7 @@ describe("restart and ask", () => {
     );
     expect(getWorkItem(db, item.id)).toEqual(item);
     expect((await getJob(sqliteDb(db), job))?.status).toBe("pending");
-    expect(getRun(db, item.currentRunId!)?.status).toBe("active");
+    expect((await getRun(sqliteDb(db), item.currentRunId!))?.status).toBe("active");
     db.close();
   });
 

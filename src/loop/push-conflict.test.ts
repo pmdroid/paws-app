@@ -36,7 +36,7 @@ test("a candidate that conflicts with its moved branch restarts with reason conf
   ).toBe(true);
 
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
-  expect(getRun(db, runId)?.status).toBe("ended");
+  expect((await getRun(sqliteDb(db), runId))?.status).toBe("ended");
   const resumes = (await listJobs(sqliteDb(db))).filter(
     (job) => job.queue === JOB_KIND.resume && job.status === "pending",
   );

@@ -464,7 +464,10 @@ export async function factsOf(db: Database, id: string): Promise<ItemFacts> {
     recoveryAttempts: item.recoveryAttempts,
     acceptedHead: item.acceptedHead,
     checkpoint: item.checkpoint,
-    runStatus: item.currentRunId === null ? null : (getRun(db, item.currentRunId)?.status ?? null),
+    runStatus:
+      item.currentRunId === null
+        ? null
+        : ((await getRun(sqliteDb(db), item.currentRunId))?.status ?? null),
     cancelRequested: item.cancelRequested,
     liveJobs: (await liveJobsOf(db, item)).map((job) => `${job.queue}:${job.status}`).sort(),
     questions: actionableQuestions(db, id),

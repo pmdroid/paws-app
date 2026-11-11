@@ -41,7 +41,7 @@ describe("interrupted verification", () => {
     const { db, item, run } = await verifying();
     await prepareShutdown(sqliteDb(db), NOW + 1);
     expect(getWorkItem(db, item.id)?.state).toBe("verifying");
-    expect(getRun(db, run.id)?.status).toBe("lost");
+    expect((await getRun(sqliteDb(db), run.id))?.status).toBe("lost");
     expect(await recoverOnStartup(sqliteDb(db), NOW + 2)).toEqual([
       { type: "reverify", resumed: true },
     ]);
@@ -98,7 +98,7 @@ describe("interrupted verification", () => {
     const later = NOW + 60_000 + RUNNER_LEASE_GRACE_MS + 10 * 60_000;
     expect(await closeExpiredRunnerLeases(sqliteDb(db), later)).toEqual([run.id]);
     expect(getWorkItem(db, item.id)?.state).toBe("verifying");
-    expect(getRun(db, run.id)?.status).toBe("lost");
+    expect((await getRun(sqliteDb(db), run.id))?.status).toBe("lost");
     expect(await pending(db)).toMatchObject([
       { queue: JOB_KIND.reverify, payload: { itemId: item.id, recheckHead: true } },
     ]);

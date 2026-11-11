@@ -173,7 +173,7 @@ export function cloneRunner(
     const result = await agent({ ...options, worktreePath: tree });
     if (options.role === "implementer") {
       git(["--git-dir", mirror, "fetch", "-q", tree, `+HEAD:${ref}`]);
-      const item = db && getWorkItem(db, getRun(db, options.runId)?.itemId ?? "");
+      const item = db && getWorkItem(db, (await getRun(sqliteDb(db), options.runId))?.itemId ?? "");
       if (item)
         await recordItemCandidate(sqliteDb(db), {
           itemId: item.id,
