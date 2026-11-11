@@ -15,7 +15,8 @@ export type PostgresDb = BunSQLDatabase<typeof pgSchema> & { $client: SQL };
 export type PgliteDb = PgliteDatabase<typeof pgSchema> & { $client: PGlite };
 
 export function openPostgres(url: string): PostgresDb {
-  const client = new SQL({ url, max: 10, idleTimeout: 30, connectionTimeout: 10, maxLifetime: 0 });
+  const max = Number(new URL(url).searchParams.get("max") ?? 10);
+  const client = new SQL({ url, max, idleTimeout: 30, connectionTimeout: 10, maxLifetime: 0 });
   return drizzle({ client, schema: pgSchema });
 }
 
