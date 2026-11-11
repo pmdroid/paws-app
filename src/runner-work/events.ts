@@ -2,7 +2,15 @@ import type { Database } from "bun:sqlite";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import { loadSecretKey } from "../credentials";
-import { plaintextRunnerEventsSteps, sealRunnerEventSteps, sqliteDb } from "../db";
+import {
+  jobStatusByKeySteps,
+  plaintextRunnerEventsSteps,
+  sealRunnerEventSteps,
+  settled,
+  sqliteDb,
+  type Q,
+  type Steps,
+} from "../db";
 import { RunnerEventSchema, type RunnerEvent } from "../runner-protocol";
 import { incrementalVacuum } from "./prune";
 
@@ -17,11 +25,13 @@ export function runnerEventKeyId(key: Buffer) {
   return createHash("sha256").update(KEY_CONTEXT).update(key).digest("hex");
 }
 
+export function* runnerEventsEncryptedSteps(q: Q): Steps<boolean> {
+  const status = yield* jobStatusByKeySteps(q, RUNNER_EVENT_ENCRYPT_JOB);
+  return status === null || status === "done";
+}
+
 export function runnerEventsEncrypted(db: Database) {
-  const job = db
-    .query<{ status: string }, [string]>("SELECT status FROM job WHERE job_key=?")
-    .get(RUNNER_EVENT_ENCRYPT_JOB);
-  return !job || job.status === "done";
+  return settled(sqliteDb(db).run(runnerEventsEncryptedSteps));
 }
 
 export type StoredRunnerEvent = {
@@ -70,9 +80,13 @@ export function sealRunnerEvent(
   };
 }
 
-export function openRunnerEvent(db: Database, key: Buffer, row: StoredRunnerEvent): RunnerEvent {
+export function* openRunnerEventSteps(
+  q: Q,
+  key: Buffer,
+  row: StoredRunnerEvent,
+): Steps<RunnerEvent> {
   if (row.keyId === null) {
-    if (runnerEventsEncrypted(db)) throw new Error("Runner event is not sealed.");
+    if (yield* runnerEventsEncryptedSteps(q)) throw new Error("Runner event is not sealed.");
     return RunnerEventSchema.parse(JSON.parse(row.payload));
   }
   if (row.keyId !== runnerEventKeyId(key) || row.payloadSha256 === null)
