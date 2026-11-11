@@ -139,7 +139,8 @@ test("the running keepalive names the agent's current plan step, never a bare Wo
       await Bun.sleep(10);
     clock.advance(KEEPALIVE_MS);
     ticks[0]!();
-    await outbox.idle();
+    await orchestrator.flushPosts();
+    while ((await outbox.tick()).length > 0) await outbox.idle();
     expect(thoughts().slice(-2)).toEqual([
       "Found the cause in the scheduler.",
       "Implementing ENG-25.",
@@ -150,7 +151,8 @@ test("the running keepalive names the agent's current plan step, never a bare Wo
     expect(hasPlan()).toBe(true);
     clock.advance(KEEPALIVE_MS);
     ticks[0]!();
-    await outbox.idle();
+    await orchestrator.flushPosts();
+    while ((await outbox.tick()).length > 0) await outbox.idle();
     expect(thoughts().at(-1)).toBe("Step 3 of 5: rank runners by load share.");
     expect(thoughts()).not.toContain("Working on ENG-25.");
     const keepalives = listOutbox(db).filter(
