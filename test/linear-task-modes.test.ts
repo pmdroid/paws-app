@@ -124,7 +124,7 @@ test("answer mode and full prepared response survive reopen as a terminal comple
     expect(isTerminalWorkItemState((await getWorkItem(sqliteDb(restored), item.id))!.state)).toBe(
       true,
     );
-    const dashboard = await createLiveStatusProvider(restored).issues();
+    const dashboard = await createLiveStatusProvider(sqliteDb(restored)).issues();
     expect(dashboard.issues[0]?.state).toBe("completed");
     expect(dashboard.runs[0]?.state).toBe("done");
     expect((await listOutbox(sqliteDb(restored), "session"))[0]?.payload).toEqual({

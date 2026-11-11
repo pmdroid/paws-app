@@ -262,7 +262,7 @@ function liveProvider(options?: {
 }): StatusProvider {
   if (options?.provider) return options.provider;
   if (options?.db) {
-    return createLiveStatusProvider(options.db, {
+    return createLiveStatusProvider(sqliteDb(options.db), {
       ...(options.sessionIds === undefined ? {} : { sessionIds: options.sessionIds }),
       ...(options.env ? { env: options.env } : {}),
       ...(options.closeoutHome ? { pawsHome: options.closeoutHome } : {}),
@@ -388,7 +388,9 @@ function cacheKey(resource: string, parameters: string, options: StatusServerOpt
 async function diagnosticCacheKey(resource: string, options: StatusServerOptions): Promise<string> {
   const visible =
     options.provider === undefined && options.db !== undefined && options.sessionIds !== undefined
-      ? await visibleDiagnosticRepositories(options.db, { sessionIds: options.sessionIds })
+      ? await visibleDiagnosticRepositories(sqliteDb(options.db), {
+          sessionIds: options.sessionIds,
+        })
       : null;
   return JSON.stringify([cacheKey(resource, "", options), visible]);
 }

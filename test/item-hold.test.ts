@@ -60,8 +60,9 @@ test("a blocked item names its blocker once in the journal and once more when it
       { itemId: "PAS-368", reason: "blocked", blockers: ["PAS-367"] },
     ]);
     expect(
-      (await createLiveStatusProvider(db).issues()).issues.find((entry) => entry.id === "PAS-368")
-        ?.blockers,
+      (await createLiveStatusProvider(sqliteDb(db)).issues()).issues.find(
+        (entry) => entry.id === "PAS-368",
+      )?.blockers,
     ).toEqual(["PAS-367"]);
     await confirmFakeMerge(db, "PAS-367");
     expect(await workspaceDispatch(db, { now: 3, log })).toEqual(["PAS-368"]);
@@ -214,8 +215,9 @@ test("without a workspace every queued item is held for the workspace, journaled
       "item PAS-9 held: no Linear workspace",
     ]);
     expect(
-      (await createLiveStatusProvider(db).issues()).issues.find((entry) => entry.id === "PAS-9")
-        ?.held,
+      (await createLiveStatusProvider(sqliteDb(db)).issues()).issues.find(
+        (entry) => entry.id === "PAS-9",
+      )?.held,
     ).toEqual({ reason: "workspace", blockers: [] });
   } finally {
     db.close();
@@ -229,7 +231,7 @@ test("the status API carries the held reason of a queued item", async () => {
     item(db, "PAS-368", "queued", 1);
     db.run("INSERT INTO task_block VALUES('issue-PAS-367','issue-PAS-368')");
     await workspaceDispatch(db, { now: 1 });
-    const items = (await createLiveStatusProvider(db).issues()).issues;
+    const items = (await createLiveStatusProvider(sqliteDb(db)).issues()).issues;
     expect(items.find((entry) => entry.id === "PAS-368")?.held).toEqual({
       reason: "blocked",
       blockers: ["PAS-367"],

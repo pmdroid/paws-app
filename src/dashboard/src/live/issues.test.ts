@@ -32,7 +32,7 @@ async function finish(db: Database, id: string, at: number): Promise<void> {
 }
 
 function provider(db: Database, sessionIds?: readonly string[]) {
-  return createLiveStatusProvider(db, {
+  return createLiveStatusProvider(sqliteDb(db), {
     now: () => new Date(NOW),
     env: {},
     ...(sessionIds === undefined ? {} : { sessionIds }),

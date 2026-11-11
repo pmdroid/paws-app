@@ -150,7 +150,7 @@ function recordSql(db: Database): string[] {
 describe("overview resource", () => {
   test("draws Overview from its own resource", async () => {
     const db = await fixture();
-    const live = createLiveStatusProvider(db, { now: () => new Date(NOW), env: {} });
+    const live = createLiveStatusProvider(sqliteDb(db), { now: () => new Date(NOW), env: {} });
     const parsed = parseOverviewResponse(JSON.parse(JSON.stringify(await live.overview())));
     if (!parsed.ok) throw new Error(parsed.error);
     expect(overviewHtml(parsed.response)).toContain('id="attention-heading"');
@@ -169,7 +169,7 @@ describe("overview resource", () => {
 
   test("keeps the risk decision card anchor and does not call a held reviewer check failed", async () => {
     const db = await fixture();
-    const overview = await createLiveStatusProvider(db, {
+    const overview = await createLiveStatusProvider(sqliteDb(db), {
       now: () => new Date(NOW),
       env: {},
     }).overview();
@@ -199,7 +199,7 @@ describe("overview resource", () => {
   test("reads no check output, evidence, CI rounds, agent Closeout or merge queue detail", async () => {
     const db = await fixture();
     const statements = recordSql(db);
-    const live = createLiveStatusProvider(db, { now: () => new Date(NOW), env: {} });
+    const live = createLiveStatusProvider(sqliteDb(db), { now: () => new Date(NOW), env: {} });
     const body = JSON.stringify(await live.overview());
     const overview = statements.splice(0);
     // The issue pages and the merge queue do read those tables.
@@ -231,7 +231,7 @@ describe("overview resource", () => {
   test("lists only the reader's sessions", async () => {
     const db = await fixture();
     insertQueuedItem(db, { id: "ENG-9", title: "Elsewhere", sessionKey: "s2", now: NOW });
-    const mine = await createLiveStatusProvider(db, {
+    const mine = await createLiveStatusProvider(sqliteDb(db), {
       now: () => new Date(NOW),
       env: {},
       sessionIds: ["s2"],

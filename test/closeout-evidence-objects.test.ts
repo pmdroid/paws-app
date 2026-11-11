@@ -96,9 +96,9 @@ test("Closeout records written by instance A are shown by instance B's dashboard
   );
   expect(await publishCloseoutEvidence(sqliteDb(db), storageA, ITEM)).toBe(0);
 
-  expect(await itemReviews(db, ITEM, homeB, {})).toEqual([]);
+  expect(await itemReviews(sqliteDb(db), ITEM, homeB, {})).toEqual([]);
   expect(await hydrateItemCloseoutEvidence(db, storageB, ITEM, ["session-acme"])).toBe(2);
-  const reviews = await itemReviews(db, ITEM, homeB, {});
+  const reviews = await itemReviews(sqliteDb(db), ITEM, homeB, {});
   expect(reviews.map((review) => review.id)).toEqual(["independent-review"]);
   expect(reviews[0]!.rounds[0]!.findings[0]).toMatchObject({ explanation: "acme breaks" });
 
@@ -153,7 +153,7 @@ test("existing Closeout records are uploaded once on startup and read from S3 af
   expect(await uploadLocalCloseoutEvidence(db, storageA)).toBe(2);
   expect(await uploadLocalCloseoutEvidence(db, storageA)).toBe(0);
   expect(await hydrateItemCloseoutEvidence(db, storageB, ITEM)).toBe(2);
-  expect(await itemReviews(db, ITEM, homeB, {})).toHaveLength(1);
+  expect(await itemReviews(sqliteDb(db), ITEM, homeB, {})).toHaveLength(1);
 });
 
 test("a finished check's files are stored before its step is recorded, while the gate still runs", async () => {
@@ -206,7 +206,7 @@ test("a finished check's files are stored before its step is recorded, while the
   await progress.settled();
   expect(calls).toEqual(["begin", "step running", "output", "publish", "step passed"]);
   expect(await hydrateItemCloseoutEvidence(db, storageB, ITEM)).toBe(2);
-  expect(await itemReviews(db, ITEM, homeB, {})).toHaveLength(1);
+  expect(await itemReviews(sqliteDb(db), ITEM, homeB, {})).toHaveLength(1);
 });
 
 test("a failed step write is raised once the queued steps settle", async () => {

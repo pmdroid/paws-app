@@ -155,7 +155,7 @@ test("the merge queue reads queue facts, issue summaries and banners for the rea
   );
 
   const seen = recordQueries(db);
-  const provider = createLiveStatusProvider(db, { sessionIds: ["ses_mine"], env: {} });
+  const provider = createLiveStatusProvider(sqliteDb(db), { sessionIds: ["ses_mine"], env: {} });
   const parsed = parseMergeQueueResponse(JSON.parse(JSON.stringify(await provider.mergeQueue())));
   if (!parsed.ok) throw new Error(parsed.error);
   const queue = parsed.response;

@@ -69,7 +69,7 @@ async function seeded() {
 async function galleryFor(
   db: Awaited<ReturnType<typeof seeded>>["db"],
 ): Promise<EvidenceListResponse> {
-  const raw = await createLiveStatusProvider(db, {
+  const raw = await createLiveStatusProvider(sqliteDb(db), {
     sessionIds: ["visible"],
     now: () => new Date(1_700_000_010_000),
   }).evidence();
@@ -83,7 +83,7 @@ async function runPage(
   db: Awaited<ReturnType<typeof seeded>>["db"],
   runId: string,
 ): Promise<string> {
-  const provider = createLiveStatusProvider(db, {
+  const provider = createLiveStatusProvider(sqliteDb(db), {
     sessionIds: ["visible"],
     now: () => new Date(1_700_000_010_000),
   });
@@ -97,7 +97,7 @@ async function evidencePage(
   db: Awaited<ReturnType<typeof seeded>>["db"],
   id: string,
 ): Promise<string> {
-  const response = await createLiveStatusProvider(db, {
+  const response = await createLiveStatusProvider(sqliteDb(db), {
     sessionIds: ["visible"],
     now: () => new Date(1_700_000_010_000),
   }).evidenceMetadata(id);

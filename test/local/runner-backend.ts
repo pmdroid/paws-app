@@ -615,7 +615,7 @@ export async function probeRunnerBackend(
     assert.deepEqual(replies, [
       { text: "Yes, the old route still answers with 410.", sequence: 6 },
     ]);
-    const status = createLiveStatusProvider(db);
+    const status = createLiveStatusProvider(sqliteDb(db));
     const listed = (await status.issues()).agentCloseout.find(
       (entry) => entry.runId === first.run.id,
     );

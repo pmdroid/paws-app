@@ -117,7 +117,7 @@ if (!text.includes("fixed")) {
     1, 2, 3, 4, 5, 6, 7, 8,
   ]);
 
-  const provider = createLiveStatusProvider(db, { now: () => new Date(clock) });
+  const provider = createLiveStatusProvider(sqliteDb(db), { now: () => new Date(clock) });
   const list = parseIssueListResponse(JSON.parse(JSON.stringify(await provider.issues())));
   if (!list.ok) throw new Error(list.error);
   expect(list.response.agentCloseout.find((entry) => entry.runId === run.id)).toEqual({
@@ -183,7 +183,7 @@ test("a running check reports how long it has run and a later stale report sends
     maxAttempts: null,
   };
   await recordAgentCloseout(sqliteDb(db), run.id, "ENG-8", { type: "started", ...attempt }, 10_000);
-  const running = (await createLiveStatusProvider(db, {
+  const running = (await createLiveStatusProvider(sqliteDb(db), {
     now: () => new Date(25_000),
   }).issue("ENG-8"))!.agentCloseout.find((entry) => entry.runId === run.id)!;
   expect(running.attempts.at(-1)!.checks[0]).toMatchObject({
@@ -229,7 +229,7 @@ test("a running check reports how long it has run and a later stale report sends
     },
     27_000,
   );
-  const stale = (await createLiveStatusProvider(db).issue("ENG-8"))!.agentCloseout.find(
+  const stale = (await createLiveStatusProvider(sqliteDb(db)).issue("ENG-8"))!.agentCloseout.find(
     (entry) => entry.runId === run.id,
   )!;
   expect(stale.attempts.at(-1)!.checks[0]!.state).toBe("pending");
@@ -278,7 +278,9 @@ test("a check still running when its run ended stops at the run's end and points
   const parsed = parseIssueDetailResponse(
     JSON.parse(
       JSON.stringify(
-        await createLiveStatusProvider(db, { now: () => new Date(3_600_000) }).issue("ENG-10"),
+        await createLiveStatusProvider(sqliteDb(db), { now: () => new Date(3_600_000) }).issue(
+          "ENG-10",
+        ),
       ),
     ),
   );
@@ -364,7 +366,7 @@ test("an evidence check takes its state from the report and lets the round finis
   );
   const attemptOf = async () => {
     const parsed = parseIssueDetailResponse(
-      JSON.parse(JSON.stringify(await createLiveStatusProvider(db).issue("ENG-9"))),
+      JSON.parse(JSON.stringify(await createLiveStatusProvider(sqliteDb(db)).issue("ENG-9"))),
     );
     if (!parsed.ok) throw new Error(parsed.error);
     return parsed.response.agentCloseout.find((entry) => entry.runId === run.id)!.attempts.at(-1)!;

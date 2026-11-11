@@ -49,7 +49,10 @@ writeFileSync(
       reason: "timed out after 10s",
     }),
 );
-const provider = createLiveStatusProvider(db, { pawsHome: root, sessionIds: ["hook-session"] });
+const provider = createLiveStatusProvider(sqliteDb(db), {
+  pawsHome: root,
+  sessionIds: ["hook-session"],
+});
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,

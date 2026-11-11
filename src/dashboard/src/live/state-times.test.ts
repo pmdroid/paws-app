@@ -23,7 +23,7 @@ function database(): Database {
 }
 
 async function issueList(db: Database, now: number): Promise<IssueListResponse> {
-  const provider = createLiveStatusProvider(db, { now: () => new Date(now), env: {} });
+  const provider = createLiveStatusProvider(sqliteDb(db), { now: () => new Date(now), env: {} });
   const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(await provider.issues())));
   if (!parsed.ok) throw new Error(parsed.error);
   return parsed.response;

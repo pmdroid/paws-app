@@ -212,7 +212,7 @@ export async function probeRunnerPublicActivity(root: string) {
       assert(!references.includes(join(directory, "acp.jsonl")));
     }
     const statusRun = (
-      await createLiveStatusProvider(db, {
+      await createLiveStatusProvider(sqliteDb(db), {
         pawsHome: root,
         sessionIds: options.sessionIds,
         env: options.env,

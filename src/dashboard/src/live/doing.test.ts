@@ -69,7 +69,7 @@ function event(db: Database, runId: string, generation: number, type: string): v
 
 async function item(db: Database, id: string, now: number): Promise<StatusItem> {
   const found = (
-    await createLiveStatusProvider(db, { now: () => new Date(now) }).issues()
+    await createLiveStatusProvider(sqliteDb(db), { now: () => new Date(now) }).issues()
   ).issues.find((entry) => entry.title === id);
 
   if (!found) throw new Error(`no item ${id}`);

@@ -51,7 +51,7 @@ async function asking(
 }
 
 function provider(db: Database, sessionIds?: readonly string[]) {
-  return createLiveStatusProvider(db, {
+  return createLiveStatusProvider(sqliteDb(db), {
     now: () => new Date(NOW),
     env: {},
     ...(sessionIds === undefined ? {} : { sessionIds }),

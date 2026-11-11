@@ -166,7 +166,7 @@ async function acceptVerdict(
  * `/api/issues` nor the detail carries check output.
  */
 async function snapshotOf(db: Database, now: number, env: NodeJS.ProcessEnv = {}): Promise<Status> {
-  const provider = createLiveStatusProvider(db, { now: () => new Date(now), env });
+  const provider = createLiveStatusProvider(sqliteDb(db), { now: () => new Date(now), env });
   const list = await provider.issues();
   const withLogs = async (itemId: string, attempt: number, checks: readonly StatusCheck[]) => {
     const logged: StatusCheck[] = [];

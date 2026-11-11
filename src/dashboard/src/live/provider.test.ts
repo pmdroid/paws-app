@@ -168,9 +168,9 @@ describe("live status provider", () => {
     const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
     seedQuestion(db, item.id, "session");
     db.run("UPDATE question SET kind = ? WHERE id = 'question'", [kind]);
-    expect((await createLiveStatusProvider(db).questions()).questions[0]?.answerable).toBe(
-      answerable,
-    );
+    expect(
+      (await createLiveStatusProvider(sqliteDb(db)).questions()).questions[0]?.answerable,
+    ).toBe(answerable);
   });
 
   test.each([
@@ -187,7 +187,7 @@ describe("live status provider", () => {
       "INSERT INTO inbox_event (dedupe_key, source, action, session_id, updated_at_ms, payload, received_at) VALUES ('event', 'webhook', 'created', 'session', 1, ?, 1)",
       [JSON.stringify({ agentSession: { url } })],
     );
-    expect((await createLiveStatusProvider(db).questions()).questions[0]?.links).toEqual([
+    expect((await createLiveStatusProvider(sqliteDb(db)).questions()).questions[0]?.links).toEqual([
       { label: "Answer in Linear", href: "https://linear.app/issue/ENG-1" },
     ]);
   });
@@ -200,7 +200,7 @@ describe("live status provider", () => {
       item.id,
     ]);
     seedQuestion(db, item.id, "session");
-    expect((await createLiveStatusProvider(db).questions()).questions[0]?.links).toEqual([
+    expect((await createLiveStatusProvider(sqliteDb(db)).questions()).questions[0]?.links).toEqual([
       { label: "Answer in Linear", href: "https://linear.app/issue/ENG-123" },
     ]);
   });
@@ -239,7 +239,7 @@ describe("live status provider", () => {
               ('q-3', ?, 'visual-proof', '["shot-2"]', 4000, 'review', NULL, NULL, NULL, NULL)`,
       [item.id, item.id, item.id],
     );
-    const list = await createLiveStatusProvider(db).issues();
+    const list = await createLiveStatusProvider(sqliteDb(db)).issues();
     expect(list.issues[0]?.visualReviews).toEqual([
       {
         questionId: "q-1",
@@ -309,7 +309,7 @@ describe("live status provider", () => {
               ('carry_1', ?, 'visual-proof', '["shot-2"]', 5000, 'accepted', 'lin-ada', 5000, ?)`,
       [item.id, item.id, JSON.stringify(carried)],
     );
-    const list = await createLiveStatusProvider(db).issues();
+    const list = await createLiveStatusProvider(sqliteDb(db)).issues();
     const reviews = list.issues[0]?.visualReviews;
     expect(reviews?.map((review) => [review.questionId, review.round, review.state])).toEqual([
       ["q-1", 1, "stale"],
@@ -420,8 +420,8 @@ describe("live status provider", () => {
     expect(parsed.response.issues).toEqual([]);
     expect(parsed.response.runs).toEqual([]);
     expect(parsed.response.verdicts).toEqual([]);
-    expect((await createLiveStatusProvider(db).questions()).questions).toEqual([]);
-    expect((await createLiveStatusProvider(db).mergeQueue()).entries).toEqual([]);
+    expect((await createLiveStatusProvider(sqliteDb(db)).questions()).questions).toEqual([]);
+    expect((await createLiveStatusProvider(sqliteDb(db)).mergeQueue()).entries).toEqual([]);
     expect(statusIntegrity(listRecords(parsed.response))).toEqual([]);
     expect(JSON.stringify(body)).not.toContain("Audit log export");
     expect(JSON.stringify(body)).not.toContain("acme");
@@ -514,7 +514,7 @@ describe("live status provider", () => {
       now,
     });
 
-    const provider = createLiveStatusProvider(db, { now: () => new Date(now) });
+    const provider = createLiveStatusProvider(sqliteDb(db), { now: () => new Date(now) });
     const list = await provider.issues();
     const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(list)));
     expect(parsed.ok).toBe(true);
@@ -591,7 +591,7 @@ describe("live status provider", () => {
       payload: { sessionId: "ses_1", body: "Closeout needs your help." },
       now,
     });
-    expect((await createLiveStatusProvider(db).questions()).questions).toEqual([
+    expect((await createLiveStatusProvider(sqliteDb(db)).questions()).questions).toEqual([
       expect.objectContaining({
         id: "q-help",
         itemId: "ENG-2",
@@ -637,7 +637,7 @@ describe("live status provider", () => {
       { id: "test", kind: "command", state: "exhausted", attempt: 3, message: "exited 1" },
     ]);
     expect(
-      (await createLiveStatusProvider(db).issue("ENG-3"))?.questions[0]?.linkAsk?.bypass,
+      (await createLiveStatusProvider(sqliteDb(db)).issue("ENG-3"))?.questions[0]?.linkAsk?.bypass,
     ).toEqual({
       policyDigest: "sha256:0eadf4c",
       passed: [],
@@ -677,7 +677,7 @@ describe("live status provider", () => {
       paths: ["src/auth/session.ts"],
       classifiedAt: now,
     });
-    const detail = (await createLiveStatusProvider(db).issue("ENG-6"))!;
+    const detail = (await createLiveStatusProvider(sqliteDb(db)).issue("ENG-6"))!;
     expect(detail.questions[0]?.linkAsk?.risk).toEqual({
       paths: ["src/auth/session.ts"],
       summary: "",
@@ -731,7 +731,7 @@ describe("live status provider", () => {
       paths: ["src/auth/session.ts"],
       recordedAt: now,
     });
-    const detail = (await createLiveStatusProvider(db).issue("ENG-6"))!;
+    const detail = (await createLiveStatusProvider(sqliteDb(db)).issue("ENG-6"))!;
     const parsed = parseIssueDetailResponse(JSON.parse(JSON.stringify(detail)));
     expect(parsed.ok && parsed.response.questions[0]?.linkAsk?.risk).toEqual({
       paths: ["src/auth/session.ts"],
@@ -773,12 +773,14 @@ describe("live status provider", () => {
         "The approval of 4b317d5 carried over: none of the files the fix changed since then is a high-risk path (`test/x.test.ts`).",
     };
     const parsed = parseIssueListResponse(
-      JSON.parse(JSON.stringify(await createLiveStatusProvider(db).issues())),
+      JSON.parse(JSON.stringify(await createLiveStatusProvider(sqliteDb(db)).issues())),
     );
     expect(parsed.ok && parsed.response.issues[0]?.riskCarryOver).toEqual(carried);
     // A newer head has not been compared yet, so the old carry-over no longer shows.
     await risk("aaaa111122", now + 1);
-    expect((await createLiveStatusProvider(db).issues()).issues[0]?.riskCarryOver).toBeUndefined();
+    expect(
+      (await createLiveStatusProvider(sqliteDb(db)).issues()).issues[0]?.riskCarryOver,
+    ).toBeUndefined();
   });
 
   test("the merge queue lists each repository's tasks in order, with what each waits for", async () => {
@@ -857,7 +859,7 @@ describe("live status provider", () => {
       now: now - 120_000,
     });
 
-    const provider = createLiveStatusProvider(db, { now: () => new Date(now) });
+    const provider = createLiveStatusProvider(sqliteDb(db), { now: () => new Date(now) });
     const resource = parseMergeQueueResponse(await provider.mergeQueue());
     if (!resource.ok) throw new Error(resource.error);
     const queue = resource.response;
@@ -912,7 +914,7 @@ describe("live status provider", () => {
     }
     await applyWorkItemEvent(sqliteDb(db), "ENG-21", "reverify_requested");
 
-    const provider = createLiveStatusProvider(db);
+    const provider = createLiveStatusProvider(sqliteDb(db));
     const parsed = parseMergeQueueResponse(await provider.mergeQueue());
     if (!parsed.ok) throw new Error(parsed.error);
     expect(
@@ -957,7 +959,7 @@ describe("live status provider", () => {
       job,
     ]);
 
-    const provider = createLiveStatusProvider(db);
+    const provider = createLiveStatusProvider(sqliteDb(db));
     const detail = parseIssueDetailResponse(await provider.issue("ENG-31"));
     if (!detail.ok) throw new Error(detail.error);
     expect(detail.response.issue.hostDiskFull).toBe(reason);
@@ -985,7 +987,7 @@ describe("live status provider", () => {
       runAt: 1_000,
       now: 20,
     });
-    const provider = createLiveStatusProvider(db);
+    const provider = createLiveStatusProvider(sqliteDb(db));
     expect((await provider.issue("ENG-32"))?.issue.hostDiskFull).toBe(reason);
     db.run("UPDATE job SET status='done' WHERE id=?", [retry]);
     expect((await provider.issue("ENG-32"))?.issue.hostDiskFull).toBeUndefined();
@@ -1021,7 +1023,7 @@ describe("live status provider", () => {
       now: now - 120_000,
     });
 
-    const provider = createLiveStatusProvider(db, { now: () => new Date(now) });
+    const provider = createLiveStatusProvider(sqliteDb(db), { now: () => new Date(now) });
     const parsed = parseMergeQueueResponse(await provider.mergeQueue());
     if (!parsed.ok) throw new Error(parsed.error);
     expect(parsed.response.entries.map((entry) => [entry.itemId, entry.repository])).toEqual([
@@ -1084,7 +1086,9 @@ describe("live status provider", () => {
     await upsertCloseoutStep(sqliteDb(db), item.id, identity, step("test", "passed", 0), now);
     await upsertCloseoutStep(sqliteDb(db), item.id, identity, step("typecheck", "skipped", 1), now);
     await finishCloseoutProgress(sqliteDb(db), item.id, identity, "accepted", now);
-    const list = await createLiveStatusProvider(db, { now: () => new Date(now) }).issues();
+    const list = await createLiveStatusProvider(sqliteDb(db), {
+      now: () => new Date(now),
+    }).issues();
     expect(list.verdicts[0]?.checks.map((check) => [check.id, check.state])).toEqual([
       ["test", "passed"],
     ]);
@@ -1101,7 +1105,7 @@ describe("live status provider", () => {
     insertQueuedItem(db, { id: "ENG-OPEN", title: "Open", now: now - 7 * STATUS_RECENT_MS });
     await finish("ENG-OLD", now - STATUS_RECENT_MS - 60_000);
     await finish("ENG-RECENT", now - 60_000);
-    const provider = createLiveStatusProvider(db, { now: () => new Date(now) });
+    const provider = createLiveStatusProvider(sqliteDb(db), { now: () => new Date(now) });
     const ids = (await provider.issues()).issues.map((item) => item.id);
     expect(ids).toContain("ENG-OPEN");
     expect(ids).toContain("ENG-RECENT");
@@ -1251,7 +1255,10 @@ describe("live status provider", () => {
       filedBy: null,
       filedAt: now,
     });
-    const provider = createLiveStatusProvider(db, { now: () => new Date(now + 5000), pawsHome });
+    const provider = createLiveStatusProvider(sqliteDb(db), {
+      now: () => new Date(now + 5000),
+      pawsHome,
+    });
     // Findings are only in the item detail, never in the list.
     expect(JSON.stringify(await provider.issues())).not.toContain("token leaks");
     const [review] = (await provider.issue("ENG-11"))!.verdicts[0]!.reviews!;
@@ -1349,7 +1356,7 @@ describe("live status provider", () => {
         at,
       );
     }
-    const provider = createLiveStatusProvider(db, {
+    const provider = createLiveStatusProvider(sqliteDb(db), {
       now: () => new Date(now + 5000),
       sessionIds: ["ses_8"],
     });
@@ -1374,7 +1381,7 @@ describe("live status provider", () => {
     ]);
     expect(JSON.stringify(detail)).not.toContain("secret log");
     expect(await provider.issue("ENG-10")).toBeNull();
-    expect((await createLiveStatusProvider(db).issue("ENG-10"))?.issue.id).toBe("ENG-10");
+    expect((await createLiveStatusProvider(sqliteDb(db)).issue("ENG-10"))?.issue.id).toBe("ENG-10");
 
     const get = (id: string) =>
       handleStatusRequest(new Request(`http://127.0.0.1/api/issues/${id}`), {
@@ -1396,7 +1403,7 @@ describe("live status provider", () => {
     const head = "c".repeat(40);
     const item = insertQueuedItem(db, { id: "ENG-11", title: "Risk", sessionKey: "ses_11", now });
     const docs = insertQueuedItem(db, { id: "ENG-12", sessionKey: "ses_11", now });
-    const provider = createLiveStatusProvider(db, { now: () => new Date(now + 5000) });
+    const provider = createLiveStatusProvider(sqliteDb(db), { now: () => new Date(now + 5000) });
     expect((await provider.issue("ENG-11"))?.risk).toBeNull();
     const identity = (taskId: string) => ({
       taskId,
@@ -1547,7 +1554,7 @@ describe("live status provider", () => {
     await seed("ENG-11", "ses_11", "unit", "unit failed");
     await seed("ENG-12", "ses_11", "lint", "lint failed");
     await seed("ENG-13", "ses_other", "unit", "hidden failure");
-    const provider = createLiveStatusProvider(db, {
+    const provider = createLiveStatusProvider(sqliteDb(db), {
       now: () => new Date(now + 5000),
       sessionIds: ["ses_11"],
     });
@@ -1638,7 +1645,7 @@ describe("live status provider", () => {
     await review("passed", now + 900_000);
     await finishCloseoutProgress(sqliteDb(db), item.id, identity, "accepted", now + 900_000);
     const check = (
-      await createLiveStatusProvider(db, {
+      await createLiveStatusProvider(sqliteDb(db), {
         now: () => new Date(now + 900_000),
       }).issue("ENG-7")
     )?.verdicts[0]?.checks[0];
@@ -1646,7 +1653,7 @@ describe("live status provider", () => {
     expect(check?.tokens).toBe(52_000);
     await review("running", now + 950_000);
     const rerun = (
-      await createLiveStatusProvider(db, {
+      await createLiveStatusProvider(sqliteDb(db), {
         now: () => new Date(now + 960_000),
       }).issue("ENG-7")
     )?.verdicts[0]?.checks[0];
@@ -1715,9 +1722,9 @@ describe("live status provider", () => {
       startedAt: now + 2,
     });
     await attempt("c".repeat(40), now + 3, "passed");
-    const detail = await createLiveStatusProvider(db, { now: () => new Date(now + 4) }).issue(
-      "ENG-6",
-    );
+    const detail = await createLiveStatusProvider(sqliteDb(db), {
+      now: () => new Date(now + 4),
+    }).issue("ENG-6");
     const attempts = detail?.verdicts.find((verdict) => verdict.itemId === "ENG-6")?.attempts;
     expect(attempts?.map((entry) => [entry.number, entry.round, entry.headSha?.[0]])).toEqual([
       [1, 1, "a"],
@@ -1774,9 +1781,9 @@ describe("live status provider", () => {
       ],
       recordedAt: now + 2,
     });
-    const detail = await createLiveStatusProvider(db, { now: () => new Date(now + 3) }).issue(
-      "ENG-7",
-    );
+    const detail = await createLiveStatusProvider(sqliteDb(db), {
+      now: () => new Date(now + 3),
+    }).issue("ENG-7");
     const parsed = parseIssueDetailResponse(JSON.parse(JSON.stringify(detail)));
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
@@ -1801,7 +1808,9 @@ describe("live status provider", () => {
       logTail: "1 fail\ntoken [redacted]",
     });
     expect(rounds[1]?.checks.map((entry) => entry.state)).toEqual(["passed", "failed", "skipped"]);
-    expect(await createLiveStatusProvider(db, { sessionIds: ["other"] }).issue("ENG-7")).toBeNull();
+    expect(
+      await createLiveStatusProvider(sqliteDb(db), { sessionIds: ["other"] }).issue("ENG-7"),
+    ).toBeNull();
   });
 
   test.each([
@@ -1839,7 +1848,7 @@ describe("live status provider", () => {
           },
         ],
       );
-      const list = await createLiveStatusProvider(db).issues();
+      const list = await createLiveStatusProvider(sqliteDb(db)).issues();
       const item = list.issues.find((entry) => entry.id === "PAS-710")!;
       expect(item.blockers).toEqual(named ? ["PAS-709"] : []);
       expect(waitReason(item)).toBe(named ? "Blocked by PAS-709" : "Waiting for a free runner");
@@ -1873,7 +1882,7 @@ describe("live status provider", () => {
         },
       ],
     );
-    const list = await createLiveStatusProvider(db, { now: () => new Date(30) }).issues();
+    const list = await createLiveStatusProvider(sqliteDb(db), { now: () => new Date(30) }).issues();
     expect(list.issues.find((item) => item.id === "ENG-BLOCK")?.blockers).toEqual(["ENG-NEW"]);
     expect(list.issues.some((item) => item.id === "ENG-OLD")).toBe(true);
     expect(statusIntegrity(listRecords(list))).toEqual([]);
@@ -1962,7 +1971,7 @@ describe("live status provider", () => {
       resetAt: new Date(3_600_000).toISOString(),
       holdUntil: new Date(300_000).toISOString(),
     });
-    const scoped = await createLiveStatusProvider(db, { sessionIds: ["s2"] }).overview();
+    const scoped = await createLiveStatusProvider(sqliteDb(db), { sessionIds: ["s2"] }).overview();
     expect(scoped.intake.map((entry) => entry.issue)).toEqual(["issue-b"]);
     expect(scoped.linearBudget).toBeNull();
   });
@@ -1970,7 +1979,7 @@ describe("live status provider", () => {
   test("the Intake section carries the warning when Linear may have disabled the webhook", async () => {
     const db = database();
     const overview = async (atMs: number) =>
-      await createLiveStatusProvider(db, { now: () => new Date(atMs) }).overview();
+      await createLiveStatusProvider(sqliteDb(db), { now: () => new Date(atMs) }).overview();
     expect((await overview(10_000)).linearWebhook).toBeNull();
     db.run("INSERT INTO sync_cursor (name, cursor_ms) VALUES ('linear:webhook', 1000)");
     expect((await overview(10_000)).linearWebhook).toBeNull();

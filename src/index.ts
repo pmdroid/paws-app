@@ -1343,7 +1343,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         }),
       findingIssues: createFindingIssueRoute({
         db,
-        reviews: (itemId) => itemReviews(db, itemId, paths.home, envSource),
+        reviews: (itemId) => itemReviews(store, itemId, paths.home, envSource),
         // Linear is called only when someone files an issue, never when the page loads.
         file: linear?.tracker?.fileFindingIssue
           ? (request, fileOptions) => linear.tracker!.fileFindingIssue!(request, fileOptions)

@@ -168,7 +168,7 @@ test("remote session output survives result transport, persistence and the live 
       30,
     );
     await finishCloseoutProgress(sqliteDb(db), "item", identity, "rejected", 40);
-    const provider = createLiveStatusProvider(db);
+    const provider = createLiveStatusProvider(sqliteDb(db));
     const detail = (await provider.issue((await provider.issues()).issues[0]!.id))!;
     const verdict = detail.verdicts[0]!;
     const check = verdict.checks[0]!;

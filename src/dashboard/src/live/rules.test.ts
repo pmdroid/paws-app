@@ -220,7 +220,7 @@ describe("rule results in the issue resources", () => {
 
   test("a rule's probe output loads like a check's log", async () => {
     const { db, home } = await seed();
-    const provider = createLiveStatusProvider(db, { pawsHome: home });
+    const provider = createLiveStatusProvider(sqliteDb(db), { pawsHome: home });
     expect(
       await provider.checkLog({ itemId: "ENG-7", attempt: 1, checkId: "api-contract", run: null }),
     ).toEqual({ stdout: "", stderr: "" });
@@ -228,7 +228,7 @@ describe("rule results in the issue resources", () => {
 
   test("without the evidence record the probe hash is null", async () => {
     const { db } = await seed();
-    const detail = await createLiveStatusProvider(db, { env: {} }).issue("ENG-7");
+    const detail = await createLiveStatusProvider(sqliteDb(db), { env: {} }).issue("ENG-7");
     expect(detail?.verdicts[0]?.checks[0]?.probeSha256).toBeNull();
   });
 });

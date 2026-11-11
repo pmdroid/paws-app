@@ -178,7 +178,8 @@ test("the status API shows a queued item's place in line until it starts", async
     insertQueuedItem(db, { id: "waiting", now: 1 });
     settled(saveQueuePositions(sqliteDb(db), ["ahead", "waiting"], { busy: 4, total: 4 }, 2));
     const queueOf = async (id: string) =>
-      (await createLiveStatusProvider(db).issues()).issues.find((item) => item.id === id)?.queue;
+      (await createLiveStatusProvider(sqliteDb(db)).issues()).issues.find((item) => item.id === id)
+        ?.queue;
     expect(await queueOf("waiting")).toEqual({ position: 2, busySlots: 4, totalSlots: 4 });
     await applyWorkItemEvent(sqliteDb(db), "ahead", "dispatched");
     settled(saveQueuePositions(sqliteDb(db), ["waiting"], { busy: 4, total: 4 }, 3));

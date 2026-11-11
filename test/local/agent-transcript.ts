@@ -87,7 +87,7 @@ writeFileSync(
       )
       .join(""),
 );
-const provider = createLiveStatusProvider(db, {
+const provider = createLiveStatusProvider(sqliteDb(db), {
   pawsHome: root,
   sessionIds: ["transcript-session"],
 });
