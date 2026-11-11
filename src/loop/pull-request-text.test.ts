@@ -116,7 +116,7 @@ async function fixture(
       now: 1,
     });
   const apply = async (draft: { title: string; body: string }) => {
-    const previous = getPullRequestDraft(db, itemId);
+    const previous = await getPullRequestDraft(sqliteDb(db), itemId);
     await savePullRequestDraft(sqliteDb(db), itemId, draft, 2);
     return applyPullRequestDraft({
       store: sqliteDb(db),

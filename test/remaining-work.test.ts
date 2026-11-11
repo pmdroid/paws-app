@@ -71,7 +71,7 @@ test("two parts left for later become two delegated sub-issues after the merge, 
       { title: "Move pull-reviews.ts to Steps", scope: "`src/db/pull-reviews.ts`: the reads." },
     ],
   });
-  expect(getPullRequestDraft(db, item.id)?.remaining).toHaveLength(2);
+  expect((await getPullRequestDraft(sqliteDb(db), item.id))?.remaining).toHaveLength(2);
 
   await deliverAll(db, tracker);
   expect(listOutbox(db).filter((row) => row.op === "linear.remaining_issues")).toEqual([]);
@@ -102,7 +102,10 @@ test("two parts left for later become two delegated sub-issues after the merge, 
 
 test("a report without remaining files nothing after the merge", async () => {
   const { db, item, tracker } = await itemWithReport({ title: "Fix acme", body: "Fixed it." });
-  expect(getPullRequestDraft(db, item.id)).toEqual({ title: "Fix acme", body: "Fixed it." });
+  expect(await getPullRequestDraft(sqliteDb(db), item.id)).toEqual({
+    title: "Fix acme",
+    body: "Fixed it.",
+  });
   await merge(db, item.id);
   await deliverAll(db, tracker);
   expect(listOutbox(db).filter((row) => row.op === "linear.remaining_issues")).toEqual([]);

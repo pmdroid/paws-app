@@ -547,12 +547,12 @@ describe("closeout gate", () => {
         home: repo.home,
         pawsHome: repo.pawsHome,
         progress: {
-          begin() {},
-          step(_identity, step) {
+          async begin() {},
+          async step(_identity, step) {
             if (step.kind === "review") steps.push(step);
           },
-          output() {},
-          finish() {},
+          async output() {},
+          async finish() {},
         },
         reviewer: {
           async review() {
@@ -622,10 +622,10 @@ describe("closeout gate", () => {
           },
         },
         progress: {
-          begin() {},
-          output() {},
-          finish() {},
-          step(_identity, step) {
+          async begin() {},
+          async output() {},
+          async finish() {},
+          async step(_identity, step) {
             steps.push(step);
           },
         },
@@ -700,12 +700,12 @@ describe("closeout gate", () => {
         home: repo.home,
         pawsHome: repo.pawsHome,
         progress: {
-          begin() {},
-          step(_identity, step) {
+          async begin() {},
+          async step(_identity, step) {
             if (step.kind === "review") steps.push(step);
           },
-          output() {},
-          finish() {},
+          async output() {},
+          async finish() {},
         },
         reviewer: {
           async review() {
@@ -1519,12 +1519,12 @@ describe("closeout gate", () => {
           home: repo.home,
           pawsHome: repo.pawsHome,
           progress: {
-            begin() {},
-            step(_identity, step) {
+            async begin() {},
+            async step(_identity, step) {
               if (step.kind === "review") states.push(step.state);
             },
-            output() {},
-            finish() {},
+            async output() {},
+            async finish() {},
           },
           reviewer: {
             async review() {

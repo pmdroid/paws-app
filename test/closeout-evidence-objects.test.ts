@@ -161,10 +161,18 @@ test("a finished check's files are stored before its step is recorded, while the
   const calls: string[] = [];
   const progress = publishingCloseoutProgress(
     {
-      begin: () => calls.push("begin"),
-      step: (_identity, step) => calls.push(`step ${step.state}`),
-      output: () => calls.push("output"),
-      finish: () => calls.push("finish"),
+      begin: async () => {
+        calls.push("begin");
+      },
+      step: async (_identity, step) => {
+        calls.push(`step ${step.state}`);
+      },
+      output: async () => {
+        calls.push("output");
+      },
+      finish: async () => {
+        calls.push("finish");
+      },
     },
     async () => {
       calls.push("publish");
@@ -204,12 +212,12 @@ test("a finished check's files are stored before its step is recorded, while the
 test("a failed step write is raised once the queued steps settle", async () => {
   const progress = publishingCloseoutProgress(
     {
-      begin: () => {
+      begin: async () => {
         throw new Error("acme database busy");
       },
-      step: () => {},
-      output: () => {},
-      finish: () => {},
+      step: async () => {},
+      output: async () => {},
+      finish: async () => {},
     },
     async () => {},
   );
@@ -260,10 +268,14 @@ test("a check whose evidence can't be stored is recorded as failed, never as pas
     const calls: string[] = [];
     const progress = publishingCloseoutProgress(
       {
-        begin: () => {},
-        step: (_identity, step) => calls.push(`step ${step.state} ${step.detail ?? ""}`.trim()),
-        output: () => {},
-        finish: (_identity, decision) => calls.push(`finish ${decision}`),
+        begin: async () => {},
+        step: async (_identity, step) => {
+          calls.push(`step ${step.state} ${step.detail ?? ""}`.trim());
+        },
+        output: async () => {},
+        finish: async (_identity, decision) => {
+          calls.push(`finish ${decision}`);
+        },
       },
       publish,
     );

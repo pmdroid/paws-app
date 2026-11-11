@@ -860,17 +860,17 @@ function rowIdentity(db: ReturnType<typeof openDatabase>): CloseoutProgressIdent
 function watching(inner: CloseoutProgress, onOutput: () => void): CloseoutProgress {
   return {
     begin(identity) {
-      inner.begin(identity);
+      return inner.begin(identity);
     },
     step(identity, value) {
-      inner.step(identity, value);
+      return inner.step(identity, value);
     },
-    output(identity, stepId, stream, text, truncated) {
-      inner.output(identity, stepId, stream, text, truncated);
+    async output(identity, stepId, stream, text, truncated) {
+      await inner.output(identity, stepId, stream, text, truncated);
       onOutput();
     },
     finish(identity, decision) {
-      inner.finish(identity, decision);
+      return inner.finish(identity, decision);
     },
   };
 }

@@ -48,7 +48,12 @@ import {
   probeSha256,
   type ProbeRunner,
 } from "./probe";
-import type { CloseoutProgress, CloseoutProgressIdentity, CloseoutProgressStep } from "./progress";
+import type {
+  CloseoutOutputStream,
+  CloseoutProgress,
+  CloseoutProgressIdentity,
+  CloseoutProgressStep,
+} from "./progress";
 import { scrubText } from "./scrub";
 
 /** Identity written on every command record this runner stores. */
@@ -171,7 +176,7 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
       ...classifyAll(steps, commands, changed, input, base, head, records),
     ];
     const identity = progressIdentity(input, base, head);
-    publishPlan(input.progress, identity, actions, reviews);
+    await publishPlan(input.progress, identity, actions, reviews);
     const taken: CommandDisposition[] = [];
     for (const action of actions) {
       if (action.kind === "turn") {
@@ -227,7 +232,7 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
     );
     if (!added.ok) {
       rmSync(tree, { recursive: true, force: true });
-      blockPending(
+      await blockPending(
         input.progress,
         identity,
         actions,
@@ -248,7 +253,7 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
       } catch (caughtError1) {
         journalCaught(caughtError1, "run.runCloseoutCommands.checkoutPatterns", null);
         const blocked = "could not populate a worktree at the candidate commit";
-        blockPending(input.progress, identity, actions, blocked);
+        await blockPending(input.progress, identity, actions, blocked);
         return { blocked, dispositions: [] };
       }
       for (const action of actions) {
@@ -286,7 +291,7 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
             message: "setup failed",
           };
           dispositions.push(skipped);
-          input.progress?.step(
+          await input.progress?.step(
             identity,
             stepUpdate(action.item, skipped, ordinalOf(actions, action.item.id), null),
           );
@@ -525,7 +530,7 @@ async function runOne(
   const attempt = nextAttempt(records, item.id, head, digest);
   const relative = artifactRelative(digest, head, item.id, attempt);
   const startedAt = Date.now();
-  input.progress?.step(identity, {
+  await input.progress?.step(identity, {
     ...blankStep(item, ordinal),
     state: "running",
     attempt,
@@ -533,19 +538,23 @@ async function runOne(
     logPath: relative,
     evidencePath: evidenceRelative(digest, head, item.id, attempt),
   });
-  const exec = await runner.runLogged({
-    cwd,
-    itemId: item.id,
-    argv: item.exec,
-    timeoutSeconds: item.timeoutSeconds,
-    logFile: join(input.evidenceDir, ...relative.split("/")),
-    artifactPath: relative,
-    expectedHead: head,
-    onOutput: (stream, text, truncated) => {
-      input.progress?.output(identity, item.id, stream, text, truncated);
-    },
-    ...(input.pullRequest ? { pullRequest: input.pullRequest } : {}),
-  });
+  const outputs = outputWriter(input.progress, identity, item.id);
+  let exec: Awaited<ReturnType<typeof runner.runLogged>>;
+  try {
+    exec = await runner.runLogged({
+      cwd,
+      itemId: item.id,
+      argv: item.exec,
+      timeoutSeconds: item.timeoutSeconds,
+      logFile: join(input.evidenceDir, ...relative.split("/")),
+      artifactPath: relative,
+      expectedHead: head,
+      onOutput: outputs.write,
+      ...(input.pullRequest ? { pullRequest: input.pullRequest } : {}),
+    });
+  } finally {
+    await outputs.drained();
+  }
   const task = input.candidate.task;
   const record: CommandRecord = {
     specVersion: SPEC_VERSION,
@@ -572,7 +581,7 @@ async function runOne(
   await input.evidence.add(record);
   records.push(record);
   const failed = executionFailed(record.exec, item.kind === "setup");
-  input.progress?.step(identity, {
+  await input.progress?.step(identity, {
     ...blankStep(item, ordinal),
     state: failed ? "failed" : "passed",
     detail: execMessage(record.exec, item.kind === "setup"),
@@ -632,7 +641,7 @@ async function recordFromCi(
   await input.evidence.add(record);
   records.push(record);
   const now = Date.now();
-  input.progress?.step(identity, {
+  await input.progress?.step(identity, {
     ...blankStep(item, ordinal),
     state: "passed",
     detail: ciMessage(ci),
@@ -691,7 +700,7 @@ async function recordFromTurn(
   };
   await input.evidence.add(record);
   records.push(record);
-  input.progress?.step(identity, {
+  await input.progress?.step(identity, {
     ...blankStep(item, ordinal),
     state: "passed",
     detail: turnMessage(pass.at),
@@ -726,7 +735,7 @@ async function runRule(
   const attempt = nextAttempt(records, rule.id, head, digest);
   const relative = artifactRelative(digest, head, rule.id, attempt);
   const startedAt = Date.now();
-  input.progress?.step(identity, {
+  await input.progress?.step(identity, {
     ...blankStep(step, ordinal),
     state: "running",
     attempt,
@@ -736,6 +745,7 @@ async function runRule(
   });
   const bytes =
     input.policy.source === "none" ? undefined : input.policy.probeFiles?.get(rule.probe);
+  const outputs = outputWriter(input.progress, identity, rule.id);
   let ran: Awaited<ReturnType<ProbeRunner["runProbe"]>>;
   let reason =
     bytes === undefined
@@ -752,9 +762,7 @@ async function runRule(
       timeoutSeconds: PROBE_TIMEOUT_SECONDS,
       logFile: join(input.evidenceDir, ...relative.split("/")),
       artifactPath: relative,
-      onOutput: (stream, text, truncated) => {
-        input.progress?.output(identity, rule.id, stream, text, truncated);
-      },
+      onOutput: outputs.write,
       ...(input.pullRequest ? { pullRequest: input.pullRequest } : {}),
     });
   } catch (caughtError) {
@@ -762,12 +770,13 @@ async function runRule(
     ran = undefined;
     reason = caughtError instanceof Error ? caughtError.message : String(caughtError);
   }
+  await outputs.drained();
   if (ran === undefined) {
     const detail = scrubText(
       `probe ${rule.probe} could not run: ${reason}`,
       credentialSecrets(input.env),
     );
-    input.progress?.step(identity, {
+    await input.progress?.step(identity, {
       ...blankStep(step, ordinal),
       state: "blocked",
       detail,
@@ -806,7 +815,7 @@ async function runRule(
   };
   await input.evidence.add(record);
   records.push(record);
-  input.progress?.step(identity, {
+  await input.progress?.step(identity, {
     ...blankStep(step, ordinal),
     state: executionFailed(record.exec, false) ? "failed" : "passed",
     detail: execMessage(record.exec, false),
@@ -859,10 +868,10 @@ function scrubProgress(
   const optional = (value: string | null): string | null => (value === null ? null : text(value));
   return {
     begin(identity) {
-      progress.begin(identity);
+      return progress.begin(identity);
     },
     step(identity, step) {
-      progress.step(identity, {
+      return progress.step(identity, {
         ...step,
         command: text(step.command),
         detail: optional(step.detail),
@@ -871,10 +880,33 @@ function scrubProgress(
       });
     },
     output(identity, stepId, stream, chunk, truncated) {
-      progress.output(identity, stepId, stream, text(chunk), truncated);
+      return progress.output(identity, stepId, stream, text(chunk), truncated);
     },
     finish(identity, decision) {
-      progress.finish(identity, decision);
+      return progress.finish(identity, decision);
+    },
+  };
+}
+
+function outputWriter(
+  progress: CloseoutProgress | undefined,
+  identity: CloseoutProgressIdentity,
+  stepId: string,
+) {
+  let chain: Promise<void> = Promise.resolve();
+  let failure: { error: unknown } | null = null;
+  return {
+    write(stream: CloseoutOutputStream, text: string, truncated: boolean): void {
+      if (progress === undefined) return;
+      chain = chain
+        .then(() => progress.output(identity, stepId, stream, text, truncated))
+        .catch((error: unknown) => {
+          failure ??= { error };
+        });
+    },
+    async drained(): Promise<void> {
+      await chain;
+      if (failure !== null) throw failure.error;
     },
   };
 }
@@ -894,23 +926,23 @@ function progressIdentity(
   };
 }
 
-function publishPlan(
+async function publishPlan(
   progress: CloseoutProgress | undefined,
   identity: CloseoutProgressIdentity,
   actions: readonly Action[],
   reviews: readonly ResolvedReview[],
-): void {
+): Promise<void> {
   if (progress === undefined) return;
-  progress.begin(identity);
-  actions.forEach((action, ordinal) => {
+  await progress.begin(identity);
+  for (const [ordinal, action] of actions.entries()) {
     if (action.kind === "skip") {
-      progress.step(identity, stepUpdate(action.item, action.disposition, ordinal, null));
-      return;
+      await progress.step(identity, stepUpdate(action.item, action.disposition, ordinal, null));
+      continue;
     }
-    progress.step(identity, { ...blankStep(action.item, ordinal), state: "pending" });
-  });
-  reviews.forEach((item, index) => {
-    progress.step(identity, {
+    await progress.step(identity, { ...blankStep(action.item, ordinal), state: "pending" });
+  }
+  for (const [index, item] of reviews.entries()) {
+    await progress.step(identity, {
       ...blankStep(
         {
           id: item.id,
@@ -925,19 +957,19 @@ function publishPlan(
       timeoutSeconds: null,
       state: "pending",
     });
-  });
+  }
 }
 
-function blockPending(
+async function blockPending(
   progress: CloseoutProgress | undefined,
   identity: CloseoutProgressIdentity,
   actions: readonly Action[],
   detail: string,
-): void {
+): Promise<void> {
   if (progress === undefined) return;
   for (const action of actions) {
     if (action.kind === "skip" || action.kind === "ci") continue;
-    progress.step(identity, {
+    await progress.step(identity, {
       ...blankStep(action.item, ordinalOf(actions, action.item.id)),
       state: "blocked",
       detail,
