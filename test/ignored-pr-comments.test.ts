@@ -198,7 +198,7 @@ describe("Settings › Merging › Ignored PR comments", () => {
     const db = openDatabase(":memory:");
     migrate(db);
     insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
-    bindWorkItemRepository(db, "eng-1", {
+    await bindWorkItemRepository(sqliteDb(db), "eng-1", {
       owner: "acme",
       repo: "monorepo",
       remoteUrl: "https://github.com/acme/monorepo.git",

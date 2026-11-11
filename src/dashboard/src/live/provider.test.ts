@@ -970,9 +970,9 @@ describe("live status provider", () => {
     const db = database();
     const now = 1_700_000_000_000;
     const head = "c".repeat(40);
-    const bound = (id: string, at: number) => {
+    const bound = async (id: string, at: number) => {
       const item = insertQueuedItem(db, { id, title: id, sessionKey: "ses_b", now: at });
-      bindWorkItemRepository(db, item.id, {
+      await bindWorkItemRepository(sqliteDb(db), item.id, {
         owner: "pmdroid",
         repo: "paws-app",
         remoteUrl: "https://github.com/pmdroid/paws-app.git",
@@ -981,8 +981,8 @@ describe("live status provider", () => {
       enterMergeQueue(db, item.id, { phase: "merge_queue", baseSha: head, wipCommit: head });
       return item;
     };
-    bound("ENG-21", 1);
-    const back = bound("ENG-22", 2);
+    await bound("ENG-21", 1);
+    const back = await bound("ENG-22", 2);
     applyWorkItemEvent(db, back.id, "restart", { kind: "restart", reason: "ci" });
     applyWorkItemEvent(db, back.id, "dispatched");
     enqueueJob(db, {
@@ -1195,7 +1195,7 @@ describe("live status provider", () => {
       finishCloseoutProgress(db, item.id, { ...identity, policyPath: null }, "rejected", at);
     }
     // An issue was filed from the pre-existing finding, on this item or another one.
-    bindWorkItemRepository(db, item.id, {
+    await bindWorkItemRepository(sqliteDb(db), item.id, {
       owner: "acme",
       repo: "widgets",
       remoteUrl: "https://github.com/acme/widgets.git",

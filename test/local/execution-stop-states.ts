@@ -11,6 +11,7 @@ import {
   getWorkItem,
   JobLoop,
   OutboxDispatcher,
+  sqliteDb,
 } from "../../src/db";
 import { createExecutionControls } from "../../src/execution-controls";
 import { createLinearMembershipReads } from "../../src/linear";
@@ -121,7 +122,7 @@ async function remoteFixture(
       remoteUrl: "https://github.com/fixture/allowed.git",
       baseSha: "a".repeat(40),
     };
-    bindWorkItemRepository(db, "controlled", repository);
+    await bindWorkItemRepository(sqliteDb(db), "controlled", repository);
     if (state === "verifying") db.run("UPDATE run SET kind='review' WHERE id=?", [runId]);
     await coordinator.work.assign({
       id: randomUUID(),

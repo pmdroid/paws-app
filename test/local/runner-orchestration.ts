@@ -800,7 +800,7 @@ export async function probeRunnerOrchestration(
       if (mergeDependencyYield) {
         const queued = listWorkItems(db)[0]!;
         saveTaskMode(db, queued.id, "code", 0, true);
-        bindWorkItemRepository(db, queued.id, {
+        await bindWorkItemRepository(sqliteDb(db), queued.id, {
           owner: "acme",
           repo: "fixture",
           remoteUrl: origin,
@@ -925,7 +925,7 @@ export async function probeRunnerOrchestration(
             [item.delegationId, clock.now()],
           );
           saveTaskMode(db, "new-blocker", "answer");
-          bindWorkItemRepository(db, "new-blocker", {
+          await bindWorkItemRepository(sqliteDb(db), "new-blocker", {
             owner: "acme",
             repo: "fixture",
             remoteUrl: origin,

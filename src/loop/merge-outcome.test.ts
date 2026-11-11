@@ -40,7 +40,11 @@ async function fixture() {
     }),
   });
   insertQueuedItem(db, { id: "item", now: clock.now() });
-  bindWorkItemRepository(db, "item", { owner: "acme", repo: "app", remoteUrl: "unused" });
+  await bindWorkItemRepository(sqliteDb(db), "item", {
+    owner: "acme",
+    repo: "app",
+    remoteUrl: "unused",
+  });
   return {
     db,
     read: () => orchestrator["mergedOutsideLane"](getWorkItem(db, "item")!),

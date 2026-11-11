@@ -14,6 +14,7 @@ import {
   openDatabase,
   setJournalSink,
   type Job,
+  sqliteDb,
 } from "../src/db";
 import { dispatch } from "../src/scheduler";
 import { workspaceAdmission, workspaceDispatch } from "./fake-workspace";
@@ -32,13 +33,17 @@ async function disagreements(run: () => unknown): Promise<string[]> {
   return lines.filter((line) => line.startsWith("claim gate disagreement"));
 }
 
-function queued(db: Database, id: string, now = 0): void {
+async function queued(db: Database, id: string, now = 0): Promise<void> {
   insertQueuedItem(db, { id, now });
-  bindWorkItemRepository(db, id, repository);
+  await bindWorkItemRepository(sqliteDb(db), id, repository);
 }
 
-function inFlight(db: Database, id: string, event: "turn_ended" | "lease_expired"): number {
-  queued(db, id);
+async function inFlight(
+  db: Database,
+  id: string,
+  event: "turn_ended" | "lease_expired",
+): Promise<number> {
+  await queued(db, id);
   applyWorkItemEvent(db, id, "dispatched");
   applyWorkItemEvent(db, id, event);
   return enqueueJob(db, {
@@ -55,7 +60,7 @@ function itemOf(job: Job | null): string | null {
 test("an unreserved start stays pending without a legacy claim decision", async () => {
   const db = tempDb();
   try {
-    queued(db, "solo");
+    await queued(db, "solo");
     const id = enqueueJob(db, { queue: JOB_KIND.start, payload: { itemId: "solo" }, now: 0 });
     let claimed: Job | null = null;
     const lines = await disagreements(() => {
@@ -72,10 +77,10 @@ test("an unreserved start stays pending without a legacy claim decision", async 
 test("a reserved start is claimed without the legacy gate", async () => {
   const db = tempDb();
   try {
-    queued(db, "legacy");
+    await queued(db, "legacy");
     applyWorkItemEvent(db, "legacy", "dispatched");
     insertRun(db, { itemId: "legacy", now: 0, status: "active" });
-    queued(db, "next", 1);
+    await queued(db, "next", 1);
     assert.deepEqual(await workspaceDispatch(db, { now: 1000 }), ["next"]);
     const start = db
       .query<{ id: number }, []>(
@@ -94,8 +99,8 @@ test("a reserved start is claimed without the legacy gate", async () => {
 test("a queued Reservation survives a restart and both rules claim its start", async () => {
   const path = join(tempHome(), "paws.db");
   const db = migratedDatabase(path);
-  queued(db, "a");
-  queued(db, "b", 1);
+  await queued(db, "a");
+  await queued(db, "b", 1);
   assert.deepEqual(await workspaceDispatch(db, { now: 1000 }), ["a", "b"]);
   db.close();
   const reopened = openDatabase(path);
@@ -117,8 +122,8 @@ test("a queued Reservation survives a restart and both rules claim its start", a
 test("work in flight without a Reservation after a restart is reconstructed before its claim", async () => {
   const path = join(tempHome(), "paws.db");
   const db = migratedDatabase(path);
-  inFlight(db, "a", "turn_ended");
-  inFlight(db, "b", "lease_expired");
+  await inFlight(db, "a", "turn_ended");
+  await inFlight(db, "b", "lease_expired");
   db.close();
   const reopened = openDatabase(path);
   try {
@@ -143,8 +148,8 @@ test("work in flight without a Reservation after a restart is reconstructed befo
 test("resume and reverify claim against their Reservation and never twice for one item", async () => {
   const db = tempDb();
   try {
-    inFlight(db, "verify", "turn_ended");
-    inFlight(db, "recover", "lease_expired");
+    await inFlight(db, "verify", "turn_ended");
+    await inFlight(db, "recover", "lease_expired");
     let claimed: (string | null)[] = [];
     const lines = await disagreements(async () => {
       await workspaceDispatch(db, { now: 1000 });
@@ -162,7 +167,7 @@ test("resume and reverify claim against their Reservation and never twice for on
 test("a Project pause between dispatch and claim retracts the stale Reservation", async () => {
   const db = tempDb();
   try {
-    queued(db, "paused");
+    await queued(db, "paused");
     const lines = await disagreements(async () => {
       assert.deepEqual(await workspaceDispatch(db, { now: 1000 }), ["paused"]);
       const paused = workspaceAdmission(db, { authority: () => false });
@@ -180,8 +185,8 @@ test("a Project pause between dispatch and claim retracts the stale Reservation"
 test("an access change between dispatch and claim retracts only that Item's Reservation", async () => {
   const db = tempDb();
   try {
-    queued(db, "revoked");
-    queued(db, "kept", 1);
+    await queued(db, "revoked");
+    await queued(db, "kept", 1);
     const revoked = db
       .query<{ id: string }, []>("SELECT delegation_id AS id FROM work_item WHERE id='revoked'")
       .get()!.id;

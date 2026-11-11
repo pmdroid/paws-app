@@ -379,7 +379,7 @@ async function runnerWorld() {
     remoteUrl: "https://github.com/fixture/repository.git",
     baseSha: "a".repeat(40),
   };
-  bindWorkItemRepository(w.db, item.id, repository);
+  await bindWorkItemRepository(sqliteDb(w.db), item.id, repository);
   const command: Extract<RunnerCommand, { type: "run" }> = {
     id: "work-1",
     type: "run",

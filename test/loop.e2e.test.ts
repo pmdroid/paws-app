@@ -760,7 +760,8 @@ test("a bound two-item delegation asks, verifies and merges in its repository af
 
   try {
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "parent"));
-    for (const item of listWorkItems(db)) bindWorkItemRepository(db, item.id, repository);
+    for (const item of listWorkItems(db))
+      await bindWorkItemRepository(sqliteDb(db), item.id, repository);
     const deadline = Date.now() + 80_000;
     let idle = 0;
     while (Date.now() < deadline && !delegationMerged(db)) {

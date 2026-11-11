@@ -7,6 +7,7 @@ import {
   recordReviewFindings,
   syncWorkspaceMember,
   type ReviewFindingReport,
+  sqliteDb,
 } from "../src/db";
 import { handleFindingsRequest, type FindingsResponse } from "../src/dashboard";
 import { tempDb } from "./helpers";
@@ -25,14 +26,14 @@ function finding(patch: Partial<ReviewFindingReport>): ReviewFindingReport {
   };
 }
 
-function seed(active = true): Database {
+async function seed(active = true): Promise<Database> {
   const db = tempDb();
   for (const [id, repo] of [
     ["item-a", "platform"],
     ["item-b", "web"],
   ] as const) {
     insertQueuedItem(db, { id, sessionKey: `session-${id}`, now: 1, title: `Title ${id}` });
-    bindWorkItemRepository(db, id, {
+    await bindWorkItemRepository(sqliteDb(db), id, {
       owner: "acme",
       repo,
       remoteUrl: `https://github.com/acme/${repo}`,
@@ -100,7 +101,7 @@ function post(db: Database, body: unknown, signedIn = true) {
 }
 
 test("the list is newest last seen first, filters, and counts severities over the other filters", async () => {
-  const db = seed();
+  const db = await seed();
   try {
     const all = await list(db);
     expect(all.findings.map((entry) => entry.path)).toEqual([
@@ -139,7 +140,7 @@ test("the list is newest last seen first, filters, and counts severities over th
 });
 
 test("a member dismisses with a reason and reopens; others and bad requests are refused", async () => {
-  const db = seed();
+  const db = await seed();
   try {
     const [first] = (await list(db)).findings;
     expect((await post(db, { id: first!.id, action: "dismiss", reason: "x" }, false))!.status).toBe(
@@ -184,7 +185,7 @@ test("a member dismisses with a reason and reopens; others and bad requests are 
 });
 
 test("an inactive member cannot change a finding", async () => {
-  const db = seed(false);
+  const db = await seed(false);
   try {
     const [first] = (await list(db)).findings;
     expect((await post(db, { id: first!.id, action: "dismiss", reason: "no" }))!.status).toBe(403);

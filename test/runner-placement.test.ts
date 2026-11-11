@@ -169,7 +169,7 @@ test("a solo item runs on its owner's runners and not another member's shared ru
 test("work goes only to runners whose reported repositories include the item's repository", async () => {
   const placed = await placeItem();
   try {
-    bindWorkItemRepository(placed.db, "item", {
+    await bindWorkItemRepository(sqliteDb(placed.db), "item", {
       owner: "Acme",
       repo: "Looky",
       remoteUrl: "https://github.com/Acme/Looky.git",

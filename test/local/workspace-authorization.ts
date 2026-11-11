@@ -114,7 +114,7 @@ export async function probeWorkspaceAuthorization(
     ["own", "allowed"],
     ["unmapped-repo", "private"],
   ])
-    bindWorkItemRepository(db, id!, {
+    await bindWorkItemRepository(sqliteDb(db), id!, {
       owner: "fixture",
       repo: repo!,
       remoteUrl: `https://example.invalid/fixture/${repo}`,

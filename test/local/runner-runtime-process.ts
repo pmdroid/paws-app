@@ -203,7 +203,7 @@ if (mode === "prepare") {
         remoteUrl: "https://github.com/fixture/repository.git",
         baseSha: base,
       };
-      bindWorkItemRepository(db, item.id, repository);
+      await bindWorkItemRepository(sqliteDb(db), item.id, repository);
       const command: WorkCommand = {
         type: type as "run" | "review",
         id: workspaceId(),

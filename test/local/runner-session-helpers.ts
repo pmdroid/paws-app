@@ -254,7 +254,7 @@ export async function probeRunnerSessionHelpers(
       remoteUrl: "https://github.com/acme/app.git",
       baseSha: "a".repeat(40),
     };
-    bindWorkItemRepository(db, item.id, repository);
+    await bindWorkItemRepository(sqliteDb(db), item.id, repository);
     db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, "acme/app", "team"]);
     const workCommand = {
       id: workspaceId(),

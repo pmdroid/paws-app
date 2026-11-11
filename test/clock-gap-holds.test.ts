@@ -38,9 +38,9 @@ const RUNNING: Checkpoint = { phase: "running", baseSha: "main", wipCommit: "wip
 const MERGING: Checkpoint = { phase: "merge_queue", baseSha: "main", wipCommit: "wip", turn: 3 };
 const EXECUTION: readonly string[] = [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify];
 
-function seed(db: Database, now: number): void {
+async function seed(db: Database, now: number): Promise<void> {
   insertQueuedItem(db, { id: "item", sessionKey: "session", now });
-  bindWorkItemRepository(db, "item", {
+  await bindWorkItemRepository(sqliteDb(db), "item", {
     owner: "owner",
     repo: "repo",
     remoteUrl: "https://example.invalid/repo.git",
@@ -48,7 +48,7 @@ function seed(db: Database, now: number): void {
 }
 
 async function hold(db: Database, now: number, kind: Hold, merging: boolean): Promise<void> {
-  seed(db, now);
+  await seed(db, now);
   const { run } = beginImplementRun(db, "item", now, RUNNING);
   if (kind === "paused") applyWorkItemEvent(db, "item", "pause", { now });
   if (kind === "manual") {

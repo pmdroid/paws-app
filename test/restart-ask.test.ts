@@ -40,10 +40,10 @@ import { ask as rawAsk, answer } from "./questions";
 import { workspaceAdmission, workspaceDispatch } from "./fake-workspace";
 import { tempDb, tempHome } from "./helpers";
 
-function fixture() {
+async function fixture() {
   const db = tempDb();
   insertQueuedItem(db, { id: "item", sessionKey: "session", now: 0 });
-  bindWorkItemRepository(db, "item", {
+  await bindWorkItemRepository(sqliteDb(db), "item", {
     owner: "owner",
     repo: "repo",
     remoteUrl: "https://example.invalid/repo.git",
@@ -55,7 +55,7 @@ function fixture() {
 
 describe("restart and ask", () => {
   test("a durable merge marker fences restart until the lane settles the merge call", async () => {
-    const { db } = fixture();
+    const { db } = await fixture();
     db.run("UPDATE work_item SET state='merge_queue' WHERE id='item'");
     await joinMergeQueue(sqliteDb(db), { itemId: "item", repository: "owner/repo", now: 2 });
     const jobs = listJobs(db).length;
@@ -75,7 +75,7 @@ describe("restart and ask", () => {
   });
 
   test("a failed item restarted with a stale cancel request is queued ready to start", async () => {
-    const { db } = fixture();
+    const { db } = await fixture();
     db.run(
       "UPDATE work_item SET state='failed',cancel_requested=1,recovery_attempts=2 WHERE id='item'",
     );
@@ -89,7 +89,7 @@ describe("restart and ask", () => {
   });
 
   test("a restart keeps the cancel request of an item a person is stopping", async () => {
-    const { db } = fixture();
+    const { db } = await fixture();
     db.run("UPDATE work_item SET cancel_requested=1 WHERE id='item'");
     restart(db, getWorkItem(db, "item")!, { reason: "findings", body: "Fix this.", now: 2 });
     expect(getWorkItem(db, "item")?.cancelRequested).toBe(true);
@@ -98,7 +98,7 @@ describe("restart and ask", () => {
   test.each(["findings", "ci", "review", "conflict", "follow_up", "answer"] as const)(
     "%s restarts preserve the run and session and dispatch their original handoff",
     async (reason) => {
-      const { db, item } = fixture();
+      const { db, item } = await fixture();
       const prior = enqueueJob(db, {
         queue: JOB_KIND.reverify,
         payload: { itemId: item.id },
@@ -132,7 +132,7 @@ describe("restart and ask", () => {
   );
 
   test("same-head CI recurs with fresh handoff and accounting, while stale replays do nothing", async () => {
-    const { db, item } = fixture();
+    const { db, item } = await fixture();
     const jobKey = "ci-failed:item:recheck:head";
     const first = restart(db, item, { reason: "ci", body: "first failure", jobKey, now: 2 })!;
     expect(restart(db, item, { reason: "ci", body: "first failure", jobKey, now: 2 })).toBeNull();
@@ -170,8 +170,8 @@ describe("restart and ask", () => {
     db.close();
   });
 
-  test("a restart without a pending job rolls back the edge and handoff", () => {
-    const { db, item } = fixture();
+  test("a restart without a pending job rolls back the edge and handoff", async () => {
+    const { db, item } = await fixture();
     enqueueJob(db, { queue: JOB_KIND.resume, jobKey: "blocked", payload: { itemId: "other" } });
     db.run("UPDATE job SET status='running' WHERE job_key='blocked'");
     expect(() =>
@@ -186,7 +186,7 @@ describe("restart and ask", () => {
   });
 
   test("repeated startup keeps one runnable restart question and one actionable question", async () => {
-    const { db } = fixture();
+    const { db } = await fixture();
     db.run("UPDATE work_item SET recovery_attempts=1, resumed_at=1 WHERE id='item'");
     await recoverOnStartup(sqliteDb(db), 100);
     await recoverOnStartup(sqliteDb(db), 200);
@@ -216,7 +216,7 @@ describe("restart and ask", () => {
   test.each(["open", "queued"] as const)(
     "startup retains an existing %s restart question even when its ask job is done",
     async (status) => {
-      const { db, item } = fixture();
+      const { db, item } = await fixture();
       const owner = { itemId: item.id, runId: item.currentRunId, sessionId: "session" };
       if (status === "queued") await rawAsk(db, owner, "agent", "First question", { now: 2 });
       await rawAsk(db, owner, "agent", "Restart?", { reason: "restart", now: 3 });
@@ -240,8 +240,8 @@ describe("restart and ask", () => {
     },
   );
 
-  test("a failed restart rolls back its fence, cancellations, and capacity release", () => {
-    const { db, item } = fixture();
+  test("a failed restart rolls back its fence, cancellations, and capacity release", async () => {
+    const { db, item } = await fixture();
     const job = enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId: item.id } });
     db.run(
       "CREATE TRIGGER reject_restart BEFORE INSERT ON work_item_event WHEN NEW.kind='restart' BEGIN SELECT RAISE(ABORT,'injected'); END",
@@ -256,7 +256,7 @@ describe("restart and ask", () => {
   });
 
   test("an old job after restart cannot accept, ask, or execute its handler", async () => {
-    const { db, item } = fixture();
+    const { db, item } = await fixture();
     applyWorkItemEvent(db, item.id, "turn_ended");
     const verifying = getWorkItem(db, item.id)!;
     const oldId = enqueueJob(db, {
@@ -321,7 +321,7 @@ describe("restart and ask", () => {
   });
 
   test("questions queue once, record their reason, and their answer restarts the same run", async () => {
-    const { db, item } = fixture();
+    const { db, item } = await fixture();
     await sqliteDb(db).transaction((q) =>
       askSteps(
         q,
@@ -370,7 +370,7 @@ describe("restart and ask", () => {
   });
 
   test("a repeated-recovery question queues behind the existing question instead of failing", async () => {
-    const { db, item } = fixture();
+    const { db, item } = await fixture();
     await sqliteDb(db).transaction((q) =>
       askSteps(
         q,
@@ -400,7 +400,7 @@ describe("restart and ask", () => {
   });
 
   test("startup keeps awaiting-input items and schedules a catch-up read", async () => {
-    const { db, item } = fixture();
+    const { db, item } = await fixture();
     await sqliteDb(db).transaction((q) =>
       askSteps(
         q,

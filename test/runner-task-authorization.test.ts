@@ -104,7 +104,7 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
         oauthClientId: "client",
         observedAtMs: now,
       });
-      bindWorkItemRepository(db, id, {
+      await bindWorkItemRepository(sqliteDb(db), id, {
         owner: "fixture",
         repo,
         remoteUrl: `https://example.invalid/fixture/${repo}`,

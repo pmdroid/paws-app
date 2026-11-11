@@ -55,7 +55,7 @@ export async function probeRunnerPlacement(
     observedAtMs: now,
   });
   bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
-  bindWorkItemRepository(db, item.id, {
+  await bindWorkItemRepository(sqliteDb(db), item.id, {
     owner: "fixture",
     repo: "repository",
     remoteUrl: "https://github.com/fixture/repository.git",

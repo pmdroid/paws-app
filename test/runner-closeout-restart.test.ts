@@ -121,7 +121,11 @@ async function fixture(agentRead?: AgentRead) {
     observedAtMs: now,
   });
   bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
-  bindWorkItemRepository(db, item.id, { owner: "acme", repo: "fixture", remoteUrl: REMOTE });
+  await bindWorkItemRepository(sqliteDb(db), item.id, {
+    owner: "acme",
+    repo: "fixture",
+    remoteUrl: REMOTE,
+  });
   db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, item.id]);
   // The agent's turn ended and Closeout is checking its candidate.
   applyWorkItemEvent(db, item.id, "turn_ended");

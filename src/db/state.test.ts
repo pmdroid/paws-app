@@ -363,7 +363,7 @@ describe("restart recovery", () => {
             const ids = order === "keep-first" ? ["keep", "reverify"] : ["reverify", "keep"];
             for (const id of ids) {
               insertQueuedItem(db, { id, now: clock.now() });
-              bindWorkItemRepository(db, id, {
+              await bindWorkItemRepository(sqliteDb(db), id, {
                 owner: "owner",
                 repo: sameRepository ? "shared" : id,
                 remoteUrl: `https://github.com/owner/${sameRepository ? "shared" : id}.git`,

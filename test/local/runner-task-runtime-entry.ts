@@ -232,7 +232,7 @@ if (mode === "agent") {
         remoteUrl: "https://github.com/fixture/repository.git",
         baseSha,
       };
-      if (repository) bindWorkItemRepository(db, item.id, binding);
+      if (repository) await bindWorkItemRepository(sqliteDb(db), item.id, binding);
       const scope = await service.work.scopeTask(run.id, workspace.id);
       const command: Task = {
         type: "task",

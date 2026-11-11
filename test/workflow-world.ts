@@ -10,7 +10,7 @@ import {
   applyWorkItemEvent,
   beginImplementRun,
   beginMergeCall,
-  bindWorkItemRepository,
+  bindWorkItemRepositorySteps,
   closeExpiredRunnerLeasesSteps,
   closeoutPolicyDigests,
   deferWorkItem,
@@ -148,11 +148,15 @@ export async function seedFixture(
   id = fixture,
 ): Promise<void> {
   insertQueuedItem(db, { id, sessionKey: `session-${id}`, now });
-  bindWorkItemRepository(db, id, {
-    owner: "owner",
-    repo: "repo",
-    remoteUrl: "https://example.invalid/repo.git",
-  });
+  settled(
+    sqliteDb(db).transaction((q) =>
+      bindWorkItemRepositorySteps(q, id, {
+        owner: "owner",
+        repo: "repo",
+        remoteUrl: "https://example.invalid/repo.git",
+      }),
+    ),
+  );
   if (fixture === "queued") return;
   const { run } = beginImplementRun(db, id, now, RUNNING);
   if (fixture.startsWith("running") || fixture.startsWith("verifying"))

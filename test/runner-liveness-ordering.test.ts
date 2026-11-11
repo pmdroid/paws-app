@@ -66,7 +66,7 @@ async function fixture() {
     remoteUrl: "https://github.com/fixture/repository.git",
     baseSha: "a".repeat(40),
   };
-  bindWorkItemRepository(db, item.id, repository);
+  await bindWorkItemRepository(sqliteDb(db), item.id, repository);
   const keys = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
     db,

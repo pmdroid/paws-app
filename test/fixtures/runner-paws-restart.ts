@@ -474,7 +474,7 @@ async function until(label: string, done: () => boolean) {
     `${label}: ${JSON.stringify({ errors, items: listWorkItems(paws.db), commands: [...commands.values()], activities: listOutbox(paws.db).map((row) => row.payload) })}`,
   );
 }
-function addItem(id: string, answer = false) {
+async function addItem(id: string, answer = false) {
   const sessionKey = `session-${id}`;
   const item = insertQueuedItem(paws.db, { id, sessionKey, now: Date.now() });
   recordLinearInstallation(paws.db, {
@@ -488,7 +488,12 @@ function addItem(id: string, answer = false) {
   bindLinearSessionTask(paws.db, sessionKey, item.delegationId, { actorId: "owner" });
   paws.db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
   if (answer) saveTaskMode(paws.db, id, "answer");
-  else bindWorkItemRepository(paws.db, id, { owner: "pmdroid", repo: "paws-demo", remoteUrl });
+  else
+    await bindWorkItemRepository(sqliteDb(paws.db), id, {
+      owner: "pmdroid",
+      repo: "paws-demo",
+      remoteUrl,
+    });
   const { run } = beginImplementRun(paws.db, id, Date.now());
   enqueueJob(paws.db, {
     queue: JOB_KIND.resume,
@@ -595,7 +600,7 @@ try {
       preparationGate = new Promise<void>((resolve) => {
         releasePreparation = resolve;
       });
-    const code = addItem("runner-restart");
+    const code = await addItem("runner-restart");
     await until("turn interrupted at requested phase", () =>
       preparation ? preparing : !!activeCommand("run"),
     );
@@ -672,13 +677,13 @@ try {
     assert(!activities.some((body) => body.includes("The runner stopped this run")));
     console.log("runner restart integration passed");
   } else {
-    const code = addItem("code");
+    const code = await addItem("code");
     await until("implementer running", () => !!activeCommand("run"));
     await restartMidTurn(activeCommand("run")!);
     await until("reviewer running", () => !!activeCommand("review"));
     await restartMidTurn(activeCommand("review")!);
     await until("one pull request published", () => github.opened.length === 1);
-    const answer = addItem("answer", true);
+    const answer = await addItem("answer", true);
     await until("answer running", () => !!activeCommand("task"));
     await restartMidTurn(activeCommand("task")!);
     await until("answer completed", () => getWorkItem(paws.db, answer)?.state === "completed");

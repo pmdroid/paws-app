@@ -107,7 +107,7 @@ export async function createExecutionControlsFixture(
     VALUES('other',?,'other','other','Unrelated item','queued','paws/other',1,?,?)`,
     [item.delegationId, now, item.sessionKey],
   );
-  bindWorkItemRepository(db, "unmapped", {
+  await bindWorkItemRepository(sqliteDb(db), "unmapped", {
     owner: "fixture",
     repo: "unmapped",
     remoteUrl: "https://example.invalid/fixture/unmapped",

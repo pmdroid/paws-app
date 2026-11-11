@@ -118,9 +118,9 @@ function accept(
   );
 }
 
-function item(db: Database, id: string): void {
+async function item(db: Database, id: string): Promise<void> {
   insertQueuedItem(db, { id, sessionKey: `session-${id}`, now: 1 });
-  bindWorkItemRepository(db, id, REPOSITORY);
+  await bindWorkItemRepository(sqliteDb(db), id, REPOSITORY);
 }
 
 const STALE: Raw = {
@@ -143,7 +143,7 @@ test("an accepted head stores its two non-blocking findings and not the waived b
   const db = tempDb();
   const home = tempHome();
   try {
-    item(db, "item-a");
+    await item(db, "item-a");
     accept(db, home, {
       itemId: "item-a",
       head: "a".repeat(40),
@@ -180,8 +180,8 @@ test("the same finding on another item updates its count and last seen instead o
   const db = tempDb();
   const home = tempHome();
   try {
-    item(db, "item-a");
-    item(db, "item-b");
+    await item(db, "item-a");
+    await item(db, "item-b");
     accept(db, home, {
       itemId: "item-a",
       head: "a".repeat(40),
@@ -248,8 +248,8 @@ test("a finding a later accepted review of its path no longer reports is gone, a
   const db = tempDb();
   const home = tempHome();
   try {
-    item(db, "item-a");
-    item(db, "item-b");
+    await item(db, "item-a");
+    await item(db, "item-b");
     accept(db, home, {
       itemId: "item-a",
       head: "a".repeat(40),
@@ -308,7 +308,7 @@ test("dismiss, reopen and filed set the status with who changed it and when", as
   const db = tempDb();
   const home = tempHome();
   try {
-    item(db, "item-a");
+    await item(db, "item-a");
     accept(db, home, {
       itemId: "item-a",
       head: "a".repeat(40),
@@ -398,8 +398,8 @@ test("the backfill reads each task's evidence once and running it again changes 
   const db = tempDb();
   const home = tempHome();
   try {
-    item(db, "item-a");
-    item(db, "item-b");
+    await item(db, "item-a");
+    await item(db, "item-b");
     accept(db, home, {
       itemId: "item-a",
       head: "a".repeat(40),
@@ -460,14 +460,14 @@ test("the migration enqueues the backfill job only where Closeout accepted somet
   }
 });
 
-test("finding report filters work by head alone and item", () => {
+test("finding report filters work by head alone and item", async () => {
   const db = tempDb();
   try {
     for (const [id, head, at] of [
       ["item-a", "head-a", 10],
       ["item-b", "head-b", 20],
     ] as const) {
-      item(db, id);
+      await item(db, id);
       recordReviewFindings(db, {
         itemId: id,
         repository: "acme/platform",
@@ -498,7 +498,7 @@ test("a review that fails with a P1 hands the agent its location and explanation
   const db = tempDb();
   const home = tempHome();
   try {
-    item(db, "item-r");
+    await item(db, "item-r");
     accept(db, home, {
       itemId: "item-r",
       head: "d".repeat(40),
@@ -526,7 +526,7 @@ test("an accepted head hands the agent no failed findings", async () => {
   const db = tempDb();
   const home = tempHome();
   try {
-    item(db, "item-s");
+    await item(db, "item-s");
     accept(db, home, { itemId: "item-s", head: "e".repeat(40), at: 100, findings: [BLOCKING] });
     expect(await failedReviewFindings(sqliteDb(db), "item-s", home)).toEqual([]);
   } finally {
