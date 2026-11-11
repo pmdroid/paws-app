@@ -51,7 +51,7 @@ describe("task blocks", () => {
     const db = tempDb();
     await saveTaskBlocks(sqliteDb(db), ["a"], [edge("x", "a")]);
     await expect(
-      await saveTaskBlocks(sqliteDb(db), ["a"], [edge("y", "a"), edge("z", "b")]),
+      saveTaskBlocks(sqliteDb(db), ["a"], [edge("y", "a"), edge("z", "b")]),
     ).rejects.toThrow(Error);
     expect(await listTaskBlockers(sqliteDb(db), "a")).toEqual(["x"]);
     expect(await listTaskBlockers(sqliteDb(db), "b")).toEqual([]);
@@ -61,9 +61,7 @@ describe("task blocks", () => {
   test("rejects a self block", async () => {
     const db = tempDb();
     await saveTaskBlocks(sqliteDb(db), ["a"], [edge("x", "a")]);
-    await expect(await saveTaskBlocks(sqliteDb(db), ["a"], [edge("a", "a")])).rejects.toThrow(
-      /CHECK/,
-    );
+    await expect(saveTaskBlocks(sqliteDb(db), ["a"], [edge("a", "a")])).rejects.toThrow(/CHECK/);
     expect(await listTaskBlockers(sqliteDb(db), "a")).toEqual(["x"]);
     db.close();
   });

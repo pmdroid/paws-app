@@ -368,9 +368,9 @@ test("commands without an account record the runner's legacy identity", async ()
   expect(
     await code(async () => await recordCommandAccount(sqliteDb(db), probe("C4", "R3", "W1"), NOW)),
   ).toBe("foreign_workspace");
-  await expect(
-    await recordCommandAccount(sqliteDb(db), probe("C1", "R1", "W1"), NOW),
-  ).rejects.toThrow(/UNIQUE/);
+  await expect(recordCommandAccount(sqliteDb(db), probe("C1", "R1", "W1"), NOW)).rejects.toThrow(
+    /UNIQUE/,
+  );
   db.close();
 });
 

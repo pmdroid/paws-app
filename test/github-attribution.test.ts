@@ -411,7 +411,7 @@ test("the Settings link returns to Settings, and a forged return_path never leav
     ]) {
       expect(attributionReturnPath(forged)).toBe("/dashboard/settings/account");
       await expect(
-        await beginGitHubAttribution(sqliteDb(f.db), binding(f), {
+        beginGitHubAttribution(sqliteDb(f.db), binding(f), {
           stateHash: "s".repeat(43),
           browserHash: "b".repeat(43),
           now: f.now,
