@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, isNull } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 
 export type RunFileChunkKind = "transcript" | "agent_session";
 
@@ -54,12 +53,12 @@ export function* runFileChunkSteps(
   return row ?? null;
 }
 
-export function runFileChunk(
-  db: Database,
+export async function runFileChunk(
+  store: Db,
   file: RunFileChunkAddress,
   offset: number,
-): RunFileChunkRow | null {
-  return settled(sqliteDb(db).run((q) => runFileChunkSteps(q, file, offset)));
+): Promise<RunFileChunkRow | null> {
+  return store.run((q) => runFileChunkSteps(q, file, offset));
 }
 
 export function* listRunFileChunksSteps(q: Q, file: RunFileChunkAddress): Steps<RunFileChunkRow[]> {
@@ -73,8 +72,11 @@ export function* listRunFileChunksSteps(q: Q, file: RunFileChunkAddress): Steps<
   );
 }
 
-export function listRunFileChunks(db: Database, file: RunFileChunkAddress): RunFileChunkRow[] {
-  return settled(sqliteDb(db).run((q) => listRunFileChunksSteps(q, file)));
+export async function listRunFileChunks(
+  store: Db,
+  file: RunFileChunkAddress,
+): Promise<RunFileChunkRow[]> {
+  return store.run((q) => listRunFileChunksSteps(q, file));
 }
 
 /** Records a stored chunk and moves the file's size to `end`; the caller holds the transaction. */
@@ -98,13 +100,13 @@ export function* recordRunFileChunkSteps(
   );
 }
 
-export function recordRunFileChunk(
-  db: Database,
+export async function recordRunFileChunk(
+  store: Db,
   file: RunFileChunkAddress,
   chunk: RunFileChunkRow,
   end: number,
-): void {
-  settled(sqliteDb(db).run((q) => recordRunFileChunkSteps(q, file, chunk, end)));
+): Promise<void> {
+  await store.run((q) => recordRunFileChunkSteps(q, file, chunk, end));
 }
 
 /** Records the key of a chunk stored before encryption, once it is sealed in place. */
@@ -130,11 +132,11 @@ export function* setRunFileChunkKeySteps(
   );
 }
 
-export function setRunFileChunkKey(
-  db: Database,
+export async function setRunFileChunkKey(
+  store: Db,
   file: RunFileChunkAddress,
   chunk: { offset: number; sha256: string },
   keyId: string,
-): void {
-  settled(sqliteDb(db).run((q) => setRunFileChunkKeySteps(q, file, chunk, keyId)));
+): Promise<void> {
+  await store.run((q) => setRunFileChunkKeySteps(q, file, chunk, keyId));
 }

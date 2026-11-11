@@ -1,7 +1,6 @@
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, isNull, ne, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
+import { type Db, type Q, type Steps } from "./db";
 import { jsonText } from "./json-text";
 import { getLinearConversationSourceSteps } from "./linear-session-url";
 
@@ -62,8 +61,8 @@ export function* listVisualReviewsSteps(q: Q, itemId: string): Steps<VisualRevie
   return reviews;
 }
 
-export function listVisualReviews(db: Database, itemId: string): VisualReviewRecord[] {
-  return settled(sqliteDb(db).run((q) => listVisualReviewsSteps(q, itemId)));
+export async function listVisualReviews(store: Db, itemId: string): Promise<VisualReviewRecord[]> {
+  return store.run((q) => listVisualReviewsSteps(q, itemId));
 }
 
 function* carriedFilesSteps(q: Q, value: string | null) {
@@ -127,8 +126,11 @@ export function* saveVisualReviewMarksSteps(q: Q, marks: readonly VisualReviewMa
   for (const mark of marks) yield* q.exec(q.orm.insert(q.t.visualReviewMark).values(mark));
 }
 
-export function saveVisualReviewMarks(db: Database, marks: readonly VisualReviewMark[]): void {
-  settled(sqliteDb(db).run((q) => saveVisualReviewMarksSteps(q, marks)));
+export async function saveVisualReviewMarks(
+  store: Db,
+  marks: readonly VisualReviewMark[],
+): Promise<void> {
+  await store.run((q) => saveVisualReviewMarksSteps(q, marks));
 }
 
 export function* listVisualReviewMarksSteps(q: Q, questionId: string) {
@@ -144,8 +146,11 @@ export function* listVisualReviewMarksSteps(q: Q, questionId: string) {
   return marks;
 }
 
-export function listVisualReviewMarks(db: Database, questionId: string): VisualReviewMark[] {
-  return settled(sqliteDb(db).run((q) => listVisualReviewMarksSteps(q, questionId)));
+export async function listVisualReviewMarks(
+  store: Db,
+  questionId: string,
+): Promise<VisualReviewMark[]> {
+  return store.run((q) => listVisualReviewMarksSteps(q, questionId));
 }
 
 export function* getVisualReviewMarkSteps(q: Q, id: string) {
@@ -160,11 +165,11 @@ export function* getVisualReviewMarkSteps(q: Q, id: string) {
   return row ?? null;
 }
 
-export function getVisualReviewMark(
-  db: Database,
+export async function getVisualReviewMark(
+  store: Db,
   id: string,
-): (VisualReviewMark & { itemId: string }) | null {
-  return settled(sqliteDb(db).run((q) => getVisualReviewMarkSteps(q, id)));
+): Promise<(VisualReviewMark & { itemId: string }) | null> {
+  return store.run((q) => getVisualReviewMarkSteps(q, id));
 }
 
 export function* openVisualReviewFilesSteps(q: Q, questionId: string) {
@@ -198,9 +203,9 @@ export function* openVisualReviewFilesSteps(q: Q, questionId: string) {
   };
 }
 
-export function openVisualReviewFiles(
-  db: Database,
+export async function openVisualReviewFiles(
+  store: Db,
   questionId: string,
-): { itemId: string; evidenceIds: string[] } | null {
-  return settled(sqliteDb(db).run((q) => openVisualReviewFilesSteps(q, questionId)));
+): Promise<{ itemId: string; evidenceIds: string[] } | null> {
+  return store.run((q) => openVisualReviewFilesSteps(q, questionId));
 }

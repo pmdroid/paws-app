@@ -126,13 +126,17 @@ for (const [name, point, kind] of failures) {
         "injected failure",
       );
       expect(await listGitHubDeliveries(sqliteDb(db))).toEqual([]);
-      expect(pendingChangeRequests(db, "first").map((r) => r.reviewId)).toEqual([40]);
+      expect((await pendingChangeRequests(sqliteDb(db), "first")).map((r) => r.reviewId)).toEqual([
+        40,
+      ]);
       expect(pendingPullComments(db, "first")).toEqual([]);
       expect(listJobs(db)).toEqual(before);
       db.run("DROP TRIGGER fail_delivery");
       expect(await acceptGitHubDelivery(db, delivery(kind!), 1_000)).toBe(true);
       expect(await listGitHubDeliveries(sqliteDb(db))).toHaveLength(1);
-      expect(pendingChangeRequests(db, "first")).toHaveLength(kind === "review" ? 2 : 1);
+      expect(await pendingChangeRequests(sqliteDb(db), "first")).toHaveLength(
+        kind === "review" ? 2 : 1,
+      );
       expect(pendingPullComments(db, "first")).toHaveLength(kind === "comment" ? 1 : 0);
       const queue =
         kind === "review"
@@ -171,7 +175,7 @@ test("failure after receipt insertion leaves the delivery retryable", async () =
     ]);
     db.run("DROP TRIGGER fail_prune");
     expect(await acceptGitHubDelivery(db, delivery("review"), 1_000)).toBe(true);
-    expect(pendingChangeRequests(db, "first")).toHaveLength(2);
+    expect(await pendingChangeRequests(sqliteDb(db), "first")).toHaveLength(2);
   } finally {
     db.close();
   }
@@ -213,7 +217,9 @@ for (const kind of ["review", "comment", "main"]) {
       try {
         expect(await listGitHubDeliveries(sqliteDb(reopened))).toEqual([]);
         expect(listJobs(reopened)).toEqual(before);
-        expect(pendingChangeRequests(reopened, "first").map((r) => r.reviewId)).toEqual([40]);
+        expect(
+          (await pendingChangeRequests(sqliteDb(reopened), "first")).map((r) => r.reviewId),
+        ).toEqual([40]);
         expect(pendingPullComments(reopened, "first")).toEqual([]);
         expect(await acceptGitHubDelivery(reopened, input, 1_000)).toBe(true);
         expect(await acceptGitHubDelivery(reopened, input, 2_000)).toBe(false);

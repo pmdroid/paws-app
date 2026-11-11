@@ -9,6 +9,7 @@ import {
   putWorkspaceUser,
   saveVisualReviewMarks,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { createEvidenceStore, evidencePath } from "../src/evidence";
 import { startServer } from "../src/server";
@@ -106,7 +107,7 @@ async function fixture() {
      VALUES ('question', 'PAS-OLD', 'visual-proof', ?, 0)`,
     [JSON.stringify([old.id])],
   );
-  saveVisualReviewMarks(db, [
+  await saveVisualReviewMarks(sqliteDb(db), [
     {
       id: MARK_ID,
       questionId: "question",

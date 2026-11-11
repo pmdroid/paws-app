@@ -808,7 +808,7 @@ for (const source of ["a repo label", "a confident Linear suggestion"] as const)
         id: string;
         state: string;
       };
-      expect(listWorkspaceRepositories(f.db, "workspace")).toEqual([]);
+      expect(await listWorkspaceRepositories(sqliteDb(f.db), "workspace")).toEqual([]);
       expect(item.state).not.toBe("cancelled");
       expect(getWorkItemRepository(f.db, item.id)).toEqual({
         owner: "acme",

@@ -183,7 +183,7 @@ describe("changes-requested reviews", () => {
     expect(payload.handoff).toContain("Typo here.");
     expect(payload.handoff).not.toContain("Done already.");
     expect(payload.handoff).toContain(`${REVIEW_FIX_INSTRUCTION}\n\nReply list.`);
-    expect(getPullReview(db, 501)?.outcome).toBe("restarted");
+    expect((await getPullReview(sqliteDb(db), 501))?.outcome).toBe("restarted");
     // The Linear session wakes with a thought the post-PR activity gate lets through.
     expect(feedbackActivities(db)).toEqual([
       {
@@ -314,7 +314,7 @@ describe("changes-requested reviews", () => {
     expect(question?.kind).toBe("ci-help");
     expect(question?.body).toContain("all 0 fix rounds are spent");
     expect(question?.body).toContain("Rename it.");
-    expect(getPullReview(db, 501)?.outcome).toBe("asked");
+    expect((await getPullReview(sqliteDb(db), 501))?.outcome).toBe("asked");
   });
 
   test("a review of an ended item is dropped", async () => {
@@ -330,7 +330,7 @@ describe("other reviews", () => {
   test("a comment-only review is a comment, not a change request", async () => {
     const { db, deliver } = setup();
     await deliver({ id: 777, state: "commented" });
-    expect(getPullReview(db, 777)).toBeNull();
+    expect(await getPullReview(sqliteDb(db), 777)).toBeNull();
     expect(reviewJobs(db)).toHaveLength(0);
     expect(pendingPullComments(db, "eng-1").map((comment) => comment.commentId)).toEqual([777]);
   });
@@ -351,7 +351,7 @@ describe("other reviews", () => {
     await deliver({ id: 6, state: "changes_requested", pull: 8 });
     expect(reviewJobs(db)).toHaveLength(0);
     await deliver({ id: 7, state: "changes_requested" });
-    expect(getPullReview(db, 7)).toMatchObject({ itemId: "eng-1", pullNumber: 7 });
+    expect(await getPullReview(sqliteDb(db), 7)).toMatchObject({ itemId: "eng-1", pullNumber: 7 });
   });
 });
 

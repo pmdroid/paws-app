@@ -438,7 +438,7 @@ export function sampleRetroDigest(): RetroDigest {
   };
 }
 
-function readableEvidence(
+async function readableEvidence(
   db: Database,
   root: string,
   principal: WorkspacePrincipal,
@@ -447,7 +447,9 @@ function readableEvidence(
 ) {
   if (retro === null || retro.workspaceId !== principal.workspaceId) return null;
   const accessible = new Set(
-    listWorkspaceRepositoryNames(db, principal.workspaceId).map((name) => name.toLowerCase()),
+    (await listWorkspaceRepositoryNames(sqliteDb(db), principal.workspaceId)).map((name) =>
+      name.toLowerCase(),
+    ),
   );
   if (!retro.repositories.every((name) => accessible.has(name.toLowerCase()))) return null;
   const source = frozenInput(db, root, retro);
@@ -514,7 +516,7 @@ export async function previewRetroPrompt(
           (retro): retro is Retro => retro !== null,
         );
   for (const candidate of candidates) {
-    const readable = readableEvidence(db, root, principal, input.sessionIds, candidate);
+    const readable = await readableEvidence(db, root, principal, input.sessionIds, candidate);
     if (readable === null) continue;
     const { retro, source } = readable;
     const digestSha256 = retro.digestSha256;
@@ -564,7 +566,7 @@ export async function readRetroRenderedPrompt(
   const { principal } = input;
   if (!workspaceMemberUsable(workspaceMember(db, principal.workspaceId, principal.userId)))
     return { ok: false, reason: "forbidden" };
-  const readable = readableEvidence(
+  const readable = await readableEvidence(
     db,
     root,
     principal,

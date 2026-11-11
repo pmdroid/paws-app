@@ -17,9 +17,9 @@ export async function delegatorCommitCredit(
   itemId: string,
 ): Promise<VerifiedGitHubAttribution | null> {
   const store = sqliteDb(db);
-  const scope = attributionItemScope(db, itemId);
+  const scope = await attributionItemScope(sqliteDb(db), itemId);
   const actorId = await store.run((q) => delegatedLinearUserIdSteps(q, itemId));
   if (!scope || !actorId) return null;
   const member = await store.run((q) => workspaceLinearMemberSteps(q, scope.workspaceId, actorId));
-  return member ? githubAttribution(db, scope.workspaceId, member.userId) : null;
+  return member ? await githubAttribution(sqliteDb(db), scope.workspaceId, member.userId) : null;
 }

@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 
 export type RunnerTranscriptRow = {
   commandId: string;
@@ -35,12 +34,12 @@ export function* runnerTranscriptSteps(
   return row ?? null;
 }
 
-export function runnerTranscript(
-  db: Database,
+export async function runnerTranscript(
+  store: Db,
   runId: string,
   generation: number,
-): RunnerTranscriptRow | null {
-  return settled(sqliteDb(db).run((q) => runnerTranscriptSteps(q, runId, generation)));
+): Promise<RunnerTranscriptRow | null> {
+  return store.run((q) => runnerTranscriptSteps(q, runId, generation));
 }
 
 export type NewRunnerTranscript = {
@@ -55,8 +54,8 @@ export function* insertRunnerTranscriptSteps(q: Q, row: NewRunnerTranscript) {
   yield* q.exec(q.orm.insert(q.t.runnerTranscript).values(row));
 }
 
-export function insertRunnerTranscript(db: Database, row: NewRunnerTranscript): void {
-  settled(sqliteDb(db).run((q) => insertRunnerTranscriptSteps(q, row)));
+export async function insertRunnerTranscript(store: Db, row: NewRunnerTranscript): Promise<void> {
+  await store.run((q) => insertRunnerTranscriptSteps(q, row));
 }
 
 export function* sealRunnerTranscriptSteps(
@@ -72,11 +71,11 @@ export function* sealRunnerTranscriptSteps(
   );
 }
 
-export function sealRunnerTranscript(
-  db: Database,
+export async function sealRunnerTranscript(
+  store: Db,
   input: { runId: string; generation: number; sizeBytes: number; sha256: string },
-): void {
-  settled(sqliteDb(db).run((q) => sealRunnerTranscriptSteps(q, input)));
+): Promise<void> {
+  await store.run((q) => sealRunnerTranscriptSteps(q, input));
 }
 
 export function* setRunnerTranscriptUriSteps(q: Q, runId: string, generation: number, uri: string) {
@@ -89,13 +88,13 @@ export function* setRunnerTranscriptUriSteps(q: Q, runId: string, generation: nu
   );
 }
 
-export function setRunnerTranscriptUri(
-  db: Database,
+export async function setRunnerTranscriptUri(
+  store: Db,
   runId: string,
   generation: number,
   uri: string,
-): void {
-  settled(sqliteDb(db).run((q) => setRunnerTranscriptUriSteps(q, runId, generation, uri)));
+): Promise<void> {
+  await store.run((q) => setRunnerTranscriptUriSteps(q, runId, generation, uri));
 }
 
 export type PlaintextTranscriptChunk = {

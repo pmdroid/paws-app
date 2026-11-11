@@ -238,7 +238,9 @@ test("Request changes on the page restarts the item with the marks and the note"
     outcome: "changes_requested",
     feedback: "The Retry button wraps under the row.",
   });
-  expect(listVisualReviewMarks(db, question.id).map((mark) => mark.id)).toEqual(["mark-1"]);
+  expect((await listVisualReviewMarks(sqliteDb(db), question.id)).map((mark) => mark.id)).toEqual([
+    "mark-1",
+  ]);
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
   const [resume] = listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
   const handoff = (resume!.payload as { handoff: string }).handoff;

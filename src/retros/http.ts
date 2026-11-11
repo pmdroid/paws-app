@@ -72,7 +72,10 @@ export function createRetroSettingsHttp(options: {
     if (new URL(request.url).pathname !== RETRO_SETTINGS_PATH) return null;
     if (!workspaceMemberUsable(workspaceMember(db, principal.workspaceId, principal.userId)))
       return json({ error: "Workspace access is unavailable." }, 403);
-    const accessibleRepositories = listWorkspaceRepositoryNames(db, principal.workspaceId);
+    const accessibleRepositories = await listWorkspaceRepositoryNames(
+      sqliteDb(db),
+      principal.workspaceId,
+    );
     const view = () =>
       readRetroSettings(db, { workspaceId: principal.workspaceId, accessibleRepositories });
     if (request.method === "GET")

@@ -10,6 +10,7 @@ import {
   revokeGitHubAttribution,
   saveGitHubAttribution,
   type AttributionBinding,
+  sqliteDb,
 } from "../db";
 import { readWorkspaceJson } from "./administration";
 import {
@@ -114,7 +115,7 @@ export function createGitHubAttributionLink(options: {
           access.principal.workspaceId !== binding.workspaceId
         )
           throw new Error("Session changed.");
-        requireAttributionSession(options.db, binding, now());
+        await requireAttributionSession(sqliteDb(options.db), binding, now());
         const started = begin(options.client, binding, returnPath);
         return new Response(null, {
           status: 303,
@@ -178,9 +179,13 @@ export function createGitHubAttributionLink(options: {
         if (url.pathname === PATH && request.method === "GET")
           return reply({
             configured: options.client !== undefined,
-            identity: githubAttribution(options.db, binding.workspaceId, binding.userId),
+            identity: await githubAttribution(
+              sqliteDb(options.db),
+              binding.workspaceId,
+              binding.userId,
+            ),
           });
-        requireAttributionSession(options.db, binding, now());
+        await requireAttributionSession(sqliteDb(options.db), binding, now());
         if (url.pathname === PATH) {
           if (request.method === "DELETE") {
             revokeGitHubAttribution(options.db, binding, now());

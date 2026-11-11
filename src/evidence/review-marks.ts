@@ -73,7 +73,7 @@ export async function handleVisualReviewChanges(
   const member = workspaceMember(db, principal.workspaceId, principal.userId);
   if (!workspaceMemberUsable(member) || !member.linearUserId)
     return Response.json({ error: "Your membership can't answer reviews." }, { status: 403 });
-  const review = openVisualReviewFiles(db, questionId);
+  const review = await openVisualReviewFiles(sqliteDb(db), questionId);
   const item = review ? getWorkItem(db, review.itemId) : null;
   if (!review || item?.sessionKey == null || !sessionIds.includes(item.sessionKey))
     return Response.json(

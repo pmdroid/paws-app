@@ -148,13 +148,13 @@ test("a Paws without an https dashboard link leaves the check unapproved and ask
   try {
     await f.until(() => f.notes(VISUAL_REVIEW_NEEDS_LINK) === 1);
     // Nothing in Linear can approve the screens: Closeout stays blocked on the check.
-    expect(listVisualReviews(f.db, listWorkItems(f.db)[0]!.id)).toEqual([]);
+    expect(await listVisualReviews(sqliteDb(f.db), listWorkItems(f.db)[0]!.id)).toEqual([]);
     expect(f.tracker.questions.every((question) => !question.options?.length)).toBe(true);
     expect(f.tracker.questions.map((question) => question.body.split("\n")[0])).toEqual([
       "Closeout needs your help.",
     ]);
     await f.orchestrator.onLinearEvent(prompted("Accept", "delegator-1"));
-    expect(listVisualReviews(f.db, listWorkItems(f.db)[0]!.id)).toEqual([]);
+    expect(await listVisualReviews(sqliteDb(f.db), listWorkItems(f.db)[0]!.id)).toEqual([]);
     expect(f.github.opened).toHaveLength(0);
   } finally {
     await f.close();
@@ -381,7 +381,7 @@ test("Request changes from the run page hands the marked screenshot and note to 
       }),
     ).toBe("forbidden");
     expect(getQuestion(f.db, open.id)?.status).toBe("open");
-    expect(listVisualReviewMarks(f.db, open.id)).toEqual([]);
+    expect(await listVisualReviewMarks(sqliteDb(f.db), open.id)).toEqual([]);
 
     expect(
       await f.orchestrator.requestVisualReviewChanges({
@@ -395,7 +395,7 @@ test("Request changes from the run page hands the marked screenshot and note to 
       answeredBy: "delegator-1",
       feedback: "Move the save button left",
     });
-    expect(listVisualReviewMarks(f.db, open.id)).toEqual([mark]);
+    expect(await listVisualReviewMarks(sqliteDb(f.db), open.id)).toEqual([mark]);
     expect(
       await f.orchestrator.requestVisualReviewChanges({
         ...request,

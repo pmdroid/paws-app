@@ -5,7 +5,7 @@ import {
 } from "./workspace";
 import type { Database } from "bun:sqlite";
 import { and, eq, gt, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 import { dashboardPath } from "../dashboard-links";
 
 export type VerifiedGitHubAttribution = { id: number; login: string; name: string; email: string };
@@ -52,8 +52,12 @@ export function* requireAttributionSessionSteps(q: Q, binding: AttributionBindin
     throw new Error("A current sign-in and permitted workspace membership are required.");
 }
 
-export function requireAttributionSession(db: Database, binding: AttributionBinding, now: number) {
-  settled(sqliteDb(db).run((q) => requireAttributionSessionSteps(q, binding, now)));
+export async function requireAttributionSession(
+  store: Db,
+  binding: AttributionBinding,
+  now: number,
+) {
+  return store.run((q) => requireAttributionSessionSteps(q, binding, now));
 }
 
 type BeginInput = {
@@ -271,12 +275,12 @@ export function* githubAttributionSteps(q: Q, workspaceId: string, userId: strin
   return { ...found, email: `${found.id}+${found.login}@users.noreply.github.com` };
 }
 
-export function githubAttribution(
-  db: Database,
+export async function githubAttribution(
+  store: Db,
   workspaceId: string,
   userId: string,
-): VerifiedGitHubAttribution | null {
-  return settled(sqliteDb(db).run((q) => githubAttributionSteps(q, workspaceId, userId)));
+): Promise<VerifiedGitHubAttribution | null> {
+  return store.run((q) => githubAttributionSteps(q, workspaceId, userId));
 }
 
 export function* attributionItemScopeSteps(q: Q, itemId: string) {
@@ -297,9 +301,14 @@ export function* attributionItemScopeSteps(q: Q, itemId: string) {
   return row ?? null;
 }
 
-export function attributionItemScope(
-  db: Database,
+export async function attributionItemScope(
+  store: Db,
   itemId: string,
-): { workspaceId: string; organizationId: string; sessionId: string; teamId: string } | null {
-  return settled(sqliteDb(db).run((q) => attributionItemScopeSteps(q, itemId)));
+): Promise<{
+  workspaceId: string;
+  organizationId: string;
+  sessionId: string;
+  teamId: string;
+} | null> {
+  return store.run((q) => attributionItemScopeSteps(q, itemId));
 }

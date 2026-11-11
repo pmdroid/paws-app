@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, eq, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 
 export type GitHubIntegrationHoldRow = {
   question_id: string;
@@ -22,8 +22,11 @@ export function* githubIntegrationHoldStatusSteps(q: Q, questionId: string): Ste
   return row?.status ?? null;
 }
 
-export function githubIntegrationHoldStatus(db: Database, questionId: string): string | null {
-  return settled(sqliteDb(db).run((q) => githubIntegrationHoldStatusSteps(q, questionId)));
+export async function githubIntegrationHoldStatus(
+  store: Db,
+  questionId: string,
+): Promise<string | null> {
+  return store.run((q) => githubIntegrationHoldStatusSteps(q, questionId));
 }
 
 export function* setGithubIntegrationHoldStatusSteps(
@@ -68,8 +71,11 @@ export function* insertGithubIntegrationHoldSteps(q: Q, hold: NewGitHubIntegrati
   yield* q.exec(q.orm.insert(q.t.githubIntegrationHold).values(hold));
 }
 
-export function insertGithubIntegrationHold(db: Database, hold: NewGitHubIntegrationHold): void {
-  settled(sqliteDb(db).run((q) => insertGithubIntegrationHoldSteps(q, hold)));
+export async function insertGithubIntegrationHold(
+  store: Db,
+  hold: NewGitHubIntegrationHold,
+): Promise<void> {
+  await store.run((q) => insertGithubIntegrationHoldSteps(q, hold));
 }
 
 export function* pendingGithubIntegrationHoldsSteps(q: Q): Steps<GitHubIntegrationHoldRow[]> {
@@ -92,8 +98,10 @@ export function* pendingGithubIntegrationHoldsSteps(q: Q): Steps<GitHubIntegrati
   );
 }
 
-export function pendingGithubIntegrationHolds(db: Database): GitHubIntegrationHoldRow[] {
-  return settled(sqliteDb(db).run((q) => pendingGithubIntegrationHoldsSteps(q)));
+export async function pendingGithubIntegrationHolds(
+  store: Db,
+): Promise<GitHubIntegrationHoldRow[]> {
+  return store.run((q) => pendingGithubIntegrationHoldsSteps(q));
 }
 
 export function* setOpenQuestionBodySteps(q: Q, questionId: string, body: string) {
@@ -106,8 +114,12 @@ export function* setOpenQuestionBodySteps(q: Q, questionId: string, body: string
   );
 }
 
-export function setOpenQuestionBody(db: Database, questionId: string, body: string): void {
-  settled(sqliteDb(db).run((q) => setOpenQuestionBodySteps(q, questionId, body)));
+export async function setOpenQuestionBody(
+  store: Db,
+  questionId: string,
+  body: string,
+): Promise<void> {
+  await store.run((q) => setOpenQuestionBodySteps(q, questionId, body));
 }
 
 export function* nudgeJobRunAtSteps(q: Q, jobId: number, now: number) {
@@ -124,6 +136,6 @@ export function* nudgeJobRunAtSteps(q: Q, jobId: number, now: number) {
   );
 }
 
-export function nudgeJobRunAt(db: Database, jobId: number, now: number): void {
-  settled(sqliteDb(db).run((q) => nudgeJobRunAtSteps(q, jobId, now)));
+export async function nudgeJobRunAt(store: Db, jobId: number, now: number): Promise<void> {
+  await store.run((q) => nudgeJobRunAtSteps(q, jobId, now));
 }

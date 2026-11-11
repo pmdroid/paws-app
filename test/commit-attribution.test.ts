@@ -12,6 +12,7 @@ import {
   revokeGitHubAttribution,
   saveGitHubAttribution,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { delegatorCommitCredit, issueWorkspaceSession } from "../src/workspace";
 
@@ -77,7 +78,7 @@ test("credit is the delegating member's linked GitHub identity, never the projec
       name: "steerer",
       email: "2+steerer@users.noreply.github.com",
     });
-    expect(githubAttribution(f.db, "workspace", "lead")).not.toBeNull();
+    expect(await githubAttribution(sqliteDb(f.db), "workspace", "lead")).not.toBeNull();
     expect(fetchSpy).not.toHaveBeenCalled();
   } finally {
     f.db.close();
