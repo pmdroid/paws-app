@@ -4,8 +4,6 @@ import {
   getLinkAskSteps,
   insertLinkAsk,
   insertLinkAskSteps,
-  settled,
-  sqliteDb,
   type Q,
   type Steps,
   type LinkAsk,
@@ -334,10 +332,6 @@ export function* removeLinkAskUrlSteps(q: Q, questionId: string, now: number): S
     payload: { sessionId, removedExternalUrls: [ask.link] },
     now,
   });
-}
-
-export function removeLinkAskUrl(db: Database, questionId: string, now: number): void {
-  settled(sqliteDb(db).run((q) => removeLinkAskUrlSteps(q, questionId, now)));
 }
 
 function linkAskShown(question: StoredQuestion): { label: string; url: string } | null {

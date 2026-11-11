@@ -20,6 +20,7 @@ import {
   recordLinearInstallation,
   saveTaskMode,
   setJournalSink,
+  sqliteDb,
 } from "../../src/db";
 import { JOB_KIND } from "../../src/core";
 import { loadConfigFile, resolveAgentProfiles } from "../../src/config";
@@ -142,7 +143,7 @@ spyOn(loop, "attachOrchestrator").mockImplementation((options) => {
     work,
     results,
     health,
-    placement: createRunnerPlacement({ db }),
+    placement: createRunnerPlacement({ store: sqliteDb(db) }),
     pollIntervalMs: 5,
     async fetchCandidate(input) {
       await git(["-C", input.mirror, "fetch", origin, input.candidateSha]);

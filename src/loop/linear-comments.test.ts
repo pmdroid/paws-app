@@ -224,10 +224,12 @@ function setup(options: { members?: string[]; agents?: string[] } = {}) {
         }),
       });
     },
-    resumedBrief: () => {
+    resumedBrief: async () => {
       const job = listJobs(db).find((entry) => entry.queue === JOB_KIND.resume);
       const restartBody = (job?.payload as { handoff?: string } | undefined)?.handoff ?? "";
-      return [restartBody, turnBrief(db, getWorkItem(db, "eng-1")!, caps) ?? ""].join("\n\n");
+      return [restartBody, (await turnBrief(db, getWorkItem(db, "eng-1")!, caps)) ?? ""].join(
+        "\n\n",
+      );
     },
     thoughts: () =>
       listOutbox(db, SESSION)
@@ -328,14 +330,14 @@ describe("receiving ordinary Linear comments", () => {
       expect(f.thoughts().at(-1)).toBe(
         "Sent eng-1 back to the agent for the comment. The agent reads it when its next turn starts.",
       );
-      const handoff = f.resumedBrief();
+      const handoff = await f.resumedBrief();
       expect(handoff).toContain("New comments on the Linear issue eng-1.");
       expect(handoff).toContain("Use the v2 endpoint.");
       expect(handoff).toContain(LINEAR_COMMENT_INSTRUCTION);
       expect(await f.comment("c-1")).toMatchObject({ state: "delivered", via: "brief" });
       expect(latestHumanTurn(f.db, "eng-1")).toBe(before);
       expect(fixRounds(f.db, "eng-1")).toBe(0);
-      expect(turnBrief(f.db, getWorkItem(f.db, "eng-1")!, f.caps)).toBeNull();
+      expect(await turnBrief(f.db, getWorkItem(f.db, "eng-1")!, f.caps)).toBeNull();
     } finally {
       await f.close();
     }
@@ -365,7 +367,7 @@ describe("receiving ordinary Linear comments", () => {
           }),
         ),
       );
-      const handoff = f.resumedBrief();
+      const handoff = await f.resumedBrief();
       expect(handoff).toContain("Use blue.");
       expect(handoff).not.toContain("Use red.");
       expect(handoff).not.toContain("Drop this.");
@@ -380,15 +382,15 @@ describe("receiving ordinary Linear comments", () => {
     try {
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Old text." })));
       const item = getWorkItem(f.db, "eng-1")!;
-      const offered = linearCommentBrief(f.db, item, f.caps)!;
+      const offered = (await linearCommentBrief(sqliteDb(f.db), item, f.caps))!;
       await f.receive(
         fromWebhook(
           webhookComment({ id: "c-1", body: "New text.", action: "update", updatedAt: T0 + 9_000 }),
         ),
       );
-      settleLinearCommentBrief(f.db, item, offered, { now: T0 + 10_000 });
+      await settleLinearCommentBrief(sqliteDb(f.db), item, offered, { now: T0 + 10_000 });
       expect(await f.comment("c-1")).toMatchObject({ state: "queued", body: "New text." });
-      expect(linearCommentBrief(f.db, item, f.caps)?.text).toContain("New text.");
+      expect((await linearCommentBrief(sqliteDb(f.db), item, f.caps))?.text).toContain("New text.");
     } finally {
       await f.close();
     }
@@ -402,7 +404,7 @@ describe("receiving ordinary Linear comments", () => {
       expect(await f.deliverWithLoop()).toBe("restarted");
       expect(await f.deliverWithLoop()).toBe("done");
       expect(f.resumeJobs()).toHaveLength(1);
-      expect(f.resumedBrief()).toContain("Ship it behind a flag.");
+      expect(await f.resumedBrief()).toContain("Ship it behind a flag.");
     } finally {
       await f.close();
     }
@@ -415,19 +417,19 @@ describe("receiving ordinary Linear comments", () => {
       expect(await f.deliver()).toBe("done");
       expect(f.resumeJobs()).toHaveLength(0);
       const item = getWorkItem(f.db, "eng-1")!;
-      const offered = linearCommentBrief(f.db, item, f.caps);
+      const offered = await linearCommentBrief(sqliteDb(f.db), item, f.caps);
       expect(offered?.text).toContain("Keep the old API too.");
       expect((await f.comment("c-1")).state).toBe("queued");
       f.db.run("UPDATE work_item SET version = version + 1 WHERE id = 'eng-1'");
       const retried = getWorkItem(f.db, "eng-1")!;
-      expect(linearCommentBrief(f.db, retried, f.caps)?.text).toBe(offered!.text);
-      settleLinearCommentBrief(f.db, retried, offered!, { now: T0 });
+      expect((await linearCommentBrief(sqliteDb(f.db), retried, f.caps))?.text).toBe(offered!.text);
+      await settleLinearCommentBrief(sqliteDb(f.db), retried, offered!, { now: T0 });
       expect(await f.comment("c-1")).toMatchObject({
         state: "delivered",
         via: "brief",
         itemVersion: retried.version,
       });
-      expect(linearCommentBrief(f.db, retried, f.caps)).toBeNull();
+      expect(await linearCommentBrief(sqliteDb(f.db), retried, f.caps)).toBeNull();
     } finally {
       await f.close();
     }
@@ -448,7 +450,7 @@ describe("receiving ordinary Linear comments", () => {
       enterMergeQueue(f.db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
       expect(await f.deliver()).toBe("restarted");
       expect(f.resumeJobs()).toHaveLength(1);
-      expect(f.resumedBrief()).toContain("Skip the migration.");
+      expect(await f.resumedBrief()).toContain("Skip the migration.");
     } finally {
       await f.close();
     }
@@ -476,7 +478,7 @@ describe("who may comment", () => {
       });
       expect(f.authorized).toEqual([PASCAL]);
       expect(await f.deliver()).toBe("restarted");
-      const handoff = f.resumedBrief();
+      const handoff = await f.resumedBrief();
       expect(handoff).toContain(`Agent ${AGENT} for ${PASCAL}`);
     } finally {
       await f.close();
@@ -678,7 +680,7 @@ describe("edits, deletions and restarts", () => {
         state: "queued",
       });
       await f.deliver();
-      const handoff = f.resumedBrief();
+      const handoff = await f.resumedBrief();
       expect(handoff).toContain("Use blue.");
       expect(handoff).not.toContain("Use red.");
       await f.receive(
@@ -890,7 +892,7 @@ describe("batching with pull request feedback", () => {
       expect(jobs[0]!.runAt).toBe(jobs[0]!.createdAt + 300_000);
       expect(await f.deliver()).toBe("restarted");
       expect(f.resumeJobs()).toHaveLength(1);
-      const handoff = f.resumedBrief();
+      const handoff = await f.resumedBrief();
       for (let index = 0; index < 8; index++) expect(handoff).toContain(`Note ${index}.`);
     } finally {
       await f.close();
@@ -922,7 +924,7 @@ describe("batching with pull request feedback", () => {
       const item = getWorkItem(f.db, "eng-1")!;
       restart(f.db, item, { reason: "review", body: "pull comments", jobKey: "review:x", now: T0 });
       expect(await f.deliver()).toBe("done");
-      const brief = turnBrief(f.db, getWorkItem(f.db, "eng-1")!, f.caps);
+      const brief = await turnBrief(f.db, getWorkItem(f.db, "eng-1")!, f.caps);
       expect(brief).toContain("And rename it.");
       expect(f.resumeJobs()).toHaveLength(1);
     } finally {
@@ -970,7 +972,7 @@ describe("review findings", () => {
         );
       expect(await f.deliver()).toBe("restarted");
       expect(f.resumeJobs()).toHaveLength(1);
-      const first = turnBrief(f.db, getWorkItem(f.db, "eng-1")!, f.caps)!;
+      const first = (await turnBrief(f.db, getWorkItem(f.db, "eng-1")!, f.caps))!;
       expect(first.length).toBeLessThanOrEqual(12_000);
       expect(first).toContain(LINEAR_COMMENT_INSTRUCTION);
       expect((await f.comment("big-0")).state).toBe("delivered");
@@ -978,7 +980,7 @@ describe("review findings", () => {
       expect(first).not.toContain("3".repeat(3_900));
       expect((await f.comment("big-3")).state).toBe("queued");
       expect(f.commentJobs().filter((job) => job.status === "pending")).toHaveLength(1);
-      const brief = turnBrief(f.db, getWorkItem(f.db, "eng-1")!, f.caps);
+      const brief = await turnBrief(f.db, getWorkItem(f.db, "eng-1")!, f.caps);
       expect(brief).toContain("3".repeat(3_900));
       expect(await f.comment("big-3")).toMatchObject({ state: "delivered", via: "brief" });
     } finally {
@@ -994,7 +996,7 @@ describe("review findings", () => {
       f.setCheckerReady(false);
       expect(await f.deliver()).toBe("wait");
       expect(f.resumeJobs()).toHaveLength(0);
-      expect(turnBrief(f.db, getWorkItem(f.db, "eng-1")!, f.caps)).toBeNull();
+      expect(await turnBrief(f.db, getWorkItem(f.db, "eng-1")!, f.caps)).toBeNull();
       expect((await f.comment("c-1")).state).toBe("queued");
       f.members.delete(PASCAL);
       f.setCheckerReady(true);
@@ -1011,7 +1013,7 @@ describe("review findings", () => {
       toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Use tabs." })));
       expect(await f.deliver()).toBe("restarted");
-      expect(f.resumedBrief()).toContain("Use tabs.");
+      expect(await f.resumedBrief()).toContain("Use tabs.");
       const prompted: AcceptedLinearEvent = {
         dedupeKey: "activity:act-1",
         deliveryId: "d-session",
@@ -1073,7 +1075,7 @@ describe("review findings", () => {
         );
       f.db.run("UPDATE job SET status = 'done' WHERE queue = ?", [JOB_KIND.linearComments]);
       const item = getWorkItem(f.db, "eng-1")!;
-      turnBrief(f.db, item, f.caps);
+      await turnBrief(f.db, item, f.caps);
       expect((await f.comment("big-4")).state).toBe("queued");
       expect(f.commentJobs().filter((job) => job.status === "pending")).toHaveLength(1);
     } finally {
@@ -1115,13 +1117,13 @@ describe("review findings", () => {
   });
 });
 
-function turnBrief(
+async function turnBrief(
   db: ReturnType<typeof openDatabase>,
   item: Parameters<typeof linearCommentBrief>[1],
   caps: Parameters<typeof linearCommentBrief>[2],
-): string | null {
-  const brief = linearCommentBrief(db, item, caps);
+): Promise<string | null> {
+  const brief = await linearCommentBrief(sqliteDb(db), item, caps);
   if (brief === null) return null;
-  settleLinearCommentBrief(db, item, brief, { now: T0 });
+  await settleLinearCommentBrief(sqliteDb(db), item, brief, { now: T0 });
   return brief.text;
 }

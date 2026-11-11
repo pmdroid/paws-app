@@ -5,7 +5,6 @@ import {
   latestRetroSettingsRevisionSteps,
   retroIdForWindowSteps,
   saveRetroSettingsRevisionSteps,
-  settled,
   sqliteDb,
   type Q,
   type Retro,
@@ -452,10 +451,6 @@ export function* freezeRetroRunSteps(q: Q, input: FreezeInput): Steps<RetroRunFr
     now: input.now,
   });
   return { ok: true, ...frozen };
-}
-
-export function freezeRetroRun(db: Database, input: FreezeInput): RetroRunFreeze {
-  return settled(sqliteDb(db).transaction((q) => freezeRetroRunSteps(q, input)));
 }
 
 export function retroRunRepositories(

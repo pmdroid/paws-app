@@ -19,7 +19,7 @@ import {
   settled,
   sqliteDb,
 } from "../src/db";
-import { intakeDelegatedIssue, readyItems, syncItemDependencies } from "../src/intake";
+import { intakeDelegatedIssue, readyItemsSteps, syncItemDependencies } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
 import { saveSchedulingContext } from "../src/scheduler";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
@@ -156,8 +156,11 @@ test("a task_block dependency is admitted only after its blocker item is merged"
       await syncItemDependencies(db, {
         itemId: item.id,
         workspaceId: "workspace",
-        expectedGeneration: readyItems(db, { itemId: item.id, workspaceId: "workspace" })
-          .generation,
+        expectedGeneration: (
+          await sqliteDb(db).run((q) =>
+            readyItemsSteps(q, { itemId: item.id, workspaceId: "workspace" }),
+          )
+        ).generation,
         tracker,
         lifecycle,
       });

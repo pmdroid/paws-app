@@ -8,6 +8,7 @@ import {
   insertQueuedItem,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../db";
 import { getQuestion } from "../questions";
 import {
@@ -44,7 +45,7 @@ function queue(...ids: string[]) {
 }
 
 function hold(db: Database, id: string, now = 10, unreadable = BROKEN) {
-  return holdForPolicyOutage(db, {
+  return holdForPolicyOutage(sqliteDb(db), {
     item: getWorkItem(db, id)!,
     repository: REPOSITORY,
     unreadable,
@@ -62,10 +63,10 @@ function questions(db: Database) {
 }
 
 describe("an unreadable Closeout policy on main", () => {
-  test("two items in one repository ask one question, and both wait in the merge queue", () => {
+  test("two items in one repository ask one question, and both wait in the merge queue", async () => {
     const db = queue("ENG-1", "ENG-2");
-    const first = hold(db, "ENG-1");
-    const second = hold(db, "ENG-2", 20);
+    const first = await hold(db, "ENG-1");
+    const second = await hold(db, "ENG-2", 20);
     const asked = questions(db);
     expect(asked).toHaveLength(1);
     expect(asked[0]).toMatchObject({ item_id: "ENG-1", status: "open" });
@@ -81,20 +82,22 @@ describe("an unreadable Closeout policy on main", () => {
     expect(getWorkItem(db, "ENG-2")?.state).toBe("merge_queue");
   });
 
-  test("main loading again settles the question and ends the outage", () => {
+  test("main loading again settles the question and ends the outage", async () => {
     const db = queue("ENG-1");
-    hold(db, "ENG-1");
+    await hold(db, "ENG-1");
     const [question] = questions(db);
-    expect(policyLoads(db, REPOSITORY, 30)).toMatchObject({ questionId: question!.id });
+    expect(await policyLoads(sqliteDb(db), REPOSITORY, 30)).toMatchObject({
+      questionId: question!.id,
+    });
     expect(getQuestion(db, question!.id)?.status).toBe("cancelled");
     expect(getPolicyOutage(db, REPOSITORY)).toBeNull();
-    expect(policyLoads(db, REPOSITORY, 40)).toBeNull();
+    expect(await policyLoads(sqliteDb(db), REPOSITORY, 40)).toBeNull();
   });
 
-  test("a different break on main replaces the question", () => {
+  test("a different break on main replaces the question", async () => {
     const db = queue("ENG-1", "ENG-2");
-    hold(db, "ENG-1");
-    hold(db, "ENG-2", 20, { ...BROKEN, message: "another error", commit: "d".repeat(40) });
+    await hold(db, "ENG-1");
+    await hold(db, "ENG-2", 20, { ...BROKEN, message: "another error", commit: "d".repeat(40) });
     const asked = questions(db);
     expect(asked.map((question) => getQuestion(db, question.id)?.status)).toEqual([
       "cancelled",
@@ -105,7 +108,7 @@ describe("an unreadable Closeout policy on main", () => {
 
   test("Closeout's own question names the breaking commit and links the repository question", async () => {
     const db = queue("ENG-1", "ENG-2");
-    hold(db, "ENG-1");
+    await hold(db, "ENG-1");
     const [question] = questions(db);
     const note = await policyOutageNote(db, REPOSITORY, "ENG-2", "https://paws.example");
     expect(note).toContain(BROKEN.commit!);

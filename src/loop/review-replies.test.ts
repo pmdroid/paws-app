@@ -206,7 +206,7 @@ const report = (
   sessionId: string | null = "s-1",
 ) => {
   const item = getWorkItem(db, "eng-1")!;
-  return checkReviewReplies(db, {
+  return checkReviewReplies(sqliteDb(db), {
     item,
     runId: item.currentRunId ?? "",
     sessionId,
@@ -378,7 +378,7 @@ describe("Paws replies to every handed-off comment", () => {
       "R2 not changed: The tenant is already part of the key prefix.",
       "R3 not changed: The cache is bypassed for a fresh read.",
     ].join("\n");
-    expect(report(db, final)).toBe("complete");
+    expect(await report(db, final)).toBe("complete");
 
     const head = "abcdef1234567890";
     expect(
@@ -436,7 +436,7 @@ describe("Paws replies to every handed-off comment", () => {
       1_000,
     );
     // Without a tracker session to ask in, a missing entry is stored as unreported.
-    expect(report(db, "R1 answered: A fresh read is required.", null)).toBe("complete");
+    expect(await report(db, "R1 answered: A fresh read is required.", null)).toBe("complete");
     await postReviewReplies(
       sqliteDb(db),
       {
@@ -490,7 +490,7 @@ describe("Paws replies to every handed-off comment", () => {
       ],
       1_000,
     );
-    report(
+    await report(
       db,
       "R1 fixed: Sort descending.\nR2 fixed: Include the tenant.\nR3 not changed: A fresh read is required.",
     );
@@ -542,7 +542,7 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
   function turnEnds(db: ReturnType<typeof setup>["db"], finalMessage: string, now = 5_000) {
     applyWorkItemEvent(db, "eng-1", "dispatched");
     const item = getWorkItem(db, "eng-1")!;
-    return checkReviewReplies(db, {
+    return checkReviewReplies(sqliteDb(db), {
       item,
       runId: item.currentRunId!,
       sessionId: "s-1",
@@ -558,7 +558,7 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
     const rounds = fixRounds(db, "eng-1");
     const final = "## Review replies\nR1 fixed: Sorted descending.\nR3 not changed: A fresh read.";
     const runId = getWorkItem(db, "eng-1")!.currentRunId!;
-    expect(turnEnds(db, final)).toBe("sent_back");
+    expect(await turnEnds(db, final)).toBe("sent_back");
     expect(getRun(db, runId)!.status).toBe("ended");
     const sentBack = latestHandoff(db);
     expect(sentBack.reason).toBe("follow_up");
@@ -575,9 +575,9 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
 
   test("the third incomplete end in the same round asks the team", async () => {
     const { db } = await handedOff();
-    expect(turnEnds(db, "R1 fixed: Sorted.\nR3 not changed: Fresh read.")).toBe("sent_back");
-    expect(turnEnds(db, "I fixed everything.")).toBe("sent_back");
-    expect(turnEnds(db, "All comments are addressed.")).toBe("asked");
+    expect(await turnEnds(db, "R1 fixed: Sorted.\nR3 not changed: Fresh read.")).toBe("sent_back");
+    expect(await turnEnds(db, "I fixed everything.")).toBe("sent_back");
+    expect(await turnEnds(db, "All comments are addressed.")).toBe("asked");
     expect(getWorkItem(db, "eng-1")!.state).toBe("awaiting_input");
     expect(getRun(db, getWorkItem(db, "eng-1")!.currentRunId!)!.status).toBe("ended");
     const question = findOpenQuestion(db, "s-1")!;
@@ -589,16 +589,16 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
   test("an entry without text is missing", async () => {
     const { db } = await handedOff();
     const final = "R1 fixed: Sorted.\nR2 fixed: **\nR3 not changed: Fresh read.";
-    expect(turnEnds(db, final)).toBe("sent_back");
+    expect(await turnEnds(db, final)).toBe("sent_back");
     expect(latestHandoff(db).handoff).toContain("R2. Review by @pascal");
     expect(unreportedReviewReplies(db, "eng-1").map((reply) => reply.number)).toEqual([2]);
   });
 
   test("an emoji is a reply", async () => {
     const { db } = await handedOff();
-    expect(turnEnds(db, "R1 fixed: ✅\nR2 not changed: 👍\nR3 not changed: Fresh read.")).toBe(
-      "complete",
-    );
+    expect(
+      await turnEnds(db, "R1 fixed: ✅\nR2 not changed: 👍\nR3 not changed: Fresh read."),
+    ).toBe("complete");
   });
 
   test("a turn end another writer overtook keeps nothing and sends nothing", async () => {
@@ -609,7 +609,7 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
     applyWorkItemEvent(db, "eng-1", "turn_ended");
     const final = "R1 fixed: Sorted.";
     expect(
-      checkReviewReplies(db, {
+      await checkReviewReplies(sqliteDb(db), {
         item,
         runId: item.currentRunId!,
         sessionId: "s-1",
@@ -625,7 +625,7 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
     const { db } = await handedOff();
     const resumes = jobs(db, JOB_KIND.resume).length;
     const final = "R1 fixed: Sorted.\nR2 fixed: Ranked.\nR3 not changed: Fresh read.";
-    expect(turnEnds(db, final)).toBe("complete");
+    expect(await turnEnds(db, final)).toBe("complete");
     expect(jobs(db, JOB_KIND.resume)).toHaveLength(resumes);
     expect(getWorkItem(db, "eng-1")!.state).toBe("running");
     expect(unreportedReviewReplies(db, "eng-1")).toEqual([]);

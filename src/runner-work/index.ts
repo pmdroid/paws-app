@@ -14,7 +14,6 @@ export {
   RUNNER_EVENT_COLUMNS,
   RUNNER_EVENT_ENCRYPT_JOB,
   RUNNER_EVENT_KEY_FILE,
-  runnerEventsEncrypted,
   type StoredRunnerEvent,
 } from "./events";
 export { pruneRunnerEvents, RUNNER_EVENT_PRUNE_EVERY_MS, RUNNER_EVENT_PRUNE_JOB } from "./prune";

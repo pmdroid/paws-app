@@ -1,7 +1,13 @@
 import type { Database } from "bun:sqlite";
-import { workspaceMemberUsable, auditWorkspaceAccess, getWorkItem, workspaceMember } from "../db";
+import {
+  workspaceMemberUsable,
+  auditWorkspaceAccess,
+  getWorkItem,
+  sqliteDb,
+  workspaceMember,
+} from "../db";
 import { canAnswer } from "./answerers";
-import { getQuestion, type QuestionKind } from "./store";
+import { getQuestionSteps, type QuestionKind } from "./store";
 
 export const QUESTION_ANSWER_PATH = "/api/questions/answer";
 
@@ -69,7 +75,8 @@ export async function handleQuestionAnswer(
     body.answer.length > MAX_ANSWER
   )
     return Response.json({ error: "Send a question and an answer." }, { status: 400 });
-  const question = getQuestion(db, body.questionId);
+  const questionId = body.questionId;
+  const question = await sqliteDb(db).run((q) => getQuestionSteps(q, questionId));
   const item = question ? getWorkItem(db, question.itemId) : null;
   if (
     question?.status !== "open" ||

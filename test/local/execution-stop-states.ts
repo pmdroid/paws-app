@@ -123,7 +123,7 @@ async function remoteFixture(
     };
     bindWorkItemRepository(db, "controlled", repository);
     if (state === "verifying") db.run("UPDATE run SET kind='review' WHERE id=?", [runId]);
-    coordinator.work.assign({
+    await coordinator.work.assign({
       id: randomUUID(),
       type: state === "verifying" ? "review" : "run",
       runnerId,

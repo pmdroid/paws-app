@@ -151,10 +151,6 @@ export function createRunnerWork(options: {
 }) {
   const { db } = options;
   const store = sqliteDb(db);
-  // Methods that still return synchronously read the settled result of their SQLite Steps,
-  // which finish before they return, until every caller can await them.
-  const transaction = <T>(body: (q: Q) => Steps<T>) => settledValue(store.transaction(body));
-  const read = <T>(body: (q: Q) => Steps<T>) => settledValue(store.run(body));
   const { eventKey } = options;
   const now = options.now ?? Date.now;
   /** Registered skills a runner should have installed. Removed ones are left out, so runners delete them. */
@@ -585,20 +581,23 @@ export function createRunnerWork(options: {
   return {
     supportsAgentSteps,
     supportsAgent(runnerId: string, agent: string) {
-      return read((q) => supportsAgentSteps(q, runnerId, agent));
+      return settledValue(store.run((q) => supportsAgentSteps(q, runnerId, agent)));
     },
     identity(runnerId: string) {
-      return read((q) => runnerSteps(q, runnerId));
+      return store.run((q) => runnerSteps(q, runnerId));
     },
     identitySteps: runnerSteps,
     scope(runId: string, workspaceId: string) {
-      return read((q) => taskSteps(q, runId, workspaceId));
+      return store.run((q) => taskSteps(q, runId, workspaceId));
     },
     scopeTask(runId: string, workspaceId: string, userId?: string) {
-      return read((q) => responseTaskSteps(q, runId, workspaceId, false, userId));
+      return store.run((q) => responseTaskSteps(q, runId, workspaceId, false, userId));
     },
-    current(runId: string, generation: number) {
-      return read((q) => currentSteps(q, runId, generation));
+    scopeTaskSteps(q: Q, runId: string, workspaceId: string, userId?: string) {
+      return responseTaskSteps(q, runId, workspaceId, false, userId);
+    },
+    scopeSteps(q: Q, runId: string, workspaceId: string) {
+      return taskSteps(q, runId, workspaceId);
     },
     currentAsync(runId: string, generation: number) {
       return store.run((q) => currentSteps(q, runId, generation));
@@ -606,11 +605,11 @@ export function createRunnerWork(options: {
     currentSteps,
     assignSteps,
     assign(input: WorkCommand) {
-      return transaction((q) => assignSteps(q, input));
+      return store.transaction((q) => assignSteps(q, input));
     },
-    enqueue(input: RunnerCommand) {
+    async enqueue(input: RunnerCommand) {
       const command = parseEnqueued(input);
-      return transaction((q) => enqueuedSteps(q, command));
+      return store.transaction((q) => enqueuedSteps(q, command));
     },
     enqueueSteps(q: Q, input: RunnerCommand) {
       return enqueuedSteps(q, parseEnqueued(input));
@@ -896,13 +895,10 @@ export function createRunnerWork(options: {
         return { duplicate: false };
       });
     },
-    openEvent(row: StoredRunnerEvent): RunnerEvent {
-      return read((q) => openEventSteps(q, row));
+    openEvent(row: StoredRunnerEvent): Promise<RunnerEvent> {
+      return store.run((q) => openEventSteps(q, row));
     },
     openEventSteps,
-    authorize(input: { runnerId: string; runId: string; generation: number; token: string }) {
-      return read((q) => authorizeSteps(q, input));
-    },
     authorizeAsync(input: { runnerId: string; runId: string; generation: number; token: string }) {
       return store.run((q) => authorizeSteps(q, input));
     },

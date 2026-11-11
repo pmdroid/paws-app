@@ -7,9 +7,10 @@ import {
   insertQueuedItem,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../db";
 import { createFakeTracker } from "../linear";
-import { postMergeConflict } from "../merge";
+import { postMergeConflictSteps } from "../merge";
 import { deliverLinearOutbox } from "./dispatch";
 
 const NOTICE = { sessionId: "ses_1", pullNumber: 988, head: "1bf8429" };
@@ -39,7 +40,10 @@ function fixture() {
       clock.advance(60_000);
     }
   };
-  const announce = () => postMergeConflict(db, getWorkItem(db, "ACME-7")!, NOTICE, clock.now());
+  const announce = () =>
+    sqliteDb(db).transaction((q) =>
+      postMergeConflictSteps(q, getWorkItem(db, "ACME-7")!, NOTICE, clock.now()),
+    );
   return { db, tracker, enqueue, deliver, announce };
 }
 
@@ -49,8 +53,8 @@ test("a conflict after the pull request response wakes the session once per head
     f.enqueue("pull-request-ready:ACME-7:0", "response", "Opened #988.");
     await f.deliver();
 
-    f.announce();
-    f.announce();
+    await f.announce();
+    await f.announce();
     await f.deliver();
 
     expect(f.tracker.progress.slice(1)).toEqual([
@@ -72,7 +76,7 @@ test("the gate still drops other progress after the pull request response", asyn
 
     f.enqueue("note:ACME-7:1", "thought", "Reading the failing test.");
     f.enqueue("merge-review-other:ACME-7:1", "action", "Ran the tests.");
-    f.announce();
+    await f.announce();
     await f.deliver();
 
     expect(f.tracker.progress.map((update) => update.body)).toEqual([

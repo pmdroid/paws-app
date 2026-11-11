@@ -4,7 +4,14 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { ArtifactRejectedError, runAgent } from "../src/acp";
 import type { FakeScript } from "../src/acp/testing/script";
-import { insertQueuedItem, listEvidence, listOutbox, migrate, openDatabase } from "../src/db";
+import {
+  insertQueuedItem,
+  listEvidence,
+  listOutbox,
+  migrate,
+  openDatabase,
+  sqliteDb,
+} from "../src/db";
 import { createEvidenceStore, EvidenceRejectedError } from "../src/evidence";
 import { createLinearFileTransfer } from "../src/linear";
 import { createEvidenceArtifactPublisher, createLinearArtifactPublisher } from "../src/loop";
@@ -110,8 +117,8 @@ function setup() {
         command: process.execPath,
         args: [resolve(import.meta.dir, "../src/acp/testing/fake-agent.ts"), trace, script],
         env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home },
-        publishArtifact: createEvidenceArtifactPublisher({
-          db,
+        publishArtifact: await createEvidenceArtifactPublisher({
+          store: sqliteDb(db),
           evidence: {
             save: (input) =>
               store.save(input).catch((error: unknown) => {
@@ -123,8 +130,8 @@ function setup() {
           publicUrl: "https://paws.example/",
           itemId: "item",
           sessionId: "session",
-          linear: createLinearArtifactPublisher({
-            db,
+          linear: await createLinearArtifactPublisher({
+            store: sqliteDb(db),
             files,
             secretsDir: join(home, "secrets"),
             itemId: "item",

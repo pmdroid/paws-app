@@ -9,7 +9,7 @@ import {
   fixRounds,
   getPullComment,
   getWorkItem,
-  immediate,
+  getWorkItemSteps,
   insertQueuedItem,
   listJobs,
   listOutbox,
@@ -27,7 +27,6 @@ import { acceptGitHubDelivery } from "./merge-jobs";
 import {
   REBASED_LINES_NOTE,
   readPendingFeedback,
-  restartWithFeedback,
   restartWithFeedbackSteps,
   storedFeedbackReadsSteps,
   type FeedbackCapabilities,
@@ -129,9 +128,9 @@ function setup(state: "running" | "verifying" | "merge_queue") {
     lead: string,
   ): Promise<number | null> => {
     const reads = await readPendingFeedback(db, getWorkItem(db, "eng-1")!, caps);
-    return immediate(db, () => {
-      const current = getWorkItem(db, "eng-1")!;
-      return restartWithFeedback(db, current, {
+    const restarted = await sqliteDb(db).transaction(function* (q) {
+      const current = (yield* getWorkItemSteps(q, "eng-1"))!;
+      return yield* restartWithFeedbackSteps(q, current, {
         reason,
         lead: [lead],
         reads,
@@ -142,6 +141,7 @@ function setup(state: "running" | "verifying" | "merge_queue") {
         jobKey: `${reason}:eng-1:recheck:h`,
       });
     });
+    return restarted?.id ?? null;
   };
   return {
     db,

@@ -9,6 +9,7 @@ import {
   insertQueuedItem,
   listOutbox,
   OutboxDispatcher,
+  sqliteDb,
 } from "../src/db";
 import { createEvidenceStore } from "../src/evidence";
 import { createFakeTracker } from "../src/linear";
@@ -32,7 +33,7 @@ function setup() {
   const tracker = createFakeTracker();
   const store = createEvidenceStore({ db, root: join(home, "evidence") });
   const publisher = createEvidenceArtifactPublisher({
-    db,
+    store: sqliteDb(db),
     itemId: "item",
     sessionId: "session",
     evidence: store,
@@ -48,7 +49,9 @@ function setup() {
   };
   const publish = async (index: number, headCommit: string) => {
     const bytes = new Uint8Array([...PNG, index]);
-    await publisher.publish(
+    await (
+      await publisher
+    ).publish(
       {
         path: `shot-${index}.png`,
         displayName: `shot-${index}.png`,
@@ -89,7 +92,7 @@ test("16 screenshots of a check post one thought with the count and the link, on
     for (let index = 0; index < 16; index++) await f.publish(index, head);
     expect(listOutbox(f.db)).toHaveLength(0);
     for (let round = 0; round < 2; round++)
-      for (const { key, body } of evidenceThoughts(f.db, {
+      for (const { key, body } of await evidenceThoughts(sqliteDb(f.db), {
         itemId: "item",
         checkIds: ["visual-proof", "no-files"],
         head,
@@ -132,7 +135,7 @@ test("after the PR response the issue gets one evidence card, and a new head upd
     for (const head of ["a".repeat(40), "b".repeat(40)]) {
       for (let index = 0; index < 16; index++) await f.publish(index, head);
       for (let round = 0; round < 2; round++)
-        enqueueEvidenceCard(f.db, {
+        await enqueueEvidenceCard(sqliteDb(f.db), {
           sessionId: "session",
           generation: 0,
           item: f.item,

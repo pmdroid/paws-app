@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { runnerNameAndOwnerSteps, sqliteDb, workspaceLinearMemberSteps } from "./db";
 import { findMemberVm, memberVmView } from "./member-vm";
-import { eligibleRunners, type EligibleRunner } from "./runner-placement";
+import { eligibleRunnersSteps, type EligibleRunner } from "./runner-placement";
 import type { OnboardingAgent, OnboardingReadinessReader } from "./workspace";
 
 const AGENTS = ["claude", "codex"] as const;
@@ -26,19 +26,21 @@ export function createOnboardingReadiness(db: Database): OnboardingReadinessRead
       if (lead && lead.userId !== userId) leads.add(lead.userId);
     }
     const leadUserIds = [...leads].sort();
-    const check = (agent: string, purpose: "prepare" | "work"): EligibleRunner[] =>
-      eligibleRunners(db, {
-        workspaceId,
-        teamId,
-        ownerUserId: userId,
-        leadUserIds,
-        agent,
-        purpose,
-        now,
-      });
-    const signIns = AGENTS.map(
-      (agent) => new Map(check(agent, "work").map((runner) => [runner.id, runner])),
-    );
+    const check = (agent: string, purpose: "prepare" | "work"): Promise<EligibleRunner[]> =>
+      store.run((q) =>
+        eligibleRunnersSteps(q, {
+          workspaceId,
+          teamId,
+          ownerUserId: userId,
+          leadUserIds,
+          agent,
+          purpose,
+          now,
+        }),
+      );
+    const signIns: Map<string, EligibleRunner>[] = [];
+    for (const agent of AGENTS)
+      signIns.push(new Map((await check(agent, "work")).map((runner) => [runner.id, runner])));
     const agentState = (runnerId: string, index: number): OnboardingAgent => {
       const runner = signIns[index]!.get(runnerId);
       if (runner?.eligible) return "connected";
@@ -46,7 +48,7 @@ export function createOnboardingReadiness(db: Database): OnboardingReadinessRead
     };
     const vm = await findMemberVm(db, { workspaceId, userId });
     const memberVm = vm !== null;
-    const runners = check("claude", "prepare");
+    const runners = await check("claude", "prepare");
     // With several usable runners, show the one with the most agents signed in, the member's own
     // before a shared one.
     const best = runners

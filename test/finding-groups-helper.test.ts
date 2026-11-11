@@ -105,11 +105,11 @@ test("daily helper uses an admin runner, accepts a stopped reporting session, an
       profile: { agent: "codex" as const, model: null },
       prompt: "Group findings",
     };
-    const dispatched = f.helpers.dispatch(input);
+    const dispatched = await f.helpers.dispatch(input);
     f.db.run("UPDATE workspace_member SET role='member'");
     await expect(f.helpers.current(dispatched.command.id)).rejects.toThrow("authority changed");
     f.helpers.finish(dispatched.command.id);
-    expect(() => f.helpers.dispatch(input)).toThrow("authority changed");
+    await expect(f.helpers.dispatch(input)).rejects.toThrow("authority changed");
   } finally {
     f.db.close();
   }
@@ -141,7 +141,7 @@ test("daily helper refuses older runners and cannot read a session from another 
       teamId: "team",
       observedAtMs: f.now,
     });
-    expect(() =>
+    await expect(
       f.helpers.dispatch({
         runnerId: "runner",
         sessionId: "other-session",
@@ -149,7 +149,7 @@ test("daily helper refuses older runners and cannot read a session from another 
         profile: { agent: "codex", model: null },
         prompt: "Group",
       }),
-    ).toThrow("authority changed");
+    ).rejects.toThrow("authority changed");
   } finally {
     f.db.close();
   }
@@ -264,7 +264,7 @@ test("one-runner foreground placement preempts grouping and fences its old lease
   const f = await seed();
   try {
     const profile = { agent: "codex" as const, model: null };
-    const placement = createRunnerPlacement({ db: f.db, now: () => f.now });
+    const placement = createRunnerPlacement({ store: sqliteDb(f.db), now: () => f.now });
     await placement.candidates({
       sessionId: "reporting-session",
       findingGroups: true,
@@ -272,22 +272,24 @@ test("one-runner foreground placement preempts grouping and fences its old lease
       role: "implementer",
       purpose: "helper",
     });
-    const maintenance = f.helpers.dispatch({
+    const maintenance = await f.helpers.dispatch({
       runnerId: "runner",
       sessionId: "reporting-session",
       purpose: "finding_groups",
       profile,
       prompt: "Group findings",
     });
-    placement.started({
-      commandId: maintenance.command.id,
-      runnerId: "runner",
-      sessionId: "reporting-session",
-      profile,
-      role: "implementer",
-      purpose: "helper",
-      startedAt: f.now,
-    });
+    await sqliteDb(f.db).transaction((q) =>
+      placement.startedSteps(q, {
+        commandId: maintenance.command.id,
+        runnerId: "runner",
+        sessionId: "reporting-session",
+        profile,
+        role: "implementer",
+        purpose: "helper",
+        startedAt: f.now,
+      }),
+    );
     recordLinearInstallation(f.db, {
       sessionId: "interactive",
       organizationId: "org",
@@ -310,7 +312,7 @@ test("one-runner foreground placement preempts grouping and fences its old lease
       "finding_groups",
     );
     // Invalid dispatch must not fence maintenance either.
-    expect(() =>
+    await expect(
       f.helpers.dispatch({
         runnerId: "runner",
         sessionId: "interactive",
@@ -318,7 +320,7 @@ test("one-runner foreground placement preempts grouping and fences its old lease
         profile,
         prompt: "x".repeat(65537),
       }),
-    ).toThrow();
+    ).rejects.toThrow();
     expect((await f.helpers.current(maintenance.command.id)).command.purpose).toBe(
       "finding_groups",
     );
@@ -326,7 +328,7 @@ test("one-runner foreground placement preempts grouping and fences its old lease
     f.db.exec(
       "CREATE TEMP TRIGGER refuse_helper BEFORE INSERT ON runner_helper BEGIN SELECT RAISE(ABORT, 'Admission failed'); END",
     );
-    expect(() =>
+    await expect(
       f.helpers.dispatch({
         runnerId: "runner",
         sessionId: "interactive",
@@ -334,12 +336,12 @@ test("one-runner foreground placement preempts grouping and fences its old lease
         profile,
         prompt: "Classify",
       }),
-    ).toThrow("Admission failed");
+    ).rejects.toThrow("Admission failed");
     expect((await f.helpers.current(maintenance.command.id)).command.purpose).toBe(
       "finding_groups",
     );
     f.db.exec("DROP TRIGGER refuse_helper");
-    const foreground = f.helpers.dispatch({
+    const foreground = await f.helpers.dispatch({
       runnerId: "runner",
       sessionId: "interactive",
       purpose: "classify",
@@ -428,14 +430,14 @@ test("ranking idle and excluded runners never fences maintenance on another runn
     );
     f.db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('idle','codex',1)");
     const profile = { agent: "codex" as const, model: null };
-    const maintenance = f.helpers.dispatch({
+    const maintenance = await f.helpers.dispatch({
       runnerId: "runner",
       sessionId: "reporting-session",
       purpose: "finding_groups",
       profile,
       prompt: "Group",
     });
-    const placement = createRunnerPlacement({ db: f.db, now: () => f.now });
+    const placement = createRunnerPlacement({ store: sqliteDb(f.db), now: () => f.now });
     const request = {
       sessionId: "reporting-session",
       profile,
@@ -444,7 +446,7 @@ test("ranking idle and excluded runners never fences maintenance on another runn
     };
     const candidates = await placement.candidates(request);
     expect(candidates[0]!.id).toBe("idle");
-    f.helpers.dispatch({
+    await f.helpers.dispatch({
       runnerId: candidates[0]!.id,
       sessionId: "reporting-session",
       purpose: "classify",
@@ -469,7 +471,7 @@ test("a failed receipt completion is retried by cleanup before the original erro
   const { createRunnerPlacement } = await import("../src/runner-placement");
   const f = await seed();
   try {
-    const placement = createRunnerPlacement({ db: f.db });
+    const placement = createRunnerPlacement({ store: sqliteDb(f.db) });
     const original = new Error("Transient receipt failure");
     let attempts = 0;
     const helper = createFindingGroupHelper({

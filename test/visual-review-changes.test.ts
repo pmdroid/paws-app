@@ -9,6 +9,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   saveVisualReviewMarks,
+  sqliteDb,
   syncWorkspaceMember,
   type VisualReviewMark,
 } from "../src/db";
@@ -19,7 +20,7 @@ import {
   handleVisualReviewChanges,
   type VisualReviewChanges,
 } from "../src/evidence";
-import { openVisualReview } from "../src/questions";
+import { openVisualReviewSteps } from "../src/questions";
 
 const HEAD = "a".repeat(40);
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7, 7, 7]);
@@ -52,15 +53,17 @@ async function harness(active = true) {
   const first = await shot("first.png", PNG);
   const second = await shot("second.png", PNG);
   const other = await shot("other.png", PNG);
-  const { question } = openVisualReview(db, {
-    itemId: "item",
-    runId: "run-1",
-    sessionId: "ses_1",
-    checkId: "visual-proof",
-    evidenceIds: [first.id, second.id],
-    headCommit: HEAD,
-    now: 1,
-  });
+  const { question } = await sqliteDb(db).transaction((q) =>
+    openVisualReviewSteps(q, {
+      itemId: "item",
+      runId: "run-1",
+      sessionId: "ses_1",
+      checkId: "visual-proof",
+      evidenceIds: [first.id, second.id],
+      headCommit: HEAD,
+      now: 1,
+    }),
+  );
   const userId = putWorkspaceUser(db, {
     id: "user-ada",
     linearUserId: "delegator-1",

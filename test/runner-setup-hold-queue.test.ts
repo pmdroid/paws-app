@@ -20,9 +20,9 @@ import { writeAgentSettings } from "../src/config";
 import { createFakeTracker, type FakeTracker } from "../src/linear";
 import { Orchestrator } from "../src/loop";
 import {
-  itemOwnerEligibleRunner,
+  itemOwnerEligibleRunnerSteps,
   itemOwnerHasEligibleRunnerSteps,
-  itemOwnerRunnerSetupNeed,
+  itemOwnerRunnerSetupNeedSteps,
 } from "../src/runner-placement";
 import { tempDb, tempHome } from "./helpers";
 import { workspaceAdmission } from "./fake-workspace";
@@ -111,9 +111,9 @@ function orchestrator(
     ownerHasRunner: (q, itemId, agent, now) =>
       itemOwnerHasEligibleRunnerSteps(q, { itemId, agent, now }),
     runnerSetupNeed: async (itemId, agent, now) =>
-      itemOwnerRunnerSetupNeed(db, { itemId, agent, now }),
+      sqliteDb(db).run((q) => itemOwnerRunnerSetupNeedSteps(q, { itemId, agent, now })),
     eligibleRunner: async (itemId, agent, now) =>
-      itemOwnerEligibleRunner(db, { itemId, agent, now }),
+      sqliteDb(db).run((q) => itemOwnerEligibleRunnerSteps(q, { itemId, agent, now })),
     ...extra,
   });
 }

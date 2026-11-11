@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import { JOB_KIND, type WorkItemState } from "../core";
 import {
   applyWorkItemEventSteps,
@@ -13,8 +12,7 @@ import {
   markRunSteps,
   pendingRestartHandoffSteps,
   saveCheckpointSteps,
-  settled,
-  sqliteDb,
+  type Db,
   type Q,
   type Steps,
 } from "../db";
@@ -94,9 +92,13 @@ export function* mergeAcceptedWorkSteps(q: Q, itemId: string, input: MergeInput)
   return true;
 }
 
-export function mergeAcceptedWork(db: Database, itemId: string, input: MergeInput): boolean {
-  const merged = settled(sqliteDb(db).transaction((q) => mergeAcceptedWorkSteps(q, itemId, input)));
-  if (merged) emitJobReady(db);
+export async function mergeAcceptedWork(
+  store: Db,
+  itemId: string,
+  input: MergeInput,
+): Promise<boolean> {
+  const merged = await store.transaction((q) => mergeAcceptedWorkSteps(q, itemId, input));
+  if (merged) emitJobReady(store);
   return merged;
 }
 
@@ -106,14 +108,13 @@ export function mergeAcceptedWork(db: Database, itemId: string, input: MergeInpu
  * unless the run was delivering findings, review or CI input. Returns false otherwise, so the rejection goes on to the push question and conflict handling.
  */
 export async function settleRejectedPush(
-  db: Database,
+  store: Db,
   itemId: string,
   input: { remoteHead: string | null; containsAccepted: boolean; now: number },
 ): Promise<boolean> {
-  const store = sqliteDb(db);
   const accepted = (await store.run((q) => getWorkItemSteps(q, itemId)))?.acceptedHead ?? null;
   if (accepted === null || (input.remoteHead !== accepted && !input.containsAccepted)) return false;
   // A turn carrying findings, review or CI input was not for nothing: it goes to the question.
   if ((await store.run((q) => pendingRestartHandoffSteps(q, itemId))).handoff) return false;
-  return mergeAcceptedWork(db, itemId, { now: input.now });
+  return await mergeAcceptedWork(store, itemId, { now: input.now });
 }

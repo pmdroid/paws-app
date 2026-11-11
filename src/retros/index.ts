@@ -1,6 +1,6 @@
 export {
   checkRetroProfile,
-  freezeRetroRun,
+  freezeRetroRunSteps,
   parseRetroSettingsDraft,
   proposedRetroSettings,
   readRetroSettings,
@@ -111,7 +111,6 @@ export {
   RETRO_DISPATCH_JOB,
   RETRO_DISPATCH_TIMING,
   RETRO_GENERATION_STATES,
-  retroGenerationView,
   retroRetryDelayMs,
   retroRunnerCandidates,
   type RetroCommandSigner,

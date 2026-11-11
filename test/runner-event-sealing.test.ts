@@ -57,7 +57,7 @@ test("the seal job converts plaintext events, resumes after an interruption, the
   insert(2, { type: "question", text: "Which fixture?", options: ["A"] });
   for (let sequence = 3; sequence <= 700; sequence++)
     insert(sequence, { type: "progress", text: `Step ${sequence}` });
-  expect(work.openEvent(row(3))).toEqual({ type: "progress", text: "Step 3" });
+  expect(await work.openEvent(row(3))).toEqual({ type: "progress", text: "Step 3" });
 
   const interrupted = new AbortController();
   const first = encryptRunnerEvents({ db, key, signal: interrupted.signal });
@@ -70,7 +70,7 @@ test("the seal job converts plaintext events, resumes after an interruption, the
       )
       .get()!.count;
   expect(unsealed()).toBe(200);
-  expect(work.openEvent(row(3))).toEqual({ type: "progress", text: "Step 3" });
+  expect(await work.openEvent(row(3))).toEqual({ type: "progress", text: "Step 3" });
 
   expect(await encryptRunnerEvents({ db, key })).toEqual({ sealed: 200 });
   expect(unsealed()).toBe(0);
@@ -80,11 +80,11 @@ test("the seal job converts plaintext events, resumes after an interruption, the
   expect(row(2).type).toBe("question");
   expect(row(2).reason).toBeNull();
   expect(row(700).payload).not.toContain("Step");
-  expect(work.openEvent(row(700))).toEqual({ type: "progress", text: "Step 700" });
+  expect(await work.openEvent(row(700))).toEqual({ type: "progress", text: "Step 700" });
 
   db.run("UPDATE job SET status='done' WHERE job_key=?", [RUNNER_EVENT_ENCRYPT_JOB]);
   insert(701, { type: "progress", text: "Plaintext" });
-  expect(() => work.openEvent(row(701))).toThrow(/not sealed/);
+  await expect(work.openEvent(row(701))).rejects.toThrow(/not sealed/);
 });
 
 test("a sealed payload moved to another sequence fails to open", async () => {
@@ -94,12 +94,12 @@ test("a sealed payload moved to another sequence fails to open", async () => {
   insert(2, { type: "progress", text: "Second" });
   await encryptRunnerEvents({ db, key });
   const first = row(1);
-  expect(work.openEvent(first)).toEqual({ type: "progress", text: "First" });
+  expect(await work.openEvent(first)).toEqual({ type: "progress", text: "First" });
   db.run(
     "UPDATE runner_event SET payload=?,payload_sha256=? WHERE run_id='run' AND generation=1 AND sequence=2",
     [first.payload, first.payloadSha256],
   );
-  expect(() => work.openEvent(row(2))).toThrow();
+  await expect(work.openEvent(row(2))).rejects.toThrow();
   const other = createRunnerWork({
     db,
     keyId: "fixture",

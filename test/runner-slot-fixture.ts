@@ -73,7 +73,7 @@ export function workspaceWithRunners(db: Database) {
       now: NOW,
       admission: workspaceAdmission(db),
       itemRunners: (q, itemId) =>
-        itemRunnerVerdictsSteps(q, db, { itemId, agent: "claude", now: NOW }),
+        itemRunnerVerdictsSteps(q, sqliteDb(db), { itemId, agent: "claude", now: NOW }),
       onRunnerHostRefusals: (refusals) => reported.push([...refusals]),
     });
   return { pair, queue, pass, workspace, userId };

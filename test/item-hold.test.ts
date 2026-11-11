@@ -2,7 +2,14 @@ import { confirmFakeMerge } from "./fake-workspace";
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { setJournalSink } from "../src/journal";
-import { listItemHolds, legacyMigrate, migrations, openDatabase, sqliteDb } from "../src/db";
+import {
+  listItemHolds,
+  legacyMigrate,
+  migrations,
+  openDatabase,
+  sqliteDb,
+  syncSteps,
+} from "../src/db";
 import { recordItemDependencies } from "../src/intake";
 import { createAdmission, dispatch, type ItemAdmission } from "../src/scheduler";
 import { createLiveStatusProvider } from "../src/dashboard";
@@ -116,6 +123,10 @@ test("a blocked hold without an open blocker is journaled as an inconsistency", 
       canDispatchDelegation: async () => true,
       canStart: async () => ({ ok: false, held: "blocked" }),
       canMerge: async () => ({ ok: false, held: "blocked" }),
+      steps: {
+        canDispatchDelegation: () => syncSteps(() => true),
+        canStart: () => syncSteps(() => ({ ok: false, held: "blocked" })),
+      },
     };
     const { lines, log } = journal();
     expect(await dispatch(db, { now: 1, log, admission: blocked })).toEqual([]);

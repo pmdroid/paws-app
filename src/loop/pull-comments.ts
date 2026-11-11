@@ -12,7 +12,6 @@ import {
   recordPullCommentSteps,
   recordRebaseReturnSteps,
   restartSteps,
-  settled,
   settlePullCiFailuresSteps,
   settlePullCommentsSteps,
   sqliteDb,
@@ -111,26 +110,15 @@ const NO_FILTER: PullCommentFilter = {
  * Record a new comment on a pull request Paws opened: a comment-only review, an inline review
  * comment or a conversation comment, from a person or another bot. Edits, deletions, the Paws
  * App's own comments, bots on the repository's ignore list, forks and ended items record nothing.
- * True when this delivery recorded a new comment.
+ * Filtering resolves before the receipt transaction, since callbacks may start provider work; the
+ * returned Steps run inside it.
  */
-export function recordCommentDelivery(
-  db: Database,
-  event: string,
-  body: unknown,
-  now: number,
-  filter: PullCommentFilter = NO_FILTER,
-): boolean {
-  return prepareCommentDelivery(db, event, body, now, filter)?.() ?? false;
-}
-
-/** Resolve filtering before the receipt transaction; callbacks may start provider work. */
 export function prepareCommentDelivery(
-  db: Database,
   event: string,
   body: unknown,
   now: number,
   filter: PullCommentFilter = NO_FILTER,
-): (() => boolean) | null {
+): ((q: Q) => Steps<CommentReceipt>) | null {
   const payload = record(body);
   const repository = record(payload.repository);
   const owner = record(repository.owner).login;
@@ -174,7 +162,7 @@ export function prepareCommentDelivery(
     const issue = record(payload.issue);
     if (typeof issue.number !== "number" || issue.pull_request === undefined) return null;
     const pullNumber = issue.number;
-    return commitDelivery(db, function* (q) {
+    return function* (q: Q): Steps<CommentReceipt> {
       // A conversation comment names no branch; only a pull request Paws recorded opening counts,
       // which also leaves out every fork.
       const item = yield* itemForPullSteps(q, owner, repo, pullNumber);
@@ -195,7 +183,7 @@ export function prepareCommentDelivery(
         },
         wait,
       );
-    });
+    };
   }
   const pull = record(payload.pull_request);
   const head = record(pull.head);
@@ -210,7 +198,7 @@ export function prepareCommentDelivery(
   )
     return null;
   const inline = event === "pull_request_review_comment";
-  return commitDelivery(db, function* (q) {
+  return function* (q: Q): Steps<CommentReceipt> {
     const item = yield* itemForBranchSteps(q, owner, repo, branch);
     if (item === null) return NOT_RECORDED;
     const opened = yield* getItemPullRequestSteps(q, item.id);
@@ -233,21 +221,12 @@ export function prepareCommentDelivery(
       },
       wait,
     );
-  });
-}
-
-type CommentReceipt = { recorded: boolean; enqueued: boolean };
-
-const NOT_RECORDED: CommentReceipt = { recorded: false, enqueued: false };
-
-/** Synchronous until `acceptGitHubDelivery` can await its receipt transaction. */
-function commitDelivery(db: Database, steps: (q: Q) => Steps<CommentReceipt>): () => boolean {
-  return () => {
-    const { recorded, enqueued } = settled(sqliteDb(db).transaction(steps));
-    if (enqueued) emitJobReady(db);
-    return recorded;
   };
 }
+
+export type CommentReceipt = { recorded: boolean; enqueued: boolean };
+
+const NOT_RECORDED: CommentReceipt = { recorded: false, enqueued: false };
 
 function* itemForPullSteps(
   q: Q,

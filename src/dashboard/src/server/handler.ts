@@ -385,10 +385,10 @@ function cacheKey(resource: string, parameters: string, options: StatusServerOpt
   return JSON.stringify([resource, parameters, reader]);
 }
 
-function diagnosticCacheKey(resource: string, options: StatusServerOptions): string {
+async function diagnosticCacheKey(resource: string, options: StatusServerOptions): Promise<string> {
   const visible =
     options.provider === undefined && options.db !== undefined && options.sessionIds !== undefined
-      ? visibleDiagnosticRepositories(options.db, { sessionIds: options.sessionIds })
+      ? await visibleDiagnosticRepositories(options.db, { sessionIds: options.sessionIds })
       : null;
   return JSON.stringify([cacheKey(resource, "", options), visible]);
 }
@@ -461,7 +461,7 @@ async function overviewResponse(
   try {
     const built = await cache.get<OverviewResponse>(
       options.provider ?? options.db ?? EMPTY_SOURCE,
-      diagnosticCacheKey("overview", options),
+      await diagnosticCacheKey("overview", options),
       async () => {
         const parsed = parseOverviewResponse(await read());
         return parsed.ok ? { value: parsed.response } : { error: parsed.error };
@@ -491,7 +491,7 @@ async function mergeQueueResponse(
   try {
     const built = await cache.get<MergeQueueResponse>(
       options.provider ?? options.db ?? EMPTY_SOURCE,
-      diagnosticCacheKey("merge-queue", options),
+      await diagnosticCacheKey("merge-queue", options),
       async () => {
         const parsed = parseMergeQueueResponse(await read());
         return parsed.ok ? { value: parsed.response } : { error: parsed.error };

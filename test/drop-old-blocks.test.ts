@@ -17,7 +17,7 @@ import {
   setCurrentRun,
   sqliteDb,
 } from "../src/db";
-import { createItemReconciler, intakeDelegatedIssue, readyItems } from "../src/intake";
+import { createItemReconciler, intakeDelegatedIssue, readyItemsSteps } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
 import { Orchestrator } from "../src/loop";
 import { legacyTempDb, tempHome } from "./helpers";
@@ -175,7 +175,11 @@ test("migration 059 drops the old block tables and task_block holds each depende
       { itemId: blocked!.id, workspaceId: "workspace" },
     ]);
     expect(
-      readyItems(db, { itemId: blocked!.id, workspaceId: "workspace" }).readyItemIds,
+      (
+        await sqliteDb(db).run((q) =>
+          readyItemsSteps(q, { itemId: blocked!.id, workspaceId: "workspace" }),
+        )
+      ).readyItemIds,
     ).not.toContain(blocked!.id);
   } finally {
     await closeReconciler?.();

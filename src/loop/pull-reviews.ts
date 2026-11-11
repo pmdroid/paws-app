@@ -15,7 +15,6 @@ import {
   recordReviewEscapeSteps,
   recordReviewRepliesSteps,
   settlePullReviewSteps,
-  settled,
   sqliteDb,
   type PullReviewRecord,
   type PullFeedbackWait,
@@ -113,15 +112,6 @@ export function* recordReviewDeliverySteps(
 }
 
 /** The ongoing item whose branch in `owner/repo` is `branch`. */
-export function itemForBranch(
-  db: Database,
-  owner: string,
-  repo: string,
-  branch: string,
-): WorkItemRecord | null {
-  return settled(sqliteDb(db).run((q) => itemForBranchSteps(q, owner, repo, branch)));
-}
-
 export function* itemForBranchSteps(
   q: Q,
   owner: string,

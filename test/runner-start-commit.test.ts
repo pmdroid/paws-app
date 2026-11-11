@@ -14,6 +14,7 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
   saveCheckpoint,
+  sqliteDb,
 } from "../src/db";
 import { isTransient } from "../src/core";
 import {
@@ -547,7 +548,7 @@ async function startScenario(input: {
     results,
     health,
     pollIntervalMs: 5,
-    placement: createRunnerPlacement({ db }),
+    placement: createRunnerPlacement({ store: sqliteDb(db) }),
     async fetchCandidate(candidate) {
       await git([
         "--git-dir",

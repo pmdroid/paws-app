@@ -13,13 +13,11 @@ import {
   runnerQuestionAnswersAfterSteps,
   runnerResultForCommandSteps,
   runnerResultMatchesSteps,
-  settled,
   sqliteDb,
   storedRunnerAnswerSteps,
   storedRunnerEventSteps,
   unansweredRunnerQuestionsSteps,
   type Q,
-  type Steps,
 } from "../db";
 import {
   RUNNER_RESULT_BODY_LIMIT,
@@ -57,8 +55,6 @@ export function createRunnerResults(options: {
 }) {
   const { db, work } = options;
   const store = sqliteDb(db);
-  const transaction = <T>(body: (q: Q) => Steps<T>) => settled(store.transaction(body));
-  const read = <T>(body: (q: Q) => Steps<T>) => settled(store.run(body));
   const now = options.now ?? Date.now;
   function* currentSteps(q: Q, runId: string, generation: number, commandId?: string) {
     const { command } = yield* work.currentSteps(q, runId, generation);
@@ -117,8 +113,8 @@ export function createRunnerResults(options: {
         return { duplicate: false };
       });
     },
-    read(runId: string, generation: number, commandId: string): RunnerResult | null {
-      const payload = read(function* (q) {
+    async read(runId: string, generation: number, commandId: string): Promise<RunnerResult | null> {
+      const payload = await store.run(function* (q) {
         yield* currentSteps(q, runId, generation, commandId);
         return yield* runnerResultForCommandSteps(q, { runId, generation }, commandId);
       });
@@ -127,7 +123,7 @@ export function createRunnerResults(options: {
     events(runId: string, generation: number, after: number) {
       integer.parse(generation);
       z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).parse(after);
-      return read(function* (q) {
+      return store.run(function* (q) {
         yield* currentSteps(q, runId, generation);
         const page = [];
         for (const row of yield* runnerEventPageSteps(q, { runId, generation }, after))
@@ -136,19 +132,19 @@ export function createRunnerResults(options: {
       });
     },
     /** The stored answer to a runner event, or null before Paws answered it. */
-    answered(runId: string, generation: number, sequence: number): string | null {
+    answered(runId: string, generation: number, sequence: number): Promise<string | null> {
       integer.parse(generation);
       integer.parse(sequence);
-      return read(function* (q) {
+      return store.run(function* (q) {
         yield* currentSteps(q, runId, generation);
         return yield* storedRunnerAnswerSteps(q, { runId, generation }, sequence);
       });
     },
-    answer(input: { runId: string; generation: number; sequence: number; answer: string }) {
+    async answer(input: { runId: string; generation: number; sequence: number; answer: string }) {
       integer.parse(input.generation);
       integer.parse(input.sequence);
       const answer = z.string().min(1).max(65536).parse(input.answer);
-      transaction(function* (q) {
+      await store.transaction(function* (q) {
         yield* currentSteps(q, input.runId, input.generation);
         const question = yield* storedRunnerEventSteps(q, input, input.sequence);
         if (!question || !QUESTION_TYPES.includes((yield* work.openEventSteps(q, question)).type))

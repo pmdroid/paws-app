@@ -586,7 +586,7 @@ export async function probeRunnerBackend(
     assert.equal(fetched, 1);
     assert.equal(await git(["-C", source, "rev-parse", "HEAD"]), head);
     assert.equal(getWorkItem(db, first.id)?.state, "running");
-    assert.throws(() => work.current(first.run.id, 1), /fenced/);
+    await assert.rejects(work.currentAsync(first.run.id, 1), /fenced/);
     assert.deepEqual(updates, ["Implementation progress"]);
     assert.deepEqual(replies, [
       { text: "Yes, the old route still answers with 410.", sequence: 6 },
@@ -1635,7 +1635,7 @@ export async function probeRunnerBackend(
         );
         assert.equal(fetched, beforeFetch);
         assert.equal(getWorkItem(db, task.id)?.checkpoint, null);
-        assert.throws(() => work.current(command.runId, command.generation), /fenced/);
+        await assert.rejects(work.currentAsync(command.runId, command.generation), /fenced/);
         observe(
           `remote ${purpose} task with repository=${withRepository} returns complete sealed text and tool history`,
           true,
@@ -2370,7 +2370,7 @@ export async function probeRunnerBackend(
       );
     }
     const placement = createRunnerPlacement({
-      db,
+      store: sqliteDb(db),
       now: () => now,
     });
     let selectionReads = 0;

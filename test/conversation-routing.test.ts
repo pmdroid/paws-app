@@ -219,7 +219,10 @@ async function setup(options: { version?: string; conversations?: number } = {})
       await orchestrator["resumeLinearSession"](session);
     },
     brief: (itemId: string) =>
-      linearCommentBrief(db, getWorkItem(db, itemId)!, { now: () => clock.now(), policy }),
+      linearCommentBrief(sqliteDb(db), getWorkItem(db, itemId)!, {
+        now: () => clock.now(),
+        policy,
+      }),
     conversations: () =>
       Promise.all(
         db
@@ -371,7 +374,7 @@ test("a message while a work turn runs is delivered at the turn boundary, as tod
   await f.say("acme-1", "c-1", "Also cover the empty cart.");
   expect(await f.deliver("acme-1")).toBe("wait");
   expect(await f.conversations()).toEqual([]);
-  expect(f.brief("acme-1")?.text).toContain("Also cover the empty cart.");
+  expect((await f.brief("acme-1"))?.text).toContain("Also cover the empty cart.");
 });
 
 // 0.1.74 to 0.1.76 run conversations but refuse Claude's reply and start_work calls (and 0.1.74
@@ -385,7 +388,7 @@ for (const version of ["0.1.73", "0.1.75", "0.1.76"])
     expect(await f.conversations()).toEqual([]);
     expect(f.resumes()).toHaveLength(1);
     expect((f.resumes()[0]!.payload as { reason: string }).reason).toBe("follow_up");
-    expect(f.brief("acme-1")?.text).toContain("Use the v2 endpoint.");
+    expect((await f.brief("acme-1"))?.text).toContain("Use the v2 endpoint.");
   });
 
 test("a queued item's start job waits while a conversation runs on its session", async () => {

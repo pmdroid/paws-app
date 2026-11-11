@@ -62,7 +62,7 @@ test("an accepted head that is the pull request head goes to the merge queue wit
     }),
   ).toBe(false);
 
-  expect(mergeAcceptedWork(db, itemId, { now: 3_000 })).toBe(true);
+  expect(await mergeAcceptedWork(sqliteDb(db), itemId, { now: 3_000 })).toBe(true);
 
   const item = getWorkItem(db, itemId)!;
   expect(item).toMatchObject({ state: "merge_queue", currentRunId: runId });
@@ -99,7 +99,7 @@ test("a rejected push whose remote is the accepted head goes to the merge queue 
   expect(getWorkItem(db, itemId)?.state).toBe("running");
 
   expect(
-    await settleRejectedPush(db, itemId, {
+    await settleRejectedPush(sqliteDb(db), itemId, {
       remoteHead: ACCEPTED,
       containsAccepted: true,
       now: 2_000,
@@ -115,7 +115,7 @@ test("a rejected push whose remote is the accepted head goes to the merge queue 
 test("a rejected push whose remote contains the accepted head goes to the merge queue", async () => {
   const { db, itemId } = await acceptedItem();
   expect(
-    await settleRejectedPush(db, itemId, {
+    await settleRejectedPush(sqliteDb(db), itemId, {
       remoteHead: "ahead",
       containsAccepted: true,
       now: 2_000,
@@ -127,14 +127,18 @@ test("a rejected push whose remote contains the accepted head goes to the merge 
 test("a rejected push whose remote diverged from the accepted head is left to conflict handling", async () => {
   const { db, itemId } = await acceptedItem();
   expect(
-    await settleRejectedPush(db, itemId, {
+    await settleRejectedPush(sqliteDb(db), itemId, {
       remoteHead: "diverged",
       containsAccepted: false,
       now: 2_000,
     }),
   ).toBe(false);
   expect(
-    await settleRejectedPush(db, itemId, { remoteHead: null, containsAccepted: false, now: 2_000 }),
+    await settleRejectedPush(sqliteDb(db), itemId, {
+      remoteHead: null,
+      containsAccepted: false,
+      now: 2_000,
+    }),
   ).toBe(false);
   expect(getWorkItem(db, itemId)?.state).toBe("running");
   expect(mergeJobs(db)).toEqual([]);
@@ -145,9 +149,9 @@ test("an item without accepted work is not sent to the merge queue", async () =>
   migrate(db);
   insertQueuedItem(db, { id: "fresh", sessionKey: "ses", now: 1_000 });
   beginImplementRun(db, "fresh", 1_000);
-  expect(mergeAcceptedWork(db, "fresh", { now: 2_000 })).toBe(false);
+  expect(await mergeAcceptedWork(sqliteDb(db), "fresh", { now: 2_000 })).toBe(false);
   expect(
-    await settleRejectedPush(db, "fresh", {
+    await settleRejectedPush(sqliteDb(db), "fresh", {
       remoteHead: ACCEPTED,
       containsAccepted: true,
       now: 2_000,
@@ -161,7 +165,9 @@ test("an accepted item queued again by a restart leaves that restart for the mer
   const item = getWorkItem(db, itemId)!;
   const job = restart(db, item, { reason: "follow_up", body: "go on", now: 2_000 })!;
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
-  expect(mergeAcceptedWork(db, itemId, { now: 3_000, exceptJobId: job })).toBe(true);
+  expect(await mergeAcceptedWork(sqliteDb(db), itemId, { now: 3_000, exceptJobId: job })).toBe(
+    true,
+  );
   expect(getWorkItem(db, itemId)?.state).toBe("merge_queue");
   expect(listJobs(db).find((entry) => entry.id === job)?.status).toBe("pending");
 });
@@ -177,7 +183,7 @@ for (const reason of ["ci", "review"] as const) {
     beginImplementRun(db, itemId, 2_500);
     db.run("UPDATE job SET status = 'running' WHERE id = ?", [job]);
     expect(
-      await settleRejectedPush(db, itemId, {
+      await settleRejectedPush(sqliteDb(db), itemId, {
         remoteHead: ACCEPTED,
         containsAccepted: true,
         now: 3_000,
@@ -202,7 +208,7 @@ for (const decision of ["rejected", "blocked"] as const) {
     finishCloseoutProgress(db, itemId, { ...identity, base: "newer" }, decision, 1_600);
     // A database written before rejection retired accepted_head can still carry it.
     await markCloseoutAccepted(sqliteDb(db), itemId, ACCEPTED);
-    expect(mergeAcceptedWork(db, itemId, { now: 2_000 })).toBe(false);
+    expect(await mergeAcceptedWork(sqliteDb(db), itemId, { now: 2_000 })).toBe(false);
     expect(mergeJobs(db)).toEqual([]);
   });
 }

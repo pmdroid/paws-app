@@ -1,10 +1,10 @@
 import { syncSteps } from "../src/runner-backend";
 import { expect, test } from "bun:test";
-import { bindLinearSessionTask, recordLinearInstallation } from "../src/db";
+import { bindLinearSessionTask, recordLinearInstallation, sqliteDb } from "../src/db";
 import {
   createItemReconciler,
   intakeDelegatedIssue,
-  readyItems,
+  readyItemsSteps,
   syncItemDependencies,
 } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
@@ -58,13 +58,17 @@ test("a delegation whose only item is cancelled is no longer treated as running 
     const itemId = intake.items[0]!.id;
     install(db, intake.delegation.id);
     const target = { itemId, workspaceId: "workspace" };
-    expect(readyItems(db, target).heldItemIds).toEqual([itemId]);
+    expect((await sqliteDb(db).run((q) => readyItemsSteps(q, target))).heldItemIds).toEqual([
+      itemId,
+    ]);
     await reconciler.reconcile(target);
     db.run("UPDATE work_item SET state='cancelled' WHERE id=?", [itemId]);
     expect(
       db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
     ).toEqual([]);
-    expect(() => readyItems(db, target)).toThrow(/Dependency workspace or task ownership changed/);
+    await expect(sqliteDb(db).run((q) => readyItemsSteps(q, target))).rejects.toThrow(
+      /Dependency workspace or task ownership changed/,
+    );
     await expect(reconciler.reconcile(target)).rejects.toThrow(
       /Item reconciliation authority changed/,
     );

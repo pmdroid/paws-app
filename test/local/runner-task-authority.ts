@@ -280,7 +280,7 @@ export async function probeRunnerTaskAuthority(
         bindLinearSessionTask(db, sessionId, item.delegationId, { actorId: "task-owner" });
         saveTaskMode(db, item.id, purpose, 0, withRepository);
         if (withRepository) bindWorkItemRepository(db, item.id, repository);
-        const scope = coordinator.work.scopeTask(run.id, workspace.id);
+        const scope = await coordinator.work.scopeTask(run.id, workspace.id);
         const command: Extract<RunnerCommand, { type: "task" }> = {
           id: workspaceId(),
           type: "task",
@@ -315,23 +315,23 @@ export async function probeRunnerTaskAuthority(
         );
         assert.equal(scope.purpose, purpose);
         assert.equal(scope.repository !== undefined, withRepository);
-        assert.throws(() =>
+        await assert.rejects(
           coordinator.work.assign({
             ...command,
             taskModeGeneration: command.taskModeGeneration + 1,
           }),
         );
-        assert.throws(() =>
+        await assert.rejects(
           coordinator.work.assign({ ...command, sessionGeneration: command.sessionGeneration + 1 }),
         );
-        assert.throws(() => coordinator.work.assign({ ...command, sessionId: "other-session" }));
-        assert.throws(() =>
+        await assert.rejects(coordinator.work.assign({ ...command, sessionId: "other-session" }));
+        await assert.rejects(
           coordinator.work.assign({
             ...command,
             purpose: purpose === "answer" ? "artifact" : "answer",
           }),
         );
-        assert.throws(() =>
+        await assert.rejects(
           coordinator.work.assign({
             ...command,
             repository: withRepository ? undefined : repository,
@@ -341,13 +341,13 @@ export async function probeRunnerTaskAuthority(
           RunnerCommandSchema.safeParse({ ...command, candidateSha: repository.baseSha }).success,
           false,
         );
-        coordinator.work.assign(command);
+        await coordinator.work.assign(command);
         const poll = await daemon.pollCommands();
         assert(poll.commands.some((value) => value.type === "task" && value.id === command.id));
         assert.equal(poll.rejected.length, 0);
         const grant = await daemon.issueRunGrant(run.id, { commandId: command.id, generation: 1 });
         const access = { runnerId, runId: run.id, generation: 1, token: grant.token };
-        assert.equal(coordinator.work.authorize(access).branch, null);
+        assert.equal((await coordinator.work.authorizeAsync(access)).branch, null);
         if (downloadInputs) {
           let grantReads = 0;
           const downloaded = await daemon.readInputs(
@@ -456,7 +456,12 @@ export async function probeRunnerTaskAuthority(
           },
           grant.token,
         );
-        coordinator.results.answer({ runId: run.id, generation: 1, sequence: 1, answer: "Text" });
+        await coordinator.results.answer({
+          runId: run.id,
+          generation: 1,
+          sequence: 1,
+          answer: "Text",
+        });
         assert.deepEqual(await daemon.answers(run.id, 1, 0, grant.token), {
           answers: [{ sequence: 1, answer: "Text" }],
         });

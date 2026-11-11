@@ -9,12 +9,10 @@ import {
   listImprovementDeliveriesSteps,
   listImprovementProposalsSteps,
   listRetroEvidenceSteps,
-  listWorkspaceRepositories,
   listWorkspaceRepositoriesSteps,
   listWorkspaceRepositoryNamesSteps,
   repairImprovementDestinationSteps,
   requeueImprovementDeliverySteps,
-  settled,
   sqliteDb,
   workspaceMemberSteps,
   workspaceMemberUsable,
@@ -25,13 +23,7 @@ import {
   type RetroEvidence,
   type Steps,
 } from "../db";
-import {
-  inboxCounts,
-  listInboxItems,
-  listInboxItemsSteps,
-  type ImprovementAccess,
-  type InboxItem,
-} from "./inbox";
+import { inboxCounts, listInboxItemsSteps, type ImprovementAccess, type InboxItem } from "./inbox";
 
 export type ImprovementReviewer = ImprovementAccess & {
   userId: string;
@@ -243,14 +235,6 @@ export function* findInboxItemSteps(
   );
 }
 
-export function findInboxItem(
-  db: Database,
-  access: ImprovementAccess,
-  improvementId: string,
-): InboxItem | null {
-  return settled(sqliteDb(db).run((q) => findInboxItemSteps(q, access, improvementId)));
-}
-
 export type InboxFilter = {
   source?: "daily" | "weekly";
   repository?: string;
@@ -265,7 +249,7 @@ export async function listImprovementPage(
   filter: InboxFilter,
 ) {
   const store = sqliteDb(db);
-  const all = listInboxItems(db, access);
+  const all = await store.run((q) => listInboxItemsSteps(q, access));
   const kind =
     filter.source === undefined
       ? undefined
@@ -313,23 +297,7 @@ export function* memberRepositoriesSteps(
   ];
 }
 
-export function memberRepositories(db: Database, workspaceId: string, userId: string): string[] {
-  return settled(sqliteDb(db).run((q) => memberRepositoriesSteps(q, workspaceId, userId)));
-}
-
-export function improvementDestinations(
-  db: Database,
-  reviewer: ImprovementReviewer,
-  repository: string,
-): string[] {
-  return destinationTeams(
-    listWorkspaceRepositories(db, reviewer.workspaceId),
-    reviewer,
-    repository,
-  );
-}
-
-function* improvementDestinationsSteps(
+export function* improvementDestinationsSteps(
   q: Q,
   reviewer: ImprovementReviewer,
   repository: string,
@@ -397,7 +365,7 @@ export async function improvementDetail(
   reviewer: ImprovementReviewer,
   improvementId: string,
 ) {
-  const items = listInboxItems(db, reviewer);
+  const items = await sqliteDb(db).run((q) => listInboxItemsSteps(q, reviewer));
   const item = items.find((entry) => entry.improvement.id === improvementId);
   if (!item) return null;
   const known = new Map<
@@ -578,7 +546,7 @@ export async function decideInboxItem(
   db: Database,
   input: {
     reviewer: ImprovementReviewer;
-    reauthorize?: () => ImprovementReviewer | null;
+    reauthorize?: (q: Q) => Steps<ImprovementReviewer | null>;
     improvementId: string;
     expectedVersion: number;
     request: ImprovementDecisionRequest;
@@ -594,7 +562,7 @@ export async function decideInboxItem(
     reason: "not_found",
     message: "This improvement is not in your inbox. Refresh the list.",
   } as const;
-  const first = findInboxItem(db, reviewer, input.improvementId);
+  const first = await store.run((q) => findInboxItemSteps(q, reviewer, input.improvementId));
   if (!first) return notFound;
   function* conflict(q: Q, item: InboxItem, reason: keyof typeof CONFLICT_MESSAGE) {
     return {
@@ -660,9 +628,9 @@ export async function decideInboxItem(
   }
 
   return store.transaction(function* (q): Steps<ImprovementDecisionOutcome> {
-    const current = input.reauthorize ? input.reauthorize() : reviewer;
+    const current = input.reauthorize ? yield* input.reauthorize(q) : reviewer;
     if (!current) return notFound;
-    const item = findInboxItem(db, current, input.improvementId);
+    const item = yield* findInboxItemSteps(q, current, input.improvementId);
     if (!item) return notFound;
     if (yield* sameDecisionSteps(q, item, request))
       return { status: "unchanged", item: yield* improvementViewSteps(q, item) };
@@ -740,7 +708,7 @@ export async function decideInboxItem(
         status: "decided",
         item: yield* improvementViewSteps(
           q,
-          findInboxItem(db, current, item.improvement.id) ?? item,
+          (yield* findInboxItemSteps(q, current, item.improvement.id)) ?? item,
         ),
       };
     if (result.reason === "unchanged")
@@ -760,7 +728,7 @@ export function retryInboxDelivery(
   input: { access: ImprovementAccess; improvementId: string; deliveryId: string; now: number },
 ): Promise<DeliveryRetryOutcome> {
   return sqliteDb(db).transaction(function* (q): Steps<DeliveryRetryOutcome> {
-    const item = findInboxItem(db, input.access, input.improvementId);
+    const item = yield* findInboxItemSteps(q, input.access, input.improvementId);
     const delivery = item
       ? (yield* listImprovementDeliveriesSteps(q, item.improvement.id)).find(
           (d) => d.id === input.deliveryId,
@@ -805,7 +773,7 @@ export function repairInboxDestination(
   return sqliteDb(db).transaction(function* (q): Steps<
     DeliveryRetryOutcome | ImprovementDecisionOutcome
   > {
-    const item = findInboxItem(db, input.reviewer, input.improvementId);
+    const item = yield* findInboxItemSteps(q, input.reviewer, input.improvementId);
     const delivery = item
       ? (yield* listImprovementDeliveriesSteps(q, item.improvement.id)).find(
           (d) => d.id === input.deliveryId,
@@ -841,7 +809,7 @@ export function cancelInboxEvidenceComment(
   input: { access: ImprovementAccess; improvementId: string; deliveryId: string },
 ): Promise<DeliveryRetryOutcome> {
   return sqliteDb(db).transaction(function* (q): Steps<DeliveryRetryOutcome> {
-    const item = findInboxItem(db, input.access, input.improvementId);
+    const item = yield* findInboxItemSteps(q, input.access, input.improvementId);
     const deliveries = item ? yield* listImprovementDeliveriesSteps(q, item.improvement.id) : [];
     const delivery = deliveries.find((d) => d.id === input.deliveryId);
     if (!item || !delivery)
@@ -865,7 +833,7 @@ export function cancelInboxEvidenceComment(
       status: "cancelled",
       item: yield* improvementViewSteps(
         q,
-        findInboxItem(db, input.access, item.improvement.id) ?? item,
+        (yield* findInboxItemSteps(q, input.access, item.improvement.id)) ?? item,
       ),
     };
   });

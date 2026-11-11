@@ -25,6 +25,7 @@ import {
   saveArtifactSteps,
   settled,
   sqliteDb,
+  type Db,
   type Q,
   type Steps,
 } from "../db";
@@ -62,7 +63,7 @@ export function publishedEvidence(db: Database, itemId: string): PublishedEviden
   return settled(sqliteDb(db).run((q) => publishedEvidenceSteps(q, itemId)));
 }
 
-function* publishedEvidenceSteps(q: Q, itemId: string): Steps<PublishedEvidence[]> {
+export function* publishedEvidenceSteps(q: Q, itemId: string): Steps<PublishedEvidence[]> {
   const rejected = yield* rejectedEvidenceIdsSteps(q, itemId);
   return latestEvidence(yield* listEvidenceSteps(q, itemId))
     .filter((row) => !rejected.has(row.id))
@@ -126,11 +127,11 @@ export function evidenceSectionUrl(publicUrl: string, item: WorkItemRecord): str
  * check and the head, so a later round at the same head posts nothing new. The images stay in
  * Paws and on the pull request.
  */
-export function evidenceThoughts(
-  db: Database,
+export async function evidenceThoughts(
+  store: Db,
   input: { itemId: string; checkIds: readonly string[]; head: string; link: string },
-): { key: string; body: string }[] {
-  const files = settled(sqliteDb(db).run((q) => evidenceFilesSteps(q, input.itemId)));
+): Promise<{ key: string; body: string }[]> {
+  const files = await store.run((q) => evidenceFilesSteps(q, input.itemId));
   return input.checkIds.flatMap((checkId) => {
     const rows = files.filter((row) => row.checkId === checkId);
     if (rows.length === 0) return [];
@@ -148,8 +149,8 @@ export function evidenceThoughts(
  * per head: Linear updates the attachment with the same URL on the same issue, so a new head
  * changes the subtitle ("16 screenshots at b7c55c8") and adds no card.
  */
-export function enqueueEvidenceCard(
-  db: Database,
+export async function enqueueEvidenceCard(
+  store: Db,
   input: {
     sessionId: string;
     generation: number;
@@ -158,32 +159,30 @@ export function enqueueEvidenceCard(
     head: string;
     now: number;
   },
-): void {
-  settled(
-    sqliteDb(db).transaction(function* (q) {
-      const rows = yield* evidenceFilesSteps(q, input.item.id);
-      if (rows.length === 0) return;
-      yield* enqueueOutboxOnceSteps(q, {
-        target: "linear",
-        op: "linear.attachment",
-        delivery: "ordered",
-        priority: 0,
-        orderingKey: input.sessionId,
-        generation: input.generation,
-        idempotencyKey: `evidence-card:${input.sessionId}:${input.generation}:${input.head}`,
-        payload: {
-          id: randomUUID(),
-          itemId: input.item.id,
-          issueId: input.item.linearIssueId,
-          title: "Closeout evidence",
-          subtitle: `${evidenceCount(rows)} at ${input.head.slice(0, 7)}`,
-          url: input.link,
-          evidence: true,
-        },
-        now: input.now,
-      });
-    }),
-  );
+): Promise<void> {
+  await store.transaction(function* (q) {
+    const rows = yield* evidenceFilesSteps(q, input.item.id);
+    if (rows.length === 0) return;
+    yield* enqueueOutboxOnceSteps(q, {
+      target: "linear",
+      op: "linear.attachment",
+      delivery: "ordered",
+      priority: 0,
+      orderingKey: input.sessionId,
+      generation: input.generation,
+      idempotencyKey: `evidence-card:${input.sessionId}:${input.generation}:${input.head}`,
+      payload: {
+        id: randomUUID(),
+        itemId: input.item.id,
+        issueId: input.item.linearIssueId,
+        title: "Closeout evidence",
+        subtitle: `${evidenceCount(rows)} at ${input.head.slice(0, 7)}`,
+        url: input.link,
+        evidence: true,
+      },
+      now: input.now,
+    });
+  });
 }
 
 /**
@@ -193,8 +192,8 @@ export function enqueueEvidenceCard(
  * Linear (`linear.evidence`) so the review question can embed it.
  * Every other artifact goes to `linear`, unchanged.
  */
-export function createEvidenceArtifactPublisher(options: {
-  db: Database;
+export async function createEvidenceArtifactPublisher(options: {
+  store: Db;
   evidence: EvidenceSink;
   publicUrl: string;
   itemId: string;
@@ -204,10 +203,10 @@ export function createEvidenceArtifactPublisher(options: {
   reviewed?: (checkId: string) => boolean;
   linear?: PublishArtifactHook;
   now?: () => number;
-}): PublishArtifactHook {
+}): Promise<PublishArtifactHook> {
   const now = options.now ?? Date.now;
-  const store = sqliteDb(options.db);
-  const generation = sessionGeneration(options.db, options.sessionId);
+  const store = options.store;
+  const generation = await store.run((q) => linearSessionGenerationSteps(q, options.sessionId));
   const inflight = new Map<string, Promise<PublishedArtifact>>();
   return {
     begin(request, context) {
@@ -278,22 +277,18 @@ export function createEvidenceArtifactPublisher(options: {
   };
 }
 
-function sessionGeneration(db: Database, sessionId: string): number {
-  return settled(sqliteDb(db).run((q) => linearSessionGenerationSteps(q, sessionId)));
-}
-
-export function createLinearArtifactPublisher(options: {
-  db: Database;
+export async function createLinearArtifactPublisher(options: {
+  store: Db;
   files: LinearFileTransfer;
   secretsDir: string;
   itemId: string;
   issueId?: string;
   sessionId: string;
   now?: () => number;
-}): PublishArtifactHook {
+}): Promise<PublishArtifactHook> {
   const now = options.now ?? Date.now;
-  const store = sqliteDb(options.db);
-  const generation = sessionGeneration(options.db, options.sessionId);
+  const store = options.store;
+  const generation = await store.run((q) => linearSessionGenerationSteps(q, options.sessionId));
   const inflight = new Map<string, Promise<PublishedArtifact>>();
   return {
     begin(request, context) {

@@ -15,6 +15,7 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import {
   createMemberVmHttp,
@@ -27,7 +28,7 @@ import { createOnboardingReadiness } from "../src/onboarding-readiness";
 import { createFakeBootstrap, createFakeExeDev } from "../src/provisioning";
 import { createRunnerControl, createRunnerHttp } from "../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
-import { createRunnerPlacement, itemOwnerHasEligibleRunner } from "../src/runner-placement";
+import { createRunnerPlacement, itemOwnerHasEligibleRunnerSteps } from "../src/runner-placement";
 import {
   issueWorkspaceBootstrap,
   onboardingPage,
@@ -251,7 +252,9 @@ async function fixture({
     });
     bindLinearSessionTask(db, "session", item.delegationId);
     return () =>
-      itemOwnerHasEligibleRunner(db, { itemId: "held", agent: "claude", now: clock.now() });
+      sqliteDb(db).run((q) =>
+        itemOwnerHasEligibleRunnerSteps(q, { itemId: "held", agent: "claude", now: clock.now() }),
+      );
   };
   return { db, clock, control, member, fetch, open, page, drive, heldItem, requests };
 }
@@ -381,7 +384,7 @@ test("a missing agent sign-in links to the sign-in on the member's own runner", 
 test("Create VM creates the member's VM, its steps update without a reload, and readiness lets the held item start", async () => {
   const f = await fixture();
   const ready = f.heldItem();
-  expect(ready()).toBe(false);
+  expect(await ready()).toBe(false);
   const page = await f.open();
   expect(page.buttons()).toEqual(["create-vm", "add-host"]);
   await page.click("create-vm");
@@ -424,14 +427,14 @@ test("Create VM creates the member's VM, its steps update without a reload, and 
   expect(page.document.querySelector(`a[href="/dashboard/runners/${vm.runnerId}"]`)).not.toBeNull();
   // Readiness is the scheduler's gate for a held first delegation: once the agents sign in on
   // the new runner, the held item may start.
-  expect(ready()).toBe(false);
+  expect(await ready()).toBe(false);
   for (const agent of ["claude", "codex"])
     f.db.run(
       "INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,?,1) ON CONFLICT(runner_id,agent) DO UPDATE SET ready=1",
       [vm.runnerId, agent],
     );
-  expect(ready()).toBe(false);
-  const placement = createRunnerPlacement({ db: f.db, now: () => f.clock.now() });
+  expect(await ready()).toBe(false);
+  const placement = createRunnerPlacement({ store: sqliteDb(f.db), now: () => f.clock.now() });
   const candidates = () =>
     placement.candidates({
       itemId: "held",
@@ -444,7 +447,7 @@ test("Create VM creates the member's VM, its steps update without a reload, and 
     (await f.control.list(f.member, [])).find((runner) => runner.id === vm.runnerId)?.hasRunWork,
   ).toBe(false);
   await f.control.setStatus(f.member, vm.runnerId!, "active");
-  expect(ready()).toBe(true);
+  expect(await ready()).toBe(true);
   expect((await candidates()).map((runner) => runner.id)).toEqual([vm.runnerId!]);
   await page.poll();
   expect(page.document.querySelector("#lead")?.textContent).toBe(

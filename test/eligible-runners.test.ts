@@ -8,11 +8,12 @@ import {
   migrate,
   openDatabase,
   putWorkspaceUser,
+  sqliteDb,
   syncWorkspaceMember,
 } from "../src/db";
 import {
-  eligibleRunners,
-  itemRepositoryRunner,
+  eligibleRunnersSteps,
+  itemRepositoryRunnerSteps,
   RUNNER_ONLINE_MS,
   type EligibleRunnerReason,
   type EligibleRunnersInput,
@@ -97,16 +98,18 @@ function workspace(runners: Record<string, Runner>) {
       const rest = Object.fromEntries(
         Object.entries(given).filter(([, value]) => value !== undefined),
       );
-      return eligibleRunners(db, {
-        workspaceId: ws.id,
-        teamId: "team",
-        ownerUserId: users.me!,
-        leadUserIds: leads.map((name) => users[name]!),
-        agent: "codex",
-        purpose: "work",
-        now,
-        ...rest,
-      });
+      return sqliteDb(db).run((q) =>
+        eligibleRunnersSteps(q, {
+          workspaceId: ws.id,
+          teamId: "team",
+          ownerUserId: users.me!,
+          leadUserIds: leads.map((name) => users[name]!),
+          agent: "codex",
+          purpose: "work",
+          now,
+          ...rest,
+        }),
+      );
     },
     close() {
       db.close();
@@ -205,10 +208,10 @@ const CASES: {
 ];
 
 for (const row of CASES)
-  test(`eligibleRunners: ${row.name} is ${row.reason}`, () => {
+  test(`eligibleRunners: ${row.name} is ${row.reason}`, async () => {
     const ws = workspace({ runner: row.runner });
     try {
-      const result = ws.check({ leads: row.leads, purpose: row.purpose });
+      const result = await ws.check({ leads: row.leads, purpose: row.purpose });
       expect(result.map(({ id, eligible, reason }) => ({ id, eligible, reason }))).toEqual([
         {
           id: "runner",
@@ -221,7 +224,7 @@ for (const row of CASES)
     }
   });
 
-test("eligibleRunners lists every unrevoked runner in the workspace in id order", () => {
+test("eligibleRunners lists every unrevoked runner in the workspace in id order", async () => {
   const ws = workspace({
     b: { owner: "colleague" },
     a: { owner: "me" },
@@ -229,7 +232,7 @@ test("eligibleRunners lists every unrevoked runner in the workspace in id order"
     gone: { owner: "me", status: "revoked" },
   });
   try {
-    expect(ws.check({ leads: ["lead"] }).map(({ id, reason }) => [id, reason])).toEqual([
+    expect((await ws.check({ leads: ["lead"] })).map(({ id, reason }) => [id, reason])).toEqual([
       ["a", "own"],
       ["b", "not-yours"],
       ["c", "lead-shared"],
@@ -239,16 +242,16 @@ test("eligibleRunners lists every unrevoked runner in the workspace in id order"
   }
 });
 
-test("eligibleRunners reports the work owner's runner as own even when it is shared and they lead", () => {
+test("eligibleRunners reports the work owner's runner as own even when it is shared and they lead", async () => {
   const ws = workspace({ mine: { owner: "me", sharing: 1 } });
   try {
-    expect(ws.check({ leads: ["me"] })[0]?.reason).toBe("own");
+    expect((await ws.check({ leads: ["me"] }))[0]?.reason).toBe("own");
   } finally {
     ws.close();
   }
 });
 
-test("eligibleRunners reads only SQLite", () => {
+test("eligibleRunners reads only SQLite", async () => {
   const ws = workspace({ mine: { owner: "me" } });
   const real = globalThis.fetch;
   let requests = 0;
@@ -257,9 +260,8 @@ test("eligibleRunners reads only SQLite", () => {
     throw new Error("eligibleRunners must not reach the network");
   }) as unknown as typeof fetch;
   try {
-    const result = ws.check();
+    const result = await ws.check();
     expect(result).toBeArray();
-    expect(result).not.toBeInstanceOf(Promise);
     expect(requests).toBe(0);
   } finally {
     globalThis.fetch = real;
@@ -267,7 +269,7 @@ test("eligibleRunners reads only SQLite", () => {
   }
 });
 
-test("a runner with an unacknowledged cancel stays online; capacity accounts for its cleanup", () => {
+test("a runner with an unacknowledged cancel stays online; capacity accounts for its cleanup", async () => {
   const space = workspace({ box: { owner: "me" } });
   const now = Date.now();
   try {
@@ -275,16 +277,18 @@ test("a runner with an unacknowledged cancel stays online; capacity accounts for
       "INSERT INTO runner_command(id,runner_id,kind,envelope,expires_at) VALUES(?,?,'cancel','{}',?)",
       ["live-cancel", "box", now + 60_000],
     );
-    expect(space.check({ now }).map((runner) => runner.reason)).toEqual(["own"]);
+    expect((await space.check({ now })).map((runner) => runner.reason)).toEqual(["own"]);
   } finally {
     space.close();
   }
 });
 
-test("a repository command goes to the item's last runner while it is eligible and new enough, then to another", () => {
+test("a repository command goes to the item's last runner while it is eligible and new enough, then to another", async () => {
   const w = workspace({ first: { owner: "me" }, last: { owner: "me", ready: 0 } });
   try {
     const { db, now } = w;
+    const repositoryRunner = () =>
+      sqliteDb(db).run((q) => itemRepositoryRunnerSteps(q, { itemId: "item", now }));
     db.run(
       "INSERT INTO linear_session(session_id,organization_id,team_id,created_at) VALUES('ses','org','team',?)",
       [now],
@@ -304,17 +308,17 @@ test("a repository command goes to the item's last runner while it is eligible a
       "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES('run','last',?,1,0,'cmd',?)",
       [w.ws.id, now],
     );
-    expect(itemRepositoryRunner(db, { itemId: "item", now })).toEqual({
+    expect(await repositoryRunner()).toEqual({
       id: "last",
       workspaceId: w.ws.id,
     });
     db.run("UPDATE runner_host_status SET runner_version='0.1.62' WHERE runner_id='last'");
-    expect(itemRepositoryRunner(db, { itemId: "item", now })?.id).toBe("first");
+    expect((await repositoryRunner())?.id).toBe("first");
     db.run("UPDATE runner_host_status SET runner_version='0.1.63'");
     db.run("UPDATE runner SET last_seen_at=? WHERE id='last'", [now - RUNNER_ONLINE_MS]);
-    expect(itemRepositoryRunner(db, { itemId: "item", now })?.id).toBe("first");
+    expect((await repositoryRunner())?.id).toBe("first");
     db.run("UPDATE runner_host_status SET runner_version='0.1.62' WHERE runner_id='first'");
-    expect(itemRepositoryRunner(db, { itemId: "item", now })).toBeNull();
+    expect(await repositoryRunner()).toBeNull();
   } finally {
     w.close();
   }

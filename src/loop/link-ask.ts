@@ -1,4 +1,4 @@
-import { askSteps, restart } from "./operations";
+import { askSteps, restartSteps } from "./operations";
 import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
@@ -23,7 +23,6 @@ import {
   LINK_ASK_NOTE_REQUIRED,
   openLinkAsksSteps,
   schedulingProjectLeadSteps,
-  settled,
   recordLinkAskDecisionSteps,
   saveCheckpointSteps,
   sqliteDb,
@@ -37,17 +36,17 @@ import {
   type WorkItemRecord,
 } from "../db";
 import {
-  answerQuestion,
+  answerQuestionSteps,
   canAnswer,
-  cancelQuestion,
-  getQuestion,
+  cancelQuestionSteps,
+  getQuestionSteps,
   LINK_ASK_ANCHORS,
   LINK_ASK_REMINDER_MS,
   linkAskDecidedNote,
   linkAskHandoff,
   linkAskReminderBody,
   openLinkAskSteps,
-  removeLinkAskUrl,
+  removeLinkAskUrlSteps,
   shortCommit,
   type StoredQuestion,
 } from "../questions";
@@ -61,7 +60,7 @@ import {
   RISK_REPLY_NOTE,
   stopForRiskSteps,
 } from "./risk-approval";
-import { decideVisualReview, postNote, VISUAL_REVIEW_REPLY_NOTE } from "./visual-review";
+import { decideVisualReviewSteps, postNoteSteps, VISUAL_REVIEW_REPLY_NOTE } from "./visual-review";
 import { dashboardIssuePath } from "../dashboard-links";
 
 /** A Paws that only listens on localhost has no link a person can open, so it cannot ask this way. */
@@ -153,15 +152,6 @@ export function* askWithLinkSteps(
   return opened;
 }
 
-export function askWithLink(
-  db: Database,
-  input: AskWithLink,
-): { question: StoredQuestion; linkAsk: LinkAsk } {
-  const opened = settled(sqliteDb(db).transaction((q) => askWithLinkSteps(q, input)));
-  emitJobReady(db);
-  return opened;
-}
-
 /** Posts the one reminder while the ask is still open. Returns whether it posted. */
 export async function remindLinkAsk(
   db: Database,
@@ -169,7 +159,7 @@ export async function remindLinkAsk(
   now: number,
 ): Promise<boolean> {
   return await sqliteDb(db).transaction(function* (q) {
-    const question = getQuestion(db, questionId);
+    const question = yield* getQuestionSteps(q, questionId);
     const linkAsk = yield* getLinkAskSteps(q, questionId);
     if (question?.status !== "open" || linkAsk === null || linkAsk.closedAt !== null) return false;
     const item = yield* getWorkItemSteps(q, question.itemId);
@@ -246,7 +236,7 @@ export async function decideLinkAsk(
   > {
     const { now } = input;
     const linkAsk = yield* getLinkAskSteps(q, input.questionId);
-    const question = getQuestion(db, input.questionId);
+    const question = yield* getQuestionSteps(q, input.questionId);
     if (linkAsk === null || linkAsk.closedAt !== null || question?.status !== "open")
       return "rejected";
     const item = yield* getWorkItemSteps(q, linkAsk.itemId);
@@ -277,7 +267,7 @@ export async function decideLinkAsk(
         : approvingRule
           ? input.note!.trim()
           : input.note;
-    const answered = answerQuestion(db, question.id, {
+    const answered = yield* answerQuestionSteps(q, question.id, {
       answer: note ? `${input.decision}: ${note}` : input.decision,
       answeredBy: input.answeredBy,
       eventKey: `dashboard:${crypto.randomUUID()}`,
@@ -311,7 +301,7 @@ export async function decideLinkAsk(
       ].join(" · "),
       now,
     });
-    removeLinkAskUrl(db, linkAsk.questionId, now);
+    yield* removeLinkAskUrlSteps(q, linkAsk.questionId, now);
     // A risk ask comes after the pull request response, so it posts through the risk gate's keys.
     if (linkAsk.kind === "risk" && (input.decision === "approve" || input.decision === "changes"))
       yield* postRiskActivitySteps(q, {
@@ -323,8 +313,8 @@ export async function decideLinkAsk(
         now,
       });
     else
-      postNote(
-        db,
+      yield* postNoteSteps(
+        q,
         question.sessionId,
         item,
         linkAskDecidedNote(linkAsk, input.decision, input.actor.name, note),
@@ -334,14 +324,18 @@ export async function decideLinkAsk(
     if (
       linkAsk.kind === "screenshots" &&
       (input.decision === "approve" || input.decision === "changes") &&
-      decideVisualReview(db, {
-        linkAsk,
-        decision: input.decision,
-        feedback: input.note ?? "",
-        answeredBy: input.answeredBy,
-        ...(input.marks ? { marks: input.marks } : {}),
-        now,
-      })
+      (yield* decideVisualReviewSteps(
+        q,
+        {
+          linkAsk,
+          decision: input.decision,
+          feedback: input.note ?? "",
+          answeredBy: input.answeredBy,
+          ...(input.marks ? { marks: input.marks } : {}),
+          now,
+        },
+        notifications,
+      ))
     )
       return "answered";
     const current = (yield* getWorkItemSteps(q, item.id))!;
@@ -362,11 +356,11 @@ export async function decideLinkAsk(
     }
     yield* handBackSteps(
       q,
-      db,
       current,
       question,
       linkAskHandoff(linkAsk, { ...input, note, ...(yield* ruleFindingsSteps(q, linkAsk)) }),
       now,
+      notifications,
       linkAsk.kind === "risk" ? "review" : "answer",
     );
     return "answered";
@@ -411,7 +405,7 @@ function* stopRiskAskSteps(
   notifications: { ready: boolean },
 ): Steps<"answered" | "rejected"> {
   const { now } = input;
-  const answered = answerQuestion(db, linkAsk.questionId, {
+  const answered = yield* answerQuestionSteps(q, linkAsk.questionId, {
     answer: input.note ? `stop: ${input.note}` : "stop",
     answeredBy: input.answeredBy,
     eventKey: `dashboard:${crypto.randomUUID()}`,
@@ -435,7 +429,7 @@ function* stopRiskAskSteps(
     ].join(" · "),
     now,
   });
-  removeLinkAskUrl(db, linkAsk.questionId, now);
+  yield* removeLinkAskUrlSteps(q, linkAsk.questionId, now);
   if (
     !(yield* stopForRiskSteps(
       q,
@@ -522,16 +516,18 @@ export async function guideLinkAsk(
   db: Database,
   input: { questionId: string; eventKey: string; body: string; answeredBy: string; now: number },
 ): Promise<boolean> {
-  return await sqliteDb(db).transaction(function* (q) {
+  const store = sqliteDb(db);
+  const notifications = { ready: false };
+  const guided = await store.transaction(function* (q) {
     const { now } = input;
     const linkAsk = yield* getLinkAskSteps(q, input.questionId);
-    const question = getQuestion(db, input.questionId);
+    const question = yield* getQuestionSteps(q, input.questionId);
     if (linkAsk === null || linkAsk.closedAt !== null || question?.status !== "open") return false;
     const item = yield* getWorkItemSteps(q, linkAsk.itemId);
     if (item === null || item.cancelRequested || ENDED.has(item.state)) return false;
     // On a rounds ask the reply is Rethink the approach, with the reply as the note.
     const rethink = linkAsk.kind === "rounds";
-    const answered = answerQuestion(db, question.id, {
+    const answered = yield* answerQuestionSteps(q, question.id, {
       answer: `${rethink ? "rethink" : "guidance"}: ${input.body}`,
       answeredBy: input.answeredBy,
       eventKey: input.eventKey,
@@ -552,7 +548,7 @@ export async function guideLinkAsk(
         by: input.answeredBy,
         now,
       });
-    removeLinkAskUrl(db, linkAsk.questionId, now);
+    yield* removeLinkAskUrlSteps(q, linkAsk.questionId, now);
     if (item.sessionKey === question.sessionId)
       yield* applyLinearTurnsSteps(q, question.sessionId, [input.eventKey], item.id);
     if (linkAsk.kind === "risk") {
@@ -566,26 +562,30 @@ export async function guideLinkAsk(
       });
       yield* handBackSteps(
         q,
-        db,
         (yield* getWorkItemSteps(q, item.id))!,
         question,
         riskReplyHandoff(linkAsk, input.body),
         now,
+        notifications,
         "review",
       );
       return true;
     }
     const changes =
       linkAsk.kind === "screenshots" &&
-      decideVisualReview(db, {
-        linkAsk,
-        decision: "changes",
-        feedback: input.body,
-        answeredBy: input.answeredBy,
-        now,
-      });
-    postNote(
-      db,
+      (yield* decideVisualReviewSteps(
+        q,
+        {
+          linkAsk,
+          decision: "changes",
+          feedback: input.body,
+          answeredBy: input.answeredBy,
+          now,
+        },
+        notifications,
+      ));
+    yield* postNoteSteps(
+      q,
       question.sessionId,
       item,
       rethink
@@ -603,7 +603,6 @@ export async function guideLinkAsk(
     if (changes) return true;
     yield* handBackSteps(
       q,
-      db,
       (yield* getWorkItemSteps(q, item.id))!,
       question,
       linkAskHandoff(linkAsk, {
@@ -612,9 +611,12 @@ export async function guideLinkAsk(
         ...(yield* ruleFindingsSteps(q, linkAsk)),
       }),
       now,
+      notifications,
     );
     return true;
   });
+  if (notifications.ready) emitJobReady(store);
+  return guided;
 }
 
 /**
@@ -637,13 +639,13 @@ export async function closeLinkAsksOnHead(
     const item = yield* getWorkItemSteps(q, itemId);
     for (const linkAsk of moved) {
       yield* closeLinkAskSteps(q, linkAsk.questionId, { reason: "head_moved", now });
-      const question = getQuestion(db, linkAsk.questionId);
+      const question = yield* getQuestionSteps(q, linkAsk.questionId);
       if (question?.status === "open" || question?.status === "queued")
-        cancelQuestion(db, linkAsk.questionId, now);
-      removeLinkAskUrl(db, linkAsk.questionId, now);
+        yield* cancelQuestionSteps(q, linkAsk.questionId, now);
+      yield* removeLinkAskUrlSteps(q, linkAsk.questionId, now);
       if (item !== null && question !== null && question.status === "open")
-        postNote(
-          db,
+        yield* postNoteSteps(
+          q,
           question.sessionId,
           item,
           `The decision on ${shortCommit(linkAsk.headCommit)} is closed: the branch moved to ${shortCommit(head)}.`,
@@ -679,21 +681,22 @@ function* stopAfterRoundsSteps(
 
 function* handBackSteps(
   q: Q,
-  db: Database,
   item: WorkItemRecord,
   question: StoredQuestion,
   body: string,
   now: number,
+  notifications: { ready: boolean },
   /** A risk change request restarts the item as a changes-requested review does. */
   reason: "answer" | "review" = "answer",
 ): Steps<void> {
-  const jobId = restart(db, item, {
+  const restarted = yield* restartSteps(q, item, {
     reason,
     body,
     jobKey: `resume:link-ask:${question.id}`,
     now,
   });
-  if (jobId !== null)
+  if (restarted?.armed) notifications.ready = true;
+  if (restarted !== null)
     yield* setQuestionHandoffVersionSteps(
       q,
       question.id,

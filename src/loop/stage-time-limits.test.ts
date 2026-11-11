@@ -14,7 +14,7 @@ import {
   openDatabase,
   sqliteDb,
 } from "../db";
-import { startFreshBudget } from "./time-budget";
+import { startFreshBudgetSteps } from "./time-budget";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -61,7 +61,9 @@ test("with fixes_minutes = 60, the second hour of fixes asks and names the fixes
   expect((await work(MINUTE)).asked).toBe(true);
   expect(question()).toStartWith("The fixes stage reached its 1 h limit; continue or stop?");
 
-  startFreshBudget(db, { itemId: id, sessionId: null, key: "q", stage: "fixes", now: 0 });
+  await sqliteDb(db).transaction((q) =>
+    startFreshBudgetSteps(q, { itemId: id, sessionId: null, key: "q", stage: "fixes", now: 0 }),
+  );
   expect(getWorkItem(db, id)).toMatchObject({
     implementMs: 30 * MINUTE,
     fixMs: 0,

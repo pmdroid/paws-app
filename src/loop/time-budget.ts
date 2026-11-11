@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import { DEFAULT_MAX_AWAKE_MS, stageLimits, type StageLimits, type TimeStage } from "../core";
 import {
   configureWorkItemSteps,
@@ -6,8 +5,6 @@ import {
   getWorkItemSteps,
   resetAwakeTimeSteps,
   resetStageTimeSteps,
-  settled,
-  sqliteDb,
   type Q,
   type Steps,
 } from "../db";
@@ -59,8 +56,4 @@ export function* startFreshBudgetSteps(q: Q, input: FreshBudget): Steps<void> {
     },
     now: input.now,
   });
-}
-
-export function startFreshBudget(db: Database, input: FreshBudget): void {
-  settled(sqliteDb(db).transaction((q) => startFreshBudgetSteps(q, input)));
 }

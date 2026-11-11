@@ -25,7 +25,7 @@ import {
 } from "../../src/db";
 import { closeStoppedPull, createFetchGitHubClient } from "../../src/github";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../../src/linear";
-import { readyItems, syncItemDependencies } from "../../src/intake";
+import { readyItemsSteps, syncItemDependencies } from "../../src/intake";
 import { Orchestrator, type OrchestratorOptions } from "../../src/loop";
 import { confirmFakeMerge, workspaceAdmission } from "../fake-workspace";
 import { runDir } from "../../src/acp";
@@ -422,7 +422,11 @@ export async function probePublicationStop(
       await syncItemDependencies(db, {
         itemId,
         workspaceId: "cycle-workspace",
-        expectedGeneration: readyItems(db, { itemId, workspaceId: "cycle-workspace" }).generation,
+        expectedGeneration: (
+          await sqliteDb(db).run((q) =>
+            readyItemsSteps(q, { itemId, workspaceId: "cycle-workspace" }),
+          )
+        ).generation,
         tracker: cycleTracker,
         lifecycle,
       });

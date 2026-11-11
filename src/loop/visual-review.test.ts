@@ -9,6 +9,7 @@ import {
   listOutbox,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../db";
 import {
   answer,
@@ -16,14 +17,14 @@ import {
   findOpenQuestion,
   getQuestion,
   getVisualReview,
-  openVisualReview,
+  openVisualReviewSteps,
   visualReviewContinueQuestion,
   VISUAL_REVIEW_CONTINUE_OPTIONS,
   VISUAL_REVIEW_ROUNDS,
 } from "../questions";
-import { ask as askQuestion } from "./operations";
+import { askSteps } from "./operations";
 import { questionEffects } from "./question-effects";
-import { askForVisualReview, VISUAL_REVIEW_NEEDS_LINK } from "./visual-review";
+import { askForVisualReviewSteps, VISUAL_REVIEW_NEEDS_LINK } from "./visual-review";
 
 const NOW = 1_700_000_000_000;
 
@@ -36,7 +37,7 @@ function verifying() {
   return { db, itemId: item.id, runId: run.id };
 }
 
-test("a Paws without an https dashboard link asks nothing in Linear and says why once", () => {
+test("a Paws without an https dashboard link asks nothing in Linear and says why once", async () => {
   const { db, itemId, runId } = verifying();
   const input = {
     item: getWorkItem(db, itemId)!,
@@ -49,8 +50,11 @@ test("a Paws without an https dashboard link asks nothing in Linear and says why
     publicUrl: "http://127.0.0.1:8787/",
     now: NOW,
   };
-  expect(askForVisualReview(db, input)).toBe(false);
-  expect(askForVisualReview(db, { ...input, now: NOW + 1 })).toBe(false);
+  const store = sqliteDb(db);
+  expect(await store.transaction((q) => askForVisualReviewSteps(q, input))).toBe(false);
+  expect(
+    await store.transaction((q) => askForVisualReviewSteps(q, { ...input, now: NOW + 1 })),
+  ).toBe(false);
   expect(findOpenQuestion(db, "ses_1")).toBeNull();
   expect(listOutbox(db).filter((row) => row.op === "elicitation")).toEqual([]);
   const notes = listOutbox(db).filter((row) => row.op === "activity");
@@ -62,18 +66,20 @@ test("a Paws without an https dashboard link asks nothing in Linear and says why
 });
 
 /** A review question Linear asked with options before the link ask, still open. */
-function askedBefore() {
+async function askedBefore() {
   const { db, itemId, runId } = verifying();
-  const { question } = openVisualReview(db, {
-    ask: (store, asker, ...rest) => askQuestion(store, { ...asker, pending: true }, ...rest),
-    itemId,
-    runId,
-    sessionId: "ses_1",
-    checkId: "visual-proof",
-    evidenceIds: ["ev-1", "ev-2"],
-    headCommit: "head",
-    now: NOW,
-  });
+  const { question } = await sqliteDb(db).transaction((q) =>
+    openVisualReviewSteps(q, {
+      ask: (reads, asker, ...rest) => askSteps(reads, { ...asker, pending: true }, ...rest),
+      itemId,
+      runId,
+      sessionId: "ses_1",
+      checkId: "visual-proof",
+      evidenceIds: ["ev-1", "ev-2"],
+      headCommit: "head",
+      now: NOW,
+    }),
+  );
   return { db, itemId, question };
 }
 
@@ -85,8 +91,8 @@ const reply = (body: string) => ({
   now: NOW + 100,
 });
 
-test("Accept on a question asked before the link ask requests changes and never approves", () => {
-  const { db, itemId, question } = askedBefore();
+test("Accept on a question asked before the link ask requests changes and never approves", async () => {
+  const { db, itemId, question } = await askedBefore();
   const outcome = answer(db, reply("Accept"), questionEffects(db, { now: NOW + 100 }));
   expect(outcome.status).toBe("answered");
   expect(getVisualReview(db, question.id)).toMatchObject({
@@ -100,8 +106,8 @@ test("Accept on a question asked before the link ask requests changes and never 
   expect(listJobs(db).filter((job) => job.queue === JOB_KIND.reverify)).toEqual([]);
 });
 
-test("Request changes restarts the item for review with the feedback", () => {
-  const { db, itemId, question } = askedBefore();
+test("Request changes restarts the item for review with the feedback", async () => {
+  const { db, itemId, question } = await askedBefore();
   answer(db, reply("Make the hint shorter"), questionEffects(db, { now: NOW + 100 }));
   expect(getVisualReview(db, question.id)?.outcome).toBe("changes_requested");
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
@@ -109,8 +115,8 @@ test("Request changes restarts the item for review with the feedback", () => {
   expect((resume!.payload as { handoff: string }).handoff).toContain("Make the hint shorter");
 });
 
-test("the round-limit question waits behind a sibling's queued question", () => {
-  const { db, itemId, question } = askedBefore();
+test("the round-limit question waits behind a sibling's queued question", async () => {
+  const { db, itemId, question } = await askedBefore();
   for (let round = 1; round < VISUAL_REVIEW_ROUNDS; round += 1)
     db.run(
       `INSERT INTO visual_review (question_id, item_id, check_id, evidence_ids, created_at, outcome)

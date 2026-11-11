@@ -3,7 +3,7 @@ import type { Database } from "bun:sqlite";
 import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  listCloseoutBypassChecks,
+  listCloseoutBypassChecksSteps,
   listLinkAsksSteps,
   sqliteDb,
   type CloseoutProgressRecord,
@@ -103,9 +103,11 @@ type RuleDecision = { checkId: string; head: string; approval: StatusRuleApprova
  */
 async function ruleDecisions(db: Database, itemId: string): Promise<RuleDecision[]> {
   const decisions: RuleDecision[] = [];
-  for (const ask of (await sqliteDb(db).run((q) => listLinkAsksSteps(q, itemId))).reverse()) {
+  const store = sqliteDb(db);
+  for (const ask of (await store.run((q) => listLinkAsksSteps(q, itemId))).reverse()) {
     if (ask.kind !== "bypass") continue;
-    for (const check of listCloseoutBypassChecks(db, ask.questionId)) {
+    const checks = await store.run((q) => listCloseoutBypassChecksSteps(q, ask.questionId));
+    for (const check of checks) {
       if (
         decisions.some((entry) => entry.checkId === check.checkId && entry.head === ask.headCommit)
       )

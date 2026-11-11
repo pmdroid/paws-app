@@ -1,12 +1,9 @@
-import type { Database } from "bun:sqlite";
 import {
   accountAttemptsInFlightSteps,
   accountSlotsInUseSteps,
   bindingAccountHealthSteps,
   bindingReadinessRowSteps,
   runnerHasCapacitySteps,
-  settled,
-  sqliteDb,
   RUNNER_FULL,
   type AccountHealth,
   type Q,
@@ -96,7 +93,7 @@ function* healthBlockSteps(
   return null;
 }
 
-function* bindingReadinessSteps(
+export function* bindingReadinessSteps(
   q: Q,
   input: { bindingId: string; model?: string | null; now: number },
 ): Steps<BindingReadiness> {
@@ -125,13 +122,6 @@ function* bindingReadinessSteps(
     low: rows.some((row) => row.state === "low"),
     revalidating: rows.some((row) => BLOCKS[row.state] !== undefined),
   };
-}
-
-export function bindingReadiness(
-  db: Database,
-  input: { bindingId: string; model?: string | null; now: number },
-): BindingReadiness {
-  return settled(sqliteDb(db).run((q) => bindingReadinessSteps(q, input)));
 }
 
 export function* accountHealthBlockSteps(

@@ -6,8 +6,8 @@ import {
   getWorkItemSteps,
   recordPolicyOutageSteps,
   setPolicyOutageQuestionSteps,
-  settled,
   sqliteDb,
+  type Db,
   type Q,
   type Steps,
   type PolicyOutage,
@@ -25,8 +25,8 @@ export type MainPolicyError = {
   commit: string | null;
 };
 
-export function holdForPolicyOutage(
-  db: Database,
+export async function holdForPolicyOutage(
+  store: Db,
   input: {
     item: WorkItemRecord;
     repository: string;
@@ -34,41 +34,41 @@ export function holdForPolicyOutage(
     now: number;
     publicUrl: string | null;
   },
-): string {
-  const outage = settled(
-    sqliteDb(db).transaction(function* (q) {
-      const before = yield* getPolicyOutageSteps(q, input.repository);
-      const recorded = yield* recordPolicyOutageSteps(q, {
-        repository: input.repository,
-        error: input.unreadable.message,
-        policyPath: input.unreadable.path,
-        main: input.unreadable.main,
-        changedBy: input.unreadable.commit,
-        now: input.now,
-      });
-      if (before?.questionId && recorded.questionId === null)
-        yield* cancelQuestionSteps(q, before.questionId, input.now);
-      if (before === null)
-        journal(`closeout policy on main of ${input.repository} does not load: ${recorded.error}`);
-      if (yield* askableSteps(q, recorded))
-        yield* askAboutPolicySteps(q, recorded, input.item, input.now);
-      return (yield* getPolicyOutageSteps(q, input.repository))!;
-    }),
-  );
+): Promise<string> {
+  const outage = await store.transaction(function* (q) {
+    const before = yield* getPolicyOutageSteps(q, input.repository);
+    const recorded = yield* recordPolicyOutageSteps(q, {
+      repository: input.repository,
+      error: input.unreadable.message,
+      policyPath: input.unreadable.path,
+      main: input.unreadable.main,
+      changedBy: input.unreadable.commit,
+      now: input.now,
+    });
+    if (before?.questionId && recorded.questionId === null)
+      yield* cancelQuestionSteps(q, before.questionId, input.now);
+    if (before === null)
+      journal(`closeout policy on main of ${input.repository} does not load: ${recorded.error}`);
+    if (yield* askableSteps(q, recorded))
+      yield* askAboutPolicySteps(q, recorded, input.item, input.now);
+    return (yield* getPolicyOutageSteps(q, input.repository))!;
+  });
   return policyOutageWait(
     outage,
-    settled(sqliteDb(db).run((q) => questionLinkSteps(q, outage, input.item.id, input.publicUrl))),
+    await store.run((q) => questionLinkSteps(q, outage, input.item.id, input.publicUrl)),
   );
 }
 
-export function policyLoads(db: Database, repository: string, now: number): PolicyOutage | null {
-  const ended = settled(
-    sqliteDb(db).transaction(function* (q) {
-      const outage = yield* endPolicyOutageSteps(q, repository);
-      if (outage?.questionId) yield* cancelQuestionSteps(q, outage.questionId, now);
-      return outage;
-    }),
-  );
+export async function policyLoads(
+  store: Db,
+  repository: string,
+  now: number,
+): Promise<PolicyOutage | null> {
+  const ended = await store.transaction(function* (q) {
+    const outage = yield* endPolicyOutageSteps(q, repository);
+    if (outage?.questionId) yield* cancelQuestionSteps(q, outage.questionId, now);
+    return outage;
+  });
   if (ended) journal(`closeout policy on main of ${repository} loads again`);
   return ended;
 }

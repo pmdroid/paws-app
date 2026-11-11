@@ -26,7 +26,6 @@ import {
 import {
   createRunnerHostRefusals,
   createRunnerPlacement,
-  itemRunnerVerdicts,
   itemRunnerVerdictsSteps,
   SESSION_GRACE_MS,
 } from "../src/runner-placement";
@@ -193,7 +192,7 @@ test("a parked item is placed on a runner as soon as it reports the repository a
       runId,
     ),
   ).toBe(true);
-  const placement = createRunnerPlacement({ db, now: () => clock.now });
+  const placement = createRunnerPlacement({ store: sqliteDb(db), now: () => clock.now });
   const candidates = await placement.candidates({
     itemId: "parked",
     role: "implementer",
@@ -243,21 +242,25 @@ test("an admission reserves only its chosen runner and placement honors that cho
     "INSERT INTO workspace_repository SELECT workspace_id,'pmdroid/exclusive',team_id FROM workspace_repository LIMIT 1",
   );
   expect(
-    itemRunnerVerdicts(db, { itemId: "a-flexible", agent: "claude", now: NOW })!.runners.filter(
-      (r) => r.rejection === null,
-    ),
+    (await sqliteDb(db).run((q) =>
+      itemRunnerVerdictsSteps(q, sqliteDb(db), { itemId: "a-flexible", agent: "claude", now: NOW }),
+    ))!.runners.filter((r) => r.rejection === null),
   ).toHaveLength(2);
   expect(
-    itemRunnerVerdicts(db, { itemId: "b-exclusive", agent: "claude", now: NOW })!.runners.find(
-      (r) => r.id === other,
-    )!.rejection,
+    (await sqliteDb(db).run((q) =>
+      itemRunnerVerdictsSteps(q, sqliteDb(db), {
+        itemId: "b-exclusive",
+        agent: "claude",
+        now: NOW,
+      }),
+    ))!.runners.find((r) => r.id === other)!.rejection,
   ).not.toBeNull();
   expect(await pass()).toEqual(["a-flexible", "b-exclusive"]);
   expect(await pass()).toEqual([]);
   expect(schedulerRunnerSlots(db, NOW).find((row) => row.itemId === "a-flexible")?.runnerId).toBe(
     other,
   );
-  const placement = createRunnerPlacement({ db, now: () => NOW });
+  const placement = createRunnerPlacement({ store: sqliteDb(db), now: () => NOW });
   const offered = await placement.candidates({
     itemId: "a-flexible",
     role: "implementer",
@@ -273,7 +276,9 @@ test("an admin repository policy refusal is not a host-config warning", async ()
   const id = await pair("admin-limited", 2, [REPOSITORY]);
   db.run("UPDATE runner_repositories SET admin_repositories='[]' WHERE runner_id=?", [id]);
   queue("a");
-  const verdict = itemRunnerVerdicts(db, { itemId: "a", agent: "claude", now: NOW })!;
+  const verdict = (await sqliteDb(db).run((q) =>
+    itemRunnerVerdictsSteps(q, sqliteDb(db), { itemId: "a", agent: "claude", now: NOW }),
+  ))!;
   expect(verdict.runners[0]!.rejection).toContain("runner's page");
   expect(verdict.runners[0]!.hostConfig).toBeNull();
   const reported: RunnerHostRefusal[][] = [];
@@ -350,7 +355,9 @@ test("a successful background sign-in check wakes parked work", async () => {
   });
   expect(getJob(db, jobId)!.runAt).toBe(at);
   expect(
-    itemRunnerVerdicts(db, { itemId: "parked", agent: "claude", now: at })!.runners[0]!.rejection,
+    (await sqliteDb(db).run((q) =>
+      itemRunnerVerdictsSteps(q, sqliteDb(db), { itemId: "parked", agent: "claude", now: at }),
+    ))!.runners[0]!.rejection,
   ).toBeNull();
 });
 
@@ -396,7 +403,7 @@ test("two flexible slow starts reserve different runner slots", async () => {
   const slots = schedulerRunnerSlots(db, NOW);
   expect(new Set(slots.map((row) => row.runnerId)).size).toBe(2);
   expect(await pass()).toEqual([]);
-  const placement = createRunnerPlacement({ db, now: () => NOW });
+  const placement = createRunnerPlacement({ store: sqliteDb(db), now: () => NOW });
   for (const itemId of ["a", "b"]) {
     const offered = await placement.candidates({
       itemId,
@@ -423,13 +430,15 @@ for (const failure of ["offline", "repository", "excluded"] as const)
     if (failure === "offline") db.run("UPDATE runner SET status='paused' WHERE id=?", [first]);
     if (failure === "repository")
       await recordRunnerRepositories(sqliteDb(db), first, ["other/repo"], NOW);
-    const offered = await createRunnerPlacement({ db, now: () => NOW }).candidates({
-      itemId: "item",
-      role: "implementer",
-      purpose: "work",
-      profile: { agent: "claude" },
-      ...(failure === "excluded" ? { excludeRunnerIds: [first] } : {}),
-    });
+    const offered = await createRunnerPlacement({ store: sqliteDb(db), now: () => NOW }).candidates(
+      {
+        itemId: "item",
+        role: "implementer",
+        purpose: "work",
+        profile: { agent: "claude" },
+        ...(failure === "excluded" ? { excludeRunnerIds: [first] } : {}),
+      },
+    );
     expect(offered.map((r) => r.id)).toEqual([second]);
     expect(schedulerRunnerSlots(db, NOW)[0]!.runnerId).toBe(second);
   });
@@ -463,7 +472,7 @@ test("a queued resume keeps its online pin and reservation past historical ended
   expect(schedulerRunnerSlots(db, NOW)[0]!.runnerId).toBe(pinned);
   applyWorkItemEvent(db, "resume", "dispatched");
   expect(schedulerRunnerSlots(db, NOW)[0]!.runnerId).toBe(pinned);
-  const offered = await createRunnerPlacement({ db, now: () => NOW }).candidates({
+  const offered = await createRunnerPlacement({ store: sqliteDb(db), now: () => NOW }).candidates({
     itemId: "resume",
     role: "implementer",
     purpose: "work",
@@ -480,7 +489,11 @@ test("unavailable session authority holds only its item and does not abort unrel
   queue("a-stopped");
   queue("b-ready");
   db.run("UPDATE linear_session SET stopped_at=? WHERE session_id=?", [NOW, "session-a-stopped"]);
-  expect(itemRunnerVerdicts(db, { itemId: "a-stopped", agent: "claude", now: NOW })).toBeNull();
+  expect(
+    await sqliteDb(db).run((q) =>
+      itemRunnerVerdictsSteps(q, sqliteDb(db), { itemId: "a-stopped", agent: "claude", now: NOW }),
+    ),
+  ).toBeNull();
   expect(await pass()).toEqual(["b-ready"]);
   expect(getWorkItem(db, "a-stopped")?.state).toBe("queued");
 });
@@ -502,7 +515,7 @@ test("a queued restart reuses its active run's held slot without admitting unrel
   expect(schedulerRunnerSlots(db, NOW).find((row) => row.itemId === "b-resume")?.runnerId).toBe(
     pinned,
   );
-  const offered = await createRunnerPlacement({ db, now: () => NOW }).candidates({
+  const offered = await createRunnerPlacement({ store: sqliteDb(db), now: () => NOW }).candidates({
     itemId: "b-resume",
     role: "implementer",
     purpose: "work",
@@ -572,7 +585,8 @@ test("admission fails over from a busy session runner once session grace ends", 
     return dispatch(db, {
       now,
       admission: workspaceAdmission(db),
-      itemRunners: (q, itemId) => itemRunnerVerdictsSteps(q, db, { itemId, agent: "claude", now }),
+      itemRunners: (q, itemId) =>
+        itemRunnerVerdictsSteps(q, sqliteDb(db), { itemId, agent: "claude", now }),
     });
   };
 

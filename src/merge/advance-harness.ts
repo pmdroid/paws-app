@@ -566,12 +566,12 @@ export async function mergeHarness(
         (state.policyDigest === null
           ? null
           : { digest: state.policyDigest, recheck: state.recheckDigest }),
-      holdForPolicy: (current, repository, unreadable) => {
+      holdForPolicy: async (current, repository, unreadable) => {
         const message = `held: ${unreadable.message} (${unreadable.commit ?? "unknown"})`;
         state.policyHolds.push({ id: current.id, repository, message });
         return message;
       },
-      policyLoads: (repository) => {
+      policyLoads: async (repository) => {
         state.policyLoads.push(repository);
       },
       mergeResultPolicy: (_, worktree, heads) => state.mergeResultPolicy(worktree, heads),

@@ -8,6 +8,7 @@ import {
   listOutbox,
   recordRebaseReturn,
   returnToMergeQueue,
+  sqliteDb,
 } from "../db";
 import { findOpenQuestion } from "../questions";
 import { mergeHarness, pendingCi, type MergeHarness } from "./advance-harness";
@@ -79,7 +80,7 @@ describe("queued pull requests that conflict with main", () => {
 
     const main = await h.moveMain("ok.txt", "main moved\n");
     h.state.lazyMergeable.set(3, 2);
-    mainMoved(h.db, { repository: "acme/app", main, now: h.clock.now() });
+    await mainMoved(sqliteDb(h.db), { repository: "acme/app", main, now: h.clock.now() });
     expect(sweeps(h)).toHaveLength(1);
     expect(await h.sweep(main)).toEqual(["ENG-3"]);
 
@@ -107,8 +108,8 @@ describe("queued pull requests that conflict with main", () => {
     const h = await start();
     await threeQueued(h);
     const main = await h.moveMain("ok.txt", "main moved\n");
-    mainMoved(h.db, { repository: "acme/app", main, now: h.clock.now() });
-    mainMoved(h.db, { repository: "acme/app", main, now: h.clock.now() + 5 });
+    await mainMoved(sqliteDb(h.db), { repository: "acme/app", main, now: h.clock.now() });
+    await mainMoved(sqliteDb(h.db), { repository: "acme/app", main, now: h.clock.now() + 5 });
     expect(sweeps(h)).toHaveLength(1);
 
     expect(await h.sweep(main)).toEqual(["ENG-3"]);
@@ -231,7 +232,11 @@ describe("queued pull requests that conflict with main", () => {
     h.state.ci = pendingCi;
     await h.pass("ENG-1");
     expect(queued(h)).toEqual(["ENG-1"]);
-    mainMoved(h.db, { repository: "acme/app", main: "a".repeat(40), now: h.clock.now() });
+    await mainMoved(sqliteDb(h.db), {
+      repository: "acme/app",
+      main: "a".repeat(40),
+      now: h.clock.now(),
+    });
     expect(sweeps(h)).toEqual([]);
   });
 });

@@ -83,8 +83,8 @@ function setup() {
         command: process.execPath,
         args: [resolve(import.meta.dir, "../src/acp/testing/fake-agent.ts"), trace, script],
         env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home },
-        publishArtifact: createLinearArtifactPublisher({
-          db,
+        publishArtifact: await createLinearArtifactPublisher({
+          store: sqliteDb(db),
           files,
           secretsDir: join(home, "secrets"),
           itemId: "item",

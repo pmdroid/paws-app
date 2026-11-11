@@ -25,7 +25,6 @@ import {
   pendingPullCommentsSteps,
   queueLinearCommentSteps,
   restartSteps,
-  settled,
   settleLinearCommentsSteps,
   sqliteDb,
   type Db,
@@ -580,13 +579,12 @@ export type LinearCommentBrief = {
   comments: { commentId: string; updatedAtMs: number }[];
 };
 
-/** Synchronous until `Orchestrator.linearCommentBrief` can await it. */
 export function linearCommentBrief(
-  db: Database,
+  store: Db,
   item: WorkItemRecord,
   caps: Pick<LinearCommentCapabilities, "now" | "policy">,
-): LinearCommentBrief | null {
-  return settled(sqliteDb(db).transaction((q) => linearCommentBriefSteps(q, item, caps)));
+): Promise<LinearCommentBrief | null> {
+  return store.transaction((q) => linearCommentBriefSteps(q, item, caps));
 }
 
 function* linearCommentBriefSteps(
@@ -609,16 +607,14 @@ function* linearCommentBriefSteps(
       };
 }
 
-/** Synchronous until `Orchestrator.settleLinearCommentBrief` can await it. */
-export function settleLinearCommentBrief(
-  db: Database,
+export async function settleLinearCommentBrief(
+  store: Db,
   item: WorkItemRecord,
   brief: LinearCommentBrief,
   options: { now: number; wait?: PullFeedbackWait },
-): void {
-  const store = sqliteDb(db);
-  const gathered = settled(
-    store.transaction((q) => settleLinearCommentBriefSteps(q, item, brief, options)),
+): Promise<void> {
+  const gathered = await store.transaction((q) =>
+    settleLinearCommentBriefSteps(q, item, brief, options),
   );
   if (gathered) emitJobReady(store);
 }

@@ -206,7 +206,7 @@ export async function probeRunnerCoordinator(
       "fixture/repository",
       "fixture-team",
     ]);
-    coordinator.work.assign({
+    await coordinator.work.assign({
       id: workspaceId(),
       type: "run",
       runnerId: identity.runnerId,

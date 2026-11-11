@@ -680,6 +680,7 @@ import {
   evidenceSectionUrl,
   createLinearArtifactPublisher,
   publishedEvidence,
+  publishedEvidenceSteps,
   type EvidenceSink,
 } from "./artifacts";
 import { createLinearInputLoader, createReviewMarkLoader } from "./input-files";
@@ -736,7 +737,7 @@ import {
 import type { RuntimeList } from "../runtimes";
 import { createRuntimeLists } from "./runtime-lists";
 import { startFreshBudgetSteps } from "./time-budget";
-import { HOST_DISK_FULL_THOUGHT, hostDiskFullThoughtKey } from "./disk-full";
+import { HOST_DISK_FULL_THOUGHT, hostDiskFullThoughtKeySteps } from "./disk-full";
 import { questionEffects } from "./question-effects";
 import { GitHubInstallationCheck, type GitHubIntegration } from "./github-integration";
 import {
@@ -1253,15 +1254,20 @@ export class Orchestrator {
     };
   }
 
-  private linearCommentBrief(item: WorkItemRecord): LinearCommentBrief | null {
+  private async linearCommentBrief(item: WorkItemRecord): Promise<LinearCommentBrief | null> {
     const policy = this.options.linearComments;
-    return policy ? linearCommentBrief(this.db, item, { now: () => this.now(), policy }) : null;
+    return policy
+      ? await linearCommentBrief(this.store, item, { now: () => this.now(), policy })
+      : null;
   }
 
-  private settleLinearCommentBrief(item: WorkItemRecord, brief: LinearCommentBrief | null): void {
+  private async settleLinearCommentBrief(
+    item: WorkItemRecord,
+    brief: LinearCommentBrief | null,
+  ): Promise<void> {
     const policy = this.options.linearComments;
     if (brief === null || policy === undefined) return;
-    settleLinearCommentBrief(this.db, item, brief, {
+    await settleLinearCommentBrief(this.store, item, brief, {
       now: this.now(),
       wait: policy.wait?.() ?? this.feedbackWait(),
     });
@@ -1474,7 +1480,7 @@ export class Orchestrator {
       const caps = this.options.caps;
       if (caps !== undefined) {
         for (const saved of result.items) {
-          const limits = this.timeLimits(saved.id);
+          const limits = await this.store.run((q) => this.timeLimitsSteps(q, saved.id));
           await this.store.run((q) =>
             configureWorkItemSteps(q, saved.id, { maxAwakeMs: caps.maxAwakeMs, limits }),
           );
@@ -1599,13 +1605,13 @@ export class Orchestrator {
     const initialSession = sessionId
       ? await this.store.run((q) => getLinearSessionSteps(q, sessionId))
       : null;
-    const isCurrent = () => {
+    const isCurrent = async () => {
       if (this.shuttingDown) return false;
       if (initialSession === null || sessionId === null) return true;
-      const current = getLinearSession(this.db, sessionId);
+      const current = await this.store.run((q) => getLinearSessionSteps(q, sessionId));
       return current?.generation === initialSession.generation && current.stoppedAt === null;
     };
-    if (!isCurrent()) throw new Error("The Linear request changed before intake");
+    if (!(await isCurrent())) throw new Error("The Linear request changed before intake");
     const requestKey = taskKey;
     const savedRequest = requestKey
       ? await this.store.run((q) => getTaskClassificationSteps(q, requestKey))
@@ -1681,7 +1687,7 @@ export class Orchestrator {
               throw error;
             })
         : null;
-    if (!isCurrent()) throw new Error("The Linear request changed before intake");
+    if (!(await isCurrent())) throw new Error("The Linear request changed before intake");
     const now = () => this.now();
     function* retireRedirectedItemSteps(q: Q) {
       if (!redirect) return;
@@ -1706,7 +1712,7 @@ export class Orchestrator {
       this.assignSessionSteps(q, delegationId, session);
     const timeLimitsSteps = (q: Q, itemId: string) => this.timeLimitsSteps(q, itemId);
     const intakeCurrent = async () => {
-      if (!isCurrent()) return false;
+      if (!(await isCurrent())) return false;
       const authorized: EpicSnapshot | null = authorizedSnapshot;
       return (
         !sessionId ||
@@ -1762,7 +1768,7 @@ export class Orchestrator {
       ...(classification && classification.mode !== "code" ? { singleIssue: true } : {}),
       adoptParent: this.options.adoptLinearParent,
     });
-    if (!isCurrent()) throw new Error("The Linear request changed during intake");
+    if (!(await isCurrent())) throw new Error("The Linear request changed during intake");
     if (sessionId && loadedSnapshot && !result.alreadyExisted)
       this.intakeReads.set(sessionId, { snapshot: loadedSnapshot, edges });
     if (result.ok && classification && classification.mode !== "clarify") {
@@ -3139,12 +3145,13 @@ export class Orchestrator {
   private async noteHostDiskFull(itemId: string | null, error: unknown): Promise<void> {
     if (itemId === null || !isHostDiskFull(error)) return;
     const item = await this.store.run((q) => getWorkItemSteps(q, itemId));
-    const key = item && hostDiskFullThoughtKey(this.db, item.id, this.now());
+    const key =
+      item && (await this.store.run((q) => hostDiskFullThoughtKeySteps(q, item.id, this.now())));
     if (item && key) this.post(item, "thought", HOST_DISK_FULL_THOUGHT, key);
   }
 
-  private pushWorked(repository: string): void {
-    const ended = pushWorked(this.db, repository, this.now());
+  private async pushWorked(repository: string): Promise<void> {
+    const ended = await pushWorked(this.store, repository, this.now());
     if (ended) this.options.journal?.(`push outage on ${repository} ended`);
   }
 
@@ -3552,7 +3559,7 @@ export class Orchestrator {
         ].join("\n");
       }
       await this.hydrateLinearContext(item.sessionKey, controller.signal);
-      const responseComments = this.linearCommentBrief(item);
+      const responseComments = await this.linearCommentBrief(item);
       const prompt = [
         mode === "answer"
           ? "Answer the user's request in this Linear conversation. Provide the complete answer in your final message."
@@ -3591,7 +3598,7 @@ export class Orchestrator {
           home: this.options.home,
           prompt: text,
           readOnly: isReadOnlyTaskMode(mode),
-          publishArtifact: mode === "artifact" ? this.artifactPublisher(item) : undefined,
+          publishArtifact: mode === "artifact" ? await this.artifactPublisher(item) : undefined,
           checkpoint: false,
           signal: controller.signal,
           askTeam: this.askHook(item, run.id),
@@ -3601,7 +3608,7 @@ export class Orchestrator {
           onEvent: activity.onEvent,
         });
         if (result.stopReason === "end_turn" || this.askedRuns.has(run.id))
-          this.settleLinearCommentBrief(item, comments);
+          await this.settleLinearCommentBrief(item, comments);
         controller.signal.throwIfAborted();
         if (this.stopped(item.id) || this.askedRuns.has(run.id)) return false;
         if (
@@ -3615,7 +3622,7 @@ export class Orchestrator {
       };
       if (!(await turn(prompt, responseComments))) return;
       for (let extra = 0; extra < RESPONSE_COMMENT_TURNS; extra++) {
-        const later = this.linearCommentBrief(item);
+        const later = await this.linearCommentBrief(item);
         if (later === null) break;
         const again = [later.text, RESPONSE_COMMENT_PROMPT[mode]].join("\n\n");
         if (!(await turn(again, later))) return;
@@ -3833,7 +3840,7 @@ export class Orchestrator {
       const promptRunner = await this.prepareConversation(item);
       await this.hydrateLinearContext(item.sessionKey, controller.signal);
       const checkout = this.runCheckout(item);
-      const comments = this.linearCommentBrief(item);
+      const comments = await this.linearCommentBrief(item);
       const suggestions = returned === null ? "" : await this.suggestionBrief(item, repository);
       const turnHandoff = [handoff, comments?.text, suggestions]
         .filter((part) => part)
@@ -3922,7 +3929,7 @@ export class Orchestrator {
         pullRequest: this.pullRequestHook(item),
         postUpdate: this.updateHook(item),
         reply: this.replyHook(item),
-        publishArtifact: this.artifactPublisher(item),
+        publishArtifact: await this.artifactPublisher(item),
         closeoutProgress: this.agentCloseoutHook(item, run.id),
         ...(focus ? { closeoutFocus: focus } : {}),
         ...(draft ? { pullRequestDraft: draft } : {}),
@@ -3933,7 +3940,7 @@ export class Orchestrator {
         ...(launched.cancelGraceMs !== undefined ? { cancelGraceMs: launched.cancelGraceMs } : {}),
       });
       if (executed.run.stopReason === "end_turn" || this.askedRuns.has(run.id))
-        this.settleLinearCommentBrief(item, comments);
+        await this.settleLinearCommentBrief(item, comments);
       this.assertJobCurrent(item.id);
       controller.signal.throwIfAborted();
       const finished = await this.store.run((q) => getWorkItemSteps(q, item.id));
@@ -3982,7 +3989,7 @@ export class Orchestrator {
       // A fix turn for pull request comments must reply to each one it was handed before Closeout.
       // Not complete: restart() or ask() has ended the run, or another writer moved the item on
       // (`stale`, nothing stored). Closeout does not start.
-      const replies = checkReviewReplies(this.db, {
+      const replies = await checkReviewReplies(this.store, {
         item: finished,
         runId: run.id,
         sessionId: this.activitySession(finished),
@@ -4037,7 +4044,10 @@ export class Orchestrator {
       if (
         suggestionJob !== null &&
         head === (await this.store.run((q) => getWorkItemSteps(q, item.id)))?.acceptedHead &&
-        mergeAcceptedWork(this.db, item.id, { now: this.now(), exceptJobId: suggestionJob })
+        (await mergeAcceptedWork(this.store, item.id, {
+          now: this.now(),
+          exceptJobId: suggestionJob,
+        }))
       ) {
         await this.flush();
         return;
@@ -4493,7 +4503,7 @@ export class Orchestrator {
     const sessionProgress = this.sessionProgress(item);
     sessionProgress?.phase("verifying");
     const checkoutExclusions = this.runCheckout(item).checks;
-    const deps = this.agentDeps(item);
+    const deps = await this.agentDeps(item);
     const networkGit =
       repository && deps.signal
         ? await this.repositoryGit(item, repository, deps.signal, "write")
@@ -4645,7 +4655,7 @@ export class Orchestrator {
       },
       recorder: {
         record: async (verdict) => {
-          if (!deps.signal?.aborted) this.postEvidence(item, verdict);
+          if (!deps.signal?.aborted) await this.postEvidence(item, verdict);
           if (
             deps.signal?.aborted ||
             verdict.outcome === "accepted" ||
@@ -5726,15 +5736,15 @@ export class Orchestrator {
         settings: (item, signal) => this.mergeSettingsFor(item, signal, mergePolicy),
         policyDigests,
         holdForPolicy: (item, repository, unreadable) =>
-          holdForPolicyOutage(this.db, {
+          holdForPolicyOutage(this.store, {
             item,
             repository,
             unreadable,
             now: this.now(),
             publicUrl: this.options.publicUrl ?? null,
           }),
-        policyLoads: (repository) => {
-          policyLoads(this.db, repository, this.now());
+        policyLoads: async (repository) => {
+          await policyLoads(this.store, repository, this.now());
         },
         mergeResultPolicy: (_, worktree, heads) => {
           const error = mergeResultPolicyError(worktree, heads.base, heads.head);
@@ -5898,7 +5908,7 @@ export class Orchestrator {
       ...(this.options.publicationGitExec ? { gitExec: this.options.publicationGitExec } : {}),
       // During a push outage only the probe pushes; the first push that works ends it.
       push: {
-        before: () => holdPush(this.db, repositoryName, run.jobId),
+        before: () => holdPush(this.store, repositoryName, run.jobId),
         after: () => this.pushWorked(repositoryName),
       },
       onCleanupFailure: () => this.blockConversation(item.id),
@@ -6130,7 +6140,7 @@ export class Orchestrator {
       {},
       "ordered",
     );
-    this.attachEvidence(item, published.head);
+    await this.attachEvidence(item, published.head);
     const sessionProgress = this.sessionProgress(item);
     if (published.pull.url) sessionProgress?.link("Pull request", published.pull.url);
     if (newPublication || published.head !== candidateHead) sessionProgress?.phase("merging");
@@ -6505,10 +6515,6 @@ export class Orchestrator {
     );
   }
 
-  private timeLimits(itemId: string): StageLimits | undefined {
-    return settled(this.store.run((q) => this.timeLimitsSteps(q, itemId)));
-  }
-
   private *timeLimitsSteps(q: Q, itemId: string): Steps<StageLimits | undefined> {
     const limits = this.options.caps?.limits;
     if (limits === undefined) return undefined;
@@ -6706,7 +6712,7 @@ export class Orchestrator {
       return null;
     });
     if (remote === null) return false;
-    return await settleRejectedPush(this.db, item.id, {
+    return await settleRejectedPush(this.store, item.id, {
       remoteHead: remote.head,
       containsAccepted: remote.contains,
       now: this.now(),
@@ -6760,7 +6766,7 @@ export class Orchestrator {
         reason,
         handoff: readString(job.payload, "handoff"),
       }) ||
-      !mergeAcceptedWork(this.db, item.id, { now: this.now(), exceptJobId: job.id })
+      !(await mergeAcceptedWork(this.store, item.id, { now: this.now(), exceptJobId: job.id }))
     )
       return false;
     await this.flush();
@@ -7603,8 +7609,12 @@ export class Orchestrator {
     return implementerAgentFor(config, this.repositoryForItem(item), this.knownProfileLabels(item));
   }
 
-  private implementerProfile(item: WorkItemRecord, config: ReturnType<typeof loadConfigFile>) {
-    const repository = this.repositoryForItem(item);
+  private *implementerProfileSteps(
+    q: Q,
+    item: WorkItemRecord,
+    config: ReturnType<typeof loadConfigFile>,
+  ) {
+    const repository = yield* getWorkItemRepositorySteps(q, item.id);
     return resolveAgentProfiles(
       config,
       repository ? `${repository.owner}/${repository.repo}` : undefined,
@@ -7625,7 +7635,12 @@ export class Orchestrator {
   ): Steps<ItemRunnerVerdicts | null> {
     const item = yield* getWorkItemSteps(q, itemId);
     return item && config
-      ? yield* itemRunners(q, itemId, this.implementerProfile(item, config), this.now())
+      ? yield* itemRunners(
+          q,
+          itemId,
+          yield* this.implementerProfileSteps(q, item, config),
+          this.now(),
+        )
       : null;
   }
 
@@ -7743,7 +7758,7 @@ export class Orchestrator {
     for (const id of itemIds) {
       const item = getWorkItem(this.db, id);
       if (!item || item.state !== "queued" || item.cancelRequested) continue;
-      settled(clearQueueWait(sqliteDb(this.db), item.id));
+      await clearQueueWait(this.store, item.id);
       const need = (await this.options.runnerSetupNeed?.(item.id, agentFor(item), now)) ?? null;
       if (need) {
         await this.store.transaction((q) => this.queuedRunnerSetupHoldSteps(q, item.id, need, now));
@@ -9351,13 +9366,13 @@ export class Orchestrator {
     });
   }
 
-  private artifactPublisher(item: WorkItemRecord) {
+  private async artifactPublisher(item: WorkItemRecord) {
     const sessionId = this.activitySession(item);
     if (!sessionId) return undefined;
     const linear =
       this.options.files && this.options.secretsDir
-        ? createLinearArtifactPublisher({
-            db: this.db,
+        ? await createLinearArtifactPublisher({
+            store: this.store,
             files: this.options.files,
             secretsDir: this.options.secretsDir,
             itemId: item.id,
@@ -9368,8 +9383,8 @@ export class Orchestrator {
         : undefined;
     const evidence = this.options.evidence;
     if (!evidence) return linear;
-    return createEvidenceArtifactPublisher({
-      db: this.db,
+    return await createEvidenceArtifactPublisher({
+      store: this.store,
       evidence: evidence.store,
       publicUrl: evidence.publicUrl,
       itemId: item.id,
@@ -9388,14 +9403,15 @@ export class Orchestrator {
    * One thought per evidence check Closeout recorded at the verdict's head, with the file count
    * and a link to Paws. After the pull request response, the issue's evidence card instead.
    */
-  private postEvidence(item: WorkItemRecord, verdict: GateResult): void {
+  private async postEvidence(item: WorkItemRecord, verdict: GateResult): Promise<void> {
     const link = this.options.evidence && evidenceSectionUrl(this.options.evidence.publicUrl, item);
     if (!link || !verdict.head) return;
-    if (!this.canReportProgress(item.id)) return this.attachEvidence(item, verdict.head);
+    if (!(await this.store.run((q) => this.canReportProgressSteps(q, item.id))))
+      return await this.attachEvidence(item, verdict.head);
     const checkIds = (verdict.decision?.items ?? [])
       .filter((check) => check.kind === "evidence")
       .map((check) => check.id);
-    for (const { key, body } of evidenceThoughts(this.db, {
+    for (const { key, body } of await evidenceThoughts(this.store, {
       itemId: item.id,
       checkIds,
       head: verdict.head,
@@ -9405,13 +9421,18 @@ export class Orchestrator {
   }
 
   /** The issue's one "Closeout evidence" card once the pull request response exists. */
-  private attachEvidence(item: WorkItemRecord, head: string): void {
+  private async attachEvidence(item: WorkItemRecord, head: string): Promise<void> {
     const sessionId = this.activitySession(item);
     const link = this.options.evidence && evidenceSectionUrl(this.options.evidence.publicUrl, item);
-    if (!link || sessionId === null || !this.hasPublishedPullRequest(sessionId)) return;
-    enqueueEvidenceCard(this.db, {
+    if (
+      !link ||
+      sessionId === null ||
+      !(await this.store.run((q) => this.hasPublishedPullRequestSteps(q, sessionId)))
+    )
+      return;
+    await enqueueEvidenceCard(this.store, {
       sessionId,
-      generation: getLinearSessionGeneration(this.db, sessionId),
+      generation: await this.store.run((q) => getLinearSessionGenerationSteps(q, sessionId)),
       item,
       link,
       head,
@@ -9967,7 +9988,7 @@ export class Orchestrator {
     return resolved;
   }
 
-  private agentDeps(item: WorkItemRecord): AcpAgentDeps {
+  private async agentDeps(item: WorkItemRecord): Promise<AcpAgentDeps> {
     const runId = item.currentRunId ?? item.id;
     const repository = this.repositoryForItem(item);
     const profiles = () => this.profileSnapshot(runId);
@@ -9977,7 +9998,7 @@ export class Orchestrator {
       get profiles() {
         return profiles();
       },
-      publishArtifact: this.artifactPublisher(item),
+      publishArtifact: await this.artifactPublisher(item),
       prepareInputFiles: this.prepareInputFiles(item, runId),
       onCandidate: (identity) => {
         if (!this.signalForItem(item.id)?.aborted) this.saveCandidate(runId, identity);
@@ -10422,7 +10443,10 @@ export class Orchestrator {
             now: this.now(),
           });
         return load.ok && !load.absent
-          ? { ...load, published: publishedEvidence(this.db, item.id) }
+          ? {
+              ...load,
+              published: await this.store.run((q) => publishedEvidenceSteps(q, item.id)),
+            }
           : load;
       },
     };

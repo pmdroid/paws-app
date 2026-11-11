@@ -16,8 +16,6 @@ import {
   getWorkItemSteps,
   recordReviewEscapeSteps,
   keepMergeQueuePlaceSteps,
-  settled,
-  sqliteDb,
   type Db,
   type Q,
   type RestartHandoff,
@@ -83,15 +81,6 @@ export type MergeConflictNotice = { sessionId: string | null; pullNumber: number
  * the `merge-conflict:` prefix the activity gate lets through after the pull request response, and
  * the head, so a head is announced once. A thought, so the session shows the agent working again.
  */
-export function postMergeConflict(
-  db: Database,
-  item: WorkItemRecord,
-  notice: MergeConflictNotice,
-  now: number,
-): void {
-  settled(sqliteDb(db).transaction((q) => postMergeConflictSteps(q, item, notice, now)));
-}
-
 export function* postMergeConflictSteps(
   q: Q,
   item: WorkItemRecord,
