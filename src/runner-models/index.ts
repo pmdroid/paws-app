@@ -1,18 +1,22 @@
 import {
   agentModelSources,
+  agentModelSourcesSteps,
   cachedAgentModels,
-  finishAgentModelProbe,
-  immediate,
-  insertAgentModelProbe,
-  lastAgentModelProbeAt,
-  pendingAgentModelProbes,
-  runnerHasOpenWork,
-  runnerHealthCommandOutstanding,
-  runnerStanding,
-  saveAgentModelCatalog,
+  cachedAgentModelsSteps,
+  finishAgentModelProbeSteps,
+  insertAgentModelProbeSteps,
+  lastAgentModelProbeAtSteps,
+  pendingAgentModelProbesSteps,
+  runnerHasOpenWorkSteps,
+  runnerHealthCommandOutstandingSteps,
+  runnerStandingSteps,
+  saveAgentModelCatalogSteps,
+  sqliteDb,
   workspaceMember,
   workspaceMemberUsable,
   type AgentModelSource,
+  type Q,
+  type Steps,
 } from "../db";
 import { journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
@@ -44,17 +48,18 @@ export function createRunnerModels(options: {
   now?: () => number;
 }) {
   const { db, work } = options;
+  const store = sqliteDb(db);
   const now = options.now ?? Date.now;
   const sources = (at = now()) =>
     agentModelSources(db, at).filter((source) => work.supportsAgent(source.runnerId, source.agent));
   function cached(source: Source) {
     return cachedAgentModels(db, source).map((row) => ({ ...source, ...row }));
   }
-  function receive() {
-    const pending = pendingAgentModelProbes(db);
+  async function receive() {
+    const pending = await store.run((q) => pendingAgentModelProbesSteps(q));
     for (const probe of pending) {
       if (!probe.resultJson && probe.expiresAt > now()) continue;
-      immediate(db, () => {
+      await store.transaction(function* (q) {
         if (probe.resultJson) {
           const result = RunnerHealthResultSchema.parse(JSON.parse(probe.resultJson));
           if (
@@ -67,7 +72,7 @@ export function createRunnerModels(options: {
             result.models?.length &&
             (!probe.model || result.identity?.model === probe.model)
           ) {
-            saveAgentModelCatalog(db, {
+            yield* saveAgentModelCatalogSteps(q, {
               runnerId: probe.runnerId,
               userId: probe.userId,
               agent: probe.agent,
@@ -77,64 +82,76 @@ export function createRunnerModels(options: {
             });
           }
         }
-        finishAgentModelProbe(db, probe.commandId, now());
+        yield* finishAgentModelProbeSteps(q, probe.commandId, now());
       });
     }
   }
-  function refresh() {
-    receive();
-    const available = sources().sort((a, b) => lastRequest(a) - lastRequest(b));
-    for (const source of available) {
-      const { runnerId, userId, agent } = source;
-      const standing = runnerStanding(db, runnerId);
+  function* availableSteps(q: Q): Steps<Source[]> {
+    const ranked: Array<{ source: Source; lastAt: number }> = [];
+    for (const source of yield* agentModelSourcesSteps(q, now()))
+      if (yield* work.supportsAgentSteps(q, source.runnerId, source.agent))
+        ranked.push({ source, lastAt: yield* lastAgentModelProbeAtSteps(q, source) });
+    return ranked.sort((a, b) => a.lastAt - b.lastAt).map(({ source }) => source);
+  }
+  function* dueSteps(q: Q, source: Source): Steps<string | undefined> {
+    const rows = yield* cachedAgentModelsSteps(q, source);
+    const header = rows.find((row) => row.model === "");
+    const catalog = header ? RunnerHealthResultSchema.parse(JSON.parse(header.resultJson)) : null;
+    for (const model of [
+      "",
+      ...(catalog?.models ?? []).map((entry) => entry.id).filter(concrete),
+    ]) {
+      const row =
+        rows.find((entry) => entry.model === model) ??
+        (model && catalog?.identity?.model === model ? header : undefined);
+      if (row && row.updatedAt > now() - refreshMs) continue;
+      const last = yield* lastAgentModelProbeAtSteps(q, source, model);
+      if (!last || last <= now() - retryMs) return model;
+    }
+    return undefined;
+  }
+  function* nextProbeSteps(q: Q) {
+    for (const source of yield* availableSteps(q)) {
+      const standing = yield* runnerStandingSteps(q, source.runnerId);
       if (
         standing?.status !== "active" ||
         standing.lastSeenAt === null ||
         standing.lastSeenAt <= now() - 60_000
       )
         continue;
-      if (runnerHasOpenWork(db, runnerId, now())) continue;
-      if (runnerHealthCommandOutstanding(db, runnerId, now())) continue;
-      const rows = cached(source);
-      const header = rows.find((row) => row.model === "");
-      const catalog = header ? RunnerHealthResultSchema.parse(JSON.parse(header.resultJson)) : null;
-      const due = ["", ...(catalog?.models ?? []).map((model) => model.id).filter(concrete)].find(
-        (model) => {
-          const row =
-            rows.find((entry) => entry.model === model) ??
-            (model && catalog?.identity?.model === model ? header : undefined);
-          return (
-            (!row || row.updatedAt <= now() - refreshMs) &&
-            (!lastRequest(source, model) || lastRequest(source, model) <= now() - retryMs)
-          );
-        },
-      );
-      if (due === undefined) continue;
-      immediate(db, () => {
-        const commandId = randomUUID();
-        work.enqueue({
-          id: commandId,
-          runnerId,
-          workspaceId: source.workspaceId,
-          type: "probe",
-          profile: { agent, model: due || null },
-          issuedAt: now(),
-          expiresAt: now() + 120_000,
-        });
-        insertAgentModelProbe(db, {
-          commandId,
-          runnerId,
-          userId,
-          agent,
-          model: due,
-          requestedAt: now(),
-        });
-      });
-      return;
+      if (yield* runnerHasOpenWorkSteps(q, source.runnerId, now())) continue;
+      if (yield* runnerHealthCommandOutstandingSteps(q, source.runnerId, now())) continue;
+      const due = yield* dueSteps(q, source);
+      if (due !== undefined) return { source, due };
     }
+    return null;
   }
-  function lastRequest(source: Source, model?: string): number {
-    return lastAgentModelProbeAt(db, source, model);
+  async function refresh() {
+    await receive();
+    const next = await store.run((q) => nextProbeSteps(q));
+    if (!next) return;
+    const { source, due } = next;
+    const { runnerId, userId, agent } = source;
+    await store.transaction(function* (q) {
+      const commandId = randomUUID();
+      yield* work.enqueueSteps(q, {
+        id: commandId,
+        runnerId,
+        workspaceId: source.workspaceId,
+        type: "probe",
+        profile: { agent, model: due || null },
+        issuedAt: now(),
+        expiresAt: now() + 120_000,
+      });
+      yield* insertAgentModelProbeSteps(q, {
+        commandId,
+        runnerId,
+        userId,
+        agent,
+        model: due,
+        requestedAt: now(),
+      });
+    });
   }
   function read(principal: { workspaceId: string; userId: string }): AgentModelCatalog[] {
     if (!workspaceMemberUsable(workspaceMember(db, principal.workspaceId, principal.userId)))

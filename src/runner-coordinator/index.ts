@@ -261,12 +261,10 @@ export async function openRunnerCoordinator(options: {
   }, 1000);
   timer.unref();
   const refreshModels = () => {
-    try {
-      models.refresh();
-    } catch (error) {
+    models.refresh().catch((error: unknown) => {
       journalCaught(error, "runner-coordinator.openRunnerCoordinator.refresh", null);
       options.onError(error);
-    }
+    });
   };
   const modelTimer = options.discoverModels ? setInterval(refreshModels, 15_000) : undefined;
   modelTimer?.unref();
