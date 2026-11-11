@@ -1,25 +1,25 @@
 import type { Database } from "bun:sqlite";
 import {
-  releasePushOutageJobs,
-  endPushOutage,
-  getJob,
+  releasePushOutageJobsSteps,
+  endPushOutageSteps,
   getJobSteps,
-  getPushOutage,
   getPushOutageSteps,
   getWorkItemSteps,
-  immediate,
   listPushOutagesSteps,
   parkLeasedJobSteps,
   recordPushOutageSteps,
   setPushOutageQuestionSteps,
+  settled,
   sqliteDb,
-  takePushOutageProbe,
+  takePushOutageProbeSteps,
+  type Q,
+  type Steps,
   type Job,
   type PushOutage,
 } from "../db";
 import { PushOutageError, pushOutageProbeDelayMs } from "../github";
 import { journal } from "../journal";
-import { cancelQuestion, getQuestion } from "../questions";
+import { cancelQuestionSteps, getQuestionSteps } from "../questions";
 import { ask } from "./operations";
 
 /** After this long in an outage, Paws asks one workspace question to check the App installation. */
@@ -41,14 +41,16 @@ export function pushOutageBanner(outage: PushOutage): string {
  * Throws a held {@link PushOutageError} when `jobId` must not push to `repository` now: another
  * live merge job probes the outage. A job whose probe is gone takes the probe over.
  */
+export function* holdPushSteps(q: Q, repository: string, jobId: number | null): Steps<void> {
+  const outage = yield* getPushOutageSteps(q, repository);
+  if (outage === null || jobId === null || outage.probeJobId === jobId) return;
+  if (outage.probeJobId !== null && (yield* jobLiveSteps(q, outage.probeJobId)))
+    throw new PushOutageError(["push"], outage.lastError, true);
+  yield* takePushOutageProbeSteps(q, repository, jobId);
+}
+
 export function holdPush(db: Database, repository: string, jobId: number | null): void {
-  immediate(db, () => {
-    const outage = getPushOutage(db, repository);
-    if (outage === null || jobId === null || outage.probeJobId === jobId) return;
-    if (outage.probeJobId !== null && jobLive(db, outage.probeJobId))
-      throw new PushOutageError(["push"], outage.lastError, true);
-    takePushOutageProbe(db, repository, jobId);
-  });
+  settled(sqliteDb(db).transaction((q) => holdPushSteps(q, repository, jobId)));
 }
 
 /**
@@ -120,13 +122,15 @@ export async function parkForPushOutage(
  * queue order, and closes the workspace question. Returns the outage it ended, or null.
  */
 export function pushWorked(db: Database, repository: string, now: number): PushOutage | null {
-  const ended = immediate(db, () => {
-    const outage = endPushOutage(db, repository);
-    if (outage === null) return null;
-    releasePushOutageJobs(db, repository, now);
-    if (outage.questionId !== null) cancelQuestion(db, outage.questionId, now);
-    return outage;
-  });
+  const ended = settled(
+    sqliteDb(db).transaction(function* (q) {
+      const outage = yield* endPushOutageSteps(q, repository);
+      if (outage === null) return null;
+      yield* releasePushOutageJobsSteps(q, repository, now);
+      if (outage.questionId !== null) yield* cancelQuestionSteps(q, outage.questionId, now);
+      return outage;
+    }),
+  );
   if (ended) journal(`push outage on ${repository} ended`);
   return ended;
 }
@@ -145,10 +149,11 @@ export async function askAboutPushOutage(
     const outage = yield* getPushOutageSteps(q, repository);
     if (outage === null || now - outage.startedAt < PUSH_OUTAGE_QUESTION_MS) return "not_yet";
     if (outage.questionId !== null) return "already";
-    const open = (yield* listPushOutagesSteps(q)).some((entry) => {
-      const question = entry.questionId ? getQuestion(db, entry.questionId) : null;
-      return question?.status === "open" || question?.status === "queued";
-    });
+    let open = false;
+    for (const entry of yield* listPushOutagesSteps(q)) {
+      const question = entry.questionId ? yield* getQuestionSteps(q, entry.questionId) : null;
+      if (question?.status === "open" || question?.status === "queued") open = true;
+    }
     if (open) return "already";
     const probe = outage.probeJobId === null ? null : yield* getJobSteps(q, outage.probeJobId);
     const itemId =
@@ -198,7 +203,7 @@ function scrubTokens(text: string): string {
   return text.replace(/\b(gh[pousr]_|github_pat_)[A-Za-z0-9_]+/g, "[redacted]");
 }
 
-function jobLive(db: Database, jobId: number): boolean {
-  const job = getJob(db, jobId);
+function* jobLiveSteps(q: Q, jobId: number): Steps<boolean> {
+  const job = yield* getJobSteps(q, jobId);
   return job?.status === "pending" || job?.status === "running";
 }
