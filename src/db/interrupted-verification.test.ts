@@ -37,20 +37,24 @@ const pending = (db: ReturnType<typeof verifying>["db"]) =>
   listJobs(db).filter((job) => job.status === "pending");
 
 describe("interrupted verification", () => {
-  test("a clean shutdown keeps the candidate in verifying and the next start re-verifies it", () => {
+  test("a clean shutdown keeps the candidate in verifying and the next start re-verifies it", async () => {
     const { db, item, run } = verifying();
-    prepareShutdown(db, NOW + 1);
+    await prepareShutdown(sqliteDb(db), NOW + 1);
     expect(getWorkItem(db, item.id)?.state).toBe("verifying");
     expect(getRun(db, run.id)?.status).toBe("lost");
-    expect(recoverOnStartup(db, NOW + 2)).toEqual([{ type: "reverify", resumed: true }]);
+    expect(await recoverOnStartup(sqliteDb(db), NOW + 2)).toEqual([
+      { type: "reverify", resumed: true },
+    ]);
     expect(getWorkItem(db, item.id)).toMatchObject({ state: "verifying", recoveryAttempts: 1 });
     expect(pending(db).map((job) => job.queue)).toEqual([JOB_KIND.reverify]);
   });
 
-  test("a crash start re-verifies the candidate once and then asks", () => {
+  test("a crash start re-verifies the candidate once and then asks", async () => {
     const { db, item } = verifying();
-    expect(recoverOnStartup(db, NOW + 1)).toEqual([{ type: "reverify", resumed: true }]);
-    expect(recoverOnStartup(db, NOW + 2)).toEqual([{ type: "ask_restart" }]);
+    expect(await recoverOnStartup(sqliteDb(db), NOW + 1)).toEqual([
+      { type: "reverify", resumed: true },
+    ]);
+    expect(await recoverOnStartup(sqliteDb(db), NOW + 2)).toEqual([{ type: "ask_restart" }]);
     expect(listJobs(db).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
     const held = getWorkItem(db, item.id)!;
     expect(held.state).toBe("recovering");
@@ -66,21 +70,21 @@ describe("interrupted verification", () => {
       message: null,
       now: NOW,
     });
-    prepareShutdown(db, NOW + 1);
-    expect(recoverOnStartup(db, NOW + 2)).toEqual([]);
+    await prepareShutdown(sqliteDb(db), NOW + 1);
+    expect(await recoverOnStartup(sqliteDb(db), NOW + 2)).toEqual([]);
     expect(pending(db)).toMatchObject([
       { queue: JOB_KIND.reverify, runAt: NOW + 60_000, payload: { retry: 1 } },
     ]);
     expect(getWorkItem(db, item.id)?.recoveryAttempts).toBe(0);
   });
 
-  test("a verifying item without a recorded candidate still moves to recovering", () => {
+  test("a verifying item without a recorded candidate still moves to recovering", async () => {
     const { db, item } = verifying(false);
-    prepareShutdown(db, NOW + 1);
+    await prepareShutdown(sqliteDb(db), NOW + 1);
     expect(getWorkItem(db, item.id)?.state).toBe("recovering");
   });
 
-  test("an expired runner lease keeps the candidate verifying, and re-verifies it without waiting for orphan recovery", () => {
+  test("an expired runner lease keeps the candidate verifying, and re-verifies it without waiting for orphan recovery", async () => {
     const { db, item, run } = verifying();
     db.run("PRAGMA foreign_keys=OFF");
     db.run(
@@ -92,19 +96,19 @@ describe("interrupted verification", () => {
       [JOB_KIND.start, JSON.stringify({ itemId: item.id }), "done", NOW, NOW, NOW],
     );
     const later = NOW + 60_000 + RUNNER_LEASE_GRACE_MS + 10 * 60_000;
-    expect(closeExpiredRunnerLeases(db, later)).toEqual([run.id]);
+    expect(await closeExpiredRunnerLeases(sqliteDb(db), later)).toEqual([run.id]);
     expect(getWorkItem(db, item.id)?.state).toBe("verifying");
     expect(getRun(db, run.id)?.status).toBe("lost");
     expect(pending(db)).toMatchObject([
       { queue: JOB_KIND.reverify, payload: { itemId: item.id, recheckHead: true } },
     ]);
-    expect(requeueOrphanedWork(db, later)).toEqual([]);
+    expect(await requeueOrphanedWork(sqliteDb(db), later)).toEqual([]);
   });
 
-  test("Stop wins over a kept candidate", () => {
+  test("Stop wins over a kept candidate", async () => {
     const { db, item } = verifying();
     db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", [item.id]);
-    prepareShutdown(db, NOW + 1);
-    expect(requeueOrphanedWork(db, NOW + 60 * 60_000)).toEqual([]);
+    await prepareShutdown(sqliteDb(db), NOW + 1);
+    expect(await requeueOrphanedWork(sqliteDb(db), NOW + 60 * 60_000)).toEqual([]);
   });
 });

@@ -2179,7 +2179,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         ],
         flush: () =>
           prepareShutdown(
-            db,
+            store,
             Date.now(),
             (item) => {
               const policy = getItemRunCommitPolicy(db, item.id);

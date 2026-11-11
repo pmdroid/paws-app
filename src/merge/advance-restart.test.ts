@@ -50,10 +50,10 @@ function reverifies(h: MergeHarness) {
   return listJobs(h.db).filter((job) => job.queue === JOB_KIND.reverify);
 }
 
-function restart(h: MergeHarness): void {
-  prepareShutdown(h.db, h.clock.now());
+async function restart(h: MergeHarness): Promise<void> {
+  await prepareShutdown(sqliteDb(h.db), h.clock.now());
   h.clock.advance(1_000);
-  recoverOnStartup(h.db, h.clock.now());
+  await recoverOnStartup(sqliteDb(h.db), h.clock.now());
 }
 
 describe("a Paws restart and the merge queue", () => {
@@ -118,7 +118,7 @@ describe("a Paws restart and the merge queue", () => {
     }
     expect(listMergeQueues(h.db).map((entry) => entry.itemId)).toEqual(ids);
 
-    restart(h);
+    await restart(h);
 
     expect(reverifies(h)).toEqual([]);
     for (const id of ids) expect(getWorkItem(h.db, id)?.state).toBe("merge_queue");
@@ -144,7 +144,7 @@ describe("a Paws restart and the merge queue", () => {
     expect(getConfirmedRemoteMerge(h.db, item.id)).toBeNull();
     expect(mergeCallInFlight(h.db, item.id)).toBe(true);
 
-    restart(h);
+    await restart(h);
 
     expect(getWorkItem(h.db, item.id)?.state).toBe("merge_queue");
     expect(reverifies(h)).toEqual([]);
@@ -175,7 +175,7 @@ describe("a Paws restart and the merge queue", () => {
       h.state.dropMergeResponse = fault === "timeout";
       h.state.mergeResponseStatus = fault === "502" ? 502 : 200;
       expect(await h.pass(item.id)).toMatchObject({ kind: "wait", reason: "merge_outcome" });
-      restart(h);
+      await restart(h);
       h.state.mergeReadUnknown = true;
       const published = h.published.length;
       const queue = listMergeQueues(h.db);
@@ -217,7 +217,7 @@ describe("a Paws restart and the merge queue", () => {
       h.clock.now(),
     ]);
 
-    restart(h);
+    await restart(h);
 
     h.state.mergeReadUnknown = true;
     expect(await h.pass(first.id, { itemId: first.id })).toMatchObject({

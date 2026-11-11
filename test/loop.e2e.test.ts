@@ -2462,7 +2462,7 @@ for (const movedHead of [false, true]) {
       expect(github.merged).toHaveLength(0);
       db.close();
       db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-      recoverOnStartup(db);
+      await recoverOnStartup(sqliteDb(db));
       db.run("CREATE TEMP TABLE title_write (summary TEXT)");
       for (const event of ["INSERT", "UPDATE OF payload"])
         db.run(`CREATE TEMP TRIGGER "title_${event}" AFTER ${event} ON outbox

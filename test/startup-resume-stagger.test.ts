@@ -17,6 +17,7 @@ import {
   openDatabase,
   prepareShutdown,
   recoverOnStartup,
+  sqliteDb,
 } from "../src/db";
 import {
   createFakeLinearAccessReads,
@@ -147,7 +148,7 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
     firstStop.abort();
     await first.orchestrator.shutdown().catch(() => undefined);
     await firstLoop;
-    prepareShutdown(db);
+    await prepareShutdown(sqliteDb(db));
     expect(
       listWorkItems(db).map((item) => item.state),
       detail(db),
@@ -169,7 +170,7 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
       }
     };
     const clock = new FakeClock(Date.now());
-    recoverOnStartup(db, clock.now());
+    await recoverOnStartup(sqliteDb(db), clock.now());
     second = attach(clock);
     secondLoop = second.jobs.run(secondStop.signal, () => Bun.sleep(5));
     const claimed = () =>

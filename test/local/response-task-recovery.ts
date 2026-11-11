@@ -67,7 +67,7 @@ export async function probeResponseTaskRecovery(root: string) {
         "https://files.example.test/screenshot.png",
       );
     }
-    prepareShutdown(db, clock.now());
+    await prepareShutdown(sqliteDb(db), clock.now());
     assert.equal(getWorkItem(db, item.id)?.checkpoint, null);
     db.close();
     db = openDatabase(path);
@@ -113,7 +113,7 @@ export async function probeResponseTaskRecovery(root: string) {
       },
     });
     try {
-      assert.deepEqual(recoverOnStartup(db, clock.now()), [
+      assert.deepEqual(await recoverOnStartup(sqliteDb(db), clock.now()), [
         { type: "resume", freshSession: true, checkpoint: null },
       ]);
       assert.equal(getWorkItem(db, item.id)?.recoveryAttempts, 1);
@@ -139,7 +139,7 @@ export async function probeResponseTaskRecovery(root: string) {
         assert.equal((await listArtifacts(sqliteDb(db), item.id))[0]?.state, "uploaded");
         assert.match(String(responses[0]!.body), /https:\/\/files.example.test\/screenshot.png/);
       }
-      assert.deepEqual(recoverOnStartup(db, clock.now()), []);
+      assert.deepEqual(await recoverOnStartup(sqliteDb(db), clock.now()), []);
       observations.push({
         mode,
         passed: true,

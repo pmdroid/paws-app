@@ -914,7 +914,7 @@ export async function probeRunnerOrchestration(
             });
             setCurrentRun(db, item.id, foreignRunId);
           } else markRun(db, originalRunId, "active", Date.now());
-          assert.deepEqual(recoverOnStartup(db), [{ type: "reverify" }]);
+          assert.deepEqual(await recoverOnStartup(sqliteDb(db)), [{ type: "reverify" }]);
           assert.equal(getWorkItem(db, item.id)?.state, "verifying");
           assert.equal(getRun(db, foreignRunId)?.status, "active");
         }

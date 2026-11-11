@@ -188,8 +188,8 @@ describe("restart and ask", () => {
   test("repeated startup keeps one runnable restart question and one actionable question", async () => {
     const { db } = fixture();
     db.run("UPDATE work_item SET recovery_attempts=1, resumed_at=1 WHERE id='item'");
-    recoverOnStartup(db, 100);
-    recoverOnStartup(db, 200);
+    await recoverOnStartup(sqliteDb(db), 100);
+    await recoverOnStartup(sqliteDb(db), 200);
     const pending = listJobs(db).filter((job) => job.queue === "item.ask");
     expect(pending).toHaveLength(1);
     expect(pending[0]?.status).toBe("pending");
@@ -203,7 +203,7 @@ describe("restart and ask", () => {
       admission: workspaceAdmission(db),
     });
     await jobs.tick(["item.ask"]);
-    recoverOnStartup(db, 400);
+    await recoverOnStartup(sqliteDb(db), 400);
     await jobs.tick(["item.ask"]);
     expect(getWorkItem(db, "item")?.state).toBe("awaiting_input");
     expect(
@@ -228,8 +228,8 @@ describe("restart and ask", () => {
       });
       db.run("UPDATE job SET status='done' WHERE id=?", [id]);
       db.run("UPDATE work_item SET recovery_attempts=1, resumed_at=1 WHERE id='item'");
-      recoverOnStartup(db, 100);
-      recoverOnStartup(db, 200);
+      await recoverOnStartup(sqliteDb(db), 100);
+      await recoverOnStartup(sqliteDb(db), 200);
       expect(getJob(db, id)?.status).toBe("done");
       expect(
         db
@@ -410,7 +410,7 @@ describe("restart and ask", () => {
         { now: 2 },
       ),
     );
-    recoverOnStartup(db, 3);
+    await recoverOnStartup(sqliteDb(db), 3);
     expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
     expect(findOpenQuestion(db, "session")?.body).toBe("Continue?");
     expect(listJobs(db).filter((job) => job.queue === JOB_KIND.catchup)).toHaveLength(1);

@@ -335,15 +335,15 @@ async function shutDownMidCommand(f: Fixture, options: (signal: AbortSignal) => 
   return command;
 }
 
-function restartWithRunnerHolding(f: Fixture) {
+async function restartWithRunnerHolding(f: Fixture) {
   expect(f.commandCount("cancel")).toBe(0);
-  prepareShutdown(f.db);
+  await prepareShutdown(sqliteDb(f.db));
   expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "verifying", recoveryAttempts: 0 });
   expect(getRun(f.db, f.run.id)?.status).toBe("active");
   f.restart();
-  expect(recoverOnStartup(f.db)).toEqual([{ type: "reverify" }]);
+  expect(await recoverOnStartup(sqliteDb(f.db))).toEqual([{ type: "reverify" }]);
   // A second start before the re-verify ran does not queue another one.
-  expect(recoverOnStartup(f.db)).toEqual([{ type: "reverify" }]);
+  expect(await recoverOnStartup(sqliteDb(f.db))).toEqual([{ type: "reverify" }]);
   expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "verifying", recoveryAttempts: 0 });
   expect(
     listJobs(f.db).filter((job) => job.queue === "run.reverify" && job.status === "pending"),
@@ -374,7 +374,7 @@ test("a Closeout review keeps running through a Paws restart and its result is u
   try {
     const command = await shutDownMidCommand(f, f.review);
     expect(command.type).toBe("review");
-    restartWithRunnerHolding(f);
+    await restartWithRunnerHolding(f);
 
     // The runner delivers the review it finished while Paws was down.
     expect(await f.finish(command, { reviewText: REVIEW_TEXT })).toEqual({ duplicate: false });
@@ -401,7 +401,7 @@ test("a Closeout check run keeps running through a Paws restart and its report i
   try {
     const command = await shutDownMidCommand(f, f.checks);
     expect(command.type).toBe("run");
-    restartWithRunnerHolding(f);
+    await restartWithRunnerHolding(f);
 
     const commands = f.commandCount();
     f.events.length = 0;
@@ -426,7 +426,7 @@ test("a delivered Closeout result has only one backend importer", async () => {
   const f = await fixture();
   try {
     const command = await shutDownMidCommand(f, f.review);
-    restartWithRunnerHolding(f);
+    await restartWithRunnerHolding(f);
     await f.finish(command, { reviewText: REVIEW_TEXT });
     let release!: () => void;
     const held = new Promise<void>((resolve) => {
@@ -461,7 +461,7 @@ test("a kept Closeout command for another head is cancelled and the checks are p
   const f = await fixture();
   try {
     const stale = await shutDownMidCommand(f, (signal) => f.checks(signal, "b".repeat(40)));
-    restartWithRunnerHolding(f);
+    await restartWithRunnerHolding(f);
 
     // The runner takes no command until it acknowledges the cancel, so the re-verify waits.
     const attempt = () =>
@@ -489,20 +489,24 @@ test("a verifying item whose runner lease ran past its grace re-verifies as befo
     await shutDownMidCommand(f, f.review);
     expect(f.commandCount("cancel")).toBe(0);
     const later = Date.now() + 60_001 + RUNNER_LEASE_GRACE_MS;
-    prepareShutdown(f.db, later);
+    await prepareShutdown(sqliteDb(f.db), later);
     expect(getWorkItem(f.db, f.item.id)).toMatchObject({
       state: "verifying",
       checkpoint: { phase: "verifying", wipCommit: f.head },
     });
     expect(getRun(f.db, f.run.id)?.status).toBe("lost");
     f.restart();
-    expect(recoverOnStartup(f.db, later)).toEqual([{ type: "reverify", resumed: true }]);
+    expect(await recoverOnStartup(sqliteDb(f.db), later)).toEqual([
+      { type: "reverify", resumed: true },
+    ]);
     expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "verifying", recoveryAttempts: 1 });
     const open = listJobs(f.db).filter((job) => job.status === "pending");
     expect(open.map((job) => job.queue)).toEqual(["run.reverify"]);
     expect(open[0]!.payload).toMatchObject({ itemId: f.item.id, recheckHead: true });
     f.restart();
-    expect(recoverOnStartup(f.db, later + 1_000)).toEqual([{ type: "ask_restart" }]);
+    expect(await recoverOnStartup(sqliteDb(f.db), later + 1_000)).toEqual([
+      { type: "ask_restart" },
+    ]);
     expect(listJobs(f.db).some((job) => job.queue === "run.resume")).toBe(false);
   } finally {
     await f.close();
@@ -677,7 +681,7 @@ test("a turn Paws reattaches after a restart gets a fresh read lease, and the ol
     const command = await shutDownMidCommand(f, withRead);
     expect(command.type === "run" && command.githubRead).toBe(true);
     expect(read.closed).toEqual([command.id]);
-    restartWithRunnerHolding(f);
+    await restartWithRunnerHolding(f);
     const resumed = f.services.backend.forItem(f.item.id)(withRead(new AbortController().signal));
     await f.until(() => read.opened.length === 2);
     await f.finish(command, { candidateSha: f.head, closeoutReport: REPORT });

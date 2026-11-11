@@ -1,7 +1,6 @@
 import { journalCaught } from "../journal";
 import { journal } from "./journal";
 import { heartbeatInstanceSteps, ownerGoneSteps } from "./instances";
-import type { Database } from "bun:sqlite";
 import { and, desc, eq, inArray, isNotNull, isNull, like, or, sql, type SQL } from "drizzle-orm";
 import {
   decideStartup,
@@ -19,7 +18,7 @@ import { enqueueOutboxOnceSteps } from "./outbox";
 import {
   applyWorkItemEventSteps,
   getWorkItemSteps,
-  listInFlightItems,
+  listInFlightItemsSteps,
   listWorkItemsByStatesSteps,
   saveCheckpointSteps,
 } from "./items";
@@ -40,10 +39,10 @@ import {
 } from "./runs";
 import { pendingRestartHandoffSteps } from "./restart";
 import { jsonField } from "./json-text";
-import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
+import type { Db, Q, Steps } from "./db";
 
-/** Commit dirty files on the item branch. Sync, so shutdown can finish before exit. */
-export type ShutdownWipCommit = (item: WorkItemRecord) => void;
+/** Commit dirty files on the item branch. Shutdown awaits it before the database closes. */
+export type ShutdownWipCommit = (item: WorkItemRecord) => void | Promise<void>;
 
 const STARTUP_STATES = [
   "awaiting_input",
@@ -75,19 +74,17 @@ export function* recoverOnStartupSteps(
   return yield* recoverItemsSteps(q, now, instanceId, true, wake);
 }
 
-export function recoverOnStartup(
-  db: Database,
+export async function recoverOnStartup(
+  store: Db,
   now = Date.now(),
   offlineBudgetMs?: number,
   instanceId?: string,
-): StartupDecision[] {
+): Promise<StartupDecision[]> {
   const wake = { armed: false };
-  const decisions = settled(
-    sqliteDb(db).transaction((q) =>
-      recoverOnStartupSteps(q, now, offlineBudgetMs, instanceId, wake),
-    ),
+  const decisions = await store.transaction((q) =>
+    recoverOnStartupSteps(q, now, offlineBudgetMs, instanceId, wake),
   );
-  if (wake.armed) emitJobReady(db);
+  if (wake.armed) emitJobReady(store);
   return decisions;
 }
 
@@ -101,16 +98,14 @@ export function* takeOverGoneRunsSteps(
   return yield* recoverItemsSteps(q, now, instanceId, false, wake);
 }
 
-export function takeOverGoneRuns(
-  db: Database,
+export async function takeOverGoneRuns(
+  store: Db,
   instanceId: string,
   now = Date.now(),
-): StartupDecision[] {
+): Promise<StartupDecision[]> {
   const wake = { armed: false };
-  const decisions = settled(
-    sqliteDb(db).transaction((q) => takeOverGoneRunsSteps(q, instanceId, now, wake)),
-  );
-  if (wake.armed) emitJobReady(db);
+  const decisions = await store.transaction((q) => takeOverGoneRunsSteps(q, instanceId, now, wake));
+  if (wake.armed) emitJobReady(store);
   return decisions;
 }
 
@@ -294,25 +289,24 @@ export function* prepareShutdownSteps(q: Q, now: number, instanceId: string | un
  * the merge queue keeps its state and its place for the next start to pick up; one
  * whose run is still active is left for a re-verify.
  */
-export function prepareShutdown(
-  db: Database,
+export async function prepareShutdown(
+  store: Db,
   now = Date.now(),
   commitWip?: ShutdownWipCommit,
   instanceId?: string,
-): void {
-  const store = sqliteDb(db);
+): Promise<void> {
   if (commitWip !== undefined) {
-    for (const item of listInFlightItems(db)) {
-      if (!settled(store.run((q) => ownsSteps(q, item, instanceId)))) continue;
+    for (const item of await store.run(listInFlightItemsSteps)) {
+      if (!(await store.run((q) => ownsSteps(q, item, instanceId)))) continue;
       try {
-        commitWip(item);
+        await commitWip(item);
       } catch (caughtError1) {
         journalCaught(caughtError1, "recovery.prepareShutdown.commitWip", item.id);
         // The lease move still happens. A missing worktree is not a reason to skip shutdown.
       }
     }
   }
-  settled(store.transaction((q) => prepareShutdownSteps(q, now, instanceId)));
+  await store.transaction((q) => prepareShutdownSteps(q, now, instanceId));
 }
 
 function* runActiveSteps(q: Q, item: WorkItemRecord) {
@@ -379,11 +373,6 @@ function* hasPendingAnswerResumeSteps(q: Q, itemId: string): Steps<boolean> {
 
 /** Item or run ids a recovery pass changed, and whether it armed a job to wake the loop for. */
 type RecoveryResult = { ids: string[]; armed: boolean };
-
-function recovered(source: Database | Db, result: RecoveryResult): string[] {
-  if (result.armed) emitJobReady(source);
-  return result.ids;
-}
 
 /**
  * Queue work again for an in-flight item nothing is moving: no pending or running job, no live
@@ -453,12 +442,10 @@ export function* requeueOrphanedWorkSteps(q: Q, now: number): Steps<RecoveryResu
   return { ids: requeued, armed };
 }
 
-export function requeueOrphanedWork(db: Database, now: number): string[] {
-  return recovered(db, settled(sqliteDb(db).run((q) => requeueOrphanedWorkSteps(q, now))));
-}
-
-export async function requeueOrphanedWorkAsync(store: Db, now: number): Promise<string[]> {
-  return recovered(store, await store.run((q) => requeueOrphanedWorkSteps(q, now)));
+export async function requeueOrphanedWork(store: Db, now: number): Promise<string[]> {
+  const result = await store.run((q) => requeueOrphanedWorkSteps(q, now));
+  if (result.armed) emitJobReady(store);
+  return result.ids;
 }
 
 /**
@@ -505,15 +492,10 @@ export function* closeExpiredRunnerLeasesSteps(q: Q, now: number): Steps<Recover
   return { ids: rows.map((row) => row.runId), armed };
 }
 
-export function closeExpiredRunnerLeases(db: Database, now: number): string[] {
-  return recovered(
-    db,
-    settled(sqliteDb(db).transaction((q) => closeExpiredRunnerLeasesSteps(q, now))),
-  );
-}
-
-export async function closeExpiredRunnerLeasesAsync(store: Db, now: number): Promise<string[]> {
-  return recovered(store, await store.transaction((q) => closeExpiredRunnerLeasesSteps(q, now)));
+export async function closeExpiredRunnerLeases(store: Db, now: number): Promise<string[]> {
+  const result = await store.transaction((q) => closeExpiredRunnerLeasesSteps(q, now));
+  if (result.armed) emitJobReady(store);
+  return result.ids;
 }
 
 /** Whether the follow-up armed a job. */

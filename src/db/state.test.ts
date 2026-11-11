@@ -52,12 +52,12 @@ function harness() {
 const checkpoint: Checkpoint = { phase: "running", wipCommit: "wip", turn: 2, baseSha: "base" };
 
 describe("restart recovery", () => {
-  test("the first start resumes from the checkpoint and the next one asks in Linear", () => {
+  test("the first start resumes from the checkpoint and the next one asks in Linear", async () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { id: "eng-1", sessionKey: "ses", now: clock.now() });
     const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
 
-    expect(recoverOnStartup(db, clock.now())).toEqual([
+    expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([
       { type: "resume", freshSession: true, checkpoint },
     ]);
     expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
@@ -68,7 +68,7 @@ describe("restart recovery", () => {
     expect(resume?.payload).toMatchObject({ freshSession: true, runId: run.id, checkpoint });
     expect(resume?.payload).not.toHaveProperty("handoff");
 
-    expect(recoverOnStartup(db, clock.now())).toEqual([{ type: "ask_restart" }]);
+    expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([{ type: "ask_restart" }]);
     expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
     expect(getRun(db, run.id)?.status).toBe("ended");
     expect(listJobs(db).find((job) => job.queue === "run.resume")?.status).toBe("cancelled");
@@ -81,13 +81,13 @@ describe("restart recovery", () => {
     expect(listOutbox(db)).toHaveLength(0);
   });
 
-  test("a second restart without a Linear session fails the item", () => {
+  test("a second restart without a Linear session fails the item", async () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { now: clock.now() });
     db.run("UPDATE work_item SET session_key = NULL WHERE id = ?", [item.id]);
     beginImplementRun(db, item.id, clock.now(), checkpoint);
-    recoverOnStartup(db, clock.now());
-    expect(recoverOnStartup(db, clock.now())).toEqual([{ type: "ask_restart" }]);
+    await recoverOnStartup(sqliteDb(db), clock.now());
+    expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([{ type: "ask_restart" }]);
     expect(getWorkItem(db, item.id)?.state).toBe("failed");
     expect(listOutbox(db)[0]?.payload).toMatchObject({
       kind: "error",
@@ -95,7 +95,7 @@ describe("restart recovery", () => {
     });
   });
 
-  test("a code task with no checkpoint starts again from its branch", () => {
+  test("a code task with no checkpoint starts again from its branch", async () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, {
       id: "eng-2",
@@ -105,7 +105,7 @@ describe("restart recovery", () => {
     });
     saveTaskMode(db, item.id, "code", 0);
     const { run } = beginImplementRun(db, item.id, clock.now());
-    expect(recoverOnStartup(db, clock.now())).toEqual([
+    expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
     expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
@@ -124,19 +124,19 @@ describe("restart recovery", () => {
     expect(listOutbox(db)).toHaveLength(0);
   });
 
-  test("a restart long after the earlier resume resumes the task again", () => {
+  test("a restart long after the earlier resume resumes the task again", async () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { id: "eng-later", sessionKey: "ses", now: clock.now() });
     beginImplementRun(db, item.id, clock.now(), checkpoint);
-    recoverOnStartup(db, clock.now());
+    await recoverOnStartup(sqliteDb(db), clock.now());
     clock.advance(45 * 60_000);
 
-    expect(recoverOnStartup(db, clock.now())).toEqual([
+    expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([
       { type: "resume", freshSession: true, checkpoint },
     ]);
     expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
     expect(listOutbox(db)).toHaveLength(0);
-    expect(recoverOnStartup(db, clock.now())).toEqual([{ type: "ask_restart" }]);
+    expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([{ type: "ask_restart" }]);
   });
 
   for (const queue of [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify]) {
@@ -159,8 +159,8 @@ describe("restart recovery", () => {
         });
         await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now());
         for (let restart = 0; restart < 3; restart++) {
-          if (graceful) prepareShutdown(db, clock.now());
-          expect(recoverOnStartup(db, clock.now())).toEqual([]);
+          if (graceful) await prepareShutdown(sqliteDb(db), clock.now());
+          expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([]);
           clock.advance(20 * 60_000);
           await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now());
         }
@@ -180,7 +180,7 @@ describe("restart recovery", () => {
     }
   }
 
-  test("restarts keep a task running while its runner still holds the work", () => {
+  test("restarts keep a task running while its runner still holds the work", async () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { now: clock.now() });
     const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
@@ -190,8 +190,8 @@ describe("restart recovery", () => {
       [run.id, "runner", "workspace", 1, 0, "command", clock.now() + 60_000],
     );
     for (let restart = 0; restart < 3; restart++) {
-      prepareShutdown(db, clock.now());
-      recoverOnStartup(db, clock.now());
+      await prepareShutdown(sqliteDb(db), clock.now());
+      await recoverOnStartup(sqliteDb(db), clock.now());
     }
     expect({
       item: getWorkItem(db, item.id),
@@ -199,7 +199,7 @@ describe("restart recovery", () => {
     }).toMatchObject({ item: { state: "running", recoveryAttempts: 0 }, run: "active" });
   });
 
-  test("each restart that reattaches a running task queues a job to follow it", () => {
+  test("each restart that reattaches a running task queues a job to follow it", async () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { now: clock.now() });
     const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
@@ -209,8 +209,8 @@ describe("restart recovery", () => {
       [run.id, "runner", "workspace", 1, 0, "command", clock.now() + 3_600_000],
     );
     for (let restart = 0; restart < 2; restart++) {
-      prepareShutdown(db, clock.now());
-      recoverOnStartup(db, clock.now());
+      await prepareShutdown(sqliteDb(db), clock.now());
+      await recoverOnStartup(sqliteDb(db), clock.now());
       expect(
         listJobs(db).filter((job) => job.queue === "run.resume" && job.status === "pending"),
       ).toHaveLength(1);
@@ -219,7 +219,7 @@ describe("restart recovery", () => {
     }
   });
 
-  test("a second restart while the reattach follower is pending queues no other one", () => {
+  test("a second restart while the reattach follower is pending queues no other one", async () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { now: clock.now() });
     const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
@@ -228,9 +228,9 @@ describe("restart recovery", () => {
       "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,?,?,?,?)",
       [run.id, "runner", "workspace", 1, 0, "command", clock.now() + 3_600_000],
     );
-    recoverOnStartup(db, clock.now());
+    await recoverOnStartup(sqliteDb(db), clock.now());
     clock.advance(60_000);
-    recoverOnStartup(db, clock.now());
+    await recoverOnStartup(sqliteDb(db), clock.now());
     expect(
       listJobs(db).filter((job) => job.queue === "run.resume" && job.status === "pending"),
     ).toHaveLength(1);
@@ -257,8 +257,8 @@ describe("restart recovery", () => {
       const { db, clock, item, runAt } = await deferred();
       for (let restart = 0; restart < 3; restart++) {
         clock.advance(1_000);
-        prepareShutdown(db, clock.now());
-        recoverOnStartup(db, clock.now());
+        await prepareShutdown(sqliteDb(db), clock.now());
+        await recoverOnStartup(sqliteDb(db), clock.now());
       }
       expect(pendingResumes(db)).toMatchObject([
         { runAt, payload: { reason: "transient_failure", retry: 4, handoff: "keep going" } },
@@ -270,7 +270,7 @@ describe("restart recovery", () => {
     test("runs once with its saved retry count when due", async () => {
       const { db, clock, runAt } = await deferred();
       clock.advance(700_000);
-      recoverOnStartup(db, clock.now());
+      await recoverOnStartup(sqliteDb(db), clock.now());
       const claimed = claimNextJob(db, { now: clock.now() });
       expect(claimed).toMatchObject({ runAt, payload: { retry: 4, handoff: "keep going" } });
       completeJob(db, claimed!, clock.now());
@@ -279,14 +279,14 @@ describe("restart recovery", () => {
 
     test("does not run after the item is cancelled", async () => {
       const { db, clock, item } = await deferred();
-      recoverOnStartup(db, clock.now());
+      await recoverOnStartup(sqliteDb(db), clock.now());
       await cancelOpenJobs(sqliteDb(db), { itemId: item.id, reason: "stop", now: clock.now() });
       clock.advance(700_000);
       expect(claimNextJob(db, { now: clock.now() })).toBeNull();
     });
   });
 
-  test("a verifying task whose runner holds Closeout work stays verifying and re-verifies", () => {
+  test("a verifying task whose runner holds Closeout work stays verifying and re-verifies", async () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { now: clock.now() });
     const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
@@ -296,35 +296,35 @@ describe("restart recovery", () => {
       "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,?,?,?,?)",
       [run.id, "runner", "workspace", 1, 0, "command", clock.now() + 60_000],
     );
-    prepareShutdown(db, clock.now());
-    expect(recoverOnStartup(db, clock.now())).toEqual([{ type: "reverify" }]);
+    await prepareShutdown(sqliteDb(db), clock.now());
+    expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([{ type: "reverify" }]);
     expect(getWorkItem(db, item.id)).toMatchObject({ state: "verifying", recoveryAttempts: 0 });
     expect(
       listJobs(db).filter((job) => job.queue === JOB_KIND.reverify && job.status === "pending"),
     ).toHaveLength(1);
   });
 
-  test("shutdown leaves the run recoverable and the next start can resume it once", () => {
+  test("shutdown leaves the run recoverable and the next start can resume it once", async () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { sessionKey: "ses", now: clock.now() });
     const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
-    prepareShutdown(db, clock.now());
+    await prepareShutdown(sqliteDb(db), clock.now());
     expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 0 });
     expect(getRun(db, run.id)?.status).toBe("lost");
 
-    recoverOnStartup(db, clock.now());
+    await recoverOnStartup(sqliteDb(db), clock.now());
     expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
     expect(getRun(db, run.id)?.status).toBe("active");
 
-    prepareShutdown(db, clock.now());
+    await prepareShutdown(sqliteDb(db), clock.now());
     expect(getWorkItem(db, item.id)?.recoveryAttempts).toBe(1);
-    recoverOnStartup(db, clock.now());
+    await recoverOnStartup(sqliteDb(db), clock.now());
     expect(listJobs(db).some((job) => job.queue === "item.ask" && job.status === "pending")).toBe(
       true,
     );
   });
 
-  test("a task waiting in the merge queue keeps its state and its merge job across a restart", () => {
+  test("a task waiting in the merge queue keeps its state and its merge job across a restart", async () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, {
       id: "eng-1",
@@ -340,8 +340,8 @@ describe("restart recovery", () => {
       now: clock.now(),
     });
 
-    prepareShutdown(db, clock.now());
-    expect(recoverOnStartup(db, clock.now())).toEqual([
+    await prepareShutdown(sqliteDb(db), clock.now());
+    expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([
       { type: "keep_place", mergeCallInFlight: false },
     ]);
     expect(getWorkItem(db, item.id)).toMatchObject({
@@ -405,11 +405,11 @@ describe("restart recovery", () => {
                 : { type: "reverify" as const },
             );
 
-            expect(recoverOnStartup(db, clock.now())).toEqual(expected);
+            expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual(expected);
             expect(getJob(db, ownMerge)?.status).toBe("cancelled");
             for (let repeat = 0; repeat < 2; repeat++) {
               clock.advance(1);
-              recoverOnStartup(db, clock.now());
+              await recoverOnStartup(sqliteDb(db), clock.now());
               await applyDecision(
                 sqliteDb(db),
                 getWorkItem(db, "reverify")!,
@@ -434,19 +434,19 @@ describe("restart recovery", () => {
     }
   }
 
-  test("a queued task whose run is still active at shutdown re-verifies", () => {
+  test("a queued task whose run is still active at shutdown re-verifies", async () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { id: "eng-busy", now: clock.now() });
     const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
     enterMergeQueue(db, item.id, checkpoint);
 
-    prepareShutdown(db, clock.now());
+    await prepareShutdown(sqliteDb(db), clock.now());
     expect(getRun(db, run.id)?.status).toBe("lost");
-    expect(recoverOnStartup(db, clock.now())).toEqual([{ type: "reverify" }]);
+    expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([{ type: "reverify" }]);
     expect(getWorkItem(db, item.id)?.state).toBe("verifying");
   });
 
-  test("a merge job the shutdown ended is queued again, and asks GitHub after a merge call", () => {
+  test("a merge job the shutdown ended is queued again, and asks GitHub after a merge call", async () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { id: "eng-2", now: clock.now() });
     const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
@@ -461,7 +461,7 @@ describe("restart recovery", () => {
     completeJob(db, leased, clock.now());
     beginMergeCall(db, item.id, "abc", clock.now());
 
-    expect(recoverOnStartup(db, clock.now())).toEqual([
+    expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([
       { type: "keep_place", mergeCallInFlight: true },
     ]);
     expect(getWorkItem(db, item.id)?.state).toBe("merge_queue");
@@ -477,7 +477,7 @@ describe("restart recovery", () => {
     ]);
   });
 
-  test("a restart during the re-verify of a queued task re-verifies it again", () => {
+  test("a restart during the re-verify of a queued task re-verifies it again", async () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { id: "eng-twice", now: clock.now() });
     const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
@@ -485,13 +485,13 @@ describe("restart recovery", () => {
     markRun(db, run.id, "ended", clock.now());
     applyWorkItemEvent(db, item.id, "reverify_requested");
 
-    expect(recoverOnStartup(db, clock.now())).toEqual([{ type: "reverify" }]);
+    expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([{ type: "reverify" }]);
     expect(getWorkItem(db, item.id)?.state).toBe("verifying");
     db.run("UPDATE job SET status='done', finished_at=? WHERE queue='run.reverify'", [clock.now()]);
     applyWorkItemEvent(db, item.id, "closeout_accepted");
     clock.advance(10 * 60_000);
 
-    expect(recoverOnStartup(db, clock.now())).toEqual([
+    expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([
       { type: "keep_place", mergeCallInFlight: false },
     ]);
     expect(getWorkItem(db, item.id)?.state).toBe("merge_queue");
@@ -500,20 +500,20 @@ describe("restart recovery", () => {
     ).toHaveLength(0);
   });
 
-  test("a question that is waiting for Linear survives a restart", () => {
+  test("a question that is waiting for Linear survives a restart", async () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { now: clock.now() });
     const { run } = beginImplementRun(db, item.id, clock.now());
     applyWorkItemEvent(db, item.id, "blocking_question");
     saveCheckpoint(db, item.id, { ...checkpoint, phase: "awaiting_input" });
-    expect(recoverOnStartup(db, clock.now())).toEqual([{ type: "none" }]);
+    expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([{ type: "none" }]);
     expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
     expect(getWorkItem(db, item.id)?.recoveryAttempts).toBe(0);
     expect(getRun(db, run.id)?.status).toBe("ended");
     expect(listJobs(db).map((job) => job.queue)).toEqual([JOB_KIND.catchup]);
   });
 
-  test("a restart leaves an answered item to its pending answer resume", () => {
+  test("a restart leaves an answered item to its pending answer resume", async () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { id: "answered", sessionKey: "ses", now: clock.now() });
     const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
@@ -526,7 +526,7 @@ describe("restart recovery", () => {
       payload: { itemId: item.id, freshSession: true, reason: "answer", handoff: "Q and A" },
       now: clock.now(),
     });
-    expect(recoverOnStartup(db, clock.now() + 1)).toEqual([]);
+    expect(await recoverOnStartup(sqliteDb(db), clock.now() + 1)).toEqual([]);
     expect(getWorkItem(db, item.id)).toMatchObject({ state: "running", recoveryAttempts: 0 });
     expect(listJobs(db).map((job) => job.jobKey)).toEqual(["resume:answer:q-1"]);
   });
@@ -556,7 +556,7 @@ describe("restart recovery", () => {
 
     const second = openDatabase(path);
     migrate(second);
-    const recovery = recoverOnStartup(second, clock.now());
+    const recovery = await recoverOnStartup(sqliteDb(second), clock.now());
     expect(getWorkItem(second, "eng-1")).toMatchObject({
       state: "recovering",
       recoveryAttempts: 1,

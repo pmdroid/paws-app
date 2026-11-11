@@ -19,8 +19,8 @@ export class PawsStopError extends Error {
 /** Attempt every cleanup, including the durable state flush, even after a failure. */
 export async function stopPawsComponents(input: {
   groups: readonly (readonly StopStage[])[];
-  flush: () => void;
-  close: () => void;
+  flush: () => unknown;
+  close: () => unknown;
   waitMs?: number;
 }): Promise<void> {
   const failures: StopFailure[] = [];
@@ -43,13 +43,13 @@ export async function stopPawsComponents(input: {
   for (const group of input.groups) await Promise.all(group.map(stop));
   let stateFlushed = false;
   try {
-    input.flush();
+    await input.flush();
     stateFlushed = true;
   } catch (error) {
     failures.push({ stage: "state flush", error });
   }
   try {
-    input.close();
+    await input.close();
   } catch (error) {
     stateFlushed = false;
     failures.push({ stage: "database close", error });

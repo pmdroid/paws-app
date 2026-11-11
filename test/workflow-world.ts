@@ -11,7 +11,7 @@ import {
   beginImplementRun,
   beginMergeCall,
   bindWorkItemRepository,
-  closeExpiredRunnerLeases,
+  closeExpiredRunnerLeasesSteps,
   closeoutPolicyDigests,
   deferWorkItem,
   enqueueJob,
@@ -27,11 +27,12 @@ import {
   mergeCallInFlight,
   migrate,
   openDatabase,
-  prepareShutdown,
-  recoverOnStartup,
-  requeueOrphanedWork,
+  prepareShutdownSteps,
+  recoverOnStartupSteps,
+  requeueOrphanedWorkSteps,
   restartHold,
   saveCheckpoint,
+  settled,
   type Job,
   type WorkItemRecord,
   sqliteDb,
@@ -322,7 +323,7 @@ export class World {
 
   stop(): void {
     this.trace.push("stop");
-    prepareShutdown(this.db, this.now);
+    settled(sqliteDb(this.db).transaction((q) => prepareShutdownSteps(q, this.now, undefined)));
     this.db.close();
     this.db = openDatabase(this.path);
     migrate(this.db);
@@ -330,14 +331,19 @@ export class World {
 
   start(): void {
     this.trace.push(`start@${this.now - T0}`);
-    recoverOnStartup(this.db, this.now);
+    const wake = { armed: false };
+    settled(
+      sqliteDb(this.db).transaction((q) =>
+        recoverOnStartupSteps(q, this.now, undefined, undefined, wake),
+      ),
+    );
   }
 
   sweep(): void {
     this.trace.push(`sweep@${this.now - T0}`);
     reapFencedJobs(this.db, this.now);
-    closeExpiredRunnerLeases(this.db, this.now);
-    requeueOrphanedWork(this.db, this.now);
+    settled(sqliteDb(this.db).transaction((q) => closeExpiredRunnerLeasesSteps(q, this.now)));
+    settled(sqliteDb(this.db).run((q) => requeueOrphanedWorkSteps(q, this.now)));
   }
 
   settle(): void {
