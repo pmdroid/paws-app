@@ -379,15 +379,15 @@ export function* reenqueueJobSteps(
   return { id: previous.id, pending: true, armed: true };
 }
 
-export function reenqueueJob(
-  db: Database,
+export async function reenqueueJob(
+  store: Db,
   job: NewJob & { jobKey: string },
   payloadFor?: (previous: Job | null) => unknown,
-): { id: number; pending: boolean } {
-  const { id, pending, armed } = settled(
-    sqliteDb(db).transaction((q) => reenqueueJobSteps(q, job, payloadFor)),
+): Promise<{ id: number; pending: boolean }> {
+  const { id, pending, armed } = await store.transaction((q) =>
+    reenqueueJobSteps(q, job, payloadFor),
   );
-  if (armed) emitJobReady(db);
+  if (armed) emitJobReady(store);
   return { id, pending };
 }
 

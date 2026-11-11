@@ -618,7 +618,7 @@ test.each(["done", "cancelled", "dead"] as const)(
     const fresh = { ...original, payload: { itemId: "revive", body: "new" }, now: 3 };
     expect(enqueueJobOnce(db, fresh)).toBe(id);
     expect(getJob(db, id)).toMatchObject({ status, attempts: 7, payload: original.payload });
-    expect(reenqueueJob(db, fresh)).toEqual({ id, pending: true });
+    expect(await reenqueueJob(sqliteDb(db), fresh)).toEqual({ id, pending: true });
     expect(getJob(db, id)).toMatchObject({
       status: "pending",
       attempts: 0,
@@ -628,10 +628,16 @@ test.each(["done", "cancelled", "dead"] as const)(
       payload: fresh.payload,
     });
     expect(await jobVersionCurrent(sqliteDb(db), getJob(db, id)!)).toBe(true);
-    expect(reenqueueJob(db, { ...fresh, now: 4, payload: {} })).toEqual({ id, pending: true });
+    expect(await reenqueueJob(sqliteDb(db), { ...fresh, now: 4, payload: {} })).toEqual({
+      id,
+      pending: true,
+    });
     expect(getJob(db, id)?.payload).toEqual(fresh.payload);
     const leased = claimNextJob(db, { now: 4, queues: ["test"] })!;
-    expect(reenqueueJob(db, { ...fresh, now: 5, payload: {} })).toEqual({ id, pending: false });
+    expect(await reenqueueJob(sqliteDb(db), { ...fresh, now: 5, payload: {} })).toEqual({
+      id,
+      pending: false,
+    });
     expect(getJob(db, id)).toEqual(leased);
     expect(listJobs(db)).toHaveLength(1);
     db.close();

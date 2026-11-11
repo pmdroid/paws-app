@@ -206,7 +206,7 @@ test("repeated non-human rebase returns count once per activation", async () => 
   db.close();
 });
 
-test("queue collisions roll back revival and fresh queue settings replace terminal settings", () => {
+test("queue collisions roll back revival and fresh queue settings replace terminal settings", async () => {
   const db = fixture();
   const id = enqueueJob(db, { queue: "other", jobKey: "collision", payload: { itemId: "item" } });
   db.run("UPDATE job SET status='done' WHERE id=?", [id]);
@@ -217,7 +217,7 @@ test("queue collisions roll back revival and fresh queue settings replace termin
   ).toThrow("different queue");
   expect(getWorkItem(db, "item")).toEqual(item);
   expect(getJob(db, id)).toEqual(before);
-  reenqueueJob(db, {
+  await reenqueueJob(sqliteDb(db), {
     queue: "other",
     jobKey: "collision",
     payload: { itemId: "item" },
@@ -278,7 +278,7 @@ test.each(["linear", "push"] as const)(
       },
     ]);
     db.run("UPDATE job SET status='done' WHERE id=?", [id]);
-    reenqueueJob(db, {
+    await reenqueueJob(sqliteDb(db), {
       queue: JOB_KIND.resume,
       jobKey: "linear-turn:legacy:1",
       payload: { itemId: "legacy" },
@@ -319,7 +319,7 @@ test("a revived older human row captures a new baseline once and outranks later 
   });
   await saveHumanRetryWindow(sqliteDb(db), "item", second, ["second"]);
   db.run("UPDATE job SET status='done' WHERE id=?", [first]);
-  reenqueueJob(db, {
+  await reenqueueJob(sqliteDb(db), {
     queue: JOB_KIND.resume,
     jobKey: "resume:answer:first",
     payload: { itemId: "item", reason: "answer" },

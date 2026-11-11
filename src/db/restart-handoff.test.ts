@@ -102,7 +102,7 @@ test("pending input follows activation order when an older job row is reused", a
     payload: { itemId: "item", handoff: "older review" },
     now: 2,
   });
-  reenqueueJob(db, {
+  await reenqueueJob(sqliteDb(db), {
     queue: JOB_KIND.resume,
     jobKey: "reused",
     payload: { itemId: "item", handoff: "new CI failure" },
