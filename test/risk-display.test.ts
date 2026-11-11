@@ -15,6 +15,7 @@ import {
   recordLinkAskDecision,
   recordReviewFindings,
   saveCheckpoint,
+  sqliteDb,
 } from "../src/db";
 import { tempDb, tempHome } from "./helpers";
 
@@ -45,7 +46,7 @@ async function fixture(
     paths: ["auth.ts"],
     classifiedAt: now,
   });
-  saveCandidatePaths(db, {
+  await saveCandidatePaths(sqliteDb(db), {
     itemId: item.id,
     head: "head",
     paths: scenario === "rules change" ? ["rules.ts"] : ["auth.ts"],

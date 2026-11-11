@@ -71,9 +71,9 @@ test("migration 059 drops the old block tables and task_block holds each depende
       blockerLinearIssueId: "hold-0",
       blockedLinearIssueId: "hold-1",
     };
-    expect(listWorkItemBlocks(db)).toEqual([edge]);
-    expect(listWorkItemBlocks(db, "hold")).toEqual([edge]);
-    expect(listWorkItemBlocks(db, "stale")).toEqual([]);
+    expect(await listWorkItemBlocks(sqliteDb(db))).toEqual([edge]);
+    expect(await listWorkItemBlocks(sqliteDb(db), "hold")).toEqual([edge]);
+    expect(await listWorkItemBlocks(sqliteDb(db), "stale")).toEqual([]);
 
     await orchestrator.reconcileExecution();
     expect(

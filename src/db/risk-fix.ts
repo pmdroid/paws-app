@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, desc, eq } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 import { jsonValue, parsedJson } from "./json-text";
 import type { riskFix } from "./schema-pg";
 
@@ -39,8 +38,8 @@ export function* saveRiskFixSteps(q: Q, fix: RiskFix) {
 }
 
 /** Records the comparison for a head. A repeat for the same head replaces it. */
-export function saveRiskFix(db: Database, fix: RiskFix): void {
-  settled(sqliteDb(db).run((q) => saveRiskFixSteps(q, fix)));
+export async function saveRiskFix(store: Db, fix: RiskFix): Promise<void> {
+  await store.run((q) => saveRiskFixSteps(q, fix));
 }
 
 export function* deleteRiskFixSteps(q: Q, itemId: string, head: string) {
@@ -51,8 +50,8 @@ export function* deleteRiskFixSteps(q: Q, itemId: string, head: string) {
 }
 
 /** Forgets the comparison for a head, as when Paws can no longer read the fix. */
-export function deleteRiskFix(db: Database, itemId: string, head: string): void {
-  settled(sqliteDb(db).run((q) => deleteRiskFixSteps(q, itemId, head)));
+export async function deleteRiskFix(store: Db, itemId: string, head: string): Promise<void> {
+  await store.run((q) => deleteRiskFixSteps(q, itemId, head));
 }
 
 type Row = typeof riskFix.$inferSelect;
@@ -68,8 +67,8 @@ export function* getRiskFixSteps(q: Q, itemId: string, head: string) {
   return row ? fromRow(q, row) : null;
 }
 
-export function getRiskFix(db: Database, itemId: string, head: string): RiskFix | null {
-  return settled(sqliteDb(db).run((q) => getRiskFixSteps(q, itemId, head)));
+export async function getRiskFix(store: Db, itemId: string, head: string): Promise<RiskFix | null> {
+  return store.run((q) => getRiskFixSteps(q, itemId, head));
 }
 
 /** Ties on `recorded_at` go to the greater head SHA. */
@@ -87,8 +86,8 @@ export function* latestRiskFixSteps(q: Q, itemId: string) {
 }
 
 /** The most recently recorded fix of the item. */
-export function latestRiskFix(db: Database, itemId: string): RiskFix | null {
-  return settled(sqliteDb(db).run((q) => latestRiskFixSteps(q, itemId)));
+export async function latestRiskFix(store: Db, itemId: string): Promise<RiskFix | null> {
+  return store.run((q) => latestRiskFixSteps(q, itemId));
 }
 
 function fromRow(q: Q, row: Row): RiskFix {

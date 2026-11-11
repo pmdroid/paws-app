@@ -13,6 +13,7 @@ import {
   recordPushOutage,
   savePolicyRunnerWarning,
   upsertCloseoutStep,
+  sqliteDb,
 } from "../../../db";
 import { parseMergeQueueResponse } from "../contract";
 import { createLiveStatusProvider } from "./provider";
@@ -118,7 +119,7 @@ test("the merge queue reads queue facts, issue summaries and banners for the rea
     now,
     delayMs: () => 60_000,
   });
-  savePolicyRunnerWarning(db, {
+  await savePolicyRunnerWarning(sqliteDb(db), {
     repository: "acme/platform",
     policyDigest: `sha256:${"a".repeat(64)}`,
     runnerVersion: "0.1.48",

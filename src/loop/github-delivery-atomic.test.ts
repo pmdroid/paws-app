@@ -19,6 +19,7 @@ import {
   pendingPullComments,
   recordItemPullRequest,
   recordPullReview,
+  sqliteDb,
 } from "../db";
 import { acceptGitHubDelivery } from "./merge-jobs";
 import { worktreeBranch } from "./sources";
@@ -124,13 +125,13 @@ for (const [name, point, kind] of failures) {
       await expect(acceptGitHubDelivery(db, delivery(kind!), 1_000)).rejects.toThrow(
         "injected failure",
       );
-      expect(listGitHubDeliveries(db)).toEqual([]);
+      expect(await listGitHubDeliveries(sqliteDb(db))).toEqual([]);
       expect(pendingChangeRequests(db, "first").map((r) => r.reviewId)).toEqual([40]);
       expect(pendingPullComments(db, "first")).toEqual([]);
       expect(listJobs(db)).toEqual(before);
       db.run("DROP TRIGGER fail_delivery");
       expect(await acceptGitHubDelivery(db, delivery(kind!), 1_000)).toBe(true);
-      expect(listGitHubDeliveries(db)).toHaveLength(1);
+      expect(await listGitHubDeliveries(sqliteDb(db))).toHaveLength(1);
       expect(pendingChangeRequests(db, "first")).toHaveLength(kind === "review" ? 2 : 1);
       expect(pendingPullComments(db, "first")).toHaveLength(kind === "comment" ? 1 : 0);
       const queue =
@@ -165,7 +166,9 @@ test("failure after receipt insertion leaves the delivery retryable", async () =
     await expect(acceptGitHubDelivery(db, delivery("review"), 1_000)).rejects.toThrow(
       "after receipt",
     );
-    expect(listGitHubDeliveries(db).map((row) => row.deliveryId)).toEqual(["expired"]);
+    expect((await listGitHubDeliveries(sqliteDb(db))).map((row) => row.deliveryId)).toEqual([
+      "expired",
+    ]);
     db.run("DROP TRIGGER fail_prune");
     expect(await acceptGitHubDelivery(db, delivery("review"), 1_000)).toBe(true);
     expect(pendingChangeRequests(db, "first")).toHaveLength(2);
@@ -208,7 +211,7 @@ for (const kind of ["review", "comment", "main"]) {
       expect(child.signalCode, child.stderr.toString()).toBe("SIGKILL");
       const reopened = openDatabase(file);
       try {
-        expect(listGitHubDeliveries(reopened)).toEqual([]);
+        expect(await listGitHubDeliveries(sqliteDb(reopened))).toEqual([]);
         expect(listJobs(reopened)).toEqual(before);
         expect(pendingChangeRequests(reopened, "first").map((r) => r.reviewId)).toEqual([40]);
         expect(pendingPullComments(reopened, "first")).toEqual([]);

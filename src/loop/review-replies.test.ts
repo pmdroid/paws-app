@@ -342,7 +342,10 @@ describe("Paws replies to every handed-off comment", () => {
     // A thread from an earlier round is not asked about again.
     expect(text).not.toContain("R4.");
     expect(
-      unreportedReviewReplies(db, "eng-1").map((reply) => [reply.number, reply.target]),
+      (await unreportedReviewReplies(sqliteDb(db), "eng-1")).map((reply) => [
+        reply.number,
+        reply.target,
+      ]),
     ).toEqual([
       [1, "thread"],
       [2, "review"],
@@ -408,7 +411,7 @@ describe("Paws replies to every handed-off comment", () => {
       "**Not changed.** The cache is bypassed for a fresh read.",
     );
 
-    expect(unpostedReviewReplies(db, "eng-1", 7)).toEqual([]);
+    expect(await unpostedReviewReplies(sqliteDb(db), "eng-1", 7)).toEqual([]);
     expect(
       await postReviewReplies(
         sqliteDb(db),
@@ -420,7 +423,7 @@ describe("Paws replies to every handed-off comment", () => {
 
   test("answered and unreported threads stay open", async () => {
     const { db, github, replies } = setup();
-    recordReplyTargets(
+    await recordReplyTargets(
       db,
       "eng-1",
       "restart-answers",
@@ -450,12 +453,12 @@ describe("Paws replies to every handed-off comment", () => {
     expect(replies.replies[0]!.body).toContain("**Answered.** A fresh read is required.");
     expect(replies.replies[1]!.body).toContain("did not report on it");
     expect(replies.resolved).toEqual([]);
-    expect(unpostedReviewReplies(db, "eng-1", 7)).toEqual([]);
+    expect(await unpostedReviewReplies(sqliteDb(db), "eng-1", 7)).toEqual([]);
   });
 
   test("a permanently failed resolution leaves later replies and resolutions independent", async () => {
     const { db, github, replies } = setup();
-    recordReplyTargets(
+    await recordReplyTargets(
       db,
       "eng-1",
       "restart-fix",
@@ -511,7 +514,7 @@ describe("Paws replies to every handed-off comment", () => {
     expect(replies.comments).toHaveLength(1);
     expect(replies.resolved).toEqual(["RT_1"]);
     expect(attempts).toEqual(["RT_0", "RT_1"]);
-    expect(unpostedReviewReplies(db, "eng-1", 7)).toEqual([]);
+    expect(await unpostedReviewReplies(sqliteDb(db), "eng-1", 7)).toEqual([]);
     expect(await postReviewReplies(sqliteDb(db), input, failing)).toBe(0);
     expect(replies.replies).toHaveLength(2);
     expect(replies.comments).toHaveLength(1);
@@ -581,7 +584,9 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
     // Closeout does not start: the item waits for the agent again.
     expect(getWorkItem(db, "eng-1")!.state).toBe("queued");
     // The replies given are kept; only R2 still waits for one.
-    expect(unreportedReviewReplies(db, "eng-1").map((reply) => reply.number)).toEqual([2]);
+    expect(
+      (await unreportedReviewReplies(sqliteDb(db), "eng-1")).map((reply) => reply.number),
+    ).toEqual([2]);
   });
 
   test("the third incomplete end in the same round asks the team", async () => {
@@ -594,7 +599,9 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
     const question = findOpenQuestion(db, "s-1")!;
     expect(question.body).toContain("R2. Review by @pascal: Fix the ranking.");
     expect(question.body).not.toContain("R1.");
-    expect(unreportedReviewReplies(db, "eng-1").map((reply) => reply.number)).toEqual([2]);
+    expect(
+      (await unreportedReviewReplies(sqliteDb(db), "eng-1")).map((reply) => reply.number),
+    ).toEqual([2]);
   });
 
   test("an entry without text is missing", async () => {
@@ -602,7 +609,9 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
     const final = "R1 fixed: Sorted.\nR2 fixed: **\nR3 not changed: Fresh read.";
     expect(await turnEnds(db, final)).toBe("sent_back");
     expect(latestHandoff(db).handoff).toContain("R2. Review by @pascal");
-    expect(unreportedReviewReplies(db, "eng-1").map((reply) => reply.number)).toEqual([2]);
+    expect(
+      (await unreportedReviewReplies(sqliteDb(db), "eng-1")).map((reply) => reply.number),
+    ).toEqual([2]);
   });
 
   test("an emoji is a reply", async () => {
@@ -629,7 +638,9 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
       }),
     ).toBe("stale");
     expect(jobs(db, JOB_KIND.resume)).toHaveLength(resumes);
-    expect(unreportedReviewReplies(db, "eng-1").map((reply) => reply.number)).toEqual([1, 2, 3]);
+    expect(
+      (await unreportedReviewReplies(sqliteDb(db), "eng-1")).map((reply) => reply.number),
+    ).toEqual([1, 2, 3]);
   });
 
   test("a complete section goes on to Closeout", async () => {
@@ -639,7 +650,7 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
     expect(await turnEnds(db, final)).toBe("complete");
     expect(jobs(db, JOB_KIND.resume)).toHaveLength(resumes);
     expect(getWorkItem(db, "eng-1")!.state).toBe("running");
-    expect(unreportedReviewReplies(db, "eng-1")).toEqual([]);
+    expect(await unreportedReviewReplies(sqliteDb(db), "eng-1")).toEqual([]);
   });
 });
 

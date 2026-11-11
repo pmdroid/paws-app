@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, gt, isNotNull, isNull, ne } from "drizzle-orm";
 import { policyKeysAbove, runnerVersionAtLeast, type PolicyKeyNeed } from "../runner-protocol";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import type * as pg from "./schema-pg";
 
 /**
@@ -57,8 +56,11 @@ export function* savePolicyRunnerWarningSteps(q: Q, warning: PolicyRunnerWarning
  * Records the warning for its repository, replacing the one before. True when the digest, the
  * runner version or the keys differ from the recorded warning, so the caller reports it once.
  */
-export function savePolicyRunnerWarning(db: Database, warning: PolicyRunnerWarning): boolean {
-  return settled(sqliteDb(db).run((q) => savePolicyRunnerWarningSteps(q, warning)));
+export async function savePolicyRunnerWarning(
+  store: Db,
+  warning: PolicyRunnerWarning,
+): Promise<boolean> {
+  return store.run((q) => savePolicyRunnerWarningSteps(q, warning));
 }
 
 export function* clearPolicyRunnerWarningSteps(q: Q, repository: string) {
@@ -73,8 +75,8 @@ export function* clearPolicyRunnerWarningSteps(q: Q, repository: string) {
 }
 
 /** Every runner can apply the repository's policy. True when a warning was recorded before. */
-export function clearPolicyRunnerWarning(db: Database, repository: string): boolean {
-  return settled(sqliteDb(db).run((q) => clearPolicyRunnerWarningSteps(q, repository)));
+export async function clearPolicyRunnerWarning(store: Db, repository: string): Promise<boolean> {
+  return store.run((q) => clearPolicyRunnerWarningSteps(q, repository));
 }
 
 export function* listPolicyRunnerWarningsSteps(q: Q): Steps<PolicyRunnerWarning[]> {
@@ -85,8 +87,8 @@ export function* listPolicyRunnerWarningsSteps(q: Q): Steps<PolicyRunnerWarning[
   return rows.map(map);
 }
 
-export function listPolicyRunnerWarnings(db: Database): PolicyRunnerWarning[] {
-  return settled(sqliteDb(db).run(listPolicyRunnerWarningsSteps));
+export async function listPolicyRunnerWarnings(store: Db): Promise<PolicyRunnerWarning[]> {
+  return store.run((q) => listPolicyRunnerWarningsSteps(q));
 }
 
 /**
@@ -102,12 +104,12 @@ export function* policyKeysLowestRunnerLacksSteps(
   return lowest === null ? null : { runnerVersion: lowest, keys: policyKeysAbove(keys, lowest) };
 }
 
-export function policyKeysLowestRunnerLacks(
-  db: Database,
+export async function policyKeysLowestRunnerLacks(
+  store: Db,
   keys: readonly string[],
   onlineSince: number,
-): { runnerVersion: string; keys: PolicyKeyNeed[] } | null {
-  return settled(sqliteDb(db).run((q) => policyKeysLowestRunnerLacksSteps(q, keys, onlineSince)));
+): Promise<{ runnerVersion: string; keys: PolicyKeyNeed[] } | null> {
+  return store.run((q) => policyKeysLowestRunnerLacksSteps(q, keys, onlineSince));
 }
 
 /** The lowest `major.minor.patch` release of `versions`; one that is not a release is skipped. */

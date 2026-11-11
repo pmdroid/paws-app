@@ -432,7 +432,9 @@ describe("failed CI while a pull request waits for review", () => {
     expect(resume?.handoff).toContain("Rename the helper.");
     expect(resume?.handoff).toContain("Also add a test for ties.");
     expect(resume?.handoff).toContain(`End of the \`test\` log:`);
-    expect(unreportedReviewReplies(h.db, "eng-1").map((reply) => reply.commentId)).toEqual([1, 2]);
+    expect(
+      (await unreportedReviewReplies(sqliteDb(h.db), "eng-1")).map((reply) => reply.commentId),
+    ).toEqual([1, 2]);
     expect(fixRounds(h.db, "eng-1")).toBe(1);
     expect(await listCiRounds(sqliteDb(h.db), "eng-1")).toMatchObject([
       { head: HEAD, next: "agent", fix: 1 },

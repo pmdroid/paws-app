@@ -91,7 +91,7 @@ describe("review escapes found after the pull request", () => {
     expect(await ciFailed([{ name: "test", url: null }])).toBe(true);
     // The item is back with the agent; the same failure read again starts no second round.
     expect(await ciFailed([{ name: "test", url: null }])).toBe(false);
-    const [candidate, ...rest] = listReviewEscapes(db);
+    const [candidate, ...rest] = await listReviewEscapes(sqliteDb(db));
     expect(rest).toEqual([]);
     expect(candidate).toMatchObject({
       itemId: "eng-1",
@@ -105,7 +105,7 @@ describe("review escapes found after the pull request", () => {
 
     const fix = await commit({ "README.md": "demo\n\nHow to rank.\n" });
     expect(await settle(fix)).toBe(1);
-    expect(listReviewEscapes(db)).toEqual([
+    expect(await listReviewEscapes(sqliteDb(db))).toEqual([
       expect.objectContaining({
         fixHead: fix,
         files: ["README.md"],
@@ -125,7 +125,7 @@ describe("review escapes found after the pull request", () => {
       "src/rank.test.ts": "// covers rank\n",
     });
     await settle(fix);
-    expect(listReviewEscapes(db)[0]).toMatchObject({
+    expect((await listReviewEscapes(sqliteDb(db)))[0]).toMatchObject({
       fixHead: fix,
       files: ["src/rank.test.ts", "src/rank.ts"],
       escape: true,
@@ -139,7 +139,7 @@ describe("review escapes found after the pull request", () => {
     await formatted.settle(
       await formatted.commit({ "src/rank.ts": "export const rank  = (a: number) => a;\n\n" }),
     );
-    expect(listReviewEscapes(formatted.db)[0]).toMatchObject({
+    expect((await listReviewEscapes(sqliteDb(formatted.db)))[0]).toMatchObject({
       files: ["src/rank.ts"],
       escape: false,
       notEscapeReason: "tests_docs_format",
@@ -150,7 +150,7 @@ describe("review escapes found after the pull request", () => {
     await flaky.settle(
       await flaky.commit({ "src/rank.ts": "export const rank = (a: number) => a + 0;\n" }),
     );
-    expect(listReviewEscapes(flaky.db)[0]).toMatchObject({
+    expect((await listReviewEscapes(sqliteDb(flaky.db)))[0]).toMatchObject({
       escape: false,
       notEscapeReason: "flake",
     });
@@ -160,7 +160,7 @@ describe("review escapes found after the pull request", () => {
     const { db, ciFailed } = await accepted();
     db.run("UPDATE work_item SET accepted_head = NULL");
     expect(await ciFailed([{ name: "test", url: null }])).toBe(true);
-    expect(listReviewEscapes(db)).toEqual([]);
+    expect(await listReviewEscapes(sqliteDb(db))).toEqual([]);
   });
 });
 

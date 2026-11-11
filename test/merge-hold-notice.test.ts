@@ -7,6 +7,7 @@ import {
   recordRebaseReturn,
   restart,
   saveCandidatePaths,
+  sqliteDb,
 } from "../src/db";
 import { joinFakeWorkspace, workspaceDispatch } from "./fake-workspace";
 import { tempDb } from "./helpers";
@@ -32,7 +33,7 @@ async function item(
     [id],
   );
   await joinFakeWorkspace(db, id);
-  saveCandidatePaths(db, { itemId: id, head: `head-${id}`, paths, recordedAt: 1 });
+  await saveCandidatePaths(sqliteDb(db), { itemId: id, head: `head-${id}`, paths, recordedAt: 1 });
 }
 
 /** A file that caused a merge-queue conflict lately, so the overlap gate holds work on it. */

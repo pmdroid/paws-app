@@ -36,7 +36,7 @@ test("the timeline shows the agent's CI re-run with its reason and run id", asyn
     at: Date.now() + 1,
   });
   const record = getWorkItem(db, "item")!;
-  const facts = new Map(listWorkItemFacts(db).map((fact) => [fact.itemId, fact]));
+  const facts = new Map((await listWorkItemFacts(sqliteDb(db))).map((fact) => [fact.itemId, fact]));
   const { timeline } = await historyOf(db, record, facts, Date.now() + 2);
   expect(timeline?.at(-1)).toMatchObject({
     kind: "ci_rerun",

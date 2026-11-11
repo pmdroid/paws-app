@@ -29,7 +29,7 @@ test("lists each item's owner, Linear project, and creation time", async () => {
   });
   db.run("UPDATE work_item SET owner_user_id = ? WHERE id = ?", [userId, older.id]);
 
-  expect(listWorkItemFacts(db)).toEqual([
+  expect(await listWorkItemFacts(sqliteDb(db))).toEqual([
     {
       itemId: solo.id,
       owner: null,

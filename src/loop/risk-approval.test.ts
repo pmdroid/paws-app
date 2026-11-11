@@ -549,7 +549,7 @@ test("a CI fix that only changes a test keeps the approval and merges without a 
     }),
   ).toEqual({ ok: true });
   // The carry-over names the approved head and why.
-  expect(getRiskFix(db, itemId, heads.ciFix)).toMatchObject({
+  expect(await getRiskFix(sqliteDb(db), itemId, heads.ciFix)).toMatchObject({
     approvedHead: heads.s,
     changed: ["test/x.test.ts"],
     paths: [],
@@ -592,11 +592,13 @@ test("a CI fix on a rebased head counts only the fix's own files, not main's", a
   const { db, itemId } = await riskApproved();
   fixAccepted(db, heads.rebasedCiFix, heads.newMain);
   expect(await approvalWithFixes(db, heads.rebasedCiFix)).toBe("approved");
-  expect(getRiskFix(db, itemId, heads.rebasedCiFix)?.changed).toEqual(["test/x.test.ts"]);
+  expect((await getRiskFix(sqliteDb(db), itemId, heads.rebasedCiFix))?.changed).toEqual([
+    "test/x.test.ts",
+  ]);
   // A rebase alone still follows samePatch and records no fix.
   fixAccepted(db, heads.rebased, heads.newMain);
   expect(await approvalWithFixes(db, heads.rebased)).toBe("approved");
-  expect(getRiskFix(db, itemId, heads.rebased)).toBeNull();
+  expect(await getRiskFix(sqliteDb(db), itemId, heads.rebased)).toBeNull();
 });
 
 test("without an approval, or when the fix cannot be read, a fix asks", async () => {
@@ -622,7 +624,7 @@ test("a carried-over approval is checked again against the high-risk paths in fo
   expect(await approvalWithFixes(db, heads.ciFix)).toBe("approved");
   // Settings now lists the tests too: the same fix no longer keeps the approval.
   expect(await approvalWithFixes(db, heads.ciFix, [...HIGH_RISK, "test/**"])).toBe("missing");
-  expect(getRiskFix(db, itemId, heads.ciFix)?.paths).toEqual(["test/x.test.ts"]);
+  expect((await getRiskFix(sqliteDb(db), itemId, heads.ciFix))?.paths).toEqual(["test/x.test.ts"]);
   // A fix Paws can no longer read forgets the earlier carry-over instead of trusting it.
   expect(await approvalWithFixes(db, heads.ciFix)).toBe("approved");
   expect(
@@ -634,7 +636,7 @@ test("a carried-over approval is checked again against the high-risk paths in fo
       fixRisk: async () => null,
     }),
   ).toBe("missing");
-  expect(getRiskFix(db, itemId, heads.ciFix)).toBeNull();
+  expect(await getRiskFix(sqliteDb(db), itemId, heads.ciFix)).toBeNull();
 });
 
 test("a rebase that changed the patch asks again, even when the change is only a test", async () => {
@@ -653,14 +655,19 @@ test("a rebase that changed the patch asks again, even when the change is only a
   expect(await samePatch(repo, heads.both, heads.absorbed, heads.mainWithTest)).toBe(false);
   expect(await fixChangedPaths(repo, heads.both, heads.absorbed, heads.mainWithTest)).toBeNull();
   expect(await approvalWithFixes(db, heads.absorbed)).toBe("missing");
-  expect(getRiskFix(db, itemId, heads.absorbed)).toBeNull();
+  expect(await getRiskFix(sqliteDb(db), itemId, heads.absorbed)).toBeNull();
 });
 
 /** Stored results, as reported through Closeout's real progress adapter. */
 async function cleanRiskFixture() {
   const fixture = await held();
   const { db, itemId } = fixture;
-  saveCandidatePaths(db, { itemId, head: heads.s, paths: ["session.ts"], recordedAt: NOW });
+  await saveCandidatePaths(sqliteDb(db), {
+    itemId,
+    head: heads.s,
+    paths: ["session.ts"],
+    recordedAt: NOW,
+  });
   const identity = {
     taskId: itemId,
     head: heads.s,
@@ -818,7 +825,7 @@ for (const policyPath of [
   test(`changing ${policyPath} always asks`, async () => {
     const f = await cleanRiskFixture();
     // The policy file deliberately matches no high-risk glob. Only session.ts is in risk.paths.
-    saveCandidatePaths(f.db, {
+    await saveCandidatePaths(sqliteDb(f.db), {
       itemId: f.itemId,
       head: heads.s,
       paths: ["session.ts", policyPath],
@@ -1020,15 +1027,15 @@ for (const severity of ["P0", "P1", "P2"] as const) {
 test("unknown or malformed candidate paths never reuse another head's path list", async () => {
   const f = await cleanRiskFixture();
   f.db.run("DELETE FROM candidate_paths");
-  saveCandidatePaths(f.db, {
+  await saveCandidatePaths(sqliteDb(f.db), {
     itemId: f.itemId,
     head: heads.changed,
     paths: ["session.ts"],
     recordedAt: NOW + 1,
   });
-  expect(getCandidatePaths(f.db, f.itemId, heads.s)).toBeNull();
+  expect(await getCandidatePaths(sqliteDb(f.db), f.itemId, heads.s)).toBeNull();
   expect(await f.read()).toBe("missing");
-  saveCandidatePaths(f.db, {
+  await saveCandidatePaths(sqliteDb(f.db), {
     itemId: f.itemId,
     head: heads.s,
     paths: ["session.ts"],
@@ -1044,7 +1051,7 @@ test("unknown or malformed candidate paths never reuse another head's path list"
 test("a carried acceptance after rebase does not substitute for exact-head reviews", async () => {
   const f = await cleanRiskFixture();
   classify(f.db, heads.rebased, heads.newMain);
-  saveCandidatePaths(f.db, {
+  await saveCandidatePaths(sqliteDb(f.db), {
     itemId: f.itemId,
     head: heads.rebased,
     paths: ["session.ts"],
@@ -1142,7 +1149,7 @@ for (const scenario of ["clean", "P2", "missing security", "rules change", "off"
       if (scenario === "missing security")
         f.db.run("DELETE FROM closeout_step WHERE step_id = 'security-review'");
       if (scenario === "rules change")
-        saveCandidatePaths(f.db, {
+        await saveCandidatePaths(sqliteDb(f.db), {
           itemId: f.itemId,
           head: heads.s,
           paths: ["tools/rules.ts"],

@@ -80,7 +80,7 @@ const target = (number: number, kind: "thread" | "conversation", commentId: numb
 test("a review restart posts one working-on-it comment and 👀 on each comment, once", async () => {
   const { db, github, clock, startRestart, turnStarts } = setup();
   startRestart("review", "Fix the review.", "review:eng-1:601");
-  recordReplyTargets(
+  await recordReplyTargets(
     db,
     "eng-1",
     "review:eng-1:601",

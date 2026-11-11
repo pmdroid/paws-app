@@ -235,7 +235,7 @@ describe("changes-requested reviews", () => {
     expect(await handlePullReview(db, 501, caps)).toBe("done");
     await deliver({ id: 501, state: "changes_requested", body: "The ranking is reversed." });
     expect(await handlePullReview(db, 501, caps)).toBe("done");
-    expect(listReviewEscapes(db)).toEqual([
+    expect(await listReviewEscapes(sqliteDb(db))).toEqual([
       expect.objectContaining({
         triggerKey: "review:eng-1:501",
         trigger: "review",

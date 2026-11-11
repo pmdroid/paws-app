@@ -4,6 +4,7 @@ import {
   migrate,
   openDatabase,
   savePolicyRunnerWarning,
+  sqliteDb,
 } from "../../../db";
 import { createLiveStatusProvider } from "./provider";
 
@@ -14,7 +15,7 @@ describe("live status: a runner too old for a Closeout policy key", () => {
     const db = openDatabase(":memory:");
     migrate(db);
     expect((await createLiveStatusProvider(db).mergeQueue()).policyRunnerWarnings).toEqual([]);
-    savePolicyRunnerWarning(db, {
+    await savePolicyRunnerWarning(sqliteDb(db), {
       repository: "pmdroid/paws-app",
       policyDigest: DIGEST,
       runnerVersion: "0.1.48",
@@ -30,7 +31,7 @@ describe("live status: a runner too old for a Closeout policy key", () => {
         checkedAt: "2026-10-28T06:43:00.000Z",
       },
     ]);
-    clearPolicyRunnerWarning(db, "pmdroid/paws-app");
+    await clearPolicyRunnerWarning(sqliteDb(db), "pmdroid/paws-app");
     expect((await createLiveStatusProvider(db).mergeQueue()).policyRunnerWarnings).toEqual([]);
   });
 });

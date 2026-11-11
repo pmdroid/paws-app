@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { aliasedTable, and, asc, desc, eq, gt, lte, or, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
 
 /** Conflict restarts this recent make their files hot. */
@@ -39,11 +39,11 @@ export function* saveCandidatePathsSteps(
 }
 
 /** Records every path a candidate head changes since its base. A repeat of the head replaces it. */
-export function saveCandidatePaths(
-  db: Database,
+export async function saveCandidatePaths(
+  store: Db,
   input: { itemId: string; head: string; paths: readonly string[]; recordedAt: number },
-): void {
-  settled(sqliteDb(db).run((q) => saveCandidatePathsSteps(q, input)));
+): Promise<void> {
+  await store.run((q) => saveCandidatePathsSteps(q, input));
 }
 
 export function* getCandidatePathsSteps(q: Q, itemId: string, head: string) {
@@ -62,8 +62,12 @@ export function* getCandidatePathsSteps(q: Q, itemId: string, head: string) {
 }
 
 /** Exact-head changed paths. Unknown paths must never be mistaken for an empty change. */
-export function getCandidatePaths(db: Database, itemId: string, head: string): string[] | null {
-  return settled(sqliteDb(db).run((q) => getCandidatePathsSteps(q, itemId, head)));
+export async function getCandidatePaths(
+  store: Db,
+  itemId: string,
+  head: string,
+): Promise<string[] | null> {
+  return store.run((q) => getCandidatePathsSteps(q, itemId, head));
 }
 
 /** Same-millisecond candidates of an item are told apart by head, the table's natural key. */
@@ -89,8 +93,8 @@ export function* latestCandidatePathsSteps(q: Q): Steps<Map<string, string[]>> {
  * The paths of each item's latest candidate, by item id. An item Paws has not published a
  * candidate for has no entry: its files are unknown.
  */
-export function latestCandidatePaths(db: Database): Map<string, string[]> {
-  return settled(sqliteDb(db).run(latestCandidatePathsSteps));
+export async function latestCandidatePaths(store: Db): Promise<Map<string, string[]>> {
+  return store.run((q) => latestCandidatePathsSteps(q));
 }
 
 /**

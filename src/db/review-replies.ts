@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 
 /**
  * Where Paws answers one comment it handed to the agent. `thread`: an inline review thread, answered
@@ -80,8 +79,8 @@ export function* recordReviewRepliesSteps(q: Q, input: ReviewReplyHandoff): Step
     );
 }
 
-export function recordReviewReplies(db: Database, input: ReviewReplyHandoff): void {
-  settled(sqliteDb(db).run((q) => recordReviewRepliesSteps(q, input)));
+export async function recordReviewReplies(store: Db, input: ReviewReplyHandoff): Promise<void> {
+  await store.run((q) => recordReviewRepliesSteps(q, input));
 }
 
 /** This item's handed-off comments the agent has not reported on yet, by number. */
@@ -96,8 +95,11 @@ export function* unreportedReviewRepliesSteps(q: Q, itemId: string): Steps<Revie
   )) as ReviewReplyRecord[];
 }
 
-export function unreportedReviewReplies(db: Database, itemId: string): ReviewReplyRecord[] {
-  return settled(sqliteDb(db).run((q) => unreportedReviewRepliesSteps(q, itemId)));
+export async function unreportedReviewReplies(
+  store: Db,
+  itemId: string,
+): Promise<ReviewReplyRecord[]> {
+  return store.run((q) => unreportedReviewRepliesSteps(q, itemId));
 }
 
 type ReviewReplyReports = ReadonlyMap<
@@ -136,16 +138,14 @@ export function* reportReviewRepliesSteps(
   return stored;
 }
 
-export function reportReviewReplies(
-  db: Database,
+export async function reportReviewReplies(
+  store: Db,
   itemId: string,
   reports: ReviewReplyReports,
   now: number,
   keepMissing = false,
-): number {
-  return settled(
-    sqliteDb(db).run((q) => reportReviewRepliesSteps(q, itemId, reports, now, keepMissing)),
-  );
+): Promise<number> {
+  return store.run((q) => reportReviewRepliesSteps(q, itemId, reports, now, keepMissing));
 }
 
 /** Reported replies on pull request `pullNumber` that Paws has not posted yet. */
@@ -171,12 +171,12 @@ export function* unpostedReviewRepliesSteps(
   )) as ReviewReplyRecord[];
 }
 
-export function unpostedReviewReplies(
-  db: Database,
+export async function unpostedReviewReplies(
+  store: Db,
   itemId: string,
   pullNumber: number,
-): ReviewReplyRecord[] {
-  return settled(sqliteDb(db).run((q) => unpostedReviewRepliesSteps(q, itemId, pullNumber)));
+): Promise<ReviewReplyRecord[]> {
+  return store.run((q) => unpostedReviewRepliesSteps(q, itemId, pullNumber));
 }
 
 export function* markReviewReplyPostedSteps(
@@ -197,11 +197,11 @@ export function* markReviewReplyPostedSteps(
   );
 }
 
-export function markReviewReplyPosted(
-  db: Database,
+export async function markReviewReplyPosted(
+  store: Db,
   id: number,
   now: number,
   resolved: boolean,
-): void {
-  settled(sqliteDb(db).run((q) => markReviewReplyPostedSteps(q, id, now, resolved)));
+): Promise<void> {
+  await store.run((q) => markReviewReplyPostedSteps(q, id, now, resolved));
 }

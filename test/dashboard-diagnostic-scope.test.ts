@@ -9,13 +9,14 @@ import {
   sessionRepositoriesAllowed,
   syncWorkspaceMember,
   workspaceSessionIds,
+  sqliteDb,
 } from "../src/db";
 import { startServer } from "../src/server";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
 
 const REPOSITORIES = ["fixture/team-a", "fixture/private-team-b", "Fixture/Catalog"];
 
-function seed(): Database {
+async function seed(): Promise<Database> {
   const db = openDatabase(":memory:");
   migrate(db);
   for (const [id, org] of [
@@ -60,7 +61,7 @@ function seed(): Database {
       now: 0,
       delayMs: () => 60_000,
     });
-    savePolicyRunnerWarning(db, {
+    await savePolicyRunnerWarning(sqliteDb(db), {
       repository,
       policyDigest: `sha256:policy-${repository}`,
       runnerVersion: "0.1.0",
@@ -71,8 +72,8 @@ function seed(): Database {
   return db;
 }
 
-test("diagnostics follow the team repository policy of the authorized sessions", () => {
-  const db = seed();
+test("diagnostics follow the team repository policy of the authorized sessions", async () => {
+  const db = await seed();
   const allowed = (sessions: string[]) => [
     ...sessionRepositoriesAllowed(db, sessions, REPOSITORIES),
   ];
@@ -85,7 +86,7 @@ test("diagnostics follow the team repository policy of the authorized sessions",
 });
 
 test("a member's overview, merge queue and issue list hold only their teams' diagnostics", async () => {
-  const db = seed();
+  const db = await seed();
   for (const [user, role, teams] of [
     ["member", "member", ["team-a"]],
     ["admin", "admin", []],

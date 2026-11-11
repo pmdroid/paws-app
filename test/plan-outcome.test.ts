@@ -12,6 +12,7 @@ import {
   listOutbox,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator, parsePlanResult, planDecision, type AgentLaunch } from "../src/loop";
@@ -238,7 +239,7 @@ test("a planning request proposes sub-issues, takes an edit, and files them once
     expect(first.body).toContain("**2. File approved sub-issues**");
     expect(first.body).toContain("Blocked by 1.");
     expect(first.body).toContain("- [ ] Screenshot of the filed sub-issues in Linear");
-    expect(getPlanProposal(db, first.id)?.drafts).toEqual(drafts);
+    expect((await getPlanProposal(sqliteDb(db), first.id))?.drafts).toEqual(drafts);
     expect(prompts.at(-1)).toContain("read-only");
     expect(prompts.at(-1)).toContain(".agents/closeout.yaml");
     const trace = JSON.parse(readFileSync(join(home, `${purposes.length}.trace.json`), "utf8"));

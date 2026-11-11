@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, isNull } from "drizzle-orm";
 import { validateSubIssueDrafts, type FiledSubIssue, type SubIssueDraft } from "../core";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { applyWorkItemEventSteps, cancelAdvancingJobsSteps, getWorkItemSteps } from "./items";
 import { markRunSteps } from "./runs";
 import { jsonText, jsonValue } from "./json-text";
@@ -43,8 +42,8 @@ export function* savePlanProposalSteps(q: Q, input: PlanProposalInput): Steps<Pl
   return (yield* getPlanProposalSteps(q, input.questionId))!;
 }
 
-export function savePlanProposal(db: Database, input: PlanProposalInput): PlanProposal {
-  return settled(sqliteDb(db).run((q) => savePlanProposalSteps(q, input)));
+export async function savePlanProposal(store: Db, input: PlanProposalInput): Promise<PlanProposal> {
+  return store.run((q) => savePlanProposalSteps(q, input));
 }
 
 export function* getPlanProposalSteps(q: Q, questionId: string): Steps<PlanProposal | null> {
@@ -73,8 +72,8 @@ export function* getPlanProposalSteps(q: Q, questionId: string): Steps<PlanPropo
       };
 }
 
-export function getPlanProposal(db: Database, questionId: string): PlanProposal | null {
-  return settled(sqliteDb(db).run((q) => getPlanProposalSteps(q, questionId)));
+export async function getPlanProposal(store: Db, questionId: string): Promise<PlanProposal | null> {
+  return store.run((q) => getPlanProposalSteps(q, questionId));
 }
 
 export function* recordPlanFiledSteps(
@@ -95,13 +94,13 @@ export function* recordPlanFiledSteps(
   return proposal;
 }
 
-export function recordPlanFiled(
-  db: Database,
+export async function recordPlanFiled(
+  store: Db,
   questionId: string,
   filed: readonly FiledSubIssue[],
   now: number,
-): PlanProposal {
-  return settled(sqliteDb(db).transaction((q) => recordPlanFiledSteps(q, questionId, filed, now)));
+): Promise<PlanProposal> {
+  return store.transaction((q) => recordPlanFiledSteps(q, questionId, filed, now));
 }
 
 export function* completePlanTaskSteps(q: Q, itemId: string, now: number) {
@@ -115,6 +114,6 @@ export function* completePlanTaskSteps(q: Q, itemId: string, now: number) {
   yield* cancelAdvancingJobsSteps(q, itemId, "plan_completed", now);
 }
 
-export function completePlanTask(db: Database, itemId: string, now: number): void {
-  settled(sqliteDb(db).transaction((q) => completePlanTaskSteps(q, itemId, now)));
+export async function completePlanTask(store: Db, itemId: string, now: number): Promise<void> {
+  await store.transaction((q) => completePlanTaskSteps(q, itemId, now));
 }

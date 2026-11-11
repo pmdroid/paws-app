@@ -144,7 +144,7 @@ test("Discarding a plan completes it from the wait with one answer_completed", a
     "File these sub-issues?",
     { options: ["Create", "Edit", "Discard"], now: 2_000 },
   );
-  savePlanProposal(db, {
+  await savePlanProposal(sqliteDb(db), {
     questionId: asked.question.id,
     itemId: item.id,
     parentIssueId: "issue-9",

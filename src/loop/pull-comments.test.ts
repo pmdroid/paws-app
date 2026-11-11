@@ -410,7 +410,7 @@ describe("pull request comments restart the item", () => {
     expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
     await conversation({ id: 3001, author: "pascal", body: "This drops the last page." });
     expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
-    expect(listReviewEscapes(db)).toEqual([
+    expect(await listReviewEscapes(sqliteDb(db))).toEqual([
       expect.objectContaining({
         itemId: "eng-1",
         trigger: "comment",

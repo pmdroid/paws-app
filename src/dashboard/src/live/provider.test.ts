@@ -717,7 +717,7 @@ describe("live status provider", () => {
       paths: ["src/auth/session.ts", "src/auth/token.ts"],
       classifiedAt: now,
     });
-    saveRiskFix(db, {
+    await saveRiskFix(sqliteDb(db), {
       itemId: item.id,
       head,
       approvedHead: "4b317d5cc2",
@@ -751,7 +751,7 @@ describe("live status provider", () => {
         classifiedAt: at,
       });
     risk("9c1d2e3ff0", now);
-    saveRiskFix(db, {
+    await saveRiskFix(sqliteDb(db), {
       itemId: item.id,
       head: "9c1d2e3ff0",
       approvedHead: "4b317d5cc2",

@@ -470,7 +470,7 @@ describe("advanceMerge on a CI failure", () => {
     h.state.ci = failingTest;
     h.state.baseCi = () => [{ name: "e2e", conclusion: "FAILURE", detailsUrl: null }];
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
-    expect(listReviewEscapes(h.db)).toEqual([
+    expect(await listReviewEscapes(sqliteDb(h.db))).toEqual([
       expect.objectContaining({
         itemId: "ENG-1",
         trigger: "ci",
@@ -484,7 +484,9 @@ describe("advanceMerge on a CI failure", () => {
     const fix = await h.requeue("ENG-1", "fix 1\n");
     h.state.ci = () => [{ name: "e2e", conclusion: "FAILURE", detailsUrl: null }];
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
-    expect(listReviewEscapes(h.db).map((row) => [row.acceptedHead, row.detail.checks])).toEqual([
+    expect(
+      (await listReviewEscapes(sqliteDb(h.db))).map((row) => [row.acceptedHead, row.detail.checks]),
+    ).toEqual([
       [item.accepted, [{ name: "test", failsOnBase: false }]],
       [fix, [{ name: "e2e", failsOnBase: true }]],
     ]);
@@ -750,7 +752,9 @@ describe("advanceMerge while the pull request waits for a review", () => {
       ["conflict", REBASE_CONFLICT_INSTRUCTION],
     ]);
     expect(listRebaseReturns(h.db, "ENG-1", 0)).toMatchObject([{ base: main, reason: "merge" }]);
-    expect(rebaseReturnedFor(h.db, "ENG-1", await h.remoteHead("ENG-1"))).toBe(true);
+    expect(await rebaseReturnedFor(sqliteDb(h.db), "ENG-1", await h.remoteHead("ENG-1"))).toBe(
+      true,
+    );
     expect(h.bodies("afterPullRequest")).toEqual([]);
   });
 

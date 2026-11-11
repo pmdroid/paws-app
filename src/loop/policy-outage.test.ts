@@ -90,7 +90,7 @@ describe("an unreadable Closeout policy on main", () => {
       questionId: question!.id,
     });
     expect(getQuestion(db, question!.id)?.status).toBe("cancelled");
-    expect(getPolicyOutage(db, REPOSITORY)).toBeNull();
+    expect(await getPolicyOutage(sqliteDb(db), REPOSITORY)).toBeNull();
     expect(await policyLoads(sqliteDb(db), REPOSITORY, 40)).toBeNull();
   });
 
