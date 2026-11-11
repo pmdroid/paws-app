@@ -22,7 +22,7 @@ export type MemberVmProvisioningSource = {
   installer: () => string | null;
   publicUrl: string | null;
   serverCa?: string | null;
-  repositories: () => readonly string[];
+  repositories: () => Promise<readonly string[]>;
   runnerControl: () => Promise<MemberVmRunnerControl | null | undefined>;
   latestRelease: () => Promise<string | null>;
   /** Reads `~/.paws/secrets/tailscale-authkey`. Absent or null: the VM joins no tailnet. */
@@ -69,7 +69,7 @@ export function createMemberVmProvisioning(
       runnerApiUrl: runnerApi.origin,
       controlPlaneUrl: new URL(source.publicUrl).origin,
       serverCa: source.serverCa ?? null,
-      allowedRepositories: source.repositories().slice(0, 256),
+      allowedRepositories: (await source.repositories()).slice(0, 256),
       tailnet: { authKey, release: PINNED_TAILSCALE.amd64 },
     });
     return { exeDev, bootstrap, mintEnrollment: control.mintEnrollment, size };

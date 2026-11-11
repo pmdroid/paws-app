@@ -125,7 +125,7 @@ export async function probeRunnerEnrollment(
   });
   let catalog: string[] = [];
   const http = createRunnerHttp(control, {
-    hostConfig: () => ({
+    hostConfig: async () => ({
       controlPlaneUrl: "https://paws.example.invalid",
       runnerApiUrl: "https://paws.example.invalid:8788",
       allowedRepositories: catalog,

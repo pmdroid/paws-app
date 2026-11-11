@@ -1147,10 +1147,6 @@ export function* extendStalledRunnerWorkSteps(q: Q, startedAt: number, lagMs: nu
   }
 }
 
-export function extendStalledRunnerWork(db: Database, startedAt: number, lagMs: number): void {
-  settled(sqliteDb(db).transaction((q) => extendStalledRunnerWorkSteps(q, startedAt, lagMs)));
-}
-
 export function* setRunnerWorkConsumedSequenceSteps(
   q: Q,
   runId: string,

@@ -100,7 +100,7 @@ import {
   enqueueCommand,
   enqueueCommandSteps,
   getLinearSession,
-  getWorkItem,
+  getWorkItemSteps,
   getItemRunCommitPolicy,
   workspaceLinearMember,
   workspaceForOrganization,
@@ -142,7 +142,7 @@ import {
   roleRunsJobs,
   RUN_TAKEOVER_JOB,
   RUN_TAKEOVER_MS,
-  listRepositoryCatalog,
+  listRepositoryCatalogSteps,
   refreshRepositoryCatalog,
   startLoops,
   submitCommand,
@@ -150,7 +150,7 @@ import {
   type WorkItemRecord,
   type Q,
   runnerHasCapacitySteps,
-  workspaceMember,
+  workspaceMemberSteps,
   sqliteDb,
   enabledRunnerIdsSteps,
   latestCloseoutProgressMarker,
@@ -935,6 +935,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   void uploadLocalCloseoutEvidence(db, closeoutEvidence).catch((error: unknown) =>
     journalCaught(error, "index.startPaws.uploadLocalCloseoutEvidence", null),
   );
+  const catalogRepositories = async () =>
+    (await store.run(listRepositoryCatalogSteps)).map((entry) => `${entry.owner}/${entry.repo}`);
   let runner: RunnerCoordinator | undefined;
   if (runnerConfig !== null)
     periodic.push(
@@ -988,8 +990,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             : undefined,
           skillsRoot: paths.skillsDir,
           publicUrl: runtime.publicUrl,
-          repositories: () =>
-            listRepositoryCatalog(db).map((entry) => `${entry.owner}/${entry.repo}`),
+          repositories: catalogRepositories,
           onError: () => console.error("Paws runner connection failed."),
           retros: () => retroDispatcher?.fetch,
         }).then(async (value) => {
@@ -1035,7 +1036,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       }
     },
     publicUrl: runtime.publicUrl,
-    repositories: () => listRepositoryCatalog(db).map((entry) => `${entry.owner}/${entry.repo}`),
+    repositories: catalogRepositories,
     latestRelease: () => latestRunnerRelease(),
     runnerControl: async () => {
       const coordinator = await runnerReady;
@@ -1043,12 +1044,14 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       return {
         port: coordinator.port,
         serverVersion: coordinator.control.serverVersion(),
-        mintEnrollment: (member, input) =>
+        mintEnrollment: async (member, input) =>
           coordinator.control.createEnrollment(
             {
               workspaceId: member.workspaceId,
               userId: member.userId,
-              role: workspaceMember(db, member.workspaceId, member.userId)?.role ?? "member",
+              role:
+                (await store.run((q) => workspaceMemberSteps(q, member.workspaceId, member.userId)))
+                  ?.role ?? "member",
               authenticatedAt: Date.now(),
               teamIds: [],
             },
@@ -1871,16 +1874,12 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             ),
           );
         });
-        const forItem = <T>(itemId: string, run: () => T): T => {
-          const item = getWorkItem(db, itemId);
-          return item ? linearItem(item.linearIdentifier, run, item.id) : run();
-        };
         created.jobs.register("linear.item.reconcile", async (job) => {
           const target = job.payload as { itemId: string; workspaceId: string };
+          const item = await store.run((q) => getWorkItemSteps(q, target.itemId));
+          const reconcile = () => reconciler?.reconcile({ ...target, signal: abort.signal });
           await linearCaller("item-reconcile", () =>
-            forItem(target.itemId, () =>
-              reconciler?.reconcile({ ...target, signal: abort.signal }),
-            ),
+            item ? linearItem(item.linearIdentifier, reconcile, item.id) : reconcile(),
           );
           await attached.reconcileExecution();
         });
@@ -2085,7 +2084,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
 
   const lagTimer = setInterval(
     createLagWatchdog({
-      recover: (lag, startedAt) => recoverRunnerWorkStall(db, startedAt, lag),
+      recover: (lag, startedAt) => recoverRunnerWorkStall(store, startedAt, lag),
     }),
     1000,
   );
