@@ -1,7 +1,13 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { bindLinearSessionTask, migrate, recordLinearInstallation, saveTaskMode } from "../src/db";
-import { intakeDelegatedIssue, readyItems, syncItemDependencies } from "../src/intake";
+import {
+  bindLinearSessionTask,
+  migrate,
+  recordLinearInstallation,
+  saveTaskMode,
+  sqliteDb,
+} from "../src/db";
+import { intakeDelegatedIssue, readyItemsSteps, syncItemDependencies } from "../src/intake";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../src/linear";
 import { inspectPullRequestMerge } from "../src/github";
 
@@ -47,10 +53,10 @@ async function fixture() {
   bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "linear-person" });
   const itemId = intake.items[0]!.id;
   const target = { workspaceId: "workspace", itemId };
-  const refresh = () =>
+  const refresh = async () =>
     syncItemDependencies(db, {
       ...target,
-      expectedGeneration: readyItems(db, target).generation,
+      expectedGeneration: (await sqliteDb(db).run((q) => readyItemsSteps(q, target))).generation,
       tracker,
       lifecycle,
     });
@@ -60,7 +66,8 @@ async function fixture() {
     tracker,
     lifecycle,
     refresh,
-    ready: () => readyItems(db, target).readyItemIds.includes(itemId),
+    ready: async () =>
+      (await sqliteDb(db).run((q) => readyItemsSteps(q, target))).readyItemIds.includes(itemId),
   };
 }
 
@@ -69,10 +76,10 @@ test("an outside blocker completed in Linear releases the item", async () => {
   try {
     f.lifecycle.issue.stateType = "started";
     await f.refresh();
-    expect(f.ready()).toBe(false);
+    expect(await f.ready()).toBe(false);
     f.lifecycle.issue.stateType = "completed";
     await f.refresh();
-    expect(f.ready()).toBe(true);
+    expect(await f.ready()).toBe(true);
   } finally {
     f.db.close();
   }
@@ -83,10 +90,10 @@ test("an outside blocker canceled in Linear releases the item; an open one holds
   try {
     f.lifecycle.issue.stateType = "started";
     await f.refresh();
-    expect(f.ready()).toBe(false);
+    expect(await f.ready()).toBe(false);
     f.lifecycle.issue.stateType = "canceled";
     await f.refresh();
-    expect(f.ready()).toBe(true);
+    expect(await f.ready()).toBe(true);
   } finally {
     f.db.close();
   }
@@ -118,18 +125,18 @@ test("Managed blockers in another delegation require canonical delivery", async 
     const item = intake.items[0]!;
     saveTaskMode(f.db, item.id, "code");
     await f.refresh();
-    expect(f.ready()).toBe(false);
+    expect(await f.ready()).toBe(false);
     f.db.run("UPDATE work_item SET state='completed' WHERE id=?", [item.id]);
-    expect(f.ready()).toBe(false);
+    expect(await f.ready()).toBe(false);
     f.db.run("UPDATE work_item SET state='merged' WHERE id=?", [item.id]);
-    expect(f.ready()).toBe(false);
+    expect(await f.ready()).toBe(false);
     f.db.run("INSERT INTO remote_merge_fact VALUES(?,'owner','repo',12,NULL,?,2000)", [
       item.id,
       "b".repeat(40),
     ]);
-    expect(f.ready()).toBe(true);
+    expect(await f.ready()).toBe(true);
     f.db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [item.id]);
-    expect(f.ready()).toBe(false);
+    expect(await f.ready()).toBe(false);
   } finally {
     f.db.close();
   }
@@ -160,10 +167,10 @@ test("A blocker whose Paws tasks were all cancelled follows its Linear state", a
     });
     f.db.run("UPDATE work_item SET state='cancelled' WHERE id=?", [intake.items[0]!.id]);
     await f.refresh();
-    expect(f.ready()).toBe(true);
+    expect(await f.ready()).toBe(true);
     f.lifecycle.issue.stateType = "started";
     await f.refresh();
-    expect(f.ready()).toBe(false);
+    expect(await f.ready()).toBe(false);
   } finally {
     f.db.close();
   }
@@ -215,16 +222,16 @@ test("Re-delegated managed blockers follow the latest active item", async () => 
       ],
     );
     await f.refresh();
-    expect(f.ready()).toBe(true);
+    expect(await f.ready()).toBe(true);
     f.db.run("UPDATE work_item SET state='running' WHERE id=?", [newer.id]);
     f.db.run("UPDATE work_item SET state='merged' WHERE id='older-blocker'");
     f.db.run(
       "INSERT INTO remote_merge_fact VALUES('older-blocker','owner','repo',11,NULL,?,1000)",
       ["c".repeat(40)],
     );
-    expect(f.ready()).toBe(false);
+    expect(await f.ready()).toBe(false);
     f.db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [newer.id]);
-    expect(f.ready()).toBe(true);
+    expect(await f.ready()).toBe(true);
   } finally {
     f.db.close();
   }

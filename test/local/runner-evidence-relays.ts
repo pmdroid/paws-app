@@ -214,7 +214,7 @@ export async function probeRunnerEvidenceRelays(
       profile: { agent: "codex", model: "scripted" },
       prompt: "Relay fixture evidence",
     };
-    coordinator.work.assign(command);
+    await coordinator.work.assign(command);
     const grant = await daemon.issueRunGrant(run.id, { commandId: command.id, generation: 1 });
     const bytes = Buffer.alloc(RUNNER_ARTIFACT_CHUNK_BYTES + 19, 65);
     const artifact = {

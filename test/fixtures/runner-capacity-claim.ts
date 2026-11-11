@@ -18,7 +18,7 @@ try {
   writeFileSync(`${commandPath}.ready`, "ready");
   while (!existsSync(barrier!)) await delay(5);
   try {
-    work.assign(command);
+    await work.assign(command);
     console.log(JSON.stringify({ accepted: true, commandId: command.id }));
   } catch (error) {
     console.log(JSON.stringify({ accepted: false, commandId: command.id, error: String(error) }));

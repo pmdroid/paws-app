@@ -16,7 +16,6 @@ import {
   applyLinearTurnsSteps,
   applyWorkItemEventSteps,
   completePlanTaskSteps,
-  emitJobReady,
   enqueueJobOnceSteps,
   enqueueOutboxOnceSteps,
   failWorkItemSteps,
@@ -33,9 +32,6 @@ import {
   setQuestionHandoffVersionSteps,
   setRetryAnswerSteps,
   commandInstance,
-  settled,
-  sqliteDb,
-  syncSteps,
   type HeldHandoff,
   type Q,
   type Steps,
@@ -59,7 +55,7 @@ import { RETRY_CLOSEOUT, retriesCloseout } from "./closeout-recovery";
 import { retriesMerge } from "../merge";
 import { worktreeBranch } from "./sources";
 import { answerRunnerRepositorySteps } from "./runner-repository";
-import { recordVisualReviewOutcome, visualReviewHandoff } from "./visual-review";
+import { recordVisualReviewOutcomeSteps, visualReviewHandoffSteps } from "./visual-review";
 
 function* consumeTurnSteps(q: Q, question: StoredQuestion): Steps<void> {
   if (
@@ -87,21 +83,11 @@ export function* verifyAgainSteps(q: Q, question: StoredQuestion, input: VerifyI
   });
 }
 
-export function verifyAgain(db: Database, question: StoredQuestion, input: VerifyInput): void {
-  settled(sqliteDb(db).transaction((q) => verifyAgainSteps(q, question, input)));
-  emitJobReady(db);
-}
-
 type RetryInput = { now: number; answer?: string };
 
 export function* retryCloseoutSteps(q: Q, question: StoredQuestion, input: RetryInput) {
   yield* setRetryAnswerSteps(q, question.id, input.answer ?? RETRY_CLOSEOUT);
   yield* verifyAgainSteps(q, question, { now: input.now, key: "retry-closeout" });
-}
-
-export function retryCloseout(db: Database, question: StoredQuestion, input: RetryInput): void {
-  settled(sqliteDb(db).transaction((q) => retryCloseoutSteps(q, question, input)));
-  emitJobReady(db);
 }
 
 export function questionEffects(
@@ -259,15 +245,13 @@ export function questionEffects(
     const review = yield* getVisualReviewSteps(q, question.id);
     if (review === null) return;
     if (input.marks) yield* saveVisualReviewMarksSteps(q, input.marks);
-    const outcome = yield* syncSteps(() =>
-      recordVisualReviewOutcome(db, question, review, input.now),
-    );
+    const outcome = yield* recordVisualReviewOutcomeSteps(q, question, review, input.now);
     if (!input.marks) yield* consumeTurn(q, question);
     const item = yield* getWorkItemSteps(q, question.itemId);
     if (outcome === "asked" || !item) return;
     yield* restartSteps(q, item, {
       reason: "review",
-      body: (yield* syncSteps(() => visualReviewHandoff(db, question.id))) ?? "",
+      body: (yield* visualReviewHandoffSteps(q, question.id)) ?? "",
       jobKey: `resume:answer:${question.id}`,
       now: input.now,
     });

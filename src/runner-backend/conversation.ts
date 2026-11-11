@@ -1,7 +1,6 @@
 import type { Database } from "bun:sqlite";
 import {
   runnerConversationLaneSteps,
-  settled,
   sqliteDb,
   unfinishedConversationHelpersSteps,
   type Db,
@@ -71,8 +70,6 @@ export function conversationTurns(options: {
       });
     },
     startSteps,
-    start: (itemId: string, sessionId: string, prompt: string) =>
-      settled(store.transaction((q) => startSteps(q, itemId, sessionId, prompt))),
     async open(itemId: string): Promise<ConversationTurn[]> {
       const rows = await store.run((q) => unfinishedConversationHelpersSteps(q));
       return rows.flatMap((row) => {

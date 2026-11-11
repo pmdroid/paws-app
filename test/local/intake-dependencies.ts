@@ -8,8 +8,14 @@ import {
   openDatabase,
   recordLinearInstallation,
   saveTaskMode,
+  sqliteDb,
 } from "../../src/db";
-import { intakeDelegatedIssue, readyItems, syncItemDependencies } from "../../src/intake";
+import {
+  intakeDelegatedIssue,
+  readyItemsSteps,
+  syncItemDependencies,
+  type DependencyReadiness,
+} from "../../src/intake";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../../src/linear";
 
 export async function probeDependencySnapshots(
@@ -48,12 +54,14 @@ export async function probeDependencySnapshots(
     const workspaceId = "workspace";
     const focus = ids.get("b")!;
     const target = { itemId: focus, workspaceId };
-    const readyIds = () =>
-      [...ids.values()].flatMap((itemId) => readyItems(db, { itemId, workspaceId }).readyItemIds);
-    const cycleIds = () =>
-      [...ids.values()].flatMap(
-        (itemId) => readyItems(db, { itemId, workspaceId }).cycleHeldItemIds,
-      );
+    const readiness = async () => {
+      const all: DependencyReadiness[] = [];
+      for (const itemId of ids.values())
+        all.push(await sqliteDb(db).run((q) => readyItemsSteps(q, { itemId, workspaceId })));
+      return all;
+    };
+    const readyIds = async () => (await readiness()).flatMap((entry) => entry.readyItemIds);
+    const cycleIds = async () => (await readiness()).flatMap((entry) => entry.cycleHeldItemIds);
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
     db.run("INSERT INTO workspace VALUES('other','outside-org','Other',1000)");
     recordLinearInstallation(db, {
@@ -71,7 +79,9 @@ export async function probeDependencySnapshots(
         await syncItemDependencies(db, {
           itemId,
           workspaceId,
-          expectedGeneration: readyItems(db, { itemId, workspaceId }).generation,
+          expectedGeneration: (
+            await sqliteDb(db).run((q) => readyItemsSteps(q, { itemId, workspaceId }))
+          ).generation,
           tracker,
           lifecycle,
         });
@@ -93,19 +103,23 @@ export async function probeDependencySnapshots(
       [],
     );
     assert(db.query("SELECT 1 FROM schema_migration WHERE id='039_epic_dependencies'").get());
-    assert.deepEqual(readyIds(), []);
+    assert.deepEqual(await readyIds(), []);
     observed("Uninitialized snapshots hold every queued item", {
       addedSchema,
-      readiness: readyIds(),
+      readiness: await readyIds(),
     });
     tracker.deps.set("parent", [edge("a", "b"), edge("outside", "b")]);
     tracker.deps.set("a", [edge("a", "b")]);
     await refresh();
     assert.equal(rowCount("task_block"), 2);
-    assert(!readyItems(db, target).readyItemIds.includes(ids.get("b")!));
+    assert(
+      !(await sqliteDb(db).run((q) => readyItemsSteps(q, target))).readyItemIds.includes(
+        ids.get("b")!,
+      ),
+    );
     observed(
       "Complete snapshots persist deduplicated internal and external edges",
-      readyItems(db, target),
+      await sqliteDb(db).run((q) => readyItemsSteps(q, target)),
     );
     const cases = [
       ["queued", "code", "completed", false],
@@ -129,7 +143,12 @@ export async function probeDependencySnapshots(
       db.run("UPDATE work_item_task SET mode=? WHERE item_id=?", [mode, ids.get("a")!]);
       lifecycle.issue.stateType = linearState;
       await refresh();
-      assert.equal(readyItems(db, target).readyItemIds.includes(ids.get("b")!), expected);
+      assert.equal(
+        (await sqliteDb(db).run((q) => readyItemsSteps(q, target))).readyItemIds.includes(
+          ids.get("b")!,
+        ),
+        expected,
+      );
     }
     observed(
       "Readiness distinguishes merged code, delivered tasks, manual completion and cancellation",
@@ -138,31 +157,37 @@ export async function probeDependencySnapshots(
     lifecycle.issue.stateType = "started";
     db.run("UPDATE work_item SET state='merged',cancel_requested=1 WHERE id=?", [ids.get("a")!]);
     await refresh();
-    assert(!readyItems(db, target).readyItemIds.includes(ids.get("b")!));
+    assert(
+      !(await sqliteDb(db).run((q) => readyItemsSteps(q, target))).readyItemIds.includes(
+        ids.get("b")!,
+      ),
+    );
     db.run("UPDATE work_item SET cancel_requested=0 WHERE id=?", [ids.get("a")!]);
     for (const state of ["started", "canceled", "Completed", "completed ", "completed"]) {
       lifecycle.issues.get("outside")!.stateType = state;
       await refresh();
       assert.equal(
-        readyItems(db, target).readyItemIds.includes(ids.get("b")!),
+        (await sqliteDb(db).run((q) => readyItemsSteps(q, target))).readyItemIds.includes(
+          ids.get("b")!,
+        ),
         state === "completed" || state === "canceled",
       );
     }
     observed(
       "Cancellation flags and open external states never satisfy blockers",
-      readyItems(db, target),
+      await sqliteDb(db).run((q) => readyItemsSteps(q, target)),
     );
     tracker.deps.clear();
     tracker.deps.set("parent", [edge("a", "b"), edge("b", "a"), edge("b", "c")]);
     db.run("UPDATE work_item SET state='queued' WHERE delegation_id=?", [intake.delegation.id]);
     await refresh();
-    assert.deepEqual(readyIds(), [ids.get("free")!]);
-    assert.deepEqual(new Set(cycleIds()), new Set(["a", "b", "c"].map((id) => ids.get(id)!)));
+    assert.deepEqual(await readyIds(), [ids.get("free")!]);
+    assert.deepEqual(new Set(await cycleIds()), new Set(["a", "b", "c"].map((id) => ids.get(id)!)));
     observed(
       "Cycles and descendants hold while unrelated work remains ready",
-      readyItems(db, target),
+      await sqliteDb(db).run((q) => readyItemsSteps(q, target)),
     );
-    const generation = readyItems(db, target).generation;
+    const generation = (await sqliteDb(db).run((q) => readyItemsSteps(q, target))).generation;
     let enter!: () => void;
     let release!: () => void;
     const entered = new Promise<void>((resolve) => (enter = resolve));
@@ -194,38 +219,44 @@ export async function probeDependencySnapshots(
     release();
     await assert.rejects(late, /snapshot changed/);
     assert.equal(rowCount("task_block"), 0);
-    assert.equal(readyIds().length, 4);
+    assert.equal((await readyIds()).length, 4);
     await assert.rejects(
       syncItemDependencies(db, { ...target, expectedGeneration: generation, tracker, lifecycle }),
       /snapshot changed/,
     );
     observed(
       "Newer snapshots remove edges and reject delayed older publications",
-      readyItems(db, target),
+      await sqliteDb(db).run((q) => readyItemsSteps(q, target)),
     );
-    assert.throws(() => readyItems(db, { ...target, workspaceId: "other" }), /ownership changed/);
-    const before = readyItems(db, target).generation;
+    await assert.rejects(
+      sqliteDb(db).run((q) => readyItemsSteps(q, { ...target, workspaceId: "other" })),
+      /ownership changed/,
+    );
+    const before = (await sqliteDb(db).run((q) => readyItemsSteps(q, target))).generation;
     tracker.deps.set("parent", [edge("outside", "b")]);
     db.run(
       "CREATE TRIGGER dependency_write_failure BEFORE INSERT ON task_block BEGIN SELECT RAISE(ABORT,'injected storage failure'); END",
     );
     await assert.rejects(refresh, /injected storage failure/);
     assert.equal(rowCount("task_block"), 0);
-    assert.equal(readyItems(db, target).generation, before);
+    assert.equal((await sqliteDb(db).run((q) => readyItemsSteps(q, target))).generation, before);
     db.run("DROP TRIGGER dependency_write_failure");
     await refresh();
     observed(
       "Wrong workspaces deny and failed publication rolls back all snapshot rows",
-      readyItems(db, target),
+      await sqliteDb(db).run((q) => readyItemsSteps(q, target)),
     );
     const owner = openDatabase(join(root, "paws.sqlite"));
     owner.run("BEGIN IMMEDIATE");
     db.run("PRAGMA busy_timeout=0");
-    const beforeBusy = readyItems(db, target).generation;
+    const beforeBusy = (await sqliteDb(db).run((q) => readyItemsSteps(q, target))).generation;
     try {
       // The store's BEGIN IMMEDIATE wraps SQLITE_BUSY in a DrizzleError; the lock is its cause.
       await assert.rejects(refresh, (error: Error) => /locked/.test(String(error.cause)));
-      assert.equal(readyItems(db, target).generation, beforeBusy);
+      assert.equal(
+        (await sqliteDb(db).run((q) => readyItemsSteps(q, target))).generation,
+        beforeBusy,
+      );
     } finally {
       owner.run("ROLLBACK");
       owner.close();
@@ -233,10 +264,10 @@ export async function probeDependencySnapshots(
     await refresh();
     observed(
       "A real SQLite writer conflict preserves the last complete snapshot and repairs exactly",
-      readyItems(db, target),
+      await sqliteDb(db).run((q) => readyItemsSteps(q, target)),
     );
     const controller = new AbortController();
-    const beforeAbort = readyItems(db, target).generation;
+    const beforeAbort = (await sqliteDb(db).run((q) => readyItemsSteps(q, target))).generation;
     await assert.rejects(
       syncItemDependencies(db, {
         ...target,
@@ -253,7 +284,10 @@ export async function probeDependencySnapshots(
       }),
       /Cancelled dependency refresh/,
     );
-    assert.equal(readyItems(db, target).generation, beforeAbort);
+    assert.equal(
+      (await sqliteDb(db).run((q) => readyItemsSteps(q, target))).generation,
+      beforeAbort,
+    );
     await assert.rejects(
       syncItemDependencies(db, {
         ...target,
@@ -267,10 +301,13 @@ export async function probeDependencySnapshots(
       }),
       /another dependency issue/,
     );
-    assert.equal(readyItems(db, target).generation, beforeAbort);
+    assert.equal(
+      (await sqliteDb(db).run((q) => readyItemsSteps(q, target))).generation,
+      beforeAbort,
+    );
     observed(
       "Cancellation and wrong issue identities cannot publish partial authoritative state",
-      readyItems(db, target),
+      await sqliteDb(db).run((q) => readyItemsSteps(q, target)),
     );
     for (const [change, restore] of [
       [
@@ -313,7 +350,10 @@ export async function probeDependencySnapshots(
       } finally {
         db.run(restore);
       }
-      assert.equal(readyItems(db, target).generation, beforeAbort);
+      assert.equal(
+        (await sqliteDb(db).run((q) => readyItemsSteps(q, target))).generation,
+        beforeAbort,
+      );
     }
     await assert.rejects(
       syncItemDependencies(db, {
@@ -330,12 +370,15 @@ export async function probeDependencySnapshots(
       }),
       /snapshot changed/,
     );
-    assert.equal(readyItems(db, target).generation, beforeAbort);
-    assert.deepEqual(readyIds(), []);
+    assert.equal(
+      (await sqliteDb(db).run((q) => readyItemsSteps(q, target))).generation,
+      beforeAbort,
+    );
+    assert.deepEqual(await readyIds(), []);
     await refresh();
     observed(
       "Changed canonical session generations hold work until a fresh snapshot succeeds",
-      readyItems(db, target),
+      await sqliteDb(db).run((q) => readyItemsSteps(q, target)),
     );
   } finally {
     db.close();

@@ -96,7 +96,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       prompt: "Implement the issue",
     };
     let work = controller();
-    work.assign(command);
+    await work.assign(command);
     expect(runnerOccupancy(db, "box", now).occupied).toBe(1);
     await work.acknowledge("box", command.id);
     await work.heartbeat(
@@ -122,7 +122,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       issuedAt: now,
       expiresAt: now + 60_000,
     };
-    work.enqueue(cancel);
+    await work.enqueue(cancel);
     expect(
       db.query<{ endedAt: number }, []>("SELECT ended_at AS endedAt FROM runner_work").get()!
         .endedAt,
@@ -147,7 +147,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       issuedAt: now,
       expiresAt: now + 600_000,
     };
-    expect(() => work.assign(next)).toThrow(RunnerTeardownPending);
+    await expect(work.assign(next)).rejects.toThrow(RunnerTeardownPending);
     // Absence also cannot erase the durable cleanup obligation.
     await work.heartbeat("box", 1, host, undefined, undefined, undefined, undefined, []);
     expect(runnerOccupancy(db, "box", now).occupied).toBe(1);
@@ -193,8 +193,8 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
         .get()!.confirmed,
     ).toBe(confirmed);
     db.run("UPDATE runner_work SET lost_at=1 WHERE run_id=?", [run.id]);
-    work.assign(next);
-    work.enqueue({
+    await work.assign(next);
+    await work.enqueue({
       ...cancel,
       id: "cancel-2",
       generation: 2,
@@ -253,10 +253,10 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       issuedAt: now,
       expiresAt: now + 120_000,
     };
-    work.assign(undelivered);
+    await work.assign(undelivered);
     db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [now, retry.id]);
     expect(await runnerCancelPending(sqliteDb(db), "box")).toBe(true);
-    expect(() => work.assign({ ...undelivered, id: "work-4", generation: 2 })).toThrow(
+    await expect(work.assign({ ...undelivered, id: "work-4", generation: 2 })).rejects.toThrow(
       RunnerTeardownPending,
     );
     now = undelivered.expiresAt + 1;
@@ -282,7 +282,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       issuedAt: now,
       expiresAt: now + 120_000,
     };
-    work.assign(reported);
+    await work.assign(reported);
     await work.heartbeat("box", 1, host, undefined, undefined, undefined, undefined, [
       { runId: retry.id, generation: 2 },
     ]);

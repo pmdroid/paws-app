@@ -17,9 +17,12 @@ import {
   migrate,
   openDatabase,
   recordLinearInstallation,
+  sqliteDb,
+  syncSteps,
+  type Q,
 } from "../../src/db";
 import { JOB_KIND } from "../../src/core";
-import { intakeDelegatedIssue, readyItems, syncItemDependencies } from "../../src/intake";
+import { intakeDelegatedIssue, readyItemsSteps, syncItemDependencies } from "../../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../../src/linear";
 import {
   createAdmission,
@@ -98,11 +101,19 @@ export async function probeScheduler(
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const observed = (name: string, value: unknown) => observe(name, true, value);
-  const onlyStarts = (db: Database, only: string) => ({
-    ...workspaceAdmission(db),
-    canStart: async (itemId: string) =>
-      itemId === only ? ({ ok: true } as const) : ({ ok: false, held: "blocked" } as const),
-  });
+  const onlyStarts = (db: Database, only: string) => {
+    const admission = workspaceAdmission(db);
+    const decide = (itemId: string) =>
+      itemId === only ? ({ ok: true } as const) : ({ ok: false, held: "blocked" } as const);
+    return {
+      ...admission,
+      canStart: async (itemId: string) => decide(itemId),
+      steps: {
+        ...admission.steps,
+        canStart: (_q: Q, itemId: string) => syncSteps(() => decide(itemId)),
+      },
+    };
+  };
   const setup = (
     name: string,
     count: number,
@@ -400,8 +411,11 @@ export async function probeScheduler(
       await syncItemDependencies(db, {
         itemId: item.id,
         workspaceId: "workspace",
-        expectedGeneration: readyItems(db, { itemId: item.id, workspaceId: "workspace" })
-          .generation,
+        expectedGeneration: (
+          await sqliteDb(db).run((q) =>
+            readyItemsSteps(q, { itemId: item.id, workspaceId: "workspace" }),
+          )
+        ).generation,
         tracker,
         lifecycle,
       });
@@ -470,8 +484,11 @@ export async function probeScheduler(
         await syncItemDependencies(db, {
           itemId: item.id,
           workspaceId: "workspace",
-          expectedGeneration: readyItems(db, { itemId: item.id, workspaceId: "workspace" })
-            .generation,
+          expectedGeneration: (
+            await sqliteDb(db).run((q) =>
+              readyItemsSteps(q, { itemId: item.id, workspaceId: "workspace" }),
+            )
+          ).generation,
           tracker,
           lifecycle,
         });

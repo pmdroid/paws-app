@@ -1,7 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { StoredReviewFinding } from "../closeout";
 import {
-  emitJobReady,
   fixRoundsSteps,
   getItemPullRequestSteps,
   getPullReviewSteps,
@@ -10,7 +9,6 @@ import {
   pendingPullCommentsSteps,
   recordReviewEscapeSteps,
   recordReviewRepliesSteps,
-  settled,
   settlePullCommentsSteps,
   sqliteDb,
   type Q,
@@ -155,18 +153,6 @@ type FeedbackRestart = Omit<RestartHandoff, "body" | "fixRound"> & {
   fixRoundLimit: number;
   sessionId: string | null;
 };
-
-export function restartWithFeedback(
-  db: Database,
-  item: WorkItemRecord,
-  input: FeedbackRestart,
-): number | null {
-  const restarted = settled(
-    sqliteDb(db).transaction((q) => restartWithFeedbackSteps(q, item, input)),
-  );
-  if (restarted?.armed) emitJobReady(db);
-  return restarted?.id ?? null;
-}
 
 export function* restartWithFeedbackSteps(
   q: Q,

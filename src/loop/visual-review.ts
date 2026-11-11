@@ -1,4 +1,4 @@
-import { ask, restart } from "./operations";
+import { askSteps, restartSteps } from "./operations";
 import { askWithLinkSteps, linkAskAvailable } from "./link-ask";
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
@@ -7,26 +7,23 @@ import type { EvidenceApproval, ResolvedEvidence } from "../closeout";
 import { readEvidenceBytes, type EvidenceStorage } from "../evidence";
 import { JOB_KIND } from "../core";
 import {
-  setQuestionHandoffVersion,
+  setQuestionHandoffVersionSteps,
   type LinkAsk,
   type WorkItemRecord,
-  applyWorkItemEvent,
+  applyWorkItemEventSteps,
   closeLinkAskSteps,
-  emitJobReady,
-  enqueueJobOnce,
+  enqueueJobOnceSteps,
   enqueueOutboxOnceSteps,
   getEvidenceSteps,
   getLinkAskSteps,
-  getWorkItem,
   getWorkItemSteps,
   linearConversationUrlAsync,
   latestEvidence,
-  listEvidence,
   listEvidenceSteps,
-  listVisualReviewMarks,
+  listVisualReviewMarksSteps,
   listVisualReviewsSteps,
-  saveCheckpoint,
-  saveVisualReviewMarks,
+  saveCheckpointSteps,
+  saveVisualReviewMarksSteps,
   settled,
   sqliteDb,
   type Db,
@@ -41,28 +38,26 @@ import {
   acceptedVisualReviewsSteps,
   approvalTime,
   carriedInFull,
-  humanApprovedScreens,
+  humanApprovedScreensSteps,
   recordCarriedVisualReviewSteps,
   visualReviewCarriedNote,
   type VisualReviewCarry,
   cancelQuestionSteps,
-  findOpenQuestion,
   findOpenQuestionSteps,
-  getQuestion,
-  getVisualReview,
+  getQuestionSteps,
   getVisualReviewSteps,
   insertVisualReviewSteps,
-  lastVisualReviewFeedback,
-  openVisualReviewContinue,
+  lastVisualReviewFeedbackSteps,
+  openVisualReviewContinueSteps,
   parseVisualReviewAnswer,
-  recordVisualReviewAnswer,
+  recordVisualReviewAnswerSteps,
   rejectedEvidenceIdsSteps,
   removeLinkAskUrlSteps,
   shortCommit,
   visualReviewAcceptedHandoff,
   visualReviewChangesHandoff,
   visualReviewLinkDetail,
-  visualReviewRounds,
+  visualReviewRoundsSteps,
   VISUAL_REVIEW_ROUNDS,
   type StoredQuestion,
   type StoredVisualReview,
@@ -131,9 +126,9 @@ export async function planVisualReviewCarry(
 ): Promise<VisualReviewCarryPlan> {
   const plan: VisualReviewCarryPlan = { carried: [], approved: new Map() };
   const store = sqliteDb(db);
-  const approved: (ReturnType<typeof humanApprovedScreens>[number] & { row: StoredEvidence })[] =
-    [];
-  for (const origin of humanApprovedScreens(db, itemId, checkId)) {
+  const origins = await store.run((q) => humanApprovedScreensSteps(q, itemId, checkId));
+  const approved: ((typeof origins)[number] & { row: StoredEvidence })[] = [];
+  for (const origin of origins) {
     const row = await store.run((q) => getEvidenceSteps(q, origin.fromEvidenceId));
     if (row) approved.push({ ...origin, row });
   }
@@ -194,10 +189,6 @@ type CarryInput = {
   head: string;
   now: number;
 };
-
-export function carryVisualReview(db: Database, input: CarryInput): StoredVisualReview {
-  return settled(sqliteDb(db).run((q) => carryVisualReviewSteps(q, input)));
-}
 
 export function* carryVisualReviewSteps(q: Q, input: CarryInput): Steps<StoredVisualReview> {
   const review = yield* recordCarriedVisualReviewSteps(q, {
@@ -338,12 +329,6 @@ export function* askForVisualReviewSteps(q: Q, input: AskForReview): Steps<boole
   return true;
 }
 
-export function askForVisualReview(db: Database, input: AskForReview): boolean {
-  const asked = settled(sqliteDb(db).transaction((q) => askForVisualReviewSteps(q, input)));
-  emitJobReady(db);
-  return asked;
-}
-
 /** Why a localhost-only Paws leaves a human visual review unapproved. */
 export const VISUAL_REVIEW_NEEDS_LINK =
   "Visual review needs a dashboard link a person can open, so the screens can be approved where they are in view. Set PAWS_PUBLIC_URL to an https address; a reply in Linear cannot approve screens.";
@@ -355,8 +340,12 @@ export async function remindVisualReview(
   now: number,
 ): Promise<boolean> {
   const store = sqliteDb(db);
-  const question = getQuestion(db, questionId);
-  if (question === null || question.status !== "open" || !getVisualReview(db, questionId))
+  const question = await store.run((q) => getQuestionSteps(q, questionId));
+  if (
+    question === null ||
+    question.status !== "open" ||
+    !(await store.run((q) => getVisualReviewSteps(q, questionId)))
+  )
     return false;
   const item = await store.run((q) => getWorkItemSteps(q, question.itemId));
   if (item === null || item.state !== "awaiting_input" || item.cancelRequested) return false;
@@ -423,17 +412,17 @@ export function* postNoteSteps(
  * is a change request, and Keep going after the round limit goes back to the
  * agent. Moves no state: the caller does.
  */
-export function recordVisualReviewOutcome(
-  db: Database,
+export function* recordVisualReviewOutcomeSteps(
+  q: Q,
   question: StoredQuestion,
   review: StoredVisualReview,
   now: number,
-): "changes" | "asked" {
+): Steps<"changes" | "asked"> {
   const answer = question.answer ?? "";
   const answeredBy = question.answeredBy ?? "";
   if (review.kind === "continue") {
     const extra = /^keep going[.!]?$/i.test(answer.trim()) ? undefined : answer.trim();
-    recordVisualReviewAnswer(db, question.id, {
+    yield* recordVisualReviewAnswerSteps(q, question.id, {
       outcome: "continued",
       answeredBy,
       now,
@@ -442,16 +431,16 @@ export function recordVisualReviewOutcome(
     return "changes";
   }
   const parsed = parseVisualReviewAnswer(answer);
-  recordVisualReviewAnswer(db, question.id, {
+  yield* recordVisualReviewAnswerSteps(q, question.id, {
     outcome: "changes_requested",
     answeredBy,
     now,
     feedback: parsed.kind === "changes" ? parsed.feedback : answer.trim(),
   });
-  if (visualReviewRounds(db, question.itemId, review.checkId) < VISUAL_REVIEW_ROUNDS)
+  if ((yield* visualReviewRoundsSteps(q, question.itemId, review.checkId)) < VISUAL_REVIEW_ROUNDS)
     return "changes";
-  openVisualReviewContinue(db, {
-    ask,
+  yield* openVisualReviewContinueSteps(q, {
+    ask: askSteps,
     itemId: question.itemId,
     runId: question.runId,
     sessionId: question.sessionId,
@@ -472,8 +461,8 @@ export const VISUAL_REVIEW_REPLY_NOTE =
  * the drawn marks, or from a Linear reply. Returns false when the ask has no
  * visual review, so the caller hands the decision back as usual.
  */
-export function decideVisualReview(
-  db: Database,
+export function* decideVisualReviewSteps(
+  q: Q,
   input: {
     linkAsk: LinkAsk;
     decision: "approve" | "changes";
@@ -482,43 +471,49 @@ export function decideVisualReview(
     marks?: readonly VisualReviewMark[];
     now: number;
   },
-): boolean {
+  notifications: { ready: boolean },
+): Steps<boolean> {
   const { linkAsk, now } = input;
-  const review = getVisualReview(db, linkAsk.questionId);
-  const question = getQuestion(db, linkAsk.questionId);
+  const review = yield* getVisualReviewSteps(q, linkAsk.questionId);
+  const question = yield* getQuestionSteps(q, linkAsk.questionId);
   if (review?.kind !== "review" || question === null) return false;
   if (input.decision === "approve") {
-    recordVisualReviewAnswer(db, review.questionId, {
+    yield* recordVisualReviewAnswerSteps(q, review.questionId, {
       outcome: "accepted",
       answeredBy: input.answeredBy,
       headCommit: linkAsk.headCommit,
       now,
     });
-    const item = getWorkItem(db, review.itemId);
+    const item = yield* getWorkItemSteps(q, review.itemId);
     // While the other checks still run on S, that evaluation picks the approval up.
-    if (item?.state !== "awaiting_input" || findOpenQuestion(db, question.sessionId) !== null)
+    if (
+      item?.state !== "awaiting_input" ||
+      (yield* findOpenQuestionSteps(q, question.sessionId)) !== null
+    )
       return true;
-    applyWorkItemEvent(db, item.id, "reverify_requested", { now });
-    if (item.checkpoint) saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "verifying" });
-    enqueueJobOnce(db, {
+    yield* applyWorkItemEventSteps(q, item.id, "reverify_requested", { now });
+    if (item.checkpoint)
+      yield* saveCheckpointSteps(q, item.id, { ...item.checkpoint, phase: "verifying" });
+    const { inserted } = yield* enqueueJobOnceSteps(q, {
       queue: JOB_KIND.reverify,
       jobKey: `visual-review-accepted:${review.questionId}`,
       payload: { itemId: item.id, decide: true },
       now,
     });
+    if (inserted) notifications.ready = true;
     return true;
   }
-  if (input.marks?.length) saveVisualReviewMarks(db, input.marks);
-  recordVisualReviewAnswer(db, review.questionId, {
+  if (input.marks?.length) yield* saveVisualReviewMarksSteps(q, input.marks);
+  yield* recordVisualReviewAnswerSteps(q, review.questionId, {
     outcome: "changes_requested",
     answeredBy: input.answeredBy,
     feedback: input.feedback,
     headCommit: linkAsk.headCommit,
     now,
   });
-  if (visualReviewRounds(db, review.itemId, review.checkId) >= VISUAL_REVIEW_ROUNDS) {
-    openVisualReviewContinue(db, {
-      ask,
+  if ((yield* visualReviewRoundsSteps(q, review.itemId, review.checkId)) >= VISUAL_REVIEW_ROUNDS) {
+    yield* openVisualReviewContinueSteps(q, {
+      ask: askSteps,
       itemId: review.itemId,
       runId: question.runId,
       sessionId: question.sessionId,
@@ -527,44 +522,53 @@ export function decideVisualReview(
     });
     return true;
   }
-  const item = getWorkItem(db, review.itemId);
+  const item = yield* getWorkItemSteps(q, review.itemId);
   if (item === null) return true;
-  const jobId = restart(db, item, {
+  const restarted = yield* restartSteps(q, item, {
     reason: "review",
-    body: visualReviewHandoff(db, review.questionId) ?? "",
+    body: (yield* visualReviewHandoffSteps(q, review.questionId)) ?? "",
     jobKey: `resume:answer:${review.questionId}`,
     now,
   });
-  if (jobId !== null)
-    setQuestionHandoffVersion(db, review.questionId, getWorkItem(db, item.id)!.version);
+  if (restarted?.armed) notifications.ready = true;
+  if (restarted !== null)
+    yield* setQuestionHandoffVersionSteps(
+      q,
+      review.questionId,
+      (yield* getWorkItemSteps(q, item.id))!.version,
+    );
   return true;
 }
 
 export function visualReviewHandoff(db: Database, questionId: string): string | null {
-  const review = getVisualReview(db, questionId);
+  return settled(sqliteDb(db).run((q) => visualReviewHandoffSteps(q, questionId)));
+}
+
+export function* visualReviewHandoffSteps(q: Q, questionId: string): Steps<string | null> {
+  const review = yield* getVisualReviewSteps(q, questionId);
   if (review === null) return null;
   if (review.outcome === "accepted") return visualReviewAcceptedHandoff(review.checkId);
   if (review.outcome === "changes_requested")
     return visualReviewChangesHandoff(
       review.checkId,
       review.feedback ?? "",
-      markedFiles(db, review.itemId, questionId),
+      yield* markedFilesSteps(q, review.itemId, questionId),
     );
   if (review.outcome === "continued") {
-    const last = lastVisualReviewFeedback(db, review.itemId, review.checkId);
+    const last = yield* lastVisualReviewFeedbackSteps(q, review.itemId, review.checkId);
     const feedback = last?.feedback ?? "";
     return visualReviewChangesHandoff(
       review.checkId,
       review.feedback ? `${feedback}\n\n${review.feedback}` : feedback,
-      last ? markedFiles(db, review.itemId, last.questionId) : [],
+      last ? yield* markedFilesSteps(q, review.itemId, last.questionId) : [],
     );
   }
   return null;
 }
 
-function markedFiles(db: Database, itemId: string, questionId: string) {
-  const evidence = new Map(listEvidence(db, itemId).map((row) => [row.id, row]));
-  return listVisualReviewMarks(db, questionId).flatMap((mark) => {
+function* markedFilesSteps(q: Q, itemId: string, questionId: string) {
+  const evidence = new Map((yield* listEvidenceSteps(q, itemId)).map((row) => [row.id, row]));
+  return (yield* listVisualReviewMarksSteps(q, questionId)).flatMap((mark) => {
     const row = evidence.get(mark.evidenceId);
     return row
       ? [

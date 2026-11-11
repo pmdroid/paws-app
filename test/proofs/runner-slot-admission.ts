@@ -6,7 +6,7 @@ import {
   schedulerRunnerSlots,
   sqliteDb,
 } from "../../src/db";
-import { createRunnerPlacement, itemRunnerVerdicts } from "../../src/runner-placement";
+import { createRunnerPlacement, itemRunnerVerdictsSteps } from "../../src/runner-placement";
 import { JOB_KIND } from "../../src/core";
 import { workspaceWithRunners, REPOSITORY, NOW } from "../runner-slot-fixture";
 import type { Proof } from "./harness";
@@ -31,7 +31,9 @@ export default {
     db.run("UPDATE linear_session SET stopped_at=? WHERE session_id=?", [NOW, "session-stopped"]);
     proof.expect(
       "unavailable authority returns an item verdict without aborting admission",
-      itemRunnerVerdicts(db, { itemId: "stopped", agent: "claude", now: NOW }) === null,
+      (await sqliteDb(db).run((q) =>
+        itemRunnerVerdictsSteps(q, sqliteDb(db), { itemId: "stopped", agent: "claude", now: NOW }),
+      )) === null,
     );
     const goldbox = await pair("goldbox", 6, ["other/repo"]);
     for (const id of ["a", "b", "c"]) queue(id);
@@ -79,7 +81,10 @@ export default {
       schedulerRunnerSlots(db, NOW).find((slot) => slot.itemId === "c")?.runnerId === goldbox,
     );
     const spare = await pair("spare", 1, [REPOSITORY]);
-    const alternatives = await createRunnerPlacement({ db, now: () => NOW }).candidates({
+    const alternatives = await createRunnerPlacement({
+      store: sqliteDb(db),
+      now: () => NOW,
+    }).candidates({
       itemId: "c",
       role: "implementer",
       purpose: "work",

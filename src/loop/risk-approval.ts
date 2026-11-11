@@ -16,7 +16,6 @@ import {
   openLinkAsksSteps,
   saveCheckpointSteps,
   saveRiskFixSteps,
-  settled,
   sqliteDb,
   type CandidateRisk,
   type Db,
@@ -188,10 +187,6 @@ function listedPaths(paths: string[]): string {
 }
 
 /** Risk link asks a signed-in person approved on the item page, oldest first. */
-export function riskApprovals(db: Database, itemId: string): LinkAsk[] {
-  return settled(sqliteDb(db).run((q) => riskApprovalsSteps(q, itemId)));
-}
-
 export function* riskApprovalsSteps(q: Q, itemId: string): Steps<LinkAsk[]> {
   return (yield* listLinkAsksSteps(q, itemId)).filter(isRiskApproval);
 }

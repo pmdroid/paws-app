@@ -88,13 +88,7 @@ import {
   type RuntimeConfig,
   sweepTmpDir,
 } from "./config";
-import {
-  type LinearCommand,
-  type GitCommitPolicy,
-  type AppBotIdentity,
-  type Clock,
-  isTransient,
-} from "./core";
+import { type LinearCommand, type GitCommitPolicy, type Clock, isTransient } from "./core";
 import {
   workspaceMemberUsable,
   enqueueCommand,
@@ -252,7 +246,7 @@ import {
   type RepositoryBinding,
   type GitHubDenial,
   type GitHubIntegration,
-  teamMemberDenial,
+  teamMemberDenialSteps,
   teamRepositoryDenial,
   riskGateOn,
   RISK_GATE_NEEDS_PUBLIC_URL,
@@ -292,7 +286,7 @@ import {
   itemOwnerRunnerSetupNeedSteps,
   itemRepositoryAllowedOnSteps,
   itemRepositoryRefusalsSteps,
-  itemRepositoryRunner,
+  itemRepositoryRunnerSteps,
 } from "./runner-placement";
 import { releaseVersionFromPath } from "./runner-protocol";
 import { startServer } from "./server";
@@ -1086,7 +1080,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         })
       : null;
   const placement = linear
-    ? createRunnerPlacement({ db, ...(parents ? { sessionActor: parents.actor } : {}) })
+    ? createRunnerPlacement({
+        store,
+        ...(parents ? { sessionActorSteps: parents.actorSteps } : {}),
+      })
     : undefined;
   const placementBrowser = createRunnerPlacementBrowser({ db });
   const accountManagement = createAccountManagement();
@@ -1499,7 +1496,9 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       void assignments
         ?.register(created.jobs)
         .catch((error: unknown) => journalCaught(error, "index.startPaws.assignments", null));
-      parents?.register(created.jobs);
+      void parents
+        ?.register(created.jobs)
+        .catch((error: unknown) => journalCaught(error, "index.startPaws.parents", null));
       registerMemberVmJob(created.jobs, {
         provision: memberVmProvisioning,
         secrets: () => [exeDevToken(), tailscaleAuthKey()],
@@ -1559,7 +1558,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
                 itemId: string,
                 profile: { agent: string; model?: string | null },
                 now: number,
-              ) => itemRunnerVerdictsSteps(q, db, { itemId, ...profile, now }),
+              ) => itemRunnerVerdictsSteps(q, store, { itemId, ...profile, now }),
               onRunnerHostRefusals: runnerHostRefusals.report,
               runnerSetupNeed: (itemId: string, agent: string, now: number) =>
                 store.run((q) => itemOwnerRunnerSetupNeedSteps(q, { itemId, agent, now })),
@@ -1575,7 +1574,9 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
                 signal: AbortSignal,
               ) => {
                 const now = Date.now();
-                const target = itemRepositoryRunner(db, { itemId: item.id, now });
+                const target = await store.run((q) =>
+                  itemRepositoryRunnerSteps(q, { itemId: item.id, now }),
+                );
                 const repository = await store.run((q) => getWorkItemRepositorySteps(q, item.id));
                 if (!target || !repository)
                   return { outcome: "failed" as const, reason: "no eligible runner" };
@@ -1657,7 +1658,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         recheckLinearEvent: async (event) =>
           workspace
             ? (await (await workspace.access).recheckLinearEvent(event)) &&
-              (parents?.recheckEvent(event) ?? (await assignments?.recheck(event)) ?? true)
+              ((await parents?.recheckEvent(event)) ?? (await assignments?.recheck(event)) ?? true)
             : true,
         scheduling: async () => {
           await enqueueMissingSnapshots();
@@ -1750,7 +1751,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
               !canAct({ id: actorId, identity, member: latest, teamId: session.teamId }, "github")
                 .allowed
             )
-              return deny(teamMemberDenial(db, item));
+              return deny(await store.run((q) => teamMemberDenialSteps(q, item)));
             const repositoryDenial = await teamRepositoryDenial(
               db,
               item,
@@ -1772,7 +1773,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             const member = yield* workspaceLinearMemberSteps(q, currentWorkspace.id, actorId);
             return (
               canAct({ id: actorId, member, teamId: session.teamId }, "github").allowed ||
-              teamMemberDenial(db, item)
+              (yield* teamMemberDenialSteps(q, item))
             );
           },
           *integrationIdentity(q, item) {
@@ -2401,18 +2402,18 @@ export function authProvider(
         }),
       };
     };
-    const perform = async (operation: "token" | "user" | "botIdentity") => {
+    const perform = async <T>(operation: (current: AuthTokenProvider) => Promise<T>) => {
       const before = provider();
-      const result = await before.provider[operation]!();
+      const result = await operation(before.provider);
       if (JSON.stringify(resolveApp(name)) !== JSON.stringify(before.active))
         throw new Error("GitHub integration replaced.");
       return result;
     };
     return {
       source: "app",
-      token: async () => (await perform("token")) as string,
-      user: async () => (await perform("user")) as { login: string; id: number },
-      botIdentity: async () => (await perform("botIdentity")) as AppBotIdentity,
+      token: (purpose) => perform((current) => current.token(purpose)),
+      user: () => perform((current) => current.user()),
+      botIdentity: () => perform((current) => current.botIdentity!()),
     };
   }
   const env = runtime.env;
@@ -2817,7 +2818,7 @@ if (import.meta.main) {
 export function gitHostToken(provider: AuthTokenProvider): GitHubTokenProvider {
   return {
     mode: provider.source,
-    tokenFor: () => provider.token(),
+    tokenFor: (purpose) => provider.token(purpose),
   };
 }
 

@@ -128,16 +128,8 @@ export async function hasPendingDelegationChanges(
   return delegationHasReconciliationWork(sqliteDb(db), delegationId);
 }
 
-export function readyItems(db: Database, target: Target): DependencyReadiness {
-  return settled(sqliteDb(db).run((q) => readyItemsSteps(q, target)));
-}
-
 export function* readyItemsSteps(q: Q, target: Target): Steps<DependencyReadiness> {
   return yield* q.transaction((tx) => readReadyItemsSteps(tx, target, false));
-}
-
-export function canAdvanceItem(db: Database, target: Target): boolean {
-  return settled(sqliteDb(db).run((q) => canAdvanceItemSteps(q, target)));
 }
 
 export function* canAdvanceItemSteps(q: Q, target: Target): Steps<boolean> {
@@ -199,14 +191,6 @@ function* readReadyItemsSteps(
     heldItemIds: candidate && !ready ? [item.id] : [],
     cycleHeldItemIds: cycleHeld.has(item.linearIssueId) ? [item.id] : [],
   };
-}
-
-/**
- * Identifiers of the issues that block `itemId` and that readiness counts as unmet, by the same
- * rules as `readyItems`. Empty without a dependency snapshot.
- */
-export function itemBlockers(db: Database, target: Target): string[] {
-  return settled(sqliteDb(db).run((q) => itemBlockersSteps(q, target)));
 }
 
 export function* itemBlockersSteps(q: Q, target: Target): Steps<string[]> {

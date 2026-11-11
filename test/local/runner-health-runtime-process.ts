@@ -139,13 +139,15 @@ if (mode === "prepare") {
         observedAtMs: Date.now(),
       });
       config.commandIds.push(
-        coordinator.helpers.dispatch({
-          runnerId: paired.runnerId,
-          sessionId: "session",
-          purpose: "classify",
-          profile: { agent: "claude", model: "fixture-model" },
-          prompt: "Classify the fixture request",
-        }).command.id,
+        (
+          await coordinator.helpers.dispatch({
+            runnerId: paired.runnerId,
+            sessionId: "session",
+            purpose: "classify",
+            profile: { agent: "claude", model: "fixture-model" },
+            prompt: "Classify the fixture request",
+          })
+        ).command.id,
       );
     } else {
       config.commandIds.push(
@@ -203,7 +205,7 @@ if (mode === "prepare") {
     }
     if (nextHelper && fenced && existsSync(join(server, "resume")) && !resumed) {
       coordinator.helpers.finish(nextHelper);
-      coordinator.helpers.dispatch({
+      await coordinator.helpers.dispatch({
         runnerId: config.runnerId!,
         sessionId: "session",
         purpose: "select_repository",
@@ -220,13 +222,15 @@ if (mode === "prepare") {
     )
       return;
     coordinator.helpers.finish(config.commandIds[0]!);
-    nextHelper = coordinator.helpers.dispatch({
-      runnerId: config.runnerId!,
-      sessionId: "session",
-      purpose: "select_repository",
-      profile: { agent: "claude", model: "hold" },
-      prompt: "Select the fixture repository",
-    }).command.id;
+    nextHelper = (
+      await coordinator.helpers.dispatch({
+        runnerId: config.runnerId!,
+        sessionId: "session",
+        purpose: "select_repository",
+        profile: { agent: "claude", model: "hold" },
+        prompt: "Select the fixture repository",
+      })
+    ).command.id;
   }, 20);
   process.once(
     "SIGTERM",

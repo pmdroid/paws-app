@@ -70,7 +70,10 @@ export default {
         run.id,
       ),
     );
-    const offered = await createRunnerPlacement({ db, now: () => NOW + 1 }).candidates({
+    const offered = await createRunnerPlacement({
+      store: sqliteDb(db),
+      now: () => NOW + 1,
+    }).candidates({
       itemId: "parked",
       role: "implementer",
       purpose: "work",

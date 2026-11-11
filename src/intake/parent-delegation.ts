@@ -189,9 +189,6 @@ export function createParentDelegations(input: {
     yield* setItemOwnerSteps(q, result.items[0].id, parent.ownerUserId);
     yield* setParentSubIssueDelegationSteps(q, sessionId, result.delegation.id);
   }
-  function scope(sessionId: string, snapshot: EpicSnapshot): EpicSnapshot {
-    return settled(store.run((q) => scopeSteps(q, sessionId, snapshot)));
-  }
   function* blockerSatisfiedSteps(q: Q, parent: Parent, blockerId: string): Steps<boolean> {
     const items = yield* listIssueBlockerItemsSteps(q, parent.workspaceId, blockerId);
     if (items.length > 0) {
@@ -445,17 +442,6 @@ export function createParentDelegations(input: {
   }
 
   return {
-    /**
-     * Record a delegated parent so each sub-issue runs in its own session. Returns false when
-     * the parent should run its sub-issues in its own session instead.
-     */
-    adoptParent(
-      sessionId: string,
-      snapshot: EpicSnapshot,
-      edges: readonly DependencyEdge[],
-    ): boolean {
-      return settled(store.transaction((q) => adoptParentSteps(q, sessionId, snapshot, edges)));
-    },
     adoptParentSteps,
     /** The sub-issues of a delegated parent, in blocks order, and what each waits for. */
     progress(parentDelegationId: string): Promise<ParentSubIssueProgress[]> {
@@ -471,20 +457,9 @@ export function createParentDelegations(input: {
         return progress;
       });
     },
-    scope,
     scopeSteps,
-    authorizeIntake(sessionId: string, snapshot: EpicSnapshot): boolean {
-      return settled(store.run((q) => authorizeIntakeSteps(q, sessionId, snapshot)));
-    },
     authorizeIntakeSteps,
-    /** A sub-issue's session acts for the person who delegated its parent. */
-    actor(sessionId: string): string | undefined {
-      return settled(store.run((q) => actorSteps(q, sessionId)));
-    },
     actorSteps,
-    accepted(sessionId: string, result: IntakeResult): void {
-      settled(store.transaction((q) => acceptedSteps(q, sessionId, result)));
-    },
     acceptedSteps,
     async authorizeEvent(event: AcceptedLinearEvent): Promise<IntakeDecision | undefined> {
       const decided = await store.run((q) => authorizeEventSteps(q, event));
@@ -503,17 +478,14 @@ export function createParentDelegations(input: {
         return ACCEPTED;
       });
     },
-    recheckEvent(event: AcceptedLinearEvent): boolean | undefined {
-      return settled(store.transaction((q) => recheckEventSteps(q, event)));
+    recheckEvent(event: AcceptedLinearEvent): Promise<boolean | undefined> {
+      return store.transaction((q) => recheckEventSteps(q, event));
     },
-    async scopeSnapshot(sessionId: string, snapshot: EpicSnapshot) {
-      return scope(sessionId, snapshot);
+    scopeSnapshot(sessionId: string, snapshot: EpicSnapshot): Promise<EpicSnapshot> {
+      return store.run((q) => scopeSteps(q, sessionId, snapshot));
     },
-    register(jobs: JobLoop) {
+    async register(jobs: JobLoop): Promise<void> {
       if (!input.startSession) return;
-      const job = { queue: QUEUE, jobKey: QUEUE, recurringEveryMs: 30_000, now: now() };
-      if (settled(store.transaction((q) => enqueueJobOnceSteps(q, job))).inserted)
-        emitJobReady(store);
       jobs.register(QUEUE, async (_job, context) => {
         for (const id of await store.run((q) => listActiveParentDelegationIdsSteps(q))) {
           context.signal.throwIfAborted();
@@ -533,6 +505,9 @@ export function createParentDelegations(input: {
           }
         }
       });
+      const job = { queue: QUEUE, jobKey: QUEUE, recurringEveryMs: 30_000, now: now() };
+      if ((await store.transaction((q) => enqueueJobOnceSteps(q, job))).inserted)
+        emitJobReady(store);
     },
   };
 }

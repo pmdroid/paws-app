@@ -229,7 +229,7 @@ if (mode === "agent") {
         baseSha,
       };
       if (repository) bindWorkItemRepository(db, item.id, binding);
-      const scope = service.work.scopeTask(run.id, workspace.id);
+      const scope = await service.work.scopeTask(run.id, workspace.id);
       const command: Task = {
         type: "task",
         id: workspaceId(),
@@ -252,7 +252,7 @@ if (mode === "agent") {
         { path: inputPath, mimeType: "application/octet-stream", bytes: inputBytes },
       ]);
       command.promptContext = await service.inputs.stagePrompt(command.id, fullPrompt);
-      service.work.assign(command);
+      await service.work.assign(command);
       configuration.commands.push(command);
     }
   writeFileSync(join(root, "config.json"), JSON.stringify(configuration));
@@ -263,12 +263,12 @@ if (mode === "agent") {
 } else if (mode === "coordinator") {
   const { db, service } = await coordinator(config().runnerPort);
   const answered = new Set<string>();
-  const timer = setInterval(() => {
+  const timer = setInterval(async () => {
     for (const command of config().commands)
-      for (const { sequence, event } of service.results.events(command.runId, 1, 0)) {
+      for (const { sequence, event } of await service.results.events(command.runId, 1, 0)) {
         const key = command.id + ":" + sequence;
         if (answered.has(key) || (event.type !== "question" && event.type !== "artifact")) continue;
-        service.results.answer({
+        await service.results.answer({
           runId: command.runId,
           generation: 1,
           sequence,

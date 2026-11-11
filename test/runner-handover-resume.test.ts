@@ -143,7 +143,7 @@ async function setup() {
     health,
     now: () => now,
     pollIntervalMs: 1,
-    placement: createRunnerPlacement({ db, now: () => now }),
+    placement: createRunnerPlacement({ store: sqliteDb(db), now: () => now }),
     async fetchCandidate(candidate) {
       git(["-C", candidate.mirror, "fetch", "-q", checkout, candidate.candidateSha]);
       git(["-C", candidate.mirror, "update-ref", candidate.ref, candidate.candidateSha]);
@@ -1074,10 +1074,10 @@ test("replayed questions attach to the open answer without asking or cancelling 
     record.runId,
   ]);
   for (let i = 0; i < 1000; i++) {
-    if (context.results.answered(command.runId, command.generation, 3)) break;
+    if (await context.results.answered(command.runId, command.generation, 3)) break;
     await delay(1);
   }
-  expect(context.results.answered(command.runId, command.generation, 1)).toBe("Use commas.");
+  expect(await context.results.answered(command.runId, command.generation, 1)).toBe("Use commas.");
   expect(
     db.query("SELECT * FROM runner_question_answer WHERE run_id=?").all(record.runId),
   ).toHaveLength(3);
@@ -1089,7 +1089,7 @@ test("replayed questions attach to the open answer without asking or cancelling 
   await context.events(command, runners.a, [
     { type: "question", text: "Which encoding?", options: [] },
   ]);
-  context.results.answer({
+  await context.results.answer({
     runId: command.runId,
     generation: command.generation,
     sequence: 4,
@@ -1158,10 +1158,10 @@ test("a replay attaches to a question already stored by an earlier attachment", 
     record.runId,
   ]);
   for (let i = 0; i < 1000; i++) {
-    if (context.results.answered(command.runId, command.generation, 2)) break;
+    if (await context.results.answered(command.runId, command.generation, 2)) break;
     await delay(1);
   }
-  expect(context.results.answered(command.runId, command.generation, 1)).toBe("Use commas.");
+  expect(await context.results.answered(command.runId, command.generation, 1)).toBe("Use commas.");
   expect(
     db.query("SELECT * FROM runner_question_answer WHERE run_id=?").all(record.runId),
   ).toHaveLength(2);

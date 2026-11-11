@@ -21,7 +21,7 @@ import {
   checkRetroProfile,
   DEFAULT_RETRO_PROMPT,
   freezeRetroPrompt,
-  freezeRetroRun,
+  freezeRetroRunSteps,
   nextRetroOccurrence,
   proposedRetroSettings,
   readRetroSettings,
@@ -122,16 +122,18 @@ function freeze(
     catalogs?: AgentModelCatalog[] | null;
   },
 ) {
-  return freezeRetroRun(db, {
-    id: input.id,
-    workspaceId: "ws",
-    windowStart: input.start,
-    windowEnd: input.start + 7 * DAY,
-    origin: "scheduled",
-    catalogs: input.catalogs === undefined ? CATALOGS : input.catalogs,
-    accessibleRepositories: input.accessible ?? [APP, LANDING],
-    now: input.start + 7 * DAY,
-  });
+  return sqliteDb(db).transaction((q) =>
+    freezeRetroRunSteps(q, {
+      id: input.id,
+      workspaceId: "ws",
+      windowStart: input.start,
+      windowEnd: input.start + 7 * DAY,
+      origin: "scheduled",
+      catalogs: input.catalogs === undefined ? CATALOGS : input.catalogs,
+      accessibleRepositories: input.accessible ?? [APP, LANDING],
+      now: input.start + 7 * DAY,
+    }),
+  );
 }
 
 function collectAndQueue(
@@ -341,7 +343,7 @@ describe("frozen retro runs", () => {
       expectedRevision: 0,
       draft: draft({ agentProfile: { agent: "codex", model: null, effort: null } }),
     });
-    const frozen = freeze(db, { id: "r1", start: 0 });
+    const frozen = await freeze(db, { id: "r1", start: 0 });
     if (!frozen.ok) throw new Error(frozen.message);
     collectAndQueue(db, root, "r1", { [APP]: 5 });
     await save(db, {
@@ -387,7 +389,7 @@ describe("frozen retro runs", () => {
     expect(retry).toEqual(prompt);
     expect(rendered).toHaveLength(1);
 
-    const again = freeze(db, { id: "r1-again", start: 0, catalogs: null });
+    const again = await freeze(db, { id: "r1-again", start: 0, catalogs: null });
     expect(again.ok && again.retro).toMatchObject({
       id: "r1",
       settingsRevision: 1,
@@ -399,19 +401,22 @@ describe("frozen retro runs", () => {
   test("a run leaves out a repository whose access was revoked and a save cannot add it back", async () => {
     const { db } = harness();
     await save(db, { expectedRevision: 0, draft: draft({ repositories: [APP, LANDING] }) });
-    const frozen = freeze(db, { id: "r1", start: 0, accessible: [APP] });
+    const frozen = await freeze(db, { id: "r1", start: 0, accessible: [APP] });
     expect(frozen.ok && frozen.retro.repositories).toEqual([APP]);
     expect(retroRunRepositories([APP], [APP, LANDING])).toEqual([APP]);
     expect(retroRunRepositories([APP, LANDING], [LANDING])).toEqual([LANDING]);
-    expect(freeze(db, { id: "r2", start: 7 * DAY, accessible: [] })).toMatchObject({
+    expect(await freeze(db, { id: "r2", start: 7 * DAY, accessible: [] })).toMatchObject({
       ok: false,
       reason: "no_accessible_repository",
     });
   });
 
-  test("a run needs a saved revision", () => {
+  test("a run needs a saved revision", async () => {
     const { db } = harness();
-    expect(freeze(db, { id: "r1", start: 0 })).toMatchObject({ ok: false, reason: "no_settings" });
+    expect(await freeze(db, { id: "r1", start: 0 })).toMatchObject({
+      ok: false,
+      reason: "no_settings",
+    });
   });
 });
 
@@ -425,13 +430,13 @@ describe("repository selection", () => {
       ).toBe(true);
     };
     await save(db, { expectedRevision: 0, draft: draft({ repositories: [APP] }) });
-    const first = freeze(db, { id: "r1", start: 0 });
+    const first = await freeze(db, { id: "r1", start: 0 });
     if (!first.ok) throw new Error(first.message);
     collectAndQueue(db, root, "r1", { [APP]: 10 });
     publish("r1", "a");
 
     await save(db, { expectedRevision: 1, draft: draft({ repositories: [LANDING] }) });
-    expect(freeze(db, { id: "r2", start: 7 * DAY }).ok).toBe(true);
+    expect((await freeze(db, { id: "r2", start: 7 * DAY })).ok).toBe(true);
     expect(beginRetroCollection(db, { retroId: "r2", now: 3 }).ok).toBe(true);
     expect(await retroRepositories(sqliteDb(db), "r2")).toEqual([
       { repository: LANDING, startCursor: 0, endCursor: null },
@@ -441,13 +446,13 @@ describe("repository selection", () => {
   test("re-enabling a repository continues from its last reported cursor", async () => {
     const { db, root } = harness();
     await save(db, { expectedRevision: 0, draft: draft({ repositories: [APP] }) });
-    freeze(db, { id: "r1", start: 0 });
+    await freeze(db, { id: "r1", start: 0 });
     collectAndQueue(db, root, "r1", { [APP]: 10 });
     const attempt = startRetroAttempt(db, { retroId: "r1", owner: "a", now: 1, leaseMs: 1000 })!;
     publishRetro(db, { retroId: "r1", ...attempt, owner: "a", result: {}, items: [], now: 2 });
     await save(db, { expectedRevision: 1, draft: draft({ repositories: [LANDING] }) });
     await save(db, { expectedRevision: 2, draft: draft({ repositories: [APP] }) });
-    freeze(db, { id: "r2", start: 21 * DAY });
+    await freeze(db, { id: "r2", start: 21 * DAY });
     expect(beginRetroCollection(db, { retroId: "r2", now: 3 }).ok).toBe(true);
     expect(await retroRepositories(sqliteDb(db), "r2")).toEqual([
       { repository: APP, startCursor: 10, endCursor: null },

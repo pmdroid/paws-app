@@ -141,7 +141,7 @@ async function fixture() {
       profile: { agent: "codex", model: "scripted" },
       prompt: "Fixture",
     };
-    services.work.assign(command);
+    await services.work.assign(command);
     const token = (
       await services.work.issueGrant({
         runnerId,

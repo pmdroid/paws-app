@@ -18,7 +18,7 @@ export function guardGitHubPublication(input: {
   isCurrent(): boolean;
   assert(purpose?: TokenPurpose, merging?: boolean): Promise<void>;
   /** Around each push: `before` may refuse it, `after` hears that it worked. */
-  push?: { before(): void; after(): void };
+  push?: { before(): Promise<void>; after(): Promise<void> };
 }): GitHubBinding & { gitExec: GitExec } {
   const current = () => {
     input.signal.throwIfAborted();
@@ -72,14 +72,14 @@ export function guardGitHubPublication(input: {
       const pushing = args.includes("push");
       if (pushing) {
         await check("push");
-        input.push?.before();
+        await input.push?.before();
       }
       current();
       const result = await ownedGitExec(args, {
         ...options,
         signal: options.signal ? AbortSignal.any([input.signal, options.signal]) : input.signal,
       });
-      if (pushing) input.push?.after();
+      if (pushing) await input.push?.after();
       return result;
     },
     tokenProvider: {

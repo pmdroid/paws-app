@@ -1,6 +1,6 @@
 import { confirmFakeMerge } from "./fake-workspace";
 import { expect, test } from "bun:test";
-import { ensureLinearSession } from "../src/db";
+import { ensureLinearSession, sqliteDb } from "../src/db";
 import type { EpicSnapshot } from "../src/linear";
 import { createParentFixture } from "./local/parent-fixture";
 
@@ -144,7 +144,7 @@ test("a delegated parent records its sub-issues and each sub-issue runs alone in
     expect(replay.delegation.id).toBe(admitted.delegation.id);
     expect(tracker.progress.filter((update) => update.sessionId === "parent-session")).toEqual([]);
 
-    parents.register(jobs);
+    await parents.register(jobs);
     await jobs.tick();
     expect(started).toEqual(["child-a"]);
     expect(
@@ -192,10 +192,10 @@ test("a delegated parent records its sub-issues and each sub-issue runs alone in
         session_id: `session-${item.linear_issue_id}`,
       })),
     );
-    expect(parents.actor("session-child-a")).toBe("lead");
+    expect(await sqliteDb(db).run((q) => parents.actorSteps(q, "session-child-a"))).toBe("lead");
     const live = await tracker.loadEpic("child-a");
     expect(
-      parents.scope("session-child-a", {
+      await parents.scopeSnapshot("session-child-a", {
         ...live,
         title: "Renamed",
         description: "Rewritten",
@@ -203,7 +203,7 @@ test("a delegated parent records its sub-issues and each sub-issue runs alone in
     ).toMatchObject({ linearIssueId: "child-a", title: "Renamed", subIssues: [] });
     expect((await parents.scopeSnapshot("session-child-a", live)).subIssues).toEqual([]);
     // Another session cannot take a sub-issue that already runs under the parent.
-    expect(() => parents.scope("parent-session", live)).toThrow(
+    await expect(parents.scopeSnapshot("parent-session", live)).rejects.toThrow(
       "This issue already runs as a sub-issue of a delegated parent.",
     );
   } finally {
@@ -466,7 +466,11 @@ test("without Linear session starts a delegated parent runs its sub-issues in it
       creatorId: "lead",
       now: fixture.clock.now(),
     });
-    expect(fixture.parents.adoptParent("parent-session", parent, [])).toBe(false);
+    expect(
+      await sqliteDb(fixture.db).transaction((q) =>
+        fixture.parents.adoptParentSteps(q, "parent-session", parent, []),
+      ),
+    ).toBe(false);
     const result = await fixture.orchestrator.intakeLinearTask(
       "parent",
       "parent-session",
@@ -529,7 +533,7 @@ test("a delegated parent leaves its finished sub-issues out and still starts the
       ),
     ).toEqual([]);
 
-    parents.register(jobs);
+    await parents.register(jobs);
     await jobs.tick();
     expect(started).toEqual(["child-b"]);
     expect(parentResponses(db)).toEqual([
@@ -626,7 +630,7 @@ test("a delegated parent with a chain of sub-issues ends its session with one su
     expect(admitted.ok).toBe(true);
     expect(parentResponses(db)).toEqual([]);
 
-    parents.register(jobs);
+    await parents.register(jobs);
     await jobs.tick();
     expect(started).toEqual(["list"]);
     const summary = [

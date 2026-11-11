@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   chargeRunnerAgentSteps,
   commandAccountSteps,
@@ -32,8 +31,6 @@ import {
   setRunnerAgentCooldownSteps,
   setSchedulerRunnerSlotSteps,
   settleRunnerAgentSteps,
-  settled,
-  sqliteDb,
   syncSteps,
   workspaceForOrganizationSteps,
   workspaceMemberSteps,
@@ -41,6 +38,7 @@ import {
   workspaceSessionIdsSteps,
   workspaceUserIdForLinearUserSteps,
   type AccountObservation,
+  type Db,
   type Q,
   type Steps,
 } from "../db";
@@ -91,18 +89,14 @@ export class PlacementUnavailableError extends Error {}
 
 type SessionWait = { runnerId: string; since: number; seen: number };
 // Admission previews and execution must observe the same session grace period.
-const sessionWaitsByDatabase = new WeakMap<Database, Map<string, SessionWait>>();
+const sessionWaitsByDatabase = new WeakMap<Db, Map<string, SessionWait>>();
 
 export function createRunnerPlacement(options: {
-  db: Database;
-  sessionActor?: (sessionId: string) => string | undefined;
+  store: Db;
+  sessionActorSteps?: (q: Q, sessionId: string) => Steps<string | undefined>;
   now?: () => number;
-}): RunnerPlacement & {
-  started(input: Parameters<RunnerPlacement["startedSteps"]>[1]): void;
-  finished(input: Parameters<RunnerPlacement["finishedSteps"]>[1]): PlacementDisposition;
-} {
-  const { db } = options;
-  const store = sqliteDb(db);
+}): RunnerPlacement {
+  const { store } = options;
   const now = options.now ?? Date.now;
   const admissions = new Map<
     string,
@@ -116,8 +110,8 @@ export function createRunnerPlacement(options: {
     }
   >();
   // Per item: since when placement has held a task for its busy session runner.
-  const sessionWaits = sessionWaitsByDatabase.get(db) ?? new Map<string, SessionWait>();
-  sessionWaitsByDatabase.set(db, sessionWaits);
+  const sessionWaits = sessionWaitsByDatabase.get(store) ?? new Map<string, SessionWait>();
+  sessionWaitsByDatabase.set(store, sessionWaits);
   function admissionKey(
     runnerId: string,
     input: Pick<PlacementRequest, "itemId" | "sessionId" | "purpose" | "role" | "profile">,
@@ -167,7 +161,9 @@ export function createRunnerPlacement(options: {
       : null;
     const ownership = item
       ? yield* delegatedLinearUserIdSteps(q, item.id)
-      : (options.sessionActor?.(session.sessionId) ?? session.creatorId);
+      : ((options.sessionActorSteps
+          ? yield* options.sessionActorSteps(q, session.sessionId)
+          : undefined) ?? session.creatorId);
     return { item, session, workspace, repository, issueId, ownership, placement };
   }
   type Scope = ReturnType<typeof scopeSteps> extends Steps<infer T> ? T : never;
@@ -777,7 +773,5 @@ export function createRunnerPlacement(options: {
       ),
     startedSteps,
     finishedSteps,
-    started: (input) => settled(store.transaction((q) => startedSteps(q, input))),
-    finished: (input) => settled(store.transaction((q) => finishedSteps(q, input))),
   };
 }

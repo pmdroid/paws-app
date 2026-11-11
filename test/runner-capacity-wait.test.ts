@@ -17,6 +17,7 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
   type Job,
+  sqliteDb,
 } from "../src/db";
 import { syncItemDependencies } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
@@ -147,7 +148,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     now: () => workNow(),
   });
   workNow = () => now - 120_000;
-  work.enqueue({
+  await work.enqueue({
     id: "cancel-other",
     type: "cancel",
     runId: otherRun.id,
@@ -167,7 +168,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
   const health = createRunnerHealth({ db, work });
   const identifiers = ["ENG-1", "ENG-2", "ENG-3", "ENG-4", "ENG-5"];
   const waiting = new Set(identifiers.slice(0, 4));
-  const placement = createRunnerPlacement({ db });
+  const placement = createRunnerPlacement({ store: sqliteDb(db) });
   const backend = createRemoteAgentRunner({
     db,
     work,

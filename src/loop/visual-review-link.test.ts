@@ -16,13 +16,14 @@ import {
   migrate,
   openDatabase,
   saveEvidence,
+  sqliteDb,
 } from "../db";
 import { findOpenQuestion, getVisualReview, LINK_ASK_REMINDER_MS } from "../questions";
 import { saveSchedulingContext } from "../scheduler";
 import { closeLinkAsksOnHead, decideLinkAsk, guideLinkAsk } from "./link-ask";
 import { awaitQuestion } from "./operations";
 import {
-  askForVisualReview,
+  askForVisualReviewSteps,
   dueVisualReview,
   pendingVisualReview,
   VISUAL_REVIEW_REPLY_NOTE,
@@ -63,7 +64,7 @@ function evidence(db: ReturnType<typeof openDatabase>, itemId: string, runId: st
 }
 
 /** The item verifies head S with its screenshots published; Paws can hand out an https link. */
-function reviewing() {
+async function reviewing() {
   const db = openDatabase(":memory:");
   migrate(db);
   const item = insertQueuedItem(db, { id: "ENG-103", sessionKey: "ses_1", title: "Signed URLs" });
@@ -84,23 +85,25 @@ function reviewing() {
     "lea@example.com",
   ]);
   evidence(db, item.id, run.id);
-  const asked = askForVisualReview(db, {
-    item: getWorkItem(db, item.id)!,
-    runId: run.id,
-    sessionId: "ses_1",
-    checkId: "visual-proof",
-    evidenceIds: ["ev-1", "ev-2"],
-    base: "base",
-    head: HEAD,
-    publicUrl: "https://paws.example/",
-    now: NOW,
-  });
+  const asked = await sqliteDb(db).transaction((q) =>
+    askForVisualReviewSteps(q, {
+      item: getWorkItem(db, item.id)!,
+      runId: run.id,
+      sessionId: "ses_1",
+      checkId: "visual-proof",
+      evidenceIds: ["ev-1", "ev-2"],
+      base: "base",
+      head: HEAD,
+      publicUrl: "https://paws.example/",
+      now: NOW,
+    }),
+  );
   expect(asked).toBe(true);
   return { db, itemId: item.id, question: findOpenQuestion(db, "ses_1")! };
 }
 
-test("the visual review is a link ask without options, reminded once from the shared link ask", () => {
-  const { db, itemId, question } = reviewing();
+test("the visual review is a link ask without options, reminded once from the shared link ask", async () => {
+  const { db, itemId, question } = await reviewing();
   // Asked beside the other checks: the item keeps verifying.
   expect(getWorkItem(db, itemId)?.state).toBe("verifying");
   expect(question.kind).toBe("link");
@@ -132,7 +135,7 @@ test("the visual review is a link ask without options, reminded once from the sh
 });
 
 test("Approve on the page passes the check for that head and those files", async () => {
-  const { db, itemId, question } = reviewing();
+  const { db, itemId, question } = await reviewing();
   const outcome = await decideLinkAsk(db, {
     questionId: question.id,
     decision: "approve",
@@ -163,7 +166,7 @@ test("Approve on the page passes the check for that head and those files", async
 });
 
 test("Approve after the other checks finished completes the evaluation of the same head", async () => {
-  const { db, itemId, question } = reviewing();
+  const { db, itemId, question } = await reviewing();
   awaitQuestion(db, getWorkItem(db, itemId)!, question, NOW + 50);
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
   await decideLinkAsk(db, {
@@ -183,7 +186,7 @@ test("Approve after the other checks finished completes the evaluation of the sa
 });
 
 test("someone else cannot approve on the page", async () => {
-  const { db, question } = reviewing();
+  const { db, question } = await reviewing();
   expect(
     await decideLinkAsk(db, {
       questionId: question.id,
@@ -198,7 +201,7 @@ test("someone else cannot approve on the page", async () => {
 });
 
 test("Request changes on the page restarts the item with the marks and the note", async () => {
-  const { db, itemId, question } = reviewing();
+  const { db, itemId, question } = await reviewing();
   const marks = [
     {
       id: "mark-1",
@@ -233,7 +236,7 @@ test("Request changes on the page restarts the item with the marks and the note"
 });
 
 test("a Linear reply that says approve requests changes and never approves", async () => {
-  const { db, itemId, question } = reviewing();
+  const { db, itemId, question } = await reviewing();
   const guided = await guideLinkAsk(db, {
     questionId: question.id,
     eventKey: "activity:reply",
@@ -260,7 +263,7 @@ test("a Linear reply that says approve requests changes and never approves", asy
 });
 
 test("a new head closes the open ask unless it has the same patch", async () => {
-  const { db, itemId, question } = reviewing();
+  const { db, itemId, question } = await reviewing();
   expect(await closeLinkAsksOnHead(db, itemId, "rebased", NOW + 10, [question.id])).toBe(0);
   expect(getLinkAsk(db, question.id)?.closedAt).toBeNull();
   expect(await closeLinkAsksOnHead(db, itemId, "different", NOW + 20)).toBe(1);
@@ -295,7 +298,7 @@ test("a later commit with a different patch asks again", async () => {
   git("init", "-q", "-b", "main");
   const base = commit("base");
   const approved = commit("retry button on one line");
-  const { db, itemId, question } = reviewing();
+  const { db, itemId, question } = await reviewing();
   db.run("UPDATE link_ask SET head_commit = ? WHERE question_id = ?", [approved, question.id]);
   await decideLinkAsk(db, {
     questionId: question.id,

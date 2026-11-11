@@ -9,11 +9,9 @@ export { parentSummaryMessage } from "./parent-summary";
 export type { SummaryIssue, SummarySubIssue } from "./parent-summary";
 export type { EarlierAttempt, StoredDelegation, StoredWorkItem } from "./store";
 export {
-  canAdvanceItem,
   hasPendingDelegationChanges,
   itemDependenciesCurrent,
   recordItemDependencies,
-  readyItems,
   readyItemsSteps,
   syncItemDependencies,
   delegationSnapshotsComplete,

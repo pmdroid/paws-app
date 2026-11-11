@@ -124,7 +124,7 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
       profile: { agent: "codex", model: "scripted" },
       prompt: "Publish evidence",
     };
-    work.assign(command);
+    await work.assign(command);
     const access = {
       runnerId,
       runId: run.id,

@@ -10,7 +10,7 @@ export {
   improvementSourceStatus,
   inboxCounts,
   itemsForIssue,
-  listInboxItems,
+  listInboxItemsSteps,
   reuseChoice,
   type ImprovementAccess,
   type ImprovementSourceStatus,
@@ -24,7 +24,6 @@ export {
   improvementDetail,
   improvementView,
   listImprovementPage,
-  memberRepositories,
   memberRepositoriesSteps,
   retryInboxDelivery,
   type ImprovementDecisionRequest,
@@ -43,7 +42,6 @@ export {
 export { createImprovementsHttp, IMPROVEMENTS_PATH, type RetroEvidenceReader } from "./http";
 export {
   delegateImprovement,
-  followThrough,
   improvementAttention,
   improvementFollowThrough,
   improvementFollowThroughSteps,

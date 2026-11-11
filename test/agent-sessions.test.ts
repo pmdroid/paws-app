@@ -146,7 +146,7 @@ async function fixture(root: string) {
       type === "run"
         ? { ...base, type: "run", prompt: "Produce the fixture." }
         : { ...base, type: "review", prompt: "Review the fixture." };
-    work.assign(command);
+    await work.assign(command);
     const token = (
       await work.issueGrant({
         runnerId,

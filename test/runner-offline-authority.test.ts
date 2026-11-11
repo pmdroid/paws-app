@@ -149,7 +149,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
     prompt: "Fixture",
   });
   const first = command(1);
-  paws.work.assign(first);
+  await paws.work.assign(first);
 
   let link: "up" | "partitioned" | "revoked" | "paws-down" = "up";
   const remote = async <T>(route: string, call: () => T | Promise<T>): Promise<T> => {
@@ -428,7 +428,7 @@ test.skipIf(!linuxUser)(
       expect(f.workEnded()).toBe(false);
       expect(f.executing()).toBe(true);
       expect(getWorkItem(f.db, f.item.id)?.state).toBe("running");
-      expect(() => f.nextGeneration()).toThrow();
+      await expect(f.nextGeneration()).rejects.toThrow();
       f.finish();
       f.setLink("up");
       await f.tickUntil(() => f.posted.length > 0);
@@ -540,7 +540,7 @@ test.skipIf(!linuxUser)(
       await f.advance(STEP);
       f.setLink("partitioned");
       await f.advance(RUNNER_OFFLINE_BUDGET_MS / 2);
-      expect(() => f.nextGeneration()).toThrow("Run assignment generation conflicts.");
+      await expect(f.nextGeneration()).rejects.toThrow("Run assignment generation conflicts.");
       expect(runnerHasCapacity(f.db, f.runnerId, f.clock.at)).toBe(false);
       await f.advance(RUNNER_OFFLINE_BUDGET_MS / 2 + 2 * STEP);
       expect(f.replaced).toHaveLength(1);

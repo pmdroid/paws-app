@@ -123,7 +123,7 @@ export async function probeRunnerTranscripts(
     profile: { agent: "codex", model: "scripted" },
     prompt: "Produce the fixture.",
   };
-  work.assign(command);
+  await work.assign(command);
   const token = (
     await work.issueGrant({
       runnerId,
@@ -315,7 +315,7 @@ export async function probeRunnerTranscripts(
       expiresAt: now + 300_000,
       generation: 2,
     };
-    work.assign(emptyCommand);
+    await work.assign(emptyCommand);
     const emptyToken = (
       await work.issueGrant({
         runnerId,
@@ -340,7 +340,7 @@ export async function probeRunnerTranscripts(
       transcriptBytes: 0,
     });
     const next = { ...emptyCommand, id: workspaceId(now), generation: 3 };
-    work.assign(next);
+    await work.assign(next);
     const nextToken = (
       await work.issueGrant({
         runnerId,

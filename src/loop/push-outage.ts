@@ -9,9 +9,9 @@ import {
   parkLeasedJobSteps,
   recordPushOutageSteps,
   setPushOutageQuestionSteps,
-  settled,
   sqliteDb,
   takePushOutageProbeSteps,
+  type Db,
   type Q,
   type Steps,
   type Job,
@@ -49,8 +49,8 @@ export function* holdPushSteps(q: Q, repository: string, jobId: number | null): 
   yield* takePushOutageProbeSteps(q, repository, jobId);
 }
 
-export function holdPush(db: Database, repository: string, jobId: number | null): void {
-  settled(sqliteDb(db).transaction((q) => holdPushSteps(q, repository, jobId)));
+export async function holdPush(store: Db, repository: string, jobId: number | null): Promise<void> {
+  await store.transaction((q) => holdPushSteps(q, repository, jobId));
 }
 
 /**
@@ -121,16 +121,18 @@ export async function parkForPushOutage(
  * A push to `repository` worked. Ends its outage, wakes the merge jobs it held so they run in
  * queue order, and closes the workspace question. Returns the outage it ended, or null.
  */
-export function pushWorked(db: Database, repository: string, now: number): PushOutage | null {
-  const ended = settled(
-    sqliteDb(db).transaction(function* (q) {
-      const outage = yield* endPushOutageSteps(q, repository);
-      if (outage === null) return null;
-      yield* releasePushOutageJobsSteps(q, repository, now);
-      if (outage.questionId !== null) yield* cancelQuestionSteps(q, outage.questionId, now);
-      return outage;
-    }),
-  );
+export async function pushWorked(
+  store: Db,
+  repository: string,
+  now: number,
+): Promise<PushOutage | null> {
+  const ended = await store.transaction(function* (q) {
+    const outage = yield* endPushOutageSteps(q, repository);
+    if (outage === null) return null;
+    yield* releasePushOutageJobsSteps(q, repository, now);
+    if (outage.questionId !== null) yield* cancelQuestionSteps(q, outage.questionId, now);
+    return outage;
+  });
   if (ended) journal(`push outage on ${repository} ended`);
   return ended;
 }

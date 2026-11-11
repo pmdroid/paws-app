@@ -133,10 +133,6 @@ export function* nextQueuedQuestionSteps(q: Q, sessionId: string): Steps<StoredQ
   return row === null ? null : mapQuestion(row);
 }
 
-export function nextQueuedQuestion(db: Database, sessionId: string): StoredQuestion | null {
-  return settled(sqliteDb(db).run((q) => nextQueuedQuestionSteps(q, sessionId)));
-}
-
 export function* questionReplyConsumedSteps(q: Q, sessionId: string, eventKey: string) {
   return yield* questionEventConsumedSteps(q, sessionId, eventKey);
 }

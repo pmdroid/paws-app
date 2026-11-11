@@ -89,9 +89,9 @@ async function fixture() {
       runnerId,
     ))!.status;
   let sequence = 0;
-  const check = (account?: { accountId: string; bindingId: string }) => {
+  const check = async (account?: { accountId: string; bindingId: string }) => {
     const id = `check-${++sequence}`;
-    work.enqueue({
+    await work.enqueue({
       id,
       type: "login_check",
       runnerId,
@@ -117,7 +117,7 @@ async function fixture() {
 test("an old runner keeps running the default sign-in and never receives a named account", async () => {
   const { db, now, runnerId, workspace, heartbeat, check, queued } = await fixture();
   expect(await heartbeat({ runnerVersion: "0.1.59" })).toBe(200);
-  const legacy = check();
+  const legacy = await check();
   expect(commandAccount(db, legacy)).toMatchObject({
     bindingId: `legacy_claude_${runnerId}`,
     accountId: `legacy_claude_${workspace}`,
@@ -137,20 +137,20 @@ test("an old runner keeps running the default sign-in and never receives a named
     now,
   });
   const named = { accountId: account.id, bindingId: binding.id };
-  expect(() => check(named)).toThrow(/runner 0\.1\.61 or later/);
+  await expect(check(named)).rejects.toThrow(/runner 0\.1\.61 or later/);
   expect(
     await heartbeat({
       runnerVersion: "0.1.59",
       accounts: { protocol: 1, bindings: [{ bindingId: binding.id, agent: "claude" }] },
     }),
   ).toBe(200);
-  expect(() => check(named)).toThrow(/runner 0\.1\.61 or later/);
+  await expect(check(named)).rejects.toThrow(/runner 0\.1\.61 or later/);
   expect(await heartbeat({ runnerVersion: "0.1.61" })).toBe(200);
-  expect(() => check(named)).toThrow(/not reported agent account support/);
+  await expect(check(named)).rejects.toThrow(/not reported agent account support/);
   expect(
     await heartbeat({ runnerVersion: "0.1.61", accounts: { protocol: 1, bindings: [] } }),
   ).toBe(200);
-  expect(() => check(named)).toThrow(/not reported this account binding/);
+  await expect(check(named)).rejects.toThrow(/not reported this account binding/);
   expect(await queued()).toEqual([{ id: legacy, account: undefined }]);
 
   expect(
@@ -159,7 +159,7 @@ test("an old runner keeps running the default sign-in and never receives a named
       accounts: { protocol: 1, bindings: [{ bindingId: binding.id, agent: "claude" }] },
     }),
   ).toBe(200);
-  const accepted = check(named);
+  const accepted = await check(named);
   expect(commandAccount(db, accepted)).toMatchObject({ bindingId: binding.id, named: true });
   // Routine checks go to the runner one at a time: the named one follows the legacy one's result.
   expect(await queued()).toEqual([{ id: legacy, account: undefined }]);

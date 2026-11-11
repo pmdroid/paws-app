@@ -21,7 +21,6 @@ import {
   moveWorkspaceAssignmentSteps,
   pendingWorkspaceAssignmentTokensSteps,
   recordLinearTurnSteps,
-  settled,
   sqliteDb,
   syncWorkspaceMemberSteps,
   workspaceAssignmentByTokenSteps,
@@ -589,9 +588,6 @@ export function createWorkspaceAssignments(options: {
     return true;
   }
   return {
-    authorizeIntake(sessionId: string, spec: EpicSnapshot): boolean {
-      return settled(store.run((q) => authorizeIntakeSteps(q, sessionId, spec)));
-    },
     authorizeIntakeSteps,
     async authorize(event: AcceptedLinearEvent): Promise<IntakeDecision> {
       if (!event.sessionId) return refused("Paws could not match this event to a session.");

@@ -108,8 +108,8 @@ async function assignedPreview(runnerVersion: string) {
       prompt: "Fixture",
       livePreview: { command: "bun run dev", port: 5173 },
     };
-    work.assign(command);
-    const sent = work.current(run.id, 1).command;
+    await work.assign(command);
+    const sent = (await work.currentAsync(run.id, 1)).command;
     return sent.type === "run" ? sent.livePreview : undefined;
   } finally {
     db.close();

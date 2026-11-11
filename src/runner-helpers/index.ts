@@ -11,7 +11,6 @@ import {
   runnerHelperAvailabilitySteps,
   runnerHelperResultMatchesSteps,
   runnerHelperRowSteps,
-  settled,
   sqliteDb,
   storeRunnerHelperResultSteps,
   unacknowledgedRunnerHelpersSteps,
@@ -196,7 +195,7 @@ export function createRunnerHelpers(options: {
   }
   const api = {
     dispatchSteps,
-    dispatch: (input: HelperDispatch) => settled(store.transaction((q) => dispatchSteps(q, input))),
+    dispatch: (input: HelperDispatch) => store.transaction((q) => dispatchSteps(q, input)),
     commands(runnerId: string): Promise<SignedRunnerCommand[]> {
       return store.run(function* (q) {
         yield* identitySteps(q, runnerId);

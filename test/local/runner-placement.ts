@@ -110,7 +110,7 @@ export async function probeRunnerPlacement(
       teamId,
       observedAtMs: ++installationObservation,
     });
-  const placement = createRunnerPlacement({ db, now: () => now });
+  const placement = createRunnerPlacement({ store: sqliteDb(db), now: () => now });
   const request: PlacementRequest = {
     itemId: item.id,
     profile: { agent: "codex", model: "implementation-model" },
@@ -128,16 +128,18 @@ export async function probeRunnerPlacement(
     const profile = { agent: "codex" as const, model };
     await placement.candidates({ ...request, purpose, role, profile });
     const commandId = workspaceId();
-    placement.started({
-      commandId,
-      runnerId,
-      itemId: item.id,
-      runId: run.id,
-      profile,
-      purpose,
-      role,
-      startedAt: now,
-    });
+    await sqliteDb(db).transaction((q) =>
+      placement.startedSteps(q, {
+        commandId,
+        runnerId,
+        itemId: item.id,
+        runId: run.id,
+        profile,
+        purpose,
+        role,
+        startedAt: now,
+      }),
+    );
     return commandId;
   };
   const result = (
@@ -183,39 +185,45 @@ export async function probeRunnerPlacement(
     });
     db.run("UPDATE work_item SET awake_ms=awake_ms+1000 WHERE id=?", [item.id]);
     const progressCommand = workspaceId();
-    placement.started({
-      commandId: progressCommand,
-      runnerId: "own",
-      itemId: item.id,
-      runId: run.id,
-      profile: request.profile,
-      role: request.role,
-      purpose: request.purpose,
-      startedAt: now,
-    });
-    placement.finished({
-      commandId: progressCommand,
-      runnerId: "own",
-      result: result(progressCommand),
-      finishedAt: now,
-    });
+    await sqliteDb(db).transaction((q) =>
+      placement.startedSteps(q, {
+        commandId: progressCommand,
+        runnerId: "own",
+        itemId: item.id,
+        runId: run.id,
+        profile: request.profile,
+        role: request.role,
+        purpose: request.purpose,
+        startedAt: now,
+      }),
+    );
+    await sqliteDb(db).transaction((q) =>
+      placement.finishedSteps(q, {
+        commandId: progressCommand,
+        runnerId: "own",
+        result: result(progressCommand),
+        finishedAt: now,
+      }),
+    );
     observe(
       "Checkpoint preparation and ordinary progress preserve unchanged selection authority",
       true,
       { checkpointSaved: true, admitted: true },
     );
-    assert.throws(
+    await assert.rejects(
       () =>
-        placement.started({
-          commandId: workspaceId(),
-          runnerId: "own",
-          itemId: item.id,
-          runId: run.id,
-          profile: request.profile,
-          role: request.role,
-          purpose: request.purpose,
-          startedAt: now,
-        }),
+        sqliteDb(db).transaction((q) =>
+          placement.startedSteps(q, {
+            commandId: workspaceId(),
+            runnerId: "own",
+            itemId: item.id,
+            runId: run.id,
+            profile: request.profile,
+            role: request.role,
+            purpose: request.purpose,
+            startedAt: now,
+          }),
+        ),
       /selection authority changed/,
     );
     observe("Selection grants are consumed once and cannot authorize another command", true, {
@@ -223,15 +231,19 @@ export async function probeRunnerPlacement(
     });
     const quotaCommand = await start("own");
     assert.equal(
-      placement.finished({
-        commandId: quotaCommand,
-        runnerId: "own",
-        finishedAt: now,
-        result: result(quotaCommand, "implementation-model", {
-          errorMessage: "Rate limit exceeded; retry in 30 minutes",
-          stopReason: "error",
-        }),
-      }).retryable,
+      (
+        await sqliteDb(db).transaction((q) =>
+          placement.finishedSteps(q, {
+            commandId: quotaCommand,
+            runnerId: "own",
+            finishedAt: now,
+            result: result(quotaCommand, "implementation-model", {
+              errorMessage: "Rate limit exceeded; retry in 30 minutes",
+              stopReason: "error",
+            }),
+          }),
+        )
+      ).retryable,
       true,
     );
     assert(!(await ids()).includes("own"));
@@ -245,12 +257,14 @@ export async function probeRunnerPlacement(
     now += 1_800_001;
     db.run("UPDATE runner SET last_seen_at=?", [now]);
     const probe = await start("own", "prepare");
-    placement.finished({
-      commandId: probe,
-      runnerId: "own",
-      finishedAt: now,
-      result: result(probe),
-    });
+    await sqliteDb(db).transaction((q) =>
+      placement.finishedSteps(q, {
+        commandId: probe,
+        runnerId: "own",
+        finishedAt: now,
+        result: result(probe),
+      }),
+    );
     assert.equal(
       db
         .query<{ state: string }, []>(
@@ -265,36 +279,44 @@ export async function probeRunnerPlacement(
       quota,
     );
     const authCommand = await start("second");
-    placement.finished({
-      commandId: authCommand,
-      runnerId: "second",
-      finishedAt: now,
-      result: result(authCommand, "other", { authRequired: true, stopReason: "error" }),
-    });
+    await sqliteDb(db).transaction((q) =>
+      placement.finishedSteps(q, {
+        commandId: authCommand,
+        runnerId: "second",
+        finishedAt: now,
+        result: result(authCommand, "other", { authRequired: true, stopReason: "error" }),
+      }),
+    );
     assert(!(await ids()).includes("second"));
     const fencedSignedOut = await start("second", "prepare");
-    placement.finished({
-      commandId: fencedSignedOut,
-      runnerId: "second",
-      finishedAt: now,
-      failure: "heartbeat_lost",
-    });
+    await sqliteDb(db).transaction((q) =>
+      placement.finishedSteps(q, {
+        commandId: fencedSignedOut,
+        runnerId: "second",
+        finishedAt: now,
+        failure: "heartbeat_lost",
+      }),
+    );
     assert(!(await ids()).includes("second"));
     const login = await start("second", "prepare");
-    placement.finished({
-      commandId: login,
-      runnerId: "second",
-      finishedAt: now,
-      result: result(login, "other"),
-    });
+    await sqliteDb(db).transaction((q) =>
+      placement.finishedSteps(q, {
+        commandId: login,
+        runnerId: "second",
+        finishedAt: now,
+        result: result(login, "other"),
+      }),
+    );
     assert((await ids()).includes("second"));
     const fencedSignedIn = await start("second");
-    placement.finished({
-      commandId: fencedSignedIn,
-      runnerId: "second",
-      finishedAt: now,
-      failure: "heartbeat_lost",
-    });
+    await sqliteDb(db).transaction((q) =>
+      placement.finishedSteps(q, {
+        commandId: fencedSignedIn,
+        runnerId: "second",
+        finishedAt: now,
+        failure: "heartbeat_lost",
+      }),
+    );
     assert((await ids()).includes("second"));
     observe("Expired authentication holds work until successful readiness verification", true, {
       held: true,
@@ -303,12 +325,14 @@ export async function probeRunnerPlacement(
       readyAfterFence: true,
     });
     const implemented = await start("own");
-    placement.finished({
-      commandId: implemented,
-      runnerId: "own",
-      finishedAt: now,
-      result: result(implemented),
-    });
+    await sqliteDb(db).transaction((q) =>
+      placement.finishedSteps(q, {
+        commandId: implemented,
+        runnerId: "own",
+        finishedAt: now,
+        result: result(implemented),
+      }),
+    );
     assert.deepEqual(
       await ids({
         ...request,
@@ -320,12 +344,16 @@ export async function probeRunnerPlacement(
     assert.deepEqual(await ids({ ...request, role: "reviewer" }), []);
     const conflictCommand = await start("second", "work", "reviewer", "review-model");
     assert.equal(
-      placement.finished({
-        commandId: conflictCommand,
-        runnerId: "second",
-        finishedAt: now,
-        result: { ...result(conflictCommand), role: "reviewer" },
-      }).retryable,
+      (
+        await sqliteDb(db).transaction((q) =>
+          placement.finishedSteps(q, {
+            commandId: conflictCommand,
+            runnerId: "second",
+            finishedAt: now,
+            result: { ...result(conflictCommand), role: "reviewer" },
+          }),
+        )
+      ).retryable,
       true,
     );
     const rejectedReview = db
@@ -347,18 +375,20 @@ export async function probeRunnerPlacement(
     );
     await placement.candidates(request);
     db.run("UPDATE runner_policy SET sharing=1 WHERE runner_id='own'");
-    assert.throws(
+    await assert.rejects(
       () =>
-        placement.started({
-          commandId: workspaceId(),
-          runnerId: "own",
-          itemId: item.id,
-          runId: run.id,
-          profile: request.profile,
-          role: "implementer",
-          purpose: "work",
-          startedAt: now,
-        }),
+        sqliteDb(db).transaction((q) =>
+          placement.startedSteps(q, {
+            commandId: workspaceId(),
+            runnerId: "own",
+            itemId: item.id,
+            runId: run.id,
+            profile: request.profile,
+            role: "implementer",
+            purpose: "work",
+            startedAt: now,
+          }),
+        ),
       /selection authority changed/,
     );
     db.run("UPDATE runner_policy SET sharing=0 WHERE runner_id='own'");
