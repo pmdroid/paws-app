@@ -26,6 +26,9 @@ import { createFakeTracker, createInboxStore, type AcceptedLinearEvent } from ".
 import { attachOrchestrator, itemPathId } from "../src/loop";
 
 const agent = new URL("./fixtures/brief-agent.ts", import.meta.url).pathname;
+// The fixture agents never answer a cancel, so the default 2 s grace is only wall-clock wait
+// before the SIGKILL these tests check, paid once to cancel and again in teardown.
+const CANCEL_GRACE_MS = 250;
 const policy = `specVersion: "0.1"
 retry:
   maxFailedAttemptsPerItem: 3
@@ -184,6 +187,7 @@ function fixture(
           path,
         ],
         env: process.env,
+        cancelGraceMs: CANCEL_GRACE_MS,
       };
     }
     starts.push(input.purpose);
@@ -191,6 +195,7 @@ function fixture(
       command: process.execPath,
       args: [agent, input.purpose, evidence, input.role, behavior],
       env: process.env,
+      cancelGraceMs: CANCEL_GRACE_MS,
     };
   };
   const options = () => ({
