@@ -390,7 +390,7 @@ describe("settling an attempt", () => {
       maxAttempts: 2,
     });
   const settle = (db: Database, root: string, attempt: number, output: string | null) =>
-    settleRetroAttempt(db, root, {
+    settleRetroAttempt(sqliteDb(db), root, {
       retroId: "r1",
       attempt,
       owner: "w",

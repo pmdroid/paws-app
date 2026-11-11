@@ -103,7 +103,7 @@ export async function world(extra: Partial<Parameters<typeof createImprovementsH
     now,
     ...extra,
   });
-  const retros = createRetroReviewHttp({ db, artifactRoot: root, now });
+  const retros = createRetroReviewHttp({ store: sqliteDb(db), artifactRoot: root, now });
   const call = async (
     handler: typeof improvements,
     who: string,

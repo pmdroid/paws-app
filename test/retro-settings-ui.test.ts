@@ -122,8 +122,16 @@ async function harness(catalogs: AgentModelCatalog[] | null = CATALOGS) {
     people[name] = { workspaceId: "ws", userId, role, authenticatedAt: 1, teamIds: [] };
   }
   const catalog = createFakeRetroCatalog(catalogs);
-  const settings = createRetroSettingsHttp({ db, catalog: catalog.read, now: () => 5 });
-  const preview = createRetroPreviewHttp({ db, artifactRoot: "/nonexistent", now: () => 5 });
+  const settings = createRetroSettingsHttp({
+    store: sqliteDb(db),
+    catalog: catalog.read,
+    now: () => 5,
+  });
+  const preview = createRetroPreviewHttp({
+    store: sqliteDb(db),
+    artifactRoot: "/nonexistent",
+    now: () => 5,
+  });
   const requests: { method: string; path: string; body: unknown }[] = [];
   const holds: (() => void)[] = [];
   let hold: RegExp | null = null;
@@ -463,7 +471,7 @@ test("a workspace switch or lost permission clears the draft and preview", async
 
 test("a report shows the prompt and profile its retro froze", async () => {
   const w = await world();
-  const handle = createRetroPreviewHttp({ db: w.db, artifactRoot: w.root });
+  const handle = createRetroPreviewHttp({ store: sqliteDb(w.db), artifactRoot: w.root });
   const controller = createRetroSettings({
     fetch: async (url: string) =>
       (await handle(new Request(String(url)), w.people.admin!, ALL)) ??

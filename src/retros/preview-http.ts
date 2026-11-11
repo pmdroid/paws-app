@@ -1,9 +1,8 @@
-import type { Database } from "bun:sqlite";
 import {
   auditWorkspaceAccessSteps,
-  sqliteDb,
   workspaceMemberSteps,
   workspaceMemberUsable,
+  type Db,
 } from "../db";
 import { journalCaught } from "../journal";
 import type { WorkspacePrincipal } from "../workspace";
@@ -18,12 +17,11 @@ const json = (body: unknown, status = 200) =>
   Response.json(body, { status, headers: { "cache-control": "no-store" } });
 
 export function createRetroPreviewHttp(options: {
-  db: Database;
+  store: Db;
   artifactRoot: string;
   now?: () => number;
 }) {
-  const { db, artifactRoot: root } = options;
-  const store = sqliteDb(db);
+  const { store, artifactRoot: root } = options;
   const now = options.now ?? Date.now;
   const denied = (principal: WorkspacePrincipal, subject: string) =>
     store.run((q) =>
@@ -57,7 +55,7 @@ export function createRetroPreviewHttp(options: {
       typeof body.outputLimits === "object" && body.outputLimits !== null
         ? (body.outputLimits as Record<string, unknown>)
         : {};
-    const result = await previewRetroPrompt(db, root, {
+    const result = await previewRetroPrompt(store, root, {
       principal,
       sessionIds,
       prompt: typeof body.prompt === "string" ? body.prompt : "",
@@ -83,7 +81,7 @@ export function createRetroPreviewHttp(options: {
     retroId: string,
   ) {
     const path = `/api/retros/reports/${retroId}/settings`;
-    const access = await retroReaderAccess(db, root, principal, sessionIds, retroId);
+    const access = await retroReaderAccess(store, root, principal, sessionIds, retroId);
     if (!access)
       return json({ error: "This retro is not available to you.", reason: "not_found" }, 404);
     if (!access.full) {
@@ -97,7 +95,7 @@ export function createRetroPreviewHttp(options: {
       );
     }
     const { retro } = access;
-    const rendered = await readRetroRenderedPrompt(db, root, { principal, sessionIds, retroId });
+    const rendered = await readRetroRenderedPrompt(store, root, { principal, sessionIds, retroId });
     return json({
       retroId: retro.id,
       settingsRevision: retro.settingsRevision,

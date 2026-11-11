@@ -127,7 +127,7 @@ async function harness() {
   };
   const w = await world({ linear, startSession, dashboardUrl: "https://paws.test/" });
   await seedDaily(w.db);
-  const retros = createRetroReviewHttp({ db: w.db, artifactRoot: w.root, now: w.now });
+  const retros = createRetroReviewHttp({ store: sqliteDb(w.db), artifactRoot: w.root, now: w.now });
   const requests: { method: string; path: string }[] = [];
   const holds: { path: string; release: () => void }[] = [];
   let hold: RegExp | null = null;
@@ -287,7 +287,7 @@ describe("improvement inbox contract", () => {
     expect(parseImprovementDetail(await read(`/api/improvements/${id}`)).ok).toBe(true);
     expect(parseFollowThrough(await read(`/api/improvements/${id}/follow-through`)).ok).toBe(true);
     expect(parseAttention(await read("/api/improvements/attention")).ok).toBe(true);
-    const retros = createRetroReviewHttp({ db: t.w.db, artifactRoot: t.w.root });
+    const retros = createRetroReviewHttp({ store: sqliteDb(t.w.db), artifactRoot: t.w.root });
     const retro = async (path: string) =>
       (await retros(new Request(`http://paws.test${path}`), t.w.people.ada!, ONLY_A))!.json();
     expect(parseRetroHistory(await retro("/api/retros/history")).ok).toBe(true);

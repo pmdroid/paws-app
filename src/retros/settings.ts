@@ -1,16 +1,15 @@
-import type { Database } from "bun:sqlite";
 import {
   createRetroSteps,
   getRetroSteps,
   latestRetroSettingsRevisionSteps,
   retroIdForWindowSteps,
   saveRetroSettingsRevisionSteps,
-  sqliteDb,
   type Q,
   type Retro,
   type Steps,
   type RetroOrigin,
   type RetroSettingsRevision,
+  type Db,
 } from "../db";
 import type { AgentModelCatalog } from "../runner-models";
 import { DEFAULT_RETRO_PROMPT, RETRO_PROMPT_MAX_CHARS, retroPromptProblem } from "./prompt";
@@ -297,10 +296,10 @@ function draftFromRevision(revision: RetroSettingsRevision): RetroSettingsDraft 
 }
 
 export function readRetroSettings(
-  db: Database,
+  store: Db,
   input: { workspaceId: string; accessibleRepositories: readonly string[] },
 ): Promise<RetroSettingsView> {
-  return sqliteDb(db).run((q) => readRetroSettingsSteps(q, input));
+  return store.run((q) => readRetroSettingsSteps(q, input));
 }
 
 function* readRetroSettingsSteps(
@@ -338,7 +337,7 @@ export type RetroSettingsSave =
     };
 
 export async function saveRetroSettings(
-  db: Database,
+  store: Db,
   input: {
     workspaceId: string;
     actorId: string;
@@ -369,7 +368,7 @@ export async function saveRetroSettings(
       draft: input.draft,
     };
   draft.repositories = draft.repositories.map((name) => accessible.get(name.toLowerCase())!);
-  return sqliteDb(db).transaction(function* (q): Steps<RetroSettingsSave> {
+  return store.transaction(function* (q): Steps<RetroSettingsSave> {
     const latest = yield* latestRetroSettingsRevisionSteps(q, input.workspaceId);
     if ((latest?.revision ?? 0) !== input.expectedRevision)
       return { ok: false, reason: "conflict", current: yield* read(q), draft: input.draft };

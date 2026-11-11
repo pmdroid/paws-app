@@ -1,12 +1,11 @@
-import type { Database } from "bun:sqlite";
 import {
   getRetroSteps,
   readRetroArtifactSteps,
-  sqliteDb,
   workItemSessionKeysSteps,
   type Q,
   type Retro,
   type Steps,
+  type Db,
 } from "../db";
 import { memberRepositoriesSteps } from "../improvements";
 import type { WorkspacePrincipal } from "../workspace";
@@ -117,11 +116,11 @@ export function* retroReaderAccessSteps(
 }
 
 export function retroReaderAccess(
-  db: Database,
+  store: Db,
   root: string,
   principal: WorkspacePrincipal,
   sessionIds: readonly string[],
   retroId: string,
 ): Promise<RetroReaderAccess | null> {
-  return sqliteDb(db).run((q) => retroReaderAccessSteps(q, root, principal, sessionIds, retroId));
+  return store.run((q) => retroReaderAccessSteps(q, root, principal, sessionIds, retroId));
 }

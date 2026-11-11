@@ -1,10 +1,9 @@
-import type { Database } from "bun:sqlite";
 import {
   workspaceMemberUsable,
   auditWorkspaceAccessSteps,
   listWorkspaceRepositoryNamesSteps,
-  sqliteDb,
   workspaceMemberSteps,
+  type Db,
 } from "../db";
 import { journalCaught } from "../journal";
 import type { AgentModelCatalog } from "../runner-models";
@@ -31,13 +30,12 @@ const REQUEST_STATUS = {
 } as const;
 
 export function createRetroScheduleHttp(options: {
-  db: Database;
+  store: Db;
   scheduler: RetroScheduler;
   catalog: RetroCatalog;
   now?: () => number;
 }) {
-  const { db, scheduler } = options;
-  const store = sqliteDb(db);
+  const { store, scheduler } = options;
   const now = options.now ?? Date.now;
   const audit = (principal: WorkspacePrincipal, action: string, subject: string) =>
     store.run((q) =>
@@ -76,7 +74,7 @@ export function createRetroScheduleHttp(options: {
     const accessibleRepositories = await store.run((q) =>
       listWorkspaceRepositoryNamesSteps(q, principal.workspaceId),
     );
-    const current = await readRetroSettings(db, {
+    const current = await readRetroSettings(store, {
       workspaceId: principal.workspaceId,
       accessibleRepositories,
     });
@@ -96,7 +94,7 @@ export function createRetroScheduleHttp(options: {
       journalCaught(error, "retros.schedule.catalog", null);
       catalogs = null;
     }
-    const result = await saveRetroSettings(db, {
+    const result = await saveRetroSettings(store, {
       workspaceId: principal.workspaceId,
       actorId: principal.userId,
       expectedRevision: body.expectedRevision as number,

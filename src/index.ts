@@ -969,7 +969,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const retroCatalog = (q: Q, principal: { workspaceId: string; userId: string }) =>
     runner ? runner.models.readSteps(q, principal) : syncSteps(() => null);
   const retroScheduler = createRetroScheduler({
-    db,
+    store,
     artifactRoot: join(paths.home, "retros"),
     catalogs: retroCatalog,
   });
@@ -1011,7 +1011,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           }
           runner = value;
           retroDispatcher = createRetroDispatcher({
-            db,
+            store,
             artifactRoot: join(paths.home, "retros"),
             sign: value.signRetroCommand,
           });
@@ -1232,14 +1232,14 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       ...(linear?.findingIssues ? { findingGroups: { issues: linear.findingIssues } } : {}),
       hostname: env.host,
       retros: (() => {
-        const settings = createRetroSettingsHttp({ db, catalog: retroCatalog });
+        const settings = createRetroSettingsHttp({ store, catalog: retroCatalog });
         const schedule = createRetroScheduleHttp({
-          db,
+          store,
           scheduler: retroScheduler,
           catalog: retroCatalog,
         });
-        const review = createRetroReviewHttp({ db, artifactRoot: join(paths.home, "retros") });
-        const preview = createRetroPreviewHttp({ db, artifactRoot: join(paths.home, "retros") });
+        const review = createRetroReviewHttp({ store, artifactRoot: join(paths.home, "retros") });
+        const preview = createRetroPreviewHttp({ store, artifactRoot: join(paths.home, "retros") });
         return async (
           request: Request,
           principal: WorkspacePrincipal,

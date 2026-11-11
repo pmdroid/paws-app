@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import { journalCaught } from "../journal";
 import {
@@ -38,7 +37,6 @@ import {
   runnerOccupancySteps,
   runnerSlotsHeldBetweenCommandsSteps,
   settleRetroDispatchSteps,
-  sqliteDb,
   startRetroAttemptSteps,
   workspaceMemberSteps,
   previousRetroResultDispatchSteps,
@@ -230,10 +228,9 @@ function* runnerHasWorkspaceAuthoritySteps(q: Q, identity: RunnerIdentity) {
 }
 
 export async function retroRunnerCandidates(
-  db: Database,
+  store: Db,
   input: { workspaceId: string; agent: string; now: number },
 ): Promise<{ candidates: Candidate[]; incompatible: number }> {
-  const store = sqliteDb(db);
   const admins = (await store.run((q) => listWorkspaceMembersSteps(q, input.workspaceId))).filter(
     (member) => workspaceMemberUsable(member) && isWorkspaceAdmin(member.role),
   );
@@ -339,13 +336,12 @@ async function attemptPrompt(
 }
 
 export function createRetroDispatcher(options: {
-  db: Database;
+  store: Db;
   artifactRoot: string;
   sign: RetroCommandSigner;
   now?: () => number;
 }) {
-  const { db, artifactRoot: root } = options;
-  const store = sqliteDb(db);
+  const { store, artifactRoot: root } = options;
   const now = options.now ?? Date.now;
 
   function* noteSteps(
@@ -556,7 +552,7 @@ export function createRetroDispatcher(options: {
           : null;
       });
       if (started === null) return;
-      const settled = await settleRetroAttempt(db, root, {
+      const settled = await settleRetroAttempt(store, root, {
         retroId: retro.id,
         attempt: started,
         owner: LOCAL_OWNER,
@@ -567,7 +563,7 @@ export function createRetroDispatcher(options: {
       else await store.transaction((q) => afterFailureSteps(q, retro.id));
       return;
     }
-    const { candidates, incompatible } = await retroRunnerCandidates(db, {
+    const { candidates, incompatible } = await retroRunnerCandidates(store, {
       workspaceId: retro.workspaceId,
       agent: profile.agent,
       now: at,
@@ -648,7 +644,7 @@ export function createRetroDispatcher(options: {
         "capacity_wait",
         `The ${profile.agent} account is at its concurrency limit. Waiting for a free slot.`,
       );
-    const prompt = await freezeRenderedRetroPrompt(db, root, { retroId: retro.id, now: at });
+    const prompt = await freezeRenderedRetroPrompt(store, root, { retroId: retro.id, now: at });
     if (!prompt.ok) return abandon(retro, "abandoned", prompt.reason, at);
     const digestRecord = (await store.run((q) => retroArtifactSteps(q, retro.id, "digest")))!;
     const promptBytes = await attemptPrompt(store, retro, digest, prompt.prompt, retro.attempt + 1);
