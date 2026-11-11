@@ -166,7 +166,6 @@ import {
   type WorkspaceHook,
 } from "../core";
 import {
-  sessionHolder,
   sessionHolderSteps,
   runRunnerSteps,
   PlacementRaceError,
@@ -2743,7 +2742,7 @@ export function createConversationTurns(options: {
   helpers: RunnerHelpers;
   now?: () => number;
 }) {
-  return conversationTurns({ ...options, holder: (itemId) => sessionHolder(options.db, itemId) });
+  return conversationTurns({ ...options, holder: sessionHolderSteps });
 }
 
 export { fastForwardToBranchTip, fetchRunnerCandidate } from "./candidate";

@@ -24,10 +24,6 @@ type SessionHolder = {
 };
 
 /** The runner and agent holding the item's last resumable session. */
-export function sessionHolder(db: Database, itemId: string): SessionHolder | undefined {
-  return settled(sqliteDb(db).run((q) => sessionHolderSteps(q, itemId)));
-}
-
 export function* sessionHolderSteps(q: Q, itemId: string): Steps<SessionHolder | undefined> {
   const rows = yield* itemSessionResultsSteps(q, itemId);
   for (const row of rows) {
