@@ -131,7 +131,6 @@ import { createRemoteHandover } from "./handover";
 import { conversationTurns } from "./conversation";
 import type { RunnerHelpers } from "../runner-helpers";
 import { createRemoteCheckpoint, recordRunnerCheckpoint } from "./checkpoint";
-import { syncSteps } from "./sync-steps";
 import {
   CheckpointLookupFailed,
   ensureStartOnRemote,
@@ -963,18 +962,16 @@ export function createRemoteAgentRunner(options: {
             const issuedAt = now();
             try {
               await store.transaction(function* (q) {
-                yield* syncSteps(() =>
-                  work.enqueue({
-                    id,
-                    runnerId: selected.id,
-                    workspaceId: selected.workspaceId,
-                    issuedAt,
-                    expiresAt: issuedAt + 120_000,
-                    type: "probe",
-                    profile,
-                    ...commandAccount(selected.account),
-                  }),
-                );
+                yield* work.enqueueSteps(q, {
+                  id,
+                  runnerId: selected.id,
+                  workspaceId: selected.workspaceId,
+                  issuedAt,
+                  expiresAt: issuedAt + 120_000,
+                  type: "probe",
+                  profile,
+                  ...commandAccount(selected.account),
+                });
                 if (options.placement)
                   yield* options.placement.startedSteps(q, {
                     commandId: id,
@@ -1695,7 +1692,7 @@ export function createRemoteAgentRunner(options: {
                       undefined,
                       true,
                     );
-                  work.assign(assigned);
+                  yield* work.assignSteps(q, assigned);
                   yield* releaseRunnerReservationSteps(q, selected.runId, instanceId);
                   if (options.placement)
                     yield* options.placement.startedSteps(q, {

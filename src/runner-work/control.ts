@@ -419,6 +419,133 @@ export function createRunnerWork(options: {
     });
     return envelope;
   }
+  function* assignSteps(q: Q, input: WorkCommand) {
+    const command = RunnerCommandSchema.parse(input);
+    if (command.type !== "run" && command.type !== "review" && command.type !== "task")
+      throw new Error("Work command is required.");
+    const at = now();
+    const accepting = yield* runnerSteps(q, command.runnerId);
+    if (
+      accepting.status !== "active" ||
+      accepting.workspaceId !== command.workspaceId ||
+      command.issuedAt > at ||
+      command.expiresAt <= at
+    )
+      throw new Error("Runner is not accepting this assignment.");
+    if (
+      (yield* runnerCancelPendingSteps(q, command.runnerId)) &&
+      !(yield* runnerHasCapacitySteps(q, command.runnerId, at, command.runId))
+    )
+      throw new RunnerTeardownPending([command.runnerId]);
+    if (!(yield* runnerHasCapacitySteps(q, command.runnerId, at, command.runId)))
+      throw new Error("Runner is occupied by active work.");
+    if (command.type === "task")
+      bindTask(
+        command,
+        yield* responseTaskSteps(q, command.runId, command.workspaceId, false, accepting.userId),
+      );
+    else {
+      const { item, repository } = yield* taskSteps(q, command.runId, command.workspaceId);
+      if (
+        item.id !== command.itemId ||
+        repository.owner !== command.repository.owner ||
+        repository.repo !== command.repository.repo ||
+        repository.remoteUrl !== command.repository.remoteUrl
+      )
+        throw new Error("Run assignment repository or task changed.");
+    }
+    const owner = yield* runTeardownOwnerSteps(q, command.runId);
+    if (owner !== null) throw new RunnerTeardownPending([owner]);
+    const previous = yield* runnerWorkAssignmentSteps(q, command.runId);
+    if (
+      command.generation !== (previous?.generation ?? 0) + 1 ||
+      (previous?.endedAt === null &&
+        ((yield* acceptedSteps(q, previous))
+          ? previous.leaseUntil > at
+          : runnerLeaseLive(previous.leaseUntil, at)) &&
+        (yield* availableRunnerIdentitySteps(q, previous.runnerId))?.fence === previous.runnerFence)
+    )
+      throw new Error("Run assignment generation conflicts.");
+    const leaseUntil = Math.min(command.expiresAt, at + RUNNER_LEASE_MS);
+    if (
+      command.type === "run" &&
+      command.livePreview &&
+      !runnerReleaseAtLeast(
+        yield* runnerHostVersionSteps(q, command.runnerId),
+        LIVE_PREVIEW_RUNNER_VERSION,
+      )
+    )
+      delete command.livePreview;
+    const envelope = yield* queueSteps(q, command);
+    yield* assignRunnerWorkSteps(q, {
+      runId: command.runId,
+      runnerId: command.runnerId,
+      workspaceId: command.workspaceId,
+      generation: command.generation,
+      runnerFence: accepting.fence,
+      commandId: command.id,
+      leaseUntil,
+    });
+    yield* deleteRunnerWorkGrantsSteps(q, command.runId);
+    yield* recordRunAgentSetupSteps(q, {
+      runId: command.runId,
+      runnerId: command.runnerId,
+      agent: command.profile.agent,
+      hooks:
+        command.type === "run" &&
+        (command.profile.agent === "claude" || command.profile.agent === "codex")
+          ? [
+              { name: "Paws Closeout", event: "stop" },
+              ...(command.hooks ?? []).map((hook) => ({
+                name: hook.command,
+                event: hook.event,
+              })),
+            ]
+          : [],
+      at,
+    });
+    return { envelope, leaseUntil };
+  }
+  function* enqueueSteps(q: Q, input: RunnerCommand) {
+    const command = RunnerCommandSchema.parse(input);
+    if (command.type === "run" || command.type === "review" || command.type === "task")
+      throw new Error("Use work assignment for run commands.");
+    if (command.type === "helper") throw new Error("Use session assignment for helper commands.");
+    if (command.type === "rebase")
+      throw new Error("Use enqueueRepositoryCommand for repository commands.");
+    const identity = yield* runnerSteps(q, command.runnerId);
+    if (
+      identity.workspaceId !== command.workspaceId ||
+      command.issuedAt > now() ||
+      command.expiresAt <= now()
+    )
+      throw new Error("Command scope or lifetime is invalid.");
+    if (command.type === "cancel") {
+      const work = yield* runnerWorkAssignmentSteps(q, command.runId);
+      if (!work || work.runnerId !== command.runnerId || work.generation !== command.generation)
+        throw new Error("Cancellation assignment changed.");
+      yield* endRunnerWorkSteps(q, work.runId, work.generation, now());
+      yield* deleteRunnerWorkGrantsSteps(q, work.runId);
+    }
+    // A handover keeps the work live: the runner still publishes its WIP commit and result.
+    // So does a checkpoint: the runner publishes the WIP commit while the agent goes on.
+    if (command.type === "handover" || command.type === "checkpoint") {
+      const work = yield* runnerWorkAssignmentSteps(q, command.runId);
+      if (
+        !work ||
+        work.runnerId !== command.runnerId ||
+        work.generation !== command.generation ||
+        work.endedAt !== null ||
+        (yield* workCommandSteps(q, work)).type !== "run"
+      )
+        throw new Error(
+          command.type === "handover"
+            ? "Handover assignment changed."
+            : "Checkpoint assignment changed.",
+        );
+    }
+    return yield* queueSteps(q, command);
+  }
   return {
     supportsAgent(runnerId: string, agent: string) {
       return read((q) => supportsAgentSteps(q, runnerId, agent));
@@ -448,143 +575,13 @@ export function createRunnerWork(options: {
         return { assignment: current, command: yield* workCommandSteps(q, current) };
       });
     },
+    assignSteps,
     assign(input: WorkCommand) {
-      const command = RunnerCommandSchema.parse(input);
-      if (command.type !== "run" && command.type !== "review" && command.type !== "task")
-        throw new Error("Work command is required.");
-      return transaction(function* (q) {
-        const at = now();
-        const accepting = yield* runnerSteps(q, command.runnerId);
-        if (
-          accepting.status !== "active" ||
-          accepting.workspaceId !== command.workspaceId ||
-          command.issuedAt > at ||
-          command.expiresAt <= at
-        )
-          throw new Error("Runner is not accepting this assignment.");
-        if (
-          (yield* runnerCancelPendingSteps(q, command.runnerId)) &&
-          !(yield* runnerHasCapacitySteps(q, command.runnerId, at, command.runId))
-        )
-          throw new RunnerTeardownPending([command.runnerId]);
-        if (!(yield* runnerHasCapacitySteps(q, command.runnerId, at, command.runId)))
-          throw new Error("Runner is occupied by active work.");
-        if (command.type === "task")
-          bindTask(
-            command,
-            yield* responseTaskSteps(
-              q,
-              command.runId,
-              command.workspaceId,
-              false,
-              accepting.userId,
-            ),
-          );
-        else {
-          const { item, repository } = yield* taskSteps(q, command.runId, command.workspaceId);
-          if (
-            item.id !== command.itemId ||
-            repository.owner !== command.repository.owner ||
-            repository.repo !== command.repository.repo ||
-            repository.remoteUrl !== command.repository.remoteUrl
-          )
-            throw new Error("Run assignment repository or task changed.");
-        }
-        const owner = yield* runTeardownOwnerSteps(q, command.runId);
-        if (owner !== null) throw new RunnerTeardownPending([owner]);
-        const previous = yield* runnerWorkAssignmentSteps(q, command.runId);
-        if (
-          command.generation !== (previous?.generation ?? 0) + 1 ||
-          (previous?.endedAt === null &&
-            ((yield* acceptedSteps(q, previous))
-              ? previous.leaseUntil > at
-              : runnerLeaseLive(previous.leaseUntil, at)) &&
-            (yield* availableRunnerIdentitySteps(q, previous.runnerId))?.fence ===
-              previous.runnerFence)
-        )
-          throw new Error("Run assignment generation conflicts.");
-        const leaseUntil = Math.min(command.expiresAt, at + RUNNER_LEASE_MS);
-        if (
-          command.type === "run" &&
-          command.livePreview &&
-          !runnerReleaseAtLeast(
-            yield* runnerHostVersionSteps(q, command.runnerId),
-            LIVE_PREVIEW_RUNNER_VERSION,
-          )
-        )
-          delete command.livePreview;
-        const envelope = yield* queueSteps(q, command);
-        yield* assignRunnerWorkSteps(q, {
-          runId: command.runId,
-          runnerId: command.runnerId,
-          workspaceId: command.workspaceId,
-          generation: command.generation,
-          runnerFence: accepting.fence,
-          commandId: command.id,
-          leaseUntil,
-        });
-        yield* deleteRunnerWorkGrantsSteps(q, command.runId);
-        yield* recordRunAgentSetupSteps(q, {
-          runId: command.runId,
-          runnerId: command.runnerId,
-          agent: command.profile.agent,
-          hooks:
-            command.type === "run" &&
-            (command.profile.agent === "claude" || command.profile.agent === "codex")
-              ? [
-                  { name: "Paws Closeout", event: "stop" },
-                  ...(command.hooks ?? []).map((hook) => ({
-                    name: hook.command,
-                    event: hook.event,
-                  })),
-                ]
-              : [],
-          at,
-        });
-        return { envelope, leaseUntil };
-      });
+      return transaction((q) => assignSteps(q, input));
     },
+    enqueueSteps,
     enqueue(input: RunnerCommand) {
-      const command = RunnerCommandSchema.parse(input);
-      if (command.type === "run" || command.type === "review" || command.type === "task")
-        throw new Error("Use work assignment for run commands.");
-      if (command.type === "helper") throw new Error("Use session assignment for helper commands.");
-      if (command.type === "rebase")
-        throw new Error("Use enqueueRepositoryCommand for repository commands.");
-      return transaction(function* (q) {
-        const identity = yield* runnerSteps(q, command.runnerId);
-        if (
-          identity.workspaceId !== command.workspaceId ||
-          command.issuedAt > now() ||
-          command.expiresAt <= now()
-        )
-          throw new Error("Command scope or lifetime is invalid.");
-        if (command.type === "cancel") {
-          const work = yield* runnerWorkAssignmentSteps(q, command.runId);
-          if (!work || work.runnerId !== command.runnerId || work.generation !== command.generation)
-            throw new Error("Cancellation assignment changed.");
-          yield* endRunnerWorkSteps(q, work.runId, work.generation, now());
-          yield* deleteRunnerWorkGrantsSteps(q, work.runId);
-        }
-        // A handover keeps the work live: the runner still publishes its WIP commit and result.
-        // So does a checkpoint: the runner publishes the WIP commit while the agent goes on.
-        if (command.type === "handover" || command.type === "checkpoint") {
-          const work = yield* runnerWorkAssignmentSteps(q, command.runId);
-          if (
-            !work ||
-            work.runnerId !== command.runnerId ||
-            work.generation !== command.generation ||
-            work.endedAt !== null ||
-            (yield* workCommandSteps(q, work)).type !== "run"
-          )
-            throw new Error(
-              command.type === "handover"
-                ? "Handover assignment changed."
-                : "Checkpoint assignment changed.",
-            );
-        }
-        return yield* queueSteps(q, command);
-      });
+      return transaction((q) => enqueueSteps(q, input));
     },
     commands(runnerId: string): SignedRunnerCommand[] {
       const result = read(function* (q) {
