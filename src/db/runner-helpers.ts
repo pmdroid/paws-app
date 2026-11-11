@@ -30,8 +30,8 @@ export function* runnerHelperRowSteps(q: Q, id: string): Steps<RunnerHelperRow |
   return row ?? null;
 }
 
-export function runnerHelperRow(db: Database, id: string): RunnerHelperRow | null {
-  return settled(sqliteDb(db).run((q) => runnerHelperRowSteps(q, id)));
+export async function runnerHelperRow(store: Db, id: string): Promise<RunnerHelperRow | null> {
+  return store.run((q) => runnerHelperRowSteps(q, id));
 }
 
 type NewRunnerHelper = {
@@ -52,8 +52,8 @@ export function* insertRunnerHelperSteps(q: Q, row: NewRunnerHelper) {
   );
 }
 
-export function insertRunnerHelper(db: Database, row: NewRunnerHelper): void {
-  settled(sqliteDb(db).run((q) => insertRunnerHelperSteps(q, row)));
+export async function insertRunnerHelper(store: Db, row: NewRunnerHelper): Promise<void> {
+  await store.run((q) => insertRunnerHelperSteps(q, row));
 }
 
 /** Helpers the runner has not acknowledged, oldest first on SQLite and by id on Postgres. */

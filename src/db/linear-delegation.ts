@@ -65,17 +65,7 @@ export function* enqueueIssueStatusSteps(
   });
 }
 
-export function enqueueIssueStatus(
-  db: Database,
-  item: Pick<WorkItemRecord, "id" | "linearIssueId" | "sessionKey" | "version">,
-  stateType: "completed" | "canceled",
-  now: number,
-  fence?: { delivery: "stop"; generation: number },
-): void {
-  settled(sqliteDb(db).transaction((q) => enqueueIssueStatusSteps(q, item, stateType, now, fence)));
-}
-
-export async function enqueueIssueStatusAsync(
+export async function enqueueIssueStatus(
   store: Db,
   item: Pick<WorkItemRecord, "id" | "linearIssueId" | "sessionKey" | "version">,
   stateType: "completed" | "canceled",

@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   and,
   asc,
@@ -20,7 +19,7 @@ import {
   type TaskMode,
   type WorkItemState,
 } from "../core";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import type { TaskBlock } from "./task-blocks";
 
 export type DependencyItem = {
@@ -97,8 +96,8 @@ export function* itemSpecificationRevisionSteps(q: Q, itemId: string) {
   return row?.revision ?? null;
 }
 
-export function itemSpecificationRevision(db: Database, itemId: string): number | null {
-  return settled(sqliteDb(db).run((q) => itemSpecificationRevisionSteps(q, itemId)));
+export async function itemSpecificationRevision(store: Db, itemId: string): Promise<number | null> {
+  return store.run((q) => itemSpecificationRevisionSteps(q, itemId));
 }
 
 export function* readDependencyScopeSteps(
@@ -333,8 +332,11 @@ export function* latestIssueIdentifierSteps(q: Q, linearIssueId: string) {
   return row?.identifier ?? undefined;
 }
 
-export function latestIssueIdentifier(db: Database, linearIssueId: string): string | undefined {
-  return settled(sqliteDb(db).run((q) => latestIssueIdentifierSteps(q, linearIssueId)));
+export async function latestIssueIdentifier(
+  store: Db,
+  linearIssueId: string,
+): Promise<string | undefined> {
+  return store.run((q) => latestIssueIdentifierSteps(q, linearIssueId));
 }
 
 type NewDependencySnapshot = {
@@ -517,6 +519,8 @@ export function* missingSnapshotTargetsSteps(q: Q) {
   );
 }
 
-export function missingSnapshotTargets(db: Database): { itemId: string; workspaceId: string }[] {
-  return settled(sqliteDb(db).run((q) => missingSnapshotTargetsSteps(q)));
+export async function missingSnapshotTargets(
+  store: Db,
+): Promise<{ itemId: string; workspaceId: string }[]> {
+  return store.run((q) => missingSnapshotTargetsSteps(q));
 }

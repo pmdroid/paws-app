@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, desc, eq, ne, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 
 /** Inputs observed by the lane, never an automatic approval. */
 export type RiskAutoContext = {
@@ -43,13 +43,13 @@ export function* saveRiskAutoContextSteps(
 }
 
 /** Keep only the most recently evaluated head; identical polls make no writes. */
-export function saveRiskAutoContext(
-  db: Database,
+export async function saveRiskAutoContext(
+  store: Db,
   itemId: string,
   head: string,
   context: RiskAutoContext | null,
-): void {
-  settled(sqliteDb(db).transaction((q) => saveRiskAutoContextSteps(q, itemId, head, context)));
+): Promise<void> {
+  await store.transaction((q) => saveRiskAutoContextSteps(q, itemId, head, context));
 }
 
 /** An item keeps one row, so ordering by `head` only makes the pick deterministic. */
@@ -67,11 +67,11 @@ export function* getRiskAutoContextSteps(q: Q, itemId: string) {
   return { head: row.head, context: contextOf(row.context) };
 }
 
-export function getRiskAutoContext(
-  db: Database,
+export async function getRiskAutoContext(
+  store: Db,
   itemId: string,
-): { head: string; context: RiskAutoContext } | null {
-  return settled(sqliteDb(db).run((q) => getRiskAutoContextSteps(q, itemId)));
+): Promise<{ head: string; context: RiskAutoContext } | null> {
+  return store.run((q) => getRiskAutoContextSteps(q, itemId));
 }
 
 function contextOf(text: string): RiskAutoContext {

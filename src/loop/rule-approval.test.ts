@@ -118,7 +118,7 @@ test("a broken approve rule is a rule link ask with its summary and the link", a
   expect(question.body).toContain("A reply here cannot approve the break.");
   // The probe output stays out of Linear; the agent gets it on a send back.
   expect(question.body).not.toContain("removed field Task.title");
-  expect(listCloseoutBypassChecks(db, question.id)).toMatchObject([
+  expect(await listCloseoutBypassChecks(sqliteDb(db), question.id)).toMatchObject([
     { checkId: "api-contract", kind: "rule", state: "failed", attempt: 1, message: FEEDBACK },
   ]);
   expect(listJobs(db).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
@@ -149,7 +149,7 @@ test("Approve records who and why and verifies the same head again", async () =>
     `closeout-bypass:${question.id}`,
   ]);
   expect(listJobs(db).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
-  expect(listCloseoutBypassChecks(db, question.id)[0]).toMatchObject({
+  expect((await listCloseoutBypassChecks(sqliteDb(db), question.id))[0]).toMatchObject({
     reason: "The contract change is intended for v2.",
     approvedBy: "lead",
     approvedByName: "Lea Lead",
@@ -261,7 +261,7 @@ test("a reply in Linear sends the finding back and approves nothing", async () =
   ).handoff;
   expect(handoff).toContain("The reply is guidance and approves nothing");
   expect(handoff).toContain("removed field Task.title");
-  expect(listCloseoutBypassChecks(db, question.id)[0]?.approvedAt).toBeNull();
+  expect((await listCloseoutBypassChecks(sqliteDb(db), question.id))[0]?.approvedAt).toBeNull();
   expect((await recoveryOptions(db, itemId)).bypasses).toEqual([]);
   const notes = listOutbox(db).filter((row) => row.idempotencyKey.startsWith("link-ask-guidance:"));
   expect(notes.map((row) => (row.payload as { body: string }).body)).toEqual([

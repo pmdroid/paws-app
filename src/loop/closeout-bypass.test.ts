@@ -105,12 +105,14 @@ test("Closeout help is a bypass link ask with the failed checks of the head", as
   expect(question.body).not.toContain("/paws bypass");
   expect(listCloseoutRecoveries(db, itemId)[0]?.questionId).toBe(question.id);
   expect(
-    listCloseoutBypassChecks(db, question.id).map(({ checkId, kind, state, attempt }) => ({
-      checkId,
-      kind,
-      state,
-      attempt,
-    })),
+    (await listCloseoutBypassChecks(sqliteDb(db), question.id)).map(
+      ({ checkId, kind, state, attempt }) => ({
+        checkId,
+        kind,
+        state,
+        attempt,
+      }),
+    ),
   ).toEqual([
     { checkId: "independent-review", kind: "review", state: "failed", attempt: 1 },
     { checkId: "test", kind: "command", state: "exhausted", attempt: 3 },
@@ -144,14 +146,14 @@ test("bypassing from the page writes the rows and verifies the same head again",
     `closeout-bypass:${question.id}`,
   ]);
   expect(listJobs(db).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
-  expect(listCloseoutBypassChecks(db, question.id)[0]).toMatchObject({
+  expect((await listCloseoutBypassChecks(sqliteDb(db), question.id))[0]).toMatchObject({
     checkId: "independent-review",
     reason: "Smoke run moved to PAS-744.",
     approvedBy: "lead",
     approvedByName: "Lea Lead",
     approvedAt: NOW + 100,
   });
-  expect(listCloseoutBypassChecks(db, question.id)[1]?.approvedAt).toBeNull();
+  expect((await listCloseoutBypassChecks(sqliteDb(db), question.id))[1]?.approvedAt).toBeNull();
   const { bypasses } = await recoveryOptions(db, itemId);
   expect(bypasses).toEqual([
     {
@@ -231,7 +233,9 @@ test("someone who did not delegate and does not lead the project cannot bypass",
     ),
   ).toBe("forbidden");
   expect(getQuestion(db, question.id)?.status).toBe("open");
-  expect(listCloseoutBypassChecks(db, question.id).every((check) => !check.approvedBy)).toBe(true);
+  expect(
+    (await listCloseoutBypassChecks(sqliteDb(db), question.id)).every((check) => !check.approvedBy),
+  ).toBe(true);
   expect((await recoveryOptions(db, itemId)).bypasses).toEqual([]);
 });
 

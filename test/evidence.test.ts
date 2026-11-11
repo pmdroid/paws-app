@@ -10,6 +10,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import {
   createEvidenceStore,
@@ -76,7 +77,7 @@ describe("evidence store", () => {
     const { db, root, store, input } = harness();
     const saved = await store.save(input(PNG));
     expect(saved.id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
-    expect(getEvidence(db, saved.id)).toEqual({
+    expect(await getEvidence(sqliteDb(db), saved.id)).toEqual({
       id: saved.id,
       itemId: "item",
       runId: "run-1",

@@ -1,14 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { and, eq, inArray, isNull, or } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 import { orm } from "./orm";
-import {
-  closeoutEvidenceObject,
-  closeoutProgress,
-  evidence,
-  evidenceObject,
-  workItem,
-} from "./schema";
+import { closeoutEvidenceObject, evidence, evidenceObject } from "./schema";
 
 export type EvidenceMediaType =
   | "video/webm"
@@ -59,9 +53,8 @@ export function* listEvidenceSteps(q: Q, itemId: string) {
   return rows as StoredEvidence[];
 }
 
-export function getEvidence(db: Database, id: string): StoredEvidence | null {
-  return (orm(db).select().from(evidence).where(eq(evidence.id, id)).get() ??
-    null) as StoredEvidence | null;
+export async function getEvidence(store: Db, id: string): Promise<StoredEvidence | null> {
+  return store.run((q) => getEvidenceSteps(q, id));
 }
 
 export function listEvidence(db: Database, itemId: string): StoredEvidence[] {
@@ -80,8 +73,8 @@ export function latestEvidence(rows: readonly StoredEvidence[]): StoredEvidence[
   return [...latest.values()];
 }
 
-export function setEvidenceAssetUrl(db: Database, id: string, assetUrl: string): void {
-  orm(db).update(evidence).set({ assetUrl }).where(eq(evidence.id, id)).run();
+export async function setEvidenceAssetUrl(store: Db, id: string, assetUrl: string): Promise<void> {
+  await store.run((q) => setEvidenceAssetUrlSteps(q, id, assetUrl));
 }
 
 export function* setEvidenceAssetUrlSteps(q: Q, id: string, assetUrl: string) {
@@ -102,15 +95,8 @@ export function* saveEvidenceObjectSteps(q: Q, row: EvidenceObject) {
   return inserted.length > 0;
 }
 
-export function saveEvidenceObject(db: Database, row: EvidenceObject): boolean {
-  return (
-    orm(db)
-      .insert(evidenceObject)
-      .values(row)
-      .onConflictDoNothing()
-      .returning({ id: evidenceObject.id })
-      .all().length > 0
-  );
+export async function saveEvidenceObject(store: Db, row: EvidenceObject): Promise<boolean> {
+  return store.run((q) => saveEvidenceObjectSteps(q, row));
 }
 
 export function* getEvidenceObjectSteps(q: Q, id: string) {
@@ -119,8 +105,8 @@ export function* getEvidenceObjectSteps(q: Q, id: string) {
   return (row as EvidenceObject | undefined) ?? null;
 }
 
-export function getEvidenceObject(db: Database, id: string): EvidenceObject | null {
-  return settled(sqliteDb(db).run((q) => getEvidenceObjectSteps(q, id)));
+export async function getEvidenceObject(store: Db, id: string): Promise<EvidenceObject | null> {
+  return store.run((q) => getEvidenceObjectSteps(q, id));
 }
 
 export function* deleteEvidenceObjectSteps(q: Q, id: string) {
@@ -128,8 +114,8 @@ export function* deleteEvidenceObjectSteps(q: Q, id: string) {
   yield* q.exec(q.orm.delete(o).where(eq(o.id, id)));
 }
 
-export function deleteEvidenceObject(db: Database, id: string): void {
-  settled(sqliteDb(db).run((q) => deleteEvidenceObjectSteps(q, id)));
+export async function deleteEvidenceObject(store: Db, id: string): Promise<void> {
+  await store.run((q) => deleteEvidenceObjectSteps(q, id));
 }
 
 export function* localEvidenceFilesSteps(q: Q) {
@@ -153,10 +139,10 @@ export function* localEvidenceFilesSteps(q: Q) {
   return [...files, ...marks];
 }
 
-export function localEvidenceFiles(
-  db: Database,
-): { id: string; itemId: string; headCommit: string; checkId: string }[] {
-  return settled(sqliteDb(db).run((q) => localEvidenceFilesSteps(q)));
+export async function localEvidenceFiles(
+  store: Db,
+): Promise<{ id: string; itemId: string; headCommit: string; checkId: string }[]> {
+  return store.run((q) => localEvidenceFilesSteps(q));
 }
 
 export type CloseoutEvidenceObject = typeof closeoutEvidenceObject.$inferSelect;
@@ -236,81 +222,39 @@ export function* closeoutTasksOfItemSteps(q: Q, ref: string, sessionIds?: readon
   return tasks.map((row) => row.task);
 }
 
-export function listCloseoutEvidenceObjects(
-  db: Database,
+export async function listCloseoutEvidenceObjects(
+  store: Db,
   tasks: readonly string[],
-): CloseoutEvidenceObject[] {
-  if (tasks.length === 0) return [];
-  return orm(db)
-    .select()
-    .from(closeoutEvidenceObject)
-    .where(inArray(closeoutEvidenceObject.task, [...tasks]))
-    .all();
+): Promise<CloseoutEvidenceObject[]> {
+  return store.run((q) => listCloseoutEvidenceObjectsSteps(q, tasks));
 }
 
-export function getCloseoutEvidenceObject(
-  db: Database,
+export async function getCloseoutEvidenceObject(
+  store: Db,
   task: string,
   path: string,
-): CloseoutEvidenceObject | null {
-  return (
-    orm(db)
-      .select()
-      .from(closeoutEvidenceObject)
-      .where(and(eq(closeoutEvidenceObject.task, task), eq(closeoutEvidenceObject.path, path)))
-      .get() ?? null
-  );
+): Promise<CloseoutEvidenceObject | null> {
+  return store.run((q) => getCloseoutEvidenceObjectSteps(q, task, path));
 }
 
-export function saveCloseoutEvidenceObject(db: Database, row: CloseoutEvidenceObject): void {
-  orm(db)
-    .insert(closeoutEvidenceObject)
-    .values(row)
-    .onConflictDoUpdate({
-      target: [closeoutEvidenceObject.task, closeoutEvidenceObject.path],
-      set: {
-        prefix: row.prefix,
-        sizeBytes: row.sizeBytes,
-        sha256: row.sha256,
-        modifiedAt: row.modifiedAt,
-        storedAt: row.storedAt,
-      },
-    })
-    .run();
+export async function saveCloseoutEvidenceObject(
+  store: Db,
+  row: CloseoutEvidenceObject,
+): Promise<void> {
+  await store.run((q) => saveCloseoutEvidenceObjectSteps(q, row));
 }
 
-export function insertCloseoutEvidenceObject(db: Database, row: CloseoutEvidenceObject): boolean {
-  return (
-    orm(db)
-      .insert(closeoutEvidenceObject)
-      .values(row)
-      .onConflictDoNothing()
-      .returning({ task: closeoutEvidenceObject.task })
-      .all().length > 0
-  );
+export async function insertCloseoutEvidenceObject(
+  store: Db,
+  row: CloseoutEvidenceObject,
+): Promise<boolean> {
+  return store.run((q) => insertCloseoutEvidenceObjectSteps(q, row));
 }
 
-export function closeoutTasksOfItem(
-  db: Database,
+export async function closeoutTasksOfItem(
+  store: Db,
   ref: string,
   sessionIds?: readonly string[],
-): string[] {
-  const items = orm(db)
-    .select({ id: workItem.id, sessionKey: workItem.sessionKey })
-    .from(workItem)
-    .where(or(eq(workItem.id, ref), eq(workItem.linearIdentifier, ref)))
-    .all()
-    .filter(
-      (item) =>
-        sessionIds === undefined ||
-        (item.sessionKey !== null && sessionIds.includes(item.sessionKey)),
-    )
-    .map((item) => item.id);
-  if (items.length === 0) return [];
-  return orm(db)
-    .selectDistinct({ task: closeoutProgress.taskId })
-    .from(closeoutProgress)
-    .where(inArray(closeoutProgress.itemId, items))
-    .all()
-    .map((row) => row.task);
+): Promise<string[]> {
+  return store.run((q) => closeoutTasksOfItemSteps(q, ref, sessionIds));
 }

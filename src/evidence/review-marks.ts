@@ -6,6 +6,7 @@ import {
   workspaceMember,
   type StoredEvidence,
   type VisualReviewMark,
+  sqliteDb,
 } from "../db";
 import { journalCaught } from "../journal";
 import { createHash } from "node:crypto";
@@ -83,7 +84,7 @@ export async function handleVisualReviewChanges(
   for (const [key, value] of form.entries()) {
     if (!key.startsWith("mark:")) continue;
     const evidenceId = key.slice("mark:".length);
-    const evidence = getEvidence(db, evidenceId);
+    const evidence = await getEvidence(sqliteDb(db), evidenceId);
     if (
       typeof value === "string" ||
       !review.evidenceIds.includes(evidenceId) ||

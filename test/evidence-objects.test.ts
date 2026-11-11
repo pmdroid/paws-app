@@ -3,7 +3,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { envelopeSubkey } from "../src/credentials";
-import { getEvidenceObject, insertQueuedItem, migrate, openDatabase } from "../src/db";
+import { getEvidenceObject, insertQueuedItem, migrate, openDatabase, sqliteDb } from "../src/db";
 import {
   createEvidenceStore,
   EvidenceRejectedError,
@@ -109,7 +109,7 @@ describe("evidence in the run file object store", () => {
     const a = instance(db, () => null);
     const saved = await save(a.store, VIDEO);
     expect(s3.writes).toEqual([]);
-    expect(getEvidenceObject(db, saved.id)).toBeNull();
+    expect(await getEvidenceObject(sqliteDb(db), saved.id)).toBeNull();
     expect(existsSync(join(a.root, saved.id))).toBe(true);
     expect(new Uint8Array(await (await a.get(saved.id)).arrayBuffer())).toEqual(VIDEO);
   });
@@ -124,7 +124,7 @@ describe("evidence in the run file object store", () => {
 
     configured = true;
     expect(await uploadLocalEvidence(db, { root: a.root, objects }, () => 42)).toBe(1);
-    expect(getEvidenceObject(db, saved.id)).toMatchObject({
+    expect(await getEvidenceObject(sqliteDb(db), saved.id)).toMatchObject({
       sizeBytes: VIDEO.length,
       storedAt: 42,
     });
@@ -176,7 +176,7 @@ describe("evidence in the run file object store", () => {
     expect(await uploadLocalEvidence(db, { root: a.root, objects: () => flaky })).toBe(0);
     rmSync(join(a.root, saved.id));
     expect(new Uint8Array(await (await a.get(saved.id)).arrayBuffer())).toEqual(VIDEO);
-    const prefix = getEvidenceObject(db, saved.id)!.prefix;
+    const prefix = (await getEvidenceObject(sqliteDb(db), saved.id))!.prefix;
     expect([...s3.objects.keys()].every((key) => key.startsWith(`${prefix}/`))).toBe(true);
   });
 

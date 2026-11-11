@@ -628,7 +628,7 @@ describe("live status provider", () => {
       retryBaseline: [],
       summary: "Closeout: exhausted",
     });
-    saveCloseoutBypassChecks(db, "q-bypass", [
+    await saveCloseoutBypassChecks(sqliteDb(db), "q-bypass", [
       { id: "test", kind: "command", state: "exhausted", attempt: 3, message: "exited 1" },
     ]);
     expect(

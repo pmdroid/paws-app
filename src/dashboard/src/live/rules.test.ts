@@ -17,6 +17,7 @@ import {
   saveCloseoutBypassChecks,
   upsertCloseoutStep,
   type CloseoutStepWrite,
+  sqliteDb,
 } from "../../../db";
 import { parseIssueDetailResponse, parseIssueListResponse } from "../contract";
 import { handleStatusRequest } from "../engine";
@@ -42,7 +43,7 @@ const PROBE_SHA = "sha256:" + "a".repeat(64);
  * probe as a command step with `probeArgv`, an evidence record listing the probe's hash, a rule
  * whose paths matched nothing, and the bypass ask Paws opened for the failed rules.
  */
-function seed(): { db: Database; home: string } {
+async function seed(): Promise<{ db: Database; home: string }> {
   const db = openDatabase(":memory:");
   migrate(db);
   open.push(db);
@@ -126,7 +127,7 @@ function seed(): { db: Database; home: string } {
     },
     now: NOW + 2_000,
   });
-  const ask = (questionId: string, checkId: string, at: number, status: string) => {
+  const ask = async (questionId: string, checkId: string, at: number, status: string) => {
     db.run(
       "INSERT INTO question (id, item_id, session_id, kind, body, status, created_at) VALUES (?, ?, 'ses_7', 'link', 'Closeout needs your decision', ?, ?)",
       [questionId, item.id, status, at],
@@ -142,25 +143,25 @@ function seed(): { db: Database; home: string } {
       answerers: ["delegator"],
       createdAt: at,
     });
-    saveCloseoutBypassChecks(db, questionId, [
+    await saveCloseoutBypassChecks(sqliteDb(db), questionId, [
       { id: checkId, kind: "rule", state: "failed", attempt: 1, message: "probe exited 1" },
     ]);
   };
-  ask("q-bypassed", "restart-and-ask-from-loop", NOW + 3_000, "answered");
-  approveCloseoutBypassChecks(db, "q-bypassed", {
+  await ask("q-bypassed", "restart-and-ask-from-loop", NOW + 3_000, "answered");
+  await approveCloseoutBypassChecks(sqliteDb(db), "q-bypassed", {
     checks: [{ checkId: "restart-and-ask-from-loop", reason: "The loop owns this call already." }],
     approvedBy: "user-1",
     approvedByName: "Ada Lovelace",
     now: NOW + 4_000,
   });
   closeLinkAsk(db, "q-bypassed", { reason: "cancelled", now: NOW + 4_000 });
-  ask("q-waiting", "api-contract", NOW + 5_000, "open");
+  await ask("q-waiting", "api-contract", NOW + 5_000, "open");
   return { db, home };
 }
 
 describe("rule results in the issue resources", () => {
   test("the list summarizes each rule as a check of kind rule", async () => {
-    const { db, home } = seed();
+    const { db, home } = await seed();
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
       db,
       env: {},
@@ -177,7 +178,7 @@ describe("rule results in the issue resources", () => {
   });
 
   test("the item detail carries each rule's probe hash, exit code, duration and decision", async () => {
-    const { db, home } = seed();
+    const { db, home } = await seed();
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues/ENG-7"), {
       db,
       env: {},
@@ -218,7 +219,7 @@ describe("rule results in the issue resources", () => {
   });
 
   test("a rule's probe output loads like a check's log", async () => {
-    const { db, home } = seed();
+    const { db, home } = await seed();
     const provider = createLiveStatusProvider(db, { pawsHome: home });
     expect(
       await provider.checkLog({ itemId: "ENG-7", attempt: 1, checkId: "api-contract", run: null }),
@@ -226,7 +227,7 @@ describe("rule results in the issue resources", () => {
   });
 
   test("without the evidence record the probe hash is null", async () => {
-    const { db } = seed();
+    const { db } = await seed();
     const detail = await createLiveStatusProvider(db, { env: {} }).issue("ENG-7");
     expect(detail?.verdicts[0]?.checks[0]?.probeSha256).toBeNull();
   });
