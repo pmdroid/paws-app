@@ -241,10 +241,10 @@ const state = paws.db
   .get(itemId)?.state;
 await paws.catchUp();
 const pending = (await createInboxStore(sqliteDb(paws.db)).listUnhandled()).length;
-const context = getLinearSessionContext(paws.db, "session");
+const context = await getLinearSessionContext(sqliteDb(paws.db), "session");
 await paws.stop();
 const reopened = openDatabase(join(home, "paws.db"));
-const restoredContext = getLinearSessionContext(reopened, "session");
+const restoredContext = await getLinearSessionContext(sqliteDb(reopened), "session");
 reopened.close();
 console.log(
   JSON.stringify({

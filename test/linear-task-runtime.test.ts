@@ -528,10 +528,10 @@ test("clarified parent code requests recover the ordered child queue and every c
         `SELECT ${parentTaskKeySql("work_item")} AS task_key FROM work_item WHERE delegation_id = ? ORDER BY position, id LIMIT 1`,
       )
       .get(previous.delegationId)!.task_key;
-    const resolved = getTaskClassification(db, originalKey)!;
+    const resolved = (await getTaskClassification(sqliteDb(db), originalKey))!;
     expect(resolved.mode).toBe("code");
     if (resolved.mode === "clarify") throw new Error("Clarification was not resolved");
-    expect(getTaskClassification(db, resolved.redirect!.taskKey)).toMatchObject({
+    expect(await getTaskClassification(sqliteDb(db), resolved.redirect!.taskKey)).toMatchObject({
       mode: "code",
       context: expect.stringContaining(answer),
     });

@@ -106,7 +106,7 @@ test.each([false, true])(
       ]);
       expect(await first).toBeInstanceOf(Error);
       expect(f.traces).toHaveLength(2);
-      expect(getTaskClassification(f.db, "first")).toBeNull();
+      expect(await getTaskClassification(sqliteDb(f.db), "first")).toBeNull();
       expect(await f.plan("replacement")).toEqual({ mode: "answer" });
       expect(f.traces).toHaveLength(2);
     } finally {
@@ -130,8 +130,8 @@ test.each([false, true])(
       expect(await first).toBeInstanceOf(Error);
       expect(await next).toBeInstanceOf(Error);
       expect(f.traces).toHaveLength(1);
-      expect(getTaskClassification(f.db, "first")).toBeNull();
-      expect(getTaskClassification(f.db, "replacement")).toBeNull();
+      expect(await getTaskClassification(sqliteDb(f.db), "first")).toBeNull();
+      expect(await getTaskClassification(sqliteDb(f.db), "replacement")).toBeNull();
     } finally {
       await f.planner.stop();
       f.db.close();
@@ -149,7 +149,7 @@ test("a clarification resolution preserves its child-task redirect and guidance 
     question: "Which outcome?",
   });
   await saveTaskClassification(sqliteDb(db), "request", { mode: "artifact" });
-  expect(getTaskClassification(db, "request")?.mode).toBe("clarify");
+  expect((await getTaskClassification(sqliteDb(db), "request"))?.mode).toBe("clarify");
   await resolveTaskClassification(sqliteDb(db), {
     taskKey: "request",
     itemId: "placeholder",
@@ -159,11 +159,11 @@ test("a clarification resolution preserves its child-task redirect and guidance 
   const reopened = openDatabase(path);
   try {
     migrate(reopened);
-    expect(getTaskClassification(reopened, "request")).toEqual({
+    expect(await getTaskClassification(sqliteDb(reopened), "request")).toEqual({
       mode: "code",
       redirect: { taskKey: "resolved:request", itemId: "placeholder" },
     });
-    expect(getTaskClassification(reopened, "resolved:request")).toEqual({
+    expect(await getTaskClassification(sqliteDb(reopened), "resolved:request")).toEqual({
       mode: "code",
       context: "Change both children.",
       sourceItemId: "placeholder",
@@ -202,7 +202,7 @@ test("unavailable selected helper fails before local launch or classification pe
       }),
     ).rejects.toThrow("Remote helper transport is unavailable");
     expect(localLaunches).toBe(0);
-    expect(getTaskClassification(db, "remote-unavailable")).toBeNull();
+    expect(await getTaskClassification(sqliteDb(db), "remote-unavailable")).toBeNull();
   } finally {
     await planner.stop();
     db.close();
