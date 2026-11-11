@@ -176,7 +176,9 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
     });
     gate.next = { decision: "accepted", exhausted: false, summary: "fake accepted" };
     const changed = Date.now();
-    (orchestrator as unknown as { reconcileAgentSettings(): void }).reconcileAgentSettings();
+    await (
+      orchestrator as unknown as { reconcileAgentSettings(): Promise<void> }
+    ).reconcileAgentSettings();
     const released = listJobs(db).filter(
       (job) => job.queue === JOB_KIND.reverify && job.status === "pending",
     );
