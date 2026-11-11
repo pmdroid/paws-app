@@ -204,8 +204,14 @@ for (const decision of ["rejected", "blocked"] as const) {
       policyDigest: "p",
       policyPath: null,
     };
-    finishCloseoutProgress(db, itemId, identity, "accepted", 1_500);
-    finishCloseoutProgress(db, itemId, { ...identity, base: "newer" }, decision, 1_600);
+    await finishCloseoutProgress(sqliteDb(db), itemId, identity, "accepted", 1_500);
+    await finishCloseoutProgress(
+      sqliteDb(db),
+      itemId,
+      { ...identity, base: "newer" },
+      decision,
+      1_600,
+    );
     // A database written before rejection retired accepted_head can still carry it.
     await markCloseoutAccepted(sqliteDb(db), itemId, ACCEPTED);
     expect(await mergeAcceptedWork(sqliteDb(db), itemId, { now: 2_000 })).toBe(false);

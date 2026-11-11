@@ -40,7 +40,7 @@ type Raw = { severity: "P0" | "P1" | "P2" | "P3"; location: string; explanation:
  * One accepted Closeout run of `itemId` at `head`: an `independent-review` record with `findings`
  * in the task's evidence, its step marked with `failOn` and the pre-existing indexes.
  */
-function accept(
+async function accept(
   db: Database,
   home: string,
   input: {
@@ -53,7 +53,7 @@ function accept(
     review?: string;
     rejected?: boolean;
   },
-): void {
+): Promise<void> {
   const review = input.review ?? "independent-review";
   const evidencePath = `evidence/policy/${input.head}/${review}/1.json`;
   const file = join(home, "closeout", "evidence", input.itemId, evidencePath);
@@ -82,8 +82,8 @@ function accept(
     policyDigest: DIGEST,
     policyPath: null,
   };
-  upsertCloseoutStep(
-    db,
+  await upsertCloseoutStep(
+    sqliteDb(db),
     input.itemId,
     identity,
     {
@@ -109,8 +109,8 @@ function accept(
     },
     input.at,
   );
-  finishCloseoutProgress(
-    db,
+  await finishCloseoutProgress(
+    sqliteDb(db),
     input.itemId,
     identity,
     input.rejected ? "rejected" : "accepted",
@@ -144,7 +144,7 @@ test("an accepted head stores its two non-blocking findings and not the waived b
   const home = tempHome();
   try {
     await item(db, "item-a");
-    accept(db, home, {
+    await accept(db, home, {
       itemId: "item-a",
       head: "a".repeat(40),
       at: 100,
@@ -182,7 +182,7 @@ test("the same finding on another item updates its count and last seen instead o
   try {
     await item(db, "item-a");
     await item(db, "item-b");
-    accept(db, home, {
+    await accept(db, home, {
       itemId: "item-a",
       head: "a".repeat(40),
       at: 100,
@@ -200,7 +200,7 @@ test("the same finding on another item updates its count and last seen instead o
       ...STALE,
       explanation: "Unchecked null:  the handler reads the user before the check",
     };
-    accept(db, home, {
+    await accept(db, home, {
       itemId: "item-b",
       head: "c".repeat(40),
       at: 200,
@@ -214,7 +214,7 @@ test("the same finding on another item updates its count and last seen instead o
       now: 2000,
     });
     // Item b's next accepted head reports it once more; it is still two items.
-    accept(db, home, {
+    await accept(db, home, {
       itemId: "item-b",
       head: "d".repeat(40),
       at: 300,
@@ -250,7 +250,7 @@ test("a finding a later accepted review of its path no longer reports is gone, a
   try {
     await item(db, "item-a");
     await item(db, "item-b");
-    accept(db, home, {
+    await accept(db, home, {
       itemId: "item-a",
       head: "a".repeat(40),
       at: 100,
@@ -263,7 +263,7 @@ test("a finding a later accepted review of its path no longer reports is gone, a
       pawsRoot: home,
       now: 1000,
     });
-    accept(db, home, { itemId: "item-b", head: "c".repeat(40), at: 200, findings: [] });
+    await accept(db, home, { itemId: "item-b", head: "c".repeat(40), at: 200, findings: [] });
     // Another review's silence and an untouched path say nothing about it.
     await recordAcceptedFindings(sqliteDb(db), {
       itemId: "item-b",
@@ -285,7 +285,7 @@ test("a finding a later accepted review of its path no longer reports is gone, a
       statusBy: null,
       statusAt: 2500,
     });
-    accept(db, home, {
+    await accept(db, home, {
       itemId: "item-b",
       head: "d".repeat(40),
       at: 300,
@@ -312,7 +312,7 @@ test("dismiss, reopen and filed set the status with who changed it and when", as
   const home = tempHome();
   try {
     await item(db, "item-a");
-    accept(db, home, {
+    await accept(db, home, {
       itemId: "item-a",
       head: "a".repeat(40),
       at: 100,
@@ -403,21 +403,21 @@ test("the backfill reads each task's evidence once and running it again changes 
   try {
     await item(db, "item-a");
     await item(db, "item-b");
-    accept(db, home, {
+    await accept(db, home, {
       itemId: "item-a",
       head: "a".repeat(40),
       at: 100,
       findings: [STALE, MINOR],
       preExisting: [0],
     });
-    accept(db, home, {
+    await accept(db, home, {
       itemId: "item-a",
       head: "e".repeat(40),
       at: 150,
       findings: [STALE, MINOR],
       preExisting: [0],
     });
-    accept(db, home, {
+    await accept(db, home, {
       itemId: "item-b",
       head: "c".repeat(40),
       at: 200,
@@ -508,7 +508,7 @@ test("a review that fails with a P1 hands the agent its location and explanation
   const home = tempHome();
   try {
     await item(db, "item-r");
-    accept(db, home, {
+    await accept(db, home, {
       itemId: "item-r",
       head: "d".repeat(40),
       at: 100,
@@ -536,7 +536,12 @@ test("an accepted head hands the agent no failed findings", async () => {
   const home = tempHome();
   try {
     await item(db, "item-s");
-    accept(db, home, { itemId: "item-s", head: "e".repeat(40), at: 100, findings: [BLOCKING] });
+    await accept(db, home, {
+      itemId: "item-s",
+      head: "e".repeat(40),
+      at: 100,
+      findings: [BLOCKING],
+    });
     expect(await failedReviewFindings(sqliteDb(db), "item-s", home)).toEqual([]);
   } finally {
     db.close();

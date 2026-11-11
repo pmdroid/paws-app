@@ -38,9 +38,10 @@ for (const reason of ["findings", "review", "ci"] as const) {
         policyDigest: "p",
         policyPath: null,
       };
-      finishCloseoutProgress(db, "item", identity, "accepted", 2);
+      await finishCloseoutProgress(sqliteDb(db), "item", identity, "accepted", 2);
       await markCloseoutAccepted(sqliteDb(db), "item", "s");
-      if (reason === "findings") finishCloseoutProgress(db, "item", identity, "rejected", 3);
+      if (reason === "findings")
+        await finishCloseoutProgress(sqliteDb(db), "item", identity, "rejected", 3);
       const body = `Address pending ${reason}`;
       const jobId = restart(db, getWorkItem(db, "item")!, { reason, body, limit: 4, now: 4 })!;
       applyWorkItemEvent(db, "item", "dispatched");

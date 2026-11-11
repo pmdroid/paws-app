@@ -1053,9 +1053,9 @@ describe("live status provider", () => {
       findings: null,
       ordinal,
     });
-    upsertCloseoutStep(db, item.id, identity, step("test", "passed", 0), now);
-    upsertCloseoutStep(db, item.id, identity, step("typecheck", "skipped", 1), now);
-    finishCloseoutProgress(db, item.id, identity, "accepted", now);
+    await upsertCloseoutStep(sqliteDb(db), item.id, identity, step("test", "passed", 0), now);
+    await upsertCloseoutStep(sqliteDb(db), item.id, identity, step("typecheck", "skipped", 1), now);
+    await finishCloseoutProgress(sqliteDb(db), item.id, identity, "accepted", now);
     const list = await createLiveStatusProvider(db, { now: () => new Date(now) }).issues();
     expect(list.verdicts[0]?.checks.map((check) => [check.id, check.state])).toEqual([
       ["test", "passed"],
@@ -1166,8 +1166,8 @@ describe("live status provider", () => {
         }),
       );
       const identity = { taskId: item.id, base, head: round.head, policyDigest: "sha256:policy" };
-      upsertCloseoutStep(
-        db,
+      await upsertCloseoutStep(
+        sqliteDb(db),
         item.id,
         { ...identity, policyPath: null },
         {
@@ -1193,7 +1193,13 @@ describe("live status provider", () => {
         },
         at,
       );
-      finishCloseoutProgress(db, item.id, { ...identity, policyPath: null }, "rejected", at);
+      await finishCloseoutProgress(
+        sqliteDb(db),
+        item.id,
+        { ...identity, policyPath: null },
+        "rejected",
+        at,
+      );
     }
     // An issue was filed from the pre-existing finding, on this item or another one.
     await bindWorkItemRepository(sqliteDb(db), item.id, {
@@ -1272,8 +1278,8 @@ describe("live status provider", () => {
         policyDigest: "sha256:policy",
         policyPath: null,
       };
-      upsertCloseoutStep(
-        db,
+      await upsertCloseoutStep(
+        sqliteDb(db),
         item.id,
         identity,
         {
@@ -1297,8 +1303,23 @@ describe("live status provider", () => {
         },
         at,
       );
-      appendCloseoutOutput(db, item.id, identity, "test", "stderr", "secret log", false, at);
-      finishCloseoutProgress(db, item.id, identity, index === 0 ? "rejected" : "accepted", at);
+      await appendCloseoutOutput(
+        sqliteDb(db),
+        item.id,
+        identity,
+        "test",
+        "stderr",
+        "secret log",
+        false,
+        at,
+      );
+      await finishCloseoutProgress(
+        sqliteDb(db),
+        item.id,
+        identity,
+        index === 0 ? "rejected" : "accepted",
+        at,
+      );
     }
     const provider = createLiveStatusProvider(db, {
       now: () => new Date(now + 5000),
@@ -1375,8 +1396,8 @@ describe("live status provider", () => {
       findings: null,
       ordinal: 0,
     });
-    upsertCloseoutStep(db, item.id, identity(item.id), review("passed", null), now);
-    finishCloseoutProgress(db, item.id, identity(item.id), "accepted", now);
+    await upsertCloseoutStep(sqliteDb(db), item.id, identity(item.id), review("passed", null), now);
+    await finishCloseoutProgress(sqliteDb(db), item.id, identity(item.id), "accepted", now);
     await saveCandidateRisk(sqliteDb(db), {
       itemId: item.id,
       head,
@@ -1389,14 +1410,14 @@ describe("live status provider", () => {
       ],
       classifiedAt: now,
     });
-    upsertCloseoutStep(
-      db,
+    await upsertCloseoutStep(
+      sqliteDb(db),
       docs.id,
       identity(docs.id),
       review("skipped", "no changed path matches"),
       now,
     );
-    finishCloseoutProgress(db, docs.id, identity(docs.id), "accepted", now);
+    await finishCloseoutProgress(sqliteDb(db), docs.id, identity(docs.id), "accepted", now);
     await saveCandidateRisk(sqliteDb(db), {
       itemId: docs.id,
       head,
@@ -1433,7 +1454,7 @@ describe("live status provider", () => {
     const db = database();
     const now = 1_700_000_000_000;
     const base = "d".repeat(40);
-    const seed = (id: string, session: string, check: string, output: string) => {
+    const seed = async (id: string, session: string, check: string, output: string) => {
       const item = insertQueuedItem(db, { id, sessionKey: session, now });
       beginImplementRun(db, item.id, now);
       enterMergeQueue(db, item.id, {
@@ -1448,8 +1469,8 @@ describe("live status provider", () => {
         policyDigest: "sha256:policy",
         policyPath: null,
       };
-      upsertCloseoutStep(
-        db,
+      await upsertCloseoutStep(
+        sqliteDb(db),
         item.id,
         identity,
         {
@@ -1473,13 +1494,31 @@ describe("live status provider", () => {
         },
         now,
       );
-      appendCloseoutOutput(db, item.id, identity, check, "stderr", output, false, now);
-      appendCloseoutOutput(db, item.id, identity, check, "stdout", `${id} out`, false, now);
-      finishCloseoutProgress(db, item.id, identity, "rejected", now);
+      await appendCloseoutOutput(
+        sqliteDb(db),
+        item.id,
+        identity,
+        check,
+        "stderr",
+        output,
+        false,
+        now,
+      );
+      await appendCloseoutOutput(
+        sqliteDb(db),
+        item.id,
+        identity,
+        check,
+        "stdout",
+        `${id} out`,
+        false,
+        now,
+      );
+      await finishCloseoutProgress(sqliteDb(db), item.id, identity, "rejected", now);
     };
-    seed("ENG-11", "ses_11", "unit", "unit failed");
-    seed("ENG-12", "ses_11", "lint", "lint failed");
-    seed("ENG-13", "ses_other", "unit", "hidden failure");
+    await seed("ENG-11", "ses_11", "unit", "unit failed");
+    await seed("ENG-12", "ses_11", "lint", "lint failed");
+    await seed("ENG-13", "ses_other", "unit", "hidden failure");
     const provider = createLiveStatusProvider(db, {
       now: () => new Date(now + 5000),
       sessionIds: ["ses_11"],
@@ -1539,9 +1578,9 @@ describe("live status provider", () => {
       policyDigest: "sha256:policy",
       policyPath: ".agents/closeout.yaml",
     };
-    const review = (state: CloseoutStepWrite["state"], at: number, extra = {}) =>
-      upsertCloseoutStep(
-        db,
+    const review = async (state: CloseoutStepWrite["state"], at: number, extra = {}) =>
+      await upsertCloseoutStep(
+        sqliteDb(db),
         item.id,
         identity,
         {
@@ -1566,10 +1605,10 @@ describe("live status provider", () => {
         },
         at,
       );
-    review("running", now);
-    review("passed", now + 200_000, { durationMs: 180_000, tokens: 52_000 });
-    review("passed", now + 900_000);
-    finishCloseoutProgress(db, item.id, identity, "accepted", now + 900_000);
+    await review("running", now);
+    await review("passed", now + 200_000, { durationMs: 180_000, tokens: 52_000 });
+    await review("passed", now + 900_000);
+    await finishCloseoutProgress(sqliteDb(db), item.id, identity, "accepted", now + 900_000);
     const check = (
       await createLiveStatusProvider(db, {
         now: () => new Date(now + 900_000),
@@ -1577,7 +1616,7 @@ describe("live status provider", () => {
     )?.verdicts[0]?.checks[0];
     expect(check?.elapsedMs).toBe(180_000);
     expect(check?.tokens).toBe(52_000);
-    review("running", now + 950_000);
+    await review("running", now + 950_000);
     const rerun = (
       await createLiveStatusProvider(db, {
         now: () => new Date(now + 960_000),
@@ -1598,7 +1637,7 @@ describe("live status provider", () => {
       baseSha: base,
       wipCommit: "b".repeat(40),
     });
-    const attempt = (head: string, at: number, state: "failed" | "passed") => {
+    const attempt = async (head: string, at: number, state: "failed" | "passed") => {
       const identity = {
         taskId: item.id,
         base,
@@ -1606,8 +1645,8 @@ describe("live status provider", () => {
         policyDigest: "sha256:policy",
         policyPath: ".agents/closeout.yaml",
       };
-      upsertCloseoutStep(
-        db,
+      await upsertCloseoutStep(
+        sqliteDb(db),
         item.id,
         identity,
         {
@@ -1631,23 +1670,23 @@ describe("live status provider", () => {
         },
         at,
       );
-      finishCloseoutProgress(
-        db,
+      await finishCloseoutProgress(
+        sqliteDb(db),
         item.id,
         identity,
         state === "passed" ? "accepted" : "rejected",
         at,
       );
     };
-    attempt("a".repeat(40), now, "failed");
-    attempt("b".repeat(40), now + 1, "passed");
+    await attempt("a".repeat(40), now, "failed");
+    await attempt("b".repeat(40), now + 1, "passed");
     await startCloseoutRound(sqliteDb(db), {
       itemId: item.id,
       head: "c".repeat(40),
       retryBaseline: ["a", "b"],
       startedAt: now + 2,
     });
-    attempt("c".repeat(40), now + 3, "passed");
+    await attempt("c".repeat(40), now + 3, "passed");
     const detail = await createLiveStatusProvider(db, { now: () => new Date(now + 4) }).issue(
       "ENG-6",
     );

@@ -40,8 +40,8 @@ async function fixture(): Promise<Database> {
   insertQueuedItem(db, { id: "ENG-2", title: "Running", sessionKey: "s1", now: NOW - 8_000 });
   beginImplementRun(db, "ENG-2", NOW - 7_900);
   const identity = { taskId: "ENG-2", base: "b".repeat(40), head: HEAD, policyDigest: "sha256:p" };
-  upsertCloseoutStep(
-    db,
+  await upsertCloseoutStep(
+    sqliteDb(db),
     "ENG-2",
     { ...identity, policyPath: null },
     {
@@ -65,8 +65,8 @@ async function fixture(): Promise<Database> {
     },
     NOW - 6_900,
   );
-  appendCloseoutOutput(
-    db,
+  await appendCloseoutOutput(
+    sqliteDb(db),
     "ENG-2",
     { ...identity, policyPath: null },
     "test",

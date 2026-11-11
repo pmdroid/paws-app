@@ -96,7 +96,7 @@ async function seed(): Promise<{ db: Database; home: string }> {
     step("test", "passed", 4, false, 0),
   ];
   for (const entry of steps) {
-    upsertCloseoutStep(db, item.id, identity, entry, NOW);
+    await upsertCloseoutStep(sqliteDb(db), item.id, identity, entry, NOW);
     if (entry.evidencePath === null) continue;
     const file = join(home, "closeout", "evidence", item.id, ...entry.evidencePath.split("/"));
     mkdirSync(dirname(file), { recursive: true });
@@ -114,7 +114,7 @@ async function seed(): Promise<{ db: Database; home: string }> {
       }),
     );
   }
-  finishCloseoutProgress(db, item.id, identity, "exhausted", NOW + 2_000);
+  await finishCloseoutProgress(sqliteDb(db), item.id, identity, "exhausted", NOW + 2_000);
   enqueueOutbox(db, {
     target: "linear",
     op: "activity",

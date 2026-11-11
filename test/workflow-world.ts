@@ -137,7 +137,7 @@ function identity(itemId: string, head: string, base = "base") {
 }
 
 async function accept(db: Database, id: string, now: number, head = "head"): Promise<void> {
-  finishCloseoutProgress(db, id, identity(id, head), "accepted", now);
+  await finishCloseoutProgress(sqliteDb(db), id, identity(id, head), "accepted", now);
   await markCloseoutAccepted(sqliteDb(db), id, head);
 }
 
@@ -201,7 +201,13 @@ export async function seedFixture(
     case "verifying_rejected":
       toVerifying();
       await accept(db, id, now);
-      finishCloseoutProgress(db, id, identity(id, "head", "newer"), "rejected", now + 1);
+      await finishCloseoutProgress(
+        sqliteDb(db),
+        id,
+        identity(id, "head", "newer"),
+        "rejected",
+        now + 1,
+      );
       return;
     case "recovering":
       applyWorkItemEvent(db, id, "lease_expired", { now });
@@ -573,7 +579,8 @@ export async function violations(
     if (item.state === "merge_queue") {
       if (item.acceptedHead === null) say("in the merge queue without an accepted head");
       else {
-        const verdict = closeoutPolicyDigests(db, item.id, item.acceptedHead)?.decision ?? null;
+        const verdict =
+          (await closeoutPolicyDigests(sqliteDb(db), item.id, item.acceptedHead))?.decision ?? null;
         if (verdict !== null && verdict !== "accepted")
           say(`in the merge queue at a head whose latest verdict is ${verdict}`);
       }

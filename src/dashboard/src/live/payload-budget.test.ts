@@ -37,7 +37,7 @@ const CHECKS = ["install", "lint", "format", "typecheck", "test", "build"];
 const base = "d".repeat(40);
 
 /** Closeout attempts on `item`, each check failing with `stderr` at the stored cap. */
-function closeout(db: Database, item: string, attempts: number, checks: number, now: number) {
+async function closeout(db: Database, item: string, attempts: number, checks: number, now: number) {
   const stderr = `error: expected 1 to be 2\n${"    at <anonymous> (src/loop/turn.test.ts:42:7)\n".repeat(OUTPUT_CAP_BYTES / 48)}`;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     const at = now + attempt;
@@ -49,8 +49,8 @@ function closeout(db: Database, item: string, attempts: number, checks: number, 
       policyPath: null,
     };
     for (const [ordinal, id] of CHECKS.slice(0, checks).entries()) {
-      upsertCloseoutStep(
-        db,
+      await upsertCloseoutStep(
+        sqliteDb(db),
         item,
         identity,
         {
@@ -74,10 +74,10 @@ function closeout(db: Database, item: string, attempts: number, checks: number, 
         },
         at,
       );
-      appendCloseoutOutput(db, item, identity, id, "stderr", stderr, false, at);
-      appendCloseoutOutput(db, item, identity, id, "stdout", stderr, false, at);
+      await appendCloseoutOutput(sqliteDb(db), item, identity, id, "stderr", stderr, false, at);
+      await appendCloseoutOutput(sqliteDb(db), item, identity, id, "stdout", stderr, false, at);
     }
-    finishCloseoutProgress(db, item, identity, "rejected", at);
+    await finishCloseoutProgress(sqliteDb(db), item, identity, "rejected", at);
   }
 }
 
@@ -91,7 +91,7 @@ describe("status payload budget", () => {
       const id = `PAS-${1000 + index}`;
       insertQueuedItem(db, { id, title: `Finished item ${index}`, now: now + index });
       beginImplementRun(db, id, now + index);
-      closeout(db, id, 1, 2, now + index);
+      await closeout(db, id, 1, 2, now + index);
       applyWorkItemEvent(db, id, "cancel", { now: now + index + 10 });
     }
     for (let index = 0; index < 10; index += 1) {
@@ -99,7 +99,7 @@ describe("status payload budget", () => {
       insertQueuedItem(db, { id, title: `Open item ${index}`, now: now + index });
       beginImplementRun(db, id, now + index);
       enterMergeQueue(db, id, { phase: "merge_queue", baseSha: base, wipCommit: "c".repeat(40) });
-      closeout(db, id, 3, CHECKS.length, now + index);
+      await closeout(db, id, 3, CHECKS.length, now + index);
       db.run(
         "INSERT INTO question (id, item_id, session_id, body, status, created_at) VALUES (?, ?, ?, ?, 'open', ?)",
         [

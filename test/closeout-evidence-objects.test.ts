@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSyn
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import { handleStatusRequest, itemReviews } from "../src/dashboard";
-import { finishCloseoutProgress, insertQueuedItem, upsertCloseoutStep } from "../src/db";
+import { finishCloseoutProgress, insertQueuedItem, upsertCloseoutStep, sqliteDb } from "../src/db";
 import {
   hydrateCloseoutEvidence,
   hydrateItemCloseoutEvidence,
@@ -22,7 +22,7 @@ const DIGEST = `sha256:${HEX}`;
 const RECORD = `evidence/${HEX}/${HEAD}/independent-review/1.json`;
 const LOG = `logs/${HEX}/${HEAD}/test/1.log`;
 
-function closeoutRun(db: Database, home: string, item = ITEM): string {
+async function closeoutRun(db: Database, home: string, item = ITEM): Promise<string> {
   const root = join(home, "closeout", "evidence");
   const write = (path: string, body: string) => {
     const file = join(root, item, ...path.split("/"));
@@ -45,8 +45,8 @@ function closeoutRun(db: Database, home: string, item = ITEM): string {
   write(LOG, "acme test output\n");
   write("retry.lock", "");
   const identity = { taskId: item, base: BASE, head: HEAD, policyDigest: DIGEST, policyPath: null };
-  upsertCloseoutStep(
-    db,
+  await upsertCloseoutStep(
+    sqliteDb(db),
     item,
     identity,
     {
@@ -72,24 +72,24 @@ function closeoutRun(db: Database, home: string, item = ITEM): string {
     },
     1,
   );
-  finishCloseoutProgress(db, item, identity, "rejected", 1);
+  await finishCloseoutProgress(sqliteDb(db), item, identity, "rejected", 1);
   return root;
 }
 
-function setup() {
+async function setup() {
   const db = tempDb();
   insertQueuedItem(db, { id: ITEM, sessionKey: "session-acme", now: 1 });
   const s3 = createFakeRunFileObjects();
   const objects = () => withSealedRunFileObjects(s3, Buffer.alloc(32, 9));
   const homeA = tempHome();
   const homeB = tempHome();
-  const storageA = { root: closeoutRun(db, homeA), objects };
+  const storageA = { root: await closeoutRun(db, homeA), objects };
   const storageB = { root: join(homeB, "closeout", "evidence"), objects };
   return { db, s3, objects, homeA, homeB, storageA, storageB };
 }
 
 test("Closeout records written by instance A are shown by instance B's dashboard", async () => {
-  const { db, s3, homeB, storageA, storageB } = setup();
+  const { db, s3, homeB, storageA, storageB } = await setup();
   expect(await publishCloseoutEvidence(db, storageA, ITEM)).toBe(2);
   expect([...s3.objects.keys()].every((key) => key.startsWith(`closeout-evidence/${ITEM}/`))).toBe(
     true,
@@ -114,14 +114,14 @@ test("Closeout records written by instance A are shown by instance B's dashboard
 });
 
 test("an item the session can't see is not restored", async () => {
-  const { db, storageA, storageB } = setup();
+  const { db, storageA, storageB } = await setup();
   await publishCloseoutEvidence(db, storageA, ITEM);
   expect(await hydrateItemCloseoutEvidence(db, storageB, ITEM, ["session-other"])).toBe(0);
   expect(existsSync(join(storageB.root, ITEM))).toBe(false);
 });
 
 test("a changed object is not restored, and a changed local file replaces its copy", async () => {
-  const { db, s3, storageA, storageB } = setup();
+  const { db, s3, storageA, storageB } = await setup();
   await publishCloseoutEvidence(db, storageA, ITEM);
   const [first, second] = [...s3.objects.keys()];
   const original = s3.objects.get(first!)!;
@@ -140,7 +140,7 @@ test("a changed object is not restored, and a changed local file replaces its co
 });
 
 test("with S3 off, Closeout records stay local", async () => {
-  const { db, s3, storageA, storageB } = setup();
+  const { db, s3, storageA, storageB } = await setup();
   expect(await publishCloseoutEvidence(db, { root: storageA.root }, ITEM)).toBe(0);
   expect(await uploadLocalCloseoutEvidence(db, { root: storageA.root })).toBe(0);
   expect(await hydrateCloseoutEvidence(db, { root: storageB.root }, [ITEM])).toBe(0);
@@ -149,7 +149,7 @@ test("with S3 off, Closeout records stay local", async () => {
 });
 
 test("existing Closeout records are uploaded once on startup and read from S3 afterwards", async () => {
-  const { db, homeB, storageA, storageB } = setup();
+  const { db, homeB, storageA, storageB } = await setup();
   expect(await uploadLocalCloseoutEvidence(db, storageA)).toBe(2);
   expect(await uploadLocalCloseoutEvidence(db, storageA)).toBe(0);
   expect(await hydrateItemCloseoutEvidence(db, storageB, ITEM)).toBe(2);
@@ -157,7 +157,7 @@ test("existing Closeout records are uploaded once on startup and read from S3 af
 });
 
 test("a finished check's files are stored before its step is recorded, while the gate still runs", async () => {
-  const { db, homeB, storageA, storageB } = setup();
+  const { db, homeB, storageA, storageB } = await setup();
   const calls: string[] = [];
   const progress = publishingCloseoutProgress(
     {
@@ -218,7 +218,7 @@ test("a failed step write is raised once the queued steps settle", async () => {
 });
 
 test("restored records keep their modification times, and a newer stored copy replaces an older one", async () => {
-  const { db, storageA, storageB } = setup();
+  const { db, storageA, storageB } = await setup();
   const record = join(storageA.root, ITEM, ...RECORD.split("/"));
   utimesSync(record, 1_700_000_000, 1_700_000_000);
   await publishCloseoutEvidence(db, storageA, ITEM);
@@ -242,12 +242,12 @@ test("restored records keep their modification times, and a newer stored copy re
 });
 
 test("every visible item with the issue's identifier has its Closeout records restored", async () => {
-  const { db, homeA, storageA, storageB } = setup();
+  const { db, homeA, storageA, storageB } = await setup();
   insertQueuedItem(db, { id: "item-acme-2", sessionKey: "session-acme", now: 1 });
   insertQueuedItem(db, { id: "item-acme-3", sessionKey: "session-other", now: 1 });
   db.run("UPDATE work_item SET linear_identifier = 'ACME-1'");
-  closeoutRun(db, homeA, "item-acme-2");
-  closeoutRun(db, homeA, "item-acme-3");
+  await closeoutRun(db, homeA, "item-acme-2");
+  await closeoutRun(db, homeA, "item-acme-3");
   await uploadLocalCloseoutEvidence(db, storageA);
   expect(await hydrateItemCloseoutEvidence(db, storageB, "ACME-1", ["session-acme"])).toBe(4);
   expect(existsSync(join(storageB.root, "item-acme-2", ...RECORD.split("/")))).toBe(true);
@@ -308,7 +308,7 @@ test("a check whose evidence can't be stored is recorded as failed, never as pas
 });
 
 test("the startup upload keeps a path already in the store instead of replacing it", async () => {
-  const { db, storageA, storageB } = setup();
+  const { db, storageA, storageB } = await setup();
   await publishCloseoutEvidence(db, storageA, ITEM);
   await Bun.sleep(5);
   writeFileSync(join(storageA.root, ITEM, ...LOG.split("/")), "acme stale local copy\n");
@@ -324,8 +324,8 @@ test("the startup upload keeps a path already in the store instead of replacing 
 });
 
 test("a startup upload that loses to a concurrent publish keeps the published copy", async () => {
-  const { db, s3, objects, homeB, storageA, storageB } = setup();
-  const publisher = { root: closeoutRun(db, homeB), objects };
+  const { db, s3, objects, homeB, storageA, storageB } = await setup();
+  const publisher = { root: await closeoutRun(db, homeB), objects };
   writeFileSync(join(publisher.root, ITEM, ...LOG.split("/")), "acme published meanwhile\n");
   let raced = false;
   const racing = () => {
@@ -352,7 +352,7 @@ test("a startup upload that loses to a concurrent publish keeps the published co
 });
 
 test("a restore that started before a file was replaced reads the replacement", async () => {
-  const { db, objects, storageA, storageB } = setup();
+  const { db, objects, storageA, storageB } = await setup();
   await publishCloseoutEvidence(db, storageA, ITEM);
   await Bun.sleep(5);
   writeFileSync(join(storageA.root, ITEM, ...LOG.split("/")), "acme replaced\n");
@@ -381,7 +381,7 @@ test("a restore that started before a file was replaced reads the replacement", 
 });
 
 test("a strict restore fails when a file can't be restored; a lenient one carries on", async () => {
-  const { db, s3, storageA, storageB } = setup();
+  const { db, s3, storageA, storageB } = await setup();
   await publishCloseoutEvidence(db, storageA, ITEM);
   const [first] = [...s3.objects.keys()];
   s3.objects.set(first!, new Uint8Array(64));

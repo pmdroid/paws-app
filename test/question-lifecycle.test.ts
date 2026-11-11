@@ -111,8 +111,8 @@ async function queuedCloseoutHelp() {
     baseSha: "base",
     wipCommit: "head-1",
   });
-  ensureCloseoutProgress(
-    db,
+  await ensureCloseoutProgress(
+    sqliteDb(db),
     asker.itemId,
     { taskId: "ENG-7", base: "base", head: "head-1", policyDigest: "policy-1", policyPath: null },
     NOW,
@@ -164,8 +164,8 @@ test("a queued Closeout help is dropped once its candidate moved", async () => {
 
 test("a queued Closeout help is dropped once the Closeout policy changed", async () => {
   const { db, asker, help } = await queuedCloseoutHelp();
-  ensureCloseoutProgress(
-    db,
+  await ensureCloseoutProgress(
+    sqliteDb(db),
     asker.itemId,
     { taskId: "ENG-7", base: "base", head: "head-1", policyDigest: "policy-2", policyPath: null },
     NOW + 50,

@@ -499,8 +499,8 @@ for (const changedIdentity of [false, true]) {
   test(`latest rejection blocks a stale accepted head with ${changedIdentity ? "a newer" : "an overwritten"} identity`, async () => {
     const h = await start();
     const item = await h.addItem("ENG-1");
-    finishCloseoutProgress(
-      h.db,
+    await finishCloseoutProgress(
+      sqliteDb(h.db),
       item.id,
       {
         taskId: item.id,

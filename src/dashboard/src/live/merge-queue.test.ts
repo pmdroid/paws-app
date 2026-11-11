@@ -77,8 +77,8 @@ async function queued(db: Database, id: string, session: string, at: number) {
     policyDigest: "sha256:p",
     policyPath: null,
   };
-  upsertCloseoutStep(
-    db,
+  await upsertCloseoutStep(
+    sqliteDb(db),
     item.id,
     identity,
     {
@@ -102,8 +102,17 @@ async function queued(db: Database, id: string, session: string, at: number) {
     },
     at,
   );
-  appendCloseoutOutput(db, item.id, identity, "test", "stderr", "check output", false, at);
-  finishCloseoutProgress(db, item.id, identity, "accepted", at);
+  await appendCloseoutOutput(
+    sqliteDb(db),
+    item.id,
+    identity,
+    "test",
+    "stderr",
+    "check output",
+    false,
+    at,
+  );
+  await finishCloseoutProgress(sqliteDb(db), item.id, identity, "accepted", at);
 }
 
 test("the merge queue reads queue facts, issue summaries and banners for the reader's sessions only", async () => {
