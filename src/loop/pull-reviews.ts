@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import {
   emitJobReady,
   openItemIdsForRepositorySteps,
-  enqueueOutboxOnce,
   enqueueOutboxOnceSteps,
   fixRoundsSteps,
   getPullReviewSteps,
@@ -331,10 +330,6 @@ export async function handlePullReview(
  * pull request response, so the key carries the `pull-feedback:` prefix the activity gate lets
  * through. A thought, so the session shows the agent working again. Once per restart job key.
  */
-export function postPullFeedback(db: Database, input: PullFeedback): void {
-  if (input.sessionId !== null) enqueueOutboxOnce(db, pullFeedbackRow(input.sessionId, input));
-}
-
 export function* postPullFeedbackSteps(q: Q, input: PullFeedback): Steps<void> {
   if (input.sessionId !== null)
     yield* enqueueOutboxOnceSteps(q, pullFeedbackRow(input.sessionId, input));

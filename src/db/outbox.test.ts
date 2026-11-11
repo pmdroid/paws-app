@@ -67,14 +67,14 @@ describe("transactional outbox", () => {
 
   test("the same idempotency key is stored once", async () => {
     const { db } = harness();
-    const first = enqueueOutboxOnce(db, {
+    const first = await enqueueOutboxOnce(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: "ses",
       idempotencyKey: "wake:1",
       payload: { text: "a" },
     });
-    const second = enqueueOutboxOnce(db, {
+    const second = await enqueueOutboxOnce(sqliteDb(db), {
       target: "linear",
       op: "activity",
       orderingKey: "ses",

@@ -12,7 +12,7 @@ import {
   claimNextJobSteps,
   completeJobSteps,
   enqueueJob,
-  enqueueJobOnceAsync,
+  enqueueJobOnce,
   enqueueJobOnceSteps,
   enqueueJobSteps,
   onJobReady,
@@ -357,9 +357,9 @@ forEachDialect((open) => {
       try {
         const id = await enqueueJob(db, { queue: "work", now: 0 });
         expect(woken).toBe(1);
-        const keyed = await enqueueJobOnceAsync(db, { queue: "work", jobKey: "k", now: 0 });
+        const keyed = await enqueueJobOnce(db, { queue: "work", jobKey: "k", now: 0 });
         expect(woken).toBe(2);
-        expect(await enqueueJobOnceAsync(db, { queue: "work", jobKey: "k", now: 0 })).toBe(keyed);
+        expect(await enqueueJobOnce(db, { queue: "work", jobKey: "k", now: 0 })).toBe(keyed);
         expect(woken).toBe(2);
         expect((await db.run(listJobsSteps)).map((job) => job.id)).toEqual([id, keyed]);
       } finally {

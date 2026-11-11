@@ -591,7 +591,7 @@ export async function probeScheduler(
     const { db } = await setup("tick", 1);
     let now = 1000;
     const loop = new JobLoop(db, { now: () => now, mono: () => now });
-    registerScheduler(
+    await registerScheduler(
       loop,
       async () => {
         await workspaceDispatch(db, { now });

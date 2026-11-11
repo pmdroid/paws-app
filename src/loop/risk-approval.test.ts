@@ -155,7 +155,7 @@ async function held(head = heads.s, base = heads.base) {
     payload: { itemId: item.id },
     now: NOW - 5,
   });
-  enqueueOutboxOnce(db, {
+  await enqueueOutboxOnce(sqliteDb(db), {
     target: "linear",
     op: "activity",
     orderingKey: "ses_1",
@@ -529,7 +529,7 @@ test("the ask, its link and the decision reach Linear after the pull request res
     now: NOW + 100,
   });
   // Ordinary progress stays quiet after the pull request response.
-  enqueueOutboxOnce(db, {
+  await enqueueOutboxOnce(sqliteDb(db), {
     target: "linear",
     op: "activity",
     orderingKey: "ses_1",
@@ -1214,7 +1214,7 @@ for (const scenario of ["clean", "P2", "missing security", "rules change", "off"
           body,
         }),
       ]);
-      enqueueOutboxOnce(f.db, {
+      await enqueueOutboxOnce(sqliteDb(f.db), {
         target: "linear",
         op: "activity",
         orderingKey: "ses_1",

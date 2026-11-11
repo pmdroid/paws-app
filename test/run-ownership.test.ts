@@ -125,20 +125,22 @@ describe("run ownership", () => {
         },
       ];
       const decisions: { by: string; decision: StartupDecision }[] = [];
-      const loops = live.map(({ db, id }) => {
-        const loop = new JobLoop(db, clock, { workerId: id });
-        loop.register(RUN_TAKEOVER_JOB, async () => {
-          for (const decision of await takeOverGoneRuns(sqliteDb(db), id, clock.now()))
-            decisions.push({ by: id, decision });
-        });
-        enqueueJobOnce(db, {
-          queue: RUN_TAKEOVER_JOB,
-          jobKey: RUN_TAKEOVER_JOB,
-          recurringEveryMs: RUN_TAKEOVER_MS,
-          now: clock.now(),
-        });
-        return loop;
-      });
+      const loops = await Promise.all(
+        live.map(async ({ db, id }) => {
+          const loop = new JobLoop(db, clock, { workerId: id });
+          loop.register(RUN_TAKEOVER_JOB, async () => {
+            for (const decision of await takeOverGoneRuns(sqliteDb(db), id, clock.now()))
+              decisions.push({ by: id, decision });
+          });
+          await enqueueJobOnce(sqliteDb(db), {
+            queue: RUN_TAKEOVER_JOB,
+            jobKey: RUN_TAKEOVER_JOB,
+            recurringEveryMs: RUN_TAKEOVER_MS,
+            now: clock.now(),
+          });
+          return loop;
+        }),
+      );
 
       let takenAt: number | null = null;
       while (clock.now() <= 120_000) {

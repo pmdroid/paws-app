@@ -401,7 +401,7 @@ describe("linear outbox dispatch", () => {
         async () => {},
         {
           signal: new AbortController().signal,
-          isCurrent: () => false,
+          isCurrent: async () => false,
         },
       ),
     ).rejects.toThrow("superseded");

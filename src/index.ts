@@ -140,7 +140,7 @@ import {
   applyLinearUserChangeSteps,
   commandInstance,
   delegatedLinearUserIdSteps,
-  enqueueJobOnceAsync,
+  enqueueJobOnce,
   getLinearSessionAccessSteps,
   getLinearSessionInstallationSteps,
   getLinearSessionSteps,
@@ -746,7 +746,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
                   `delegated:${notification.issueId}`,
                   notification.createdAtMs,
                 );
-                await enqueueJobOnceAsync(store, {
+                await enqueueJobOnce(store, {
                   queue: "linear.redelegation",
                   jobKey: `linear.redelegation:${notification.issueId}:${notification.createdAtMs}`,
                   payload: {
@@ -1442,7 +1442,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const enqueueMissingSnapshots = async () => {
     const targets = await store.run(missingSnapshotTargetsSteps);
     for (const target of targets)
-      await enqueueJobOnceAsync(store, {
+      await enqueueJobOnce(store, {
         queue: "linear.item.reconcile",
         jobKey: `linear.item.reconcile:${target.itemId}`,
         payload: target,
@@ -1499,7 +1499,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         await store.transaction((q) => takeOverGoneRunsSteps(q, instance.id, now, wake));
         if (wake.armed) emitJobReady(store);
       });
-      await enqueueJobOnceAsync(store, {
+      await enqueueJobOnce(store, {
         queue: RUN_TAKEOVER_JOB,
         jobKey: RUN_TAKEOVER_JOB,
         recurringEveryMs: RUN_TAKEOVER_MS,
@@ -1924,7 +1924,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           await linearCaller("epics-sweep", () => reconciler?.sweep({ signal: abort.signal }));
           await attached.reconcileExecution();
         });
-        await enqueueJobOnceAsync(store, {
+        await enqueueJobOnce(store, {
           queue: "linear.epics.reconcile",
           jobKey: "linear.epics.reconcile",
           recurringEveryMs: 1_800_000,
@@ -1947,7 +1947,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         created.jobs.register("linear.relations.poll", async () => {
           await relations.all(abort.signal);
         });
-        await enqueueJobOnceAsync(store, {
+        await enqueueJobOnce(store, {
           queue: "linear.relations.poll",
           jobKey: "linear.relations.poll",
           recurringEveryMs: RELATIONS_POLL_MS,
@@ -1956,7 +1956,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         created.jobs.register("linear.relations.poll.blocked", async () => {
           await relations.blocked(abort.signal);
         });
-        await enqueueJobOnceAsync(store, {
+        await enqueueJobOnce(store, {
           queue: "linear.relations.poll.blocked",
           jobKey: "linear.relations.poll.blocked",
           recurringEveryMs: BLOCKED_RELATIONS_POLL_MS,
@@ -1964,17 +1964,17 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         });
       }
       if (findingGrouping)
-        registerFindingGrouping(created.jobs, {
+        await registerFindingGrouping(created.jobs, {
           groupingTime: runtime.file.findingsGroupingTime ?? "06:00",
           workspaces: () => listWorkspaceIds(sqliteDb(db)),
           run: (workspaceId, signal) =>
             findingGrouping.run(workspaceId, AbortSignal.any([signal, abort.signal])),
         });
-      registerScheduler(created.jobs, () => attached.reconcileExecution());
+      await registerScheduler(created.jobs, () => attached.reconcileExecution());
       // A conversation blocked on an unverified cleanup continues once its runner reports the
       // old command gone.
       created.jobs.register("conversation.block.release", () => attached.releaseCleanupBlocks());
-      await enqueueJobOnceAsync(store, {
+      await enqueueJobOnce(store, {
         queue: "conversation.block.release",
         jobKey: "conversation.block.release",
         recurringEveryMs: 30_000,
@@ -1992,7 +1992,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         created.jobs.register(FAILED_ISSUE_SWEEP_JOB, async (_job, context) => {
           await sweepFailed(context.signal);
         });
-        const sweep = await enqueueJobOnceAsync(store, {
+        const sweep = await enqueueJobOnce(store, {
           queue: FAILED_ISSUE_SWEEP_JOB,
           jobKey: FAILED_ISSUE_SWEEP_JOB,
           recurringEveryMs: FAILED_ISSUE_SWEEP_MS,
@@ -2005,14 +2005,14 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           await store.run((q) => runPendingJobNowSteps(q, sweep, Date.now()));
       }
       created.jobs.register(POLICY_BLOCK_CHECK_JOB, () => attached.checkPolicyBlocks());
-      await enqueueJobOnceAsync(store, {
+      await enqueueJobOnce(store, {
         queue: POLICY_BLOCK_CHECK_JOB,
         jobKey: POLICY_BLOCK_CHECK_JOB,
         recurringEveryMs: POLICY_BLOCK_CHECK_MS,
         now: Date.now(),
       });
       created.jobs.register("closeout.stall", () => attached.recoverStalledCloseout());
-      await enqueueJobOnceAsync(store, {
+      await enqueueJobOnce(store, {
         queue: "closeout.stall",
         jobKey: "closeout.stall",
         recurringEveryMs: 60_000,
@@ -2021,7 +2021,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       created.jobs.register("worktree.sweep", (_job, context) =>
         attached.sweepWorktrees(context.signal),
       );
-      await enqueueJobOnceAsync(store, {
+      await enqueueJobOnce(store, {
         queue: "worktree.sweep",
         jobKey: "worktree.sweep",
         recurringEveryMs: 3_600_000,
@@ -2055,7 +2055,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           },
         ),
       );
-      await enqueueJobOnceAsync(store, {
+      await enqueueJobOnce(store, {
         queue: RUNNER_EVENT_PRUNE_JOB,
         jobKey: RUNNER_EVENT_PRUNE_JOB,
         recurringEveryMs: RUNNER_EVENT_PRUNE_EVERY_MS,
@@ -2073,7 +2073,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       created.jobs.register(RETRO_SCHEDULE_JOB, async () => {
         await retroScheduler.tick();
       });
-      await enqueueJobOnceAsync(store, {
+      await enqueueJobOnce(store, {
         queue: RETRO_SCHEDULE_JOB,
         jobKey: RETRO_SCHEDULE_JOB,
         recurringEveryMs: RETRO_SCHEDULE_TICK_MS,
@@ -2083,7 +2083,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         await runnerReady;
         await retroDispatcher?.tick();
       });
-      await enqueueJobOnceAsync(store, {
+      await enqueueJobOnce(store, {
         queue: RETRO_DISPATCH_JOB,
         jobKey: RETRO_DISPATCH_JOB,
         recurringEveryMs: RETRO_DISPATCH_TIMING.tickMs,
@@ -2096,7 +2096,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         created.jobs.register(work.queue, async (_job, context) => {
           await work.run(context.signal);
         });
-        const id = await enqueueJobOnceAsync(store, {
+        const id = await enqueueJobOnce(store, {
           queue: work.queue,
           jobKey: work.queue,
           recurringEveryMs: work.everyMs,
@@ -2109,7 +2109,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         }
       }
       created.jobs.register("github.auth.recover", () => attached.recoverGitHubAuth());
-      await enqueueJobOnceAsync(store, {
+      await enqueueJobOnce(store, {
         queue: "github.auth.recover",
         jobKey: "github.auth.recover",
         recurringEveryMs: 30_000,

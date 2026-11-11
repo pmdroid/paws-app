@@ -61,7 +61,7 @@ export async function probeSchedulerRuntime(
   await activateLinearItem(sqliteDb(db), "session", "original");
   const heldLoop = new JobLoop(db, clock);
   let heldTicks = 0;
-  registerScheduler(
+  await registerScheduler(
     heldLoop,
     () => {
       heldTicks += 1;
@@ -98,7 +98,7 @@ export async function probeSchedulerRuntime(
     scheduling: async () => ({}),
   });
   try {
-    registerScheduler(
+    await registerScheduler(
       jobs,
       async () => {
         events.push(`reconcile:${(await getLinearSession(sqliteDb(db), "session"))?.activeItemId}`);
@@ -160,7 +160,7 @@ export async function probeSchedulerRuntime(
     );
     const loop = new JobLoop(defaults, clock);
     const run = () => workspaceDispatch(defaults, { now: clock.now() });
-    registerScheduler(
+    await registerScheduler(
       loop,
       async () => {
         await run();

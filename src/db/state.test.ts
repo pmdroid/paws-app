@@ -550,7 +550,7 @@ describe("restart recovery", () => {
     await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
     await markRun(sqliteDb(db), run.id, "ended", clock.now());
     await applyWorkItemEvent(sqliteDb(db), item.id, "answer_received");
-    enqueueJobOnce(db, {
+    await enqueueJobOnce(sqliteDb(db), {
       queue: JOB_KIND.resume,
       jobKey: "resume:answer:q-1",
       payload: { itemId: item.id, freshSession: true, reason: "answer", handoff: "Q and A" },

@@ -23,7 +23,7 @@ import type { FiledFindingIssue, FindingIssueRequest } from "./finding-issues";
 export type TrackerRequestOptions = {
   signal?: AbortSignal;
   reconcile?: boolean;
-  isCurrent?: () => boolean;
+  isCurrent?: () => Promise<boolean>;
 };
 
 /**
