@@ -342,7 +342,7 @@ export async function probeExecutionStopStates(root: string) {
       });
       const origin = `http://127.0.0.1:${server.port}`;
       access = createWorkspaceAccess({
-        db,
+        store: sqliteDb(db),
         publicUrl: origin,
         clientId: "client",
         installedOrganization: { id: "org", name: "Stop states" },

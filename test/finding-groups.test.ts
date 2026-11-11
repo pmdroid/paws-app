@@ -351,7 +351,7 @@ test("group actions require the workspace CSRF token and same origin", async () 
   const origin = `http://127.0.0.1:${port}`;
   f.db.run("UPDATE workspace_member SET source='manual',manual_role='admin'");
   const access = createWorkspaceAccess({
-    db: f.db,
+    store: sqliteDb(f.db),
     publicUrl: origin,
     clientId: "fixture",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -375,7 +375,7 @@ test("group actions require the workspace CSRF token and same origin", async () 
     findingGroups: { issues: f.issues },
   });
   try {
-    const session = await issueWorkspaceSession(f.db, {
+    const session = await issueWorkspaceSession(sqliteDb(f.db), {
       workspaceId: "ws",
       userId: "ada",
       now: Date.now(),

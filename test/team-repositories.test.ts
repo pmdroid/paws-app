@@ -37,7 +37,7 @@ function allowed(db: ReturnType<typeof tempDb>, team: string, repository: string
 test("a team with linked repositories may only use those", async () => {
   const db = seed();
   try {
-    await refreshRepositoryCatalog(db, async () => [
+    await refreshRepositoryCatalog(sqliteDb(db), async () => [
       {
         owner: "acme",
         repo: "other",
@@ -56,7 +56,7 @@ test("a team with linked repositories may only use those", async () => {
 test("a team without linked repositories may use any repository Paws can access", async () => {
   const db = seed();
   try {
-    await refreshRepositoryCatalog(db, async () => [
+    await refreshRepositoryCatalog(sqliteDb(db), async () => [
       {
         owner: "acme",
         repo: "paws-app",
@@ -90,7 +90,7 @@ test("the workspace GitHub App resolves a repository found in the access catalog
       `INSERT INTO workspace_github_connection(workspace_id,generation,secret_id,installation_id,repositories)
        VALUES('ws',1,'secret-1','42','["acme/linked"]')`,
     );
-    await refreshRepositoryCatalog(db, async () => [
+    await refreshRepositoryCatalog(sqliteDb(db), async () => [
       {
         owner: "acme",
         repo: "paws-app",

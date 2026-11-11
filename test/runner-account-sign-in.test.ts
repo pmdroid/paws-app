@@ -44,7 +44,7 @@ async function fixture(runnerVersion = "0.1.61") {
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-host", now);
+  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "fixture-host", now);
   const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "fixture-host",

@@ -488,7 +488,7 @@ for (const admin of [false, true]) {
     const scene = fixture();
     try {
       const access = createWorkspaceAccess({
-        db: scene.db,
+        store: sqliteDb(scene.db),
         publicUrl: "https://paws.example",
         clientId: "fixture-client",
         installedOrganization: { id: "org", name: "Workspace" },

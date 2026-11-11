@@ -50,7 +50,7 @@ async function replicas() {
     organizationId: "acme",
     name: "Acme",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "acme", clock)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "acme", clock)),
     now: clock,
   });
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [

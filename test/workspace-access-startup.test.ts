@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isTransient } from "../src/core";
-import { migrate, openDatabase } from "../src/db";
+import { migrate, openDatabase, sqliteDb } from "../src/db";
 import { startWorkspaceAccess } from "../src/workspace";
 
 function timeoutError() {
@@ -19,7 +19,7 @@ async function withRuntime(
   migrate(db);
   let errors = 0;
   const runtime = startWorkspaceAccess({
-    db,
+    store: sqliteDb(db),
     publicUrl: "https://paws.example",
     clientId: "client",
     accessRetryBaseMs: 5,

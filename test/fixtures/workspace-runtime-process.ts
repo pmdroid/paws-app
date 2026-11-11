@@ -168,10 +168,14 @@ async function createOwner() {
     organizationId: "org",
     name: "Local workspace",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(paws.db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(paws.db), "org", now)),
     now,
   });
-  const issued = await issueWorkspaceSession(paws.db, { userId, workspaceId: workspace.id, now });
+  const issued = await issueWorkspaceSession(sqliteDb(paws.db), {
+    userId,
+    workspaceId: workspace.id,
+    now,
+  });
   return { userId, workspace, issued };
 }
 

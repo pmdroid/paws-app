@@ -59,7 +59,7 @@ export async function probeRunnerWork(
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-work", now);
+  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "fixture-work", now);
   const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "fixture-work",

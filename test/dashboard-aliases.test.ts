@@ -58,7 +58,7 @@ test("run, session and verdict links resolve through stored records the signed-i
   const port = reservation.port!;
   await reservation.stop(true);
   const access = createWorkspaceAccess({
-    db,
+    store: sqliteDb(db),
     publicUrl: `http://127.0.0.1:${port}`,
     clientId: "fixture",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -84,7 +84,7 @@ test("run, session and verdict links resolve through stored records the signed-i
   try {
     for (const path of [`/runs/${runs[0]}`, "/sessions/session-mine", "/verdicts/PAS-1"])
       expect((await fetch(alias(path))).status).toBe(401);
-    const session = await issueWorkspaceSession(db, {
+    const session = await issueWorkspaceSession(sqliteDb(db), {
       workspaceId: "workspace",
       userId: "member",
       now: Date.now(),

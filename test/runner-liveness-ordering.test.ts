@@ -37,7 +37,7 @@ async function fixture() {
     organizationId: "org",
     name: "Test",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", clock.now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", clock.now)),
     now: clock.now,
   });
   db.run(

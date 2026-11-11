@@ -565,7 +565,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       queue: "repository.catalog.refresh",
       everyMs: 600_000,
       atStartup: true,
-      run: () => refreshRepositoryCatalog(db, listCatalog),
+      run: () => refreshRepositoryCatalog(store, listCatalog),
     });
   if (options?.refreshAgentCatalog) {
     const agentCatalog = createAgentCatalog({ db, registry: createNpmRegistry() });
@@ -837,7 +837,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         throw new Error("Public workspace assignments require verified Linear task access.");
       {
         assignments = createWorkspaceAssignments({
-          db,
+          store,
           origin: runtime.publicUrl!,
           clientId: runtime.linearClientId!,
           memberships: members!,
@@ -869,7 +869,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           }
         })(),
         slackIdentities: createSlackIdentityReads({ home: paths.home, db }),
-        db,
+        store,
         publicUrl: runtime.publicUrl!,
         clientId: runtime.linearClientId!,
         memberships: linear.memberships,
@@ -905,7 +905,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     if (!bot) throw new Error("Attribution App bot authority is unavailable");
     const policy = options?.commitPolicyForItem
       ? await options.commitPolicyForItem(item)
-      : { bot, credit: await delegatorCommitCredit(db, item.id) };
+      : { bot, credit: await delegatorCommitCredit(store, item.id) };
     if (
       bot.appId !== policy.bot.appId ||
       bot.id !== policy.bot.id ||

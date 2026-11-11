@@ -48,7 +48,7 @@ async function fixture() {
     organizationId: "fixture-host",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "fixture-host", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "fixture-host", now)),
     now,
   });
   const principal = (id: string, role: WorkspacePrincipal["role"]): WorkspacePrincipal => ({

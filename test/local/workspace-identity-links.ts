@@ -48,7 +48,7 @@ export async function probeWorkspaceIdentityLinks(
     ...workspace,
     userId: ids[0]!,
     now,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
   });
   for (const userId of ids)
     await syncWorkspaceMember(sqliteDb(db), {
@@ -126,7 +126,7 @@ export async function probeWorkspaceIdentityLinks(
   });
   const origin = `http://127.0.0.1:${server.port}`;
   access = createWorkspaceAccess({
-    db,
+    store: sqliteDb(db),
     publicUrl: origin,
     clientId: "client",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -147,17 +147,17 @@ export async function probeWorkspaceIdentityLinks(
       },
     },
   });
-  const owner = await issueWorkspaceSession(db, {
+  const owner = await issueWorkspaceSession(sqliteDb(db), {
     workspaceId: workspace.id,
     userId: ids[0]!,
     now,
   });
-  const admin = await issueWorkspaceSession(db, {
+  const admin = await issueWorkspaceSession(sqliteDb(db), {
     workspaceId: workspace.id,
     userId: ids[1]!,
     now,
   });
-  const member = await issueWorkspaceSession(db, {
+  const member = await issueWorkspaceSession(sqliteDb(db), {
     workspaceId: workspace.id,
     userId: ids[2]!,
     now,
@@ -232,7 +232,7 @@ export async function probeWorkspaceIdentityLinks(
       new Request(origin, { headers: { cookie: `${WORKSPACE_COOKIE}=${admin.token}` } }),
       Date.now(),
     ))!;
-    const raced = createWorkspaceIdentityLinks({ db, slack }).handle(
+    const raced = createWorkspaceIdentityLinks({ store: sqliteDb(db), slack }).handle(
       new Request(`${origin}/api/workspaces/identity-links`, {
         method: "PUT",
         headers: {
@@ -308,7 +308,7 @@ export async function probeWorkspaceIdentityLinks(
     });
     let transactionDenial: Response | null;
     try {
-      transactionDenial = await createWorkspaceIdentityLinks({ db, slack }).handle(
+      transactionDenial = await createWorkspaceIdentityLinks({ store: sqliteDb(db), slack }).handle(
         new Request(`${origin}/api/workspaces/identity-links`, {
           method: "PUT",
           headers: {
@@ -407,7 +407,7 @@ export async function probeWorkspaceIdentityLinks(
         release = resolve;
       }),
     };
-    const service = createWorkspaceIdentityLinks({ db, slack });
+    const service = createWorkspaceIdentityLinks({ store: sqliteDb(db), slack });
     const delayed = service.syncUser(workspace.id, ids[8]!);
     await started;
     const during = await save(admin, ids[8]!, "slack", "U888");

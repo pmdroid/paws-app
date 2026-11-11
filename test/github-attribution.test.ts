@@ -49,9 +49,21 @@ async function fixture(configured = true) {
     teamIds: ["team"],
     now,
   });
-  const alice = await issueWorkspaceSession(db, { workspaceId: "workspace", userId: "alice", now });
-  const bob = await issueWorkspaceSession(db, { workspaceId: "workspace", userId: "bob", now });
-  const other = await issueWorkspaceSession(db, { workspaceId: "other", userId: "alice", now });
+  const alice = await issueWorkspaceSession(sqliteDb(db), {
+    workspaceId: "workspace",
+    userId: "alice",
+    now,
+  });
+  const bob = await issueWorkspaceSession(sqliteDb(db), {
+    workspaceId: "workspace",
+    userId: "bob",
+    now,
+  });
+  const other = await issueWorkspaceSession(sqliteDb(db), {
+    workspaceId: "other",
+    userId: "alice",
+    now,
+  });
   let active = true;
   let guest = false;
   let tokenScope = "";
@@ -91,7 +103,7 @@ async function fixture(configured = true) {
   const origin = `http://127.0.0.1:${server.port}`;
   function reconstruct() {
     access = createWorkspaceAccess({
-      db,
+      store: sqliteDb(db),
       publicUrl: origin,
       clientId: "linear-client",
       installedOrganization: { id: "org", name: "Workspace" },

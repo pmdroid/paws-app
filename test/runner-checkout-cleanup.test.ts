@@ -40,7 +40,7 @@ async function tornDownRun(state: string, runnerVersion = CURRENT) {
       organizationId: "org",
       name: "Test",
       userId,
-      tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+      tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
       now,
     });
     db.run(

@@ -12,10 +12,8 @@ import {
   type Steps,
   type WorkspaceRole,
   type WorkspaceSession,
-  sqliteDb,
 } from "../db";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import type { Database } from "bun:sqlite";
 
 export type WorkspacePrincipal = {
   workspaceId: string;
@@ -54,12 +52,12 @@ export function workspaceId(now = Date.now()): string {
 }
 
 export async function issueWorkspaceBootstrap(
-  db: Database,
+  store: Db,
   organizationId: string,
   now = Date.now(),
 ): Promise<string> {
   const token = workspaceSecret();
-  await createWorkspaceBootstrap(sqliteDb(db), {
+  await createWorkspaceBootstrap(store, {
     tokenHash: workspaceTokenHash(token),
     organizationId,
     expiresAt: now + 10 * 60_000,
@@ -75,10 +73,9 @@ export class WorkspaceAccessRevoked extends Error {
 }
 
 export async function issueWorkspaceSession(
-  db: Database,
+  store: Db,
   input: { userId: string; workspaceId: string; now: number },
 ): Promise<{ token: string; session: WorkspaceSession }> {
-  const store = sqliteDb(db);
   const member = await store.run((q) => workspaceMemberSteps(q, input.workspaceId, input.userId));
   if (member?.revokedAt != null) throw new WorkspaceAccessRevoked();
   if (!workspaceMemberUsable(member)) throw new Error("Workspace membership is required.");

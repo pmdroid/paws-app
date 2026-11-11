@@ -113,7 +113,7 @@ test("a member's overview, merge queue and issue list hold only their teams' dia
   const port = reservation.port!;
   await reservation.stop(true);
   const access = createWorkspaceAccess({
-    db,
+    store: sqliteDb(db),
     publicUrl: `http://127.0.0.1:${port}`,
     clientId: "fixture",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -132,7 +132,7 @@ test("a member's overview, merge queue and issue list hold only their teams' dia
   const server = startServer({ port, hostname: "127.0.0.1", db, workspaceAccess: access });
   const cookie = async (userId: string) => ({
     headers: {
-      cookie: `${WORKSPACE_COOKIE}=${(await issueWorkspaceSession(db, { workspaceId: "workspace", userId, now: Date.now() })).token}`,
+      cookie: `${WORKSPACE_COOKIE}=${(await issueWorkspaceSession(sqliteDb(db), { workspaceId: "workspace", userId, now: Date.now() })).token}`,
     },
   });
   const member = await cookie("member");

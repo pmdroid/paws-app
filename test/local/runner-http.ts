@@ -37,7 +37,7 @@ export async function probeRunnerHttp(
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-http", now);
+  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "fixture-http", now);
   const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "fixture-http",

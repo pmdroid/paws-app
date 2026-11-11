@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { migrate, openDatabase } from "../src/db";
+import { migrate, openDatabase, sqliteDb } from "../src/db";
 import { createBrowserOnboarding } from "../src/onboarding";
 import { startServer } from "../src/server";
 import {
@@ -32,7 +32,7 @@ function fixture() {
 
 function options(db: ReturnType<typeof openDatabase>) {
   return {
-    db,
+    store: sqliteDb(db),
     publicUrl: origin,
     clientId: "fixture-client",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -113,7 +113,7 @@ test("OAuth state stays bounded across instances and admits starts after expirat
   const another = openDatabase(join(home, "paws.sqlite"));
   cleanups.push(() => another.close());
   const start = (connection: typeof db, now = 1_000) =>
-    beginWorkspaceOAuth(connection, {
+    beginWorkspaceOAuth(sqliteDb(connection), {
       clientId: "fixture-client",
       origin,
       bootstrap: null,

@@ -31,7 +31,7 @@ export async function probeRunnerPolicyBrowser(
     name: "Admin",
     email: "admin@example.invalid",
   });
-  const token = await issueWorkspaceBootstrap(db, "org", now);
+  const token = await issueWorkspaceBootstrap(sqliteDb(db), "org", now);
   const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "org",

@@ -60,7 +60,7 @@ export async function probeWorkspaceAuthorization(
   await consumeWorkspaceBootstrap(sqliteDb(db), {
     ...workspace,
     userId: ownerId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
     now,
   });
   await syncWorkspaceMember(sqliteDb(db), {
@@ -79,22 +79,22 @@ export async function probeWorkspaceAuthorization(
     teamIds: ["team-a"],
     now,
   });
-  const owner = await issueWorkspaceSession(db, {
+  const owner = await issueWorkspaceSession(sqliteDb(db), {
     workspaceId: workspace.id,
     userId: ownerId,
     now,
   });
-  let member = await issueWorkspaceSession(db, {
+  let member = await issueWorkspaceSession(sqliteDb(db), {
     workspaceId: workspace.id,
     userId: memberId,
     now,
   });
-  const admin = await issueWorkspaceSession(db, {
+  const admin = await issueWorkspaceSession(sqliteDb(db), {
     workspaceId: workspace.id,
     userId: adminId,
     now,
   });
-  const oldOwner = await issueWorkspaceSession(db, {
+  const oldOwner = await issueWorkspaceSession(sqliteDb(db), {
     workspaceId: workspace.id,
     userId: ownerId,
     now: now - 2 * 24 * 60 * 60_000,
@@ -193,7 +193,7 @@ export async function probeWorkspaceAuthorization(
   });
   const origin = `http://127.0.0.1:${server.port}`;
   const access = createWorkspaceAccess({
-    db,
+    store: sqliteDb(db),
     publicUrl: origin,
     clientId: "client",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -560,7 +560,7 @@ export async function probeWorkspaceAuthorization(
         status: pageAction.status,
       },
     );
-    const outageSession = await issueWorkspaceSession(db, {
+    const outageSession = await issueWorkspaceSession(sqliteDb(db), {
       workspaceId: workspace.id,
       userId: ownerId,
       now,
@@ -633,7 +633,11 @@ export async function probeWorkspaceAuthorization(
     guest = false;
     memberTeams = [];
     await access.refreshMemberships();
-    member = await issueWorkspaceSession(db, { workspaceId: workspace.id, userId: memberId, now });
+    member = await issueWorkspaceSession(sqliteDb(db), {
+      workspaceId: workspace.id,
+      userId: memberId,
+      now,
+    });
     const refreshed = (await (
       await fetch(`${origin}/api/issues`, { headers: headers(member) })
     ).json()) as typeof ownerIssues;

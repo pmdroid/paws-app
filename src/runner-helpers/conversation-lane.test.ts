@@ -41,7 +41,7 @@ async function fixture(version: string | null, conversations?: number) {
     organizationId: "org",
     name: "Acme",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
     now,
   });
   db.run(

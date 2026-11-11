@@ -136,7 +136,7 @@ test("admin revoke atomically ends sessions, runners, queued and running work; s
     );
     expect(await listUserWorkspaces(sqliteDb(db), "member")).toEqual([]);
     await expect(
-      issueWorkspaceSession(db, { workspaceId: "workspace", userId: "member", now }),
+      issueWorkspaceSession(sqliteDb(db), { workspaceId: "workspace", userId: "member", now }),
     ).rejects.toThrow(WORKSPACE_REVOKED_SIGN_IN);
     expect(
       await requestWorkspaceSession(
@@ -154,7 +154,13 @@ test("admin revoke atomically ends sessions, runners, queued and running work; s
     });
     expect(restored.status).toBe(200);
     expect(
-      (await issueWorkspaceSession(db, { workspaceId: "workspace", userId: "member", now })).token,
+      (
+        await issueWorkspaceSession(sqliteDb(db), {
+          workspaceId: "workspace",
+          userId: "member",
+          now,
+        })
+      ).token,
     ).toBeTruthy();
     expect(db.query("SELECT status,fence FROM runner WHERE id='box'").get()).toEqual({
       status: "revoked",
@@ -361,7 +367,7 @@ test("a forced attribution refresh corrects an inactive snapshot after joining a
     let reads = 0;
     let at = Date.now() + 100;
     const access = createWorkspaceAccess({
-      db: f.db,
+      store: sqliteDb(f.db),
       publicUrl: f.origin,
       clientId: "client",
       installedOrganization: { id: "org", name: "Workspace" },

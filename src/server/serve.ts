@@ -473,7 +473,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
           resolve: (repository) => activation.resolve(repository),
         });
         return (await handleWorkspaceGitHubIntegration(request, {
-          db: secrets.db,
+          store: sqliteDb(secrets.db),
           principal: access.principal,
           session: access.session,
           origin: workspace.origin,

@@ -239,7 +239,7 @@ async function runnerWithSlots(db: ReturnType<typeof tempDb>, capacity: number):
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", 0)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", 0)),
     now: 0,
   });
   db.run(

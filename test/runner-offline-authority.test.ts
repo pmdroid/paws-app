@@ -69,7 +69,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", pawsNow())),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", pawsNow())),
     now: pawsNow(),
   });
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [

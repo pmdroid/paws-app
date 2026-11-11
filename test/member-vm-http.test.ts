@@ -56,7 +56,9 @@ async function fixture(options: { size?: ExeDevVmSize } = {}) {
     organizationId: "vm-org",
     name: "vm-org",
     userId: ownerUserId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "vm-org", clock.now())),
+    tokenHash: workspaceTokenHash(
+      await issueWorkspaceBootstrap(sqliteDb(db), "vm-org", clock.now()),
+    ),
     now: clock.now(),
   });
   const person = async (name: string, active = true): Promise<WorkspacePrincipal> => {

@@ -207,7 +207,9 @@ const workspace = await consumeWorkspaceBootstrap(sqliteDb(paws.db), {
   organizationId: "org",
   name: "Fixture",
   userId,
-  tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(paws.db, "org", Date.now())),
+  tokenHash: workspaceTokenHash(
+    await issueWorkspaceBootstrap(sqliteDb(paws.db), "org", Date.now()),
+  ),
   now: Date.now(),
 });
 paws.db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [

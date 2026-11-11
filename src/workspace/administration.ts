@@ -1,6 +1,5 @@
 import { isWorkspaceAdmin } from "./eligibility";
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import {
   auditWorkspaceAccessSteps,
   changeWorkspaceRole,
@@ -10,10 +9,10 @@ import {
   listWorkspaceAuditSteps,
   listWorkspaceRepositoriesSteps,
   replaceWorkspaceRepositoriesSteps,
-  sqliteDb,
   workspaceMemberSteps,
   type WorkspaceRole,
   type WorkspaceSession,
+  type Db,
 } from "../db";
 import type { LinearMembershipReads } from "../linear";
 import { validWorkspaceCsrf, type WorkspacePrincipal } from "./session";
@@ -21,7 +20,7 @@ import { validWorkspaceCsrf, type WorkspacePrincipal } from "./session";
 export async function handleWorkspaceAdministration(
   request: Request,
   options: {
-    db: Database;
+    store: Db;
     principal: WorkspacePrincipal;
     session: WorkspaceSession;
     origin: string;
@@ -40,7 +39,7 @@ export async function handleWorkspaceAdministration(
   )
     return null;
   const principal = options.principal;
-  const store = sqliteDb(options.db);
+  const { store } = options;
   const workspaceId = principal.workspaceId;
   const deny = async (message: string) => {
     const audit = {
@@ -147,7 +146,7 @@ export async function handleWorkspaceAdministration(
         verified.userId !== member.linearUserId
       )
         throw new Error("Linear membership could not be verified.");
-      await changeWorkspaceRole(sqliteDb(options.db), {
+      await changeWorkspaceRole(options.store, {
         workspaceId: principal.workspaceId,
         actorId: principal.userId,
         userId: body["userId"],

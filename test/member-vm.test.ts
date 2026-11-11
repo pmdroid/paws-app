@@ -69,7 +69,7 @@ async function fixture(input: { exeDev?: ExeDev; installPolls?: number } = {}) {
     name: "Workspace Owner",
     email: "owner@example.invalid",
   });
-  const issued = await issueWorkspaceBootstrap(db, "vm-org", clock.now());
+  const issued = await issueWorkspaceBootstrap(sqliteDb(db), "vm-org", clock.now());
   const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "vm-org",

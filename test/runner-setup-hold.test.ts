@@ -104,7 +104,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     organizationId: "org",
     name: "Fixture",
     userId: ownerId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
     now,
   });
   const memberId = await putWorkspaceUser(sqliteDb(db), {

@@ -43,7 +43,7 @@ export async function probeRunnerEvidenceRelays(
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(db, "relay-org", now);
+  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "relay-org", now);
   const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "relay-org",

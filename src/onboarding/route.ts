@@ -116,7 +116,7 @@ export function createBrowserOnboarding(options: {
           { error: "Configure LINEAR_ORGANIZATION_ID to match this Paws workspace on the server." },
           { status: 503, headers: { "cache-control": "no-store" } },
         );
-      return beginWorkspaceOAuth(db, {
+      return beginWorkspaceOAuth(sqliteDb(db), {
         clientId: options.clientId!,
         origin,
         now: now(),
@@ -125,7 +125,7 @@ export function createBrowserOnboarding(options: {
     }
     if (url.pathname === "/auth/linear/callback") {
       try {
-        const { identity } = await completeWorkspaceOAuth(db, request, {
+        const { identity } = await completeWorkspaceOAuth(sqliteDb(db), request, {
           clientId: options.clientId!,
           origin,
           now: now(),
@@ -252,7 +252,7 @@ export function createBrowserOnboarding(options: {
       });
       let workspace = await workspaceForOrganization(sqliteDb(db), organization.id);
       if (workspace === null) {
-        const grant = await issueWorkspaceBootstrap(db, organization.id, timestamp);
+        const grant = await issueWorkspaceBootstrap(sqliteDb(db), organization.id, timestamp);
         workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
           id: workspaceId(),
           organizationId: organization.id,
@@ -270,7 +270,7 @@ export function createBrowserOnboarding(options: {
         teamIds: member.teamIds,
         now: timestamp + 1,
       });
-      const session = await issueWorkspaceSession(db, {
+      const session = await issueWorkspaceSession(sqliteDb(db), {
         workspaceId: workspace.id,
         userId,
         now: timestamp + 1,

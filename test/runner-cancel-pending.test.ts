@@ -51,7 +51,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       organizationId: "org",
       name: "Test",
       userId,
-      tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+      tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
       now,
     });
     db.run(

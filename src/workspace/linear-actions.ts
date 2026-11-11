@@ -1,15 +1,14 @@
 import { canAct } from "./eligibility";
-import type { Database } from "bun:sqlite";
 import {
   auditWorkspaceAccessSteps,
   getLinearSessionAccessSteps,
   getLinearSessionInstallationSteps,
-  sqliteDb,
   syncWorkspaceMemberSteps,
   workspaceForOrganizationSteps,
   workspaceLinearMemberSteps,
   type Q,
   type Steps,
+  type Db,
 } from "../db";
 import {
   LinearEntityNotFoundError,
@@ -18,13 +17,13 @@ import {
 } from "../linear";
 
 export function createWorkspaceLinearActions(options: {
-  db: Database;
+  store: Db;
   organizationId: string;
   clientId: string;
   memberships: LinearMembershipReads;
   now: () => number;
 }) {
-  const store = sqliteDb(options.db);
+  const { store } = options;
   const workspaceOf = () =>
     store.run((q) => workspaceForOrganizationSteps(q, options.organizationId));
   const memberOf = (workspaceId: string, actorId: string) =>

@@ -55,7 +55,7 @@ export async function probeStandaloneAttribution(root: string) {
     teamIds: ["team"],
     now,
   });
-  const session = await issueWorkspaceSession(db, {
+  const session = await issueWorkspaceSession(sqliteDb(db), {
     workspaceId: "workspace",
     userId: "steerer",
     now,
@@ -100,7 +100,7 @@ export async function probeStandaloneAttribution(root: string) {
   const bot = { appId: "99", id: 88, login: "paws-test[bot]" };
   const policyForItem = async (): Promise<GitCommitPolicy> => ({
     bot,
-    credit: await delegatorCommitCredit(db, item.id),
+    credit: await delegatorCommitCredit(sqliteDb(db), item.id),
   });
   const requests: string[] = [];
   const realFetch = globalThis.fetch;

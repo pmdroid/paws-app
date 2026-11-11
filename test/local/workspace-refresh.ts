@@ -34,7 +34,7 @@ export async function probeWorkspaceRefresh(root: string, observe: Observe) {
     organizationId: "org",
     name: "Workspace",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org")),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org")),
     now: Date.now(),
   });
   let reads = 0;
@@ -43,7 +43,7 @@ export async function probeWorkspaceRefresh(root: string, observe: Observe) {
   let maxActiveReads = 0;
   const secondGate = Promise.withResolvers<void>();
   const secondStarted = Promise.withResolvers<void>();
-  const sessionBeforeRefresh = await issueWorkspaceSession(db, {
+  const sessionBeforeRefresh = await issueWorkspaceSession(sqliteDb(db), {
     userId,
     workspaceId: workspace.id,
     now: Date.now(),
@@ -51,7 +51,7 @@ export async function probeWorkspaceRefresh(root: string, observe: Observe) {
   const gate = Promise.withResolvers<void>();
   const started = Promise.withResolvers<void>();
   const runtime = startWorkspaceAccess({
-    db,
+    store: sqliteDb(db),
     publicUrl: "https://paws.example",
     clientId: "client",
     refreshIntervalMs: 50,
@@ -161,10 +161,10 @@ export async function probeWorkspaceRefresh(root: string, observe: Observe) {
     organizationId: "org",
     name: "Workspace",
     userId: memberId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(draining, "org", 0)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(draining), "org", 0)),
     now: 0,
   });
-  const session = await issueWorkspaceSession(draining, {
+  const session = await issueWorkspaceSession(sqliteDb(draining), {
     userId: memberId,
     workspaceId: selected.id,
     now: Date.now(),
@@ -173,7 +173,7 @@ export async function probeWorkspaceRefresh(root: string, observe: Observe) {
   const requestStarted = Promise.withResolvers<void>();
   let requestReads = 0;
   const owner = startWorkspaceAccess({
-    db: draining,
+    store: sqliteDb(draining),
     publicUrl: "https://paws.example",
     clientId: "client",
     onError: () => errors++,
@@ -222,7 +222,7 @@ export async function probeWorkspaceRefresh(root: string, observe: Observe) {
   );
   let boundaryReads = 0;
   const boundary = startWorkspaceAccess({
-    db: draining,
+    store: sqliteDb(draining),
     publicUrl: "https://paws.example",
     clientId: "client",
     onError: () => errors++,

@@ -58,7 +58,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     organizationId: "org",
     name: "Workspace",
     userId: ownerId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
     now,
   });
   for (const [id, role, active, teams] of [
@@ -108,7 +108,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
   let delayed: { entered(): void; wait: Promise<void> } | undefined;
   let lookupFails = false;
   const access = createWorkspaceAccess({
-    db,
+    store: sqliteDb(db),
     publicUrl: "http://127.0.0.1",
     clientId: "client",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -566,7 +566,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     organizationId: "org",
     name: "Workspace",
     userId: "owner",
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
     now,
   });
   await putWorkspaceUser(sqliteDb(db), {

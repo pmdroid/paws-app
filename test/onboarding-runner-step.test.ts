@@ -138,7 +138,7 @@ async function fixture({
     organizationId: "org",
     name: "org",
     userId: ownerId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", clock.now())),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", clock.now())),
     now: clock.now(),
   });
   const userId = await putWorkspaceUser(sqliteDb(db), {

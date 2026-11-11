@@ -67,7 +67,7 @@ async function blockedAfterCleanupFailure() {
     organizationId: "org",
     name: "Fixture",
     userId: "owner",
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
     now,
   });
   db.run(

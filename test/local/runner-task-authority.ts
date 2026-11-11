@@ -77,7 +77,7 @@ export async function probeRunnerTaskAuthority(
     organizationId: "task-org",
     name: "Tasks",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "task-org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "task-org", now)),
     now,
   });
   const identity = join(root, "identity");

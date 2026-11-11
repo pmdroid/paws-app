@@ -300,7 +300,7 @@ async function firstDelegation(
     organizationId: "org",
     name: "Workspace",
     userId: owner,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now())),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now())),
     now: now(),
   });
   // The owner's runner is online and free the whole time. Nova may not use it.
@@ -328,7 +328,7 @@ async function firstDelegation(
   });
   // As `src/index.ts` wires them for a public dashboard.
   const assignments = createWorkspaceAssignments({
-    db,
+    store: sqliteDb(db),
     origin: ORIGIN,
     clientId: "client",
     memberships: cacheLinearMemberships(linear.memberships!, now),
@@ -341,7 +341,7 @@ async function firstDelegation(
   });
   assignments.register(jobs);
   const access = createWorkspaceAccess({
-    db,
+    store: sqliteDb(db),
     assignments,
     publicUrl: ORIGIN,
     clientId: "client",

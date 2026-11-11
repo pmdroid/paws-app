@@ -65,7 +65,7 @@ async function setup(options: { version?: string; conversations?: number } = {})
     organizationId: "org-acme",
     name: "Acme",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org-acme", T0)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org-acme", T0)),
     now: T0,
   });
   db.run(

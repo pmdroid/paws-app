@@ -43,7 +43,7 @@ export async function probeRunnerTranscripts(
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(db, "transcript-org", now);
+  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "transcript-org", now);
   const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "transcript-org",

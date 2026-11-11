@@ -48,7 +48,7 @@ async function workspace() {
     organizationId: "org",
     name: "Test",
     userId: await user("owner"),
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", NOW)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", NOW)),
     now: NOW,
   });
   for (const id of ["me", "colleague", "lead"])

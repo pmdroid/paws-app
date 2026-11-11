@@ -362,7 +362,7 @@ async function runnerWorld() {
     organizationId: "org",
     name: "Test",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(w.db, "org", w.now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(w.db), "org", w.now)),
     now: w.now,
   });
   w.db.run(

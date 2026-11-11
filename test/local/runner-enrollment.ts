@@ -82,7 +82,7 @@ export async function probeRunnerEnrollment(
     name: "Fixture owner",
     email: "enroll-owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(db, "enroll-org", now);
+  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "enroll-org", now);
   const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "enroll-org",

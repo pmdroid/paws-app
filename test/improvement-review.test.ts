@@ -685,7 +685,7 @@ describe("individual finding issues share the inbox claim", () => {
       },
       now: () => END + 50,
     });
-    const { session } = await issueWorkspaceSession(w.db, {
+    const { session } = await issueWorkspaceSession(sqliteDb(w.db), {
       workspaceId: "ws",
       userId: "user-bea",
       now: END,

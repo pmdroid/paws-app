@@ -47,7 +47,7 @@ async function seed() {
   db.run(
     "INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES('ws','acme/linked','mapped')",
   );
-  await refreshRepositoryCatalog(db, async () =>
+  await refreshRepositoryCatalog(sqliteDb(db), async () =>
     ["linked", "catalog"].map((repo) => ({
       owner: "acme",
       repo,

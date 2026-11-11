@@ -51,7 +51,7 @@ export async function probeRunnerRepositoryAccess(
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-repository", now);
+  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "fixture-repository", now);
   const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "fixture-repository",

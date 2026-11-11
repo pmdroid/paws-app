@@ -40,7 +40,7 @@ async function acme() {
     organizationId: "acme-org",
     name: "Acme",
     userId: ada,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "acme-org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "acme-org", now)),
     now,
   });
   await recordLinearInstallation(sqliteDb(db), {

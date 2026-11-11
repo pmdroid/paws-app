@@ -1,14 +1,13 @@
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import { changeDecision, decisionAnswers, listDecisions } from "../decisions";
-import { sqliteDb, type WorkspaceSession } from "../db";
+import { type WorkspaceSession, type Db } from "../db";
 import { readWorkspaceJson } from "./administration";
 import { requestWorkspaceSession, validWorkspaceCsrf, type WorkspacePrincipal } from "./session";
 
 export async function handleDecisions(
   request: Request,
   options: {
-    db: Database;
+    store: Db;
     principal: WorkspacePrincipal;
     session: WorkspaceSession;
     origin: string;
@@ -23,11 +22,11 @@ export async function handleDecisions(
   if (request.method === "GET")
     return json({
       decisions: await listDecisions(
-        options.db,
+        options.store,
         actor,
         new URL(request.url).searchParams.get("search")?.slice(0, 1000),
       ),
-      answers: await decisionAnswers(options.db, actor),
+      answers: await decisionAnswers(options.store, actor),
     });
   if (request.method !== "POST") return json({ error: "Use GET or POST." }, 405);
   if (
@@ -57,14 +56,14 @@ export async function handleDecisions(
       (value["retire"] !== undefined && typeof value["retire"] !== "boolean")
     )
       throw new Error("Invalid decision fields.");
-    const current = await requestWorkspaceSession(sqliteDb(options.db), request, options.now());
+    const current = await requestWorkspaceSession(options.store, request, options.now());
     if (
       !current ||
       current.principal.workspaceId !== actor.workspaceId ||
       current.principal.userId !== actor.userId
     )
       return json({ error: "Sign in again before saving a decision." }, 401);
-    const id = await changeDecision(options.db, actor, value, options.now());
+    const id = await changeDecision(options.store, actor, value, options.now());
     return json({ id });
   } catch (error) {
     journalCaught(error, "decisions.handleDecisions.readWorkspaceJson", null);
