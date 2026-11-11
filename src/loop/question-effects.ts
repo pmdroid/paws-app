@@ -55,6 +55,7 @@ import { RETRY_CLOSEOUT, retriesCloseout } from "./closeout-recovery";
 import { retriesMerge } from "../merge";
 import { worktreeBranch } from "./sources";
 import { answerRunnerRepositorySteps } from "./runner-repository";
+import { AGENT_HUNG_REASON, AGENT_HUNG_STOP } from "./runner-wait";
 import { recordVisualReviewOutcomeSteps, visualReviewHandoffSteps } from "./visual-review";
 
 function* consumeTurnSteps(q: Q, question: StoredQuestion): Steps<void> {
@@ -322,10 +323,24 @@ export function questionEffects(
         now: input.now,
       });
   }
+  function* agentHung(q: Q, question: StoredQuestion): Steps<void> {
+    if (question.answer?.trim().toLowerCase() !== AGENT_HUNG_STOP.toLowerCase()) {
+      yield* resume(q, question);
+      return;
+    }
+    yield* consumeTurn(q, question);
+    const item = yield* getWorkItemSteps(q, question.itemId);
+    if (item?.state === "awaiting_input")
+      yield* applyWorkItemEventSteps(q, item.id, "pause", { now: input.now });
+  }
   return {
     "plan-approval": planApproval,
     "visual-review": visualReview,
     "runner-wait": function* (q, question) {
+      if (question.reason === AGENT_HUNG_REASON) {
+        yield* agentHung(q, question);
+        return;
+      }
       yield* consumeTurn(q, question);
       if ((yield* findOpenQuestionSteps(q, question.sessionId))?.itemId === question.itemId) return;
       const item = yield* getWorkItemSteps(q, question.itemId);

@@ -268,6 +268,7 @@ import {
   isHostDiskFull,
   isTransient,
   isTransientGitError,
+  AgentHungError,
   MAX_TRANSIENT_RETRIES,
   RUNNER_CAPACITY_WAIT_MS,
   RunnerCapacityWait,
@@ -684,6 +685,9 @@ import {
 import { sweepWorktrees } from "./worktree-sweep";
 import { sweepCheckpointRefs } from "./checkpoint-ref";
 import {
+  AGENT_HUNG_REASON,
+  AGENT_HUNG_RETRY,
+  AGENT_HUNG_STOP,
   KEEP_WAITING,
   MOVE_TO_ANOTHER_RUNNER,
   waitForRunner,
@@ -4060,7 +4064,9 @@ export class Orchestrator {
             current,
             error instanceof LinearRateLimitError ? error.retryAfterMs : 0,
           );
-        else if (isTransient(error) || slotsBusy(error)) {
+        else if (error instanceof AgentHungError) {
+          if (current.state === "running") await this.askAgentHung(current, run.id, error);
+        } else if (isTransient(error) || slotsBusy(error)) {
           deferred = true;
           capacityWaiting = capacityWaitIn(error) !== null;
           throw error;
@@ -4920,6 +4926,35 @@ export class Orchestrator {
       );
     });
     return this.runnerWaitQuestion(question.id);
+  }
+
+  private async askAgentHung(
+    item: WorkItemRecord,
+    runId: string,
+    error: AgentHungError,
+  ): Promise<void> {
+    const sessionId = this.activitySession(item);
+    if (sessionId === null) {
+      await this.fail(item, "run_error", error.message, error);
+      return;
+    }
+    const body = `The agent on runner ${error.runnerId} hung after its first tool call ${error.hangs} times in a row for ${item.linearIdentifier}: the runner kept confirming the command, but the agent sent nothing for ${error.minutes} minutes. Runs: ${error.runIds.join(", ")}. Paws stopped retrying. Retry once, or stop?`;
+    const now = this.now();
+    await this.store.transaction(function* (q) {
+      const version = (yield* getWorkItemSteps(q, item.id))?.version;
+      return yield* askSteps(
+        q,
+        { itemId: item.id, runId, sessionId, version },
+        "runner-wait",
+        body,
+        {
+          options: [AGENT_HUNG_RETRY, AGENT_HUNG_STOP],
+          reason: AGENT_HUNG_REASON,
+          now,
+        },
+      );
+    });
+    await this.flush();
   }
 
   private runnerWaitQuestion(id: string): RunnerWaitQuestion {

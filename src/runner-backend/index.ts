@@ -24,6 +24,7 @@ import {
   questionRowByIdSteps,
   anyActiveRunnerSteps,
   endLostRunnerWorkSteps,
+  recordRunHangSteps,
   itemStartedRunnerWorkSteps,
   lastRunResultSteps,
   leasedRunnerWorkCommandSteps,
@@ -154,6 +155,8 @@ import {
   type UsageLimit,
 } from "./failover";
 import {
+  AgentHungError,
+  HANG_ASK_AFTER,
   checkpointRef,
   checkpointStart,
   isReadOnlyTaskMode,
@@ -2292,19 +2295,31 @@ export function createRemoteAgentRunner(options: {
               if (unconfirmed || now() - heardAt >= hungRunMs) {
                 const at = now();
                 const minutes = Math.round((at - heardAt) / 60_000);
-                const recovered = await store.transaction(function* (q) {
+                const { recovered, hangs } = await store.transaction(function* (q) {
                   yield* endLostRunnerWorkSteps(q, assigned.runId, assigned.generation, at);
-                  return (
-                    options.placement &&
-                    (yield* options.placement.finishedSteps(q, {
-                      commandId: assigned.id,
-                      runnerId: selected.id,
-                      profile,
-                      failure: "heartbeat_lost",
-                      finishedAt: at,
-                    }))
-                  );
+                  return {
+                    hangs:
+                      !unconfirmed && assigned.type === "run"
+                        ? yield* recordRunHangSteps(q, assigned.runId, selected.id, at)
+                        : null,
+                    recovered:
+                      options.placement &&
+                      (yield* options.placement.finishedSteps(q, {
+                        commandId: assigned.id,
+                        runnerId: selected.id,
+                        profile,
+                        failure: "heartbeat_lost",
+                        finishedAt: at,
+                      })),
+                  };
                 });
+                if (hangs && hangs.count >= HANG_ASK_AFTER) {
+                  journal(
+                    `item ${itemId} run ${assigned.runId} generation ${assigned.generation} hung on runner ${selected.id} after ${minutes} minutes: ${hangs.count} consecutive hangs, asking the team`,
+                  );
+                  await cancelItem(itemId, signal);
+                  throw new AgentHungError(selected.id, hangs.runIds, hangs.count, minutes);
+                }
                 if (!recovered?.retryable) throw new Error(RUN_LOST_MESSAGE);
                 throw await lostRun(
                   unconfirmed

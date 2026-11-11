@@ -62,4 +62,5 @@ export type Checkpoint = {
   lostCommits?: string;
   /** The main the runner's checkpoint `sha` was taken against, when its run had one. */
   checkpointMain?: { sha: string; main: string };
+  hangs?: { runnerId: string; at: number }[];
 };
