@@ -92,7 +92,7 @@ export function postMergeConflict(
   settled(sqliteDb(db).transaction((q) => postMergeConflictSteps(q, item, notice, now)));
 }
 
-function* postMergeConflictSteps(
+export function* postMergeConflictSteps(
   q: Q,
   item: WorkItemRecord,
   notice: MergeConflictNotice,

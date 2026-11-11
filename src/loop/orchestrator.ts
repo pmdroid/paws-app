@@ -587,7 +587,6 @@ import { pullRequestScreenshots } from "./pull-screenshots";
 import { readReviewChecks, withReviewWait } from "./review-checks";
 import {
   readPendingFeedback,
-  restartWithFeedback,
   restartWithFeedbackSteps,
   storedFeedbackReadsSteps,
   type FeedbackReads,
@@ -634,11 +633,10 @@ import {
   parkMerge,
   queueConflictSweep,
   askMergeHelp,
-  rebaseBudgetFor,
   rebaseBudgetForSteps,
   returnQueuedConflicts,
   wakeMergesBehind,
-  postMergeConflict,
+  postMergeConflictSteps,
   type MergePublication,
   type MergeStep,
   type MergeWait,
@@ -5044,11 +5042,12 @@ export class Orchestrator {
     const sent = await this.store.transaction((q) =>
       this.sendBackForConflictSteps(q, item, head, conflict, reads),
     );
+    if (sent?.armed) emitJobReady(this.store);
     if (sent)
       this.options.journal?.(
         `item ${item.linearIdentifier} ${found}: the pull request conflicts with main. Sent back to the agent to rebase.`,
       );
-    return sent;
+    return sent !== null;
   }
 
   private *sendBackForConflictSteps(
@@ -5057,16 +5056,16 @@ export class Orchestrator {
     head: string,
     conflict: { base: string; files: null; reason: "merge" },
     reads: FeedbackReads | null,
-  ): Steps<boolean> {
+  ): Steps<{ armed: boolean } | null> {
     const current = yield* getWorkItemSteps(q, item.id);
     if (
       !current ||
       current.cancelRequested ||
       (current.state !== "verifying" && current.state !== "merge_queue") ||
-      !rebaseBudgetFor(this.db, item.id, conflict, this.now()).allowed
+      !(yield* rebaseBudgetForSteps(q, item.id, conflict, this.now())).allowed
     )
-      return false;
-    const jobId = restartWithFeedback(this.db, current, {
+      return null;
+    const restarted = yield* restartWithFeedbackSteps(q, current, {
       reason: "conflict",
       lead: [REBASE_CONFLICT_INSTRUCTION],
       reads,
@@ -5075,23 +5074,23 @@ export class Orchestrator {
       now: this.now(),
       jobKey: `conflict:${item.id}:recheck:${head}`,
     });
-    if (jobId === null) return false;
+    if (restarted === null) return null;
     yield* recordRebaseReturnSteps(q, {
       itemId: item.id,
-      jobId,
+      jobId: restarted.id,
       candidate: head,
       ...conflict,
       recordedAt: this.now(),
     });
     const pull = yield* getItemPullRequestSteps(q, item.id);
     if (pull !== null)
-      postMergeConflict(
-        this.db,
+      yield* postMergeConflictSteps(
+        q,
         current,
         { sessionId: this.activitySession(current), pullNumber: pull.pullNumber, head },
         this.now(),
       );
-    return true;
+    return { armed: restarted.armed };
   }
 
   /**
@@ -5106,9 +5105,11 @@ export class Orchestrator {
     this.assertJobCurrent(item.id);
     const reads = await this.readPendingFeedback(item);
     this.assertJobCurrent(item.id);
-    return await this.store.transaction((q) =>
+    const sent = await this.store.transaction((q) =>
       this.sendBackForCiSteps(q, item, head, checks, reads),
     );
+    if (sent?.armed) emitJobReady(this.store);
+    return sent !== null;
   }
 
   private *sendBackForCiSteps(
@@ -5117,18 +5118,18 @@ export class Orchestrator {
     head: string,
     checks: readonly FailedCiCheck[],
     reads: FeedbackReads | null,
-  ): Steps<boolean> {
+  ): Steps<{ armed: boolean } | null> {
     const current = yield* getWorkItemSteps(q, item.id);
     if (
       !current ||
       current.cancelRequested ||
       (current.state !== "verifying" && current.state !== "merge_queue")
     )
-      return false;
+      return null;
     const rounds = yield* fixRoundsSteps(q, item.id);
     const limit = this.fixRoundLimit(current);
-    if (rounds >= limit) return false;
-    const jobId = restartWithFeedback(this.db, current, {
+    if (rounds >= limit) return null;
+    const restarted = yield* restartWithFeedbackSteps(q, current, {
       reason: "ci",
       lead: [ciFixHandoff(checks)],
       reads,
@@ -5138,11 +5139,11 @@ export class Orchestrator {
       now: this.now(),
       jobKey: `ci-failed:${item.id}:recheck:${head}`,
     });
-    if (jobId === null) return false;
+    if (restarted === null) return null;
     this.options.journal?.(
       `item ${current.linearIdentifier} re-check at ${head.slice(0, 7)}: ${ciFixRoundLine(checks, rounds + 1, limit)}`,
     );
-    return true;
+    return { armed: restarted.armed };
   }
 
   private *restartForFindingsSteps(
@@ -5155,10 +5156,10 @@ export class Orchestrator {
       limit: number;
       attempts: ReturnType<typeof fixAttemptLimit>;
     },
-  ): Steps<void> {
+  ): Steps<boolean> {
     const latest = yield* getWorkItemSteps(q, itemId);
-    if (latest?.version !== version) return;
-    restartWithFeedback(this.db, latest, {
+    if (latest?.version !== version) return false;
+    const restarted = yield* restartWithFeedbackSteps(q, latest, {
       reason: "findings",
       lead: [input.lead],
       reads: input.reads,
@@ -5167,6 +5168,7 @@ export class Orchestrator {
       now: this.now(),
       limit: input.attempts,
     });
+    return restarted?.armed ?? false;
   }
 
   private *restartWithStoredFeedbackSteps(
@@ -5249,7 +5251,7 @@ export class Orchestrator {
       }
       const reads = await this.readPendingFeedback(current);
       this.assertJobCurrent(item.id);
-      await this.store.transaction((q) =>
+      const armed = await this.store.transaction((q) =>
         this.restartForFindingsSteps(q, item.id, current.version, {
           lead: result?.handoff ?? summary,
           reads,
@@ -5257,6 +5259,7 @@ export class Orchestrator {
           attempts: fixAttemptLimit(limit, rounds + 1, result?.fixesLeft ?? null),
         }),
       );
+      if (armed) emitJobReady(this.store);
       return;
     }
     const sessionId = this.activitySession(item);
@@ -8703,7 +8706,8 @@ export class Orchestrator {
         : null;
     const conflict: RebaseConflict = { base: upstream, files: null };
     const rebase =
-      upstream !== null && rebaseBudgetFor(this.db, item.id, conflict, this.now()).allowed;
+      upstream !== null &&
+      (await this.store.run((q) => rebaseBudgetForSteps(q, item.id, conflict, this.now()))).allowed;
     const generation = await this.store.run((q) => getLinearSessionGenerationSteps(q, sessionId));
     const jobKey = `linear-turn:${sessionId}:${generation}`;
     const before = await this.store.run((q) => getWorkItemSteps(q, item.id));
