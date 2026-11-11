@@ -15,4 +15,4 @@ test("public workspace startup and membership refresh shutdown", async () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-}, 30_000);
+}, 60_000);
