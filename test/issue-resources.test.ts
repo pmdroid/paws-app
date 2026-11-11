@@ -48,7 +48,7 @@ test("issue and question resources need a Paws session, show only the member's s
     ["PAS-1", "session-mine"],
     ["PAS-2", "session-other"],
   ] as const) {
-    insertQueuedItem(db, { id: item, sessionKey: session });
+    await insertQueuedItem(db, { id: item, sessionKey: session });
     await beginImplementRun(sqliteDb(db), item, Date.now());
     await applyWorkItemEvent(sqliteDb(db), item, "blocking_question");
     db.run(
@@ -60,7 +60,7 @@ test("issue and question resources need a Paws session, show only the member's s
   const port = reservation.port!;
   await reservation.stop(true);
   const access = createWorkspaceAccess({
-    db,
+    store: sqliteDb(db),
     publicUrl: `http://127.0.0.1:${port}`,
     clientId: "fixture",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -77,7 +77,7 @@ test("issue and question resources need a Paws session, show only the member's s
     },
   });
   const server = startServer({ port, hostname: "127.0.0.1", db, workspaceAccess: access });
-  const session = await issueWorkspaceSession(db, {
+  const session = await issueWorkspaceSession(sqliteDb(db), {
     workspaceId: "workspace",
     userId: "member",
     now: Date.now(),

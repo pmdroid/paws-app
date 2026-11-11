@@ -70,7 +70,7 @@ for (const delivered of [true, false, "completed"] as const)
     };
     const forwarded: { itemId: string; body: string }[] = [];
     const orchestrator = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       admission: workspaceAdmission(db),
       jobs,
       outbox,

@@ -49,7 +49,7 @@ test("the merge queue needs a Paws session, shows only the member's sessions and
     ["PAS-1", "session-mine"],
     ["PAS-2", "session-other"],
   ] as const) {
-    insertQueuedItem(db, { id, sessionKey });
+    await insertQueuedItem(db, { id, sessionKey });
     await beginImplementRun(sqliteDb(db), id, Date.now());
     await enterMergeQueue(sqliteDb(db), id, {
       phase: "merge_queue",
@@ -61,7 +61,7 @@ test("the merge queue needs a Paws session, shows only the member's sessions and
   const port = reservation.port!;
   await reservation.stop(true);
   const access = createWorkspaceAccess({
-    db,
+    store: sqliteDb(db),
     publicUrl: `http://127.0.0.1:${port}`,
     clientId: "fixture",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -78,7 +78,7 @@ test("the merge queue needs a Paws session, shows only the member's sessions and
     },
   });
   const server = startServer({ port, hostname: "127.0.0.1", db, workspaceAccess: access });
-  const session = await issueWorkspaceSession(db, {
+  const session = await issueWorkspaceSession(sqliteDb(db), {
     workspaceId: "workspace",
     userId: "member",
     now: Date.now(),

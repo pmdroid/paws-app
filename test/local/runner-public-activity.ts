@@ -10,7 +10,7 @@ export async function probeRunnerPublicActivity(root: string) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const db = openDatabase(join(root, "paws.db"));
   migrate(db);
-  const item = insertQueuedItem(db, { id: "activity-item", sessionKey: "visible-session" });
+  const item = await insertQueuedItem(db, { id: "activity-item", sessionKey: "visible-session" });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, 1000);
   const journalRoot = join(root, "journal");
   mkdirSync(journalRoot, { mode: 0o700 });
@@ -158,7 +158,7 @@ export async function probeRunnerPublicActivity(root: string) {
         .join(""),
     );
     const options = {
-      db,
+      store: sqliteDb(db),
       closeoutHome: root,
       sessionIds: ["visible-session"],
       env: { API_KEY: "tool-secret-fixture" },
@@ -212,7 +212,7 @@ export async function probeRunnerPublicActivity(root: string) {
       assert(!references.includes(join(directory, "acp.jsonl")));
     }
     const statusRun = (
-      await createLiveStatusProvider(db, {
+      await createLiveStatusProvider(sqliteDb(db), {
         pawsHome: root,
         sessionIds: options.sessionIds,
         env: options.env,

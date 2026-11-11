@@ -38,7 +38,7 @@ for (const [body, existing] of [
   test(`Stop fences a deferred ${body} before the final activity, existing task: ${existing}`, async () => {
     const db = tempDb();
     const home = tempHome();
-    if (existing) insertQueuedItem(db, { id: "existing", sessionKey: "session" });
+    if (existing) await insertQueuedItem(db, { id: "existing", sessionKey: "session" });
     const tracker = createFakeTracker([
       {
         linearIssueId: "issue",
@@ -50,7 +50,7 @@ for (const [body, existing] of [
     ]);
     const outbox = new OutboxDispatcher(db, systemClock);
     const orchestrator = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       pawsRoot: home,
       tracker,
       outbox,
@@ -68,8 +68,9 @@ for (const [body, existing] of [
       options?.signal?.throwIfAborted();
       return post(update, options);
     };
-    const linear = openLinear({
+    const linear = await openLinear({
       db,
+      store: sqliteDb(db),
       secretsDir: join(home, "secrets"),
       env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
       fetch: async () => {
@@ -129,7 +130,7 @@ test("acknowledgement retry and duplicate replay preserve one activity UUID", as
   const tracker = createFakeTracker();
   const outbox = new OutboxDispatcher(db, clock);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     clock,
     tracker,
     outbox,
@@ -175,7 +176,7 @@ test("an old prompted intake failure cannot terminate a newer session generation
   const tracker = createFakeTracker();
   const outbox = new OutboxDispatcher(db, systemClock);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     pawsRoot: home,
     tracker,
     outbox,
@@ -183,8 +184,9 @@ test("an old prompted intake failure cannot terminate a newer session generation
   });
   const ready = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
-  const linear = openLinear({
+  const linear = await openLinear({
     db,
+    store: sqliteDb(db),
     secretsDir: join(home, "secrets"),
     env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
     progressReporter: (event) => orchestrator.sessionProgressReporter(event),
@@ -239,7 +241,7 @@ test.each([false, true])(
     ]);
     const outbox = new OutboxDispatcher(db, systemClock);
     const orchestrator = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       pawsRoot: home,
       tracker,
       outbox,
@@ -257,8 +259,9 @@ test.each([false, true])(
       }
       return load(issueId);
     };
-    const linear = openLinear({
+    const linear = await openLinear({
       db,
+      store: sqliteDb(db),
       secretsDir: join(home, "secrets"),
       env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
       progressReporter: (event) => orchestrator.sessionProgressReporter(event),
@@ -321,7 +324,7 @@ test("item Stop delivery retains one UUID through failure, reopen and duplicate 
   };
   let outbox = new OutboxDispatcher(db, clock);
   const options = () => ({
-    db,
+    store: sqliteDb(db),
     clock,
     tracker,
     outbox,
@@ -330,7 +333,7 @@ test("item Stop delivery retains one UUID through failure, reopen and duplicate 
   });
   let orchestrator = attachOrchestrator(options());
   try {
-    insertQueuedItem(db, { id: "stopped", sessionKey: "session" });
+    await insertQueuedItem(db, { id: "stopped", sessionKey: "session" });
     const stop = {
       ...created(),
       dedupeKey: "stop-retry",
@@ -370,7 +373,7 @@ test("item Stop delivery retains one UUID through failure, reopen and duplicate 
 test("a merged item settles its delegation without a delegation summary", async () => {
   const db = openDatabase(join(tempHome(), "completion.db"));
   migrate(db);
-  const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
+  const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
   db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [item.id]);
   const tracker = createFakeTracker([
     {
@@ -382,7 +385,7 @@ test("a merged item settles its delegation without a delegation summary", async 
     },
   ]);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     pawsRoot: tempHome(),
     tracker,
     jobs: new JobLoop(db, systemClock),

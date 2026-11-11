@@ -29,8 +29,8 @@ async function start(): Promise<MergeHarness> {
   return harness;
 }
 
-function queued(h: MergeHarness): string[] {
-  return listMergeQueues(h.db).map((entry) => entry.itemId);
+async function queued(h: MergeHarness): Promise<string[]> {
+  return (await listMergeQueues(sqliteDb(h.db))).map((entry) => entry.itemId);
 }
 
 async function restarts(h: MergeHarness) {
@@ -53,7 +53,7 @@ async function threeQueued(h: MergeHarness): Promise<void> {
     await h.pass(id);
     h.clock.advance(1_000);
   }
-  expect(queued(h)).toEqual(["ENG-1", "ENG-2", "ENG-3"]);
+  expect(await queued(h)).toEqual(["ENG-1", "ENG-2", "ENG-3"]);
 }
 
 async function until(condition: () => boolean): Promise<void> {
@@ -74,7 +74,7 @@ describe("queued pull requests that conflict with main", () => {
     h.state.ci = () => undefined;
     const front: Promise<MergeStep> = h.pass("ENG-1");
     await until(() => h.state.squashing);
-    expect(queued(h)).toEqual(["ENG-1", "ENG-2", "ENG-3"]);
+    expect(await queued(h)).toEqual(["ENG-1", "ENG-2", "ENG-3"]);
     // The front's own CI wait reads its pull request; the sweep does not.
     const frontReads = h.state.pullReads.get(1);
 
@@ -149,27 +149,27 @@ describe("queued pull requests that conflict with main", () => {
     await threeQueued(h);
     const main = await h.moveMain("ok.txt", "main moved\n");
     expect(await h.sweep(main)).toEqual(["ENG-3"]);
-    expect(queued(h)).toEqual(["ENG-1", "ENG-2"]);
+    expect(await queued(h)).toEqual(["ENG-1", "ENG-2"]);
 
     await h.addItem("ENG-4");
     h.clock.advance(1_000);
     await h.pass("ENG-4");
-    expect(queued(h)).toEqual(["ENG-1", "ENG-2", "ENG-4"]);
+    expect(await queued(h)).toEqual(["ENG-1", "ENG-2", "ENG-4"]);
 
     await h.requeue("ENG-3");
     await returnToMergeQueue(sqliteDb(h.db), "ENG-3");
-    expect(queued(h)).toEqual(["ENG-1", "ENG-2", "ENG-3", "ENG-4"]);
+    expect(await queued(h)).toEqual(["ENG-1", "ENG-2", "ENG-3", "ENG-4"]);
     expect(await h.pass("ENG-3")).toMatchObject({
       kind: "wait",
       reason: "ahead",
       message: "Third in the acme/app queue. ENG-2 merges first.",
     });
-    expect(queued(h)).toEqual(["ENG-1", "ENG-2", "ENG-3", "ENG-4"]);
+    expect(await queued(h)).toEqual(["ENG-1", "ENG-2", "ENG-3", "ENG-4"]);
 
     // The kept place is spent: a later return to the agent leaves the queue as before.
     h.db.run("UPDATE work_item SET state = 'verifying' WHERE id = 'ENG-3'");
     await returnToMergeQueue(sqliteDb(h.db), "ENG-3");
-    expect(queued(h)).toEqual(["ENG-1", "ENG-2", "ENG-4"]);
+    expect(await queued(h)).toEqual(["ENG-1", "ENG-2", "ENG-4"]);
   });
 
   test("a task whose merge starts while its pull request is read is left to the lane", async () => {
@@ -231,7 +231,7 @@ describe("queued pull requests that conflict with main", () => {
     await h.addItem("ENG-1");
     h.state.ci = pendingCi;
     await h.pass("ENG-1");
-    expect(queued(h)).toEqual(["ENG-1"]);
+    expect(await queued(h)).toEqual(["ENG-1"]);
     await mainMoved(sqliteDb(h.db), {
       repository: "acme/app",
       main: "a".repeat(40),

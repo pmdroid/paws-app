@@ -3,6 +3,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createLiveStatusProvider } from "../src/dashboard";
+import { sqliteDb } from "../src/db";
 
 type Timing = { sql: string; calls: number; ms: number };
 
@@ -52,7 +53,7 @@ for (const factory of ["query", "prepare"] as const) {
 }
 
 const db = new Database(dbPath, { readonly: true });
-const provider = createLiveStatusProvider(db, {
+const provider = createLiveStatusProvider(sqliteDb(db), {
   pawsHome: process.env.PAWS_HOME ?? join(homedir(), ".paws"),
 });
 

@@ -40,7 +40,7 @@ test("a re-check of a rebased head retains the spent check budget", async () => 
   const db = openDatabase(":memory:");
   try {
     migrate(db);
-    insertQueuedItem(db, { id: "item-390" });
+    await insertQueuedItem(db, { id: "item-390" });
     await mkdir(home);
     await mkdir(pawsHome);
     await exec("git", ["init", "--bare", "-b", "main", path.join(root, "origin.git")]);

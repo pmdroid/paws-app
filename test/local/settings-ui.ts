@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { migrate, openDatabase } from "../../src/db";
+import { migrate, openDatabase, sqliteDb } from "../../src/db";
 import { INSTALLATION_PERMISSIONS } from "../../src/github";
 import { startServer } from "../../src/server";
 import {
@@ -167,7 +167,7 @@ const server = startServer({
 const origin = `https://127.0.0.1:${server.port}`;
 ready.resolve(
   createWorkspaceAccess({
-    db,
+    store: sqliteDb(db),
     githubAttributionClient: {
       clientId: "Iv1.fixture",
       clientSecret: "synthetic-client-secret",
@@ -232,7 +232,7 @@ writeFileSync(
   JSON.stringify({
     origin,
     control: `http://127.0.0.1:${provider.port}/__fixture`,
-    bootstrap: await issueWorkspaceBootstrap(db, "fixture-org"),
+    bootstrap: await issueWorkspaceBootstrap(sqliteDb(db), "fixture-org"),
   }),
 );
 console.log(`Workspace browser fixture: ${origin}/dashboard/`);

@@ -13,9 +13,7 @@ import {
   type ReviewFindingItem,
   type ReviewFindingRecord,
   type Steps,
-  sqliteDb,
 } from "../../../db";
-import type { Database } from "bun:sqlite";
 import { journalCaught } from "../journal";
 import {
   DISMISS_REASON_LIMIT,
@@ -30,8 +28,7 @@ import {
 } from "../findings";
 
 export type FindingsOptions = {
-  db: Database;
-  store?: Db;
+  store: Db;
   /** The signed-in reader. Without one the list is read-only. */
   principal?: { workspaceId: string; userId: string };
   /** The sessions the reader may open. Undefined reads every item. */
@@ -58,14 +55,10 @@ export async function handleFindingsRequest(
   return new Response(null, { status: 405, headers: { allow: "GET, POST" } });
 }
 
-function storeOf(options: FindingsOptions): Db {
-  return options.store ?? sqliteDb(options.db);
-}
-
 async function list(options: FindingsOptions, url: URL): Promise<FindingsResponse> {
   const filter = parseFindingQuery(url.searchParams);
   const pathPrefix = filter.path.replace(/^(\.\/|\/)+/, "");
-  const { rows, every } = await storeOf(options).run(function* (q) {
+  const { rows, every } = await options.store.run(function* (q) {
     const matched = yield* visibleSteps(
       q,
       options,
@@ -118,7 +111,7 @@ function* visibleSteps(
 async function change(request: Request, options: FindingsOptions): Promise<Response> {
   const { principal } = options;
   if (principal === undefined) return Response.json({ error: "Sign in to Paws." }, { status: 401 });
-  const store = storeOf(options);
+  const store = options.store;
   const member = await store.run((q) =>
     workspaceMemberSteps(q, principal.workspaceId, principal.userId),
   );

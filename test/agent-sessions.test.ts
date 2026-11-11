@@ -63,7 +63,7 @@ async function fixture(root: string) {
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(db, "session-org", now);
+  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "session-org", now);
   const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "session-org",
@@ -80,7 +80,7 @@ async function fixture(root: string) {
   const authorityRoot = join(root, "issuer");
   const authority = await initializeRunnerAuthority(authorityRoot);
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority,
     certificateRoot: authorityRoot,
     disconnect() {},
@@ -103,13 +103,17 @@ async function fixture(root: string) {
     return runnerId;
   }
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
   async function startRun(name: string) {
-    const item = insertQueuedItem(db, { id: `${name}-item`, now, sessionKey: `${name}-session` });
+    const item = await insertQueuedItem(db, {
+      id: `${name}-item`,
+      now,
+      sessionKey: `${name}-session`,
+    });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
     await recordLinearInstallation(sqliteDb(db), {
       organizationId: "session-org",

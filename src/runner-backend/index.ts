@@ -16,7 +16,6 @@ import {
 import { setTimeout as delay } from "node:timers/promises";
 import { checkoutExclusionsFor, loadConfigFile } from "../config";
 import { join, relative, sep } from "node:path";
-import type { Database } from "bun:sqlite";
 import {
   unansweredRunnerQuestionsSteps,
   setRunnerWorkConsumedSequenceSteps,
@@ -68,7 +67,6 @@ import {
   reserveRunnerSlotSteps,
   runnerReservationHolder,
   unassignedRunnerReservationsSteps,
-  sqliteDb,
   type Db,
   type Q,
 } from "../db";
@@ -299,9 +297,7 @@ function snapshotCommit(workspace: string, repository: { owner: string; repo: st
 }
 
 export function createRemoteAgentRunner(options: {
-  db: Database;
-  /** The async `Db` over `db` for converted code. Defaults to `sqliteDb(db)`. */
-  store?: Db;
+  store: Db;
   work: RunnerWork;
   results: RunnerResults;
   health: RunnerHealth;
@@ -342,8 +338,7 @@ export function createRemoteAgentRunner(options: {
     close(commandId: string): Promise<void>;
   };
 }) {
-  const { db, work, results, health } = options;
-  const store = options.store ?? sqliteDb(db);
+  const { store, work, results, health } = options;
   const now = options.now ?? Date.now;
   const mono = options.mono ?? systemClock.mono;
   const interval = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
@@ -367,7 +362,7 @@ export function createRemoteAgentRunner(options: {
   }
   /** Workspace hooks for the run's agent, signed into the command with everything else. */
   async function runHooks(agent: string, runnerId: string): Promise<{ hooks?: WorkspaceHook[] }> {
-    const hooks = (await listHooks(sqliteDb(db))).filter((hook) =>
+    const hooks = (await listHooks(store)).filter((hook) =>
       (hook.agents as readonly string[]).includes(agent),
     );
     if (hooks.some((hook) => hook.skill !== null)) {
@@ -2771,7 +2766,7 @@ export { createRemoteSessionAgentRunner } from "./helpers";
 export type { ConversationTurns } from "./conversation";
 
 export function createConversationTurns(options: {
-  db: Database;
+  store: Db;
   helpers: RunnerHelpers;
   now?: () => number;
 }) {

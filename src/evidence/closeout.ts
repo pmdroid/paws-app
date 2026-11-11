@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, readdir, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
@@ -8,7 +7,6 @@ import {
   insertCloseoutEvidenceObjectSteps,
   listCloseoutEvidenceObjectsSteps,
   saveCloseoutEvidenceObjectSteps,
-  sqliteDb,
   type CloseoutEvidenceObject,
   type Db,
 } from "../db";
@@ -173,13 +171,13 @@ async function restoreCloseoutFile(
 }
 
 export async function hydrateItemCloseoutEvidence(
-  db: Database,
+  db: Db,
   storage: EvidenceStorage,
   ref: string,
   sessionIds?: readonly string[],
 ): Promise<number> {
-  const tasks = await sqliteDb(db).run((q) => closeoutTasksOfItemSteps(q, ref, sessionIds));
-  return hydrateCloseoutEvidence(sqliteDb(db), storage, tasks);
+  const tasks = await db.run((q) => closeoutTasksOfItemSteps(q, ref, sessionIds));
+  return hydrateCloseoutEvidence(db, storage, tasks);
 }
 
 export function closeoutEvidenceItemOf(request: Request): string | null {
@@ -195,7 +193,7 @@ export function closeoutEvidenceItemOf(request: Request): string | null {
 }
 
 export async function uploadLocalCloseoutEvidence(
-  db: Database,
+  db: Db,
   storage: EvidenceStorage,
 ): Promise<number> {
   if (!storage.objects?.()) return 0;
@@ -210,7 +208,7 @@ export async function uploadLocalCloseoutEvidence(
   for (const entry of entries) {
     if (!entry.isDirectory() || !safeTask(entry.name)) continue;
     try {
-      uploaded += await publishCloseoutEvidence(sqliteDb(db), storage, entry.name, {
+      uploaded += await publishCloseoutEvidence(db, storage, entry.name, {
         keepStored: true,
       });
     } catch (error) {

@@ -56,7 +56,7 @@ const THREADS: FakeReviewThread[] = [
 async function setup(threads = THREADS, options: { commentsPerPage?: number } = {}) {
   const db = openDatabase(":memory:");
   migrate(db);
-  insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
+  await insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
   await bindWorkItemRepository(sqliteDb(db), "eng-1", {
     owner: "acme",
     repo: "one",
@@ -114,7 +114,7 @@ async function setup(threads = THREADS, options: { commentsPerPage?: number } = 
     pull?: number;
   }) =>
     acceptGitHubDelivery(
-      db,
+      sqliteDb(db),
       {
         deliveryId: `d-${(delivery += 1)}`,
         event: "pull_request_review",
@@ -175,7 +175,7 @@ describe("changes-requested reviews", () => {
 
     expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("restarted");
     expect((await getWorkItem(sqliteDb(db), "eng-1"))?.state).toBe("queued");
-    expect(fixRounds(db, "eng-1")).toBe(1);
+    expect(await fixRounds(sqliteDb(db), "eng-1")).toBe(1);
     const [resume] = await resumeJobs(db);
     expect(resume?.jobKey).toBe("review:eng-1:501");
     const payload = resume?.payload as { reason: string; handoff: string };

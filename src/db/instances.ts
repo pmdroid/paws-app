@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, desc, eq, gt, isNull, max } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { ulid } from "./ulid";
 
 export const INSTANCE_HEARTBEAT_MS = 10_000;
@@ -86,8 +85,8 @@ export function* stopInstanceSteps(q: Q, id: string, now: number) {
  * Record a clean stop at `now`. The row keeps the last heartbeat, so the instance that takes over
  * its runs can credit runner leases for the time no instance was alive.
  */
-export function stopInstance(db: Database, id: string, now: number): void {
-  settled(sqliteDb(db).run((q) => stopInstanceSteps(q, id, now)));
+export async function stopInstance(store: Db, id: string, now: number): Promise<void> {
+  await store.run((q) => stopInstanceSteps(q, id, now));
 }
 
 export function* lastInstanceHeartbeatSteps(q: Q) {

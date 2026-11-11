@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { changeDecision, listDecisions, decisionAnswers } from "../src/decisions";
+import { sqliteDb } from "../src/db";
 import { openQuestion } from "../src/questions";
 import { answer, ask, confirmDecision, suggestDecisions } from "./questions";
 import { decisionFixture, probeDecisionMemory } from "./decision-memory-fixture";
@@ -31,10 +32,9 @@ test("only agent and clarification answers are offered as decisions", async () =
       });
     }
     const actor = { workspaceId: "workspace", userId: "member", clientId: "client" };
-    expect((await decisionAnswers(f.db, actor)).map((row) => row.body).toSorted()).toEqual([
-      "Which pagination format?",
-      "clarification question",
-    ]);
+    expect(
+      (await decisionAnswers(sqliteDb(f.db), actor)).map((row) => row.body).toSorted(),
+    ).toEqual(["Which pagination format?", "clarification question"]);
   } finally {
     await f.close();
     rmSync(root, { recursive: true, force: true });
@@ -48,7 +48,7 @@ test("two concurrent confirmations accept one suggestion once, with every read i
   try {
     const actor = { workspaceId: "workspace", userId: "member", clientId: "client" };
     await changeDecision(
-      f.db,
+      sqliteDb(f.db),
       actor,
       {
         questionId: f.question.id,
@@ -58,7 +58,7 @@ test("two concurrent confirmations accept one suggestion once, with every read i
       },
       Date.now(),
     );
-    const pending = await openQuestion(f.db, {
+    const pending = await openQuestion(sqliteDb(f.db), {
       itemId: "controlled",
       sessionId: "session-controlled",
       body: "Which pagination format?",
@@ -121,7 +121,7 @@ test("two concurrent confirmations accept one suggestion once, with every read i
     }
     expect((await Promise.all(children.map((child) => child.exited))).sort()).toEqual([0, 2]);
     for (const reader of outputs) reader.releaseLock();
-    expect((await listDecisions(f.db, actor))[0]?.accepted).toBe(1);
+    expect((await listDecisions(sqliteDb(f.db), actor))[0]?.accepted).toBe(1);
     await expect(
       confirmDecision(f.db, pending.id, suggestion.value, "member", 300),
     ).rejects.toThrow();

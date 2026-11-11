@@ -3,6 +3,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { createRunnerHelpers } from "../src/runner-helpers";
 import { createFindingGroupHelper } from "../src/runner-backend";
 import {
+  insertQueuedItem,
   recordLinearInstallation,
   putWorkspaceUser,
   syncWorkspaceMember,
@@ -47,7 +48,12 @@ async function seed() {
   db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('runner','codex',1)");
   await recordRunnerHostStatus(sqliteDb(db), "runner", { runnerVersion: "0.1.53" }, now);
   const { privateKey } = generateKeyPairSync("ed25519");
-  const helpers = createRunnerHelpers({ db, keyId: "key", privateKey, now: () => now });
+  const helpers = createRunnerHelpers({
+    store: sqliteDb(db),
+    keyId: "key",
+    privateKey,
+    now: () => now,
+  });
   return {
     db,
     now,
@@ -63,7 +69,7 @@ test("daily helper uses an admin runner, accepts a stopped reporting session, an
   try {
     let dispatches = 0;
     const helper = createFindingGroupHelper({
-      db: f.db,
+      store: sqliteDb(f.db),
       profile: () => ({ agent: "codex", model: null }),
       helpers: async () => ({
         ...f.helpers,
@@ -108,7 +114,7 @@ test("daily helper uses an admin runner, accepts a stopped reporting session, an
     const dispatched = await f.helpers.dispatch(input);
     f.db.run("UPDATE workspace_member SET role='member'");
     await expect(f.helpers.current(dispatched.command.id)).rejects.toThrow("authority changed");
-    f.helpers.finish(dispatched.command.id);
+    await f.helpers.finish(dispatched.command.id);
     await expect(f.helpers.dispatch(input)).rejects.toThrow("authority changed");
   } finally {
     f.db.close();
@@ -120,7 +126,7 @@ test("daily helper refuses older runners and cannot read a session from another 
   try {
     await recordRunnerHostStatus(sqliteDb(f.db), "runner", { runnerVersion: "0.1.50" }, f.now);
     const helper = createFindingGroupHelper({
-      db: f.db,
+      store: sqliteDb(f.db),
       profile: () => ({ agent: "codex", model: null }),
       helpers: async () => f.helpers,
     });
@@ -160,7 +166,7 @@ test("grouping accepts a result after one minute, records usage, and rejects err
     const f = await seed();
     try {
       const helper = createFindingGroupHelper({
-        db: f.db,
+        store: sqliteDb(f.db),
         profile: () => ({ agent: "codex", model: null }),
         helpers: async () => ({
           ...f.helpers,
@@ -221,7 +227,7 @@ test("pre-dispatch refusals try the next admin runner without issuing a second h
     await recordRunnerHostStatus(sqliteDb(f.db), "runner2", { runnerVersion: "0.1.53" }, f.now);
     let attempts = 0;
     const helper = createFindingGroupHelper({
-      db: f.db,
+      store: sqliteDb(f.db),
       profile: () => ({ agent: "codex", model: null }),
       helpers: async () => ({
         ...f.helpers,
@@ -371,7 +377,7 @@ test("cleanup accounting cannot replace a local abort and reports cancellation i
     const original = new Error("Original stop");
     const outcomes: string[] = [];
     const runner = createRemoteSessionAgentRunner({
-      db: f.db,
+      store: sqliteDb(f.db),
       helpers: {
         ...f.helpers,
         *dispatchSteps(q, input) {
@@ -475,7 +481,7 @@ test("a failed receipt completion is retried by cleanup before the original erro
     const original = new Error("Transient receipt failure");
     let attempts = 0;
     const helper = createFindingGroupHelper({
-      db: f.db,
+      store: sqliteDb(f.db),
       profile: () => ({ agent: "codex", model: null }),
       placement: {
         ...placement,
@@ -541,7 +547,7 @@ test("grouping runs on a later admin's runner when the earlier admin has none", 
     });
     let runnerId = "";
     const helper = createFindingGroupHelper({
-      db: f.db,
+      store: sqliteDb(f.db),
       profile: () => ({ agent: "codex", model: null }),
       helpers: async () => ({
         ...f.helpers,
@@ -580,10 +586,9 @@ test("grouping runs on a later admin's runner when the earlier admin has none", 
 });
 
 test("grouping does not dispatch a session the runner owner cannot authorize", async () => {
-  const { insertQueuedItem } = await import("../src/db");
   const f = await seed();
   try {
-    insertQueuedItem(f.db, { id: "outside", sessionKey: "reporting-session", now: f.now });
+    await insertQueuedItem(f.db, { id: "outside", sessionKey: "reporting-session", now: f.now });
     f.db.run(
       "INSERT INTO work_item_repository(item_id,owner,repo,remote_url) VALUES('outside','other','secret','https://github.com/other/secret.git')",
     );
@@ -592,7 +597,7 @@ test("grouping does not dispatch a session the runner owner cannot authorize", a
     );
     let attempts = 0;
     const helper = createFindingGroupHelper({
-      db: f.db,
+      store: sqliteDb(f.db),
       profile: () => ({ agent: "codex", model: null }),
       helpers: async () => ({
         ...f.helpers,

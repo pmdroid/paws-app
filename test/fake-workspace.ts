@@ -45,7 +45,7 @@ const DEPENDENCY_INPUTS = `SELECT json_array(
 const currentInputs = new WeakMap<Database, Map<string, string>>();
 
 export function workspaceAdmission(db: Database, options: AdmissionOptions = {}): ItemAdmission {
-  const admission = createAdmission({ db, ...options });
+  const admission = createAdmission({ db: sqliteDb(db), ...options });
   const ofItem = (itemId: string) =>
     db
       .query<{ id: string }, [string]>("SELECT delegation_id AS id FROM work_item WHERE id=?")
@@ -82,7 +82,7 @@ export function workspaceDispatch(
   db: Database,
   options: Omit<Parameters<typeof dispatch>[1], "admission">,
 ): Promise<string[]> {
-  return dispatch(db, { ...options, admission: workspaceAdmission(db) });
+  return dispatch(sqliteDb(db), { ...options, admission: workspaceAdmission(db) });
 }
 
 export function joinFakeWorkspace(db: Database, delegationId: string): Promise<void> {

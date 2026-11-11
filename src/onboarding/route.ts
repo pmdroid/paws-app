@@ -116,7 +116,7 @@ export function createBrowserOnboarding(options: {
           { error: "Configure LINEAR_ORGANIZATION_ID to match this Paws workspace on the server." },
           { status: 503, headers: { "cache-control": "no-store" } },
         );
-      return beginWorkspaceOAuth(db, {
+      return beginWorkspaceOAuth(sqliteDb(db), {
         clientId: options.clientId!,
         origin,
         now: now(),
@@ -125,7 +125,7 @@ export function createBrowserOnboarding(options: {
     }
     if (url.pathname === "/auth/linear/callback") {
       try {
-        const { identity } = await completeWorkspaceOAuth(db, request, {
+        const { identity } = await completeWorkspaceOAuth(sqliteDb(db), request, {
           clientId: options.clientId!,
           origin,
           now: now(),
@@ -170,8 +170,8 @@ export function createBrowserOnboarding(options: {
     }
     if (url.pathname !== CALLBACK)
       return Response.json({ error: "Sign in to connect your Linear workspace." }, { status: 401 });
-    if (installing || (readStoredToken(db, secretsDir) !== null && !options.reconnect))
-      return retry("already-connected");
+    const stored = await readStoredToken(sqliteDb(db), secretsDir);
+    if (installing || (stored !== null && !options.reconnect)) return retry("already-connected");
     installing = true;
     try {
       const state = url.searchParams.get("state") ?? "";
@@ -206,7 +206,7 @@ export function createBrowserOnboarding(options: {
       });
       const client = createLinearClient({
         auth: {
-          hasToken: () => true,
+          hasToken: async () => true,
           ensureFresh: async () => token.accessToken,
           forceRefresh: async () => token.accessToken,
         },
@@ -242,7 +242,8 @@ export function createBrowserOnboarding(options: {
           await createLinearReconnect({ fetch: fetchImpl, snapshot: reconnect })(home)
         ).complete({ clientId: options.clientId!, token });
         if (!restored) return retry("workspace-mismatch");
-      } else if (!writeStoredToken(db, secretsDir, token, true)) return retry("already-connected");
+      } else if (!(await writeStoredToken(sqliteDb(db), secretsDir, token, true)))
+        return retry("already-connected");
       const timestamp = now();
       const userId = await putWorkspaceUser(sqliteDb(db), {
         id: workspaceId(),
@@ -252,7 +253,7 @@ export function createBrowserOnboarding(options: {
       });
       let workspace = await workspaceForOrganization(sqliteDb(db), organization.id);
       if (workspace === null) {
-        const grant = await issueWorkspaceBootstrap(db, organization.id, timestamp);
+        const grant = await issueWorkspaceBootstrap(sqliteDb(db), organization.id, timestamp);
         workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
           id: workspaceId(),
           organizationId: organization.id,
@@ -270,7 +271,7 @@ export function createBrowserOnboarding(options: {
         teamIds: member.teamIds,
         now: timestamp + 1,
       });
-      const session = await issueWorkspaceSession(db, {
+      const session = await issueWorkspaceSession(sqliteDb(db), {
         workspaceId: workspace.id,
         userId,
         now: timestamp + 1,

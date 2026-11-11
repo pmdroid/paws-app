@@ -46,7 +46,7 @@ test("a delegation whose only item is cancelled is no longer treated as running 
     delegateId: "app",
   });
   const reconciler = createItemReconciler({
-    db,
+    store: sqliteDb(db),
     tracker,
     lifecycle,
     onChanges: () => syncSteps(() => {}),
@@ -123,7 +123,7 @@ test("a sub-issue of a delegated parent reads its parent issue from parent_deleg
       [intake.delegation.id],
     );
     seen.length = 0;
-    await syncItemDependencies(db, {
+    await syncItemDependencies(sqliteDb(db), {
       itemId: intake.items[0]!.id,
       workspaceId: "workspace",
       expectedGeneration: 0,

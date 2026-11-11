@@ -41,7 +41,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
     name: "Workspace",
     userId: owner,
     tokenHash: workspace.workspaceTokenHash(
-      await workspace.issueWorkspaceBootstrap(db, "org", now()),
+      await workspace.issueWorkspaceBootstrap(sqliteDb(db), "org", now()),
     ),
     now: now(),
   });
@@ -110,7 +110,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
   let continuations = 0;
   const build = () => {
     const assignments = workspace.createWorkspaceAssignments({
-      db,
+      store: sqliteDb(db),
       origin,
       clientId: "client",
       memberships,
@@ -146,7 +146,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
       },
     });
     const access = workspace.createWorkspaceAccess({
-      db,
+      store: sqliteDb(db),
       assignments,
       publicUrl: origin,
       clientId: "client",
@@ -171,7 +171,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
       }) as typeof fetch,
     });
     const orchestrator = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       jobs: new dbApi.JobLoop(db, clock),
       outbox: new dbApi.OutboxDispatcher(db, clock),
       pawsRoot: root,
@@ -300,7 +300,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
     });
     const policy = async (): Promise<GitCommitPolicy> => ({
       bot: await botProvider.botIdentity!(),
-      credit: await workspace.delegatorCommitCredit(db, (await current()).id),
+      credit: await workspace.delegatorCommitCredit(sqliteDb(db), (await current()).id),
     });
     auth = new GitHubInstallationCheck(
       sqliteDb(db),
@@ -325,7 +325,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
       (await dbApi.listJobs(sqliteDb(db))).filter((job) => job.queue === "run.resume"),
     ).toHaveLength(1);
     const member = (await dbApi.workspaceLinearMember(sqliteDb(db), "workspace", "creator"))!;
-    const login = await workspace.issueWorkspaceSession(db, {
+    const login = await workspace.issueWorkspaceSession(sqliteDb(db), {
       workspaceId: "workspace",
       userId: member.userId,
       now: now(),
@@ -336,7 +336,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
       sessionHash: login.session.tokenHash,
     };
     const request = { stateHash: "synthetic-state", browserHash: "synthetic-browser", now: now() };
-    dbApi.beginGitHubAttribution(db, binding, request);
+    await dbApi.beginGitHubAttribution(sqliteDb(db), binding, request);
     const revision = await dbApi.consumeGitHubAttribution(db, binding, request);
     await dbApi.saveGitHubAttribution(
       sqliteDb(db),

@@ -32,7 +32,11 @@ async function asked(
 ) {
   const db = openDatabase(":memory:");
   migrate(db);
-  const item = insertQueuedItem(db, { id: "PAS-633", sessionKey: "ses_1", title: "Signed URLs" });
+  const item = await insertQueuedItem(db, {
+    id: "PAS-633",
+    sessionKey: "ses_1",
+    title: "Signed URLs",
+  });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
   await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
   db.run("UPDATE work_item SET delegated_by = 'delegator' WHERE id = ?", [item.id]);

@@ -1,11 +1,10 @@
-import type { Database } from "bun:sqlite";
 import {
   attributionItemScope,
   delegatedLinearUserIdSteps,
   githubAttribution,
-  sqliteDb,
   workspaceLinearMemberSteps,
   type VerifiedGitHubAttribution,
+  type Db,
 } from "../db";
 
 /**
@@ -13,13 +12,12 @@ import {
  * A local lookup: Paws reads nothing from Linear or GitHub to credit the run.
  */
 export async function delegatorCommitCredit(
-  db: Database,
+  store: Db,
   itemId: string,
 ): Promise<VerifiedGitHubAttribution | null> {
-  const store = sqliteDb(db);
-  const scope = await attributionItemScope(sqliteDb(db), itemId);
+  const scope = await attributionItemScope(store, itemId);
   const actorId = await store.run((q) => delegatedLinearUserIdSteps(q, itemId));
   if (!scope || !actorId) return null;
   const member = await store.run((q) => workspaceLinearMemberSteps(q, scope.workspaceId, actorId));
-  return member ? await githubAttribution(sqliteDb(db), scope.workspaceId, member.userId) : null;
+  return member ? await githubAttribution(store, scope.workspaceId, member.userId) : null;
 }

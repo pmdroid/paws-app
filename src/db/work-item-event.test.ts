@@ -11,16 +11,16 @@ import {
   TransitionRejectedError,
 } from "./index";
 
-function harness() {
+async function harness() {
   const db = openDatabase(":memory:");
   migrate(db);
-  const item = insertQueuedItem(db, { id: "eng-1", sessionKey: "ses", now: 1_000 });
+  const item = await insertQueuedItem(db, { id: "eng-1", sessionKey: "ses", now: 1_000 });
   return { db, item };
 }
 
 describe("work_item_event", () => {
   test("each committed transition writes one row with the version it produced", async () => {
-    const { db, item } = harness();
+    const { db, item } = await harness();
     const running = await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched", { now: 2_000 });
     await applyWorkItemEvent(sqliteDb(db), item.id, "restart", {
       kind: "restart",
@@ -51,7 +51,7 @@ describe("work_item_event", () => {
   });
 
   test("a rolled-back transition leaves no event row and no state change", async () => {
-    const { db, item } = harness();
+    const { db, item } = await harness();
     await expect(
       sqliteDb(db).transaction(function* (q) {
         yield* applyWorkItemEventSteps(q, item.id, "dispatched");
@@ -67,15 +67,15 @@ describe("work_item_event", () => {
   });
 
   test("a rejected event writes no row", async () => {
-    const { db, item } = harness();
+    const { db, item } = await harness();
     await expect(applyWorkItemEvent(sqliteDb(db), item.id, "merge_accepted")).rejects.toThrow(
       TransitionRejectedError,
     );
     expect(await listWorkItemEventRows(sqliteDb(db), item.id)).toEqual([]);
   });
 
-  test("a restart row must name a known reason and an ask row must name one", () => {
-    const { db, item } = harness();
+  test("a restart row must name a known reason and an ask row must name one", async () => {
+    const { db, item } = await harness();
     const insert = (kind: string, reason: string | null) =>
       db.run(
         `INSERT INTO work_item_event (item_id, version, at, from_state, to_state, event, kind, reason)
@@ -88,7 +88,7 @@ describe("work_item_event", () => {
   });
 
   test("the history keeps the newest rows when limited", async () => {
-    const { db, item } = harness();
+    const { db, item } = await harness();
     await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched", { now: 1 });
     await applyWorkItemEvent(sqliteDb(db), item.id, "pause", { now: 2 });
     await applyWorkItemEvent(sqliteDb(db), item.id, "resume", { now: 3 });

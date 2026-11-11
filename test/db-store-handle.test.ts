@@ -60,8 +60,7 @@ test("the orchestrator holds the store it is given", () => {
   const store = sqliteDb(db);
   const jobs = new JobLoop(db, systemClock, { store });
   const outbox = new OutboxDispatcher(db, systemClock, { store });
-  expect(attachOrchestrator({ db, store, jobs, outbox, pawsRoot: root }).store).toBe(store);
-  expect(attachOrchestrator({ db, jobs, outbox, pawsRoot: root }).store).toBe(store);
+  expect(attachOrchestrator({ store, jobs, outbox, pawsRoot: root }).store).toBe(store);
   db.close();
 });
 
@@ -78,21 +77,19 @@ test("the runner backend holds the store it is given", () => {
   const { db } = database();
   const store = sqliteDb(db);
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
   const options = {
-    db,
     work,
-    results: createRunnerResults({ db, work }),
-    health: createRunnerHealth({ db, work }),
+    results: createRunnerResults({ store: sqliteDb(db), work }),
+    health: createRunnerHealth({ store: sqliteDb(db), work }),
     async fetchCandidate() {
       throw new Error("This fixture does not return a candidate");
     },
   };
   expect(createRemoteAgentRunner({ ...options, store }).store).toBe(store);
-  expect(createRemoteAgentRunner(options).store).toBe(store);
   db.close();
 });

@@ -1,39 +1,74 @@
-import type { Database } from "bun:sqlite";
-import { readCredentialCiphertext, writeCredentialCiphertext, type CredentialKey } from "../db";
+import {
+  readCredentialCiphertextSteps,
+  writeCredentialCiphertextSteps,
+  type CredentialKey,
+  type CredentialWrite,
+  type Db,
+  type Q,
+  type Steps,
+} from "../db";
 import { openSecret, readSecretFile, sealSecret } from "./files";
 
 export type CredentialKind = CredentialKey["kind"];
 
 const INSTALLATION = "installation";
 
-export function readCredential(db: Database, secretsDir: string, kind: CredentialKind) {
+export function* readCredentialSteps(
+  q: Q,
+  secretsDir: string,
+  kind: CredentialKind,
+): Steps<string | null> {
   const key = { kind, workspace: INSTALLATION };
-  const ciphertext = readCredentialCiphertext(db, key);
+  const ciphertext = yield* readCredentialCiphertextSteps(q, key);
   return ciphertext === null ? null : openSecret(secretsDir, context(key), ciphertext);
 }
 
-export function writeCredential(
-  db: Database,
+export function readCredential(
+  store: Db,
+  secretsDir: string,
+  kind: CredentialKind,
+): Promise<string | null> {
+  return store.run((q) => readCredentialSteps(q, secretsDir, kind));
+}
+
+export function* writeCredentialSteps(
+  q: Q,
   secretsDir: string,
   kind: CredentialKind,
   value: string,
-  options: { onlyIfMissing?: boolean } = {},
-): boolean {
+  options: CredentialWrite = {},
+): Steps<boolean> {
   const key = { kind, workspace: INSTALLATION };
-  return writeCredentialCiphertext(db, key, sealSecret(secretsDir, context(key), value), options);
+  return yield* writeCredentialCiphertextSteps(
+    q,
+    key,
+    sealSecret(secretsDir, context(key), value),
+    options,
+  );
 }
 
-export function importCredentialFile(
-  db: Database,
+export function writeCredential(
+  store: Db,
+  secretsDir: string,
+  kind: CredentialKind,
+  value: string,
+  options: CredentialWrite = {},
+): Promise<boolean> {
+  return store.run((q) => writeCredentialSteps(q, secretsDir, kind, value, options));
+}
+
+export async function importCredentialFile(
+  store: Db,
   secretsDir: string,
   kind: CredentialKind,
   path: string,
   prepare: (value: string) => string = (value) => value,
-): boolean {
-  if (readCredentialCiphertext(db, { kind, workspace: INSTALLATION }) !== null) return false;
+): Promise<boolean> {
+  const key = { kind, workspace: INSTALLATION };
+  if ((await store.run((q) => readCredentialCiphertextSteps(q, key))) !== null) return false;
   const value = readSecretFile(path, false);
   if (value === null || value.trim().length === 0) return false;
-  return writeCredential(db, secretsDir, kind, prepare(value), { onlyIfMissing: true });
+  return writeCredential(store, secretsDir, kind, prepare(value), { onlyIfMissing: true });
 }
 
 function context(key: CredentialKey): string {

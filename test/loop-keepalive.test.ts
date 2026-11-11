@@ -73,7 +73,7 @@ test("the running keepalive names the agent's current plan step, never a bare Wo
     return interval(handler, delay);
   }) as typeof setInterval);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,

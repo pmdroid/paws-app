@@ -36,10 +36,9 @@ import {
   type JobLoop,
   type Q,
   type Steps,
-  sqliteDb,
+  type Db,
 } from "../db";
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import { isBlockerSatisfied } from "../core";
 import type {
   AcceptedLinearEvent,
@@ -94,7 +93,7 @@ export type ParentSubIssueProgress = SubIssue & { waitingFor: string[] };
  * delegation id groups the sub-issues; each sub-issue keeps its own delegation.
  */
 export function createParentDelegations(input: {
-  db: Database;
+  store: Db;
   tracker: Pick<TrackerAdapter, "listDeps">;
   lifecycle: Pick<LinearIssueLifecycle, "inspect">;
   /** Absent when Paws cannot open Linear sessions; parents then run in their own session. */
@@ -104,7 +103,7 @@ export function createParentDelegations(input: {
   origin: string;
   now?: () => number;
 }) {
-  const store = sqliteDb(input.db);
+  const { store } = input;
   const now = input.now ?? Date.now;
 
   function readParentSteps(q: Q, delegationId: string): Steps<Parent | null> {

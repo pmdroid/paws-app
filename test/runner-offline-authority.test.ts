@@ -69,7 +69,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", pawsNow())),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", pawsNow())),
     now: pawsNow(),
   });
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
@@ -79,7 +79,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
   ]);
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -106,7 +106,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
     "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.59',?)",
     [runnerId, pawsNow()],
   );
-  const item = insertQueuedItem(db, { id: "item", now: pawsNow(), sessionKey: "session" });
+  const item = await insertQueuedItem(db, { id: "item", now: pawsNow(), sessionKey: "session" });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, pawsNow());
   await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
@@ -130,13 +130,13 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
   const keys = generateKeyPairSync("ed25519");
   const open = () => {
     const work = createRunnerWork({
-      db,
+      store: sqliteDb(db),
       keyId: "fixture",
       privateKey: keys.privateKey,
       eventKey: Buffer.alloc(32, 7),
       now: pawsNow,
     });
-    return { work, results: createRunnerResults({ db, work, now: pawsNow }) };
+    return { work, results: createRunnerResults({ store: sqliteDb(db), work, now: pawsNow }) };
   };
   let paws = open();
   const command = (generation: number): Extract<RunnerCommand, { type: "run" }> => ({
@@ -404,7 +404,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
     async pawsOutage(ms: number) {
       link = "paws-down";
       await prepareShutdown(sqliteDb(db), clock.at, undefined, instance.id);
-      stopInstance(db, instance.id, clock.at);
+      await stopInstance(sqliteDb(db), instance.id, clock.at);
       db.close();
       await this.advance(ms, false);
       db = openDatabase(path);

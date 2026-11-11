@@ -1,5 +1,4 @@
-import type { Database } from "bun:sqlite";
-import { blockerCheckedAtSteps, getWorkItemSteps, sqliteDb, type Db } from "../db";
+import { blockerCheckedAtSteps, getWorkItemSteps, type Db } from "../db";
 import {
   BLOCKED_RELATIONS_POLL_MS,
   RELATIONS_POLL_MS,
@@ -18,7 +17,7 @@ export function relationsPollIntervalMs(input: { blocked: boolean; lowBudget: bo
 }
 
 export function createRelationsPolls(input: {
-  db: Database;
+  store: Db;
   reconciler: Reconciler;
   lowBudget: () => Promise<boolean>;
   reconcileExecution: () => unknown;
@@ -64,13 +63,12 @@ export function createRelationsPolls(input: {
 }
 
 export function createBlockerCheckRoute(input: {
-  db: Database;
-  store?: Db;
+  store: Db;
   polls: Pick<ReturnType<typeof createRelationsPolls>, "checkNow">;
   blockedItemIds: () => Promise<string[]>;
   signal?: AbortSignal;
 }) {
-  const store = input.store ?? sqliteDb(input.db);
+  const { store } = input;
   return async (request: Request, sessionIds: readonly string[]): Promise<Response | null> => {
     if (new URL(request.url).pathname !== BLOCKER_CHECK_PATH) return null;
     if (request.method !== "POST") return Response.json({ error: "Use POST." }, { status: 405 });

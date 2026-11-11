@@ -60,7 +60,7 @@ export async function createExecutionControlsFixture(
     organizationId: "org",
     name: "Controls verification",
     userId: "admin",
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
     now,
   });
   for (const [id, role, teamIds] of [
@@ -85,7 +85,7 @@ export async function createExecutionControlsFixture(
   }
   const sessions: Record<string, Awaited<ReturnType<typeof issueWorkspaceSession>>> = {};
   for (const userId of ["admin", "member", "inactive", "outside"])
-    sessions[userId] = await issueWorkspaceSession(db, { workspaceId, userId, now });
+    sessions[userId] = await issueWorkspaceSession(sqliteDb(db), { workspaceId, userId, now });
   db.run("UPDATE workspace_member SET active=0 WHERE workspace_id=? AND user_id='inactive'", [
     workspaceId,
   ]);
@@ -94,7 +94,7 @@ export async function createExecutionControlsFixture(
     ["foreign", "foreign"],
     ["unmapped", "org"],
   ]) {
-    const item = insertQueuedItem(db, {
+    const item = await insertQueuedItem(db, {
       id,
       sessionKey: `session-${id}`,
       title: `Control ${id}`,
@@ -130,7 +130,7 @@ export async function createExecutionControlsFixture(
   const run = (await beginImplementRun(sqliteDb(db), item.id, now)).run;
   const clock = new FakeClock(now);
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     clock,
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
@@ -175,7 +175,7 @@ export async function createExecutionControlsFixture(
   const access = createWorkspaceAccess({
     interruptItem: options.interruptItem,
     onMemberRevoked: options.onMemberRevoked,
-    db,
+    store: sqliteDb(db),
     publicUrl: origin,
     clientId: "client",
     installedOrganization: { id: "org", name: "Controls verification" },

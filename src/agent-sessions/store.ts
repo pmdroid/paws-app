@@ -65,7 +65,7 @@ export function createAgentSessions(options: {
   const { db, work, objects } = options;
   const store = sqliteDb(db);
   const files = createRunFileChunks({
-    db,
+    store: sqliteDb(db),
     kind: "agent_session",
     objects,
     key: options.key,

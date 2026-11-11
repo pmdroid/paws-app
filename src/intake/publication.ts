@@ -1,11 +1,10 @@
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
   dependencySnapshotGenerationSteps,
   leasedJobsForItemSteps,
   readPublicationIdentitySteps,
-  sqliteDb,
+  type Db,
 } from "../db";
 import type { createItemReconciler } from "./reconciliation";
 
@@ -13,13 +12,13 @@ export type PublicationPhase = "publish" | "merge";
 export type PublicationCandidate = { sha: string; baseSha: string };
 
 export function createPublicationReadiness(input: {
-  db: Database;
+  store: Db;
   reconciler: Pick<ReturnType<typeof createItemReconciler>, "reconcile">;
   canMerge: (itemId: string) => Promise<boolean>;
   now?: () => number;
 }) {
   const { reconciler } = input;
-  const store = sqliteDb(input.db);
+  const { store } = input;
   const now = input.now ?? Date.now;
   const ready = new Map<string, { binding: string; phase: PublicationPhase }>();
 

@@ -59,7 +59,7 @@ export async function probeRunnerWork(
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-work", now);
+  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "fixture-work", now);
   const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "fixture-work",
@@ -78,7 +78,7 @@ export async function probeRunnerWork(
   const issuer = join(root, "issuer");
   const authority = await initializeRunnerAuthority(issuer);
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority,
     certificateRoot: issuer,
     disconnect() {},
@@ -100,7 +100,7 @@ export async function probeRunnerWork(
   const keyPath = join(root, "fixture-signing.pem");
   writeFileSync(keyPath, keys.privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: keys.privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -122,7 +122,11 @@ export async function probeRunnerWork(
       undefined,
       [{ runId: command.runId, generation: command.generation, commandId: command.id }],
     );
-  const item = insertQueuedItem(db, { id: "fixture-item", now, sessionKey: "fixture-session" });
+  const item = await insertQueuedItem(db, {
+    id: "fixture-item",
+    now,
+    sessionKey: "fixture-session",
+  });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
   await recordLinearInstallation(sqliteDb(db), {
     organizationId: "fixture-work",
@@ -413,7 +417,7 @@ export async function probeRunnerWork(
     await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
     await assert.rejects(work.authorizeAsync(event), /matching open question/);
     assert.equal((await work.heartbeat(firstRunner)).leases.length, 1);
-    const question = await openQuestion(db, {
+    const question = await openQuestion(sqliteDb(db), {
       itemId: item.id,
       runId: run.id,
       sessionId: "fixture-session",
@@ -560,7 +564,7 @@ export async function probeRunnerWork(
     assert.equal((await work.currentAsync(run.id, 4)).command.id, replacement.id);
     await work.finish(run.id, 4);
     for (let index = 0; index < 64; index++) {
-      const blocked = insertQueuedItem(db, {
+      const blocked = await insertQueuedItem(db, {
         id: `blocked-${index}`,
         now,
         sessionKey: "fixture-session",
@@ -600,7 +604,7 @@ export async function probeRunnerWork(
     );
     const contenders = [];
     for (let index = 0; index < 2; index++) {
-      const queued = insertQueuedItem(db, {
+      const queued = await insertQueuedItem(db, {
         id: `capacity-${index}`,
         now,
         sessionKey: "fixture-session",
@@ -685,7 +689,7 @@ export async function probeRunnerWork(
       );
       await assert.rejects(work.assign(waiting), /occupied/);
       const helpers = createRunnerHelpers({
-        db,
+        store: sqliteDb(db),
         keyId: "fixture",
         privateKey: keys.privateKey,
         now: () => now,
@@ -750,7 +754,7 @@ export async function probeRunnerWork(
       const waitingForTeardown = openDatabase(path);
       try {
         const reconstructed = createRunnerWork({
-          db: waitingForTeardown,
+          store: sqliteDb(waitingForTeardown),
           keyId: "fixture",
           privateKey: keys.privateKey,
           eventKey: Buffer.alloc(32, 7),
@@ -780,7 +784,7 @@ export async function probeRunnerWork(
       await assert.rejects(helpers.dispatch(helperInput), /busy/);
       await work.finish(released.runId, 3);
       await work.heartbeat(firstRunner, 1);
-      helpers.finish(helper.command.id);
+      await helpers.finish(helper.command.id);
       await work.assign(review);
       const commandCount = db
         .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM runner_command")
@@ -799,10 +803,10 @@ export async function probeRunnerWork(
       await work.finish(waiting.runId, 4);
       await work.assign({ ...review, id: workspaceId(), generation: 5 });
       const backend = createRemoteAgentRunner({
-        db,
+        store: sqliteDb(db),
         work,
-        health: createRunnerHealth({ db, work, now: () => now }),
-        results: createRunnerResults({ db, work, now: () => now }),
+        health: createRunnerHealth({ store: sqliteDb(db), work, now: () => now }),
+        results: createRunnerResults({ store: sqliteDb(db), work, now: () => now }),
         now: () => now,
         pollIntervalMs: 1,
         async fetchCandidate() {
@@ -912,7 +916,7 @@ export async function probeRunnerWork(
       });
       await work.finish(waiting.runId, 8);
       const recoveredHelper = await helpers.dispatch(helperInput);
-      helpers.finish(recoveredHelper.command.id);
+      await helpers.finish(recoveredHelper.command.id);
       observe(
         "Expired cancellation recovery joins a fresh signed command without fabricating the older acknowledgement",
         true,

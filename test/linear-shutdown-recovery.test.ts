@@ -45,7 +45,7 @@ for (const shutdown of ["application", "linear"] as const) {
       let jobs = new JobLoop(db, systemClock);
       const makeOrchestrator = () =>
         attachOrchestrator({
-          db,
+          store: sqliteDb(db),
           admission: workspaceAdmission(db),
           tracker,
           pawsRoot: home,
@@ -64,8 +64,9 @@ for (const shutdown of ["application", "linear"] as const) {
       const controller = new AbortController();
       const entered = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();
-      const linear = openLinear({
+      const linear = await openLinear({
         db,
+        store: sqliteDb(db),
         secretsDir: join(home, "secrets"),
         env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
         signal: controller.signal,
@@ -118,8 +119,9 @@ for (const shutdown of ["application", "linear"] as const) {
       store = createInboxStore(sqliteDb(db));
       jobs = new JobLoop(db, systemClock);
       orchestrator = makeOrchestrator();
-      const recovered = openLinear({
+      const recovered = await openLinear({
         db,
+        store: sqliteDb(db),
         secretsDir: join(home, "secrets"),
         env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
         isAuthorized: async () => false,

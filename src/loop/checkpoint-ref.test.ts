@@ -17,7 +17,7 @@ const REPOSITORY = { owner: "acme", repo: "repo", remoteUrl: "https://github.com
 async function setup() {
   const db = openDatabase(":memory:");
   migrate(db);
-  const item = insertQueuedItem(db, { id: "item", branchName: "paws/item", now: 1 });
+  const item = await insertQueuedItem(db, { id: "item", branchName: "paws/item", now: 1 });
   await bindWorkItemRepository(sqliteDb(db), item.id, REPOSITORY);
   const removed: { repository: RepositoryBinding; ref: string }[] = [];
   const remove = async (repository: RepositoryBinding, ref: string) => {
@@ -84,7 +84,7 @@ test("an item resumed before the sweep keeps its checkpoint", async () => {
 test("a continuing item that took over the branch owns the checkpoint, until it ends too", async () => {
   const { db, item, removed, remove } = await setup();
   db.run("UPDATE work_item SET state='cancelled', version=version+1 WHERE id=?", [item.id]);
-  const next = insertQueuedItem(db, { id: "next", branchName: "paws/item", now: 3 });
+  const next = await insertQueuedItem(db, { id: "next", branchName: "paws/item", now: 3 });
   db.run("INSERT INTO item_continuation(item_id,previous_item_id,branch) VALUES(?,?,?)", [
     next.id,
     item.id,
@@ -114,8 +114,8 @@ test("a ref that is already gone is fine", async () => {
 
 test("a continuation two steps on that still runs keeps the shared checkpoint", async () => {
   const { db, item, removed, remove, ended } = await setup();
-  const second = insertQueuedItem(db, { id: "second", branchName: "paws/item", now: 2 });
-  const third = insertQueuedItem(db, { id: "third", branchName: "paws/item", now: 3 });
+  const second = await insertQueuedItem(db, { id: "second", branchName: "paws/item", now: 2 });
+  const third = await insertQueuedItem(db, { id: "third", branchName: "paws/item", now: 3 });
   for (const [next, previous] of [
     [second.id, item.id],
     [third.id, second.id],

@@ -32,7 +32,7 @@ async function seed(active = true): Promise<Database> {
     ["item-a", "platform"],
     ["item-b", "web"],
   ] as const) {
-    insertQueuedItem(db, { id, sessionKey: `session-${id}`, now: 1, title: `Title ${id}` });
+    await insertQueuedItem(db, { id, sessionKey: `session-${id}`, now: 1, title: `Title ${id}` });
     await bindWorkItemRepository(sqliteDb(db), id, {
       owner: "acme",
       repo,
@@ -78,7 +78,7 @@ async function seed(active = true): Promise<Database> {
 
 async function list(db: Database, query = "", sessionIds?: string[]): Promise<FindingsResponse> {
   const response = await handleFindingsRequest(new Request(`${URL_BASE}${query}`), {
-    db,
+    store: sqliteDb(db),
     ...(sessionIds ? { sessionIds } : {}),
   });
   expect(response!.status).toBe(200);
@@ -93,7 +93,7 @@ function post(db: Database, body: unknown, signedIn = true) {
       body: JSON.stringify(body),
     }),
     {
-      db,
+      store: sqliteDb(db),
       now: () => 5000,
       ...(signedIn ? { principal: { workspaceId: "ws-1", userId: "user-ada" } } : {}),
     },

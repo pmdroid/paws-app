@@ -12,7 +12,7 @@ import {
   insertGithubOAuthSteps,
   latestGitHubDeliverySteps,
   listWorkspaceRepositoriesSteps,
-  sqliteDb,
+  type Db,
   workspaceMemberSteps,
   type Q,
   type Steps,
@@ -20,7 +20,6 @@ import {
 import { isWorkspaceAdmin, requestWorkspaceSessionSteps, validWorkspaceCsrf } from "../workspace";
 import { journalCaught } from "../journal";
 import { discoverGitHubInstallation } from "./github-connect-status";
-import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
   createWorkspaceGitHubActivation,
@@ -43,15 +42,14 @@ type Intent = {
   scope: string;
 };
 export function createHostedGitHubConnect(options: {
-  db: Database;
+  store: Db;
   home: string;
   env: Record<string, string | undefined>;
   origin: string;
   fetch?: typeof fetch;
   now?: () => number;
 }) {
-  const { db } = options;
-  const store = sqliteDb(db);
+  const { store } = options;
   const now = options.now ?? Date.now;
   const origin = new URL(options.origin).origin;
   if (new URL(origin).protocol !== "https:")

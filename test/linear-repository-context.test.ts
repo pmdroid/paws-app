@@ -173,7 +173,7 @@ test.each(
       const jobs = new JobLoop(db, systemClock);
       const outbox = new OutboxDispatcher(db, systemClock);
       const orchestrator = attachOrchestrator({
-        db,
+        store: sqliteDb(db),
         admission: workspaceAdmission(db),
         jobs,
         outbox,
@@ -295,7 +295,7 @@ test.each(
       }
       await f.jobs.tick();
       expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("completed");
-      expect(getWorkItemRepository(db, itemId)).toEqual(repository);
+      expect(await getWorkItemRepository(sqliteDb(db), itemId)).toEqual(repository);
       expect(await taskRequiresRepository(sqliteDb(db), itemId)).toBe(true);
       expect(purposes).toEqual(
         scenario === "clarify"

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
-import { immediate, orm, schema } from "../src/db";
+import { orm, schema } from "../src/db";
 import { tempDb } from "./helpers";
 
 describe("orm", () => {
@@ -10,7 +10,7 @@ describe("orm", () => {
     expect(orm(tempDb())).not.toBe(orm(db));
   });
 
-  test("sees uncommitted rows inside immediate()", () => {
+  test("sees uncommitted rows inside an immediate transaction", () => {
     const db = tempDb();
     const probe = () =>
       orm(db)
@@ -19,11 +19,13 @@ describe("orm", () => {
         .where(eq(schema.syncCursor.name, "orm_probe"))
         .all();
     expect(() =>
-      immediate(db, () => {
-        db.run("INSERT INTO sync_cursor (name, cursor_ms) VALUES ('orm_probe', 1)");
-        expect(probe()).toEqual([{ name: "orm_probe" }]);
-        throw new Error("roll back");
-      }),
+      db
+        .transaction(() => {
+          db.run("INSERT INTO sync_cursor (name, cursor_ms) VALUES ('orm_probe', 1)");
+          expect(probe()).toEqual([{ name: "orm_probe" }]);
+          throw new Error("roll back");
+        })
+        .immediate(),
     ).toThrow("roll back");
     expect(probe()).toEqual([]);
   });

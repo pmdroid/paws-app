@@ -70,7 +70,7 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
   const attach = (clock: Clock) => {
     const jobs = new JobLoop(db, clock, { concurrency: 4 });
     let orchestrator: ReturnType<typeof attachOrchestrator>;
-    const gate = new LinearTaskAccess(db, {
+    const gate = new LinearTaskAccess(sqliteDb(db), {
       access: access.adapter,
       lifecycle,
       oauthClientId: scope.oauthClientId,
@@ -79,7 +79,7 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
       interruptSession: (sessionId) => orchestrator.interruptLinearSession(sessionId),
     });
     orchestrator = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       admission: workspaceAdmission(db),
       jobs,
       outbox: new OutboxDispatcher(db, systemClock),

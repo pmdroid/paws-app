@@ -28,7 +28,7 @@ async function setup(file = ":memory:") {
   const db = openDatabase(file);
   migrate(db);
   for (const id of ["first", "second"]) {
-    insertQueuedItem(db, { id, now: 1 });
+    await insertQueuedItem(db, { id, now: 1 });
     await bindWorkItemRepository(sqliteDb(db), id, {
       owner: "acme",
       repo: "one",
@@ -58,7 +58,7 @@ async function setup(file = ":memory:") {
       runAt: 90_000,
     });
   }
-  recordPullReview(db, {
+  await recordPullReview(sqliteDb(db), {
     reviewId: 40,
     itemId: "first",
     state: "changes_requested",
@@ -130,7 +130,7 @@ for (const [name, point, kind] of failures) {
       db.run(
         `CREATE TEMP TRIGGER fail_delivery ${point} BEGIN SELECT RAISE(ABORT, 'injected failure'); END`,
       );
-      await expect(acceptGitHubDelivery(db, delivery(kind!), 1_000)).rejects.toThrow(
+      await expect(acceptGitHubDelivery(sqliteDb(db), delivery(kind!), 1_000)).rejects.toThrow(
         "injected failure",
       );
       expect(await listGitHubDeliveries(sqliteDb(db))).toEqual([]);
@@ -140,7 +140,7 @@ for (const [name, point, kind] of failures) {
       expect(await pendingPullComments(sqliteDb(db), "first")).toEqual([]);
       expect(await listJobs(sqliteDb(db))).toEqual(before);
       db.run("DROP TRIGGER fail_delivery");
-      expect(await acceptGitHubDelivery(db, delivery(kind!), 1_000)).toBe(true);
+      expect(await acceptGitHubDelivery(sqliteDb(db), delivery(kind!), 1_000)).toBe(true);
       expect(await listGitHubDeliveries(sqliteDb(db))).toHaveLength(1);
       expect(await pendingChangeRequests(sqliteDb(db), "first")).toHaveLength(
         kind === "review" ? 2 : 1,
@@ -163,7 +163,7 @@ for (const [name, point, kind] of failures) {
           .map((j) => j.runAt),
       ).toEqual(kind === "push" ? [90_000, 90_000] : [1_000, 1_000]);
       const committed = await listJobs(sqliteDb(db));
-      expect(await acceptGitHubDelivery(db, delivery(kind!), 2_000)).toBe(false);
+      expect(await acceptGitHubDelivery(sqliteDb(db), delivery(kind!), 2_000)).toBe(false);
       expect(await listJobs(sqliteDb(db))).toEqual(committed);
     } finally {
       db.close();
@@ -179,14 +179,14 @@ test("failure after receipt insertion leaves the delivery retryable", async () =
     db.run(
       "CREATE TEMP TRIGGER fail_prune BEFORE DELETE ON github_delivery BEGIN SELECT RAISE(ABORT, 'after receipt'); END",
     );
-    await expect(acceptGitHubDelivery(db, delivery("review"), 1_000)).rejects.toThrow(
+    await expect(acceptGitHubDelivery(sqliteDb(db), delivery("review"), 1_000)).rejects.toThrow(
       "after receipt",
     );
     expect((await listGitHubDeliveries(sqliteDb(db))).map((row) => row.deliveryId)).toEqual([
       "expired",
     ]);
     db.run("DROP TRIGGER fail_prune");
-    expect(await acceptGitHubDelivery(db, delivery("review"), 1_000)).toBe(true);
+    expect(await acceptGitHubDelivery(sqliteDb(db), delivery("review"), 1_000)).toBe(true);
     expect(await pendingChangeRequests(sqliteDb(db), "first")).toHaveLength(2);
   } finally {
     db.close();
@@ -205,7 +205,7 @@ for (const kind of ["review", "comment", "main"]) {
         process.execPath,
         "-e",
         `
-        import { openDatabase } from ${JSON.stringify(new URL("../db/index.ts", import.meta.url).pathname)};
+        import { openDatabase, sqliteDb } from ${JSON.stringify(new URL("../db/index.ts", import.meta.url).pathname)};
         import { acceptGitHubDelivery } from ${JSON.stringify(new URL("./merge-jobs.ts", import.meta.url).pathname)};
         const db = openDatabase(${JSON.stringify(file)});
         const prepare = db.prepare.bind(db);
@@ -220,7 +220,7 @@ for (const kind of ["review", "comment", "main"]) {
           };
           return statement;
         };
-        await acceptGitHubDelivery(db, ${JSON.stringify(input)}, 1000);
+        await acceptGitHubDelivery(sqliteDb(db), ${JSON.stringify(input)}, 1000);
         process.exit(99);
       `,
       ]);
@@ -233,8 +233,8 @@ for (const kind of ["review", "comment", "main"]) {
           (await pendingChangeRequests(sqliteDb(reopened), "first")).map((r) => r.reviewId),
         ).toEqual([40]);
         expect(await pendingPullComments(sqliteDb(reopened), "first")).toEqual([]);
-        expect(await acceptGitHubDelivery(reopened, input, 1_000)).toBe(true);
-        expect(await acceptGitHubDelivery(reopened, input, 2_000)).toBe(false);
+        expect(await acceptGitHubDelivery(sqliteDb(reopened), input, 1_000)).toBe(true);
+        expect(await acceptGitHubDelivery(sqliteDb(reopened), input, 2_000)).toBe(false);
       } finally {
         reopened.close();
       }
@@ -273,13 +273,15 @@ test("filter and identity refresh callbacks run outside the write transaction, n
     },
   };
   try {
-    expect(await acceptGitHubDelivery(db, delivery("comment"), 1_000, filter)).toBe(true);
+    expect(await acceptGitHubDelivery(sqliteDb(db), delivery("comment"), 1_000, filter)).toBe(true);
     expect(calls).toContain("identity refresh");
     expect(
       (await listJobs(sqliteDb(db))).find((j) => j.queue === JOB_KIND.pullComments)?.runAt,
     ).toBe(1_020);
     const before = [...calls];
-    expect(await acceptGitHubDelivery(db, delivery("comment"), 2_000, filter)).toBe(false);
+    expect(await acceptGitHubDelivery(sqliteDb(db), delivery("comment"), 2_000, filter)).toBe(
+      false,
+    );
     expect(calls).toEqual(before);
   } finally {
     db.close();

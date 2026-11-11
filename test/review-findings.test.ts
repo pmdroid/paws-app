@@ -119,7 +119,7 @@ async function accept(
 }
 
 async function item(db: Database, id: string): Promise<void> {
-  insertQueuedItem(db, { id, sessionKey: `session-${id}`, now: 1 });
+  await insertQueuedItem(db, { id, sessionKey: `session-${id}`, now: 1 });
   await bindWorkItemRepository(sqliteDb(db), id, REPOSITORY);
 }
 

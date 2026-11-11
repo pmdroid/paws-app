@@ -39,7 +39,7 @@ const MERGING: Checkpoint = { phase: "merge_queue", baseSha: "main", wipCommit: 
 const EXECUTION: readonly string[] = [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify];
 
 async function seed(db: Database, now: number): Promise<void> {
-  insertQueuedItem(db, { id: "item", sessionKey: "session", now });
+  await insertQueuedItem(db, { id: "item", sessionKey: "session", now });
   await bindWorkItemRepository(sqliteDb(db), "item", {
     owner: "owner",
     repo: "repo",
@@ -131,7 +131,7 @@ async function snapshot(db: Database) {
 function orchestrate(db: Database, clock: FakeClock) {
   const jobs = new JobLoop(db, clock);
   attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs,
     outbox: new OutboxDispatcher(db, clock),
     pawsRoot: tempHome(),
@@ -142,7 +142,7 @@ function orchestrate(db: Database, clock: FakeClock) {
 }
 
 async function observeGaps(db: Database, clock: FakeClock, gapMs: number): Promise<void> {
-  const host = new HostSupervisor(db, clock, new WakeDetector(clock), 250);
+  const host = new HostSupervisor(sqliteDb(db), clock, new WakeDetector(clock), 250);
   const jobs = orchestrate(db, clock);
   const since = clock.now();
   try {

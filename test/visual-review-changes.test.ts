@@ -35,11 +35,11 @@ afterEach(() => {
 async function harness(active = true) {
   const db = openDatabase(":memory:");
   migrate(db);
-  insertQueuedItem(db, { id: "item", sessionKey: "ses_1" });
+  await insertQueuedItem(db, { id: "item", sessionKey: "ses_1" });
   const home = mkdtempSync(join(tmpdir(), "paws-review-marks-"));
   roots.push(home);
   const root = join(home, "evidence");
-  const store = createEvidenceStore({ db, root });
+  const store = createEvidenceStore({ store: sqliteDb(db), root });
   const shot = (name: string, source: Uint8Array) =>
     store.save({
       itemId: "item",
@@ -98,7 +98,7 @@ async function harness(active = true) {
         body: new Uint8Array(body),
       }),
       {
-        db,
+        store: sqliteDb(db),
         root,
         principal: options.signedIn === false ? undefined : { workspaceId: "ws-1", userId },
         sessionIds: options.sessionIds ?? ["ses_1"],
@@ -193,7 +193,7 @@ describe("POST /api/visual-review-changes", () => {
     const get = await handleVisualReviewChanges(
       new Request("https://paws.example/api/visual-review-changes"),
       {
-        db: openDatabase(":memory:"),
+        store: sqliteDb(openDatabase(":memory:")),
         root: h.root,
         principal: { workspaceId: "ws-1", userId: "user-ada" },
         sessionIds: [],
@@ -261,7 +261,7 @@ test("a stored mark is served like evidence to members who can see the task", as
   await saveVisualReviewMarks(sqliteDb(h.db), [mark!]);
   const get = (sessionIds: string[]) =>
     handleEvidenceRequest(new Request(`https://paws.example/api/evidence/${mark!.id}`), {
-      db: h.db,
+      store: sqliteDb(h.db),
       root: h.root,
       sessionIds,
     });

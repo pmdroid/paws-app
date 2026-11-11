@@ -97,7 +97,10 @@ describe("advanceMerge rebases on a runner", () => {
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
     expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("queued");
     expect(
-      listRebaseReturns(h.db, "ENG-1", 0).map((row) => ({ base: row.base, files: row.files })),
+      (await listRebaseReturns(sqliteDb(h.db), "ENG-1", 0)).map((row) => ({
+        base: row.base,
+        files: row.files,
+      })),
     ).toEqual([{ base: main, files: ["ok.txt"] }]);
     expect(await h.remoteHead("ENG-1")).toBe(item.accepted);
     expect(fallbacks()).toEqual([]);

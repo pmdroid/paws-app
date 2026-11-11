@@ -36,7 +36,7 @@ async function fixture(mergeable: boolean | null) {
   const reads: string[] = [];
   const lines: string[] = [];
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     clock,
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
@@ -64,7 +64,7 @@ async function fixture(mergeable: boolean | null) {
     }),
   });
   orchestrator["fetchUpstreamMain"] = async () => MAIN;
-  insertQueuedItem(db, { id: "DEP-661", sessionKey: "ses-1", now: clock.now() });
+  await insertQueuedItem(db, { id: "DEP-661", sessionKey: "ses-1", now: clock.now() });
   await bindWorkItemRepository(sqliteDb(db), "DEP-661", {
     owner: "acme",
     repo: "monorepo",
@@ -119,7 +119,9 @@ test("a merge attempt that gets HTTP 500 on a conflicting pull request goes back
     expect(payload.reason).toBe("conflict");
     expect(payload.handoff.startsWith(REBASE_CONFLICT_INSTRUCTION)).toBe(true);
     expect(payload.handoff).toContain("git reset --soft $(git merge-base HEAD origin/main)");
-    expect(listRebaseReturns(f.db, "DEP-661", 0)).toMatchObject([{ base: MAIN, reason: "merge" }]);
+    expect(await listRebaseReturns(sqliteDb(f.db), "DEP-661", 0)).toMatchObject([
+      { base: MAIN, reason: "merge" },
+    ]);
     expect(f.lines.filter((line) => line.includes("conflicts with main"))).toEqual([
       `item DEP-661 merge attempt got GitHub HTTP 500; pull request #6496 at ${HEAD.slice(0, 7)}: the pull request conflicts with main. Sent back to the agent to rebase.`,
     ]);

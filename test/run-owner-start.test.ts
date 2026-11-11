@@ -74,7 +74,7 @@ test("a run the orchestrator starts records the instance that started it", async
   });
   const github = createFakeGitHub();
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     instanceId: instance.id,
     admission: workspaceAdmission(db),
     jobs,

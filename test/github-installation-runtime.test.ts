@@ -29,7 +29,7 @@ async function fixture(launch?: AgentLaunch) {
   const db = tempDb();
   const home = tempHome();
   const clock = new FakeClock(1_000);
-  const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
+  const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
   await ensureLinearSession(sqliteDb(db), {
     sessionId: "session",
     issueId: "ENG-1",
@@ -45,7 +45,7 @@ async function fixture(launch?: AgentLaunch) {
   host.admins = ["linear-admin"];
   const tracker = createFakeTracker();
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -211,7 +211,7 @@ test.each(["pending", "rejected"] as const)(
       const recovering = f.orchestrator.recoverGitHubAuth();
       void recovering.catch(() => undefined);
       await reading.promise;
-      const writer = insertQueuedItem(f.db, { id: "ENG-2", sessionKey: "writer" });
+      const writer = await insertQueuedItem(f.db, { id: "ENG-2", sessionKey: "writer" });
       await applyWorkItemEvent(sqliteDb(f.db), writer.id, "dispatched");
       await saveTaskMode(sqliteDb(f.db), writer.id, "answer");
       await enqueueJobOnce(sqliteDb(f.db), {

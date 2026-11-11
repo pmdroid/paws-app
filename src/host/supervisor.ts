@@ -1,11 +1,10 @@
-import type { Database } from "bun:sqlite";
 import {
   accrueAwakeSteps,
   emitJobReady,
   enqueueJobOnceSteps,
   listWorkItemsByStatesSteps,
   recordWakeSteps,
-  sqliteDb,
+  type Db,
 } from "../db";
 import {
   awakeCapReached,
@@ -22,7 +21,7 @@ export class HostSupervisor {
   private lastObservedMono = new Map<string, number>();
 
   constructor(
-    readonly db: Database,
+    readonly store: Db,
     readonly clock: Clock,
     readonly detector: WakeDetector,
     readonly pollMs = 250,
@@ -61,7 +60,7 @@ export class HostSupervisor {
     const observed = new Map<string, number>();
     const stops: string[] = [];
     const lastObservedMono = this.lastObservedMono;
-    const jobReady = await sqliteDb(this.db).transaction(function* (q) {
+    const jobReady = await this.store.transaction(function* (q) {
       let ready = false;
       for (const item of yield* listWorkItemsByStatesSteps(q, IN_FLIGHT_ITEM_STATES)) {
         observed.set(item.id, mono);
@@ -80,7 +79,7 @@ export class HostSupervisor {
       }
       return ready;
     });
-    if (jobReady) emitJobReady(this.db);
+    if (jobReady) emitJobReady(this.store);
     this.lastObservedMono = observed;
     for (const id of stops) this.stopAgent?.(id);
   }
@@ -94,7 +93,7 @@ export class HostSupervisor {
    */
   private async handleWake(sample: WakeSample): Promise<void> {
     const now = this.clock.now();
-    const enqueued = await sqliteDb(this.db).transaction(function* (q) {
+    const enqueued = await this.store.transaction(function* (q) {
       const inserted = yield* recordWakeSteps(q, {
         fromWall: sample.fromWall,
         toWall: sample.toWall,
@@ -110,6 +109,6 @@ export class HostSupervisor {
       });
       return job.inserted;
     });
-    if (enqueued) emitJobReady(this.db);
+    if (enqueued) emitJobReady(this.store);
   }
 }

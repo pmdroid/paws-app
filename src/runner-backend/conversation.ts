@@ -1,7 +1,5 @@
-import type { Database } from "bun:sqlite";
 import {
   runnerConversationLaneSteps,
-  sqliteDb,
   unfinishedConversationHelpersSteps,
   type Db,
   type Q,
@@ -32,13 +30,12 @@ export type ConversationTurn = {
 };
 
 export function conversationTurns(options: {
-  db: Database;
-  store?: Db;
+  store: Db;
   helpers: RunnerHelpers;
   holder: (q: Q, itemId: string) => Steps<Holder | undefined>;
   now?: () => number;
 }) {
-  const store = options.store ?? sqliteDb(options.db);
+  const { store } = options;
   const now = options.now ?? Date.now;
   function* startSteps(q: Q, itemId: string, sessionId: string, prompt: string): Steps<boolean> {
     const holder = yield* options.holder(q, itemId);
@@ -91,8 +88,8 @@ export function conversationTurns(options: {
         ];
       });
     },
-    finish(commandId: string): void {
-      options.helpers.finish(commandId);
+    finishSteps(q: Q, commandId: string): Steps<void> {
+      return options.helpers.finishSteps(q, commandId);
     },
   };
 }

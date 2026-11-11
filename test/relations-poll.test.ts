@@ -50,7 +50,7 @@ async function relationsFixture(options: { batched?: boolean } = {}) {
   let epicReads = 0;
   const depReads: string[] = [];
   const reconciler = createItemReconciler({
-    db,
+    store: sqliteDb(db),
     tracker: {
       ...tracker,
       ...(options.batched === false ? { listBlockers: undefined } : {}),

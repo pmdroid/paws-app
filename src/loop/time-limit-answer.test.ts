@@ -26,7 +26,7 @@ async function askedAtTimeLimit(pendingHandoff?: string) {
   const clock = new FakeClock(20_000);
   const db = openDatabase(":memory:");
   migrate(db);
-  const item = insertQueuedItem(db, {
+  const item = await insertQueuedItem(db, {
     id: "eng-7",
     sessionKey: "ses",
     limits: { fixes: 30 * MINUTE },
@@ -73,7 +73,7 @@ async function askedBeforeAcceptance(state: "running" | "verifying") {
   const clock = new FakeClock(20_000);
   const db = openDatabase(":memory:");
   migrate(db);
-  const item = insertQueuedItem(db, {
+  const item = await insertQueuedItem(db, {
     id: "eng-8",
     sessionKey: "ses",
     maxAwakeMs: 30 * MINUTE,

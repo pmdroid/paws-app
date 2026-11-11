@@ -152,9 +152,9 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
   };
 }
 
-function storedLinearToken(runtime: ReturnType<typeof loadRuntime>): string | null {
+async function storedLinearToken(runtime: ReturnType<typeof loadRuntime>): Promise<string | null> {
   const secretsDir = pawsPaths(runtime.env.home).secretsDir;
-  const stored = readPawsDbSync(runtime.env.home, (db) => readStoredToken(db, secretsDir));
+  const stored = await readPawsDb(runtime.env.home, (store) => readStoredToken(store, secretsDir));
   if (stored) return stored.accessToken;
   try {
     const file: unknown = JSON.parse(readSecretFile(runtime.linearTokenFile, false) ?? "null");
@@ -162,22 +162,6 @@ function storedLinearToken(runtime: ReturnType<typeof loadRuntime>): string | nu
     return typeof token === "string" && token.length > 0 ? token : null;
   } catch (error) {
     journalCaught(error, "probe.storedLinearToken.parse", null);
-    return null;
-  }
-}
-
-function readPawsDbSync<T>(home: string, read: (db: Database) => T): T | null {
-  const file = pawsPaths(home).db;
-  if (!existsSync(file)) return null;
-  try {
-    const db = new Database(file, { readonly: true });
-    try {
-      return read(db);
-    } finally {
-      db.close();
-    }
-  } catch (caughtError1) {
-    journalCaught(caughtError1, "probe.readPawsDb.read", null);
     return null;
   }
 }
@@ -286,12 +270,12 @@ async function linearFact(runtime: ReturnType<typeof loadRuntime>): Promise<Prob
     teamFound: false,
     error: null,
   };
-  const credential = runtime.linearAccessToken ?? storedLinearToken(runtime);
+  const credential = runtime.linearAccessToken ?? (await storedLinearToken(runtime));
   if (credential === null) return empty;
   const token = async () => credential;
   try {
     const client = createLinearClient({
-      auth: { hasToken: () => true, ensureFresh: token, forceRefresh: token },
+      auth: { hasToken: async () => true, ensureFresh: token, forceRefresh: token },
       fetch: (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(8_000) }),
     });
     const teamId = runtime.linearTeamId;

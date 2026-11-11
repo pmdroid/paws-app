@@ -70,7 +70,7 @@ async function placeItem(bindTask = true) {
     name: "Pool",
     email: "pool@example.invalid",
   });
-  const token = await issueWorkspaceBootstrap(db, "org", now);
+  const token = await issueWorkspaceBootstrap(sqliteDb(db), "org", now);
   const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "org",
@@ -88,7 +88,7 @@ async function placeItem(bindTask = true) {
       teamIds: ["team"],
       now,
     });
-  const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
+  const item = await insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
   await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app-client",
@@ -344,7 +344,7 @@ test("session affinity waits for other runs' held slots and unassigned reservati
     expect(await placed.ids({ ...session, reserved: new Map([["second", 1]]) })).toEqual([
       "second",
     ]);
-    insertQueuedItem(db, { id: "pinned", now: placed.now() });
+    await insertQueuedItem(db, { id: "pinned", now: placed.now() });
     const pin = await enqueueJob(sqliteDb(db), {
       queue: "run.resume",
       now: placed.now(),
@@ -607,7 +607,7 @@ test("a runner with quota left goes before one running on extra usage, which nam
           startedAt: pool.now(),
         }),
       );
-      const response = await createRunnerPlacementBrowser({ db: pool.db })(
+      const response = await createRunnerPlacementBrowser({ store: sqliteDb(pool.db) })(
         new Request("http://127.0.0.1/api/runners/usage"),
         {
           workspaceId: pool.workspaceId,
@@ -651,7 +651,7 @@ test("the runner's owner and admins switch extra usage per agent, others get 403
     placed.db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [
       runnerId,
     ]);
-    const browser = createRunnerPlacementBrowser({ db: placed.db, now: placed.now });
+    const browser = createRunnerPlacementBrowser({ store: sqliteDb(placed.db), now: placed.now });
     const as = (userId: string, role: "admin" | "member") => ({
       workspaceId: placed.workspaceId,
       userId,
@@ -887,7 +887,7 @@ test("a moved run goes to the idle runner that can continue its agent session", 
           startedAt: placed.now(),
         }),
       );
-    const response = await createRunnerPlacementBrowser({ db: placed.db })(
+    const response = await createRunnerPlacementBrowser({ store: sqliteDb(placed.db) })(
       new Request("http://127.0.0.1/api/runners/usage"),
       {
         workspaceId: placed.workspaceId,

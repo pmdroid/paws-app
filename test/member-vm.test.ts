@@ -69,7 +69,7 @@ async function fixture(input: { exeDev?: ExeDev; installPolls?: number } = {}) {
     name: "Workspace Owner",
     email: "owner@example.invalid",
   });
-  const issued = await issueWorkspaceBootstrap(db, "vm-org", clock.now());
+  const issued = await issueWorkspaceBootstrap(sqliteDb(db), "vm-org", clock.now());
   const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "vm-org",
@@ -105,7 +105,7 @@ async function fixture(input: { exeDev?: ExeDev; installPolls?: number } = {}) {
   const member = await person("Ada Lovelace", "ada@example.invalid");
   const admin = principal(ownerUserId, "admin");
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority,
     certificateRoot: authorityRoot,
     disconnect: () => {},
@@ -139,13 +139,13 @@ async function fixture(input: { exeDev?: ExeDev; installPolls?: number } = {}) {
 
 async function drive(f: Fixture, loop: JobLoop, until: (row: MemberVm) => boolean, limit = 2_000) {
   for (let index = 0; index < limit; index++) {
-    const row = (await findMemberVm(f.db, f.member))!;
+    const row = (await findMemberVm(sqliteDb(f.db), f.member))!;
     if (until(row)) return row;
     const job = await loop.tick();
     if (job === null) f.clock.advance(MEMBER_VM_POLL_MS);
   }
   throw new Error(
-    `member VM did not settle: ${JSON.stringify(await findMemberVm(f.db, f.member))}`,
+    `member VM did not settle: ${JSON.stringify(await findMemberVm(sqliteDb(f.db), f.member))}`,
   );
 }
 
@@ -205,7 +205,7 @@ describe("member VM", () => {
 
     f.clock.advance(MEMBER_VM_POLL_MS);
     await loop.tick();
-    expect((await findMemberVm(f.db, f.member))!.step).toBe("health");
+    expect((await findMemberVm(sqliteDb(f.db), f.member))!.step).toBe("health");
     heartbeat(f.db, health.runnerId!, f.clock.now());
     const ready = await drive(f, loop, settled);
     expect(ready.step).toBe("ready");
@@ -227,7 +227,7 @@ describe("member VM", () => {
     };
     void f.jobs(dying).tick();
     await Bun.sleep(5);
-    expect((await findMemberVm(f.db, f.member))!.step).toBe("create");
+    expect((await findMemberVm(sqliteDb(f.db), f.member))!.step).toBe("create");
     expect(f.exeDev.vms.size).toBe(1);
 
     f.clock.advance(LEASE_MS + 1);
@@ -457,7 +457,7 @@ describe("member VM", () => {
     expect(ready.step).toBe("ready");
 
     await f.control.setStatus(f.admin, ready.runnerId!, "revoked");
-    expect((await findMemberVm(f.db, f.member))!.runnerId).toBeNull();
+    expect((await findMemberVm(sqliteDb(f.db), f.member))!.runnerId).toBeNull();
 
     const stale = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
     expect(stale.step).toBe("enroll");

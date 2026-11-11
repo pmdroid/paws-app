@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   and,
   count,
@@ -14,7 +13,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { jsonFromText, jsonText, jsonValue } from "./json-text";
 import { runnerSignInWaitingSteps, workHelperSql } from "./runner-capacity";
 import { runnerLeaseCutoff } from "./runner-lease";
@@ -993,10 +992,6 @@ export function* runnerFinishedRunsSteps(q: Q, runnerId: string, limit = 64) {
       .limit(limit),
   );
   return rows.map((row) => row.runId);
-}
-
-export function runnerFinishedRuns(db: Database, runnerId: string): string[] {
-  return settled(sqliteDb(db).run((q) => runnerFinishedRunsSteps(q, runnerId)));
 }
 
 export function* setRunnerWorkLastSequenceSteps(q: Q, runId: string, sequence: number) {

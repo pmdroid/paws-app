@@ -21,7 +21,7 @@ function harness() {
   const db = tempDb();
   const clock = new FakeClock(1_000);
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
@@ -124,7 +124,7 @@ test("the orchestrator pump treats a delegation whose items are all merged as fi
   const db = tempDb();
   const clock = new FakeClock(1_000);
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
@@ -194,7 +194,7 @@ test("a follow-up session turn routes by the item's task key without the epic ro
   ]);
   const jobs = new JobLoop(db, clock);
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox: new OutboxDispatcher(db, clock),

@@ -102,7 +102,7 @@ function save(
     now?: number;
   },
 ) {
-  return saveRetroSettings(db, {
+  return saveRetroSettings(sqliteDb(db), {
     workspaceId: "ws",
     actorId: "admin-1",
     expectedRevision: input.expectedRevision,
@@ -166,7 +166,10 @@ async function collectAndQueue(
 describe("saving retro settings", () => {
   test("before a save the proposed defaults show at revision 0", async () => {
     const { db } = harness();
-    const view = await readRetroSettings(db, { workspaceId: "ws", accessibleRepositories: [APP] });
+    const view = await readRetroSettings(sqliteDb(db), {
+      workspaceId: "ws",
+      accessibleRepositories: [APP],
+    });
     expect(view).toMatchObject({ revision: 0, saved: false, defaultPrompt: DEFAULT_RETRO_PROMPT });
     expect(view.settings.executionLimits).toEqual({ activeMinutes: 15, retries: 1 });
     expect(view.settings.outputLimits).toEqual({ maxItems: 5, workedWell: 3 });
@@ -194,7 +197,7 @@ describe("saving retro settings", () => {
       now: 2,
     });
     expect(second.ok).toBe(true);
-    const view = await readRetroSettings(db, {
+    const view = await readRetroSettings(sqliteDb(db), {
       workspaceId: "ws",
       accessibleRepositories: [APP, LANDING],
     });
@@ -245,7 +248,8 @@ describe("saving retro settings", () => {
       "schedule.timeZone",
     ]);
     expect(
-      (await readRetroSettings(db, { workspaceId: "ws", accessibleRepositories: [] })).saved,
+      (await readRetroSettings(sqliteDb(db), { workspaceId: "ws", accessibleRepositories: [] }))
+        .saved,
     ).toBe(false);
   });
 
@@ -361,7 +365,7 @@ describe("frozen retro runs", () => {
       rendered.push(text);
       return text;
     };
-    const prompt = await freezeRetroPrompt(db, root, { retroId: "r1", render, now: 3 });
+    const prompt = await freezeRetroPrompt(sqliteDb(db), root, { retroId: "r1", render, now: 3 });
     if (!prompt.ok) throw new Error(prompt.reason);
     expect(prompt.prompt).toContain("digest r1");
     expect(prompt.prompt).not.toContain("Changed.");
@@ -391,7 +395,7 @@ describe("frozen retro runs", () => {
         ...limits,
       }),
     ).toEqual({ attempt: 2 });
-    const retry = await freezeRetroPrompt(db, root, { retroId: "r1", render, now: 7 });
+    const retry = await freezeRetroPrompt(sqliteDb(db), root, { retroId: "r1", render, now: 7 });
     expect(retry).toEqual(prompt);
     expect(rendered).toHaveLength(1);
 

@@ -47,7 +47,7 @@ async function fixture() {
     organizationId: "org",
     name: "Workspace",
     userId: "owner",
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
     now,
   });
   for (const role of ["admin", "member"] as const) {
@@ -81,7 +81,11 @@ async function fixture() {
   };
   const sessions: Record<string, Awaited<ReturnType<typeof issueWorkspaceSession>>> = {};
   for (const role of ["owner", "admin", "member"])
-    sessions[role] = await issueWorkspaceSession(db, { workspaceId: "ws", userId: role, now });
+    sessions[role] = await issueWorkspaceSession(sqliteDb(db), {
+      workspaceId: "ws",
+      userId: role,
+      now,
+    });
   const calls: { path: string; body: string }[] = [];
   let hold: Promise<void> | undefined;
   let beforeInstallation: (() => Promise<void>) | undefined;
@@ -170,7 +174,7 @@ async function fixture() {
     )) as typeof fetch;
   const handler = () =>
     createHostedGitHubConnect({
-      db,
+      store: sqliteDb(db),
       home,
       env,
       origin: "https://paws.example",
@@ -211,7 +215,7 @@ async function fixture() {
     handler,
     setup: () =>
       createGitHubRepositorySetup({
-        db,
+        store: sqliteDb(db),
         home,
         env,
         origin: "https://paws.example",
@@ -358,7 +362,7 @@ test("hosted connection reports missing server credentials as JSON without chang
   const f = await fixture();
   try {
     const handler = createHostedGitHubConnect({
-      db: f.db,
+      store: sqliteDb(f.db),
       home: f.home,
       env: {},
       origin: "https://paws.example",

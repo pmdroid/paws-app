@@ -266,7 +266,9 @@ test("browser sign-in creates an owner only in the operator's configured organiz
     expect(scene.state.installed).toBe(1);
     const workspace = (await workspaceForOrganization(sqliteDb(scene.db), "org"))!;
     expect((await listWorkspaceMembers(sqliteDb(scene.db), workspace.id))[0]?.role).toBe("admin");
-    expect(readStoredToken(scene.db, join(scene.home, "secrets"))?.accessToken).toBe("fixture-app");
+    expect(
+      (await readStoredToken(sqliteDb(scene.db), join(scene.home, "secrets")))?.accessToken,
+    ).toBe("fixture-app");
     expect(JSON.stringify(scene.db.query("SELECT * FROM credential").all())).not.toContain(
       "fixture-app",
     );
@@ -308,7 +310,7 @@ test("an unrelated Linear admin cannot claim a fresh instance", async () => {
     );
     expect(scene.db.query("SELECT 1 FROM browser_installation_request").get()).toBeNull();
     expect(scene.db.query("SELECT 1 FROM workspace").get()).toBeNull();
-    expect(readStoredToken(scene.db, join(scene.home, "secrets"))).toBeNull();
+    expect(await readStoredToken(sqliteDb(scene.db), join(scene.home, "secrets"))).toBeNull();
     expect(install.response.headers.get("set-cookie")).toBeNull();
     expect(scene.state.installed).toBe(0);
   } finally {
@@ -327,7 +329,7 @@ test("installation rechecks the operator organization after a restart", async ()
       install.cookie,
     );
     expect(response.headers.get("location")).toBe("/dashboard/?onboarding=workspace-mismatch");
-    expect(readStoredToken(scene.db, join(scene.home, "secrets"))).toBeNull();
+    expect(await readStoredToken(sqliteDb(scene.db), join(scene.home, "secrets"))).toBeNull();
     expect(scene.db.query("SELECT 1 FROM workspace").get()).toBeNull();
     expect(scene.state.exchanges).toBe(1);
     expect(scene.state.installed).toBe(0);
@@ -350,7 +352,7 @@ test("a concurrently bound foreign workspace prevents credential writes", async 
       install.cookie,
     );
     expect(response.headers.get("location")).toBe("/dashboard/?onboarding=workspace-mismatch");
-    expect(readStoredToken(scene.db, join(scene.home, "secrets"))).toBeNull();
+    expect(await readStoredToken(sqliteDb(scene.db), join(scene.home, "secrets"))).toBeNull();
     expect(existsSync(join(scene.home, "secrets/linear-client.json"))).toBe(false);
     expect(await workspaceForOrganization(sqliteDb(scene.db), "org")).toBeNull();
     expect(scene.state.installed).toBe(0);
@@ -412,7 +414,7 @@ for (const failure of [
         failure === "cookie" ? "" : install.cookie,
       );
       expect(response.headers.get("location")).toContain("/dashboard/?onboarding=");
-      expect(readStoredToken(scene.db, join(scene.home, "secrets"))).toBeNull();
+      expect(await readStoredToken(sqliteDb(scene.db), join(scene.home, "secrets"))).toBeNull();
       expect(await workspaceForOrganization(sqliteDb(scene.db), "org")).toBeNull();
       expect(scene.state.installed).toBe(0);
     } finally {
@@ -468,9 +470,9 @@ for (const concurrentRevocation of [false, true]) {
       expect(await getLinearSessionAccess(sqliteDb(scene.db), "session")).toBe(
         concurrentRevocation ? "revoked" : "allowed",
       );
-      expect(readStoredToken(scene.db, join(scene.home, "secrets"))?.accessToken).toBe(
-        concurrentRevocation ? "fixture-app" : "fixture-reconnected-app",
-      );
+      expect(
+        (await readStoredToken(sqliteDb(scene.db), join(scene.home, "secrets")))?.accessToken,
+      ).toBe(concurrentRevocation ? "fixture-app" : "fixture-reconnected-app");
       expect((await workspaceForOrganization(sqliteDb(scene.db), "org"))?.id).toBe(workspace.id);
       expect(
         (await listWorkspaceMembers(sqliteDb(scene.db), workspace.id)).filter(
@@ -488,7 +490,7 @@ for (const admin of [false, true]) {
     const scene = fixture();
     try {
       const access = createWorkspaceAccess({
-        db: scene.db,
+        store: sqliteDb(scene.db),
         publicUrl: "https://paws.example",
         clientId: "fixture-client",
         installedOrganization: { id: "org", name: "Workspace" },

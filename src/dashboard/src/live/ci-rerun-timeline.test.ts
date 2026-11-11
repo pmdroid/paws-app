@@ -25,7 +25,7 @@ test("the timeline shows the agent's CI re-run with its reason and run id", asyn
   const db = openDatabase(":memory:");
   open.push(db);
   migrate(db);
-  insertQueuedItem(db, { id: "item" });
+  await insertQueuedItem(db, { id: "item" });
   await beginImplementRun(sqliteDb(db), "item", 1);
   const reason = "shard 3 hit its 12-minute limit in a test this change does not touch";
   await recordCiRerun(sqliteDb(db), {
@@ -37,7 +37,7 @@ test("the timeline shows the agent's CI re-run with its reason and run id", asyn
   });
   const record = (await getWorkItem(sqliteDb(db), "item"))!;
   const facts = new Map((await listWorkItemFacts(sqliteDb(db))).map((fact) => [fact.itemId, fact]));
-  const { timeline } = await historyOf(db, record, facts, Date.now() + 2);
+  const { timeline } = await historyOf(sqliteDb(db), record, facts, Date.now() + 2);
   expect(timeline?.at(-1)).toMatchObject({
     kind: "ci_rerun",
     from: "running",
@@ -48,7 +48,7 @@ test("the timeline shows the agent's CI re-run with its reason and run id", asyn
   });
   await applyWorkItemEvent(sqliteDb(db), "item", "turn_ended");
   const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-    db,
+    store: sqliteDb(db),
     env: {},
   });
   const body = parseIssueListResponse(await response!.json());

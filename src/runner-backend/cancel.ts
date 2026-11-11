@@ -1,28 +1,24 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import type { Database } from "bun:sqlite";
 import { RunnerCapacityWait } from "../core";
 import {
   itemOpenRunnerWorkRunsSteps,
   itemRunnerCancelWorkSteps,
   pendingRunnerCancelSteps,
   runTeardownOwnerSteps,
-  sqliteDb,
   type Db,
 } from "../db";
 import type { RunnerWork } from "../runner-work";
 
 export function createRemoteCancellation(options: {
-  db: Database;
-  store?: Db;
+  store: Db;
   work: RunnerWork;
   now?: () => number;
   pollIntervalMs?: number;
   /** Publishes a running run's work as a WIP commit before the cancel stops it. */
   checkpoint?: (runId: string) => Promise<unknown> | null;
 }) {
-  const { db, work } = options;
-  const store = options.store ?? sqliteDb(db);
+  const { store, work } = options;
   const now = options.now ?? Date.now;
   return async function cancelItem(itemId: string, signal?: AbortSignal): Promise<void> {
     if (options.checkpoint) {

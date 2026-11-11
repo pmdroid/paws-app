@@ -1,12 +1,11 @@
 import { z } from "zod";
-import type { Database } from "bun:sqlite";
 import {
   auditWorkspaceAccessSteps,
-  sqliteDb,
   workspaceMemberSteps,
   workspaceMemberUsable,
   type Q,
   type Steps,
+  type Db,
 } from "../db";
 import { journalCaught } from "../journal";
 import type { WorkspacePrincipal } from "../workspace";
@@ -140,7 +139,7 @@ const OUTCOME_STATUS = {
 } as const;
 
 export function createImprovementsHttp(options: {
-  db: Database;
+  store: Db;
   lookup?: IssueLookup;
   retroEvidence?: RetroEvidenceReader;
   linear?: IssueReader;
@@ -148,8 +147,7 @@ export function createImprovementsHttp(options: {
   dashboardUrl?: string;
   now?: () => number;
 }) {
-  const { db } = options;
-  const store = sqliteDb(db);
+  const { store } = options;
   const now = options.now ?? Date.now;
   const audit = (principal: WorkspacePrincipal, action: string, subject: string) => {
     const at = now();
@@ -215,16 +213,16 @@ export function createImprovementsHttp(options: {
       if (request.method !== "GET") return json({ error: "Use GET." }, 405);
       const query = listSchema.safeParse(Object.fromEntries(url.searchParams));
       if (!query.success) return json({ error: "Check the list filters." }, 400);
-      return json(await listImprovementPage(db, reviewer, query.data));
+      return json(await listImprovementPage(store, reviewer, query.data));
     }
     if (path === ATTENTION) {
       if (request.method !== "GET") return json({ error: "Use GET." }, 405);
-      return json(await improvementAttention(db, reviewer, now()));
+      return json(await improvementAttention(store, reviewer, now()));
     }
     const followed = FOLLOW_THROUGH.exec(path);
     if (followed) {
       if (request.method !== "GET") return json({ error: "Use GET." }, 405);
-      const detail = await improvementFollowThrough(db, reviewer, followed[1]!, now());
+      const detail = await improvementFollowThrough(store, reviewer, followed[1]!, now());
       return detail
         ? json(detail)
         : json({ error: "This improvement is not in your inbox.", reason: "not_found" }, 404);
@@ -256,7 +254,7 @@ export function createImprovementsHttp(options: {
         return json(outcome, OUTCOME_STATUS[outcome.status]);
       };
       const delegate = (expectedVersion: number, again: boolean) =>
-        delegateImprovement(db, {
+        delegateImprovement(store, {
           reviewer: actor,
           reauthorize: reviewerForSteps,
           improvementId,
@@ -285,7 +283,7 @@ export function createImprovementsHttp(options: {
           );
         const { expectedVersion, evidence, revision, deployment, ...stated } = parsed.data;
         return respond(
-          await recordVerification(db, {
+          await recordVerification(store, {
             access: actor,
             improvementId,
             expectedVersion,
@@ -306,7 +304,7 @@ export function createImprovementsHttp(options: {
         const parsed = criterionSchema.safeParse(body);
         if (!parsed.success) return json({ error: "Send expectedVersion and the criterion." }, 400);
         return respond(
-          await recordCriterion(db, {
+          await recordCriterion(store, {
             access: actor,
             improvementId,
             expectedVersion: parsed.data.expectedVersion,
@@ -321,7 +319,7 @@ export function createImprovementsHttp(options: {
       if (parsed.data.choice === "redelegate")
         return respond(await delegate(parsed.data.expectedVersion, true));
       return respond(
-        await recoverImprovement(db, {
+        await recoverImprovement(store, {
           access: actor,
           improvementId,
           expectedVersion: parsed.data.expectedVersion,
@@ -334,7 +332,7 @@ export function createImprovementsHttp(options: {
     const item = ITEM.exec(path);
     if (item) {
       if (request.method !== "GET") return json({ error: "Use GET." }, 405);
-      const detail = await improvementDetail(db, reviewer, item[1]!);
+      const detail = await improvementDetail(store, reviewer, item[1]!);
       return detail
         ? json(detail)
         : json({ error: "This improvement is not in your inbox.", reason: "not_found" }, 404);
@@ -347,7 +345,7 @@ export function createImprovementsHttp(options: {
       return json({ error: "Not found.", reason: "not_found" }, 404);
     if (request.method !== "POST") return json({ error: "Use POST." }, 405);
     if (retry) {
-      const outcome = await retryInboxDelivery(db, {
+      const outcome = await retryInboxDelivery(store, {
         access: reviewer,
         improvementId: retry[1]!,
         deliveryId: retry[2]!,
@@ -358,7 +356,7 @@ export function createImprovementsHttp(options: {
       return json(outcome, OUTCOME_STATUS[outcome.status]);
     }
     if (cancel) {
-      const outcome = await cancelInboxEvidenceComment(db, {
+      const outcome = await cancelInboxEvidenceComment(store, {
         access: reviewer,
         improvementId: cancel[1]!,
         deliveryId: cancel[2]!,
@@ -378,7 +376,7 @@ export function createImprovementsHttp(options: {
     if (destination) {
       const team = z.strictObject({ teamId: text(200) }).safeParse(body);
       if (!team.success) return json({ error: "Send the Linear teamId to file to." }, 400);
-      const outcome = await repairInboxDestination(db, {
+      const outcome = await repairInboxDestination(store, {
         reviewer,
         improvementId: destination[1]!,
         deliveryId: destination[2]!,
@@ -399,7 +397,7 @@ export function createImprovementsHttp(options: {
         },
         400,
       );
-    const outcome = await decideInboxItem(db, {
+    const outcome = await decideInboxItem(store, {
       reviewer,
       reauthorize: reviewerForSteps,
       improvementId: decision![1]!,

@@ -32,7 +32,7 @@ test("quiet verification retries once across restart, then asks a person", async
   try {
     migrate(db);
     const clock = new FakeClock(Date.now() + 1000);
-    insertQueuedItem(db, { id: "stalled", sessionKey: "ses", now: clock.now() });
+    await insertQueuedItem(db, { id: "stalled", sessionKey: "ses", now: clock.now() });
     await beginImplementRun(sqliteDb(db), "stalled", clock.now());
     await applyWorkItemEvent(sqliteDb(db), "stalled", "turn_ended", { now: clock.now() });
     await saveCheckpoint(sqliteDb(db), "stalled", {
@@ -138,7 +138,7 @@ test("quiet verification retries once across restart, then asks a person", async
 });
 
 async function verifyingItem(id: string, db: ReturnType<typeof openDatabase>, now: number) {
-  insertQueuedItem(db, { id, sessionKey: `ses-${id}`, now });
+  await insertQueuedItem(db, { id, sessionKey: `ses-${id}`, now });
   await beginImplementRun(sqliteDb(db), id, now);
   await applyWorkItemEvent(sqliteDb(db), id, "turn_ended", { now });
   await saveCheckpoint(sqliteDb(db), id, {

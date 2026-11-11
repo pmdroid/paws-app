@@ -86,14 +86,28 @@ export function setAsideLegacyDatabase(
       `${path} is from before drizzle-kit migrations and cannot be carried over. Paws would start on an empty database, and the workspace, members, runners and items in this one would be lost. Paws changed nothing. To set this database aside and start empty, set PAWS_RESET_LEGACY_DATABASE=1 and start Paws again.`,
     );
   if (!isLegacyDatabase(path, true)) return null;
-  const target = `${path}.pre-drizzle-${now.toISOString().replace(/[-:]|\.\d+/g, "")}`;
+  const target = renameDatabase(path, "pre-drizzle", now);
+  journal(
+    `database reset: the database from before drizzle-kit migrations was renamed to ${target}; Paws starts on a fresh database`,
+  );
+  return target;
+}
+
+function renameDatabase(path: string, label: string, now: Date): string {
+  const target = `${path}.${label}-${now.toISOString().replace(/[-:]|\.\d+/g, "")}`;
   for (const suffix of ["", ...SIDE_FILES])
     if (existsSync(target + suffix)) throw new Error(`${target + suffix} already exists`);
   for (const suffix of SIDE_FILES)
     if (existsSync(path + suffix)) renameSync(path + suffix, target + suffix);
   renameSync(path, target);
+  return target;
+}
+
+export function setAsideSqliteDatabase(path: string, now: Date = new Date()): string | null {
+  if (!existsSync(path)) return null;
+  const target = renameDatabase(path, "pre-postgres", now);
   journal(
-    `database reset: the database from before drizzle-kit migrations was renamed to ${target}; Paws starts on a fresh database`,
+    `database moved to Postgres: the SQLite database was renamed to ${target}; Paws starts on a fresh database`,
   );
   return target;
 }

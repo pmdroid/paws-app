@@ -138,7 +138,7 @@ async function fixture({
     organizationId: "org",
     name: "org",
     userId: ownerId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", clock.now())),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", clock.now())),
     now: clock.now(),
   });
   const userId = await putWorkspaceUser(sqliteDb(db), {
@@ -163,7 +163,7 @@ async function fixture({
     teamIds: ["team"],
   };
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority,
     certificateRoot: authorityRoot,
     disconnect: () => {},
@@ -184,8 +184,12 @@ async function fixture({
     mintEnrollment: (_ref, request) => control.createEnrollment(member, request),
     now: () => clock.now(),
   });
-  const vmHttp = createMemberVmHttp({ db, available: () => available, now: () => clock.now() });
-  const read = createOnboardingReadiness(db);
+  const vmHttp = createMemberVmHttp({
+    store: sqliteDb(db),
+    available: () => available,
+    now: () => clock.now(),
+  });
+  const read = createOnboardingReadiness(sqliteDb(db));
   const page = async () =>
     onboardingPage({
       identifier: "TEST-1",
@@ -225,7 +229,7 @@ async function fixture({
   /** Runs the member VM job until `until` holds, as the job loop would in the background. */
   const drive = async (until: (row: MemberVm) => boolean) => {
     for (let index = 0; index < 500; index++) {
-      const row = (await findMemberVm(db, member))!;
+      const row = (await findMemberVm(sqliteDb(db), member))!;
       if (until(row)) return row;
       if ((await loop.tick()) === null) clock.advance(MEMBER_VM_POLL_MS);
     }
@@ -233,7 +237,11 @@ async function fixture({
   };
   /** A queued item Ada delegated, which the scheduler starts once she has an eligible runner. */
   const heldItem = async () => {
-    const item = insertQueuedItem(db, { id: "held", now: clock.now(), sessionKey: "session" });
+    const item = await insertQueuedItem(db, {
+      id: "held",
+      now: clock.now(),
+      sessionKey: "session",
+    });
     db.run("UPDATE work_item SET owner_user_id=? WHERE id='held'", [userId]);
     await ensureLinearSession(sqliteDb(db), {
       sessionId: "session",
@@ -389,7 +397,7 @@ test("Create VM creates the member's VM, its steps update without a reload, and 
   expect(page.buttons()).toEqual(["create-vm", "add-host"]);
   await page.click("create-vm");
   expect(f.requests).toContain("POST /api/runners/vm");
-  expect((await findMemberVm(f.db, f.member))?.step).toBe("create");
+  expect((await findMemberVm(sqliteDb(f.db), f.member))?.step).toBe("create");
   // The same document now shows the VM's steps; the page polls faster while it sets up.
   expect(page.runner()?.getAttribute("data-runner")).toBe("setting-up");
   const states = () =>
@@ -468,7 +476,7 @@ test("a failed VM step shows its error and Retry resumes from it", async () => {
   expect(page.buttons()).toEqual(["retry-vm"]);
   await page.click("retry-vm");
   expect(f.requests).toContain("POST /api/runners/vm/retry");
-  expect((await findMemberVm(f.db, f.member))?.failure).toBeNull();
+  expect((await findMemberVm(sqliteDb(f.db), f.member))?.failure).toBeNull();
   expect(page.runner()?.getAttribute("data-runner")).toBe("setting-up");
 });
 
@@ -541,7 +549,7 @@ test("an inactive member's Create VM and Add a host requests are refused", async
     });
     expect(response.status).toBe(403);
   }
-  expect(await findMemberVm(f.db, f.member)).toBeNull();
+  expect(await findMemberVm(sqliteDb(f.db), f.member)).toBeNull();
 });
 
 test("the page's inline script and style are the only ones its policy allows", async () => {

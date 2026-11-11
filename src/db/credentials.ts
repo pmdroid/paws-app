@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, eq } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q } from "./db";
 
 export type CredentialKey = { kind: "linear" | "slack"; workspace: string };
 
@@ -15,11 +14,7 @@ export function* readCredentialCiphertextSteps(q: Q, key: CredentialKey) {
   return row?.ciphertext ?? null;
 }
 
-export function readCredentialCiphertext(db: Database, key: CredentialKey): string | null {
-  return settled(sqliteDb(db).run((q) => readCredentialCiphertextSteps(q, key)));
-}
-
-type CredentialWrite = { now?: number; onlyIfMissing?: boolean };
+export type CredentialWrite = { now?: number; onlyIfMissing?: boolean };
 
 export function* writeCredentialCiphertextSteps(
   q: Q,
@@ -40,15 +35,4 @@ export function* writeCredentialCiphertextSteps(
       });
   const rows = yield* q.all(written.returning({ kind: credential.kind }));
   return rows.length > 0;
-}
-
-export function writeCredentialCiphertext(
-  db: Database,
-  key: CredentialKey,
-  ciphertext: string,
-  options: CredentialWrite = {},
-): boolean {
-  return settled(
-    sqliteDb(db).run((q) => writeCredentialCiphertextSteps(q, key, ciphertext, options)),
-  );
 }

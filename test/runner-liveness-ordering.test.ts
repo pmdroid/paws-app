@@ -37,7 +37,7 @@ async function fixture() {
     organizationId: "org",
     name: "Test",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", clock.now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", clock.now)),
     now: clock.now,
   });
   db.run(
@@ -49,7 +49,7 @@ async function fixture() {
     "fixture/repository",
     "team",
   ]);
-  const item = insertQueuedItem(db, { id: "item", now: clock.now, sessionKey: "session" });
+  const item = await insertQueuedItem(db, { id: "item", now: clock.now, sessionKey: "session" });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now);
   await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
@@ -69,7 +69,7 @@ async function fixture() {
   await bindWorkItemRepository(sqliteDb(db), item.id, repository);
   const keys = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: keys.privateKey,
     eventKey: Buffer.alloc(32, 7),

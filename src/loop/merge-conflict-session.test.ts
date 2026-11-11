@@ -15,14 +15,16 @@ import { deliverLinearOutbox } from "./dispatch";
 
 const NOTICE = { sessionId: "ses_1", pullNumber: 988, head: "1bf8429" };
 
-function fixture() {
+async function fixture() {
   const db = openDatabase(":memory:");
   migrate(db);
   const clock = new FakeClock(1_000);
-  insertQueuedItem(db, { id: "ACME-7", sessionKey: "ses_1", now: clock.now() });
+  await insertQueuedItem(db, { id: "ACME-7", sessionKey: "ses_1", now: clock.now() });
   const tracker = createFakeTracker();
   const delivery = new OutboxDispatcher(db, clock);
-  delivery.setHandler((row) => deliverLinearOutbox(row, tracker, async () => {}, undefined, db));
+  delivery.setHandler((row) =>
+    deliverLinearOutbox(row, tracker, async () => {}, undefined, sqliteDb(db)),
+  );
   const enqueue = (key: string, kind: string, body: string) =>
     enqueueOutboxOnce(sqliteDb(db), {
       target: "linear",
@@ -48,7 +50,7 @@ function fixture() {
 }
 
 test("a conflict after the pull request response wakes the session once per head", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.enqueue("pull-request-ready:ACME-7:0", "response", "Opened #988.");
     await f.deliver();
@@ -69,7 +71,7 @@ test("a conflict after the pull request response wakes the session once per head
 });
 
 test("the gate still drops other progress after the pull request response", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.enqueue("pull-request-ready:ACME-7:0", "response", "Opened #988.");
     await f.deliver();

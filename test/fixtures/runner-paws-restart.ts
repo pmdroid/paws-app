@@ -128,18 +128,20 @@ let services!: {
 let orchestrator!: ReturnType<typeof loop.attachOrchestrator>;
 const attach = loop.attachOrchestrator;
 spyOn(loop, "attachOrchestrator").mockImplementation((options) => {
-  const { db, jobs, outbox } = options;
+  const { store, jobs, outbox } = options;
+  if (store.dialect !== "sqlite") throw new Error("The restart fixture runs on SQLite");
+  const db = store.orm.$client;
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: signing.privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
-  const results = createRunnerResults({ db, work });
-  const health = createRunnerHealth({ db, work });
+  const results = createRunnerResults({ store: sqliteDb(db), work });
+  const health = createRunnerHealth({ store: sqliteDb(db), work });
   services = { work, results, health };
   const backend = createRemoteAgentRunner({
-    db,
+    store: sqliteDb(db),
     work,
     results,
     health,
@@ -156,7 +158,7 @@ spyOn(loop, "attachOrchestrator").mockImplementation((options) => {
     },
   });
   orchestrator = attach({
-    db,
+    store: sqliteDb(db),
     jobs,
     outbox,
     pawsRoot: home,
@@ -207,7 +209,9 @@ const workspace = await consumeWorkspaceBootstrap(sqliteDb(paws.db), {
   organizationId: "org",
   name: "Fixture",
   userId,
-  tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(paws.db, "org", Date.now())),
+  tokenHash: workspaceTokenHash(
+    await issueWorkspaceBootstrap(sqliteDb(paws.db), "org", Date.now()),
+  ),
   now: Date.now(),
 });
 paws.db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
@@ -217,7 +221,7 @@ paws.db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
 ]);
 const issuer = join(root, "issuer");
 const control = createRunnerControl({
-  db: paws.db,
+  store: sqliteDb(paws.db),
   authority: await initializeRunnerAuthority(issuer),
   certificateRoot: issuer,
   disconnect() {},
@@ -476,7 +480,7 @@ async function until(label: string, done: () => boolean | Promise<boolean>) {
 }
 async function addItem(id: string, answer = false) {
   const sessionKey = `session-${id}`;
-  const item = insertQueuedItem(paws.db, { id, sessionKey, now: Date.now() });
+  const item = await insertQueuedItem(paws.db, { id, sessionKey, now: Date.now() });
   await recordLinearInstallation(sqliteDb(paws.db), {
     organizationId: "org",
     oauthClientId: "app",

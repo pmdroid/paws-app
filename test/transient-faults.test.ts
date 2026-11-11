@@ -436,13 +436,13 @@ async function runWithFault(fault: {
   });
   const clock = fault.clock ?? systemClock;
   const jobs = new JobLoop(db, clock);
-  const host = new HostSupervisor(db, clock, new WakeDetector(clock));
+  const host = new HostSupervisor(sqliteDb(db), clock, new WakeDetector(clock));
   const outbox = new OutboxDispatcher(db, clock);
   const waits: { delayMs: number; runningJobs: number }[] = [];
   let implementations = 0;
   let sequence = 0;
   let orchestrator: ReturnType<typeof attachOrchestrator>;
-  const gate = new LinearTaskAccess(db, {
+  const gate = new LinearTaskAccess(sqliteDb(db), {
     access: access.adapter,
     lifecycle,
     oauthClientId: scope.oauthClientId,
@@ -451,7 +451,7 @@ async function runWithFault(fault: {
     interruptSession: (sessionId) => orchestrator.interruptLinearSession(sessionId),
   });
   orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,

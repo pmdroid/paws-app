@@ -48,9 +48,10 @@ test("a reconcile that keeps failing holds the item in the merge queue without m
   try {
     await run.until(() => run.failedReads() >= 3);
     expect(stateOf(run.db, "ACME-1"), await run.detail()).toBe("merge_queue");
-    expect(await hasPendingDelegationChanges(run.db, run.delegationId), await run.detail()).toBe(
-      true,
-    );
+    expect(
+      await hasPendingDelegationChanges(sqliteDb(run.db), run.delegationId),
+      await run.detail(),
+    ).toBe(true);
     expect(
       (await listJobs(sqliteDb(run.db))).some(
         (job) => job.queue === JOB_KIND.merge && job.status === "pending",
@@ -84,7 +85,7 @@ async function delegate(failures: number) {
   let left = failures;
   let failed = 0;
   const reconciler = createItemReconciler({
-    db,
+    store: sqliteDb(db),
     tracker: {
       async loadEpic(id) {
         if (stateOf(db, "ACME-1") === "merge_queue" && left > 0) {
@@ -107,14 +108,14 @@ async function delegate(failures: number) {
     onChanges: () => syncSteps(() => {}),
   });
   const publication = createPublicationReadiness({
-    db,
+    store: sqliteDb(db),
     reconciler,
     canMerge: async (itemId) => (await admission.canMerge(itemId)).ok,
   });
   const lines: string[] = [];
   let sequence = 0;
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission,
     jobs,
     outbox,

@@ -134,10 +134,10 @@ export async function probeBoundaries(
       baseSha: "a".repeat(40),
       wipCommit: "b".repeat(40),
     };
-    const recovering = insertQueuedItem(db, { id: "recovering-item", now: clock.now() });
+    const recovering = await insertQueuedItem(db, { id: "recovering-item", now: clock.now() });
     await beginImplementRun(sqliteDb(db), recovering.id, clock.now());
     await enterMergeQueue(sqliteDb(db), recovering.id, checkpoint);
-    const original = await enqueueVerifiedMerge(db, {
+    const original = await enqueueVerifiedMerge(sqliteDb(db), {
       itemId: recovering.id,
       head: checkpoint.wipCommit,
       summary: "Accepted synthetic candidate",
@@ -151,7 +151,7 @@ export async function probeBoundaries(
       queues: [JOB_KIND.reverify],
     });
     if (reverification === null) throw new Error("Recovery did not schedule re-verification");
-    const retry = await enqueueVerifiedMerge(db, {
+    const retry = await enqueueVerifiedMerge(sqliteDb(db), {
       itemId: recovering.id,
       head: checkpoint.wipCommit,
       summary: "Reverified synthetic candidate",

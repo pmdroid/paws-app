@@ -187,13 +187,13 @@ async function runRecovering(input: {
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
     now,
   });
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, "acme/fixture", "team"]);
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -217,14 +217,14 @@ async function runRecovering(input: {
   db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [runnerId]);
 
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
   await work.heartbeat(runnerId, input.capacity);
-  const results = createRunnerResults({ db, work });
-  const health = createRunnerHealth({ db, work });
+  const results = createRunnerResults({ store: sqliteDb(db), work });
+  const health = createRunnerHealth({ store: sqliteDb(db), work });
   const prepared = new Map<string, Set<string>>();
   const basePlacement = createRunnerPlacement({ store: sqliteDb(db) });
   const trackedPlacement: RunnerPlacement = {
@@ -240,7 +240,7 @@ async function runRecovering(input: {
   };
   const placement = input.wrap?.(trackedPlacement) ?? trackedPlacement;
   const backend = createRemoteAgentRunner({
-    db,
+    store: sqliteDb(db),
     work,
     results,
     health,
@@ -266,7 +266,7 @@ async function runRecovering(input: {
   const jobs = new JobLoop(db, input.clock, { concurrency: input.count, pollMs: 5 });
   const outbox = new OutboxDispatcher(db, input.clock);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs,
     outbox,
     clock: input.clock,
@@ -374,7 +374,7 @@ async function runRecovering(input: {
         actorId: "owner",
       });
       db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, item.id]);
-      await syncItemDependencies(db, {
+      await syncItemDependencies(sqliteDb(db), {
         itemId: item.id,
         workspaceId: workspace.id,
         expectedGeneration: 0,

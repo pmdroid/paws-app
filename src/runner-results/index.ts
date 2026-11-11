@@ -1,5 +1,4 @@
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import {
   insertRunnerFollowUpSteps,
@@ -13,11 +12,11 @@ import {
   runnerQuestionAnswersAfterSteps,
   runnerResultForCommandSteps,
   runnerResultMatchesSteps,
-  sqliteDb,
   storedRunnerAnswerSteps,
   storedRunnerEventSteps,
   unansweredRunnerQuestionsSteps,
   type Q,
+  type Db,
 } from "../db";
 import {
   RUNNER_RESULT_BODY_LIMIT,
@@ -48,13 +47,8 @@ function followUpsSupported(version: string | null): boolean {
 
 const QUESTION_TYPES: readonly string[] = ["question", "artifact", "closeout_policy", "ci_rerun"];
 
-export function createRunnerResults(options: {
-  db: Database;
-  work: RunnerWork;
-  now?: () => number;
-}) {
-  const { db, work } = options;
-  const store = sqliteDb(db);
+export function createRunnerResults(options: { store: Db; work: RunnerWork; now?: () => number }) {
+  const { store, work } = options;
   const now = options.now ?? Date.now;
   function* currentSteps(q: Q, runId: string, generation: number, commandId?: string) {
     const { command } = yield* work.currentSteps(q, runId, generation);

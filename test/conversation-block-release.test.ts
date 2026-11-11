@@ -67,7 +67,7 @@ async function blockedAfterCleanupFailure() {
     organizationId: "org",
     name: "Fixture",
     userId: "owner",
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
     now,
   });
   db.run(
@@ -92,7 +92,7 @@ async function blockedAfterCleanupFailure() {
     },
   ]);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     tracker,
     pawsRoot: home,
     jobs: new JobLoop(db, systemClock),
@@ -120,10 +120,10 @@ async function blockedAfterCleanupFailure() {
     [run.id, workspace.id, now + 60_000],
   );
   await applyWorkItemEvent(sqliteDb(db), itemId, "run_failed");
-  blockConversation(db, itemId, now);
+  await blockConversation(sqliteDb(db), itemId, now);
   const keys = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: keys.privateKey,
     eventKey: Buffer.alloc(32, 7),

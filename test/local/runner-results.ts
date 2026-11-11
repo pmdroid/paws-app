@@ -39,7 +39,7 @@ export async function probeRunnerResults(root: string, observe: Observe) {
       name: "Owner",
       email: "owner@example.invalid",
     });
-    const bootstrap = await issueWorkspaceBootstrap(db, "fixture-org", now);
+    const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "fixture-org", now);
     const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
       id: workspaceId(),
       organizationId: "fixture-org",
@@ -51,7 +51,7 @@ export async function probeRunnerResults(root: string, observe: Observe) {
     const authorityRoot = join(root, "issuer");
     const authority = await initializeRunnerAuthority(authorityRoot);
     const control = createRunnerControl({
-      db,
+      store: sqliteDb(db),
       authority,
       certificateRoot: authorityRoot,
       disconnect() {},
@@ -70,7 +70,11 @@ export async function probeRunnerResults(root: string, observe: Observe) {
       })
     ).runnerId;
     db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
-    const item = insertQueuedItem(db, { id: "result-item", now, sessionKey: "result-session" });
+    const item = await insertQueuedItem(db, {
+      id: "result-item",
+      now,
+      sessionKey: "result-session",
+    });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
     await recordLinearInstallation(sqliteDb(db), {
       organizationId: "fixture-org",
@@ -97,12 +101,12 @@ export async function probeRunnerResults(root: string, observe: Observe) {
     ]);
     const keys = generateKeyPairSync("ed25519");
     const work = createRunnerWork({
-      db,
+      store: sqliteDb(db),
       keyId: "fixture",
       privateKey: keys.privateKey,
       eventKey: Buffer.alloc(32, 7),
     });
-    const results = createRunnerResults({ db, work });
+    const results = createRunnerResults({ store: sqliteDb(db), work });
     let generation = 0;
     function verify(envelope: unknown) {
       const verified = verifyRunnerCommand(envelope, {

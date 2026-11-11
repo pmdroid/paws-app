@@ -300,7 +300,7 @@ async function firstDelegation(
     organizationId: "org",
     name: "Workspace",
     userId: owner,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now())),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now())),
     now: now(),
   });
   // The owner's runner is online and free the whole time. Nova may not use it.
@@ -310,8 +310,9 @@ async function firstDelegation(
   const github = createFakeGitHub();
   let gate: LinearTaskAccess | undefined;
   let orchestrator: ReturnType<typeof attachOrchestrator> | undefined;
-  const linear = openLinear({
+  const linear = await openLinear({
     db,
+    store: sqliteDb(db),
     secretsDir: path.join(layout.pawsRoot, "secrets"),
     env: { LINEAR_ACCESS_TOKEN: "fixture-token", LINEAR_CLIENT_ID: "client" },
     fetch: server.fetch.bind(server),
@@ -319,7 +320,7 @@ async function firstDelegation(
     followUp: (event) => orchestrator!.onLinearEvent(event),
     progressReporter: (event) => orchestrator!.sessionProgressReporter(event),
   });
-  gate = new LinearTaskAccess(db, {
+  gate = new LinearTaskAccess(sqliteDb(db), {
     access: linearCallerFor(linear.access!, "task-access"),
     lifecycle: linearCallerFor(linear.issueLifecycle!, "task-access"),
     oauthClientId: "client",
@@ -328,7 +329,7 @@ async function firstDelegation(
   });
   // As `src/index.ts` wires them for a public dashboard.
   const assignments = createWorkspaceAssignments({
-    db,
+    store: sqliteDb(db),
     origin: ORIGIN,
     clientId: "client",
     memberships: cacheLinearMemberships(linear.memberships!, now),
@@ -341,7 +342,7 @@ async function firstDelegation(
   });
   assignments.register(jobs);
   const access = createWorkspaceAccess({
-    db,
+    store: sqliteDb(db),
     assignments,
     publicUrl: ORIGIN,
     clientId: "client",
@@ -389,7 +390,7 @@ async function firstDelegation(
     };
   };
   orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,

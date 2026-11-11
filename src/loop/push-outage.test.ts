@@ -42,7 +42,7 @@ async function lane() {
   open.push(db);
   const jobs = [];
   for (const [index, name] of ["a", "b", "c"].entries()) {
-    insertQueuedItem(db, { id: `item-${name}`, sessionKey: `ses-${name}`, now: 0 });
+    await insertQueuedItem(db, { id: `item-${name}`, sessionKey: `ses-${name}`, now: 0 });
     await beginImplementRun(sqliteDb(db), `item-${name}`, 1);
     jobs.push(
       await enqueueJob(sqliteDb(db), {

@@ -324,7 +324,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
     ...(proof.reviewer
       ? { closeoutGate: (options) => createCloseoutGate({ ...options, reviewer: proof.reviewer! }) }
       : {}),
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -436,7 +436,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
       act(`Move ${ACME.identifier} to Canceled in Linear`);
       linear.issueStateTypes.set(ACME.issueId, "canceled");
       await closeClosedIssueTasks(
-        db,
+        sqliteDb(db),
         {
           issueId: ACME.issueId,
           organizationId: null,

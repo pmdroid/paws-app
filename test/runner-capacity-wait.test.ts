@@ -96,13 +96,13 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
     now,
   });
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, "acme/fixture", "team"]);
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -132,7 +132,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
   };
   const busyRunner = await pair("busy");
   const freeRunner = await pair("free");
-  const other = insertQueuedItem(db, { id: "other", now });
+  const other = await insertQueuedItem(db, { id: "other", now });
   const otherRun = await insertRun(sqliteDb(db), { itemId: other.id, now, status: "active" });
   db.run(
     "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,1,0,'other',?)",
@@ -141,7 +141,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
 
   let workNow = Date.now;
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -164,13 +164,13 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     { runId: otherRun.id, generation: 1 },
   ]);
   await work.heartbeat(freeRunner, 8);
-  const results = createRunnerResults({ db, work });
-  const health = createRunnerHealth({ db, work });
+  const results = createRunnerResults({ store: sqliteDb(db), work });
+  const health = createRunnerHealth({ store: sqliteDb(db), work });
   const identifiers = ["ENG-1", "ENG-2", "ENG-3", "ENG-4", "ENG-5"];
   const waiting = new Set(identifiers.slice(0, 4));
   const placement = createRunnerPlacement({ store: sqliteDb(db) });
   const backend = createRemoteAgentRunner({
-    db,
+    store: sqliteDb(db),
     work,
     results,
     health,
@@ -206,7 +206,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
   const jobs = new JobLoop(db, clock, { concurrency: 4, pollMs: 5 });
   const outbox = new OutboxDispatcher(db, clock);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs,
     outbox,
     clock,
@@ -295,7 +295,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
         actorId: "owner",
       });
       db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, item.id]);
-      await syncItemDependencies(db, {
+      await syncItemDependencies(sqliteDb(db), {
         itemId: item.id,
         workspaceId: workspace.id,
         expectedGeneration: 0,
@@ -310,7 +310,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
         }),
       });
     }
-    await dispatch(db, { now: clock.now() });
+    await dispatch(sqliteDb(db), { now: clock.now() });
     expect(db.query("SELECT item_id FROM scheduler_admission").all()).toHaveLength(5);
     loop = jobs.run(controller.signal, (ms) => Bun.sleep(ms));
     const deadline = Date.now() + 20_000;

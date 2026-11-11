@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
 import { chmod, mkdir, open, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { Database } from "bun:sqlite";
-import { saveEvidenceObjectSteps, saveEvidenceSteps, sqliteDb, type StoredEvidence } from "../db";
+import { saveEvidenceObjectSteps, saveEvidenceSteps, type StoredEvidence, type Db } from "../db";
 import { mediaKind, sniffMedia, SNIFF_BYTES } from "./media";
 import {
   evidenceObjectPrefix,
@@ -30,7 +29,7 @@ export type EvidenceInput = {
 };
 
 export type EvidenceStoreOptions = {
-  db: Database;
+  store: Db;
   root: string;
   objects?: EvidenceObjects;
   limits?: EvidenceLimits;
@@ -57,7 +56,7 @@ export function evidencePath(root: string, id: string): string {
 }
 
 export function createEvidenceStore(options: EvidenceStoreOptions): EvidenceStore {
-  const store = sqliteDb(options.db);
+  const store = options.store;
   const limits = options.limits ?? EVIDENCE_LIMITS;
   const now = options.now ?? Date.now;
   const largest = Math.max(limits.video, limits.image);

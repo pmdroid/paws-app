@@ -37,7 +37,7 @@ export async function probeRunnerHttp(
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-http", now);
+  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "fixture-http", now);
   const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "fixture-http",
@@ -107,7 +107,7 @@ export async function probeRunnerHttp(
   const tls = { key: readFileSync(serverKey, "utf8"), cert: readFileSync(serverCert, "utf8") };
   let listener: Awaited<ReturnType<typeof startRunnerListener>> | undefined;
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority,
     certificateRoot: authorityRoot,
     disconnect: (fingerprint) => listener?.revoke(fingerprint),

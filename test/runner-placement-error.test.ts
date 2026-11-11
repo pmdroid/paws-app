@@ -10,19 +10,19 @@ import { createRemoteAgentRunner } from "../src/runner-backend";
 test("unavailable placement names the saved agent and why no runner can take it", async () => {
   const db = tempDb();
   try {
-    const queued = insertQueuedItem(db, { id: "unavailable-agent" });
+    const queued = await insertQueuedItem(db, { id: "unavailable-agent" });
     const { item, run } = await beginImplementRun(sqliteDb(db), queued.id, Date.now());
     const work = createRunnerWork({
-      db,
+      store: sqliteDb(db),
       keyId: "fixture",
       privateKey: generateKeyPairSync("ed25519").privateKey,
       eventKey: Buffer.alloc(32, 7),
     });
     const backend = createRemoteAgentRunner({
-      db,
+      store: sqliteDb(db),
       work,
-      results: createRunnerResults({ db, work }),
-      health: createRunnerHealth({ db, work }),
+      results: createRunnerResults({ store: sqliteDb(db), work }),
+      health: createRunnerHealth({ store: sqliteDb(db), work }),
       fetchCandidate: async () => {
         throw new Error("Unavailable placement must not fetch a candidate");
       },

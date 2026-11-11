@@ -166,7 +166,7 @@ async function acceptVerdict(
  * `/api/issues` nor the detail carries check output.
  */
 async function snapshotOf(db: Database, now: number, env: NodeJS.ProcessEnv = {}): Promise<Status> {
-  const provider = createLiveStatusProvider(db, { now: () => new Date(now), env });
+  const provider = createLiveStatusProvider(sqliteDb(db), { now: () => new Date(now), env });
   const list = await provider.issues();
   const withLogs = async (itemId: string, attempt: number, checks: readonly StatusCheck[]) => {
     const logged: StatusCheck[] = [];
@@ -227,7 +227,7 @@ describe("live closeout ui", () => {
   test("a paused task retains its status when its prior session is lost", async () => {
     const db = database();
     const id = "ENG-302";
-    insertQueuedItem(db, { id });
+    await insertQueuedItem(db, { id });
     const { run } = await beginImplementRun(sqliteDb(db), id, 1);
     await applyWorkItemEvent(sqliteDb(db), id, "pause");
     await markRun(sqliteDb(db), run.id, "lost", 2);
@@ -240,7 +240,7 @@ describe("live closeout ui", () => {
     const db = database();
     const now = 1_700_000_000_000;
     const id = "ENG-302";
-    insertQueuedItem(db, { id, title: "Capped repair", limits: { closeout: 1_000 }, now });
+    await insertQueuedItem(db, { id, title: "Capped repair", limits: { closeout: 1_000 }, now });
     db.run("UPDATE work_item SET session_key = NULL WHERE id = ?", [id]);
     await seedVerifying(db, id, sha("b"), now);
     // Closeout time counts while a job verifies the item.
@@ -261,7 +261,7 @@ describe("live closeout ui", () => {
     const now = 1_700_000_000_000;
     const id = "ENG-74";
     const head = sha("b");
-    insertQueuedItem(db, { id, title: "Live closeout", now });
+    await insertQueuedItem(db, { id, title: "Live closeout", now });
     await seedVerifying(db, id, head, now);
     await enqueueOutbox(sqliteDb(db), {
       target: "linear",
@@ -326,7 +326,7 @@ describe("live closeout ui", () => {
     const id = "ENG-75";
     const oldHead = sha("a");
     const newHead = sha("d");
-    insertQueuedItem(db, { id, title: "Recheck", now });
+    await insertQueuedItem(db, { id, title: "Recheck", now });
     await beginImplementRun(sqliteDb(db), id, now, {
       phase: "merge_queue",
       baseSha: sha("c"),
@@ -393,7 +393,7 @@ describe("live closeout ui", () => {
     const id = "ENG-77";
     const firstHead = sha("a");
     const secondHead = sha("e");
-    insertQueuedItem(db, { id, title: "Fix loop", now });
+    await insertQueuedItem(db, { id, title: "Fix loop", now });
     await seedVerifying(db, id, secondHead, now);
     const first = identity(id, firstHead, policy("a"));
     await ensureCloseoutProgress(sqliteDb(db), id, first, now + 1, true);
@@ -463,7 +463,7 @@ describe("live closeout ui", () => {
     const id = "ENG-76";
     const oldHead = sha("a");
     const newHead = sha("e");
-    insertQueuedItem(db, { id, title: "Fixer", now });
+    await insertQueuedItem(db, { id, title: "Fixer", now });
     await seedVerifying(db, id, oldHead, now);
     const accepted = [
       "Closeout: accepted",
@@ -522,8 +522,8 @@ describe("live closeout ui", () => {
     const secret = "super-secret-token-value";
     const pat = `github_pat_${"p".repeat(24)}`;
     const ghp = `ghp_${"g".repeat(24)}`;
-    insertQueuedItem(db, { id, title: "Artifacts", now });
-    insertQueuedItem(db, { id: other, title: "Other", now: now + 1 });
+    await insertQueuedItem(db, { id, title: "Artifacts", now });
+    await insertQueuedItem(db, { id: other, title: "Other", now: now + 1 });
     await seedVerifying(db, id, head, now);
     await seedVerifying(db, other, head, now);
     const current = identity(id, head, digest);
@@ -603,7 +603,7 @@ describe("live closeout ui", () => {
       home: { evidenceRoot?: string; closeoutHome?: string } = { closeoutHome: root },
     ) =>
       handleStatusRequest(new Request(`http://127.0.0.1/api/closeout-artifact?${query}`), {
-        db,
+        store: sqliteDb(db),
         env,
         staticDir: null,
         ...home,
@@ -658,7 +658,7 @@ describe("live closeout ui", () => {
     expect(escaped?.status).toBe(404);
     expect(await escaped?.text()).not.toContain("outside-secret-value");
     const linkedTask = "ENG-SYMLINK";
-    insertQueuedItem(db, { id: linkedTask, now });
+    await insertQueuedItem(db, { id: linkedTask, now });
     const linkedIdentity = identity(linkedTask, head, digest);
     await ensureCloseoutProgress(sqliteDb(db), linkedTask, linkedIdentity, now, true);
     await upsertCloseoutStep(
@@ -718,7 +718,7 @@ describe("live closeout ui", () => {
     const id = "ENG-79";
     const head = sha("1");
     const first = database(file);
-    insertQueuedItem(first, { id, title: "Persisted", now });
+    await insertQueuedItem(first, { id, title: "Persisted", now });
     await seedVerifying(first, id, head, now);
     const current = identity(id, head, policy("1"));
     await ensureCloseoutProgress(sqliteDb(first), id, current, now, true);

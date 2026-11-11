@@ -39,7 +39,7 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
     const outbox = new OutboxDispatcher(db, systemClock);
     let launches = 0;
     const orchestrator = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       jobs,
       outbox,
       pawsRoot: root,
@@ -58,7 +58,7 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
     });
     const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
     const secret = "fake-webhook-secret";
-    writeStoredToken(db, join(root, "secrets"), {
+    await writeStoredToken(sqliteDb(db), join(root, "secrets"), {
       accessToken: "fake-access",
       refreshToken: "fake-refresh",
       expiresAtMs: Date.now() + 600_000,
@@ -70,21 +70,22 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
     let lostTeam = mode === "initial-denied";
     let failedRead = false;
     const requests: string[] = [];
-    const opened = openLinear({
+    const opened = await openLinear({
       db,
+      store: sqliteDb(db),
       secretsDir: join(root, "secrets"),
       env: { LINEAR_CLIENT_ID: "client", LINEAR_APP_USER_ID: "app" },
-      isAuthorized: async () => !isLinearAppRevoked(db, scope),
+      isAuthorized: async () => !(await isLinearAppRevoked(sqliteDb(db), scope)),
       beforeEvent: async (event) => {
         if (
-          await handleLinearAdministration(db, event, {
+          await handleLinearAdministration(sqliteDb(db), event, {
             ...scope,
             notify: () => {
               throw new Error("The classifier has no work item to cancel");
             },
             revalidate: (sessionIds) => gate.revalidateSessions(sessionIds),
             interrupt: async (sessionId) => {
-              expect(isLinearAppRevoked(db, scope)).toBe(true);
+              expect(await isLinearAppRevoked(sqliteDb(db), scope)).toBe(true);
               await orchestrator.interruptLinearSession(sessionId);
               joined = true;
             },
@@ -120,7 +121,7 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
         });
       },
     });
-    gate = new LinearTaskAccess(db, {
+    gate = new LinearTaskAccess(sqliteDb(db), {
       access: opened.access,
       lifecycle: opened.issueLifecycle,
       oauthClientId: "client",

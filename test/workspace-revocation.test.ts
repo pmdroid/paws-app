@@ -136,7 +136,7 @@ test("admin revoke atomically ends sessions, runners, queued and running work; s
     );
     expect(await listUserWorkspaces(sqliteDb(db), "member")).toEqual([]);
     await expect(
-      issueWorkspaceSession(db, { workspaceId: "workspace", userId: "member", now }),
+      issueWorkspaceSession(sqliteDb(db), { workspaceId: "workspace", userId: "member", now }),
     ).rejects.toThrow(WORKSPACE_REVOKED_SIGN_IN);
     expect(
       await requestWorkspaceSession(
@@ -154,7 +154,13 @@ test("admin revoke atomically ends sessions, runners, queued and running work; s
     });
     expect(restored.status).toBe(200);
     expect(
-      (await issueWorkspaceSession(db, { workspaceId: "workspace", userId: "member", now })).token,
+      (
+        await issueWorkspaceSession(sqliteDb(db), {
+          workspaceId: "workspace",
+          userId: "member",
+          now,
+        })
+      ).token,
     ).toBeTruthy();
     expect(db.query("SELECT status,fence FROM runner WHERE id='box'").get()).toEqual({
       status: "revoked",
@@ -253,7 +259,7 @@ test("revocation uses resolved delegator ownership, not the session creator", as
       ["other-organization", "member", null, "linear-member", false],
     ] as const;
     for (const [id, owner, delegated, creator] of cases) {
-      insertQueuedItem(db, { id, sessionKey: `ownership-${id}`, now });
+      await insertQueuedItem(db, { id, sessionKey: `ownership-${id}`, now });
       await recordLinearInstallation(sqliteDb(db), {
         sessionId: `ownership-${id}`,
         organizationId: id === "other-organization" ? "foreign" : "org",
@@ -361,7 +367,7 @@ test("a forced attribution refresh corrects an inactive snapshot after joining a
     let reads = 0;
     let at = Date.now() + 100;
     const access = createWorkspaceAccess({
-      db: f.db,
+      store: sqliteDb(f.db),
       publicUrl: f.origin,
       clientId: "client",
       installedOrganization: { id: "org", name: "Workspace" },
@@ -424,7 +430,7 @@ test("revocation stops explicit owners and delegators without session metadata",
     ] as const;
     const now = Date.now();
     for (const [id, owner, delegator, session, , running] of cases) {
-      insertQueuedItem(db, { id, now });
+      await insertQueuedItem(db, { id, now });
       db.run("UPDATE work_item SET owner_user_id=?,delegated_by=?,session_key=? WHERE id=?", [
         owner,
         delegator,

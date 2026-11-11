@@ -199,7 +199,7 @@ describe("Settings › Merging › Ignored PR comments", () => {
     const { options } = fixture();
     const db = openDatabase(":memory:");
     migrate(db);
-    insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
+    await insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
     await bindWorkItemRepository(sqliteDb(db), "eng-1", {
       owner: "acme",
       repo: "monorepo",
@@ -227,7 +227,7 @@ describe("Settings › Merging › Ignored PR comments", () => {
     let delivery = 0;
     const comment = (id: number, author: string, body: string) =>
       acceptGitHubDelivery(
-        db,
+        sqliteDb(db),
         {
           deliveryId: `d-${(delivery += 1)}`,
           event: "issue_comment",

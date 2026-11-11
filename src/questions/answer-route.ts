@@ -1,10 +1,9 @@
-import type { Database } from "bun:sqlite";
 import {
   workspaceMemberUsable,
   auditWorkspaceAccess,
   getWorkItem,
-  sqliteDb,
   workspaceMember,
+  type Db,
 } from "../db";
 import { canAnswer } from "./answerers";
 import { getQuestionSteps, type QuestionKind } from "./store";
@@ -46,7 +45,7 @@ export type QuestionAnswer = (input: {
 }) => Promise<"answered" | "rejected">;
 
 export type QuestionAnswerOptions = {
-  db: Database;
+  store: Db;
   principal: { workspaceId: string; userId: string } | undefined;
   sessionIds: readonly string[] | undefined;
   submit: QuestionAnswer;
@@ -58,7 +57,7 @@ export async function handleQuestionAnswer(
   options: QuestionAnswerOptions,
 ): Promise<Response | null> {
   if (new URL(request.url).pathname !== QUESTION_ANSWER_PATH) return null;
-  const { db, principal, sessionIds } = options;
+  const { store, principal, sessionIds } = options;
   if (principal === undefined || sessionIds === undefined)
     return Response.json({ error: "Sign in to Paws." }, { status: 401 });
   if (request.method !== "POST")
@@ -76,8 +75,8 @@ export async function handleQuestionAnswer(
   )
     return Response.json({ error: "Send a question and an answer." }, { status: 400 });
   const questionId = body.questionId;
-  const question = await sqliteDb(db).run((q) => getQuestionSteps(q, questionId));
-  const item = question ? await getWorkItem(sqliteDb(db), question.itemId) : null;
+  const question = await store.run((q) => getQuestionSteps(q, questionId));
+  const item = question ? await getWorkItem(store, question.itemId) : null;
   if (
     question?.status !== "open" ||
     item?.sessionKey == null ||
@@ -87,13 +86,13 @@ export async function handleQuestionAnswer(
   const kind = question.kind;
   if (!isPawsAnswerKind(kind))
     return Response.json({ error: "Answer this on the issue page" }, { status: 400 });
-  const member = await workspaceMember(sqliteDb(db), principal.workspaceId, principal.userId);
+  const member = await workspaceMember(store, principal.workspaceId, principal.userId);
   if (
     !workspaceMemberUsable(member) ||
     !member.linearUserId ||
     !canAnswer({ kind }, { id: member.linearUserId })
   ) {
-    await auditWorkspaceAccess(sqliteDb(db), {
+    await auditWorkspaceAccess(store, {
       workspaceId: principal.workspaceId,
       userId: principal.userId,
       action: "question.refused",

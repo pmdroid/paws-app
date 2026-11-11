@@ -98,14 +98,14 @@ function issueUpdate(stateType: string, updatedFrom: Record<string, unknown> = {
 test("a failed task whose issue moves to Done leaves Needs a person and completes its session without reading Linear", async () => {
   const f = await fixture();
   await applyWorkItemEvent(sqliteDb(f.db), f.item.id, "start_timed_out");
-  const status = createLiveStatusProvider(f.db);
+  const status = createLiveStatusProvider(sqliteDb(f.db));
   const needsPerson = async () =>
     (await status.issues()).issues
       .filter((item) => item.state === "needs_human")
       .map((item) => item.title);
   expect(await needsPerson()).toEqual(["Task"]);
 
-  storeLinearToken(f.home, {
+  await storeLinearToken(f.home, {
     accessToken: "fake-access",
     refreshToken: "fake-refresh",
     expiresAtMs: Date.now() + 600_000,
@@ -118,14 +118,15 @@ test("a failed task whose issue moves to Done leaves Needs a person and complete
   bus.subscribe((command) => notified.push(command.itemId));
   const interrupted: string[] = [];
   const handled = Promise.withResolvers<void>();
-  const opened = openLinear({
+  const opened = await openLinear({
     db: f.db,
+    store: sqliteDb(f.db),
     secretsDir: join(f.home, "secrets"),
     env: { LINEAR_CLIENT_ID: "client", LINEAR_APP_USER_ID: "app" },
     beforeEvent: async (event) => {
       const closed = parseLinearIssueClosed(event);
       if (closed)
-        await closeClosedIssueTasks(f.db, closed, {
+        await closeClosedIssueTasks(sqliteDb(f.db), closed, {
           notify: (command) => bus.emit(command),
           interrupt: async (sessionId) => {
             interrupted.push(sessionId);
@@ -197,7 +198,7 @@ test("an issue moved to Canceled cancels a queued task", async () => {
   )!;
   const closed = parseLinearIssueClosed(event);
   expect(closed).toMatchObject({ issueId: "issue", organizationId: "org", stateType: "canceled" });
-  const outcomes = await closeClosedIssueTasks(f.db, closed!, {
+  const outcomes = await closeClosedIssueTasks(sqliteDb(f.db), closed!, {
     notify: (command) => notified.push(command.itemId),
   });
   expect(outcomes).toEqual([{ itemId: f.item.id, outcome: "cancelled" }]);
@@ -220,7 +221,7 @@ test("a failed task whose issue moves to Duplicate is cancelled with the cancele
     parseAgentEvent(JSON.stringify(issueUpdate("duplicate")), "issue-duplicate", Date.now())!,
   )!;
   expect(closed.stateType).toBe("canceled");
-  expect(await closeClosedIssueTasks(f.db, closed, { notify: () => {} })).toEqual([
+  expect(await closeClosedIssueTasks(sqliteDb(f.db), closed, { notify: () => {} })).toEqual([
     { itemId: f.item.id, outcome: "cancelled" },
   ]);
   expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("cancelled");
@@ -248,7 +249,7 @@ test("a confirmed merge from the task's own branch completes the task as merged"
   const closed = parseLinearIssueClosed(
     parseAgentEvent(JSON.stringify(issueUpdate("completed")), "issue-merged", Date.now())!,
   )!;
-  const outcomes = await closeClosedIssueTasks(f.db, closed, { notify: () => {} });
+  const outcomes = await closeClosedIssueTasks(sqliteDb(f.db), closed, { notify: () => {} });
   expect(outcomes).toEqual([{ itemId: f.item.id, outcome: "merged" }]);
   expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("merged");
 });
@@ -260,7 +261,7 @@ test("Done cancels a merge-queue task without a confirmed merge and completes it
   const closed = parseLinearIssueClosed(
     parseAgentEvent(JSON.stringify(issueUpdate("completed")), "issue-queued", Date.now())!,
   )!;
-  expect(await closeClosedIssueTasks(f.db, closed, { notify: () => {} })).toEqual([
+  expect(await closeClosedIssueTasks(sqliteDb(f.db), closed, { notify: () => {} })).toEqual([
     { itemId: f.item.id, outcome: "cancelled" },
   ]);
   expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("cancelled");
@@ -282,7 +283,7 @@ test("Done cancels a merge-queue task without a confirmed merge and completes it
 test("a task created after the issue closed is a later delegation and stays", async () => {
   const f = await fixture();
   const outcomes = await closeClosedIssueTasks(
-    f.db,
+    sqliteDb(f.db),
     {
       issueId: "issue",
       organizationId: "org",
@@ -331,11 +332,11 @@ test("the catch-up poll closes the tasks of an issue whose webhook was missed", 
   const poller = startCatchUpPoller({
     source: { poll: async () => sighting },
     store,
-    db: f.db,
+    db: sqliteDb(f.db),
     onEvent: async (event) => {
       seen.push(event);
       const closed = parseLinearIssueClosed(event);
-      if (closed) await closeClosedIssueTasks(f.db, closed, { notify: () => {} });
+      if (closed) await closeClosedIssueTasks(sqliteDb(f.db), closed, { notify: () => {} });
       return false;
     },
     sleeper: { wait: () => new Promise(() => {}), wake: () => {} },
@@ -386,10 +387,12 @@ for (const exit of ["closed", "undelegated"] as const) {
       const closed = parseLinearIssueClosed(
         parseAgentEvent(JSON.stringify(issueUpdate("canceled")), "closed", now)!,
       )!;
-      expect(await closeClosedIssueTasks(f.db, closed, { ...options, now: () => now })).toEqual([]);
+      expect(
+        await closeClosedIssueTasks(sqliteDb(f.db), closed, { ...options, now: () => now }),
+      ).toEqual([]);
     } else {
       await stopUndelegatedIssue(
-        f.db,
+        sqliteDb(f.db),
         {
           organizationId: scope.organizationId,
           appUserId: scope.appUserId,

@@ -30,7 +30,7 @@ const epoch = Date.parse("2026-10-28T06:00:00Z");
 async function seed() {
   const db = tempDb();
   db.run("INSERT INTO workspace VALUES('ws','org','Workspace',1)");
-  insertQueuedItem(db, { id: "item", sessionKey: "session", title: "Task", now: 1 });
+  await insertQueuedItem(db, { id: "item", sessionKey: "session", title: "Task", now: 1 });
   await recordReviewFindings(sqliteDb(db), {
     itemId: "item",
     repository: "acme/app",
@@ -101,7 +101,7 @@ async function seed() {
   ]);
   let now = epoch;
   const grouping = await createFindingGrouping({
-    db,
+    store: sqliteDb(db),
     sources: () => sources(),
     helper: helper.run,
     issues,
@@ -198,7 +198,7 @@ test("empty findings and failed helpers never spend extra turns on the same UTC 
   const f = await seed();
   try {
     const empty = await createFindingGrouping({
-      db: f.db,
+      store: sqliteDb(f.db),
       sources: () => [],
       issues: f.issues,
       helper: f.helper.run,
@@ -208,7 +208,7 @@ test("empty findings and failed helpers never spend extra turns on the same UTC 
     expect(f.helper.calls).toHaveLength(0);
     expect(f.issues.reads).toHaveLength(0);
     const failed = await createFindingGrouping({
-      db: f.db,
+      store: sqliteDb(f.db),
       sources: f.sources,
       issues: f.issues,
       helper: async () => {
@@ -282,7 +282,7 @@ async function post(f: Awaited<ReturnType<typeof seed>>, body: unknown, sessionI
       body: JSON.stringify(body),
     }),
     {
-      db: f.db,
+      store: sqliteDb(f.db),
       principal: { workspaceId: "ws", userId: "ada" },
       services: { issues: f.issues },
       now: () => epoch,
@@ -351,7 +351,7 @@ test("group actions require the workspace CSRF token and same origin", async () 
   const origin = `http://127.0.0.1:${port}`;
   f.db.run("UPDATE workspace_member SET source='manual',manual_role='admin'");
   const access = createWorkspaceAccess({
-    db: f.db,
+    store: sqliteDb(f.db),
     publicUrl: origin,
     clientId: "fixture",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -375,7 +375,7 @@ test("group actions require the workspace CSRF token and same origin", async () 
     findingGroups: { issues: f.issues },
   });
   try {
-    const session = await issueWorkspaceSession(f.db, {
+    const session = await issueWorkspaceSession(sqliteDb(f.db), {
       workspaceId: "ws",
       userId: "ada",
       now: Date.now(),
@@ -446,7 +446,7 @@ test("a lost Linear reply keeps the action retryable and protects its members du
           reason: "Changed my mind",
         }),
       }),
-      { db: f.db, principal: { workspaceId: "ws", userId: "ada" } },
+      { store: sqliteDb(f.db), principal: { workspaceId: "ws", userId: "ada" } },
     );
     expect(dismiss!.status).toBe(409);
     f.db.run("UPDATE review_finding SET severity='P3'");
@@ -488,7 +488,7 @@ test("large inputs fit the helper schema and rotate overflow without another fin
     const helper = createFakeGroupingHelper('{"groups":[]}');
     let now = epoch;
     const grouping = await createFindingGrouping({
-      db: f.db,
+      store: sqliteDb(f.db),
       sources: () => findings,
       issues: f.issues,
       helper: helper.run,
@@ -618,7 +618,7 @@ test("untouched groups follow individual dismissals immediately and locks are wo
           method: "POST",
           body: JSON.stringify({ action: "dismiss", id, reason: "Handle individually" }),
         }),
-        { db: f.db, principal: { workspaceId, userId: "ada" } },
+        { store: sqliteDb(f.db), principal: { workspaceId, userId: "ada" } },
       );
     expect((await dismiss(f.ids[0]!))!.status).toBe(200);
     expect((await listFindingGroups(sqliteDb(f.db), "ws"))[0]!.memberIds).toEqual([f.ids[1]!]);
@@ -668,7 +668,7 @@ test("overflow advances by a full batch and keeps groups outside the current bat
     const batches: number[][] = [];
     let now = epoch;
     const grouping = await createFindingGrouping({
-      db: f.db,
+      store: sqliteDb(f.db),
       sources: () => rows,
       issues: f.issues,
       now: () => now,
@@ -741,7 +741,7 @@ test("admin grouping covers findings reported by teams outside that admin's memb
         teamId: teamId!,
         observedAtMs: 3,
       });
-    insertQueuedItem(f.db, {
+    await insertQueuedItem(f.db, {
       id: "team-y-item",
       sessionKey: "session-y",
       title: "Other team finding",
@@ -764,7 +764,7 @@ test("admin grouping covers findings reported by teams outside that admin's memb
         },
       ],
     });
-    const rows = await workspaceGroupingSources(f.db, "ws", "client");
+    const rows = await workspaceGroupingSources(sqliteDb(f.db), "ws", "client");
     expect(rows.some((row) => row.teamId === "team-x")).toBe(true);
     expect(rows.some((row) => row.teamId === "team-y")).toBe(true);
   } finally {
@@ -801,8 +801,10 @@ test("grouping authority is an admin who owns a runner, not an earlier admin wit
     f.db.run(
       "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('runner','ws','ada','Runner','active',1,1)",
     );
-    expect(await groupingAuthorityUser(f.db, "ws")).toBe("ada");
-    expect((await workspaceGroupingSources(f.db, "ws", "client")).length).toBeGreaterThan(0);
+    expect(await groupingAuthorityUser(sqliteDb(f.db), "ws")).toBe("ada");
+    expect((await workspaceGroupingSources(sqliteDb(f.db), "ws", "client")).length).toBeGreaterThan(
+      0,
+    );
   } finally {
     f.db.close();
   }
@@ -821,7 +823,7 @@ test("a partial grouping cycle processes each finding and then skips unchanged s
     let calls = 0;
     let now = epoch;
     const grouping = await createFindingGrouping({
-      db: f.db,
+      store: sqliteDb(f.db),
       sources: () => rows,
       issues: f.issues,
       now: () => now,
@@ -862,7 +864,7 @@ test("daily finding updates do not reset the overflow cursor", async () => {
     const covered = new Set<number>();
     let now = epoch;
     const grouping = await createFindingGrouping({
-      db: f.db,
+      store: sqliteDb(f.db),
       sources: () => rows,
       issues: f.issues,
       now: () => now,
@@ -963,7 +965,7 @@ test("persisted overflow IDs survive closures between daily runs", async () => {
     let now = epoch;
     const batches: number[][] = [];
     const grouping = await createFindingGrouping({
-      db: f.db,
+      store: sqliteDb(f.db),
       issues: f.issues,
       sources: () => rows,
       now: () => now,
@@ -993,7 +995,7 @@ test("recovered runs cannot publish groups or overwrite interrupted history", as
     const before = await listFindingGroups(sqliteDb(f.db), "ws");
     let now = epoch + 86400000;
     const grouping = await createFindingGrouping({
-      db: f.db,
+      store: sqliteDb(f.db),
       issues: f.issues,
       sources: async () =>
         (await f.sources()).map((row) => ({ ...row, text: row.text + " changed" })),
@@ -1028,7 +1030,7 @@ test("a preempted turn consumes the daily allowance and retries on the next UTC 
     let now = epoch;
     let attempts = 0;
     const grouping = await createFindingGrouping({
-      db: f.db,
+      store: sqliteDb(f.db),
       issues: f.issues,
       sources: f.sources,
       now: () => now,
@@ -1068,7 +1070,7 @@ test("legacy position cursors start a fresh ID-based pass", async () => {
       text: "x".repeat(4000),
     }));
     const grouping = await createFindingGrouping({
-      db: f.db,
+      store: sqliteDb(f.db),
       issues: f.issues,
       sources: () => rows,
       now: () => epoch,
@@ -1096,7 +1098,7 @@ test("a workspace with grouping off spends no turn and cannot run now", async ()
     expect((await post(f, { action: "run" })).status).toBe(409);
     const listing = await handleFindingGroupsRequest(
       new Request("http://localhost/api/finding-groups"),
-      { db: f.db, principal: { workspaceId: "ws", userId: "ada" } },
+      { store: sqliteDb(f.db), principal: { workspaceId: "ws", userId: "ada" } },
     );
     expect(await listing!.json()).toMatchObject({ canRun: false, enabled: false });
     await setFindingGrouping(sqliteDb(f.db), "ws", true);

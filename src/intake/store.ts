@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   isTerminalWorkItemState,
   type DelegationState,
@@ -16,7 +15,6 @@ import {
   readUnlandedAttemptSteps,
   saveTaskBlocksSteps,
   saveWorkItemLinearProjectSteps,
-  sqliteDb,
   type Q,
   type Steps,
   type WorkItemLinearProject,
@@ -97,8 +95,8 @@ export function* readAdoptedParentSteps(
       };
 }
 
-export function listWorkItems(db: Database, delegationId: string): Promise<StoredWorkItem[]> {
-  return sqliteDb(db).run((q) => listDelegationItemsSteps(q, delegationId));
+export function listWorkItems(store: Db, delegationId: string): Promise<StoredWorkItem[]> {
+  return store.run((q) => listDelegationItemsSteps(q, delegationId));
 }
 
 export function* insertRunningQueueSteps(

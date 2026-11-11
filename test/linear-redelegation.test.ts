@@ -15,7 +15,7 @@ function fixture(delegateId: string | null = "paws-app") {
     await store.setCursor(`delegated:${issueId}`, delegatedAtMs);
     return checkRedelegation(
       {
-        db,
+        db: sqliteDb(db),
         store,
         appUserId: "paws-app",
         inspect: async (id) => ({
@@ -66,7 +66,7 @@ test("a re-delegation that brought a new session leaves intake to that session",
 
 test("an issue that already has an open task starts nothing", async () => {
   const f = fixture();
-  insertQueuedItem(f.db, { id: "task", sessionKey: "new-session" });
+  await insertQueuedItem(f.db, { id: "task", sessionKey: "new-session" });
   await f.session("old-session", "lin-item-task", 10 * MINUTE);
 
   expect(await f.check("lin-item-task")).toBe(false);
@@ -89,7 +89,7 @@ test("a check superseded by a later delegation leaves it to the later check", as
   expect(
     await checkRedelegation(
       {
-        db: f.db,
+        db: sqliteDb(f.db),
         store: f.store,
         appUserId: "paws-app",
         inspect: async () => {

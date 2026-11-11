@@ -50,7 +50,7 @@ export async function startDashboardFixture(
     });
   await sync();
   const evidenceDir = join(home, "evidence");
-  const store = createEvidenceStore({ db, root: evidenceDir });
+  const store = createEvidenceStore({ store: sqliteDb(db), root: evidenceDir });
   const answers: Parameters<QuestionAnswer>[0][] = [];
   const runs: Record<string, string> = {};
   const evidence: Record<string, string> = {};
@@ -63,7 +63,7 @@ export async function startDashboardFixture(
         installation_observed_at, created_at) VALUES (?, 'org', 'fixture', 'app', ?, 1, 0)`,
       [session, team],
     );
-    insertQueuedItem(db, {
+    await insertQueuedItem(db, {
       id: item,
       sessionKey: session,
       title: `Fixture ${item}`,
@@ -90,7 +90,7 @@ export async function startDashboardFixture(
     ["PAS-3", "session-mine"],
     ["PAS-4", "session-other"],
   ] as const) {
-    insertQueuedItem(db, {
+    await insertQueuedItem(db, {
       id: item,
       sessionKey: session,
       title: `Fixture ${item}`,
@@ -110,7 +110,7 @@ export async function startDashboardFixture(
   await reservation.stop(true);
   const origin = `http://127.0.0.1:${port}`;
   const access = createWorkspaceAccess({
-    db,
+    store: sqliteDb(db),
     publicUrl: origin,
     clientId: "fixture",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -134,14 +134,14 @@ export async function startDashboardFixture(
     evidenceDir,
     questionAnswers: (request, principal, sessionIds) =>
       handleQuestionAnswer(request, {
-        db,
+        store: sqliteDb(db),
         principal,
         sessionIds,
         submit: async (input) => (answers.push(input), "answered"),
       }),
     ...options,
   });
-  const session = await issueWorkspaceSession(db, {
+  const session = await issueWorkspaceSession(sqliteDb(db), {
     workspaceId: "workspace",
     userId: "member",
     now: Date.now(),

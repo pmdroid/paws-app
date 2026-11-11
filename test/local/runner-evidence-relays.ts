@@ -43,7 +43,7 @@ export async function probeRunnerEvidenceRelays(
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(db, "relay-org", now);
+  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "relay-org", now);
   const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "relay-org",
@@ -114,7 +114,7 @@ export async function probeRunnerEvidenceRelays(
   });
   const objects = createFakeRunnerTranscriptObjects();
   const transcripts = createRunnerTranscripts({
-    db,
+    store: sqliteDb(db),
     work: coordinator.work,
     objects,
     key: randomBytes(32),
@@ -178,7 +178,7 @@ export async function probeRunnerEvidenceRelays(
     if (enrolled.phase !== "paired") throw new Error("Runner enrollment failed");
     const { runnerId } = enrolled;
     db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
-    const item = insertQueuedItem(db, { id: "relay-item", now, sessionKey: "relay-session" });
+    const item = await insertQueuedItem(db, { id: "relay-item", now, sessionKey: "relay-session" });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
     await recordLinearInstallation(sqliteDb(db), {
       organizationId: "relay-org",

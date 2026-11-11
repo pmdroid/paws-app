@@ -45,9 +45,9 @@ test("the delegation of a cancelled item is no longer held as reconciling", asyn
   try {
     seed(db);
     db.run("DELETE FROM item_reconciliation_request WHERE item_id='live'");
-    assert.equal(await hasPendingDelegationChanges(db, "delegation"), true);
+    assert.equal(await hasPendingDelegationChanges(sqliteDb(db), "delegation"), true);
     await applyWorkItemEvent(sqliteDb(db), "cancelled", "cancel");
-    assert.equal(await hasPendingDelegationChanges(db, "delegation"), false);
+    assert.equal(await hasPendingDelegationChanges(sqliteDb(db), "delegation"), false);
   } finally {
     db.close();
   }

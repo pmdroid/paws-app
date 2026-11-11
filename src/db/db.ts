@@ -179,18 +179,6 @@ export function postgresDb(pg: PgOrm): PgDb {
   };
 }
 
-export function settled<T>(promise: Promise<T>): T {
-  const status = Bun.peek.status(promise);
-  if (status === "pending")
-    throw new Error("settled() got a pending promise; await it from an async caller instead");
-  const value = Bun.peek(promise);
-  if (status === "rejected") {
-    void promise.then(undefined, (error: unknown) => error);
-    throw value;
-  }
-  return value as T;
-}
-
 export function* syncSteps<T>(work: () => T): Steps<T> {
   yield* [];
   return work();

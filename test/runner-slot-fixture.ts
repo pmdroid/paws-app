@@ -31,7 +31,7 @@ export async function workspaceWithRunners(db: Database) {
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", NOW)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", NOW)),
     now: NOW,
   });
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, REPOSITORY, "team"]);
@@ -50,7 +50,7 @@ export async function workspaceWithRunners(db: Database) {
   const queue = async (id: string) => {
     const [owner, repo] = REPOSITORY.split("/") as [string, string];
     const sessionKey = `session-${id}`;
-    insertQueuedItem(db, { id, now: NOW, sessionKey });
+    await insertQueuedItem(db, { id, now: NOW, sessionKey });
     await bindWorkItemRepository(sqliteDb(db), id, {
       owner,
       repo,
@@ -69,7 +69,7 @@ export async function workspaceWithRunners(db: Database) {
     db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
   };
   const pass = (reported: RunnerHostRefusal[][] = []) =>
-    dispatch(db, {
+    dispatch(sqliteDb(db), {
       now: NOW,
       admission: workspaceAdmission(db),
       itemRunners: (q, itemId) =>

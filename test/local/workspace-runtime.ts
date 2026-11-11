@@ -123,10 +123,14 @@ async function probeWorkspaceHttpDrain(path: string, observe: Observe) {
     organizationId: "org",
     name: "Workspace",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
     now,
   });
-  const session = await issueWorkspaceSession(db, { userId, workspaceId: workspace.id, now });
+  const session = await issueWorkspaceSession(sqliteDb(db), {
+    userId,
+    workspaceId: workspace.id,
+    now,
+  });
   const ready = Promise.withResolvers<WorkspaceAccess>();
   const entered = Promise.withResolvers<void>();
   const gate = Promise.withResolvers<void>();
@@ -152,7 +156,7 @@ async function probeWorkspaceHttpDrain(path: string, observe: Observe) {
   });
   const origin = `http://127.0.0.1:${server.port}`;
   const access = createWorkspaceAccess({
-    db,
+    store: sqliteDb(db),
     publicUrl: origin,
     clientId: "client",
     installedOrganization: { id: "org", name: "Workspace" },

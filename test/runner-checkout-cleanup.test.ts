@@ -40,7 +40,7 @@ async function tornDownRun(state: string, runnerVersion = CURRENT) {
       organizationId: "org",
       name: "Test",
       userId,
-      tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+      tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
       now,
     });
     db.run(
@@ -52,7 +52,7 @@ async function tornDownRun(state: string, runnerVersion = CURRENT) {
       "fixture/repository",
       "team",
     ]);
-    const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
+    const item = await insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
     await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
@@ -86,7 +86,7 @@ async function tornDownRun(state: string, runnerVersion = CURRENT) {
     };
     const keys = generateKeyPairSync("ed25519");
     const work = createRunnerWork({
-      db,
+      store: sqliteDb(db),
       keyId: "fixture",
       privateKey: keys.privateKey,
       eventKey: Buffer.alloc(32, 7),

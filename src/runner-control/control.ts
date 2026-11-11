@@ -18,7 +18,6 @@ import {
   requestRunnerAgentUpdateSteps,
   isCurrentRunnerCertificateSteps,
   runnerForCertificateSteps,
-  sqliteDb,
   type Db,
   type Q,
   setRunnerAdminRepositoriesSteps,
@@ -36,14 +35,12 @@ import {
 } from "../workspace";
 import { journalCaught } from "../journal";
 import { realpathSync } from "node:fs";
-import type { Database } from "bun:sqlite";
 import { agentCatalogPackagesSteps } from "../agent-catalog";
 import { validateRunnerRequest, type RunnerAuthority, type RunnerPeer } from "../runner-identity";
 import { releaseVersionFromPath } from "../runner-protocol";
 
 export function createRunnerControl(options: {
-  db: Database;
-  store?: Db;
+  store: Db;
   authority: RunnerAuthority;
   certificateRoot: string;
   disconnect(fingerprint: string): void;
@@ -51,8 +48,7 @@ export function createRunnerControl(options: {
   /** Installed Paws release, or null for a source checkout. Read from the release path by default. */
   serverVersion?: string | null;
 }) {
-  const { db } = options;
-  const store = options.store ?? sqliteDb(db);
+  const { store } = options;
   const now = options.now ?? Date.now;
   const serverVersion =
     options.serverVersion === undefined ? installedVersion() : options.serverVersion;

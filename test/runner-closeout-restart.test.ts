@@ -82,13 +82,13 @@ async function fixture(agentRead?: AgentRead) {
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
     now,
   });
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, "acme/fixture", "team"]);
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -110,7 +110,7 @@ async function fixture(agentRead?: AgentRead) {
     "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'9.0.0',?)",
     [runnerId, now],
   );
-  const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
+  const item = await insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
   await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
@@ -138,17 +138,17 @@ async function fixture(agentRead?: AgentRead) {
   const keys = generateKeyPairSync("ed25519");
   function open() {
     const work = createRunnerWork({
-      db,
+      store: sqliteDb(db),
       keyId: "fixture",
       privateKey: keys.privateKey,
       eventKey: Buffer.alloc(32, 7),
     });
-    const results = createRunnerResults({ db, work });
+    const results = createRunnerResults({ store: sqliteDb(db), work });
     const backend = createRemoteAgentRunner({
-      db,
+      store: sqliteDb(db),
       work,
       results,
-      health: createRunnerHealth({ db, work }),
+      health: createRunnerHealth({ store: sqliteDb(db), work }),
       placement: createRunnerPlacement({ store: sqliteDb(db) }),
       pollIntervalMs: 5,
       ...(agentRead ? { agentRead } : {}),

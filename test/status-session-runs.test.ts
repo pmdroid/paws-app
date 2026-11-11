@@ -23,7 +23,7 @@ test("one Linear session shows as one run with every attempt in its timeline", a
   const db = openDatabase(":memory:");
   try {
     migrate(db);
-    const item = insertQueuedItem(db, {
+    const item = await insertQueuedItem(db, {
       id: "01SESSIONITEM",
       title: "Runs list filters",
       sessionKey: "ses_7",
@@ -63,7 +63,7 @@ test("one Linear session shows as one run with every attempt in its timeline", a
       });
 
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-      db,
+      store: sqliteDb(db),
       env: {},
     });
     const parsed = parseIssueListResponse(await response?.json());
@@ -89,14 +89,14 @@ test("one Linear session shows as one run with every attempt in its timeline", a
 
     const alias = await handleStatusRequest(
       new Request(`http://127.0.0.1/api/aliases/runs/${review.id}`),
-      { db, env: {} },
+      { store: sqliteDb(db), env: {} },
     );
     expect(await alias?.json()).toEqual({ issueId: "ENG-7" });
     const route = parseRoute("/issues/ENG-7");
     const itemResponse = await handleStatusRequest(
       new Request("http://127.0.0.1/api/issues/ENG-7"),
       {
-        db,
+        store: sqliteDb(db),
         env: {},
       },
     );
@@ -122,7 +122,7 @@ test("a reply in the Linear session shows in the run's timeline with its author,
   const db = openDatabase(":memory:");
   try {
     migrate(db);
-    const item = insertQueuedItem(db, {
+    const item = await insertQueuedItem(db, {
       id: "01REPLYITEM",
       title: "Retry Closeout",
       sessionKey: "ses_8",
@@ -156,7 +156,7 @@ test("a reply in the Linear session shows in the run's timeline with its author,
     await applyLinearTurns(sqliteDb(db), "ses_8", ["reply-1"], item.id);
 
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-      db,
+      store: sqliteDb(db),
       env: {},
     });
     const parsed = parseIssueListResponse(await response?.json());
@@ -178,7 +178,7 @@ test("a Closeout re-check shows as a re-check, not as a review by the reviewer a
   const db = openDatabase(":memory:");
   try {
     migrate(db);
-    const item = insertQueuedItem(db, { id: "01RECHECKITEM", sessionKey: "ses_8", now: NOW });
+    const item = await insertQueuedItem(db, { id: "01RECHECKITEM", sessionKey: "ses_8", now: NOW });
     db.run("UPDATE work_item SET linear_identifier = ? WHERE id = ?", ["ENG-8", item.id]);
     const { run: first } = await beginImplementRun(sqliteDb(db), item.id, NOW);
     await markRun(sqliteDb(db), first.id, "ended", NOW + 1_000);
@@ -191,7 +191,7 @@ test("a Closeout re-check shows as a re-check, not as a review by the reviewer a
     });
     await setCurrentRun(sqliteDb(db), item.id, recheck.id);
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-      db,
+      store: sqliteDb(db),
       env: {},
     });
     const parsed = parseIssueListResponse(await response?.json());

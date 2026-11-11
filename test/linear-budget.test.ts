@@ -13,7 +13,7 @@ import { migrate, openDatabase } from "../src/db";
 import { startServer } from "../src/server";
 
 const AUTH = {
-  hasToken: () => true,
+  hasToken: async () => true,
   ensureFresh: async () => "token",
   forceRefresh: async () => "token",
 };

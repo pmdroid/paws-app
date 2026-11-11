@@ -38,14 +38,14 @@ function sized(head: Buffer, bytes: number): Buffer {
   return buffer;
 }
 
-function setup(reviewed = true) {
+async function setup(reviewed = true) {
   const home = tempHome();
   homes.push(home);
   const db = openDatabase(join(home, "paws.db"));
   migrate(db);
-  insertQueuedItem(db, { id: "item", sessionKey: "session" });
+  await insertQueuedItem(db, { id: "item", sessionKey: "session" });
   const root = join(home, "evidence");
-  const store = createEvidenceStore({ db, root });
+  const store = createEvidenceStore({ store: sqliteDb(db), root });
   const uploads: string[] = [];
   const failures = { remaining: 0 };
   const files = createLinearFileTransfer({
@@ -110,7 +110,7 @@ function setup(reviewed = true) {
   const clock = new FakeClock(Date.now());
   const dispatcher = new OutboxDispatcher(db, clock);
   dispatcher.setHandler((row, delivery) =>
-    deliverLinearOutbox(row, tracker, async () => {}, delivery, db, { files, root }),
+    deliverLinearOutbox(row, tracker, async () => {}, delivery, sqliteDb(db), { files, root }),
   );
   async function deliver(rounds = 1) {
     for (let round = 0; round < rounds; round++) {
@@ -131,7 +131,7 @@ async function rows(db: Database) {
 }
 
 test("a visual review screenshot is uploaded once and nothing is posted", async () => {
-  const f = setup();
+  const f = await setup();
   try {
     const published = await f.publish(
       "Settings → Agents, desktop",
@@ -153,7 +153,7 @@ test("a visual review screenshot is uploaded once and nothing is posted", async 
 });
 
 test("evidence of a check without a visual review is only stored", async () => {
-  const f = setup(false);
+  const f = await setup(false);
   try {
     await f.publish("shot.png", "image/png", sized(PNG_HEAD, 64));
     expect(await rows(f.db)).toHaveLength(0);
@@ -163,7 +163,7 @@ test("evidence of a check without a visual review is only stored", async () => {
 });
 
 test("a failed upload retries through the outbox", async () => {
-  const f = setup();
+  const f = await setup();
   try {
     f.failures.remaining = 1;
     const published = await f.publish("clip.webm", "video/webm", sized(WEBM_HEAD, 2 * MB));
@@ -184,7 +184,7 @@ test("a failed upload retries through the outbox", async () => {
 });
 
 test("an upload that keeps failing gives up on the last attempt", async () => {
-  const f = setup();
+  const f = await setup();
   try {
     f.failures.remaining = 100;
     const published = await f.publish("shot.png", "image/png", sized(PNG_HEAD, 64));
@@ -198,7 +198,7 @@ test("an upload that keeps failing gives up on the last attempt", async () => {
 });
 
 test("files over the inline limits are not uploaded", async () => {
-  const f = setup();
+  const f = await setup();
   try {
     await f.publish("walkthrough.webm", "video/webm", sized(WEBM_HEAD, 51 * MB));
     await f.publish("full-page.png", "image/png", sized(PNG_HEAD, 11 * MB));

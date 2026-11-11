@@ -22,7 +22,7 @@ await recordLinearInstallation(sqliteDb(db), {
 });
 await revokeLinearInstallation(sqliteDb(db), { ...scope, eventKey: "revoked", createdAtMs: 2 });
 db.close();
-storeLinearToken(home, {
+await storeLinearToken(home, {
   accessToken: "fake-access",
   refreshToken: "fake-refresh",
   expiresAtMs: 0,

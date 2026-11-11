@@ -35,7 +35,7 @@ describe("shutdown WIP", () => {
       PAWS_PORT: "0",
       PAWS_HOST: "127.0.0.1",
     });
-    insertQueuedItem(paws.db, {
+    await insertQueuedItem(paws.db, {
       id: "ENG-21",
       branchName: "paws/eng-21",
       now: Date.now(),
@@ -79,7 +79,7 @@ describe("shutdown WIP", () => {
       "implementer",
       "hang",
     ].join(" ");
-    storeLinearToken(home, {
+    await storeLinearToken(home, {
       accessToken: "synthetic-linear-token",
       refreshToken: "synthetic-refresh-token",
       expiresAtMs: Date.now() + 600_000,
@@ -175,7 +175,7 @@ describe("shutdown WIP", () => {
       LINEAR_TEAM_ID: "team",
     });
     try {
-      const answer = insertQueuedItem(paws.db, { id: "answer", sessionKey: "session" });
+      const answer = await insertQueuedItem(paws.db, { id: "answer", sessionKey: "session" });
       await ensureLinearSession(sqliteDb(paws.db), {
         sessionId: "session",
         issueId: answer.linearIssueId,
@@ -198,7 +198,7 @@ describe("shutdown WIP", () => {
       expect((await getWorkItem(sqliteDb(paws.db), answer.id))?.state).toBe("queued");
       expect(existsSync(evidence)).toBe(false);
       expect(existsSync(`${evidence}.descendant`)).toBe(false);
-      insertQueuedItem(paws.db, { id: "ENG-21", branchName: "paws/eng-21" });
+      await insertQueuedItem(paws.db, { id: "ENG-21", branchName: "paws/eng-21" });
       await saveRunCommitPolicy(
         sqliteDb(paws.db),
         (
@@ -245,7 +245,7 @@ describe("shutdown WIP", () => {
     try {
       await readUntil(proc, "paws ready", 15_000);
       const db = openDatabase(join(home, "paws.db"));
-      insertQueuedItem(db, {
+      await insertQueuedItem(db, {
         id: "ENG-21",
         branchName: "paws/eng-21",
         now: Date.now(),

@@ -2,10 +2,11 @@ import { LinearHttpError } from "./graphql";
 import type { Database } from "bun:sqlite";
 import {
   importCredentialFile,
-  readCredential,
+  readCredentialSteps,
   refreshCredential,
-  writeCredential,
+  writeCredentialSteps,
 } from "../credentials";
+import { sqliteDb, type Db, type Q, type Steps } from "../db";
 
 /** Scopes for an install that can be delegated and mentioned. */
 export const LINEAR_APP_SCOPES = "read,write,app:assignable,app:mentionable";
@@ -42,7 +43,7 @@ export type StoredLinearToken = {
 };
 
 export type LinearAuth = {
-  hasToken(): boolean;
+  hasToken(): Promise<boolean>;
   assertAuthorized?(): Promise<void>;
   ensureFresh(): Promise<string>;
   forceRefresh(): Promise<string>;
@@ -94,7 +95,7 @@ export function readLinearEnv(source: EnvSource): LinearEnv {
   };
 }
 
-export function createLinearAuth(options: {
+export async function createLinearAuth(options: {
   db: Database;
   secretsDir: string;
   clientId: string | null;
@@ -104,14 +105,16 @@ export function createLinearAuth(options: {
   isAuthorized?: () => Promise<boolean>;
   fetch?: FetchLike;
   now?: () => number;
-}): LinearAuth {
+}): Promise<LinearAuth> {
   const fetchImpl = options.fetch ?? fetch;
   const now = options.now ?? Date.now;
   const { db, secretsDir } = options;
+  const store = sqliteDb(db);
+  const readToken = () => readStoredToken(store, secretsDir);
   const accessToken = options.bootstrapAccessToken ?? null;
   if (accessToken !== null)
-    writeToken(
-      db,
+    await writeStoredToken(
+      store,
       secretsDir,
       {
         accessToken,
@@ -139,7 +142,7 @@ export function createLinearAuth(options: {
 
   async function refreshOnce(): Promise<string> {
     await assertAuthorized();
-    if (readToken(db, secretsDir)?.refreshToken == null) {
+    if ((await readToken())?.refreshToken == null) {
       throw new Error("Linear access token expired and no refresh token is stored");
     }
     const rotate = async (
@@ -162,8 +165,8 @@ export function createLinearAuth(options: {
     const saved = await refreshCredential({
       db,
       identity: "linear",
-      read: () => readToken(db, secretsDir),
-      write: (token) => writeToken(db, secretsDir, token),
+      read: (q) => readStoredTokenSteps(q, secretsDir),
+      write: (q, token) => writeStoredTokenSteps(q, secretsDir, token),
       refresh: rotate,
     });
     await assertAuthorized();
@@ -172,12 +175,12 @@ export function createLinearAuth(options: {
 
   return {
     assertAuthorized,
-    hasToken() {
-      return readToken(db, secretsDir) !== null;
+    async hasToken() {
+      return (await readToken()) !== null;
     },
     async ensureFresh() {
       await assertAuthorized();
-      const current = readToken(db, secretsDir);
+      const current = await readToken();
       if (current === null) throw new Error("Linear OAuth token is not configured");
       if (current.expiresAtMs - REFRESH_SKEW_MS > now()) return current.accessToken;
       if (current.refreshToken === null) {
@@ -268,26 +271,40 @@ async function requestToken(
   };
 }
 
-export function readStoredToken(db: Database, secretsDir: string): StoredLinearToken | null {
-  return readToken(db, secretsDir);
+export function* readStoredTokenSteps(q: Q, secretsDir: string): Steps<StoredLinearToken | null> {
+  const text = yield* readCredentialSteps(q, secretsDir, "linear");
+  return text === null ? null : parseToken(text);
 }
 
-export function writeStoredToken(
-  db: Database,
+export function readStoredToken(store: Db, secretsDir: string): Promise<StoredLinearToken | null> {
+  return store.run((q) => readStoredTokenSteps(q, secretsDir));
+}
+
+export function writeStoredTokenSteps(
+  q: Q,
   secretsDir: string,
   token: StoredLinearToken,
   onlyIfMissing = false,
-): boolean {
-  return writeToken(db, secretsDir, token, onlyIfMissing);
+): Steps<boolean> {
+  return writeCredentialSteps(q, secretsDir, "linear", JSON.stringify(token), { onlyIfMissing });
+}
+
+export function writeStoredToken(
+  store: Db,
+  secretsDir: string,
+  token: StoredLinearToken,
+  onlyIfMissing = false,
+): Promise<boolean> {
+  return store.run((q) => writeStoredTokenSteps(q, secretsDir, token, onlyIfMissing));
 }
 
 export function importLinearTokenFile(
-  db: Database,
+  store: Db,
   secretsDir: string,
   path: string,
   now = Date.now(),
-): boolean {
-  return importCredentialFile(db, secretsDir, "linear", path, (text) => {
+): Promise<boolean> {
+  return importCredentialFile(store, secretsDir, "linear", path, (text) => {
     let token: StoredLinearToken;
     try {
       token = parseToken(text);
@@ -298,11 +315,6 @@ export function importLinearTokenFile(
       token.expiresAtMs = now + BOOTSTRAP_LIFETIME_MS;
     return JSON.stringify(token);
   });
-}
-
-function readToken(db: Database, secretsDir: string): StoredLinearToken | null {
-  const text = readCredential(db, secretsDir, "linear");
-  return text === null ? null : parseToken(text);
 }
 
 function parseToken(text: string): StoredLinearToken {
@@ -327,15 +339,6 @@ function parseToken(text: string): StoredLinearToken {
     scope: typeof scope === "string" ? scope : null,
     actor: LINEAR_ACTOR,
   };
-}
-
-function writeToken(
-  db: Database,
-  secretsDir: string,
-  token: StoredLinearToken,
-  onlyIfMissing = false,
-): boolean {
-  return writeCredential(db, secretsDir, "linear", JSON.stringify(token), { onlyIfMissing });
 }
 
 function readScope(value: unknown): string | null {

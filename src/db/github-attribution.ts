@@ -5,7 +5,7 @@ import {
 } from "./workspace";
 import type { Database } from "bun:sqlite";
 import { and, eq, gt, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { sqliteDb, type Q, type Db } from "./db";
 import { dashboardPath } from "../dashboard-links";
 
 export type VerifiedGitHubAttribution = { id: number; login: string; name: string; email: string };
@@ -108,12 +108,12 @@ export function* beginGitHubAttributionSteps(q: Q, binding: AttributionBinding, 
   );
 }
 
-export function beginGitHubAttribution(
-  db: Database,
+export async function beginGitHubAttribution(
+  store: Db,
   binding: AttributionBinding,
   input: BeginInput,
 ) {
-  settled(sqliteDb(db).transaction((q) => beginGitHubAttributionSteps(q, binding, input)));
+  return store.transaction((q) => beginGitHubAttributionSteps(q, binding, input));
 }
 
 type ConsumeInput = { stateHash: string; browserHash: string; now: number };

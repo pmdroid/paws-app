@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import type { Database } from "bun:sqlite";
 import {
   findingGroupSourcesSteps,
   getImprovementSteps,
@@ -10,7 +9,6 @@ import {
   recordImprovementProposalSteps,
   reviewFindingsByIds,
   reviewFindingsByIdsSteps,
-  sqliteDb,
   type Db,
   type FindingGroup,
   type Improvement,
@@ -88,11 +86,11 @@ function ownFindings(keys: ReadonlySet<string>, findings: ReviewFindingRecord[])
 }
 
 export async function improvementFindings(
-  db: Database,
+  store: Db,
   improvementId: string,
 ): Promise<ReviewFindingRecord[]> {
-  const { keys, ids } = findingKeys(await listImprovementProposals(sqliteDb(db), improvementId));
-  return ownFindings(keys, await reviewFindingsByIds(sqliteDb(db), ids));
+  const { keys, ids } = findingKeys(await listImprovementProposals(store, improvementId));
+  return ownFindings(keys, await reviewFindingsByIds(store, ids));
 }
 
 export function* improvementFindingsSteps(
@@ -152,11 +150,10 @@ export type DailyIngestResult = {
 type Unit = { group: FindingGroup | null; members: ReviewFindingRecord[]; acted: boolean };
 
 export async function ingestDailyFindings(
-  db: Database,
+  store: Db,
   workspaceId: string,
   options: { now: number; limit?: number },
 ): Promise<DailyIngestResult> {
-  const store = sqliteDb(db);
   const limit = options.limit ?? 500;
   const { findings, groups } = await store.run(function* (q) {
     const inWorkspace = new Set((yield* findingGroupSourcesSteps(q, workspaceId)).map((s) => s.id));

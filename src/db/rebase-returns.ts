@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, count, eq, gte, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
 
 export type RebaseReturn = {
@@ -97,12 +96,12 @@ export function* listRebaseReturnsSteps(
   }));
 }
 
-export function listRebaseReturns(
-  db: Database,
+export async function listRebaseReturns(
+  store: Db,
   itemId: string,
   sinceActivationId: number,
-): RebaseReturnRecord[] {
-  return settled(sqliteDb(db).run((q) => listRebaseReturnsSteps(q, itemId, sinceActivationId)));
+): Promise<RebaseReturnRecord[]> {
+  return store.run((q) => listRebaseReturnsSteps(q, itemId, sinceActivationId));
 }
 
 export function* rebaseReturnedForSteps(q: Q, itemId: string, candidate: string) {

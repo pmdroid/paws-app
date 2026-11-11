@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { Checkpoint, StageLimits } from "../core";
-import { settled, sqliteDb, type Db, type Q } from "./db";
+import { sqliteDb, type Db, type Q } from "./db";
 import {
   applyWorkItemEventSteps,
   configureWorkItemSteps,
@@ -33,7 +33,10 @@ function* configureQueuedItemSteps(q: Q, id: string, input: QueuedItemInput) {
 }
 
 /** Insert a queued work item. New columns keep their defaults so intake inserts stay valid. */
-export function insertQueuedItem(db: Database, input: QueuedItemInput = {}): WorkItemRecord {
+export async function insertQueuedItem(
+  db: Database,
+  input: QueuedItemInput = {},
+): Promise<WorkItemRecord> {
   const id = input.id ?? "item-1";
   const now = input.now ?? 0;
   const delegationId = `epic-${id}`;
@@ -51,7 +54,7 @@ export function insertQueuedItem(db: Database, input: QueuedItemInput = {}): Wor
       now,
     ],
   );
-  return settled(sqliteDb(db).run((q) => configureQueuedItemSteps(q, id, input)));
+  return await sqliteDb(db).run((q) => configureQueuedItemSteps(q, id, input));
 }
 
 export function* beginImplementRunSteps(

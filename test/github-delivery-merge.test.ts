@@ -44,7 +44,7 @@ test("a green check_suite delivery for the pull request's head merges it before 
   let green = false;
   let sequence = 0;
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -121,7 +121,7 @@ test("a green check_suite delivery for the pull request's head merges it before 
     const head = (parked!.payload as { ciWaitHead: string }).ciWaitHead;
     green = true;
     await acceptGitHubDelivery(
-      db,
+      sqliteDb(db),
       {
         deliveryId: "delivery-1",
         event: "check_suite",

@@ -30,7 +30,7 @@ import { tempDb, tempHome } from "./helpers";
 
 async function fixture() {
   const db = tempDb();
-  const item = insertQueuedItem(db);
+  const item = await insertQueuedItem(db);
   const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
   await ensureLinearSession(sqliteDb(db), { sessionId: "session", issueId: item.linearIssueId });
   await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "human" });
@@ -61,7 +61,7 @@ async function fixture() {
   });
   const tracker = createFakeTracker([]);
   const outbox = new OutboxDispatcher(db, systemClock);
-  const gate = new LinearTaskAccess(db, {
+  const gate = new LinearTaskAccess(sqliteDb(db), {
     access: access.adapter,
     lifecycle,
     oauthClientId: "client",
@@ -69,7 +69,7 @@ async function fixture() {
     stopSession: () => syncSteps(() => {}),
   });
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs: new JobLoop(db, systemClock),
     outbox,
     tracker,
@@ -108,7 +108,7 @@ test.each(["workflow states", "credential acquisition"])(
       createLinearTracker(
         createLinearClient({
           auth: {
-            hasToken: () => true,
+            hasToken: async () => true,
             async ensureFresh() {
               if (boundary === "credential acquisition") {
                 started.resolve();

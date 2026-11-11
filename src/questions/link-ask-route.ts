@@ -5,11 +5,10 @@ import {
   getWorkItemSteps,
   LINK_ASK_DECISIONS,
   LINK_ASK_NOTE_REQUIRED,
-  sqliteDb,
   workspaceMemberSteps,
   type LinkAskDecision,
+  type Db,
 } from "../db";
-import type { Database } from "bun:sqlite";
 
 /**
  * `POST /api/link-asks` with `{ questionId, decision, note }`: a decision made on the item page.
@@ -38,7 +37,7 @@ export type LinkAskAnswer = (input: {
 }) => Promise<"answered" | "forbidden" | "rejected">;
 
 export type LinkAskAnswerOptions = {
-  db: Database;
+  store: Db;
   principal: { workspaceId: string; userId: string } | undefined;
   /** Sessions the signed-in person can see. */
   sessionIds: readonly string[] | undefined;
@@ -55,8 +54,7 @@ export async function handleLinkAskAnswer(
   options: LinkAskAnswerOptions,
 ): Promise<Response | null> {
   if (new URL(request.url).pathname !== LINK_ASK_ANSWER_PATH) return null;
-  const { db, principal, sessionIds } = options;
-  const store = sqliteDb(db);
+  const { store, principal, sessionIds } = options;
   if (principal === undefined || sessionIds === undefined)
     return Response.json({ error: "Sign in to Paws." }, { status: 401 });
   if (request.method !== "POST")

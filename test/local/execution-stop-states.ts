@@ -187,7 +187,7 @@ async function remoteFixture(
               askTeam: {
                 async ask(request, context) {
                   await applyWorkItemEvent(sqliteDb(db), "controlled", "blocking_question");
-                  await openQuestion(db, {
+                  await openQuestion(sqliteDb(db), {
                     itemId: "controlled",
                     runId,
                     sessionId: "session-controlled",
@@ -244,7 +244,7 @@ async function remoteFixture(
       "Remote ACP did not become ready",
     );
     const backend = createRemoteAgentRunner({
-      db,
+      store: sqliteDb(db),
       work: coordinator.work,
       results: coordinator.results,
       health: coordinator.health,
@@ -304,7 +304,7 @@ export async function probeExecutionStopStates(root: string) {
       if (state === "running" || state === "awaiting_input" || state === "verifying")
         remote = await remoteFixture(fixture, directory, state);
       const options: OrchestratorOptions = {
-        db,
+        store: sqliteDb(db),
         clock: systemClock,
         jobs: new JobLoop(db, systemClock),
         outbox: new OutboxDispatcher(db, systemClock),
@@ -342,7 +342,7 @@ export async function probeExecutionStopStates(root: string) {
       });
       const origin = `http://127.0.0.1:${server.port}`;
       access = createWorkspaceAccess({
-        db,
+        store: sqliteDb(db),
         publicUrl: origin,
         clientId: "client",
         installedOrganization: { id: "org", name: "Stop states" },

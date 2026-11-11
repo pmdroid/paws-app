@@ -68,7 +68,7 @@ async function fixture() {
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now())),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now())),
     now: now(),
   });
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
@@ -78,7 +78,7 @@ async function fixture() {
   ]);
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -99,7 +99,7 @@ async function fixture() {
     "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.53',?)",
     [runnerId, now()],
   );
-  const item = insertQueuedItem(db, { id: "item", now: now(), sessionKey: "session" });
+  const item = await insertQueuedItem(db, { id: "item", now: now(), sessionKey: "session" });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, now());
   const start = async () =>
     await registerInstance(sqliteDb(db), { role: "all", host: "acme", version: null, now: now() });
@@ -118,13 +118,13 @@ async function fixture() {
   const keys = generateKeyPairSync("ed25519");
   const open = () => {
     const work = createRunnerWork({
-      db,
+      store: sqliteDb(db),
       keyId: "fixture",
       privateKey: keys.privateKey,
       eventKey: Buffer.alloc(32, 7),
       now,
     });
-    return { work, results: createRunnerResults({ db, work, now }) };
+    return { work, results: createRunnerResults({ store: sqliteDb(db), work, now }) };
   };
   let services = open();
   async function admit(expiresInMs = 4 * 60 * MINUTE) {
@@ -198,7 +198,7 @@ async function fixture() {
     /** Shut Paws down now, stay down for `ms`, then open the database again. */
     async down(ms: number) {
       await prepareShutdown(sqliteDb(db), clock.at, undefined, instance.id);
-      stopInstance(db, instance.id, clock.at);
+      await stopInstance(sqliteDb(db), instance.id, clock.at);
       db.close();
       clock.at += ms;
       db = openDatabase(path);
@@ -228,7 +228,7 @@ test("a runner that never returns retains only its remaining lease plus grace af
     // No renewal arrives. The shifted deadline expires after the original remaining lease
     // and grace, rather than another offline budget after startup.
     f.clock.at = f.leaseUntil() + RUNNER_LEASE_GRACE_MS;
-    stopInstance(f.db, f.instance.id, f.clock.at);
+    await stopInstance(sqliteDb(f.db), f.instance.id, f.clock.at);
     await f.crash();
     expect(await recoverOnStartup(sqliteDb(f.db), f.clock.at, BUDGET, f.instance.id)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
@@ -304,7 +304,7 @@ test("with a second instance alive throughout, a restart gives no credit and the
       // The first instance stops cleanly, and its replacement starts four minutes later.
       if (at === before) {
         await prepareShutdown(sqliteDb(f.db), at, undefined, acme);
-        stopInstance(f.db, acme, at);
+        await stopInstance(sqliteDb(f.db), acme, at);
       }
       if (at === before + 4 * MINUTE) {
         await f.crash();
@@ -377,7 +377,7 @@ test("an instance that outlived the owner and then stopped credits only the time
     });
     // The owner dies now; the other instance stops 20 seconds later without taking over.
     f.clock.at += 20_000;
-    stopInstance(b, other.id, f.clock.at);
+    await stopInstance(sqliteDb(b), other.id, f.clock.at);
     const stoppedAt = f.clock.at;
     f.clock.at += 20 * MINUTE;
     await f.crash();
@@ -405,7 +405,7 @@ test("an instance that came and went during the outage without taking over leave
       now: f.clock.at,
     });
     f.clock.at += MINUTE;
-    stopInstance(b, other.id, f.clock.at);
+    await stopInstance(sqliteDb(b), other.id, f.clock.at);
     f.clock.at += 14 * MINUTE;
     await f.crash();
     await recoverOnStartup(sqliteDb(f.db), f.clock.at, BUDGET, f.instance.id);

@@ -28,7 +28,7 @@ function errorBodies(db: Database): string[] {
 test("a retried task that fails again with the same reason posts a second error", async () => {
   const db = tempDb();
   databases.push(db);
-  const { id } = insertQueuedItem(db, { sessionKey: "session" });
+  const { id } = await insertQueuedItem(db, { sessionKey: "session" });
   await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
   await failWorkItem(
     sqliteDb(db),
@@ -52,7 +52,7 @@ test("a retried task that fails again with the same reason posts a second error"
 test("a retried task that hits the same cap again posts a second error", async () => {
   const db = tempDb();
   databases.push(db);
-  const { id } = insertQueuedItem(db, { maxAwakeMs: 10 });
+  const { id } = await insertQueuedItem(db, { maxAwakeMs: 10 });
   db.run("UPDATE work_item SET session_key = NULL WHERE id = ?", [id]);
   await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
   await accrueAwake(sqliteDb(db), id, 0, 1, undefined, true);

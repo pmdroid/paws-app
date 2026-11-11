@@ -174,7 +174,7 @@ if (mode === "agent") {
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
     now,
   });
   const principal = {
@@ -210,7 +210,7 @@ if (mode === "agent") {
   for (const purpose of ["answer", "artifact"] as const)
     for (const repository of [false, true]) {
       const sessionId = "task-session-" + configuration.commands.length;
-      const item = insertQueuedItem(db, {
+      const item = await insertQueuedItem(db, {
         id: "task-item-" + configuration.commands.length,
         now,
         sessionKey: sessionId,

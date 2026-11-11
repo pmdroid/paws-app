@@ -127,7 +127,7 @@ async function harness() {
   };
   const w = await world({ linear, startSession, dashboardUrl: "https://paws.test/" });
   await seedDaily(w.db);
-  const retros = createRetroReviewHttp({ db: w.db, artifactRoot: w.root, now: w.now });
+  const retros = createRetroReviewHttp({ store: sqliteDb(w.db), artifactRoot: w.root, now: w.now });
   const requests: { method: string; path: string }[] = [];
   const holds: { path: string; release: () => void }[] = [];
   let hold: RegExp | null = null;
@@ -216,14 +216,14 @@ async function harness() {
   };
   const deliver = (now = END + 60 * 60_000) =>
     deliverImprovements({
-      db: w.db,
+      store: sqliteDb(w.db),
       owner: "test",
       linearFor: async () => linear,
       sourceUrl: (id) => `https://paws.test/dashboard/improvements/${id}`,
       now: () => now,
     });
   const sync = () =>
-    syncImprovementOutcomes({ db: w.db, linearFor: async () => linear, now: w.now });
+    syncImprovementOutcomes({ store: sqliteDb(w.db), linearFor: async () => linear, now: w.now });
   return {
     w,
     linear,
@@ -287,7 +287,7 @@ describe("improvement inbox contract", () => {
     expect(parseImprovementDetail(await read(`/api/improvements/${id}`)).ok).toBe(true);
     expect(parseFollowThrough(await read(`/api/improvements/${id}/follow-through`)).ok).toBe(true);
     expect(parseAttention(await read("/api/improvements/attention")).ok).toBe(true);
-    const retros = createRetroReviewHttp({ db: t.w.db, artifactRoot: t.w.root });
+    const retros = createRetroReviewHttp({ store: sqliteDb(t.w.db), artifactRoot: t.w.root });
     const retro = async (path: string) =>
       (await retros(new Request(`http://paws.test${path}`), t.w.people.ada!, ONLY_A))!.json();
     expect(parseRetroHistory(await retro("/api/retros/history")).ok).toBe(true);
@@ -407,7 +407,7 @@ describe("improvement inbox", () => {
     expect(t.root.querySelector('[data-improvement-action="delegate"]')).toBeNull();
 
     const issueId = (await listImprovementDeliveries(sqliteDb(t.w.db), id))[0]!.remoteId!;
-    insertQueuedItem(t.w.db, { id: "work-x", sessionKey: "session-a", now: END + 2_500 });
+    await insertQueuedItem(t.w.db, { id: "work-x", sessionKey: "session-a", now: END + 2_500 });
     t.w.db.run("UPDATE work_item SET linear_issue_id = ?, state = 'running' WHERE id = 'work-x'", [
       issueId,
     ]);
@@ -753,7 +753,11 @@ async function filedWork(t: Awaited<ReturnType<typeof harness>>, state: string) 
   expect((await t.w.api("ada", `/api/improvements/${id}/decision`, accept())).status).toBe(200);
   await t.deliver();
   const issueId = (await listImprovementDeliveries(sqliteDb(t.w.db), id))[0]!.remoteId!;
-  insertQueuedItem(t.w.db, { id: "work-x", sessionKey: "session-a", now: END + 2 * 3_600_000 });
+  await insertQueuedItem(t.w.db, {
+    id: "work-x",
+    sessionKey: "session-a",
+    now: END + 2 * 3_600_000,
+  });
   t.w.db.run("UPDATE work_item SET linear_issue_id = ?, state = ? WHERE id = 'work-x'", [
     issueId,
     state,

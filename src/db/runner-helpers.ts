@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, gt, isNull, sql, type SQL } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { jsonFromText, jsonText } from "./json-text";
 
 export type RunnerHelperRow = {
@@ -148,8 +147,4 @@ export function* endRunnerHelperSteps(q: Q, id: string, at: number) {
       .set({ endedAt: sql`COALESCE(${helper.endedAt}, ${at})` })
       .where(eq(helper.id, id)),
   );
-}
-
-export function endRunnerHelper(db: Database, id: string, at: number): void {
-  settled(sqliteDb(db).run((q) => endRunnerHelperSteps(q, id, at)));
 }

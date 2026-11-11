@@ -176,7 +176,7 @@ test("a parked item is placed on a runner as soon as it reports the repository a
   );
   const clock = { now: NOW + 1_000 };
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -300,7 +300,7 @@ test("a reconnect with unchanged reports wakes parked work once, without waking 
   const { jobId } = await parkedRun(db, "parked", [id], [id]);
   const now = NOW + 60_000;
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -336,13 +336,13 @@ test("a successful background sign-in check wakes parked work", async () => {
   const { jobId } = await parkedRun(db, "parked", [id], [id]);
   const at = NOW + 1;
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
     now: () => at,
   });
-  const health = createRunnerHealth({ db, work, now: () => at });
+  const health = createRunnerHealth({ store: sqliteDb(db), work, now: () => at });
   expect(await health.afterSignIn(id, "claude")).toBe(true);
   const envelope = (await work.commands(id))[0]!;
   const command = JSON.parse(Buffer.from(envelope.payload, "base64url").toString()) as {
@@ -392,10 +392,12 @@ test("an enabled but unavailable placement scope stays queued while disabled che
   await pair("agentbox", 1, [REPOSITORY]);
   await queue("unknown");
   const options = { now: NOW, admission: workspaceAdmission(db) };
-  expect(await dispatch(db, { ...options, itemRunners: () => syncSteps(() => null) })).toEqual([]);
+  expect(
+    await dispatch(sqliteDb(db), { ...options, itemRunners: () => syncSteps(() => null) }),
+  ).toEqual([]);
   expect((await getWorkItem(sqliteDb(db), "unknown"))?.state).toBe("queued");
   expect((await listItemHolds(sqliteDb(db)))[0]?.blockers[0]).toContain("placement scope");
-  expect(await dispatch(db, options)).toEqual(["unknown"]);
+  expect(await dispatch(sqliteDb(db), options)).toEqual(["unknown"]);
 });
 
 test("two flexible slow starts reserve different runner slots", async () => {
@@ -589,7 +591,7 @@ test("admission fails over from a busy session runner once session grace ends", 
   // Each pass asks placement afresh, as the scheduler does on its 30 second tick.
   const pass = (now: number) => {
     db.run("UPDATE runner SET last_seen_at=?", [now]);
-    return dispatch(db, {
+    return dispatch(sqliteDb(db), {
       now,
       admission: workspaceAdmission(db),
       itemRunners: (q, itemId) =>

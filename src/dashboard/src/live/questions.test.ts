@@ -33,7 +33,12 @@ async function asking(
   question: string,
   kind = "ask",
 ): Promise<void> {
-  insertQueuedItem(db, { id, title: `Title of ${id}`, sessionKey: session, now: NOW - 10_000 });
+  await insertQueuedItem(db, {
+    id,
+    title: `Title of ${id}`,
+    sessionKey: session,
+    now: NOW - 10_000,
+  });
   await beginImplementRun(sqliteDb(db), id, NOW - 9_000);
   await applyWorkItemEvent(sqliteDb(db), id, "blocking_question");
   db.run(
@@ -51,7 +56,7 @@ async function asking(
 }
 
 function provider(db: Database, sessionIds?: readonly string[]) {
-  return createLiveStatusProvider(db, {
+  return createLiveStatusProvider(sqliteDb(db), {
     now: () => new Date(NOW),
     env: {},
     ...(sessionIds === undefined ? {} : { sessionIds }),

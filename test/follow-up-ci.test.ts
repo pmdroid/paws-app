@@ -131,7 +131,7 @@ async function waitingTask(
   const previousToken = process.env.FOLLOW_UP_TEST_TOKEN;
   process.env.FOLLOW_UP_TEST_TOKEN = TOKEN;
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     tracker,
     pawsRoot: home,
     jobs: new JobLoop(db, systemClock),
@@ -218,7 +218,7 @@ test("a follow-up on a pull request with failed CI carries the person's text, fa
     expect(handoff).toContain("Paws could not read a log for: `check / lint`.");
     expect(handoff).not.toContain(TOKEN);
     expect(handoff.length).toBeLessThan(20_000);
-    expect(fixRounds(f.db, f.itemId)).toBe(0);
+    expect(await fixRounds(sqliteDb(f.db), f.itemId)).toBe(0);
     expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toHaveLength(1);
   } finally {
     await f.close();
@@ -357,7 +357,7 @@ test("CI enrichment with a pending comment batch makes one follow-up handoff and
     expect(
       (await listJobs(sqliteDb(f.db))).some((job) => job.jobKey?.startsWith("ci-failed:")),
     ).toBe(false);
-    expect(fixRounds(f.db, f.itemId)).toBe(0);
+    expect(await fixRounds(sqliteDb(f.db), f.itemId)).toBe(0);
     expect(await gathering()).toEqual(window);
     expect(
       (await pendingPullComments(sqliteDb(f.db), f.itemId)).map((comment) => comment.commentId),
@@ -414,7 +414,7 @@ test("an automatic CI repair restart keeps adding to the same clock", async () =
   try {
     spent(f.db, f.itemId);
     const before = (await getWorkItem(sqliteDb(f.db), f.itemId))!;
-    restart(f.db, before, {
+    await restart(sqliteDb(f.db), before, {
       reason: "ci",
       body: "CI failed on the pull request.",
       now: Date.now(),

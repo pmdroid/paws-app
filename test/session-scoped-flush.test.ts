@@ -45,7 +45,7 @@ function fixture(outboxWaitMs?: number) {
   };
   const outbox = new OutboxDispatcher(db, systemClock);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     tracker,
     pawsRoot: tempHome(),
     jobs: new JobLoop(db, systemClock),

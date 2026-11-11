@@ -32,7 +32,7 @@ test.each(["cancelled", "merged"] as const)(
     let db = openDatabase(path);
     try {
       migrate(db);
-      const item = insertQueuedItem(db, { id: "item" });
+      const item = await insertQueuedItem(db, { id: "item" });
       if (state === "cancelled") await applyWorkItemEvent(sqliteDb(db), item.id, "cancel");
       else {
         await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
@@ -59,7 +59,7 @@ test.each(["cancelled", "merged"] as const)(
 test("replayed confirmation preserves its original observation and rejects conflicting PR history", async () => {
   const db = tempDb();
   try {
-    insertQueuedItem(db, { id: "item" });
+    await insertQueuedItem(db, { id: "item" });
     await recordConfirmedRemoteMerge(sqliteDb(db), fact());
     expect(await recordConfirmedRemoteMerge(sqliteDb(db), { ...fact(), confirmedAt: 300 })).toEqual(
       fact(),
@@ -80,7 +80,7 @@ test("replayed confirmation preserves its original observation and rejects confl
 test("confirmed success without a reported merge SHA retains the PR identity without inventing a SHA", async () => {
   const db = tempDb();
   try {
-    insertQueuedItem(db, { id: "item" });
+    await insertQueuedItem(db, { id: "item" });
     expect(await recordConfirmedRemoteMerge(sqliteDb(db), { ...fact(), mergeSha: null })).toEqual({
       ...fact(),
       mergeSha: null,
@@ -94,8 +94,8 @@ test("confirmed success without a reported merge SHA retains the PR identity wit
 test("a failed fact write leaves terminal task history and earlier confirmed merges untouched", async () => {
   const db = tempDb();
   try {
-    insertQueuedItem(db, { id: "item" });
-    insertQueuedItem(db, { id: "second" });
+    await insertQueuedItem(db, { id: "item" });
+    await insertQueuedItem(db, { id: "second" });
     await recordConfirmedRemoteMerge(sqliteDb(db), fact());
     await applyWorkItemEvent(sqliteDb(db), "second", "cancel");
     db.exec(`CREATE TRIGGER deny_fact BEFORE INSERT ON remote_merge_fact

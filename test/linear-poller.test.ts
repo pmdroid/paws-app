@@ -247,7 +247,7 @@ describe("linear intake poll", () => {
     async (withTask) => {
       const db = tempDb();
       const store = createInboxStore(sqliteDb(db));
-      if (withTask) insertQueuedItem(db, { sessionKey: "session-reused" });
+      if (withTask) await insertQueuedItem(db, { sessionKey: "session-reused" });
       const created: string[] = [];
       let polls = 0;
       const { client } = scripted(() => {
@@ -265,7 +265,7 @@ describe("linear intake poll", () => {
       const poller = startCatchUpPoller({
         source: createIntakePollSource(client, { teamId: TEAM }),
         store,
-        db,
+        db: sqliteDb(db),
         onEvent: (event) => {
           if (event.action !== "created") return;
           created.push(event.dedupeKey);
@@ -291,7 +291,7 @@ describe("linear intake poll", () => {
     async (withTask) => {
       const db = tempDb();
       const store = createInboxStore(sqliteDb(db));
-      if (withTask) insertQueuedItem(db, { sessionKey: "session-again" });
+      if (withTask) await insertQueuedItem(db, { sessionKey: "session-again" });
       const created: string[] = [];
       const { client } = scripted(() => ({
         ...page([]),
@@ -300,7 +300,7 @@ describe("linear intake poll", () => {
       const poller = startCatchUpPoller({
         source: createIntakePollSource(client, { teamId: TEAM }),
         store,
-        db,
+        db: sqliteDb(db),
         onEvent: (event) => {
           if (event.action === "created" && event.sessionId === "session-again")
             created.push(event.dedupeKey);
@@ -398,8 +398,9 @@ describe("linear intake poll", () => {
     mkdirSync(secrets, { recursive: true });
     const db = tempDb();
     const queries: string[] = [];
-    const linear = openLinear({
+    const linear = await openLinear({
       db,
+      store: sqliteDb(db),
       secretsDir: secrets,
       env: { LINEAR_ACCESS_TOKEN: "token" },
       fetch: async (_url, init) => {
@@ -631,7 +632,7 @@ describe("linear intake poll", () => {
     const poller = startCatchUpPoller({
       source: createIntakePollSource(client, { teamId: TEAM }),
       store,
-      db,
+      db: sqliteDb(db),
       onEvent: async (event) => {
         if (event.action !== "created" || event.issueId === null) return;
         const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
@@ -793,7 +794,7 @@ describe("linear intake poll", () => {
     const poller = startCatchUpPoller({
       source: createIntakePollSource(client, { teamId: TEAM }),
       store,
-      db,
+      db: sqliteDb(db),
       onEvent: async (event) => {
         seen.push(event);
       },
@@ -860,7 +861,7 @@ describe("linear intake poll", () => {
     const poller = startCatchUpPoller({
       source: createIntakePollSource(client, { teamId: TEAM }),
       store,
-      db,
+      db: sqliteDb(db),
       onEvent: async (event) => {
         if (event.action !== "created" || event.issueId === null) return;
         const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
@@ -911,7 +912,7 @@ describe("linear intake poll", () => {
     const poller = startCatchUpPoller({
       source: createIntakePollSource(client, { teamId: TEAM }),
       store,
-      db,
+      db: sqliteDb(db),
       onEvent: async (event) => {
         if (event.action !== "created" || event.issueId === null) return;
         const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
@@ -1045,7 +1046,7 @@ function emptyRelations(): Record<string, unknown> {
 }
 
 const AUTH: LinearAuth = {
-  hasToken: () => true,
+  hasToken: async () => true,
   ensureFresh: async () => "token",
   forceRefresh: async () => "token",
 };
@@ -1145,7 +1146,7 @@ test("stopping joins a manual Linear poll before its final SQLite write", async 
   let polls = 0;
   const store = createInboxStore(sqliteDb(db));
   const poller = startCatchUpPoller({
-    db,
+    db: sqliteDb(db),
     store,
     onEvent() {},
     sleeper: blockedSleeper(),
@@ -1195,8 +1196,9 @@ test("Linear runtime stop joins interrupted events and rejects new handlers befo
   const db = tempDb();
   const ready = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
-  const linear = openLinear({
+  const linear = await openLinear({
     db,
+    store: sqliteDb(db),
     secretsDir: join(tempHome(), "secrets"),
     env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
     fetch: async () => json(emptyData()),
@@ -1258,7 +1260,7 @@ test("a synchronous Linear adapter Stop joins the poll before SQLite can close",
   let stopped = false;
   let stopping: Promise<void> | undefined;
   const poller = startCatchUpPoller({
-    db,
+    db: sqliteDb(db),
     store,
     onEvent() {},
     sleeper: blockedSleeper(),

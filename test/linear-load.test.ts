@@ -122,7 +122,7 @@ test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes wh
   const outbox = new OutboxDispatcher(db, clock);
   await registerScheduler(jobs, () => orchestrator.reconcileExecution(), clock.now());
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -258,7 +258,7 @@ async function seedRunner(db: Database, now: number) {
     seen: (at: number) => db.run("UPDATE runner SET last_seen_at=?", [at]),
     async fill(at: number) {
       for (let slot = 0; slot < SLOTS; slot++) {
-        const item = insertQueuedItem(db, { id: `other-${slot}`, now: at });
+        const item = await insertQueuedItem(db, { id: `other-${slot}`, now: at });
         const run = await insertRun(sqliteDb(db), { itemId: item.id, now: at, status: "active" });
         db.run(
           "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,'runner','ws-1',1,0,?,?)",

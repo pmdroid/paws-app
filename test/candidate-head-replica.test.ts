@@ -143,7 +143,7 @@ function instance(input: {
   };
   const github = createFakeGitHub();
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,

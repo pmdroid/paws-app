@@ -23,7 +23,7 @@ async function item(
   paths: readonly string[] | null,
   now = 1,
 ): Promise<void> {
-  insertQueuedItem(db, { id, now });
+  await insertQueuedItem(db, { id, now });
   db.run(
     "INSERT INTO work_item_repository(item_id,owner,repo,remote_url) VALUES(?,'owner','repo','https://github.com/owner/repo.git')",
     [id],
@@ -265,12 +265,12 @@ test("hot files come from conflict restarts in the last 7 days", async () => {
   const db = tempDb();
   try {
     await conflicted(db, ["src/old.ts"], NOW - HOT_FILE_WINDOW_MS - 1);
-    expect(hotFiles(db, NOW)).toEqual([]);
+    expect(await hotFiles(sqliteDb(db), NOW)).toEqual([]);
     db.run("DELETE FROM work_item_repository");
     db.run("DELETE FROM rebase_return");
     db.run("DELETE FROM work_item");
     await conflicted(db, [PROVIDER, "src/index.ts"]);
-    expect(hotFiles(db, NOW)).toEqual([
+    expect(await hotFiles(sqliteDb(db), NOW)).toEqual([
       { repository: "owner/repo", path: PROVIDER, conflicts: 1, items: ["earlier"] },
       { repository: "owner/repo", path: "src/index.ts", conflicts: 1, items: ["earlier"] },
     ]);
@@ -301,7 +301,7 @@ test("a conflict restart without files counts the files a merge before it shared
       files: null,
       recordedAt: NOW - 60_000,
     });
-    expect(hotFiles(db, NOW)).toEqual([
+    expect(await hotFiles(sqliteDb(db), NOW)).toEqual([
       { repository: "owner/repo", path: PROVIDER, conflicts: 1, items: ["returned"] },
     ]);
   } finally {
@@ -345,7 +345,7 @@ test("a later candidate does not change the files of an earlier conflict", async
       paths: ["src/b.ts"],
       recordedAt: NOW - 10_000,
     });
-    expect(hotFiles(db, NOW).map((file) => file.path)).toEqual([PROVIDER]);
+    expect((await hotFiles(sqliteDb(db), NOW)).map((file) => file.path)).toEqual([PROVIDER]);
   } finally {
     db.close();
   }

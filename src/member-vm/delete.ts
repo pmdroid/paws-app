@@ -1,5 +1,4 @@
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import {
   advanceMemberVmDeleteSteps,
   auditWorkspaceAccessSteps,
@@ -17,7 +16,6 @@ import {
   revokeUnusedMemberVmEnrollmentsSteps,
   runnerBlockingTasksSteps,
   setMemberVmDeleteRunnerSteps,
-  sqliteDb,
   updateRunnerStatus,
   type Db,
   type Job,
@@ -56,11 +54,10 @@ const TAILNET_LOGOUT_TIMEOUT_MS = 60_000;
 type Outcome = "advance" | "wait" | "done";
 
 export function registerMemberVmDeleteJob(jobs: JobLoop, options: MemberVmDeleteJobOptions): void {
-  jobs.register(MEMBER_VM_DELETE_QUEUE, createMemberVmDeleteHandler(jobs.db, options));
+  jobs.register(MEMBER_VM_DELETE_QUEUE, createMemberVmDeleteHandler(jobs.store, options));
 }
 
-export function createMemberVmDeleteHandler(db: Database, options: MemberVmDeleteJobOptions) {
-  const store = sqliteDb(db);
+export function createMemberVmDeleteHandler(store: Db, options: MemberVmDeleteJobOptions) {
   const now = options.now ?? Date.now;
   const pollMs = options.pollMs ?? MEMBER_VM_DELETE_POLL_MS;
   return async (job: Job, context: JobContext): Promise<void> => {

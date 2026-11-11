@@ -176,7 +176,7 @@ describe("catch-up poll in a quiet workspace", () => {
     const db = tempDb();
     expect((await deliver(createInboxStore(sqliteDb(db)), NOW, "secret")).status).toBe(200);
     expect(await linearWebhookWarning(sqliteDb(db), NOW + 2 * HOUR)).toBeNull();
-    insertQueuedItem(db, { id: "item", sessionKey: "session-webhook" });
+    await insertQueuedItem(db, { id: "item", sessionKey: "session-webhook" });
     expect(await linearWebhookWarning(sqliteDb(db), NOW + HOUR)).toBeNull();
     expect(await linearWebhookWarning(sqliteDb(db), NOW + 2 * HOUR)).toEqual({
       reason: "silent",

@@ -67,8 +67,9 @@ describe("Linear webhook acknowledgement", () => {
     const home = tempHome();
     const stall = Promise.withResolvers<void>();
     const stalled: string[] = [];
-    const linear = openLinear({
+    const linear = await openLinear({
       db,
+      store: sqliteDb(db),
       secretsDir: join(home, "secrets"),
       env: { LINEAR_ACCESS_TOKEN: "fixture-token", LINEAR_CLIENT_ID: "client" },
       followUp: async () => {

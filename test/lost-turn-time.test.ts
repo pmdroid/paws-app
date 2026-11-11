@@ -20,7 +20,7 @@ const MINUTE = 60_000;
 test("a turn declared lost gives back its implementation time after the last checkpoint", async () => {
   const db = tempDb();
   databases.push(db);
-  const { id } = insertQueuedItem(db, { sessionKey: "session" });
+  const { id } = await insertQueuedItem(db, { sessionKey: "session" });
   await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
   await accrueAwake(sqliteDb(db), id, 0, 1, undefined, true);
   await accrueAwake(sqliteDb(db), id, 60 * MINUTE, 2, undefined, true);

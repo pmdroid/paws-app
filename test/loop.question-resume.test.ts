@@ -402,7 +402,7 @@ async function askOnce(answerDuringTurn?: string): Promise<{
   }
   const attach = (loop: JobLoop, dispatcher: OutboxDispatcher) =>
     attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       admission: workspaceAdmission(db),
       jobs: loop,
       outbox: dispatcher,
@@ -623,7 +623,7 @@ test("the implementer's prompt includes the project overview with its mock links
     return { command: process.execPath, args: [fakeAgent, "", scriptPath], env: process.env };
   };
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,

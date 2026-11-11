@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   emitJobReady,
   markReviewReplyPostedSteps,
@@ -19,7 +18,6 @@ import {
   type ReviewReplyOutcome,
   type ReviewReplyRecord,
   type WorkItemRecord,
-  sqliteDb,
 } from "../db";
 import type { ReviewThread } from "../github";
 import { askSteps, restartSteps } from "./operations";
@@ -215,13 +213,13 @@ function* checkOpenRepliesSteps(
 
 /** Record the reply targets of the restart with job key `restartKey`. Call inside its transaction. */
 export async function recordReplyTargets(
-  db: Database,
+  store: Db,
   itemId: string,
   restartKey: string,
   targets: readonly NewReviewReply[],
   now: number,
 ): Promise<void> {
-  await recordReviewReplies(sqliteDb(db), { itemId, restartKey, replies: targets, now });
+  await recordReviewReplies(store, { itemId, restartKey, replies: targets, now });
 }
 
 const LINE =

@@ -15,7 +15,7 @@ const root = process.env.PAWS_VERIFY_ROOT;
 if (root === undefined) throw new Error("Use scripts/verify-local.ts workspace-serve.");
 const db = openDatabase(join(root, "workspace-ui.sqlite"));
 migrate(db);
-insertQueuedItem(db, {
+await insertQueuedItem(db, {
   id: "fixture-item",
   sessionKey: "fixture-session",
   title: "Verify workspace access",
@@ -43,7 +43,7 @@ const server = startServer({
 const origin = `http://127.0.0.1:${server.port}`;
 ready.resolve(
   createWorkspaceAccess({
-    db,
+    store: sqliteDb(db),
     githubAttributionClient: {
       clientId: "fixture-github",
       clientSecret: "synthetic-browser-secret",

@@ -30,10 +30,10 @@ const principal = { workspaceId: "ws", userId: "user-1" };
 
 async function setup(active = true) {
   const db = tempDb();
-  const item = insertQueuedItem(db, { id: "PAS-1003", sessionKey: "ses_1", title: "Policy" });
+  const item = await insertQueuedItem(db, { id: "PAS-1003", sessionKey: "ses_1", title: "Policy" });
   await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
   await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
-  const question = await openQuestion(db, {
+  const question = await openQuestion(sqliteDb(db), {
     itemId: item.id,
     sessionId: "ses_1",
     body: "Which way?",
@@ -62,7 +62,7 @@ async function setup(active = true) {
   });
   const clock = new FakeClock(NOW + 1_000);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     pawsRoot: "/tmp/paws-question-answer-route",
@@ -77,7 +77,7 @@ async function setup(active = true) {
         body: JSON.stringify(body),
       }),
       {
-        db,
+        store: sqliteDb(db),
         principal: sessionIds === null ? undefined : principal,
         sessionIds: sessionIds ?? undefined,
         submit: (input) => orchestrator.answerFromPaws(input),
@@ -159,7 +159,7 @@ test("a link ask is answered on the issue page", async () => {
   const { db, question, submit } = await setup();
   try {
     db.run("UPDATE question SET status = 'answered' WHERE id = ?", [question.id]);
-    const { question: link } = await openLinkAsk(db, {
+    const { question: link } = await openLinkAsk(sqliteDb(db), {
       asker: { itemId: "PAS-1003", runId: null, sessionId: "ses_1" },
       kind: "risk",
       head: "7f65200aa",
@@ -302,7 +302,7 @@ test("the answer record reaches Linear after the pull request response", async (
     expect((await submit({ questionId: question.id, answer: OPTIONS[0] }))?.status).toBe(200);
     const tracker = createFakeTracker();
     for (const row of (await listOutbox(sqliteDb(db))).filter((entry) => entry.status !== "sent"))
-      await deliverLinearOutbox(row, tracker, async () => {}, undefined, db);
+      await deliverLinearOutbox(row, tracker, async () => {}, undefined, sqliteDb(db));
     expect(tracker.progress.map((update) => update.body)).toEqual([
       "Answered in Paws by Sam: Fix the policy",
     ]);

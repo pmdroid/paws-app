@@ -106,14 +106,14 @@ export async function openRunnerCoordinator(options: {
   const signing = signingIdentity(options.root);
   let listener: RunnerListener | undefined;
   const control = createRunnerControl({
-    db: options.db,
+    store: sqliteDb(options.db),
     authority,
     certificateRoot: options.root,
     disconnect: (fingerprint) => listener?.revoke(fingerprint),
     now: options.now,
   });
   const work = createRunnerWork({
-    db: options.db,
+    store: sqliteDb(options.db),
     keyId: signing.signingKeys[0].keyId,
     privateKey: signing.privateKey,
     eventKey: options.eventKey,
@@ -121,7 +121,11 @@ export async function openRunnerCoordinator(options: {
   });
   const workHttp = createRunnerWorkHttp(work, { skillsRoot: options.skillsRoot });
   const runnerFiles = options.runnerFiles
-    ? createSealedRunnerFiles({ db: options.db, now: options.now, ...options.runnerFiles })
+    ? createSealedRunnerFiles({
+        store: sqliteDb(options.db),
+        now: options.now,
+        ...options.runnerFiles,
+      })
     : undefined;
   const inputs = createRunnerInputStore({
     root: join(options.root, "inputs"),
@@ -129,15 +133,15 @@ export async function openRunnerCoordinator(options: {
     remote: runnerFiles,
   });
   const helpers = createRunnerHelpers({
-    db: options.db,
+    store: sqliteDb(options.db),
     keyId: signing.signingKeys[0].keyId,
     privateKey: signing.privateKey,
     now: options.now,
   });
-  const results = createRunnerResults({ db: options.db, work, now: options.now });
-  const health = createRunnerHealth({ db: options.db, work, now: options.now });
+  const results = createRunnerResults({ store: sqliteDb(options.db), work, now: options.now });
+  const health = createRunnerHealth({ store: sqliteDb(options.db), work, now: options.now });
   const login = createRunnerLogin({
-    db: options.db,
+    store: sqliteDb(options.db),
     work,
     now: options.now,
     onSignedIn: ({ runnerId, agent }) => {
@@ -161,7 +165,7 @@ export async function openRunnerCoordinator(options: {
       };
     },
   });
-  const models = createRunnerModels({ db: options.db, work, now: options.now });
+  const models = createRunnerModels({ store: sqliteDb(options.db), work, now: options.now });
   const artifacts = createRunnerArtifactStore({
     root: join(options.root, "artifacts"),
     work,
@@ -191,16 +195,19 @@ export async function openRunnerCoordinator(options: {
       : undefined;
   void agentRead?.recover();
   const agentReadAccess = agentRead ? createAgentReadAccess({ work, agentRead }) : undefined;
-  const repositoryCommands = createRepositoryCommandsHttp({ db: options.db, now: options.now });
+  const repositoryCommands = createRepositoryCommandsHttp({
+    store: sqliteDb(options.db),
+    now: options.now,
+  });
   const repositoryCommandAccess = options.repositoryAccess
     ? createRepositoryCommandAccess({
         ...options.repositoryAccess,
-        db: options.db,
+        store: sqliteDb(options.db),
         now: options.now,
       })
     : undefined;
   const transcripts = options.transcripts
-    ? createRunnerTranscripts({ db: options.db, work, ...options.transcripts })
+    ? createRunnerTranscripts({ store: sqliteDb(options.db), work, ...options.transcripts })
     : undefined;
   const transcriptsHttp = transcripts ? createRunnerTranscriptsHttp(transcripts) : undefined;
   const agentSessions = options.agentSessions

@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, desc, eq, isNull, notInArray, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
 import { emitJobReady, enqueueJobOnceSteps } from "./jobs";
 import {
   DEFAULT_PULL_FEEDBACK_WAIT,
@@ -76,15 +75,13 @@ export function* recordPullReviewSteps(
   return { recorded: true, enqueued };
 }
 
-export function recordPullReview(
-  db: Database,
+export async function recordPullReview(
+  store: Db,
   review: Omit<PullReviewRecord, "handledAt" | "outcome">,
   wait: PullFeedbackWait = DEFAULT_PULL_FEEDBACK_WAIT,
-): boolean {
-  const { recorded, enqueued } = settled(
-    sqliteDb(db).run((q) => recordPullReviewSteps(q, review, wait)),
-  );
-  if (enqueued) emitJobReady(db);
+): Promise<boolean> {
+  const { recorded, enqueued } = await store.run((q) => recordPullReviewSteps(q, review, wait));
+  if (enqueued) emitJobReady(store);
   return recorded;
 }
 

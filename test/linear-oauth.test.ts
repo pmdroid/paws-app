@@ -1,3 +1,4 @@
+import { sqliteDb } from "../src/db";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -48,7 +49,7 @@ describe("linear oauth", () => {
         scope: "read write",
       });
     };
-    const auth = createLinearAuth({
+    const auth = await createLinearAuth({
       db,
       secretsDir,
       clientId: "client-1",
@@ -58,13 +59,13 @@ describe("linear oauth", () => {
       fetch: fetchImpl,
       now: () => 1_000,
     });
-    expect(auth.hasToken()).toBe(true);
+    expect(await auth.hasToken()).toBe(true);
     const sealed = () =>
       db.query<{ ciphertext: string }, []>("SELECT ciphertext FROM credential").get()!.ciphertext;
     for (const secret of ["access-1", "refresh-1"]) expect(sealed()).not.toContain(secret);
     const access = await auth.ensureFresh();
     expect(access).toBe("access-2");
-    expect(readStoredToken(db, secretsDir)).toMatchObject({
+    expect(await readStoredToken(sqliteDb(db), secretsDir)).toMatchObject({
       accessToken: "access-2",
       refreshToken: "refresh-2",
       actor: "app",
@@ -82,13 +83,13 @@ describe("linear oauth", () => {
     mkdirSync(secretsDir, { recursive: true });
     const path = join(secretsDir, "acme-linear.json");
     writeFileSync(path, JSON.stringify({ accessToken: "acme-access" }), { mode: 0o600 });
-    expect(importLinearTokenFile(db, secretsDir, path, 1_000)).toBe(true);
-    expect(readStoredToken(db, secretsDir)).toMatchObject({
+    expect(await importLinearTokenFile(sqliteDb(db), secretsDir, path, 1_000)).toBe(true);
+    expect(await readStoredToken(sqliteDb(db), secretsDir)).toMatchObject({
       accessToken: "acme-access",
       refreshToken: null,
       expiresAtMs: 1_000 + 23 * 60 * 60 * 1000,
     });
-    const auth = createLinearAuth({
+    const auth = await createLinearAuth({
       db,
       secretsDir,
       clientId: "acme-client",
@@ -119,7 +120,7 @@ describe("linear oauth", () => {
       if (header === "Bearer access-1") return new Response("no", { status: 401 });
       return Response.json({ data: { viewer: { id: "app-user" } } });
     };
-    const auth = createLinearAuth({
+    const auth = await createLinearAuth({
       db,
       secretsDir,
       clientId: "client-1",
@@ -129,9 +130,12 @@ describe("linear oauth", () => {
       fetch: fetchImpl,
       now: () => 5_000,
     });
-    const stored = readStoredToken(db, secretsDir);
+    const stored = await readStoredToken(sqliteDb(db), secretsDir);
     if (stored === null) throw new Error("missing token");
-    writeStoredToken(db, secretsDir, { ...stored, expiresAtMs: 5_000 + 60 * 60 * 1000 });
+    await writeStoredToken(sqliteDb(db), secretsDir, {
+      ...stored,
+      expiresAtMs: 5_000 + 60 * 60 * 1000,
+    });
     const client = createLinearClient({ auth, fetch: fetchImpl });
     const data = (await client.query("query { viewer { id } }")) as { viewer: { id: string } };
     expect(data.viewer.id).toBe("app-user");

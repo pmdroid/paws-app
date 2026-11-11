@@ -191,13 +191,13 @@ export function cloneRunner(
   };
 }
 
-export function storeLinearToken(home: string, token: StoredLinearToken): void {
+export async function storeLinearToken(home: string, token: StoredLinearToken): Promise<void> {
   const path = join(home, "paws.db");
   mkdirSync(dirname(path), { recursive: true });
   const db = existsSync(path) ? openDatabase(path) : migratedDatabase(path);
   try {
     migrate(db);
-    writeStoredToken(db, join(home, "secrets"), token);
+    await writeStoredToken(sqliteDb(db), join(home, "secrets"), token);
   } finally {
     db.close();
   }

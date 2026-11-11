@@ -31,7 +31,7 @@ export async function probeRunnerPolicyBrowser(
     name: "Admin",
     email: "admin@example.invalid",
   });
-  const token = await issueWorkspaceBootstrap(db, "org", now);
+  const token = await issueWorkspaceBootstrap(sqliteDb(db), "org", now);
   const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "org",
@@ -66,7 +66,7 @@ export async function probeRunnerPolicyBrowser(
     authenticatedAt: now,
     teamIds: ["team"],
   });
-  const browser = createRunnerPlacementBrowser({ db, now: () => now });
+  const browser = createRunnerPlacementBrowser({ store: sqliteDb(db), now: () => now });
   const request = async (path: string, actor: WorkspacePrincipal, value?: unknown) =>
     browser(
       new Request("https://paws.example.invalid" + path, {

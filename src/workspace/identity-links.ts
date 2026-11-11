@@ -3,26 +3,25 @@ import {
   auditWorkspaceAccessSteps,
   listWorkspaceMembersSteps,
   saveWorkspaceIdentityLinkSteps,
-  sqliteDb,
   workspaceIdentityCandidatesSteps,
   workspaceIdentityLinksSteps,
   workspaceMemberSteps,
   type WorkspaceSession,
+  type Db,
 } from "../db";
 import { isWorkspaceAdmin } from "./eligibility";
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import type { SlackIdentityReads } from "../slack";
 import { readWorkspaceJson } from "./administration";
 import { validWorkspaceCsrf, type WorkspacePrincipal } from "./session";
 
 export function createWorkspaceIdentityLinks(options: {
-  db: Database;
+  store: Db;
   slack?: SlackIdentityReads | null;
   now?: () => number;
 }) {
   const now = options.now ?? Date.now;
-  const store = sqliteDb(options.db);
+  const { store } = options;
   const candidates = (workspaceId: string) =>
     store.run((q) => workspaceIdentityCandidatesSteps(q, workspaceId));
   const memberOf = (workspaceId: string, userId: string) =>

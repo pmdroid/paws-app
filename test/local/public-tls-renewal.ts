@@ -356,7 +356,7 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
     assert(cliPort > 0, running.output);
     assert.equal(await fingerprint(cliPort), oldFingerprint);
     const db = openDatabase(join(home, "paws.db"));
-    insertQueuedItem(db, { id: itemId, branchName: "paws/tls-1", now: Date.now() });
+    await insertQueuedItem(db, { id: itemId, branchName: "paws/tls-1", now: Date.now() });
     await saveRunCommitPolicy(
       sqliteDb(db),
       (await beginImplementRun(sqliteDb(db), itemId, Date.now(), { phase: "running", turn: 1 })).run

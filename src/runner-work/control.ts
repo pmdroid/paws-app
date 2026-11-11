@@ -57,7 +57,6 @@ import {
   runnerWorkStillReportedSteps,
   runTeardownOwnerSteps,
   setRunnerWorkLastSequenceSteps,
-  sqliteDb,
   storedRunnerEventSteps,
   taskRequiresRepositorySteps,
   wakeRunnerSlotWaitsSteps,
@@ -72,7 +71,6 @@ import {
 } from "../db";
 import { journalCaught } from "../journal";
 import type { KeyObject } from "node:crypto";
-import type { Database } from "bun:sqlite";
 import {
   executionAuthorityUntil,
   LIVE_PREVIEW_RUNNER_VERSION,
@@ -142,14 +140,13 @@ export class RunnerWorkFencedError extends Error {
 }
 
 export function createRunnerWork(options: {
-  db: Database;
+  store: Db;
   keyId: string;
   privateKey: KeyObject;
   eventKey: Buffer;
   now?: () => number;
 }) {
-  const { db } = options;
-  const store = sqliteDb(db);
+  const { store } = options;
   const { eventKey } = options;
   const now = options.now ?? Date.now;
   /** Registered skills a runner should have installed. Removed ones are left out, so runners delete them. */
@@ -650,7 +647,12 @@ export function createRunnerWork(options: {
         }
         return signed;
       });
-      for (const command of deliverRepositoryCommands(db, runnerId, now(), 16 - result.length))
+      for (const command of await deliverRepositoryCommands(
+        store,
+        runnerId,
+        now(),
+        16 - result.length,
+      ))
         result.push(
           signRunnerCommand({ keyId: options.keyId, privateKey: options.privateKey, command }),
         );

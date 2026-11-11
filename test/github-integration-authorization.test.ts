@@ -50,7 +50,11 @@ test("transient production authorization persists a wait, survives restart and r
   host.check = async () => true;
   host.unavailableRetryMs = [];
   const auth = new GitHubInstallationCheck(sqliteDb(db), host, () => 1000);
-  insertQueuedItem(db, { id: "unavailable", sessionKey: "unavailable", title: "unavailable" });
+  await insertQueuedItem(db, {
+    id: "unavailable",
+    sessionKey: "unavailable",
+    title: "unavailable",
+  });
   await beginImplementRun(sqliteDb(db), "unavailable", 1000);
   const first = (await getWorkItem(sqliteDb(db), "unavailable"))!;
   try {
@@ -78,7 +82,7 @@ test("transient production authorization persists a wait, survives restart and r
   };
   const recovered = new GitHubInstallationCheck(sqliteDb(reopened), host, () => 2000);
   try {
-    insertQueuedItem(reopened, { id: "sibling", sessionKey: "sibling", title: "sibling" });
+    await insertQueuedItem(reopened, { id: "sibling", sessionKey: "sibling", title: "sibling" });
     await beginImplementRun(sqliteDb(reopened), "sibling", 2000);
     host.check = async (item) => item.id !== "sibling";
     await recovered.ensure((await getWorkItem(sqliteDb(reopened), "sibling"))!, "initial", signal);
@@ -94,7 +98,7 @@ test("transient production authorization persists a wait, survives restart and r
     expect(
       (await listJobs(sqliteDb(reopened))).filter((job) => job.queue === "run.resume"),
     ).toHaveLength(2);
-    insertQueuedItem(reopened, { id: "revoked", sessionKey: "revoked", title: "revoked" });
+    await insertQueuedItem(reopened, { id: "revoked", sessionKey: "revoked", title: "revoked" });
     await beginImplementRun(sqliteDb(reopened), "revoked", 2000);
     host.check = async () => false;
     await recovered.ensure((await getWorkItem(sqliteDb(reopened), "revoked"))!, "initial", signal);
@@ -112,7 +116,7 @@ test("real LinearTaskAccess distinguishes revoked installation from unavailable 
   const db = openDatabase(":memory:");
   migrate(db);
   const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
-  const item = insertQueuedItem(db, { id: "task", sessionKey: "session", title: "task" });
+  const item = await insertQueuedItem(db, { id: "task", sessionKey: "session", title: "task" });
   await beginImplementRun(sqliteDb(db), item.id, 1000);
   await recordLinearInstallation(sqliteDb(db), {
     ...scope,
@@ -132,7 +136,7 @@ test("real LinearTaskAccess distinguishes revoked installation from unavailable 
     delegateId: "app",
     stateType: "started",
   });
-  const gate = new LinearTaskAccess(db, {
+  const gate = new LinearTaskAccess(sqliteDb(db), {
     access: reads.adapter,
     lifecycle,
     oauthClientId: "client",
@@ -202,7 +206,7 @@ test("an App task with a selected repository starts without an attribution wait"
   host.check = async () => true;
   host.unavailableRetryMs = [];
   const auth = new GitHubInstallationCheck(sqliteDb(db), host, () => 1000);
-  const item = insertQueuedItem(db, { id: "unlinked", sessionKey: "session" });
+  const item = await insertQueuedItem(db, { id: "unlinked", sessionKey: "session" });
   await beginImplementRun(sqliteDb(db), item.id, 1000);
   try {
     expect(
@@ -244,7 +248,7 @@ for (const later of [60_000, 11 * 60_000]) {
     host.unavailableRetryMs = [];
     let now = 1_000;
     const auth = new GitHubInstallationCheck(sqliteDb(db), host, () => now);
-    insertQueuedItem(db, { id: "cached", sessionKey: "cached", title: "cached" });
+    await insertQueuedItem(db, { id: "cached", sessionKey: "cached", title: "cached" });
     await beginImplementRun(sqliteDb(db), "cached", now);
     const signal = new AbortController().signal;
     try {
@@ -289,7 +293,7 @@ test("a denied authorization after an issue change still stops the task", async 
   host.check = async () => true;
   host.unavailableRetryMs = [];
   const auth = new GitHubInstallationCheck(sqliteDb(db), host, () => 1_000);
-  insertQueuedItem(db, { id: "revoked", sessionKey: "revoked", title: "revoked" });
+  await insertQueuedItem(db, { id: "revoked", sessionKey: "revoked", title: "revoked" });
   await beginImplementRun(sqliteDb(db), "revoked", 1_000);
   const signal = new AbortController().signal;
   try {
@@ -348,7 +352,7 @@ async function cachedAuthorization() {
   host.unavailableRetryMs = [];
   const clock = { now: 1_000 };
   const auth = new GitHubInstallationCheck(sqliteDb(db), host, () => clock.now);
-  insertQueuedItem(db, { id: "task", sessionKey: "session", title: "task" });
+  await insertQueuedItem(db, { id: "task", sessionKey: "session", title: "task" });
   await beginImplementRun(sqliteDb(db), "task", clock.now);
   const ensure = async (options?: { fresh?: boolean }) =>
     auth.ensure(

@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   listCloseoutProgressStatesSteps,
   listItemHoldsSteps,
@@ -7,7 +6,7 @@ import {
   listMergeQueuesSteps,
   listOpenQuestionsSteps,
   listQueuePositions,
-  sqliteDb,
+  type Db,
   listRunsSteps,
   listVisualReviewsSteps,
   listWorkItemFactsSteps,
@@ -59,22 +58,21 @@ const FINISHED_ITEM_STATES: ReadonlySet<string> = new Set(["merged", "completed"
 export const OVERVIEW_RECENTLY_MERGED = 5;
 
 export async function readOverview(
-  db: Database,
+  store: Db,
   options: LiveStatusOptions,
 ): Promise<OverviewResponse> {
-  const store = sqliteDb(db);
   const now = options.now?.() ?? new Date();
   const nowMs = now.getTime();
   const generatedAt = now.toISOString();
   const facts = new Map(
     (await store.run(listWorkItemFactsSteps)).map((fact) => [fact.itemId, fact]),
   );
-  const visible = await visibleRecords(db, options, facts);
-  const listed = await listedRecords(db, visible, facts, nowMs);
-  const rows = await readerOutbox(db, options);
+  const visible = await visibleRecords(store, options, facts);
+  const listed = await listedRecords(store, visible, facts, nowMs);
+  const rows = await readerOutbox(store, options);
   const openQuestions = await store.run(listOpenQuestionsSteps);
   const questions: OverviewQuestion[] = (
-    await questionsFor(db, listed, rows, () => null, openQuestions)
+    await questionsFor(store, listed, rows, () => null, openQuestions)
   ).map((question) => ({
     id: question.id,
     itemId: question.itemId,
@@ -110,7 +108,7 @@ export async function readOverview(
   for (const run of await store.run((q) => listRunsSteps(q)))
     storedRuns.set(run.itemId, [...(storedRuns.get(run.itemId) ?? []), run]);
   const context: IssueContext = {
-    db,
+    store,
     options,
     nowMs,
     generatedAt,
@@ -128,7 +126,7 @@ export async function readOverview(
     firstQuestion,
     storedRuns,
   };
-  const intake = await readIntake(db, options);
+  const intake = await readIntake(store, options);
   const issues: OverviewIssue[] = [];
   for (const record of shown) issues.push(await overviewIssue(record, context));
   return {
@@ -136,12 +134,13 @@ export async function readOverview(
     generatedAt,
     issues,
     questions,
-    mergedTimes: (await mergedTimesFor(db, visible, facts, nowMs)).mergedTimes ?? null,
+    mergedTimes: (await mergedTimesFor(store, visible, facts, nowMs)).mergedTimes ?? null,
     intake: intake.intake ?? [],
     linearBudget: intake.linearBudget ?? null,
     linearWebhook: intake.linearWebhook ?? null,
-    pushOutages: (await readPushOutages(db, options)).pushOutages ?? [],
-    policyRunnerWarnings: (await readPolicyRunnerWarnings(db, options)).policyRunnerWarnings ?? [],
+    pushOutages: (await readPushOutages(store, options)).pushOutages ?? [],
+    policyRunnerWarnings:
+      (await readPolicyRunnerWarnings(store, options)).policyRunnerWarnings ?? [],
     mergeQueueCount: listed.filter(
       (record) =>
         record.state === "merge_queue" || (record.state === "verifying" && places.has(record.id)),
@@ -166,7 +165,7 @@ export function emptyOverview(now = new Date()): OverviewResponse {
 }
 
 type IssueContext = {
-  db: Database;
+  store: Db;
   options: LiveStatusOptions;
   nowMs: number;
   generatedAt: string;
@@ -187,20 +186,20 @@ async function overviewIssue(
   record: WorkItemRecord,
   context: IssueContext,
 ): Promise<OverviewIssue> {
-  const { db, nowMs } = context;
+  const { store, nowMs } = context;
   const id = publicId(record);
   const current = context.storedRuns.get(record.id)?.find((run) => run.id === record.currentRunId);
-  const pause = current ? await runUsagePause(db, current.id, context.generatedAt) : null;
-  const reviews = await sqliteDb(db).run((q) => listVisualReviewsSteps(q, record.id));
+  const pause = current ? await runUsagePause(store, current.id, context.generatedAt) : null;
+  const reviews = await store.run((q) => listVisualReviewsSteps(q, record.id));
   const last = reviews.at(-1);
   const place =
     record.state === "merge_queue" || record.state === "verifying"
       ? context.places.get(record.id)
       : undefined;
-  const blockers = await blockersFor(db, record, context.itemsByIssue);
+  const blockers = await blockersFor(store, record, context.itemsByIssue);
   const held = await heldOf(record, context.holds);
-  const history = await historyOf(db, record, context.facts, nowMs);
-  const doing = await doingFor(db, record, {
+  const history = await historyOf(store, record, context.facts, nowMs);
+  const doing = await doingFor(store, record, {
     hold: context.holds.get(record.id),
     question: context.firstQuestion.get(record.id) ?? null,
     lastChange: context.changed.get(record.id) ?? context.facts.get(record.id)?.createdAt ?? nowMs,

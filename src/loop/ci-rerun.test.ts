@@ -84,7 +84,7 @@ function rerun(
 
 test("the item records the agent's reason and refuses a second re-run of the same commit", async () => {
   const db = database();
-  insertQueuedItem(db, { id: "item" });
+  await insertQueuedItem(db, { id: "item" });
   const github = fakeGitHub();
   const journal: string[] = [];
   const reason = "runner-session-helpers timed out at 30 s; this change touches only docs";
@@ -101,7 +101,7 @@ test("the item records the agent's reason and refuses a second re-run of the sam
 
 test("a 403 from GitHub answers with the permission message and leaves the item alone", async () => {
   const db = database();
-  const before = insertQueuedItem(db, { id: "item" });
+  const before = await insertQueuedItem(db, { id: "item" });
   const journal: string[] = [];
   const answer = await rerun(db, fakeGitHub(403).client, journal, "flaky shard");
   expect(answer.startsWith(CI_RERUN_PERMISSION_MISSING)).toBe(true);
@@ -115,7 +115,7 @@ test("a 403 from GitHub answers with the permission message and leaves the item 
 
 test("Paws's own re-run names Paws in the journal", async () => {
   const db = database();
-  insertQueuedItem(db, { id: "item" });
+  await insertQueuedItem(db, { id: "item" });
   const journal: string[] = [];
   await rerun(db, fakeGitHub().client, journal, "cancelled or timed-out CI job", "Paws");
   expect(journal).toEqual([

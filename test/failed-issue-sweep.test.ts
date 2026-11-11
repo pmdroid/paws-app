@@ -52,7 +52,7 @@ async function fixture() {
   cleanup.push(setJournalSink((line) => journal.push(line)));
   const notified: string[] = [];
   const sweep = () =>
-    sweepFailedIssues(db, {
+    sweepFailedIssues(sqliteDb(db), {
       readIssueClosures: tracker.readIssueClosures,
       notify: (command) => notified.push(command.itemId),
     });

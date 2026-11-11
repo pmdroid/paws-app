@@ -200,7 +200,7 @@ function fixture(
     };
   };
   const options = () => ({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,

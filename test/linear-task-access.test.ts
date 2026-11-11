@@ -90,7 +90,7 @@ async function fixture(child = false, actorId: string | null = "human") {
   });
   const stopped: string[] = [];
   const clock = { now: 10 };
-  const gate = new LinearTaskAccess(db, {
+  const gate = new LinearTaskAccess(sqliteDb(db), {
     access: access.adapter,
     lifecycle,
     oauthClientId: "client",
@@ -192,7 +192,7 @@ test.each(["unknown", "rejected"])(
         throw new Error("Unexpected query");
       },
     });
-    const gate = new LinearTaskAccess(f.db, {
+    const gate = new LinearTaskAccess(sqliteDb(f.db), {
       access: f.access.adapter,
       lifecycle,
       oauthClientId: "client",
@@ -204,7 +204,7 @@ test.each(["unknown", "rejected"])(
     issue.delegate = null;
     const reopened = openDatabase(f.path);
     databases.push(reopened);
-    const recovered = new LinearTaskAccess(reopened, {
+    const recovered = new LinearTaskAccess(sqliteDb(reopened), {
       access: f.access.adapter,
       lifecycle,
       oauthClientId: "client",
@@ -429,7 +429,7 @@ test("a task queued behind a blocker is cancelled when its issue is undelegated 
   const f = await fixture(true);
   const cancelled: string[] = [];
   await stopUndelegatedIssue(
-    f.db,
+    sqliteDb(f.db),
     { ...scope, issueId: "parent", createdAtMs: Date.now() },
     { notify: (command) => cancelled.push(command.itemId) },
   );
@@ -446,7 +446,7 @@ test("a task queued behind a blocker is cancelled when its issue is undelegated 
 test("an undelegation that predates the task leaves it queued", async () => {
   const f = await fixture(true);
   await stopUndelegatedIssue(
-    f.db,
+    sqliteDb(f.db),
     { ...scope, issueId: "parent", createdAtMs: 0 },
     { notify: () => {} },
   );

@@ -42,7 +42,7 @@ const ROUNDS: LinkAskRounds = {
 async function asked(findings?: string) {
   const db = openDatabase(":memory:");
   migrate(db);
-  const item = insertQueuedItem(db, { id: "PAS-759", sessionKey: "ses_1", title: "Rounds" });
+  const item = await insertQueuedItem(db, { id: "PAS-759", sessionKey: "ses_1", title: "Rounds" });
   await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
   await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
   db.run("UPDATE work_item SET delegated_by = 'delegator' WHERE id = ?", [item.id]);

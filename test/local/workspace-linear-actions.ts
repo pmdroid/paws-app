@@ -58,7 +58,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     organizationId: "org",
     name: "Workspace",
     userId: ownerId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
     now,
   });
   for (const [id, role, active, teams] of [
@@ -108,7 +108,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
   let delayed: { entered(): void; wait: Promise<void> } | undefined;
   let lookupFails = false;
   const access = createWorkspaceAccess({
-    db,
+    store: sqliteDb(db),
     publicUrl: "http://127.0.0.1",
     clientId: "client",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -132,7 +132,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
   async function task(actor: string | null, signal: string | null = null) {
     const id = `item-${++serial}`,
       sessionId = `session-${serial}`;
-    const item = insertQueuedItem(db, { id, sessionKey: sessionId, title: "Export rows" });
+    const item = await insertQueuedItem(db, { id, sessionKey: sessionId, title: "Export rows" });
     await ensureLinearSession(sqliteDb(db), { sessionId, issueId: id, now });
     await recordLinearInstallation(sqliteDb(db), {
       sessionId,
@@ -144,7 +144,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     });
     await beginImplementRun(sqliteDb(db), item.id, now - 10);
     await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
-    const question = await openQuestion(db, {
+    const question = await openQuestion(sqliteDb(db), {
       itemId: item.id,
       sessionId,
       body: "Include archived rows?",
@@ -174,7 +174,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
   }
   const clock = new FakeClock(now);
   const loop = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     pawsRoot: root,
@@ -313,7 +313,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     const queued = await task("owner");
     let calls = 0;
     const queueLoop = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       jobs: new JobLoop(db, clock),
       outbox: new OutboxDispatcher(db, clock),
       pawsRoot: root,
@@ -351,7 +351,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     });
     let followupCalls = 0;
     const followupLoop = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       jobs: new JobLoop(db, clock),
       outbox: new OutboxDispatcher(db, clock),
       pawsRoot: root,
@@ -566,7 +566,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     organizationId: "org",
     name: "Workspace",
     userId: "owner",
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
     now,
   });
   await putWorkspaceUser(sqliteDb(db), {
@@ -587,7 +587,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
   async function task(actor: string, signal: string | null = null) {
     const id = `native-${++sequence}`,
       at = Date.now();
-    const item = insertQueuedItem(db, { id, sessionKey: id, title: "Export rows" });
+    const item = await insertQueuedItem(db, { id, sessionKey: id, title: "Export rows" });
     await ensureLinearSession(sqliteDb(db), { sessionId: id, issueId: id, now: at });
     await recordLinearInstallation(sqliteDb(db), {
       sessionId: id,
@@ -599,7 +599,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     });
     await beginImplementRun(sqliteDb(db), id, at - 10);
     await applyWorkItemEvent(sqliteDb(db), id, "blocking_question");
-    const question = await openQuestion(db, {
+    const question = await openQuestion(sqliteDb(db), {
       itemId: id,
       sessionId: id,
       body: "Include archived rows?",

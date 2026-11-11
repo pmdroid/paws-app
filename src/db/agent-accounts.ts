@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   aliasedTable,
   type AnyColumn,
@@ -26,7 +25,7 @@ import {
   type RunnerCommand,
   type RunnerRetroCommand,
 } from "../runner-protocol";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
 import { TEARDOWN_UNRESOLVED } from "./runner-capacity";
 import { runnerLeaseCutoff } from "./runner-lease";
@@ -678,12 +677,12 @@ export function* recordCommandAccountSteps(
   return (yield* commandAccountSteps(q, command.id))!;
 }
 
-export function recordCommandAccount(
-  db: Database,
+export async function recordCommandAccount(
+  store: Db,
   command: RunnerCommand | RunnerRetroCommand,
   at: number,
-): CommandAccount | null {
-  return settled(sqliteDb(db).transaction((q) => recordCommandAccountSteps(q, command, at)));
+): Promise<CommandAccount | null> {
+  return store.transaction((q) => recordCommandAccountSteps(q, command, at));
 }
 
 export function* commandAccountSteps(q: Q, commandId: string) {

@@ -124,6 +124,7 @@ import {
   RUN_TAKEOVER_JOB,
   RUN_TAKEOVER_MS,
   listRepositoryCatalogSteps,
+  incrementalVacuum,
   refreshRepositoryCatalog,
   startLoops,
   submitCommand,
@@ -450,8 +451,13 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const db = openDatabase(paths.db);
   const store = sqliteDb(db);
   migrate(db);
-  importLinearTokenFile(db, paths.secretsDir, runtime.linearTokenFile);
-  importCredentialFile(db, paths.secretsDir, "slack", join(paths.secretsDir, "slack-oauth.json"));
+  await importLinearTokenFile(store, paths.secretsDir, runtime.linearTokenFile);
+  await importCredentialFile(
+    store,
+    paths.secretsDir,
+    "slack",
+    join(paths.secretsDir, "slack-oauth.json"),
+  );
   await store.run(clearUsagePausesSteps);
   const linearRevoked = () =>
     store.run((q) =>
@@ -463,7 +469,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   if (
     publicDashboard &&
     ((await linearRevoked()) ||
-      (runtime.linearAccessToken === null && readStoredToken(db, paths.secretsDir) === null))
+      (runtime.linearAccessToken === null &&
+        (await readStoredToken(store, paths.secretsDir)) === null))
   ) {
     const reconnect = await linearRevoked();
     db.close();
@@ -564,10 +571,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       queue: "repository.catalog.refresh",
       everyMs: 600_000,
       atStartup: true,
-      run: () => refreshRepositoryCatalog(db, listCatalog),
+      run: () => refreshRepositoryCatalog(store, listCatalog),
     });
   if (options?.refreshAgentCatalog) {
-    const agentCatalog = createAgentCatalog({ db, registry: createNpmRegistry() });
+    const agentCatalog = createAgentCatalog({ store, registry: createNpmRegistry() });
     // Hourly checks keep the daily read on schedule across sleep and restarts.
     periodic.push({
       queue: "agent.catalog.refresh",
@@ -668,8 +675,9 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     }
   }
 
-  const linear = openLinear({
+  const linear = await openLinear({
     db,
+    store,
     signal: abort.signal,
     countItemRequest: async (itemId, caller) =>
       await countLinearRequest(sqliteDb(db), itemId, caller),
@@ -697,7 +705,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         );
       const undelegation = parseLinearUndelegation(event, runtime.linearViewerId);
       if (undelegation)
-        await stopUndelegatedIssue(db, undelegation, {
+        await stopUndelegatedIssue(store, undelegation, {
           notify: (command) => {
             if (orchestrator === null) throw new Error("The loop is not attached.");
             orchestrator.bus.emit(command);
@@ -709,7 +717,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         });
       const closedIssue = parseLinearIssueClosed(event);
       if (closedIssue) {
-        await closeClosedIssueTasks(db, closedIssue, {
+        await closeClosedIssueTasks(store, closedIssue, {
           notify: (command) => {
             if (orchestrator === null) throw new Error("The loop is not attached.");
             orchestrator.bus.emit(command);
@@ -727,7 +735,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         return false;
       }
       if (
-        await handleLinearAdministration(db, event, {
+        await handleLinearAdministration(store, event, {
           oauthClientId: runtime.linearClientId,
           appUserId: runtime.linearViewerId,
           interrupt: async (sessionId) => {
@@ -807,7 +815,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   });
 
   if (linear !== null)
-    linearTaskAccess = new LinearTaskAccess(db, {
+    linearTaskAccess = new LinearTaskAccess(store, {
       access: linear.access && linearCallerFor(linear.access, "task-access"),
       lifecycle: linear.issueLifecycle && linearCallerFor(linear.issueLifecycle, "task-access"),
       oauthClientId: runtime.linearClientId,
@@ -836,7 +844,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         throw new Error("Public workspace assignments require verified Linear task access.");
       {
         assignments = createWorkspaceAssignments({
-          db,
+          store,
           origin: runtime.publicUrl!,
           clientId: runtime.linearClientId!,
           memberships: members!,
@@ -856,7 +864,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           await orchestrator?.interruptItem(itemId);
         },
         assignments,
-        onboardingReadiness: createOnboardingReadiness(db),
+        onboardingReadiness: createOnboardingReadiness(store),
         createVmAvailable,
         githubAttributionClient: (() => {
           try {
@@ -867,8 +875,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             return undefined;
           }
         })(),
-        slackIdentities: createSlackIdentityReads({ home: paths.home, db }),
-        db,
+        slackIdentities: await createSlackIdentityReads({ home: paths.home, db }),
+        store,
         publicUrl: runtime.publicUrl!,
         clientId: runtime.linearClientId!,
         memberships: linear.memberships,
@@ -904,7 +912,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     if (!bot) throw new Error("Attribution App bot authority is unavailable");
     const policy = options?.commitPolicyForItem
       ? await options.commitPolicyForItem(item)
-      : { bot, credit: await delegatorCommitCredit(db, item.id) };
+      : { bot, credit: await delegatorCommitCredit(store, item.id) };
     if (
       bot.appId !== policy.bot.appId ||
       bot.id !== policy.bot.id ||
@@ -936,14 +944,14 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       const key = envelopeSubkey(paths.secretsDir, "paws-evidence-objects");
       return withSealedRunFileObjects(createS3RunFileObjects("evidence", s3), key);
     });
-  void uploadLocalEvidence(db, { root: paths.evidenceDir, objects: evidenceObjects }).catch(
+  void uploadLocalEvidence(store, { root: paths.evidenceDir, objects: evidenceObjects }).catch(
     (error: unknown) => journalCaught(error, "index.startPaws.uploadLocalEvidence", null),
   );
   const closeoutEvidence = {
     root: join(paths.home, "closeout", "evidence"),
     objects: evidenceObjects,
   };
-  void uploadLocalCloseoutEvidence(db, closeoutEvidence).catch((error: unknown) =>
+  void uploadLocalCloseoutEvidence(store, closeoutEvidence).catch((error: unknown) =>
     journalCaught(error, "index.startPaws.uploadLocalCloseoutEvidence", null),
   );
   const catalogRepositories = async () =>
@@ -969,7 +977,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const retroCatalog = (q: Q, principal: { workspaceId: string; userId: string }) =>
     runner ? runner.models.readSteps(q, principal) : syncSteps(() => null);
   const retroScheduler = createRetroScheduler({
-    db,
+    store,
     artifactRoot: join(paths.home, "retros"),
     catalogs: retroCatalog,
   });
@@ -1011,7 +1019,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           }
           runner = value;
           retroDispatcher = createRetroDispatcher({
-            db,
+            store,
             artifactRoot: join(paths.home, "retros"),
             sign: value.signRetroCommand,
           });
@@ -1075,7 +1083,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const parents =
     workspace && linear?.tracker && linear.issueLifecycle
       ? createParentDelegations({
-          db,
+          store,
           tracker: linear.tracker,
           lifecycle: linear.issueLifecycle,
           ...(linear.startSession && runtime.publicUrl
@@ -1097,11 +1105,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         ...(parents ? { sessionActorSteps: parents.actorSteps } : {}),
       })
     : undefined;
-  const placementBrowser = createRunnerPlacementBrowser({ db });
+  const placementBrowser = createRunnerPlacementBrowser({ store });
   const accountManagement = createAccountManagement();
   const sessionMovesStop = new AbortController();
   const memberVmHttp = createMemberVmHttp({
-    db,
     store,
     available: createVmAvailable,
     size: memberVmSize,
@@ -1113,7 +1120,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         if (!placement) throw new Error("Remote execution requires current Linear ownership.");
         return {
           agents: createRemoteAgentRunner({
-            db,
             store,
             ...coordinator,
             fetchCandidate: fetchRunnerCandidate,
@@ -1122,7 +1128,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             instanceId: instance.id,
           }),
           sessions: createRemoteSessionAgentRunner({
-            db,
+            store,
             helpers: coordinator.helpers,
             placement,
           }),
@@ -1134,11 +1140,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   });
   const findingGrouping = linear?.findingIssues
     ? await createFindingGrouping({
-        db,
         store,
         issues: linear.findingIssues,
         helper: createFindingGroupHelper({
-          db,
+          store,
           helpers: async () => {
             const coordinator = await runnerReady;
             if (!coordinator) throw new Error("A paired runner is required for finding grouping.");
@@ -1148,7 +1153,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         }),
         sources: (workspaceId) => {
           if (!runtime.linearClientId) return [];
-          return workspaceGroupingSources(db, workspaceId, runtime.linearClientId);
+          return workspaceGroupingSources(store, workspaceId, runtime.linearClientId);
         },
       })
     : null;
@@ -1187,7 +1192,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   // failover in `forItem` resumes it on another eligible runner.
   const sessionMoves = remote
     ? createRunnerSessionMoves({
-        db,
+        store,
         signal: sessionMovesStop.signal,
         handOver: async (itemId, signal) => (await remote).agents.handOverItem(itemId, signal),
       })
@@ -1232,14 +1237,14 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       ...(linear?.findingIssues ? { findingGroups: { issues: linear.findingIssues } } : {}),
       hostname: env.host,
       retros: (() => {
-        const settings = createRetroSettingsHttp({ db, catalog: retroCatalog });
+        const settings = createRetroSettingsHttp({ store, catalog: retroCatalog });
         const schedule = createRetroScheduleHttp({
-          db,
+          store,
           scheduler: retroScheduler,
           catalog: retroCatalog,
         });
-        const review = createRetroReviewHttp({ db, artifactRoot: join(paths.home, "retros") });
-        const preview = createRetroPreviewHttp({ db, artifactRoot: join(paths.home, "retros") });
+        const review = createRetroReviewHttp({ store, artifactRoot: join(paths.home, "retros") });
+        const preview = createRetroPreviewHttp({ store, artifactRoot: join(paths.home, "retros") });
         return async (
           request: Request,
           principal: WorkspacePrincipal,
@@ -1254,7 +1259,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         blockerChecks?.(request, sessionIds) ??
         Response.json({ error: "Blocker checks are starting." }, { status: 503 }),
       improvements: createImprovementsHttp({
-        db,
+        store,
         ...(linear?.improvementIssues ? { lookup: linear.improvementIssues } : {}),
         ...(linear?.improvementDelivery ? { linear: linear.improvementDelivery } : {}),
         ...(linear?.startSession ? { startSession: linear.startSession } : {}),
@@ -1309,7 +1314,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       linearWebhookSecret: env.linearWebhookSecret,
       githubWebhookSecret: env.githubWebhookSecret,
       githubWebhook: {
-        accept: (delivery) => acceptGitHubDelivery(db, delivery, Date.now(), commentFilter),
+        accept: (delivery) => acceptGitHubDelivery(store, delivery, Date.now(), commentFilter),
       },
       slackSigningSecret:
         envSource.SLACK_SIGNING_SECRET ?? readSlackApp(paths.home)?.signingSecret ?? null,
@@ -1329,27 +1334,27 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         orchestrator ? orchestrator.requestVisualReviewChanges(input) : "rejected",
       linkAsks: (request, principal, sessionIds) =>
         handleLinkAskAnswer(request, {
-          db,
+          store,
           principal,
           sessionIds,
           submit: async (input) => (orchestrator ? orchestrator.decideLinkAsk(input) : "rejected"),
         }),
       questionAnswers: (request, principal, sessionIds) =>
         handleQuestionAnswer(request, {
-          db,
+          store,
           principal,
           sessionIds,
           submit: async (input) => (orchestrator ? orchestrator.answerFromPaws(input) : "rejected"),
         }),
       findingIssues: createFindingIssueRoute({
         db,
-        reviews: (itemId) => itemReviews(db, itemId, paths.home, envSource),
+        reviews: (itemId) => itemReviews(store, itemId, paths.home, envSource),
         // Linear is called only when someone files an issue, never when the page loads.
         file: linear?.tracker?.fileFindingIssue
           ? (request, fileOptions) => linear.tracker!.fileFindingIssue!(request, fileOptions)
           : undefined,
       }),
-      readLinearArtifact: createLinearArtifactReader({ db, secretsDir: paths.secretsDir }),
+      readLinearArtifact: createLinearArtifactReader({ store, secretsDir: paths.secretsDir }),
       ...(linear?.startSession ? { startLinearSession: linear.startSession } : {}),
       skillSettings: {
         root: paths.skillsDir,
@@ -1358,7 +1363,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       },
       agentSettings: {
         applyToWaiting: async () => (await orchestrator?.applyAgentSettingsToWaiting()) ?? 0,
-        runnerReadiness: (agent) => activeRunnerReadiness(db, agent),
+        runnerReadiness: (agent) => activeRunnerReadiness(store, agent),
         ...(linear?.tracker?.readBriefIssue
           ? {
               readIssue: (identifier: string, signal: AbortSignal) =>
@@ -1438,7 +1443,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const tracker = linear?.tracker ?? null;
   const managed = Boolean(workspace && linear?.tracker && linear.issueLifecycle);
   if (!managed) journal(LINEAR_WORKSPACE_REQUIRED);
-  const admission = createAdmission({ db, workspace: managed });
+  const admission = createAdmission({ db: store, workspace: managed });
   const enqueueMissingSnapshots = async () => {
     const targets = await store.run(missingSnapshotTargetsSteps);
     for (const target of targets)
@@ -1461,7 +1466,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   if (improvementDelivery && workspace) {
     const access = workspace.access;
     startImprovementDeliveries({
-      db,
+      store,
       owner: `paws:${process.pid}:${crypto.randomUUID()}`,
       signal: abort.signal,
       linearFor: async (workspaceId) =>
@@ -1476,7 +1481,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         ),
     });
     startImprovementOutcomeSync({
-      db,
+      store,
       signal: abort.signal,
       linearFor: async (workspaceId) =>
         (await store.run((q) => getWorkspaceSteps(q, workspaceId)))?.organizationId ===
@@ -1542,7 +1547,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         secrets: () => [exeDevToken(), tailscaleAuthKey()],
       });
       const attached = attachOrchestrator({
-        db,
         store,
         instanceId: instance.id,
         jobs: created.jobs,
@@ -1560,7 +1564,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
               conversations: async () => {
                 const coordinator = await runnerReady;
                 return coordinator
-                  ? createConversationTurns({ db, helpers: coordinator.helpers })
+                  ? createConversationTurns({ store, helpers: coordinator.helpers })
                   : null;
               },
               ownerHasRunner: (q: Q, itemId: string, agent: string, now: number) =>
@@ -1600,7 +1604,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
                     item.title,
                 );
                 return rebaseOnRunner(
-                  db,
+                  store,
                   {
                     runnerId: target.id,
                     workspaceId: target.workspaceId,
@@ -1765,7 +1769,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             )
               return deny(await store.run((q) => teamMemberDenialSteps(q, item)));
             const repositoryDenial = await teamRepositoryDenial(
-              db,
+              store,
               item,
               { workspaceId: currentWorkspace.id, teamId: session.teamId },
               selectedRepository,
@@ -1824,7 +1828,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
               objects: evidenceObjects,
               store: {
                 save: (input) =>
-                  createEvidenceStore({ db, root: paths.evidenceDir, objects: evidenceObjects })
+                  createEvidenceStore({ store, root: paths.evidenceDir, objects: evidenceObjects })
                     .save(input)
                     .catch((error: unknown) => {
                       if (error instanceof EvidenceRejectedError)
@@ -1873,7 +1877,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       });
       if (workspace && linear?.tracker && linear.issueLifecycle) {
         reconciler = createItemReconciler({
-          db,
+          store,
           tracker: linear.tracker,
           lifecycle: linear.issueLifecycle,
           ...(parents ? { scopeSnapshot: parents.scopeSnapshot } : {}),
@@ -1890,7 +1894,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           afterChanges: (changes) => attached.finishDelegationChanges(changes),
         });
         publication = createPublicationReadiness({
-          db,
+          store,
           reconciler,
           canMerge: async (itemId) => (await admission.canMerge(itemId)).ok,
         });
@@ -1901,7 +1905,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           await linearCaller("redelegation", () =>
             checkRedelegation(
               {
-                db,
+                db: store,
                 store: inbox,
                 appUserId: runtime.linearViewerId,
                 inspect: (issueId) => lifecycle.inspect(issueId, { signal: abort.signal }),
@@ -1931,7 +1935,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           now: Date.now(),
         });
         const relations = createRelationsPolls({
-          db,
+          store,
           reconciler,
           lowBudget: async () =>
             linearBudgetIsLow((await linear?.usage())?.budget ?? null, Date.now()),
@@ -1939,7 +1943,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           read: (run) => linearCaller("relations-poll", run),
         });
         blockerChecks = createBlockerCheckRoute({
-          db,
+          store,
           polls: relations,
           blockedItemIds: reconciler.blockedItemIds,
           signal: abort.signal,
@@ -1983,7 +1987,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       const readIssueClosures = tracker?.readIssueClosures?.bind(tracker);
       if (readIssueClosures) {
         const sweepFailed = (signal: AbortSignal) =>
-          sweepFailedIssues(db, {
+          sweepFailedIssues(store, {
             readIssueClosures,
             signal: AbortSignal.any([signal, abort.signal]),
             notify: (command) => attached.bus.emit(command),
@@ -2031,7 +2035,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       // registered without runner placement too, since an unhandled job is cancelled, not kept.
       created.jobs.register(RUNNER_TRANSCRIPT_ENCRYPT_JOB, (_job, context) =>
         encryptRunnerTranscripts({
-          db,
+          store,
           stores: (transcriptStorage ?? loadRunnerTranscriptStores(runtime.env.home)).stores,
           key: loadRunnerTranscriptKey(join(paths.secretsDir, RUNNER_TRANSCRIPT_KEY_FILE)),
           signal: AbortSignal.any([context.signal, abort.signal]),
@@ -2049,9 +2053,11 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         }).then(({ sealed }) => journal(`runner events encrypted: ${sealed} events sealed`)),
       );
       created.jobs.register(RUNNER_EVENT_PRUNE_JOB, (_job, context) =>
-        pruneRunnerEvents({ db, signal: AbortSignal.any([context.signal, abort.signal]) }).then(
+        pruneRunnerEvents({ store, signal: AbortSignal.any([context.signal, abort.signal]) }).then(
           ({ deleted }) => {
-            if (deleted) journal(`runner events pruned: ${deleted} events deleted`);
+            if (!deleted) return;
+            incrementalVacuum(db);
+            journal(`runner events pruned: ${deleted} events deleted`);
           },
         ),
       );
@@ -2129,7 +2135,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   lagTimer.unref();
   abort.signal.addEventListener("abort", () => clearInterval(lagTimer), { once: true });
   const host = startHost({
-    db,
+    store,
     clock: options?.hostClock,
     signal: abort.signal,
     stopAgent: (itemId) => {
@@ -2148,11 +2154,11 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   }, INSTANCE_HEARTBEAT_MS);
   instanceTimer.unref?.();
   const commandTimer = setInterval(() => {
-    try {
-      orchestrator?.deliverInstanceCommands();
-    } catch (error) {
-      journalCaught(error, "index.startPaws.deliverInstanceCommands", null);
-    }
+    orchestrator
+      ?.deliverInstanceCommands()
+      .catch((error: unknown) =>
+        journalCaught(error, "index.startPaws.deliverInstanceCommands", null),
+      );
   }, COMMAND_DELIVERY_MS);
   commandTimer.unref?.();
 

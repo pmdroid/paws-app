@@ -43,8 +43,8 @@ function harness() {
   return { clock, db, dispatcher };
 }
 
-function waiting(db: Database, id: string, session: string): void {
-  insertQueuedItem(db, { id, sessionKey: session });
+async function waiting(db: Database, id: string, session: string): Promise<void> {
+  await insertQueuedItem(db, { id, sessionKey: session });
   db.run("UPDATE work_item SET state = 'awaiting_input' WHERE id = ?", [id]);
   db.run(
     `INSERT INTO question (id, item_id, session_id, body, status, created_at)
@@ -80,7 +80,7 @@ async function deliverAll(dispatcher: OutboxDispatcher, clock: FakeClock, rounds
 describe("dead outbox rows and jobs", () => {
   test("a dead row writes one journal line with the item, the kind and the last error", async () => {
     const { clock, db, dispatcher } = harness();
-    insertQueuedItem(db, { id: "item-a", sessionKey: "ses-a" });
+    await insertQueuedItem(db, { id: "item-a", sessionKey: "ses-a" });
     await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
@@ -119,7 +119,7 @@ describe("dead outbox rows and jobs", () => {
 
   test("a dead elicitation of a waiting item is re-enqueued once, then re-asked", async () => {
     const { clock, db, dispatcher } = harness();
-    waiting(db, "item-q", "ses-q");
+    await waiting(db, "item-q", "ses-q");
     await elicit(db, "item-q", "ses-q");
     const posted: string[] = [];
     dispatcher.setHandler((row) => {
@@ -157,7 +157,7 @@ describe("dead outbox rows and jobs", () => {
 
   test("each question gets its own re-ask, and a re-asked question does not get another", async () => {
     const { clock, db, dispatcher } = harness();
-    waiting(db, "item-q", "ses-q");
+    await waiting(db, "item-q", "ses-q");
     dispatcher.setHandler(() => {
       throw new Error("Linear is down");
     });
@@ -242,7 +242,7 @@ describe("dead outbox rows and jobs", () => {
 
   test("the re-enqueued elicitation is delivered when Linear recovers", async () => {
     const { clock, db, dispatcher } = harness();
-    waiting(db, "item-q", "ses-q");
+    await waiting(db, "item-q", "ses-q");
     await elicit(db, "item-q", "ses-q");
     let fail = true;
     dispatcher.setHandler(() => {
@@ -260,7 +260,7 @@ describe("dead outbox rows and jobs", () => {
 
   test("an elicitation for an item that no longer waits stays dead", async () => {
     const { clock, db, dispatcher } = harness();
-    waiting(db, "item-q", "ses-q");
+    await waiting(db, "item-q", "ses-q");
     db.run("UPDATE work_item SET state = 'running' WHERE id = 'item-q'");
     await elicit(db, "item-q", "ses-q");
     dispatcher.setHandler(() => {
@@ -272,7 +272,7 @@ describe("dead outbox rows and jobs", () => {
 
   test("an answered question's elicitation is not re-enqueued", async () => {
     const { clock, db, dispatcher } = harness();
-    waiting(db, "item-q", "ses-q");
+    await waiting(db, "item-q", "ses-q");
     db.run("UPDATE question SET status = 'answered' WHERE id = 'q-item-q'");
     await elicit(db, "item-q", "ses-q");
     dispatcher.setHandler(() => {
@@ -284,7 +284,7 @@ describe("dead outbox rows and jobs", () => {
 
   test("retry puts a dead row or job of the item back to pending", async () => {
     const { clock, db, dispatcher } = harness();
-    waiting(db, "item-q", "ses-q");
+    await waiting(db, "item-q", "ses-q");
     db.run("UPDATE work_item SET state = 'running' WHERE id = 'item-q'");
     await elicit(db, "item-q", "ses-q");
     dispatcher.setHandler(() => {
@@ -329,7 +329,7 @@ describe("dead outbox rows and jobs", () => {
 
   test("a dead job from an earlier item version is listed but never retried", async () => {
     const { db } = harness();
-    waiting(db, "item-q", "ses-q");
+    await waiting(db, "item-q", "ses-q");
     await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.resume,
       payload: { itemId: "item-q" },
@@ -368,7 +368,7 @@ describe("dead outbox rows and jobs", () => {
 
   test("a question delivered again after the PR keeps its ordered delivery past the PR response", async () => {
     const { db } = harness();
-    waiting(db, "item-q", "ses-q");
+    await waiting(db, "item-q", "ses-q");
     // The PR response is a terminal activity; later critical elicitations are fenced off.
     await enqueueOutbox(sqliteDb(db), {
       target: "linear",
@@ -401,7 +401,7 @@ describe("dead outbox rows and jobs", () => {
 
   test("a redelivery the session fence rejects leaves the dead row listed for a retry", async () => {
     const { db } = harness();
-    waiting(db, "item-q", "ses-q");
+    await waiting(db, "item-q", "ses-q");
     const dead = await elicit(db, "item-q", "ses-q");
     db.run("UPDATE outbox SET status = 'dead', error = 'Linear is down' WHERE id = ?", [dead]);
     // A terminal response arrived since; a critical elicitation can no longer follow it.
@@ -430,7 +430,7 @@ describe("dead outbox rows and jobs", () => {
 
   test("only a dead final Stop delivery counts as one for a stopped session", async () => {
     const { db } = harness();
-    waiting(db, "item-q", "ses-q");
+    await waiting(db, "item-q", "ses-q");
     const question = await elicit(db, "item-q", "ses-q");
     const stop = await enqueueOutbox(sqliteDb(db), {
       target: "linear",

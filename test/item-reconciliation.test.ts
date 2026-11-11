@@ -162,7 +162,7 @@ test("a spec change on the item's issue is reconciled through the item", async (
     });
     const changed: string[][] = [];
     const reconciler = createItemReconciler({
-      db,
+      store: sqliteDb(db),
       tracker,
       lifecycle,
       *onChanges(_q, changes) {
@@ -233,7 +233,7 @@ test("a reconcile handed the intake's reads writes the scheduler rows without re
       throw new Error("The intake's reads must not be repeated");
     };
     const reconciler = createItemReconciler({
-      db,
+      store: sqliteDb(db),
       tracker: { loadEpic: unread, listDeps: unread },
       lifecycle: { inspect: unread },
       *onChanges() {

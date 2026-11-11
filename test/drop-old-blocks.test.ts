@@ -27,7 +27,7 @@ test("migration 059 drops the old block tables and task_block holds each depende
   const db = legacyTempDb();
   const clock = new FakeClock(1_000);
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
@@ -167,7 +167,7 @@ test("migration 059 drops the old block tables and task_block holds each depende
     );
     tracker.deps.set("parent", [{ blockerLinearIssueId: "outside", blockedLinearIssueId: "b" }]);
     const reconciler = createItemReconciler({
-      db,
+      store: sqliteDb(db),
       tracker,
       lifecycle,
       onChanges: () => syncSteps(() => {}),

@@ -60,7 +60,7 @@ export async function createParentFixture(
   const started: string[] = [];
   const intake = { delayed: false };
   const parents = createParentDelegations({
-    db,
+    store: sqliteDb(db),
     tracker,
     lifecycle: {
       inspect: async (id) =>
@@ -120,7 +120,7 @@ export async function createParentFixture(
   }
   const outbox = new OutboxDispatcher(db, clock);
   orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     clock,
     jobs: new JobLoop(db, clock),
     outbox,

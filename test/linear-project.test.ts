@@ -43,8 +43,9 @@ async function delegated(snapshot: EpicSnapshot) {
   });
   if (!intake.ok) throw new Error("intake failed");
   const projectOf = async () =>
-    (await createLiveStatusProvider(db).issues()).issues.find((item) => item.id === "PAS-608")
-      ?.project;
+    (await createLiveStatusProvider(sqliteDb(db)).issues()).issues.find(
+      (item) => item.id === "PAS-608",
+    )?.project;
   return { db, tracker, intake, projectOf };
 }
 
@@ -132,7 +133,7 @@ test("a reconcile after the issue moved in Linear stores the new project", async
     delegateId: "app",
   });
   const reconciler = createItemReconciler({
-    db,
+    store: sqliteDb(db),
     tracker,
     lifecycle,
     onChanges: () => syncSteps(() => {}),

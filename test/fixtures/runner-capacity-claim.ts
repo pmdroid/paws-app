@@ -1,14 +1,14 @@
 import { createPrivateKey } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
-import { openDatabase } from "../../src/db";
+import { openDatabase, sqliteDb } from "../../src/db";
 import { createRunnerWork } from "../../src/runner-work";
 
 const [path, keyPath, commandPath, barrier, at] = process.argv.slice(2);
 const db = openDatabase(path!);
 try {
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: createPrivateKey(readFileSync(keyPath!)),
     eventKey: Buffer.alloc(32, 7),

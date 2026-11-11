@@ -8,7 +8,7 @@ const root = process.argv[2]!;
 const db = openDatabase(join(root, "paws.sqlite"));
 let listener: Awaited<ReturnType<typeof startRunnerListener>>;
 const control = createRunnerControl({
-  db,
+  store: sqliteDb(db),
   authority: await openRunnerAuthority(join(root, "issuer")),
   certificateRoot: join(root, "issuer"),
   disconnect: (fingerprint) => listener.revoke(fingerprint),

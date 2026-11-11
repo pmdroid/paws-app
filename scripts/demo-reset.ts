@@ -1005,7 +1005,7 @@ async function main(): Promise<void> {
     templateDir,
     linear: createLinearClient({
       auth: {
-        hasToken: () => true,
+        hasToken: async () => true,
         ensureFresh: async () => key,
         forceRefresh: async () => {
           throw new DemoResetError("Linear API key was rejected");

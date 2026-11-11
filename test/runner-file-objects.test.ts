@@ -17,7 +17,11 @@ async function fixture() {
   const db = openDatabase(":memory:");
   migrate(db);
   let clock = Date.parse("2026-11-07T06:00:00Z");
-  const item = insertQueuedItem(db, { id: "acme-item", now: clock, sessionKey: "acme-session" });
+  const item = await insertQueuedItem(db, {
+    id: "acme-item",
+    now: clock,
+    sessionKey: "acme-session",
+  });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, clock);
   const command = { type: "run", id: "acme-command", runId: run.id } as Extract<
     RunnerCommand,
@@ -29,7 +33,12 @@ async function fixture() {
   } as unknown as RunnerWork;
   const objects = createFakeRunFileObjects();
   const instance = (root = mkdtempSync(join(tmpdir(), "paws-acme-instance-"))) => {
-    const files = createSealedRunnerFiles({ db, objects, key: KEY, now: () => clock });
+    const files = createSealedRunnerFiles({
+      store: sqliteDb(db),
+      objects,
+      key: KEY,
+      now: () => clock,
+    });
     return {
       root,
       files,
@@ -330,7 +339,7 @@ describe("runner inputs and artifacts in the shared store", () => {
     const artifacts = createRunnerArtifactStore({
       root: join(root, "artifacts"),
       work,
-      remote: { files: createSealedRunnerFiles({ db, objects, key: KEY }), db },
+      remote: { files: createSealedRunnerFiles({ store: sqliteDb(db), objects, key: KEY }), db },
     });
     const bytes = Buffer.from("acme evidence");
     const artifact: RunnerArtifact = {

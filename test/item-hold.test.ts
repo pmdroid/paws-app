@@ -60,8 +60,9 @@ test("a blocked item names its blocker once in the journal and once more when it
       { itemId: "PAS-368", reason: "blocked", blockers: ["PAS-367"] },
     ]);
     expect(
-      (await createLiveStatusProvider(db).issues()).issues.find((entry) => entry.id === "PAS-368")
-        ?.blockers,
+      (await createLiveStatusProvider(sqliteDb(db)).issues()).issues.find(
+        (entry) => entry.id === "PAS-368",
+      )?.blockers,
     ).toEqual(["PAS-367"]);
     await confirmFakeMerge(db, "PAS-367");
     expect(await workspaceDispatch(db, { now: 3, log })).toEqual(["PAS-368"]);
@@ -103,7 +104,13 @@ for (const state of ["started", "unstarted"])
     try {
       await externalBlocker(db, state);
       const { lines, log } = journal();
-      expect(await dispatch(db, { now: 1, log, admission: createAdmission({ db }) })).toEqual([]);
+      expect(
+        await dispatch(sqliteDb(db), {
+          now: 1,
+          log,
+          admission: createAdmission({ db: sqliteDb(db) }),
+        }),
+      ).toEqual([]);
       expect(await listItemHolds(sqliteDb(db))).toEqual([
         { itemId: "PAS-840", reason: "blocked", blockers: ["OPS-12"] },
       ]);
@@ -132,8 +139,8 @@ test("a blocked hold without an open blocker is journaled as an inconsistency", 
       },
     };
     const { lines, log } = journal();
-    expect(await dispatch(db, { now: 1, log, admission: blocked })).toEqual([]);
-    expect(await dispatch(db, { now: 2, log, admission: blocked })).toEqual([]);
+    expect(await dispatch(sqliteDb(db), { now: 1, log, admission: blocked })).toEqual([]);
+    expect(await dispatch(sqliteDb(db), { now: 2, log, admission: blocked })).toEqual([]);
     expect(await listItemHolds(sqliteDb(db))).toEqual([
       { itemId: "PAS-841", reason: "blocked", blockers: [] },
     ]);
@@ -180,7 +187,7 @@ test("a project that holds an item is its held reason", async () => {
     item(db, "PAS-5");
     const { lines, log } = journal();
     const admission = workspaceAdmission(db, { authority: () => false });
-    expect(await dispatch(db, { now: 1, log, admission })).toEqual([]);
+    expect(await dispatch(sqliteDb(db), { now: 1, log, admission })).toEqual([]);
     expect(await listItemHolds(sqliteDb(db))).toEqual([
       { itemId: "PAS-5", reason: "project", blockers: [] },
     ]);
@@ -201,9 +208,9 @@ test("without a workspace every queued item is held for the workspace, journaled
     await confirmFakeMerge(db, "PAS-7");
     db.run("UPDATE work_item SET state='merged' WHERE id='PAS-7'");
     item(db, "PAS-9", "queued", 2);
-    const admission = createAdmission({ db, workspace: false });
-    expect(await dispatch(db, { now: 2, log, admission })).toEqual([]);
-    expect(await dispatch(db, { now: 3, log, admission })).toEqual([]);
+    const admission = createAdmission({ db: sqliteDb(db), workspace: false });
+    expect(await dispatch(sqliteDb(db), { now: 2, log, admission })).toEqual([]);
+    expect(await dispatch(sqliteDb(db), { now: 3, log, admission })).toEqual([]);
     expect(await listItemHolds(sqliteDb(db))).toEqual([
       { itemId: "PAS-8", reason: "workspace", blockers: [] },
       { itemId: "PAS-9", reason: "workspace", blockers: [] },
@@ -214,8 +221,9 @@ test("without a workspace every queued item is held for the workspace, journaled
       "item PAS-9 held: no Linear workspace",
     ]);
     expect(
-      (await createLiveStatusProvider(db).issues()).issues.find((entry) => entry.id === "PAS-9")
-        ?.held,
+      (await createLiveStatusProvider(sqliteDb(db)).issues()).issues.find(
+        (entry) => entry.id === "PAS-9",
+      )?.held,
     ).toEqual({ reason: "workspace", blockers: [] });
   } finally {
     db.close();
@@ -229,7 +237,7 @@ test("the status API carries the held reason of a queued item", async () => {
     item(db, "PAS-368", "queued", 1);
     db.run("INSERT INTO task_block VALUES('issue-PAS-367','issue-PAS-368')");
     await workspaceDispatch(db, { now: 1 });
-    const items = (await createLiveStatusProvider(db).issues()).issues;
+    const items = (await createLiveStatusProvider(sqliteDb(db)).issues()).issues;
     expect(items.find((entry) => entry.id === "PAS-368")?.held).toEqual({
       reason: "blocked",
       blockers: ["PAS-367"],
@@ -273,7 +281,7 @@ test("an item blocked only by an issue canceled in Linear is not held", async ()
   try {
     await externalBlocker(db, "canceled");
     const { lines, log } = journal();
-    await dispatch(db, { now: 1, log, admission: createAdmission({ db }) });
+    await dispatch(sqliteDb(db), { now: 1, log, admission: createAdmission({ db: sqliteDb(db) }) });
     expect(await listItemHolds(sqliteDb(db))).toEqual([]);
     expect(lines).toEqual([]);
   } finally {

@@ -1,11 +1,4 @@
-import type { Database } from "bun:sqlite";
-import {
-  issueHasItemOutside,
-  latestOpenIssueSession,
-  sessionHasWorkItem,
-  sqliteDb,
-  type Db,
-} from "../db";
+import { issueHasItemOutside, latestOpenIssueSession, sessionHasWorkItem, type Db } from "../db";
 import type { AcceptedLinearEvent } from "./events";
 import type { InboxStore } from "./inbox";
 import type { LinearIssueOwnership } from "./issue-lifecycle";
@@ -16,7 +9,7 @@ const CLOSED_STATES = ["merged", "completed", "cancelled", "failed"];
 
 export async function checkRedelegation(
   options: {
-    db: Database;
+    db: Db;
     store: InboxStore;
     appUserId: string | null;
     inspect: (issueId: string) => Promise<LinearIssueOwnership>;
@@ -25,7 +18,7 @@ export async function checkRedelegation(
   target: { issueId: string; delegatedAtMs: number },
 ): Promise<boolean> {
   const { store } = options;
-  const db = sqliteDb(options.db);
+  const { db } = options;
   if ((await store.getCursor(`delegated:${target.issueId}`)) !== target.delegatedAtMs) return false;
   const event = await reusedSessionEvent(db, target);
   if (event === null || (await store.get(event.dedupeKey)) !== null) return false;

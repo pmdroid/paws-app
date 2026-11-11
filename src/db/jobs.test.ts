@@ -303,7 +303,7 @@ describe("job queue", () => {
 
   test("a ready start needs its own reservation", async () => {
     const { db, clock } = queue();
-    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    await insertQueuedItem(db, { id: "eng-1", now: clock.now() });
     const id = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.start,
       payload: { itemId: "eng-1" },
@@ -319,7 +319,7 @@ describe("job queue", () => {
 
   test("a queued start with old capacity bookkeeping still needs admission", async () => {
     const { db, clock } = queue();
-    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    await insertQueuedItem(db, { id: "eng-1", now: clock.now() });
     const id = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.start,
       payload: {
@@ -339,7 +339,7 @@ describe("job queue", () => {
 
   test("a start parked for a runner slot is claimed again after the item is running", async () => {
     const { db, clock } = queue();
-    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    await insertQueuedItem(db, { id: "eng-1", now: clock.now() });
     await beginImplementRun(sqliteDb(db), "eng-1", clock.now());
     const parked = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.start,
@@ -354,8 +354,8 @@ describe("job queue", () => {
 
   test("the in-flight item can resume while another start waits", async () => {
     const { db, clock } = queue();
-    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
-    insertQueuedItem(db, { id: "eng-2", now: clock.now() });
+    await insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    await insertQueuedItem(db, { id: "eng-2", now: clock.now() });
     await beginImplementRun(sqliteDb(db), "eng-1", clock.now());
     await applyWorkItemEvent(sqliteDb(db), "eng-1", "lease_expired");
     await enqueueJob(sqliteDb(db), {
@@ -378,8 +378,8 @@ describe("job queue", () => {
 
   test("two merge jobs for different repositories are both claimed", async () => {
     const { db, clock } = queue();
-    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
-    insertQueuedItem(db, { id: "eng-2", now: clock.now() });
+    await insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    await insertQueuedItem(db, { id: "eng-2", now: clock.now() });
     await bindRepo(db, "eng-1", "acme", "one");
     await bindRepo(db, "eng-2", "acme", "two");
     await enqueueMerge(db, clock, "eng-1");
@@ -394,8 +394,8 @@ describe("job queue", () => {
 
   test("a second merge job for the same repository is not claimed", async () => {
     const { db, clock } = queue();
-    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
-    insertQueuedItem(db, { id: "eng-2", now: clock.now() });
+    await insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    await insertQueuedItem(db, { id: "eng-2", now: clock.now() });
     await bindRepo(db, "eng-1", "acme", "one");
     await bindRepo(db, "eng-2", "Acme", "ONE");
     await holdMergeQueuePlace(db, clock, "eng-1");
@@ -408,7 +408,7 @@ describe("job queue", () => {
   test("merge jobs in one repository's different project lanes are both claimed, each first in its lane", async () => {
     const { db, clock } = queue();
     for (const id of ["eng-1", "eng-2"]) {
-      insertQueuedItem(db, { id, now: clock.now() });
+      await insertQueuedItem(db, { id, now: clock.now() });
       await bindRepo(db, id, "acme", "one");
     }
     await holdMergeQueuePlace(db, clock, "eng-1", "project-a");
@@ -418,7 +418,12 @@ describe("job queue", () => {
     expect((await claim(db, clock, [JOB_KIND.merge]))?.payload).toEqual({ itemId: "eng-1" });
     expect((await claim(db, clock, [JOB_KIND.merge]))?.payload).toEqual({ itemId: "eng-2" });
     expect(
-      listMergeQueues(db).map((entry) => [entry.itemId, entry.lane, entry.position, entry.total]),
+      (await listMergeQueues(sqliteDb(db))).map((entry) => [
+        entry.itemId,
+        entry.lane,
+        entry.position,
+        entry.total,
+      ]),
     ).toEqual([
       ["eng-1", "project-a", 1, 1],
       ["eng-2", "project-b", 1, 1],
@@ -428,7 +433,7 @@ describe("job queue", () => {
   test("a second merge job in the same project lane is not claimed", async () => {
     const { db, clock } = queue();
     for (const id of ["eng-1", "eng-2"]) {
-      insertQueuedItem(db, { id, now: clock.now() });
+      await insertQueuedItem(db, { id, now: clock.now() });
       await bindRepo(db, id, "acme", "one");
     }
     await holdMergeQueuePlace(db, clock, "eng-1", "project-a");
@@ -438,7 +443,11 @@ describe("job queue", () => {
     expect((await claim(db, clock, [JOB_KIND.merge]))?.payload).toEqual({ itemId: "eng-1" });
     expect(await claim(db, clock, [JOB_KIND.merge])).toBeNull();
     expect(
-      listMergeQueues(db).map((entry) => [entry.itemId, entry.position, entry.aheadItemId]),
+      (await listMergeQueues(sqliteDb(db))).map((entry) => [
+        entry.itemId,
+        entry.position,
+        entry.aheadItemId,
+      ]),
     ).toEqual([
       ["eng-1", 1, null],
       ["eng-2", 2, "eng-1"],
@@ -448,7 +457,7 @@ describe("job queue", () => {
   test("a merge job with no queue place yet waits only for the repository-wide lane", async () => {
     const { db, clock } = queue();
     for (const id of ["eng-1", "eng-2", "eng-3"]) {
-      insertQueuedItem(db, { id, now: clock.now() });
+      await insertQueuedItem(db, { id, now: clock.now() });
       await bindRepo(db, id, "acme", "one");
     }
     await holdMergeQueuePlace(db, clock, "eng-1", "project-a");
@@ -470,8 +479,8 @@ describe("job queue", () => {
 
   test("a merge job whose item waits outside the merge queue does not hold the lane", async () => {
     const { db, clock } = queue();
-    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
-    insertQueuedItem(db, { id: "eng-2", now: clock.now() });
+    await insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    await insertQueuedItem(db, { id: "eng-2", now: clock.now() });
     await bindRepo(db, "eng-1", "acme", "one");
     await bindRepo(db, "eng-2", "acme", "one");
     await holdMergeQueuePlace(db, clock, "eng-1");
@@ -484,8 +493,8 @@ describe("job queue", () => {
 
   test("a start job is claimed while a merge job is running", async () => {
     const { db, clock } = queue();
-    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
-    insertQueuedItem(db, { id: "eng-2", now: clock.now() });
+    await insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    await insertQueuedItem(db, { id: "eng-2", now: clock.now() });
     await bindRepo(db, "eng-1", "acme", "one");
     await enqueueMerge(db, clock, "eng-1");
     expect((await claim(db, clock, [JOB_KIND.merge]))?.payload).toEqual({ itemId: "eng-1" });
@@ -632,7 +641,7 @@ test.each(["done", "cancelled", "dead"] as const)(
   "explicit revival refreshes a %s row while lifetime dedupe retains it",
   async (status) => {
     const { db } = queue();
-    insertQueuedItem(db, { id: "revive", now: 1 });
+    await insertQueuedItem(db, { id: "revive", now: 1 });
     const original = {
       queue: "test",
       jobKey: "revive",

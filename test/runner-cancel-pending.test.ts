@@ -32,7 +32,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
   const keys = generateKeyPairSync("ed25519");
   const controller = () =>
     createRunnerWork({
-      db,
+      store: sqliteDb(db),
       keyId: "fixture",
       privateKey: keys.privateKey,
       eventKey: Buffer.alloc(32, 7),
@@ -51,7 +51,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       organizationId: "org",
       name: "Test",
       userId,
-      tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+      tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
       now,
     });
     db.run(
@@ -63,7 +63,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       "fixture/repository",
       "team",
     ]);
-    const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
+    const item = await insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
     await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
@@ -232,7 +232,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       [{ runId: run.id, generation: 2, commandId: "cancel-2" }],
     );
     expect(await runnerSlotFree(sqliteDb(db), ["box"], now)).toBe(true);
-    const other = insertQueuedItem(db, { id: "item-2", now, sessionKey: "session-2" });
+    const other = await insertQueuedItem(db, { id: "item-2", now, sessionKey: "session-2" });
     const retry = (await beginImplementRun(sqliteDb(db), other.id, now)).run;
     await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",

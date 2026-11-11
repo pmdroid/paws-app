@@ -52,7 +52,7 @@ async function setup() {
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-work", now);
+  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "fixture-work", now);
   const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "fixture-work",
@@ -75,7 +75,7 @@ async function setup() {
   };
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -94,14 +94,14 @@ async function setup() {
   }
   const signing = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: signing.privateKey,
     eventKey: Buffer.alloc(32, 7),
     now: () => now,
   });
-  const results = createRunnerResults({ db, work, now: () => now });
-  const health = createRunnerHealth({ db, work, now: () => now });
+  const results = createRunnerResults({ store: sqliteDb(db), work, now: () => now });
+  const health = createRunnerHealth({ store: sqliteDb(db), work, now: () => now });
   const sessions = createAgentSessions({
     db,
     work,
@@ -137,7 +137,7 @@ async function setup() {
   const checkout = join(root, "runner-a");
   git(["clone", "-q", source, checkout]);
   const backend = createRemoteAgentRunner({
-    db,
+    store: sqliteDb(db),
     work,
     results,
     health,
@@ -295,7 +295,7 @@ async function setup() {
     const id = `item-${++sequence}`;
     git(["--git-dir", paws, "update-ref", candidateRef(`display-${id}`), base]);
     const sessionKey = `session-${sequence}`;
-    const record = insertQueuedItem(db, { id, now, sessionKey });
+    const record = await insertQueuedItem(db, { id, now, sessionKey });
     const { run } = await beginImplementRun(sqliteDb(db), id, now);
     await recordLinearInstallation(sqliteDb(db), {
       organizationId: "fixture-work",
@@ -716,7 +716,7 @@ async function finish(onA: RunCommand, running: Promise<unknown>) {
 /** The move route over the fixture's backend; every request here is its route. */
 function sessionMoves() {
   const moves = createRunnerSessionMoves({
-    db: context.db,
+    store: sqliteDb(context.db),
     handOver: (itemId, signal) => context.backend.handOverItem(itemId, signal),
     now: () => context.now,
   });

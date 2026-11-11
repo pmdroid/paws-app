@@ -80,7 +80,7 @@ async function fixture({
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(db, "org", clock.now());
+  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "org", clock.now());
   await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: "workspace",
     organizationId: "org",
@@ -185,7 +185,7 @@ async function fixture({
   const continuations: string[] = [];
   const build = () =>
     createWorkspaceAssignments({
-      db,
+      store: sqliteDb(db),
       origin,
       clientId: "client",
       memberships,
@@ -235,7 +235,7 @@ async function fixture({
           )
           .all(delegationId);
         for (const item of itemIds)
-          await syncItemDependencies(db, {
+          await syncItemDependencies(sqliteDb(db), {
             itemId: item.id,
             workspaceId: "workspace",
             expectedGeneration: (
@@ -260,7 +260,7 @@ async function fixture({
   function buildOrchestrator() {
     orchestratorJobs = new JobLoop(db, clock);
     return attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       jobs: orchestratorJobs,
       outbox: new OutboxDispatcher(db, clock),
       pawsRoot: root,
@@ -290,13 +290,13 @@ async function fixture({
   }
   const access = () =>
     createWorkspaceAccess({
-      db,
+      store: sqliteDb(db),
       assignments,
       publicUrl: origin,
       clientId: "client",
       installedOrganization: { id: "org", name: "Workspace" },
       memberships,
-      onboardingReadiness: createOnboardingReadiness(db),
+      onboardingReadiness: createOnboardingReadiness(sqliteDb(db)),
       ...(createVm === undefined ? {} : { createVmAvailable: async () => createVm }),
       githubAttributionClient: { clientId: "github-client", clientSecret: "github-secret" },
       now: () => clock.now(),
@@ -379,7 +379,7 @@ async function fixture({
     for (const row of await listOutbox(sqliteDb(db)))
       if (row.status === "pending" && !delivered.has(row.id)) {
         delivered.add(row.id);
-        await deliverLinearOutbox(row, tracker, async () => {}, undefined, db);
+        await deliverLinearOutbox(row, tracker, async () => {}, undefined, sqliteDb(db));
       }
   }
   function jobs() {
@@ -1443,7 +1443,7 @@ test("an onboarding without a GitHub link resumes and starts with no commit cred
     expect(formFields(html)).toEqual({ action: `${path}/github`, csrf: expect.any(String) });
     // The optional step never counts as remaining work.
     expect(html).toContain("2 more steps before Paws starts");
-    expect(await delegatorCommitCredit(f.db, itemId)).toBeNull();
+    expect(await delegatorCommitCredit(sqliteDb(f.db), itemId)).toBeNull();
     expect(f.githubCalls).toEqual([]);
   } finally {
     await f.close();
@@ -1484,7 +1484,7 @@ test("linking GitHub from the onboarding page returns to it and credits that run
     expect(linked).toContain("Commits will credit @morgan-gh.");
     expect(linked).toMatch(/<h2>GitHub credit<\/h2>.*<span class="label">Linked<\/span>/);
     expect(formFields(linked)).toBeNull();
-    expect(await delegatorCommitCredit(f.db, itemId)).toEqual({
+    expect(await delegatorCommitCredit(sqliteDb(f.db), itemId)).toEqual({
       id: 4242,
       login: "morgan-gh",
       name: "Morgan",

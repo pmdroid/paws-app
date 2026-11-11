@@ -10,7 +10,7 @@ import { createLiveStatusProvider, handleStatusRequest } from "../../src/dashboa
 const root = mkdtempSync(join(tmpdir(), "paws-hook-failure-transcript-"));
 const db = openDatabase(join(root, "paws.db"));
 migrate(db);
-const item = insertQueuedItem(db, { id: "PAS-449", sessionKey: "hook-session" });
+const item = await insertQueuedItem(db, { id: "PAS-449", sessionKey: "hook-session" });
 const { run } = await beginImplementRun(sqliteDb(db), item.id, Date.now());
 mkdirSync(join(root, "runs", run.id), { recursive: true, mode: 0o700 });
 const at = (offset: number) => new Date(Date.now() - 60_000 + offset * 1_000).toISOString();
@@ -49,7 +49,10 @@ writeFileSync(
       reason: "timed out after 10s",
     }),
 );
-const provider = createLiveStatusProvider(db, { pawsHome: root, sessionIds: ["hook-session"] });
+const provider = createLiveStatusProvider(sqliteDb(db), {
+  pawsHome: root,
+  sessionIds: ["hook-session"],
+});
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
@@ -57,7 +60,7 @@ const server = Bun.serve({
     return (
       (await handleStatusRequest(request, {
         provider,
-        db,
+        store: sqliteDb(db),
         closeoutHome: root,
         sessionIds: ["hook-session"],
       })) ?? new Response("Not found", { status: 404 })

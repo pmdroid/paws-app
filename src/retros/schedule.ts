@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   workspaceMemberUsable,
   closeRetro,
@@ -24,12 +23,12 @@ import {
   retroScheduleRuntimeSteps,
   retroSettingsWorkspacesSteps,
   retroWatermarksSteps,
-  sqliteDb,
   type Q,
   type Retro,
   type RetroOrigin,
   type RetroState,
   type Steps,
+  type Db,
 } from "../db";
 import { journalCaught } from "../journal";
 import type { AgentModelCatalog } from "../runner-models";
@@ -311,14 +310,13 @@ function* storedOccurrenceSteps(q: Q, retroId: string) {
 }
 
 export function createRetroScheduler(options: {
-  db: Database;
+  store: Db;
   artifactRoot: string;
   catalogs: RetroCatalogSource;
   now?: () => number;
   secrets?: () => readonly string[];
 }) {
-  const { db, artifactRoot } = options;
-  const store = sqliteDb(db);
+  const { store, artifactRoot } = options;
   const now = options.now ?? Date.now;
 
   function* catalogsForSteps(
@@ -486,15 +484,15 @@ export function createRetroScheduler(options: {
         );
     } catch (error) {
       journalCaught(error, "retros.schedule.collect", null);
-      if ((await getRetro(sqliteDb(db), retro.id))?.state !== "collecting") return;
+      if ((await getRetro(store, retro.id))?.state !== "collecting") return;
       const reason = `Evidence collection failed: ${error instanceof Error ? error.message : String(error)}`;
-      await closeRetro(sqliteDb(db), {
+      await closeRetro(store, {
         retroId: retro.id,
         state: "abandoned",
         error: reason.slice(0, 2000),
         now: now(),
       });
-      await recordRetroGeneration(sqliteDb(db), {
+      await recordRetroGeneration(store, {
         retroId: retro.id,
         diagnostic: "failed",
         detail: reason.slice(0, 2000),

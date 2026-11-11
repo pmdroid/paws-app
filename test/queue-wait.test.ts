@@ -18,7 +18,6 @@ import {
   queueWaitSince,
   saveQueuePositions,
   syncWorkspaceMember,
-  settled,
   sqliteDb,
 } from "../src/db";
 import { createFakeTracker, type SessionUpdate } from "../src/linear";
@@ -52,14 +51,14 @@ async function oneBusyRunnerSlot(db: ReturnType<typeof tempDb>): Promise<void> {
     [userId, 100 * DAY],
   );
   db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES('runner',1)");
-  insertQueuedItem(db, { id: "busy", now: -1, sessionKey: "busy-session" });
+  await insertQueuedItem(db, { id: "busy", now: -1, sessionKey: "busy-session" });
 }
 
 test("a ready item waiting for a runner slot is queued once in Linear and fails after a day", async () => {
   const db = tempDb();
   const clock = new FakeClock(1_000);
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
@@ -69,7 +68,7 @@ test("a ready item waiting for a runner slot is queued once in Linear and fails 
   });
   try {
     await oneBusyRunnerSlot(db);
-    const item = insertQueuedItem(db, { id: "waiting", now: 1_000, sessionKey: "session" });
+    const item = await insertQueuedItem(db, { id: "waiting", now: 1_000, sessionKey: "session" });
     await ensureLinearSession(sqliteDb(db), {
       sessionId: "session",
       issueId: item.linearIssueId,
@@ -106,7 +105,7 @@ test("the queued thought shows the place in line, and the start timeout comes fr
   const pawsRoot = tempHome();
   writeFileSync(join(pawsRoot, "config.toml"), "[queue]\nstart_timeout_hours = 2\n");
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
@@ -116,8 +115,8 @@ test("the queued thought shows the place in line, and the start timeout comes fr
   });
   try {
     await oneBusyRunnerSlot(db);
-    insertQueuedItem(db, { id: "ahead", now: 0 });
-    const item = insertQueuedItem(db, { id: "waiting", now: 1_000, sessionKey: "session" });
+    await insertQueuedItem(db, { id: "ahead", now: 0 });
+    const item = await insertQueuedItem(db, { id: "waiting", now: 1_000, sessionKey: "session" });
     db.run("UPDATE work_item SET linear_identifier='PAS-1' WHERE id='waiting'");
     await ensureLinearSession(sqliteDb(db), {
       sessionId: "session",
@@ -174,24 +173,23 @@ test("queue lines use ordinals and singular slots", () => {
 test("the status API shows a queued item's place in line until it starts", async () => {
   const db = tempDb();
   try {
-    insertQueuedItem(db, { id: "ahead", now: 0 });
-    insertQueuedItem(db, { id: "waiting", now: 1 });
-    settled(saveQueuePositions(sqliteDb(db), ["ahead", "waiting"], { busy: 4, total: 4 }, 2));
+    await insertQueuedItem(db, { id: "ahead", now: 0 });
+    await insertQueuedItem(db, { id: "waiting", now: 1 });
+    await saveQueuePositions(sqliteDb(db), ["ahead", "waiting"], { busy: 4, total: 4 }, 2);
     const queueOf = async (id: string) =>
-      (await createLiveStatusProvider(db).issues()).issues.find((item) => item.id === id)?.queue;
+      (await createLiveStatusProvider(sqliteDb(db)).issues()).issues.find((item) => item.id === id)
+        ?.queue;
     expect(await queueOf("waiting")).toEqual({ position: 2, busySlots: 4, totalSlots: 4 });
     await applyWorkItemEvent(sqliteDb(db), "ahead", "dispatched");
-    settled(saveQueuePositions(sqliteDb(db), ["waiting"], { busy: 4, total: 4 }, 3));
+    await saveQueuePositions(sqliteDb(db), ["waiting"], { busy: 4, total: 4 }, 3);
     expect(await queueOf("ahead")).toBeUndefined();
     expect(await queueOf("waiting")).toEqual({ position: 1, busySlots: 4, totalSlots: 4 });
-    settled(
-      saveQueuePositions(
-        sqliteDb(db),
-        ["waiting"],
-        { busy: 4, total: 4 },
-        4,
-        new Map([["waiting", 3]]),
-      ),
+    await saveQueuePositions(
+      sqliteDb(db),
+      ["waiting"],
+      { busy: 4, total: 4 },
+      4,
+      new Map([["waiting", 3]]),
     );
     expect(await queueOf("waiting")).toEqual({
       position: 1,
@@ -208,7 +206,7 @@ test("a runner-queued item names its place in the title and plan, and a restart 
   const db = tempDb();
   const clock = new FakeClock(1_000);
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
@@ -219,8 +217,8 @@ test("a runner-queued item names its place in the title and plan, and a restart 
   });
   try {
     await oneBusyRunnerSlot(db);
-    insertQueuedItem(db, { id: "ahead", now: 0, sessionKey: "ahead-session" });
-    const item = insertQueuedItem(db, { id: "waiting", now: 1_000, sessionKey: "session" });
+    await insertQueuedItem(db, { id: "ahead", now: 0, sessionKey: "ahead-session" });
+    const item = await insertQueuedItem(db, { id: "waiting", now: 1_000, sessionKey: "session" });
     db.run("UPDATE work_item SET linear_identifier='PAS-1' WHERE id='waiting'");
     await ensureLinearSession(sqliteDb(db), {
       sessionId: "session",
@@ -282,7 +280,7 @@ test("paused and recovering items get a waiting title and no ephemeral", async (
   const db = tempDb();
   const clock = new FakeClock(1_000);
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
@@ -292,7 +290,7 @@ test("paused and recovering items get a waiting title and no ephemeral", async (
     scheduling: async () => ({}),
   });
   try {
-    const item = insertQueuedItem(db, { id: "paused", now: 1_000, sessionKey: "session" });
+    const item = await insertQueuedItem(db, { id: "paused", now: 1_000, sessionKey: "session" });
     db.run("UPDATE work_item SET linear_identifier='PAS-2' WHERE id='paused'");
     await ensureLinearSession(sqliteDb(db), {
       sessionId: "session",
@@ -377,20 +375,19 @@ forEachDialect((open) => {
   });
 });
 
-test("on SQLite the functions settle before they return, and settled() refuses a pending promise", () => {
+test("on SQLite the functions settle before they return", async () => {
   const db = tempDb();
   try {
-    insertQueuedItem(db, { id: "a", now: 0 });
+    await insertQueuedItem(db, { id: "a", now: 0 });
     const since = queueWaitSince(sqliteDb(db), "a", 1, 5);
     expect(Bun.peek.status(since)).toBe("fulfilled");
-    expect(settled(since)).toBe(5);
-    settled(saveQueuePositions(sqliteDb(db), ["a"], { busy: 1, total: 1 }, 1));
-    expect(settled(getQueuePosition(sqliteDb(db), "a"))?.position).toBe(1);
-    expect(() => settled(new Promise(() => {}))).toThrow("pending");
-    expect(() =>
-      settled(saveQueuePositions(sqliteDb(db), ["missing"], { busy: 1, total: 1 }, 2)),
-    ).toThrow("FOREIGN KEY");
-    expect(settled(getQueuePosition(sqliteDb(db), "a"))?.position).toBe(1);
+    expect(await since).toBe(5);
+    await saveQueuePositions(sqliteDb(db), ["a"], { busy: 1, total: 1 }, 1);
+    expect((await getQueuePosition(sqliteDb(db), "a"))?.position).toBe(1);
+    await expect(
+      saveQueuePositions(sqliteDb(db), ["missing"], { busy: 1, total: 1 }, 2),
+    ).rejects.toThrow("FOREIGN KEY");
+    expect((await getQueuePosition(sqliteDb(db), "a"))?.position).toBe(1);
   } finally {
     db.close();
   }

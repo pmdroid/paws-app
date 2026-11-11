@@ -1,14 +1,13 @@
 import { createHash } from "node:crypto";
-import type { Database } from "bun:sqlite";
 import {
   listRunFileChunksSteps,
   recordRunFileChunkSteps,
   runFileChunkSteps,
   setRunFileChunkKeySteps,
-  sqliteDb,
   type Q,
   type RunFileChunkRow,
   type Steps,
+  type Db,
 } from "../db";
 import { journalCaught } from "../journal";
 import { openRunFileChunk, runFileKeyId, sealRunFileChunk } from "./key";
@@ -34,7 +33,7 @@ function hash(bytes: Uint8Array) {
  * write or read it; `refused` is how it says no.
  */
 export function createRunFileChunks(options: {
-  db: Database;
+  store: Db;
   kind: RunFileKind;
   objects: RunFileObjects;
   /** The kind's 32-byte key from `loadRunFileKey`. */
@@ -44,7 +43,7 @@ export function createRunFileChunks(options: {
   plaintext?: () => Promise<boolean>;
 }) {
   const { kind, objects, key, refused } = options;
-  const store = sqliteDb(options.db);
+  const { store } = options;
   const { title } = RUN_FILE_KINDS[kind];
   if (key.length !== 32) throw new Error(`${title} key is invalid.`);
   const keyId = runFileKeyId(kind, key);

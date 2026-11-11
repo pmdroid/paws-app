@@ -96,7 +96,7 @@ test("a burst of 20 sessions while every runner slot is busy and Linear rate-lim
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs,
     outbox,
     home,

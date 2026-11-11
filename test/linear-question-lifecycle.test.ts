@@ -42,10 +42,14 @@ test("question handoff preserves selection labels and their values for freeform 
 
 async function setup(tracker: TrackerAdapter | null = null) {
   const db = tempDb();
-  const item = insertQueuedItem(db, { id: "ENG-2", sessionKey: "ses_1", title: "Export rows" });
+  const item = await insertQueuedItem(db, {
+    id: "ENG-2",
+    sessionKey: "ses_1",
+    title: "Export rows",
+  });
   await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
   await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
-  const question = await openQuestion(db, {
+  const question = await openQuestion(sqliteDb(db), {
     itemId: item.id,
     sessionId: "ses_1",
     body: "Include archived rows?",
@@ -54,7 +58,7 @@ async function setup(tracker: TrackerAdapter | null = null) {
   const clock = new FakeClock(NOW + 1_000);
   const outbox = new OutboxDispatcher(db, clock);
   const orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     jobs: new JobLoop(db, clock),
     outbox,
     pawsRoot: "/tmp/paws-question-lifecycle",
@@ -216,7 +220,7 @@ test("a consumed activity cannot answer the next question in its session", async
     await orchestrator.onLinearEvent(event);
     await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
     await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
-    const next = await openQuestion(db, {
+    const next = await openQuestion(sqliteDb(db), {
       itemId: item.id,
       sessionId: "ses_1",
       body: "Use CSV?",
@@ -234,7 +238,7 @@ test("only one blocking question may be open on a session", async () => {
   const { db, item, question } = await setup();
   try {
     await expect(
-      openQuestion(db, {
+      openQuestion(sqliteDb(db), {
         itemId: item.id,
         sessionId: "ses_1",
         body: "Use CSV?",
@@ -291,7 +295,7 @@ test("a Linear Stop pauses the item with its question open, and a reply restarts
 test("polling keeps activity creation and human identity distinct from viewer and update time", async () => {
   const client = createLinearClient({
     auth: {
-      hasToken: () => true,
+      hasToken: async () => true,
       ensureFresh: async () => "fixture-token",
       forceRefresh: async () => "fixture-token",
     },

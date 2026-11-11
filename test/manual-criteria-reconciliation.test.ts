@@ -32,7 +32,7 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
   const db = tempDb();
   const clock = new FakeClock(1000);
   const orchestrator = new Orchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
@@ -73,7 +73,7 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
   for (const state of [...states, "removed"])
     lifecycle.issues.set(state, { ...lifecycle.issue, id: state });
   const reconciler = createItemReconciler({
-    db,
+    store: sqliteDb(db),
     tracker,
     lifecycle,
     now: () => clock.now(),
@@ -134,7 +134,7 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
     const links: Awaited<ReturnType<typeof openLinkAsk>>[] = [];
     for (const kind of ["bypass", "screenshots", "risk", "rounds", "rule", "question"] as const)
       links.push(
-        await openLinkAsk(db, {
+        await openLinkAsk(sqliteDb(db), {
           asker: { itemId: manualId, runId: null, sessionId: "session" },
           kind,
           head: "candidate",
@@ -272,12 +272,12 @@ test.each(["all", "criteria"] as const)(
   async (scope) => {
     const db = tempDb();
     try {
-      const item = insertQueuedItem(db, {
+      const item = await insertQueuedItem(db, {
         id: "EDIT-1",
         title: "Manual edit",
         sessionKey: "session",
       });
-      const open = await openLinkAsk(db, {
+      const open = await openLinkAsk(sqliteDb(db), {
         asker: { itemId: item.id, runId: null, sessionId: "session" },
         kind: "risk",
         head: "candidate",
@@ -287,7 +287,7 @@ test.each(["all", "criteria"] as const)(
         now: 1000,
       });
       db.run("UPDATE outbox SET status='dead' WHERE op='elicitation'");
-      const queued = await openLinkAsk(db, {
+      const queued = await openLinkAsk(sqliteDb(db), {
         asker: { itemId: item.id, runId: null, sessionId: "session" },
         kind: "bypass",
         head: "candidate",

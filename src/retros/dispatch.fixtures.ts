@@ -152,6 +152,11 @@ export async function world(options: { activity?: boolean; retries?: number } = 
   if (!collected.ok) throw new Error(collected.reason);
   const clock = { now: FIXTURE_END + 10_000 };
   const open = (database: Database) =>
-    createRetroDispatcher({ db: database, artifactRoot: root, sign, now: () => clock.now });
+    createRetroDispatcher({
+      store: sqliteDb(database),
+      artifactRoot: root,
+      sign,
+      now: () => clock.now,
+    });
   return { db, root, path, clock, open, digestSha256: collected.digestSha256 };
 }

@@ -24,7 +24,7 @@ test("one scheduler tick requeues an orphan and admits its resume in the same pa
       issueId: "orphan-parent",
       now: 1,
     });
-    insertQueuedItem(db, { id: "orphan", now: 1, sessionKey: "orphan-session" });
+    await insertQueuedItem(db, { id: "orphan", now: 1, sessionKey: "orphan-session" });
     db.run("UPDATE work_item SET state='running' WHERE id='orphan'");
     const finished = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.start,
@@ -35,7 +35,7 @@ test("one scheduler tick requeues an orphan and admits its resume in the same pa
       clock.now() - GRACE_MS - 1,
       finished,
     ]);
-    insertQueuedItem(db, { id: "next", now: 2 });
+    await insertQueuedItem(db, { id: "next", now: 2 });
     const jobs = new JobLoop(db, clock);
     const ticks: string[][] = [];
     await registerScheduler(

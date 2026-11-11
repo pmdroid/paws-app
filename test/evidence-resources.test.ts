@@ -80,15 +80,15 @@ async function fixture() {
         installation_observed_at, created_at) VALUES (?, 'org', 'fixture', 'app', ?, 1, 0)`,
       [session!, team!],
     );
-  insertQueuedItem(db, { id: "PAS-1", sessionKey: "session-mine", now: Date.now() });
-  insertQueuedItem(db, { id: "PAS-OLD", sessionKey: "session-mine" });
+  await insertQueuedItem(db, { id: "PAS-1", sessionKey: "session-mine", now: Date.now() });
+  await insertQueuedItem(db, { id: "PAS-OLD", sessionKey: "session-mine" });
   db.run("UPDATE work_item SET state = 'merged' WHERE id = 'PAS-OLD'");
-  insertQueuedItem(db, { id: "PAS-2", sessionKey: "session-other", now: Date.now() });
+  await insertQueuedItem(db, { id: "PAS-2", sessionKey: "session-other", now: Date.now() });
 
   const home = mkdtempSync(join(tmpdir(), "paws-evidence-resources-"));
   homes.push(home);
   const evidenceDir = join(home, "evidence");
-  const store = createEvidenceStore({ db, root: evidenceDir });
+  const store = createEvidenceStore({ store: sqliteDb(db), root: evidenceDir });
   const save = (itemId: string, source: Uint8Array, displayName: string, attempt = 1) =>
     store.save({
       itemId,
@@ -128,7 +128,7 @@ async function fixture() {
   const port = reservation.port!;
   await reservation.stop(true);
   const access = createWorkspaceAccess({
-    db,
+    store: sqliteDb(db),
     publicUrl: `http://127.0.0.1:${port}`,
     clientId: "fixture",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -151,7 +151,7 @@ async function fixture() {
     workspaceAccess: access,
     evidenceDir,
   });
-  const session = await issueWorkspaceSession(db, {
+  const session = await issueWorkspaceSession(sqliteDb(db), {
     workspaceId: "workspace",
     userId: "member",
     now: Date.now(),

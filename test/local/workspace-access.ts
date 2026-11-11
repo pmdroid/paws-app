@@ -39,7 +39,7 @@ export async function probeWorkspaceAccess(
     organizationId: "verified-linear-org",
     name: "Fixture workspace",
   };
-  const grant = await issueWorkspaceBootstrap(db, workspace.organizationId, now);
+  const grant = await issueWorkspaceBootstrap(sqliteDb(db), workspace.organizationId, now);
   let mismatchRejected = false;
   try {
     await consumeWorkspaceBootstrap(sqliteDb(db), {
@@ -91,7 +91,11 @@ export async function probeWorkspaceAccess(
     member?.role === "admin" && member.teamIds.join() === "team-one",
     member,
   );
-  const issued = await issueWorkspaceSession(db, { userId, workspaceId: workspace.id, now });
+  const issued = await issueWorkspaceSession(sqliteDb(db), {
+    userId,
+    workspaceId: workspace.id,
+    now,
+  });
   const cookie = `${WORKSPACE_COOKIE}=${issued.token}`;
   const request = new Request("https://paws.example.invalid/api/issues", { headers: { cookie } });
   const stored = JSON.stringify(db.query("SELECT * FROM workspace_session").all());
@@ -160,7 +164,11 @@ export async function probeWorkspaceAccess(
     responses,
   );
   const restored = openDatabase(path);
-  const idle = await issueWorkspaceSession(restored, { userId, workspaceId: workspace.id, now });
+  const idle = await issueWorkspaceSession(sqliteDb(restored), {
+    userId,
+    workspaceId: workspace.id,
+    now,
+  });
   const idleRequest = new Request(request.url, {
     headers: { cookie: `${WORKSPACE_COOKIE}=${idle.token}` },
   });
@@ -233,7 +241,7 @@ export async function probeWorkspaceAccess(
     teamIds: ["team-one"],
     now: now + 4,
   });
-  const returned = await issueWorkspaceSession(restored, {
+  const returned = await issueWorkspaceSession(sqliteDb(restored), {
     userId,
     workspaceId: workspace.id,
     now: now + 4,

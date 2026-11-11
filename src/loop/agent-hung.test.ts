@@ -17,10 +17,10 @@ import { askSteps } from "./operations";
 import { questionEffects } from "./question-effects";
 import { AGENT_HUNG_REASON, AGENT_HUNG_RETRY, AGENT_HUNG_STOP } from "./runner-wait";
 
-function hungItem(clock: FakeClock) {
+async function hungItem(clock: FakeClock) {
   const db = openDatabase(":memory:");
   migrate(db);
-  const item = insertQueuedItem(db, { id: "acme-7", sessionKey: "ses", now: clock.now() });
+  const item = await insertQueuedItem(db, { id: "acme-7", sessionKey: "ses", now: clock.now() });
   return { db, item };
 }
 
@@ -33,7 +33,7 @@ function addRun(db: ReturnType<typeof openDatabase>, itemId: string, id: string,
 
 test("hang losses count across runs until a turn completes", async () => {
   const clock = new FakeClock(20_000);
-  const { db, item } = hungItem(clock);
+  const { db, item } = await hungItem(clock);
   const store = sqliteDb(db);
   const hang = (runId: string) =>
     store.transaction((q) => recordRunHangSteps(q, runId, "runner-1", clock.now()));
@@ -55,7 +55,7 @@ test("hang losses count across runs until a turn completes", async () => {
 
 async function askHung(answer: string) {
   const clock = new FakeClock(20_000);
-  const { db, item } = hungItem(clock);
+  const { db, item } = await hungItem(clock);
   const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now());
   await sqliteDb(db).transaction((q) =>
     askSteps(q, { itemId: item.id, runId: run.id, sessionId: "ses" }, "runner-wait", "Hung.", {

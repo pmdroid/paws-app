@@ -71,7 +71,7 @@ await requireLinearTaskDelegation(sqliteDb(db), {
   humanActorId: "human",
 });
 db.close();
-storeLinearToken(home, {
+await storeLinearToken(home, {
   accessToken: "fake-access",
   refreshToken: "fake-refresh",
   expiresAtMs: Date.now() + 600_000,

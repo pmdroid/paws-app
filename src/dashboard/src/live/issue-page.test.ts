@@ -72,7 +72,7 @@ async function activity(
 
 /** PAS-367 after a restart and a reply: three engine runs, each with one agent turn. */
 async function threeRuns(db: Database): Promise<string[]> {
-  insertQueuedItem(db, {
+  await insertQueuedItem(db, {
     id: ITEM,
     title: "Keep runs across restart",
     sessionKey: SESSION,
@@ -107,7 +107,7 @@ type Status = {
 };
 
 async function snapshotOf(db: Database): Promise<Status> {
-  const provider = createLiveStatusProvider(db, {
+  const provider = createLiveStatusProvider(sqliteDb(db), {
     now: () => new Date(T0 + 300_000),
     env: {},
   });
@@ -179,7 +179,7 @@ describe("one page per issue", () => {
   test("an old Conversations URL resolves to the issue page from stored records", async () => {
     const db = database();
     await threeRuns(db);
-    const provider = createLiveStatusProvider(db, { env: {} });
+    const provider = createLiveStatusProvider(sqliteDb(db), { env: {} });
     expect(parseRoute(`/sessions/${encodeURIComponent(SESSION)}`)).toEqual({
       view: "alias",
       kind: "sessions",
@@ -194,7 +194,7 @@ describe("one page per issue", () => {
   test("run, session and verdict links resolve to PAS-367", async () => {
     const db = database();
     const runIds = await threeRuns(db);
-    const provider = createLiveStatusProvider(db, { env: {} });
+    const provider = createLiveStatusProvider(sqliteDb(db), { env: {} });
     for (const id of runIds) expect(await provider.alias("runs", id)).toBe("PAS-367");
     expect(await provider.alias("verdicts", "PAS-367")).toBe("PAS-367");
     expect(await provider.alias("verdicts", runIds[0]!)).toBe("PAS-367");
@@ -207,7 +207,7 @@ describe("one page per issue", () => {
 
   test("a re-delegated issue shows only the current Linear session on its page", async () => {
     const db = database();
-    insertQueuedItem(db, {
+    await insertQueuedItem(db, {
       id: EARLIER,
       title: "Keep runs",
       sessionKey: "earlier-session",
@@ -233,7 +233,7 @@ describe("one page per issue", () => {
     expect(html).not.toContain("earlier-attempt");
     expect(html).not.toContain("Earlier attempt");
     expect(html).not.toContain("Earlier session turn.");
-    const provider = createLiveStatusProvider(db, { env: {} });
+    const provider = createLiveStatusProvider(sqliteDb(db), { env: {} });
     expect(await provider.alias("sessions", "earlier-session")).toBe("PAS-367");
     expect(await provider.alias("runs", old.id)).toBe("PAS-367");
   });
@@ -241,7 +241,12 @@ describe("one page per issue", () => {
   test("sibling sub-issues that share one Linear session keep one page each, naming the session", async () => {
     const db = database();
     await threeRuns(db);
-    insertQueuedItem(db, { id: "sibling", title: "Sibling", sessionKey: SESSION, now: T0 + 10 });
+    await insertQueuedItem(db, {
+      id: "sibling",
+      title: "Sibling",
+      sessionKey: SESSION,
+      now: T0 + 10,
+    });
     identify(db, "sibling", "PAS-368", "lin-368");
     const snapshot = await snapshotOf(db);
     const own = issuePage(snapshot);
@@ -250,14 +255,14 @@ describe("one page per issue", () => {
     expect(own).toContain('shared with <a class="lin-id" href="/issues/PAS-368">PAS-368</a>');
     expect(sibling).toContain('shared with <a class="lin-id" href="/issues/PAS-367">PAS-367</a>');
     expect(sibling).not.toContain("First turn read the issue.");
-    expect(await createLiveStatusProvider(db, { env: {} }).alias("sessions", SESSION)).toBe(
-      "PAS-367",
-    );
+    expect(
+      await createLiveStatusProvider(sqliteDb(db), { env: {} }).alias("sessions", SESSION),
+    ).toBe("PAS-367");
   });
 
   test("the page names the task only as PAS-367, with no internal id in visible text", async () => {
     const db = database();
-    insertQueuedItem(db, {
+    await insertQueuedItem(db, {
       id: EARLIER,
       title: "Keep runs",
       sessionKey: "earlier-session",
@@ -311,7 +316,12 @@ describe("one page per issue", () => {
   test("dead outbox rows and dead jobs of the issue are listed with a retry", async () => {
     const db = database();
     await threeRuns(db);
-    insertQueuedItem(db, { id: "other", title: "Other", sessionKey: "other-session", now: T0 });
+    await insertQueuedItem(db, {
+      id: "other",
+      title: "Other",
+      sessionKey: "other-session",
+      now: T0,
+    });
     identify(db, "other", "PAS-368", "lin-368");
     const elicitation = await enqueueOutbox(sqliteDb(db), {
       target: "linear",

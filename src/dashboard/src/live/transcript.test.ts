@@ -38,7 +38,7 @@ function message(text: string) {
 test("full transcript reads unfinished ACP output, tools and classification while the status view links to it", async () => {
   const db = tempDb();
   const home = tempHome();
-  const item = insertQueuedItem(db, { id: "transcript-item", sessionKey: "visible" });
+  const item = await insertQueuedItem(db, { id: "transcript-item", sessionKey: "visible" });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, 1000);
   const directory = join(home, "runs", run.id);
   mkdirSync(directory, { recursive: true });
@@ -75,7 +75,7 @@ test("full transcript reads unfinished ACP output, tools and classification whil
       .map((x) => JSON.stringify(x) + "\n")
       .join("") + "{unfinished",
   );
-  const provider = createLiveStatusProvider(db, {
+  const provider = createLiveStatusProvider(sqliteDb(db), {
     pawsHome: home,
     sessionIds: ["visible"],
     env: { API_KEY: "fixture-secret-value" },
@@ -107,7 +107,12 @@ test("full transcript reads unfinished ACP output, tools and classification whil
   appendFileSync(file, "}\n" + JSON.stringify(message("Screenshot captured")) + "\n");
   expect(read().at(-1)?.text).toContain("Screenshot captured");
   expect(
-    (await createLiveStatusProvider(db, { pawsHome: home, sessionIds: ["other"] }).issues()).runs,
+    (
+      await createLiveStatusProvider(sqliteDb(db), {
+        pawsHome: home,
+        sessionIds: ["other"],
+      }).issues()
+    ).runs,
   ).toEqual([]);
   db.close();
 });
@@ -128,7 +133,7 @@ test("transcript reader refuses outside directories, symlink files and incomplet
 test("the transcript route answers JSON entries when the page asks for them", async () => {
   const db = tempDb();
   const home = tempHome();
-  const item = insertQueuedItem(db, { id: "json-item", sessionKey: "visible" });
+  const item = await insertQueuedItem(db, { id: "json-item", sessionKey: "visible" });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, 1000);
   mkdirSync(join(home, "runs", run.id), { recursive: true });
   writeFileSync(
@@ -138,7 +143,7 @@ test("the transcript route answers JSON entries when the page asks for them", as
       .join(""),
   );
   const url = `http://127.0.0.1/api/runs/transcript?run=${run.id}`;
-  const options = { db, closeoutHome: home, sessionIds: ["visible"] };
+  const options = { store: sqliteDb(db), closeoutHome: home, sessionIds: ["visible"] };
   const asked = (await handleStatusRequest(
     new Request(url, { headers: { Accept: "application/json" } }),
     options,

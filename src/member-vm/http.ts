@@ -2,14 +2,12 @@ import {
   memberVmByIdSteps,
   memberVmForMemberSteps,
   setMemberVmPoolSteps,
-  sqliteDb,
   workspaceMemberSteps,
   workspaceMemberUsable,
   workspaceUserContactSteps,
   type Db,
 } from "../db";
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import {
   isExeDevPoolName,
   isProvisioningError,
@@ -205,9 +203,7 @@ const MAX_BODY = 4096;
  * `{ available: false }`.
  */
 export function createMemberVmHttp(options: {
-  db: Database;
-  /** The async `Db` over `db`. Defaults to `sqliteDb(db)`. */
-  store?: Db;
+  store: Db;
   available: () => boolean | Promise<boolean>;
   /** `[member_vm]` from config.toml. */
   size?: () => ExeDevVmSize;
@@ -215,7 +211,7 @@ export function createMemberVmHttp(options: {
   exeDev?: Pick<ExeDev, "listPools" | "adoptVm">;
   now?: () => number;
 }) {
-  const store = options.store ?? sqliteDb(options.db);
+  const { store } = options;
   const now = options.now ?? Date.now;
   return async function memberVmHttp(
     request: Request,

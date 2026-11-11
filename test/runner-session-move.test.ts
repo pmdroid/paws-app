@@ -49,7 +49,7 @@ async function setup() {
     name: "Other",
     email: "other@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-work", now);
+  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "fixture-work", now);
   const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "fixture-work",
@@ -73,7 +73,7 @@ async function setup() {
   const issuer = join(root, "issuer");
   const authority = await initializeRunnerAuthority(issuer);
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority,
     certificateRoot: issuer,
     disconnect() {},
@@ -100,14 +100,14 @@ async function setup() {
   }
   const signing = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: signing.privateKey,
     eventKey: Buffer.alloc(32, 7),
     now: () => now,
   });
-  const results = createRunnerResults({ db, work, now: () => now });
-  const health = createRunnerHealth({ db, work, now: () => now });
+  const results = createRunnerResults({ store: sqliteDb(db), work, now: () => now });
+  const health = createRunnerHealth({ store: sqliteDb(db), work, now: () => now });
   const sessions = createAgentSessions({
     db,
     work,
@@ -144,7 +144,7 @@ async function setup() {
   const mirror = mirrorPath(root, "fixture", "repository");
   run(["clone", "-q", "--bare", source, mirror]);
   const backend = createRemoteAgentRunner({
-    db,
+    store: sqliteDb(db),
     work,
     results,
     health,
@@ -184,7 +184,7 @@ async function setup() {
     const id = `item-${++sequence}`;
     run(["--git-dir", mirror, "update-ref", candidateRef(`display-${id}`), base]);
     const sessionKey = `session-${sequence}`;
-    const record = insertQueuedItem(db, { id, now, sessionKey });
+    const record = await insertQueuedItem(db, { id, now, sessionKey });
     const { run: started } = await beginImplementRun(sqliteDb(db), id, now);
     await recordLinearInstallation(sqliteDb(db), {
       organizationId: "fixture-work",
@@ -681,7 +681,7 @@ async function mergeQueueItemOnFullRunner() {
     "fixture/repository",
     context.now,
   ]);
-  const other = insertQueuedItem(db, { id: `busy-${record.id}`, now: context.now });
+  const other = await insertQueuedItem(db, { id: `busy-${record.id}`, now: context.now });
   const busy = (await beginImplementRun(sqliteDb(db), other.id, context.now)).run.id;
   db.run(
     "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) SELECT ?,?,workspace_id,1,0,?,? FROM runner WHERE id=?",

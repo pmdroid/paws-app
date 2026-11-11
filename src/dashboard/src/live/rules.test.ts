@@ -49,7 +49,12 @@ async function seed(): Promise<{ db: Database; home: string }> {
   open.push(db);
   const home = mkdtempSync(join(tmpdir(), "paws-rules-"));
   homes.push(home);
-  const item = insertQueuedItem(db, { id: "ENG-7", title: "Rules", sessionKey: "ses_7", now: NOW });
+  const item = await insertQueuedItem(db, {
+    id: "ENG-7",
+    title: "Rules",
+    sessionKey: "ses_7",
+    now: NOW,
+  });
   await beginImplementRun(sqliteDb(db), item.id, NOW);
   await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
   const identity = {
@@ -163,7 +168,7 @@ describe("rule results in the issue resources", () => {
   test("the list summarizes each rule as a check of kind rule", async () => {
     const { db, home } = await seed();
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-      db,
+      store: sqliteDb(db),
       env: {},
       closeoutHome: home,
     });
@@ -180,7 +185,7 @@ describe("rule results in the issue resources", () => {
   test("the item detail carries each rule's probe hash, exit code, duration and decision", async () => {
     const { db, home } = await seed();
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues/ENG-7"), {
-      db,
+      store: sqliteDb(db),
       env: {},
       closeoutHome: home,
     });
@@ -220,7 +225,7 @@ describe("rule results in the issue resources", () => {
 
   test("a rule's probe output loads like a check's log", async () => {
     const { db, home } = await seed();
-    const provider = createLiveStatusProvider(db, { pawsHome: home });
+    const provider = createLiveStatusProvider(sqliteDb(db), { pawsHome: home });
     expect(
       await provider.checkLog({ itemId: "ENG-7", attempt: 1, checkId: "api-contract", run: null }),
     ).toEqual({ stdout: "", stderr: "" });
@@ -228,7 +233,7 @@ describe("rule results in the issue resources", () => {
 
   test("without the evidence record the probe hash is null", async () => {
     const { db } = await seed();
-    const detail = await createLiveStatusProvider(db, { env: {} }).issue("ENG-7");
+    const detail = await createLiveStatusProvider(sqliteDb(db), { env: {} }).issue("ENG-7");
     expect(detail?.verdicts[0]?.checks[0]?.probeSha256).toBeNull();
   });
 });

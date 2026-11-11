@@ -24,7 +24,7 @@ test("lost repository interpreter ownership persists cleanup failure before abor
   const wrapper = join(home, "fake-agent.ts");
   const controller = new AbortController();
   let pid = 0;
-  insertQueuedItem(db, { id: "item", sessionKey: "session" });
+  await insertQueuedItem(db, { id: "item", sessionKey: "session" });
   writeFileSync(script, JSON.stringify({ steps: [{ type: "hang" }] }));
   writeFileSync(
     wrapper,

@@ -21,7 +21,7 @@ import { advanceMerge, type MergeCapabilities } from "./advance";
 async function queued() {
   const db = openDatabase(":memory:");
   migrate(db);
-  insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
+  await insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
   await beginImplementRun(sqliteDb(db), "eng-1", 1);
   await enterMergeQueue(sqliteDb(db), "eng-1", {
     phase: "merge_queue",

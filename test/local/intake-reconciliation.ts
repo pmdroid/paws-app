@@ -102,7 +102,7 @@ export async function probeEpicReconciliation(root: string) {
     const joinedChanges: ItemChanges[] = [];
     let fail = false;
     const reconciler = createItemReconciler({
-      db,
+      store: sqliteDb(db),
       tracker,
       lifecycle,
       *onChanges(q, changes) {
@@ -170,7 +170,7 @@ export async function probeEpicReconciliation(root: string) {
     );
     let interruptedEffects: ItemChanges | null = null;
     const interrupted = createItemReconciler({
-      db,
+      store: sqliteDb(db),
       tracker,
       lifecycle,
       *onChanges(q, changes) {
@@ -191,7 +191,7 @@ export async function probeEpicReconciliation(root: string) {
     try {
       let recoveredEffects: ItemChanges | null = null;
       const recovered = createItemReconciler({
-        db: recoveredDb,
+        store: sqliteDb(recoveredDb),
         tracker,
         lifecycle,
         *onChanges(q, changes) {
@@ -282,7 +282,7 @@ export async function probeEpicReconciliation(root: string) {
     let loads = 0;
     let publications = 0;
     const coalesced = createItemReconciler({
-      db,
+      store: sqliteDb(db),
       lifecycle,
       tracker: {
         ...tracker,
@@ -331,7 +331,7 @@ export async function probeEpicReconciliation(root: string) {
     const staleGate = new Promise<void>((resolve) => (staleRelease = resolve));
     const staleEntered = new Promise<void>((resolve) => (staleEnter = resolve));
     const stale = createItemReconciler({
-      db,
+      store: sqliteDb(db),
       lifecycle,
       tracker: {
         ...tracker,
@@ -391,7 +391,7 @@ export async function probeEpicReconciliation(root: string) {
     assert.notEqual(firstRestoration, b);
     tracker.epics.get("parent")!.subIssues = [keepIssue];
     const pendingRemoval = createItemReconciler({
-      db,
+      store: sqliteDb(db),
       tracker,
       lifecycle,
       *onChanges(q, changes) {
@@ -452,7 +452,7 @@ export async function probeEpicReconciliation(root: string) {
     const stopGate = new Promise<void>((resolve) => (stopRelease = resolve));
     const stopEntered = new Promise<void>((resolve) => (stopEnter = resolve));
     const stopping = createItemReconciler({
-      db,
+      store: sqliteDb(db),
       lifecycle,
       tracker: {
         ...tracker,

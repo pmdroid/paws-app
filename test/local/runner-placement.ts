@@ -35,7 +35,7 @@ export async function probeRunnerPlacement(
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const token = await issueWorkspaceBootstrap(db, "org", now);
+  const token = await issueWorkspaceBootstrap(sqliteDb(db), "org", now);
   const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "org",
@@ -44,7 +44,7 @@ export async function probeRunnerPlacement(
     tokenHash: workspaceTokenHash(token),
     now,
   });
-  const item = insertQueuedItem(db, { id: "placement", now, sessionKey: "session" });
+  const item = await insertQueuedItem(db, { id: "placement", now, sessionKey: "session" });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
   await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",

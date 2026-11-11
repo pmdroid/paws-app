@@ -68,13 +68,13 @@ describe("combined recovery scenarios", () => {
     try {
       const id = "merge_queue";
       const jobKey = `ci-failed:${id}:recheck:head`;
-      const first = restart(w.db, (await getWorkItem(sqliteDb(w.db), id))!, {
+      const first = (await restart(sqliteDb(w.db), (await getWorkItem(sqliteDb(w.db), id))!, {
         reason: "ci",
         body: "first failure",
         jobKey,
         now: w.now,
-      })!;
-      expect(fixRounds(w.db, id)).toBe(1);
+      }))!;
+      expect(await fixRounds(sqliteDb(w.db), id)).toBe(1);
       await workspaceDispatch(w.db, { now: w.now });
       const claimed = await claimNextJob(sqliteDb(w.db), { now: w.now, queues: [JOB_KIND.resume] });
       expect(claimed?.id).toBe(first);
@@ -93,7 +93,7 @@ describe("combined recovery scenarios", () => {
       await markCloseoutAccepted(sqliteDb(w.db), id, "head");
 
       const second = async () =>
-        restart(w.db, (await getWorkItem(sqliteDb(w.db), id))!, {
+        await restart(sqliteDb(w.db), (await getWorkItem(sqliteDb(w.db), id))!, {
           reason: "ci",
           body: "second failure",
           jobKey,
@@ -105,7 +105,7 @@ describe("combined recovery scenarios", () => {
         status: "pending",
         payload: { handoff: "second failure", reason: "ci" },
       });
-      expect(fixRounds(w.db, id)).toBe(2);
+      expect(await fixRounds(sqliteDb(w.db), id)).toBe(2);
 
       w.crash();
       await w.start();
@@ -176,7 +176,7 @@ describe("combined recovery scenarios", () => {
         const facts = await factsOf(w.db, id);
         expect([facts.state, facts.mergeCall]).toEqual(["merge_queue", true]);
         expect(
-          restart(w.db, (await getWorkItem(sqliteDb(w.db), id))!, {
+          await restart(sqliteDb(w.db), (await getWorkItem(sqliteDb(w.db), id))!, {
             reason: "ci",
             body: "x",
             now: w.now,
@@ -205,9 +205,9 @@ describe("combined recovery scenarios", () => {
         (await applyLinearCommand(sqliteDb(w.db), { ...stop, requestedAt: w.now })).applied,
       ).toBe(false);
       const current = (await getWorkItem(sqliteDb(w.db), id))!;
-      expect(() => restart(w.db, current, { reason: "ci", body: "late", now: w.now })).toThrow(
-        "illegal_transition",
-      );
+      await expect(
+        restart(sqliteDb(w.db), current, { reason: "ci", body: "late", now: w.now }),
+      ).rejects.toThrow("illegal_transition");
       expect(await completeMergedItem(sqliteDb(w.db), { itemId: id, now: w.now })).toBeNull();
       await w.settle();
       expect(await factsOf(w.db, id)).toMatchObject({ state: "merged", version: merged.version });
@@ -252,7 +252,7 @@ describe("combined recovery scenarios", () => {
           review: { id: 42, state: "changes_requested", body: "Fix it", user: { login: "lead" } },
         }),
       };
-      expect(await acceptGitHubDelivery(w.db, delivery, w.now)).toBe(true);
+      expect(await acceptGitHubDelivery(sqliteDb(w.db), delivery, w.now)).toBe(true);
       const reviews = async () =>
         (await pendingChangeRequests(sqliteDb(w.db), id)).map((review) => review.reviewId);
       expect(await reviews()).toEqual([42]);
@@ -263,11 +263,11 @@ describe("combined recovery scenarios", () => {
 
       w.crash();
       await w.start();
-      expect(await acceptGitHubDelivery(w.db, delivery, w.now)).toBe(false);
+      expect(await acceptGitHubDelivery(sqliteDb(w.db), delivery, w.now)).toBe(false);
       w.crash();
       w.advance(1_000);
       await w.start();
-      expect(await acceptGitHubDelivery(w.db, delivery, w.now)).toBe(false);
+      expect(await acceptGitHubDelivery(sqliteDb(w.db), delivery, w.now)).toBe(false);
       expect(await reviews()).toEqual([42]);
       expect(await jobs()).toEqual(effects);
       expect((await liveExecution(w, id)).map((job) => job.id)).toEqual(merge);
@@ -345,7 +345,7 @@ async function runnerWorld() {
   const keys = generateKeyPairSync("ed25519");
   const controller = () =>
     createRunnerWork({
-      db: w.db,
+      store: sqliteDb(w.db),
       keyId: "fixture",
       privateKey: keys.privateKey,
       eventKey: Buffer.alloc(32, 7),
@@ -362,7 +362,7 @@ async function runnerWorld() {
     organizationId: "org",
     name: "Test",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(w.db, "org", w.now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(w.db), "org", w.now)),
     now: w.now,
   });
   w.db.run(
@@ -374,7 +374,7 @@ async function runnerWorld() {
     "fixture/repository",
     "team",
   ]);
-  const item = insertQueuedItem(w.db, { id: "item", now: w.now, sessionKey: "session" });
+  const item = await insertQueuedItem(w.db, { id: "item", now: w.now, sessionKey: "session" });
   const { run } = await beginImplementRun(sqliteDb(w.db), item.id, w.now);
   await recordLinearInstallation(sqliteDb(w.db), {
     organizationId: "org",

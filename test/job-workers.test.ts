@@ -17,7 +17,7 @@ test("Paws runs more task starts at once than the four workers it used to have",
   const db = tempDb();
   const ids = Array.from({ length: 10 }, (_, index) => `item-${index}`);
   for (const [index, id] of ids.entries()) {
-    insertQueuedItem(db, { id, now: index });
+    await insertQueuedItem(db, { id, now: index });
     await bindWorkItemRepository(sqliteDb(db), id, repository);
     await sqliteDb(db).run((q) =>
       saveSchedulingContextSteps(q, { itemId: id, projectId: "project", paths: [`src/${id}.ts`] }),

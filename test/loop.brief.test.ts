@@ -137,7 +137,7 @@ test.each([
     let jobs = new JobLoop(db, systemClock);
     let outbox = new OutboxDispatcher(db, systemClock);
     let orchestrator = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       admission: workspaceAdmission(db),
       jobs,
       outbox,
@@ -175,7 +175,7 @@ test.each([
       jobs = new JobLoop(db, systemClock);
       outbox = new OutboxDispatcher(db, systemClock);
       orchestrator = attachOrchestrator({
-        db,
+        store: sqliteDb(db),
         admission: workspaceAdmission(db),
         jobs,
         outbox,

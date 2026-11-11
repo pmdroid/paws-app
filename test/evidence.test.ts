@@ -45,16 +45,16 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function harness(limits?: { video: number; image: number }) {
+async function harness(limits?: { video: number; image: number }) {
   const db = openDatabase(":memory:");
   migrate(db);
-  insertQueuedItem(db, { id: "item", sessionKey: "session-visible" });
-  insertQueuedItem(db, { id: "hidden", sessionKey: "session-hidden" });
+  await insertQueuedItem(db, { id: "item", sessionKey: "session-visible" });
+  await insertQueuedItem(db, { id: "hidden", sessionKey: "session-hidden" });
   const home = mkdtempSync(join(tmpdir(), "paws-evidence-"));
   roots.push(home);
   const root = join(home, "evidence");
   const store = createEvidenceStore({
-    db,
+    store: sqliteDb(db),
     root,
     now: () => 1_700_000_000_000,
     ...(limits ? { limits } : {}),
@@ -74,7 +74,7 @@ function harness(limits?: { video: number; image: number }) {
 
 describe("evidence store", () => {
   test("a stored file gets a row with every field, mode 0600 in a 0700 directory", async () => {
-    const { db, root, store, input } = harness();
+    const { db, root, store, input } = await harness();
     const saved = await store.save(input(PNG));
     expect(saved.id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
     expect(await getEvidence(sqliteDb(db), saved.id)).toEqual({
@@ -97,7 +97,7 @@ describe("evidence store", () => {
   });
 
   test("the media type comes from the content, not the name", async () => {
-    const { store, input } = harness();
+    const { store, input } = await harness();
     const cases: [Uint8Array, string, string][] = [
       [WEBM, "clip.mp4", "video/webm"],
       [MP4, "clip.webm", "video/mp4"],
@@ -110,7 +110,7 @@ describe("evidence store", () => {
   });
 
   test("SVG and other types are refused whatever they are called", async () => {
-    const { db, root, store, input } = harness();
+    const { db, root, store, input } = await harness();
     const refused = [
       bytes(text('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>')),
       bytes(text("<!DOCTYPE html><html></html>")),
@@ -130,7 +130,7 @@ describe("evidence store", () => {
   });
 
   test("a file over the cap for its kind is refused", async () => {
-    const { root, store, input } = harness({ video: 64, image: PNG.byteLength - 1 });
+    const { root, store, input } = await harness({ video: 64, image: PNG.byteLength - 1 });
     const error = await store.save(input(PNG)).catch((e) => e);
     expect((error as EvidenceRejectedError).reason).toBe("size");
     const huge = bytes([...WEBM], new Array<number>(100).fill(0));
@@ -142,7 +142,7 @@ describe("evidence store", () => {
   });
 
   test("an unknown work item leaves no file behind", async () => {
-    const { root, store, input } = harness();
+    const { root, store, input } = await harness();
     await expect(store.save(input(PNG, { itemId: "missing" }))).rejects.toThrow();
     expect(readdirSync(root)).toEqual([]);
   });
@@ -156,7 +156,7 @@ describe("evidence store", () => {
 
 describe("GET /api/evidence/:id", () => {
   async function stored() {
-    const h = harness();
+    const h = await harness();
     const video = await h.store.save(
       h.input(bytes([...WEBM], text("0123456789")), { displayName: 'run "one" ✓.webm' }),
     );
@@ -167,7 +167,7 @@ describe("GET /api/evidence/:id", () => {
       sessionIds: string[] | null = ["session-visible"],
     ) =>
       handleEvidenceRequest(new Request(`http://paws.test/api/evidence/${id}`, init), {
-        db: h.db,
+        store: sqliteDb(h.db),
         root: h.root,
         sessionIds: sessionIds ?? undefined,
       }).then((response) => response!);
@@ -250,8 +250,8 @@ test("the server refuses evidence without a session and hides it from members wi
   const home = mkdtempSync(join(tmpdir(), "paws-evidence-server-"));
   roots.push(home);
   const evidenceDir = join(home, "evidence");
-  insertQueuedItem(f.db, { id: "evidence-item", sessionKey: "session-elsewhere" });
-  const saved = await createEvidenceStore({ db: f.db, root: evidenceDir }).save({
+  await insertQueuedItem(f.db, { id: "evidence-item", sessionKey: "session-elsewhere" });
+  const saved = await createEvidenceStore({ store: sqliteDb(f.db), root: evidenceDir }).save({
     itemId: "evidence-item",
     runId: "run",
     checkId: "e2e",
@@ -265,7 +265,7 @@ test("the server refuses evidence without a session and hides it from members wi
   await reservation.stop(true);
   const origin = `http://127.0.0.1:${port}`;
   const access = createWorkspaceAccess({
-    db: f.db,
+    store: sqliteDb(f.db),
     publicUrl: origin,
     clientId: "fixture",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -288,7 +288,7 @@ test("the server refuses evidence without a session and hides it from members wi
     workspaceAccess: access,
     evidenceDir,
   });
-  const session = await issueWorkspaceSession(f.db, { ...f.actor, now: Date.now() });
+  const session = await issueWorkspaceSession(sqliteDb(f.db), { ...f.actor, now: Date.now() });
   const url = (id: string) => `http://127.0.0.1:${server.port}/api/evidence/${id}`;
   try {
     expect((await fetch(url(saved.id))).status).toBe(401);

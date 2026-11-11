@@ -70,7 +70,11 @@ for (const state of [
       options,
     );
     try {
-      insertQueuedItem(paws.db, { id: "legacy", branchName: "paws/legacy", now: clock.now() });
+      await insertQueuedItem(paws.db, {
+        id: "legacy",
+        branchName: "paws/legacy",
+        now: clock.now(),
+      });
       const { run } = await beginImplementRun(sqliteDb(paws.db), "legacy", clock.now(), {
         phase: "running",
         wipCommit: before,

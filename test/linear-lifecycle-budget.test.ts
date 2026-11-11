@@ -324,8 +324,9 @@ async function runTask(input: {
   let polls = 0;
   let gate: LinearTaskAccess | undefined;
   let orchestrator: ReturnType<typeof attachOrchestrator> | undefined;
-  const linear = openLinear({
+  const linear = await openLinear({
     db,
+    store: sqliteDb(db),
     secretsDir: path.join(layout.pawsRoot, "secrets"),
     env: { LINEAR_ACCESS_TOKEN: "fixture-token", LINEAR_CLIENT_ID: "client" },
     fetch: server.fetch,
@@ -333,7 +334,7 @@ async function runTask(input: {
     followUp: (event) => orchestrator!.onLinearEvent(event),
     progressReporter: (event) => orchestrator!.sessionProgressReporter(event),
   });
-  gate = new LinearTaskAccess(db, {
+  gate = new LinearTaskAccess(sqliteDb(db), {
     access: linearCallerFor(linear.access!, "task-access"),
     lifecycle: linearCallerFor(linear.issueLifecycle!, "task-access"),
     oauthClientId: "client",
@@ -378,7 +379,7 @@ async function runTask(input: {
     };
   };
   orchestrator = attachOrchestrator({
-    db,
+    store: sqliteDb(db),
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -386,7 +387,11 @@ async function runTask(input: {
     tracker: linear.tracker,
     files: linear.files!,
     evidence: {
-      store: createEvidenceStore({ db, root: evidenceRoot, now: () => clock.now() }),
+      store: createEvidenceStore({
+        store: sqliteDb(db),
+        root: evidenceRoot,
+        now: () => clock.now(),
+      }),
       publicUrl: "https://paws.example",
       root: evidenceRoot,
     },

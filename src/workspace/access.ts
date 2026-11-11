@@ -9,17 +9,16 @@ import {
   listWorkspaceMembersSteps,
   membershipFresh,
   putWorkspaceUserSteps,
-  sqliteDb,
   syncWorkspaceMemberSteps,
   workspaceForOrganizationSteps,
   workspaceLinearMemberSteps,
   workspaceMemberSteps,
+  type Db,
 } from "../db";
 import { journalCaught } from "../journal";
 import { handleDecisions } from "./decisions";
 import { createGitHubAttributionLink } from "./github-attribution";
 import { LINEAR_GUEST_REFUSAL } from "./eligibility";
-import type { Database } from "bun:sqlite";
 import type { WorkspaceAssignments } from "./assignments";
 import { linearItem, type LinearMembershipReads } from "../linear";
 import type { SlackIdentityReads } from "../slack";
@@ -45,7 +44,7 @@ import { dashboardIssuePath, dashboardPath } from "../dashboard-links";
 const GITHUB_STEP = "/github";
 
 export type WorkspaceAccessOptions = {
-  db: Database;
+  store: Db;
   assignments?: WorkspaceAssignments;
   /** Runner and coding-agent state for the onboarding page. */
   onboardingReadiness?: OnboardingReadinessReader;
@@ -87,7 +86,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     throw new Error("Paws browser sign-in requires an HTTPS origin.");
   const origin = configured.origin;
   const now = options.now ?? Date.now;
-  const store = sqliteDb(options.db);
+  const { store } = options;
   const memberOf = (workspaceKey: string, userId: string) =>
     store.run((q) => workspaceMemberSteps(q, workspaceKey, userId));
   const workspaceOf = (organizationId: string) =>
@@ -98,14 +97,14 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
   const deleteSession = (tokenHash: string) =>
     store.run((q) => deleteWorkspaceSessionSteps(q, tokenHash));
   const linearActions = createWorkspaceLinearActions({
-    db: options.db,
+    store: options.store,
     organizationId: options.installedOrganization.id,
     clientId: options.clientId,
     memberships: options.memberships,
     now,
   });
   const links = createWorkspaceIdentityLinks({
-    db: options.db,
+    store: options.store,
     slack: options.slackIdentities,
     now,
   });
@@ -181,7 +180,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     }
   }
   const attribution = createGitHubAttributionLink({
-    db: options.db,
+    store: options.store,
     origin,
     client: options.githubAttributionClient,
     refresh: (workspaceKey, userId) => refresh(workspaceKey, userId, true, true),
@@ -271,11 +270,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           : attribution.startFromPage(request, `/onboard/${creator.link.linkId}`);
       if (creator !== null) {
         const { link: done, member: owner, viewer: signedIn } = creator;
-        const credit = await githubAttribution(
-          sqliteDb(options.db),
-          done.workspaceId,
-          owner.userId,
-        );
+        const credit = await githubAttribution(options.store, done.workspaceId, owner.userId);
         return onboardingPage({
           identifier: done.identifier,
           issueUrl: done.issueUrl,
@@ -309,7 +304,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       if (link.state === "done") return notFound();
       const perLink = limits.startsPerLink.take(link.link);
       if (!perLink.allowed) return limited(limits.startsPerLink, perLink.retryAfterSeconds);
-      return beginWorkspaceOAuth(options.db, {
+      return beginWorkspaceOAuth(options.store, {
         clientId: options.clientId,
         origin,
         now: now(),
@@ -347,7 +342,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           },
           410,
         );
-      return beginWorkspaceOAuth(options.db, {
+      return beginWorkspaceOAuth(options.store, {
         clientId: options.clientId,
         origin,
         now: now(),
@@ -367,7 +362,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
   }
   async function callback(request: Request): Promise<Response> {
     try {
-      const result = await completeWorkspaceOAuth(options.db, request, {
+      const result = await completeWorkspaceOAuth(options.store, request, {
         clientId: options.clientId,
         origin,
         now: now(),
@@ -445,7 +440,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
             403,
           );
         const grant = await issueWorkspaceBootstrap(
-          options.db,
+          options.store,
           result.identity.organizationId,
           now(),
         );
@@ -493,7 +488,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       await links.syncUser(workspace.id, userId);
       const previous = await requestWorkspaceSession(store, request, now());
       if (previous !== null) await deleteSession(previous.session.tokenHash);
-      const issued = await issueWorkspaceSession(options.db, {
+      const issued = await issueWorkspaceSession(options.store, {
         userId,
         workspaceId: workspace.id,
         now: now(),
@@ -557,7 +552,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       return json({ ok: true });
     }
     const decisionResponse = await handleDecisions(request, {
-      db: options.db,
+      store: options.store,
       ...access,
       origin,
       clientId: options.clientId,
@@ -567,7 +562,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     const identityAdministration = await links.handle(request, { ...access, origin, now: now() });
     if (identityAdministration !== null) return identityAdministration;
     const administration = await handleWorkspaceAdministration(request, {
-      db: options.db,
+      store: options.store,
       ...access,
       origin,
       now: now(),

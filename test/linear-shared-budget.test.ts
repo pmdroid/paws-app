@@ -7,7 +7,7 @@ import { pgliteDb } from "./pglite";
 import { createLinearClient, createLinearLedger, LinearRateLimitError } from "../src/linear";
 
 const AUTH = {
-  hasToken: () => true,
+  hasToken: async () => true,
   ensureFresh: async () => "token",
   forceRefresh: async () => "token",
 };

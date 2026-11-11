@@ -376,7 +376,7 @@ export async function probeRunnerOrchestration(
       `${mergeSettings}[checkout.projects."acme/fixture"]\nexclude_from_checks = ["large"]\n`,
     );
     const orchestrator = attachOrchestrator({
-      db,
+      store: sqliteDb(db),
       admission: workspaceAdmission(db),
       clock,
       jobs,

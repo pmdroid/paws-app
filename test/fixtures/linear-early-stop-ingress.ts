@@ -8,7 +8,7 @@ import { createInboxStore } from "../../src/linear";
 const home = process.argv[2]!;
 const token = process.argv[3] === "token";
 if (token)
-  storeLinearToken(home, {
+  await storeLinearToken(home, {
     accessToken: "fake-access",
     refreshToken: "fake-refresh",
     expiresAtMs: Date.now() + 600_000,

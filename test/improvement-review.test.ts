@@ -367,7 +367,7 @@ describe("improvement decisions", () => {
     const w = await world();
     const id = w.retro.a;
     const ada = w.people["ada"]!;
-    const outcome = await decideInboxItem(w.db, {
+    const outcome = await decideInboxItem(sqliteDb(w.db), {
       reviewer: { ...ada, repositories: [A, B], sessionIds: ONLY_A },
       improvementId: id,
       expectedVersion: 1,
@@ -437,7 +437,7 @@ describe("improvement decisions", () => {
     const id = w.retro.a;
     const decideWhile = async (revoke: () => unknown) => {
       const http = createImprovementsHttp({
-        db: w.db,
+        store: sqliteDb(w.db),
         lookup: async (issue) => {
           await revoke();
           return w.lookup.lookup(issue);
@@ -579,7 +579,7 @@ describe("daily findings share legacy claims", () => {
         body: JSON.stringify({ action: "file", id: groupId }),
       }),
       {
-        db: w.db,
+        store: sqliteDb(w.db),
         principal: w.people["bea"]!,
         sessionIds: ONLY_A,
         services: {
@@ -629,7 +629,7 @@ describe("legacy dismissal after an inbox accept", () => {
         method: "POST",
         body: JSON.stringify({ action: "dismiss", id: groupId, reason: "Noise" }),
       }),
-      { db: w.db, principal: w.people["bea"]!, sessionIds: ONLY_A },
+      { store: sqliteDb(w.db), principal: w.people["bea"]!, sessionIds: ONLY_A },
     );
     expect(group!.status).toBe(409);
     const single = await handleFindingsRequest(
@@ -637,7 +637,7 @@ describe("legacy dismissal after an inbox accept", () => {
         method: "POST",
         body: JSON.stringify({ action: "dismiss", id: findings[0]!.id, reason: "Noise" }),
       }),
-      { db: w.db, principal: w.people["bea"]!, sessionIds: ONLY_A },
+      { store: sqliteDb(w.db), principal: w.people["bea"]!, sessionIds: ONLY_A },
     );
     expect(single!.status).toBe(409);
     expect((await listReviewFindings(sqliteDb(w.db))).every((f) => f.status === "open")).toBe(true);
@@ -685,7 +685,7 @@ describe("individual finding issues share the inbox claim", () => {
       },
       now: () => END + 50,
     });
-    const { session } = await issueWorkspaceSession(w.db, {
+    const { session } = await issueWorkspaceSession(sqliteDb(w.db), {
       workspaceId: "ws",
       userId: "user-bea",
       now: END,
@@ -767,7 +767,7 @@ describe("individual finding issues share the inbox claim", () => {
         method: "POST",
         body: JSON.stringify({ action: "dismiss", id: groupId, reason: "Noise" }),
       }),
-      { db: w.db, principal: w.people["bea"]!, sessionIds: ONLY_A },
+      { store: sqliteDb(w.db), principal: w.people["bea"]!, sessionIds: ONLY_A },
     );
     expect(dismissed!.status).toBe(200);
     const { post } = await route(w);

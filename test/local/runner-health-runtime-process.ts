@@ -87,7 +87,7 @@ if (mode === "prepare") {
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
     now,
   });
   const principal = {
@@ -204,7 +204,7 @@ if (mode === "prepare") {
       writeFileSync(join(server, "fenced"), "fenced");
     }
     if (nextHelper && fenced && existsSync(join(server, "resume")) && !resumed) {
-      coordinator.helpers.finish(nextHelper);
+      await coordinator.helpers.finish(nextHelper);
       await coordinator.helpers.dispatch({
         runnerId: config.runnerId!,
         sessionId: "session",
@@ -221,7 +221,7 @@ if (mode === "prepare") {
       !(await coordinator.helpers.result(config.commandIds[0]!))
     )
       return;
-    coordinator.helpers.finish(config.commandIds[0]!);
+    await coordinator.helpers.finish(config.commandIds[0]!);
     nextHelper = (
       await coordinator.helpers.dispatch({
         runnerId: config.runnerId!,

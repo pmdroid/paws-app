@@ -12,7 +12,7 @@ import {
   RunFileStorageError,
   runFileKeyId,
 } from "../src/run-files";
-import { syncSteps } from "../src/db";
+import { syncSteps, sqliteDb } from "../src/db";
 import { tempDb, tempHome } from "./helpers";
 
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -49,7 +49,7 @@ describe("run file store", () => {
   const file = (runId: string) => ({ runId, generation: 1, prefix: `paws/test/${runId}` });
   const store = (storeKey = key, plaintext?: () => Promise<boolean>) =>
     createRunFileChunks({
-      db,
+      store: sqliteDb(db),
       kind: "transcript",
       objects,
       key: storeKey,

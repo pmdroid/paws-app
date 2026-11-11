@@ -45,12 +45,12 @@ export async function probeMergeDependencyYield(
     const jobs = new JobLoop(db, clock);
     let gitHubCalls = 0;
     const orchestrator = new Orchestrator({
-      db,
+      store: sqliteDb(db),
       jobs,
       outbox: new OutboxDispatcher(db, clock),
       clock,
       pawsRoot: directory,
-      ...(guard ? { admission: createAdmission({ db, authority: guard }) } : {}),
+      ...(guard ? { admission: createAdmission({ db: sqliteDb(db), authority: guard }) } : {}),
       repositories: [
         { owner: "owner", repo: "repo", remoteUrl: "https://example.invalid/repo.git" },
       ],

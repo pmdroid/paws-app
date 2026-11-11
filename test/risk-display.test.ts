@@ -30,7 +30,7 @@ async function fixture(
 ) {
   const db = tempDb();
   const now = 1_700_000_000_000;
-  const item = insertQueuedItem(db, { id: "risk-item", sessionKey: "risk-session", now });
+  const item = await insertQueuedItem(db, { id: "risk-item", sessionKey: "risk-session", now });
   const identity = {
     taskId: item.id,
     base: "base",
@@ -110,7 +110,7 @@ async function fixture(
   await finishCloseoutProgress(sqliteDb(db), item.id, identity, "accepted", now);
   if (scenario === "unreadable")
     db.run("UPDATE candidate_paths SET paths = '{}' WHERE item_id = ?", [item.id]);
-  const provider = createLiveStatusProvider(db, {
+  const provider = createLiveStatusProvider(sqliteDb(db), {
     env: {},
     riskApproval: async (id) => reader.read(id),
   });

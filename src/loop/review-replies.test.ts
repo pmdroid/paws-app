@@ -89,7 +89,7 @@ const FILTER: PullCommentFilter = {
 async function setup() {
   const db = openDatabase(":memory:");
   migrate(db);
-  insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
+  await insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
   await bindWorkItemRepository(sqliteDb(db), "eng-1", {
     owner: "acme",
     repo: "one",
@@ -142,7 +142,7 @@ async function setup() {
   let wait: PullFeedbackWait | undefined;
   const send = (event: string, payload: Record<string, unknown>) =>
     acceptGitHubDelivery(
-      db,
+      sqliteDb(db),
       {
         deliveryId: `d-${(delivery += 1)}`,
         event,
@@ -438,7 +438,7 @@ describe("Paws replies to every handed-off comment", () => {
   test("answered and unreported threads stay open", async () => {
     const { db, github, replies } = await setup();
     await recordReplyTargets(
-      db,
+      sqliteDb(db),
       "eng-1",
       "restart-answers",
       [1, 2].map((number) => ({
@@ -473,7 +473,7 @@ describe("Paws replies to every handed-off comment", () => {
   test("a permanently failed resolution leaves later replies and resolutions independent", async () => {
     const { db, github, replies } = await setup();
     await recordReplyTargets(
-      db,
+      sqliteDb(db),
       "eng-1",
       "restart-fix",
       [
@@ -587,7 +587,7 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
 
   test("a missing entry sends the turn straight back with that entry, spending no fix round", async () => {
     const { db } = await handedOff();
-    const rounds = fixRounds(db, "eng-1");
+    const rounds = await fixRounds(sqliteDb(db), "eng-1");
     const final = "## Review replies\nR1 fixed: Sorted descending.\nR3 not changed: A fresh read.";
     const runId = (await getWorkItem(sqliteDb(db), "eng-1"))!.currentRunId!;
     expect(await turnEnds(db, final)).toBe("sent_back");
@@ -598,7 +598,7 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
     expect(sentBack.handoff).not.toContain("R1.");
     expect(sentBack.handoff).not.toContain("R3.");
     expect(sentBack.handoff).toContain("A summary saying you fixed everything is not a reply");
-    expect(fixRounds(db, "eng-1")).toBe(rounds);
+    expect(await fixRounds(sqliteDb(db), "eng-1")).toBe(rounds);
     // Closeout does not start: the item waits for the agent again.
     expect((await getWorkItem(sqliteDb(db), "eng-1"))!.state).toBe("queued");
     // The replies given are kept; only R2 still waits for one.

@@ -132,7 +132,7 @@ const workspace = await consumeWorkspaceBootstrap(sqliteDb(paws.db), {
   organizationId: "org",
   name: "Create VM proof",
   userId: owner,
-  tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(paws.db, "org", now)),
+  tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(paws.db), "org", now)),
   now,
 });
 const person = async (name: string, role: "member" | "admin") => {
@@ -160,7 +160,7 @@ for (const [name, userId] of [
   ["admin", admin],
 ] as const)
   sessions[name] = (
-    await issueWorkspaceSession(paws.db, { userId, workspaceId: workspace.id, now })
+    await issueWorkspaceSession(sqliteDb(paws.db), { userId, workspaceId: workspace.id, now })
   ).token;
 console.log(JSON.stringify({ origin, cookie: WORKSPACE_COOKIE, sessions, member }));
 

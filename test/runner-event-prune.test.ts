@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { migrate, openDatabase } from "../src/db";
+import { migrate, openDatabase, sqliteDb } from "../src/db";
 import { pruneRunnerEvents } from "../src/runner-work";
 
 const DAY = 86_400_000;
@@ -59,7 +59,7 @@ test("the prune deletes events of runs that ended over a week ago and keeps the 
   db.run("UPDATE runner_event SET type='question' WHERE run_id='answered' AND sequence=2");
   db.run("INSERT INTO runner_question_answer VALUES('answered',1,2,'yes',0)");
 
-  expect(await pruneRunnerEvents({ db, now: NOW })).toEqual({ deleted: 9 });
+  expect(await pruneRunnerEvents({ store: sqliteDb(db), now: NOW })).toEqual({ deleted: 9 });
   expect(count("old")).toBe(0);
   expect(count("lost")).toBe(0);
   expect(count("finished")).toBe(0);
@@ -71,7 +71,7 @@ test("the prune deletes events of runs that ended over a week ago and keeps the 
   expect(count("answered")).toBe(1);
   expect(db.query("SELECT count(*) AS n FROM run").get()).toEqual({ n: 9 });
 
-  expect(await pruneRunnerEvents({ db, now: NOW })).toEqual({ deleted: 0 });
+  expect(await pruneRunnerEvents({ store: sqliteDb(db), now: NOW })).toEqual({ deleted: 0 });
 });
 
 test("the prune deletes at most 5,000 events per transaction", async () => {
@@ -79,7 +79,11 @@ test("the prune deletes at most 5,000 events per transaction", async () => {
   run("big", 8, 12_001);
   const batches: number[] = [];
   expect(
-    await pruneRunnerEvents({ db, now: NOW, onBatch: (deleted) => batches.push(deleted) }),
+    await pruneRunnerEvents({
+      store: sqliteDb(db),
+      now: NOW,
+      onBatch: (deleted) => batches.push(deleted),
+    }),
   ).toEqual({ deleted: 12_001 });
   expect(batches).toEqual([5_000, 5_000, 2_001]);
   expect(count("big")).toBe(0);

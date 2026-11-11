@@ -1,14 +1,13 @@
-import type { Database } from "bun:sqlite";
 import {
   insertRunnerTranscriptSteps,
   jobStatusByKeySteps,
   runnerTranscriptSteps,
   sealRunnerTranscriptSteps,
   setRunnerTranscriptUriSteps,
-  sqliteDb,
   type Q,
   type RunnerTranscriptRow,
   type Steps,
+  type Db,
 } from "../db";
 import { RunnerWorkFencedError, type RunnerWork } from "../runner-work";
 import { createRunFileChunks, type RunFileObjects } from "../run-files";
@@ -29,10 +28,8 @@ export const RUNNER_TRANSCRIPT_ENCRYPT_JOB = "runner-transcripts.encrypt";
  * True once the job is done, or when the migration found nothing to convert. From then on a chunk
  * without a key ID is refused instead of read as plaintext.
  */
-export async function runnerTranscriptsEncrypted(db: Database) {
-  const status = await sqliteDb(db).run((q) =>
-    jobStatusByKeySteps(q, RUNNER_TRANSCRIPT_ENCRYPT_JOB),
-  );
+export async function runnerTranscriptsEncrypted(store: Db) {
+  const status = await store.run((q) => jobStatusByKeySteps(q, RUNNER_TRANSCRIPT_ENCRYPT_JOB));
   return status === null || status === "done";
 }
 
@@ -50,21 +47,20 @@ export function denied(): never {
 }
 
 export function createRunnerTranscripts(options: {
-  db: Database;
+  store: Db;
   work: RunnerWork;
   objects: RunFileObjects;
   /** The 32-byte key from `loadRunnerTranscriptKey`. */
   key: Buffer;
 }) {
-  const { db, work } = options;
-  const store = sqliteDb(db);
+  const { store, work } = options;
   const files = createRunFileChunks({
-    db,
+    store,
     kind: "transcript",
     objects: options.objects,
     key: options.key,
     refused: denied,
-    plaintext: async () => !(await runnerTranscriptsEncrypted(db)),
+    plaintext: async () => !(await runnerTranscriptsEncrypted(store)),
   });
   function* authorizeSteps(q: Q, access: Access, generation: number) {
     const { command } = yield* work.authorizeSteps(q, { ...access, generation });

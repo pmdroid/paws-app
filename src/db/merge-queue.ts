@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { aliasedTable, and, asc, desc, eq, inArray, lt, max, ne, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { jsonField } from "./json-text";
 
 /**
@@ -251,8 +250,8 @@ export function* listMergeQueuesSteps(q: Q, held?: MergeHeld) {
  * its Linear dependencies, keeps its row and its `ready_at` but takes no place, so it blocks
  * nobody and returns to its place once released.
  */
-export function listMergeQueues(db: Database): MergeQueuePosition[] {
-  return settled(sqliteDb(db).run((q) => listMergeQueuesSteps(q)));
+export async function listMergeQueues(store: Db): Promise<MergeQueuePosition[]> {
+  return store.run((q) => listMergeQueuesSteps(q));
 }
 
 export function* mergeQueuePositionSteps(
@@ -263,8 +262,11 @@ export function* mergeQueuePositionSteps(
   return (yield* listMergeQueuesSteps(q, held)).find((entry) => entry.itemId === itemId) ?? null;
 }
 
-export function mergeQueuePosition(db: Database, itemId: string): MergeQueuePosition | null {
-  return listMergeQueues(db).find((entry) => entry.itemId === itemId) ?? null;
+export async function mergeQueuePosition(
+  store: Db,
+  itemId: string,
+): Promise<MergeQueuePosition | null> {
+  return store.run((q) => mergeQueuePositionSteps(q, itemId));
 }
 
 export function* wakeMergesBehindSteps(q: Q, now: number) {

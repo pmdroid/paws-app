@@ -5,6 +5,7 @@ import { join } from "node:path";
 export type PawsPaths = {
   home: string;
   db: string;
+  pgliteDir: string;
   configFile: string;
   secretsDir: string;
   reposDir: string;
@@ -23,6 +24,7 @@ export function pawsPaths(home: string): PawsPaths {
   return {
     home,
     db: join(home, "paws.db"),
+    pgliteDir: join(home, "pglite"),
     configFile: join(home, "config.toml"),
     secretsDir: join(home, "secrets"),
     reposDir: join(home, "repos"),

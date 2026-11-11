@@ -11,7 +11,6 @@ import {
   getOutboxSteps,
   insertQueuedItem,
   insertRun,
-  immediate,
   migrate,
   openDatabase,
   setCurrentRun,
@@ -79,7 +78,7 @@ export async function probeLinearActivityBudget(
   const tracker = createLinearTracker(
     createLinearClient({
       auth: {
-        hasToken: () => true,
+        hasToken: async () => true,
         ensureFresh: async () => "fixture",
         forceRefresh: async () => "fixture",
       },
@@ -91,7 +90,7 @@ export async function probeLinearActivityBudget(
     const result = new OutboxDispatcher(db, clock);
     result.setHandler((row, context) =>
       row.target === "linear"
-        ? deliverLinearOutbox(row, tracker, async () => {}, context, db)
+        ? deliverLinearOutbox(row, tracker, async () => {}, context, sqliteDb(db))
         : undefined,
     );
     return result;
@@ -109,7 +108,7 @@ export async function probeLinearActivityBudget(
     });
   }
   try {
-    const item = insertQueuedItem(db, { id: "chatty", sessionKey: "chatty" });
+    const item = await insertQueuedItem(db, { id: "chatty", sessionKey: "chatty" });
     const original = await beginImplementRun(sqliteDb(db), item.id, clock.now());
     const reporter = createAcpActivityReporter((payload) => {
       void enqueueOutbox(sqliteDb(db), {
@@ -121,11 +120,11 @@ export async function probeLinearActivityBudget(
         now: clock.now(),
       });
     });
-    immediate(db, () => {
+    db.transaction(() => {
       for (let n = 0; n < eventCount; n++) {
         reporter.onEvent({ type: "progress", text: `Checked ${n}.` });
       }
-    });
+    }).immediate();
     const final = await activity("chatty", "response", item.id);
     for (let n = 0; n < 61; n++) {
       await outbox.tick();
@@ -253,7 +252,7 @@ export async function probeLinearActivityBudget(
         otherTargetsUnaffected: true,
       },
     );
-    const reserve = insertQueuedItem(db, { id: "reservation" });
+    const reserve = await insertQueuedItem(db, { id: "reservation" });
     await beginImplementRun(sqliteDb(db), reserve.id, clock.now());
     for (let n = 0; n < 80; n++) await activity(`parallel-${n}`, "thought", reserve.id);
     const second = openDatabase(path);
