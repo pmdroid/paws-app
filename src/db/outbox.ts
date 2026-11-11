@@ -163,10 +163,6 @@ export function* lastOutboxSequenceSteps(q: Q, prefix: string) {
   }, 0);
 }
 
-export function getOutbox(db: Database, id: number): OutboxRow | null {
-  return settled(sqliteDb(db).run((q) => getOutboxSteps(q, id)));
-}
-
 export function* getOutboxSteps(q: Q, id: number) {
   const { outbox } = q.t;
   const row = yield* q.one(q.orm.select().from(outbox).where(eq(outbox.id, id)));

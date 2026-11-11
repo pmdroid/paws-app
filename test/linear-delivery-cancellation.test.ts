@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { FakeClock } from "../src/core";
 import {
   enqueueOutbox,
-  getOutbox,
+  getOutboxSteps,
   migrate,
   openDatabase,
   OutboxDispatcher,
@@ -78,8 +78,8 @@ test("Stop aborts active Linear HTTP delivery before its final acknowledgement s
     await dispatcher.tick();
     await dispatcher.idle();
     expect(calls).toEqual(["Working", "aborted", "Stopped"]);
-    expect(getOutbox(db, progress)?.status).toBe("dropped");
-    expect(getOutbox(db, ack)?.status).toBe("sent");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, progress)))?.status).toBe("dropped");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, ack)))?.status).toBe("sent");
   } finally {
     db.close();
   }

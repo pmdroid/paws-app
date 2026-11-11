@@ -12,7 +12,7 @@ import {
   getConversation,
   getJob,
   getLinearSession,
-  getOutbox,
+  getOutboxSteps,
   getWorkItem,
   submitCommand,
   sqliteDb,
@@ -94,7 +94,7 @@ test("Retry puts a dead job of an authorized item back to pending and refuses ev
     assert.equal(getJob(db, late)!.status, "dead");
     assert.equal((await retry(`outbox:${stop}`, "inactive")).status, 401);
     assert.equal((await retry(`outbox:${stop}`)).status, 200);
-    assert.equal(getOutbox(db, stop)!.status, "pending");
+    assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, stop)))!.status, "pending");
   } finally {
     await fixture.close();
     rmSync(root, { recursive: true, force: true });

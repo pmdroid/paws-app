@@ -1,7 +1,14 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { FakeClock } from "../src/core";
-import { enqueueOutbox, getOutbox, migrate, openDatabase, OutboxDispatcher } from "../src/db";
+import {
+  enqueueOutbox,
+  getOutboxSteps,
+  migrate,
+  openDatabase,
+  OutboxDispatcher,
+  sqliteDb,
+} from "../src/db";
 import { createLinearTracker } from "../src/linear";
 import { deliverLinearOutbox } from "../src/loop";
 import { tempDb, tempHome } from "./helpers";
@@ -76,7 +83,11 @@ test.each([
       payload: { sessionId: "session", ...change },
     });
     await expect(
-      deliverLinearOutbox(getOutbox(db, id)!, tracker, async () => {}),
+      deliverLinearOutbox(
+        (await sqliteDb(db).run((q) => getOutboxSteps(q, id)))!,
+        tracker,
+        async () => {},
+      ),
     ).rejects.toThrow();
     expect(sent).toBe(0);
   } finally {

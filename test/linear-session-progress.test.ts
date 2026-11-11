@@ -3,7 +3,7 @@ import { FakeClock } from "../src/core";
 import {
   advanceOutboxSession,
   enqueueOutbox,
-  getOutbox,
+  getOutboxSteps,
   listOutbox,
   OutboxDispatcher,
   stopOutboxSession,
@@ -259,7 +259,7 @@ test.each(["elicitation", "activity"])(
           : { sessionId: "session", body: "Which?" },
     });
     await flush(dispatcher);
-    expect(getOutbox(db, critical)?.status).toBe("sent");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, critical)))?.status).toBe("sent");
     db.close();
   },
 );
