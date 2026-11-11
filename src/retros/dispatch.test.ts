@@ -182,7 +182,7 @@ describe("retro dispatch, composed with a fake runner", () => {
       commandId: dispatch!.commandId,
       attemptsUsed: 1,
     });
-    expect(runnerOccupancy(db, "R1", clock.now).occupied).toBe(1);
+    expect((await runnerOccupancy(sqliteDb(db), "R1", clock.now)).occupied).toBe(1);
 
     const [command] = await runner.poll(dispatcher);
     expect(command).toMatchObject({
@@ -243,7 +243,7 @@ describe("retro dispatch, composed with a fake runner", () => {
       activeMs: 42_000,
       waitMs: 60_000,
     });
-    expect(runnerOccupancy(reopened, "R1", clock.now).occupied).toBe(0);
+    expect((await runnerOccupancy(sqliteDb(reopened), "R1", clock.now)).occupied).toBe(0);
     reopened.close();
   });
 });
@@ -294,7 +294,10 @@ describe("placement", () => {
     addRunner(db, { id: "R1", capacity: 2 });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
     await open(db).tick();
-    expect(runnerOccupancy(db, "R1", clock.now)).toEqual({ capacity: 2, occupied: 1 });
+    expect(await runnerOccupancy(sqliteDb(db), "R1", clock.now)).toEqual({
+      capacity: 2,
+      occupied: 1,
+    });
   });
 
   test("an empty window publishes an empty report without a runner", async () => {
@@ -377,7 +380,7 @@ describe("recovery", () => {
       attempt: 1,
     });
     expect(await listRetroDispatches(sqliteDb(db), "r1")).toHaveLength(1);
-    expect(runnerOccupancy(db, "R1", clock.now).occupied).toBe(1);
+    expect((await runnerOccupancy(sqliteDb(db), "R1", clock.now)).occupied).toBe(1);
 
     expect(
       (
@@ -386,7 +389,7 @@ describe("recovery", () => {
         })
       ).status,
     ).toBe(200);
-    expect(runnerOccupancy(db, "R1", clock.now).occupied).toBe(0);
+    expect((await runnerOccupancy(sqliteDb(db), "R1", clock.now)).occupied).toBe(0);
     expect(await dispatcher.generation("r1")).toMatchObject({
       state: "failed",
       diagnostic: "retry_backoff",
@@ -664,11 +667,11 @@ describe("recovery", () => {
     });
     expect(input.status).toBe(409);
     await dispatcher.tick();
-    expect(runnerOccupancy(db, "R1", clock.now).occupied).toBe(1);
+    expect((await runnerOccupancy(sqliteDb(db), "R1", clock.now)).occupied).toBe(1);
     expect(
       (await runner.submit(dispatcher, command!, runner.result(command!, VALID_OUTPUT))).status,
     ).toBe(200);
-    expect(runnerOccupancy(db, "R1", clock.now).occupied).toBe(0);
+    expect((await runnerOccupancy(sqliteDb(db), "R1", clock.now)).occupied).toBe(0);
     expect(await getRetro(sqliteDb(db), "r1")).toMatchObject({ state: "failed" });
     expect((await getRetro(sqliteDb(db), "r1"))!.error).toContain("lost workspace authority");
     expect(await listRetroItems(sqliteDb(db), "r1")).toEqual([]);
@@ -685,7 +688,7 @@ describe("recovery", () => {
     expect((await listRetroDispatches(sqliteDb(db), "r1"))[0]).toMatchObject({
       releaseReason: "not_started",
     });
-    expect(runnerOccupancy(db, "R1", clock.now).occupied).toBe(0);
+    expect((await runnerOccupancy(sqliteDb(db), "R1", clock.now)).occupied).toBe(0);
   });
 
   test("replaying settlement after publication keeps the ready report and its accounting", async () => {

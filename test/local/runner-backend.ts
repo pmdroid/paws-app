@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { Database } from "bun:sqlite";
 import { createAcpActivityReporter } from "../../src/loop";
 import { createHash, randomBytes, randomUUID, generateKeyPairSync } from "node:crypto";
 import { mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync } from "node:fs";
@@ -64,6 +65,20 @@ import { answerQuestion, ask as askQuestion } from "../questions";
 import { applyWorkItemEvent } from "../../src/db";
 import { PawsShutdown, RunnerCapacityWait } from "../../src/core";
 import { createRunnerPlacement } from "../../src/runner-placement";
+
+async function slotsTaken(
+  db: Database,
+  hostIds: readonly string[],
+  now: number,
+  occupied: boolean,
+): Promise<number> {
+  let total = 0;
+  for (const id of hostIds)
+    total +=
+      (occupied ? (await runnerOccupancy(sqliteDb(db), id, now)).occupied : 0) +
+      (await runnerSlotsHeldBetweenCommands(sqliteDb(db), id, now));
+  return total;
+}
 
 export async function probeRunnerBackend(
   root: string,
@@ -2452,16 +2467,7 @@ export async function probeRunnerBackend(
           const command = await next(host);
           assert(command.type === "run" || command.type === "review");
           assert.equal(command.runnerId, host);
-          assert.equal(
-            hostIds.reduce(
-              (total, id) =>
-                total +
-                runnerOccupancy(db, id, now).occupied +
-                runnerSlotsHeldBetweenCommands(db, id, now),
-              0,
-            ),
-            1,
-          );
+          assert.equal(await slotsTaken(db, hostIds, now, true), 1);
           const affinityGrant = await work.issueGrant({
             runnerId: host,
             runId: command.runId,
@@ -2482,10 +2488,7 @@ export async function probeRunnerBackend(
             },
           });
           await affinityTurn;
-          assert.equal(
-            hostIds.reduce((total, id) => total + runnerSlotsHeldBetweenCommands(db, id, now), 0),
-            1,
-          );
+          assert.equal(await slotsTaken(db, hostIds, now, false), 1);
           return command;
         };
         const implemented = await step(firstHost, "implementer");
@@ -2516,7 +2519,7 @@ export async function probeRunnerBackend(
         assert.notEqual(replacement, firstHost);
         const moved = await step(replacement, "reviewer");
         assert(!("resumeSessionId" in moved));
-        assert.equal(runnerSlotsHeldBetweenCommands(db, firstHost, now), 0);
+        assert.equal(await runnerSlotsHeldBetweenCommands(sqliteDb(db), firstHost, now), 0);
         // Reviewer preflight after a moved review/ejection must not use cached model evidence
         // or the checkout pin. A revoked previous generation must not prevent reviewerPreparation.
         db.run("UPDATE runner_agent_policy SET resolved_model='model'");
@@ -2619,10 +2622,7 @@ export async function probeRunnerBackend(
             result: receipt,
           });
           await affinityTurn;
-          assert.equal(
-            hostIds.reduce((total, id) => total + runnerSlotsHeldBetweenCommands(db, id, now), 0),
-            1,
-          );
+          assert.equal(await slotsTaken(db, hostIds, now, false), 1);
         }
         db.run("UPDATE run SET status='ended' WHERE id=?", [record.run.id]);
       }
@@ -3061,16 +3061,7 @@ export async function probeRunnerBackend(
       if (independent.type !== "review") throw new Error("Expected fresh independent review");
       assert.equal(independent.runnerId, conflicting.runnerId);
       assert.equal(independent.generation, conflicting.generation + 1);
-      assert.equal(
-        hostIds.reduce(
-          (total, id) =>
-            total +
-            runnerOccupancy(db, id, now).occupied +
-            runnerSlotsHeldBetweenCommands(db, id, now),
-          0,
-        ),
-        1,
-      );
+      assert.equal(await slotsTaken(db, hostIds, now, true), 1);
       assert.match(independent.prompt, /fresh agent session/);
       const independentGrant = await work.issueGrant({
         runnerId: independentHost,
@@ -3136,16 +3127,7 @@ export async function probeRunnerBackend(
         if (conflictingReview.type !== "review") throw new Error("Expected conflicting review");
         if (previousGeneration) assert.equal(conflictingReview.generation, previousGeneration + 1);
         previousGeneration = conflictingReview.generation;
-        assert.equal(
-          hostIds.reduce(
-            (total, id) =>
-              total +
-              runnerOccupancy(db, id, now).occupied +
-              runnerSlotsHeldBetweenCommands(db, id, now),
-            0,
-          ),
-          1,
-        );
+        assert.equal(await slotsTaken(db, hostIds, now, true), 1);
         const retryGrant = await work.issueGrant({
           runnerId: pinnedReviewHost,
           runId: conflictingReview.runId,

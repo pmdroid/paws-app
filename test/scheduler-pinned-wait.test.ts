@@ -163,7 +163,7 @@ test("with another runner free, the waiting item's slot stays off limits to the 
     // Placement keeps Y off A while X holds A's slot, and gives X its own slot.
     const reserved = await pinnedSlotsReserved(sqliteDb(db), "A", "Y", NOW + 2);
     expect(reserved).toBe(1);
-    expect(runnerHasCapacity(db, "A", NOW + 2, "", reserved)).toBe(false);
+    expect(await runnerHasCapacity(sqliteDb(db), "A", NOW + 2, "", reserved)).toBe(false);
     expect(await pinnedSlotsReserved(sqliteDb(db), "B", "Y", NOW + 2)).toBe(0);
     expect(await pinnedSlotsReserved(sqliteDb(db), "A", "X", NOW + 2)).toBe(0);
     // Once X is placed the reservation is gone.

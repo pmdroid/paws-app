@@ -232,9 +232,9 @@ test("lowering concurrency below running work holds back new placement", async (
       [run.id, runner.runnerId, runner.workspaceId, `cmd-${index}`, runner.now + 60_000],
     );
   }
-  expect(runnerHasCapacity(runner.db, runner.runnerId, runner.now)).toBe(true);
+  expect(await runnerHasCapacity(sqliteDb(runner.db), runner.runnerId, runner.now)).toBe(true);
   expect((await runner.set(1)).status).toBe(200);
-  expect(runnerHasCapacity(runner.db, runner.runnerId, runner.now)).toBe(false);
+  expect(await runnerHasCapacity(sqliteDb(runner.db), runner.runnerId, runner.now)).toBe(false);
   expect((await runner.list()).slots).toEqual({ used: 2, total: 1 });
   expect(
     runner.db

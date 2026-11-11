@@ -21,6 +21,7 @@ import {
   recoverOnStartup,
   runnerHasCapacity,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import type { Database } from "bun:sqlite";
 import { findOpenQuestion, handoffNote } from "../src/questions";
@@ -97,7 +98,7 @@ test("asking ends the run and an answer resumes through verification", async () 
         )
         .find((result) => result.askTeam)?.askTeam?.text,
     ).toBe(ASK_TURN_REPLY);
-    expect(runnerHasCapacity(fixture.db, fixture.runnerId, Date.now())).toBe(true);
+    expect(await runnerHasCapacity(sqliteDb(fixture.db), fixture.runnerId, Date.now())).toBe(true);
     expect(
       fixture.db
         .query<{ n: number }, [string]>(

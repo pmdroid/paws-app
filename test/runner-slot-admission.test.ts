@@ -374,10 +374,10 @@ test("admission includes teardown occupancy that placement still considers full"
     [run.id, id, workspace.id, NOW - 1, NOW - 1],
   );
   queue("next");
-  expect(runnerHasCapacity(db, id, NOW)).toBe(false);
+  expect(await runnerHasCapacity(sqliteDb(db), id, NOW)).toBe(false);
   expect(await pass()).toEqual([]);
   db.run("UPDATE runner_work SET teardown_confirmed_at=? WHERE run_id=?", [NOW, run.id]);
-  expect(runnerHasCapacity(db, id, NOW)).toBe(true);
+  expect(await runnerHasCapacity(sqliteDb(db), id, NOW)).toBe(true);
   expect(await pass()).toEqual(["next"]);
 });
 

@@ -107,7 +107,7 @@ test("two screenshots published 10 s apart end the turn with one link ask that n
     expect(item.state).toBe("awaiting_input");
     expect(item.checkpoint?.phase).toBe("awaiting_input");
     expect(getRun(f.db, item.currentRunId!)?.status).toBe("ended");
-    expect(runnerHasCapacity(f.db, f.runnerId, Date.now())).toBe(true);
+    expect(await runnerHasCapacity(sqliteDb(f.db), f.runnerId, Date.now())).toBe(true);
     const [first, second] = listEvidence(f.db, item.id);
     expect(second!.createdAt - first!.createdAt).toBeGreaterThanOrEqual(10_000);
     expect(f.lastPublication()).toMatch(
@@ -856,7 +856,7 @@ test("the visual review waits beside the commands and the independent review of 
     await f.tickAll();
     expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
     expect(findOpenQuestion(f.db, "ses_1")?.id).toBe(open.id);
-    expect(runnerHasCapacity(f.db, f.runnerId, Date.now())).toBe(true);
+    expect(await runnerHasCapacity(sqliteDb(f.db), f.runnerId, Date.now())).toBe(true);
 
     // The gate reads approvals: once the person accepts, later runs pass the check.
     gate.decided = ACCEPTED;

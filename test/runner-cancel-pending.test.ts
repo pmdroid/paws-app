@@ -97,7 +97,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
     };
     let work = controller();
     await work.assign(command);
-    expect(runnerOccupancy(db, "box", now).occupied).toBe(1);
+    expect((await runnerOccupancy(sqliteDb(db), "box", now)).occupied).toBe(1);
     await work.acknowledge("box", command.id);
     await work.heartbeat(
       "box",
@@ -127,8 +127,8 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       db.query<{ endedAt: number }, []>("SELECT ended_at AS endedAt FROM runner_work").get()!
         .endedAt,
     ).toBe(now);
-    expect(runnerOccupancy(db, "box", now).occupied).toBe(1);
-    expect(runnerSlotsHeldBetweenCommands(db, "box", now)).toBe(0);
+    expect((await runnerOccupancy(sqliteDb(db), "box", now)).occupied).toBe(1);
+    expect(await runnerSlotsHeldBetweenCommands(sqliteDb(db), "box", now)).toBe(0);
     await work.acknowledge("box", cancel.id);
     expect(await runnerCancelPending(sqliteDb(db), "box")).toBe(true);
     now = cancel.expiresAt + 1;
@@ -150,7 +150,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
     await expect(work.assign(next)).rejects.toThrow(RunnerTeardownPending);
     // Absence also cannot erase the durable cleanup obligation.
     await work.heartbeat("box", 1, host, undefined, undefined, undefined, undefined, []);
-    expect(runnerOccupancy(db, "box", now).occupied).toBe(1);
+    expect((await runnerOccupancy(sqliteDb(db), "box", now)).occupied).toBe(1);
     const termination = { runId: run.id, generation: 1, commandId: command.id };
     const http = createRunnerWorkHttp(work);
     const response = await http(
@@ -164,9 +164,9 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
     expect(response!.status).toBe(200);
     expect(((await response!.json()) as { terminated: unknown }).terminated).toEqual([termination]);
     expect(await runnerCancelPending(sqliteDb(db), "box")).toBe(false);
-    expect(runnerOccupancy(db, "box", now).occupied).toBe(0);
+    expect((await runnerOccupancy(sqliteDb(db), "box", now)).occupied).toBe(0);
     // Between-command ownership survives until the owning run ends.
-    expect(runnerSlotsHeldBetweenCommands(db, "box", now)).toBe(1);
+    expect(await runnerSlotsHeldBetweenCommands(sqliteDb(db), "box", now)).toBe(1);
     const confirmed = db
       .query<{ confirmed: number }, []>(
         "SELECT teardown_confirmed_at AS confirmed FROM runner_work",
@@ -215,7 +215,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       [termination],
     );
     expect(await runnerCancelPending(sqliteDb(db), "box")).toBe(true);
-    expect(runnerOccupancy(db, "box", now).occupied).toBe(1);
+    expect((await runnerOccupancy(sqliteDb(db), "box", now)).occupied).toBe(1);
     // Generic release/recovery paths end authority but keep the slot until confirmation.
     await releaseRunCapacity(sqliteDb(db), run.id, now);
     expect(await runnerSlotFree(sqliteDb(db), ["box"], now)).toBe(false);
@@ -274,7 +274,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       [],
     );
     expect(await runnerCancelPending(sqliteDb(db), "box")).toBe(false);
-    expect(runnerOccupancy(db, "box", now).occupied).toBe(0);
+    expect((await runnerOccupancy(sqliteDb(db), "box", now)).occupied).toBe(0);
     const reported = {
       ...undelivered,
       id: "work-4",
@@ -301,7 +301,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       [],
     );
     expect(await runnerCancelPending(sqliteDb(db), "box")).toBe(true);
-    expect(runnerOccupancy(db, "box", now).occupied).toBe(1);
+    expect((await runnerOccupancy(sqliteDb(db), "box", now)).occupied).toBe(1);
   } finally {
     db.close();
     rmSync(root, { recursive: true, force: true });
@@ -330,9 +330,9 @@ test("a runner that never reported terminations keeps the legacy release on canc
     ended("lost", 1200);
     expect(await runnerCancelPending(sqliteDb(db), "old")).toBe(false);
     db.run("UPDATE runner SET terminations_since=1050");
-    expect(runnerOccupancy(db, "old", 1300).occupied).toBe(2);
+    expect((await runnerOccupancy(sqliteDb(db), "old", 1300)).occupied).toBe(2);
     db.run("UPDATE runner SET terminations_since=1150");
-    expect(runnerOccupancy(db, "old", 1300).occupied).toBe(1);
+    expect((await runnerOccupancy(sqliteDb(db), "old", 1300)).occupied).toBe(1);
     db.run("UPDATE runner SET terminations_since=1250");
     expect(await runnerCancelPending(sqliteDb(db), "old")).toBe(false);
   } finally {

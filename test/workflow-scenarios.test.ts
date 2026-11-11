@@ -434,7 +434,7 @@ describe("runner control across Paws restarts", () => {
       controller().enqueue(cancel);
       const held = async () => {
         expect(await factsOf(w.db, "item")).toMatchObject({ state: "paused", liveJobs: [] });
-        expect(runnerOccupancy(w.db, "box", w.now).occupied).toBe(1);
+        expect((await runnerOccupancy(sqliteDb(w.db), "box", w.now)).occupied).toBe(1);
         expect(await runnerCancelPending(sqliteDb(w.db), "box")).toBe(true);
         expect(await unexpectedViolations(w.db, w.now)).toEqual([]);
       };
@@ -468,12 +468,12 @@ describe("runner control across Paws restarts", () => {
         [{ runId: run.id, generation: 1, commandId: command.id }],
       );
       expect(await runnerCancelPending(sqliteDb(w.db), "box")).toBe(false);
-      expect(runnerOccupancy(w.db, "box", w.now).occupied).toBe(0);
+      expect((await runnerOccupancy(sqliteDb(w.db), "box", w.now)).occupied).toBe(0);
       w.crash();
       w.start();
       await w.settle();
       expect(await factsOf(w.db, "item")).toMatchObject({ state: "paused", liveJobs: [] });
-      expect(runnerOccupancy(w.db, "box", w.now).occupied).toBe(0);
+      expect((await runnerOccupancy(sqliteDb(w.db), "box", w.now)).occupied).toBe(0);
     } finally {
       w.close();
     }
