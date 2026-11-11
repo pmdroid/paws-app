@@ -1209,7 +1209,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     server = startServer({
       server: options?.server,
       linearUsage: linear === null ? undefined : () => linear.usage(),
-      riskApproval: (itemId) => orchestrator?.riskDisplay(itemId) ?? null,
+      riskApproval: async (itemId) => orchestrator?.riskDisplay(itemId) ?? null,
       riskSettingsChanged: () => orchestrator?.refreshRiskDisplaySettings(),
       onboarding: async (request, client) =>
         reconnectLinear &&

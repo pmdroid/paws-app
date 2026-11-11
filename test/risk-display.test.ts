@@ -109,7 +109,10 @@ async function fixture(
   finishCloseoutProgress(db, item.id, identity, "accepted", now);
   if (scenario === "unreadable")
     db.run("UPDATE candidate_paths SET paths = '{}' WHERE item_id = ?", [item.id]);
-  const provider = createLiveStatusProvider(db, { env: {}, riskApproval: (id) => reader.read(id) });
+  const provider = createLiveStatusProvider(db, {
+    env: {},
+    riskApproval: async (id) => reader.read(id),
+  });
   return {
     db,
     item,
