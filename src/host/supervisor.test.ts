@@ -1,5 +1,13 @@
+import type { Database } from "bun:sqlite";
 import { describe, expect, spyOn, test } from "bun:test";
-import { DEFAULT_MAX_AWAKE_MS, FakeClock, JOB_KIND, type Checkpoint, type Clock } from "../core";
+import {
+  DEFAULT_MAX_AWAKE_MS,
+  FakeClock,
+  JOB_KIND,
+  type Checkpoint,
+  type Clock,
+  type WorkItemEvent,
+} from "../core";
 import {
   applyWorkItemEvent as applyEvent,
   beginImplementRun as beginRun,
@@ -19,13 +27,14 @@ import {
   openDatabase,
   prepareShutdown,
   sqliteDb,
+  type WorkItemEventRecord,
 } from "../db";
 import { startHost } from "./index";
 import { HostSupervisor } from "./supervisor";
 import { WakeDetector } from "./wake";
 
 /** The unit fixture holds a real job while its simulated agent is running. */
-function agentJob(db: Parameters<typeof beginRun>[0], itemId: string, now: number) {
+function agentJob(db: Database, itemId: string, now: number) {
   const id = enqueueJob(db, {
     queue: JOB_KIND.resume,
     jobKey: `fixture-agent:${itemId}:${getWorkItem(db, itemId)!.version}`,
@@ -37,29 +46,34 @@ function agentJob(db: Parameters<typeof beginRun>[0], itemId: string, now: numbe
     id,
   ]);
 }
-function endAgentJob(db: Parameters<typeof beginRun>[0], itemId: string) {
+function endAgentJob(db: Database, itemId: string) {
   db.run(
     "UPDATE job SET status='done', locked_until=NULL, locked_by=NULL WHERE job_key LIKE 'fixture-agent:%' AND json_extract(payload,'$.itemId')=?",
     [itemId],
   );
 }
-function beginImplementRun(...args: Parameters<typeof beginRun>) {
-  const result = beginRun(...args);
-  agentJob(args[0], args[1], args[2]);
+function beginImplementRun(db: Database, itemId: string, now: number, checkpoint?: Checkpoint) {
+  const result = beginRun(db, itemId, now, checkpoint);
+  agentJob(db, itemId, now);
   return result;
 }
-function applyWorkItemEvent(...args: Parameters<typeof applyEvent>) {
-  const before = getWorkItem(args[0], args[1])!.state;
-  const result = applyEvent(...args);
-  if (before === "running" && result.state !== "running") endAgentJob(args[0], args[1]);
-  if (before !== "running" && result.state === "running") agentJob(args[0], args[1], 1_000_000);
+function applyWorkItemEvent(
+  db: Database,
+  id: string,
+  event: WorkItemEvent,
+  record?: WorkItemEventRecord,
+) {
+  const before = getWorkItem(db, id)!.state;
+  const result = applyEvent(db, id, event, record);
+  if (before === "running" && result.state !== "running") endAgentJob(db, id);
+  if (before !== "running" && result.state === "running") agentJob(db, id, 1_000_000);
   return result;
 }
-function enterMergeQueue(...args: Parameters<typeof enterQueue>) {
-  endAgentJob(args[0], args[1]);
-  return enterQueue(...args);
+function enterMergeQueue(db: Database, itemId: string, checkpoint: Checkpoint) {
+  endAgentJob(db, itemId);
+  return enterQueue(db, itemId, checkpoint);
 }
-const listJobs = (db: Parameters<typeof storedJobs>[0]) =>
+const listJobs = (db: Database) =>
   storedJobs(db).filter((job) => !job.jobKey?.startsWith("fixture-agent:"));
 
 const checkpoint: Checkpoint = { phase: "running", wipCommit: "wip", turn: 3, baseSha: "main" };
