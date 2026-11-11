@@ -15,7 +15,6 @@ import {
   readDependencySnapshotSteps,
   saveDependencySnapshotSteps,
   saveTaskBlocksSteps,
-  settled,
   sqliteDb,
   type Q,
   type Steps,
@@ -301,24 +300,18 @@ export async function syncItemDependencies(
   );
 }
 
-export function recordItemDependencies(
-  db: Database,
+export function* recordItemDependenciesSteps(
+  q: Q,
   input: Target & { expectedGeneration: number },
   reads: DependencyReads,
-): DependencyReadiness {
-  return settled(
-    sqliteDb(db).transaction((q) => writeItemDependenciesSteps(q, input, reads, null)),
-  );
+): Steps<DependencyReadiness> {
+  return yield* q.transaction((tx) => writeItemDependenciesSteps(tx, input, reads, null));
 }
 
-export function itemDependenciesCurrent(db: Database, target: Target): boolean {
+export function* itemDependenciesCurrentSteps(q: Q, target: Target): Steps<boolean> {
   try {
-    return settled(
-      sqliteDb(db).run(function* (q) {
-        const current = yield* scopeSteps(q, target);
-        return current !== null && (yield* snapshotSteps(q, target))?.scope === current.token;
-      }),
-    );
+    const current = yield* scopeSteps(q, target);
+    return current !== null && (yield* snapshotSteps(q, target))?.scope === current.token;
   } catch (caughtError1) {
     journalCaught(caughtError1, "dependencies.itemDependenciesCurrent.scope", target.itemId);
     return false;

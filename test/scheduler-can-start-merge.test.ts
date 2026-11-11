@@ -130,7 +130,7 @@ test("admission holds a delegation until its snapshots exist and changes are app
     db.run("INSERT INTO item_reconciliation_request VALUES('work','workspace','token')");
     assert.deepEqual(await admission.canStart("work"), { ok: false, held: "reconciling" });
     db.run("DELETE FROM item_reconciliation_request");
-    joinFakeWorkspace(db, "delegation");
+    await joinFakeWorkspace(db, "delegation");
     assert.equal(await admission.canDispatchDelegation("delegation"), true);
     assert.deepEqual(await admission.canStart("work"), { ok: true });
   } finally {

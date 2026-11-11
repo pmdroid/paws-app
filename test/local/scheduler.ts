@@ -137,7 +137,7 @@ export async function probeScheduler(
     (db.query(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
   {
     const { directory, db, ids } = await setup("competing", 20);
-    for (const id of ids) joinFakeWorkspace(db, `epic-${id}`);
+    for (const id of ids) await joinFakeWorkspace(db, `epic-${id}`);
     db.run("VACUUM INTO ?", [join(directory, "template.sqlite")]);
     const children = Array.from({ length: 20 }, (_, index) => spawnContender(directory, index));
     try {
