@@ -40,6 +40,7 @@ import {
   migrate,
   openDatabase,
   sqliteDb,
+  syncSteps,
 } from "../src/db";
 import {
   createFakeGitHub,
@@ -4915,9 +4916,10 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
       lifecycle,
       oauthClientId: scope.oauthClientId,
       appUserId: scope.appUserId,
-      stopSession: (sessionId) => {
-        revoked.push(sessionId);
-      },
+      stopSession: (_q, sessionId) =>
+        syncSteps(() => {
+          revoked.push(sessionId);
+        }),
       interruptSession: (sessionId) => orchestrator.interruptLinearSession(sessionId),
     });
     return attachOrchestrator({

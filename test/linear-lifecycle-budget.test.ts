@@ -16,6 +16,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   sqliteDb,
+  syncSteps,
 } from "../src/db";
 import { createEvidenceStore } from "../src/evidence";
 import { createFakeGitHub, fakeMergeReadiness } from "../src/github";
@@ -337,7 +338,7 @@ async function runTask(input: {
     lifecycle: linearCallerFor(linear.issueLifecycle!, "task-access"),
     oauthClientId: "client",
     appUserId: "app",
-    stopSession: () => {},
+    stopSession: () => syncSteps(() => {}),
   });
   const evidenceRoot = path.join(layout.pawsRoot, "evidence");
   let rounds = 0;

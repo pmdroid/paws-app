@@ -131,7 +131,7 @@ test("real LinearTaskAccess distinguishes revoked installation from unavailable 
     lifecycle,
     oauthClientId: "client",
     appUserId: "app",
-    stopSession: () => {},
+    stopSession: () => syncSteps(() => {}),
     now: () => 10,
   });
   let unavailable = true;

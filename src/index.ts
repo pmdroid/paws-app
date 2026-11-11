@@ -91,10 +91,9 @@ import {
 import { type LinearCommand, type GitCommitPolicy, type Clock, isTransient } from "./core";
 import {
   workspaceMemberUsable,
-  enqueueCommand,
   enqueueCommandSteps,
   getWorkItemSteps,
-  getItemRunCommitPolicy,
+  getItemRunCommitPolicySteps,
   listRepositoryCandidatesSteps,
   isLinearAppRevoked,
   journal,
@@ -102,7 +101,7 @@ import {
   getWorkItemRepositoryAnswerSteps,
   getTaskModeSteps,
   taskRequiresRepositorySteps,
-  listWorkItems,
+  listWorkItemsSteps,
   listReviewEscapesSteps,
   countLinearRequest,
   linearBudgetStore,
@@ -118,7 +117,6 @@ import {
   CONFIG_SETTINGS_KEY,
   setAsideLegacyDatabase,
   prepareShutdown,
-  stopInstance,
   COMMAND_DELIVERY_MS,
   bindInstance,
   INSTANCE_HEARTBEAT_MS,
@@ -153,7 +151,6 @@ import {
   listSkillsSteps,
   openDelegationWorkspaceIdSteps,
   submitCommandSteps,
-  settled,
   workItemForSessionSteps,
   workspaceForOrganizationSteps,
   workspaceLinearMemberSteps,
@@ -625,24 +622,21 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     }
     return accepted;
   };
-  const submit = (command: LinearCommand): void => {
+  function* submitSteps(q: Q, command: LinearCommand): Steps<void> {
     if (orchestrator === null) {
-      enqueueCommand(db, command);
+      const { inserted } = yield* enqueueCommandSteps(q, command);
+      if (inserted) emitJobReady(store);
       return;
     }
     const bus = orchestrator.bus;
-    settled(
-      store.run((q) =>
-        submitCommandSteps(
-          q,
-          command,
-          (c) => bus.emit(c),
-          () => emitJobReady(store),
-          commandInstance(store),
-        ),
-      ),
+    yield* submitCommandSteps(
+      q,
+      command,
+      (c) => bus.emit(c),
+      () => emitJobReady(store),
+      commandInstance(store),
     );
-  };
+  }
   const submitAsync = async (command: LinearCommand): Promise<void> => {
     if (orchestrator === null) {
       const { inserted } = await store.run((q) => enqueueCommandSteps(q, command));
@@ -662,13 +656,19 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   let workspace: ReturnType<typeof startWorkspaceAccess> | undefined;
   let assignments: ReturnType<typeof createWorkspaceAssignments> | undefined;
   let members: ReturnType<typeof cacheLinearMemberships> | null = null;
-  const stopLinearSession = (sessionId: string): void => {
-    for (const item of listWorkItems(db)) {
+  function* stopLinearSessionSteps(q: Q, sessionId: string): Steps<void> {
+    for (const item of yield* listWorkItemsSteps(q)) {
       if (item.sessionKey !== sessionId) continue;
       if (["cancelled", "completed", "merged"].includes(item.state)) continue;
-      submit({ type: "cancel", source: "linear", itemId: item.id, requestedAt: Date.now() });
+      yield* submitSteps(q, {
+        type: "cancel",
+        source: "linear",
+        itemId: item.id,
+        requestedAt: Date.now(),
+      });
     }
-  };
+  }
+
   const linear = openLinear({
     db,
     signal: abort.signal,
@@ -817,7 +817,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       lifecycle: linear.issueLifecycle && linearCallerFor(linear.issueLifecycle, "task-access"),
       oauthClientId: runtime.linearClientId,
       appUserId: runtime.linearViewerId,
-      stopSession: stopLinearSession,
+      stopSession: stopLinearSessionSteps,
       interruptSession: async (sessionId) => {
         if (orchestrator === null) throw new Error("The loop is not attached.");
         await orchestrator.interruptLinearSession(sessionId);
@@ -2199,8 +2199,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           prepareShutdown(
             store,
             Date.now(),
-            (item) => {
-              const policy = getItemRunCommitPolicy(db, item.id);
+            async (item) => {
+              const policy = await store.run((q) => getItemRunCommitPolicySteps(q, item.id));
               if (policy)
                 commitCheckpointSync(
                   worktreePath(paths.home, itemPathId(item)),
@@ -2211,12 +2211,12 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             },
             instance.id,
           ),
-        close: () => {
+        close: async () => {
           releaseSettings();
           clearInterval(instanceTimer);
           clearInterval(commandTimer);
           try {
-            stopInstance(db, instance.id, Date.now());
+            await store.run((q) => stopInstanceSteps(q, instance.id, Date.now()));
           } finally {
             db.close();
           }

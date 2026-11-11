@@ -16,6 +16,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   sqliteDb,
+  syncSteps,
 } from "../src/db";
 import { createFakeGitHub } from "../src/github";
 import {
@@ -323,7 +324,7 @@ async function firstDelegation(
     lifecycle: linearCallerFor(linear.issueLifecycle!, "task-access"),
     oauthClientId: "client",
     appUserId: "app",
-    stopSession: () => {},
+    stopSession: () => syncSteps(() => {}),
   });
   // As `src/index.ts` wires them for a public dashboard.
   const assignments = createWorkspaceAssignments({

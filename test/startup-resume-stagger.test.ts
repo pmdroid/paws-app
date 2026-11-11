@@ -18,6 +18,7 @@ import {
   prepareShutdown,
   recoverOnStartup,
   sqliteDb,
+  syncSteps,
 } from "../src/db";
 import {
   createFakeLinearAccessReads,
@@ -74,7 +75,7 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
       lifecycle,
       oauthClientId: scope.oauthClientId,
       appUserId: scope.appUserId,
-      stopSession: () => {},
+      stopSession: () => syncSteps(() => {}),
       interruptSession: (sessionId) => orchestrator.interruptLinearSession(sessionId),
     });
     orchestrator = attachOrchestrator({

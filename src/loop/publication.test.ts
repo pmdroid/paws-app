@@ -5,7 +5,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFetchGitHubClient, type GitExec } from "../github";
-import { getWorkItem, migrate, openDatabase, recordLinearInstallation, sqliteDb } from "../db";
+import {
+  getWorkItem,
+  migrate,
+  openDatabase,
+  recordLinearInstallation,
+  sqliteDb,
+  syncSteps,
+} from "../db";
 import { intakeDelegatedIssue } from "../intake";
 import {
   createFakeLinearAccessReads,
@@ -107,9 +114,10 @@ test.each(["push", "pr", "merge"] as const)(
         lifecycle,
         oauthClientId: "client",
         appUserId: "app",
-        stopSession: (id) => {
-          stopped.push(id);
-        },
+        stopSession: (_q, id) =>
+          syncSteps(() => {
+            stopped.push(id);
+          }),
       });
       const item = getWorkItem(db, task.items[0]!.id)!;
       f.state.verify = () => gate.assert(item, f.controller.signal);

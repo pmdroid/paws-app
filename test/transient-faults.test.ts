@@ -25,6 +25,7 @@ import {
   migrate,
   openDatabase,
   sqliteDb,
+  syncSteps,
 } from "../src/db";
 import { HostSupervisor } from "../src/host/supervisor";
 import { WakeDetector } from "../src/host/wake";
@@ -446,7 +447,7 @@ async function runWithFault(fault: {
     lifecycle,
     oauthClientId: scope.oauthClientId,
     appUserId: scope.appUserId,
-    stopSession: () => {},
+    stopSession: () => syncSteps(() => {}),
     interruptSession: (sessionId) => orchestrator.interruptLinearSession(sessionId),
   });
   orchestrator = attachOrchestrator({

@@ -10,6 +10,7 @@ import {
   JobLoop,
   OutboxDispatcher,
   sqliteDb,
+  getLinearSessionSteps,
 } from "../src/db";
 import { attachOrchestrator, handleLinearAdministration, LinearTaskAccess } from "../src/loop";
 import { startServer } from "../src/server";
@@ -124,8 +125,8 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
       lifecycle: opened.issueLifecycle,
       oauthClientId: "client",
       appUserId: "app",
-      stopSession: async () => {
-        expect((await getLinearSession(sqliteDb(db), "session"))?.stoppedAt).not.toBeNull();
+      stopSession: function* (q) {
+        expect((yield* getLinearSessionSteps(q, "session"))?.stoppedAt).not.toBeNull();
       },
       interruptSession: async (sessionId) => {
         await orchestrator.interruptLinearSession(sessionId);

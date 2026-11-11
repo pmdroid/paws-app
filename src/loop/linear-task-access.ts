@@ -78,7 +78,7 @@ export class LinearTaskAccess {
       lifecycle: LinearIssueLifecycle | null;
       oauthClientId: string | null;
       appUserId: string | null;
-      stopSession: (sessionId: string) => void;
+      stopSession: (q: Q, sessionId: string) => Steps<void>;
       interruptSession?: (sessionId: string) => Promise<void>;
       now?: () => number;
     },
@@ -226,7 +226,7 @@ export class LinearTaskAccess {
       stop: true,
       now: (this.options.now ?? Date.now)(),
     });
-    this.options.stopSession(access.sessionId);
+    await this.store.run((q) => this.options.stopSession(q, access.sessionId));
     await this.options.interruptSession?.(access.sessionId);
     return false;
   }
@@ -479,7 +479,7 @@ export class LinearTaskAccess {
       );
       if (!(await this.team(issue.teamId, { signal }, fresh))) {
         this.invalidate({ sessionId });
-        this.options.stopSession(sessionId);
+        await this.store.run((q) => this.options.stopSession(q, sessionId));
         throw new LinearAccessRemovedError("Linear task team access was removed.");
       }
       await current();
@@ -498,7 +498,7 @@ export class LinearTaskAccess {
   ): Steps<void> {
     if (!(yield* permitsSteps(q, item, access, issue, allowTerminalIssue))) {
       this.invalidate({ sessionId });
-      this.options.stopSession(sessionId);
+      yield* this.options.stopSession(q, sessionId);
       throw new LinearAccessRemovedError("Linear task delegation or workflow access was removed.");
     }
     if (issue.delegateId === access.appUserId)
@@ -575,7 +575,7 @@ export class LinearTaskAccess {
 
   private *allowedSteps(q: Q, sessionId: string): Steps<boolean> {
     if ((yield* getLinearSessionAccessSteps(q, sessionId)) === "allowed") return true;
-    this.options.stopSession(sessionId);
+    yield* this.options.stopSession(q, sessionId);
     return false;
   }
 
