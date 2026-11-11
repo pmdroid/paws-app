@@ -15,7 +15,6 @@ import {
   enqueueJob,
   getWorkItem,
   insertRun,
-  markRun,
   migrate,
   openDatabase,
   recordLinearInstallation,
