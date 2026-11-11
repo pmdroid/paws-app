@@ -389,9 +389,9 @@ import {
   PULL_REVIEW_CHECK_MAX_WAIT_MS,
   type CloseoutFaults,
   releaseReviewerFaultHolds,
-  enqueueRunnerSetupCheck,
-  holdForRunnerSetup,
-  markRunnerSetupNotified,
+  enqueueRunnerSetupCheckSteps,
+  holdForRunnerSetupSteps as storeRunnerSetupHoldSteps,
+  markRunnerSetupNotifiedSteps,
   runnerAgentName,
   runnerCapacityWait,
   getTaskMergeSettings,
@@ -406,7 +406,7 @@ import {
   clearItemRecovery,
   clearItemRecoverySteps,
   hasOpenItemJob,
-  itemOwnerUserId,
+  itemOwnerUserIdSteps,
   itemParentTaskKey,
   itemSpecificationRevisionSteps,
   landedTaskBlockersSteps,
@@ -2784,7 +2784,11 @@ export class Orchestrator {
    */
   private async holdForRunnerSetup(item: WorkItemRecord, need: RunnerSetupNeed): Promise<boolean> {
     const now = this.now();
-    return await this.store.transaction((q) => this.holdForRunnerSetupSteps(q, item, need, now));
+    const held = await this.store.transaction((q) =>
+      this.holdForRunnerSetupSteps(q, item, need, now),
+    );
+    if (held) emitJobReady(this.store);
+    return held;
   }
 
   private *holdForRunnerSetupSteps(
@@ -2805,8 +2809,8 @@ export class Orchestrator {
       if (run && (run.status === "active" || run.status === "provisioning"))
         yield* markRunSteps(q, run.id, "lost", now);
     }
-    restart(this.db, current, { reason: "follow_up", body: "Retry runner setup.", now });
-    this.recordRunnerSetupHold(current, need, now, current.currentRunId);
+    yield* restartSteps(q, current, { reason: "follow_up", body: "Retry runner setup.", now });
+    yield* this.recordRunnerSetupHoldSteps(q, current, need, now, current.currentRunId);
     return true;
   }
 
@@ -2814,15 +2818,27 @@ export class Orchestrator {
    * Write the runner-setup hold of a queued item and post its thought, once per hold. Runs in
    * the caller's transaction.
    */
-  private recordRunnerSetupHold(
+  private *queuedRunnerSetupHoldSteps(
+    q: Q,
+    itemId: string,
+    need: RunnerSetupNeed,
+    now: number,
+  ): Steps<void> {
+    const current = yield* getWorkItemSteps(q, itemId);
+    if (current?.state === "queued" && !current.cancelRequested)
+      yield* this.recordRunnerSetupHoldSteps(q, current, need, now);
+  }
+
+  private *recordRunnerSetupHoldSteps(
+    q: Q,
     current: WorkItemRecord,
     need: RunnerSetupNeed,
     now: number,
     runId: string | null = null,
-  ) {
-    const hold = holdForRunnerSetup(this.db, {
+  ): Steps<void> {
+    const hold = yield* storeRunnerSetupHoldSteps(q, {
       itemId: current.id,
-      ownerUserId: itemOwnerUserId(this.db, current.id),
+      ownerUserId: yield* itemOwnerUserIdSteps(q, current.id),
       reason: need.reason,
       ...(need.reason === "agent-not-signed-in"
         ? { runnerId: need.runnerId, agent: need.agent }
@@ -2832,12 +2848,12 @@ export class Orchestrator {
     });
     // A runner may have become usable while placement decided to hold. Check once now, so the
     // hold does not wait for a later write.
-    if (hold.ownerUserId !== null) enqueueRunnerSetupCheck(this.db, hold.ownerUserId, now);
+    if (hold.ownerUserId !== null) yield* enqueueRunnerSetupCheckSteps(q, hold.ownerUserId, now);
     this.options.journal?.(`item ${current.linearIdentifier} held: runner setup (${need.reason})`);
     if (hold.notifiedAt !== null) return;
     const sessionId = this.activitySession(current);
     if (sessionId !== null)
-      enqueueOutboxOnce(this.db, {
+      yield* enqueueOutboxOnceSteps(q, {
         target: OUTBOX_ACTIVITY.target,
         op: OUTBOX_ACTIVITY.op,
         orderingKey: sessionId,
@@ -2845,7 +2861,7 @@ export class Orchestrator {
         payload: { sessionId, kind: "thought", body: this.runnerSetupLine(need) },
         now,
       });
-    markRunnerSetupNotified(this.db, current.id, now);
+    yield* markRunnerSetupNotifiedSteps(q, current.id, now);
   }
 
   /**
@@ -7682,10 +7698,10 @@ export class Orchestrator {
    * runner-setup hold and its session hears it once; the scheduler starts it on its own once the
    * owner has a usable runner. A runner that is only offline gets the general line.
    */
-  private noteRunnerSetup(
+  private async noteRunnerSetup(
     itemIds: readonly string[],
     agentFor: (item: WorkItemRecord) => string,
-  ): void {
+  ): Promise<void> {
     const now = this.now();
     for (const id of itemIds) {
       const item = getWorkItem(this.db, id);
@@ -7693,11 +7709,8 @@ export class Orchestrator {
       settled(clearQueueWait(sqliteDb(this.db), item.id));
       const need = this.options.runnerSetupNeed?.(item.id, agentFor(item), now) ?? null;
       if (need) {
-        immediate(this.db, () => {
-          const current = getWorkItem(this.db, item.id);
-          if (current?.state === "queued" && !current.cancelRequested)
-            this.recordRunnerSetupHold(current, need, now);
-        });
+        await this.store.transaction((q) => this.queuedRunnerSetupHoldSteps(q, item.id, need, now));
+        emitJobReady(this.store);
         continue;
       }
       const sessionId = this.activitySession(item);

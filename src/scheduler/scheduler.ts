@@ -90,7 +90,7 @@ export type SchedulerOptions = {
    */
   ownerHasRunner?: (q: Q, itemId: string) => Steps<boolean | null>;
   /** Queued items whose owner has no runner they may use, after every admission pass. */
-  onRunnerSetup?: (itemIds: readonly string[]) => void;
+  onRunnerSetup?: (itemIds: readonly string[]) => void | Promise<void>;
   onWaits?: (waits: readonly ItemWait[]) => void;
   itemRunners?: (itemId: string) => ItemRunnerVerdicts | null;
   onRunnerHostRefusals?: (refusals: readonly RunnerHostRefusal[], now: number) => void;
@@ -898,7 +898,7 @@ async function admit(
   if (result.armed) emitJobReady(store);
   if (options.log) for (const line of result.changes) options.log(line);
   options.onWaiting?.(result.waiting);
-  options.onRunnerSetup?.(result.setup);
+  await options.onRunnerSetup?.(result.setup);
   options.onWaits?.(result.waits);
   options.onRunnerHostRefusals?.(result.hostRefusals, now);
   return result.admitted;
