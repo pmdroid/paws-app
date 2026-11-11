@@ -25,7 +25,6 @@ import {
   recordImprovementOutcomeSteps,
   returnImprovementToReviewSteps,
   settleImprovementDelegationSteps,
-  settled as settledValue,
   sqliteDb,
   type ImprovementAction,
   type ImprovementDelegation,
@@ -39,7 +38,11 @@ import {
 } from "../db";
 import { journalCaught } from "../journal";
 import { listInboxItemsSteps, type ImprovementAccess, type InboxItem } from "./inbox";
-import { findInboxItemSteps, improvementDestinations, type ImprovementReviewer } from "./review";
+import {
+  findInboxItemSteps,
+  improvementDestinationsSteps,
+  type ImprovementReviewer,
+} from "./review";
 
 export const IMPROVEMENT_OUTCOME_LIMITS = {
   staleSyncMs: 6 * 60 * 60_000,
@@ -328,10 +331,6 @@ function* followThroughSteps(q: Q, item: InboxItem, now: number): Steps<FollowTh
   return viewOf(item, yield* factsSteps(q, item, now), now);
 }
 
-export function followThrough(db: Database, item: InboxItem, now: number): FollowThrough {
-  return settledValue(sqliteDb(db).run((q) => followThroughSteps(q, item, now)));
-}
-
 function viewOf(item: InboxItem, facts: Facts, now: number): FollowThrough {
   const { improvement } = item;
   const { sync, work, delegation, actions } = facts;
@@ -487,9 +486,7 @@ export function improvementFollowThrough(
   improvementId: string,
   now: number,
 ) {
-  return settledValue(
-    sqliteDb(db).run((q) => improvementFollowThroughSteps(q, access, improvementId, now)),
-  );
+  return sqliteDb(db).run((q) => improvementFollowThroughSteps(q, access, improvementId, now));
 }
 
 const ATTENTION_KIND: Partial<
@@ -739,7 +736,7 @@ export async function delegateImprovement(
   db: Database,
   input: {
     reviewer: ImprovementReviewer;
-    reauthorize?: () => ImprovementReviewer | null;
+    reauthorize?: (q: Q) => Steps<ImprovementReviewer | null>;
     improvementId: string;
     expectedVersion: number;
     linear?: IssueReader;
@@ -803,10 +800,10 @@ export async function delegateImprovement(
   if (input.again && !view.recovery.includes("redelegate"))
     return refuse("conflict", "recovery_unavailable", view);
   const team = await store.run((q) => issueTeamSteps(q, first));
-  if (
-    team === null ||
-    !improvementDestinations(db, input.reviewer, first.improvement.repository).includes(team)
-  )
+  const destinations = await store.run((q) =>
+    improvementDestinationsSteps(q, input.reviewer, first.improvement.repository),
+  );
+  if (team === null || !destinations.includes(team))
     return refuse("forbidden", "destination", view);
   if (!input.linear || !input.startSession)
     return refuse("unavailable", "linear_unavailable", view);
@@ -819,9 +816,10 @@ export async function delegateImprovement(
   if (read.value.state === "closed")
     return refuse("conflict", "issue_closed", await fresh(input.reviewer));
   const freshTeam = read.value.teamId;
-  if (
-    !improvementDestinations(db, input.reviewer, first.improvement.repository).includes(freshTeam)
-  )
+  const freshDestinations = await store.run((q) =>
+    improvementDestinationsSteps(q, input.reviewer, first.improvement.repository),
+  );
+  if (!freshDestinations.includes(freshTeam))
     return refuse("forbidden", "destination", await fresh(input.reviewer));
   if (!input.again && read.value.delegated) {
     await existing(first, input.reviewer.userId, input.now());
@@ -831,13 +829,17 @@ export async function delegateImprovement(
   const claim = await store.transaction(function* (q): Steps<
     FollowThroughOutcome | { attempts: number }
   > {
-    const current = input.reauthorize ? input.reauthorize() : input.reviewer;
+    const current = input.reauthorize ? yield* input.reauthorize(q) : input.reviewer;
     const item =
       current &&
       (yield* q.transaction((tx) => settleSteps(tx, current, input.improvementId, input.now())));
     if (!current || !item) return NOT_FOUND;
     const latest = yield* followThroughSteps(q, item, input.now());
-    if (!improvementDestinations(db, current, item.improvement.repository).includes(freshTeam))
+    if (
+      !(yield* improvementDestinationsSteps(q, current, item.improvement.repository)).includes(
+        freshTeam,
+      )
+    )
       return refuse("forbidden", "destination", latest);
     if (!input.again && latest.work) {
       yield* q.transaction((tx) =>

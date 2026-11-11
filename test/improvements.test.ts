@@ -33,8 +33,9 @@ import {
   ingestDailyFindings,
   itemsForIssue,
   legacyActions,
-  listInboxItems,
+  listInboxItemsSteps,
   reuseChoice,
+  type ImprovementAccess,
 } from "../src/improvements";
 import { tempDb } from "./helpers";
 
@@ -103,6 +104,8 @@ function group(
 
 const regroup = (db: Database) =>
   db.run("DELETE FROM finding_group WHERE status='open' AND action IS NULL");
+const listInboxItems = (db: Database, access: ImprovementAccess) =>
+  sqliteDb(db).run((q) => listInboxItemsSteps(q, access));
 const owner = async (db: Database, f: ReviewFindingRecord) =>
   (
     await improvementBySource(sqliteDb(db), "ws", {
@@ -211,7 +214,7 @@ describe("daily finding sources", () => {
       changed: 0,
       remaining: 0,
     });
-    const items = listInboxItems(db, { workspaceId: "ws" });
+    const items = await listInboxItems(db, { workspaceId: "ws" });
     expect(items).toHaveLength(3);
     const linked = items.find((i) => i.members.some((m) => m.findingId === f[0]!.id))!;
     expect(linked.lifecycle).toBe("linked");
@@ -273,8 +276,8 @@ describe("daily finding sources", () => {
     group(db, [f[0]!, f[1]!]);
     await ingestDailyFindings(db, "ws", { now: 1 });
     const id = (await owner(db, f[0]!))!;
-    const item = () =>
-      listInboxItems(db, { workspaceId: "ws" }).find((i) => i.improvement.id === id)!;
+    const item = async () =>
+      (await listInboxItems(db, { workspaceId: "ws" })).find((i) => i.improvement.id === id)!;
     setReviewFindingStatus(db, {
       id: f[0]!.id,
       status: "dismissed",
@@ -282,13 +285,16 @@ describe("daily finding sources", () => {
       by: "Ada",
       now: 2,
     });
-    expect(item()).toMatchObject({ lifecycle: "needs_review", undecided: [f[1]!.id] });
+    expect(await item()).toMatchObject({ lifecycle: "needs_review", undecided: [f[1]!.id] });
     markReviewFindingFiled(db, { key: f[0]!.key, issue: "PAS-30", by: "Ada", now: 3 });
-    expect(item()).toMatchObject({ lifecycle: "needs_review", undecided: [f[1]!.id] });
-    expect(item().issue).toMatchObject({ identifier: "PAS-30" });
-    expect(reuseChoice(item(), "open")).toMatchObject({ kind: "review", reason: "scope_changed" });
+    expect(await item()).toMatchObject({ lifecycle: "needs_review", undecided: [f[1]!.id] });
+    expect((await item()).issue).toMatchObject({ identifier: "PAS-30" });
+    expect(reuseChoice(await item(), "open")).toMatchObject({
+      kind: "review",
+      reason: "scope_changed",
+    });
     markReviewFindingFiled(db, { key: f[1]!.key, issue: "PAS-30", by: "Ada", now: 4 });
-    expect(item()).toMatchObject({ lifecycle: "linked", undecided: [] });
+    expect(await item()).toMatchObject({ lifecycle: "linked", undecided: [] });
   });
 
   test("a claimed legacy action stays pending", async () => {
@@ -297,7 +303,9 @@ describe("daily finding sources", () => {
     await ingestDailyFindings(db, "ws", { now: 1 });
     const id = (await owner(db, f[0]!))!;
     db.run("UPDATE finding_group SET action='file'");
-    const [item] = listInboxItems(db, { workspaceId: "ws" }).filter((i) => i.improvement.id === id);
+    const [item] = (await listInboxItems(db, { workspaceId: "ws" })).filter(
+      (i) => i.improvement.id === id,
+    );
     expect(item!.lifecycle).toBe("pending");
     expect(
       legacyActions(improvementFindings(db, id), await listFindingGroups(sqliteDb(db), "ws")),
@@ -308,10 +316,14 @@ describe("daily finding sources", () => {
     const { db, f } = seed();
     group(db, [f[0]!, f[1]!]);
     await ingestDailyFindings(db, "ws", { now: 1 });
-    expect(listInboxItems(db, { workspaceId: "ws", sessionIds: ["session"] })).toHaveLength(3);
-    expect(listInboxItems(db, { workspaceId: "ws", sessionIds: ["other"] })).toEqual([]);
-    expect(listInboxItems(db, { workspaceId: "ws", repositories: ["acme/other"] })).toEqual([]);
-    expect(inboxCounts(listInboxItems(db, { workspaceId: "other" })).total).toBe(0);
+    expect(await listInboxItems(db, { workspaceId: "ws", sessionIds: ["session"] })).toHaveLength(
+      3,
+    );
+    expect(await listInboxItems(db, { workspaceId: "ws", sessionIds: ["other"] })).toEqual([]);
+    expect(await listInboxItems(db, { workspaceId: "ws", repositories: ["acme/other"] })).toEqual(
+      [],
+    );
+    expect(inboxCounts(await listInboxItems(db, { workspaceId: "other" })).total).toBe(0);
   });
 });
 
@@ -388,7 +400,7 @@ describe("daily findings and retros share one inbox", () => {
       remote: { id: "issue-20", identifier: "PAS-20" },
       now: 10,
     });
-    const items = listInboxItems(db, { workspaceId: "ws" });
+    const items = await listInboxItems(db, { workspaceId: "ws" });
     const shared = itemsForIssue(items, { identifier: "PAS-20" });
     expect(shared.map((i) => i.sourceKind).sort()).toEqual(["daily_finding", "retro_item"]);
     expect(shared.find((i) => i.sourceKind === "retro_item")!.proposal.evidence).toEqual([
@@ -398,7 +410,9 @@ describe("daily findings and retros share one inbox", () => {
     expect(retroItem.criterion).toBe("No repair questions");
     expect(reuseChoice(retroItem, "open")).toMatchObject({ kind: "reuse" });
     expect(getImprovement(db, retroItem.improvement.id)!.issue!.id).toBe("issue-20");
-    expect(listInboxItems(db, { workspaceId: "ws", repositories: ["acme/other"] })).toEqual([]);
+    expect(await listInboxItems(db, { workspaceId: "ws", repositories: ["acme/other"] })).toEqual(
+      [],
+    );
     expect(inboxCounts(items)).toMatchObject({ daily: 4, weekly: 1, missingCriterion: 3 });
     expect(await improvementSourceStatus(db, "ws")).toEqual({
       daily: { enabled: true, lastRun: expect.objectContaining({ status: "completed" }) },

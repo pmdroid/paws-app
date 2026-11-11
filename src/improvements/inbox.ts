@@ -11,7 +11,6 @@ import {
   retroScheduleRuntimeSteps,
   reviewFindingIssueClaimsSteps,
   reviewFindingItemsSteps,
-  settled,
   sqliteDb,
   type FindingGroupRun,
   type Improvement,
@@ -198,10 +197,6 @@ export function* listInboxItemsSteps(q: Q, access: ImprovementAccess): Steps<Inb
     });
   }
   return result;
-}
-
-export function listInboxItems(db: Database, access: ImprovementAccess): InboxItem[] {
-  return settled(sqliteDb(db).run((q) => listInboxItemsSteps(q, access)));
 }
 
 export type InboxCounts = {
