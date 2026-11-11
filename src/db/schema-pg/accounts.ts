@@ -4,13 +4,13 @@ import {
   foreignKey,
   index,
   integer,
-  jsonb,
   pgTable,
   primaryKey,
   text,
   unique,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { jsonb } from "./types";
 import { sql } from "drizzle-orm";
 import { workspace } from "./workspace";
 import { runner } from "./runners";
