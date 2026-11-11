@@ -371,7 +371,7 @@ import {
   setRunningCloseoutStepDetail,
   markRun,
   releaseRunCapacity,
-  saveVisualReviewMarks,
+  saveVisualReviewMarksSteps,
   type VisualReviewMark,
   listRunsSteps,
   type StoredLinearSession,
@@ -522,7 +522,9 @@ import {
   renderLinearSessionContext,
 } from "../linear";
 import {
-  answer as answerAsked,
+  answerSteps,
+  type AnswerEffects,
+  type QuestionReply,
   answerer,
   canAnswer,
   cancelItemQuestions,
@@ -533,6 +535,7 @@ import {
   handoffNote,
   acceptedVisualReviews,
   getQuestion,
+  getQuestionSteps,
   isPawsAnswerKind,
   pawsAnswerNote,
   getVisualReview,
@@ -555,6 +558,7 @@ import {
   pendingVisualReviewSteps,
   planVisualReviewCarry,
   postNote,
+  postNoteSteps,
   remindVisualReview,
   reviewable,
   visualReviewApprovals,
@@ -2998,8 +3002,7 @@ export class Orchestrator {
       for (const question of batch) {
         seen.add(question.id);
         if (!allowedOn(question.itemId, runnerId, now)) continue;
-        const outcome = answerAsked(
-          this.db,
+        const outcome = await this.answerInStore(
           {
             sessionId: question.sessionId,
             deliveryId: `runner-repository-allowed:${question.id}`,
@@ -6944,8 +6947,7 @@ export class Orchestrator {
       open.kind === "policy-outage" ||
       open.kind === "runner-repository"
     ) {
-      const outcome = answerAsked(
-        this.db,
+      const outcome = await this.answerInStore(
         { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: this.now() },
         questionEffects(this.db, {
           now: this.now(),
@@ -6965,8 +6967,7 @@ export class Orchestrator {
         (await this.store.run((q) => getWorkItemSteps(q, open.itemId)))?.state !== "awaiting_input"
       )
         return "rejected";
-      const outcome = answerAsked(
-        this.db,
+      const outcome = await this.answerInStore(
         { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: this.now() },
         questionEffects(this.db, {
           now: this.now(),
@@ -7009,8 +7010,8 @@ export class Orchestrator {
           return "rejected" as const;
         }
       }
-      const answered = answerAsked(
-        db,
+      const answered = yield* answerSteps(
+        q,
         { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: now() },
         questionEffects(db, {
           maxAwakeMs: caps?.maxAwakeMs,
@@ -9632,6 +9633,12 @@ export class Orchestrator {
     );
   }
 
+  private async answerInStore(reply: QuestionReply, effects: AnswerEffects) {
+    const outcome = await this.store.transaction((q) => answerSteps(q, reply, effects));
+    emitJobReady(this.store);
+    return outcome;
+  }
+
   private async answerVisualReview(
     open: StoredQuestion,
     review: StoredVisualReview,
@@ -9641,8 +9648,15 @@ export class Orchestrator {
     marks?: readonly VisualReviewMark[],
   ): Promise<"answered" | "rejected"> {
     const sessionId = open.sessionId;
-    const outcome = immediate(this.db, () => {
-      const item = getWorkItem(this.db, open.itemId);
+    const db = this.db;
+    const now = this.now();
+    const effects = questionEffects(db, {
+      now,
+      asking: (runId) => this.askedRuns.has(runId),
+      ...(marks ? { marks } : {}),
+    });
+    const outcome = await this.store.transaction(function* (q) {
+      const item = yield* getWorkItemSteps(q, open.itemId);
       // A pending-human check is answered while the other checks still run.
       const waiting =
         item?.state === "awaiting_input" ||
@@ -9651,32 +9665,29 @@ export class Orchestrator {
         item === null ||
         !waiting ||
         item.cancelRequested ||
-        getQuestion(this.db, open.id)?.status !== "open"
+        (yield* getQuestionSteps(q, open.id))?.status !== "open"
       )
         return "rejected" as const;
       if (review.kind === "review" && parseVisualReviewAnswer(answer).kind === "describe") {
-        if (marks) saveVisualReviewMarks(this.db, marks);
-        postNote(
-          this.db,
+        if (marks) yield* saveVisualReviewMarksSteps(q, marks);
+        yield* postNoteSteps(
+          q,
           sessionId,
           item,
           VISUAL_REVIEW_DESCRIBE,
           `visual-review-describe:${eventKey}`,
-          this.now(),
+          now,
         );
         return "rejected" as const;
       }
-      const answered = answerAsked(
-        this.db,
-        { sessionId, deliveryId: eventKey, body: answer, answeredBy, now: this.now() },
-        questionEffects(this.db, {
-          now: this.now(),
-          asking: (runId) => this.askedRuns.has(runId),
-          ...(marks ? { marks } : {}),
-        }),
+      const answered = yield* answerSteps(
+        q,
+        { sessionId, deliveryId: eventKey, body: answer, answeredBy, now },
+        effects,
       );
       return answered.status === "answered" ? ("answered" as const) : ("rejected" as const);
     });
+    emitJobReady(this.store);
     // Changes requested while the other checks ran restart the item: stop that evaluation.
     if (
       outcome === "answered" &&
