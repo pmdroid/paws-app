@@ -6,20 +6,20 @@ How the browser reaches the dashboard and what each page reads. The response fie
 
 `/dashboard` is the canonical address. `/` answers 307 to `/dashboard/`, keeping the query. HTML served under `/dashboard` carries `<base href="/dashboard/">`, and assets are `/dashboard/assets/<file>`, cached for a year by their content hash.
 
-| Page                           | Path                                                                                                                       | Reads                                             |
-| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| Overview                       | `/dashboard/`                                                                                                              | `GET /api/overview`                               |
-| Issues                         | `/dashboard/issues`                                                                                                        | `GET /api/issues`                                 |
-| Issue                          | `/dashboard/issues/<id>`                                                                                                   | `GET /api/issues/<id>`                            |
-| Questions                      | `/dashboard/questions`, `/dashboard/questions/<id>`                                                                        | `GET /api/questions[/<id>]`                       |
-| Merge queue                    | `/dashboard/merge-queue`                                                                                                   | `GET /api/merge-queue`                            |
-| Evidence                       | `/dashboard/evidence`, `/dashboard/evidence/<id>`                                                                          | `GET /api/evidence[/<id>/metadata]`               |
-| Run, session and verdict links | `/dashboard/runs/<id>`, `/dashboard/sessions/<id>`, `/dashboard/verdicts/<id>`                                             | `GET /api/aliases/<kind>/<id>`                    |
-| Runners                        | `/dashboard/runners[/<id>]`                                                                                                | `GET /api/runners...`                             |
-| Findings                       | `/dashboard/findings`                                                                                                      | `GET /api/findings`, `GET /api/finding-groups`    |
-| Improvements                   | `/dashboard/improvements[/<id>]`, `/dashboard/improvements/reports/<id>`, `/history`, `/settings`                          | `GET /api/improvements...`, `GET /api/retros/...` |
-| Settings                       | `/dashboard/settings/<page>`: decisions, agents, merging, limits, brief, findings, integrations, workspace, account, audit | `/api/settings/...`, `/api/workspaces/...`        |
-| Agent transcript               | `/dashboard/runs/<id>/transcript` (its own HTML page)                                                                      | `GET /api/runs/transcript?run=<id>`               |
+| Page                           | Path                                                                                                            | Reads                                             |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| Overview                       | `/dashboard/`                                                                                                   | `GET /api/overview`                               |
+| Issues                         | `/dashboard/issues`                                                                                             | `GET /api/issues`                                 |
+| Issue                          | `/dashboard/issues/<id>`                                                                                        | `GET /api/issues/<id>`                            |
+| Questions                      | `/dashboard/questions`, `/dashboard/questions/<id>`                                                             | `GET /api/questions[/<id>]`                       |
+| Merge queue                    | `/dashboard/merge-queue`                                                                                        | `GET /api/merge-queue`                            |
+| Evidence                       | `/dashboard/evidence`, `/dashboard/evidence/<id>`                                                               | `GET /api/evidence[/<id>/metadata]`               |
+| Run, session and verdict links | `/dashboard/runs/<id>`, `/dashboard/sessions/<id>`, `/dashboard/verdicts/<id>`                                  | `GET /api/aliases/<kind>/<id>`                    |
+| Runners                        | `/dashboard/runners[/<id>]`                                                                                     | `GET /api/runners...`                             |
+| Findings                       | `/dashboard/findings`                                                                                           | `GET /api/findings`, `GET /api/finding-groups`    |
+| Improvements                   | `/dashboard/improvements[/<id>]`, `/dashboard/improvements/reports/<id>`, `/history`, `/settings`               | `GET /api/improvements...`, `GET /api/retros/...` |
+| Settings                       | `/dashboard/settings/<page>`: agents, merging, limits, brief, findings, integrations, workspace, account, audit | `/api/settings/...`, `/api/workspaces/...`        |
+| Agent transcript               | `/dashboard/runs/<id>/transcript` (its own HTML page)                                                           | `GET /api/runs/transcript?run=<id>`               |
 
 Improvements is the shared inbox for daily findings and weekly retros; [Improvement review API](improvement-review.md#dashboard) describes the page. `/retros` opens it filtered to weekly retros and `/retros/<id>` opens that retro's report.
 

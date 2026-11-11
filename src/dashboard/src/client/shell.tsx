@@ -61,7 +61,6 @@ const ICONS = {
   workspace: KeyRound,
   account: UserRound,
   audit: History,
-  decisions: BookOpen,
 };
 const ControllerRegions = memo(function ControllerRegions() {
   return (

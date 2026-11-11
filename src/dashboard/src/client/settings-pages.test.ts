@@ -2,10 +2,20 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { createBriefSettings } from "./brief-settings";
 import { createHookSettings, type HookListing } from "./hooks";
+import { parseRoute } from "./route";
 import { SETTINGS_PAGES, renderSettingsPage } from "./settings-pages";
 import { createSkillSettings, type SkillListing } from "./skills";
 
 const MOVED = ["brief-settings", "skill-settings", "hook-settings"];
+
+test("the settings navigation has no Decisions page and opens on Agents", () => {
+  expect(SETTINGS_PAGES.map((page) => page.id)).not.toContain("decisions");
+  expect(SETTINGS_PAGES.map((page) => page.name)).not.toContain("Decisions");
+  expect(SETTINGS_PAGES[0]?.id).toBe("agents");
+  expect(parseRoute("/settings")).toEqual({ view: "settings" });
+  expect(parseRoute("/settings/decisions")).toEqual({ view: "settings" });
+  expect(renderSettingsPage()).toContain('<h1 class="sr-only">Agents</h1>');
+});
 
 test("Agent instructions holds the brief, then skills, then hooks", () => {
   expect(SETTINGS_PAGES.find((page) => page.id === "brief")).toEqual({

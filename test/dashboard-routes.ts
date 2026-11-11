@@ -34,7 +34,6 @@ const api = (
 ): RouteEntry => ({ surface: "http", method, pattern, disposition, owner, ...extra });
 
 export const SETTINGS_PAGE_IDS = [
-  "decisions",
   "agents",
   "merging",
   "limits",
