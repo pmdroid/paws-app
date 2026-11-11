@@ -38,7 +38,7 @@ export type {
 } from "./onboarding-page";
 export { handleWorkspaceGitHubIntegration } from "./github-integration";
 export { createGitHubAttributionLink } from "./github-attribution";
-export { delegatorCommitCredit } from "./commit-attribution";
+export { delegatorCommitCredit, delegatorPullRequestToken } from "./commit-attribution";
 
 export { readWorkspaceJson } from "./administration";
 
