@@ -79,7 +79,7 @@ describe("combined recovery scenarios", () => {
       beginImplementRun(w.db, id, w.now);
 
       w.crash();
-      w.start();
+      await w.start();
       expect(await pendingRestartHandoff(sqliteDb(w.db), id)).toEqual({ handoff: "first failure" });
       const resume = liveExecution(w, id).find((job) => job.status === "pending")!;
       expect(resume.payload).toMatchObject({ reason: "process_restart", handoff: "first failure" });
@@ -106,7 +106,7 @@ describe("combined recovery scenarios", () => {
       expect(fixRounds(w.db, id)).toBe(2);
 
       w.crash();
-      w.start();
+      await w.start();
       await w.settle();
       expect(getJob(w.db, first)?.status).toBe("pending");
       expect(await pendingRestartHandoff(sqliteDb(w.db), id)).toEqual({
@@ -131,7 +131,7 @@ describe("combined recovery scenarios", () => {
       });
       for (let n = 0; n < 2; n++) {
         w.crash();
-        w.start();
+        await w.start();
         expect(await mergeAcceptedWork(sqliteDb(w.db), id, { now: w.now })).toBe(false);
         await markCloseoutAccepted(sqliteDb(w.db), id, "head");
         expect(await mergeAcceptedWork(sqliteDb(w.db), id, { now: w.now })).toBe(false);
@@ -168,9 +168,9 @@ describe("combined recovery scenarios", () => {
       });
       for (const entry of ["crash", "stop", "crash"] as const) {
         if (entry === "crash") w.crash();
-        else w.stop();
+        else await w.stop();
         w.advance(HOUR);
-        w.start();
+        await w.start();
         const facts = await factsOf(w.db, id);
         expect([facts.state, facts.mergeCall]).toEqual(["merge_queue", true]);
         expect(restart(w.db, getWorkItem(w.db, id)!, { reason: "ci", body: "x", now: w.now })).toBe(
@@ -194,7 +194,7 @@ describe("combined recovery scenarios", () => {
       expect(merged.mergeCall).toBe(false);
 
       w.crash();
-      w.start();
+      await w.start();
       expect(
         (await applyLinearCommand(sqliteDb(w.db), { ...stop, requestedAt: w.now })).applied,
       ).toBe(false);
@@ -250,11 +250,11 @@ describe("combined recovery scenarios", () => {
       const merge = liveExecution(w, id).map((job) => job.id);
 
       w.crash();
-      w.start();
+      await w.start();
       expect(await acceptGitHubDelivery(w.db, delivery, w.now)).toBe(false);
       w.crash();
       w.advance(1_000);
-      w.start();
+      await w.start();
       expect(await acceptGitHubDelivery(w.db, delivery, w.now)).toBe(false);
       expect(await reviews()).toEqual([42]);
       expect(jobs()).toEqual(effects);
@@ -294,10 +294,10 @@ describe("combined recovery scenarios", () => {
       };
       await check();
       w.crash();
-      w.start();
+      await w.start();
       await check();
-      w.stop();
-      w.start();
+      await w.stop();
+      await w.start();
       await check();
       expect(itemJobs(w, "verifying_leased").some((job) => job.queue === JOB_KIND.resume)).toBe(
         false,
@@ -312,7 +312,7 @@ describe("combined recovery scenarios", () => {
     try {
       w.crash();
       w.advance(-HOUR);
-      w.start();
+      await w.start();
       const execution = [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify];
       expect(claimNextJob(w.db, { now: w.now, queues: execution })).toBeNull();
       await w.settle();
@@ -447,15 +447,15 @@ describe("runner control across Paws restarts", () => {
       };
       await held();
       w.crash();
-      w.start();
+      await w.start();
       await held();
       await controller().acknowledge("box", cancel.id);
       w.advance(cancel.expiresAt - w.now + RUNNER_LEASE_GRACE_MS + 1);
       await controller().heartbeat("box", 1, host, undefined, undefined, undefined, undefined, [
         { runId: run.id, generation: 1 },
       ]);
-      w.stop();
-      w.start();
+      await w.stop();
+      await w.start();
       await w.settle();
       await held();
       expect(() =>
@@ -477,7 +477,7 @@ describe("runner control across Paws restarts", () => {
       expect(await runnerCancelPending(sqliteDb(w.db), "box")).toBe(false);
       expect((await runnerOccupancy(sqliteDb(w.db), "box", w.now)).occupied).toBe(0);
       w.crash();
-      w.start();
+      await w.start();
       await w.settle();
       expect(await factsOf(w.db, "item")).toMatchObject({ state: "paused", liveJobs: [] });
       expect((await runnerOccupancy(sqliteDb(w.db), "box", w.now)).occupied).toBe(0);
@@ -496,8 +496,8 @@ describe("runner control across Paws restarts", () => {
       expect((await factsOf(w.db, "item")).state).toBe("recovering");
       for (const restartWith of ["crash", "stop"] as const) {
         if (restartWith === "crash") w.crash();
-        else w.stop();
-        w.start();
+        else await w.stop();
+        await w.start();
         await expect(controller().currentAsync(run.id, 1)).rejects.toThrow(RunnerWorkFencedError);
         await controller().heartbeat("box", 1, {}, undefined, undefined, undefined, undefined, [
           { runId: run.id, generation: 1 },

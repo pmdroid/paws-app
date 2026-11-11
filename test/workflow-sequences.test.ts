@@ -100,14 +100,14 @@ async function apply(w: World, sequence: Sequence, action: Action): Promise<void
   switch (action.kind) {
     case "crash_start":
       w.crash();
-      w.start();
+      await w.start();
       return;
     case "stop_start":
-      w.stop();
-      w.start();
+      await w.stop();
+      await w.start();
       return;
     case "start_again":
-      w.start();
+      await w.start();
       return;
     case "sweep":
       await w.sweep();
@@ -152,7 +152,7 @@ async function apply(w: World, sequence: Sequence, action: Action): Promise<void
       failWrites(w.db, WRITE_POINTS[action.point]!);
       let failed = false;
       try {
-        w.start();
+        await w.start();
       } catch (error) {
         failed = true;
         expect(String(error)).toContain("injected write failure");
@@ -161,7 +161,7 @@ async function apply(w: World, sequence: Sequence, action: Action): Promise<void
       }
       if (failed) expect(dump(w.db)).toEqual(before);
       w.crash();
-      w.start();
+      await w.start();
       return;
     }
     case "reconnect": {
@@ -245,7 +245,7 @@ async function failure(sequence: Sequence): Promise<string | null> {
       if (unsafe.length > 0) return `step ${step} ${action.kind}: ${unsafe.join("; ")}`;
     }
     w.crash();
-    w.start();
+    await w.start();
     await w.settle();
     const stuck = await unexpectedViolations(w.db, w.now);
     if (stuck.length > 0) return `after settling: ${stuck.join("; ")}`;

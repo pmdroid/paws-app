@@ -331,29 +331,27 @@ export class World {
     migrate(this.db);
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     this.trace.push("stop");
-    settled(sqliteDb(this.db).transaction((q) => prepareShutdownSteps(q, this.now, undefined)));
+    await sqliteDb(this.db).transaction((q) => prepareShutdownSteps(q, this.now, undefined));
     this.db.close();
     this.db = openDatabase(this.path);
     migrate(this.db);
   }
 
-  start(): void {
+  async start(): Promise<void> {
     this.trace.push(`start@${this.now - T0}`);
     const wake = { armed: false };
-    settled(
-      sqliteDb(this.db).transaction((q) =>
-        recoverOnStartupSteps(q, this.now, undefined, undefined, wake),
-      ),
+    await sqliteDb(this.db).transaction((q) =>
+      recoverOnStartupSteps(q, this.now, undefined, undefined, wake),
     );
   }
 
   async sweep(): Promise<void> {
     this.trace.push(`sweep@${this.now - T0}`);
     reapFencedJobs(this.db, this.now);
-    settled(sqliteDb(this.db).transaction((q) => closeExpiredRunnerLeasesSteps(q, this.now)));
-    settled(sqliteDb(this.db).run((q) => requeueOrphanedWorkSteps(q, this.now)));
+    await sqliteDb(this.db).transaction((q) => closeExpiredRunnerLeasesSteps(q, this.now));
+    await sqliteDb(this.db).run((q) => requeueOrphanedWorkSteps(q, this.now));
   }
 
   async settle(): Promise<void> {

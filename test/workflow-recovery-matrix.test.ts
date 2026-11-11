@@ -32,14 +32,14 @@ const ENTRIES: Record<string, Entry> = {
     startup: true,
     run: async (w) => {
       w.crash();
-      w.start();
+      await w.start();
     },
   },
   sigterm: {
     startup: true,
     run: async (w) => {
-      w.stop();
-      w.start();
+      await w.stop();
+      await w.start();
     },
   },
   repeated_startup: {
@@ -48,7 +48,7 @@ const ENTRIES: Record<string, Entry> = {
       for (let n = 0; n < 3; n++) {
         w.crash();
         w.advance(MINUTE);
-        w.start();
+        await w.start();
       }
     },
   },
@@ -67,16 +67,16 @@ const ENTRIES: Record<string, Entry> = {
     run: async (w) => {
       w.crash();
       w.advance(-HOUR);
-      w.start();
+      await w.start();
     },
   },
   clock_jump: {
     startup: true,
     longGap: true,
     run: async (w) => {
-      w.stop();
+      await w.stop();
       w.advance(3 * HOUR);
-      w.start();
+      await w.start();
     },
   },
   ...Object.fromEntries(
@@ -88,11 +88,11 @@ const ENTRIES: Record<string, Entry> = {
           w.crash();
           const before = dump(w.db);
           failWrites(w.db, point);
-          expect(() => w.start()).toThrow("injected write failure");
+          await expect(w.start()).rejects.toThrow("injected write failure");
           allowWrites(w.db);
           expect(dump(w.db)).toEqual(before);
           w.crash();
-          w.start();
+          await w.start();
         },
       },
     ]),
@@ -208,7 +208,7 @@ describe("preserved reproducers for open gaps", () => {
       const w = await new World().seed(["recovering"]);
       try {
         w.crash();
-        w.start();
+        await w.start();
         expect(await violations(w.db, w.now)).toEqual([]);
       } finally {
         w.close();
