@@ -1480,7 +1480,7 @@ export class Orchestrator {
       const caps = this.options.caps;
       if (caps !== undefined) {
         for (const saved of result.items) {
-          const limits = this.timeLimits(saved.id);
+          const limits = await this.store.run((q) => this.timeLimitsSteps(q, saved.id));
           await this.store.run((q) =>
             configureWorkItemSteps(q, saved.id, { maxAwakeMs: caps.maxAwakeMs, limits }),
           );
@@ -6515,10 +6515,6 @@ export class Orchestrator {
     );
   }
 
-  private timeLimits(itemId: string): StageLimits | undefined {
-    return settled(this.store.run((q) => this.timeLimitsSteps(q, itemId)));
-  }
-
   private *timeLimitsSteps(q: Q, itemId: string): Steps<StageLimits | undefined> {
     const limits = this.options.caps?.limits;
     if (limits === undefined) return undefined;
@@ -7753,7 +7749,7 @@ export class Orchestrator {
     for (const id of itemIds) {
       const item = getWorkItem(this.db, id);
       if (!item || item.state !== "queued" || item.cancelRequested) continue;
-      settled(clearQueueWait(sqliteDb(this.db), item.id));
+      await clearQueueWait(this.store, item.id);
       const need = (await this.options.runnerSetupNeed?.(item.id, agentFor(item), now)) ?? null;
       if (need) {
         await this.store.transaction((q) => this.queuedRunnerSetupHoldSteps(q, item.id, need, now));
