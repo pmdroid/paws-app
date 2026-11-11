@@ -99,19 +99,11 @@ import {
   workspaceMemberUsable,
   enqueueCommand,
   enqueueCommandSteps,
-  getLinearSession,
   getWorkItemSteps,
   getItemRunCommitPolicy,
-  workspaceLinearMember,
-  workspaceForOrganization,
-  listWorkspaceMembers,
   listRepositoryCandidatesSteps,
-  getLinearSessionInstallation,
   isLinearAppRevoked,
   journal,
-  delegatedLinearUserId,
-  getWorkItemRepository,
-  getWorkItemRepositoryChoice,
   getWorkItemRepositoryChoiceSteps,
   getWorkItemRepositoryAnswerSteps,
   getTaskModeSteps,
@@ -153,10 +145,8 @@ import {
   workspaceMemberSteps,
   sqliteDb,
   enabledRunnerIdsSteps,
-  latestCloseoutProgressMarker,
   listWorkspaceIds,
   missingSnapshotTargetsSteps,
-  workspaceUserLinearId,
   applyLinearIssueProjectSteps,
   applyLinearUserChangeSteps,
   commandInstance,
@@ -174,6 +164,10 @@ import {
   workItemForSessionSteps,
   workspaceForOrganizationSteps,
   workspaceLinearMemberSteps,
+  latestCloseoutProgressMarkerSteps,
+  listWorkspaceMembersSteps,
+  syncSteps,
+  workspaceUserLinearIdSteps,
   type Db,
   clearUsagePausesSteps,
   emitJobReady,
@@ -185,6 +179,7 @@ import {
   runPendingJobNowSteps,
   stopInstanceSteps,
   takeOverGoneRunsSteps,
+  type Steps,
 } from "./db";
 import { doctorChecks, formatDoctor, realProbe } from "./doctor";
 import { installHostMain } from "./install-host";
@@ -1748,40 +1743,45 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             );
             return repositoryDenial ? deny(repositoryDenial) : true;
           },
-          currentIntegrationItem: (item) => {
+          *currentIntegrationItem(q, item) {
             if (!workspace) return true;
             const session = item.sessionKey
-              ? getLinearSessionInstallation(db, item.sessionKey)
+              ? yield* getLinearSessionInstallationSteps(q, item.sessionKey)
               : null;
             const currentWorkspace = session?.organizationId
-              ? workspaceForOrganization(db, session.organizationId)
+              ? yield* workspaceForOrganizationSteps(q, session.organizationId)
               : null;
-            const actorId = delegatedLinearUserId(db, item.id);
+            const actorId = yield* delegatedLinearUserIdSteps(q, item.id);
             if (!currentWorkspace || !actorId || !session?.teamId) return false;
-            const member = workspaceLinearMember(db, currentWorkspace.id, actorId);
+            const member = yield* workspaceLinearMemberSteps(q, currentWorkspace.id, actorId);
             return (
               canAct({ id: actorId, member, teamId: session.teamId }, "github").allowed ||
               teamMemberDenial(db, item)
             );
           },
-          integrationIdentity: (item) =>
-            JSON.stringify([
-              delegatedLinearUserId(db, item.id),
-              getWorkItemRepository(db, item.id) ?? getWorkItemRepositoryChoice(db, item.id),
-              latestCloseoutProgressMarker(db, item.id),
-            ]),
-          administratorsForItem: (item) => {
-            const session = item.sessionKey ? getLinearSession(db, item.sessionKey) : null;
+          *integrationIdentity(q, item) {
+            return JSON.stringify([
+              yield* delegatedLinearUserIdSteps(q, item.id),
+              (yield* getWorkItemRepositorySteps(q, item.id)) ??
+                (yield* getWorkItemRepositoryChoiceSteps(q, item.id)),
+              yield* latestCloseoutProgressMarkerSteps(q, item.id),
+            ]);
+          },
+          *administratorsForItem(q, item) {
+            const session = item.sessionKey
+              ? yield* getLinearSessionSteps(q, item.sessionKey)
+              : null;
             const currentWorkspace = session?.organizationId
-              ? workspaceForOrganization(db, session.organizationId)
+              ? yield* workspaceForOrganizationSteps(q, session.organizationId)
               : null;
             if (!currentWorkspace) return [];
-            return listWorkspaceMembers(db, currentWorkspace.id)
-              .filter((member) => workspaceMemberUsable(member) && isWorkspaceAdmin(member.role))
-              .flatMap((member) => {
-                const linked = workspaceUserLinearId(db, member.id);
-                return linked ? [linked] : [];
-              });
+            const administrators: string[] = [];
+            for (const member of yield* listWorkspaceMembersSteps(q, currentWorkspace.id)) {
+              if (!workspaceMemberUsable(member) || !isWorkspaceAdmin(member.role)) continue;
+              const linked = yield* workspaceUserLinearIdSteps(q, member.id);
+              if (linked) administrators.push(linked);
+            }
+            return administrators;
           },
         }),
         commitPolicyForItem,
@@ -2439,9 +2439,9 @@ export function createGitHubIntegration(input: {
     signal: AbortSignal,
     repository: RepositoryBinding,
   ) => Promise<boolean | GitHubDenial>;
-  integrationIdentity: (item: WorkItemRecord) => string;
-  currentIntegrationItem?: (item: WorkItemRecord) => boolean | GitHubDenial;
-  administratorsForItem?: (item: WorkItemRecord) => readonly string[];
+  integrationIdentity: (q: Q, item: WorkItemRecord) => Steps<string>;
+  currentIntegrationItem?: (q: Q, item: WorkItemRecord) => Steps<boolean | GitHubDenial>;
+  administratorsForItem?: (q: Q, item: WorkItemRecord) => Steps<readonly string[]>;
   accessForItem?: (item: WorkItemRecord) => Promise<"read" | "write">;
 }): GitHubIntegration {
   const installation = createGitHubInstallationCheck({
@@ -2454,8 +2454,8 @@ export function createGitHubIntegration(input: {
       input.runtime.publicUrl ?? "http://127.0.0.1:8787",
       "/settings/integrations",
     ),
-    administrators: input.administratorsForItem ?? (() => []),
-    current: input.currentIntegrationItem ?? (() => true),
+    administrators: input.administratorsForItem ?? (() => syncSteps(() => [])),
+    current: input.currentIntegrationItem ?? (() => syncSteps(() => true)),
     unavailableRetryMs: [2_000, 5_000, 10_000, 20_000, 30_000],
     identity: input.integrationIdentity,
     authorize: async (item: WorkItemRecord, signal: AbortSignal) => {

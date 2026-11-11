@@ -13,6 +13,7 @@ import {
   JobLoop,
   OutboxDispatcher,
   saveTaskMode,
+  syncSteps,
 } from "../../src/db";
 import { Orchestrator } from "../../src/loop";
 import { migratedDatabase } from "../helpers";
@@ -48,8 +49,8 @@ export async function probeCurrentRunStartup(root: string) {
     let launches = 0;
     const host = {
       check: async () => ++probes === 1 && mode === "artifact",
-      identity: () => "workspace-installation-repository",
-      administrators: () => [],
+      identity: () => syncSteps(() => "workspace-installation-repository"),
+      administrators: () => syncSteps(() => []),
       recoveryUrl: "https://paws.example/status/#/settings/integrations",
     };
     const orchestrator = new Orchestrator({

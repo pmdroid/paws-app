@@ -293,7 +293,7 @@ import {
 import {
   listWaitingProfileRuns,
   getTaskMode,
-  getLinearSessionAccess,
+  getLinearSessionAccessSteps,
   type ConfirmedRemoteMerge,
   getLinearTaskDelegation,
   getLinearSessionGeneration,
@@ -1006,10 +1006,8 @@ export class Orchestrator {
           options.db,
           options.githubInstallation,
           () => this.now(),
-          (item) =>
-            !this.taskAccess() ||
-            (item.sessionKey !== null &&
-              getLinearSessionAccess(this.db, item.sessionKey) === "allowed"),
+          (q, item) => this.sessionAccessAllowedSteps(q, item),
+          this.store,
         )
       : null;
     this.inputLoader = options.files
@@ -8509,6 +8507,14 @@ export class Orchestrator {
           );
       },
     });
+  }
+
+  private *sessionAccessAllowedSteps(q: Q, item: WorkItemRecord): Steps<boolean> {
+    return (
+      !this.taskAccess() ||
+      (item.sessionKey !== null &&
+        (yield* getLinearSessionAccessSteps(q, item.sessionKey)) === "allowed")
+    );
   }
 
   private authorization(item: WorkItemRecord): GitHubInstallationCheck | null {

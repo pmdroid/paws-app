@@ -27,6 +27,7 @@ import {
   saveRunCommitPolicy,
   syncWorkspaceMember,
   sqliteDb,
+  syncSteps,
 } from "../../src/db";
 import { GitHubInstallationCheck } from "../../src/loop";
 import { signRunnerCommand, verifyRunnerCommand } from "../../src/runner-protocol";
@@ -114,8 +115,8 @@ export async function probeStandaloneAttribution(root: string) {
     db,
     {
       check: async () => true,
-      identity: () => "workspace-repository",
-      administrators: () => [],
+      identity: () => syncSteps(() => "workspace-repository"),
+      administrators: () => syncSteps(() => []),
       recoveryUrl: "https://paws.example/status/#/settings/account",
     },
     () => now,

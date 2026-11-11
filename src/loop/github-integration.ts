@@ -1,26 +1,39 @@
-import { ask } from "./operations";
+import { askSteps } from "./operations";
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { isTransient, JOB_KIND, sleep } from "../core";
 import { LinearRateLimitError } from "../linear";
 import {
-  applyWorkItemEvent,
-  applyLinearCommand,
-  enqueueJobOnce,
-  enqueueOutboxOnce,
+  applyWorkItemEventSteps,
+  applyLinearCommandSteps,
+  commandInstance,
+  emitJobReady,
+  enqueueJobOnceSteps,
+  enqueueOutboxOnceSteps,
   getLinearSession,
-  getLinearSessionGeneration,
+  getLinearSessionGenerationSteps,
   getWorkItem,
+  getWorkItemSteps,
   githubIntegrationHoldStatus,
-  immediate,
-  insertGithubIntegrationHold,
-  pendingGithubIntegrationHolds,
+  githubIntegrationHoldStatusSteps,
+  insertGithubIntegrationHoldSteps,
+  pendingGithubIntegrationHoldsSteps,
   setGithubIntegrationHoldStatus,
-  setOpenQuestionBody,
+  setGithubIntegrationHoldStatusSteps,
+  setOpenQuestionBodySteps,
+  sqliteDb,
   syncSteps,
+  type Db,
+  type Q,
+  type Steps,
   type WorkItemRecord,
 } from "../db";
-import { answer, findOpenQuestion, getQuestion, type StoredQuestion } from "../questions";
+import {
+  answerSteps,
+  findOpenQuestionSteps,
+  getQuestionSteps,
+  type StoredQuestion,
+} from "../questions";
 
 export const TASK_ACCESS_TTL_MS = 5 * 60_000;
 
@@ -64,11 +77,11 @@ export type GitHubIntegration = {
   check(item: WorkItemRecord, signal: AbortSignal): Promise<boolean>;
   /** False, or a `GitHubDenial` with its reason, cancels the item. */
   authorize?(item: WorkItemRecord, signal: AbortSignal): Promise<boolean | GitHubDenial>;
-  administrators(item: WorkItemRecord): readonly string[];
+  administrators(q: Q, item: WorkItemRecord): Steps<readonly string[]>;
   recoveryUrl: string;
-  identity(item: WorkItemRecord): string;
+  identity(q: Q, item: WorkItemRecord): Steps<string>;
   /** False, or a `GitHubDenial` with its reason, cancels the item without a read. */
-  current?(item: WorkItemRecord): boolean | GitHubDenial;
+  current?(q: Q, item: WorkItemRecord): Steps<boolean | GitHubDenial>;
   unavailableRetryMs?: readonly number[];
 };
 
@@ -90,6 +103,14 @@ const TRANSIENT_CHECK_ERROR =
   /fetch failed|timed? ?out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|getaddrinfo|EHOSTUNREACH|ENETUNREACH|socket|network|rate.?limit|\b429\b|\b5\d\d\b|temporarily unavailable/i;
 
 type Unreachable = { unreachable: string };
+
+type Stamp = {
+  version: number;
+  checkpoint: string;
+  runId: string | null;
+  generation: number;
+  authority: string;
+};
 
 /**
  * Holds an item until the workspace GitHub App installation covers its repository.
@@ -118,7 +139,9 @@ export class GitHubInstallationCheck {
     private readonly db: Database,
     private readonly integration: GitHubIntegration,
     private readonly now: () => number,
-    private readonly allowed: (item: WorkItemRecord) => boolean = () => true,
+    private readonly allowed: (q: Q, item: WorkItemRecord) => Steps<boolean> = () =>
+      syncSteps(() => true),
+    private readonly store: Db = sqliteDb(db),
   ) {}
 
   owns(questionId: string): boolean {
@@ -155,14 +178,13 @@ export class GitHubInstallationCheck {
     options: { fresh?: boolean } = {},
   ): Promise<boolean> {
     const version = item.version;
-    const generation = this.generation(item);
-    const authority = this.integration.identity(item);
+    const { generation, authority } = await this.store.run((q) => this.stampSteps(q, item));
     const checkpoint = JSON.stringify(item.checkpoint);
     const runId = item.currentRunId;
     if (this.closed || signal.aborted) return false;
-    const before = this.permission(item);
+    const before = await this.store.run((q) => this.permissionSteps(q, item));
     if (before !== true) {
-      this.deny(item.id, before.reason);
+      await this.deny(item.id, before.reason);
       return false;
     }
     const result =
@@ -170,153 +192,182 @@ export class GitHubInstallationCheck {
         ? "ready"
         : await this.reachable(item, signal);
     if (this.closed || signal.aborted || isUnreachable(result)) return false;
-    const current = getWorkItem(this.db, item.id);
-    if (
-      this.closed ||
-      signal.aborted ||
-      current?.version !== version ||
-      current.cancelRequested ||
-      JSON.stringify(current.checkpoint) !== checkpoint ||
-      current.currentRunId !== runId ||
-      this.generation(current) !== generation ||
-      this.integration.identity(current) !== authority
-    )
-      return false;
-    const permission = this.permission(current);
+    const held = { version, checkpoint, runId, generation, authority };
+    const current = await this.store.run((q) => this.unchangedSteps(q, item.id, held));
+    if (this.closed || signal.aborted || current === null) return false;
+    const permission = await this.store.run((q) => this.permissionSteps(q, current));
     if (permission !== true) {
-      this.deny(current.id, permission.reason);
+      await this.deny(current.id, permission.reason);
       return false;
     }
     if (typeof result === "object") {
-      this.deny(current.id, result.reason);
+      await this.deny(current.id, result.reason);
       return false;
     }
     if (result === "ready") return true;
-    immediate(this.db, () => {
-      const latest = getWorkItem(this.db, item.id);
-      if (
-        !latest?.sessionKey ||
-        latest.version !== version ||
-        latest.cancelRequested ||
-        JSON.stringify(latest.checkpoint) !== checkpoint ||
-        latest.currentRunId !== runId ||
-        this.generation(latest) !== generation ||
-        this.integration.identity(latest) !== authority
-      )
-        return;
-      const latestPermission = this.permission(latest);
-      if (latestPermission !== true) {
-        this.deny(latest.id, latestPermission.reason);
-        return;
-      }
-      if (findOpenQuestion(this.db, latest.sessionKey) !== null) return;
-      const body = waitingMessage(result);
-      const { question } = ask(
-        this.db,
-        { itemId: latest.id, runId: null, sessionId: latest.sessionKey, version: latest.version },
-        "github-auth",
-        body,
-        { now: this.now() },
-      );
-      const held = getWorkItem(this.db, latest.id)!;
-      insertGithubIntegrationHold(this.db, {
-        questionId: question.id,
-        itemId: held.id,
-        phase,
-        itemVersion: held.version,
-        sessionGeneration: generation,
-        currentRunId: held.currentRunId,
-        checkpoint: JSON.stringify(held.checkpoint),
-        authority: this.integration.identity(held),
-      });
-      enqueueOutboxOnce(this.db, {
-        target: "linear",
-        op: "activity",
-        orderingKey: latest.sessionKey,
-        idempotencyKey: `github-integration:waiting:${question.id}`,
-        payload: { sessionId: latest.sessionKey, kind: "thought", body },
-        now: this.now(),
-      });
-      if (result === "installation")
-        this.notifyAdministrators(latest, question.id, latest.sessionKey);
-    });
+    const notifications = { ready: false };
+    await this.store.transaction((q) =>
+      this.holdSteps(q, item.id, phase, held, result, notifications),
+    );
+    if (notifications.ready) emitJobReady(this.store);
     return false;
+  }
+
+  private *stampSteps(
+    q: Q,
+    item: WorkItemRecord,
+  ): Steps<{ generation: number; authority: string }> {
+    const generation = yield* this.generationSteps(q, item);
+    const authority = yield* this.integration.identity(q, item);
+    return { generation, authority };
+  }
+
+  private *unchangedSteps(q: Q, itemId: string, held: Stamp): Steps<WorkItemRecord | null> {
+    const current = yield* getWorkItemSteps(q, itemId);
+    if (
+      current?.version !== held.version ||
+      current.cancelRequested ||
+      JSON.stringify(current.checkpoint) !== held.checkpoint ||
+      current.currentRunId !== held.runId ||
+      (yield* this.generationSteps(q, current)) !== held.generation ||
+      (yield* this.integration.identity(q, current)) !== held.authority
+    )
+      return null;
+    return current;
+  }
+
+  private *holdSteps(
+    q: Q,
+    itemId: string,
+    phase: GitHubInstallationPhase,
+    held: Stamp,
+    result: "installation" | "unavailable",
+    notifications: { ready: boolean },
+  ): Steps<void> {
+    const latest = yield* this.unchangedSteps(q, itemId, held);
+    if (!latest?.sessionKey) return;
+    const latestPermission = yield* this.permissionSteps(q, latest);
+    if (latestPermission !== true) {
+      yield* this.denySteps(q, latest.id, latestPermission.reason, notifications);
+      return;
+    }
+    if ((yield* findOpenQuestionSteps(q, latest.sessionKey)) !== null) return;
+    const body = waitingMessage(result);
+    const { question } = yield* askSteps(
+      q,
+      { itemId: latest.id, runId: null, sessionId: latest.sessionKey, version: latest.version },
+      "github-auth",
+      body,
+      { now: this.now() },
+    );
+    const asked = (yield* getWorkItemSteps(q, latest.id))!;
+    yield* insertGithubIntegrationHoldSteps(q, {
+      questionId: question.id,
+      itemId: asked.id,
+      phase,
+      itemVersion: asked.version,
+      sessionGeneration: held.generation,
+      currentRunId: asked.currentRunId,
+      checkpoint: JSON.stringify(asked.checkpoint),
+      authority: yield* this.integration.identity(q, asked),
+    });
+    yield* enqueueOutboxOnceSteps(q, {
+      target: "linear",
+      op: "activity",
+      orderingKey: latest.sessionKey,
+      idempotencyKey: `github-integration:waiting:${question.id}`,
+      payload: { sessionId: latest.sessionKey, kind: "thought", body },
+      now: this.now(),
+    });
+    if (result === "installation")
+      yield* this.notifyAdministratorsSteps(q, latest, question.id, latest.sessionKey);
   }
 
   async recover(signal: AbortSignal = new AbortController().signal): Promise<void> {
     if (this.closed || signal.aborted) return;
-    const holds = pendingGithubIntegrationHolds(this.db) as Hold[];
+    const holds = (await this.store.run(pendingGithubIntegrationHoldsSteps)) as Hold[];
     for (const hold of holds) {
       if (this.closed || signal.aborted) return;
-      if (!this.current(hold)) {
-        this.cancelObsolete(hold.item_id, hold.question_id);
+      if (!(await this.store.run((q) => this.currentSteps(q, hold)))) {
+        await this.cancelObsolete(hold.item_id, hold.question_id);
         continue;
       }
-      const item = getWorkItem(this.db, hold.item_id)!;
+      const item = (await this.store.run((q) => getWorkItemSteps(q, hold.item_id)))!;
       const result = await this.probe(item, signal, []);
       if (this.closed || signal.aborted) return;
       if (isUnreachable(result)) continue;
       if (typeof result === "object") {
-        if (this.current(hold)) this.deny(item.id, result.reason);
+        if (await this.store.run((q) => this.currentSteps(q, hold)))
+          await this.deny(item.id, result.reason);
         continue;
       }
       if (result !== "ready") {
-        immediate(this.db, () => {
-          if (!this.current(hold)) return;
-          const question = getQuestion(this.db, hold.question_id)!;
-          const body = waitingMessage(result);
-          if (question.body === body) return;
-          setOpenQuestionBody(this.db, question.id, body);
-          enqueueOutboxOnce(this.db, {
-            target: "linear",
-            op: "activity",
-            orderingKey: question.sessionId,
-            idempotencyKey: `github-integration:waiting:${question.id}:${result}`,
-            payload: { sessionId: question.sessionId, kind: "thought", body },
-            now: this.now(),
-          });
-        });
-        if (result === "installation" && this.current(hold)) {
-          const question = getQuestion(this.db, hold.question_id)!;
-          this.notifyAdministrators(item, question.id, question.sessionId);
-        }
+        await this.store.transaction((q) => this.rewaitSteps(q, hold, result));
+        if (result === "installation")
+          await this.store.transaction((q) => this.renotifySteps(q, hold, item));
         continue;
       }
-      immediate(this.db, () => {
-        if (!this.current(hold)) return;
-        const question = getQuestion(this.db, hold.question_id)!;
-        answer(
-          this.db,
-          {
-            sessionId: question.sessionId,
-            deliveryId: `github-integration:${question.id}`,
-            body: "Workspace GitHub App repository access revalidated by Paws.",
-            answeredBy: "paws",
-            now: this.now(),
-          },
-          { "github-auth": (_q, answered) => syncSteps(() => this.resume(hold, answered)) },
-        );
-      });
+      if (await this.store.transaction((q) => this.revalidateSteps(q, hold)))
+        emitJobReady(this.store);
     }
   }
 
-  private resume(hold: Hold, question: StoredQuestion): void {
+  private *rewaitSteps(q: Q, hold: Hold, result: "installation" | "unavailable"): Steps<void> {
+    if (!(yield* this.currentSteps(q, hold))) return;
+    const question = (yield* getQuestionSteps(q, hold.question_id))!;
+    const body = waitingMessage(result);
+    if (question.body === body) return;
+    yield* setOpenQuestionBodySteps(q, question.id, body);
+    yield* enqueueOutboxOnceSteps(q, {
+      target: "linear",
+      op: "activity",
+      orderingKey: question.sessionId,
+      idempotencyKey: `github-integration:waiting:${question.id}:${result}`,
+      payload: { sessionId: question.sessionId, kind: "thought", body },
+      now: this.now(),
+    });
+  }
+
+  private *renotifySteps(q: Q, hold: Hold, item: WorkItemRecord): Steps<void> {
+    if (!(yield* this.currentSteps(q, hold))) return;
+    const question = (yield* getQuestionSteps(q, hold.question_id))!;
+    yield* this.notifyAdministratorsSteps(q, item, question.id, question.sessionId);
+  }
+
+  private *revalidateSteps(q: Q, hold: Hold): Steps<boolean> {
+    if (!(yield* this.currentSteps(q, hold))) return false;
+    const question = (yield* getQuestionSteps(q, hold.question_id))!;
+    yield* answerSteps(
+      q,
+      {
+        sessionId: question.sessionId,
+        deliveryId: `github-integration:${question.id}`,
+        body: "Workspace GitHub App repository access revalidated by Paws.",
+        answeredBy: "paws",
+        now: this.now(),
+      },
+      { "github-auth": (tx, answered) => this.resumeSteps(tx, hold, answered) },
+    );
+    return true;
+  }
+
+  private *resumeSteps(q: Q, hold: Hold, question: StoredQuestion): Steps<void> {
     if (question.id !== hold.question_id)
       throw new Error("A GitHub App hold answer reached another question.");
-    setGithubIntegrationHoldStatus(this.db, { questionId: question.id }, "verified");
-    applyWorkItemEvent(
-      this.db,
+    yield* setGithubIntegrationHoldStatusSteps(q, { questionId: question.id }, "verified");
+    yield* applyWorkItemEventSteps(
+      q,
       hold.item_id,
       hold.phase === "publication" ? "reverify_requested" : "answer_received",
       { now: this.now() },
     );
-    enqueueJobOnce(this.db, {
+    yield* enqueueJobOnceSteps(q, {
       queue: hold.phase === "initial" ? JOB_KIND.resume : JOB_KIND.reverify,
       jobKey: `github-integration:${question.id}`,
       payload: { itemId: hold.item_id, reason: "github-integration" },
       now: this.now(),
     });
-    enqueueOutboxOnce(this.db, {
+    yield* enqueueOutboxOnceSteps(q, {
       target: "linear",
       op: "activity",
       orderingKey: question.sessionId,
@@ -352,18 +403,21 @@ export class GitHubInstallationCheck {
       }
       if (!outage.posted && item.sessionKey && this.now() - outage.since > UNREACHABLE_STATUS_MS) {
         outage.posted = true;
-        enqueueOutboxOnce(this.db, {
-          target: "linear",
-          op: "activity",
-          orderingKey: item.sessionKey,
-          idempotencyKey: `github-integration:unreachable:${item.id}:${outage.since}`,
-          payload: {
-            sessionId: item.sessionKey,
-            kind: "thought",
-            body: `Can't reach GitHub: ${result.unreachable}. Paws keeps retrying before continuing.`,
-          },
-          now: this.now(),
-        });
+        const sessionId = item.sessionKey;
+        await this.store.transaction((q) =>
+          enqueueOutboxOnceSteps(q, {
+            target: "linear",
+            op: "activity",
+            orderingKey: sessionId,
+            idempotencyKey: `github-integration:unreachable:${item.id}:${outage.since}`,
+            payload: {
+              sessionId,
+              kind: "thought",
+              body: `Can't reach GitHub: ${result.unreachable}. Paws keeps retrying before continuing.`,
+            },
+            now: this.now(),
+          }),
+        );
       }
       await sleep(this.integration.unavailableRetryMs?.at(-1) ?? 60_000, signal);
     }
@@ -376,16 +430,17 @@ export class GitHubInstallationCheck {
   ): Promise<"ready" | "installation" | "unavailable" | Denied | Unreachable> {
     try {
       const result = await this.check(item, signal);
-      if (result === "ready")
+      if (result === "ready") {
+        const { generation, authority } = await this.store.run((q) => this.stampSteps(q, item));
         this.lastReady.set(item.id, {
-          authority: this.integration.identity(item),
-          generation: this.generation(item),
+          authority,
+          generation,
           runId: item.currentRunId,
           checkpoint: JSON.stringify(item.checkpoint),
           at: this.now(),
           reusable: true,
         });
-      else this.lastReady.delete(item.id);
+      } else this.lastReady.delete(item.id);
       return result;
     } catch (error) {
       journalCaught(
@@ -413,7 +468,7 @@ export class GitHubInstallationCheck {
       const message = error instanceof Error ? error.message : String(error);
       if (!TRANSIENT_CHECK_ERROR.test(message) && !isTransient(error)) return "unavailable";
       return last !== undefined &&
-        last.authority === this.integration.identity(item) &&
+        last.authority === (await this.store.run((q) => this.integration.identity(q, item))) &&
         this.now() - last.at <= RECENT_READY_MS
         ? "ready"
         : { unreachable: message };
@@ -446,21 +501,38 @@ export class GitHubInstallationCheck {
   }
 
   /** Cancels the item once. A reason replaces the default "Cancelled from Linear." response. */
-  private deny(itemId: string, reason: string | null = null): void {
-    immediate(this.db, () => {
-      applyLinearCommand(
-        this.db,
-        { type: "cancel", source: "linear", itemId, requestedAt: this.now() },
-        this.now(),
-        reason ?? undefined,
-      );
-      this.revoke(itemId);
-    });
+  private async deny(itemId: string, reason: string | null): Promise<void> {
+    const notifications = { ready: false };
+    await this.store.transaction((q) => this.denySteps(q, itemId, reason, notifications));
+    if (notifications.ready) emitJobReady(this.store);
   }
 
-  private notifyAdministrators(item: WorkItemRecord, questionId: string, sessionId: string): void {
-    for (const administrator of new Set(this.integration.administrators(item))) {
-      enqueueOutboxOnce(this.db, {
+  private *denySteps(
+    q: Q,
+    itemId: string,
+    reason: string | null,
+    notifications: { ready: boolean },
+  ): Steps<void> {
+    yield* applyLinearCommandSteps(
+      q,
+      { type: "cancel", source: "linear", itemId, requestedAt: this.now() },
+      this.now(),
+      reason ?? undefined,
+      {},
+      commandInstance(this.db),
+      notifications,
+    );
+    yield* setGithubIntegrationHoldStatusSteps(q, { itemId }, "revoked");
+  }
+
+  private *notifyAdministratorsSteps(
+    q: Q,
+    item: WorkItemRecord,
+    questionId: string,
+    sessionId: string,
+  ): Steps<void> {
+    for (const administrator of new Set(yield* this.integration.administrators(q, item))) {
+      yield* enqueueOutboxOnceSteps(q, {
         target: "linear",
         op: "elicitation",
         orderingKey: sessionId,
@@ -481,35 +553,48 @@ export class GitHubInstallationCheck {
     }
   }
 
-  private cancelObsolete(itemId: string, questionId: string): void {
-    immediate(this.db, () => {
-      setGithubIntegrationHoldStatus(this.db, { questionId }, "revoked");
-      const item = getWorkItem(this.db, itemId);
-      if (item?.state === "awaiting_input" && getQuestion(this.db, questionId)?.status === "open") {
-        applyLinearCommand(
-          this.db,
-          { type: "cancel", source: "linear", itemId, requestedAt: this.now() },
-          this.now(),
-        );
-      }
-    });
+  private async cancelObsolete(itemId: string, questionId: string): Promise<void> {
+    const notifications = { ready: false };
+    await this.store.transaction((q) =>
+      this.cancelObsoleteSteps(q, itemId, questionId, notifications),
+    );
+    if (notifications.ready) emitJobReady(this.store);
   }
 
-  private permitted(item: WorkItemRecord): boolean {
-    return this.permission(item) === true;
+  private *cancelObsoleteSteps(
+    q: Q,
+    itemId: string,
+    questionId: string,
+    notifications: { ready: boolean },
+  ): Steps<void> {
+    yield* setGithubIntegrationHoldStatusSteps(q, { questionId }, "revoked");
+    const item = yield* getWorkItemSteps(q, itemId);
+    if (
+      item?.state === "awaiting_input" &&
+      (yield* getQuestionSteps(q, questionId))?.status === "open"
+    )
+      yield* applyLinearCommandSteps(
+        q,
+        { type: "cancel", source: "linear", itemId, requestedAt: this.now() },
+        this.now(),
+        undefined,
+        {},
+        commandInstance(this.db),
+        notifications,
+      );
   }
 
-  private permission(item: WorkItemRecord): true | Denied {
-    if (!this.allowed(item)) return { denied: true, reason: null };
-    return denial(this.integration.current?.(item) ?? true);
+  private *permissionSteps(q: Q, item: WorkItemRecord): Steps<true | Denied> {
+    if (!(yield* this.allowed(q, item))) return { denied: true, reason: null };
+    return denial(this.integration.current ? yield* this.integration.current(q, item) : true);
   }
 
-  private generation(item: WorkItemRecord): number {
-    return item.sessionKey ? getLinearSessionGeneration(this.db, item.sessionKey) : 0;
+  private *generationSteps(q: Q, item: WorkItemRecord): Steps<number> {
+    return item.sessionKey ? yield* getLinearSessionGenerationSteps(q, item.sessionKey) : 0;
   }
 
-  private current(hold: Hold): boolean {
-    const item = getWorkItem(this.db, hold.item_id);
+  private *currentSteps(q: Q, hold: Hold): Steps<boolean> {
+    const item = yield* getWorkItemSteps(q, hold.item_id);
     return (
       !this.closed &&
       item !== null &&
@@ -518,11 +603,11 @@ export class GitHubInstallationCheck {
       item.version === hold.item_version &&
       item.currentRunId === hold.current_run_id &&
       JSON.stringify(item.checkpoint) === hold.checkpoint &&
-      this.integration.identity(item) === hold.authority &&
-      this.generation(item) === hold.session_generation &&
-      this.permitted(item) &&
-      getQuestion(this.db, hold.question_id)?.status === "open" &&
-      githubIntegrationHoldStatus(this.db, hold.question_id) === "pending"
+      (yield* this.integration.identity(q, item)) === hold.authority &&
+      (yield* this.generationSteps(q, item)) === hold.session_generation &&
+      (yield* this.permissionSteps(q, item)) === true &&
+      (yield* getQuestionSteps(q, hold.question_id))?.status === "open" &&
+      (yield* githubIntegrationHoldStatusSteps(q, hold.question_id)) === "pending"
     );
   }
 }
