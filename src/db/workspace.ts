@@ -51,8 +51,8 @@ export function* getWorkspaceSteps(q: Q, id: string) {
   return yield* findWorkspaceSteps(q, "id", id);
 }
 
-export function getWorkspace(db: Database, id: string): WorkspaceRecord | null {
-  return settled(sqliteDb(db).run((q) => getWorkspaceSteps(q, id)));
+export async function getWorkspace(store: Db, id: string): Promise<WorkspaceRecord | null> {
+  return store.run((q) => getWorkspaceSteps(q, id));
 }
 
 export function* workspaceForOrganizationSteps(q: Q, organizationId: string) {
@@ -95,8 +95,11 @@ export function* workspaceUserIdForLinearUserSteps(q: Q, linearUserId: string) {
   return row?.id ?? null;
 }
 
-export function workspaceUserIdForLinearUser(db: Database, linearUserId: string): string | null {
-  return settled(sqliteDb(db).run((q) => workspaceUserIdForLinearUserSteps(q, linearUserId)));
+export async function workspaceUserIdForLinearUser(
+  store: Db,
+  linearUserId: string,
+): Promise<string | null> {
+  return store.run((q) => workspaceUserIdForLinearUserSteps(q, linearUserId));
 }
 
 export function* workspaceUserContactSteps(q: Q, userId: string) {
@@ -296,8 +299,11 @@ export function* createWorkspaceBootstrapSteps(q: Q, input: WorkspaceBootstrapIn
   yield* q.exec(q.orm.insert(q.t.workspaceBootstrap).values(input));
 }
 
-export function createWorkspaceBootstrap(db: Database, input: WorkspaceBootstrapInput): void {
-  settled(sqliteDb(db).run((q) => createWorkspaceBootstrapSteps(q, input)));
+export async function createWorkspaceBootstrap(
+  store: Db,
+  input: WorkspaceBootstrapInput,
+): Promise<void> {
+  await store.run((q) => createWorkspaceBootstrapSteps(q, input));
 }
 
 type WorkspaceBootstrapClaim = WorkspaceRecord & { tokenHash: string; userId: string; now: number };
@@ -349,11 +355,11 @@ export function* consumeWorkspaceBootstrapSteps(q: Q, input: WorkspaceBootstrapC
   return { id: input.id, organizationId: input.organizationId, name: input.name };
 }
 
-export function consumeWorkspaceBootstrap(
-  db: Database,
+export async function consumeWorkspaceBootstrap(
+  store: Db,
   input: WorkspaceBootstrapClaim,
-): WorkspaceRecord {
-  return settled(sqliteDb(db).transaction((q) => consumeWorkspaceBootstrapSteps(q, input)));
+): Promise<WorkspaceRecord> {
+  return store.transaction((q) => consumeWorkspaceBootstrapSteps(q, input));
 }
 
 export function* saveWorkspaceSessionSteps(q: Q, session: WorkspaceSession) {
@@ -608,6 +614,6 @@ export function* workspaceUserLinearIdSteps(q: Q, userId: string) {
   return row?.id ?? null;
 }
 
-export function workspaceUserLinearId(db: Database, userId: string): string | null {
-  return settled(sqliteDb(db).run((q) => workspaceUserLinearIdSteps(q, userId)));
+export async function workspaceUserLinearId(store: Db, userId: string): Promise<string | null> {
+  return store.run((q) => workspaceUserLinearIdSteps(q, userId));
 }

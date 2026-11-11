@@ -14,6 +14,7 @@ import {
   OutboxDispatcher,
   saveTaskMode,
   syncSteps,
+  sqliteDb,
 } from "../../src/db";
 import { Orchestrator } from "../../src/loop";
 import { migratedDatabase } from "../helpers";
@@ -35,7 +36,10 @@ export async function probeCurrentRunStartup(root: string) {
         `${taskKey}:item:${item.linearIssueId}`,
         item.id,
       ]);
-      saveTaskClassification(db, taskKey, { mode: "clarify", question: "Which page?" });
+      await saveTaskClassification(sqliteDb(db), taskKey, {
+        mode: "clarify",
+        question: "Which page?",
+      });
       const previous = beginImplementRun(db, item.id, clock.now());
       markRun(db, previous.run.id, "ended", clock.now());
     } else saveTaskMode(db, item.id, mode, 0, mode === "artifact");

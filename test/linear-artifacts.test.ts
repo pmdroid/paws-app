@@ -106,9 +106,9 @@ test("artifact publication persists immutable bytes privately and a durable inli
     url: URL,
     displayName: "proof.png",
   });
-  const rows = listArtifacts(env.db, "item");
+  const rows = await listArtifacts(sqliteDb(env.db), "item");
   expect(rows[0]?.state).toBe("uploaded");
-  expect(artifactPublicationReady(env.db, "item")).toBe(true);
+  expect(await artifactPublicationReady(sqliteDb(env.db), "item")).toBe(true);
   expect(JSON.stringify(rows)).not.toContain("private-secret");
   const directory = join(env.secretsDir, "linear-artifacts");
   expect((await stat(directory)).mode & 0o777).toBe(0o700);
@@ -128,7 +128,7 @@ test("artifact publication persists immutable bytes privately and a durable inli
 test("dashboard artifact reads return the private snapshot rather than mutable workspace bytes or signed manifests", async () => {
   const env = setup();
   await (await env.publisher()).publish(artifact, context);
-  const row = listArtifacts(env.db, "item")[0]!;
+  const row = (await listArtifacts(sqliteDb(env.db), "item"))[0]!;
   const read = createLinearArtifactReader(env);
   expect(await read(row.id)).toEqual({ bytes, displayName: "proof.png", mimeType: "image/png" });
   expect(await read("../../secrets")).toBeNull();
@@ -150,7 +150,7 @@ test("dashboard artifact reads return the private snapshot rather than mutable w
 test("dashboard can read a prepared artifact while publication retries without exposing upload credentials", async () => {
   const env = setup({ fail: true });
   await expect((await env.publisher()).publish(artifact, context)).rejects.toThrow();
-  const row = listArtifacts(env.db, "item")[0]!;
+  const row = (await listArtifacts(sqliteDb(env.db), "item"))[0]!;
   expect(row.state).toBe("failed");
   expect(await createLinearArtifactReader(env)(row.id)).toEqual({
     bytes,
@@ -168,8 +168,8 @@ test("restart reconciles an uploaded asset after losing the PUT response", async
   await expect((await env.publisher()).publish(artifact, context)).rejects.toThrow(
     "upload request failed",
   );
-  expect(listArtifacts(env.db, "item")[0]?.state).toBe("failed");
-  expect(artifactPublicationReady(env.db, "item")).toBe(false);
+  expect((await listArtifacts(sqliteDb(env.db), "item"))[0]?.state).toBe("failed");
+  expect(await artifactPublicationReady(sqliteDb(env.db), "item")).toBe(false);
   expect(listOutbox(env.db, "session")).toHaveLength(0);
   env.db.close();
   const reopened = openDatabase(databasePath);
@@ -180,7 +180,7 @@ test("restart reconciles an uploaded asset after losing the PUT response", async
     });
     expect(env.prepares()).toBe(1);
     expect(env.uploads()).toBe(1);
-    expect(listArtifacts(reopened, "item")[0]?.state).toBe("uploaded");
+    expect((await listArtifacts(sqliteDb(reopened), "item"))[0]?.state).toBe("uploaded");
   } finally {
     reopened.close();
   }
@@ -201,7 +201,7 @@ test("concurrent identical publications share one upload and durable result", as
 test("failed uploads remain incomplete and never publish a link", async () => {
   const env = setup({ fail: true });
   await expect((await env.publisher()).publish(artifact, context)).rejects.toThrow("HTTP 503");
-  expect(artifactPublicationReady(env.db, "item")).toBe(false);
+  expect(await artifactPublicationReady(sqliteDb(env.db), "item")).toBe(false);
   expect(listOutbox(env.db, "session")).toHaveLength(0);
   env.db.close();
 });
@@ -218,7 +218,7 @@ test("Stop fences a captured artifact callback from posting a late success", asy
 test("recovery refuses tampered snapshot bytes before a second upload", async () => {
   const env = setup({ fail: true });
   await expect((await env.publisher()).publish(artifact, context)).rejects.toThrow();
-  const row = listArtifacts(env.db, "item")[0]!;
+  const row = (await listArtifacts(sqliteDb(env.db), "item"))[0]!;
   await writeFile(join(env.secretsDir, "linear-artifacts", `${row.id}.bytes`), "tampered");
   await expect((await env.publisher()).publish(artifact, context)).rejects.toThrow("integrity");
   expect(env.uploads()).toBe(1);
@@ -230,7 +230,7 @@ test("expired restored destinations refresh after confirming the old asset is ab
   await expect((await env.publisher()).publish(artifact, context)).rejects.toThrow("HTTP 403");
   expect(await (await env.publisher()).publish(artifact, context)).toMatchObject({ url: URL });
   expect(env.prepares()).toBe(2);
-  expect(artifactPublicationReady(env.db, "item")).toBe(true);
+  expect(await artifactPublicationReady(sqliteDb(env.db), "item")).toBe(true);
   env.db.close();
 });
 
@@ -247,8 +247,8 @@ test("a successful replacement resolves a failed artifact at the same path", asy
   };
   options.fail = false;
   await (await env.publisher()).publish(replacement, context);
-  expect(artifactPublicationReady(env.db, "item")).toBe(true);
-  expect(listArtifacts(env.db, "item")).toHaveLength(2);
+  expect(await artifactPublicationReady(sqliteDb(env.db), "item")).toBe(true);
+  expect(await listArtifacts(sqliteDb(env.db), "item")).toHaveLength(2);
   env.db.close();
 });
 
@@ -315,8 +315,8 @@ test.each([false, true])(
 
 test("an uploaded replacement still resolves a legacy failed artifact by its exact path", async () => {
   const env = setup();
-  saveArtifact(
-    env.db,
+  await saveArtifact(
+    sqliteDb(env.db),
     {
       id: "legacy",
       itemId: "item",
@@ -331,9 +331,9 @@ test("an uploaded replacement still resolves a legacy failed artifact by its exa
     },
     1,
   );
-  markArtifact(env.db, "legacy", null);
-  expect(artifactPublicationReady(env.db, "item")).toBe(false);
+  await markArtifact(sqliteDb(env.db), "legacy", null);
+  expect(await artifactPublicationReady(sqliteDb(env.db), "item")).toBe(false);
   await (await env.publisher()).publish(artifact, context);
-  expect(artifactPublicationReady(env.db, "item")).toBe(true);
+  expect(await artifactPublicationReady(sqliteDb(env.db), "item")).toBe(true);
   env.db.close();
 });

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createResourceCache, handleStatusRequest, RESOURCE_REUSE_MS } from "./handler";
 import { emptyOverview } from "../live/overview";
-import { migrate, openDatabase, recordPushOutage } from "../../../db";
+import { migrate, openDatabase, recordPushOutage, sqliteDb } from "../../../db";
 
 function poll(headers: Record<string, string> = {}) {
   return new Request("http://127.0.0.1/api/overview", { headers });
@@ -110,7 +110,7 @@ describe("dashboard resource cache", () => {
           installation_observed_at, created_at) VALUES (?, 'org', 'fixture', 'app', ?, 1, 0)`,
         [`s-${team}`, team],
       );
-      recordPushOutage(db, {
+      await recordPushOutage(sqliteDb(db), {
         repository: `fixture/team-${team}`,
         error: "denied",
         jobId: null,

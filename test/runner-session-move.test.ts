@@ -17,6 +17,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
+  sqliteDb,
 } from "../src/db";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerHealth } from "../src/runner-health";
@@ -48,8 +49,8 @@ async function setup() {
     name: "Other",
     email: "other@example.invalid",
   });
-  const bootstrap = issueWorkspaceBootstrap(db, "fixture-work", now);
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-work", now);
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "fixture-work",
     name: "Fixture",

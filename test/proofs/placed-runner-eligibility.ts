@@ -21,7 +21,7 @@ export default {
   agent: () => [],
   async run(proof) {
     const db = proof.database;
-    const { pair, queue, workspace } = workspaceWithRunners(db);
+    const { pair, queue, workspace } = await workspaceWithRunners(db);
     const previous = await pair("previous", 1, [REPOSITORY]);
     const full = await pair("full", 1, [REPOSITORY]);
     const newly = await pair("newly", 1, ["other/repo"]);

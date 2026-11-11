@@ -94,11 +94,11 @@ export function* linearSessionInstallationSteps(q: Q, sessionId: string) {
   return row ?? null;
 }
 
-export function linearSessionInstallation(
-  db: Database,
+export async function linearSessionInstallation(
+  store: Db,
   sessionId: string,
-): { teamId: string | null; clientId: string | null } | null {
-  return settled(sqliteDb(db).run((q) => linearSessionInstallationSteps(q, sessionId)));
+): Promise<{ teamId: string | null; clientId: string | null } | null> {
+  return store.run((q) => linearSessionInstallationSteps(q, sessionId));
 }
 
 type LinearSessionInput = {
@@ -327,8 +327,8 @@ export function* delegatedLinearUserIdSteps(q: Q, itemId: string): Steps<string 
   return row?.actorId ?? null;
 }
 
-export function delegatedLinearUserId(db: Database, itemId: string): string | null {
-  return settled(sqliteDb(db).run((q) => delegatedLinearUserIdSteps(q, itemId)));
+export async function delegatedLinearUserId(store: Db, itemId: string): Promise<string | null> {
+  return store.run((q) => delegatedLinearUserIdSteps(q, itemId));
 }
 
 type LinearTurnInput = {
@@ -404,8 +404,11 @@ export function* listPendingLinearTurnsSteps(q: Q, sessionId: string): Steps<Sto
   return rows.map(mapTurn);
 }
 
-export function listPendingLinearTurns(db: Database, sessionId: string): StoredLinearTurn[] {
-  return settled(sqliteDb(db).run((q) => listPendingLinearTurnsSteps(q, sessionId)));
+export async function listPendingLinearTurns(
+  store: Db,
+  sessionId: string,
+): Promise<StoredLinearTurn[]> {
+  return store.run((q) => listPendingLinearTurnsSteps(q, sessionId));
 }
 
 export function* applyLinearTurnsSteps(
@@ -434,13 +437,13 @@ export function* applyLinearTurnsSteps(
     );
 }
 
-export function applyLinearTurns(
-  db: Database,
+export async function applyLinearTurns(
+  store: Db,
   sessionId: string,
   eventKeys: readonly string[],
   itemId: string,
-): void {
-  settled(sqliteDb(db).transaction((q) => applyLinearTurnsSteps(q, sessionId, eventKeys, itemId)));
+): Promise<void> {
+  await store.transaction((q) => applyLinearTurnsSteps(q, sessionId, eventKeys, itemId));
 }
 
 export function* getLinearSessionGenerationSteps(q: Q, sessionId: string): Steps<number> {
@@ -620,18 +623,7 @@ export function* announceLinearTurnSteps(
   return true;
 }
 
-export function announceLinearTurn(
-  db: Database,
-  sessionId: string,
-  eventKey: string,
-  now = Date.now(),
-): boolean {
-  return settled(
-    sqliteDb(db).transaction((q) => announceLinearTurnSteps(q, sessionId, eventKey, now)),
-  );
-}
-
-export async function announceLinearTurnAsync(
+export async function announceLinearTurn(
   store: Db,
   sessionId: string,
   eventKey: string,
@@ -749,8 +741,8 @@ export function* linearSessionClientIdSteps(q: Q, sessionId: string): Steps<stri
   return row?.clientId ?? null;
 }
 
-export function linearSessionClientId(db: Database, sessionId: string): string | null {
-  return settled(sqliteDb(db).run((q) => linearSessionClientIdSteps(q, sessionId)));
+export async function linearSessionClientId(store: Db, sessionId: string): Promise<string | null> {
+  return store.run((q) => linearSessionClientIdSteps(q, sessionId));
 }
 
 export function* linearSessionInWorkspaceSteps(

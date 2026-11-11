@@ -8,6 +8,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../../src/db";
 import { createRunnerControl, createRunnerHttp } from "../../src/runner-control";
 import {
@@ -36,8 +37,8 @@ export async function probeRunnerHttp(
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = issueWorkspaceBootstrap(db, "fixture-http", now);
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-http", now);
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "fixture-http",
     name: "Fixture",

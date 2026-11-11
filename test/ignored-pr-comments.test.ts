@@ -19,6 +19,7 @@ import {
   openDatabase,
   pendingPullComments,
   recordItemPullRequest,
+  sqliteDb,
 } from "../src/db";
 import { acceptGitHubDelivery, type PullCommentFilter } from "../src/loop";
 import { handleMergeSettingsRequest, type MergeSettingsOptions } from "../src/settings";
@@ -204,7 +205,12 @@ describe("Settings › Merging › Ignored PR comments", () => {
     });
     beginImplementRun(db, "eng-1", 1);
     enterMergeQueue(db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
-    recordItemPullRequest(db, { itemId: "eng-1", pullNumber: 7, pullUrl: null, openedAt: 1 });
+    await recordItemPullRequest(sqliteDb(db), {
+      itemId: "eng-1",
+      pullNumber: 7,
+      pullUrl: null,
+      openedAt: 1,
+    });
     const settings = () => readMergeSettings(loadConfigFile(options.configPath));
     const filter: PullCommentFilter = {
       appId: () => null,
@@ -229,10 +235,11 @@ describe("Settings › Merging › Ignored PR comments", () => {
         1_000,
         filter,
       );
-    const recorded = () => pendingPullComments(db, "eng-1").map((row) => row.commentId);
+    const recorded = async () =>
+      (await pendingPullComments(sqliteDb(db), "eng-1")).map((row) => row.commentId);
     try {
       await comment(1, "github-actions[bot]", "<!-- deploy-security-proof -->\nResult: **PASS**");
-      expect(recorded()).toEqual([1]);
+      expect(await recorded()).toEqual([1]);
 
       const saved = await handleMergeSettingsRequest(
         request("PUT", {
@@ -251,7 +258,7 @@ describe("Settings › Merging › Ignored PR comments", () => {
       await comment(2, "github-actions[bot]", "<!-- deploy-security-proof -->\nResult: **PASS**");
       await comment(3, "deploy-bot", "Deployed to staging.");
       await comment(4, "github-actions[bot]", "Result: **FAIL**");
-      expect(recorded()).toEqual([1, 4]);
+      expect(await recorded()).toEqual([1, 4]);
     } finally {
       db.close();
     }

@@ -87,7 +87,7 @@ test("a stop during a successful squash waits for completion and answers already
   beginMergeCall(db, "holder", "head", 5);
   expect(submitCommand(db, bus, command)).toEqual({ applied: false });
   expect(getWorkItem(db, "holder")).toMatchObject({ state: "merge_queue", cancelRequested: false });
-  expect(mergeStopRequested(db, "holder")).toBe(true);
+  expect(await mergeStopRequested(sqliteDb(db), "holder")).toBe(true);
   expect(drainCommands(db, bus, 1_010)).toBe(1);
   recordConfirmedRemoteMerge(db, {
     itemId: "holder",
@@ -117,14 +117,14 @@ test("a stop during a successful squash waits for completion and answers already
   db.close();
 });
 
-test("a deferred stop cancels when the squash did not succeed", () => {
+test("a deferred stop cancels when the squash did not succeed", async () => {
   const db = setup();
   const bus = new CommandBus();
   beginMergeCall(db, "holder", "head", 5);
   expect(
     applyLinearCommand(db, command, 10, "Stopped by test.", { keepPullRequest: true }).deferred,
   ).toBe(true);
-  endMergeCall(db, "holder");
+  await endMergeCall(sqliteDb(db), "holder");
   drainCommands(db, bus, 1_010);
   expect(getWorkItem(db, "holder")?.state).toBe("cancelled");
   expect(listJobs(db).some((j) => j.queue === JOB_KIND.closeStoppedPull)).toBe(false);

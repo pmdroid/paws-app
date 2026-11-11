@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { eq, notInArray } from "drizzle-orm";
 import { WORK_ITEM_STATES } from "../src/core";
-import { listTaskBlockers, migrations, syncSteps } from "../src/db";
+import { listTaskBlockers, migrations, syncSteps, sqliteDb } from "../src/db";
 import { cycleMessage, intakeDelegatedIssue, orderByBlocks, queueMessage } from "../src/intake";
 import { createFakeTracker, type EpicSnapshot } from "../src/linear";
 import { tempDb } from "./helpers";
@@ -242,9 +242,9 @@ describe("intake", () => {
       sessionId: "ses_1",
     });
     expect(result.ok).toBe(true);
-    expect(listTaskBlockers(db, "b")).toEqual(["a", "outside"]);
-    expect(listTaskBlockers(db, "a")).toEqual([]);
-    expect(listTaskBlockers(db, "outside")).toEqual([]);
+    expect(await listTaskBlockers(sqliteDb(db), "b")).toEqual(["a", "outside"]);
+    expect(await listTaskBlockers(sqliteDb(db), "a")).toEqual([]);
+    expect(await listTaskBlockers(sqliteDb(db), "outside")).toEqual([]);
     db.close();
   });
 

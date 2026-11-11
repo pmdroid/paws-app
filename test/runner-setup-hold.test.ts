@@ -99,12 +99,12 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId: ownerId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   const memberId = putWorkspaceUser(db, {

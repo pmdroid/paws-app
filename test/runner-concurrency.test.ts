@@ -11,6 +11,7 @@ import {
   putWorkspaceUser,
   runnerHasCapacity,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { createRunnerControl, createRunnerHttp } from "../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
@@ -44,8 +45,8 @@ async function fixture() {
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = issueWorkspaceBootstrap(db, "fixture-host", now);
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-host", now);
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "fixture-host",
     name: "Fixture",

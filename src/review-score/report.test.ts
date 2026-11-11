@@ -12,6 +12,7 @@ import {
   recordReviewEscape,
   settleReviewEscape,
   type ReviewEscapeTrigger,
+  sqliteDb,
 } from "../db";
 import { formatReviewScore, readReviewEscapesFile, scoreReview } from "./report";
 
@@ -53,7 +54,7 @@ function candidates() {
 }
 
 describe("the reviewer score report", () => {
-  test("lists found after the PR with counts per trigger, beside the escapes after merge", () => {
+  test("lists found after the PR with counts per trigger, beside the escapes after merge", async () => {
     const { db, add } = candidates();
     add("ci", { escape: true });
     add("ci", { escape: true });
@@ -74,7 +75,7 @@ describe("the reviewer score report", () => {
       }),
     ).toBe(false);
 
-    const score = scoreReview(listReviewEscapes(db), [{ pr: 1 }, { pr: 2 }]);
+    const score = scoreReview(await listReviewEscapes(sqliteDb(db)), [{ pr: 1 }, { pr: 2 }]);
     expect(score).toEqual({
       afterMerge: 2,
       afterPullRequest: [
@@ -95,7 +96,9 @@ describe("the reviewer score report", () => {
       ].join("\n"),
     );
     // `since` leaves out the three CI candidates recorded before it.
-    expect(scoreReview(listReviewEscapes(db, 40), null).afterPullRequest[0]).toEqual({
+    expect(
+      scoreReview(await listReviewEscapes(sqliteDb(db), 40), null).afterPullRequest[0],
+    ).toEqual({
       trigger: "ci",
       escapes: 0,
       notEscapes: {},

@@ -284,7 +284,7 @@ describe("retro generation", () => {
       }),
     ).toEqual({ ok: false, reason: "unknown_evidence" });
     expect(await retroWatermarks(sqliteDb(db), "ws")).toEqual([]);
-    expect(listRetroItems(db, "r1")).toEqual([]);
+    expect(await listRetroItems(sqliteDb(db), "r1")).toEqual([]);
   });
 
   test("a recorded coverage gap blocks publication and the watermark", async () => {
@@ -417,7 +417,7 @@ describe("retro collection", () => {
         now: 6,
       }),
     ).toBe(true);
-    expect(listRetroCoverageGaps(db, "r1")).toEqual([
+    expect(await listRetroCoverageGaps(sqliteDb(db), "r1")).toEqual([
       {
         repository: REPO,
         kind: "retention_gap",
@@ -500,7 +500,9 @@ describe("restart persistence", () => {
     const db = openDatabase(path);
     migrate(db);
     expect((await getRetro(sqliteDb(db), "r1"))!.result).toEqual({ ok: 1 });
-    expect(listRetroItems(db, "r1").map((row) => row.itemId)).toEqual(["git-recovery"]);
+    expect((await listRetroItems(sqliteDb(db), "r1")).map((row) => row.itemId)).toEqual([
+      "git-recovery",
+    ]);
     expect((await retroWatermarks(sqliteDb(db), "ws"))[0]!.cursor).toBe(9);
     expect(await retroScheduleRuntime(sqliteDb(db), "ws")).toEqual({
       workspaceId: "ws",

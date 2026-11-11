@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { eq } from "drizzle-orm";
 import type { TaskMode } from "../core";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 import { workItemTask } from "./schema";
 import { applyWorkItemEventSteps, cancelAdvancingJobsSteps, getWorkItemSteps } from "./items";
 import { enqueueOutboxOnceSteps } from "./outbox";
@@ -66,16 +66,16 @@ export function* taskRequiresRepositorySteps(q: Q, itemId: string) {
   return (yield* taskColumnSteps(q, itemId, "repositoryContext")) === 1;
 }
 
-export function taskRequiresRepository(db: Database, itemId: string): boolean {
-  return settled(sqliteDb(db).run((q) => taskRequiresRepositorySteps(q, itemId)));
+export async function taskRequiresRepository(store: Db, itemId: string): Promise<boolean> {
+  return store.run((q) => taskRequiresRepositorySteps(q, itemId));
 }
 
 export function* getTaskModeGenerationSteps(q: Q, itemId: string) {
   return (yield* taskColumnSteps(q, itemId, "generation")) ?? 0;
 }
 
-export function getTaskModeGeneration(db: Database, itemId: string): number {
-  return settled(sqliteDb(db).run((q) => getTaskModeGenerationSteps(q, itemId)));
+export async function getTaskModeGeneration(store: Db, itemId: string): Promise<number> {
+  return store.run((q) => getTaskModeGenerationSteps(q, itemId));
 }
 
 export function* selectTaskModeForTurnSteps(

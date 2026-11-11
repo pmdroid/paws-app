@@ -12,6 +12,7 @@ import {
   openDatabase,
   saveCandidateRisk,
   upsertCloseoutStep,
+  sqliteDb,
 } from "../../../db";
 import { parseOverviewResponse, type OverviewResponse } from "../contract";
 import { render } from "../client/render";
@@ -33,7 +34,7 @@ function database(): Database {
   return db;
 }
 
-function fixture(): Database {
+async function fixture(): Promise<Database> {
   const db = database();
   insertQueuedItem(db, { id: "ENG-1", title: "Queued", sessionKey: "s1", now: NOW - 9_000 });
   insertQueuedItem(db, { id: "ENG-2", title: "Running", sessionKey: "s1", now: NOW - 8_000 });
@@ -88,7 +89,7 @@ function fixture(): Database {
     "INSERT INTO question (id, item_id, session_id, kind, body, status, created_at) VALUES ('q-risk', 'ENG-4', 's1', 'link', 'High-risk changes', 'open', ?)",
     [NOW - 5_000],
   );
-  insertLinkAsk(db, {
+  await insertLinkAsk(sqliteDb(db), {
     questionId: "q-risk",
     itemId: "ENG-4",
     kind: "risk",
@@ -148,7 +149,7 @@ function recordSql(db: Database): string[] {
 
 describe("overview resource", () => {
   test("draws Overview from its own resource", async () => {
-    const db = fixture();
+    const db = await fixture();
     const live = createLiveStatusProvider(db, { now: () => new Date(NOW), env: {} });
     const parsed = parseOverviewResponse(JSON.parse(JSON.stringify(await live.overview())));
     if (!parsed.ok) throw new Error(parsed.error);
@@ -167,7 +168,7 @@ describe("overview resource", () => {
   });
 
   test("keeps the risk decision card anchor and does not call a held reviewer check failed", async () => {
-    const db = fixture();
+    const db = await fixture();
     const overview = await createLiveStatusProvider(db, {
       now: () => new Date(NOW),
       env: {},
@@ -196,7 +197,7 @@ describe("overview resource", () => {
   });
 
   test("reads no check output, evidence, CI rounds, agent Closeout or merge queue detail", async () => {
-    const db = fixture();
+    const db = await fixture();
     const statements = recordSql(db);
     const live = createLiveStatusProvider(db, { now: () => new Date(NOW), env: {} });
     const body = JSON.stringify(await live.overview());
@@ -228,7 +229,7 @@ describe("overview resource", () => {
   });
 
   test("lists only the reader's sessions", async () => {
-    const db = fixture();
+    const db = await fixture();
     insertQueuedItem(db, { id: "ENG-9", title: "Elsewhere", sessionKey: "s2", now: NOW });
     const mine = await createLiveStatusProvider(db, {
       now: () => new Date(NOW),

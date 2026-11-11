@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, desc, eq } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 
 /**
  * `moving` while the runner hands the session over or Paws places it, `waiting` while no runner
@@ -144,8 +143,11 @@ export function* latestSealedSnapshotSteps(
   return (row as SealedSessionSnapshot | undefined) ?? null;
 }
 
-export function latestSealedSnapshot(db: Database, runId: string): SealedSessionSnapshot | null {
-  return settled(sqliteDb(db).run((q) => latestSealedSnapshotSteps(q, runId)));
+export async function latestSealedSnapshot(
+  store: Db,
+  runId: string,
+): Promise<SealedSessionSnapshot | null> {
+  return store.run((q) => latestSealedSnapshotSteps(q, runId));
 }
 
 export function* lastRunCommandAccountSteps(
@@ -172,12 +174,12 @@ export function* lastRunCommandAccountSteps(
   return row ?? null;
 }
 
-export function lastRunCommandAccount(
-  db: Database,
+export async function lastRunCommandAccount(
+  store: Db,
   runId: string,
   generation: number,
-): { accountId: string; named: number } | null {
-  return settled(sqliteDb(db).run((q) => lastRunCommandAccountSteps(q, runId, generation)));
+): Promise<{ accountId: string; named: number } | null> {
+  return store.run((q) => lastRunCommandAccountSteps(q, runId, generation));
 }
 
 export function* currentRunnerAgentVersionSteps(
@@ -201,10 +203,10 @@ export function* currentRunnerAgentVersionSteps(
   return row?.version ?? null;
 }
 
-export function currentRunnerAgentVersion(
-  db: Database,
+export async function currentRunnerAgentVersion(
+  store: Db,
   runnerId: string,
   agent: string,
-): string | null {
-  return settled(sqliteDb(db).run((q) => currentRunnerAgentVersionSteps(q, runnerId, agent)));
+): Promise<string | null> {
+  return store.run((q) => currentRunnerAgentVersionSteps(q, runnerId, agent));
 }

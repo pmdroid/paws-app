@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, eq, gte, isNull } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 
 /** What started a fix round after the pull request: failed CI, a changes-requested review, or comments. */
 export type ReviewEscapeTrigger = "ci" | "review" | "comment";
@@ -119,8 +119,8 @@ export function* openReviewEscapesSteps(q: Q, itemId: string): Steps<ReviewEscap
   return rows.map((row) => mapRow(q, row));
 }
 
-export function openReviewEscapes(db: Database, itemId: string): ReviewEscapeRecord[] {
-  return settled(sqliteDb(db).run((q) => openReviewEscapesSteps(q, itemId)));
+export async function openReviewEscapes(store: Db, itemId: string): Promise<ReviewEscapeRecord[]> {
+  return store.run((q) => openReviewEscapesSteps(q, itemId));
 }
 
 type ReviewEscapeSettlement = {
@@ -175,8 +175,8 @@ export function* listReviewEscapesSteps(q: Q, since = 0): Steps<ReviewEscapeReco
   return rows.map((row) => mapRow(q, row));
 }
 
-export function listReviewEscapes(db: Database, since = 0): ReviewEscapeRecord[] {
-  return settled(sqliteDb(db).run((q) => listReviewEscapesSteps(q, since)));
+export async function listReviewEscapes(store: Db, since = 0): Promise<ReviewEscapeRecord[]> {
+  return store.run((q) => listReviewEscapesSteps(q, since));
 }
 
 function mapRow(q: Q, row: Row): ReviewEscapeRecord {

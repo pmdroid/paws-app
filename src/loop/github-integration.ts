@@ -144,8 +144,8 @@ export class GitHubInstallationCheck {
     private readonly store: Db = sqliteDb(db),
   ) {}
 
-  owns(questionId: string): boolean {
-    return githubIntegrationHoldStatus(this.db, questionId) !== null;
+  async owns(questionId: string): Promise<boolean> {
+    return (await githubIntegrationHoldStatus(sqliteDb(this.db), questionId)) !== null;
   }
 
   close(): void {

@@ -9,6 +9,7 @@ import {
   insertQueuedItem,
   listJobs,
   setJournalSink,
+  sqliteDb,
 } from "../src/db";
 import {
   createInboxStore,
@@ -232,7 +233,7 @@ test("the poll cursor starts where the cycle read activities, so a reply during 
     t.advance(60_000);
     await t.poller.pollNow();
     expect(t.delivered.map((event) => event.activityId)).toContain("reply-1");
-    expect(getQuestion(t.db, t.question.id)?.status).toBe("answered");
+    expect((await getQuestion(sqliteDb(t.db), t.question.id))?.status).toBe("answered");
   } finally {
     await t.close();
   }
@@ -246,7 +247,7 @@ test("a reply behind the poll cursor with no webhook answers the open question o
     t.store.setCursor("linear", t.at() + 60_000);
     t.advance(60_000);
     await t.poller.pollNow();
-    expect(getQuestion(t.db, t.question.id)).toMatchObject({
+    expect(await getQuestion(sqliteDb(t.db), t.question.id)).toMatchObject({
       status: "answered",
       answer: "Yes",
       answerEventKey: "activity:reply-1",
@@ -265,7 +266,7 @@ test("a reply delivered by both a webhook and the poll answers the question once
   try {
     await t.poller.pollNow();
     await t.webhook(t.reply({ at: t.at() + 1_000 }));
-    expect(getQuestion(t.db, t.question.id)?.status).toBe("answered");
+    expect((await getQuestion(sqliteDb(t.db), t.question.id))?.status).toBe("answered");
     t.advance(60_000);
     await t.poller.pollNow();
     expect(t.resumes()).toHaveLength(1);
@@ -284,7 +285,7 @@ test("a reply in another issue's thread does not touch the open question", async
     t.store.setCursor("linear", t.at() + 60_000);
     t.advance(60_000);
     await t.poller.pollNow();
-    expect(getQuestion(t.db, t.question.id)?.status).toBe("open");
+    expect((await getQuestion(sqliteDb(t.db), t.question.id))?.status).toBe("open");
     expect(t.resumes()).toHaveLength(0);
     expect(new Set(t.world.threadReads)).toEqual(new Set(["ses_1"]));
   } finally {
@@ -300,7 +301,7 @@ test("an answered question's thread is no longer re-read", async () => {
     t.reply({ at: t.at() + 1_000 });
     t.advance(60_000);
     await t.poller.pollNow();
-    expect(getQuestion(t.db, t.question.id)?.status).toBe("answered");
+    expect((await getQuestion(sqliteDb(t.db), t.question.id))?.status).toBe("answered");
     const reads = t.world.threadReads.length;
     t.advance(60_000);
     await t.poller.pollNow();

@@ -12,6 +12,7 @@ import {
   migrate,
   openDatabase,
   OutboxDispatcher,
+  sqliteDb,
 } from "../src/db";
 import { systemClock } from "../src/core";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
@@ -206,7 +207,7 @@ test.skipIf(process.platform !== "linux")(
       await expect(orchestrator.interruptLinearSession("session")).rejects.toThrow("cleanup");
       await work;
       const itemId = getLinearSession(db, "session")!.activeItemId!;
-      expect(getConversation(db, itemId).blocked).toBe(true);
+      expect((await getConversation(sqliteDb(db), itemId)).blocked).toBe(true);
       expect(getWorkItem(db, itemId)?.state).not.toBe("completed");
       await expect(orchestrator.shutdown()).rejects.toThrow("cleanup");
       expect(launches).toBe(2);

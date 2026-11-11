@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { and, asc, desc, eq, inArray, ne, notExists, notInArray, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 import { jsonText } from "./json-text";
 
 export type TaskBlock = {
@@ -61,8 +61,8 @@ export function* listTaskBlockersSteps(q: Q, blockedLinearIssueId: string) {
   return rows.map((row) => row.blocker);
 }
 
-export function listTaskBlockers(db: Database, blockedLinearIssueId: string): string[] {
-  return settled(sqliteDb(db).run((q) => listTaskBlockersSteps(q, blockedLinearIssueId)));
+export async function listTaskBlockers(store: Db, blockedLinearIssueId: string): Promise<string[]> {
+  return store.run((q) => listTaskBlockersSteps(q, blockedLinearIssueId));
 }
 
 export function* listTaskBlocksSteps(q: Q) {
@@ -74,8 +74,8 @@ export function* listTaskBlocksSteps(q: Q) {
   );
 }
 
-export function listTaskBlocks(db: Database): { blocker: string; blocked: string }[] {
-  return settled(sqliteDb(db).run(listTaskBlocksSteps));
+export async function listTaskBlocks(store: Db): Promise<{ blocker: string; blocked: string }[]> {
+  return store.run((q) => listTaskBlocksSteps(q));
 }
 
 export function* openTaskDependentsSteps(q: Q, delegationId: string, blockerLinearIssueId: string) {
@@ -100,14 +100,12 @@ export function* openTaskDependentsSteps(q: Q, delegationId: string, blockerLine
   );
 }
 
-export function openTaskDependents(
-  db: Database,
+export async function openTaskDependents(
+  store: Db,
   delegationId: string,
   blockerLinearIssueId: string,
-): { id: string; identifier: string }[] {
-  return settled(
-    sqliteDb(db).run((q) => openTaskDependentsSteps(q, delegationId, blockerLinearIssueId)),
-  );
+): Promise<{ id: string; identifier: string }[]> {
+  return store.run((q) => openTaskDependentsSteps(q, delegationId, blockerLinearIssueId));
 }
 
 export function* landedTaskBlockersSteps(q: Q, delegationId: string, blockedLinearIssueId: string) {
@@ -157,12 +155,10 @@ export function* landedTaskBlockersSteps(q: Q, delegationId: string, blockedLine
   return rows.map((row) => ({ ...row, checkpoint: row.checkpoint as string | null }));
 }
 
-export function landedTaskBlockers(
-  db: Database,
+export async function landedTaskBlockers(
+  store: Db,
   delegationId: string,
   blockedLinearIssueId: string,
-): { id: string; identifier: string; checkpoint: string | null }[] {
-  return settled(
-    sqliteDb(db).run((q) => landedTaskBlockersSteps(q, delegationId, blockedLinearIssueId)),
-  );
+): Promise<{ id: string; identifier: string; checkpoint: string | null }[]> {
+  return store.run((q) => landedTaskBlockersSteps(q, delegationId, blockedLinearIssueId));
 }

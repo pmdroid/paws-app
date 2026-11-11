@@ -64,12 +64,12 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", pawsNow())),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", pawsNow())),
     now: pawsNow(),
   });
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
@@ -121,7 +121,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
   const start = () =>
     registerInstance(db, { role: "all", host: "acme", version: null, now: pawsNow() });
   let instance = start();
-  claimRun(db, run.id, instance.id);
+  await claimRun(sqliteDb(db), run.id, instance.id);
   const keys = generateKeyPairSync("ed25519");
   const open = () => {
     const work = createRunnerWork({
@@ -322,8 +322,8 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
   if (!execution) throw new Error("The runner never started the work.");
 
   const replaced: number[] = [];
-  const pawsStep = () => {
-    heartbeatInstance(db, instance.id, clock.at);
+  const pawsStep = async () => {
+    await heartbeatInstance(sqliteDb(db), instance.id, clock.at);
     if (closeExpiredRunnerLeases(db, clock.at).includes(run.id)) replaced.push(clock.at);
   };
   const executing = () => stops === 0 && !finished;
@@ -360,7 +360,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
         clock.at += step;
         clock.monotonic += step;
         await tick();
-        if (pawsUp) pawsStep();
+        if (pawsUp) await pawsStep();
         if (replaced.length > 0 && executing()) overlaps.push(clock.at);
       }
     },

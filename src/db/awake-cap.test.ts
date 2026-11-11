@@ -88,8 +88,8 @@ test("the job loop bills only active agent and Closeout work across every waitin
     expect((await accrue()).awakeMs).toBe(0);
     clock.advance(5 * MINUTE);
     expect((await accrue()).awakeMs).toBe(5 * MINUTE);
-    startUsagePause(
-      db,
+    await startUsagePause(
+      sqliteDb(db),
       {
         itemId: item.id,
         runId: run.id,
@@ -103,7 +103,7 @@ test("the job loop bills only active agent and Closeout work across every waitin
     );
     clock.advance(120 * MINUTE);
     expect((await accrue()).awakeMs).toBe(5 * MINUTE);
-    endUsagePause(db, run.id, clock.mono(), clock.now());
+    await endUsagePause(sqliteDb(db), run.id, clock.mono(), clock.now());
     for (const [enter, leave] of [
       ["blocking_question", "answer_received"],
       ["pause", "resume"],

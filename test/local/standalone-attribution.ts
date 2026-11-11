@@ -65,16 +65,16 @@ export async function probeStandaloneAttribution(root: string) {
     userId: "steerer",
     sessionHash: session.session.tokenHash,
   };
-  const consent = () => {
+  const consent = async () => {
     const stateHash = randomUUID();
     beginGitHubAttribution(db, binding, { stateHash, browserHash: stateHash, now });
-    const revision = consumeGitHubAttribution(db, binding, {
+    const revision = await consumeGitHubAttribution(db, binding, {
       stateHash,
       browserHash: stateHash,
       now,
     });
-    saveGitHubAttribution(
-      db,
+    await saveGitHubAttribution(
+      sqliteDb(db),
       binding,
       {
         id: 8,
@@ -134,7 +134,7 @@ export async function probeStandaloneAttribution(root: string) {
     observations.push(
       "an unlinked delegator gets a bot-only policy and the App gate starts work without waiting",
     );
-    consent();
+    await consent();
     assert.deepEqual(policyCoauthors(await policyForItem()), [
       {
         id: 8,
@@ -147,7 +147,7 @@ export async function probeStandaloneAttribution(root: string) {
       commitPolicyMessage("work", await policyForItem()),
       "work\n\nCo-authored-by: Task Steerer <8+steerer@users.noreply.github.com>\n",
     );
-    revokeGitHubAttribution(db, binding, now);
+    await revokeGitHubAttribution(sqliteDb(db), binding, now);
     assert.equal((await policyForItem()).credit, null);
     assert.equal(
       await auth.ensure(getWorkItem(db, item.id)!, "initial", new AbortController().signal),

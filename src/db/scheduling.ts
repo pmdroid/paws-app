@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { and, asc, eq, gt, inArray, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { JOB_KIND, delegationHasOpenWork, type WorkItemState } from "../core";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 import { jsonItemId } from "./jobs";
 import { jsonField, jsonText, jsonValue } from "./json-text";
 import { ciWaitingSql, workHelperSql } from "./runner-capacity";
@@ -85,8 +85,8 @@ export function* schedulingProjectLeadSteps(q: Q, itemId: string) {
   return row?.lead ?? null;
 }
 
-export function schedulingProjectLead(db: Database, itemId: string): string | null {
-  return settled(sqliteDb(db).run((q) => schedulingProjectLeadSteps(q, itemId)));
+export async function schedulingProjectLead(store: Db, itemId: string): Promise<string | null> {
+  return store.run((q) => schedulingProjectLeadSteps(q, itemId));
 }
 
 /** The people who lead a Linear project anywhere in the delegation, by `workspace_user` id. */
@@ -104,8 +104,8 @@ export function* delegationProjectLeadIdsSteps(q: Q, delegationId: string) {
   return rows.map((row) => row.id);
 }
 
-export function delegationProjectLeadIds(db: Database, delegationId: string): string[] {
-  return settled(sqliteDb(db).run((q) => delegationProjectLeadIdsSteps(q, delegationId)));
+export async function delegationProjectLeadIds(store: Db, delegationId: string): Promise<string[]> {
+  return store.run((q) => delegationProjectLeadIdsSteps(q, delegationId));
 }
 
 export function* itemPathHintsSteps(q: Q, itemId: string) {
@@ -123,8 +123,8 @@ export function* itemPathHintsSteps(q: Q, itemId: string) {
   return row ?? null;
 }
 
-export function itemPathHints(db: Database, itemId: string) {
-  return settled(sqliteDb(db).run((q) => itemPathHintsSteps(q, itemId)));
+export async function itemPathHints(store: Db, itemId: string) {
+  return store.run((q) => itemPathHintsSteps(q, itemId));
 }
 
 export function* listSchedulerAdmissionsSteps(q: Q) {
@@ -145,8 +145,8 @@ export function* listSchedulerAdmissionsSteps(q: Q) {
   );
 }
 
-export function listSchedulerAdmissions(db: Database) {
-  return settled(sqliteDb(db).run(listSchedulerAdmissionsSteps));
+export async function listSchedulerAdmissions(store: Db) {
+  return store.run((q) => listSchedulerAdmissionsSteps(q));
 }
 
 export function* dropSchedulerAdmissionSteps(q: Q, itemId: string) {
@@ -154,8 +154,8 @@ export function* dropSchedulerAdmissionSteps(q: Q, itemId: string) {
   yield* q.exec(q.orm.delete(schedulerAdmission).where(eq(schedulerAdmission.itemId, itemId)));
 }
 
-export function dropSchedulerAdmission(db: Database, itemId: string): void {
-  settled(sqliteDb(db).run((q) => dropSchedulerAdmissionSteps(q, itemId)));
+export async function dropSchedulerAdmission(store: Db, itemId: string): Promise<void> {
+  await store.run((q) => dropSchedulerAdmissionSteps(q, itemId));
 }
 
 type SchedulerAdmission = {
@@ -202,12 +202,12 @@ export function* saveSchedulerAdmissionSteps(q: Q, row: SchedulerAdmission, orIg
   }
 }
 
-export function saveSchedulerAdmission(
-  db: Database,
+export async function saveSchedulerAdmission(
+  store: Db,
   row: SchedulerAdmission,
   orIgnore = false,
-): void {
-  settled(sqliteDb(db).run((q) => saveSchedulerAdmissionSteps(q, row, orIgnore)));
+): Promise<void> {
+  await store.run((q) => saveSchedulerAdmissionSteps(q, row, orIgnore));
 }
 
 export function* schedulerItemsSteps(q: Q, now: number) {
@@ -282,8 +282,8 @@ export function* schedulerItemsSteps(q: Q, now: number) {
   return rows as SchedulerItem[];
 }
 
-export function schedulerItems(db: Database, now: number): SchedulerItem[] {
-  return settled(sqliteDb(db).run((q) => schedulerItemsSteps(q, now)));
+export async function schedulerItems(store: Db, now: number): Promise<SchedulerItem[]> {
+  return store.run((q) => schedulerItemsSteps(q, now));
 }
 
 export function* runnerTaskSlotsSteps(q: Q, now: number, seenAfter: number) {
@@ -349,8 +349,8 @@ export function* pendingRunnerWaitsSteps(q: Q, seenAfter: number) {
   );
 }
 
-export function pendingRunnerWaits(db: Database, seenAfter: number) {
-  return settled(sqliteDb(db).run((q) => pendingRunnerWaitsSteps(q, seenAfter)));
+export async function pendingRunnerWaits(store: Db, seenAfter: number) {
+  return store.run((q) => pendingRunnerWaitsSteps(q, seenAfter));
 }
 
 export function* schedulerRunnerSlotsSteps(q: Q, now: number) {
@@ -378,8 +378,8 @@ export function* schedulerRunnerSlotsSteps(q: Q, now: number) {
   );
 }
 
-export function schedulerRunnerSlots(db: Database, now: number) {
-  return settled(sqliteDb(db).run((q) => schedulerRunnerSlotsSteps(q, now)));
+export async function schedulerRunnerSlots(store: Db, now: number) {
+  return store.run((q) => schedulerRunnerSlotsSteps(q, now));
 }
 
 /** Replace or abandon a scheduler choice; physical reservations keep their own lifecycle. */
@@ -407,10 +407,10 @@ export function* setSchedulerRunnerSlotSteps(q: Q, itemId: string, runnerId: str
   );
 }
 
-export function setSchedulerRunnerSlot(
-  db: Database,
+export async function setSchedulerRunnerSlot(
+  store: Db,
   itemId: string,
   runnerId: string | null,
-): void {
-  settled(sqliteDb(db).run((q) => setSchedulerRunnerSlotSteps(q, itemId, runnerId)));
+): Promise<void> {
+  await store.run((q) => setSchedulerRunnerSlotSteps(q, itemId, runnerId));
 }

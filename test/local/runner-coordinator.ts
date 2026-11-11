@@ -15,6 +15,7 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../../src/db";
 import { createRunnerKey } from "../../src/runner-identity";
 import { initializeRunnerCoordinator, openRunnerCoordinator } from "../../src/runner-coordinator";
@@ -53,8 +54,8 @@ export async function probeRunnerCoordinator(
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = issueWorkspaceBootstrap(db, "coordinator-org", now);
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const bootstrap = await issueWorkspaceBootstrap(db, "coordinator-org", now);
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "coordinator-org",
     name: "Fixture",

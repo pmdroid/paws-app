@@ -49,7 +49,7 @@ const FILTER: PullCommentFilter = {
 const FINDINGS = "Closeout found: `src/rank.ts:30` sorts the wrong way round.";
 const CHECKS = [{ name: "test (0/2)", url: "https://ci.example/acme/one/1" }];
 
-function setup(state: "running" | "verifying" | "merge_queue") {
+async function setup(state: "running" | "verifying" | "merge_queue") {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
@@ -62,7 +62,12 @@ function setup(state: "running" | "verifying" | "merge_queue") {
   if (state === "verifying") applyWorkItemEvent(db, "eng-1", "turn_ended");
   if (state === "merge_queue")
     enterMergeQueue(db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
-  recordItemPullRequest(db, { itemId: "eng-1", pullNumber: 7, pullUrl: null, openedAt: 1 });
+  await recordItemPullRequest(sqliteDb(db), {
+    itemId: "eng-1",
+    pullNumber: 7,
+    pullUrl: null,
+    openedAt: 1,
+  });
   let clock = 1_000;
   let limit = 3;
   let busy = false;
@@ -156,7 +161,7 @@ function setup(state: "running" | "verifying" | "merge_queue") {
   };
 }
 
-type Db = ReturnType<typeof setup>["db"];
+type Db = Awaited<ReturnType<typeof setup>>["db"];
 const resumeJobs = (db: Db) => listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
 const handoffs = (db: Db) =>
   resumeJobs(db).map((job) => job.payload as { handoff: string; reason: string });
@@ -174,7 +179,7 @@ function backToMergeQueue(db: Db) {
 
 describe("a send-back carries the feedback waiting on the item", () => {
   test("a re-check conflict restarts once with the rebase, then the comment and its reply", async () => {
-    const h = setup("verifying");
+    const h = await setup("verifying");
     await h.inline(9001, "cursor[bot]", BOT_FINDING);
 
     expect(await h.sendBack("conflict", REBASE_CONFLICT_INSTRUCTION)).not.toBeNull();
@@ -191,7 +196,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
     expect(handoff).toContain(`\`src/cache.ts:40\`: ${BOT_FINDING}`);
     expect(handoff.indexOf(COMMENT_FIX_INSTRUCTION)).toBeGreaterThan(digest);
     expect(replies).toBeGreaterThan(digest);
-    expect(getPullComment(h.db, "inline", 9001)?.outcome).toBe("restarted");
+    expect((await getPullComment(sqliteDb(h.db), "inline", 9001))?.outcome).toBe("restarted");
     expect(feedbackThoughts(h.db)).toEqual([
       "@cursor[bot] commented on pull request #7. The agent is working on the comments.",
     ]);
@@ -203,7 +208,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
   });
 
   test("a Closeout findings restart carries the comment", async () => {
-    const h = setup("verifying");
+    const h = await setup("verifying");
     await h.conversation(9101, "pascal", "Please also rename the comparator.");
     await h.sendBack("findings", FINDINGS);
     const [restarted] = handoffs(h.db);
@@ -212,12 +217,12 @@ describe("a send-back carries the feedback waiting on the item", () => {
     expect(restarted?.handoff.startsWith(FINDINGS)).toBe(true);
     expect(restarted?.handoff).toContain("@pascal in the conversation:");
     expect(restarted?.handoff).not.toContain(REBASED_LINES_NOTE);
-    expect(getPullComment(h.db, "conversation", 9101)?.outcome).toBe("restarted");
+    expect((await getPullComment(sqliteDb(h.db), "conversation", 9101))?.outcome).toBe("restarted");
     expect(fixRounds(h.db, "eng-1")).toBe(1);
   });
 
   test("a CI restart carries the failed checks and the comment, in one fix round", async () => {
-    const h = setup("verifying");
+    const h = await setup("verifying");
     await h.inline(9201, "cursor[bot]", BOT_FINDING);
     await h.sendBack("ci", ciFixHandoff(CHECKS));
     const [restarted] = handoffs(h.db);
@@ -226,12 +231,12 @@ describe("a send-back carries the feedback waiting on the item", () => {
     expect(restarted?.handoff.indexOf("CI failed on the pull request.")).toBe(0);
     expect(restarted?.handoff).toContain("- test (0/2)");
     expect(restarted?.handoff).toContain(BOT_FINDING);
-    expect(getPullComment(h.db, "inline", 9201)?.outcome).toBe("restarted");
+    expect((await getPullComment(sqliteDb(h.db), "inline", 9201))?.outcome).toBe("restarted");
     expect(fixRounds(h.db, "eng-1")).toBe(1);
   });
 
   test("with the fix rounds spent, the conflict goes back alone and the comment asks", async () => {
-    const h = setup("verifying");
+    const h = await setup("verifying");
     h.setLimit(0);
     await h.inline(9301, "cursor[bot]", BOT_FINDING);
     await h.sendBack("conflict", REBASE_CONFLICT_INSTRUCTION);
@@ -239,7 +244,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
       expect.objectContaining({ reason: "conflict", handoff: REBASE_CONFLICT_INSTRUCTION }),
     ]);
     expect(fixRounds(h.db, "eng-1")).toBe(0);
-    expect(pendingPullComments(h.db, "eng-1")).toHaveLength(2);
+    expect(await pendingPullComments(sqliteDb(h.db), "eng-1")).toHaveLength(2);
 
     backToMergeQueue(h.db);
     expect(await handlePullComments(h.db, "eng-1", h.caps)).toBe("asked");
@@ -249,7 +254,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
   });
 
   test("a comment during a turn waits, then rides the next restart", async () => {
-    const h = setup("running");
+    const h = await setup("running");
     h.setBusy(true);
     await h.inline(9401, "cursor[bot]", BOT_FINDING);
     expect(await handlePullComments(h.db, "eng-1", h.caps)).toBe("wait");
@@ -259,11 +264,11 @@ describe("a send-back carries the feedback waiting on the item", () => {
     applyWorkItemEvent(h.db, "eng-1", "turn_ended");
     await h.sendBack("conflict", REBASE_CONFLICT_INSTRUCTION);
     expect(handoffs(h.db)[0]?.handoff).toContain(BOT_FINDING);
-    expect(getPullComment(h.db, "inline", 9401)?.outcome).toBe("restarted");
+    expect((await getPullComment(sqliteDb(h.db), "inline", 9401))?.outcome).toBe("restarted");
   });
 
   test("an ignored bot's comment is not carried", async () => {
-    const h = setup("verifying");
+    const h = await setup("verifying");
     await h.conversation(9501, "codecov[bot]", "Coverage: 91%.");
     await h.sendBack("conflict", REBASE_CONFLICT_INSTRUCTION);
     expect(handoffs(h.db)[0]?.handoff).toBe(REBASE_CONFLICT_INSTRUCTION);
@@ -274,7 +279,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
 
 describe("a comment restart on a conflicting pull request", () => {
   test("adds the rebase instruction and records one rebase return", async () => {
-    const h = setup("merge_queue");
+    const h = await setup("merge_queue");
     h.setConflict({ head: "h", base: "main-2" });
     await h.inline(9601, "cursor[bot]", BOT_FINDING);
     expect(await handlePullComments(h.db, "eng-1", h.caps)).toBe("restarted");
@@ -291,7 +296,7 @@ describe("a comment restart on a conflicting pull request", () => {
   });
 
   test("without a conflict has no rebase instruction", async () => {
-    const h = setup("merge_queue");
+    const h = await setup("merge_queue");
     await h.inline(9701, "cursor[bot]", BOT_FINDING);
     expect(await handlePullComments(h.db, "eng-1", h.caps)).toBe("restarted");
     expect(handoffs(h.db)[0]?.handoff).not.toContain(REBASE_CONFLICT_INSTRUCTION);
@@ -300,7 +305,7 @@ describe("a comment restart on a conflicting pull request", () => {
 });
 
 test("the merge lane's rebase return carries the stored comment", async () => {
-  const h = setup("merge_queue");
+  const h = await setup("merge_queue");
   h.setBusy(true);
   await h.inline(9801, "cursor[bot]", BOT_FINDING);
   const returned = await returnToAgent(sqliteDb(h.db), {
@@ -329,6 +334,6 @@ test("the merge lane's rebase return carries the stored comment", async () => {
   expect(restarted?.reason).toBe("conflict");
   expect(restarted?.handoff.indexOf(REBASE_CONFLICT_INSTRUCTION)).toBe(0);
   expect(restarted?.handoff).toContain(`\`src/cache.ts:40\`: ${BOT_FINDING}`);
-  expect(getPullComment(h.db, "inline", 9801)?.outcome).toBe("restarted");
+  expect((await getPullComment(sqliteDb(h.db), "inline", 9801))?.outcome).toBe("restarted");
   expect(fixRounds(h.db, "eng-1")).toBe(1);
 });

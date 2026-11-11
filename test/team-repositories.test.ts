@@ -7,6 +7,7 @@ import {
   listTeamRepositories,
   refreshRepositoryCatalog,
   teamRepositoryAllowedSql,
+  sqliteDb,
 } from "../src/db";
 import { tempDb, tempHome } from "./helpers";
 
@@ -105,14 +106,14 @@ test("the workspace GitHub App resolves a repository found in the access catalog
   }
 });
 
-test("a session's team links are the repositories it may choose from", () => {
+test("a session's team links are the repositories it may choose from", async () => {
   const db = seed();
   try {
     db.run(
       "INSERT INTO linear_session(session_id,organization_id,team_id,created_at) VALUES('limited-session','org','limited',0),('open-session','org','open',0)",
     );
-    expect(listTeamRepositories(db, "limited-session")).toEqual(["acme/linked"]);
-    expect(listTeamRepositories(db, "open-session")).toEqual([]);
+    expect(await listTeamRepositories(sqliteDb(db), "limited-session")).toEqual(["acme/linked"]);
+    expect(await listTeamRepositories(sqliteDb(db), "open-session")).toEqual([]);
   } finally {
     db.close();
   }

@@ -112,7 +112,9 @@ test("an App hold is asked as the github-auth kind and posts no question of its 
     const hold = f.db
       .query<{ question_id: string }, []>("SELECT question_id FROM github_integration_hold")
       .get()!;
-    expect(getQuestion(f.db, hold.question_id)).toMatchObject({ kind: "github-auth" });
+    expect(await getQuestion(sqliteDb(f.db), hold.question_id)).toMatchObject({
+      kind: "github-auth",
+    });
     expect(
       listOutbox(f.db)
         .map((row) => row.idempotencyKey)
@@ -143,7 +145,7 @@ test("App hold survives restart, notifies only administrators and revalidates ex
   const hold = f.db
     .query<{ question_id: string }, []>("SELECT question_id FROM github_integration_hold")
     .get()!;
-  expect(getQuestion(f.db, hold.question_id)?.status).toBe("open");
+  expect((await getQuestion(sqliteDb(f.db), hold.question_id))?.status).toBe("open");
   f.auth.close();
   f.db.close();
   const reopened = openDatabase(path);

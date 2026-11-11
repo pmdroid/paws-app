@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { eq } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 
 export type TaskMergeSettings = {
   order: "queue" | "ci-green" | "github-queue";
@@ -30,13 +30,13 @@ export function* keepTaskMergeSettingsSteps(
 }
 
 /** Keep the first resolution: a task merges with the settings it started with. */
-export function keepTaskMergeSettings(
-  db: Database,
+export async function keepTaskMergeSettings(
+  store: Db,
   itemId: string,
   settings: TaskMergeSettings,
   now: number,
-): void {
-  settled(sqliteDb(db).run((q) => keepTaskMergeSettingsSteps(q, itemId, settings, now)));
+): Promise<void> {
+  await store.run((q) => keepTaskMergeSettingsSteps(q, itemId, settings, now));
 }
 
 export function* getTaskMergeSettingsSteps(q: Q, itemId: string) {

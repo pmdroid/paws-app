@@ -69,7 +69,7 @@ test("verified host reconnection persists a new credential and restores the same
   try {
     expect(getLinearSessionAccess(reopened, "session")).toBe("allowed");
     expect(isLinearAppRevoked(reopened, scope)).toBe(false);
-    expect(listLinearInstallationRevocations(reopened)).toEqual([]);
+    expect(await listLinearInstallationRevocations(sqliteDb(reopened))).toEqual([]);
     expect(reopened.query("SELECT * FROM linear_app_revocation").get()).toMatchObject({
       revoked_at: 10,
       generation: 1,
@@ -189,7 +189,7 @@ test.each([20, 25])(
       }),
     ).toEqual(["session"]);
     expect(getLinearSessionAccess(f.db, "session")).toBe("revoked");
-    expect(listLinearInstallationRevocations(f.db)[0]?.generation).toBe(2);
+    expect((await listLinearInstallationRevocations(sqliteDb(f.db)))[0]?.generation).toBe(2);
   },
 );
 

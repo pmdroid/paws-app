@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { asc, desc, eq, lt } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 import type { githubDelivery } from "./schema";
 
 export type IntegrationEvent = typeof githubDelivery.$inferSelect;
@@ -33,12 +32,12 @@ export function* recordGitHubDeliverySteps(
   return inserted.length > 0;
 }
 
-export function recordGitHubDelivery(
-  db: Database,
+export async function recordGitHubDelivery(
+  store: Db,
   input: Omit<IntegrationEvent, "receivedAt">,
   now = Date.now(),
-): boolean {
-  return settled(sqliteDb(db).run((q) => recordGitHubDeliverySteps(q, input, now)));
+): Promise<boolean> {
+  return store.run((q) => recordGitHubDeliverySteps(q, input, now));
 }
 
 export function* latestGitHubDeliverySteps(q: Q) {
@@ -53,10 +52,10 @@ export function* latestGitHubDeliverySteps(q: Q) {
   return row ?? null;
 }
 
-export function latestGitHubDelivery(
-  db: Database,
-): Pick<IntegrationEvent, "event" | "receivedAt"> | null {
-  return settled(sqliteDb(db).run(latestGitHubDeliverySteps));
+export async function latestGitHubDelivery(
+  store: Db,
+): Promise<Pick<IntegrationEvent, "event" | "receivedAt"> | null> {
+  return store.run((q) => latestGitHubDeliverySteps(q));
 }
 
 export function* listGitHubDeliveriesSteps(q: Q) {
@@ -69,8 +68,8 @@ export function* listGitHubDeliveriesSteps(q: Q) {
   );
 }
 
-export function listGitHubDeliveries(db: Database): IntegrationEvent[] {
-  return settled(sqliteDb(db).run(listGitHubDeliveriesSteps));
+export async function listGitHubDeliveries(store: Db): Promise<IntegrationEvent[]> {
+  return store.run((q) => listGitHubDeliveriesSteps(q));
 }
 
 export function* githubDeliveryRecordedSteps(q: Q, deliveryId: string) {
@@ -84,6 +83,6 @@ export function* githubDeliveryRecordedSteps(q: Q, deliveryId: string) {
   return row !== undefined;
 }
 
-export function githubDeliveryRecorded(db: Database, deliveryId: string): boolean {
-  return settled(sqliteDb(db).run((q) => githubDeliveryRecordedSteps(q, deliveryId)));
+export async function githubDeliveryRecorded(store: Db, deliveryId: string): Promise<boolean> {
+  return store.run((q) => githubDeliveryRecordedSteps(q, deliveryId));
 }

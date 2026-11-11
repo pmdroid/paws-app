@@ -195,8 +195,12 @@ export function* restartsSinceHumanTurnSteps(q: Q, itemId: string, prefix: strin
   return row!.count;
 }
 
-export function restartsSinceHumanTurn(db: Database, itemId: string, prefix: string): number {
-  return settled(sqliteDb(db).run((q) => restartsSinceHumanTurnSteps(q, itemId, prefix)));
+export async function restartsSinceHumanTurn(
+  store: Db,
+  itemId: string,
+  prefix: string,
+): Promise<number> {
+  return store.run((q) => restartsSinceHumanTurnSteps(q, itemId, prefix));
 }
 
 /** Latest human retry window, ordered by activation rather than reusable row id. */

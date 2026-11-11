@@ -6,6 +6,7 @@ import {
   migrate,
   openDatabase,
   recordLinearInstallation,
+  sqliteDb,
 } from "../src/db";
 import { createItemReconciler, intakeDelegatedIssue } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
@@ -96,14 +97,14 @@ test("a tracker without batched reads reads each item's relations", async () => 
 
 test("a relations poll picks up a blocker added in Linear and reconciles its delegation", async () => {
   await using fixture = await relationsFixture();
-  expect(listTaskBlockers(fixture.db, "child")).toEqual([]);
+  expect(await listTaskBlockers(sqliteDb(fixture.db), "child")).toEqual([]);
   fixture.tracker.deps.set("child", [
     { blockerLinearIssueId: "outside", blockedLinearIssueId: "child" },
   ]);
   const changed = await fixture.reconciler.pollRelations();
   expect(changed).toHaveLength(1);
   expect(fixture.epicReads()).toBe(2);
-  expect(listTaskBlockers(fixture.db, "child")).toEqual(["outside"]);
+  expect(await listTaskBlockers(sqliteDb(fixture.db), "child")).toEqual(["outside"]);
   expect(await fixture.reconciler.pollRelations()).toEqual([]);
   expect(fixture.epicReads()).toBe(2);
 });
@@ -114,10 +115,10 @@ test("a relations poll picks up a blocker removed in Linear", async () => {
     { blockerLinearIssueId: "outside", blockedLinearIssueId: "child" },
   ]);
   await fixture.reconciler.pollRelations();
-  expect(listTaskBlockers(fixture.db, "child")).toEqual(["outside"]);
+  expect(await listTaskBlockers(sqliteDb(fixture.db), "child")).toEqual(["outside"]);
   fixture.tracker.deps.set("child", []);
   expect(await fixture.reconciler.pollRelations()).toHaveLength(1);
-  expect(listTaskBlockers(fixture.db, "child")).toEqual([]);
+  expect(await listTaskBlockers(sqliteDb(fixture.db), "child")).toEqual([]);
 });
 
 test("a relation where the item blocks another issue does not count as its blocker", async () => {

@@ -161,7 +161,7 @@ export async function probeWorkspaceBrowser(
       { status: withoutBootstrap.response.status },
     );
     membershipDelayMs = 1000;
-    const owner = await login("owner", issueWorkspaceBootstrap(db, "org", now));
+    const owner = await login("owner", await issueWorkspaceBootstrap(db, "org", now));
     const member = await login("member");
     const outsider = await login("outsider");
     const ownerSession = (await (

@@ -3244,8 +3244,8 @@ export class Orchestrator {
   private async repositoryBeforeSelection(item: WorkItemRecord): Promise<RepositoryBinding | null> {
     const bound = this.repositoryForItem(item);
     if (bound) return bound;
-    const candidates = listRepositoryCandidates(
-      this.db,
+    const candidates = await listRepositoryCandidates(
+      sqliteDb(this.db),
       item.sessionKey,
       this.options.repositories ?? [],
     );
@@ -3346,7 +3346,7 @@ export class Orchestrator {
     if (
       saved &&
       (await this.store.run((q) => taskRequiresRepositorySteps(q, item.id))) &&
-      getWorkItemRepositoryAnswer(this.db, item.id) &&
+      (await getWorkItemRepositoryAnswer(sqliteDb(this.db), item.id)) &&
       !(await this.store.run((q) => getWorkItemRepositorySteps(q, item.id)))
     )
       return true;
@@ -6296,7 +6296,7 @@ export class Orchestrator {
       }),
     );
     if (!merged) return;
-    wakeMergesBehind(this.db, this.now());
+    await wakeMergesBehind(sqliteDb(this.db), this.now());
     await (this.options.remoteExecution ? removeCandidateRef : removeWorktree)({
       owner: repository.owner,
       repo: repository.repo,
@@ -9948,7 +9948,7 @@ export class Orchestrator {
       {
         kind: "visual-review",
         delegatorId: await this.store.run((q) => delegatedLinearUserIdSteps(q, item.id)),
-        leadId: projectLeadId(this.db, item.id),
+        leadId: await projectLeadId(this.db, item.id),
       },
       { id: actorId },
     );
@@ -10194,7 +10194,7 @@ export class Orchestrator {
         summary === NO_SESSION_MODEL &&
         base !== "" &&
         base === head &&
-        jobStatusByKey(this.db, jobKey) === null
+        (await jobStatusByKey(sqliteDb(this.db), jobKey)) === null
       ) {
         restart(this.db, item, {
           reason: "follow_up",

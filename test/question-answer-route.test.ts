@@ -11,6 +11,7 @@ import {
   enqueueOutboxOnce,
   listOutbox,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { createFakeTracker, parseAgentEvent } from "../src/linear";
 import { attachOrchestrator, deliverLinearOutbox } from "../src/loop";
@@ -148,7 +149,7 @@ test("a non-member gets 403 and an audit row", async () => {
         )
         .all(),
     ).toEqual([{ action: "question.refused", subject: "PAS-1003 agent" }]);
-    expect(getQuestion(db, question.id)?.status).toBe("open");
+    expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
   } finally {
     db.close();
   }
@@ -181,14 +182,16 @@ test("an option answered in Paws restarts the item as a Linear reply does, once"
   try {
     const response = await paws.submit({ questionId: paws.question.id, answer: OPTIONS[0] });
     expect(response?.status).toBe(200);
-    expect(getQuestion(paws.db, paws.question.id)).toMatchObject({
+    expect(await getQuestion(sqliteDb(paws.db), paws.question.id)).toMatchObject({
       status: "answered",
       answer: OPTIONS[0],
       answeredBy: "linear-1",
     });
 
     await linear.orchestrator.onLinearEvent(linearReply(OPTIONS[0]!));
-    expect(getQuestion(linear.db, linear.question.id)?.answeredBy).toBe("linear-1");
+    expect((await getQuestion(sqliteDb(linear.db), linear.question.id))?.answeredBy).toBe(
+      "linear-1",
+    );
     expect(history(paws.db, paws.item.id)).toEqual(history(linear.db, linear.item.id));
     expect(getWorkItem(paws.db, paws.item.id)?.state).toBe(
       getWorkItem(linear.db, linear.item.id)!.state,
@@ -227,10 +230,13 @@ test("a rejected answer leaves the question open and a corrected answer closes i
   try {
     const rejected = await submit({ questionId: question.id, answer: "/paws decision expired" });
     expect(rejected?.status).toBe(409);
-    expect(getQuestion(db, question.id)?.status).toBe("open");
+    expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
     expect(resumes(db)).toEqual([]);
     expect((await submit({ questionId: question.id, answer: OPTIONS[0] }))?.status).toBe(200);
-    expect(getQuestion(db, question.id)).toMatchObject({ status: "answered", answer: OPTIONS[0] });
+    expect(await getQuestion(sqliteDb(db), question.id)).toMatchObject({
+      status: "answered",
+      answer: OPTIONS[0],
+    });
     expect(resumes(db)).toHaveLength(1);
   } finally {
     db.close();
@@ -262,7 +268,7 @@ test("a Linear reply racing a Paws answer answers the question once", async () =
       }),
     ]);
     const answered = paws.status === "fulfilled" && paws.value === "answered";
-    const stored = getQuestion(db, question.id)!;
+    const stored = (await getQuestion(sqliteDb(db), question.id))!;
     expect(stored.status).toBe("answered");
     expect(stored.answer).toBe(answered ? OPTIONS[0]! : OPTIONS[1]!);
     expect(resumes(db)).toHaveLength(1);

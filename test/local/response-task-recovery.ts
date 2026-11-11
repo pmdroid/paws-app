@@ -20,6 +20,7 @@ import {
   saveArtifact,
   saveConversation,
   saveTaskMode,
+  sqliteDb,
 } from "../../src/db";
 import { createFakeTracker } from "../../src/linear";
 import { Orchestrator } from "../../src/loop";
@@ -44,8 +45,8 @@ export async function probeResponseTaskRecovery(root: string) {
       null,
     );
     if (mode === "artifact") {
-      saveArtifact(
-        db,
+      await saveArtifact(
+        sqliteDb(db),
         {
           id: "published-screenshot",
           itemId: item.id,
@@ -60,7 +61,11 @@ export async function probeResponseTaskRecovery(root: string) {
         },
         clock.now(),
       );
-      markArtifact(db, "published-screenshot", "https://files.example.test/screenshot.png");
+      await markArtifact(
+        sqliteDb(db),
+        "published-screenshot",
+        "https://files.example.test/screenshot.png",
+      );
     }
     prepareShutdown(db, clock.now());
     assert.equal(getWorkItem(db, item.id)?.checkpoint, null);
@@ -130,8 +135,8 @@ export async function probeResponseTaskRecovery(root: string) {
       assert.equal(responses.length, 1);
       assert.match(String(responses[0]!.body), /Completed the requested Create VM response/);
       if (mode === "artifact") {
-        assert.equal(listArtifacts(db, item.id).length, 1);
-        assert.equal(listArtifacts(db, item.id)[0]?.state, "uploaded");
+        assert.equal((await listArtifacts(sqliteDb(db), item.id)).length, 1);
+        assert.equal((await listArtifacts(sqliteDb(db), item.id))[0]?.state, "uploaded");
         assert.match(String(responses[0]!.body), /https:\/\/files.example.test\/screenshot.png/);
       }
       assert.deepEqual(recoverOnStartup(db, clock.now()), []);
@@ -142,7 +147,7 @@ export async function probeResponseTaskRecovery(root: string) {
         state: "completed",
         gitCheckpoint: null,
         priorAnswerPreserved: true,
-        publishedArtifacts: listArtifacts(db, item.id).length,
+        publishedArtifacts: (await listArtifacts(sqliteDb(db), item.id)).length,
       });
     } finally {
       await orchestrator.shutdown();

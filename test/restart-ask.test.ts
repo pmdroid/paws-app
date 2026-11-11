@@ -54,10 +54,10 @@ function fixture() {
 }
 
 describe("restart and ask", () => {
-  test("a durable merge marker fences restart until the lane settles the merge call", () => {
+  test("a durable merge marker fences restart until the lane settles the merge call", async () => {
     const { db } = fixture();
     db.run("UPDATE work_item SET state='merge_queue' WHERE id='item'");
-    joinMergeQueue(db, { itemId: "item", repository: "owner/repo", now: 2 });
+    await joinMergeQueue(sqliteDb(db), { itemId: "item", repository: "owner/repo", now: 2 });
     const jobs = listJobs(db).length;
     const queue = listMergeQueues(db);
     beginMergeCall(db, "item", "head", 3);
@@ -67,7 +67,7 @@ describe("restart and ask", () => {
     expect(getWorkItem(db, "item")?.state).toBe("merge_queue");
     expect(listJobs(db)).toHaveLength(jobs);
     expect(listMergeQueues(db)).toEqual(queue);
-    endMergeCall(db, "item");
+    await endMergeCall(sqliteDb(db), "item");
     expect(
       restart(db, getWorkItem(db, "item")!, { reason: "review", body: "Fix it.", now: 5 }),
     ).not.toBeNull();
@@ -104,7 +104,7 @@ describe("restart and ask", () => {
         payload: { itemId: item.id },
         now: 1,
       });
-      joinMergeQueue(db, { itemId: item.id, repository: "owner/repo", now: 1 });
+      await joinMergeQueue(sqliteDb(db), { itemId: item.id, repository: "owner/repo", now: 1 });
       const jobId = restart(db, item, { reason, body: "Keep the branch and fix this.", now: 2 });
       const queued = getWorkItem(db, item.id)!;
       expect(queued).toMatchObject({
@@ -131,7 +131,7 @@ describe("restart and ask", () => {
     },
   );
 
-  test("same-head CI recurs with fresh handoff and accounting, while stale replays do nothing", () => {
+  test("same-head CI recurs with fresh handoff and accounting, while stale replays do nothing", async () => {
     const { db, item } = fixture();
     const jobKey = "ci-failed:item:recheck:head";
     const first = restart(db, item, { reason: "ci", body: "first failure", jobKey, now: 2 })!;
@@ -154,7 +154,7 @@ describe("restart and ask", () => {
       finishedAt: null,
       payload: { handoff: "second failure", reason: "ci" },
     });
-    expect(jobVersionCurrent(db, getJob(db, second)!)).toBe(true);
+    expect(await jobVersionCurrent(sqliteDb(db), getJob(db, second)!)).toBe(true);
     expect(fixRounds(db, item.id)).toBe(2);
     expect(
       restart(db, secondItem, { reason: "ci", body: "second failure", jobKey, now: 5 }),
@@ -266,7 +266,7 @@ describe("restart and ask", () => {
     });
     const old = claimNextJob(db, { now: 1 })!;
     restart(db, verifying, { reason: "findings", body: "fix", now: 2 });
-    expect(jobVersionCurrent(db, old)).toBe(false);
+    expect(await jobVersionCurrent(sqliteDb(db), old)).toBe(false);
     const before = {
       events: listWorkItemEventRows(db, item.id),
       outbox: listOutbox(db),
@@ -380,7 +380,7 @@ describe("restart and ask", () => {
         { now: 2 },
       ),
     );
-    applyDecision(db, getWorkItem(db, item.id)!, { type: "ask_restart" }, 3);
+    await applyDecision(sqliteDb(db), getWorkItem(db, item.id)!, { type: "ask_restart" }, 3);
     const clock = new FakeClock(4);
     const jobs = new JobLoop(db, clock);
     attachOrchestrator({

@@ -265,7 +265,7 @@ test("browser sign-in creates an owner only in the operator's configured organiz
     expect(response.headers.get("set-cookie")).toContain("__Host-paws-session=");
     expect(scene.state.installed).toBe(1);
     const workspace = workspaceForOrganization(scene.db, "org")!;
-    expect(listWorkspaceMembers(scene.db, workspace.id)[0]?.role).toBe("admin");
+    expect((await listWorkspaceMembers(sqliteDb(scene.db), workspace.id))[0]?.role).toBe("admin");
     expect(readStoredToken(scene.db, join(scene.home, "secrets"))?.accessToken).toBe("fixture-app");
     expect(JSON.stringify(scene.db.query("SELECT * FROM credential").all())).not.toContain(
       "fixture-app",
@@ -473,7 +473,9 @@ for (const concurrentRevocation of [false, true]) {
       );
       expect(workspaceForOrganization(scene.db, "org")?.id).toBe(workspace.id);
       expect(
-        listWorkspaceMembers(scene.db, workspace.id).filter((member) => member.role === "admin"),
+        (await listWorkspaceMembers(sqliteDb(scene.db), workspace.id)).filter(
+          (member) => member.role === "admin",
+        ),
       ).toHaveLength(1);
     } finally {
       scene.close();
@@ -512,7 +514,10 @@ for (const admin of [false, true]) {
       );
       expect(response?.status).toBe(admin ? 303 : 403);
       const workspace = workspaceForOrganization(scene.db, "org");
-      if (admin) expect(listWorkspaceMembers(scene.db, workspace!.id)[0]?.role).toBe("admin");
+      if (admin)
+        expect((await listWorkspaceMembers(sqliteDb(scene.db), workspace!.id))[0]?.role).toBe(
+          "admin",
+        );
       else expect(workspace).toBeNull();
       await access.stop();
     } finally {

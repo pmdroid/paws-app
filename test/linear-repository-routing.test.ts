@@ -15,6 +15,7 @@ import {
   listWorkspaceRepositories,
   saveConversation,
   type WorkItemRecord,
+  sqliteDb,
 } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import {
@@ -207,7 +208,9 @@ test("a natural-language repository choice survives an installation wait and res
     await f.jobs.tick();
     const authQuestion = findOpenQuestion(f.db, "session")!;
     expect(authQuestion.id).not.toBe(repositoryQuestion.id);
-    expect(getWorkItemRepositoryChoice(f.db, repositoryQuestion.itemId)).toEqual(repositories[1]!);
+    expect(await getWorkItemRepositoryChoice(sqliteDb(f.db), repositoryQuestion.itemId)).toEqual(
+      repositories[1]!,
+    );
     expect(getWorkItemRepository(f.db, repositoryQuestion.itemId)).toBeNull();
     expect(f.launches()).toBe(1);
     expect(f.checked).toEqual([]);
@@ -760,7 +763,8 @@ function teamRepositoryIntegration(db: ReturnType<typeof tempDb>) {
         )
         .get(item.sessionKey ?? "");
       const repository =
-        getWorkItemRepository(db, item.id) ?? getWorkItemRepositoryChoice(db, item.id);
+        getWorkItemRepository(db, item.id) ??
+        (await getWorkItemRepositoryChoice(sqliteDb(db), item.id));
       const decision =
         scope && repository
           ? ((await teamRepositoryDenial(db, item, scope, repository)) ?? true)
@@ -804,7 +808,7 @@ for (const source of ["a repo label", "a confident Linear suggestion"] as const)
         id: string;
         state: string;
       };
-      expect(listWorkspaceRepositories(f.db, "workspace")).toEqual([]);
+      expect(await listWorkspaceRepositories(sqliteDb(f.db), "workspace")).toEqual([]);
       expect(item.state).not.toBe("cancelled");
       expect(getWorkItemRepository(f.db, item.id)).toEqual({
         owner: "acme",

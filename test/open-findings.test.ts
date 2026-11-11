@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { applyLinearCommand, insertQueuedItem, listOutbox, saveOpenFindings } from "../src/db";
+import {
+  applyLinearCommand,
+  insertQueuedItem,
+  listOutbox,
+  saveOpenFindings,
+  sqliteDb,
+} from "../src/db";
 import {
   inertMarkdown,
   openFindingsLine,
@@ -95,7 +101,7 @@ test("the Paws link needs a public URL", () => {
   expect(pawsIssueUrl("  ", item)).toBeNull();
 });
 
-test("the stopped and closed responses carry the open findings of the last published head", () => {
+test("the stopped and closed responses carry the open findings of the last published head", async () => {
   const db = tempDb();
   try {
     for (const [id, response] of [
@@ -103,7 +109,7 @@ test("the stopped and closed responses carry the open findings of the last publi
       ["closed", "Closed: the issue was canceled in Linear."],
     ] as const) {
       insertQueuedItem(db, { id, sessionKey: `session-${id}`, now: 1 });
-      saveOpenFindings(db, {
+      await saveOpenFindings(sqliteDb(db), {
         itemId: id,
         head: "a".repeat(40),
         line: "1 finding still open.",

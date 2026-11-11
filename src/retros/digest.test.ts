@@ -279,7 +279,7 @@ describe("incremental retro windows", () => {
       await collectRetroDigest(db, { retroId: "r-overlap", artifactRoot: root, now: at(4) }),
     ).toEqual({ ok: false, reason: "busy", busy: [{ repository: REPO, retroId: "r1" }] });
     publish(db, "r1", at(3));
-    const first = listRetroEvidence(db, "r1").map((entry) => entry.evidenceId);
+    const first = (await listRetroEvidence(sqliteDb(db), "r1")).map((entry) => entry.evidenceId);
     const digest = await collect(db, root, { id: "r2", start: at(3), end: at(7) });
     const both = new Set([
       ...first.filter((e) => e.startsWith("work_item_event")),
@@ -368,9 +368,7 @@ describe("evidence quality", () => {
     const ids = digest.records.map((record) => record.evidenceId);
     expect(new Set(ids).size).toBe(ids.length);
     expect(
-      listRetroEvidence(db, "r1")
-        .map((entry) => entry.evidenceId)
-        .sort(),
+      (await listRetroEvidence(sqliteDb(db), "r1")).map((entry) => entry.evidenceId).sort(),
     ).toEqual([...ids].sort());
   });
 
@@ -551,7 +549,7 @@ describe("evidence quality", () => {
     });
     const stored = readRetroArtifact(db, root, "r1", "digest");
     const text = stored.ok ? new TextDecoder().decode(stored.bytes) : "";
-    const evidence = JSON.stringify(listRetroEvidence(db, "r1"));
+    const evidence = JSON.stringify(await listRetroEvidence(sqliteDb(db), "r1"));
     for (const leaked of [
       token,
       "lin_api_",

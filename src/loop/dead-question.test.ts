@@ -59,7 +59,7 @@ describe("a question whose elicitation died twice", () => {
   test("is asked again through ask() with a fresh delivery", async () => {
     const { db, question, job } = await waitingItem();
     expect(getWorkItem(db, "item-q")?.state).toBe("awaiting_input");
-    expect(listDeadDeliveries(db, "item-q")).toHaveLength(1);
+    expect(await listDeadDeliveries(sqliteDb(db), "item-q")).toHaveLength(1);
 
     const again = await reaskDeadQuestion(db, {
       itemId: "item-q",
@@ -70,19 +70,19 @@ describe("a question whose elicitation died twice", () => {
 
     expect(again).not.toBeNull();
     expect(again).not.toBe(question.id);
-    expect(getQuestion(db, again!)).toMatchObject({
+    expect(await getQuestion(sqliteDb(db), again!)).toMatchObject({
       body: "Which repository?",
       options: ["paws-app", "paws-runner"],
       kind: "agent",
     });
-    expect(getQuestion(db, question.id)?.cancelledAt).toBe(3_000);
+    expect((await getQuestion(sqliteDb(db), question.id))?.cancelledAt).toBe(3_000);
     expect(findOpenQuestion(db, "ses-q")?.id).toBe(again!);
     expect(getWorkItem(db, "item-q")?.state).toBe("awaiting_input");
     expect(listOutbox(db, "ses-q").map((row) => [row.idempotencyKey, row.status])).toEqual([
       [`question:${question.id}`, "dropped"],
       [`question:${again}`, "pending"],
     ]);
-    expect(listDeadDeliveries(db, "item-q")).toEqual([]);
+    expect(await listDeadDeliveries(sqliteDb(db), "item-q")).toEqual([]);
     // The job remembers the question it produced, so that question shares this allowance.
     expect(getJob(db, job)?.payload).toMatchObject({ questionId: question.id, reaskedAs: again });
   });
@@ -98,15 +98,15 @@ describe("a question whose elicitation died twice", () => {
     });
 
     expect(again).toBe(question.id);
-    expect(getQuestion(db, question.id)?.status).toBe("open");
+    expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
     expect(findOpenQuestion(db, "ses-q")?.id).toBe(question.id);
-    expect(getVisualReview(db, question.id)).not.toBeNull();
+    expect(await getVisualReview(sqliteDb(db), question.id)).not.toBeNull();
     expect(listOutbox(db, "ses-q").map((row) => [row.idempotencyKey, row.status])).toEqual([
       [`question:${question.id}`, "dropped"],
       [`question:${question.id}:reask`, "pending"],
     ]);
     expect(listOutbox(db, "ses-q")[1]?.payload).toEqual(listOutbox(db, "ses-q")[0]?.payload);
-    expect(listDeadDeliveries(db, "item-q")).toEqual([]);
+    expect(await listDeadDeliveries(sqliteDb(db), "item-q")).toEqual([]);
     expect(getJob(db, job)?.payload).toMatchObject({ reaskedAs: question.id });
   });
 
@@ -121,7 +121,7 @@ describe("a question whose elicitation died twice", () => {
         now: 3_000,
       }),
     ).toBeNull();
-    expect(listDeadDeliveries(moved.db, "item-q")).toHaveLength(1);
+    expect(await listDeadDeliveries(sqliteDb(moved.db), "item-q")).toHaveLength(1);
 
     const answered = await waitingItem();
     answered.db.run("UPDATE question SET status = 'answered' WHERE id = ?", [answered.question.id]);

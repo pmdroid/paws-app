@@ -294,12 +294,12 @@ async function firstDelegation(
     name: "Owner",
     email: "owner@example.invalid",
   });
-  consumeWorkspaceBootstrap(db, {
+  await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: "workspace",
     organizationId: "org",
     name: "Workspace",
     userId: owner,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now())),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now())),
     now: now(),
   });
   // The owner's runner is online and free the whole time. Nova may not use it.

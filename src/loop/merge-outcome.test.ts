@@ -14,6 +14,7 @@ import {
   migrate,
   openDatabase,
   recordItemPullRequest,
+  sqliteDb,
 } from "../db";
 import type { GitHubResponse } from "../github";
 import { Orchestrator } from "./orchestrator";
@@ -71,7 +72,7 @@ test.each([404, 403, 502, "timeout"])(
   async (failure) => {
     const f = await fixture();
     try {
-      recordItemPullRequest(f.db, {
+      await recordItemPullRequest(sqliteDb(f.db), {
         itemId: "item",
         pullNumber: 7,
         pullUrl: null,

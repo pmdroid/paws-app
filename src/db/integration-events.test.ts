@@ -1,40 +1,57 @@
 import { expect, test } from "bun:test";
-import { listGitHubDeliveries, migrate, openDatabase, recordGitHubDelivery } from "./index";
+import {
+  listGitHubDeliveries,
+  migrate,
+  openDatabase,
+  recordGitHubDelivery,
+  sqliteDb,
+} from "./index";
 
 const DAY = 24 * 60 * 60 * 1000;
 
-test("a GitHub delivery keeps its id, event, time and payload", () => {
+test("a GitHub delivery keeps its id, event, time and payload", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
   expect(
-    recordGitHubDelivery(
-      db,
+    await recordGitHubDelivery(
+      sqliteDb(db),
       { deliveryId: "d-1", event: "check_run", payload: "x".repeat(20_000) },
       1_000,
     ),
   ).toBe(true);
   expect(
-    recordGitHubDelivery(db, { deliveryId: "d-1", event: "check_run", payload: "{}" }, 2_000),
+    await recordGitHubDelivery(
+      sqliteDb(db),
+      { deliveryId: "d-1", event: "check_run", payload: "{}" },
+      2_000,
+    ),
   ).toBe(false);
-  expect(listGitHubDeliveries(db)).toEqual([
+  expect(await listGitHubDeliveries(sqliteDb(db))).toEqual([
     { deliveryId: "d-1", event: "check_run", payload: "x".repeat(20_000), receivedAt: 1_000 },
   ]);
 });
 
-test("GitHub deliveries and their payloads older than three days are deleted", () => {
+test("GitHub deliveries and their payloads older than three days are deleted", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
   const now = 10 * DAY;
-  recordGitHubDelivery(
-    db,
+  await recordGitHubDelivery(
+    sqliteDb(db),
     { deliveryId: "old", event: "check_run", payload: "{}" },
     now - 3 * DAY - 1,
   );
-  recordGitHubDelivery(
-    db,
+  await recordGitHubDelivery(
+    sqliteDb(db),
     { deliveryId: "recent", event: "check_run", payload: "{}" },
     now - 3 * DAY + 1,
   );
-  recordGitHubDelivery(db, { deliveryId: "new", event: "check_run", payload: "{}" }, now);
-  expect(listGitHubDeliveries(db).map((row) => row.deliveryId)).toEqual(["recent", "new"]);
+  await recordGitHubDelivery(
+    sqliteDb(db),
+    { deliveryId: "new", event: "check_run", payload: "{}" },
+    now,
+  );
+  expect((await listGitHubDeliveries(sqliteDb(db))).map((row) => row.deliveryId)).toEqual([
+    "recent",
+    "new",
+  ]);
 });

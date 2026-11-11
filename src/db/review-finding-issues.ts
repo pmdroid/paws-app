@@ -1,8 +1,7 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { reviewFindingKey as coreFindingKey } from "../core";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 
 /** Where a finding points: its path and its line, or `first-last`. */
 export type ReviewFindingPlace = { path: string; lines: string };
@@ -75,11 +74,11 @@ export function* reviewFindingIssuesSteps(
   return found;
 }
 
-export function reviewFindingIssues(
-  db: Database,
+export async function reviewFindingIssues(
+  store: Db,
   keys: readonly string[],
-): Map<string, ReviewFindingIssue> {
-  return settled(sqliteDb(db).run((q) => reviewFindingIssuesSteps(q, keys)));
+): Promise<Map<string, ReviewFindingIssue>> {
+  return store.run((q) => reviewFindingIssuesSteps(q, keys));
 }
 
 /** Stores the filed issue unless one is already stored for its key; returns the stored one. */

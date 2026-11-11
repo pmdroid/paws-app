@@ -97,7 +97,7 @@ test("Accept on a question asked before the link ask requests changes and never 
     answerSteps(q, reply("Accept"), questionEffects(db, { now: NOW + 100 })),
   );
   expect(outcome.status).toBe("answered");
-  expect(getVisualReview(db, question.id)).toMatchObject({
+  expect(await getVisualReview(sqliteDb(db), question.id)).toMatchObject({
     outcome: "changes_requested",
     feedback: "Accept",
   });
@@ -113,7 +113,7 @@ test("Request changes restarts the item for review with the feedback", async () 
   await sqliteDb(db).transaction((q) =>
     answerSteps(q, reply("Make the hint shorter"), questionEffects(db, { now: NOW + 100 })),
   );
-  expect(getVisualReview(db, question.id)?.outcome).toBe("changes_requested");
+  expect((await getVisualReview(sqliteDb(db), question.id))?.outcome).toBe("changes_requested");
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
   const [resume] = listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
   expect((resume!.payload as { handoff: string }).handoff).toContain("Make the hint shorter");
@@ -139,14 +139,14 @@ test("the round-limit question waits behind a sibling's queued question", async 
     answerSteps(q, reply("Make the hint shorter"), questionEffects(db, { now: NOW + 100 })),
   );
 
-  expect(getVisualReview(db, question.id)?.outcome).toBe("changes_requested");
+  expect((await getVisualReview(sqliteDb(db), question.id))?.outcome).toBe("changes_requested");
   expect(findOpenQuestion(db, "ses_1")?.id).toBe(ci.question.id);
   const queued = db
     .query<{ id: string }, [string]>(
       "SELECT question_id AS id FROM visual_review WHERE item_id = ? AND kind = 'continue'",
     )
     .get(itemId)!;
-  expect(getQuestion(db, queued.id)).toMatchObject({
+  expect(await getQuestion(sqliteDb(db), queued.id)).toMatchObject({
     kind: "visual-review",
     status: "queued",
     body: visualReviewContinueQuestion(VISUAL_REVIEW_ROUNDS),

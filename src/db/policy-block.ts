@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, isNull } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import type * as pg from "./schema-pg";
 
 export type PolicyBlock = {
@@ -47,8 +46,8 @@ export function* savePolicyBlockSteps(q: Q, block: PolicyBlock) {
   );
 }
 
-export function savePolicyBlock(db: Database, block: PolicyBlock): void {
-  settled(sqliteDb(db).run((q) => savePolicyBlockSteps(q, block)));
+export async function savePolicyBlock(store: Db, block: PolicyBlock): Promise<void> {
+  await store.run((q) => savePolicyBlockSteps(q, block));
 }
 
 /** Oldest first; blocks created in the same millisecond in item order. */
@@ -75,6 +74,6 @@ export function* listOpenPolicyBlocksSteps(q: Q, repository?: string): Steps<Pol
   return rows.map(({ block }) => map(block));
 }
 
-export function listOpenPolicyBlocks(db: Database, repository?: string): PolicyBlock[] {
-  return settled(sqliteDb(db).run((q) => listOpenPolicyBlocksSteps(q, repository)));
+export async function listOpenPolicyBlocks(store: Db, repository?: string): Promise<PolicyBlock[]> {
+  return store.run((q) => listOpenPolicyBlocksSteps(q, repository));
 }

@@ -400,7 +400,7 @@ describe("settling an attempt", () => {
     expect(settled.report.generation).toBe("empty_input");
     expect(settled.report.digestSha256).toBe(sha);
     expect((await getRetro(sqliteDb(db), "r1"))!.state).toBe("published");
-    expect(listRetroItems(db, "r1")).toEqual([]);
+    expect(await listRetroItems(sqliteDb(db), "r1")).toEqual([]);
   });
 
   test("invalid output records a diagnostic and retries against the same digest", async () => {
@@ -432,7 +432,7 @@ describe("settling an attempt", () => {
     const output = JSON.stringify(one());
     const settled = await settle(db, root, start(db, FIXTURE_END + 1)!.attempt, output);
     if (!settled.ok) throw new Error(settled.reason);
-    const [stored] = listRetroItems(db, "r1");
+    const [stored] = await listRetroItems(sqliteDb(db), "r1");
     expect(stored).toMatchObject({
       actionStep: "issue",
       area: "Git recovery",

@@ -187,12 +187,12 @@ async function usageLimitScenario(
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, "acme/fixture", "team"]);
@@ -233,12 +233,12 @@ async function usageLimitScenario(
     });
     const otherWorkspace =
       wake === "foreign-workspace"
-        ? consumeWorkspaceBootstrap(db, {
+        ? await consumeWorkspaceBootstrap(sqliteDb(db), {
             id: workspaceId(),
             organizationId: "other-org",
             name: "Other",
             userId: otherUser,
-            tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "other-org", now)),
+            tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "other-org", now)),
             now,
           })
         : workspace;
@@ -373,7 +373,8 @@ async function usageLimitScenario(
           sim.policyAtPause = policy();
           pauseObservedAt = Date.now();
           if (switchProfiles) selectedAgent = "codex";
-          else if (wake === "resume") resumeUsagePauseNow(db, pause.runId, Date.now());
+          else if (wake === "resume")
+            await resumeUsagePauseNow(sqliteDb(db), pause.runId, Date.now());
           else if (wake === "cooldown")
             db.run(
               "UPDATE runner_agent_policy SET cooldown_until=0 WHERE runner_id=? AND agent='claude'",

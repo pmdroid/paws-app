@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, gte, max, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 import { jsonValue, parsedJson } from "./json-text";
 
 export type CiRoundCheck = {
@@ -61,8 +60,8 @@ export function* recordCiRoundSteps(q: Q, round: CiRound) {
   );
 }
 
-export function recordCiRound(db: Database, round: CiRound): void {
-  settled(sqliteDb(db).run((q) => recordCiRoundSteps(q, round)));
+export async function recordCiRound(store: Db, round: CiRound): Promise<void> {
+  await store.run((q) => recordCiRoundSteps(q, round));
 }
 
 /** Oldest first. */
@@ -90,8 +89,8 @@ export function* listCiRoundsSteps(q: Q, itemId?: string) {
   }));
 }
 
-export function listCiRounds(db: Database, itemId?: string): CiRound[] {
-  return settled(sqliteDb(db).run((q) => listCiRoundsSteps(q, itemId)));
+export async function listCiRounds(store: Db, itemId?: string): Promise<CiRound[]> {
+  return store.run((q) => listCiRoundsSteps(q, itemId));
 }
 
 export function* countCiFixesSteps(q: Q, itemId: string, sinceJobId: number) {
@@ -112,6 +111,6 @@ export function* countCiFixesSteps(q: Q, itemId: string, sinceJobId: number) {
   return Number(row?.n ?? 0);
 }
 
-export function countCiFixes(db: Database, itemId: string, sinceJobId: number): number {
-  return settled(sqliteDb(db).run((q) => countCiFixesSteps(q, itemId, sinceJobId)));
+export async function countCiFixes(store: Db, itemId: string, sinceJobId: number): Promise<number> {
+  return store.run((q) => countCiFixesSteps(q, itemId, sinceJobId));
 }

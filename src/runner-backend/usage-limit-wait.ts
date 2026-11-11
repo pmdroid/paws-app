@@ -1,7 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { RunAgentOptions } from "../acp";
 import { usageLimitNotice } from "../core";
-import { endUsagePauseAsync, startUsagePauseAsync, usagePauseSteps, type Db } from "../db";
+import { endUsagePause, startUsagePause, usagePauseSteps, type Db } from "../db";
 import type { UsageLimitWait } from "./failover";
 
 export function usageLimitWait(
@@ -20,7 +20,7 @@ export function usageLimitWait(
       if (!run) throw limit;
       const { itemId, runId } = run;
       const agent = agentName(limit.agent);
-      await startUsagePauseAsync(
+      await startUsagePause(
         store,
         {
           runId,
@@ -47,7 +47,7 @@ export function usageLimitWait(
           await delay(Math.min(wait, interval * 20), undefined, { signal: input.signal });
         }
       } finally {
-        await endUsagePauseAsync(store, runId, mono(), now());
+        await endUsagePause(store, runId, mono(), now());
       }
       input.signal?.throwIfAborted();
       await input.onEvent?.({

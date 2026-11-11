@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, notExists, sql } from "drizzle-orm";
 import { sqliteTable, text } from "drizzle-orm/sqlite-core";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 import { jsonFromText, jsonText } from "./json-text";
 import type { Orm } from "./orm";
 import { sessionRepositoryAllowed } from "./workspace-scope";
@@ -40,8 +39,8 @@ export type DecisionAnswer = {
 
 export type DecisionContent = { statement: string; globs: string; tags: string };
 
-export function decisionScope(db: Database, questionId: string): DecisionScope | null {
-  return settled(sqliteDb(db).run((q) => decisionScopeSteps(q, questionId)));
+export async function decisionScope(store: Db, questionId: string): Promise<DecisionScope | null> {
+  return store.run((q) => decisionScopeSteps(q, questionId));
 }
 
 export function* decisionScopeSteps(q: Q, questionId: string) {
@@ -95,8 +94,8 @@ function decisionRows(q: Q) {
     .innerJoin(question, eq(question.id, d.questionId));
 }
 
-export function listDecisionRows(db: Database, workspaceId: string): DecisionRow[] {
-  return settled(sqliteDb(db).run((q) => listDecisionRowsSteps(q, workspaceId)));
+export async function listDecisionRows(store: Db, workspaceId: string): Promise<DecisionRow[]> {
+  return store.run((q) => listDecisionRowsSteps(q, workspaceId));
 }
 
 export function* listDecisionRowsSteps(q: Q, workspaceId: string) {
@@ -138,8 +137,11 @@ type DecisionSearch = {
   activeOnly?: boolean;
 };
 
-export function searchDecisionRows(db: Database, search: DecisionSearch): DecisionRow[] {
-  return settled(sqliteDb(db).run((q) => searchDecisionRowsSteps(q, search)));
+export async function searchDecisionRows(
+  store: Db,
+  search: DecisionSearch,
+): Promise<DecisionRow[]> {
+  return store.run((q) => searchDecisionRowsSteps(q, search));
 }
 
 export function* searchDecisionRowsSteps(q: Q, search: DecisionSearch) {
@@ -161,8 +163,8 @@ export function* searchDecisionRowsSteps(q: Q, search: DecisionSearch) {
   return found as DecisionRow[];
 }
 
-export function replaceDecisionSearch(db: Database, entry: DecisionSearchEntry): void {
-  settled(sqliteDb(db).run((q) => replaceDecisionSearchSteps(q, entry)));
+export async function replaceDecisionSearch(store: Db, entry: DecisionSearchEntry): Promise<void> {
+  await store.run((q) => replaceDecisionSearchSteps(q, entry));
 }
 
 type DecisionSearchEntry = { id: string; statement: string; tags: string };
@@ -179,12 +181,12 @@ export function* replaceDecisionSearchSteps(q: Q, entry: DecisionSearchEntry) {
   );
 }
 
-export function decisionRow(
-  db: Database,
+export async function decisionRow(
+  store: Db,
   id: string,
   options: { activeOnly?: boolean } = {},
-): DecisionRow | null {
-  return settled(sqliteDb(db).run((q) => decisionRowSteps(q, id, options)));
+): Promise<DecisionRow | null> {
+  return store.run((q) => decisionRowSteps(q, id, options));
 }
 
 export function* decisionRowSteps(q: Q, id: string, options: { activeOnly?: boolean } = {}) {
@@ -195,8 +197,8 @@ export function* decisionRowSteps(q: Q, id: string, options: { activeOnly?: bool
   return (row as DecisionRow | undefined) ?? null;
 }
 
-export function unsavedDecisionAnswers(db: Database): DecisionAnswer[] {
-  return settled(sqliteDb(db).run((q) => unsavedDecisionAnswersSteps(q)));
+export async function unsavedDecisionAnswers(store: Db): Promise<DecisionAnswer[]> {
+  return store.run((q) => unsavedDecisionAnswersSteps(q));
 }
 
 export function* unsavedDecisionAnswersSteps(q: Q) {
@@ -230,8 +232,8 @@ export function* unsavedDecisionAnswersSteps(q: Q) {
   return rows as DecisionAnswer[];
 }
 
-export function answeredDecisionQuestion(db: Database, questionId: string) {
-  return settled(sqliteDb(db).run((q) => answeredDecisionQuestionSteps(q, questionId)));
+export async function answeredDecisionQuestion(store: Db, questionId: string) {
+  return store.run((q) => answeredDecisionQuestionSteps(q, questionId));
 }
 
 export function* answeredDecisionQuestionSteps(q: Q, questionId: string) {
@@ -253,8 +255,8 @@ export function* answeredDecisionQuestionSteps(q: Q, questionId: string) {
 
 type DecisionChange = { id: string; userId: string; now: number };
 
-export function retireDecisionMemory(db: Database, change: DecisionChange): void {
-  settled(sqliteDb(db).run((q) => retireDecisionMemorySteps(q, change)));
+export async function retireDecisionMemory(store: Db, change: DecisionChange): Promise<void> {
+  await store.run((q) => retireDecisionMemorySteps(q, change));
 }
 
 export function* retireDecisionMemorySteps(q: Q, change: DecisionChange) {
@@ -272,11 +274,11 @@ export function* retireDecisionMemorySteps(q: Q, change: DecisionChange) {
   );
 }
 
-export function correctDecisionMemory(
-  db: Database,
+export async function correctDecisionMemory(
+  store: Db,
   change: DecisionChange & DecisionContent,
-): void {
-  settled(sqliteDb(db).run((q) => correctDecisionMemorySteps(q, change)));
+): Promise<void> {
+  await store.run((q) => correctDecisionMemorySteps(q, change));
 }
 
 export function* correctDecisionMemorySteps(q: Q, change: DecisionChange & DecisionContent) {
@@ -298,8 +300,8 @@ export function* correctDecisionMemorySteps(q: Q, change: DecisionChange & Decis
 
 type NewDecision = DecisionChange & DecisionContent & { workspaceId: string; questionId: string };
 
-export function insertDecisionMemory(db: Database, decision: NewDecision): void {
-  settled(sqliteDb(db).run((q) => insertDecisionMemorySteps(q, decision)));
+export async function insertDecisionMemory(store: Db, decision: NewDecision): Promise<void> {
+  await store.run((q) => insertDecisionMemorySteps(q, decision));
 }
 
 export function* insertDecisionMemorySteps(q: Q, decision: NewDecision) {
@@ -326,8 +328,11 @@ type NewSuggestion = {
   statement: string;
 };
 
-export function recordDecisionSuggestion(db: Database, suggestion: NewSuggestion): string {
-  return settled(sqliteDb(db).run((q) => recordDecisionSuggestionSteps(q, suggestion)));
+export async function recordDecisionSuggestion(
+  store: Db,
+  suggestion: NewSuggestion,
+): Promise<string> {
+  return store.run((q) => recordDecisionSuggestionSteps(q, suggestion));
 }
 
 export function* recordDecisionSuggestionSteps(q: Q, suggestion: NewSuggestion) {
@@ -342,8 +347,8 @@ export function* recordDecisionSuggestionSteps(q: Q, suggestion: NewSuggestion) 
   return saved!.id;
 }
 
-export function openDecisionSuggestion(db: Database, id: string, questionId: string) {
-  return settled(sqliteDb(db).run((q) => openDecisionSuggestionSteps(q, id, questionId)));
+export async function openDecisionSuggestion(store: Db, id: string, questionId: string) {
+  return store.run((q) => openDecisionSuggestionSteps(q, id, questionId));
 }
 
 export function* openDecisionSuggestionSteps(q: Q, id: string, questionId: string) {
@@ -357,13 +362,13 @@ export function* openDecisionSuggestionSteps(q: Q, id: string, questionId: strin
   return row ?? null;
 }
 
-export function acceptDecisionSuggestion(
-  db: Database,
+export async function acceptDecisionSuggestion(
+  store: Db,
   id: string,
   acceptedBy: string,
   now: number,
-): void {
-  settled(sqliteDb(db).run((q) => acceptDecisionSuggestionSteps(q, id, acceptedBy, now)));
+): Promise<void> {
+  await store.run((q) => acceptDecisionSuggestionSteps(q, id, acceptedBy, now));
 }
 
 export function* acceptDecisionSuggestionSteps(q: Q, id: string, acceptedBy: string, now: number) {

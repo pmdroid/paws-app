@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Window } from "happy-dom";
-import { createRetro, insertQueuedItem, listImprovementDeliveries, retroArtifact } from "../src/db";
+import {
+  createRetro,
+  insertQueuedItem,
+  listImprovementDeliveries,
+  retroArtifact,
+  sqliteDb,
+} from "../src/db";
 import {
   deliverImprovements,
   syncImprovementOutcomes,
@@ -911,7 +917,7 @@ describe("retro history", () => {
     expect(t.saved[0]!.name).toBe("retro-r1-digest.json");
     expect(JSON.parse(t.saved[0]!.text).records).toHaveLength(4);
 
-    rmSync(join(t.w.root, retroArtifact(t.w.db, "r1", "prompt")!.fileName));
+    rmSync(join(t.w.root, (await retroArtifact(sqliteDb(t.w.db), "r1", "prompt"))!.fileName));
     await reopen(t, "/improvements/reports/r1");
     expect(t.find('[data-retro-artifact="prompt"]').textContent).toContain(
       "the stored file is unavailable",

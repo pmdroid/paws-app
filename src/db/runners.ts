@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   aliasedTable,
   and,
@@ -17,7 +16,7 @@ import {
   sql,
   type SQL,
 } from "drizzle-orm";
-import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
+import { type Db, type Q, type Steps } from "./db";
 import { jsonField } from "./json-text";
 import { auditWorkspaceAccessSteps, workspaceMemberUsableWhere } from "./workspace";
 import { endRevokedRunnerAuthoritySteps, runnerLeaseCutoff } from "./runner-lease";
@@ -65,8 +64,8 @@ function runnerColumns({ t: { runner } }: Q) {
   };
 }
 
-export function getRunner(db: Database, id: string): RunnerRecord | null {
-  return settled(sqliteDb(db).run((q) => getRunnerSteps(q, id)));
+export async function getRunner(store: Db, id: string): Promise<RunnerRecord | null> {
+  return store.run((q) => getRunnerSteps(q, id));
 }
 
 export function* getRunnerSteps(q: Q, id: string): Steps<RunnerRecord | null> {
@@ -280,8 +279,11 @@ type RunnerAgentUsageReport = {
   observedAt: number;
 };
 
-export function recordRunnerAgentUsage(db: Database, usage: RunnerAgentUsageReport): void {
-  settled(sqliteDb(db).run((q) => recordRunnerAgentUsageSteps(q, usage)));
+export async function recordRunnerAgentUsage(
+  store: Db,
+  usage: RunnerAgentUsageReport,
+): Promise<void> {
+  await store.run((q) => recordRunnerAgentUsageSteps(q, usage));
 }
 
 export function* recordRunnerAgentUsageSteps(q: Q, usage: RunnerAgentUsageReport) {
@@ -304,12 +306,12 @@ export function* recordRunnerAgentUsageSteps(q: Q, usage: RunnerAgentUsageReport
   );
 }
 
-export function runnerAgentUsage(
-  db: Database,
+export async function runnerAgentUsage(
+  store: Db,
   runnerId: string,
   agent: string,
-): { limits: RunnerAgentLimit[]; observedAt: number } | null {
-  return settled(sqliteDb(db).run((q) => runnerAgentUsageSteps(q, runnerId, agent)));
+): Promise<{ limits: RunnerAgentLimit[]; observedAt: number } | null> {
+  return store.run((q) => runnerAgentUsageSteps(q, runnerId, agent));
 }
 
 export function* runnerAgentUsageSteps(q: Q, runnerId: string, agent: string) {
@@ -940,11 +942,11 @@ export function* runnerHostVersionSteps(q: Q, runnerId: string) {
   return row?.version ?? null;
 }
 
-export function runnerTargetForRestore(
-  db: Database,
+export async function runnerTargetForRestore(
+  store: Db,
   runnerId: string,
-): { ownerUserId: string; version: string | null } | null {
-  return settled(sqliteDb(db).run((q) => runnerTargetForRestoreSteps(q, runnerId)));
+): Promise<{ ownerUserId: string; version: string | null } | null> {
+  return store.run((q) => runnerTargetForRestoreSteps(q, runnerId));
 }
 
 export function* runnerTargetForRestoreSteps(q: Q, runnerId: string) {
@@ -959,11 +961,11 @@ export function* runnerTargetForRestoreSteps(q: Q, runnerId: string) {
   return row ?? null;
 }
 
-export function runnerStanding(
-  db: Database,
+export async function runnerStanding(
+  store: Db,
   runnerId: string,
-): { status: string; revokedAt: number | null; lastSeenAt: number | null } | null {
-  return settled(sqliteDb(db).run((q) => runnerStandingSteps(q, runnerId)));
+): Promise<{ status: string; revokedAt: number | null; lastSeenAt: number | null } | null> {
+  return store.run((q) => runnerStandingSteps(q, runnerId));
 }
 
 export function* runnerStandingSteps(q: Q, runnerId: string) {
@@ -1106,8 +1108,8 @@ export function* usableRunnerSteps(q: Q, runnerId: string): Steps<UsableRunner |
   return row ?? null;
 }
 
-export function usableRunner(db: Database, runnerId: string): UsableRunner | null {
-  return settled(sqliteDb(db).run((q) => usableRunnerSteps(q, runnerId)));
+export async function usableRunner(store: Db, runnerId: string): Promise<UsableRunner | null> {
+  return store.run((q) => usableRunnerSteps(q, runnerId));
 }
 
 export type RunnerIdentity = {
@@ -1120,8 +1122,8 @@ export type RunnerIdentity = {
 };
 
 /** The runner's workspace, owner, standing and fence. */
-export function runnerIdentity(db: Database, runnerId: string): RunnerIdentity | null {
-  return settled(sqliteDb(db).run((q) => runnerIdentitySteps(q, runnerId)));
+export async function runnerIdentity(store: Db, runnerId: string): Promise<RunnerIdentity | null> {
+  return store.run((q) => runnerIdentitySteps(q, runnerId));
 }
 
 export function* runnerIdentitySteps(q: Q, runnerId: string): Steps<RunnerIdentity | null> {
@@ -1140,10 +1142,6 @@ export function* runnerIdentitySteps(q: Q, runnerId: string): Steps<RunnerIdenti
       .where(eq(runner.id, runnerId)),
   );
   return row ?? null;
-}
-
-function runSteps<T>(db: Database, body: (q: Q) => Steps<T>): T {
-  return settled(sqliteDb(db).run(body));
 }
 
 /** The newest usage row first when `ended_at` or `started_at` ties. */
@@ -1236,8 +1234,8 @@ export function* runnerPlacementPolicySteps(q: Q, runnerId: string, agent?: stri
   };
 }
 
-export function runnerPlacementPolicy(db: Database, runnerId: string, agent?: string) {
-  return runSteps(db, (q) => runnerPlacementPolicySteps(q, runnerId, agent));
+export async function runnerPlacementPolicy(store: Db, runnerId: string, agent?: string) {
+  return store.run((q) => runnerPlacementPolicySteps(q, runnerId, agent));
 }
 
 /** Start and end of each execution on a runner that ended in `(from, to]`. */
@@ -1252,13 +1250,13 @@ export function* runnerExecutionHistorySteps(q: Q, runnerId: string, from: numbe
   return rows.map((row) => ({ startedAt: row.startedAt, endedAt: row.endedAt as number }));
 }
 
-export function runnerExecutionHistory(
-  db: Database,
+export async function runnerExecutionHistory(
+  store: Db,
   runnerId: string,
   from: number,
   to: number,
-): { startedAt: number; endedAt: number }[] {
-  return runSteps(db, (q) => runnerExecutionHistorySteps(q, runnerId, from, to));
+): Promise<{ startedAt: number; endedAt: number }[]> {
+  return store.run((q) => runnerExecutionHistorySteps(q, runnerId, from, to));
 }
 
 /** The runner and resolved model of an item's latest successful implementer turn. */
@@ -1282,11 +1280,11 @@ export function* lastSuccessfulImplementationSteps(q: Q, itemId: string) {
   return row ?? null;
 }
 
-export function lastSuccessfulImplementation(
-  db: Database,
+export async function lastSuccessfulImplementation(
+  store: Db,
   itemId: string,
-): { runnerId: string; model: string | null } | null {
-  return runSteps(db, (q) => lastSuccessfulImplementationSteps(q, itemId));
+): Promise<{ runnerId: string; model: string | null } | null> {
+  return store.run((q) => lastSuccessfulImplementationSteps(q, itemId));
 }
 
 export function* runnerAgentQuotaSteps(q: Q, runnerId: string, agent: string) {
@@ -1300,12 +1298,12 @@ export function* runnerAgentQuotaSteps(q: Q, runnerId: string, agent: string) {
   return row ?? null;
 }
 
-export function runnerAgentQuota(
-  db: Database,
+export async function runnerAgentQuota(
+  store: Db,
   runnerId: string,
   agent: string,
-): { cooldownUntil: number; quotaState: string } | null {
-  return runSteps(db, (q) => runnerAgentQuotaSteps(q, runnerId, agent));
+): Promise<{ cooldownUntil: number; quotaState: string } | null> {
+  return store.run((q) => runnerAgentQuotaSteps(q, runnerId, agent));
 }
 
 /** Charge one placement to a runner's agent, creating its policy row on first use. */
@@ -1328,11 +1326,11 @@ export function* chargeRunnerAgentSteps(
   );
 }
 
-export function chargeRunnerAgent(
-  db: Database,
+export async function chargeRunnerAgent(
+  store: Db,
   input: { runnerId: string; agent: string; at: number },
-): void {
-  runSteps(db, (q) => chargeRunnerAgentSteps(q, input));
+): Promise<void> {
+  await store.run((q) => chargeRunnerAgentSteps(q, input));
 }
 
 export type RunnerExecutionStart = {
@@ -1353,8 +1351,11 @@ export function* insertRunnerExecutionUsageSteps(q: Q, input: RunnerExecutionSta
   yield* q.exec(q.orm.insert(q.t.runnerExecutionUsage).values(input));
 }
 
-export function insertRunnerExecutionUsage(db: Database, input: RunnerExecutionStart): void {
-  runSteps(db, (q) => insertRunnerExecutionUsageSteps(q, input));
+export async function insertRunnerExecutionUsage(
+  store: Db,
+  input: RunnerExecutionStart,
+): Promise<void> {
+  await store.run((q) => insertRunnerExecutionUsageSteps(q, input));
 }
 
 /** The usage receipt a finished command settles, or null when it is not this runner's. */
@@ -1379,8 +1380,8 @@ export function* runnerExecutionReceiptSteps(q: Q, commandId: string, runnerId: 
   return row ?? null;
 }
 
-export function runnerExecutionReceipt(db: Database, commandId: string, runnerId: string) {
-  return runSteps(db, (q) => runnerExecutionReceiptSteps(q, commandId, runnerId));
+export async function runnerExecutionReceipt(store: Db, commandId: string, runnerId: string) {
+  return store.run((q) => runnerExecutionReceiptSteps(q, commandId, runnerId));
 }
 
 export type RunnerExecutionFinish = {
@@ -1398,8 +1399,11 @@ export function* finishRunnerExecutionUsageSteps(q: Q, input: RunnerExecutionFin
   yield* q.exec(q.orm.update(u).set(finished).where(eq(u.commandId, commandId)));
 }
 
-export function finishRunnerExecutionUsage(db: Database, input: RunnerExecutionFinish): void {
-  runSteps(db, (q) => finishRunnerExecutionUsageSteps(q, input));
+export async function finishRunnerExecutionUsage(
+  store: Db,
+  input: RunnerExecutionFinish,
+): Promise<void> {
+  await store.run((q) => finishRunnerExecutionUsageSteps(q, input));
 }
 
 export type RunnerAgentSettlement = {
@@ -1432,8 +1436,8 @@ export function* settleRunnerAgentSteps(q: Q, input: RunnerAgentSettlement) {
   );
 }
 
-export function settleRunnerAgent(db: Database, input: RunnerAgentSettlement): void {
-  runSteps(db, (q) => settleRunnerAgentSteps(q, input));
+export async function settleRunnerAgent(store: Db, input: RunnerAgentSettlement): Promise<void> {
+  await store.run((q) => settleRunnerAgentSteps(q, input));
 }
 
 export function* setRunnerAgentCooldownSteps(
@@ -1451,13 +1455,13 @@ export function* setRunnerAgentCooldownSteps(
   );
 }
 
-export function setRunnerAgentCooldown(
-  db: Database,
+export async function setRunnerAgentCooldown(
+  store: Db,
   runnerId: string,
   agent: string,
   cooldownUntil: number,
-): void {
-  runSteps(db, (q) => setRunnerAgentCooldownSteps(q, runnerId, agent, cooldownUntil));
+): Promise<void> {
+  await store.run((q) => setRunnerAgentCooldownSteps(q, runnerId, agent, cooldownUntil));
 }
 
 /** The people who own a runner in this workspace that is not revoked. */
@@ -1615,6 +1619,6 @@ export function* enabledRunnerIdsSteps(q: Q) {
   );
 }
 
-export function enabledRunnerIds(db: Database): { id: string }[] {
-  return settled(sqliteDb(db).run((q) => enabledRunnerIdsSteps(q)));
+export async function enabledRunnerIds(store: Db): Promise<{ id: string }[]> {
+  return store.run((q) => enabledRunnerIdsSteps(q));
 }

@@ -597,13 +597,13 @@ export function* pinnedSlotsReservedSteps(q: Q, runnerId: string, itemId: string
   ]).size;
 }
 
-export function pinnedSlotsReserved(
-  db: Database,
+export async function pinnedSlotsReserved(
+  store: Db,
   runnerId: string,
   itemId: string,
   now: number,
-): number {
-  return settled(sqliteDb(db).run((q) => pinnedSlotsReservedSteps(q, runnerId, itemId, now)));
+): Promise<number> {
+  return store.run((q) => pinnedSlotsReservedSteps(q, runnerId, itemId, now));
 }
 
 export function* runnerCancelPendingSteps(q: Q, runnerId: string) {
@@ -717,17 +717,15 @@ export function* runnerHelperAvailabilitySteps(
   };
 }
 
-export function runnerHelperAvailability(
-  db: Database,
+export async function runnerHelperAvailability(
+  store: Db,
   runnerId: string,
   now: number,
   foreground: boolean,
   conversation = false,
 ) {
-  return settled(
-    sqliteDb(db).run((q) =>
-      runnerHelperAvailabilitySteps(q, runnerId, now, foreground, conversation),
-    ),
+  return store.run((q) =>
+    runnerHelperAvailabilitySteps(q, runnerId, now, foreground, conversation),
   );
 }
 
@@ -782,13 +780,13 @@ export function* runnerHelperAcknowledgedSteps(q: Q, id: string) {
   return row?.acknowledgedAt != null;
 }
 
-export function openSessionHelper(
-  db: Database,
+export async function openSessionHelper(
+  store: Db,
   sessionId: string,
   generation: number,
   now: number,
 ) {
-  return settled(sqliteDb(db).run((q) => openSessionHelperSteps(q, sessionId, generation, now)));
+  return store.run((q) => openSessionHelperSteps(q, sessionId, generation, now));
 }
 
 export async function runnerHelperAcknowledged(store: Db, id: string): Promise<boolean> {
@@ -850,8 +848,12 @@ export function* yieldFindingGroupHelpersSteps(q: Q, runnerId: string, now: numb
   }
 }
 
-export function yieldFindingGroupHelpers(db: Database, runnerId: string, now: number): void {
-  settled(sqliteDb(db).transaction((q) => yieldFindingGroupHelpersSteps(q, runnerId, now)));
+export async function yieldFindingGroupHelpers(
+  store: Db,
+  runnerId: string,
+  now: number,
+): Promise<void> {
+  await store.transaction((q) => yieldFindingGroupHelpersSteps(q, runnerId, now));
 }
 
 export function* runnerConversationLaneSteps(

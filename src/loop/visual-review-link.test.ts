@@ -109,7 +109,7 @@ test("the visual review is a link ask without options, reminded once from the sh
   // Asked beside the other checks: the item keeps verifying.
   expect(getWorkItem(db, itemId)?.state).toBe("verifying");
   expect(question.kind).toBe("link");
-  expect(getLinkAsk(db, question.id)).toMatchObject({
+  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
     kind: "screenshots",
     headCommit: HEAD,
     link: "https://paws.example/dashboard/issues/ENG-103#visual-review",
@@ -117,7 +117,7 @@ test("the visual review is a link ask without options, reminded once from the sh
     detail:
       "2 changed screens for visual-proof: Settings · Audit · 1440px, Settings · Audit · 390px.",
   });
-  expect(getVisualReview(db, question.id)).toMatchObject({
+  expect(await getVisualReview(sqliteDb(db), question.id)).toMatchObject({
     evidenceIds: ["ev-1", "ev-2"],
     headCommit: HEAD,
     outcome: null,
@@ -150,7 +150,7 @@ test("Approve on the page passes the check for that head and those files", async
     now: NOW + 100,
   });
   expect(outcome).toBe("answered");
-  expect(getVisualReview(db, question.id)).toMatchObject({
+  expect(await getVisualReview(sqliteDb(db), question.id)).toMatchObject({
     outcome: "accepted",
     answeredBy: "lead",
     headCommit: HEAD,
@@ -209,7 +209,7 @@ test("someone else cannot approve on the page", async () => {
       now: NOW + 100,
     }),
   ).toBe("forbidden");
-  expect(getVisualReview(db, question.id)?.outcome).toBeNull();
+  expect((await getVisualReview(sqliteDb(db), question.id))?.outcome).toBeNull();
 });
 
 test("Request changes on the page restarts the item with the marks and the note", async () => {
@@ -234,11 +234,13 @@ test("Request changes on the page restarts the item with the marks and the note"
     now: NOW + 100,
   });
   expect(outcome).toBe("answered");
-  expect(getVisualReview(db, question.id)).toMatchObject({
+  expect(await getVisualReview(sqliteDb(db), question.id)).toMatchObject({
     outcome: "changes_requested",
     feedback: "The Retry button wraps under the row.",
   });
-  expect(listVisualReviewMarks(db, question.id).map((mark) => mark.id)).toEqual(["mark-1"]);
+  expect((await listVisualReviewMarks(sqliteDb(db), question.id)).map((mark) => mark.id)).toEqual([
+    "mark-1",
+  ]);
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
   const [resume] = listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
   const handoff = (resume!.payload as { handoff: string }).handoff;
@@ -257,14 +259,17 @@ test("a Linear reply that says approve requests changes and never approves", asy
     now: NOW + 100,
   });
   expect(guided).toBe(true);
-  expect(getVisualReview(db, question.id)).toMatchObject({
+  expect(await getVisualReview(sqliteDb(db), question.id)).toMatchObject({
     outcome: "changes_requested",
     feedback: "approve",
   });
   expect(await sqliteDb(db).run((q) => visualReviewApprovalsSteps(q, itemId, "ENG-103"))).toEqual(
     [],
   );
-  expect(getLinkAsk(db, question.id)).toMatchObject({ closedReason: "guidance", decision: null });
+  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
+    closedReason: "guidance",
+    decision: null,
+  });
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
   const [resume] = listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
   expect((resume!.payload as { handoff: string }).handoff).toContain(
@@ -279,9 +284,9 @@ test("a Linear reply that says approve requests changes and never approves", asy
 test("a new head closes the open ask unless it has the same patch", async () => {
   const { db, itemId, question } = await reviewing();
   expect(await closeLinkAsksOnHead(db, itemId, "rebased", NOW + 10, [question.id])).toBe(0);
-  expect(getLinkAsk(db, question.id)?.closedAt).toBeNull();
+  expect((await getLinkAsk(sqliteDb(db), question.id))?.closedAt).toBeNull();
   expect(await closeLinkAsksOnHead(db, itemId, "different", NOW + 20)).toBe(1);
-  expect(getLinkAsk(db, question.id)?.closedReason).toBe("head_moved");
+  expect((await getLinkAsk(sqliteDb(db), question.id))?.closedReason).toBe("head_moved");
   expect(findOpenQuestion(db, "ses_1")).toBeNull();
 });
 

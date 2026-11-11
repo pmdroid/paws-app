@@ -26,7 +26,7 @@ export default {
   agent: () => [],
   async run(proof) {
     const db = proof.database;
-    const { pair, queue, pass } = workspaceWithRunners(db);
+    const { pair, queue, pass } = await workspaceWithRunners(db);
     queue("stopped");
     db.run("UPDATE linear_session SET stopped_at=? WHERE session_id=?", [NOW, "session-stopped"]);
     proof.expect(
@@ -47,8 +47,8 @@ export default {
     proof.expect("only two items are admitted", admitted.length === 2, admitted);
     proof.expect(
       "each admitted item reserves only the runner that accepts it",
-      schedulerRunnerSlots(db, NOW).length === 2 &&
-        schedulerRunnerSlots(db, NOW).every((slot) => slot.runnerId === agentbox),
+      (await schedulerRunnerSlots(sqliteDb(db), NOW)).length === 2 &&
+        (await schedulerRunnerSlots(sqliteDb(db), NOW)).every((slot) => slot.runnerId === agentbox),
     );
     const claims = Array.from({ length: 2 }, (_, i) =>
       claimNextJob(db, {
@@ -78,7 +78,8 @@ export default {
     proof.expect("newly allowed capacity admits the held item", (await pass()).includes("c"));
     proof.expect(
       "newly eligible runner owns the third admission",
-      schedulerRunnerSlots(db, NOW).find((slot) => slot.itemId === "c")?.runnerId === goldbox,
+      (await schedulerRunnerSlots(sqliteDb(db), NOW)).find((slot) => slot.itemId === "c")
+        ?.runnerId === goldbox,
     );
     const spare = await pair("spare", 1, [REPOSITORY]);
     const alternatives = await createRunnerPlacement({
@@ -97,7 +98,8 @@ export default {
     );
     proof.expect(
       "failover replaces the unusable admission choice",
-      schedulerRunnerSlots(db, NOW).find((slot) => slot.itemId === "c")?.runnerId === spare,
+      (await schedulerRunnerSlots(sqliteDb(db), NOW)).find((slot) => slot.itemId === "c")
+        ?.runnerId === spare,
     );
   },
 } satisfies Proof;

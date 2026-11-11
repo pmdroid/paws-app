@@ -692,8 +692,8 @@ export function* commandAccountSteps(q: Q, commandId: string) {
   return row ? { ...row, agent: row.agent as RunnerCodingAgent, named: row.named === 1 } : null;
 }
 
-export function commandAccount(db: Database, commandId: string): CommandAccount | null {
-  return settled(sqliteDb(db).run((q) => commandAccountSteps(q, commandId)));
+export async function commandAccount(store: Db, commandId: string): Promise<CommandAccount | null> {
+  return store.run((q) => commandAccountSteps(q, commandId));
 }
 
 type AccountAdmission = {
@@ -831,15 +831,13 @@ export function* accountSlotsInUseSteps(
   return retros!.count + usage!.count;
 }
 
-export function accountSlotsInUse(
-  db: Database,
+export async function accountSlotsInUse(
+  store: Db,
   accountId: string,
   at: number,
   exceptCommandId: string | null = null,
-): number {
-  return settled(
-    sqliteDb(db).run((q) => accountSlotsInUseSteps(q, accountId, at, exceptCommandId)),
-  );
+): Promise<number> {
+  return store.run((q) => accountSlotsInUseSteps(q, accountId, at, exceptCommandId));
 }
 
 export function* storedAgentBindingIdSteps(q: Q, id: string) {

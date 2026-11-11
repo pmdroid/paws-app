@@ -46,12 +46,12 @@ async function fixture() {
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "org",
     name: "Test",
     userId: owner,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", clock)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", clock)),
     now: clock,
   });
   recordLinearInstallation(db, {

@@ -77,11 +77,14 @@ async function blockedOnMain(db: Database, id: string, repository = REPOSITORY) 
     checks: [],
     policyBlock: { repository, unreadable: BROKEN },
   });
-  return question(db, id);
+  return await question(db, id);
 }
 
-function question(db: Database, id: string) {
-  return getQuestion(db, listCloseoutRecoveries(db, id).at(-1)!.questionId)!;
+async function question(db: Database, id: string) {
+  return (await getQuestion(
+    sqliteDb(db),
+    (await listCloseoutRecoveries(sqliteDb(db), id)).at(-1)!.questionId,
+  ))!;
 }
 
 const reverifies = (db: Database) =>
@@ -96,7 +99,7 @@ describe("a closeout-help question blocked by an unreadable policy on main", () 
   test("records the cause and says Paws retries by itself", async () => {
     const db = database();
     const asked = await blockedOnMain(db, "ENG-1");
-    expect(listOpenPolicyBlocks(db, REPOSITORY)).toEqual([
+    expect(await listOpenPolicyBlocks(sqliteDb(db), REPOSITORY)).toEqual([
       {
         questionId: asked.id,
         itemId: "ENG-1",
@@ -126,7 +129,7 @@ describe("a closeout-help question blocked by an unreadable policy on main", () 
     const db = database();
     const asked = await blockedOnMain(db, "ENG-1");
     expect(await retry(db, LOADS)).toEqual([asked.id]);
-    expect(getQuestion(db, asked.id)).toMatchObject({
+    expect(await getQuestion(sqliteDb(db), asked.id)).toMatchObject({
       status: "answered",
       answer: "Answered by Paws: the policy on main loads again at f100000.",
       answeredBy: "paws",
@@ -146,7 +149,7 @@ describe("a closeout-help question blocked by an unreadable policy on main", () 
     expect(await retry(db, LOADS)).toEqual([first.id, second.id]);
     expect(getWorkItem(db, "ENG-1")?.state).toBe("verifying");
     expect(getWorkItem(db, "ENG-2")?.state).toBe("verifying");
-    expect(getQuestion(db, elsewhere.id)?.status).toBe("open");
+    expect((await getQuestion(sqliteDb(db), elsewhere.id))?.status).toBe("open");
   });
 
   test("a new question after the retry is a normal one, and the old one is not retried again", async () => {
@@ -169,7 +172,7 @@ describe("a closeout-help question blocked by an unreadable policy on main", () 
     expect(next.body).not.toContain("Paws retries by itself");
     expect(await retry(db, LOADS)).toEqual([]);
     expect(findOpenQuestion(db, "ses-ENG-1")?.id).toBe(next.id);
-    expect(getQuestion(db, asked.id)?.answeredAt).toBe(NOW + 100);
+    expect((await getQuestion(sqliteDb(db), asked.id))?.answeredAt).toBe(NOW + 100);
     expect(reverifies(db)).toEqual([`retry-closeout:${asked.id}`]);
   });
 
@@ -178,7 +181,7 @@ describe("a closeout-help question blocked by an unreadable policy on main", () 
     const asked = await blockedOnMain(db, "ENG-1");
     expect(await retry(db, UNREADABLE)).toEqual([]);
     expect(await retry(db, null)).toEqual([]);
-    expect(getQuestion(db, asked.id)?.status).toBe("open");
+    expect((await getQuestion(sqliteDb(db), asked.id))?.status).toBe("open");
     expect(getWorkItem(db, "ENG-1")?.state).toBe("awaiting_input");
     expect(reverifies(db)).toEqual([]);
   });
@@ -191,10 +194,10 @@ describe("a closeout-help question blocked by an unreadable policy on main", () 
       reason: "blocked_check",
       checks: [],
     });
-    const asked = question(db, "ENG-1");
+    const asked = await question(db, "ENG-1");
     expect(asked.options).toEqual(["Retry Closeout"]);
     expect(await retry(db, LOADS)).toEqual([]);
-    expect(getQuestion(db, asked.id)?.status).toBe("open");
+    expect((await getQuestion(sqliteDb(db), asked.id))?.status).toBe("open");
     expect(getWorkItem(db, "ENG-1")?.state).toBe("awaiting_input");
   });
 });

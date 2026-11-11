@@ -14,6 +14,7 @@ import {
   recordGitHubDelivery,
   replaceWorkspaceRepositories,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import {
   issueWorkspaceBootstrap,
@@ -28,7 +29,7 @@ const key = generateKeyPairSync("rsa", {
   privateKeyEncoding: { type: "pkcs8", format: "pem" },
   publicKeyEncoding: { type: "spki", format: "pem" },
 }).privateKey;
-function fixture() {
+async function fixture() {
   const home = mkdtempSync(join(tmpdir(), "paws-hosted-app-"));
   writeFileSync(join(home, "key.pem"), key, { mode: 0o600 });
   const path = join(home, "db.sqlite");
@@ -41,12 +42,12 @@ function fixture() {
     name: "owner",
     email: "owner@example.invalid",
   });
-  consumeWorkspaceBootstrap(db, {
+  await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: "ws",
     organizationId: "org",
     name: "Workspace",
     userId: "owner",
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   for (const role of ["admin", "member"] as const) {
@@ -65,7 +66,7 @@ function fixture() {
       now,
     });
   }
-  replaceWorkspaceRepositories(db, {
+  await replaceWorkspaceRepositories(sqliteDb(db), {
     workspaceId: "ws",
     actorId: "owner",
     repositories: [{ repository: "acme/widgets", teamId: "team" }],
@@ -256,7 +257,7 @@ function fixture() {
 }
 
 test("hosted App OAuth survives restart, verifies real scripted HTTP, encrypts activation and rejects replay", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const flow = await f.begin("admin");
     expect(flow.authorize.searchParams.get("redirect_uri")).toBe(
@@ -295,7 +296,7 @@ test("hosted App OAuth survives restart, verifies real scripted HTTP, encrypts a
 });
 
 test("concurrent admin callbacks cannot overwrite the first activated generation", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const first = await f.begin();
     const second = await f.begin("admin");
@@ -313,7 +314,7 @@ test("concurrent admin callbacks cannot overwrite the first activated generation
 
 for (const invalidation of ["logout", "demotion", "repositories", "session"] as const)
   test(`hosted callback refuses ${invalidation} while exchange is awaited`, async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       const flow = await f.begin("admin");
       const gate = Promise.withResolvers<void>();
@@ -330,7 +331,7 @@ for (const invalidation of ["logout", "demotion", "repositories", "session"] as 
       if (invalidation === "demotion")
         f.db.run("UPDATE workspace_member SET role='member' WHERE user_id='admin'");
       if (invalidation === "repositories")
-        replaceWorkspaceRepositories(f.db, {
+        await replaceWorkspaceRepositories(sqliteDb(f.db), {
           workspaceId: "ws",
           actorId: "owner",
           repositories: [],
@@ -354,7 +355,7 @@ for (const invalidation of ["logout", "demotion", "repositories", "session"] as 
   });
 
 test("hosted connection reports missing server credentials as JSON without changing connection state", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const handler = createHostedGitHubConnect({
       db: f.db,
@@ -386,7 +387,7 @@ test("hosted connection reports missing server credentials as JSON without chang
   }
 });
 
-function automaticRequest(f: ReturnType<typeof fixture>, method = "POST", role = "owner") {
+function automaticRequest(f: Awaited<ReturnType<typeof fixture>>, method = "POST", role = "owner") {
   return f.request(role, "https://paws.example/api/workspaces/github-connect", {
     method,
     ...(method === "POST"
@@ -402,7 +403,7 @@ function automaticRequest(f: ReturnType<typeof fixture>, method = "POST", role =
 }
 
 test("GitHub setup discovers the approved installation and exposes status without credential or ID inputs", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const initial = await f.handler()(automaticRequest(f, "GET"));
     expect(await initial?.json()).toMatchObject({
@@ -428,7 +429,11 @@ test("GitHub setup discovers the approved installation and exposes status withou
       repositoryCount: 1,
       lastDelivery: null,
     });
-    recordGitHubDelivery(f.db, { deliveryId: "d-1", event: "check_suite", payload: "{}" }, 5_000);
+    await recordGitHubDelivery(
+      sqliteDb(f.db),
+      { deliveryId: "d-1", event: "check_suite", payload: "{}" },
+      5_000,
+    );
     expect(await (await f.handler()(automaticRequest(f, "GET")))?.json()).toMatchObject({
       lastDelivery: { event: "check_suite", receivedAt: 5_000 },
     });
@@ -441,7 +446,7 @@ test("GitHub setup discovers the approved installation and exposes status withou
 });
 
 test("missing installations offer a verified GitHub install URL without persisting OAuth state", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     f.setInstallationStatus(404);
     const response = await f.handler()(automaticRequest(f));
@@ -459,7 +464,7 @@ test("missing installations offer a verified GitHub install URL without persisti
 });
 
 test("an administrator signed in hours ago can still manage the connection", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     f.advance(6 * 60 * 60_000);
     const response = await f.handler()(automaticRequest(f, "GET"));
@@ -475,7 +480,7 @@ test("an administrator signed in hours ago can still manage the connection", asy
 
 for (const change of ["logout", "demotion", "repositories", "credentials", "expiry"] as const) {
   test(`automatic installation discovery rejects ${change} during GitHub lookup`, async () => {
-    const f = fixture();
+    const f = await fixture();
     const entered = Promise.withResolvers<void>();
     const released = Promise.withResolvers<void>();
     try {
@@ -491,7 +496,7 @@ for (const change of ["logout", "demotion", "repositories", "credentials", "expi
           "UPDATE workspace_member SET role='member' WHERE workspace_id='ws' AND user_id='owner'",
         );
       if (change === "repositories")
-        replaceWorkspaceRepositories(f.db, {
+        await replaceWorkspaceRepositories(sqliteDb(f.db), {
           workspaceId: "ws",
           actorId: "owner",
           repositories: [],
@@ -522,7 +527,7 @@ for (const repository of [
   "acme/widgets/extra",
 ]) {
   test(`automatic discovery rejects an unsafe repository before App requests: ${repository}`, async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       f.db.run("UPDATE workspace_repository SET repository=? WHERE workspace_id='ws'", [
         repository,
@@ -539,7 +544,7 @@ for (const repository of [
   });
 }
 
-async function signInForRepositorySetup(f: ReturnType<typeof fixture>) {
+async function signInForRepositorySetup(f: Awaited<ReturnType<typeof fixture>>) {
   const response = await f.setup()(
     f.request("owner", "https://paws.example/api/workspaces/github-setup", {
       method: "POST",
@@ -562,7 +567,7 @@ async function signInForRepositorySetup(f: ReturnType<typeof fixture>) {
   return callback;
 }
 async function saveSetup(
-  f: ReturnType<typeof fixture>,
+  f: Awaited<ReturnType<typeof fixture>>,
   mappings: unknown = [{ repository: "acme/widgets", teamId: "team" }],
   installationId = "22",
 ) {
@@ -588,7 +593,7 @@ for (const permissions of [
   null,
 ])
   test("repository setup shows accessible repositories with missing permissions and blocks activation until approved", async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       f.db.run("DELETE FROM workspace_repository");
       f.setCatalogPermissions(permissions);
@@ -618,7 +623,7 @@ for (const permissions of [
   });
 
 test("GitHub sign-in precedes repository approval and activates selected matches atomically", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     f.db.run("DELETE FROM workspace_repository");
     const callback = await signInForRepositorySetup(f);
@@ -673,7 +678,7 @@ for (const scenario of [
   "rollback",
 ] as const) {
   test(`repository setup rejects ${scenario} without activating access`, async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       await signInForRepositorySetup(f);
       if (scenario === "expired") f.advance(600_001);
@@ -719,7 +724,7 @@ for (const scenario of [
   });
 }
 test("repository setup rechecks owner authority while GitHub verification is held", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await signInForRepositorySetup(f);
     f.setBeforeInstallation(async () => {
@@ -733,7 +738,7 @@ test("repository setup rechecks owner authority while GitHub verification is hel
 });
 
 test("repository choices read every user-accessible page and reject duplicate pagination", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await signInForRepositorySetup(f);
     f.setCatalogPages(true);

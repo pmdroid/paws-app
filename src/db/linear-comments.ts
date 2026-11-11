@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
-import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
+import { type Db, type Q, type Steps } from "./db";
 import { enqueueJobOnceSteps, emitJobReady } from "./jobs";
 import { jsonField } from "./json-text";
 import type { PullFeedbackWait } from "./pull-comments";
@@ -284,8 +283,11 @@ export function* pendingLinearCommentsSteps(q: Q, itemId: string): Steps<LinearC
   return rows.map(mapRow);
 }
 
-export function pendingLinearComments(db: Database, itemId: string): LinearCommentRecord[] {
-  return settled(sqliteDb(db).run((q) => pendingLinearCommentsSteps(q, itemId)));
+export async function pendingLinearComments(
+  store: Db,
+  itemId: string,
+): Promise<LinearCommentRecord[]> {
+  return store.run((q) => pendingLinearCommentsSteps(q, itemId));
 }
 
 export function* queuedLinearCommentItemIdsSteps(q: Q, issueId: string): Steps<string[]> {

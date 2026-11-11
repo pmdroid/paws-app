@@ -11,6 +11,7 @@ import {
   openDatabase,
   registerInstance,
   startLoops,
+  sqliteDb,
 } from "../src/db";
 import { tempHome } from "./helpers";
 
@@ -88,10 +89,10 @@ describe("instances", () => {
         const killed = rows.find((row) => row.id === secondHealth.instance)!;
         expect(killed.stopped_at).toBeNull();
         const killedAt = killed.heartbeat_at;
-        expect(liveInstances(db, killedAt + INSTANCE_DEAD_MS - 1).map((row) => row.id)).toEqual([
-          secondHealth.instance,
-        ]);
-        expect(liveInstances(db, killedAt + INSTANCE_DEAD_MS)).toEqual([]);
+        expect(
+          (await liveInstances(sqliteDb(db), killedAt + INSTANCE_DEAD_MS - 1)).map((row) => row.id),
+        ).toEqual([secondHealth.instance]);
+        expect(await liveInstances(sqliteDb(db), killedAt + INSTANCE_DEAD_MS)).toEqual([]);
       } finally {
         db.close();
       }
@@ -101,7 +102,7 @@ describe("instances", () => {
     }
   }, 40_000);
 
-  test("a heartbeat keeps one instance live while the other expires", () => {
+  test("a heartbeat keeps one instance live while the other expires", async () => {
     const path = join(tempHome(), "paws.db");
     const acme = openDatabase(path);
     migrate(acme);
@@ -109,10 +110,15 @@ describe("instances", () => {
     try {
       const a = registerInstance(acme, { role: "all", host: "acme-a", version: null, now: 0 });
       const b = registerInstance(other, { role: "all", host: "acme-b", version: "0.1.2", now: 0 });
-      expect(heartbeatInstance(acme, a.id, 50_000)).toBe(true);
-      expect(liveInstances(other, 59_999).map((row) => row.id)).toEqual([a.id, b.id]);
-      expect(liveInstances(other, 60_000).map((row) => row.id)).toEqual([a.id]);
-      expect(heartbeatInstance(acme, "01JACMEGONE00000000000000", 60_000)).toBe(false);
+      expect(await heartbeatInstance(sqliteDb(acme), a.id, 50_000)).toBe(true);
+      expect((await liveInstances(sqliteDb(other), 59_999)).map((row) => row.id)).toEqual([
+        a.id,
+        b.id,
+      ]);
+      expect((await liveInstances(sqliteDb(other), 60_000)).map((row) => row.id)).toEqual([a.id]);
+      expect(await heartbeatInstance(sqliteDb(acme), "01JACMEGONE00000000000000", 60_000)).toBe(
+        false,
+      );
     } finally {
       other.close();
       acme.close();

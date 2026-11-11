@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, getTableColumns, isNull, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
 import type { linkAsk as linkAskTable } from "./schema-pg";
 
@@ -105,8 +104,8 @@ export function* insertLinkAskSteps(q: Q, input: LinkAskInput) {
   return (yield* getLinkAskSteps(q, input.questionId))!;
 }
 
-export function insertLinkAsk(db: Database, input: LinkAskInput): LinkAsk {
-  return settled(sqliteDb(db).run((q) => insertLinkAskSteps(q, input)));
+export async function insertLinkAsk(store: Db, input: LinkAskInput): Promise<LinkAsk> {
+  return store.run((q) => insertLinkAskSteps(q, input));
 }
 
 function selectLinkAsks(q: Q) {
@@ -125,8 +124,8 @@ export function* getLinkAskSteps(q: Q, questionId: string) {
   return row === undefined ? null : mapLinkAsk(row);
 }
 
-export function getLinkAsk(db: Database, questionId: string): LinkAsk | null {
-  return settled(sqliteDb(db).run((q) => getLinkAskSteps(q, questionId)));
+export async function getLinkAsk(store: Db, questionId: string): Promise<LinkAsk | null> {
+  return store.run((q) => getLinkAskSteps(q, questionId));
 }
 
 /** Link asks of the item that nobody decided and nothing closed, oldest first. */
@@ -140,8 +139,8 @@ export function* openLinkAsksSteps(q: Q, itemId: string) {
   return rows.map(mapLinkAsk);
 }
 
-export function openLinkAsks(db: Database, itemId: string): LinkAsk[] {
-  return settled(sqliteDb(db).run((q) => openLinkAsksSteps(q, itemId)));
+export async function openLinkAsks(store: Db, itemId: string): Promise<LinkAsk[]> {
+  return store.run((q) => openLinkAsksSteps(q, itemId));
 }
 
 /** Every link ask of the item, oldest first. */
@@ -155,8 +154,8 @@ export function* listLinkAsksSteps(q: Q, itemId: string) {
   return rows.map(mapLinkAsk);
 }
 
-export function listLinkAsks(db: Database, itemId: string): LinkAsk[] {
-  return settled(sqliteDb(db).run((q) => listLinkAsksSteps(q, itemId)));
+export async function listLinkAsks(store: Db, itemId: string): Promise<LinkAsk[]> {
+  return store.run((q) => listLinkAsksSteps(q, itemId));
 }
 
 type LinkAskDecisionInput = {
@@ -186,12 +185,12 @@ export function* recordLinkAskDecisionSteps(q: Q, questionId: string, input: Lin
   return rows.length > 0;
 }
 
-export function recordLinkAskDecision(
-  db: Database,
+export async function recordLinkAskDecision(
+  store: Db,
   questionId: string,
   input: LinkAskDecisionInput,
-): boolean {
-  return settled(sqliteDb(db).run((q) => recordLinkAskDecisionSteps(q, questionId, input)));
+): Promise<boolean> {
+  return store.run((q) => recordLinkAskDecisionSteps(q, questionId, input));
 }
 
 type LinkAskCloseInput = {
@@ -219,8 +218,12 @@ export function* closeLinkAskSteps(q: Q, questionId: string, input: LinkAskClose
   return rows.length > 0;
 }
 
-export function closeLinkAsk(db: Database, questionId: string, input: LinkAskCloseInput): boolean {
-  return settled(sqliteDb(db).run((q) => closeLinkAskSteps(q, questionId, input)));
+export async function closeLinkAsk(
+  store: Db,
+  questionId: string,
+  input: LinkAskCloseInput,
+): Promise<boolean> {
+  return store.run((q) => closeLinkAskSteps(q, questionId, input));
 }
 
 type LinkAskRow = Omit<typeof linkAskTable.$inferSelect, "answerers" | "rounds"> & {

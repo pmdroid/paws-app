@@ -9,6 +9,7 @@ import {
   getWorkItem,
   listOutbox,
   saveTaskClassification,
+  sqliteDb,
 } from "../src/db";
 import { intakeDelegatedIssue } from "../src/intake";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
@@ -222,11 +223,11 @@ test("a follow-up session turn routes by the item's task key without the epic ro
       now: clock.now(),
     });
     bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "human" });
-    saveTaskClassification(db, "session:session", {
+    await saveTaskClassification(sqliteDb(db), "session:session", {
       mode: "code",
       redirect: { taskKey: "resolved:session:session", itemId: parentId },
     });
-    saveTaskClassification(db, "resolved:session:session", {
+    await saveTaskClassification(sqliteDb(db), "resolved:session:session", {
       mode: "code",
       context: "Build the child issue.",
       sourceItemId: parentId,

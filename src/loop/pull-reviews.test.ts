@@ -183,7 +183,7 @@ describe("changes-requested reviews", () => {
     expect(payload.handoff).toContain("Typo here.");
     expect(payload.handoff).not.toContain("Done already.");
     expect(payload.handoff).toContain(`${REVIEW_FIX_INSTRUCTION}\n\nReply list.`);
-    expect(getPullReview(db, 501)?.outcome).toBe("restarted");
+    expect((await getPullReview(sqliteDb(db), 501))?.outcome).toBe("restarted");
     // The Linear session wakes with a thought the post-PR activity gate lets through.
     expect(feedbackActivities(db)).toEqual([
       {
@@ -235,7 +235,7 @@ describe("changes-requested reviews", () => {
     expect(await handlePullReview(db, 501, caps)).toBe("done");
     await deliver({ id: 501, state: "changes_requested", body: "The ranking is reversed." });
     expect(await handlePullReview(db, 501, caps)).toBe("done");
-    expect(listReviewEscapes(db)).toEqual([
+    expect(await listReviewEscapes(sqliteDb(db))).toEqual([
       expect.objectContaining({
         triggerKey: "review:eng-1:501",
         trigger: "review",
@@ -314,7 +314,7 @@ describe("changes-requested reviews", () => {
     expect(question?.kind).toBe("ci-help");
     expect(question?.body).toContain("all 0 fix rounds are spent");
     expect(question?.body).toContain("Rename it.");
-    expect(getPullReview(db, 501)?.outcome).toBe("asked");
+    expect((await getPullReview(sqliteDb(db), 501))?.outcome).toBe("asked");
   });
 
   test("a review of an ended item is dropped", async () => {
@@ -330,9 +330,11 @@ describe("other reviews", () => {
   test("a comment-only review is a comment, not a change request", async () => {
     const { db, deliver } = setup();
     await deliver({ id: 777, state: "commented" });
-    expect(getPullReview(db, 777)).toBeNull();
+    expect(await getPullReview(sqliteDb(db), 777)).toBeNull();
     expect(reviewJobs(db)).toHaveLength(0);
-    expect(pendingPullComments(db, "eng-1").map((comment) => comment.commentId)).toEqual([777]);
+    expect(
+      (await pendingPullComments(sqliteDb(db), "eng-1")).map((comment) => comment.commentId),
+    ).toEqual([777]);
   });
 
   test("approvals, edits and other branches record nothing", async () => {
@@ -347,11 +349,16 @@ describe("other reviews", () => {
     const { db, deliver } = setup();
     await deliver({ id: 4, state: "changes_requested", headRepository: 99 });
     await deliver({ id: 5, state: "changes_requested", headRepository: null });
-    recordItemPullRequest(db, { itemId: "eng-1", pullNumber: 7, pullUrl: null, openedAt: 1 });
+    await recordItemPullRequest(sqliteDb(db), {
+      itemId: "eng-1",
+      pullNumber: 7,
+      pullUrl: null,
+      openedAt: 1,
+    });
     await deliver({ id: 6, state: "changes_requested", pull: 8 });
     expect(reviewJobs(db)).toHaveLength(0);
     await deliver({ id: 7, state: "changes_requested" });
-    expect(getPullReview(db, 7)).toMatchObject({ itemId: "eng-1", pullNumber: 7 });
+    expect(await getPullReview(sqliteDb(db), 7)).toMatchObject({ itemId: "eng-1", pullNumber: 7 });
   });
 });
 

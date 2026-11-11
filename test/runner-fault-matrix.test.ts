@@ -313,12 +313,12 @@ async function runRemoteFault(fault: Fault) {
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, "acme/fixture", "team"]);
@@ -512,12 +512,12 @@ async function runRemoteFault(fault: Fault) {
       HIDDEN_CHECKPOINT_RUNNER_VERSION.join("."),
       Date.now(),
     ]);
-  function recover() {
+  async function recover() {
     if (!runner.faulty) return;
     const paused = db.query<{ runId: string }, []>("SELECT run_id AS runId FROM usage_pause").get();
     if (paused) {
       runner.faulty = false;
-      resumeUsagePauseNow(db, paused.runId, Date.now());
+      await resumeUsagePauseNow(sqliteDb(db), paused.runId, Date.now());
       return;
     }
     const deferred = listJobs(db).find(
@@ -605,7 +605,7 @@ async function runRemoteFault(fault: Fault) {
   }
   const loop = (async () => {
     while (!runner.stopped) {
-      recover();
+      await recover();
       if (unreachable && Date.now() - unreachable.since > 250) {
         const { command } = unreachable;
         unreachable = undefined;
@@ -797,7 +797,7 @@ async function runRemoteFault(fault: Fault) {
       )
     ) {
       const ran = await jobs.tick();
-      recover();
+      await recover();
       if (ran === null) {
         await outbox.tick();
         await Bun.sleep(10);

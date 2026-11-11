@@ -75,7 +75,7 @@ test("own_turn starts nothing without suggestions or when another restart is alr
       await startTurn(db, { itemId: "acme-2", head: "a".repeat(40), suggestions: 0, now: 5 }),
     ).toBe("none");
     expect(await getSuggestionTurn(sqliteDb(db), "acme-2")).toBeNull();
-    recordPullComment(db, {
+    await recordPullComment(sqliteDb(db), {
       itemId: "acme-2",
       pullNumber: 7,
       commentId: 11,

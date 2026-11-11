@@ -8,6 +8,7 @@ import {
   localEvidenceFiles,
   saveEvidenceObject,
   type EvidenceObject,
+  sqliteDb,
 } from "../db";
 import { journalCaught } from "../journal";
 import { RUN_FILE_CHUNK_BYTES, type RunFileObjects } from "../run-files";
@@ -77,7 +78,7 @@ export async function writeEvidenceFile(
   }
   const prefix = evidenceObjectPrefix(location, id);
   const sizeBytes = await writeEvidenceChunks(objects, prefix, [bytes]);
-  saveEvidenceObject(db, { id, prefix, sizeBytes, storedAt: now });
+  await saveEvidenceObject(sqliteDb(db), { id, prefix, sizeBytes, storedAt: now });
 }
 
 export async function removeEvidenceFile(
@@ -85,11 +86,11 @@ export async function removeEvidenceFile(
   storage: EvidenceStorage,
   id: string,
 ): Promise<void> {
-  const row = getEvidenceObject(db, id);
+  const row = await getEvidenceObject(sqliteDb(db), id);
   if (row) {
     const objects = storage.objects?.();
     if (objects) await removeEvidenceChunks(objects, row.prefix, row.sizeBytes);
-    deleteEvidenceObject(db, id);
+    await deleteEvidenceObject(sqliteDb(db), id);
   }
   await rm(join(storage.root, id), { force: true });
 }
@@ -100,7 +101,7 @@ export async function openEvidenceFile(
   id: string,
   range?: { start: number; end: number },
 ): Promise<{ size: number; body: Blob | ReadableStream<Uint8Array> } | null> {
-  const row = getEvidenceObject(db, id);
+  const row = await getEvidenceObject(sqliteDb(db), id);
   const objects = row === null ? null : storage.objects?.();
   if (row === null || !objects) {
     const file = Bun.file(join(storage.root, id));
@@ -163,13 +164,16 @@ export async function uploadLocalEvidence(
   const objects = storage.objects?.();
   if (!objects) return 0;
   let uploaded = 0;
-  for (const file of localEvidenceFiles(db)) {
+  for (const file of await localEvidenceFiles(sqliteDb(db))) {
     const local = Bun.file(join(storage.root, file.id));
     if (!(await local.exists())) continue;
     const prefix = `${evidenceObjectPrefix(file, file.id)}/${randomUUID()}`;
     try {
       const sizeBytes = await writeEvidenceChunks(objects, prefix, local.stream());
-      if (saveEvidenceObject(db, { id: file.id, prefix, sizeBytes, storedAt: now() })) uploaded++;
+      if (
+        await saveEvidenceObject(sqliteDb(db), { id: file.id, prefix, sizeBytes, storedAt: now() })
+      )
+        uploaded++;
       else await removeEvidenceChunks(objects, prefix, sizeBytes);
     } catch (error) {
       journalCaught(error, "evidence.uploadLocalEvidence", file.itemId);

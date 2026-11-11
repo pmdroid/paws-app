@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
+import { emitJobReady, settled, sqliteDb, type Db, type Q, type Steps } from "./db";
 
 export function* countItemsSteps(_q: Q, kind: string): Steps<number> {
   yield kind;
@@ -56,4 +56,26 @@ export function labelItem(db: Database, name: string): string {
 
 export function itemFile(db: Database): string {
   return db.filename;
+}
+
+export function* bumpItemSteps(_q: Q, name: string): Steps<boolean> {
+  yield name;
+  return true;
+}
+
+export async function bumpItem(store: Db, name: string): Promise<boolean> {
+  const bumped = await store.run((q) => bumpItemSteps(q, name));
+  if (bumped) console.log(name);
+  return bumped;
+}
+
+export function* ringItemSteps(_q: Q, name: string): Steps<boolean> {
+  yield name;
+  return true;
+}
+
+export async function ringItem(store: Db, name: string): Promise<string> {
+  const rang = await store.transaction((q) => ringItemSteps(q, name));
+  if (rang) emitJobReady(store);
+  return name;
 }

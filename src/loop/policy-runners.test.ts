@@ -75,7 +75,7 @@ describe("a Closeout policy key the lowest online runner does not know", () => {
     }
     expect(lines.filter((line) => line.includes("items[].ci (runner 0.1.53)"))).toHaveLength(1);
     expect(lines[0]).toContain("the lowest online runner is 0.1.48");
-    expect(listPolicyRunnerWarnings(db)).toEqual([
+    expect(await listPolicyRunnerWarnings(sqliteDb(db))).toEqual([
       {
         repository: REPOSITORY,
         policyDigest: DIGEST,
@@ -92,13 +92,13 @@ describe("a Closeout policy key the lowest online runner does not know", () => {
     expect(await check(db)).not.toBeNull();
     db.run("UPDATE runner_host_status SET runner_version='0.1.53'");
     expect(await check(db)).toBeNull();
-    expect(listPolicyRunnerWarnings(db)).toEqual([]);
+    expect(await listPolicyRunnerWarnings(sqliteDb(db))).toEqual([]);
   });
 
   test("with no runner online there is nothing to compare", async () => {
     const db = database();
     runner(db, "gone", "0.1.40", NOW - 600_000);
     expect(await check(db)).toBeNull();
-    expect(listPolicyRunnerWarnings(db)).toEqual([]);
+    expect(await listPolicyRunnerWarnings(sqliteDb(db))).toEqual([]);
   });
 });

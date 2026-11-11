@@ -606,7 +606,7 @@ describe("live status provider", () => {
       "INSERT INTO question (id, item_id, session_id, kind, body, status, created_at) VALUES ('q-bypass', ?, 'ses_1', 'link', 'Closeout needs your decision', 'open', ?)",
       [item.id, now],
     );
-    insertLinkAsk(db, {
+    await insertLinkAsk(sqliteDb(db), {
       questionId: "q-bypass",
       itemId: item.id,
       kind: "bypass",
@@ -617,7 +617,7 @@ describe("live status provider", () => {
       answerers: ["delegator"],
       createdAt: now,
     });
-    saveCloseoutRecovery(db, {
+    await saveCloseoutRecovery(sqliteDb(db), {
       questionId: "q-bypass",
       taskId: "ENG-3",
       itemId: item.id,
@@ -628,7 +628,7 @@ describe("live status provider", () => {
       retryBaseline: [],
       summary: "Closeout: exhausted",
     });
-    saveCloseoutBypassChecks(db, "q-bypass", [
+    await saveCloseoutBypassChecks(sqliteDb(db), "q-bypass", [
       { id: "test", kind: "command", state: "exhausted", attempt: 3, message: "exited 1" },
     ]);
     expect(
@@ -653,7 +653,7 @@ describe("live status provider", () => {
       "INSERT INTO question (id, item_id, session_id, kind, body, status, created_at) VALUES ('q-risk', ?, 'ses_1', 'link', 'High-risk changes', 'open', ?)",
       [item.id, now],
     );
-    insertLinkAsk(db, {
+    await insertLinkAsk(sqliteDb(db), {
       questionId: "q-risk",
       itemId: item.id,
       kind: "risk",
@@ -698,7 +698,7 @@ describe("live status provider", () => {
       "INSERT INTO question (id, item_id, session_id, kind, body, status, created_at) VALUES ('q-risk', ?, 'ses_1', 'link', 'High-risk changes', 'open', ?)",
       [item.id, now],
     );
-    insertLinkAsk(db, {
+    await insertLinkAsk(sqliteDb(db), {
       questionId: "q-risk",
       itemId: item.id,
       kind: "risk",
@@ -717,7 +717,7 @@ describe("live status provider", () => {
       paths: ["src/auth/session.ts", "src/auth/token.ts"],
       classifiedAt: now,
     });
-    saveRiskFix(db, {
+    await saveRiskFix(sqliteDb(db), {
       itemId: item.id,
       head,
       approvedHead: "4b317d5cc2",
@@ -751,7 +751,7 @@ describe("live status provider", () => {
         classifiedAt: at,
       });
     risk("9c1d2e3ff0", now);
-    saveRiskFix(db, {
+    await saveRiskFix(sqliteDb(db), {
       itemId: item.id,
       head: "9c1d2e3ff0",
       approvedHead: "4b317d5cc2",
@@ -780,7 +780,7 @@ describe("live status provider", () => {
     const db = database();
     const now = 1_700_000_000_000;
     const head = "c".repeat(40);
-    const merging = (id: string, repository: string, ready: number | null, at: number) => {
+    const merging = async (id: string, repository: string, ready: number | null, at: number) => {
       const item = insertQueuedItem(db, { id, title: id, sessionKey: "ses_q", now: at });
       beginImplementRun(db, item.id, at);
       enterMergeQueue(db, item.id, { phase: "merge_queue", baseSha: head, wipCommit: head });
@@ -802,12 +802,13 @@ describe("live status provider", () => {
         },
         now: at,
       });
-      if (ready !== null) joinMergeQueue(db, { itemId: item.id, repository, now: ready });
+      if (ready !== null)
+        await joinMergeQueue(sqliteDb(db), { itemId: item.id, repository, now: ready });
       return item;
     };
-    const first = merging("ENG-11", "acme/platform", 10, 1);
-    merging("ENG-12", "acme/platform", 20, 2);
-    const review = merging("ENG-13", "acme/web", null, 3);
+    const first = await merging("ENG-11", "acme/platform", 10, 1);
+    await merging("ENG-12", "acme/platform", 20, 2);
+    const review = await merging("ENG-13", "acme/web", null, 3);
     db.run("UPDATE job SET payload=? WHERE json_extract(payload,'$.itemId')=?", [
       JSON.stringify({
         itemId: review.id,
@@ -816,8 +817,8 @@ describe("live status provider", () => {
       }),
       review.id,
     ]);
-    keepTaskMergeSettings(
-      db,
+    await keepTaskMergeSettings(
+      sqliteDb(db),
       review.id,
       {
         order: "ci-green",
@@ -826,7 +827,7 @@ describe("live status provider", () => {
       },
       4,
     );
-    const merged = merging("ENG-14", "acme/platform", null, 5);
+    const merged = await merging("ENG-14", "acme/platform", null, 5);
     applyWorkItemEvent(db, merged.id, "merge_accepted");
     recordConfirmedRemoteMerge(db, {
       itemId: merged.id,
@@ -837,7 +838,7 @@ describe("live status provider", () => {
       mergeSha: null,
       confirmedAt: now - 60_000,
     });
-    const back = merging("ENG-15", "acme/platform", null, 6);
+    const back = await merging("ENG-15", "acme/platform", null, 6);
     applyWorkItemEvent(db, back.id, "restart", { kind: "restart", reason: "ci" });
     applyWorkItemEvent(db, back.id, "dispatched");
     enqueueJob(db, {
@@ -890,7 +891,11 @@ describe("live status provider", () => {
       const item = insertQueuedItem(db, { id, title: id, sessionKey: "ses_r", now: index + 1 });
       beginImplementRun(db, item.id, index + 1);
       enterMergeQueue(db, item.id, { phase: "merge_queue", baseSha: head, wipCommit: head });
-      joinMergeQueue(db, { itemId: item.id, repository: "acme/platform", now: 10 * (index + 1) });
+      await joinMergeQueue(sqliteDb(db), {
+        itemId: item.id,
+        repository: "acme/platform",
+        now: 10 * (index + 1),
+      });
     }
     applyWorkItemEvent(db, "ENG-21", "reverify_requested");
 
@@ -923,7 +928,7 @@ describe("live status provider", () => {
     const item = insertQueuedItem(db, { id: "ENG-31", title: "Disk", sessionKey: "ses_d", now: 1 });
     beginImplementRun(db, item.id, 1);
     enterMergeQueue(db, item.id, { phase: "merge_queue", baseSha: head, wipCommit: head });
-    joinMergeQueue(db, { itemId: item.id, repository: "acme/platform", now: 10 });
+    await joinMergeQueue(sqliteDb(db), { itemId: item.id, repository: "acme/platform", now: 10 });
     const job = enqueueJob(db, { queue: "github.merge", payload: { itemId: item.id }, now: 20 });
     const reason = "Paws's host is out of disk space (/tmp, 12 MB left)";
     db.run("UPDATE job SET last_error=? WHERE id=?", [
@@ -1635,7 +1640,7 @@ describe("live status provider", () => {
     };
     attempt("a".repeat(40), now, "failed");
     attempt("b".repeat(40), now + 1, "passed");
-    startCloseoutRound(db, {
+    await startCloseoutRound(sqliteDb(db), {
       itemId: item.id,
       head: "c".repeat(40),
       retryBaseline: ["a", "b"],
@@ -1673,7 +1678,7 @@ describe("live status provider", () => {
       logTail,
       logSource: logTail === null ? null : ("actions" as const),
     });
-    recordCiRound(db, {
+    await recordCiRound(sqliteDb(db), {
       itemId: item.id,
       head: "a".repeat(40),
       runId: run.id,
@@ -1687,7 +1692,7 @@ describe("live status provider", () => {
       ],
       recordedAt: now + 1,
     });
-    recordCiRound(db, {
+    await recordCiRound(sqliteDb(db), {
       itemId: item.id,
       head: "b".repeat(40),
       runId: run.id,

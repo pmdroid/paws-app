@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, desc, eq, isNotNull, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
 import { jsonField } from "./json-text";
 
 export function* linearSessionsForIssueContextSteps(q: Q, issueId: string) {
@@ -79,6 +78,6 @@ export function* sessionIssueTeamNameSteps(q: Q, sessionId: string) {
   return row?.name ?? null;
 }
 
-export function sessionIssueTeamName(db: Database, sessionId: string): string | null {
-  return settled(sqliteDb(db).run((q) => sessionIssueTeamNameSteps(q, sessionId)));
+export async function sessionIssueTeamName(store: Db, sessionId: string): Promise<string | null> {
+  return store.run((q) => sessionIssueTeamNameSteps(q, sessionId));
 }

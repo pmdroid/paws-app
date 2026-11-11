@@ -1,7 +1,7 @@
 import { chromium, expect, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { listWorkspaceRepositoryNames, saveRetroSettingsRevision } from "../src/db";
+import { listWorkspaceRepositoryNames, saveRetroSettingsRevision, sqliteDb } from "../src/db";
 import type { AgentModelCatalog } from "../src/runner-models";
 import {
   createFakeRetroCatalog,
@@ -69,10 +69,10 @@ const catalog = createFakeRetroCatalog(CATALOGS);
 const settings = createRetroSettingsHttp({ db: w.db, catalog: catalog.read });
 const preview = createRetroPreviewHttp({ db: w.db, artifactRoot: w.root });
 const reviews = createRetroReviewHttp({ db: w.db, artifactRoot: w.root });
-const schedule = () => {
+const schedule = async () => {
   const view = readRetroSettings(w.db, {
     workspaceId: "ws",
-    accessibleRepositories: listWorkspaceRepositoryNames(w.db, "ws"),
+    accessibleRepositories: await listWorkspaceRepositoryNames(sqliteDb(w.db), "ws"),
   });
   const paused = view.settings.schedule.cadence === "paused";
   return {
@@ -120,7 +120,7 @@ const server = startServer({
   improvements: w.improvements,
   retros: async (request, principal, sessionIds) => {
     const path = new URL(request.url).pathname;
-    if (path === "/api/retros/schedule") return Response.json(schedule());
+    if (path === "/api/retros/schedule") return Response.json(await schedule());
     return (
       (await settings(request, principal)) ??
       (await preview(request, principal, path === "/api/retros/preview" ? [] : sessionIds)) ??

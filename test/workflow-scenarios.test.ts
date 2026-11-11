@@ -150,7 +150,12 @@ describe("combined recovery scenarios", () => {
     const w = await new World().seed(["merge_inflight"]);
     try {
       const id = "merge_inflight";
-      recordItemPullRequest(w.db, { itemId: id, pullNumber: 7, pullUrl: null, openedAt: w.now });
+      await recordItemPullRequest(sqliteDb(w.db), {
+        itemId: id,
+        pullNumber: 7,
+        pullUrl: null,
+        openedAt: w.now,
+      });
       const stop = {
         type: "stop" as const,
         itemId: id,
@@ -205,7 +210,12 @@ describe("combined recovery scenarios", () => {
     const w = await new World().seed(["merge_queue", "merge_active_run"]);
     try {
       const id = "merge_queue";
-      recordItemPullRequest(w.db, { itemId: id, pullNumber: 7, pullUrl: null, openedAt: w.now });
+      await recordItemPullRequest(sqliteDb(w.db), {
+        itemId: id,
+        pullNumber: 7,
+        pullUrl: null,
+        openedAt: w.now,
+      });
       const delivery = {
         deliveryId: "delivery-1",
         event: "pull_request_review",
@@ -227,8 +237,9 @@ describe("combined recovery scenarios", () => {
         }),
       };
       expect(await acceptGitHubDelivery(w.db, delivery, w.now)).toBe(true);
-      const reviews = () => pendingChangeRequests(w.db, id).map((review) => review.reviewId);
-      expect(reviews()).toEqual([42]);
+      const reviews = async () =>
+        (await pendingChangeRequests(sqliteDb(w.db), id)).map((review) => review.reviewId);
+      expect(await reviews()).toEqual([42]);
       const jobs = () => itemJobs(w, id).filter((job) => !EXECUTION_QUEUES.includes(job.queue));
       const effects = jobs();
       const merge = liveExecution(w, id).map((job) => job.id);
@@ -240,7 +251,7 @@ describe("combined recovery scenarios", () => {
       w.advance(1_000);
       w.start();
       expect(await acceptGitHubDelivery(w.db, delivery, w.now)).toBe(false);
-      expect(reviews()).toEqual([42]);
+      expect(await reviews()).toEqual([42]);
       expect(jobs()).toEqual(effects);
       expect(liveExecution(w, id).map((job) => job.id)).toEqual(merge);
       expect(factsOf(w.db, "merge_active_run").state).toBe("verifying");
@@ -329,12 +340,12 @@ async function runnerWorld() {
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = consumeWorkspaceBootstrap(w.db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(w.db), {
     id: "ws",
     organizationId: "org",
     name: "Test",
     userId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(w.db, "org", w.now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(w.db, "org", w.now)),
     now: w.now,
   });
   w.db.run(

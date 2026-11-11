@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { and, desc, eq, inArray, lt, lte, notInArray, sql, type SQL } from "drizzle-orm";
 import { findingPlace, reviewFindingKey, type ReviewFindingStatus } from "../core";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 
 export type ReviewFindingSeverity = "P0" | "P1" | "P2" | "P3";
 /** In code the change did not touch, or reported only because it is below the review's `failOn`. */
@@ -355,11 +355,11 @@ export function* reviewFindingItemsSteps(
   return byFinding;
 }
 
-export function reviewFindingItems(
-  db: Database,
+export async function reviewFindingItems(
+  store: Db,
   ids: readonly number[],
-): Map<number, ReviewFindingItem[]> {
-  return settled(sqliteDb(db).run((q) => reviewFindingItemsSteps(q, ids)));
+): Promise<Map<number, ReviewFindingItem[]>> {
+  return store.run((q) => reviewFindingItemsSteps(q, ids));
 }
 
 type ReviewFindingStatusChange =
@@ -392,11 +392,11 @@ export function* setReviewFindingStatusSteps(
   return changed.length > 0 ? yield* getReviewFindingSteps(q, input.id) : null;
 }
 
-export function setReviewFindingStatus(
-  db: Database,
+export async function setReviewFindingStatus(
+  store: Db,
   input: ReviewFindingStatusChange,
-): ReviewFindingRecord | null {
-  return settled(sqliteDb(db).run((q) => setReviewFindingStatusSteps(q, input)));
+): Promise<ReviewFindingRecord | null> {
+  return store.run((q) => setReviewFindingStatusSteps(q, input));
 }
 
 type ReviewFindingFiling = { key: string; issue: string; by: string | null; now: number };
@@ -426,11 +426,11 @@ export function* markReviewFindingFiledSteps(
   return changed.length > 0 ? yield* getReviewFindingByKeySteps(q, input.key) : null;
 }
 
-export function markReviewFindingFiled(
-  db: Database,
+export async function markReviewFindingFiled(
+  store: Db,
   input: ReviewFindingFiling,
-): ReviewFindingRecord | null {
-  return settled(sqliteDb(db).run((q) => markReviewFindingFiledSteps(q, input)));
+): Promise<ReviewFindingRecord | null> {
+  return store.run((q) => markReviewFindingFiledSteps(q, input));
 }
 
 function mapRow(row: Row): ReviewFindingRecord {

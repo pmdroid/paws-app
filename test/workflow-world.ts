@@ -165,7 +165,7 @@ export async function seedFixture(
     await accept(db, id, now);
     applyWorkItemEvent(db, id, "closeout_accepted", { now });
     saveCheckpoint(db, id, MERGING);
-    joinMergeQueue(db, { itemId: id, repository: "owner/repo", now });
+    await joinMergeQueue(sqliteDb(db), { itemId: id, repository: "owner/repo", now });
     if (runEnded) markRun(db, run.id, "ended", now);
     enqueueJob(db, {
       queue: JOB_KIND.merge,

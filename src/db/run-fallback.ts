@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 
 export type FallbackOutcome = "failed" | "handed_over" | "usage_limit";
 
@@ -93,8 +92,8 @@ export function* recordFallbackAttemptSteps(q: Q, input: FallbackAttempt): Steps
   return inserted.length > 0;
 }
 
-export function recordFallbackAttempt(db: Database, input: FallbackAttempt): boolean {
-  return settled(sqliteDb(db).transaction((q) => recordFallbackAttemptSteps(q, input)));
+export async function recordFallbackAttempt(store: Db, input: FallbackAttempt): Promise<boolean> {
+  return store.transaction((q) => recordFallbackAttemptSteps(q, input));
 }
 
 export function* fallbackHistorySteps(
@@ -128,13 +127,13 @@ export function* fallbackHistorySteps(
   };
 }
 
-export function fallbackHistory(
-  db: Database,
+export async function fallbackHistory(
+  store: Db,
   runId: string,
   callId: string,
   policyKey: string,
-): FallbackHistory {
-  return settled(sqliteDb(db).run((q) => fallbackHistorySteps(q, runId, callId, policyKey)));
+): Promise<FallbackHistory> {
+  return store.run((q) => fallbackHistorySteps(q, runId, callId, policyKey));
 }
 
 export function* closeFallbackAttemptsSteps(
@@ -158,11 +157,11 @@ export function* closeFallbackAttemptsSteps(
   );
 }
 
-export function closeFallbackAttempts(
-  db: Database,
+export async function closeFallbackAttempts(
+  store: Db,
   runId: string,
   callId: string,
   now: number,
-): void {
-  settled(sqliteDb(db).run((q) => closeFallbackAttemptsSteps(q, runId, callId, now)));
+): Promise<void> {
+  await store.run((q) => closeFallbackAttemptsSteps(q, runId, callId, now));
 }

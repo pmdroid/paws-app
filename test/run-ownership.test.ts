@@ -21,6 +21,7 @@ import {
   RUN_TAKEOVER_MS,
   runOwner,
   takeOverGoneRuns,
+  sqliteDb,
 } from "../src/db";
 import { tempHome } from "./helpers";
 
@@ -35,10 +36,10 @@ function sharedDatabase(): { path: string; open: () => Database } {
   return { path, open: () => openDatabase(path) };
 }
 
-function runningItem(db: Database, id: string, owner: string, now: number): string {
+async function runningItem(db: Database, id: string, owner: string, now: number): Promise<string> {
   insertQueuedItem(db, { id, sessionKey: `${id}-session`, now });
   const { run } = beginImplementRun(db, id, now, checkpoint);
-  claimRun(db, run.id, owner);
+  await claimRun(sqliteDb(db), run.id, owner);
   return run.id;
 }
 
@@ -50,13 +51,13 @@ function resumeJobs(db: Database, itemId: string) {
 }
 
 describe("run ownership", () => {
-  test("a starting instance leaves a live instance's run alone and recovers an unowned one", () => {
+  test("a starting instance leaves a live instance's run alone and recovers an unowned one", async () => {
     const shared = sharedDatabase();
     const a = shared.open();
     const b = shared.open();
     try {
       const acme = registerInstance(a, { role: "all", host: "acme-a", version: null, now: 0 });
-      const ownedRun = runningItem(a, "acme-1", acme.id, 0);
+      const ownedRun = await runningItem(a, "acme-1", acme.id, 0);
       insertQueuedItem(a, { id: "acme-2", sessionKey: "acme-2-session", now: 0 });
       beginImplementRun(a, "acme-2", 0, checkpoint);
 
@@ -83,7 +84,7 @@ describe("run ownership", () => {
     const clock = new FakeClock(0);
     try {
       const acme = registerInstance(a, { role: "all", host: "acme-a", version: null, now: 0 });
-      const runId = runningItem(a, "acme-1", acme.id, 0);
+      const runId = await runningItem(a, "acme-1", acme.id, 0);
       const live = [
         {
           db: b,
@@ -113,7 +114,7 @@ describe("run ownership", () => {
       let takenAt: number | null = null;
       while (clock.now() <= 120_000) {
         for (const [index, loop] of loops.entries()) {
-          heartbeatInstance(live[index]!.db, live[index]!.id, clock.now());
+          await heartbeatInstance(sqliteDb(live[index]!.db), live[index]!.id, clock.now());
           await loop.tick([RUN_TAKEOVER_JOB]);
         }
         if (takenAt === null && decisions.length > 0) takenAt = clock.now();
@@ -134,7 +135,7 @@ describe("run ownership", () => {
     }
   });
 
-  test("an earlier process on this host whose pid is gone is taken over without waiting", () => {
+  test("an earlier process on this host whose pid is gone is taken over without waiting", async () => {
     const shared = sharedDatabase();
     const db = shared.open();
     try {
@@ -146,7 +147,7 @@ describe("run ownership", () => {
         now: 0,
         pid: exited,
       });
-      const runId = runningItem(db, "acme-1", crashed.id, 0);
+      const runId = await runningItem(db, "acme-1", crashed.id, 0);
       const restarted = registerInstance(db, {
         role: "all",
         host: "acme",
@@ -163,15 +164,15 @@ describe("run ownership", () => {
     }
   });
 
-  test("a clean stop releases only the stopping instance's runs", () => {
+  test("a clean stop releases only the stopping instance's runs", async () => {
     const shared = sharedDatabase();
     const a = shared.open();
     const b = shared.open();
     try {
       const acme = registerInstance(a, { role: "all", host: "acme-a", version: null, now: 0 });
       const other = registerInstance(b, { role: "all", host: "acme-b", version: null, now: 0 });
-      const mine = runningItem(a, "acme-1", acme.id, 0);
-      const theirs = runningItem(b, "acme-2", other.id, 0);
+      const mine = await runningItem(a, "acme-1", acme.id, 0);
+      const theirs = await runningItem(b, "acme-2", other.id, 0);
 
       prepareShutdown(a, 1_000, undefined, acme.id);
 
@@ -226,14 +227,14 @@ describe("run ownership across two Paws processes", () => {
     const db = openDatabase(join(home, "paws.db"));
     try {
       const a = await readyInstance(first);
-      const aRun = runningItem(db, "acme-1", a, Date.now());
+      const aRun = await runningItem(db, "acme-1", a, Date.now());
 
       second = spawnPaws(home);
       const b = await readyInstance(second);
       expect(getWorkItem(db, "acme-1")).toMatchObject({ state: "running", recoveryAttempts: 0 });
       expect(resumeJobs(db, "acme-1")).toEqual([]);
       expect(runOwner(db, aRun)).toBe(a);
-      const bRun = runningItem(db, "acme-2", b, Date.now());
+      const bRun = await runningItem(db, "acme-2", b, Date.now());
 
       first.kill("SIGTERM");
       expect(await first.exited).toBe(0);

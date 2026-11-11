@@ -35,7 +35,7 @@ async function closeoutHelp() {
   const { question } = await ask(db, asker, "closeout-help", "Closeout needs your help.", {
     now: NOW,
   });
-  saveCloseoutRecovery(db, {
+  await saveCloseoutRecovery(sqliteDb(db), {
     questionId: question.id,
     taskId: "ENG-2",
     itemId: asker.itemId,
@@ -121,8 +121,8 @@ test("a Closeout stall asked while another question is open is delivered after i
   const { db, asker } = parked();
   const open = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW });
   await askCloseoutHelp(db, "ses_1", help("Closeout: blocked\nMessage: stalled"), { now: NOW + 1 });
-  const queued = listCloseoutRecoveries(db, asker.itemId)[0]!;
-  expect(getQuestion(db, queued.questionId)).toMatchObject({
+  const queued = (await listCloseoutRecoveries(sqliteDb(db), asker.itemId))[0]!;
+  expect(await getQuestion(sqliteDb(db), queued.questionId)).toMatchObject({
     kind: "closeout-help",
     status: "queued",
   });
@@ -199,7 +199,10 @@ async function askedAbout(
 ) {
   const { db, asker } = parked();
   await askCloseoutHelp(db, "ses_1", blocked, { now: NOW, reason, checks });
-  const question = getQuestion(db, listCloseoutRecoveries(db, asker.itemId)[0]!.questionId)!;
+  const question = (await getQuestion(
+    sqliteDb(db),
+    (await listCloseoutRecoveries(sqliteDb(db), asker.itemId))[0]!.questionId,
+  ))!;
   return { db, asker, question };
 }
 
@@ -221,7 +224,7 @@ for (const body of ["Retry Closeout", "  RETRY "])
       },
     ]);
     expect(runs(db)).toBe(1);
-    expect(getQuestion(db, question.id)).toMatchObject({
+    expect(await getQuestion(sqliteDb(db), question.id)).toMatchObject({
       answer: "Retry Closeout",
       answeredBy: "pascal",
     });
@@ -288,7 +291,7 @@ test("the exported re-verify path settles an unanswered question without the age
     "Retry Closeout",
     question.id,
   ]);
-  const answered = getQuestion(db, question.id)!;
+  const answered = (await getQuestion(sqliteDb(db), question.id))!;
   await sqliteDb(db).transaction((q) =>
     verifyAgainSteps(q, answered, { now: NOW + 100, key: "policy-loaded" }),
   );

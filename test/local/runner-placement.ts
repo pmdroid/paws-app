@@ -35,8 +35,8 @@ export async function probeRunnerPlacement(
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const token = issueWorkspaceBootstrap(db, "org", now);
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const token = await issueWorkspaceBootstrap(db, "org", now);
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "org",
     name: "Test",

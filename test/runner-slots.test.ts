@@ -101,7 +101,7 @@ test("the runner overview lists each live session with its issue and phase", asy
   );
   const merging = work(3, lease, { state: "merge_queue", startedAt: now - 20_000 });
   markRun(db, work(4, now - RUNNER_LEASE_GRACE_MS - 1, { startedAt: now - 10_000 }), "ended", now);
-  releaseRunCapacity(db, work(5, lease, { startedAt: now - 5_000 }), now);
+  await releaseRunCapacity(sqliteDb(db), work(5, lease, { startedAt: now - 5_000 }), now);
 
   expect((await listRunnerOverview(sqliteDb(db), "ws-1", now))[0]?.running).toEqual([
     {
@@ -164,7 +164,7 @@ test("a run placed on a runner stays in its list through Closeout and leaves whe
   expect(held?.running).toEqual([{ ...session, phase: "closeout", movable: false }]);
   expect(held?.slots.used).toBe(1);
 
-  releaseRunCapacity(db, runId, now + 130_000);
+  await releaseRunCapacity(sqliteDb(db), runId, now + 130_000);
   const [after] = await listRunnerOverview(sqliteDb(db), "ws-1", now + 130_000);
   expect(after?.running).toEqual([]);
   expect(after?.slots.used).toBe(0);

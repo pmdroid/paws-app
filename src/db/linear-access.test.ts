@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { getLinearSessionInstallation, recordLinearInstallation } from "./linear-access";
 import { migrate } from "./migrate";
 import { openDatabase } from "./open";
+import { sqliteDb } from "./db";
 
 const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
 
@@ -11,14 +12,14 @@ function database() {
   return db;
 }
 
-test("a session read naming the team fills a teamless webhook observed in the same millisecond", () => {
+test("a session read naming the team fills a teamless webhook observed in the same millisecond", async () => {
   const db = database();
   try {
     recordLinearInstallation(db, { ...scope, sessionId: "s", teamId: null, observedAtMs: 5 });
     recordLinearInstallation(db, { ...scope, sessionId: "s", teamId: "team", observedAtMs: 5 });
-    expect(getLinearSessionInstallation(db, "s")?.teamId).toBe("team");
+    expect((await getLinearSessionInstallation(sqliteDb(db), "s"))?.teamId).toBe("team");
     recordLinearInstallation(db, { ...scope, sessionId: "s", teamId: null, observedAtMs: 5 });
-    expect(getLinearSessionInstallation(db, "s")?.teamId).toBe("team");
+    expect((await getLinearSessionInstallation(sqliteDb(db), "s"))?.teamId).toBe("team");
   } finally {
     db.close();
   }

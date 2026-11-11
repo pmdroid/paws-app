@@ -2,7 +2,7 @@ import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { and, eq, sql } from "drizzle-orm";
 import type { RepositoryBinding } from "../core";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { sqliteDb, type Q, type Steps, type Db } from "./db";
 
 export type CatalogEntry = {
   owner: string;
@@ -11,8 +11,8 @@ export type CatalogEntry = {
   defaultBranch: string;
 };
 
-export function listRepositoryCatalog(db: Database): CatalogEntry[] {
-  return settled(sqliteDb(db).run((q) => listRepositoryCatalogSteps(q)));
+export async function listRepositoryCatalog(store: Db): Promise<CatalogEntry[]> {
+  return store.run((q) => listRepositoryCatalogSteps(q));
 }
 
 export function* listRepositoryCatalogSteps(q: Q): Steps<CatalogEntry[]> {
@@ -87,33 +87,16 @@ export function teamRepositoryAllowedSql(
   return `(EXISTS (SELECT 1 FROM workspace_repository scope_link WHERE scope_link.workspace_id = ${workspaceSql} AND scope_link.team_id = ${teamSql} AND lower(scope_link.repository) = ${repositorySql}) OR (NOT EXISTS (SELECT 1 FROM workspace_repository scope_team WHERE scope_team.workspace_id = ${workspaceSql} AND scope_team.team_id = ${teamSql}) AND EXISTS (SELECT 1 FROM repository_catalog scope_catalog WHERE scope_catalog.repository = ${repositorySql})))`;
 }
 
-export function listTeamRepositories(db: Database, sessionId: string): string[] {
-  return settled(sqliteDb(db).run((q) => listTeamRepositoriesSteps(q, sessionId)));
+export async function listTeamRepositories(store: Db, sessionId: string): Promise<string[]> {
+  return store.run((q) => listTeamRepositoriesSteps(q, sessionId));
 }
 
-export function listRepositoryCandidates(
-  db: Database,
+export async function listRepositoryCandidates(
+  store: Db,
   sessionId: string | null,
   configured: readonly RepositoryBinding[],
-): RepositoryBinding[] {
-  const teamLinks = sessionId ? listTeamRepositories(db, sessionId) : [];
-  const candidates = [
-    ...configured,
-    ...listRepositoryCatalog(db),
-    ...teamLinks.map((name) => {
-      const [owner, repo] = name.split("/");
-      return { owner: owner!, repo: repo!, remoteUrl: `https://github.com/${name}.git` };
-    }),
-  ];
-  const seen = new Set<string>();
-  return candidates
-    .filter((candidate) => {
-      const name = `${candidate.owner}/${candidate.repo}`.toLowerCase();
-      if (seen.has(name) || (teamLinks.length > 0 && !teamLinks.includes(name))) return false;
-      seen.add(name);
-      return true;
-    })
-    .map(({ owner, repo, remoteUrl }) => ({ owner, repo, remoteUrl }));
+): Promise<RepositoryBinding[]> {
+  return store.run((q) => listRepositoryCandidatesSteps(q, sessionId, configured));
 }
 
 export function* listTeamRepositoriesSteps(q: Q, sessionId: string): Steps<string[]> {
@@ -202,13 +185,11 @@ export function* teamRepositoryAllowedSteps(
   return cataloged !== undefined;
 }
 
-export function teamRepositoryAllowed(
-  db: Database,
+export async function teamRepositoryAllowed(
+  store: Db,
   workspaceId: string,
   teamId: string,
   repository: string,
-): boolean {
-  return settled(
-    sqliteDb(db).run((q) => teamRepositoryAllowedSteps(q, workspaceId, teamId, repository)),
-  );
+): Promise<boolean> {
+  return store.run((q) => teamRepositoryAllowedSteps(q, workspaceId, teamId, repository));
 }

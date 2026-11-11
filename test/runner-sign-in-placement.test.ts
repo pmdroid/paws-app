@@ -25,7 +25,7 @@ import { tempHome } from "./helpers";
 
 const HOUR = 3_600_000;
 
-function acme() {
+async function acme() {
   const db = openDatabase(join(tempHome(), "paws.sqlite"));
   migrate(db);
   const now = Date.now();
@@ -35,12 +35,12 @@ function acme() {
     name: "Ada",
     email: "ada@acme.test",
   });
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "acme-org",
     name: "Acme",
     userId: ada,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "acme-org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "acme-org", now)),
     now,
   });
   recordLinearInstallation(db, {
@@ -80,7 +80,7 @@ function acme() {
 }
 
 test("two runners signed in to Claude, one with its 5-hour window spent: the implementer goes to the other", async () => {
-  const f = acme();
+  const f = await acme();
   const reset = f.now + 5 * HOUR;
   f.db.run(
     "UPDATE runner_agent_policy SET quota_state='exhausted',resets_at=?,cooldown_until=? WHERE runner_id='acme-1' AND agent='claude'",
@@ -125,7 +125,7 @@ test("two runners signed in to Claude, one with its 5-hour window spent: the imp
 });
 
 test("no runner signed in to the reviewer's agent: placement offers none and waits for a sign-in", async () => {
-  const f = acme();
+  const f = await acme();
   const reviewer = {
     role: "reviewer" as const,
     profile: { agent: "codex" as const, model: "gpt-5" },
@@ -147,7 +147,7 @@ test("no runner signed in to the reviewer's agent: placement offers none and wai
 });
 
 test("a named account bound to a runner no longer stands in for that runner's own sign-in", async () => {
-  const f = acme();
+  const f = await acme();
   const named = await createAgentAccount(sqliteDb(f.db), {
     workspaceId: f.workspaceId,
     agent: "claude",

@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { consumeWorkspaceBootstrap, migrate, openDatabase, putWorkspaceUser } from "../../src/db";
+import {
+  consumeWorkspaceBootstrap,
+  migrate,
+  openDatabase,
+  putWorkspaceUser,
+  sqliteDb,
+} from "../../src/db";
 import { initializeRunnerCoordinator, openRunnerCoordinator } from "../../src/runner-coordinator";
 import { openRunnerDaemon, RunnerRequestError } from "../../src/runner-daemon";
 import type { RunnerHealthResult } from "../../src/runner-protocol";
@@ -54,12 +60,12 @@ export async function probeRunnerDaemonHealth(
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   const principal = {

@@ -137,7 +137,7 @@ test("incomplete installation provenance fails closed and invalid changes roll b
   ensureLinearSession(db, { sessionId: "legacy" });
   expect(getLinearSessionAccess(db, "missing")).toBe("unknown");
   expect(getLinearSessionAccess(db, "legacy")).toBe("unknown");
-  expect(getLinearSessionInstallation(db, "legacy")).toBeNull();
+  expect(await getLinearSessionInstallation(sqliteDb(db), "legacy")).toBeNull();
   session(db, "no-team", { teamId: null });
   expect(getLinearSessionAccess(db, "no-team")).toBe("unknown");
   await expect(teams(db, "invalid", 20, ["team"], ["team"])).rejects.toThrow("contradicts");
@@ -167,7 +167,7 @@ test("reopening SQLite preserves removal, revocation and processed event identit
   migrate(db);
   expect(getLinearSessionAccess(db, "session")).toBe("team_removed");
   expect(getLinearSessionAccess(db, "revoked")).toBe("revoked");
-  expect(getLinearSessionInstallation(db, "session")).toEqual({
+  expect(await getLinearSessionInstallation(sqliteDb(db), "session")).toEqual({
     ...scope,
     teamId: "team",
     observedAtMs: 10,

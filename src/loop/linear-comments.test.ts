@@ -835,7 +835,7 @@ describe("holds, questions and gates", () => {
         );
         await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Approved, ship it." })));
         expect(await f.deliver()).toBe("done");
-        expect(getQuestion(f.db, asked.question.id)!.status).toBe("open");
+        expect((await getQuestion(sqliteDb(f.db), asked.question.id))!.status).toBe("open");
         expect(findOpenQuestion(f.db, SESSION)?.id).toBe(asked.question.id);
         expect(getWorkItem(f.db, "eng-1")!.state).toBe("awaiting_input");
         expect((await f.comment("c-1")).state).toBe("queued");
@@ -907,7 +907,7 @@ describe("batching with pull request feedback", () => {
     const f = setup();
     try {
       toMergeQueue(f.db);
-      recordPullComment(f.db, {
+      await recordPullComment(sqliteDb(f.db), {
         source: "conversation",
         commentId: 99,
         itemId: "eng-1",
@@ -1049,7 +1049,12 @@ describe("review findings", () => {
     const f = setup();
     try {
       toMergeQueue(f.db);
-      recordItemPullRequest(f.db, { itemId: "eng-1", pullNumber: 7, pullUrl: null, openedAt: T0 });
+      await recordItemPullRequest(sqliteDb(f.db), {
+        itemId: "eng-1",
+        pullNumber: 7,
+        pullUrl: null,
+        openedAt: T0,
+      });
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "One more thing." })));
       f.setQueueResult("merged");
       expect(await f.deliver()).toBe("wait");
@@ -1091,7 +1096,12 @@ describe("review findings", () => {
     const f = setup();
     try {
       toMergeQueue(f.db);
-      recordItemPullRequest(f.db, { itemId: "eng-1", pullNumber: 7, pullUrl: null, openedAt: T0 });
+      await recordItemPullRequest(sqliteDb(f.db), {
+        itemId: "eng-1",
+        pullNumber: 7,
+        pullUrl: null,
+        openedAt: T0,
+      });
       const left: number[] = [];
       f.onLeave((pullNumber) => left.push(pullNumber));
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Wait for me." })));
@@ -1106,7 +1116,12 @@ describe("review findings", () => {
     const f = setup();
     try {
       toMergeQueue(f.db);
-      recordItemPullRequest(f.db, { itemId: "eng-1", pullNumber: 7, pullUrl: null, openedAt: T0 });
+      await recordItemPullRequest(sqliteDb(f.db), {
+        itemId: "eng-1",
+        pullNumber: 7,
+        pullUrl: null,
+        openedAt: T0,
+      });
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Too late?" })));
       f.setQueueResult("closed");
       expect(await f.deliver()).toBe("done");

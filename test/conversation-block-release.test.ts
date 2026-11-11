@@ -18,6 +18,7 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
   syncSteps,
+  sqliteDb,
 } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
@@ -56,12 +57,12 @@ async function blockedAfterCleanupFailure() {
   migrate(db);
   let now = Date.now();
   putWorkspaceUser(db, { id: "owner", linearUserId: "owner", name: "Owner", email: "o@x.invalid" });
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: "workspace",
     organizationId: "org",
     name: "Fixture",
     userId: "owner",
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   db.run(
@@ -160,15 +161,15 @@ test("a blocked reply waits, then is delivered once after the restarted runner r
     await f.orchestrator.onLinearEvent(linearEvent("reply-1", "Please continue"));
     await f.orchestrator.onLinearEvent(linearEvent("reply-2", "And add a test"));
     // The replies wait instead of failing; the session hears why once.
-    expect(listPendingLinearTurns(f.db, "session")).toHaveLength(2);
+    expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toHaveLength(2);
     expect(f.restarts()).toEqual([]);
     expect(f.notices()).toBe(1);
-    expect(getConversation(f.db, f.itemId).blocked).toBe(true);
+    expect((await getConversation(sqliteDb(f.db), f.itemId)).blocked).toBe(true);
 
     // The runner restarted for an update and no longer names the command.
     await f.heartbeat([]);
     await f.orchestrator.releaseCleanupBlocks();
-    expect(getConversation(f.db, f.itemId).blocked).toBe(false);
+    expect((await getConversation(sqliteDb(f.db), f.itemId)).blocked).toBe(false);
     const restarts = f.restarts();
     expect(restarts).toHaveLength(1);
     expect(restarts[0]!.payload).toContain("Please continue");
@@ -190,14 +191,14 @@ test("a runner that still reports the command keeps the block", async () => {
     await f.heartbeat(live);
     await f.heartbeat(live);
     await f.orchestrator.releaseCleanupBlocks();
-    expect(getConversation(f.db, f.itemId).blocked).toBe(true);
-    expect(listPendingLinearTurns(f.db, "session")).toHaveLength(1);
+    expect((await getConversation(sqliteDb(f.db), f.itemId)).blocked).toBe(true);
+    expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toHaveLength(1);
     expect(f.restarts()).toEqual([]);
 
     // Once a later report leaves it out, the old agent is gone.
     await f.heartbeat([]);
     await f.orchestrator.releaseCleanupBlocks();
-    expect(getConversation(f.db, f.itemId).blocked).toBe(false);
+    expect((await getConversation(sqliteDb(f.db), f.itemId)).blocked).toBe(false);
     expect(f.restarts()).toHaveLength(1);
   } finally {
     await f.close();

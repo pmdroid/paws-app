@@ -104,7 +104,7 @@ test("a broken approve rule is a rule link ask with its summary and the link", a
   const { db, itemId, question } = await held();
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
   expect(question.kind).toBe("link");
-  expect(getLinkAsk(db, question.id)).toMatchObject({
+  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
     kind: "rule",
     headCommit: HEAD,
     link: LINK,
@@ -118,7 +118,7 @@ test("a broken approve rule is a rule link ask with its summary and the link", a
   expect(question.body).toContain("A reply here cannot approve the break.");
   // The probe output stays out of Linear; the agent gets it on a send back.
   expect(question.body).not.toContain("removed field Task.title");
-  expect(listCloseoutBypassChecks(db, question.id)).toMatchObject([
+  expect(await listCloseoutBypassChecks(sqliteDb(db), question.id)).toMatchObject([
     { checkId: "api-contract", kind: "rule", state: "failed", attempt: 1, message: FEEDBACK },
   ]);
   expect(listJobs(db).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
@@ -149,7 +149,7 @@ test("Approve records who and why and verifies the same head again", async () =>
     `closeout-bypass:${question.id}`,
   ]);
   expect(listJobs(db).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
-  expect(listCloseoutBypassChecks(db, question.id)[0]).toMatchObject({
+  expect((await listCloseoutBypassChecks(sqliteDb(db), question.id))[0]).toMatchObject({
     reason: "The contract change is intended for v2.",
     approvedBy: "lead",
     approvedByName: "Lea Lead",
@@ -207,7 +207,7 @@ test("Approve needs a reason and a person who may decide", async () => {
       effects,
     ),
   ).toBe("forbidden");
-  expect(getQuestion(db, question.id)?.status).toBe("open");
+  expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
   expect((await recoveryOptions(db, itemId)).bypasses).toEqual([]);
 });
@@ -253,7 +253,10 @@ test("a reply in Linear sends the finding back and approves nothing", async () =
       now: NOW + 100,
     }),
   ).toBe(true);
-  expect(getLinkAsk(db, question.id)).toMatchObject({ decision: null, closedReason: "guidance" });
+  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
+    decision: null,
+    closedReason: "guidance",
+  });
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
   expect(listJobs(db).some((job) => job.queue === JOB_KIND.reverify)).toBe(false);
   const handoff = (
@@ -261,7 +264,7 @@ test("a reply in Linear sends the finding back and approves nothing", async () =
   ).handoff;
   expect(handoff).toContain("The reply is guidance and approves nothing");
   expect(handoff).toContain("removed field Task.title");
-  expect(listCloseoutBypassChecks(db, question.id)[0]?.approvedAt).toBeNull();
+  expect((await listCloseoutBypassChecks(sqliteDb(db), question.id))[0]?.approvedAt).toBeNull();
   expect((await recoveryOptions(db, itemId)).bypasses).toEqual([]);
   const notes = listOutbox(db).filter((row) => row.idempotencyKey.startsWith("link-ask-guidance:"));
   expect(notes.map((row) => (row.payload as { body: string }).body)).toEqual([
@@ -272,6 +275,6 @@ test("a reply in Linear sends the finding back and approves nothing", async () =
 test("without a public link the rule is a Linear question a reply sends back", async () => {
   const { db, itemId, question } = await held(null);
   expect(question.kind).toBe("closeout-help");
-  expect(getLinkAsk(db, question.id)).toBeNull();
+  expect(await getLinkAsk(sqliteDb(db), question.id)).toBeNull();
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
 });

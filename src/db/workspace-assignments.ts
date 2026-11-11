@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { jsonFromText, jsonText } from "./json-text";
 
 export type WorkspaceAssignmentStatus = "pending" | "ready" | "accepted" | "continued" | "invalid";
@@ -19,12 +18,6 @@ export type WorkspaceAssignmentHold = {
   expiresAt: number;
   status: WorkspaceAssignmentStatus;
 };
-
-type Run<T> = (q: Q) => Steps<T>;
-
-function sync<T>(db: Database, body: Run<T>): T {
-  return settled(sqliteDb(db).run(body));
-}
 
 function holdColumns(q: Q) {
   const hold = q.t.workspaceAssignment;
@@ -59,11 +52,11 @@ export function* latestWorkspaceAssignmentSteps(
   return row ?? null;
 }
 
-export function latestWorkspaceAssignment(
-  db: Database,
+export async function latestWorkspaceAssignment(
+  store: Db,
   sessionId: string,
-): WorkspaceAssignmentHold | null {
-  return sync(db, (q) => latestWorkspaceAssignmentSteps(q, sessionId));
+): Promise<WorkspaceAssignmentHold | null> {
+  return store.run((q) => latestWorkspaceAssignmentSteps(q, sessionId));
 }
 
 export function* workspaceAssignmentByTokenSteps(
@@ -166,8 +159,8 @@ export function* invalidateWorkspaceAssignmentSteps(q: Q, tokenHash: string): St
   );
 }
 
-export function invalidateWorkspaceAssignment(db: Database, tokenHash: string): void {
-  sync(db, (q) => invalidateWorkspaceAssignmentSteps(q, tokenHash));
+export async function invalidateWorkspaceAssignment(store: Db, tokenHash: string): Promise<void> {
+  await store.run((q) => invalidateWorkspaceAssignmentSteps(q, tokenHash));
 }
 
 type AssignmentMove =

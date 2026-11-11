@@ -10,6 +10,7 @@ import {
   listOpenQuestions,
   listOutbox,
   syncSteps,
+  sqliteDb,
 } from "../src/db";
 import { questionEffects } from "../src/loop";
 import { elicitationBody, handoffNote, getQuestion, openQuestion } from "../src/questions";
@@ -194,7 +195,7 @@ test("structured choices persist their values and display their labels", async (
     body: "Which?",
     options,
   });
-  expect(getQuestion(db, question.id)?.options).toEqual(options);
-  expect(listOpenQuestions(db)[0]?.options).toEqual(["Other", "Paws"]);
+  expect((await getQuestion(sqliteDb(db), question.id))?.options).toEqual(options);
+  expect((await listOpenQuestions(sqliteDb(db)))[0]?.options).toEqual(["Other", "Paws"]);
   db.close();
 });

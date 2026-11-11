@@ -271,7 +271,11 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           : attribution.startFromPage(request, `/onboard/${creator.link.linkId}`);
       if (creator !== null) {
         const { link: done, member: owner, viewer: signedIn } = creator;
-        const credit = githubAttribution(options.db, done.workspaceId, owner.userId);
+        const credit = await githubAttribution(
+          sqliteDb(options.db),
+          done.workspaceId,
+          owner.userId,
+        );
         return onboardingPage({
           identifier: done.identifier,
           issueUrl: done.issueUrl,
@@ -440,7 +444,11 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
             { error: "A Linear workspace admin must connect this workspace first." },
             403,
           );
-        const grant = issueWorkspaceBootstrap(options.db, result.identity.organizationId, now());
+        const grant = await issueWorkspaceBootstrap(
+          options.db,
+          result.identity.organizationId,
+          now(),
+        );
         const claim = {
           id: workspaceId(now()),
           organizationId: result.identity.organizationId,

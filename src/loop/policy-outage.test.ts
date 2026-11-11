@@ -89,8 +89,8 @@ describe("an unreadable Closeout policy on main", () => {
     expect(await policyLoads(sqliteDb(db), REPOSITORY, 30)).toMatchObject({
       questionId: question!.id,
     });
-    expect(getQuestion(db, question!.id)?.status).toBe("cancelled");
-    expect(getPolicyOutage(db, REPOSITORY)).toBeNull();
+    expect((await getQuestion(sqliteDb(db), question!.id))?.status).toBe("cancelled");
+    expect(await getPolicyOutage(sqliteDb(db), REPOSITORY)).toBeNull();
     expect(await policyLoads(sqliteDb(db), REPOSITORY, 40)).toBeNull();
   });
 
@@ -99,10 +99,11 @@ describe("an unreadable Closeout policy on main", () => {
     await hold(db, "ENG-1");
     await hold(db, "ENG-2", 20, { ...BROKEN, message: "another error", commit: "d".repeat(40) });
     const asked = questions(db);
-    expect(asked.map((question) => getQuestion(db, question.id)?.status)).toEqual([
-      "cancelled",
-      "open",
-    ]);
+    expect(
+      await Promise.all(
+        asked.map(async (question) => (await getQuestion(sqliteDb(db), question.id))?.status),
+      ),
+    ).toEqual(["cancelled", "open"]);
     expect(asked[1]).toMatchObject({ item_id: "ENG-2" });
   });
 

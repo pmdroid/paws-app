@@ -62,7 +62,7 @@ function claim(
   return claimNextJob(db, { workerId, leaseMs, now: clock.now(), queues });
 }
 
-function holdMergeQueuePlace(
+async function holdMergeQueuePlace(
   db: ReturnType<typeof openDatabase>,
   clock: FakeClock,
   id: string,
@@ -71,11 +71,16 @@ function holdMergeQueuePlace(
   beginImplementRun(db, id, clock.now());
   applyWorkItemEvent(db, id, "turn_ended");
   applyWorkItemEvent(db, id, "closeout_accepted");
-  joinMergeQueue(db, { itemId: id, repository: "acme/one", lane, now: clock.now() });
+  await joinMergeQueue(sqliteDb(db), {
+    itemId: id,
+    repository: "acme/one",
+    lane,
+    now: clock.now(),
+  });
 }
 
 describe("job queue", () => {
-  test("item cancellation stays local while explicit merge-lane cancellation unions scopes", () => {
+  test("item cancellation stays local while explicit merge-lane cancellation unions scopes", async () => {
     const { db, clock } = queue();
     const own = enqueueMerge(db, clock, "own");
     const other = enqueueMerge(db, clock, "other");
@@ -89,7 +94,9 @@ describe("job queue", () => {
       payload: { itemId: "own" },
       now: clock.now(),
     });
-    expect(cancelOpenJobs(db, { itemId: "own", reason: "local", now: clock.now() })).toBe(1);
+    expect(
+      await cancelOpenJobs(sqliteDb(db), { itemId: "own", reason: "local", now: clock.now() }),
+    ).toBe(1);
     expect(getJob(db, own)?.status).toBe("cancelled");
     expect(getJob(db, other)?.status).toBe("pending");
     expect(getJob(db, otherResume)?.status).toBe("pending");
@@ -100,7 +107,12 @@ describe("job queue", () => {
       now: clock.now(),
     });
     expect(
-      cancelOpenJobs(db, { itemId: "own", mergeLane: true, reason: "global", now: clock.now() }),
+      await cancelOpenJobs(sqliteDb(db), {
+        itemId: "own",
+        mergeLane: true,
+        reason: "global",
+        now: clock.now(),
+      }),
     ).toBe(2);
     expect(getJob(db, ownResume)?.status).toBe("cancelled");
     expect(getJob(db, other)?.status).toBe("cancelled");
@@ -367,27 +379,27 @@ describe("job queue", () => {
     expect(second?.status).toBe("running");
   });
 
-  test("a second merge job for the same repository is not claimed", () => {
+  test("a second merge job for the same repository is not claimed", async () => {
     const { db, clock } = queue();
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
     insertQueuedItem(db, { id: "eng-2", now: clock.now() });
     bindRepo(db, "eng-1", "acme", "one");
     bindRepo(db, "eng-2", "Acme", "ONE");
-    holdMergeQueuePlace(db, clock, "eng-1");
+    await holdMergeQueuePlace(db, clock, "eng-1");
     enqueueMerge(db, clock, "eng-1");
     enqueueMerge(db, clock, "eng-2");
     expect(claim(db, clock, [JOB_KIND.merge])?.payload).toEqual({ itemId: "eng-1" });
     expect(claim(db, clock, [JOB_KIND.merge])).toBeNull();
   });
 
-  test("merge jobs in one repository's different project lanes are both claimed, each first in its lane", () => {
+  test("merge jobs in one repository's different project lanes are both claimed, each first in its lane", async () => {
     const { db, clock } = queue();
     for (const id of ["eng-1", "eng-2"]) {
       insertQueuedItem(db, { id, now: clock.now() });
       bindRepo(db, id, "acme", "one");
     }
-    holdMergeQueuePlace(db, clock, "eng-1", "project-a");
-    holdMergeQueuePlace(db, clock, "eng-2", "project-b");
+    await holdMergeQueuePlace(db, clock, "eng-1", "project-a");
+    await holdMergeQueuePlace(db, clock, "eng-2", "project-b");
     enqueueMerge(db, clock, "eng-1");
     enqueueMerge(db, clock, "eng-2");
     expect(claim(db, clock, [JOB_KIND.merge])?.payload).toEqual({ itemId: "eng-1" });
@@ -400,14 +412,14 @@ describe("job queue", () => {
     ]);
   });
 
-  test("a second merge job in the same project lane is not claimed", () => {
+  test("a second merge job in the same project lane is not claimed", async () => {
     const { db, clock } = queue();
     for (const id of ["eng-1", "eng-2"]) {
       insertQueuedItem(db, { id, now: clock.now() });
       bindRepo(db, id, "acme", "one");
     }
-    holdMergeQueuePlace(db, clock, "eng-1", "project-a");
-    holdMergeQueuePlace(db, clock, "eng-2", "project-a");
+    await holdMergeQueuePlace(db, clock, "eng-1", "project-a");
+    await holdMergeQueuePlace(db, clock, "eng-2", "project-a");
     enqueueMerge(db, clock, "eng-1");
     enqueueMerge(db, clock, "eng-2");
     expect(claim(db, clock, [JOB_KIND.merge])?.payload).toEqual({ itemId: "eng-1" });
@@ -420,13 +432,13 @@ describe("job queue", () => {
     ]);
   });
 
-  test("a merge job with no queue place yet waits only for the repository-wide lane", () => {
+  test("a merge job with no queue place yet waits only for the repository-wide lane", async () => {
     const { db, clock } = queue();
     for (const id of ["eng-1", "eng-2", "eng-3"]) {
       insertQueuedItem(db, { id, now: clock.now() });
       bindRepo(db, id, "acme", "one");
     }
-    holdMergeQueuePlace(db, clock, "eng-1", "project-a");
+    await holdMergeQueuePlace(db, clock, "eng-1", "project-a");
     enqueueMerge(db, clock, "eng-1");
     enqueueMerge(db, clock, "eng-2");
     expect(claim(db, clock, [JOB_KIND.merge])?.payload).toEqual({ itemId: "eng-1" });
@@ -434,21 +446,21 @@ describe("job queue", () => {
     expect(unplaced?.payload).toEqual({ itemId: "eng-2" });
     expect(unplaced !== null && completeJob(db, unplaced, clock.now())).toBe(true);
 
-    holdMergeQueuePlace(db, clock, "eng-3");
+    await holdMergeQueuePlace(db, clock, "eng-3");
     enqueueMerge(db, clock, "eng-3");
     expect(claim(db, clock, [JOB_KIND.merge])?.payload).toEqual({ itemId: "eng-3" });
     enqueueMerge(db, clock, "eng-2");
     expect(claim(db, clock, [JOB_KIND.merge])).toBeNull();
   });
 
-  test("a merge job whose item waits outside the merge queue does not hold the lane", () => {
+  test("a merge job whose item waits outside the merge queue does not hold the lane", async () => {
     const { db, clock } = queue();
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
     insertQueuedItem(db, { id: "eng-2", now: clock.now() });
     bindRepo(db, "eng-1", "acme", "one");
     bindRepo(db, "eng-2", "acme", "one");
-    holdMergeQueuePlace(db, clock, "eng-1");
-    leaveMergeQueue(db, "eng-1");
+    await holdMergeQueuePlace(db, clock, "eng-1");
+    await leaveMergeQueue(sqliteDb(db), "eng-1");
     enqueueMerge(db, clock, "eng-1");
     enqueueMerge(db, clock, "eng-2");
     expect(claim(db, clock, [JOB_KIND.merge])?.payload).toEqual({ itemId: "eng-1" });
@@ -588,7 +600,7 @@ describe("leased job writes", () => {
 
 test.each(["done", "cancelled", "dead"] as const)(
   "explicit revival refreshes a %s row while lifetime dedupe retains it",
-  (status) => {
+  async (status) => {
     const { db } = queue();
     insertQueuedItem(db, { id: "revive", now: 1 });
     const original = {
@@ -606,7 +618,7 @@ test.each(["done", "cancelled", "dead"] as const)(
     const fresh = { ...original, payload: { itemId: "revive", body: "new" }, now: 3 };
     expect(enqueueJobOnce(db, fresh)).toBe(id);
     expect(getJob(db, id)).toMatchObject({ status, attempts: 7, payload: original.payload });
-    expect(reenqueueJob(db, fresh)).toEqual({ id, pending: true });
+    expect(await reenqueueJob(sqliteDb(db), fresh)).toEqual({ id, pending: true });
     expect(getJob(db, id)).toMatchObject({
       status: "pending",
       attempts: 0,
@@ -615,11 +627,17 @@ test.each(["done", "cancelled", "dead"] as const)(
       lastError: null,
       payload: fresh.payload,
     });
-    expect(jobVersionCurrent(db, getJob(db, id)!)).toBe(true);
-    expect(reenqueueJob(db, { ...fresh, now: 4, payload: {} })).toEqual({ id, pending: true });
+    expect(await jobVersionCurrent(sqliteDb(db), getJob(db, id)!)).toBe(true);
+    expect(await reenqueueJob(sqliteDb(db), { ...fresh, now: 4, payload: {} })).toEqual({
+      id,
+      pending: true,
+    });
     expect(getJob(db, id)?.payload).toEqual(fresh.payload);
     const leased = claimNextJob(db, { now: 4, queues: ["test"] })!;
-    expect(reenqueueJob(db, { ...fresh, now: 5, payload: {} })).toEqual({ id, pending: false });
+    expect(await reenqueueJob(sqliteDb(db), { ...fresh, now: 5, payload: {} })).toEqual({
+      id,
+      pending: false,
+    });
     expect(getJob(db, id)).toEqual(leased);
     expect(listJobs(db)).toHaveLength(1);
     db.close();

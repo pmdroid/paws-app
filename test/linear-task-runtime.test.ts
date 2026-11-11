@@ -16,6 +16,7 @@ import {
   listOutbox,
   JobLoop,
   OutboxDispatcher,
+  sqliteDb,
 } from "../src/db";
 import {
   createFakeTracker,
@@ -290,11 +291,11 @@ const waitOnAnotherQuestion = (db: Database) =>
      VALUES ('waiting', 'other', 'session', 'runner-wait', 'Move or keep waiting?', 'open', 1)`,
   );
 
-const questionOf = (db: Database, itemId: string) =>
-  getQuestion(
-    db,
+const questionOf = async (db: Database, itemId: string) =>
+  (await getQuestion(
+    sqliteDb(db),
     db.query<{ id: string }, [string]>("SELECT id FROM question WHERE item_id = ?").get(itemId)!.id,
-  )!;
+  ))!;
 
 test("a clarification asked while the session waits on another question queues behind it", async () => {
   const f = setup("clarify", "Explain it, create a file, or change the code?");
@@ -304,7 +305,10 @@ test("a clarification asked while the session waits on another question queues b
     await f.jobs.tick();
     const itemId = getLinearSession(f.db, "session")!.activeItemId!;
     expect(getWorkItem(f.db, itemId)?.state).toBe("awaiting_input");
-    expect(questionOf(f.db, itemId)).toMatchObject({ kind: "clarification", status: "queued" });
+    expect(await questionOf(f.db, itemId)).toMatchObject({
+      kind: "clarification",
+      status: "queued",
+    });
     expect(f.tracker.questions).toEqual([]);
     await answerAsked(f.db, {
       sessionId: "session",
@@ -312,11 +316,11 @@ test("a clarification asked while the session waits on another question queues b
       body: "Keep waiting",
       answeredBy: "human",
     });
-    expect(questionOf(f.db, itemId).status).toBe("open");
+    expect((await questionOf(f.db, itemId)).status).toBe("open");
+    const asked = await questionOf(f.db, itemId);
     expect(
       listOutbox(f.db).filter(
-        (row) =>
-          row.op === "elicitation" && row.idempotencyKey.endsWith(questionOf(f.db, itemId).id),
+        (row) => row.op === "elicitation" && row.idempotencyKey.endsWith(asked.id),
       ),
     ).toHaveLength(1);
   } finally {
@@ -343,7 +347,7 @@ test("ask_team while the session waits on another question queues the agent's qu
     await f.jobs.tick();
     const itemId = getLinearSession(f.db, "session")!.activeItemId!;
     expect(getWorkItem(f.db, itemId)?.state).toBe("awaiting_input");
-    expect(questionOf(f.db, itemId)).toMatchObject({
+    expect(await questionOf(f.db, itemId)).toMatchObject({
       kind: "agent",
       status: "queued",
       body: "Which screenshot?",
@@ -451,7 +455,7 @@ test.each([null, "", " \n "])(
       await waitFor(() => answered);
       await answering;
       await running;
-      expect(getQuestion(f.db, question.id)?.answer).toBe(reply.body);
+      expect((await getQuestion(sqliteDb(f.db), question.id))?.answer).toBe(reply.body);
       expect(store.listUnhandled()).toHaveLength(0);
       await f.jobs.tick();
       expect(getWorkItem(f.db, itemId)?.state).toBe("completed");
@@ -624,7 +628,7 @@ test("a question reply resumes through history containing an action with an empt
       updatedAtMs: answeredAt,
       body: "Capture a fresh screenshot of an empty instance.",
     });
-    expect(getQuestion(f.db, question.id)?.answer).toBe(
+    expect((await getQuestion(sqliteDb(f.db), question.id))?.answer).toBe(
       "Capture a fresh screenshot of an empty instance.",
     );
     await f.jobs.tick();
@@ -696,7 +700,7 @@ test.each(["ok", "fail", "omit"] as const)(
       if (upload === "ok") {
         expect(f.uploads()).toBe(1);
         expect(getWorkItem(f.db, itemId)?.state).toBe("completed");
-        expect(listArtifacts(f.db, itemId)[0]?.state).toBe("uploaded");
+        expect((await listArtifacts(sqliteDb(f.db), itemId))[0]?.state).toBe("uploaded");
         expect(responses).toHaveLength(1);
         expect(responses[0]?.body).toContain(f.answer.trim());
         expect(responses[0]?.body).toContain(

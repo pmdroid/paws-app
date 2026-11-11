@@ -36,12 +36,12 @@ async function fixture(version: string | null, conversations?: number) {
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "org",
     name: "Acme",
     userId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   db.run(
@@ -96,7 +96,7 @@ test("a conversation starts with every work slot busy and fills no work slot", a
   const { db, now, workspace, dispatch } = await fixture("0.1.77", 2);
   await dispatch("session-1", "classify");
   expect(runnerOccupancy(db, "runner", now)).toEqual({ capacity: 1, occupied: 1 });
-  expect(runnerHelperAvailability(db, "runner", now, true).available).toBe(false);
+  expect((await runnerHelperAvailability(sqliteDb(db), "runner", now, true)).available).toBe(false);
 
   const command = await dispatch("session-2", "conversation");
   expect(command.expiresAt - command.issuedAt).toBe(RUNNER_CONVERSATION_MS);
@@ -111,7 +111,9 @@ test("a third conversation waits for a conversation slot, not a work slot", asyn
   await dispatch("session-1", "conversation");
   await dispatch("session-2", "conversation");
   await expect(dispatch("session-3", "conversation")).rejects.toThrow("Runner is busy");
-  expect(runnerHelperAvailability(db, "runner", now, true, true).available).toBe(false);
+  expect((await runnerHelperAvailability(sqliteDb(db), "runner", now, true, true)).available).toBe(
+    false,
+  );
   expect(runnerOccupancy(db, "runner", now)).toEqual({ capacity: 1, occupied: 0 });
   expect((await dispatch("session-4", "classify")).purpose).toBe("classify");
 });
@@ -125,6 +127,8 @@ for (const [name, version, conversations] of [
 ] as const)
   test(`${name} admits no conversation`, async () => {
     const { db, now, dispatch } = await fixture(version, conversations);
-    expect(runnerHelperAvailability(db, "runner", now, true, true).available).toBe(false);
+    expect(
+      (await runnerHelperAvailability(sqliteDb(db), "runner", now, true, true)).available,
+    ).toBe(false);
     await expect(dispatch("session-1", "conversation")).rejects.toThrow("Runner is busy");
   });

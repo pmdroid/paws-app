@@ -20,6 +20,7 @@ import {
   reenqueueJob,
   restart,
   saveHumanRetryWindow,
+  sqliteDb,
 } from "../src/db";
 import { FakeClock, JOB_KIND } from "../src/core";
 import { enqueueVerifiedMerge } from "../src/loop";
@@ -58,11 +59,11 @@ test("a cancelled resume handler stays fenced while its revived row runs a new h
   loop.register(JOB_KIND.resume, async (job, context) => {
     if ((job.payload as { handoff: string }).handoff === "old") {
       await gate;
-      staleChecks = [context.isCurrent(), jobVersionCurrent(db, job)];
+      staleChecks = [context.isCurrent(), await jobVersionCurrent(sqliteDb(db), job)];
       if (staleChecks.some(Boolean)) writes.push("stale");
     } else {
       expect(context.isCurrent()).toBe(true);
-      expect(jobVersionCurrent(db, job)).toBe(true);
+      expect(await jobVersionCurrent(sqliteDb(db), job)).toBe(true);
       writes.push("new");
     }
   });
@@ -77,7 +78,7 @@ test("a cancelled resume handler stays fenced while its revived row runs a new h
       now: 3,
     }),
   ).toBe(id);
-  expect(jobVersionCurrent(db, old)).toBe(false);
+  expect(await jobVersionCurrent(sqliteDb(db), old)).toBe(false);
   clock.advance(2);
   await workspaceDispatch(db, { now: clock.now() });
   await loop.tick([JOB_KIND.resume]);
@@ -100,12 +101,12 @@ test.each(["done", "cancelled", "dead"] as const)(
     const old = claimNextJob(db, { now: 2, queues: [JOB_KIND.merge] })!;
     db.run("UPDATE job SET status=? WHERE id=?", [status, id]);
     expect(await enqueueVerifiedMerge(db, { ...input, now: 3 })).toBe(id);
-    expect(jobVersionCurrent(db, old)).toBe(false);
+    expect(await jobVersionCurrent(sqliteDb(db), old)).toBe(false);
     const current = claimNextJob(db, { now: 3, queues: [JOB_KIND.merge] })!;
     expect(current.id).toBe(old.id);
     expect(current.activationId).toBeGreaterThan(old.activationId);
-    expect(jobVersionCurrent(db, old)).toBe(false);
-    expect(jobVersionCurrent(db, current)).toBe(true);
+    expect(await jobVersionCurrent(sqliteDb(db), old)).toBe(false);
+    expect(await jobVersionCurrent(sqliteDb(db), current)).toBe(true);
     expect(completeJob(db, old, 4)).toBe(false);
     expect(getJob(db, id)).toEqual(current);
     db.close();
@@ -114,7 +115,7 @@ test.each(["done", "cancelled", "dead"] as const)(
 
 test.each(["linear", "answer"] as const)(
   "revived %s human turns reset both budgets and preserve per-activation retry baselines and returns",
-  (kind) => {
+  async (kind) => {
     const db = fixture();
     let now = 2;
     const admit = (key: string, reason: "ci" | "follow_up" | "answer") =>
@@ -124,27 +125,47 @@ test.each(["linear", "answer"] as const)(
     const reason = kind === "linear" ? "follow_up" : "answer";
     const first = admit(key(1), reason);
     const oldActivation = getJob(db, first)!.activationId;
-    saveHumanRetryWindow(db, "item", first, ["first"]);
-    recordRebaseReturn(db, { itemId: "item", jobId: first, candidate: "a", reason: "linear" });
+    await saveHumanRetryWindow(sqliteDb(db), "item", first, ["first"]);
+    await recordRebaseReturn(sqliteDb(db), {
+      itemId: "item",
+      jobId: first,
+      candidate: "a",
+      reason: "linear",
+    });
     admit("same-head-ci", "ci");
     expect(fixRounds(db, "item")).toBe(1);
     const second = admit(key(2), reason);
-    saveHumanRetryWindow(db, "item", second, ["second"]);
-    recordRebaseReturn(db, { itemId: "item", jobId: second, candidate: "b", reason: "linear" });
+    await saveHumanRetryWindow(sqliteDb(db), "item", second, ["second"]);
+    await recordRebaseReturn(sqliteDb(db), {
+      itemId: "item",
+      jobId: second,
+      candidate: "b",
+      reason: "linear",
+    });
     admit("same-head-ci", "ci");
     expect(fixRounds(db, "item")).toBe(1);
     const owner = getWorkItem(db, "item")!;
     expect(admit(key(1), reason)).toBe(first);
     expect(fixRounds(db, "item")).toBe(0);
-    expect(rebaseReturns(db, "item")).toBe(0);
+    expect(await rebaseReturns(db, "item")).toBe(0);
     expect(getJob(db, first)!.activationId).toBeGreaterThan(getJob(db, second)!.activationId);
     expect(latestUserTurn(db, "item")).toBe(getJob(db, first)!.activationId);
-    saveHumanRetryWindow(db, "item", first, ["third"]);
-    saveHumanRetryWindow(db, "item", first, ["redispatch"]);
-    expect(humanRetryBaseline(db, "item")).toEqual(["third"]);
-    recordRebaseReturn(db, { itemId: "item", jobId: first, candidate: "c", reason: "linear" });
-    recordRebaseReturn(db, { itemId: "item", jobId: first, candidate: "replay", reason: "linear" });
-    expect(rebaseReturns(db, "item")).toBe(1);
+    await saveHumanRetryWindow(sqliteDb(db), "item", first, ["third"]);
+    await saveHumanRetryWindow(sqliteDb(db), "item", first, ["redispatch"]);
+    expect(await humanRetryBaseline(sqliteDb(db), "item")).toEqual(["third"]);
+    await recordRebaseReturn(sqliteDb(db), {
+      itemId: "item",
+      jobId: first,
+      candidate: "c",
+      reason: "linear",
+    });
+    await recordRebaseReturn(sqliteDb(db), {
+      itemId: "item",
+      jobId: first,
+      candidate: "replay",
+      reason: "linear",
+    });
+    expect(await rebaseReturns(db, "item")).toBe(1);
     expect(listRebaseReturns(db, "item", 0)).toHaveLength(3);
     expect(
       db
@@ -157,14 +178,14 @@ test.each(["linear", "answer"] as const)(
       { activation_id: getJob(db, first)!.activationId },
     ]);
     expect(restart(db, owner, { reason, body: "replay", jobKey: key(1), now })).toBeNull();
-    expect(rebaseReturns(db, "item")).toBe(1);
+    expect(await rebaseReturns(db, "item")).toBe(1);
     admit("same-head-ci", "ci");
     expect(fixRounds(db, "item")).toBe(1);
     db.close();
   },
 );
 
-test("repeated non-human rebase returns count once per activation", () => {
+test("repeated non-human rebase returns count once per activation", async () => {
   const db = fixture();
   for (const now of [2, 3]) {
     const id = restart(db, getWorkItem(db, "item")!, {
@@ -174,13 +195,18 @@ test("repeated non-human rebase returns count once per activation", () => {
       now,
     })!;
     for (let replay = 0; replay < 2; replay++)
-      recordRebaseReturn(db, { itemId: "item", jobId: id, candidate: "head", reason: "merge" });
-    expect(rebaseReturns(db, "item")).toBe(now - 1);
+      await recordRebaseReturn(sqliteDb(db), {
+        itemId: "item",
+        jobId: id,
+        candidate: "head",
+        reason: "merge",
+      });
+    expect(await rebaseReturns(db, "item")).toBe(now - 1);
   }
   db.close();
 });
 
-test("queue collisions roll back revival and fresh queue settings replace terminal settings", () => {
+test("queue collisions roll back revival and fresh queue settings replace terminal settings", async () => {
   const db = fixture();
   const id = enqueueJob(db, { queue: "other", jobKey: "collision", payload: { itemId: "item" } });
   db.run("UPDATE job SET status='done' WHERE id=?", [id]);
@@ -191,7 +217,7 @@ test("queue collisions roll back revival and fresh queue settings replace termin
   ).toThrow("different queue");
   expect(getWorkItem(db, "item")).toEqual(item);
   expect(getJob(db, id)).toEqual(before);
-  reenqueueJob(db, {
+  await reenqueueJob(sqliteDb(db), {
     queue: "other",
     jobKey: "collision",
     payload: { itemId: "item" },
@@ -212,7 +238,7 @@ test("queue collisions roll back revival and fresh queue settings replace termin
 
 test.each(["linear", "push"] as const)(
   "activation migration preserves %s returns, human windows, and job IDs",
-  (reason) => {
+  async (reason) => {
     const db = openDatabase(":memory:");
     legacyMigrate(db, {
       until:
@@ -240,8 +266,8 @@ test.each(["linear", "push"] as const)(
     legacyMigrate(db);
     expect(getJob(db, id)?.activationId).toBe(id);
     expect(latestUserTurn(db, "legacy")).toBe(id);
-    expect(humanRetryBaseline(db, "legacy")).toEqual(["old"]);
-    expect(rebaseReturns(db, "legacy")).toBe(1);
+    expect(await humanRetryBaseline(sqliteDb(db), "legacy")).toEqual(["old"]);
+    expect(await rebaseReturns(db, "legacy")).toBe(1);
     expect(listRebaseReturns(db, "legacy", 0)).toEqual([
       {
         jobId: id,
@@ -252,26 +278,31 @@ test.each(["linear", "push"] as const)(
       },
     ]);
     db.run("UPDATE job SET status='done' WHERE id=?", [id]);
-    reenqueueJob(db, {
+    await reenqueueJob(sqliteDb(db), {
       queue: JOB_KIND.resume,
       jobKey: "linear-turn:legacy:1",
       payload: { itemId: "legacy" },
       now: 2,
     });
     expect(getJob(db, id)!.activationId).toBeGreaterThan(id);
-    expect(rebaseReturns(db, "legacy")).toBe(0);
+    expect(await rebaseReturns(db, "legacy")).toBe(0);
     for (let replay = 0; replay < 2; replay++)
-      recordRebaseReturn(db, { itemId: "legacy", jobId: id, candidate: "fixed", reason });
-    expect(rebaseReturns(db, "legacy")).toBe(1);
+      await recordRebaseReturn(sqliteDb(db), {
+        itemId: "legacy",
+        jobId: id,
+        candidate: "fixed",
+        reason,
+      });
+    expect(await rebaseReturns(db, "legacy")).toBe(1);
     expect(listRebaseReturns(db, "legacy", 0)).toHaveLength(2);
-    saveHumanRetryWindow(db, "legacy", id, ["new"]);
-    expect(humanRetryBaseline(db, "legacy")).toEqual(["new"]);
+    await saveHumanRetryWindow(sqliteDb(db), "legacy", id, ["new"]);
+    expect(await humanRetryBaseline(sqliteDb(db), "legacy")).toEqual(["new"]);
     expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
     db.close();
   },
 );
 
-test("a revived older human row captures a new baseline once and outranks later row IDs", () => {
+test("a revived older human row captures a new baseline once and outranks later row IDs", async () => {
   const db = fixture();
   const first = enqueueJob(db, {
     queue: JOB_KIND.resume,
@@ -279,23 +310,23 @@ test("a revived older human row captures a new baseline once and outranks later 
     payload: { itemId: "item", reason: "answer" },
     now: 2,
   });
-  saveHumanRetryWindow(db, "item", first, ["first"]);
+  await saveHumanRetryWindow(sqliteDb(db), "item", first, ["first"]);
   const second = enqueueJob(db, {
     queue: JOB_KIND.resume,
     jobKey: "resume:answer:second",
     payload: { itemId: "item", reason: "answer" },
     now: 3,
   });
-  saveHumanRetryWindow(db, "item", second, ["second"]);
+  await saveHumanRetryWindow(sqliteDb(db), "item", second, ["second"]);
   db.run("UPDATE job SET status='done' WHERE id=?", [first]);
-  reenqueueJob(db, {
+  await reenqueueJob(sqliteDb(db), {
     queue: JOB_KIND.resume,
     jobKey: "resume:answer:first",
     payload: { itemId: "item", reason: "answer" },
     now: 4,
   });
-  saveHumanRetryWindow(db, "item", first, ["new first"]);
-  saveHumanRetryWindow(db, "item", first, ["replayed"]);
-  expect(humanRetryBaseline(db, "item")).toEqual(["new first"]);
+  await saveHumanRetryWindow(sqliteDb(db), "item", first, ["new first"]);
+  await saveHumanRetryWindow(sqliteDb(db), "item", first, ["replayed"]);
+  expect(await humanRetryBaseline(sqliteDb(db), "item")).toEqual(["new first"]);
   db.close();
 });

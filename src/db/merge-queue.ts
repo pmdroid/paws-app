@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { aliasedTable, and, asc, desc, eq, inArray, lt, max, ne, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { jsonField } from "./json-text";
 
 /**
@@ -57,16 +57,16 @@ export function* joinMergeQueueSteps(q: Q, input: JoinMergeQueue) {
  * Join the lane at the end, in the order tasks became ready. A task already in the queue keeps its
  * place and its lane. `lane` is a Linear project id, or `''` (the default) for the whole repository.
  */
-export function joinMergeQueue(db: Database, input: JoinMergeQueue): void {
-  settled(sqliteDb(db).run((q) => joinMergeQueueSteps(q, input)));
+export async function joinMergeQueue(store: Db, input: JoinMergeQueue): Promise<void> {
+  await store.run((q) => joinMergeQueueSteps(q, input));
 }
 
 export function* leaveMergeQueueSteps(q: Q, itemId: string) {
   yield* q.exec(q.orm.delete(q.t.mergeQueueEntry).where(eq(q.t.mergeQueueEntry.itemId, itemId)));
 }
 
-export function leaveMergeQueue(db: Database, itemId: string): void {
-  settled(sqliteDb(db).run((q) => leaveMergeQueueSteps(q, itemId)));
+export async function leaveMergeQueue(store: Db, itemId: string): Promise<void> {
+  await store.run((q) => leaveMergeQueueSteps(q, itemId));
 }
 
 export function* inMergeQueueSteps(q: Q, itemId: string) {
@@ -88,8 +88,8 @@ export function* inMergeQueueSteps(q: Q, itemId: string) {
 }
 
 /** Whether the task holds a place in a merge queue: `merge_queue`, or `verifying` in it. */
-export function inMergeQueue(db: Database, itemId: string): boolean {
-  return settled(sqliteDb(db).run((q) => inMergeQueueSteps(q, itemId)));
+export async function inMergeQueue(store: Db, itemId: string): Promise<boolean> {
+  return store.run((q) => inMergeQueueSteps(q, itemId));
 }
 
 export function* restartedFromMergeQueueSteps(q: Q, itemId: string) {
@@ -132,8 +132,8 @@ export function* restartedFromMergeQueueSteps(q: Q, itemId: string) {
  * Whether the task's latest restart sent it back to the agent from the merge queue, or from the
  * re-verify of a task in it: a CI, conflict, review or findings fix of a finished pull request.
  */
-export function restartedFromMergeQueue(db: Database, itemId: string): boolean {
-  return settled(sqliteDb(db).run((q) => restartedFromMergeQueueSteps(q, itemId)));
+export async function restartedFromMergeQueue(store: Db, itemId: string): Promise<boolean> {
+  return store.run((q) => restartedFromMergeQueueSteps(q, itemId));
 }
 
 export function* keepMergeQueuePlaceSteps(q: Q, itemId: string) {
@@ -147,8 +147,8 @@ export function* keepMergeQueuePlaceSteps(q: Q, itemId: string) {
  * Keep the task's place while it goes back to the agent for a rebase. A halt leaves the kept
  * place alone, and the next Closeout acceptance returns the task to it.
  */
-export function keepMergeQueuePlace(db: Database, itemId: string): void {
-  settled(sqliteDb(db).run((q) => keepMergeQueuePlaceSteps(q, itemId)));
+export async function keepMergeQueuePlace(store: Db, itemId: string): Promise<void> {
+  await store.run((q) => keepMergeQueuePlaceSteps(q, itemId));
 }
 
 export function* releaseMergeQueuePlaceSteps(q: Q, itemId: string) {
@@ -161,8 +161,8 @@ export function* releaseMergeQueuePlaceSteps(q: Q, itemId: string) {
 }
 
 /** Leave the queue unless the place is kept. */
-export function releaseMergeQueuePlace(db: Database, itemId: string): void {
-  settled(sqliteDb(db).run((q) => releaseMergeQueuePlaceSteps(q, itemId)));
+export async function releaseMergeQueuePlace(store: Db, itemId: string): Promise<void> {
+  await store.run((q) => releaseMergeQueuePlaceSteps(q, itemId));
 }
 
 export function* returnToMergeQueueSteps(q: Q, itemId: string) {
@@ -174,8 +174,8 @@ export function* returnToMergeQueueSteps(q: Q, itemId: string) {
 }
 
 /** Closeout accepted a new head: back to a kept place, or out of the queue to join at the end. */
-export function returnToMergeQueue(db: Database, itemId: string): void {
-  settled(sqliteDb(db).run((q) => returnToMergeQueueSteps(q, itemId)));
+export async function returnToMergeQueue(store: Db, itemId: string): Promise<void> {
+  await store.run((q) => returnToMergeQueueSteps(q, itemId));
 }
 
 export function* markMergeQueueNotifiedSteps(q: Q, itemId: string, position: number) {
@@ -188,8 +188,12 @@ export function* markMergeQueueNotifiedSteps(q: Q, itemId: string, position: num
   );
 }
 
-export function markMergeQueueNotified(db: Database, itemId: string, position: number): void {
-  settled(sqliteDb(db).run((q) => markMergeQueueNotifiedSteps(q, itemId, position)));
+export async function markMergeQueueNotified(
+  store: Db,
+  itemId: string,
+  position: number,
+): Promise<void> {
+  await store.run((q) => markMergeQueueNotifiedSteps(q, itemId, position));
 }
 
 type MergeHeld = (q: Q, itemId: string) => Steps<boolean>;
@@ -281,8 +285,8 @@ export function* wakeMergesBehindSteps(q: Q, now: number) {
 }
 
 /** A holder departed or changed eligibility: parked followers check again now. */
-export function wakeMergesBehind(db: Database, now: number): void {
-  settled(sqliteDb(db).run((q) => wakeMergesBehindSteps(q, now)));
+export async function wakeMergesBehind(store: Db, now: number): Promise<void> {
+  await store.run((q) => wakeMergesBehindSteps(q, now));
 }
 
 export function* mergeQueueReadyTimesSteps(q: Q) {
@@ -294,6 +298,8 @@ export function* mergeQueueReadyTimesSteps(q: Q) {
   );
 }
 
-export function mergeQueueReadyTimes(db: Database): { itemId: string; readyAt: number }[] {
-  return settled(sqliteDb(db).run(mergeQueueReadyTimesSteps));
+export async function mergeQueueReadyTimes(
+  store: Db,
+): Promise<{ itemId: string; readyAt: number }[]> {
+  return store.run((q) => mergeQueueReadyTimesSteps(q));
 }

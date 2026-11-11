@@ -752,12 +752,12 @@ describe("skill pins", () => {
     const installed = [
       { name: "fake", version: "1.0.0", sha256: "a", status: "installed" as const },
     ];
-    recordRunnerSkills(db, "runner-1", installed, 2);
-    recordRunnerSkills(db, "runner-2", installed, 2);
+    await recordRunnerSkills(sqliteDb(db), "runner-1", installed, 2);
+    await recordRunnerSkills(sqliteDb(db), "runner-2", installed, 2);
     await removeSkill({ db, now: 5 }, "fake");
-    recordRunnerSkills(db, "runner-1", [], 6);
+    await recordRunnerSkills(sqliteDb(db), "runner-1", [], 6);
     expect((await getSkill(sqliteDb(db), "fake"))?.removedAt).toBe(5);
-    recordRunnerSkills(db, "runner-2", [], 7);
+    await recordRunnerSkills(sqliteDb(db), "runner-2", [], 7);
     expect(await getSkill(sqliteDb(db), "fake")).toBeNull();
   });
 });
@@ -989,7 +989,7 @@ describe("skill settings API", () => {
 
     expect(added.error).toBeUndefined();
     expect(added.notice).toMatch(/^Added impeccable [0-9a-f]{7} and 2 hooks\.$/);
-    expect(listHooks(db).map(({ id: _id, ...hook }) => hook)).toEqual([
+    expect((await listHooks(sqliteDb(db))).map(({ id: _id, ...hook }) => hook)).toEqual([
       {
         event: "session_start",
         matcher: null,
@@ -1034,8 +1034,8 @@ describe("skill settings API", () => {
     );
 
     for (let index = 0; index < 18; index += 1)
-      saveHook(
-        db,
+      await saveHook(
+        sqliteDb(db),
         {
           id: `hook_${index}`,
           event: "stop",
@@ -1053,7 +1053,7 @@ describe("skill settings API", () => {
       "Paws runs at most 20 hooks. Remove some, or add fewer of this skill's hooks.",
     );
     expect(await getSkill(sqliteDb(db), "impeccable")).toBeNull();
-    expect(listHooks(db)).toHaveLength(18);
+    expect(await listHooks(sqliteDb(db))).toHaveLength(18);
     expect(audit).toEqual([]);
   });
 

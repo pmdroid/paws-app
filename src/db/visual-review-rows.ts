@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, inArray, isNotNull, sql, type SQL } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
 
 export type VisualReviewRow = {
@@ -78,8 +77,8 @@ export function* insertVisualReviewRowSteps(q: Q, row: NewVisualReviewRow) {
   );
 }
 
-export function insertVisualReviewRow(db: Database, row: NewVisualReviewRow): void {
-  settled(sqliteDb(db).run((q) => insertVisualReviewRowSteps(q, row)));
+export async function insertVisualReviewRow(store: Db, row: NewVisualReviewRow): Promise<void> {
+  await store.run((q) => insertVisualReviewRowSteps(q, row));
 }
 
 export function* visualReviewRowSteps(
@@ -92,8 +91,11 @@ export function* visualReviewRowSteps(
     | undefined;
 }
 
-export function visualReviewRow(db: Database, questionId: string): VisualReviewRow | undefined {
-  return settled(sqliteDb(db).run((q) => visualReviewRowSteps(q, questionId)));
+export async function visualReviewRow(
+  store: Db,
+  questionId: string,
+): Promise<VisualReviewRow | undefined> {
+  return store.run((q) => visualReviewRowSteps(q, questionId));
 }
 
 export function* approvedVisualReviewRowsSteps(
@@ -119,12 +121,12 @@ export function* approvedVisualReviewRowsSteps(
   )) as VisualReviewRow[];
 }
 
-export function approvedVisualReviewRows(
-  db: Database,
+export async function approvedVisualReviewRows(
+  store: Db,
   itemId: string,
   checkId: string,
-): VisualReviewRow[] {
-  return settled(sqliteDb(db).run((q) => approvedVisualReviewRowsSteps(q, itemId, checkId)));
+): Promise<VisualReviewRow[]> {
+  return store.run((q) => approvedVisualReviewRowsSteps(q, itemId, checkId));
 }
 
 export function* recordVisualReviewAnswerRowSteps(
@@ -153,8 +155,8 @@ export function* recordVisualReviewAnswerRowSteps(
   );
 }
 
-export function recordVisualReviewAnswerRow(
-  db: Database,
+export async function recordVisualReviewAnswerRow(
+  store: Db,
   questionId: string,
   answer: {
     outcome: string;
@@ -163,8 +165,8 @@ export function recordVisualReviewAnswerRow(
     feedback?: string;
     headCommit?: string;
   },
-): void {
-  settled(sqliteDb(db).run((q) => recordVisualReviewAnswerRowSteps(q, questionId, answer)));
+): Promise<void> {
+  await store.run((q) => recordVisualReviewAnswerRowSteps(q, questionId, answer));
 }
 
 export function* markVisualReviewRowStaleSteps(q: Q, questionId: string) {
@@ -177,8 +179,8 @@ export function* markVisualReviewRowStaleSteps(q: Q, questionId: string) {
   );
 }
 
-export function markVisualReviewRowStale(db: Database, questionId: string): void {
-  settled(sqliteDb(db).run((q) => markVisualReviewRowStaleSteps(q, questionId)));
+export async function markVisualReviewRowStale(store: Db, questionId: string): Promise<void> {
+  await store.run((q) => markVisualReviewRowStaleSteps(q, questionId));
 }
 
 export function* itemVisualReviewRowsSteps(
@@ -203,15 +205,13 @@ export function* itemVisualReviewRowsSteps(
   )) as VisualReviewRow[];
 }
 
-export function itemVisualReviewRows(
-  db: Database,
+export async function itemVisualReviewRows(
+  store: Db,
   itemId: string,
   outcomes: readonly string[],
   reviewsOnly: boolean,
-): VisualReviewRow[] {
-  return settled(
-    sqliteDb(db).run((q) => itemVisualReviewRowsSteps(q, itemId, outcomes, reviewsOnly)),
-  );
+): Promise<VisualReviewRow[]> {
+  return store.run((q) => itemVisualReviewRowsSteps(q, itemId, outcomes, reviewsOnly));
 }
 
 export function* visualReviewRoundCountsSteps(q: Q, itemId: string, checkId: string) {
@@ -229,12 +229,12 @@ export function* visualReviewRoundCountsSteps(q: Q, itemId: string, checkId: str
   };
 }
 
-export function visualReviewRoundCounts(
-  db: Database,
+export async function visualReviewRoundCounts(
+  store: Db,
   itemId: string,
   checkId: string,
-): { changes: number; continued: number } {
-  return settled(sqliteDb(db).run((q) => visualReviewRoundCountsSteps(q, itemId, checkId)));
+): Promise<{ changes: number; continued: number }> {
+  return store.run((q) => visualReviewRoundCountsSteps(q, itemId, checkId));
 }
 
 export function* lastVisualReviewFeedbackRowSteps(q: Q, itemId: string, checkId: string) {
@@ -257,10 +257,10 @@ export function* lastVisualReviewFeedbackRowSteps(q: Q, itemId: string, checkId:
   return row ?? null;
 }
 
-export function lastVisualReviewFeedbackRow(
-  db: Database,
+export async function lastVisualReviewFeedbackRow(
+  store: Db,
   itemId: string,
   checkId: string,
-): { questionId: string; feedback: string | null } | null {
-  return settled(sqliteDb(db).run((q) => lastVisualReviewFeedbackRowSteps(q, itemId, checkId)));
+): Promise<{ questionId: string; feedback: string | null } | null> {
+  return store.run((q) => lastVisualReviewFeedbackRowSteps(q, itemId, checkId));
 }

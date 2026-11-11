@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, gt, inArray, isNull, notExists } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 
 export function* runnerHealthCommandOutstandingSteps(q: Q, runnerId: string, at: number) {
   const { runnerCommand: c, runnerHealthResult: h, runnerLogin: l } = q.t;
@@ -33,10 +32,10 @@ export function* runnerHealthCommandOutstandingSteps(q: Q, runnerId: string, at:
   return row !== undefined;
 }
 
-export function runnerHealthCommandOutstanding(
-  db: Database,
+export async function runnerHealthCommandOutstanding(
+  store: Db,
   runnerId: string,
   at: number,
-): boolean {
-  return settled(sqliteDb(db).run((q) => runnerHealthCommandOutstandingSteps(q, runnerId, at)));
+): Promise<boolean> {
+  return store.run((q) => runnerHealthCommandOutstandingSteps(q, runnerId, at));
 }

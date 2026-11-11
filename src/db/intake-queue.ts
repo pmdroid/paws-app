@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 
 export type IntakeQueueEntry = {
   sessionId: string | null;
@@ -64,6 +63,6 @@ export function* listIntakeQueueSteps(q: Q) {
   return rows as IntakeQueueEntry[];
 }
 
-export function listIntakeQueue(db: Database): IntakeQueueEntry[] {
-  return settled(sqliteDb(db).run(listIntakeQueueSteps));
+export async function listIntakeQueue(store: Db): Promise<IntakeQueueEntry[]> {
+  return store.run((q) => listIntakeQueueSteps(q));
 }
