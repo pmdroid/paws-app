@@ -14,18 +14,18 @@ import {
   rmSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { openPawsStore, PG_MIGRATIONS_FOLDER, pgSchema, type Db, type PgliteDb } from "../src/db";
 
-const CACHE = new URL("../node_modules/.cache/", import.meta.url).pathname;
+const PGLITE_PACKAGE = Bun.resolveSync("@electric-sql/pglite/package.json", import.meta.dir);
+
+const CACHE = join(dirname(PGLITE_PACKAGE), "..", "..", ".cache");
 
 const TEMPLATE = join(
   CACHE,
   `paws-pglite-template-${createHash("sha256")
     .update(readFileSync(join(PG_MIGRATIONS_FOLDER, "meta/_journal.json")))
-    .update(
-      readFileSync(new URL("../node_modules/@electric-sql/pglite/package.json", import.meta.url)),
-    )
+    .update(readFileSync(PGLITE_PACKAGE))
     .digest("hex")
     .slice(0, 16)}`,
 );
