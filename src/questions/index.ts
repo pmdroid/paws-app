@@ -58,6 +58,7 @@ export {
   getQuestion,
   getQuestionSteps,
   openQuestion,
+  openQuestionSteps,
   questionReplyConsumedSteps,
   type QuestionKind,
   type StoredQuestion,

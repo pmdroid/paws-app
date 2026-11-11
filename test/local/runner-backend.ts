@@ -61,9 +61,9 @@ import {
   createFakeRunnerTranscriptObjects,
   RUNNER_TRANSCRIPT_CHUNK_BYTES,
 } from "../../src/runner-transcripts";
-import { openQuestion } from "../../src/questions";
+import { openQuestionSteps } from "../../src/questions";
 import { answerQuestion, ask as askQuestion } from "../questions";
-import { applyWorkItemEvent } from "../../src/db";
+import { applyWorkItemEvent, applyWorkItemEventSteps } from "../../src/db";
 import { PawsShutdown, RunnerCapacityWait } from "../../src/core";
 import { createRunnerPlacement } from "../../src/runner-placement";
 
@@ -2097,13 +2097,15 @@ export async function probeRunnerBackend(
             assert.equal(request.question, "Include archived rows?");
             assert.deepEqual(request.options, [{ label: "Include", value: "yes" }]);
             assert.equal(request.context, undefined);
-            await applyWorkItemEvent(sqliteDb(db), asked.id, "blocking_question");
-            const question = await openQuestion(db, {
-              itemId: asked.id,
-              runId: asked.run.id,
-              sessionId: `session-${sequence}`,
-              body: request.question,
-              now,
+            const question = await sqliteDb(db).transaction(function* (q) {
+              yield* applyWorkItemEventSteps(q, asked.id, "blocking_question");
+              return yield* openQuestionSteps(q, {
+                itemId: asked.id,
+                runId: asked.run.id,
+                sessionId: `session-${sequence}`,
+                body: request.question,
+                now,
+              });
             });
             opened = true;
             await delay(10, undefined, { signal: context.signal });
@@ -2872,13 +2874,16 @@ export async function probeRunnerBackend(
         },
         askTeam: {
           async ask(request, context) {
-            await applyWorkItemEvent(sqliteDb(db), artifactItem.id, "blocking_question");
-            const question = await openQuestion(db, {
-              itemId: artifactItem.id,
-              runId: artifactItem.run.id,
-              sessionId: getWorkItem(db, artifactItem.id)!.sessionKey!,
-              body: request.question,
-              now,
+            const sessionId = getWorkItem(db, artifactItem.id)!.sessionKey!;
+            const question = await sqliteDb(db).transaction(function* (q) {
+              yield* applyWorkItemEventSteps(q, artifactItem.id, "blocking_question");
+              return yield* openQuestionSteps(q, {
+                itemId: artifactItem.id,
+                runId: artifactItem.run.id,
+                sessionId,
+                body: request.question,
+                now,
+              });
             });
             continuationState.questionId = question.id;
             while (continuationState.answer === null)
