@@ -6,7 +6,7 @@ import { chmod, link, lstat, mkdir, open, realpath, unlink } from "node:fs/promi
 import { dirname, join } from "node:path";
 import { git, requestText, type AgentInputFile } from "../acp";
 import type { LinearFileTransfer } from "../linear";
-import { getVisualReviewMark, recordLinearInput, sqliteDb } from "../db";
+import { getVisualReviewMarkSteps, recordLinearInput, sqliteDb } from "../db";
 import { readEvidenceBytes, type EvidenceStorage } from "../evidence";
 
 const MAX_BYTES = 20 * 1024 * 1024;
@@ -160,7 +160,7 @@ export function createReviewMarkLoader(options: {
     const local = new Map<string, string>();
     for (const id of ids) {
       request.signal.throwIfAborted();
-      const mark = getVisualReviewMark(options.db, id);
+      const mark = await sqliteDb(options.db).run((q) => getVisualReviewMarkSteps(q, id));
       if (mark?.itemId !== options.itemId) continue;
       const bytes = await readEvidenceBytes(options.db, options.storage, id);
       if (digest(bytes) !== mark.sha256) continue;
