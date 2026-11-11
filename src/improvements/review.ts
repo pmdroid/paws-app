@@ -11,11 +11,12 @@ import {
   listRetroEvidenceSteps,
   listWorkspaceRepositories,
   listWorkspaceRepositoriesSteps,
-  listWorkspaceRepositoryNames,
+  listWorkspaceRepositoryNamesSteps,
   repairImprovementDestinationSteps,
   requeueImprovementDeliverySteps,
+  settled,
   sqliteDb,
-  workspaceMember,
+  workspaceMemberSteps,
   workspaceMemberUsable,
   type ImprovementDelivery,
   type ImprovementProposal,
@@ -24,7 +25,13 @@ import {
   type RetroEvidence,
   type Steps,
 } from "../db";
-import { inboxCounts, listInboxItems, type ImprovementAccess, type InboxItem } from "./inbox";
+import {
+  inboxCounts,
+  listInboxItems,
+  listInboxItemsSteps,
+  type ImprovementAccess,
+  type InboxItem,
+} from "./inbox";
 
 export type ImprovementReviewer = ImprovementAccess & {
   userId: string;
@@ -225,12 +232,23 @@ function* improvementViewSteps(q: Q, item: InboxItem): Steps<ImprovementView> {
   };
 }
 
+export function* findInboxItemSteps(
+  q: Q,
+  access: ImprovementAccess,
+  improvementId: string,
+): Steps<InboxItem | null> {
+  return (
+    (yield* listInboxItemsSteps(q, access)).find((item) => item.improvement.id === improvementId) ??
+    null
+  );
+}
+
 export function findInboxItem(
   db: Database,
   access: ImprovementAccess,
   improvementId: string,
 ): InboxItem | null {
-  return listInboxItems(db, access).find((item) => item.improvement.id === improvementId) ?? null;
+  return settled(sqliteDb(db).run((q) => findInboxItemSteps(q, access, improvementId)));
 }
 
 export type InboxFilter = {
@@ -278,17 +296,25 @@ export async function listImprovementPage(
   };
 }
 
-export function memberRepositories(db: Database, workspaceId: string, userId: string): string[] {
-  const member = workspaceMember(db, workspaceId, userId);
+export function* memberRepositoriesSteps(
+  q: Q,
+  workspaceId: string,
+  userId: string,
+): Steps<string[]> {
+  const member = yield* workspaceMemberSteps(q, workspaceId, userId);
   if (!workspaceMemberUsable(member)) return [];
-  if (member.role === "admin") return listWorkspaceRepositoryNames(db, workspaceId);
+  if (member.role === "admin") return yield* listWorkspaceRepositoryNamesSteps(q, workspaceId);
   return [
     ...new Set(
-      listWorkspaceRepositories(db, workspaceId)
+      (yield* listWorkspaceRepositoriesSteps(q, workspaceId))
         .filter((entry) => member.teamIds.includes(entry.teamId))
         .map((entry) => entry.repository),
     ),
   ];
+}
+
+export function memberRepositories(db: Database, workspaceId: string, userId: string): string[] {
+  return settled(sqliteDb(db).run((q) => memberRepositoriesSteps(q, workspaceId, userId)));
 }
 
 export function improvementDestinations(
@@ -347,7 +373,12 @@ function* evidenceOfSteps(q: Q, access: ImprovementAccess, item: InboxItem) {
         new Map((yield* listRetroEvidenceSteps(q, retroId)).map((e) => [e.evidenceId, e])),
       );
     const entry = byRetro.get(retroId)!.get(evidenceId);
-    if (!entry || access.retroEvidence?.(retroId)?.has(evidenceId) === false) continue;
+    if (
+      !entry ||
+      (access.retroEvidence !== undefined &&
+        (yield* access.retroEvidence(q, retroId))?.has(evidenceId) === false)
+    )
+      continue;
     evidence.push({
       kind: "retro_evidence" as const,
       ref,

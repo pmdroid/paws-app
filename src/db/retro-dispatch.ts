@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import { isDeepStrictEqual } from "node:util";
 import {
   and,
@@ -13,7 +12,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 import type * as pgSchema from "./schema-pg";
 import { ulid } from "./ulid";
 
@@ -109,8 +108,11 @@ type NewRetroDispatch = {
   now: number;
 };
 
-export function recordRetroDispatch(db: Database, input: NewRetroDispatch): RetroDispatch {
-  return settled(sqliteDb(db).run((q) => recordRetroDispatchSteps(q, input)));
+export async function recordRetroDispatch(
+  store: Db,
+  input: NewRetroDispatch,
+): Promise<RetroDispatch> {
+  return store.run((q) => recordRetroDispatchSteps(q, input));
 }
 
 export function* recordRetroDispatchSteps(q: Q, input: NewRetroDispatch) {
@@ -132,8 +134,11 @@ export function* recordRetroDispatchSteps(q: Q, input: NewRetroDispatch) {
   return (yield* getRetroDispatchSteps(q, input.commandId))!;
 }
 
-export function getRetroDispatch(db: Database, commandId: string): RetroDispatch | null {
-  return settled(sqliteDb(db).run((q) => getRetroDispatchSteps(q, commandId)));
+export async function getRetroDispatch(
+  store: Db,
+  commandId: string,
+): Promise<RetroDispatch | null> {
+  return store.run((q) => getRetroDispatchSteps(q, commandId));
 }
 
 export function* getRetroDispatchSteps(q: Q, commandId: string) {
@@ -144,8 +149,8 @@ export function* getRetroDispatchSteps(q: Q, commandId: string) {
   return row === undefined ? null : fromRow(q, row);
 }
 
-export function listRetroDispatches(db: Database, retroId: string): RetroDispatch[] {
-  return settled(sqliteDb(db).run((q) => listRetroDispatchesSteps(q, retroId)));
+export async function listRetroDispatches(store: Db, retroId: string): Promise<RetroDispatch[]> {
+  return store.run((q) => listRetroDispatchesSteps(q, retroId));
 }
 
 export function* listRetroDispatchesSteps(q: Q, retroId: string) {
@@ -160,8 +165,8 @@ export function* listRetroDispatchesSteps(q: Q, retroId: string) {
   return rows.map((row) => fromRow(q, row));
 }
 
-export function openRetroDispatch(db: Database, retroId: string): RetroDispatch | null {
-  return settled(sqliteDb(db).run((q) => openRetroDispatchSteps(q, retroId)));
+export async function openRetroDispatch(store: Db, retroId: string): Promise<RetroDispatch | null> {
+  return store.run((q) => openRetroDispatchSteps(q, retroId));
 }
 
 export function* openRetroDispatchSteps(q: Q, retroId: string) {
@@ -177,8 +182,8 @@ export function* openRetroDispatchSteps(q: Q, retroId: string) {
   return row === undefined ? null : fromRow(q, row);
 }
 
-export function unfinishedRetroDispatches(db: Database): RetroDispatch[] {
-  return settled(sqliteDb(db).run((q) => unfinishedRetroDispatchesSteps(q)));
+export async function unfinishedRetroDispatches(store: Db): Promise<RetroDispatch[]> {
+  return store.run((q) => unfinishedRetroDispatchesSteps(q));
 }
 
 export function* unfinishedRetroDispatchesSteps(q: Q) {
@@ -193,8 +198,11 @@ export function* unfinishedRetroDispatchesSteps(q: Q) {
   return rows.map((row) => fromRow(q, row));
 }
 
-export function deliverableRetroDispatches(db: Database, runnerId: string): RetroDispatch[] {
-  return settled(sqliteDb(db).run((q) => deliverableRetroDispatchesSteps(q, runnerId)));
+export async function deliverableRetroDispatches(
+  store: Db,
+  runnerId: string,
+): Promise<RetroDispatch[]> {
+  return store.run((q) => deliverableRetroDispatchesSteps(q, runnerId));
 }
 
 export function* deliverableRetroDispatchesSteps(q: Q, runnerId: string) {
@@ -217,8 +225,8 @@ export function* deliverableRetroDispatchesSteps(q: Q, runnerId: string) {
   return rows.map((row) => fromRow(q, row));
 }
 
-export function retroSlotsHeld(db: Database, runnerId: string): number {
-  return settled(sqliteDb(db).run((q) => retroSlotsHeldSteps(q, runnerId)));
+export async function retroSlotsHeld(store: Db, runnerId: string): Promise<number> {
+  return store.run((q) => retroSlotsHeldSteps(q, runnerId));
 }
 
 export function* retroSlotsHeldSteps(q: Q, runnerId: string) {
@@ -232,8 +240,8 @@ export function* retroSlotsHeldSteps(q: Q, runnerId: string) {
   return row!.held;
 }
 
-export function retroDispatchesNotStarted(db: Database, retroId: string): number {
-  return settled(sqliteDb(db).run((q) => retroDispatchesNotStartedSteps(q, retroId)));
+export async function retroDispatchesNotStarted(store: Db, retroId: string): Promise<number> {
+  return store.run((q) => retroDispatchesNotStartedSteps(q, retroId));
 }
 
 export function* retroDispatchesNotStartedSteps(q: Q, retroId: string) {
@@ -249,8 +257,12 @@ export function* retroDispatchesNotStartedSteps(q: Q, retroId: string) {
   return row!.count;
 }
 
-export function markRetroDispatchFetched(db: Database, commandId: string, now: number): void {
-  settled(sqliteDb(db).run((q) => markRetroDispatchFetchedSteps(q, commandId, now)));
+export async function markRetroDispatchFetched(
+  store: Db,
+  commandId: string,
+  now: number,
+): Promise<void> {
+  await store.run((q) => markRetroDispatchFetchedSteps(q, commandId, now));
 }
 
 export function* markRetroDispatchFetchedSteps(q: Q, commandId: string, now: number) {
@@ -265,8 +277,8 @@ export function* markRetroDispatchFetchedSteps(q: Q, commandId: string, now: num
 
 type Resign = { commandId: string; envelope: unknown; issuedAt: number; expiresAt: number };
 
-export function resignRetroDispatch(db: Database, input: Resign): boolean {
-  return settled(sqliteDb(db).run((q) => resignRetroDispatchSteps(q, input)));
+export async function resignRetroDispatch(store: Db, input: Resign): Promise<boolean> {
+  return store.run((q) => resignRetroDispatchSteps(q, input));
 }
 
 export function* resignRetroDispatchSteps(q: Q, input: Resign) {
@@ -293,8 +305,12 @@ export function* resignRetroDispatchSteps(q: Q, input: Resign) {
   return changed.length === 1;
 }
 
-export function acknowledgeRetroDispatch(db: Database, commandId: string, now: number): boolean {
-  return settled(sqliteDb(db).run((q) => acknowledgeRetroDispatchSteps(q, commandId, now)));
+export async function acknowledgeRetroDispatch(
+  store: Db,
+  commandId: string,
+  now: number,
+): Promise<boolean> {
+  return store.run((q) => acknowledgeRetroDispatchSteps(q, commandId, now));
 }
 
 export function* acknowledgeRetroDispatchSteps(q: Q, commandId: string, now: number) {
@@ -318,8 +334,12 @@ export function* acknowledgeRetroDispatchSteps(q: Q, commandId: string, now: num
   return changed.length === 1;
 }
 
-export function requestRetroDispatchCancel(db: Database, commandId: string, now: number): void {
-  settled(sqliteDb(db).run((q) => requestRetroDispatchCancelSteps(q, commandId, now)));
+export async function requestRetroDispatchCancel(
+  store: Db,
+  commandId: string,
+  now: number,
+): Promise<void> {
+  await store.run((q) => requestRetroDispatchCancelSteps(q, commandId, now));
 }
 
 export function* requestRetroDispatchCancelSteps(q: Q, commandId: string, now: number) {
@@ -334,11 +354,11 @@ export function* requestRetroDispatchCancelSteps(q: Q, commandId: string, now: n
 
 type DispatchResult = { commandId: string; result: unknown; now: number };
 
-export function recordRetroDispatchResult(
-  db: Database,
+export async function recordRetroDispatchResult(
+  store: Db,
   input: DispatchResult,
-): "recorded" | "duplicate" | "conflict" | "released" {
-  return settled(sqliteDb(db).transaction((q) => recordRetroDispatchResultSteps(q, input)));
+): Promise<"recorded" | "duplicate" | "conflict" | "released"> {
+  return store.transaction((q) => recordRetroDispatchResultSteps(q, input));
 }
 
 export function* recordRetroDispatchResultSteps(q: Q, input: DispatchResult) {
@@ -371,8 +391,8 @@ export function* recordRetroDispatchResultSteps(q: Q, input: DispatchResult) {
 
 type Release = { commandId: string; reason: Exclude<RetroDispatchRelease, "result">; now: number };
 
-export function releaseRetroDispatch(db: Database, input: Release): boolean {
-  return settled(sqliteDb(db).run((q) => releaseRetroDispatchSteps(q, input)));
+export async function releaseRetroDispatch(store: Db, input: Release): Promise<boolean> {
+  return store.run((q) => releaseRetroDispatchSteps(q, input));
 }
 
 export function* releaseRetroDispatchSteps(q: Q, input: Release) {
@@ -387,8 +407,12 @@ export function* releaseRetroDispatchSteps(q: Q, input: Release) {
   return changed.length === 1;
 }
 
-export function settleRetroDispatch(db: Database, commandId: string, now: number): void {
-  settled(sqliteDb(db).run((q) => settleRetroDispatchSteps(q, commandId, now)));
+export async function settleRetroDispatch(
+  store: Db,
+  commandId: string,
+  now: number,
+): Promise<void> {
+  await store.run((q) => settleRetroDispatchSteps(q, commandId, now));
 }
 
 export function* settleRetroDispatchSteps(q: Q, commandId: string, now: number) {
@@ -410,8 +434,11 @@ type Generation = {
   activeMs?: number;
 };
 
-export function recordRetroGeneration(db: Database, input: Generation): RetroGenerationRow {
-  return settled(sqliteDb(db).transaction((q) => recordRetroGenerationSteps(q, input)));
+export async function recordRetroGeneration(
+  store: Db,
+  input: Generation,
+): Promise<RetroGenerationRow> {
+  return store.transaction((q) => recordRetroGenerationSteps(q, input));
 }
 
 export function* recordRetroGenerationSteps(q: Q, input: Generation) {
@@ -442,8 +469,11 @@ export function* recordRetroGenerationSteps(q: Q, input: Generation) {
   return (yield* retroGenerationSteps(q, input.retroId))!;
 }
 
-export function retroGeneration(db: Database, retroId: string): RetroGenerationRow | null {
-  return settled(sqliteDb(db).run((q) => retroGenerationSteps(q, retroId)));
+export async function retroGeneration(
+  store: Db,
+  retroId: string,
+): Promise<RetroGenerationRow | null> {
+  return store.run((q) => retroGenerationSteps(q, retroId));
 }
 
 export function* retroGenerationSteps(q: Q, retroId: string) {
@@ -455,12 +485,12 @@ export function* retroGenerationSteps(q: Q, retroId: string) {
 }
 
 /** Why the dispatch for one attempt of a retro was released, or null when it was not. */
-export function retroDispatchReleaseReason(
-  db: Database,
+export async function retroDispatchReleaseReason(
+  store: Db,
   retroId: string,
   attempt: number,
-): string | null {
-  return settled(sqliteDb(db).run((q) => retroDispatchReleaseReasonSteps(q, retroId, attempt)));
+): Promise<string | null> {
+  return store.run((q) => retroDispatchReleaseReasonSteps(q, retroId, attempt));
 }
 
 export function* retroDispatchReleaseReasonSteps(q: Q, retroId: string, attempt: number) {
@@ -475,8 +505,11 @@ export function* retroDispatchReleaseReasonSteps(q: Q, retroId: string, attempt:
 }
 
 /** The dispatch of a retro's latest attempt, finished or not. */
-export function latestRetroDispatch(db: Database, retroId: string): RetroDispatch | null {
-  return settled(sqliteDb(db).run((q) => latestRetroDispatchSteps(q, retroId)));
+export async function latestRetroDispatch(
+  store: Db,
+  retroId: string,
+): Promise<RetroDispatch | null> {
+  return store.run((q) => latestRetroDispatchSteps(q, retroId));
 }
 
 export function* latestRetroDispatchSteps(q: Q, retroId: string) {
@@ -493,12 +526,12 @@ export function* latestRetroDispatchSteps(q: Q, retroId: string) {
 }
 
 /** The latest dispatch before `attempt` that recorded a result. */
-export function previousRetroResultDispatch(
-  db: Database,
+export async function previousRetroResultDispatch(
+  store: Db,
   retroId: string,
   attempt: number,
-): RetroDispatch | null {
-  return settled(sqliteDb(db).run((q) => previousRetroResultDispatchSteps(q, retroId, attempt)));
+): Promise<RetroDispatch | null> {
+  return store.run((q) => previousRetroResultDispatchSteps(q, retroId, attempt));
 }
 
 export function* previousRetroResultDispatchSteps(q: Q, retroId: string, attempt: number) {
@@ -521,8 +554,8 @@ export function* previousRetroResultDispatchSteps(q: Q, retroId: string, attempt
 }
 
 /** Whether any dispatch of the retro is still unreleased or unsettled. */
-export function retroHasUnfinishedDispatch(db: Database, retroId: string): boolean {
-  return settled(sqliteDb(db).run((q) => retroHasUnfinishedDispatchSteps(q, retroId)));
+export async function retroHasUnfinishedDispatch(store: Db, retroId: string): Promise<boolean> {
+  return store.run((q) => retroHasUnfinishedDispatchSteps(q, retroId));
 }
 
 export function* retroHasUnfinishedDispatchSteps(q: Q, retroId: string) {
@@ -541,8 +574,8 @@ export function* retroHasUnfinishedDispatchSteps(q: Q, retroId: string) {
  * Retros the dispatcher advances, oldest first: those still to generate, unless their generation
  * failed for good, and those with a dispatch still to release or settle.
  */
-export function retrosToAdvance(db: Database): string[] {
-  return settled(sqliteDb(db).run((q) => retrosToAdvanceSteps(q)));
+export async function retrosToAdvance(store: Db): Promise<string[]> {
+  return store.run((q) => retrosToAdvanceSteps(q));
 }
 
 export function* retrosToAdvanceSteps(q: Q) {

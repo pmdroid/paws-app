@@ -1,6 +1,13 @@
 import { z } from "zod";
 import type { Database } from "bun:sqlite";
-import { auditWorkspaceAccessSteps, sqliteDb, workspaceMember, workspaceMemberUsable } from "../db";
+import {
+  auditWorkspaceAccessSteps,
+  sqliteDb,
+  workspaceMember,
+  workspaceMemberUsable,
+  type Q,
+  type Steps,
+} from "../db";
 import { journalCaught } from "../journal";
 import type { WorkspacePrincipal } from "../workspace";
 import {
@@ -45,10 +52,11 @@ const DESTINATION =
   /^\/api\/improvements\/([0-9A-Za-z]{1,64})\/deliveries\/([0-9a-f-]{36})\/destination$/;
 
 export type RetroEvidenceReader = (
+  q: Q,
   principal: WorkspacePrincipal,
   sessionIds: readonly string[],
   retroId: string,
-) => ReadonlySet<string> | null;
+) => Steps<ReadonlySet<string> | null>;
 
 const json = (body: unknown, status = 200) =>
   Response.json(body, { status, headers: { "cache-control": "no-store" } });
@@ -185,9 +193,12 @@ export function createImprovementsHttp(options: {
         teamIds: member.teamIds,
         ...(options.retroEvidence
           ? {
-              retroEvidence: (retroId: string) => {
+              retroEvidence: function* (q: Q, retroId: string) {
                 if (!evidence.has(retroId))
-                  evidence.set(retroId, options.retroEvidence!(principal, sessionIds, retroId));
+                  evidence.set(
+                    retroId,
+                    yield* options.retroEvidence!(q, principal, sessionIds, retroId),
+                  );
                 return evidence.get(retroId)!;
               },
             }

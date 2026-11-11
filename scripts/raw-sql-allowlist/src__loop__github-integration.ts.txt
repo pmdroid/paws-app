@@ -1,8 +1,0 @@
-src/loop/github-integration.ts | this.db.query("SELECT 1 FROM github_integration_hold WHERE question_id=?").get(questionId) !== | not yet converted to Drizzle
-src/loop/github-integration.ts | this.db.run( | not yet converted to Drizzle
-src/loop/github-integration.ts | this.db.run( | not yet converted to Drizzle
-src/loop/github-integration.ts | const holds = this.db .query<Hold, []>("SELECT * FROM github_integration_hold WHERE status='pending'") | not yet converted to Drizzle
-src/loop/github-integration.ts | this.db.run("UPDATE question SET body=? WHERE id=? AND status='open'", [ | not yet converted to Drizzle
-src/loop/github-integration.ts | this.db.run( | not yet converted to Drizzle
-src/loop/github-integration.ts | this.db.run( | not yet converted to Drizzle
-src/loop/github-integration.ts | this.db .query<{ status: string }, [string]>( | not yet converted to Drizzle

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { findingGroupingEnabled } from "../src/db";
+import { findingGroupingEnabled, sqliteDb } from "../src/db";
 import { handleFindingSettingsRequest, type FindingSettingsOptions } from "../src/settings";
 import { tempDb } from "./helpers";
 
@@ -41,9 +41,9 @@ test("grouping starts on and an admin can switch it off and on", async () => {
   const off = await handleFindingSettingsRequest(post({ grouping: false }), options("admin"));
   expect(off!.status).toBe(200);
   expect(await off!.json()).toMatchObject({ grouping: false });
-  expect(findingGroupingEnabled(db, "ws")).toBe(false);
+  expect(await findingGroupingEnabled(sqliteDb(db), "ws")).toBe(false);
   await handleFindingSettingsRequest(post({ grouping: true }), options("admin"));
-  expect(findingGroupingEnabled(db, "ws")).toBe(true);
+  expect(await findingGroupingEnabled(sqliteDb(db), "ws")).toBe(true);
   expect(audits).toEqual([
     ["settings.findings.grouping", "Turned daily finding grouping off"],
     ["settings.findings.grouping", "Turned daily finding grouping on"],
@@ -61,6 +61,6 @@ test("members, missing CSRF and malformed bodies cannot change grouping", async 
   expect(
     (await handleFindingSettingsRequest(post({ grouping: "no" }), options("admin")))!.status,
   ).toBe(400);
-  expect(findingGroupingEnabled(db, "ws")).toBe(true);
+  expect(await findingGroupingEnabled(sqliteDb(db), "ws")).toBe(true);
   expect(audits).toEqual([]);
 });

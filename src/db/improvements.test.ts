@@ -20,6 +20,7 @@ import {
   settleImprovementDelivery,
   type ImprovementProposalInput,
   type ImprovementSource,
+  sqliteDb,
 } from "./index";
 
 const REPO = "pmdroid/paws-app";
@@ -92,7 +93,7 @@ describe("improvement sources", () => {
     expect(retro.improvementId).not.toBe(daily.improvementId);
   });
 
-  test("an overlapping group can be attached explicitly without merging evidence", () => {
+  test("an overlapping group can be attached explicitly without merging evidence", async () => {
     const db = harness();
     const first = propose(db, { kind: "daily_finding", key: "finding:42" });
     const overlap = propose(
@@ -107,9 +108,10 @@ describe("improvement sources", () => {
       created: false,
       changed: true,
     });
-    expect(improvementBySource(db, "ws", { kind: "daily_finding", key: "finding:43" })!.id).toBe(
-      first.improvementId,
-    );
+    expect(
+      (await improvementBySource(sqliteDb(db), "ws", { kind: "daily_finding", key: "finding:43" }))!
+        .id,
+    ).toBe(first.improvementId);
     expect(
       listImprovementProposals(db, first.improvementId).map((row) => [
         row.source.key,
@@ -157,7 +159,7 @@ describe("improvement decisions", () => {
     expect(listImprovementDeliveries(db, improvementId)).toEqual([]);
   });
 
-  test("an accepted item keeps its decision through failed and unknown delivery", () => {
+  test("an accepted item keeps its decision through failed and unknown delivery", async () => {
     const db = harness();
     const { improvementId } = propose(db, { kind: "retro_item", key: "r1/a" });
     expect(
@@ -175,9 +177,9 @@ describe("improvement decisions", () => {
     expect(delivery!.id).toBe(improvementDeliveryId(improvementId, "create_issue"));
 
     const claim = { deliveryId: delivery!.id, owner: "w1", now: 10, leaseMs: 100 };
-    expect(claimImprovementDelivery(db, claim)!.attempts).toBe(1);
-    expect(claimImprovementDelivery(db, { ...claim, owner: "w2" })).toBeNull();
-    settleImprovementDelivery(db, {
+    expect((await claimImprovementDelivery(sqliteDb(db), claim))!.attempts).toBe(1);
+    expect(await claimImprovementDelivery(sqliteDb(db), { ...claim, owner: "w2" })).toBeNull();
+    await settleImprovementDelivery(sqliteDb(db), {
       deliveryId: delivery!.id,
       attempt: 1,
       owner: "w1",
@@ -187,8 +189,8 @@ describe("improvement decisions", () => {
     });
     expect(getImprovement(db, improvementId)!.reviewState).toBe("accepted");
 
-    claimImprovementDelivery(db, { ...claim, owner: "w2", now: 20 });
-    settleImprovementDelivery(db, {
+    await claimImprovementDelivery(sqliteDb(db), { ...claim, owner: "w2", now: 20 });
+    await settleImprovementDelivery(sqliteDb(db), {
       deliveryId: delivery!.id,
       attempt: 2,
       owner: "w2",
@@ -196,12 +198,12 @@ describe("improvement decisions", () => {
       error: "Response lost",
       now: 21,
     });
-    expect(claimableImprovementDeliveries(db, "ws", 22).map((row) => row.id)).toEqual([
-      delivery!.id,
-    ]);
-    claimImprovementDelivery(db, { ...claim, owner: "w3", now: 30 });
     expect(
-      settleImprovementDelivery(db, {
+      (await claimableImprovementDeliveries(sqliteDb(db), "ws", 22)).map((row) => row.id),
+    ).toEqual([delivery!.id]);
+    await claimImprovementDelivery(sqliteDb(db), { ...claim, owner: "w3", now: 30 });
+    expect(
+      await settleImprovementDelivery(sqliteDb(db), {
         deliveryId: delivery!.id,
         attempt: 3,
         owner: "w3",
@@ -218,7 +220,7 @@ describe("improvement decisions", () => {
       issue: { id: "issue-1", identifier: "PAS-1100", confirmedAt: 31 },
     });
     expect(
-      listImprovementDeliveryAttempts(db, delivery!.id).map((row) => [
+      (await listImprovementDeliveryAttempts(sqliteDb(db), delivery!.id)).map((row) => [
         row.attempt,
         row.owner,
         row.outcome,
@@ -233,23 +235,33 @@ describe("improvement decisions", () => {
     expect(() => db.run("UPDATE improvement_delivery_attempt SET error = 'x'")).toThrow(
       /immutable/,
     );
-    expect(claimableImprovementDeliveries(db, "ws", 40)).toEqual([]);
-    expect(listImprovementDecisions(db, improvementId).map((row) => row.reviewState)).toEqual([
-      "accepted",
-    ]);
+    expect(await claimableImprovementDeliveries(sqliteDb(db), "ws", 40)).toEqual([]);
+    expect(
+      (await listImprovementDecisions(sqliteDb(db), improvementId)).map((row) => row.reviewState),
+    ).toEqual(["accepted"]);
   });
 
-  test("an expired claim can be retaken and the old owner cannot settle it", () => {
+  test("an expired claim can be retaken and the old owner cannot settle it", async () => {
     const db = harness();
     const { improvementId } = propose(db, { kind: "retro_item", key: "r1/a" });
     accept(db, improvementId, { kind: "accept", proposalVersion: 1, intent: { kind: "create" } });
     const id = improvementDeliveryId(improvementId, "create_issue");
-    claimImprovementDelivery(db, { deliveryId: id, owner: "w1", now: 10, leaseMs: 5 });
+    await claimImprovementDelivery(sqliteDb(db), {
+      deliveryId: id,
+      owner: "w1",
+      now: 10,
+      leaseMs: 5,
+    });
     expect(
-      claimImprovementDelivery(db, { deliveryId: id, owner: "w2", now: 15, leaseMs: 5 }),
+      await claimImprovementDelivery(sqliteDb(db), {
+        deliveryId: id,
+        owner: "w2",
+        now: 15,
+        leaseMs: 5,
+      }),
     ).not.toBeNull();
     expect(
-      settleImprovementDelivery(db, {
+      await settleImprovementDelivery(sqliteDb(db), {
         deliveryId: id,
         attempt: 1,
         owner: "w1",
@@ -258,27 +270,41 @@ describe("improvement decisions", () => {
         now: 16,
       }),
     ).toBe(false);
-    expect(listImprovementDeliveryAttempts(db, id).map((row) => row.outcome)).toEqual([
-      "expired",
-      "claimed",
-    ]);
+    expect(
+      (await listImprovementDeliveryAttempts(sqliteDb(db), id)).map((row) => row.outcome),
+    ).toEqual(["expired", "claimed"]);
   });
 
-  test("a late response from an expired attempt cannot settle a retry by the same owner", () => {
+  test("a late response from an expired attempt cannot settle a retry by the same owner", async () => {
     const db = harness();
     const { improvementId } = propose(db, { kind: "retro_item", key: "r1/a" });
     accept(db, improvementId, { kind: "accept", proposalVersion: 1, intent: { kind: "create" } });
     const id = improvementDeliveryId(improvementId, "create_issue");
-    claimImprovementDelivery(db, { deliveryId: id, owner: "w", now: 10, leaseMs: 5 });
+    await claimImprovementDelivery(sqliteDb(db), {
+      deliveryId: id,
+      owner: "w",
+      now: 10,
+      leaseMs: 5,
+    });
     expect(
-      claimImprovementDelivery(db, { deliveryId: id, owner: "w", now: 15, leaseMs: 5 })!.attempts,
+      (await claimImprovementDelivery(sqliteDb(db), {
+        deliveryId: id,
+        owner: "w",
+        now: 15,
+        leaseMs: 5,
+      }))!.attempts,
     ).toBe(2);
     const settle = { deliveryId: id, owner: "w", now: 16 };
     expect(
-      settleImprovementDelivery(db, { ...settle, attempt: 1, outcome: "failed", error: "late" }),
+      await settleImprovementDelivery(sqliteDb(db), {
+        ...settle,
+        attempt: 1,
+        outcome: "failed",
+        error: "late",
+      }),
     ).toBe(false);
     expect(
-      settleImprovementDelivery(db, {
+      await settleImprovementDelivery(sqliteDb(db), {
         ...settle,
         attempt: 2,
         outcome: "succeeded",
@@ -291,7 +317,7 @@ describe("improvement decisions", () => {
     });
   });
 
-  test("two sources link to one issue and keep their own evidence", () => {
+  test("two sources link to one issue and keep their own evidence", async () => {
     const db = harness();
     const daily = propose(db, { kind: "daily_finding", key: "finding:42" });
     const retro = propose(
@@ -306,8 +332,13 @@ describe("improvement decisions", () => {
         intent: { kind: "link", issueId: "issue-7" },
       });
       const id = improvementDeliveryId(improvementId, "link_issue");
-      claimImprovementDelivery(db, { deliveryId: id, owner: "w", now: 10, leaseMs: 5 });
-      settleImprovementDelivery(db, {
+      await claimImprovementDelivery(sqliteDb(db), {
+        deliveryId: id,
+        owner: "w",
+        now: 10,
+        leaseMs: 5,
+      });
+      await settleImprovementDelivery(sqliteDb(db), {
         deliveryId: id,
         attempt: 1,
         owner: "w",
@@ -317,9 +348,7 @@ describe("improvement decisions", () => {
       });
     }
     expect(
-      improvementsForIssue(db, "ws", "issue-7")
-        .map((row) => row.id)
-        .sort(),
+      (await improvementsForIssue(sqliteDb(db), "ws", "issue-7")).map((row) => row.id).sort(),
     ).toEqual([daily.improvementId, retro.improvementId].sort());
     expect(listImprovementProposals(db, retro.improvementId)[0]!.evidence).toEqual(["retro:r1:e9"]);
     expect(listImprovementDeliveries(db, daily.improvementId).map((row) => row.operation)).toEqual([
@@ -346,7 +375,7 @@ describe("improvement decisions", () => {
 });
 
 describe("improvement outcomes", () => {
-  test("implementation and verification evolve independently and stay unknown by default", () => {
+  test("implementation and verification evolve independently and stay unknown by default", async () => {
     const db = harness();
     const { improvementId } = propose(db, { kind: "retro_item", key: "r1/a" });
     expect(getImprovement(db, improvementId)).toMatchObject({
@@ -398,7 +427,11 @@ describe("improvement outcomes", () => {
       verificationAt: 12,
     });
     expect(
-      listImprovementOutcomes(db, improvementId).map((row) => [row.track, row.state, row.revision]),
+      (await listImprovementOutcomes(sqliteDb(db), improvementId)).map((row) => [
+        row.track,
+        row.state,
+        row.revision,
+      ]),
     ).toEqual([
       ["implementation", "merged", null],
       ["verification", "verified", "abc123"],

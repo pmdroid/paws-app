@@ -88,7 +88,7 @@ export function addRunner(
     .run();
 }
 
-export function world(options: { activity?: boolean; retries?: number } = {}) {
+export async function world(options: { activity?: boolean; retries?: number } = {}) {
   const root = mkdtempSync(join(tmpdir(), "paws-retro-dispatch-"));
   const path = join(root, "paws.db");
   const db = openDatabase(path);
@@ -136,7 +136,11 @@ export function world(options: { activity?: boolean; retries?: number } = {}) {
     agentProfile: { agent: "codex", model: "gpt-x", effort: null },
     now: FIXTURE_END,
   });
-  const collected = collectRetroDigest(db, { retroId: "r1", artifactRoot: root, now: FIXTURE_END });
+  const collected = await collectRetroDigest(db, {
+    retroId: "r1",
+    artifactRoot: root,
+    now: FIXTURE_END,
+  });
   if (!collected.ok) throw new Error(collected.reason);
   const clock = { now: FIXTURE_END + 10_000 };
   const open = (database: Database) =>

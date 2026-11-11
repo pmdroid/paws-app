@@ -1,2 +1,0 @@
-src/runner-work/prune.ts | const mode = db.query<{ auto_vacuum: number }, []>("PRAGMA auto_vacuum").get(); | not yet converted to Drizzle
-src/runner-work/prune.ts | if (mode?.auto_vacuum === 2) db.run("PRAGMA incremental_vacuum"); | not yet converted to Drizzle
