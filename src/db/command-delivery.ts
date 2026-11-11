@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { and, eq, gt, ne } from "drizzle-orm";
 import { JOB_KIND, parseLinearCommand, type LinearCommand } from "../core";
 import { journalCaught } from "../journal";
-import { sqliteDb, type Db, type Q, type Steps } from "./db";
+import { storeOf, type Db, type Q, type Steps } from "./db";
 import { INSTANCE_DEAD_MS } from "./instances";
 import { getWorkItemSteps } from "./items";
 import {
@@ -22,7 +22,7 @@ export const COMMAND_DELIVERY_MS = 1_000;
 const boundInstances = new WeakMap<Db, string>();
 
 export function commandInstance(source: Database | Db): string | undefined {
-  return boundInstances.get("dialect" in source ? source : sqliteDb(source));
+  return boundInstances.get(storeOf(source));
 }
 
 export function bindInstance(store: Db, instanceId: string): void {

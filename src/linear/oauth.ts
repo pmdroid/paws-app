@@ -6,7 +6,7 @@ import {
   refreshCredential,
   writeCredentialSteps,
 } from "../credentials";
-import { sqliteDb, type Db, type Q, type Steps } from "../db";
+import { storeOf, type Db, type Q, type Steps } from "../db";
 
 /** Scopes for an install that can be delegated and mentioned. */
 export const LINEAR_APP_SCOPES = "read,write,app:assignable,app:mentionable";
@@ -96,7 +96,7 @@ export function readLinearEnv(source: EnvSource): LinearEnv {
 }
 
 export async function createLinearAuth(options: {
-  db: Database;
+  db: Database | Db;
   secretsDir: string;
   clientId: string | null;
   clientSecret: string | null;
@@ -109,7 +109,7 @@ export async function createLinearAuth(options: {
   const fetchImpl = options.fetch ?? fetch;
   const now = options.now ?? Date.now;
   const { db, secretsDir } = options;
-  const store = sqliteDb(db);
+  const store = storeOf(db);
   const readToken = () => readStoredToken(store, secretsDir);
   const accessToken = options.bootstrapAccessToken ?? null;
   if (accessToken !== null)

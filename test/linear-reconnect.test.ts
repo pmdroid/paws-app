@@ -62,7 +62,7 @@ test("verified host reconnection persists a new credential and restores the same
       requests.push({ url: String(url), init });
       return verified();
     },
-  })(f.home);
+  })(sqliteDb(f.db), f.home);
   expect(await reconnect.complete({ clientId: "client", token: f.next })).toBe(true);
   expect(await readStoredToken(sqliteDb(f.db), f.secretsDir)).toEqual(f.next);
   const reopened = openDatabase(join(f.home, "paws.db"));
@@ -95,7 +95,7 @@ test("an unchanged credential cannot restore access or make a verification reque
       requests++;
       return verified();
     },
-  })(f.home);
+  })(sqliteDb(f.db), f.home);
   await expect(reconnect.complete({ clientId: "client", token: f.previous })).rejects.toThrow(
     "new authorization grant",
   );
@@ -106,6 +106,7 @@ test("an unchanged credential cannot restore access or make a verification reque
 test("a claimed OAuth client without a verified app user cannot restore a revoked installation", async () => {
   const f = await fixture(false);
   const reconnect = await createLinearReconnect({ now: () => 20, fetch: async () => verified() })(
+    sqliteDb(f.db),
     f.home,
   );
   await expect(reconnect.complete({ clientId: "client", token: f.next })).rejects.toThrow(
@@ -137,7 +138,7 @@ test.each(["human", "other-app", "unauthorized", "errors", "missing"])(
           },
         });
       },
-    })(f.home);
+    })(sqliteDb(f.db), f.home);
     await expect(reconnect.complete({ clientId: "client", token: f.next })).rejects.toThrow();
     expect(await readStoredToken(sqliteDb(f.db), f.secretsDir)).toEqual(f.previous);
     expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("revoked");
@@ -156,7 +157,7 @@ test.each(["revocation", "credential"])(
         started.resolve();
         return released.promise;
       },
-    })(f.home);
+    })(sqliteDb(f.db), f.home);
     const pending = reconnect.complete({ clientId: "client", token: f.next });
     await started.promise;
     const expected =
@@ -180,6 +181,7 @@ test.each([20, 25])(
   async (createdAtMs) => {
     const f = await fixture();
     const reconnect = await createLinearReconnect({ now: () => 20, fetch: async () => verified() })(
+      sqliteDb(f.db),
       f.home,
     );
     await reconnect.complete({ clientId: "client", token: f.next });
@@ -198,6 +200,7 @@ test.each([20, 25])(
 test("historical revocation before the captured grant start stays deduped and cannot cancel the new installation", async () => {
   const f = await fixture();
   const reconnect = await createLinearReconnect({ now: () => 20, fetch: async () => verified() })(
+    sqliteDb(f.db),
     f.home,
   );
   await reconnect.complete({ clientId: "client", token: f.next });
@@ -216,6 +219,7 @@ test("historical revocation before the captured grant start stays deduped and ca
 test("a failed restoration write leaves both the credential and fence unchanged", async () => {
   const f = await fixture();
   const reconnect = await createLinearReconnect({ now: () => 20, fetch: async () => verified() })(
+    sqliteDb(f.db),
     f.home,
   );
   f.db.run(
@@ -231,7 +235,10 @@ test("a failed restoration write leaves both the credential and fence unchanged"
 test("a refresh started before revocation cannot overwrite the verified host reconnect credential", async () => {
   const f = await fixture();
   await (
-    await createLinearReconnect({ now: () => 20, fetch: async () => verified() })(f.home)
+    await createLinearReconnect({ now: () => 20, fetch: async () => verified() })(
+      sqliteDb(f.db),
+      f.home,
+    )
   ).complete({
     clientId: "client",
     token: f.next,
@@ -262,7 +269,10 @@ test("a refresh started before revocation cannot overwrite the verified host rec
     refreshToken: "fake-reconnected-refresh",
   };
   await (
-    await createLinearReconnect({ now: () => 40, fetch: async () => verified() })(f.home)
+    await createLinearReconnect({ now: () => 40, fetch: async () => verified() })(
+      sqliteDb(f.db),
+      f.home,
+    )
   ).complete({
     clientId: "client",
     token: latest,

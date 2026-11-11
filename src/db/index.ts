@@ -78,6 +78,7 @@ export { orm, type Orm } from "./orm";
 export {
   postgresDb,
   sqliteDb,
+  storeOf,
   type Db,
   type PgDb,
   type PgOrm,

@@ -82,7 +82,7 @@ const reconnect = await createLinearReconnect({
   now: () => Date.now() + 1000,
   fetch: async () =>
     Response.json({ data: { viewer: { id: "app", app: true, organization: { id: "org" } } } }),
-})(home);
+})(paws.store, home);
 const restored = await reconnect.complete({
   clientId: "client",
   token: { ...previous, accessToken: "fake-new-access", refreshToken: "fake-new-refresh" },
