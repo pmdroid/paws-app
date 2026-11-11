@@ -1,26 +1,27 @@
 import { z } from "zod";
-import type { Database } from "bun:sqlite";
 import {
   workspaceMemberUsable,
   acceptedImprovementsForFindings,
-  auditWorkspaceAccess,
+  auditWorkspaceAccessSteps,
   claimFindingGroupAction,
-  closeFindingGroup,
-  enqueueJobOnce,
+  closeFindingGroupSteps,
+  enqueueJobOnceAsync,
   findingGroupingEnabled,
   firstWorkspaceId,
-  reviewFindingsByIds,
+  reviewFindingsByIdsSteps,
   getFindingGroup,
-  immediate,
   lastFindingGroupRun,
   listFindingGroups,
-  markReviewFindingFiled,
+  markReviewFindingFiledSteps,
   releaseFindingGroupAction,
-  reviewFindingItems,
-  setReviewFindingStatus,
-  workspaceMember,
+  reviewFindingItemsSteps,
+  setReviewFindingStatusSteps,
+  workspaceMemberSteps,
   type FindingGroup,
+  type Q,
+  type ReviewFindingItem,
   type ReviewFindingRecord,
+  type Steps,
   sqliteDb,
 } from "../../../db";
 import { journalCaught } from "../journal";
@@ -50,20 +51,25 @@ const actionSchema = z.discriminatedUnion("action", [
     reason: z.string().trim().min(1).max(500),
   }),
 ]);
+type Snapshot = {
+  rows: Map<number, ReviewFindingRecord>;
+  items: Map<number, ReviewFindingItem[]>;
+};
+function* snapshotSteps(q: Q, ids: readonly number[]): Steps<Snapshot> {
+  const rows = yield* reviewFindingsByIdsSteps(q, ids);
+  return {
+    rows: new Map(rows.map((f) => [f.id, f])),
+    items: yield* reviewFindingItemsSteps(q, ids),
+  };
+}
 function members(
-  db: Database,
   group: FindingGroup,
+  snapshot: Snapshot,
   sessions?: readonly string[],
-  snapshot?: {
-    rows: Map<number, ReviewFindingRecord>;
-    items: ReturnType<typeof reviewFindingItems>;
-  },
-): { rows: ReviewFindingRecord[]; items: ReturnType<typeof reviewFindingItems> } | null {
-  const available =
-    snapshot?.rows ?? new Map(reviewFindingsByIds(db, group.memberIds).map((f) => [f.id, f]));
-  const rows = group.memberIds.map((id) => available.get(id));
+): { rows: ReviewFindingRecord[]; items: Map<number, ReviewFindingItem[]> } | null {
+  const rows = group.memberIds.map((id) => snapshot.rows.get(id));
   if (rows.some((r) => r === undefined)) return null;
-  const items = snapshot?.items ?? reviewFindingItems(db, group.memberIds);
+  const { items } = snapshot;
   if (
     sessions !== undefined &&
     group.memberIds.some(
@@ -83,11 +89,14 @@ export async function handleFindingGroupsRequest(
   },
 ): Promise<Response | null> {
   if (new URL(request.url).pathname !== FINDING_GROUPS_API_PATH) return null;
-  const { db, principal } = options;
-  const workspaceId = principal?.workspaceId ?? (await firstWorkspaceId(sqliteDb(db))) ?? undefined;
-  const member = principal ? workspaceMember(db, principal.workspaceId, principal.userId) : null;
+  const { principal } = options;
+  const store = options.store ?? sqliteDb(options.db);
+  const workspaceId = principal?.workspaceId ?? (await firstWorkspaceId(store)) ?? undefined;
+  const member = principal
+    ? await store.run((q) => workspaceMemberSteps(q, principal.workspaceId, principal.userId))
+    : null;
   if (request.method === "GET") {
-    const enabled = !workspaceId || (await findingGroupingEnabled(sqliteDb(db), workspaceId));
+    const enabled = !workspaceId || (await findingGroupingEnabled(store, workspaceId));
     const data: FindingGroupsResponse = {
       groups: [],
       lastRun: null,
@@ -95,21 +104,15 @@ export async function handleFindingGroupsRequest(
       enabled,
     };
     if (workspaceId && (!principal || workspaceMemberUsable(member))) {
-      const groups = await listFindingGroups(sqliteDb(db), workspaceId, 200);
-      const snapshot = {
-        rows: new Map(
-          reviewFindingsByIds(
-            db,
-            groups.flatMap((g) => g.memberIds),
-          ).map((f) => [f.id, f]),
-        ),
-        items: reviewFindingItems(
-          db,
+      const groups = await listFindingGroups(store, workspaceId, 200);
+      const snapshot = await store.run((q) =>
+        snapshotSteps(
+          q,
           groups.flatMap((g) => g.memberIds),
         ),
-      };
+      );
       data.groups = groups.flatMap((group) => {
-        const accessible = members(db, group, options.sessionIds, snapshot);
+        const accessible = members(group, snapshot, options.sessionIds);
         if (!accessible) return [];
         const { items } = accessible;
         const rows =
@@ -134,7 +137,7 @@ export async function handleFindingGroupsRequest(
           },
         ];
       });
-      data.lastRun = await lastFindingGroupRun(sqliteDb(db), workspaceId);
+      data.lastRun = await lastFindingGroupRun(store, workspaceId);
     }
     return Response.json(data, { headers: { "cache-control": "no-store" } });
   }
@@ -163,19 +166,19 @@ export async function handleFindingGroupsRequest(
       return Response.json({ error: "Only admins can run grouping." }, { status: 403 });
     if (!options.services)
       return Response.json({ error: "Finding grouping is unavailable." }, { status: 503 });
-    if (!(await findingGroupingEnabled(sqliteDb(db), principal.workspaceId)))
+    if (!(await findingGroupingEnabled(store, principal.workspaceId)))
       return Response.json(
         { error: "Daily grouping is off. Turn it on in Settings → Findings." },
         { status: 409 },
       );
     const day = new Date(now).toISOString().slice(0, 10);
-    const last = await lastFindingGroupRun(sqliteDb(db), principal.workspaceId);
+    const last = await lastFindingGroupRun(store, principal.workspaceId);
     if (last && new Date(last.startedAt).toISOString().slice(0, 10) === day)
       return Response.json(
         { error: "Grouping already ran today. The next helper turn is available tomorrow UTC." },
         { status: 409 },
       );
-    enqueueJobOnce(db, {
+    await enqueueJobOnceAsync(store, {
       queue: "findings.group",
       jobKey: `findings.group.manual:${principal.workspaceId}:${day}`,
       payload: { workspaceId: principal.workspaceId },
@@ -183,9 +186,13 @@ export async function handleFindingGroupsRequest(
     });
     return Response.json({ queued: true }, { status: 202 });
   }
-  const group = await getFindingGroup(sqliteDb(db), principal.workspaceId, action.id);
+  const group = await getFindingGroup(store, principal.workspaceId, action.id);
   if (!group) return Response.json({ error: "Group not found." }, { status: 404 });
-  const accessible = members(db, group, options.sessionIds);
+  const accessible = members(
+    group,
+    await store.run((q) => snapshotSteps(q, group.memberIds)),
+    options.sessionIds,
+  );
   if (!accessible)
     return Response.json(
       { error: "You cannot access every finding in this group." },
@@ -209,7 +216,7 @@ export async function handleFindingGroupsRequest(
   if (
     (
       await acceptedImprovementsForFindings(
-        sqliteDb(db),
+        store,
         principal.workspaceId,
         rows.map((f) => f.id),
       )
@@ -225,7 +232,7 @@ export async function handleFindingGroupsRequest(
     return Response.json({ error: "This group action is still running." }, { status: 409 });
   // Store the chosen action before the network write. Stable Linear ids make retries safe.
   const claimed = await claimFindingGroupAction(
-    sqliteDb(db),
+    store,
     group.id,
     action.action,
     rows.map((f) => f.id),
@@ -252,10 +259,10 @@ export async function handleFindingGroupsRequest(
       });
       identifier = group.suggestedIssue;
     }
-    immediate(db, () => {
+    await store.transaction(function* (q) {
       for (const finding of rows) {
         if (action.action === "dismiss") {
-          const changed = setReviewFindingStatus(db, {
+          const changed = yield* setReviewFindingStatusSteps(q, {
             id: finding.id,
             status: "dismissed",
             reason: action.reason,
@@ -267,9 +274,15 @@ export async function handleFindingGroupsRequest(
               new Error("A finding changed. Refresh the group before dismissing."),
               { noFindingWrite: true, findingConflict: true },
             );
-        } else markReviewFindingFiled(db, { key: finding.key, issue: identifier!, by, now });
+        } else
+          yield* markReviewFindingFiledSteps(q, {
+            key: finding.key,
+            issue: identifier!,
+            by,
+            now,
+          });
       }
-      closeFindingGroup(db, {
+      yield* closeFindingGroupSteps(q, {
         id: group.id,
         status:
           action.action === "file" ? "filed" : action.action === "add" ? "added" : "dismissed",
@@ -278,7 +291,7 @@ export async function handleFindingGroupsRequest(
         now,
         filedIssue: identifier,
       });
-      auditWorkspaceAccess(db, {
+      yield* auditWorkspaceAccessSteps(q, {
         workspaceId: principal.workspaceId,
         userId: principal.userId,
         action: `finding-group.${action.action}`,
@@ -291,7 +304,7 @@ export async function handleFindingGroupsRequest(
     journalCaught(error, "finding-groups.action", null);
     // The adapter checks the stable Linear id before a definitive refusal, including on retries.
     if (error instanceof Error && "noFindingWrite" in error && error.noFindingWrite === true)
-      await releaseFindingGroupAction(sqliteDb(db), group.id, action.action);
+      await releaseFindingGroupAction(store, group.id, action.action);
     if (error instanceof Error && "findingConflict" in error)
       return Response.json({ error: error.message }, { status: 409 });
     return Response.json(

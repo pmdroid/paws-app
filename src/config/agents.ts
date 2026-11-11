@@ -329,8 +329,8 @@ export function writeAgentSettings(
   input: AgentSettings,
   merge?: StoredMerge,
   queue?: QueueSettings,
-): void {
-  updateConfigText(path, (current) => {
+): Promise<void> {
+  return updateConfigText(path, (current) => {
     const agents = renderAgentSettingsText(current, input);
     const merged = merge === undefined ? agents : setMergeSettingsText(agents, merge);
     return queue === undefined ? merged : setQueueSettingsText(merged, queue);

@@ -94,8 +94,8 @@ export function setCheckoutProjectsText(current: string, projects: CheckoutProje
   return `${retained}\n${tables}`;
 }
 
-export function writeCheckoutProjects(path: string, projects: CheckoutProjects): void {
-  updateConfigText(path, (current) => {
+export function writeCheckoutProjects(path: string, projects: CheckoutProjects): Promise<void> {
+  return updateConfigText(path, (current) => {
     const next = setCheckoutProjectsText(current, projects);
     parseCheckoutProjects(next);
     return next.endsWith("\n") || next === "" ? next : `${next}\n`;
