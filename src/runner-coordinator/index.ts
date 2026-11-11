@@ -202,7 +202,7 @@ export async function openRunnerCoordinator(options: {
   const repositoryCommandAccess = options.repositoryAccess
     ? createRepositoryCommandAccess({
         ...options.repositoryAccess,
-        db: options.db,
+        store: sqliteDb(options.db),
         now: options.now,
       })
     : undefined;

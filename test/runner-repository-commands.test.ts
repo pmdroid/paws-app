@@ -84,7 +84,7 @@ async function fixture(file = ":memory:") {
     expiresAt: now + 30 * 60_000,
   });
   const access = createRepositoryCommandAccess({
-    db,
+    store: sqliteDb(db),
     github,
     installationForRepository: async () => "installation",
     checkpointBot: async () => bot,
