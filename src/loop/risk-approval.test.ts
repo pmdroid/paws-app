@@ -1153,12 +1153,12 @@ for (const scenario of ["clean", "P2", "missing security", "rules change", "off"
         "rules change": "Manual approval required: changes the risk rules",
         off: "Manual approval required: automatic approval is off",
       }[scenario];
-      expect(display.read(f.itemId)?.detail).toBe(expected);
-      const body = pullRequestReadyResponse({
+      expect((await display.read(f.itemId))?.detail).toBe(expected);
+      const body = await pullRequestReadyResponse({
         itemId: f.itemId,
         head: heads.s,
         pull: { number: 1 },
-        riskApproval: () => display.read(f.itemId, heads.s)!.detail,
+        riskApproval: async () => (await display.read(f.itemId, heads.s))!.detail,
         risk: getCandidateRisk(f.db, f.itemId, heads.s),
         openLine: "",
       });
@@ -1218,24 +1218,24 @@ test("a corrupt risk row cannot prevent the sole pull-request response", async (
     f.db.run("PRAGMA ignore_check_constraints=ON");
     f.db.run("PRAGMA ignore_check_constraints=ON");
     f.db.run("UPDATE candidate_risk SET paths = '{' WHERE item_id = ?", [f.itemId]);
-    const body = pullRequestReadyResponse({
+    const body = await pullRequestReadyResponse({
       itemId: f.itemId,
       head: heads.s,
       pull: { number: 1 },
       risk: { tier: "high", paths: ["session.ts"] },
       openLine: "",
-      riskApproval: () => display.read(f.itemId, heads.s)!.detail,
+      riskApproval: async () => (await display.read(f.itemId, heads.s))!.detail,
     });
     expect(body).toStartWith("Opened pull request #1.");
     expect(body).toContain("Manual approval required");
     expect(
-      pullRequestReadyResponse({
+      await pullRequestReadyResponse({
         itemId: f.itemId,
         head: heads.s,
         pull: { number: 1 },
         risk: { tier: "high", paths: [] },
         openLine: "",
-        riskApproval: () => {
+        riskApproval: async () => {
           throw new Error("unreadable display");
         },
       }),

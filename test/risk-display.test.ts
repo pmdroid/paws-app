@@ -173,7 +173,7 @@ test("changed risk settings invalidate older policy evidence", async () => {
   f.settings.repositories = { "acme/repo": { packages: [], highRiskPaths: ["new/**"] } };
   f.reader.refreshSettings();
   await f.reader.remember(f.item.id, "head", f.context);
-  expect(f.reader.read(f.item.id)?.detail).toContain("policy evidence is unavailable");
+  expect((await f.reader.read(f.item.id))?.detail).toContain("policy evidence is unavailable");
 });
 
 test("failed display persistence cannot reject the merge gate", async () => {
@@ -311,7 +311,7 @@ test("custom review findings name the actual review", async () => {
     ],
     reviewed: [],
   });
-  expect(f.reader.read(f.item.id)?.detail).toBe(
+  expect((await f.reader.read(f.item.id))?.detail).toBe(
     "Manual approval required: custom-review has a P2 finding",
   );
 });
@@ -334,13 +334,14 @@ test("hand edits to config are observed outside the status read path", async () 
   });
   cleanup.push(() => reader.close());
   await reader.remember(f.item.id, "head", { ...f.context, ...reader.inputs() });
-  expect(reader.read(f.item.id)?.detail).toContain("Passes automatically");
+  expect((await reader.read(f.item.id))?.detail).toContain("Passes automatically");
   writeFileSync(path, "[merge]\nauto_approve_high_risk = false\n");
   await waitFor(
-    () => reader.read(f.item.id)?.detail.includes("automatic approval is off") ?? false,
+    async () =>
+      (await reader.read(f.item.id))?.detail.includes("automatic approval is off") ?? false,
   );
   const before = reads;
-  reader.read(f.item.id);
+  await reader.read(f.item.id);
   expect(reads).toBe(before);
 });
 
@@ -354,10 +355,11 @@ test("policy file edits invalidate display evidence, including across a reader r
     ...f.context,
     policyFiles: f.reader.observeFiles([path]),
   });
-  expect(f.reader.read(f.item.id)?.detail).toContain("Passes automatically");
+  expect((await f.reader.read(f.item.id))?.detail).toContain("Passes automatically");
   writeFileSync(path, "new rules");
   await waitFor(
-    () => f.reader.read(f.item.id)?.detail.includes("policy evidence is unavailable") ?? false,
+    async () =>
+      (await f.reader.read(f.item.id))?.detail.includes("policy evidence is unavailable") ?? false,
   );
   f.reader.close();
   const restarted = new RiskDisplayReader({
@@ -367,7 +369,7 @@ test("policy file edits invalidate display evidence, including across a reader r
     readSettings: () => f.settings,
   });
   cleanup.push(() => restarted.close());
-  expect(restarted.read(f.item.id)?.detail).toContain("policy evidence is unavailable");
+  expect((await restarted.read(f.item.id))?.detail).toContain("policy evidence is unavailable");
 });
 
 test("filesystem events invalidate policy evidence while stat polling is delayed", async () => {
@@ -385,20 +387,22 @@ test("filesystem events invalidate policy evidence while stat polling is delayed
       ...f.context,
       policyFiles: f.reader.observeFiles([path]),
     });
-    expect(f.reader.read(f.item.id)?.detail).toContain("Passes automatically");
+    expect((await f.reader.read(f.item.id))?.detail).toContain("Passes automatically");
     writeFileSync(path, "new rules");
     await waitFor(
-      () => f.reader.read(f.item.id)?.detail.includes("policy evidence is unavailable") ?? false,
+      async () =>
+        (await f.reader.read(f.item.id))?.detail.includes("policy evidence is unavailable") ??
+        false,
     );
   } finally {
     polling.mockRestore();
   }
 });
 
-async function waitFor(predicate: () => boolean): Promise<void> {
+async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 2000;
-  while (!predicate() && Date.now() < deadline) await Bun.sleep(25);
-  expect(predicate()).toBe(true);
+  while (!(await predicate()) && Date.now() < deadline) await Bun.sleep(25);
+  expect(await predicate()).toBe(true);
 }
 
 test("a failing human-approval display observer cannot reject an approved head", async () => {
