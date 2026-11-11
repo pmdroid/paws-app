@@ -247,7 +247,7 @@ export async function openRunnerCoordinator(options: {
     },
   });
   const timer = setInterval(() => {
-    control.expireConnectionsAsync().catch((error: unknown) => {
+    control.expireConnections().catch((error: unknown) => {
       journalCaught(error, "runner-coordinator.openRunnerCoordinator.expireConnections", null);
       options.onError(error);
       void listener

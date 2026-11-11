@@ -1,5 +1,5 @@
 import { and, eq, exists, ne, isNull, sql } from "drizzle-orm";
-import { type Q, type Db } from "./db";
+import { type Q, type Db, type Steps } from "./db";
 import { jsonValue, parsedJson } from "./json-text";
 import { auditWorkspaceAccessSteps } from "./workspace";
 import { agentCatalogSummarySteps, readAgentVersionSteps } from "./agent-versions";
@@ -20,7 +20,11 @@ type RunnerAgentReport = {
 export type CatalogPackage = { name: string; version: string; integrity: string };
 
 /** The native build package and its platform packages the catalog checked for an agent version. */
-type CatalogPackages = (agent: string, nativeVersion: string | null) => CatalogPackage[];
+type CatalogPackages = (
+  q: Q,
+  agent: string,
+  nativeVersion: string | null,
+) => Steps<CatalogPackage[]>;
 
 /** The version someone chose on the Runners page, sent to the runner until it runs it. */
 type RunnerAgentTargetRow = {
@@ -336,7 +340,7 @@ export function* requestRunnerAgentUpdateSteps(q: Q, input: UpdateRequest) {
       version: input.version,
       integrity: row.integrity,
       nativeVersion: row.nativeVersion,
-      packages: input.catalogPackages(input.agent, row.nativeVersion),
+      packages: yield* input.catalogPackages(q, input.agent, row.nativeVersion),
     },
     input,
   );
@@ -426,7 +430,7 @@ export function* requestAllRunnerAgentUpdatesSteps(q: Q, input: UpdateAllRequest
         version,
         integrity: catalog.integrity,
         nativeVersion: catalog.nativeVersion,
-        packages: input.catalogPackages(row.agent, catalog.nativeVersion),
+        packages: yield* input.catalogPackages(q, row.agent, catalog.nativeVersion),
       },
       input,
     );

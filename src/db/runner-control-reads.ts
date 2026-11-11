@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, gt, inArray, isNotNull, isNull, lte, not, or, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import type { Q, Steps, Db } from "./db";
 import { workspaceMemberUsableWhere } from "./workspace";
 
 export function* liveRunnerSessionsSteps(
@@ -61,10 +60,6 @@ export function* expiredRunnerCertificatesSteps(q: Q, now: number): Steps<string
       ),
   );
   return rows.map((row) => row.fingerprint);
-}
-
-export function expiredRunnerCertificates(db: Database, now: number): string[] {
-  return settled(sqliteDb(db).run((q) => expiredRunnerCertificatesSteps(q, now)));
 }
 
 export function* certificateRunnerRevokedSteps(q: Q, fingerprint: string): Steps<boolean> {

@@ -6,6 +6,7 @@ import {
   requestRunnerAgentUpdateSteps,
   runnerAgentTargetsSteps,
   RunnerAgentUpdateError,
+  syncSteps,
   type Db,
   type Q,
 } from "../src/db";
@@ -17,10 +18,12 @@ afterEach(async () => {
   for (const handle of open.splice(0)) await handle.close();
 });
 
-const packages = (agent: string, nativeVersion: string | null) =>
-  nativeVersion === null
-    ? []
-    : [{ name: `${agent}-native`, version: nativeVersion, integrity: "sha512-n" }];
+const packages = (_q: Q, agent: string, nativeVersion: string | null) =>
+  syncSteps(() =>
+    nativeVersion === null
+      ? []
+      : [{ name: `${agent}-native`, version: nativeVersion, integrity: "sha512-n" }],
+  );
 
 function* insertVersionSteps(
   q: Q,

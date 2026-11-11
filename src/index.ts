@@ -838,7 +838,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       workspace = startWorkspaceAccess({
         onMemberRevoked: async () => {
           const coordinator = await runnerReady;
-          coordinator?.control.expireConnections();
+          await coordinator?.control.expireConnections();
         },
         interruptItem: async (itemId) => {
           await orchestrator?.interruptItem(itemId);
