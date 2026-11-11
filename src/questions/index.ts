@@ -61,6 +61,7 @@ export {
   findOpenQuestion,
   findOpenQuestionSteps,
   getQuestion,
+  getQuestionSteps,
   openQuestion,
   questionReplyConsumed,
   type QuestionKind,

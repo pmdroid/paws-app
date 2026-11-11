@@ -88,6 +88,7 @@ import {
   AFTER_PULL_REQUEST_RESPONSE,
   canReportProgress as canReportSessionProgress,
   hasPublishedPullRequest,
+  hasPublishedPullRequestSteps as hasPublishedPullRequestPolicySteps,
 } from "./activity-policy";
 import { reaskDeadQuestion } from "./dead-question";
 import { createHash, randomUUID } from "node:crypto";
@@ -303,7 +304,6 @@ import {
   completeArtifactTask,
   getTaskClassification,
   accrueAwake,
-  enqueueJobOnce,
   enqueueOutboxOnce,
   lastOutboxSequence,
   getOutbox,
@@ -362,16 +362,14 @@ import {
   listLinearTurnsForItem,
   getWorkItemRepository,
   getWorkItemRepositoryAnswer,
-  saveWorkItemRepositoryQuestion,
+  saveWorkItemRepositoryQuestionSteps,
   getWorkItem,
   getPullRequestDraft,
-  immediate,
   drainInstanceCommands,
   runRunnerAvailability,
   setRunningCloseoutStepDetail,
   markRun,
-  releaseRunCapacity,
-  saveVisualReviewMarks,
+  saveVisualReviewMarksSteps,
   type VisualReviewMark,
   listRunsSteps,
   type StoredLinearSession,
@@ -522,7 +520,9 @@ import {
   renderLinearSessionContext,
 } from "../linear";
 import {
-  answer as answerAsked,
+  answerSteps,
+  type AnswerEffects,
+  type QuestionReply,
   answerer,
   canAnswer,
   cancelItemQuestions,
@@ -530,14 +530,16 @@ import {
   cancelQuestion,
   findAskedQuestion,
   findOpenQuestion,
+  findOpenQuestionSteps,
   handoffNote,
   acceptedVisualReviews,
   getQuestion,
+  getQuestionSteps,
   isPawsAnswerKind,
   pawsAnswerNote,
   getVisualReview,
   parseVisualReviewAnswer,
-  markVisualReviewStale,
+  markVisualReviewStaleSteps,
   questionReplyConsumed,
   visualReviewStaleHandoff,
   VISUAL_REVIEW_ANSWERERS,
@@ -555,6 +557,7 @@ import {
   pendingVisualReviewSteps,
   planVisualReviewCarry,
   postNote,
+  postNoteSteps,
   remindVisualReview,
   reviewable,
   visualReviewApprovals,
@@ -2998,8 +3001,7 @@ export class Orchestrator {
       for (const question of batch) {
         seen.add(question.id);
         if (!allowedOn(question.itemId, runnerId, now)) continue;
-        const outcome = answerAsked(
-          this.db,
+        const outcome = await this.answerInStore(
           {
             sessionId: question.sessionId,
             deliveryId: `runner-repository-allowed:${question.id}`,
@@ -6944,8 +6946,7 @@ export class Orchestrator {
       open.kind === "policy-outage" ||
       open.kind === "runner-repository"
     ) {
-      const outcome = answerAsked(
-        this.db,
+      const outcome = await this.answerInStore(
         { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: this.now() },
         questionEffects(this.db, {
           now: this.now(),
@@ -6965,8 +6966,7 @@ export class Orchestrator {
         (await this.store.run((q) => getWorkItemSteps(q, open.itemId)))?.state !== "awaiting_input"
       )
         return "rejected";
-      const outcome = answerAsked(
-        this.db,
+      const outcome = await this.answerInStore(
         { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: this.now() },
         questionEffects(this.db, {
           now: this.now(),
@@ -7009,8 +7009,8 @@ export class Orchestrator {
           return "rejected" as const;
         }
       }
-      const answered = answerAsked(
-        db,
+      const answered = yield* answerSteps(
+        q,
         { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: now() },
         questionEffects(db, {
           maxAwakeMs: caps?.maxAwakeMs,
@@ -8206,6 +8206,57 @@ export class Orchestrator {
       const id = this.post(item, "thought", line, idempotencyKey, { ephemeral: true }, "critical");
       if (id === undefined || getOutbox(this.db, id)?.idempotencyKey === idempotencyKey) return;
     }
+  }
+
+  private *postSteps(
+    q: Q,
+    item: WorkItemRecord,
+    kind: "thought" | "action" | "response" | "error",
+    body: string,
+    key: string,
+  ): Steps<number | undefined> {
+    if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return;
+    const current = yield* getWorkItemSteps(q, item.id);
+    if (current === null || current.state === "cancelled") return;
+    const sessionId = this.activitySession(current);
+    if (sessionId === null || body.trim() === "") return;
+    if (
+      !(yield* this.canReportProgressSteps(q, item.id)) &&
+      (kind === "thought" ||
+        kind === "action" ||
+        (yield* this.hasPublishedPullRequestSteps(q, sessionId))) &&
+      !(kind === "response" && AFTER_PULL_REQUEST_RESPONSE.test(key))
+    )
+      return;
+    return yield* enqueueOutboxOnceSteps(q, {
+      target: "linear",
+      op: "activity",
+      orderingKey: sessionId,
+      idempotencyKey: key,
+      payload: { sessionId, itemId: item.id, issueId: item.linearIssueId, kind, body },
+      now: this.now(),
+    });
+  }
+
+  private *canReportProgressSteps(q: Q, itemId: string): Steps<boolean> {
+    if (!(this.jobContexts.get(itemId)?.isCurrent() ?? true)) return false;
+    const item = yield* getWorkItemSteps(q, itemId);
+    if (item === null || item.cancelRequested) return false;
+    if (!["running", "verifying", "merge_queue"].includes(item.state)) return false;
+    const sessionId = this.activitySession(item);
+    return (
+      sessionId === null ||
+      ((yield* findOpenQuestionSteps(q, sessionId)) === null &&
+        !(yield* this.hasPublishedPullRequestSteps(q, sessionId)))
+    );
+  }
+
+  private *hasPublishedPullRequestSteps(q: Q, sessionId: string): Steps<boolean> {
+    return yield* hasPublishedPullRequestPolicySteps(
+      q,
+      sessionId,
+      yield* getLinearSessionGenerationSteps(q, sessionId),
+    );
   }
 
   private canReportProgress(itemId: string): boolean {
@@ -9632,6 +9683,12 @@ export class Orchestrator {
     );
   }
 
+  private async answerInStore(reply: QuestionReply, effects: AnswerEffects) {
+    const outcome = await this.store.transaction((q) => answerSteps(q, reply, effects));
+    emitJobReady(this.store);
+    return outcome;
+  }
+
   private async answerVisualReview(
     open: StoredQuestion,
     review: StoredVisualReview,
@@ -9641,8 +9698,15 @@ export class Orchestrator {
     marks?: readonly VisualReviewMark[],
   ): Promise<"answered" | "rejected"> {
     const sessionId = open.sessionId;
-    const outcome = immediate(this.db, () => {
-      const item = getWorkItem(this.db, open.itemId);
+    const db = this.db;
+    const now = this.now();
+    const effects = questionEffects(db, {
+      now,
+      asking: (runId) => this.askedRuns.has(runId),
+      ...(marks ? { marks } : {}),
+    });
+    const outcome = await this.store.transaction(function* (q) {
+      const item = yield* getWorkItemSteps(q, open.itemId);
       // A pending-human check is answered while the other checks still run.
       const waiting =
         item?.state === "awaiting_input" ||
@@ -9651,32 +9715,29 @@ export class Orchestrator {
         item === null ||
         !waiting ||
         item.cancelRequested ||
-        getQuestion(this.db, open.id)?.status !== "open"
+        (yield* getQuestionSteps(q, open.id))?.status !== "open"
       )
         return "rejected" as const;
       if (review.kind === "review" && parseVisualReviewAnswer(answer).kind === "describe") {
-        if (marks) saveVisualReviewMarks(this.db, marks);
-        postNote(
-          this.db,
+        if (marks) yield* saveVisualReviewMarksSteps(q, marks);
+        yield* postNoteSteps(
+          q,
           sessionId,
           item,
           VISUAL_REVIEW_DESCRIBE,
           `visual-review-describe:${eventKey}`,
-          this.now(),
+          now,
         );
         return "rejected" as const;
       }
-      const answered = answerAsked(
-        this.db,
-        { sessionId, deliveryId: eventKey, body: answer, answeredBy, now: this.now() },
-        questionEffects(this.db, {
-          now: this.now(),
-          asking: (runId) => this.askedRuns.has(runId),
-          ...(marks ? { marks } : {}),
-        }),
+      const answered = yield* answerSteps(
+        q,
+        { sessionId, deliveryId: eventKey, body: answer, answeredBy, now },
+        effects,
       );
       return answered.status === "answered" ? ("answered" as const) : ("rejected" as const);
     });
+    emitJobReady(this.store);
     // Changes requested while the other checks ran restart the item: stop that evaluation.
     if (
       outcome === "answered" &&
@@ -9709,12 +9770,15 @@ export class Orchestrator {
     );
     if (outdated.length === 0) return false;
     const checkIds = [...new Set(outdated.map((review) => review.checkId))];
-    const resumed = immediate(this.db, () => {
-      const current = getWorkItem(this.db, item.id);
+    const now = this.now();
+    const post = (q: Q, current: WorkItemRecord, body: string, key: string) =>
+      this.postSteps(q, current, "thought", body, key);
+    const resumed = await this.store.transaction(function* (q) {
+      const current = yield* getWorkItemSteps(q, item.id);
       if (current?.state !== "running" || current.cancelRequested) return false;
-      for (const review of outdated) markVisualReviewStale(this.db, review.questionId);
-      if (current.currentRunId) releaseRunCapacity(this.db, current.currentRunId, this.now());
-      enqueueJobOnce(this.db, {
+      for (const review of outdated) yield* markVisualReviewStaleSteps(q, review.questionId);
+      if (current.currentRunId) yield* releaseRunCapacitySteps(q, current.currentRunId, now);
+      yield* enqueueJobOnceSteps(q, {
         queue: JOB_KIND.resume,
         jobKey: `visual-review-outdated:${outdated[0]!.questionId}`,
         payload: {
@@ -9723,16 +9787,17 @@ export class Orchestrator {
           handoff: checkIds.map(visualReviewStaleHandoff).join("\n\n"),
           reason: "visual-review",
         },
-        now: this.now(),
+        now,
       });
-      this.post(
+      yield* post(
+        q,
         current,
-        "thought",
         `Files under the paths of ${checkIds.join(", ")} changed after the visual review was accepted. The agent publishes new screenshots, then Paws asks again.`,
         `visual-review-outdated:${outdated[0]!.questionId}`,
       );
       return true;
     });
+    if (resumed) emitJobReady(this.store);
     if (resumed) await this.flush();
     return resumed;
   }
@@ -10762,9 +10827,10 @@ export class Orchestrator {
       }
       const sessionId = this.activitySession(item);
       if (sessionId === null) throw new Error("Repository selection has no tracker session");
-      immediate(this.db, () => {
-        const { question } = ask(
-          this.db,
+      const now = this.now();
+      await this.store.transaction(function* (q) {
+        const { question } = yield* askSteps(
+          q,
           { itemId: item.id, runId: null, sessionId, version: item.version },
           "repository",
           "Which repository should I use? Choose one of the configured repositories or describe your choice.",
@@ -10772,10 +10838,10 @@ export class Orchestrator {
             options: ranked.map(
               (candidate) => `https://github.com/${candidate.owner}/${candidate.repo}`,
             ),
-            now: this.now(),
+            now,
           },
         );
-        saveWorkItemRepositoryQuestion(this.db, item.id, question.id, ranked);
+        yield* saveWorkItemRepositoryQuestionSteps(q, item.id, question.id, ranked);
       });
       await this.flush();
       return false;
