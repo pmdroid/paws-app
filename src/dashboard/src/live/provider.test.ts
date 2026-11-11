@@ -372,7 +372,7 @@ describe("live status provider", () => {
       if (fromEnv.ok)
         expect(fromEnv.response.runs.find((run) => run.id === ids[0])?.reviewer).toBe("Grok");
     } finally {
-      server.stop(true);
+      void server.stop(true);
     }
   });
 

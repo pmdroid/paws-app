@@ -3784,7 +3784,7 @@ export class Orchestrator {
       const returned = await this.store.run((q) => latestRestartEventSteps(q, item.id));
       const fixing =
         returned !== null && ["findings", "ci", "review", "conflict"].includes(returned.reason);
-      if (!fixing) sessionProgress?.phase("implementing");
+      if (!fixing) await sessionProgress?.phase("implementing");
       if (fixing) {
         const round = await this.store.run((q) => fixRoundsSteps(q, item.id));
         const limit = await this.fixAttemptLimit(item, returned.reason);
@@ -3797,8 +3797,8 @@ export class Orchestrator {
                 ? "merge conflicts"
                 : "Closeout findings";
         const counter = returned.reason === "conflict" ? "" : ` (${round} of ${limit})`;
-        sessionProgress?.restart(returned.reason, round, returned.version, limit);
-        sessionProgress?.restartWait(`${item.linearIdentifier}: fixing ${label}${counter}`);
+        await sessionProgress?.restart(returned.reason, round, returned.version, limit);
+        await sessionProgress?.restartWait(`${item.linearIdentifier}: fixing ${label}${counter}`);
         live.progress =
           returned.reason === "conflict"
             ? `Resolving merge conflicts for ${item.linearIdentifier}.`
@@ -3969,7 +3969,7 @@ export class Orchestrator {
       if (replies !== "complete") return;
       if (!executed.run.identity)
         throw new Error("Implementer did not report a concrete session model");
-      this.saveCandidate(run.id, executed.run.identity);
+      await this.saveCandidate(run.id, executed.run.identity);
       const at = await this.itemHead(finished);
       const head = (await git(["-C", at.repo, "rev-parse", at.ref])).trim();
       await recordAgentFindingDecisions(
@@ -4851,7 +4851,7 @@ export class Orchestrator {
           );
       },
       notify: (reason) => {
-        this.post(item, "thought", reason, `${runId}:closeout-runner-wait:${head}:${reason}`);
+        void this.post(item, "thought", reason, `${runId}:closeout-runner-wait:${head}:${reason}`);
         void this.flush().catch((caughtError4) => {
           journalCaught(
             caughtError4,
@@ -7057,7 +7057,7 @@ export class Orchestrator {
             undefined,
             journalTo,
           );
-          post(
+          void post(
             item,
             error instanceof Error ? error.message : "Answer this question in your own words.",
           );

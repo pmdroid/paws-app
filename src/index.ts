@@ -2153,11 +2153,11 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   }, INSTANCE_HEARTBEAT_MS);
   instanceTimer.unref?.();
   const commandTimer = setInterval(() => {
-    try {
-      orchestrator?.deliverInstanceCommands();
-    } catch (error) {
-      journalCaught(error, "index.startPaws.deliverInstanceCommands", null);
-    }
+    orchestrator
+      ?.deliverInstanceCommands()
+      .catch((error: unknown) =>
+        journalCaught(error, "index.startPaws.deliverInstanceCommands", null),
+      );
   }, COMMAND_DELIVERY_MS);
   commandTimer.unref?.();
 

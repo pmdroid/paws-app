@@ -94,13 +94,17 @@ export function createIntakeQueue(options: {
       });
     }, leaseMs / 4);
     renewal.unref?.();
-    const running: Promise<void> = work().finally(async () => {
+    const release = async () => {
       clearInterval(renewal);
       into.delete(running);
       await guarded("intake-queue.createIntakeQueue.release", async () => {
         await store.release(dedupeKey, owner);
         pump();
       });
+    };
+    const running: Promise<void> = work().then(release, async (error: unknown) => {
+      await release();
+      throw error;
     });
     into.add(running);
   };

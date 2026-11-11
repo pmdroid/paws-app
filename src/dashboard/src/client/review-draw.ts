@@ -199,8 +199,8 @@ export function openReviewDraw(
     host.remove();
     if (options.collect) void done();
   });
-  submit?.addEventListener("click", async () => {
-    submit.disabled = true;
+  const send = async () => {
+    submit!.disabled = true;
     message!.textContent = "Sending…";
     try {
       await sendReviewChanges(questionId, shots, note!.value);
@@ -210,9 +210,10 @@ export function openReviewDraw(
       journalCaught(error, "review-draw.openReviewDraw.send", null);
       message!.textContent =
         error instanceof Error ? error.message : "The changes could not be sent. Try again.";
-      submit.disabled = false;
+      submit!.disabled = false;
     }
-  });
+  };
+  submit?.addEventListener("click", () => void send());
   dialog.showModal();
   counts();
 }

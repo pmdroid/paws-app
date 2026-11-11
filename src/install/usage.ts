@@ -86,7 +86,7 @@ async function readJsonLines(
   });
   const timer = setTimeout(() => child.kill(), timeoutMs);
   try {
-    child.stdin.write(input);
+    void child.stdin.write(input);
     await child.stdin.flush();
     const decoder = new TextDecoder();
     let buffer = "";
