@@ -125,6 +125,8 @@ forEachDialect((open) => {
 });
 ```
 
+With `PAWS_TEST_DATABASE_URL` set to a Postgres server, the Postgres side of `forEachDialect()` and `pgliteServer()` in `test/pglite.ts` run on that server instead of PGlite: each opens a fresh database copied from a migrated template and drops it on close. CI's `test (postgres)` job runs the `src/db` tests and every test that uses either helper against a `postgres:17` service this way.
+
 Seed rows through `db.run()` (`insertWorkItem()` does the work item, and `insertWorkItemSteps()` inside a transaction), not through a SQLite-only helper. Tests that drive a still-synchronous caller stay SQLite-only.
 
 ## Drift test
