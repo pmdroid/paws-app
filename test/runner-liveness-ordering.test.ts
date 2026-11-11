@@ -145,7 +145,7 @@ test("a delayed heartbeat sampled before the acknowledgement cannot fence the wo
     f.clock.now += 1_000;
     f.work.assign(f.command(1));
     f.clock.now += 1_000;
-    f.work.acknowledge("box", "work-1");
+    await f.work.acknowledge("box", "work-1");
     f.clock.now += 2 * RUNNER_LIVE_GRACE_MS;
     const http = createRunnerWorkHttp(f.work);
     const response = await http(
@@ -176,13 +176,13 @@ test("a delayed heartbeat sampled before the acknowledgement cannot fence the wo
   }
 });
 
-test("a sample that names the work confirms it, and out-of-order older samples never fence it", () => {
+test("a sample that names the work confirms it, and out-of-order older samples never fence it", async () => {
   const f = fixture();
   try {
     const first = f.heartbeat([], 0);
     f.clock.now += 1_000;
     f.work.assign(f.command(1));
-    f.work.acknowledge("box", "work-1");
+    await f.work.acknowledge("box", "work-1");
     f.clock.now += 1_000;
     const named = f.heartbeat([{ runId: f.runId, generation: 1 }], first.observedAt);
     expect(f.row().confirmedAt).toBe(f.clock.now);
@@ -196,11 +196,11 @@ test("a sample that names the work confirms it, and out-of-order older samples n
   }
 });
 
-test("a runner without a cursor keeps the grace rule", () => {
+test("a runner without a cursor keeps the grace rule", async () => {
   const f = fixture();
   try {
     f.work.assign(f.command(1));
-    f.work.acknowledge("box", "work-1");
+    await f.work.acknowledge("box", "work-1");
     f.clock.now += RUNNER_LIVE_GRACE_MS - 1;
     const early = f.heartbeat([]);
     expect(early.fenced).toEqual([]);
@@ -212,13 +212,13 @@ test("a runner without a cursor keeps the grace rule", () => {
   }
 });
 
-test("a new generation inherits neither confirmation nor loss, and an old report cannot confirm it", () => {
+test("a new generation inherits neither confirmation nor loss, and an old report cannot confirm it", async () => {
   const f = fixture();
   try {
     const first = f.heartbeat([], 0);
     f.clock.now += 1_000;
     f.work.assign(f.command(1));
-    f.work.acknowledge("box", "work-1");
+    await f.work.acknowledge("box", "work-1");
     f.clock.now += 1_000;
     const named = f.heartbeat([{ runId: f.runId, generation: 1 }], first.observedAt);
     f.clock.now += 1_000;

@@ -363,13 +363,13 @@ const runtimeOptions: Parameters<typeof openRunnerRuntime>[0] = {
     },
     async pollCommands() {
       reachable();
-      for (const envelope of services.work.commands(runnerId)) {
+      for (const envelope of await services.work.commands(runnerId)) {
         const command = JSON.parse(
           Buffer.from(envelope.payload, "base64url").toString(),
         ) as RunnerCommand;
         commands.set(command.id, command);
         if (command.type === "probe") {
-          services.work.acknowledge(runnerId, command.id);
+          await services.work.acknowledge(runnerId, command.id);
           await services.health.submit(runnerId, result(command, workspaceId()));
         } else if (!pending.some((c) => c.id === command.id)) pending.push(command);
       }
@@ -378,7 +378,7 @@ const runtimeOptions: Parameters<typeof openRunnerRuntime>[0] = {
     pendingCommands: () => pending,
     async acknowledgeCommand(id) {
       reachable();
-      services.work.acknowledge(runnerId, id);
+      await services.work.acknowledge(runnerId, id);
       pending = pending.filter((c) => c.id !== id);
     },
     async issueRunGrant(runId, request) {

@@ -53,7 +53,7 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
     const path = new URL(request.url).pathname;
     try {
       if (path === "/v1/commands" && request.method === "GET")
-        return json({ commands: work.commands(runnerId) });
+        return json({ commands: await work.commands(runnerId) });
       if (path === "/v1/heartbeat" && request.method === "POST") {
         const {
           capacity,
@@ -103,7 +103,7 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
       const acknowledgment = /^\/v1\/commands\/([^/]+)\/ack$/.exec(path);
       if (acknowledgment && request.method === "POST") {
         empty.parse(await body(request));
-        work.acknowledge(runnerId, id.parse(decodeURIComponent(acknowledgment[1]!)));
+        await work.acknowledge(runnerId, id.parse(decodeURIComponent(acknowledgment[1]!)));
         return json({ ok: true });
       }
       const permission = /^\/v1\/runs\/([^/]+)\/grant$/.exec(path);

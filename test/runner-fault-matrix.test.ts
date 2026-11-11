@@ -648,13 +648,13 @@ async function runRemoteFault(fault: Fault) {
             runner.hungStopped = Date.now() - entry.at >= HUNG_RUN_MS;
           }
       }
-      for (const envelope of work.commands(runnerId)) {
+      for (const envelope of await work.commands(runnerId)) {
         const command = JSON.parse(
           Buffer.from(envelope.payload, "base64url").toString(),
         ) as RunnerCommand;
         if (handled.has(command.id)) continue;
         handled.add(command.id);
-        work.acknowledge(runnerId, command.id);
+        await work.acknowledge(runnerId, command.id);
         if (command.type === "cancel") {
           live.delete(command.id);
           terminated.push({

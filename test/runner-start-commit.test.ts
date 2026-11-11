@@ -569,7 +569,7 @@ async function startScenario(input: {
   const runner = (async () => {
     while (!sim.stopped) {
       work.heartbeat(runnerId);
-      for (const envelope of work.commands(runnerId)) {
+      for (const envelope of await work.commands(runnerId)) {
         const command = JSON.parse(
           Buffer.from(envelope.payload, "base64url").toString(),
         ) as RunnerCommand;
@@ -578,7 +578,7 @@ async function startScenario(input: {
         pendingAtAssignment = getWorkItem(db, item.id)?.checkpoint?.lostCommits;
         executions++;
         const cancelled = input.cancelFirstRun === true && executions === 1;
-        work.acknowledge(runnerId, command.id);
+        await work.acknowledge(runnerId, command.id);
         const grant = work.issueGrant({
           runnerId,
           runId: command.runId,

@@ -103,8 +103,8 @@ async function fixture() {
     });
     return id;
   };
-  const queued = () =>
-    work.commands(runnerId).map((envelope) => {
+  const queued = async () =>
+    (await work.commands(runnerId)).map((envelope) => {
       const payload = JSON.parse(Buffer.from(envelope.payload, "base64url").toString()) as {
         id: string;
         account?: unknown;
@@ -151,7 +151,7 @@ test("an old runner keeps running the default sign-in and never receives a named
     await heartbeat({ runnerVersion: "0.1.61", accounts: { protocol: 1, bindings: [] } }),
   ).toBe(200);
   expect(() => check(named)).toThrow(/not reported this account binding/);
-  expect(queued()).toEqual([{ id: legacy, account: undefined }]);
+  expect(await queued()).toEqual([{ id: legacy, account: undefined }]);
 
   expect(
     await heartbeat({
@@ -162,12 +162,12 @@ test("an old runner keeps running the default sign-in and never receives a named
   const accepted = check(named);
   expect(commandAccount(db, accepted)).toMatchObject({ bindingId: binding.id, named: true });
   // Routine checks go to the runner one at a time: the named one follows the legacy one's result.
-  expect(queued()).toEqual([{ id: legacy, account: undefined }]);
+  expect(await queued()).toEqual([{ id: legacy, account: undefined }]);
   db.run(
     "INSERT INTO runner_health_result(command_id,runner_id,result_json,received_at) VALUES(?,?,'{}',?)",
     [legacy, runnerId, now],
   );
-  expect(queued()).toEqual([{ id: accepted, account: named }]);
+  expect(await queued()).toEqual([{ id: accepted, account: named }]);
   expect(
     await heartbeat({
       runnerVersion: "0.1.61",

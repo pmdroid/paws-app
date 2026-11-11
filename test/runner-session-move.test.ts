@@ -156,7 +156,7 @@ async function setup() {
   const seen = new Set<string>();
   async function next(runnerId: string) {
     for (let index = 0; index < 2000; index++) {
-      for (const envelope of work.commands(runnerId)) {
+      for (const envelope of await work.commands(runnerId)) {
         const verified = verifyRunnerCommand(envelope, {
           trustedKeys: new Map([["fixture", signing.publicKey]]),
           runnerId,
@@ -166,7 +166,7 @@ async function setup() {
           claimCommand: (id) => !seen.has(id) && Boolean(seen.add(id)),
         });
         if (verified.ok) {
-          work.acknowledge(runnerId, verified.command.id);
+          await work.acknowledge(runnerId, verified.command.id);
           return verified.command;
         }
       }

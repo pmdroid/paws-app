@@ -98,7 +98,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
     let work = controller();
     work.assign(command);
     expect(runnerOccupancy(db, "box", now).occupied).toBe(1);
-    work.acknowledge("box", command.id);
+    await work.acknowledge("box", command.id);
     work.heartbeat(
       "box",
       1,
@@ -129,7 +129,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
     ).toBe(now);
     expect(runnerOccupancy(db, "box", now).occupied).toBe(1);
     expect(runnerSlotsHeldBetweenCommands(db, "box", now)).toBe(0);
-    work.acknowledge("box", cancel.id);
+    await work.acknowledge("box", cancel.id);
     expect(await runnerCancelPending(sqliteDb(db), "box")).toBe(true);
     now = cancel.expiresAt + 1;
     const report = [{ runId: run.id, generation: 1 }];
@@ -192,7 +192,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       issuedAt: now,
       expiresAt: now + 60_000,
     });
-    work.acknowledge("box", cancel.id);
+    await work.acknowledge("box", cancel.id);
     work.heartbeat("box", 1, host, undefined, undefined, undefined, undefined, [], undefined, [
       termination,
     ]);
