@@ -346,7 +346,6 @@ const errors = [];
           .getByRole("combobox", { name: "Appearance" })
           .selectOption({ label: appearance });
         for (const name of [
-          "Decisions",
           "Agents",
           "Integrations",
           "Members",

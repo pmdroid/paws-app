@@ -1,5 +1,4 @@
 import { journalCaught } from "../journal";
-import { initializeDecisions } from "./decisions";
 import type { SettingsPage } from "./settings-pages";
 import { renderMarkup } from "./theme";
 import { initializeWorkspaceIdentities } from "./workspace-identities";
@@ -190,7 +189,6 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
   initializeWorkspaceMembers(root, session);
   initializeWorkspaceAttribution(root, session.csrfToken);
   initializeWorkspaceGitHub(root, session.csrfToken, session.role === "admin");
-  initializeDecisions(root, session.csrfToken);
   if (session.role === "admin") {
     initializeWorkspaceIdentities(root, session.csrfToken);
     initializeWorkspaceAudit(root);
