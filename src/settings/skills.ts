@@ -43,7 +43,7 @@ export type SkillSettingsOptions = {
   /** The signed-in member's workspace role. Absent on a local Paws without workspaces. */
   role?: string;
   /** Records every skill change in the audit history. */
-  audit: (action: string, subject: string) => void;
+  audit: (action: string, subject: string) => Promise<void>;
   limit?: number;
   now?: () => number;
 };
@@ -94,7 +94,7 @@ export async function handleSkillSettingsRequest(
     if (type === "multipart/form-data") {
       const upload = await readSkillUpload(request, options.limit ?? SKILL_BUNDLE_LIMIT);
       const skill = await addUploadedSkill(registry, upload.folder, upload.files, upload);
-      options.audit("settings.skill.add", added(skill));
+      await options.audit("settings.skill.add", added(skill));
       return await listing(`Added ${skill.name} ${shortVersion(skill)}.`);
     }
     let body: unknown;
@@ -118,9 +118,9 @@ export async function handleSkillSettingsRequest(
             ...(agents ? { agents } : {}),
             hooks: stringList(body.hooks) ?? [],
           });
-          for (const skill of skills) options.audit("settings.skill.add", added(skill));
+          for (const skill of skills) await options.audit("settings.skill.add", added(skill));
           for (const hook of hooks)
-            options.audit("settings.hook.add", `Added hook ${describeHook(hook)}`);
+            await options.audit("settings.hook.add", `Added hook ${describeHook(hook)}`);
           const hookCount = hooks.length
             ? ` and ${hooks.length} hook${hooks.length === 1 ? "" : "s"}`
             : "";
@@ -132,14 +132,14 @@ export async function handleSkillSettingsRequest(
           ...(name ? { name } : {}),
           ...(agents ? { agents } : {}),
         });
-        options.audit("settings.skill.add", added(skill));
+        await options.audit("settings.skill.add", added(skill));
         return await listing(`Added ${skill.name} ${shortVersion(skill)}.`);
       }
       case "update": {
         const { before, after } = await updateSkill(registry, name);
         if (before.version === after.version)
           return await listing(`${name} is already at the newest version, ${shortVersion(after)}.`);
-        options.audit(
+        await options.audit(
           "settings.skill.update",
           `Updated skill ${name} ${shortVersion(before)} → ${shortVersion(after)}`,
         );
@@ -148,7 +148,7 @@ export async function handleSkillSettingsRequest(
       case "agents": {
         if (agents === undefined) return json({ error: "Choose the agents for this skill." }, 400);
         const { after } = await changeSkillAgents(registry, name, agents);
-        options.audit(
+        await options.audit(
           "settings.skill.agents",
           `Skill ${name} now applies to ${agentList(after.agents)}`,
         );
@@ -156,7 +156,10 @@ export async function handleSkillSettingsRequest(
       }
       case "remove": {
         const skill = await removeSkill(registry, name);
-        options.audit("settings.skill.remove", `Removed skill ${name} ${shortVersion(skill)}`);
+        await options.audit(
+          "settings.skill.remove",
+          `Removed skill ${name} ${shortVersion(skill)}`,
+        );
         return await listing(`Removed ${name}. Runners uninstall it before their next run.`);
       }
       default:

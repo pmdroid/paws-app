@@ -29,7 +29,7 @@ export type CheckoutSettingsOptions = {
   /** Repositories Paws can access, `owner/repo`. */
   repos?: string[];
   /** Records each change in the audit history. */
-  audit?: (action: string, subject: string) => void;
+  audit?: (action: string, subject: string) => Promise<void>;
   /** `null` when Paws has no local copy of the repository yet. */
   inspect?: (repo: string) => Promise<RepositoryCheckoutFacts | null>;
 };
@@ -96,7 +96,8 @@ export async function handleCheckoutSettingsRequest(
   } catch {
     return json({ error: "Checkout settings could not be saved" }, 503);
   }
-  for (const change of checkoutChanges(before, after)) options.audit?.("settings.checkout", change);
+  for (const change of checkoutChanges(before, after))
+    await options.audit?.("settings.checkout", change);
   const saved = await view(after, [...repos, ...Object.keys(changes)], options);
   const warnings = saved.repositories.flatMap((repository) =>
     repository.paths

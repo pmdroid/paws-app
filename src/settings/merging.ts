@@ -36,7 +36,7 @@ export type MergeSettingsOptions = {
   configPath: string;
   csrfToken: string;
   /** Records each change in the audit history. */
-  audit?: (action: string, subject: string) => void;
+  audit?: (action: string, subject: string) => Promise<void>;
   choices?: (signal: AbortSignal) => Promise<MergeChoices>;
   /**
    * The configured repositories (`owner/repo`) whose base branch has a GitHub merge queue. The
@@ -254,12 +254,13 @@ export async function handleMergeSettingsRequest(
   } catch (error) {
     journalCaught(error, "merging.handleMergeSettingsRequest.changed", null);
   }
-  for (const change of mergeChanges(before, policy)) options.audit?.("settings.merging", change);
+  for (const change of mergeChanges(before, policy))
+    await options.audit?.("settings.merging", change);
   if (
     autoApproveHighRisk !== undefined &&
     autoApproveHighRisk !== (before?.autoApproveHighRisk ?? false)
   )
-    options.audit?.(
+    await options.audit?.(
       "settings.merging",
       `Automatic high-risk approval: ${autoApproveHighRisk ? "on" : "off"}`,
     );
@@ -269,12 +270,12 @@ export async function handleMergeSettingsRequest(
     waitAfter.quietSeconds !== waitBefore.quietSeconds ||
     waitAfter.maxWaitSeconds !== waitBefore.maxWaitSeconds
   )
-    options.audit?.(
+    await options.audit?.(
       "settings.merging",
       `Pull request comment wait: ${waitBefore.quietSeconds}s quiet, ${waitBefore.maxWaitSeconds}s at most → ${waitAfter.quietSeconds}s quiet, ${waitAfter.maxWaitSeconds}s at most`,
     );
   if (waitAfter.reviewWaitMaxSeconds !== waitBefore.reviewWaitMaxSeconds)
-    options.audit?.(
+    await options.audit?.(
       "settings.merging",
       `Review check wait: ${waitBefore.reviewWaitMaxSeconds}s at most → ${waitAfter.reviewWaitMaxSeconds}s at most`,
     );
@@ -282,7 +283,7 @@ export async function handleMergeSettingsRequest(
     highRiskPaths ??
     Object.fromEntries(highRiskPathsView(before).map((entry) => [entry.repository, entry.paths]));
   for (const change of highRiskPathChanges(before, saved))
-    options.audit?.("settings.merging", change);
+    await options.audit?.("settings.merging", change);
   let after: MergeSettings | null = null;
   try {
     after = readMergeSettings(loadConfigFile(options.configPath));
@@ -295,7 +296,7 @@ export async function handleMergeSettingsRequest(
       before ? ignoredCommentsView(before, options) : [],
       ignoredAfter,
     ))
-      options.audit?.("settings.merging", change);
+      await options.audit?.("settings.merging", change);
   return json({
     ...view(policy),
     autoApproveHighRisk: autoApproveHighRisk ?? before?.autoApproveHighRisk ?? false,

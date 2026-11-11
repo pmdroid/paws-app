@@ -87,7 +87,7 @@ describe("advanceMerge", () => {
       mergeSha: "m",
       confirmedAt: 5,
     });
-    beginMergeCall(db, "eng-1", "h", 1);
+    await beginMergeCall(sqliteDb(db), "eng-1", "h", 1);
     const { caps, calls } = capabilities();
     expect(
       await advanceMerge(db, sqliteDb(db), { itemId: "eng-1", payload: {}, jobId: 1 }, caps),
@@ -102,7 +102,7 @@ describe("advanceMerge", () => {
   test("a durable marker without a payload flag fences publication after a confirmed negative read", async () => {
     const db = queued();
     try {
-      beginMergeCall(db, "eng-1", "h", 1);
+      await beginMergeCall(sqliteDb(db), "eng-1", "h", 1);
       const { caps } = capabilities();
       expect(
         await advanceMerge(db, sqliteDb(db), { itemId: "eng-1", payload: {}, jobId: 1 }, caps),

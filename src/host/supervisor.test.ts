@@ -260,7 +260,7 @@ describe("host suspension and clock gaps", () => {
       enterMergeQueue(db, "eng-9", { ...checkpoint, phase: "merge_queue" });
       enqueueJob(db, { queue: JOB_KIND.merge, payload: { itemId: "eng-9" }, now: clock.now() });
       claimNextJob(db, { workerId: "merger", now: clock.now(), queues: [JOB_KIND.merge] });
-      if (held === "merge_call") beginMergeCall(db, "eng-9", "wip", clock.now());
+      if (held === "merge_call") await beginMergeCall(sqliteDb(db), "eng-9", "wip", clock.now());
     }
     return run;
   }

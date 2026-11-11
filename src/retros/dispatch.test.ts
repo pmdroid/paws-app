@@ -312,13 +312,13 @@ describe("placement", () => {
   test("a digest over the runner limit abandons the retro and names its size and the limit", async () => {
     const { db, root, clock, open } = await world();
     const first = (await getRetro(sqliteDb(db), "r1"))!;
-    const read = (kind: "digest" | "manifest") => {
-      const stored = readRetroArtifact(db, root, "r1", kind);
+    const read = async (kind: "digest" | "manifest") => {
+      const stored = await readRetroArtifact(sqliteDb(db), root, "r1", kind);
       if (!stored.ok) throw new Error(stored.reason);
       return Buffer.from(stored.bytes);
     };
-    const digest = read("digest");
-    const manifest = read("manifest");
+    const digest = await read("digest");
+    const manifest = await read("manifest");
     await closeRetro(sqliteDb(db), {
       retroId: "r1",
       state: "abandoned",

@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { evidencePath } from "../closeout";
 import { reviewRecordsSince } from "../closeout-spec";
-import { getWorkItemRepository, listWorkItems, openDatabase } from "../db";
+import { getWorkItemRepositorySteps, listWorkItems, openDatabase, sqliteDb } from "../db";
 import { journalCaught } from "../journal";
 import { itemPathId } from "../loop";
 import { DEFAULT_SINCE_DAYS } from "./sources";
@@ -79,7 +79,7 @@ export async function readStoredFindings(input: {
   const tasks: string[] = [];
   try {
     for (const item of listWorkItems(db)) {
-      const bound = getWorkItemRepository(db, item.id);
+      const bound = await sqliteDb(db).run((q) => getWorkItemRepositorySteps(q, item.id));
       if (bound?.owner.toLowerCase() !== input.owner.toLowerCase()) continue;
       if (bound.repo.toLowerCase() !== input.repo.toLowerCase()) continue;
       tasks.push(itemPathId(item));

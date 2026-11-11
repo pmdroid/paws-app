@@ -91,7 +91,7 @@ test("admin revoke atomically ends sessions, runners, queued and running work; s
       runners: 0,
       openItems: 0,
     });
-    const member = workspaceMember(db, "workspace", "member")!;
+    const member = (await workspaceMember(sqliteDb(db), "workspace", "member"))!;
     expect(member.active).toBe(true);
     expect(member.revokedAt).not.toBeNull();
     expect(member.revokedBy).toBe("admin");
@@ -131,7 +131,9 @@ test("admin revoke atomically ends sessions, runners, queued and running work; s
       teamIds: ["team"],
       now: now + 1,
     });
-    expect(workspaceMemberUsable(workspaceMember(db, "workspace", "member"))).toBe(false);
+    expect(workspaceMemberUsable(await workspaceMember(sqliteDb(db), "workspace", "member"))).toBe(
+      false,
+    );
     expect(await listUserWorkspaces(sqliteDb(db), "member")).toEqual([]);
     await expect(
       issueWorkspaceSession(db, { workspaceId: "workspace", userId: "member", now }),
@@ -195,7 +197,9 @@ test("revoke and restore require admin, origin and CSRF; self and last admin sta
         now: Date.now(),
       }),
     ).rejects.toThrow("You cannot revoke your own access.");
-    expect(workspaceMemberUsable(workspaceMember(f.db, "workspace", "admin"))).toBe(true);
+    expect(workspaceMemberUsable(await workspaceMember(sqliteDb(f.db), "workspace", "admin"))).toBe(
+      true,
+    );
     await expect(
       changeWorkspaceRevocation(sqliteDb(f.db), {
         workspaceId: "workspace",
@@ -223,7 +227,7 @@ test("a failed Stop rolls back the whole revocation", async () => {
         now: Date.now(),
       }),
     ).rejects.toThrow("Work changed before access could be revoked.");
-    expect(workspaceMember(f.db, "workspace", "member")?.revokedAt).toBeNull();
+    expect((await workspaceMember(sqliteDb(f.db), "workspace", "member"))?.revokedAt).toBeNull();
     expect(
       f.db.query("SELECT 1 FROM workspace_session WHERE user_id='member'").get(),
     ).not.toBeNull();
@@ -395,7 +399,7 @@ test("a forced attribution refresh corrects an inactive snapshot after joining a
       await refresh;
       await attribution;
       expect(reads).toBe(2);
-      expect(workspaceMember(f.db, "workspace", "member")?.active).toBe(true);
+      expect((await workspaceMember(sqliteDb(f.db), "workspace", "member"))?.active).toBe(true);
     } finally {
       gate.resolve();
       await access.stop();
@@ -501,7 +505,7 @@ test("revoking an idle member detaches their VM runner and notifies the connecti
         calls++;
         committed =
           !database.inTransaction &&
-          workspaceMember(database, "workspace", "member")?.revokedAt !== null;
+          (await workspaceMember(sqliteDb(database), "workspace", "member"))?.revokedAt !== null;
       },
     },
   );

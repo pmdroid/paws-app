@@ -469,7 +469,7 @@ export function createRetroScheduler(options: {
 
   async function collect(retro: Retro) {
     try {
-      const collected = await collectRetroDigest(db, {
+      const collected = await collectRetroDigest(store, {
         retroId: retro.id,
         artifactRoot,
         now: retro.createdAt,

@@ -20,6 +20,7 @@ import {
   recordPullComment,
   type LinearCommentRecord,
   sqliteDb,
+  syncSteps,
 } from "../db";
 import {
   createInboxStore,
@@ -164,7 +165,7 @@ async function setup(options: { members?: string[]; agents?: string[] } = {}) {
       authorized.push(actor.id);
       return members.has(actor.id) && actor.teamId === TEAM;
     },
-    recheck: (actor) => (checkerReady ? members.has(actor.id) : null),
+    recheck: (_q, actor) => syncSteps(() => (checkerReady ? members.has(actor.id) : null)),
     wait: () => ({ quietMs: 60_000, maxMs: 300_000 }),
   };
   insertQueuedItem(db, { id: "eng-1", now: T0, sessionKey: SESSION });

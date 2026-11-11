@@ -133,7 +133,9 @@ test("settings save round-trips through config.toml and warns about check paths"
     configPath,
     csrfToken: "token",
     repos: ["acme/demo"],
-    audit: (_action: string, subject: string) => audit.push(subject),
+    audit: async (_action: string, subject: string) => {
+      audit.push(subject);
+    },
     inspect: async () => ({
       files: ["docs/index.md", "docs/archive/old.md", "src/a.ts"],
       checks: [{ id: "links", paths: ["docs/"] }],

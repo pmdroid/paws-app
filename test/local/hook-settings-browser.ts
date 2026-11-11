@@ -71,14 +71,14 @@ const server = Bun.serve({
         resolver,
         csrfToken: "synthetic-csrf",
         role: "admin",
-        audit: () => {},
+        audit: async () => {},
       }))!;
     if (url.pathname === "/api/settings/hooks")
       return (await handleHookSettingsRequest(req, {
         db,
         csrfToken: "synthetic-csrf",
         role: "admin",
-        audit: () => {},
+        audit: async () => {},
       }))!;
     if (url.pathname === "/api/settings/agents")
       return Response.json({

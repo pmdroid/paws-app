@@ -387,8 +387,11 @@ export function* getLinearSessionAccessSteps(q: Q, sessionId: string): Steps<Lin
   return team === "removed" ? "team_removed" : "allowed";
 }
 
-export function getLinearSessionAccess(db: Database, sessionId: string): LinearSessionAccess {
-  return settled(sqliteDb(db).run((q) => getLinearSessionAccessSteps(q, sessionId)));
+export async function getLinearSessionAccess(
+  store: Db,
+  sessionId: string,
+): Promise<LinearSessionAccess> {
+  return store.run((q) => getLinearSessionAccessSteps(q, sessionId));
 }
 
 type LinearTeamAccess = "allowed" | "removed" | "unknown";

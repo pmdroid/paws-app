@@ -148,7 +148,7 @@ async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 
     ask,
     now: () => clock,
     stopped: async () => {
-      const item = getWorkItem(db, "eng-1");
+      const item = await sqliteDb(db).run((q) => getWorkItemSteps(q, "eng-1"));
       return item === null || item.state === "cancelled" || item.cancelRequested;
     },
     session: (item) => item.sessionKey,

@@ -116,7 +116,7 @@ test("signed-in admins, including the one who connected the workspace, can reval
         .query("SELECT * FROM workspace_access_audit WHERE action='github.integration.revalidated'")
         .all(),
     ).toHaveLength(3);
-    expect(workspaceMember(f.db, "workspace", "admin")?.role).toBe("admin");
+    expect((await workspaceMember(sqliteDb(f.db), "workspace", "admin"))?.role).toBe("admin");
   } finally {
     f.db.close();
   }

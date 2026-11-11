@@ -85,7 +85,7 @@ export async function probeWorkspaceAccess(
     teamIds: ["team-one"],
     now: now + 1,
   });
-  const member = workspaceMember(db, workspace.id, userId);
+  const member = await workspaceMember(sqliteDb(db), workspace.id, userId);
   observe(
     "Linear membership sync preserves the manual owner and its verified teams",
     member?.role === "admin" && member.teamIds.join() === "team-one",
@@ -186,7 +186,7 @@ export async function probeWorkspaceAccess(
     "membership removal invalidates an existing browser session",
     requestWorkspaceSession(restored, request, now + 2) === null,
     {
-      member: workspaceMember(restored, workspace.id, userId),
+      member: await workspaceMember(sqliteDb(restored), workspace.id, userId),
       remainingSessions: restored.query("SELECT count(*) AS count FROM workspace_session").get(),
     },
   );
@@ -209,7 +209,7 @@ export async function probeWorkspaceAccess(
     teamIds: ["stale-team"],
     now: now + 3,
   });
-  const tied = workspaceMember(restored, workspace.id, userId);
+  const tied = await workspaceMember(sqliteDb(restored), workspace.id, userId);
   observe(
     "same-timestamp active observation cannot restore revoked membership or teams",
     tied?.active === false && tied.teamIds.length === 0,

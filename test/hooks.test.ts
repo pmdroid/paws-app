@@ -29,7 +29,9 @@ function options(role?: string): HookSettingsOptions {
     db,
     csrfToken: "csrf",
     ...(role ? { role } : {}),
-    audit: (action, subject) => audits.push([action, subject]),
+    audit: async (action, subject) => {
+      audits.push([action, subject]);
+    },
     root: join(root, "skills"),
     resolver: fakeSkillResolver(),
     now: () => 1_000,

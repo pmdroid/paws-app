@@ -45,7 +45,7 @@ test.each(["cancelled", "merged"] as const)(
       db.close();
       db = openDatabase(path);
       migrate(db);
-      expect(getConfirmedRemoteMerge(db, item.id)).toEqual(fact());
+      expect(await getConfirmedRemoteMerge(sqliteDb(db), item.id)).toEqual(fact());
       expect(getWorkItem(db, item.id)).toEqual(before);
       expect(getWorkItem(db, item.id)?.state).toBe(state);
       expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM job").get()?.n).toBe(0);
@@ -70,7 +70,7 @@ test("replayed confirmation preserves its original observation and rejects confl
     await expect(
       recordConfirmedRemoteMerge(sqliteDb(db), { ...fact(), mergeSha: "b".repeat(40) }),
     ).rejects.toThrow("conflicts");
-    expect(getConfirmedRemoteMerge(db, "item")).toEqual(fact());
+    expect(await getConfirmedRemoteMerge(sqliteDb(db), "item")).toEqual(fact());
     expect(getWorkItem(db, "item")?.state).toBe("queued");
   } finally {
     db.close();
@@ -85,7 +85,7 @@ test("confirmed success without a reported merge SHA retains the PR identity wit
       ...fact(),
       mergeSha: null,
     });
-    expect(getConfirmedRemoteMerge(db, "item")?.mergeSha).toBeNull();
+    expect((await getConfirmedRemoteMerge(sqliteDb(db), "item"))?.mergeSha).toBeNull();
   } finally {
     db.close();
   }
@@ -104,8 +104,8 @@ test("a failed fact write leaves terminal task history and earlier confirmed mer
       "storage failure",
     );
     expect(getWorkItem(db, "second")?.state).toBe("cancelled");
-    expect(getConfirmedRemoteMerge(db, "second")).toBeNull();
-    expect(getConfirmedRemoteMerge(db, "item")).toEqual(fact());
+    expect(await getConfirmedRemoteMerge(sqliteDb(db), "second")).toBeNull();
+    expect(await getConfirmedRemoteMerge(sqliteDb(db), "item")).toEqual(fact());
   } finally {
     db.close();
   }

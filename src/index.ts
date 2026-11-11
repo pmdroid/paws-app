@@ -1667,8 +1667,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
                   commentAccess = await workspace!.access;
                   return commentAccess.authorizeLinearCommentActor(actor);
                 },
-                recheck: (actor: { id: string; teamId: string | null }) =>
-                  commentAccess?.recheckLinearCommentActor(actor) ?? null,
+                recheck: (q: Q, actor: { id: string; teamId: string | null }) =>
+                  commentAccess?.recheckLinearCommentActorSteps(q, actor) ?? syncSteps(() => null),
               }
             : {}),
         },

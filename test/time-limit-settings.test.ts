@@ -23,7 +23,9 @@ function options(role?: string): TimeLimitSettingsOptions {
     configPath,
     csrfToken: "csrf",
     ...(role ? { role } : {}),
-    audit: (action, subject) => audits.push([action, subject]),
+    audit: async (action, subject) => {
+      audits.push([action, subject]);
+    },
   };
 }
 

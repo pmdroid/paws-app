@@ -196,7 +196,7 @@ try {
     readiness.resolve();
     await stopping;
     const db = openDatabase(paws.paths.db);
-    const member = workspaceMember(db, workspace.id, userId);
+    const member = await workspaceMember(sqliteDb(db), workspace.id, userId);
     const sessions = db
       .query<{ count: number }, []>("SELECT count(*) AS count FROM workspace_session")
       .get()!.count;
@@ -361,7 +361,7 @@ try {
     );
     let member: WorkspaceMember | null = null;
     for (let attempt = 0; attempt < 100; attempt++) {
-      member = workspaceMember(paws.db, workspace.id, userId);
+      member = await workspaceMember(sqliteDb(paws.db), workspace.id, userId);
       if (member?.active === false) break;
       await Bun.sleep(5);
     }

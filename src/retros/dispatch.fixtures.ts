@@ -144,7 +144,7 @@ export async function world(options: { activity?: boolean; retries?: number } = 
     agentProfile: { agent: "codex", model: "gpt-x", effort: null },
     now: FIXTURE_END,
   });
-  const collected = await collectRetroDigest(db, {
+  const collected = await collectRetroDigest(sqliteDb(db), {
     retroId: "r1",
     artifactRoot: root,
     now: FIXTURE_END,

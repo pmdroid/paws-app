@@ -4740,13 +4740,13 @@ for (const race of ["token", "merge", "followup"] as const) {
       if (race === "token") {
         expect(github.opened).toEqual([]);
         expect(github.merged).toEqual([]);
-        expect(getConfirmedRemoteMerge(db, item.id)).toBeNull();
+        expect(await getConfirmedRemoteMerge(sqliteDb(db), item.id)).toBeNull();
       } else {
         expect(github.merged).toHaveLength(1);
         const sha = (
           await exec("git", ["--git-dir", layout.bare, "rev-parse", "main"])
         ).stdout.trim();
-        expect(getConfirmedRemoteMerge(db, item.id)).toMatchObject({
+        expect(await getConfirmedRemoteMerge(sqliteDb(db), item.id)).toMatchObject({
           repositoryOwner: "pmdroid",
           repositoryName: "paws-demo",
           pullNumber: 1,

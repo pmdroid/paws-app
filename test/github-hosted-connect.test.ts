@@ -327,7 +327,7 @@ for (const invalidation of ["logout", "demotion", "repositories", "session"] as 
       )
         await Bun.sleep(1);
       if (invalidation === "logout")
-        deleteWorkspaceSession(f.db, f.sessions.admin!.session.tokenHash);
+        await deleteWorkspaceSession(sqliteDb(f.db), f.sessions.admin!.session.tokenHash);
       if (invalidation === "demotion")
         f.db.run("UPDATE workspace_member SET role='member' WHERE user_id='admin'");
       if (invalidation === "repositories")
@@ -490,7 +490,8 @@ for (const change of ["logout", "demotion", "repositories", "credentials", "expi
       });
       const pending = f.handler()(automaticRequest(f));
       await entered.promise;
-      if (change === "logout") deleteWorkspaceSession(f.db, f.sessions.owner!.session.tokenHash);
+      if (change === "logout")
+        await deleteWorkspaceSession(sqliteDb(f.db), f.sessions.owner!.session.tokenHash);
       if (change === "demotion")
         f.db.run(
           "UPDATE workspace_member SET role='member' WHERE workspace_id='ws' AND user_id='owner'",

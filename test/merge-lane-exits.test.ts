@@ -84,7 +84,7 @@ test("a stop during a successful squash waits for completion and answers already
   const bus = new CommandBus();
   const emitted: unknown[] = [];
   bus.subscribe((c) => emitted.push(c));
-  beginMergeCall(db, "holder", "head", 5);
+  await beginMergeCall(sqliteDb(db), "holder", "head", 5);
   expect(await submitCommand(sqliteDb(db), bus, command)).toEqual({ applied: false });
   expect(getWorkItem(db, "holder")).toMatchObject({ state: "merge_queue", cancelRequested: false });
   expect(await mergeStopRequested(sqliteDb(db), "holder")).toBe(true);
@@ -120,7 +120,7 @@ test("a stop during a successful squash waits for completion and answers already
 test("a deferred stop cancels when the squash did not succeed", async () => {
   const db = setup();
   const bus = new CommandBus();
-  beginMergeCall(db, "holder", "head", 5);
+  await beginMergeCall(sqliteDb(db), "holder", "head", 5);
   expect(
     (
       await applyLinearCommand(sqliteDb(db), command, 10, "Stopped by test.", {

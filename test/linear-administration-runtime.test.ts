@@ -171,7 +171,7 @@ test("one session cleanup failure still interrupts every session and remains ret
   for (let i = 0; i < 100 && f.interrupted.length < 2; i++) await Bun.sleep(5);
   expect(f.interrupted).toEqual(["session", "session-two"]);
   expect(await createInboxStore(sqliteDb(f.db)).listUnhandled()).toHaveLength(1);
-  expect(getLinearSessionAccess(f.db, "session-two")).toBe("revoked");
+  expect(await getLinearSessionAccess(sqliteDb(f.db), "session-two")).toBe("revoked");
   expect((await getLinearSession(sqliteDb(f.db), "session-two"))?.generation).toBe(1);
   f.cleanupFailure.sessionId = null;
   expect((await f.post(event, "cleanup-revocation")).status).toBe(200);
@@ -201,7 +201,7 @@ test("a rejected second-child cancellation rolls back signed revocation before n
   expect(f.task.items.map((item) => getWorkItem(f.db, item.id)?.state)).toEqual(original);
   expect((await getLinearSession(sqliteDb(f.db), "session"))?.generation).toBe(0);
   expect((await getLinearSession(sqliteDb(f.db), "session"))?.stoppedAt).toBeNull();
-  expect(getLinearSessionAccess(f.db, "session")).toBe("allowed");
+  expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("allowed");
   expect(
     f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM linear_access_event").get()?.n,
   ).toBe(0);
@@ -228,7 +228,7 @@ test("a rejected second-child cancellation rolls back signed revocation before n
   expect(f.notifications).toEqual(f.task.items.map((item) => item.id));
   expect(f.interrupted).toEqual(["session"]);
   expect(f.owned.signal.aborted).toBe(true);
-  expect(getLinearSessionAccess(f.db, "session")).toBe("revoked");
+  expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("revoked");
   expect(listOutbox(f.db, "session").every((row) => row.status === "dropped")).toBe(true);
 });
 
@@ -244,7 +244,7 @@ test("signed revocation stops owned work and fences active, queued and delayed r
   await f.dispatcher.tick();
   await f.active.promise;
   expect((await f.post(revoked())).status).toBe(200);
-  expect(getLinearSessionAccess(f.db, "session")).toBe("revoked");
+  expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("revoked");
   expect(getWorkItem(f.db, f.task.items[0]!.id)?.state).toBe("cancelled");
   expect(f.owned.signal.aborted).toBe(true);
   expect(listOutbox(f.db, "session").every((row) => row.status === "dropped")).toBe(true);
@@ -292,7 +292,7 @@ test("signed revocation is persisted and stops queued work even without a stored
   const f = await fixture(false);
   expect(f.opened.tracker).toBeNull();
   expect((await f.post(revoked())).status).toBe(200);
-  expect(getLinearSessionAccess(f.db, "session")).toBe("revoked");
+  expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("revoked");
   expect(f.owned.signal.aborted).toBe(true);
   expect(f.requests).toEqual([]);
 });
@@ -312,7 +312,7 @@ test("team removal keeps the authorized stopped response while human unassignmen
       })
     ).status,
   ).toBe(200);
-  expect(getLinearSessionAccess(f.db, "session")).toBe("team_removed");
+  expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("team_removed");
   expect(isLinearAppRevoked(f.db, scope)).toBe(false);
   await f.dispatcher.tick();
   await f.dispatcher.idle();
