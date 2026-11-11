@@ -1,6 +1,5 @@
 import {
   sessionIssueTeamNameSteps,
-  settled,
   sqliteDb,
   teamRepositoryAllowedSteps,
   workspaceMemberUsable,
@@ -51,8 +50,8 @@ export async function teamRepositoryDenial(
 }
 
 /** The delegator is not in the issue's team in Paws. */
-export function teamMemberDenial(db: Database, item: WorkItemRecord): GitHubDenial {
-  return notTeamMemberDenial(issueTeamName(db, item));
+export function* teamMemberDenialSteps(q: Q, item: WorkItemRecord): Steps<GitHubDenial> {
+  return notTeamMemberDenial(yield* issueTeamNameSteps(q, item));
 }
 
 /** Names of the workspace's active admins, from the database. */
@@ -69,10 +68,6 @@ export async function workspaceAdministratorNames(
  * The issue's team as Linear named it in the session webhook, or the team key from the issue
  * identifier when no stored payload names it. Never reads Linear.
  */
-export function issueTeamName(db: Database, item: WorkItemRecord): string {
-  return settled(sqliteDb(db).run((q) => issueTeamNameSteps(q, item)));
-}
-
 export function* issueTeamNameSteps(q: Q, item: WorkItemRecord): Steps<string> {
   const stored = item.sessionKey ? yield* sessionIssueTeamNameSteps(q, item.sessionKey) : undefined;
   if (typeof stored === "string" && stored.trim() !== "") return stored.trim();

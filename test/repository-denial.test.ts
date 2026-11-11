@@ -6,13 +6,13 @@ import {
   listOutbox,
   refreshRepositoryCatalog,
   type WorkItemRecord,
-  syncSteps,
+  sqliteDb,
 } from "../src/db";
 import {
   FakeGitHubIntegration,
   GitHubInstallationCheck,
-  issueTeamName,
-  teamMemberDenial,
+  issueTeamNameSteps,
+  teamMemberDenialSteps,
   teamRepositoryDenial,
 } from "../src/loop";
 import { tempDb } from "./helpers";
@@ -139,9 +139,10 @@ test("a workspace without active admins names the role instead of a person", asy
 test("the team name comes from the stored webhook, else the issue key, never from Linear", async () => {
   const { db, item } = await seed();
   try {
-    expect(issueTeamName(db, item("PAS-1", "Pascal"))).toBe("Pascal");
-    expect(issueTeamName(db, item("ENG-2", null))).toBe("ENG");
-    expect(teamMemberDenial(db, item("PAS-3"))).toEqual({
+    const store = sqliteDb(db);
+    expect(await store.run((q) => issueTeamNameSteps(q, item("PAS-1", "Pascal")))).toBe("Pascal");
+    expect(await store.run((q) => issueTeamNameSteps(q, item("ENG-2", null)))).toBe("ENG");
+    expect(await store.run((q) => teamMemberDenialSteps(q, item("PAS-3")))).toEqual({
       denied: true,
       reason: "You're not a member of Pascal in Paws.",
     });
@@ -165,7 +166,8 @@ for (const [name, decide, response] of [
   ],
   [
     "a delegator outside the team",
-    (db: ReturnType<typeof tempDb>, item: WorkItemRecord) => teamMemberDenial(db, item),
+    (db: ReturnType<typeof tempDb>, item: WorkItemRecord) =>
+      sqliteDb(db).run((q) => teamMemberDenialSteps(q, item)),
     "You're not a member of Pascal in Paws.",
   ],
 ] as const) {
@@ -221,7 +223,7 @@ test("a membership lost while held cancels on recovery with the member reason", 
     expect(await check.ensure(current, "initial", new AbortController().signal)).toBe(false);
     expect(getWorkItem(db, current.id)?.state).toBe("awaiting_input");
     integration.installed = true;
-    integration.permitted = teamMemberDenial(db, current);
+    integration.permitted = await sqliteDb(db).run((q) => teamMemberDenialSteps(q, current));
     await check.recover();
     expect(getWorkItem(db, current.id)?.state).toBe("cancelled");
     expect(stopResponses(db)).toEqual(["You're not a member of Pascal in Paws."]);
@@ -235,7 +237,7 @@ test("a local membership check that fails explains without reading GitHub or Lin
   const { db, item } = await seed();
   const current = item();
   const integration = new FakeGitHubIntegration({
-    current: (_q, subject) => syncSteps(() => teamMemberDenial(db, subject)),
+    current: (q, subject) => teamMemberDenialSteps(q, subject),
   });
   const check = new GitHubInstallationCheck(db, integration, () => 1000);
   try {
