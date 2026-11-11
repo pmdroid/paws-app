@@ -286,8 +286,11 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   let emitQueue: Promise<void> = Promise.resolve();
   const emit: AcpEventListener = (event) => {
     emitQueue = emitQueue.then(async () => {
-      const line = JSON.stringify({ t: new Date().toISOString(), event });
-      await appendFile(transcript, `${options.redactTranscript?.(line) ?? line}\n`);
+      const record = { t: new Date().toISOString(), event };
+      await appendFile(
+        transcript,
+        `${options.serializeTranscript?.(record) ?? JSON.stringify(record)}\n`,
+      );
       if (!state.cancelling || event.type === "cancelled") await options.onEvent?.(event);
     });
     return emitQueue;
