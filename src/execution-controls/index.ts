@@ -1,21 +1,27 @@
 import {
   workspaceMemberUsable,
   CLEANUP_BLOCKED_NOTICE,
-  auditWorkspaceAccess,
-  deadDeliveryIsFinalStop,
-  deadDeliveryItemId,
-  getConversation,
-  getLinearSession,
-  getWorkItem,
-  getWorkspace,
-  linearSessionClientId,
+  auditWorkspaceAccessSteps,
+  commandInstance,
+  deadDeliveryIsFinalStopSteps,
+  deadDeliveryItemIdSteps,
+  emitJobReady,
+  getConversationSteps,
+  getLinearSessionSteps,
+  getWorkItemSteps,
+  getWorkspaceSteps,
+  linearSessionClientIdSteps,
   parseDeadDeliveryRef,
-  resumeUsagePauseNow,
-  retryDeadDelivery,
-  submitCommand,
-  usagePause,
-  workspaceMember,
-  workspaceSessionIds,
+  resumeUsagePauseNowSteps,
+  retryDeadDeliverySteps,
+  sqliteDb,
+  submitCommandSteps,
+  usagePauseSteps,
+  workspaceMemberSteps,
+  workspaceSessionIdsSteps,
+  type Q,
+  type Steps,
+  type WorkItemRecord,
 } from "../db";
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
@@ -23,16 +29,15 @@ import { CommandBus, TERMINAL_WORK_ITEM_STATES } from "../core";
 import type { WorkspacePrincipal } from "../workspace";
 
 export type ExecutionControlPort = {
-  pauseItem(itemId: string, canAct?: () => boolean, onCommitted?: () => void): Promise<boolean>;
-  resumeItem(itemId: string, canAct?: () => boolean, onCommitted?: () => void): Promise<boolean>;
+  pauseItem(itemId: string, canAct?: CanAct, onCommitted?: OnCommitted): Promise<boolean>;
+  resumeItem(itemId: string, canAct?: CanAct, onCommitted?: OnCommitted): Promise<boolean>;
   interruptItem(itemId: string): Promise<void>;
   /** A person vouches that the item's old agent is gone; clears its conversation block. */
-  clearStuckAgent(
-    itemId: string,
-    canAct?: () => boolean,
-    onCommitted?: () => void,
-  ): Promise<boolean>;
+  clearStuckAgent(itemId: string, canAct?: CanAct, onCommitted?: OnCommitted): Promise<boolean>;
 };
+
+export type CanAct = (q: Q) => Steps<boolean>;
+export type OnCommitted = (q: Q) => Steps<void>;
 
 export function createExecutionControls(input: {
   db: Database;
@@ -41,17 +46,19 @@ export function createExecutionControls(input: {
   now?: () => number;
 }) {
   const now = input.now ?? Date.now;
-  function authorized(
+  const store = sqliteDb(input.db);
+  function* authorizedSteps(
+    q: Q,
     itemId: string,
     principal: WorkspacePrincipal,
     sessionIds: readonly string[],
     options: { stoppedSession?: boolean } = {},
-  ) {
-    const member = workspaceMember(input.db, principal.workspaceId, principal.userId);
-    const item = getWorkItem(input.db, itemId);
-    const session = item?.sessionKey ? getLinearSession(input.db, item.sessionKey) : null;
-    const workspace = getWorkspace(input.db, principal.workspaceId);
-    const clientId = session ? linearSessionClientId(input.db, session.sessionId) : null;
+  ): Steps<WorkItemRecord | null> {
+    const member = yield* workspaceMemberSteps(q, principal.workspaceId, principal.userId);
+    const item = yield* getWorkItemSteps(q, itemId);
+    const session = item?.sessionKey ? yield* getLinearSessionSteps(q, item.sessionKey) : null;
+    const workspace = yield* getWorkspaceSteps(q, principal.workspaceId);
+    const clientId = session ? yield* linearSessionClientIdSteps(q, session.sessionId) : null;
     return workspaceMemberUsable(member) &&
       item &&
       session &&
@@ -61,12 +68,14 @@ export function createExecutionControls(input: {
       session.delegationId === item.delegationId &&
       session.organizationId === workspace.organizationId &&
       sessionIds.includes(session.sessionId) &&
-      workspaceSessionIds(input.db, workspace.id, member.userId, clientId).includes(
+      (yield* workspaceSessionIdsSteps(q, workspace.id, member.userId, clientId)).includes(
         session.sessionId,
       )
       ? item
       : null;
   }
+  const audit = (entry: Parameters<typeof auditWorkspaceAccessSteps>[1]) =>
+    store.run((q) => auditWorkspaceAccessSteps(q, entry));
   return {
     async handle(
       request: Request,
@@ -123,15 +132,18 @@ export function createExecutionControls(input: {
         );
       const itemId =
         retryRef !== null
-          ? deadDeliveryItemId(input.db, retryRef)
+          ? await store.run((q) => deadDeliveryItemIdSteps(q, retryRef))
           : request.method === "GET"
             ? url.searchParams.get("itemId")
             : body["itemId"];
       // A dead final Stop delivery belongs to a stopped session; retrying it resumes nothing.
-      const stoppedSession = retryRef !== null && deadDeliveryIsFinalStop(input.db, retryRef);
+      const stoppedSession =
+        retryRef !== null && (await store.run((q) => deadDeliveryIsFinalStopSteps(q, retryRef)));
       const item =
         typeof itemId === "string"
-          ? authorized(itemId, principal, sessionIds, { stoppedSession })
+          ? await store.run((q) =>
+              authorizedSteps(q, itemId, principal, sessionIds, { stoppedSession }),
+            )
           : null;
       // The dashboard asks for every item it shows; "none" is an answer, not a denial.
       if (!item && request.method === "GET")
@@ -140,7 +152,7 @@ export function createExecutionControls(input: {
           { headers: { "Cache-Control": "no-store" } },
         );
       if (!item) {
-        auditWorkspaceAccess(input.db, {
+        await audit({
           workspaceId: principal.workspaceId,
           userId: principal.userId,
           action: "access.denied",
@@ -153,7 +165,7 @@ export function createExecutionControls(input: {
         );
       }
       if (retryRef !== null) {
-        if (!retryDeadDelivery(input.db, item.id, retryRef, now()))
+        if (!(await store.transaction((q) => retryDeadDeliverySteps(q, item.id, retryRef, now()))))
           return Response.json(
             {
               error:
@@ -161,7 +173,7 @@ export function createExecutionControls(input: {
             },
             { status: 409 },
           );
-        auditWorkspaceAccess(input.db, {
+        await audit({
           workspaceId: principal.workspaceId,
           userId: principal.userId,
           action: "execution.retry",
@@ -171,16 +183,24 @@ export function createExecutionControls(input: {
         return Response.json({ applied: true, itemId: item.id, action: "retry" });
       }
       const port = input.getPort(principal.workspaceId);
-      const blocked = getConversation(input.db, item.id).blocked;
+      const blocked = (await store.run((q) => getConversationSteps(q, item.id))).blocked;
       // Only an admin may vouch that the old agent is gone: a wrong call runs two.
-      const vouches = () =>
-        workspaceMember(input.db, principal.workspaceId, principal.userId)?.role === "admin";
+      function* vouchesSteps(q: Q): Steps<boolean> {
+        return (
+          (yield* workspaceMemberSteps(q, principal.workspaceId, principal.userId))?.role ===
+          "admin"
+        );
+      }
+      const vouches = () => store.run(vouchesSteps);
+      const pause = item.currentRunId
+        ? await store.run((q) => usagePauseSteps(q, item.currentRunId!))
+        : null;
       const actions = [
         ...((TERMINAL_WORK_ITEM_STATES as readonly string[]).includes(item.state)
           ? []
           : [
               "stop",
-              ...(item.currentRunId && usagePause(input.db, item.currentRunId)
+              ...(pause
                 ? ["resume_now"]
                 : item.state === "running"
                   ? ["pause"]
@@ -188,7 +208,7 @@ export function createExecutionControls(input: {
                     ? ["resume"]
                     : []),
             ]),
-        ...(blocked && vouches() ? ["clear_stuck_agent"] : []),
+        ...(blocked && (await vouches()) ? ["clear_stuck_agent"] : []),
       ];
       if (request.method === "GET")
         return Response.json(
@@ -206,8 +226,8 @@ export function createExecutionControls(input: {
           { error: "Execution controls are not ready. Try again." },
           { status: 503 },
         );
-      if (action === "clear_stuck_agent" && !vouches()) {
-        auditWorkspaceAccess(input.db, {
+      if (action === "clear_stuck_agent" && !(await vouches())) {
+        await audit({
           workspaceId: principal.workspaceId,
           userId: principal.userId,
           action: "access.denied",
@@ -224,47 +244,61 @@ export function createExecutionControls(input: {
           { error: "This action is no longer available. Refresh the run." },
           { status: 409 },
         );
-      const sessionGeneration = getLinearSession(input.db, item.sessionKey!)!.generation;
-      const canAct = () => {
-        const current = authorized(item.id, principal, sessionIds);
+      const sessionGeneration = (await store.run((q) =>
+        getLinearSessionSteps(q, item.sessionKey!),
+      ))!.generation;
+      const canAct = function* (q: Q): Steps<boolean> {
+        const current = yield* authorizedSteps(q, item.id, principal, sessionIds);
         return (
           current !== null &&
           current.version === item.version &&
           current.currentRunId === item.currentRunId &&
-          getLinearSession(input.db, item.sessionKey!)?.generation === sessionGeneration
+          (yield* getLinearSessionSteps(q, item.sessionKey!))?.generation === sessionGeneration
         );
       };
-      const onCommitted = () =>
-        auditWorkspaceAccess(input.db, {
+      const onCommitted = function* (q: Q): Steps<void> {
+        yield* auditWorkspaceAccessSteps(q, {
           workspaceId: principal.workspaceId,
           userId: principal.userId,
           action: `execution.${action}`,
           subject: item.id,
           now: now(),
         });
+      };
       let applied: boolean;
       try {
         if (action === "stop") {
-          applied = input.db
-            .transaction(() => {
-              if (!canAct()) return false;
-              onCommitted();
-              const result = submitCommand(input.db, input.bus, {
-                type: "stop",
-                source: "dashboard",
-                itemId: item.id,
-                requestedAt: now(),
-              });
-              if (!result.applied) throw new Error("Item changed before Stop committed");
-              return true;
-            })
-            .immediate();
+          let ready = false;
+          applied = await store.transaction(function* (q) {
+            if (!(yield* canAct(q))) return false;
+            yield* onCommitted(q);
+            const result = yield* submitCommandSteps(
+              q,
+              { type: "stop", source: "dashboard", itemId: item.id, requestedAt: now() },
+              (command) => input.bus.emit(command),
+              () => (ready = true),
+              commandInstance(input.db),
+            );
+            if (!result.applied) throw new Error("Item changed before Stop committed");
+            return true;
+          });
+          if (ready) emitJobReady(input.db);
           if (applied) await port.interruptItem(item.id);
         } else if (action === "clear_stuck_agent") {
-          applied = await port.clearStuckAgent(item.id, () => vouches() && canAct(), onCommitted);
+          applied = await port.clearStuckAgent(
+            item.id,
+            function* (q) {
+              return (yield* vouchesSteps(q)) && (yield* canAct(q));
+            },
+            onCommitted,
+          );
         } else if (action === "resume_now") {
-          applied = canAct() && resumeUsagePauseNow(input.db, item.currentRunId!, now());
-          if (applied) onCommitted();
+          applied = await store.transaction(function* (q) {
+            if (!(yield* canAct(q))) return false;
+            if (!(yield* resumeUsagePauseNowSteps(q, item.currentRunId!, now()))) return false;
+            yield* onCommitted(q);
+            return true;
+          });
         } else
           applied = await port[action === "pause" ? "pauseItem" : "resumeItem"](
             item.id,

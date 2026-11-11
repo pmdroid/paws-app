@@ -11,7 +11,12 @@ import {
   getLinearSession,
   getLinearSessionGeneration,
   getWorkItem,
+  githubIntegrationHoldStatus,
   immediate,
+  insertGithubIntegrationHold,
+  pendingGithubIntegrationHolds,
+  setGithubIntegrationHoldStatus,
+  setOpenQuestionBody,
   syncSteps,
   type WorkItemRecord,
 } from "../db";
@@ -117,10 +122,7 @@ export class GitHubInstallationCheck {
   ) {}
 
   owns(questionId: string): boolean {
-    return (
-      this.db.query("SELECT 1 FROM github_integration_hold WHERE question_id=?").get(questionId) !==
-      null
-    );
+    return githubIntegrationHoldStatus(this.db, questionId) !== null;
   }
 
   close(): void {
@@ -143,10 +145,7 @@ export class GitHubInstallationCheck {
   }
 
   revoke(itemId: string): void {
-    this.db.run(
-      "UPDATE github_integration_hold SET status='revoked' WHERE item_id=? AND status='pending'",
-      [itemId],
-    );
+    setGithubIntegrationHoldStatus(this.db, { itemId }, "revoked");
   }
 
   async ensure(
@@ -220,19 +219,16 @@ export class GitHubInstallationCheck {
         { now: this.now() },
       );
       const held = getWorkItem(this.db, latest.id)!;
-      this.db.run(
-        "INSERT INTO github_integration_hold(question_id,item_id,phase,item_version,session_generation,current_run_id,checkpoint,authority) VALUES(?,?,?,?,?,?,?,?)",
-        [
-          question.id,
-          held.id,
-          phase,
-          held.version,
-          generation,
-          held.currentRunId,
-          JSON.stringify(held.checkpoint),
-          this.integration.identity(held),
-        ],
-      );
+      insertGithubIntegrationHold(this.db, {
+        questionId: question.id,
+        itemId: held.id,
+        phase,
+        itemVersion: held.version,
+        sessionGeneration: generation,
+        currentRunId: held.currentRunId,
+        checkpoint: JSON.stringify(held.checkpoint),
+        authority: this.integration.identity(held),
+      });
       enqueueOutboxOnce(this.db, {
         target: "linear",
         op: "activity",
@@ -249,9 +245,7 @@ export class GitHubInstallationCheck {
 
   async recover(signal: AbortSignal = new AbortController().signal): Promise<void> {
     if (this.closed || signal.aborted) return;
-    const holds = this.db
-      .query<Hold, []>("SELECT * FROM github_integration_hold WHERE status='pending'")
-      .all();
+    const holds = pendingGithubIntegrationHolds(this.db) as Hold[];
     for (const hold of holds) {
       if (this.closed || signal.aborted) return;
       if (!this.current(hold)) {
@@ -272,10 +266,7 @@ export class GitHubInstallationCheck {
           const question = getQuestion(this.db, hold.question_id)!;
           const body = waitingMessage(result);
           if (question.body === body) return;
-          this.db.run("UPDATE question SET body=? WHERE id=? AND status='open'", [
-            body,
-            question.id,
-          ]);
+          setOpenQuestionBody(this.db, question.id, body);
           enqueueOutboxOnce(this.db, {
             target: "linear",
             op: "activity",
@@ -312,10 +303,7 @@ export class GitHubInstallationCheck {
   private resume(hold: Hold, question: StoredQuestion): void {
     if (question.id !== hold.question_id)
       throw new Error("A GitHub App hold answer reached another question.");
-    this.db.run(
-      "UPDATE github_integration_hold SET status='verified' WHERE question_id=? AND status='pending'",
-      [question.id],
-    );
+    setGithubIntegrationHoldStatus(this.db, { questionId: question.id }, "verified");
     applyWorkItemEvent(
       this.db,
       hold.item_id,
@@ -495,10 +483,7 @@ export class GitHubInstallationCheck {
 
   private cancelObsolete(itemId: string, questionId: string): void {
     immediate(this.db, () => {
-      this.db.run(
-        "UPDATE github_integration_hold SET status='revoked' WHERE question_id=? AND status='pending'",
-        [questionId],
-      );
+      setGithubIntegrationHoldStatus(this.db, { questionId }, "revoked");
       const item = getWorkItem(this.db, itemId);
       if (item?.state === "awaiting_input" && getQuestion(this.db, questionId)?.status === "open") {
         applyLinearCommand(
@@ -537,11 +522,7 @@ export class GitHubInstallationCheck {
       this.generation(item) === hold.session_generation &&
       this.permitted(item) &&
       getQuestion(this.db, hold.question_id)?.status === "open" &&
-      this.db
-        .query<{ status: string }, [string]>(
-          "SELECT status FROM github_integration_hold WHERE question_id=?",
-        )
-        .get(hold.question_id)?.status === "pending"
+      githubIntegrationHoldStatus(this.db, hold.question_id) === "pending"
     );
   }
 }

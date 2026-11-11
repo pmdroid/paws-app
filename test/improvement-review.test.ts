@@ -12,6 +12,7 @@ import {
   requeueImprovementDelivery,
   settleImprovementDelivery,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { handleFindingGroupsRequest } from "../src/dashboard/src/server/finding-groups";
 import { handleFindingsRequest } from "../src/dashboard/src/server/findings";
@@ -112,7 +113,7 @@ describe("improvement decisions", () => {
     const id = w.retro.a;
     await w.api("ada", `/api/improvements/${id}/decision`, accept());
     const [delivery] = listImprovementDeliveries(w.db, id);
-    claimImprovementDelivery(w.db, {
+    await claimImprovementDelivery(sqliteDb(w.db), {
       deliveryId: delivery!.id,
       owner: "outbox",
       now: END + 5_000,
@@ -132,13 +133,13 @@ describe("improvement decisions", () => {
     const id = w.retro.a;
     await w.api("ada", `/api/improvements/${id}/decision`, accept());
     const [delivery] = listImprovementDeliveries(w.db, id);
-    claimImprovementDelivery(w.db, {
+    await claimImprovementDelivery(sqliteDb(w.db), {
       deliveryId: delivery!.id,
       owner: "outbox",
       now: END + 5_000,
       leaseMs: 60_000,
     });
-    settleImprovementDelivery(w.db, {
+    await settleImprovementDelivery(sqliteDb(w.db), {
       deliveryId: delivery!.id,
       attempt: 1,
       owner: "outbox",
@@ -160,13 +161,13 @@ describe("improvement decisions", () => {
     const after = listImprovementDeliveries(w.db, id);
     expect(after.map((d) => [d.id, d.state])).toEqual([[delivery!.id, "pending"]]);
 
-    claimImprovementDelivery(w.db, {
+    await claimImprovementDelivery(sqliteDb(w.db), {
       deliveryId: delivery!.id,
       owner: "outbox",
       now: END + 7_000,
       leaseMs: 60_000,
     });
-    settleImprovementDelivery(w.db, {
+    await settleImprovementDelivery(sqliteDb(w.db), {
       deliveryId: delivery!.id,
       attempt: 2,
       owner: "outbox",
@@ -186,13 +187,13 @@ describe("improvement decisions", () => {
     const base = `/api/improvements/${id}/deliveries/${delivery!.id}`;
     w.db.run("INSERT INTO workspace_repository VALUES ('ws', ?, 'team-b')", [A]);
     w.db.run("DELETE FROM workspace_repository WHERE repository = ? AND team_id = 'team-a'", [A]);
-    claimImprovementDelivery(w.db, {
+    await claimImprovementDelivery(sqliteDb(w.db), {
       deliveryId: delivery!.id,
       owner: "outbox",
       now: END + 5_000,
       leaseMs: 60_000,
     });
-    settleImprovementDelivery(w.db, {
+    await settleImprovementDelivery(sqliteDb(w.db), {
       deliveryId: delivery!.id,
       attempt: 1,
       owner: "outbox",
@@ -217,19 +218,19 @@ describe("improvement decisions", () => {
       blocked: null,
     });
 
-    claimImprovementDelivery(w.db, {
+    await claimImprovementDelivery(sqliteDb(w.db), {
       deliveryId: delivery!.id,
       owner: "outbox",
       now: END + 7_000,
       leaseMs: 60_000,
     });
-    reserveImprovementDeliveryRemote(w.db, {
+    await reserveImprovementDeliveryRemote(sqliteDb(w.db), {
       deliveryId: delivery!.id,
       owner: "outbox",
       attempt: 2,
       remoteId: randomUUID(),
     });
-    settleImprovementDelivery(w.db, {
+    await settleImprovementDelivery(sqliteDb(w.db), {
       deliveryId: delivery!.id,
       attempt: 2,
       owner: "outbox",
@@ -253,20 +254,20 @@ describe("improvement decisions", () => {
     const w = world();
     const id = w.retro.a;
     const decision = `/api/improvements/${id}/decision`;
-    const settle = (
+    const settle = async (
       operation: string,
       attempt: number,
       outcome: "succeeded" | "failed",
       blocked?: "conflict",
     ) => {
       const target = listImprovementDeliveries(w.db, id).find((d) => d.operation === operation)!;
-      claimImprovementDelivery(w.db, {
+      await claimImprovementDelivery(sqliteDb(w.db), {
         deliveryId: target.id,
         owner: "outbox",
         now: END + attempt * 1_000,
         leaseMs: 60_000,
       });
-      settleImprovementDelivery(w.db, {
+      await settleImprovementDelivery(sqliteDb(w.db), {
         deliveryId: target.id,
         attempt,
         owner: "outbox",
@@ -284,7 +285,7 @@ describe("improvement decisions", () => {
     }) => Object.fromEntries(body.item.deliveries.map((d) => [d.operation, d.recovery]));
     const linkWithComment = { kind: "link", issue: "PAS-60", addEvidenceComment: true };
     expect((await w.api("ada", decision, accept(1, linkWithComment))).body.status).toBe("decided");
-    settle("link_issue", 1, "failed", "conflict");
+    await settle("link_issue", 1, "failed", "conflict");
     const blocked = await w.api("ada", `/api/improvements/${id}`);
     expect(recoveries(blocked.body)).toEqual({ link_issue: "reopen", evidence_comment: null });
     const reopened = await w.api("bea", decision, {
@@ -295,13 +296,16 @@ describe("improvement decisions", () => {
     expect(reopened.body.item).toMatchObject({ reviewState: "needs_review", deliveries: [] });
 
     expect((await w.api("ada", decision, accept(3, linkWithComment))).body.status).toBe("decided");
-    settle("link_issue", 1, "succeeded");
-    const transient = settle("evidence_comment", 1, "failed");
+    await settle("link_issue", 1, "succeeded");
+    const transient = await settle("evidence_comment", 1, "failed");
     const cancel = `/api/improvements/${id}/deliveries/${transient.id}/cancel`;
     const early = await w.api("ada", cancel, {});
     expect([early.status, early.body.reason]).toEqual([409, "cancel_comment"]);
-    requeueImprovementDelivery(w.db, { deliveryId: transient.id, now: END + 3_000 });
-    settle("evidence_comment", 2, "failed", "conflict");
+    await requeueImprovementDelivery(sqliteDb(w.db), {
+      deliveryId: transient.id,
+      now: END + 3_000,
+    });
+    await settle("evidence_comment", 2, "failed", "conflict");
     const stranded = await w.api("ada", `/api/improvements/${id}`);
     expect(recoveries(stranded.body)).toEqual({
       link_issue: null,
@@ -536,7 +540,7 @@ describe("daily findings share legacy claims", () => {
       ),
     );
     expect(accepted.body.item.criterion).toBe("The daily review stops reporting src/a.ts:1.");
-    expect(listImprovementCriteria(w.db, daily.id)).toMatchObject([
+    expect(await listImprovementCriteria(sqliteDb(w.db), daily.id)).toMatchObject([
       { revision: 1, actor: "user-ada" },
     ]);
     expect(

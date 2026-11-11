@@ -97,7 +97,7 @@ export function createRetroPreviewHttp(options: {
       );
     }
     const { retro } = access;
-    const rendered = readRetroRenderedPrompt(db, root, { principal, sessionIds, retroId });
+    const rendered = await readRetroRenderedPrompt(db, root, { principal, sessionIds, retroId });
     return json({
       retroId: retro.id,
       settingsRevision: retro.settingsRevision,
