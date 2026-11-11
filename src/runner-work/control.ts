@@ -511,6 +511,9 @@ export function createRunnerWork(options: {
     current(runId: string, generation: number) {
       return read((q) => currentSteps(q, runId, generation));
     },
+    currentAsync(runId: string, generation: number) {
+      return store.run((q) => currentSteps(q, runId, generation));
+    },
     currentSteps,
     assign(input: WorkCommand) {
       const command = RunnerCommandSchema.parse(input);
@@ -901,6 +904,9 @@ export function createRunnerWork(options: {
     openEventSteps,
     authorize(input: { runnerId: string; runId: string; generation: number; token: string }) {
       return read((q) => authorizeSteps(q, input));
+    },
+    authorizeAsync(input: { runnerId: string; runId: string; generation: number; token: string }) {
+      return store.run((q) => authorizeSteps(q, input));
     },
     authorizeSteps,
     async finish(runId: string, generation: number) {
