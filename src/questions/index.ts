@@ -22,6 +22,7 @@ export {
   linkAskTitle,
   reviewRoundsDetail,
   openLinkAsk,
+  openLinkAskSteps,
   removeLinkAskUrl,
   removeLinkAskUrlSteps,
   shortCommit,

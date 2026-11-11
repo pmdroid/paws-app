@@ -1,5 +1,5 @@
 import { ask, restart } from "./operations";
-import { askWithLink, linkAskAvailable } from "./link-ask";
+import { askWithLinkSteps, linkAskAvailable } from "./link-ask";
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
@@ -12,9 +12,9 @@ import {
   type WorkItemRecord,
   applyWorkItemEvent,
   closeLinkAskSteps,
+  emitJobReady,
   enqueueJobOnce,
   enqueueOutboxOnceSteps,
-  getEvidence,
   getEvidenceSteps,
   getLinkAskSteps,
   getWorkItem,
@@ -51,7 +51,7 @@ import {
   getQuestion,
   getVisualReview,
   getVisualReviewSteps,
-  insertVisualReview,
+  insertVisualReviewSteps,
   lastVisualReviewFeedback,
   openVisualReviewContinue,
   parseVisualReviewAnswer,
@@ -275,30 +275,29 @@ export function reviewable(item: WorkItemRecord | null): item is WorkItemRecord 
  * screens, so Paws does not ask and the check stays unapproved; it says so once.
  * Returns whether it asked.
  */
-export function askForVisualReview(
-  db: Database,
-  input: {
-    item: WorkItemRecord;
-    runId: string | null;
-    sessionId: string;
-    checkId: string;
-    evidenceIds: readonly string[];
-    base: string;
-    head: string;
-    publicUrl: string;
-    now: number;
-    /** Files among `evidenceIds` that carried an approval over and are not asked about. */
-    carried?: readonly VisualReviewCarry[];
-  },
-): boolean {
+type AskForReview = {
+  item: WorkItemRecord;
+  runId: string | null;
+  sessionId: string;
+  checkId: string;
+  evidenceIds: readonly string[];
+  base: string;
+  head: string;
+  publicUrl: string;
+  now: number;
+  /** Files among `evidenceIds` that carried an approval over and are not asked about. */
+  carried?: readonly VisualReviewCarry[];
+};
+
+export function* askForVisualReviewSteps(q: Q, input: AskForReview): Steps<boolean> {
   const { item, sessionId } = input;
   const carried = input.carried ?? [];
-  const current = getWorkItem(db, item.id);
+  const current = yield* getWorkItemSteps(q, item.id);
   if (!reviewable(current)) return false;
-  if (findOpenQuestion(db, sessionId) !== null) return false;
+  if ((yield* findOpenQuestionSteps(q, sessionId)) !== null) return false;
   if (!linkAskAvailable(input.publicUrl) || current.sessionKey !== sessionId) {
-    postNote(
-      db,
+    yield* postNoteSteps(
+      q,
       sessionId,
       current,
       VISUAL_REVIEW_NEEDS_LINK,
@@ -308,8 +307,11 @@ export function askForVisualReview(
     return false;
   }
   const skipped = new Set(carried.map((entry) => entry.evidenceId));
-  const name = (id: string) => getEvidence(db, id)?.displayName ?? id;
-  const { question } = askWithLink(db, {
+  const names = new Map<string, string>();
+  for (const id of input.evidenceIds)
+    names.set(id, (yield* getEvidenceSteps(q, id))?.displayName ?? id);
+  const name = (id: string) => names.get(id) ?? id;
+  const { question } = yield* askWithLinkSteps(q, {
     item: current,
     runId: input.runId,
     kind: "screenshots",
@@ -324,7 +326,7 @@ export function askForVisualReview(
     // Asked beside the command checks and the review; the item stays verifying.
     pending: true,
   });
-  insertVisualReview(db, {
+  yield* insertVisualReviewSteps(q, {
     questionId: question.id,
     itemId: item.id,
     checkId: input.checkId,
@@ -334,6 +336,12 @@ export function askForVisualReview(
     carried,
   });
   return true;
+}
+
+export function askForVisualReview(db: Database, input: AskForReview): boolean {
+  const asked = settled(sqliteDb(db).transaction((q) => askForVisualReviewSteps(q, input)));
+  emitJobReady(db);
+  return asked;
 }
 
 /** Why a localhost-only Paws leaves a human visual review unapproved. */

@@ -1,4 +1,4 @@
-import { ask, restart } from "./operations";
+import { askSteps, restart } from "./operations";
 import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
@@ -9,20 +9,20 @@ import {
   approveCloseoutBypassChecksSteps,
   auditWorkspaceAccessSteps,
   closeLinkAskSteps,
-  delegatedLinearUserId,
+  delegatedLinearUserIdSteps,
   emitJobReady,
-  enqueueJobOnce,
   enqueueJobOnceSteps,
   enqueueOutboxOnceSteps,
   failWorkItemSteps,
   getLinkAskSteps,
   getWorkItemSteps,
-  immediate,
   listCloseoutBypassChecksSteps,
   listCloseoutRecoveriesSteps,
   LINK_ASK_DECISIONS,
   LINK_ASK_NOTE_REQUIRED,
   openLinkAsksSteps,
+  schedulingProjectLeadSteps,
+  settled,
   recordLinkAskDecisionSteps,
   saveCheckpointSteps,
   sqliteDb,
@@ -45,12 +45,11 @@ import {
   linkAskDecidedNote,
   linkAskHandoff,
   linkAskReminderBody,
-  openLinkAsk,
+  openLinkAskSteps,
   removeLinkAskUrl,
   shortCommit,
   type StoredQuestion,
 } from "../questions";
-import { projectLeadId } from "../scheduler";
 import { BYPASS_REPLY } from "./closeout-recovery";
 import { worktreeBranch } from "./sources";
 import {
@@ -94,62 +93,72 @@ export function linkAskUrl(publicUrl: string, item: WorkItemRecord, kind: LinkAs
  * session, and one reminder after 24 hours. `pending` asks while the item
  * keeps verifying, as a pending-human check does.
  */
-export function askWithLink(
-  db: Database,
-  input: {
-    item: WorkItemRecord;
-    runId: string | null;
-    kind: LinkAskKind;
-    head: string;
-    title?: string;
-    detail: string;
-    publicUrl: string | null;
-    now: number;
-    pending?: boolean;
-    /** The item version the ask was decided on; a newer item makes the ask stale. */
-    version?: number;
-    rounds?: LinkAskRounds;
-    findings?: string;
-  },
-): { question: StoredQuestion; linkAsk: LinkAsk } {
+type AskWithLink = {
+  item: WorkItemRecord;
+  runId: string | null;
+  kind: LinkAskKind;
+  head: string;
+  title?: string;
+  detail: string;
+  publicUrl: string | null;
+  now: number;
+  pending?: boolean;
+  /** The item version the ask was decided on; a newer item makes the ask stale. */
+  version?: number;
+  rounds?: LinkAskRounds;
+  findings?: string;
+};
+
+export function* askWithLinkSteps(
+  q: Q,
+  input: AskWithLink,
+): Steps<{ question: StoredQuestion; linkAsk: LinkAsk }> {
   if (!linkAskAvailable(input.publicUrl)) throw new Error(LINK_ASK_NEEDS_PUBLIC_URL);
   const { item } = input;
   if (item.sessionKey === null) throw new Error("Question owner is stale");
-  const answerers = [delegatedLinearUserId(db, item.id), projectLeadId(db, item.id)].filter(
-    (id): id is string => id !== null,
-  );
-  return immediate(db, () => {
-    const opened = openLinkAsk(db, {
-      ask: (store, asker, ...rest) =>
-        ask(
-          store,
-          {
-            ...asker,
-            ...(input.pending ? { pending: true } : {}),
-            ...(input.version === undefined ? {} : { version: input.version }),
-          },
-          ...rest,
-        ),
-      asker: { itemId: item.id, runId: input.runId, sessionId: item.sessionKey! },
-      kind: input.kind,
-      head: input.head,
-      link: linkAskUrl(input.publicUrl!, item, input.kind),
-      ...(input.title === undefined ? {} : { title: input.title }),
-      detail: input.detail,
-      answerers,
-      ...(input.rounds === undefined ? {} : { rounds: input.rounds }),
-      ...(input.findings ? { findings: input.findings } : {}),
-      now: input.now,
-    });
-    enqueueJobOnce(db, {
-      queue: JOB_KIND.linkAskReminder,
-      jobKey: `link-ask-reminder:${opened.question.id}`,
-      payload: { questionId: opened.question.id },
-      runAt: input.now + LINK_ASK_REMINDER_MS,
-      now: input.now,
-    });
-    return opened;
+  const answerers = [
+    yield* delegatedLinearUserIdSteps(q, item.id),
+    yield* schedulingProjectLeadSteps(q, item.id),
+  ].filter((id): id is string => id !== null);
+  const opened = yield* openLinkAskSteps(q, {
+    ask: (reads, asker, ...rest) =>
+      askSteps(
+        reads,
+        {
+          ...asker,
+          ...(input.pending ? { pending: true } : {}),
+          ...(input.version === undefined ? {} : { version: input.version }),
+        },
+        ...rest,
+      ),
+    asker: { itemId: item.id, runId: input.runId, sessionId: item.sessionKey },
+    kind: input.kind,
+    head: input.head,
+    link: linkAskUrl(input.publicUrl!, item, input.kind),
+    ...(input.title === undefined ? {} : { title: input.title }),
+    detail: input.detail,
+    answerers,
+    ...(input.rounds === undefined ? {} : { rounds: input.rounds }),
+    ...(input.findings ? { findings: input.findings } : {}),
+    now: input.now,
   });
+  yield* enqueueJobOnceSteps(q, {
+    queue: JOB_KIND.linkAskReminder,
+    jobKey: `link-ask-reminder:${opened.question.id}`,
+    payload: { questionId: opened.question.id },
+    runAt: input.now + LINK_ASK_REMINDER_MS,
+    now: input.now,
+  });
+  return opened;
+}
+
+export function askWithLink(
+  db: Database,
+  input: AskWithLink,
+): { question: StoredQuestion; linkAsk: LinkAsk } {
+  const opened = settled(sqliteDb(db).transaction((q) => askWithLinkSteps(q, input)));
+  emitJobReady(db);
+  return opened;
 }
 
 /** Posts the one reminder while the ask is still open. Returns whether it posted. */

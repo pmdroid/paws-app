@@ -548,7 +548,7 @@ import {
   type StoredVisualReview,
 } from "../questions";
 import {
-  askForVisualReview,
+  askForVisualReviewSteps,
   cancelVisualReviewQuestion,
   carryVisualReviewSteps,
   dueVisualReview,
@@ -9430,7 +9430,6 @@ export class Orchestrator {
         due.evidenceIds,
         this.evidenceStorage(),
       );
-      const db = this.db;
       const at = this.now();
       const outcome = await this.store.transaction(function* (q) {
         const now = yield* dueVisualReviewSteps(q, item.id, requirements, approvals);
@@ -9461,7 +9460,7 @@ export class Orchestrator {
         }
         const runId = current.currentRunId ?? null;
         if (
-          !askForVisualReview(db, {
+          !(yield* askForVisualReviewSteps(q, {
             item,
             runId,
             sessionId,
@@ -9472,7 +9471,7 @@ export class Orchestrator {
             head,
             publicUrl: evidence.publicUrl,
             now: at,
-          })
+          }))
         )
           return "none" as const;
         return "asked" as const;
