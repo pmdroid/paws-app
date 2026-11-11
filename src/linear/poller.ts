@@ -1,6 +1,13 @@
 import { journal, journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
-import { JOB_KIND, parentIssueIdSql, type LinearCommand } from "../core";
+import type { LinearCommand } from "../core";
+import {
+  issueHasItemOutside,
+  openQuestionThreads,
+  openStopTargets,
+  persistStopJob,
+  sessionHasWorkItem,
+} from "../db";
 import { CLOSED_ISSUE_EVENT } from "./administration";
 import { budgetHoldMs, LinearRateLimitError, type LinearRateBudget } from "./budget";
 import { LinearEntityNotFoundError } from "./graphql";
@@ -213,14 +220,7 @@ export function startCatchUpPoller(options: {
   async function rereadQuestionThreads(): Promise<void> {
     const read = options.source.questionReplies;
     if (read === undefined || options.db === undefined) return;
-    const threads = options.db
-      .query<{ session_id: string; created_at: number }, []>(
-        `SELECT q.session_id, MIN(q.created_at) AS created_at FROM question q
-         JOIN work_item w ON w.id = q.item_id
-         WHERE q.status = 'open' AND q.cancelled_at IS NULL AND w.state = 'awaiting_input'
-         GROUP BY q.session_id ORDER BY q.session_id`,
-      )
-      .all();
+    const threads = openQuestionThreads(options.db);
     for (const thread of threads) {
       if (control.stopped) return;
       let replies: readonly PolledActivity[];
@@ -253,17 +253,12 @@ export function startCatchUpPoller(options: {
       if (!session.stoppedAtMs && !session.endedAtMs)
         sessionByIssue.set(session.issueId, session.id);
     const sessionHasTask = (sessionId: string) =>
-      options.db?.query("SELECT 1 FROM work_item WHERE session_key=? LIMIT 1").get(sessionId) !=
-      null;
+      options.db !== undefined && sessionHasWorkItem(options.db, sessionId);
     const issueEvents = sighting.issues
       .map((issue) => issueEvent(issue, sessionByIssue, options.store, sessionHasTask))
       .filter((event): event is AcceptedLinearEvent => event !== null);
     const issueHasOpenTask = (issueId: string) =>
-      options.db
-        ?.query(
-          "SELECT 1 FROM work_item WHERE linear_issue_id=? AND state NOT IN ('completed','merged','cancelled') LIMIT 1",
-        )
-        .get(issueId) != null;
+      options.db !== undefined && issueHasItemOutside(options.db, issueId);
     const closedEvents = sighting.issues
       .filter((issue) => issue.closed && issueHasOpenTask(issue.id))
       .map((issue) => closedIssueEvent(issue, sessionByIssue.get(issue.id) ?? null));
@@ -480,23 +475,7 @@ function sessionEvent(
 
 /** Queue a stop in the same shape `submitCommand` drains, without applying it here. */
 export function persistStopCommand(db: Database, command: LinearCommand): void {
-  try {
-    db.run(
-      `INSERT INTO job (
-         queue, job_key, payload, priority, run_at, max_attempts, created_at, recurring_every_ms, lane
-       ) VALUES (?, ?, ?, 0, ?, 10, ?, NULL, 'default')`,
-      [
-        JOB_KIND.command,
-        `cmd:${command.type}:${command.itemId}:${command.requestedAt}`,
-        JSON.stringify(command),
-        command.requestedAt,
-        command.requestedAt,
-      ],
-    );
-  } catch (error) {
-    if (!isUnique(error)) throw error;
-    journalCaught(error, "poller.persistStopCommand.run", command.itemId, "duplicate stop command");
-  }
+  persistStopJob(db, command);
 }
 
 const REDELEGATION_MARGIN_MS = 60_000;
@@ -677,32 +656,8 @@ function stopTargets(
 ): string[] {
   if (db === undefined) return linearIssueId === null ? [] : [linearIssueId];
   const ids: string[] = [];
-  const push = (id: string) => {
-    if (!ids.includes(id)) ids.push(id);
-  };
   try {
-    if (linearIssueId !== null && sessionId === null) {
-      const rows = db
-        .query<{ id: string }, [string, string]>(
-          `SELECT work_item.id AS id
-           FROM work_item
-           WHERE work_item.state NOT IN ('completed', 'merged', 'cancelled')
-             AND (work_item.linear_issue_id = ? OR ${parentIssueIdSql("work_item")} = ?)
-           ORDER BY work_item.position, work_item.id`,
-        )
-        .all(linearIssueId, linearIssueId);
-      for (const row of rows) push(row.id);
-    }
-    if (sessionId !== null) {
-      const rows = db
-        .query<{ id: string }, [string]>(
-          `SELECT id FROM work_item
-           WHERE session_key = ? AND state NOT IN ('completed', 'merged', 'cancelled')
-           ORDER BY position, id`,
-        )
-        .all(sessionId);
-      for (const row of rows) push(row.id);
-    }
+    ids.push(...openStopTargets(db, linearIssueId, sessionId));
   } catch (caughtError2) {
     journalCaught(caughtError2, "poller.stopTargets.all", null);
     return linearIssueId === null || sessionId !== null ? [] : [linearIssueId];

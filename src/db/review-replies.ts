@@ -107,18 +107,20 @@ type ReviewReplyReports = ReadonlyMap<
 
 /**
  * Store what the fix turn reported for each handed-off comment. A comment the report leaves out is
- * `unreported`. The number stored.
+ * `unreported`, or stays open for a later report with `keepMissing`. The number stored.
  */
 export function* reportReviewRepliesSteps(
   q: Q,
   itemId: string,
   reports: ReviewReplyReports,
   now: number,
+  keepMissing = false,
 ): Steps<number> {
   const { reviewReply } = q.t;
   let stored = 0;
   for (const open of yield* unreportedReviewRepliesSteps(q, itemId)) {
     const report = reports.get(open.number);
+    if (!report && keepMissing) continue;
     stored += (yield* q.all(
       q.orm
         .update(reviewReply)
@@ -139,8 +141,11 @@ export function reportReviewReplies(
   itemId: string,
   reports: ReviewReplyReports,
   now: number,
+  keepMissing = false,
 ): number {
-  return settled(sqliteDb(db).run((q) => reportReviewRepliesSteps(q, itemId, reports, now)));
+  return settled(
+    sqliteDb(db).run((q) => reportReviewRepliesSteps(q, itemId, reports, now, keepMissing)),
+  );
 }
 
 /** Reported replies on pull request `pullNumber` that Paws has not posted yet. */

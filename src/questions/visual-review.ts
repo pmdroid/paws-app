@@ -1,5 +1,15 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
+import {
+  approvedVisualReviewRows,
+  insertVisualReviewRow,
+  itemVisualReviewRows,
+  lastVisualReviewFeedbackRow,
+  markVisualReviewRowStale,
+  recordVisualReviewAnswerRow,
+  visualReviewRoundCounts,
+  visualReviewRow,
+} from "../db";
 import { ask } from "./lifecycle";
 import type { StoredQuestion } from "./store";
 
@@ -135,18 +145,15 @@ export function insertVisualReview(
     carried?: readonly VisualReviewCarry[];
   },
 ): StoredVisualReview {
-  db.run(
-    "INSERT INTO visual_review (question_id, item_id, check_id, evidence_ids, created_at, head_commit, carried) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    [
-      input.questionId,
-      input.itemId,
-      input.checkId,
-      JSON.stringify(input.evidenceIds),
-      input.now,
-      input.headCommit,
-      input.carried?.length ? JSON.stringify(input.carried) : null,
-    ],
-  );
+  insertVisualReviewRow(db, {
+    questionId: input.questionId,
+    itemId: input.itemId,
+    checkId: input.checkId,
+    evidenceIds: input.evidenceIds,
+    createdAt: input.now,
+    headCommit: input.headCommit,
+    ...(input.carried?.length ? { carried: input.carried } : {}),
+  });
   return getVisualReview(db, input.questionId)!;
 }
 
@@ -187,21 +194,18 @@ export function recordCarriedVisualReview(
     entry.approvedAt > last.approvedAt ? entry : last,
   );
   const id = `carry_${randomUUID()}`;
-  db.run(
-    `INSERT INTO visual_review (question_id, item_id, check_id, evidence_ids, created_at, head_commit, carried,
-       outcome, answered_by, answered_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?)`,
-    [
-      id,
-      input.itemId,
-      input.checkId,
-      JSON.stringify(input.evidenceIds),
-      input.now,
-      input.headCommit,
-      JSON.stringify(input.carried),
-      latest.approvedBy,
-      input.now,
-    ],
-  );
+  insertVisualReviewRow(db, {
+    questionId: id,
+    itemId: input.itemId,
+    checkId: input.checkId,
+    evidenceIds: input.evidenceIds,
+    createdAt: input.now,
+    headCommit: input.headCommit,
+    carried: input.carried,
+    outcome: "accepted",
+    answeredBy: latest.approvedBy,
+    answeredAt: input.now,
+  });
   return getVisualReview(db, id)!;
 }
 
@@ -227,12 +231,7 @@ export function humanApprovedScreens(
   itemId: string,
   checkId: string,
 ): Omit<VisualReviewCarry, "evidenceId" | "match">[] {
-  const rows = db
-    .query<VisualReviewRow, [string, string]>(
-      `SELECT * FROM visual_review WHERE item_id = ? AND check_id = ? AND kind = 'review'
-       AND outcome IN ('accepted', 'stale') AND answered_by IS NOT NULL ORDER BY answered_at, rowid`,
-    )
-    .all(itemId, checkId);
+  const rows = approvedVisualReviewRows(db, itemId, checkId) as VisualReviewRow[];
   const seen = new Map<string, Omit<VisualReviewCarry, "evidenceId" | "match">>();
   for (const review of rows.map(mapVisualReview)) {
     const carried = new Map(review.carried.map((entry) => [entry.evidenceId, entry]));
@@ -259,10 +258,8 @@ export function humanApprovedScreens(
 }
 
 export function getVisualReview(db: Database, questionId: string): StoredVisualReview | null {
-  const row = db
-    .query<VisualReviewRow, [string]>("SELECT * FROM visual_review WHERE question_id = ?")
-    .get(questionId);
-  return row === null ? null : mapVisualReview(row);
+  const row = visualReviewRow(db, questionId) as VisualReviewRow | undefined;
+  return row === undefined ? null : mapVisualReview(row);
 }
 
 export function openVisualReviewContinue(
@@ -283,10 +280,14 @@ export function openVisualReviewContinue(
     visualReviewContinueQuestion(VISUAL_REVIEW_ROUNDS),
     { options: [...VISUAL_REVIEW_CONTINUE_OPTIONS], now: input.now },
   );
-  db.run(
-    "INSERT INTO visual_review (question_id, item_id, check_id, evidence_ids, created_at, kind) VALUES (?, ?, ?, '[]', ?, 'continue')",
-    [question.id, input.itemId, input.checkId, input.now],
-  );
+  insertVisualReviewRow(db, {
+    questionId: question.id,
+    itemId: input.itemId,
+    checkId: input.checkId,
+    evidenceIds: [],
+    createdAt: input.now,
+    kind: "continue",
+  });
   return question;
 }
 
@@ -301,54 +302,32 @@ export function recordVisualReviewAnswer(
     headCommit?: string;
   },
 ): void {
-  db.run(
-    "UPDATE visual_review SET outcome = ?, answered_by = ?, answered_at = ?, feedback = ?, head_commit = ? WHERE question_id = ?",
-    [
-      input.outcome,
-      input.answeredBy,
-      input.now,
-      input.feedback ?? null,
-      input.headCommit ?? null,
-      questionId,
-    ],
-  );
+  recordVisualReviewAnswerRow(db, questionId, input);
 }
 
 export function markVisualReviewStale(db: Database, questionId: string): void {
-  db.run(
-    "UPDATE visual_review SET outcome = 'stale' WHERE question_id = ? AND outcome = 'accepted'",
-    [questionId],
-  );
+  markVisualReviewRowStale(db, questionId);
 }
 
 export function acceptedVisualReviews(db: Database, itemId: string): StoredVisualReview[] {
-  return db
-    .query<VisualReviewRow, [string]>(
-      "SELECT * FROM visual_review WHERE item_id = ? AND kind = 'review' AND outcome = 'accepted' ORDER BY answered_at, rowid",
-    )
-    .all(itemId)
-    .map(mapVisualReview);
+  return (itemVisualReviewRows(db, itemId, ["accepted"], true) as VisualReviewRow[]).map(
+    mapVisualReview,
+  );
 }
 
 export function rejectedEvidenceIds(db: Database, itemId: string): Set<string> {
-  const rows = db
-    .query<VisualReviewRow, [string]>(
-      "SELECT * FROM visual_review WHERE item_id = ? AND outcome IN ('changes_requested', 'stale')",
-    )
-    .all(itemId);
+  const rows = itemVisualReviewRows(
+    db,
+    itemId,
+    ["changes_requested", "stale"],
+    false,
+  ) as VisualReviewRow[];
   return new Set(rows.flatMap((row) => mapVisualReview(row).evidenceIds));
 }
 
 export function visualReviewRounds(db: Database, itemId: string, checkId: string): number {
-  const row = db
-    .query<{ changes: number; continued: number }, [string, string]>(
-      `SELECT
-         COALESCE(SUM(kind = 'review' AND outcome = 'changes_requested'), 0) AS changes,
-         COALESCE(SUM(kind = 'continue' AND outcome = 'continued'), 0) AS continued
-       FROM visual_review WHERE item_id = ? AND check_id = ?`,
-    )
-    .get(itemId, checkId);
-  return (row?.changes ?? 0) - VISUAL_REVIEW_ROUNDS * (row?.continued ?? 0);
+  const row = visualReviewRoundCounts(db, itemId, checkId);
+  return row.changes - VISUAL_REVIEW_ROUNDS * row.continued;
 }
 
 export function lastVisualReviewFeedback(
@@ -356,13 +335,7 @@ export function lastVisualReviewFeedback(
   itemId: string,
   checkId: string,
 ): { questionId: string; feedback: string | null } | null {
-  return db
-    .query<{ questionId: string; feedback: string | null }, [string, string]>(
-      `SELECT question_id AS questionId, feedback FROM visual_review
-       WHERE item_id = ? AND check_id = ? AND kind = 'review' AND outcome = 'changes_requested'
-       ORDER BY answered_at DESC, rowid DESC LIMIT 1`,
-    )
-    .get(itemId, checkId);
+  return lastVisualReviewFeedbackRow(db, itemId, checkId);
 }
 
 export type VisualReviewAnswer =

@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { JOB_KIND } from "../core";
 import {
+  applyWorkItemEvent,
   beginImplementRun,
   bindWorkItemRepository,
+  fixRounds,
   enterMergeQueue,
   getPullComment,
+  getRun,
   getWorkItem,
   insertQueuedItem,
   listJobs,
@@ -29,14 +32,15 @@ import {
   type FakeReviewThread,
   type GitHubClient,
 } from "../github";
+import { findOpenQuestion } from "../questions";
 import { acceptGitHubDelivery } from "./merge-jobs";
 import { handlePullComments, type PullCommentFilter } from "./pull-comments";
 import { handlePullReview, type PullReviewCapabilities } from "./pull-reviews";
 import {
   REVIEW_REPLY_MARKER,
+  checkReviewReplies,
   parseReviewReplies,
   postReviewReplies,
-  recordAgentReviewReplies,
   recordReplyTargets,
   type ReviewReplyGitHub,
 } from "./review-replies";
@@ -196,6 +200,20 @@ function setup() {
 
 const jobs = (db: ReturnType<typeof setup>["db"], queue: string) =>
   listJobs(db).filter((job) => job.queue === queue);
+const report = (
+  db: ReturnType<typeof setup>["db"],
+  finalMessage: string,
+  sessionId: string | null = "s-1",
+) => {
+  const item = getWorkItem(db, "eng-1")!;
+  return checkReviewReplies(db, {
+    item,
+    runId: item.currentRunId ?? "",
+    sessionId,
+    finalMessage,
+    now: 2_000,
+  });
+};
 const handoffText = (db: ReturnType<typeof setup>["db"]) =>
   (jobs(db, JOB_KIND.resume)[0]?.payload as { handoff: string } | undefined)?.handoff ?? "";
 
@@ -360,7 +378,7 @@ describe("Paws replies to every handed-off comment", () => {
       "R2 not changed: The tenant is already part of the key prefix.",
       "R3 not changed: The cache is bypassed for a fresh read.",
     ].join("\n");
-    expect(await recordAgentReviewReplies(sqliteDb(db), "eng-1", final, 2_000)).toBe(3);
+    expect(report(db, final)).toBe("complete");
 
     const head = "abcdef1234567890";
     expect(
@@ -417,12 +435,8 @@ describe("Paws replies to every handed-off comment", () => {
       })),
       1_000,
     );
-    await recordAgentReviewReplies(
-      sqliteDb(db),
-      "eng-1",
-      "R1 answered: A fresh read is required.",
-      2_000,
-    );
+    // Without a tracker session to ask in, a missing entry is stored as unreported.
+    expect(report(db, "R1 answered: A fresh read is required.", null)).toBe("complete");
     await postReviewReplies(
       sqliteDb(db),
       {
@@ -476,11 +490,9 @@ describe("Paws replies to every handed-off comment", () => {
       ],
       1_000,
     );
-    await recordAgentReviewReplies(
-      sqliteDb(db),
-      "eng-1",
+    report(
+      db,
       "R1 fixed: Sort descending.\nR2 fixed: Include the tenant.\nR3 not changed: A fresh read is required.",
-      2_000,
     );
     const input = { itemId: "eng-1", pullNumber: 7, head: "abcdef1234567890", now: () => 3_000 };
     const attempts: string[] = [];
@@ -513,6 +525,110 @@ describe("Paws replies to every handed-off comment", () => {
     const { db, conversation } = setup();
     conversation({ id: 3002, author, body });
     expect(getPullComment(db, "conversation", 3002)).toBeNull();
+  });
+});
+
+describe("a fix turn cannot end until every comment has its own reply", () => {
+  async function handedOff() {
+    const context = setup();
+    const { db, caps, review, inline, conversation } = context;
+    inline({ id: 9001, review: 601, author: "pascal", body: "Wrong order.", path: "src/rank.ts" });
+    review({ id: 601, author: "pascal", state: "changes_requested", body: "Fix the ranking." });
+    conversation({ id: 3001, author: "pascal", body: "Why skip the cache?" });
+    expect(await handlePullReview(db, 601, caps)).toBe("restarted");
+    return context;
+  }
+  // The turn the restart handed the reply list to ends with `finalMessage`.
+  function turnEnds(db: ReturnType<typeof setup>["db"], finalMessage: string, now = 5_000) {
+    applyWorkItemEvent(db, "eng-1", "dispatched");
+    const item = getWorkItem(db, "eng-1")!;
+    return checkReviewReplies(db, {
+      item,
+      runId: item.currentRunId!,
+      sessionId: "s-1",
+      finalMessage,
+      now,
+    });
+  }
+  const latestHandoff = (db: ReturnType<typeof setup>["db"]) =>
+    jobs(db, JOB_KIND.resume).at(-1)!.payload as { handoff: string; reason: string };
+
+  test("a missing entry sends the turn straight back with that entry, spending no fix round", async () => {
+    const { db } = await handedOff();
+    const rounds = fixRounds(db, "eng-1");
+    const final = "## Review replies\nR1 fixed: Sorted descending.\nR3 not changed: A fresh read.";
+    const runId = getWorkItem(db, "eng-1")!.currentRunId!;
+    expect(turnEnds(db, final)).toBe("sent_back");
+    expect(getRun(db, runId)!.status).toBe("ended");
+    const sentBack = latestHandoff(db);
+    expect(sentBack.reason).toBe("follow_up");
+    expect(sentBack.handoff).toContain("R2. Review by @pascal: Fix the ranking.");
+    expect(sentBack.handoff).not.toContain("R1.");
+    expect(sentBack.handoff).not.toContain("R3.");
+    expect(sentBack.handoff).toContain("A summary saying you fixed everything is not a reply");
+    expect(fixRounds(db, "eng-1")).toBe(rounds);
+    // Closeout does not start: the item waits for the agent again.
+    expect(getWorkItem(db, "eng-1")!.state).toBe("queued");
+    // The replies given are kept; only R2 still waits for one.
+    expect(unreportedReviewReplies(db, "eng-1").map((reply) => reply.number)).toEqual([2]);
+  });
+
+  test("the third incomplete end in the same round asks the team", async () => {
+    const { db } = await handedOff();
+    expect(turnEnds(db, "R1 fixed: Sorted.\nR3 not changed: Fresh read.")).toBe("sent_back");
+    expect(turnEnds(db, "I fixed everything.")).toBe("sent_back");
+    expect(turnEnds(db, "All comments are addressed.")).toBe("asked");
+    expect(getWorkItem(db, "eng-1")!.state).toBe("awaiting_input");
+    expect(getRun(db, getWorkItem(db, "eng-1")!.currentRunId!)!.status).toBe("ended");
+    const question = findOpenQuestion(db, "s-1")!;
+    expect(question.body).toContain("R2. Review by @pascal: Fix the ranking.");
+    expect(question.body).not.toContain("R1.");
+    expect(unreportedReviewReplies(db, "eng-1").map((reply) => reply.number)).toEqual([2]);
+  });
+
+  test("an entry without text is missing", async () => {
+    const { db } = await handedOff();
+    const final = "R1 fixed: Sorted.\nR2 fixed: **\nR3 not changed: Fresh read.";
+    expect(turnEnds(db, final)).toBe("sent_back");
+    expect(latestHandoff(db).handoff).toContain("R2. Review by @pascal");
+    expect(unreportedReviewReplies(db, "eng-1").map((reply) => reply.number)).toEqual([2]);
+  });
+
+  test("an emoji is a reply", async () => {
+    const { db } = await handedOff();
+    expect(turnEnds(db, "R1 fixed: ✅\nR2 not changed: 👍\nR3 not changed: Fresh read.")).toBe(
+      "complete",
+    );
+  });
+
+  test("a turn end another writer overtook keeps nothing and sends nothing", async () => {
+    const { db } = await handedOff();
+    applyWorkItemEvent(db, "eng-1", "dispatched");
+    const item = getWorkItem(db, "eng-1")!;
+    const resumes = jobs(db, JOB_KIND.resume).length;
+    applyWorkItemEvent(db, "eng-1", "turn_ended");
+    const final = "R1 fixed: Sorted.";
+    expect(
+      checkReviewReplies(db, {
+        item,
+        runId: item.currentRunId!,
+        sessionId: "s-1",
+        finalMessage: final,
+        now: 5_000,
+      }),
+    ).toBe("stale");
+    expect(jobs(db, JOB_KIND.resume)).toHaveLength(resumes);
+    expect(unreportedReviewReplies(db, "eng-1").map((reply) => reply.number)).toEqual([1, 2, 3]);
+  });
+
+  test("a complete section goes on to Closeout", async () => {
+    const { db } = await handedOff();
+    const resumes = jobs(db, JOB_KIND.resume).length;
+    const final = "R1 fixed: Sorted.\nR2 fixed: Ranked.\nR3 not changed: Fresh read.";
+    expect(turnEnds(db, final)).toBe("complete");
+    expect(jobs(db, JOB_KIND.resume)).toHaveLength(resumes);
+    expect(getWorkItem(db, "eng-1")!.state).toBe("running");
+    expect(unreportedReviewReplies(db, "eng-1")).toEqual([]);
   });
 });
 

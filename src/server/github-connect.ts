@@ -1,8 +1,15 @@
 import {
   workspaceMemberUsable,
+  advanceGithubConnectionSteps,
   auditWorkspaceAccessSteps,
+  claimGithubOAuthSteps,
+  completeGithubOAuthSteps,
   emitJobReady,
   enqueueJobSteps,
+  ensureGithubConnectionSteps,
+  failGithubOAuthSteps,
+  githubConnectionSteps,
+  insertGithubOAuthSteps,
   latestGitHubDeliverySteps,
   listWorkspaceRepositoriesSteps,
   sqliteDb,
@@ -35,18 +42,6 @@ type Intent = {
   repositories: string[];
   scope: string;
 };
-type Pending = {
-  state_hash: string;
-  workspace_id: string;
-  user_id: string;
-  session_hash: string;
-  secret_id: string;
-  expected_generation: number;
-  intent: string;
-  expires_at: number;
-  status: string;
-};
-
 export function createHostedGitHubConnect(options: {
   db: Database;
   home: string;
@@ -150,14 +145,7 @@ export function createHostedGitHubConnect(options: {
           signal,
           options.fetch,
         );
-        const connection = db
-          .query<
-            { secret_id: string | null; installation_id: string | null; repositories: string },
-            [string]
-          >(
-            "SELECT secret_id,installation_id,repositories FROM workspace_github_connection WHERE workspace_id=?",
-          )
-          .get(workspaceId);
+        const connection = await store.run((q) => githubConnectionSteps(q, workspaceId));
         const expected = repositories.map((name) => name.toLowerCase()).sort();
         const approved: unknown = connection ? JSON.parse(connection.repositories) : null;
         let connected = Boolean(
@@ -378,28 +366,18 @@ export function createHostedGitHubConnect(options: {
           repositories,
           scope,
         } satisfies Intent);
-        db.run(
-          "INSERT INTO workspace_github_connection(workspace_id) VALUES(?) ON CONFLICT DO NOTHING",
-          [workspaceId],
-        );
-        const generation = db
-          .query<{ generation: number }, [string]>(
-            "SELECT generation FROM workspace_github_connection WHERE workspace_id=?",
-          )
-          .get(workspaceId)!.generation;
-        db.run(
-          "INSERT INTO workspace_github_oauth(state_hash,workspace_id,user_id,session_hash,secret_id,expected_generation,intent,expires_at) VALUES(?,?,?,?,?,?,?,?)",
-          [
-            hash(secret.state),
-            workspaceId,
-            access!.principal.userId,
-            access!.session.tokenHash,
-            secret.id,
-            generation,
-            JSON.stringify({ appId: app.appId, installationId, scope }),
-            now() + 600000,
-          ],
-        );
+        yield* ensureGithubConnectionSteps(q, workspaceId);
+        const generation = (yield* githubConnectionSteps(q, workspaceId))!.generation;
+        yield* insertGithubOAuthSteps(q, {
+          stateHash: hash(secret.state),
+          workspaceId,
+          userId: access!.principal.userId,
+          sessionHash: access!.session.tokenHash,
+          secretId: secret.id,
+          expectedGeneration: generation,
+          intent: JSON.stringify({ appId: app.appId, installationId, scope }),
+          expiresAt: now() + 600000,
+        });
         yield* auditSteps(q, "github.connect.started");
         return Response.json(
           {
@@ -425,20 +403,14 @@ export function createHostedGitHubConnect(options: {
       url.searchParams.has("error")
     )
       return denied();
-    // oxlint-disable-next-line require-yield -- the claim is one raw statement in its own transaction
-    const pending = await store.transaction(function* () {
-      return db
-        .query<Pending, [string, string, string, string, number]>(
-          "UPDATE workspace_github_oauth SET status='claimed' WHERE state_hash=? AND workspace_id=? AND user_id=? AND session_hash=? AND expires_at>? AND status='pending' RETURNING *",
-        )
-        .get(
-          hash(state),
-          access!.principal.workspaceId,
-          access!.principal.userId,
-          access!.session.tokenHash,
-          now(),
-        );
-    });
+    const requester = {
+      workspaceId: access!.principal.workspaceId,
+      userId: access!.principal.userId,
+      sessionHash: access!.session.tokenHash,
+    };
+    const pending = await store.transaction((q) =>
+      claimGithubOAuthSteps(q, hash(state), requester, now()),
+    );
     if (!pending) return denied();
     try {
       const intent = activation.read<Intent>(pending.secret_id);
@@ -464,26 +436,21 @@ export function createHostedGitHubConnect(options: {
             intent.scope
         )
           return yield* deniedSteps(q);
-        const changed = db.run(
-          "UPDATE workspace_github_connection SET generation=generation+1,secret_id=?,actor_id=?,installation_id=?,repositories=? WHERE workspace_id=? AND generation=?",
-          [
+        if (
+          !(yield* advanceGithubConnectionSteps(q, {
+            workspaceId: pending.workspace_id,
+            expectedGeneration: pending.expected_generation,
             secretId,
-            pending.user_id,
-            intent.installationId,
-            JSON.stringify(intent.repositories),
-            pending.workspace_id,
-            pending.expected_generation,
-          ],
-        );
-        if (changed.changes !== 1)
+            actorId: pending.user_id,
+            installationId: intent.installationId,
+            repositories: intent.repositories,
+          }))
+        )
           return Response.json(
             { error: "A newer connection is already active. Start again." },
             { status: 409 },
           );
-        db.run(
-          "UPDATE workspace_github_oauth SET status='complete' WHERE state_hash=? AND status='claimed'",
-          [pending.state_hash],
-        );
+        yield* completeGithubOAuthSteps(q, pending.state_hash);
         yield* auditWorkspaceAccessSteps(q, {
           workspaceId: pending.workspace_id,
           userId: pending.user_id,
@@ -505,9 +472,7 @@ export function createHostedGitHubConnect(options: {
       return response;
     } catch (caughtError7) {
       journalCaught(caughtError7, "github-connect.createHostedGitHubConnect.read", null);
-      db.run("UPDATE workspace_github_oauth SET status='failed' WHERE state_hash=?", [
-        pending.state_hash,
-      ]);
+      await store.run((q) => failGithubOAuthSteps(q, pending.state_hash, false));
       await audit("github.connect.failed");
       return Response.json(
         { error: "GitHub connection could not be verified. Start again." },

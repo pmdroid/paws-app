@@ -1,11 +1,12 @@
 import type { Database } from "bun:sqlite";
+import { issueHasItemOutside, latestOpenIssueSession, sessionHasWorkItem } from "../db";
 import type { AcceptedLinearEvent } from "./events";
 import type { InboxStore } from "./inbox";
 import type { LinearIssueOwnership } from "./issue-lifecycle";
 
 export const REDELEGATION_CHECK_DELAY_MS = 60_000;
 const NEW_SESSION_MARGIN_MS = 60_000;
-const CLOSED_STATES = "'merged','completed','cancelled','failed'";
+const CLOSED_STATES = ["merged", "completed", "cancelled", "failed"];
 
 export async function checkRedelegation(
   options: {
@@ -35,22 +36,11 @@ function reusedSessionEvent(
   db: Database,
   target: { issueId: string; delegatedAtMs: number },
 ): AcceptedLinearEvent | null {
-  const open = db
-    .query(
-      `SELECT 1 FROM work_item WHERE linear_issue_id=? AND state NOT IN (${CLOSED_STATES}) LIMIT 1`,
-    )
-    .get(target.issueId);
-  if (open !== null) return null;
-  const session = db
-    .query<{ sessionId: string; createdAt: number }, [string]>(
-      `SELECT session_id AS sessionId, created_at AS createdAt FROM linear_session
-       WHERE issue_id=? AND stopped_at IS NULL ORDER BY created_at DESC LIMIT 1`,
-    )
-    .get(target.issueId);
+  if (issueHasItemOutside(db, target.issueId, CLOSED_STATES)) return null;
+  const session = latestOpenIssueSession(db, target.issueId);
   if (session === null || session.createdAt > target.delegatedAtMs - NEW_SESSION_MARGIN_MS)
     return null;
-  if (db.query("SELECT 1 FROM work_item WHERE session_key=? LIMIT 1").get(session.sessionId))
-    return null;
+  if (sessionHasWorkItem(db, session.sessionId)) return null;
   return {
     dedupeKey: `session:${session.sessionId}:created:${target.delegatedAtMs}`,
     deliveryId: null,
