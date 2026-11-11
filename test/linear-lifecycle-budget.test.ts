@@ -450,7 +450,7 @@ async function runTask(input: {
     while (!["merged", "failed"].includes(state() ?? "")) {
       if (Date.now() > deadline) throw new Error(`The task is stuck in ${state()}`);
       while ((await outbox.tick()).length > 0) await outbox.idle();
-      const open = findOpenQuestion(db, "session");
+      const open = await findOpenQuestion(sqliteDb(db), "session");
       if (open !== null && open.kind === "link" && !asked.includes("visual-review")) {
         // The screens are approved on the item page; a Linear reply never approves them.
         asked.push("visual-review");

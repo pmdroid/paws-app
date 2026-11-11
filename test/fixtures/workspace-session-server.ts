@@ -1,12 +1,12 @@
-import { openDatabase } from "../../src/db";
+import { openDatabase, sqliteDb } from "../../src/db";
 import { requestWorkspaceSession } from "../../src/workspace";
 
 const db = openDatabase(process.argv[2]!);
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
-  fetch(request) {
-    const access = requestWorkspaceSession(db, request);
+  async fetch(request) {
+    const access = await requestWorkspaceSession(sqliteDb(db), request);
     return access === null
       ? Response.json({ error: "Unauthorized" }, { status: 401 })
       : Response.json(access.principal);

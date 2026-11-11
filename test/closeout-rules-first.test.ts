@@ -144,7 +144,7 @@ test("a checks run whose rule breaks asks the rule question before the checks, a
     expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
     expect(checksRuns).toEqual([true]);
     expect(existsSync(checkMark)).toBe(false);
-    const question = findOpenQuestion(db, "ses_1")!;
+    const question = (await findOpenQuestion(sqliteDb(db), "ses_1"))!;
     expect((await getLinkAsk(sqliteDb(db), question.id))?.kind).toBe("rule");
     expect(tracker.questions.at(-1)?.body).toContain("Rule api-contract broke");
 

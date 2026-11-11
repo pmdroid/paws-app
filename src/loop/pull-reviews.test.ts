@@ -315,7 +315,7 @@ describe("changes-requested reviews", () => {
     expect(await feedbackActivities(db)).toEqual([]);
     expect(getWorkItem(db, "eng-1")?.state).toBe("awaiting_input");
     expect(await resumeJobs(db)).toHaveLength(0);
-    const question = findOpenQuestion(db, "s-1");
+    const question = await findOpenQuestion(sqliteDb(db), "s-1");
     expect(question?.kind).toBe("ci-help");
     expect(question?.body).toContain("all 0 fix rounds are spent");
     expect(question?.body).toContain("Rename it.");

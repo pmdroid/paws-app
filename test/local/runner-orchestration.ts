@@ -289,10 +289,10 @@ export async function probeRunnerOrchestration(
       parked = undefined;
       current.resolve();
     }
-    async function until(label: string, check: () => boolean) {
+    async function until(label: string, check: () => boolean | Promise<boolean>) {
       for (let polls = 0; polls < 1_000; polls++) {
         await poll();
-        if (check()) return;
+        if (await check()) return;
         release();
       }
       throw new Error(`The runner wait polled 1000 times before ${label}`);
@@ -317,10 +317,10 @@ export async function probeRunnerOrchestration(
         0,
         "no checks are sent to a paused runner",
       );
-      await until("the team is asked about the unavailable runner", () =>
-        Boolean(findOpenQuestion(db, "session")),
+      await until("the team is asked about the unavailable runner", async () =>
+        Boolean(await findOpenQuestion(sqliteDb(db), "session")),
       );
-      const question = findOpenQuestion(db, "session")!;
+      const question = (await findOpenQuestion(sqliteDb(db), "session"))!;
       assert(question.body.includes("Runner goldbox has been unavailable"), question.body);
       assert.deepEqual(question.options, ["Move to another runner", "Keep waiting"]);
       assert(
@@ -344,7 +344,10 @@ export async function probeRunnerOrchestration(
         updatedAtMs: clock.now() + 1_000,
         payload: "{}",
       });
-      await until("the answer is recorded", () => !findOpenQuestion(db, "session"));
+      await until(
+        "the answer is recorded",
+        async () => !(await findOpenQuestion(sqliteDb(db), "session")),
+      );
       assert.equal(getWorkItem(db, itemId)?.state, "verifying");
       for (let polls = 0; polls < 5; polls++) {
         release();
@@ -876,7 +879,7 @@ export async function probeRunnerOrchestration(
         assert.equal(
           item.state,
           "merge_queue",
-          JSON.stringify({ item, question: findOpenQuestion(db, "session") }),
+          JSON.stringify({ item, question: await findOpenQuestion(sqliteDb(db), "session") }),
         );
         assert.equal(implementationCount, 2);
         assert(calls.filter((call) => call.prepare).length === 2);
@@ -1052,7 +1055,7 @@ export async function probeRunnerOrchestration(
           assert.equal(await git(["--git-dir", mirror, "rev-parse", candidate]), accepted);
         if (rebase) {
           const reverifyChecks = calls.filter((call) => call.checks && call.reverifying);
-          const question = findOpenQuestion(db, "session");
+          const question = await findOpenQuestion(sqliteDb(db), "session");
           const rebased = checkedHeads.at(-1);
           if (scenario === "rebase-unreachable" || scenario === "rebase-empty-report") {
             assert.equal(verified.state, "awaiting_input");

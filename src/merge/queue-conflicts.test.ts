@@ -198,7 +198,7 @@ describe("queued pull requests that conflict with main", () => {
     };
     expect(await h.sweep(null)).toEqual([]);
     expect(await restarts(h)).toEqual([]);
-    expect(findOpenQuestion(h.db, "ses-ENG-2")).toBeNull();
+    expect(await findOpenQuestion(sqliteDb(h.db), "ses-ENG-2")).toBeNull();
     expect(getWorkItem(h.db, "ENG-2")?.state).toBe("merge_queue");
     expect(getWorkItem(h.db, "ENG-3")?.state).toBe("merge_queue");
     expect(h.bodies("thought")).toEqual([]);
@@ -221,7 +221,7 @@ describe("queued pull requests that conflict with main", () => {
     expect(await h.sweep(main)).toEqual(["ENG-3"]);
     expect(await restarts(h)).toEqual([]);
     expect(getWorkItem(h.db, "ENG-3")?.state).toBe("awaiting_input");
-    expect(findOpenQuestion(h.db, "ses-ENG-3")?.body).toContain(
+    expect((await findOpenQuestion(sqliteDb(h.db), "ses-ENG-3"))?.body).toContain(
       `The branch still conflicts with main after ${MAX_REBASE_RETURNS} attempts`,
     );
   });

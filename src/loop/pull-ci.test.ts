@@ -568,7 +568,7 @@ describe("failed CI while a pull request waits for review", () => {
     await h.evaluate();
     h.tick(60_000);
     expect(await h.runDue()).toEqual(["asked"]);
-    const question = findOpenQuestion(h.db, "s-1");
+    const question = await findOpenQuestion(sqliteDb(h.db), "s-1");
     expect(question?.reason).toBe("budget_spent");
     expect(question?.body).toContain(
       "CI failed on the pull request (https://github.com/acme/one/pull/7)",

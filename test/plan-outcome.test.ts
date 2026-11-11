@@ -181,8 +181,8 @@ async function setupPlan() {
     payload: JSON.stringify({ agentSession: { creatorId: "human" } }),
   };
   let at = Date.now();
-  const reply = (key: string, body: string) => {
-    at = Math.max(at + 1, (findOpenQuestion(db, "session")?.createdAt ?? 0) + 1);
+  const reply = async (key: string, body: string) => {
+    at = Math.max(at + 1, ((await findOpenQuestion(sqliteDb(db), "session"))?.createdAt ?? 0) + 1);
     return orchestrator.onLinearEvent({
       ...created,
       dedupeKey: key,
@@ -231,7 +231,7 @@ test("a planning request proposes sub-issues, takes an edit, and files them once
 
     // The proposal arrives as one select elicitation, and the run wrote nothing.
     expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
-    const first = findOpenQuestion(db, "session")!;
+    const first = (await findOpenQuestion(sqliteDb(db), "session"))!;
     expect(first).toMatchObject({
       kind: "plan-approval",
       options: ["Create 3 sub-issues", "Edit", "Discard"],
@@ -250,7 +250,7 @@ test("a planning request proposes sub-issues, takes an edit, and files them once
 
     // A bare Edit asks what to change; the reply is the next planning turn.
     await reply("edit", "Edit");
-    const edit = findOpenQuestion(db, "session")!;
+    const edit = (await findOpenQuestion(sqliteDb(db), "session"))!;
     expect(edit.kind).toBe("plan-approval");
     expect(edit.body).toContain("What should change");
     expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
@@ -261,7 +261,7 @@ test("a planning request proposes sub-issues, takes an edit, and files them once
     expect(prompts.at(-1)).toContain(
       "Requested change: Create smaller sub-issues: drop the smoke-run one.",
     );
-    const second = findOpenQuestion(db, "session")!;
+    const second = (await findOpenQuestion(sqliteDb(db), "session"))!;
     expect(second.options).toEqual(["Create 2 sub-issues", "Edit", "Discard"]);
     expect(tracker.subIssueRequests).toEqual([]);
 
@@ -315,7 +315,7 @@ test("Discard completes the plan with one response and files nothing", async () 
     await orchestrator.onLinearEvent(created);
     const itemId = db.query<{ id: string }, []>("SELECT id FROM work_item").get()!.id;
     await jobs.tick();
-    expect(findOpenQuestion(db, "session")?.kind).toBe("plan-approval");
+    expect((await findOpenQuestion(sqliteDb(db), "session"))?.kind).toBe("plan-approval");
     await reply("discard", "Discard");
     await outbox.idle();
     expect(getWorkItem(db, itemId)?.state).toBe("completed");

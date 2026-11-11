@@ -197,10 +197,10 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
   }
   async function authenticate(request: Request) {
     if (new URL(request.url).origin !== origin) return null;
-    const current = requestWorkspaceSession(options.db, request, now());
+    const current = await requestWorkspaceSession(store, request, now());
     if (current === null) return null;
     await refresh(current.principal.workspaceId, current.principal.userId);
-    return requestWorkspaceSession(options.db, request, now());
+    return requestWorkspaceSession(store, request, now());
   }
   /** A failing check offers only Add a host. */
   async function createVmAvailable(): Promise<boolean> {
@@ -253,7 +253,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       // A finished link shows only its signed-in creator where the task stands. Anyone else,
       // signed in or not, gets the same 404 as an unknown link and learns nothing.
       const viewer =
-        link.state === "done" ? requestWorkspaceSession(options.db, request, now()) : null;
+        link.state === "done" ? await requestWorkspaceSession(store, request, now()) : null;
       const member =
         link.state === "done" && viewer?.principal.workspaceId === link.workspaceId
           ? await memberOf(link.workspaceId, viewer.principal.userId)
@@ -491,7 +491,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
             : `/onboard/${completion.linkId}`;
       } else await options.assignments?.releaseFor(workspace.id, result.identity.userId);
       await links.syncUser(workspace.id, userId);
-      const previous = requestWorkspaceSession(options.db, request, now());
+      const previous = await requestWorkspaceSession(store, request, now());
       if (previous !== null) await deleteSession(previous.session.tokenHash);
       const issued = await issueWorkspaceSession(options.db, {
         userId,
@@ -527,7 +527,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     try {
       access =
         path === "/api/auth/logout"
-          ? requestWorkspaceSession(options.db, request, now())
+          ? await requestWorkspaceSession(store, request, now())
           : await authenticate(request);
     } catch (caughtError5) {
       journalCaught(caughtError5, "access.sessionRoutes.requestWorkspaceSession", null);

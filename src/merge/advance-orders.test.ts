@@ -515,7 +515,7 @@ describe("advanceMerge on a CI failure", () => {
     await h.requeue("ENG-1", "fix 1\n");
     expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
     expect(getWorkItem(h.db, "ENG-1")?.state).toBe("awaiting_input");
-    const question = findOpenQuestion(h.db, "ses-ENG-1")!;
+    const question = (await findOpenQuestion(sqliteDb(h.db), "ses-ENG-1"))!;
     expect(question.body).toContain(
       "The agent used all 1 fix round across Closeout, CI and review.",
     );
@@ -535,7 +535,9 @@ describe("advanceMerge on a CI failure", () => {
     h.state.ciFixAttempts = 0;
     h.state.ci = failingTest;
     expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
-    expect(findOpenQuestion(h.db, "ses-ENG-1")?.body).toContain("Fix rounds are set to 0");
+    expect((await findOpenQuestion(sqliteDb(h.db), "ses-ENG-1"))?.body).toContain(
+      "Fix rounds are set to 0",
+    );
     expect(await resumes(h)).toEqual([]);
   });
 
@@ -548,7 +550,7 @@ describe("advanceMerge on a CI failure", () => {
     h.state.ciFixAttempts = 1;
     await h.requeue("ENG-1", "fix 1\n");
     expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
-    expect(findOpenQuestion(h.db, "ses-ENG-1")?.body).toContain(
+    expect((await findOpenQuestion(sqliteDb(h.db), "ses-ENG-1"))?.body).toContain(
       "The agent used all 1 fix round across Closeout, CI and review.",
     );
   });
@@ -722,7 +724,9 @@ describe("advanceMerge with the GitHub merge queue order", () => {
     await h.pass("ENG-1");
     queue.remove(1, "MERGE_CONFLICT");
     expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
-    expect(findOpenQuestion(h.db, "ses-ENG-1")).toMatchObject({ reason: "rebase_budget_spent" });
+    expect(await findOpenQuestion(sqliteDb(h.db), "ses-ENG-1")).toMatchObject({
+      reason: "rebase_budget_spent",
+    });
     expect(getWorkItem(h.db, "ENG-1")?.state).toBe("awaiting_input");
   });
 
@@ -732,7 +736,7 @@ describe("advanceMerge with the GitHub merge queue order", () => {
     queue.remove(1, "MANUAL", "octocat");
     expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
     expect(getWorkItem(h.db, "ENG-1")?.state).toBe("awaiting_input");
-    const body = findOpenQuestion(h.db, "ses-ENG-1")?.body ?? "";
+    const body = (await findOpenQuestion(sqliteDb(h.db), "ses-ENG-1"))?.body ?? "";
     expect(body).toContain("@octocat removed");
     expect(body).toContain("from the acme/app GitHub merge queue (MANUAL).");
     expect(body).toContain("What should Paws do?");
@@ -805,7 +809,9 @@ describe("advanceMerge while the pull request waits for a review", () => {
         recordedAt: h.clock.now(),
       });
     expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
-    expect(findOpenQuestion(h.db, "ses-ENG-1")).toMatchObject({ reason: "rebase_budget_spent" });
+    expect(await findOpenQuestion(sqliteDb(h.db), "ses-ENG-1")).toMatchObject({
+      reason: "rebase_budget_spent",
+    });
     expect(getWorkItem(h.db, "ENG-1")?.state).toBe("awaiting_input");
     expect(await resumes(h)).toEqual([]);
     expect(h.bodies("afterPullRequest")).toEqual([]);

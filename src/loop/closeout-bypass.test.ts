@@ -84,7 +84,7 @@ async function blocked(publicUrl: string | null = "https://paws.example") {
       ],
     },
   );
-  const question = findOpenQuestion(db, "ses_1")!;
+  const question = (await findOpenQuestion(sqliteDb(db), "ses_1"))!;
   return { db, itemId: item.id, question };
 }
 

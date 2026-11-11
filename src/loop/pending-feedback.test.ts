@@ -253,7 +253,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
 
     await backToMergeQueue(h.db);
     expect(await handlePullComments(h.db, "eng-1", h.caps)).toBe("asked");
-    expect(findOpenQuestion(h.db, "s-1")?.body).toContain(BOT_FINDING);
+    expect((await findOpenQuestion(sqliteDb(h.db), "s-1"))?.body).toContain(BOT_FINDING);
     expect(getWorkItem(h.db, "eng-1")?.state).toBe("awaiting_input");
     expect(await handoffs(h.db)).toHaveLength(1);
   });

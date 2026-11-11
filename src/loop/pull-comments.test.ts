@@ -351,7 +351,7 @@ describe("pull request comments restart the item", () => {
       path: "src/cache.ts",
     });
     expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
-    expect(findOpenQuestion(db, "eng-1")).toBeNull();
+    expect(await findOpenQuestion(sqliteDb(db), "eng-1")).toBeNull();
     const text = (await handoff(db))!.handoff;
     expect(text).toContain("Closeout's independent review reported these findings");
     expect(text).toContain(
@@ -383,7 +383,7 @@ describe("pull request comments restart the item", () => {
       path: "README.md",
     });
     expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
-    expect(findOpenQuestion(db, "eng-1")).toBeNull();
+    expect(await findOpenQuestion(sqliteDb(db), "eng-1")).toBeNull();
     const text = (await handoff(db))!.handoff;
     expect(text).toContain("Bug: the README example uses the old flag.");
     expect(text).toContain("- fixed, P1 at `src/cache.ts:41`");
@@ -631,7 +631,7 @@ describe("timing", () => {
     expect(await handlePullComments(db, "eng-1", caps)).toBe("asked");
     expect(getWorkItem(db, "eng-1")?.state).toBe("awaiting_input");
     expect(await resumeJobs(db)).toHaveLength(0);
-    const question = findOpenQuestion(db, "s-1");
+    const question = await findOpenQuestion(sqliteDb(db), "s-1");
     expect(question?.body).toContain("@pascal commented on pull request #7");
     expect(question?.body).toContain("all 0 fix rounds are spent");
     expect(question?.body).toContain("Rename it.");

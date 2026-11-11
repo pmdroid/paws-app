@@ -161,7 +161,7 @@ test("startup leaves an open question parked and its answer resumes the run", as
   const fixture = await askOnce();
   try {
     const item = listWorkItems(fixture.db)[0]!;
-    const open = findOpenQuestion(fixture.db, "ses_1");
+    const open = await findOpenQuestion(sqliteDb(fixture.db), "ses_1");
     expect(open?.status).toBe("open");
     const jobsBefore = (await listJobs(sqliteDb(fixture.db))).filter(
       (job) => job.queue === JOB_KIND.resume,

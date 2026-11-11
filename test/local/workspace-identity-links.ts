@@ -227,11 +227,11 @@ export async function probeWorkspaceIdentityLinks(
     const bodyWait = new Promise<void>((resolve) => {
       releaseBody = resolve;
     });
-    const context = requestWorkspaceSession(
-      db,
+    const context = (await requestWorkspaceSession(
+      sqliteDb(db),
       new Request(origin, { headers: { cookie: `${WORKSPACE_COOKIE}=${admin.token}` } }),
       Date.now(),
-    )!;
+    ))!;
     const raced = createWorkspaceIdentityLinks({ db, slack }).handle(
       new Request(`${origin}/api/workspaces/identity-links`, {
         method: "PUT",

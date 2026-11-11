@@ -144,7 +144,9 @@ test("an HTTP 500 on a conflicting pull request with the rebase budget spent ask
     expect(await f.failed(500)).toBe(true);
     expect(await f.resumes()).toEqual([]);
     expect(getWorkItem(f.db, "DEP-661")?.state).toBe("awaiting_input");
-    expect(findOpenQuestion(f.db, "ses-1")).toMatchObject({ reason: "rebase_budget_spent" });
+    expect(await findOpenQuestion(sqliteDb(f.db), "ses-1")).toMatchObject({
+      reason: "rebase_budget_spent",
+    });
   } finally {
     await f.cleanup();
   }

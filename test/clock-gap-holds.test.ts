@@ -180,7 +180,8 @@ describe("clock gaps preserve human holds", () => {
             expect(await snapshot(db)).toEqual(before);
             expect(await executions(db)).toEqual([]);
             expect(actionableQuestions(db)).toHaveLength(kind === "awaiting_input" ? 1 : 0);
-            if (kind === "awaiting_input") expect(findOpenQuestion(db, "session")).not.toBeNull();
+            if (kind === "awaiting_input")
+              expect(await findOpenQuestion(sqliteDb(db), "session")).not.toBeNull();
 
             await recoverOnStartup(sqliteDb(db), clock.now());
             expect(await requeueOrphanedWork(sqliteDb(db), clock.now() + TWO_HOURS)).toEqual([]);

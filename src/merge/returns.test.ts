@@ -159,7 +159,7 @@ describe("merge returns", () => {
       }),
     ).toBe(true);
     expect(getWorkItem(db, "eng-1")?.state).toBe("awaiting_input");
-    expect(findOpenQuestion(db, "s-1")?.body).toBe("CI failed.");
+    expect((await findOpenQuestion(sqliteDb(db), "s-1"))?.body).toBe("CI failed.");
   });
 
   test("CI help asked while another task's question is open waits its turn", async () => {
@@ -178,7 +178,7 @@ describe("merge returns", () => {
       }),
     ).toBe(true);
     expect(getWorkItem(db, "eng-1")?.state).toBe("awaiting_input");
-    expect(findOpenQuestion(db, "s-1")?.id).toBe(open.question.id);
+    expect((await findOpenQuestion(sqliteDb(db), "s-1"))?.id).toBe(open.question.id);
     const queuedHelp = db
       .query<{ id: string }, []>("SELECT id FROM question WHERE item_id = 'eng-1'")
       .get()!;

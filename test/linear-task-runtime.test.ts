@@ -396,7 +396,7 @@ test.each([null, "", " \n "])(
       running = f.jobs.tick();
       await ready.promise;
       expect(f.orchestrator.agentAlive(getWorkItem(f.db, itemId)!.currentRunId!)).toBe(true);
-      expect(findOpenQuestion(f.db, "session")).toBeNull();
+      expect(await findOpenQuestion(sqliteDb(f.db), "session")).toBeNull();
       const store = createInboxStore(sqliteDb(f.db));
       await store.commit({
         ...event(),
@@ -432,8 +432,8 @@ test.each([null, "", " \n "])(
         0,
       );
       release.resolve();
-      await waitFor(() => findOpenQuestion(f.db, "session") !== null);
-      const question = findOpenQuestion(f.db, "session")!;
+      await waitFor(async () => (await findOpenQuestion(sqliteDb(f.db), "session")) !== null);
+      const question = (await findOpenQuestion(sqliteDb(f.db), "session"))!;
       expect(getWorkItem(f.db, itemId)?.state).toBe("awaiting_input");
       steps.length = 0;
       const answeredAt = Math.max(Date.now(), question.createdAt + 1);
@@ -569,7 +569,10 @@ test("clarifying a parent discussion as an answer keeps its children undispatche
   try {
     await f.orchestrator.onLinearEvent(event());
     await f.jobs.tick();
-    const answeredAt = Math.max(Date.now(), findOpenQuestion(f.db, "session")!.createdAt + 1);
+    const answeredAt = Math.max(
+      Date.now(),
+      (await findOpenQuestion(sqliteDb(f.db), "session"))!.createdAt + 1,
+    );
     await f.orchestrator.onLinearEvent({
       ...event(),
       action: "prompted",
@@ -596,7 +599,7 @@ test("a question reply resumes through history containing an action with an empt
   try {
     await f.orchestrator.onLinearEvent(event());
     await f.jobs.tick();
-    const question = findOpenQuestion(f.db, "session")!;
+    const question = (await findOpenQuestion(sqliteDb(f.db), "session"))!;
     const answeredAt = Math.max(Date.now(), question.createdAt + 1);
     f.tracker.listSessionActivities = createLinearTracker({
       async query() {

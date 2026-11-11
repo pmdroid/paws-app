@@ -197,7 +197,7 @@ test("instance B verifies and merges the candidate instance A imported, from the
 
     // Run files stay on local disk for now; only the mirror differs between the instances.
     await cp(path.join(a.pawsRoot, "runs"), path.join(b.pawsRoot, "runs"), { recursive: true });
-    const question = findOpenQuestion(b.db, "ses_1")!;
+    const question = (await findOpenQuestion(sqliteDb(b.db), "ses_1"))!;
     expect(
       await b.orchestrator.decideLinkAsk({
         questionId: question.id,

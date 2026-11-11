@@ -106,7 +106,7 @@ for await (const line of createInterface({ input: process.stdin })) {
         });
       orchestrator = create();
       await (orchestrator as unknown as PreflightRunner).runItem(getWorkItem(db, item.id)!);
-      const question = findOpenQuestion(db, "session");
+      const question = await findOpenQuestion(sqliteDb(db), "session");
       expect(question).not.toBeNull();
       expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
       const before = existsSync(writes) ? readFileSync(writes, "utf8").length : 0;

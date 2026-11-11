@@ -6,8 +6,8 @@ import {
   deleteWorkspaceSessionSteps,
   readWorkspaceSessionSteps,
   saveWorkspaceSession,
-  settled,
   workspaceMemberSteps,
+  type Db,
   type Q,
   type Steps,
   type WorkspaceRole,
@@ -134,11 +134,11 @@ export function* requestWorkspaceSessionSteps(
 }
 
 export function requestWorkspaceSession(
-  db: Database,
+  store: Db,
   request: Request,
   now = Date.now(),
-): RequestedWorkspaceSession | null {
-  return settled(sqliteDb(db).run((q) => requestWorkspaceSessionSteps(q, request, now)));
+): Promise<RequestedWorkspaceSession | null> {
+  return store.run((q) => requestWorkspaceSessionSteps(q, request, now));
 }
 
 export function workspaceSessionCookie(token: string): string {

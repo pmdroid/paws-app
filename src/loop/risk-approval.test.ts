@@ -187,7 +187,7 @@ async function asked(head = heads.s) {
     now: NOW,
   });
   expect(outcome).toBe("asked");
-  return { ...fixture, question: findOpenQuestion(fixture.db, "ses_1")! };
+  return { ...fixture, question: (await findOpenQuestion(sqliteDb(fixture.db), "ses_1"))! };
 }
 
 function approval(db: ReturnType<typeof openDatabase>, head: string) {
@@ -589,7 +589,7 @@ test("a fix that changes a high-risk path asks again and lists only that change"
       now: NOW + 600,
     }),
   ).toBe("asked");
-  const ask = findOpenQuestion(db, "ses_1")!;
+  const ask = (await findOpenQuestion(sqliteDb(db), "ses_1"))!;
   const detail = `High-risk paths the fix changed since the approved ${heads.s.slice(0, 7)}: \`src/auth/session.ts\`.`;
   expect(await getLinkAsk(sqliteDb(db), ask.id)).toMatchObject({
     kind: "risk",
@@ -656,7 +656,7 @@ test("a carried-over approval is checked again against the high-risk paths in fo
 
 test("a rebase that changed the patch asks again, even when the change is only a test", async () => {
   const { db, itemId } = await asked(heads.both);
-  const question = findOpenQuestion(db, "ses_1")!;
+  const question = (await findOpenQuestion(sqliteDb(db), "ses_1"))!;
   await decideLinkAsk(db, {
     questionId: question.id,
     decision: "approve",
@@ -786,7 +786,7 @@ async function automaticMerge(f: Awaited<ReturnType<typeof cleanRiskFixture>>) {
         now: NOW,
       }),
     ).toBe("asked");
-    expect(findOpenQuestion(f.db, "ses_1")).not.toBeNull();
+    expect(await findOpenQuestion(sqliteDb(f.db), "ses_1")).not.toBeNull();
   }
   return verdict;
 }
@@ -799,7 +799,7 @@ test("opt-in clean reviews at S pass mergeable without a question, writes or app
     before,
   );
   expect(await sqliteDb(f.db).run((q) => riskApprovalsSteps(q, f.itemId))).toEqual([]);
-  expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+  expect(await findOpenQuestion(sqliteDb(f.db), "ses_1")).toBeNull();
   f.db.close();
 });
 

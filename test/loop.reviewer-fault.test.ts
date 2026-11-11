@@ -136,7 +136,7 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
     );
     for (const hold of await holds()) expect(hold.runAt - hold.createdAt).toBe(60_000);
     for (const session of ["ses_ENG-1", "ses_ENG-2"])
-      expect(findOpenQuestion(db, session)).toBeNull();
+      expect(await findOpenQuestion(sqliteDb(db), session)).toBeNull();
     expect(tracker.questions).toEqual([]);
     const alerts = tracker.progress.filter((update) =>
       update.body.includes("can't run its review"),

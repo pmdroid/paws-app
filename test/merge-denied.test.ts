@@ -59,7 +59,7 @@ describe("a merge GitHub refuses", () => {
     expect(await h.pass(item.id)).toEqual({ kind: "asked" });
     expect(getWorkItem(h.db, item.id)?.state).toBe("awaiting_input");
     expect(await mergeCallInFlight(sqliteDb(h.db), item.id)).toBe(false);
-    const question = findOpenQuestion(h.db, `ses-${item.id}`)!;
+    const question = (await findOpenQuestion(sqliteDb(h.db), `ses-${item.id}`))!;
     expect(question.options).toEqual([RETRY_MERGE]);
     expect(question.body).toContain("status 405");
     expect(question.body).toContain("Repository rule violations found");
@@ -121,7 +121,7 @@ describe("a merge GitHub refuses", () => {
       };
     };
     expect(await h.pass(item.id)).toMatchObject({ kind: "wait", reason: "ci" });
-    expect(findOpenQuestion(h.db, `ses-${item.id}`)).toBeNull();
+    expect(await findOpenQuestion(sqliteDb(h.db), `ses-${item.id}`)).toBeNull();
     expect(getWorkItem(h.db, item.id)?.state).toBe("merge_queue");
     h.state.mergeState = null;
     expect(await h.pass(item.id)).toMatchObject({ kind: "wait", reason: "ci" });
@@ -138,6 +138,6 @@ describe("a merge GitHub refuses", () => {
       body: { message: "Resource not accessible by integration" },
     });
     expect(await h.pass(item.id)).toMatchObject({ kind: "failed", reason: "merge" });
-    expect(findOpenQuestion(h.db, `ses-${item.id}`)).toBeNull();
+    expect(await findOpenQuestion(sqliteDb(h.db), `ses-${item.id}`)).toBeNull();
   });
 });

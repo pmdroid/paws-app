@@ -128,7 +128,7 @@ describe("a push outage", () => {
     }
     for (const name of ["a", "b", "c"]) {
       expect(getWorkItem(db, `item-${name}`)?.state).toBe("running");
-      expect(findOpenQuestion(db, `ses-${name}`)).toBeNull();
+      expect(await findOpenQuestion(sqliteDb(db), `ses-${name}`)).toBeNull();
     }
     expect((await listOutbox(sqliteDb(db))).filter((row) => row.op === "elicitation")).toEqual([]);
   });
@@ -187,16 +187,17 @@ describe("a push outage", () => {
     await attempt(db, 101, () => "works");
     await attempt(db, 102, () => "works");
     expect(await askAboutPushOutage(db, REPOSITORY, hour - 1)).toBe("not_yet");
-    expect(findOpenQuestion(db, "ses-a")).toBeNull();
+    expect(await findOpenQuestion(sqliteDb(db), "ses-a")).toBeNull();
 
     expect(await askAboutPushOutage(db, REPOSITORY, hour)).toBe("asked");
-    const question = findOpenQuestion(db, "ses-a")!;
+    const question = (await findOpenQuestion(sqliteDb(db), "ses-a"))!;
     expect(question).toMatchObject({ kind: "push-outage", itemId: "item-a" });
     expect(question.body).toContain("https://github.com/settings/installations/2");
     expect(question.body).toContain("denied to paws-helper[bot]");
     // One question for the workspace, not one per item, and the item keeps its state.
     expect(await askAboutPushOutage(db, REPOSITORY, hour + 10 * MINUTE)).toBe("already");
-    for (const name of ["b", "c"]) expect(findOpenQuestion(db, `ses-${name}`)).toBeNull();
+    for (const name of ["b", "c"])
+      expect(await findOpenQuestion(sqliteDb(db), `ses-${name}`)).toBeNull();
     expect(getWorkItem(db, "item-a")?.state).toBe("running");
     expect(
       (await listOutbox(sqliteDb(db)))
@@ -207,6 +208,6 @@ describe("a push outage", () => {
     db.run("UPDATE job SET run_at = 0 WHERE id = ?", [jobs[0]]);
     await attempt(db, hour + 11 * MINUTE, () => "works");
     expect((await getQuestion(sqliteDb(db), question.id))?.cancelledAt).toBe(hour + 11 * MINUTE);
-    expect(findOpenQuestion(db, "ses-a")).toBeNull();
+    expect(await findOpenQuestion(sqliteDb(db), "ses-a")).toBeNull();
   });
 });

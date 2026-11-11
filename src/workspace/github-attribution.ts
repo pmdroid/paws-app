@@ -87,7 +87,7 @@ export function createGitHubAttributionLink(options: {
           request.headers.get("host")?.toLowerCase() !== url.host.toLowerCase())
       )
         return reply({ error: "Use the configured Paws origin." }, 403);
-      let access = requestWorkspaceSession(options.db, request, now());
+      let access = await requestWorkspaceSession(sqliteDb(options.db), request, now());
       if (!access) return reply({ error: "Sign in to Paws." }, 401);
       const form = await readForm(request).catch((caughtError1) => {
         journalCaught(caughtError1, "github-attribution.startFromPage.readForm", null);
@@ -108,7 +108,7 @@ export function createGitHubAttributionLink(options: {
       };
       try {
         await options.refresh(binding.workspaceId, binding.userId);
-        access = requestWorkspaceSession(options.db, request, now());
+        access = await requestWorkspaceSession(sqliteDb(options.db), request, now());
         if (
           !access ||
           access.session.tokenHash !== binding.sessionHash ||
@@ -150,7 +150,7 @@ export function createGitHubAttributionLink(options: {
         (url.pathname === PATH && !["GET", "POST", "DELETE"].includes(request.method))
       )
         return reply({ error: "Method not allowed" }, 405);
-      let access = requestWorkspaceSession(options.db, request, now());
+      let access = await requestWorkspaceSession(sqliteDb(options.db), request, now());
       if (!access) return reply({ error: "Sign in to Paws." }, 401);
       const selected =
         url.searchParams.get("workspaceId") ?? request.headers.get("x-paws-workspace");
@@ -169,7 +169,7 @@ export function createGitHubAttributionLink(options: {
         return reply({ error: "CSRF token required." }, 403);
       try {
         await options.refresh(binding.workspaceId, binding.userId);
-        access = requestWorkspaceSession(options.db, request, now());
+        access = await requestWorkspaceSession(sqliteDb(options.db), request, now());
         if (
           !access ||
           access.session.tokenHash !== binding.sessionHash ||

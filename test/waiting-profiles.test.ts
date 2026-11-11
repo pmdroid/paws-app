@@ -484,7 +484,7 @@ test("an unknown label asks, starts nothing, and Use the default holds for the i
   f.label({ implementer: "Acme unknown" });
   const run = await f.gate.ensureRun(f.item());
   expect(await f.gate.checkProfileLabels(f.item(), run.id)).toBe(false);
-  const open = findOpenQuestion(f.db, "acme-session")!;
+  const open = (await findOpenQuestion(sqliteDb(f.db), "acme-session"))!;
   expect(open.body).toContain('Implementer label "Acme unknown": no preset has this name');
   expect(open.body).toContain("Available presets: Opus, Codex.");
   expect(open.options).toEqual(["Use the default", "I fixed the label"]);
@@ -505,7 +505,7 @@ test("I fixed the label reads the corrected label before the run goes on", async
   f.label({ implementer: "Acme unknown" });
   const run = await f.gate.ensureRun(f.item());
   await f.gate.checkProfileLabels(f.item(), run.id);
-  await answerQuestion(f.db, findOpenQuestion(f.db, "acme-session")!.id, {
+  await answerQuestion(f.db, (await findOpenQuestion(sqliteDb(f.db), "acme-session"))!.id, {
     answer: "I fixed the label",
     answeredBy: "acme-user",
   });
@@ -521,7 +521,7 @@ test("a reviewer label equal to the implementer asks the same question", async (
   f.label({ implementer: "Opus", reviewer: "Opus" });
   const run = await f.gate.ensureRun(f.item());
   expect(await f.gate.checkProfileLabels(f.item(), run.id)).toBe(false);
-  const open = findOpenQuestion(f.db, "acme-session")!;
+  const open = (await findOpenQuestion(sqliteDb(f.db), "acme-session"))!;
   expect(open.body).toContain('Reviewer label "Opus"');
   expect(open.options).toEqual(["Use the default", "I fixed the label"]);
 });
@@ -552,6 +552,6 @@ test("without labels a new run saves the Settings profiles and asks nothing", as
   const run = await f.gate.ensureRun(f.item());
   expect(await f.gate.checkProfileLabels(f.item(), run.id)).toBe(true);
   expect(f.snapshot(run.id).profiles).toEqual(oldProfiles);
-  expect(findOpenQuestion(f.db, "acme-session")).toBeNull();
+  expect(await findOpenQuestion(sqliteDb(f.db), "acme-session")).toBeNull();
   expect((await f.bodies()).filter((body) => body.includes("(label)"))).toEqual([]);
 });

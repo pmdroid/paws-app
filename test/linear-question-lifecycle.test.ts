@@ -241,7 +241,7 @@ test("only one blocking question may be open on a session", async () => {
         now: NOW + 1,
       }),
     ).rejects.toThrow("already has an unanswered question");
-    expect(findOpenQuestion(db, "ses_1")?.id).toBe(question.id);
+    expect((await findOpenQuestion(sqliteDb(db), "ses_1"))?.id).toBe(question.id);
   } finally {
     db.close();
   }
@@ -276,7 +276,7 @@ test("a Linear Stop pauses the item with its question open, and a reply restarts
     await orchestrator.onLinearEvent(prompt(NOW + 500, "reply-1"));
     expect(getWorkItem(db, item.id)?.state).toBe("queued");
     expect((await getQuestion(sqliteDb(db), question.id))?.answer).toBeNull();
-    expect(findOpenQuestion(db, "ses_1")).toBeNull();
+    expect(await findOpenQuestion(sqliteDb(db), "ses_1")).toBeNull();
     const resume = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
     expect(resume).toHaveLength(1);
     expect(resume[0]!.payload).toMatchObject({

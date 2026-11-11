@@ -217,7 +217,7 @@ describe("restart and ask", () => {
     expect(
       db.query("SELECT id FROM question WHERE status IN ('open','queued')").all(),
     ).toHaveLength(1);
-    expect(findOpenQuestion(db, "session")?.reason).toBe("restart");
+    expect((await findOpenQuestion(sqliteDb(db), "session"))?.reason).toBe("restart");
     db.close();
   });
 
@@ -326,7 +326,7 @@ describe("restart and ask", () => {
     });
     await jobs.tick([JOB_KIND.reverify]);
     expect(getWorkItem(db, item.id)?.state).toBe("queued");
-    expect(findOpenQuestion(db, "session")).toBeNull();
+    expect(await findOpenQuestion(sqliteDb(db), "session")).toBeNull();
     expect(await listOutbox(sqliteDb(db))).toEqual(before.outbox);
     db.close();
   });
@@ -403,7 +403,7 @@ describe("restart and ask", () => {
     });
     await jobs.tick(["item.ask"]);
     expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
-    expect(findOpenQuestion(db, "session")?.body).toBe("Which direction?");
+    expect((await findOpenQuestion(sqliteDb(db), "session"))?.body).toBe("Which direction?");
     expect(db.query("SELECT reason FROM question WHERE status='queued'").all()).toEqual([
       { reason: "restart" },
     ]);
@@ -423,7 +423,7 @@ describe("restart and ask", () => {
     );
     await recoverOnStartup(sqliteDb(db), 3);
     expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
-    expect(findOpenQuestion(db, "session")?.body).toBe("Continue?");
+    expect((await findOpenQuestion(sqliteDb(db), "session"))?.body).toBe("Continue?");
     expect(
       (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.catchup),
     ).toHaveLength(1);
