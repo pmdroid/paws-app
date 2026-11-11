@@ -72,6 +72,59 @@ const MIXED_POLICY = [
   "",
 ].join("\n");
 
+describe("progress writes", () => {
+  test("each write lands before the next one starts, in call order", async () => {
+    const repo = await candidateRepo(probe("console.log('one');"));
+    const calls: string[] = [];
+    const slow = async (name: string) => {
+      calls.push(`start ${name}`);
+      await new Promise((resume) => setTimeout(resume, 5));
+      calls.push(`end ${name}`);
+    };
+    const result = await evaluateRepo(repo, {
+      begin: () => slow("begin"),
+      step: (_identity, step) => slow(`step ${step.id} ${step.state}`),
+      output: (_identity, stepId) => slow(`output ${stepId}`),
+      finish: (_identity, decision) => slow(`finish ${decision}`),
+    });
+
+    expect(result.outcome).toBe("accepted");
+    for (let index = 0; index < calls.length; index += 2) {
+      expect(calls[index]!.replace("start ", "")).toBe(calls[index + 1]!.replace("end ", ""));
+    }
+    const ended = calls.filter((call) => call.startsWith("end ")).map((call) => call.slice(4));
+    expect(ended[0]).toBe("begin");
+    expect(ended.at(-1)).toBe("finish accepted");
+    const running = ended.indexOf("step probe-rule running");
+    const output = ended.indexOf("output probe-rule");
+    const passed = ended.indexOf("step probe-rule passed");
+    expect(running).toBeGreaterThan(0);
+    expect(output).toBeGreaterThan(running);
+    expect(passed).toBeGreaterThan(output);
+  });
+
+  test("a failing write blocks the evaluation with its error instead of being dropped", async () => {
+    const repo = await candidateRepo(probe("process.exit(0);"));
+    const written: string[] = [];
+    const result = await evaluateRepo(repo, {
+      async begin() {},
+      async step(_identity, step) {
+        if (step.state === "passed") throw new Error("acme database unavailable");
+        written.push(step.state);
+      },
+      async output() {},
+      async finish(_identity, decision) {
+        written.push(`finish ${decision}`);
+      },
+    });
+
+    expect(result.outcome).toBe("blocked");
+    expect(result.error).toContain("acme database unavailable");
+    expect(written).not.toContain("passed");
+    expect(written.at(-1)).toBe("finish blocked");
+  });
+});
+
 describe("rules set to approve", () => {
   const failing = probe("console.error('removed field Task.title'); process.exit(1);");
 
@@ -455,12 +508,12 @@ function captured(): { progress: CloseoutProgress; stdout: () => string } {
   let stdout = "";
   return {
     progress: {
-      begin() {},
-      step() {},
-      output(_identity, stepId, stream, text) {
+      async begin() {},
+      async step() {},
+      async output(_identity, stepId, stream, text) {
         if (stepId === "probe-rule" && stream === "stdout") stdout += text;
       },
-      finish() {},
+      async finish() {},
     },
     stdout: () => stdout,
   };
