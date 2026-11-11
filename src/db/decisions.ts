@@ -1,6 +1,5 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
-import type { Database } from "bun:sqlite";
+import { type Db, type Q, type Steps } from "./db";
 import { JOB_KIND, type Checkpoint, type StartupDecision } from "../core";
 import {
   applyWorkItemEventSteps,
@@ -20,24 +19,7 @@ import { getRunSteps, markRunSteps, releaseRunCapacitySteps } from "./runs";
 import { pendingRestartHandoffSteps } from "./restart";
 import { getTaskModeSteps } from "./tasks";
 
-/**
- * Apply one startup decision. Callers wrap a batch in one transaction
- * so the state change and the follow-up job commit together.
- */
-export function applyDecision(
-  db: Database,
-  item: WorkItemRecord,
-  decision: StartupDecision,
-  now: number,
-  options: { runAt?: number } = {},
-): void {
-  const armed = settled(
-    sqliteDb(db).transaction((q) => applyDecisionSteps(q, item, decision, now, options)),
-  );
-  if (armed) emitJobReady(db);
-}
-
-export async function applyDecisionAsync(
+export async function applyDecision(
   store: Db,
   item: WorkItemRecord,
   decision: StartupDecision,

@@ -380,7 +380,7 @@ describe("restart and ask", () => {
         { now: 2 },
       ),
     );
-    applyDecision(db, getWorkItem(db, item.id)!, { type: "ask_restart" }, 3);
+    await applyDecision(sqliteDb(db), getWorkItem(db, item.id)!, { type: "ask_restart" }, 3);
     const clock = new FakeClock(4);
     const jobs = new JobLoop(db, clock);
     attachOrchestrator({

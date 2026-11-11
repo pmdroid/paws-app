@@ -221,7 +221,7 @@ describe("restart hold", () => {
     const db = fixture();
     recoverOnStartup(db, 100);
     await orchestrate(db, 200).tick(["item.ask"]);
-    applyDecision(db, getWorkItem(db, "item")!, { type: "ask_restart" }, 300);
+    await applyDecision(sqliteDb(db), getWorkItem(db, "item")!, { type: "ask_restart" }, 300);
     expect(liveAsks(db)).toEqual([]);
     expect(actionableQuestions(db)).toHaveLength(1);
     expect(findOpenQuestion(db, "session")?.reason).toBe("restart");

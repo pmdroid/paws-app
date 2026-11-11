@@ -121,7 +121,7 @@ test("a Closeout stall asked while another question is open is delivered after i
   const { db, asker } = parked();
   const open = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW });
   await askCloseoutHelp(db, "ses_1", help("Closeout: blocked\nMessage: stalled"), { now: NOW + 1 });
-  const queued = listCloseoutRecoveries(db, asker.itemId)[0]!;
+  const queued = (await listCloseoutRecoveries(sqliteDb(db), asker.itemId))[0]!;
   expect(await getQuestion(sqliteDb(db), queued.questionId)).toMatchObject({
     kind: "closeout-help",
     status: "queued",
@@ -201,7 +201,7 @@ async function askedAbout(
   await askCloseoutHelp(db, "ses_1", blocked, { now: NOW, reason, checks });
   const question = (await getQuestion(
     sqliteDb(db),
-    listCloseoutRecoveries(db, asker.itemId)[0]!.questionId,
+    (await listCloseoutRecoveries(sqliteDb(db), asker.itemId))[0]!.questionId,
   ))!;
   return { db, asker, question };
 }

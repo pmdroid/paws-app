@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { asc, eq, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
 
 export type CloseoutRecovery = {
@@ -66,8 +65,11 @@ export function* listCloseoutRecoveriesSteps(q: Q, itemId: string): Steps<Closeo
   }));
 }
 
-export function listCloseoutRecoveries(db: Database, itemId: string): CloseoutRecovery[] {
-  return settled(sqliteDb(db).run((q) => listCloseoutRecoveriesSteps(q, itemId)));
+export async function listCloseoutRecoveries(
+  store: Db,
+  itemId: string,
+): Promise<CloseoutRecovery[]> {
+  return store.run((q) => listCloseoutRecoveriesSteps(q, itemId));
 }
 
 /** The candidate a Closeout help question was asked about, by its question. */

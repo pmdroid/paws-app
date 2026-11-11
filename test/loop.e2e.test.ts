@@ -1516,7 +1516,7 @@ for (const recovery of [
       expect(launches).toEqual(["implement", "fix"]);
       expect(github.merged).toHaveLength(0);
       const question = findOpenQuestion(db, "ses_1")!;
-      const context = listCloseoutRecoveries(db, question.itemId)[0]!;
+      const context = (await listCloseoutRecoveries(sqliteDb(db), question.itemId))[0]!;
       expect(context.failedChecks).toEqual(["test"]);
       expect(context.retryBaseline).toHaveLength(2);
       expect(question.body).toContain(
@@ -1622,9 +1622,9 @@ for (const recovery of [
         expect(launches).toEqual(
           recovery === "guidance" ? ["implement", "fix", "implement"] : ["implement", "fix"],
         );
-        expect(listCloseoutRecoveries(db, question.itemId)[0]?.retryBaseline).toEqual(
-          context.retryBaseline,
-        );
+        expect(
+          (await listCloseoutRecoveries(sqliteDb(db), question.itemId))[0]?.retryBaseline,
+        ).toEqual(context.retryBaseline);
         if (recovery === "guidance") expect(prompts.at(-1)).toContain(answer);
         if (recovery === "bypass") {
           expect(github.opened[0]?.body).toContain("Bypassed checks:");
@@ -3248,7 +3248,7 @@ test("a repository without a Closeout policy merges without Closeout checks or a
     expect(github.merged).toHaveLength(1);
     while ((await outbox.tick()).length > 0) await outbox.idle();
     expect(tracker.questions).toHaveLength(0);
-    expect(listCloseoutRecoveries(db, listWorkItems(db)[0]!.id)).toHaveLength(0);
+    expect(await listCloseoutRecoveries(sqliteDb(db), listWorkItems(db)[0]!.id)).toHaveLength(0);
   } finally {
     await orchestrator.shutdown();
     db.close();

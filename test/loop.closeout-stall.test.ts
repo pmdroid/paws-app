@@ -151,7 +151,7 @@ test("a job that ends without a Closeout result re-verifies the same head after 
     ]);
     expect(getWorkItem(f.db, item.id)?.state).toBe("verifying");
     expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
-    expect(listCloseoutRecoveries(f.db, item.id)).toHaveLength(0);
+    expect(await listCloseoutRecoveries(sqliteDb(f.db), item.id)).toHaveLength(0);
     const [retry, ...rest] = closeoutFaultJobs(f.db);
     expect(rest).toEqual([]);
     expect(retry).toMatchObject({
@@ -921,9 +921,9 @@ test("running out of review attempts asks on the item page instead of failing", 
       rounds: { limit: 4, handoff: "Fix the P1 review finding." },
     });
     // The recovery row keeps the retry baseline a Rethink or Keep going grants.
-    expect(listCloseoutRecoveries(f.db, item.id).map((entry) => entry.questionId)).toEqual([
-      question.id,
-    ]);
+    expect(
+      (await listCloseoutRecoveries(sqliteDb(f.db), item.id)).map((entry) => entry.questionId),
+    ).toEqual([question.id]);
     const asked = f.tracker.questions.at(-1)!;
     expect(asked.options ?? []).toEqual([]);
     expect(asked.body).toContain(
@@ -1006,7 +1006,9 @@ test("a broken approve rule waits for a person on the item page and uses no fix 
       kind: "rule",
       link: "https://paws.example/dashboard/issues/ENG-7#rule",
     });
-    expect(listCloseoutRecoveries(f.db, item.id)[0]?.failedChecks).toEqual(["api-contract"]);
+    expect((await listCloseoutRecoveries(sqliteDb(f.db), item.id))[0]?.failedChecks).toEqual([
+      "api-contract",
+    ]);
     const asked = f.tracker.questions.at(-1)!;
     expect(asked.options ?? []).toEqual([]);
     expect(asked.body).toContain("Rule api-contract broke: No removed field or route.");

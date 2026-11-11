@@ -81,7 +81,10 @@ async function blockedOnMain(db: Database, id: string, repository = REPOSITORY) 
 }
 
 async function question(db: Database, id: string) {
-  return (await getQuestion(sqliteDb(db), listCloseoutRecoveries(db, id).at(-1)!.questionId))!;
+  return (await getQuestion(
+    sqliteDb(db),
+    (await listCloseoutRecoveries(sqliteDb(db), id)).at(-1)!.questionId,
+  ))!;
 }
 
 const reverifies = (db: Database) =>

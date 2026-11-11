@@ -358,7 +358,7 @@ describe("restart recovery", () => {
     for (const sameRepository of [true, false]) {
       for (const status of ["pending", "running"] as const) {
         for (const inFlight of [false, true]) {
-          test(`mixed startup ${order}, same repo=${sameRepository}, ${status}, in flight=${inFlight} preserves unrelated merge work`, () => {
+          test(`mixed startup ${order}, same repo=${sameRepository}, ${status}, in flight=${inFlight} preserves unrelated merge work`, async () => {
             const { db, clock } = harness();
             const ids = order === "keep-first" ? ["keep", "reverify"] : ["reverify", "keep"];
             for (const id of ids) {
@@ -410,7 +410,12 @@ describe("restart recovery", () => {
             for (let repeat = 0; repeat < 2; repeat++) {
               clock.advance(1);
               recoverOnStartup(db, clock.now());
-              applyDecision(db, getWorkItem(db, "reverify")!, { type: "reverify" }, clock.now());
+              await applyDecision(
+                sqliteDb(db),
+                getWorkItem(db, "reverify")!,
+                { type: "reverify" },
+                clock.now(),
+              );
               expect(getJob(db, mergeId)).toEqual(savedJob);
               expect(getWorkItem(db, "keep")).toEqual(savedItem);
               expect(db.query("SELECT * FROM merge_call WHERE item_id = ?").get("keep")).toEqual(

@@ -103,7 +103,7 @@ test("Closeout help is a bypass link ask with the failed checks of the head", as
   expect(question.body).toContain(`Decide in Paws: ${LINK}`);
   expect(question.body).toContain("2 checks failed (independent-review, test)");
   expect(question.body).not.toContain("/paws bypass");
-  expect(listCloseoutRecoveries(db, itemId)[0]?.questionId).toBe(question.id);
+  expect((await listCloseoutRecoveries(sqliteDb(db), itemId))[0]?.questionId).toBe(question.id);
   expect(
     (await listCloseoutBypassChecks(sqliteDb(db), question.id)).map(
       ({ checkId, kind, state, attempt }) => ({
