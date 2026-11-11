@@ -1,22 +1,23 @@
-import type { Database } from "bun:sqlite";
 import { HIGH_RISK_PATHS_FILE } from "../core";
 import {
-  getCloseoutProgress,
-  getCandidatePaths,
-  listReviewFindings,
+  getCloseoutProgressSteps,
+  getCandidatePathsSteps,
+  listReviewFindingsSteps,
   type CandidateRisk,
+  type Q,
+  type Steps,
 } from "../db";
 
 /** Exact-head evidence only. Reads stored rows without changing the gate or recording approval. */
-export function automaticRiskApproval(
-  db: Database,
+export function* automaticRiskApprovalSteps(
+  q: Q,
   risk: CandidateRisk,
   input: {
     autoApproveHighRisk?: boolean;
     policyDigest?: string | null;
     policyPaths?: readonly string[] | null;
   },
-): { eligible: boolean; detail: string } {
+): Steps<{ eligible: boolean; detail: string }> {
   const manual = (reason: string) => ({
     eligible: false,
     detail: `Manual approval required: ${reason}`,
@@ -25,7 +26,7 @@ export function automaticRiskApproval(
   if (risk.tier !== "high") return manual("risk is not high");
   const { policyDigest, policyPaths } = input;
   if (policyDigest == null || policyPaths == null) return manual("policy evidence is unavailable");
-  const run = getCloseoutProgress(db, risk.itemId, risk.head);
+  const run = yield* getCloseoutProgressSteps(q, risk.itemId, risk.head);
   if (
     run?.decision !== "accepted" ||
     run.finishedAt === null ||
@@ -33,7 +34,7 @@ export function automaticRiskApproval(
     run.policyDigest !== policyDigest
   )
     return manual("Closeout has not accepted this head and policy");
-  const paths = getCandidatePaths(db, risk.itemId, risk.head);
+  const paths = yield* getCandidatePathsSteps(q, risk.itemId, risk.head);
   if (
     paths === null ||
     paths.some(
@@ -81,11 +82,11 @@ export function automaticRiskApproval(
     )
   )
     return manual("a Closeout check has not passed");
-  const finding = listReviewFindings(db, {
+  const finding = (yield* listReviewFindingsSteps(q, {
     itemId: risk.itemId,
     head: risk.head,
     status: "open",
-  }).find((entry) => entry.severity !== "P3");
+  })).find((entry) => entry.severity !== "P3");
   if (finding)
     return manual(
       `${finding.review === "security-review" ? "security review" : finding.review === "independent-review" ? "independent review" : finding.review} has a ${finding.severity} finding`,
