@@ -32,6 +32,7 @@ import { parseRoute, routePath, routerBase, type Route } from "./route";
 import { NAVIGATION, PAGES } from "./navigation";
 import { SETTINGS_PAGES } from "./settings-pages";
 import { AppearanceControl, initializeAppearance } from "./appearance";
+import { CommandPalette } from "./command-palette";
 import { Button } from "./ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetTitle, SheetTrigger } from "./ui/sheet";
 import {
@@ -356,7 +357,12 @@ export function mountShell(): {
               )}
               <Breadcrumb authenticated={authenticated} route={route} detail={detail} />
             </div>
-            <AppearanceControl />
+            <div className="flex items-center gap-2">
+              {authenticated && (
+                <CommandPalette onNavigate={(path) => void router.navigate(path)} />
+              )}
+              <AppearanceControl />
+            </div>
           </header>
           <div
             className={
