@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import {
   adoptLegacyCandidate,
   candidateRef,
@@ -11,22 +12,18 @@ import {
   git,
   worktreePath,
 } from "../acp";
-import {
-  insertQueuedItem,
-  insertRun,
-  migrate,
-  openDatabase,
-  type WorkItemRecord,
-  sqliteDb,
-} from "../db";
+import { insertQueuedItem, insertRun, type Db, type WorkItemRecord } from "../db";
 import { RETIRED_WORKTREE_MS, sweepWorktrees, type WorktreeSweep } from "./worktree-sweep";
+import { tempStore } from "../../test/pglite";
 
 const roots: string[] = [];
+const open: (() => Promise<void>)[] = [];
 const repository = { owner: "acme", repo: "demo", remoteUrl: "" };
 const now = Date.UTC(2026, 9, 17);
 const old = now - RETIRED_WORKTREE_MS - 60_000;
 
 afterEach(async () => {
+  for (const close of open.splice(0)) await close();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -38,7 +35,7 @@ test("removes finished worktrees after seven idle days and keeps recent or waiti
   await fixture.item("ENG-4", "awaiting_input", old);
   await fixture.item("ENG-5", "merged", now - 60_000);
   await fixture.item("ENG-6", "merged", old);
-  await insertRun(sqliteDb(fixture.db), { itemId: "ENG-2", now: now - 60_000, status: "lost" });
+  await insertRun(fixture.db, { itemId: "ENG-2", now: now - 60_000, status: "lost" });
 
   await sweepWorktrees(fixture.sweep());
 
@@ -90,10 +87,7 @@ test("keeps a worktree another live item shares", async () => {
   const fixture = await setup();
   await fixture.item("ENG-1", "cancelled", old);
   const sibling = await insertQueuedItem(fixture.db, { id: "ENG-1-again" });
-  fixture.db.run(
-    "UPDATE work_item SET linear_identifier = 'ENG-1', state = 'running' WHERE id = ?",
-    [sibling.id],
-  );
+  await updateItem(fixture.db, sibling.id, { linearIdentifier: "ENG-1", state: "running" });
 
   await sweepWorktrees(fixture.sweep());
 
@@ -114,17 +108,14 @@ test("keeps a worktree when its owners or files change before removal", async ()
   await sweepWorktrees(
     fixture.sweep({
       mergedHeads: async (item) => {
-        if (item.id === "ENG-1")
-          fixture.db.run("UPDATE work_item SET state = 'running' WHERE id = 'ENG-1'");
+        if (item.id === "ENG-1") await updateItem(fixture.db, "ENG-1", { state: "running" });
         return [heads.get(item.id)!];
       },
       hold: async (itemIds, operation) => {
         held.push([...itemIds]);
         if (itemIds.includes("ENG-2")) {
           const sibling = await insertQueuedItem(fixture.db, { id: "ENG-2-again" });
-          fixture.db.run("UPDATE work_item SET linear_identifier = 'ENG-2' WHERE id = ?", [
-            sibling.id,
-          ]);
+          await updateItem(fixture.db, sibling.id, { linearIdentifier: "ENG-2" });
         }
         if (itemIds.includes("ENG-3"))
           await writeFile(join(worktreePath(fixture.pawsRoot, "ENG-3"), "late.txt"), "late\n");
@@ -136,6 +127,16 @@ test("keeps a worktree when its owners or files change before removal", async ()
   expect(held).toEqual([["ENG-1"], ["ENG-2"], ["ENG-3"]]);
   expect(fixture.present()).toEqual({ "ENG-1": true, "ENG-2": true, "ENG-3": true });
 }, 30_000);
+
+function updateItem(
+  db: Db,
+  id: string,
+  values: { state?: WorkItemRecord["state"]; linearIdentifier?: string },
+) {
+  return db.run((q) =>
+    q.exec(q.orm.update(q.t.workItem).set(values).where(eq(q.t.workItem.id, id))),
+  );
+}
 
 test("removes leftover worktrees of runner-backed items unless their work runs here", async () => {
   const fixture = await setup();
@@ -222,8 +223,8 @@ async function setup() {
   await git(["-C", source, "add", "README.md"]);
   await commitIn(source, "init");
   const mirror = (await ensureBareMirror({ ...repository, remoteUrl: source, pawsRoot })).path;
-  const db = openDatabase(join(root, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
+  open.push(close);
   const ids: string[] = [];
   return {
     db,
@@ -232,8 +233,8 @@ async function setup() {
     async item(id: string, state: WorkItemRecord["state"], touched: number) {
       ids.push(id);
       const item = await insertQueuedItem(db, { id });
-      db.run("UPDATE work_item SET state = ? WHERE id = ?", [state, id]);
-      await insertRun(sqliteDb(db), { itemId: id, now: touched, status: "ended" });
+      await updateItem(db, id, { state });
+      await insertRun(db, { itemId: id, now: touched, status: "ended" });
       const tree = await createWorktree({ ...repository, itemId: id, pawsRoot });
       await utimes(tree.path, touched / 1000, touched / 1000);
       return { ...item, state };
@@ -262,7 +263,7 @@ async function setup() {
     },
     sweep(overrides: Partial<WorktreeSweep> = {}): WorktreeSweep {
       return {
-        store: sqliteDb(db),
+        store: db,
         pawsRoot,
         now,
         signal: new AbortController().signal,
