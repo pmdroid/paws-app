@@ -1,23 +1,15 @@
 import { afterEach, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { ArtifactSnapshot, PublishArtifactContext } from "../src/acp";
 import { FakeClock } from "../src/core";
-import {
-  getEvidence,
-  insertQueuedItem,
-  listOutbox,
-  migrate,
-  OutboxDispatcher,
-  openDatabase,
-  sqliteDb,
-} from "../src/db";
+import { getEvidence, insertQueuedItem, listOutbox, OutboxDispatcher, type Db } from "../src/db";
 import { createEvidenceStore } from "../src/evidence";
 import { createFakeTracker, createLinearFileTransfer } from "../src/linear";
 import { createEvidenceArtifactPublisher, deliverLinearOutbox } from "../src/loop";
 import { tempHome } from "./helpers";
+import { tempStore } from "./pglite";
 
 const MB = 1024 * 1024;
 const ASSET = "https://uploads.linear.app/workspace/evidence";
@@ -41,11 +33,10 @@ function sized(head: Buffer, bytes: number): Buffer {
 async function setup(reviewed = true) {
   const home = tempHome();
   homes.push(home);
-  const db = openDatabase(join(home, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   await insertQueuedItem(db, { id: "item", sessionKey: "session" });
   const root = join(home, "evidence");
-  const store = createEvidenceStore({ store: sqliteDb(db), root });
+  const store = createEvidenceStore({ store: db, root });
   const uploads: string[] = [];
   const failures = { remaining: 0 };
   const files = createLinearFileTransfer({
@@ -79,7 +70,7 @@ async function setup(reviewed = true) {
     maxBytes: 50 * MB,
   });
   const publisher = createEvidenceArtifactPublisher({
-    store: sqliteDb(db),
+    store: db,
     evidence: store,
     publicUrl: "https://paws.example",
     itemId: "item",
@@ -110,7 +101,7 @@ async function setup(reviewed = true) {
   const clock = new FakeClock(Date.now());
   const dispatcher = new OutboxDispatcher(db, clock);
   dispatcher.setHandler((row, delivery) =>
-    deliverLinearOutbox(row, tracker, async () => {}, delivery, sqliteDb(db), { files, root }),
+    deliverLinearOutbox(row, tracker, async () => {}, delivery, db, { files, root }),
   );
   async function deliver(rounds = 1) {
     for (let round = 0; round < rounds; round++) {
@@ -119,15 +110,15 @@ async function setup(reviewed = true) {
       clock.advance(3_600_000);
     }
   }
-  return { db, publish, tracker, uploads, failures, deliver };
+  return { db, close, publish, tracker, uploads, failures, deliver };
 }
 
 function evidenceId(url: string): string {
   return url.split("/").at(-1)!;
 }
 
-async function rows(db: Database) {
-  return await listOutbox(sqliteDb(db), "session");
+async function rows(db: Db) {
+  return await listOutbox(db, "session");
 }
 
 test("a visual review screenshot is uploaded once and nothing is posted", async () => {
@@ -145,10 +136,10 @@ test("a visual review screenshot is uploaded once and nothing is posted", async 
     await f.deliver(3);
     expect(f.uploads).toEqual(["Settings → Agents, desktop"]);
     expect((await rows(f.db)).map((row) => row.status)).toEqual(["sent"]);
-    expect((await getEvidence(sqliteDb(f.db), evidenceId(published.url)))?.assetUrl).toBe(ASSET);
+    expect((await getEvidence(f.db, evidenceId(published.url)))?.assetUrl).toBe(ASSET);
     expect(f.tracker.progress).toHaveLength(0);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -158,7 +149,7 @@ test("evidence of a check without a visual review is only stored", async () => {
     await f.publish("shot.png", "image/png", sized(PNG_HEAD, 64));
     expect(await rows(f.db)).toHaveLength(0);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -171,15 +162,15 @@ test("a failed upload retries through the outbox", async () => {
     const [failed] = await rows(f.db);
     expect(failed).toMatchObject({ status: "pending", attempts: 1 });
     expect(failed!.error).toContain("HTTP 503");
-    expect((await getEvidence(sqliteDb(f.db), evidenceId(published.url)))?.assetUrl).toBeNull();
+    expect((await getEvidence(f.db, evidenceId(published.url)))?.assetUrl).toBeNull();
 
     await f.deliver(3);
     expect((await rows(f.db)).map((row) => row.status)).toEqual(["sent"]);
     expect(f.uploads).toEqual(["clip.webm", "clip.webm"]);
-    expect((await getEvidence(sqliteDb(f.db), evidenceId(published.url)))?.assetUrl).toBe(ASSET);
+    expect((await getEvidence(f.db, evidenceId(published.url)))?.assetUrl).toBe(ASSET);
     expect(f.tracker.progress).toHaveLength(0);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -190,10 +181,10 @@ test("an upload that keeps failing gives up on the last attempt", async () => {
     const published = await f.publish("shot.png", "image/png", sized(PNG_HEAD, 64));
     await f.deliver(10);
     expect((await rows(f.db)).map((row) => row.status)).toEqual(["sent"]);
-    expect((await getEvidence(sqliteDb(f.db), evidenceId(published.url)))?.assetUrl).toBeNull();
+    expect((await getEvidence(f.db, evidenceId(published.url)))?.assetUrl).toBeNull();
     expect(f.tracker.progress).toHaveLength(0);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -204,6 +195,6 @@ test("files over the inline limits are not uploaded", async () => {
     await f.publish("full-page.png", "image/png", sized(PNG_HEAD, 11 * MB));
     expect(await rows(f.db)).toHaveLength(0);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
