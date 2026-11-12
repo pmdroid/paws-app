@@ -288,6 +288,49 @@ test("an idle loop claims once per ceiling and sleeps until the earliest run_at"
   await close();
 });
 
+test("a job enqueued after the loop read its next run time wakes it before the poll", async () => {
+  const { db, close } = await tempStore();
+  let armed = true;
+  const store = {
+    ...db,
+    run: async <T>(body: (q: Q) => Steps<T>) => {
+      let readNextRunAt = false;
+      const result = await db.run(function* (q: Q): Steps<T> {
+        const steps = body(q);
+        let next = steps.next();
+        while (!next.done) {
+          const step = next.value;
+          const query = "query" in step ? (step.query as { toSQL?(): { sql: string } }) : {};
+          if (query.toSQL?.().sql.includes("MIN(")) readNextRunAt = true;
+          next = steps.next(yield step);
+        }
+        return next.value;
+      });
+      if (readNextRunAt && armed) {
+        armed = false;
+        await enqueueJob(db, { queue: "work", now: Date.now() });
+      }
+      return result;
+    },
+  } as Db;
+  const loop = new JobLoop(db, systemClock, { pollMs: 60_000, store });
+  let started = false;
+  loop.register("work", () => {
+    started = true;
+  });
+  const controller = new AbortController();
+  const running = loop.run(controller.signal);
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (started) break;
+    await Bun.sleep(5);
+  }
+  expect(armed).toBe(false);
+  expect(started).toBe(true);
+  controller.abort();
+  await running;
+  await close();
+});
+
 test("a job enqueued while the loop sleeps starts within 50ms", async () => {
   const { db, close } = await tempStore();
   const loop = new JobLoop(db, systemClock, { pollMs: 60_000 });
