@@ -7,11 +7,10 @@ import {
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
-  migrate,
   openDatabase,
+  openPawsStore,
   putWorkspaceUser,
   recordLinearInstallation,
-  sqliteDb,
 } from "../../src/db";
 import { createFakeGitHub } from "../../src/github";
 import { createLocalRunnerTranscriptObjects } from "../../src/runner-transcripts";
@@ -28,11 +27,12 @@ import { openRunnerRuntime } from "../../src/runner-runtime";
 import { executeRunnerCommand } from "../../src/runner-worker";
 import type { WorkCommand } from "../../src/runner-journal";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
+import { copyMigratedPglite } from "../pglite";
 
 const mode = process.argv[2]!;
 const root = process.argv[3]!;
 const server = join(root, "server");
-const dbPath = join(server, "paws.db");
+const pgliteDir = join(server, "pglite");
 const inputPath = ".paws-linear-inputs/private [a]*!.bin";
 const inputBytes = Buffer.from([0, 255, 40, 20]);
 const fullPrompt = "Restored native context 日本語 " + "x".repeat(1_048_576) + " context-tail";
@@ -122,21 +122,21 @@ if (mode === "prepare") {
   assert.equal(certificate.exitCode, 0, certificate.stderr.toString());
   chmodSync(join(server, "server.key"), 0o600);
   writeFileSync(join(root, "server.pem"), tls().cert);
-  const db = openDatabase(dbPath);
-  migrate(db);
+  await copyMigratedPglite(pgliteDir);
+  const { store: db, close } = await openPawsStore({ url: null, pgliteDir });
   const now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   const principal = {
@@ -179,16 +179,20 @@ if (mode === "prepare") {
     if (paired.phase !== "paired") throw new Error("Runner enrollment failed");
     await coordinator.control.setStatus(principal, paired.runnerId, "active");
     assert(paired.phase === "paired");
-    db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-      workspace.id,
-      "fixture/repository",
-      "team",
-    ]);
+    await db.run((q) =>
+      q.exec(
+        q.orm.insert(q.t.workspaceRepository).values({
+          workspaceId: workspace.id,
+          repository: "fixture/repository",
+          teamId: "team",
+        }),
+      ),
+    );
     for (const [index, type] of ["run", "review", "run", "run"].entries()) {
       const session = `session-${index}`;
       const item = await insertQueuedItem(db, { id: `item-${index}`, now, sessionKey: session });
-      const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
-      await recordLinearInstallation(sqliteDb(db), {
+      const { run } = await beginImplementRun(db, item.id, now);
+      await recordLinearInstallation(db, {
         organizationId: "org",
         oauthClientId: "fixture",
         appUserId: "app",
@@ -196,14 +200,14 @@ if (mode === "prepare") {
         teamId: "team",
         observedAtMs: now,
       });
-      await bindLinearSessionTask(sqliteDb(db), session, item.delegationId, { actorId: "owner" });
+      await bindLinearSessionTask(db, session, item.delegationId, { actorId: "owner" });
       const repository = {
         owner: "fixture",
         repo: "repository",
         remoteUrl: "https://github.com/fixture/repository.git",
         baseSha: base,
       };
-      await bindWorkItemRepository(sqliteDb(db), item.id, repository);
+      await bindWorkItemRepository(db, item.id, repository);
       const command: WorkCommand = {
         type: type as "run" | "review",
         id: workspaceId(),
@@ -232,11 +236,11 @@ if (mode === "prepare") {
     daemon.close();
     await browser.stop(true);
     await coordinator.stop();
-    db.close();
+    await close();
   }
 } else if (mode === "coordinator") {
   const config = configuration();
-  const db = openDatabase(dbPath);
+  const { store: db, close } = await openPawsStore({ url: null, pgliteDir });
   const coordinator = await openRunnerCoordinator({
     eventKey: Buffer.alloc(32, 7),
     db,
@@ -280,11 +284,13 @@ if (mode === "prepare") {
   process.once(
     "SIGTERM",
     () =>
-      void coordinator.stop().then(() => {
-        clearInterval(timer);
-        db.close();
-        process.exit(0);
-      }),
+      void coordinator
+        .stop()
+        .then(() => {
+          clearInterval(timer);
+          return close();
+        })
+        .then(() => process.exit(0)),
   );
   writeFileSync(join(server, "ready"), "ready");
 } else if (mode === "reader") {

@@ -11,13 +11,12 @@ import {
   getOutboxSteps,
   insertQueuedItem,
   insertRun,
-  migrate,
-  openDatabase,
+  openPawsStore,
   setCurrentRun,
-  sqliteDb,
 } from "../../src/db";
 import { createLinearClient, createLinearLedger, createLinearTracker } from "../../src/linear";
 import { createAcpActivityReporter, deliverLinearOutbox } from "../../src/loop";
+import { pgliteServer } from "../pglite";
 
 export async function probeLinearActivityBudget(
   root: string,
@@ -25,9 +24,15 @@ export async function probeLinearActivityBudget(
   eventCount = 3_000,
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const path = join(root, "activities.sqlite");
-  let db = openDatabase(path);
-  migrate(db);
+  const postgres = await pgliteServer();
+  const connect = () => openPawsStore({ url: postgres.url, pgliteDir: "" });
+  let open = await connect();
+  let db = open.store;
+  async function reopen() {
+    await open.close();
+    open = await connect();
+    db = open.store;
+  }
   const clock = new FakeClock(Date.now());
   let limited = false;
   let requests = 0;
@@ -90,7 +95,7 @@ export async function probeLinearActivityBudget(
     const result = new OutboxDispatcher(db, clock);
     result.setHandler((row, context) =>
       row.target === "linear"
-        ? deliverLinearOutbox(row, tracker, async () => {}, context, sqliteDb(db))
+        ? deliverLinearOutbox(row, tracker, async () => {}, context, db)
         : undefined,
     );
     return result;
@@ -98,7 +103,7 @@ export async function probeLinearActivityBudget(
   let outbox = dispatcher();
   let sequence = 0;
   async function activity(sessionId: string, kind: string, itemId?: string) {
-    return await enqueueOutbox(sqliteDb(db), {
+    return await enqueueOutbox(db, {
       target: "linear",
       op: kind === "elicitation" ? "elicitation" : "activity",
       orderingKey: sessionId,
@@ -109,9 +114,13 @@ export async function probeLinearActivityBudget(
   }
   try {
     const item = await insertQueuedItem(db, { id: "chatty", sessionKey: "chatty" });
-    const original = await beginImplementRun(sqliteDb(db), item.id, clock.now());
-    const reporter = createAcpActivityReporter((payload) => {
-      void enqueueOutbox(sqliteDb(db), {
+    const original = await beginImplementRun(db, item.id, clock.now());
+    const reported: Record<string, unknown>[] = [];
+    const reporter = createAcpActivityReporter((payload) => reported.push(payload));
+    for (let n = 0; n < eventCount; n++)
+      reporter.onEvent({ type: "progress", text: `Checked ${n}.` });
+    for (const payload of reported)
+      await enqueueOutbox(db, {
         target: "linear",
         op: "activity",
         orderingKey: "chatty",
@@ -119,27 +128,19 @@ export async function probeLinearActivityBudget(
         payload: { ...payload, sessionId: "chatty", itemId: item.id },
         now: clock.now(),
       });
-    });
-    db.transaction(() => {
-      for (let n = 0; n < eventCount; n++) {
-        reporter.onEvent({ type: "progress", text: `Checked ${n}.` });
-      }
-    }).immediate();
     const final = await activity("chatty", "response", item.id);
     for (let n = 0; n < 61; n++) {
       await outbox.tick();
       await outbox.idle();
     }
     assert.equal(activities.size, 61);
-    assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, final)))?.status, "pending");
+    assert.equal((await db.run((q) => getOutboxSteps(q, final)))?.status, "pending");
     observe("Public history passes the former hourly cap before the final response", true, {
       events: eventCount,
       published: activities.size,
       finalWaitsForHistory: true,
     });
-    db.close();
-    db = openDatabase(path);
-    migrate(db);
+    await reopen();
     outbox = dispatcher();
     for (let n = 61; n < eventCount + 1; n++) {
       await outbox.tick();
@@ -153,14 +154,14 @@ export async function probeLinearActivityBudget(
       assert.equal(output["body"], `Checked ${n}.`);
       assert.equal(delivered[n]!["ephemeral"], false);
     }
-    assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, final)))?.status, "sent");
-    observe("Every public update survives SQLite reopen and precedes the final response", true, {
+    assert.equal((await db.run((q) => getOutboxSteps(q, final)))?.status, "sent");
+    observe("Every public update survives a store reopen and precedes the final response", true, {
       published: activities.size,
       orderedTools: eventCount,
       noClockAdvance: true,
     });
     clock.advance(600_000);
-    const keepalive = await enqueueOutbox(sqliteDb(db), {
+    const keepalive = await enqueueOutbox(db, {
       target: "linear",
       op: "activity",
       orderingKey: "chatty-keepalive",
@@ -176,22 +177,22 @@ export async function probeLinearActivityBudget(
     });
     await outbox.tick();
     await outbox.idle();
-    assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, keepalive)))?.status, "sent");
+    assert.equal((await db.run((q) => getOutboxSteps(q, keepalive)))?.status, "sent");
     observe("Keepalives remain deliverable alongside complete public history", true, {
       keepaliveSent: true,
     });
-    const nextRun = await insertRun(sqliteDb(db), {
+    const nextRun = await insertRun(db, {
       itemId: item.id,
       status: "active",
       kind: "implement",
       agent: "cursor",
       now: clock.now(),
     });
-    await setCurrentRun(sqliteDb(db), item.id, nextRun.id);
+    await setCurrentRun(db, item.id, nextRun.id);
     const nextId = await activity("next-run-session", "thought", item.id);
     await outbox.tick();
     await outbox.idle();
-    assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, nextId)))?.status, "sent");
+    assert.equal((await db.run((q) => getOutboxSteps(q, nextId)))?.status, "sent");
     assert.notEqual(original.run.id, nextRun.id);
     observe("A new canonical run gets its first update without replaying stale progress", true, {
       runChanged: true,
@@ -199,11 +200,11 @@ export async function probeLinearActivityBudget(
     const question = await activity("question-session", "elicitation", item.id);
     await outbox.tick();
     await outbox.idle();
-    assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, question)))?.status, "sent");
+    assert.equal((await db.run((q) => getOutboxSteps(q, question)))?.status, "sent");
     const questionFinal = await activity("question-session", "response", item.id);
     await outbox.tick();
     await outbox.idle();
-    assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, questionFinal)))?.status, "sent");
+    assert.equal((await db.run((q) => getOutboxSteps(q, questionFinal)))?.status, "sent");
     observe(
       "Questions and the final response are delivered exactly once after queued history",
       true,
@@ -217,10 +218,10 @@ export async function probeLinearActivityBudget(
     for (let n = 0; n < 7; n++) {
       await outbox.tick();
       await outbox.idle();
-      assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, critical)))?.status, "pending");
+      assert.equal((await db.run((q) => getOutboxSteps(q, critical)))?.status, "pending");
       const before = requests;
       await activity(`other-${n}`, "thought");
-      const slack = await enqueueOutbox(sqliteDb(db), {
+      const slack = await enqueueOutbox(db, {
         target: "slack",
         op: "message",
         idempotencyKey: `slack:${n}`,
@@ -228,11 +229,9 @@ export async function probeLinearActivityBudget(
       await outbox.tick();
       await outbox.idle();
       assert.equal(requests, before);
-      assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, slack)))?.status, "sent");
+      assert.equal((await db.run((q) => getOutboxSteps(q, slack)))?.status, "sent");
       if (n === 0) {
-        db.close();
-        db = openDatabase(path);
-        migrate(db);
+        await reopen();
         outbox = dispatcher();
         assert.equal((await outbox.tick()).length, 0);
       }
@@ -241,39 +240,39 @@ export async function probeLinearActivityBudget(
     limited = false;
     await outbox.tick();
     await outbox.idle();
-    assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, critical)))?.status, "sent");
-    assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, critical)))?.attempts, 8);
+    assert.equal((await db.run((q) => getOutboxSteps(q, critical)))?.status, "sent");
+    assert.equal((await db.run((q) => getOutboxSteps(q, critical)))?.attempts, 8);
     observe(
       "Actual HTTP429 Retry-After persists across restart and preserves normal history through seven limits",
       true,
       {
-        attempts: (await sqliteDb(db).run((q) => getOutboxSteps(q, critical)))?.attempts,
+        attempts: (await db.run((q) => getOutboxSteps(q, critical)))?.attempts,
         delivered: true,
         otherTargetsUnaffected: true,
       },
     );
     const reserve = await insertQueuedItem(db, { id: "reservation" });
-    await beginImplementRun(sqliteDb(db), reserve.id, clock.now());
+    await beginImplementRun(db, reserve.id, clock.now());
     for (let n = 0; n < 80; n++) await activity(`parallel-${n}`, "thought", reserve.id);
-    const second = openDatabase(path);
+    const second = await connect();
     try {
-      const first = await claimOutboxHeads(sqliteDb(db), {
+      const first = await claimOutboxHeads(db, {
         now: clock.now(),
         limit: 59,
         workerId: "one",
       });
-      const rest = await claimOutboxHeads(sqliteDb(second), {
+      const rest = await claimOutboxHeads(second.store, {
         now: clock.now(),
         limit: 80,
         workerId: "two",
       });
       assert.equal(first.length, 59);
       assert.equal(rest.length, 21);
-      for (const row of first) await completeOutbox(sqliteDb(db), row, clock.now());
-      for (const row of rest) await completeOutbox(sqliteDb(second), row, clock.now());
-      assert.equal((await claimOutboxHeads(sqliteDb(db), { now: clock.now() })).length, 0);
+      for (const row of first) await completeOutbox(db, row, clock.now());
+      for (const row of rest) await completeOutbox(second.store, row, clock.now());
+      assert.equal((await claimOutboxHeads(db, { now: clock.now() })).length, 0);
       observe(
-        "Two SQLite connections claim all eighty independent sessions without duplicate delivery",
+        "Two store connections claim all eighty independent sessions without duplicate delivery",
         true,
         {
           first: first.length,
@@ -281,10 +280,11 @@ export async function probeLinearActivityBudget(
         },
       );
     } finally {
-      second.close();
+      await second.close();
     }
   } finally {
-    db.close();
+    await open.close();
+    await postgres.close();
     await server.stop(true);
   }
 }

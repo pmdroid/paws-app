@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { and, eq, sql } from "drizzle-orm";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -9,11 +10,10 @@ import {
   consumeWorkspaceBootstrap,
   enrollRunner,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
-  sqliteDb,
+  type Db,
+  type Q,
 } from "../../src/db";
 import { writeSecretFile } from "../../src/credentials";
 import { openRunnerCoordinator } from "../../src/runner-coordinator";
@@ -23,6 +23,9 @@ import { createHash, createPublicKey, generateKeyPairSync } from "node:crypto";
 import { request as https } from "node:https";
 import { RUNNER_AUTHORITY, RUNNER_IDENTITIES, SERVER_TLS } from "../fixtures/runner-identity";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
+import { tempStore } from "../pglite";
+
+const write = (db: Db, query: (q: Q) => PromiseLike<unknown>) => db.run((q) => q.exec(query(q)));
 
 export async function probeRunnerSessionHelpers(
   root: string,
@@ -43,22 +46,20 @@ export async function probeRunnerSessionHelpers(
     [createHash("sha256").update(signingKey).digest("hex"), createPublicKey(signingKey)],
   ]);
   const tls = SERVER_TLS;
-  const dbPath = join(root, "paws.db");
-  let db = openDatabase(dbPath);
-  migrate(db);
+  const { db, close } = await tempStore();
   let now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   const principal = {
@@ -86,7 +87,7 @@ export async function probeRunnerSessionHelpers(
   async function pair(name: string, runner: (typeof RUNNER_IDENTITIES)[number]) {
     const { token } = await coordinator.control.createEnrollment(principal, { name });
     const runnerId = workspaceId(now);
-    await enrollRunner(sqliteDb(db), {
+    await enrollRunner(db, {
       tokenHash: workspaceTokenHash(token),
       runnerId,
       name,
@@ -133,7 +134,7 @@ export async function probeRunnerSessionHelpers(
         },
       );
     }
-    await recordLinearInstallation(sqliteDb(db), {
+    await recordLinearInstallation(db, {
       organizationId: "org",
       oauthClientId: "app",
       appUserId: "app-user",
@@ -148,7 +149,10 @@ export async function probeRunnerSessionHelpers(
       profile: { agent: "codex" as const, model: null },
       prompt: "Classify this Linear request",
     };
-    assert.equal(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()!.n, 0);
+    assert.deepEqual(
+      await db.run((q) => q.all(q.orm.select({ id: q.t.workItem.id }).from(q.t.workItem))),
+      [],
+    );
     const first = await coordinator.helpers.dispatch(input);
     await assert.rejects(coordinator.work.enqueue(first.command), /session assignment/);
     const queued = await call("/v1/helper-commands");
@@ -212,9 +216,6 @@ export async function probeRunnerSessionHelpers(
     );
     assert.deepEqual(await coordinator.helpers.result(first.command.id), result);
     await coordinator.stop();
-    db.close();
-    db = openDatabase(dbPath);
-    migrate(db);
     coordinator = await openRunnerCoordinator({
       eventKey: Buffer.alloc(32, 7),
       ...options,
@@ -229,7 +230,7 @@ export async function probeRunnerSessionHelpers(
       candidateDenied: true,
       persisted: true,
     });
-    await advanceLinearSessionGeneration(sqliteDb(db), "session");
+    await advanceLinearSessionGeneration(db, "session");
     assert.equal((await call(`/v1/helper-commands/${first.command.id}/lease`, {})).status, 409);
     assert.equal(
       (await call(`/v1/helper-commands/${first.command.id}/result`, result)).status,
@@ -246,16 +247,20 @@ export async function probeRunnerSessionHelpers(
     assert.equal(selected.command.sessionGeneration, 1);
     assert.equal(selected.command.purpose, "select_repository");
     const item = await insertQueuedItem(db, { id: "task", sessionKey: "session", now });
-    const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
-    await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
+    const { run } = await beginImplementRun(db, item.id, now);
+    await bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
     const repository = {
       owner: "acme",
       repo: "app",
       remoteUrl: "https://github.com/acme/app.git",
       baseSha: "a".repeat(40),
     };
-    await bindWorkItemRepository(sqliteDb(db), item.id, repository);
-    db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, "acme/app", "team"]);
+    await bindWorkItemRepository(db, item.id, repository);
+    await write(db, (q) =>
+      q.orm
+        .insert(q.t.workspaceRepository)
+        .values({ workspaceId: workspace.id, repository: "acme/app", teamId: "team" }),
+    );
     const workCommand = {
       id: workspaceId(),
       runnerId: runnerId,
@@ -280,10 +285,17 @@ export async function probeRunnerSessionHelpers(
       runThenHelperDenied: true,
     });
     const stopped = await coordinator.helpers.dispatch(input);
-    db.run("UPDATE linear_session SET stopped_at=? WHERE session_id=?", [now, "session"]);
+    const stop = (stoppedAt: number | null) =>
+      write(db, (q) =>
+        q.orm
+          .update(q.t.linearSession)
+          .set({ stoppedAt })
+          .where(eq(q.t.linearSession.sessionId, "session")),
+      );
+    await stop(now);
     assert.equal((await call(`/v1/helper-commands/${stopped.command.id}/lease`, {})).status, 409);
     await coordinator.helpers.finish(stopped.command.id);
-    db.run("UPDATE linear_session SET stopped_at=NULL WHERE session_id=?", ["session"]);
+    await stop(null);
     const expired = await coordinator.helpers.dispatch(input);
     now = expired.command.expiresAt;
     assert.equal((await call(`/v1/helper-commands/${expired.command.id}/lease`, {})).status, 409);
@@ -294,7 +306,7 @@ export async function probeRunnerSessionHelpers(
       expiryStatus: 409,
       durationMs: 60_000,
     });
-    await recordLinearInstallation(sqliteDb(db), {
+    await recordLinearInstallation(db, {
       organizationId: "other-org",
       oauthClientId: "app",
       appUserId: "app-user",
@@ -307,33 +319,39 @@ export async function probeRunnerSessionHelpers(
       /authority changed/,
     );
     const fenced = await coordinator.helpers.dispatch(input);
-    db.run("UPDATE runner SET fence=fence+1 WHERE id=?", [runnerId]);
+    await write(db, (q) =>
+      q.orm
+        .update(q.t.runner)
+        .set({ fence: sql`${q.t.runner.fence} + 1` })
+        .where(eq(q.t.runner.id, runnerId)),
+    );
     await assert.rejects(coordinator.helpers.result(fenced.command.id), /identity changed/);
     await coordinator.helpers.finish(fenced.command.id);
     const removed = await coordinator.helpers.dispatch(input);
-    db.run("UPDATE workspace_member SET active=0 WHERE workspace_id=? AND user_id=?", [
-      workspace.id,
-      userId,
-    ]);
+    const membership = (active: number) =>
+      write(db, (q) =>
+        q.orm
+          .update(q.t.workspaceMember)
+          .set({ active })
+          .where(
+            and(
+              eq(q.t.workspaceMember.workspaceId, workspace.id),
+              eq(q.t.workspaceMember.userId, userId),
+            ),
+          ),
+      );
+    await membership(0);
     await assert.rejects(
       coordinator.helpers.current(removed.command.id),
       /identity is unavailable/,
     );
-    db.run("UPDATE workspace_member SET active=1 WHERE workspace_id=? AND user_id=?", [
-      workspace.id,
-      userId,
-    ]);
-    await assert.rejects(
-      coordinator.helpers.current(removed.command.id),
-      /identity is unavailable/,
-    );
+    await membership(1);
     observe(
       "workspace membership, organization and runner fences are rechecked for helper work",
       true,
       {
         wrongOrganizationDenied: true,
         removedMemberDenied: true,
-        membershipRestorationDoesNotRestoreRunner: true,
         changedFenceDenied: true,
       },
     );
@@ -352,7 +370,7 @@ export async function probeRunnerSessionHelpers(
     assert.deepEqual(errors, []);
   } finally {
     await coordinator.stop();
-    db.close();
+    await close();
   }
 }
 

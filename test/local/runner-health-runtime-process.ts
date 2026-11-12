@@ -4,11 +4,10 @@ import { join } from "node:path";
 import {
   advanceLinearSessionGeneration,
   consumeWorkspaceBootstrap,
-  migrate,
   openDatabase,
+  openPawsStore,
   putWorkspaceUser,
   recordLinearInstallation,
-  sqliteDb,
 } from "../../src/db";
 import { initializeRunnerCoordinator, openRunnerCoordinator } from "../../src/runner-coordinator";
 import { openRunnerDaemon } from "../../src/runner-daemon";
@@ -16,11 +15,12 @@ import { readRunnerJob } from "../../src/runner-execution";
 import { openRunnerHealthRuntime } from "../../src/runner-health-runtime";
 import { executeRunnerCommand } from "../../src/runner-worker";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
+import { copyMigratedPglite } from "../pglite";
 
 const mode = process.argv[2]!;
 const root = process.argv[3]!;
 const server = join(root, "server");
-const dbPath = join(server, "paws.db");
+const pgliteDir = join(server, "pglite");
 const tls = () => ({
   key: readFileSync(join(server, "server.key"), "utf8"),
   cert: readFileSync(join(server, "server.pem"), "utf8"),
@@ -73,21 +73,21 @@ if (mode === "prepare") {
   assert.equal(generated.exitCode, 0, generated.stderr.toString());
   chmodSync(join(server, "server.key"), 0o600);
   writeFileSync(join(root, "server.pem"), tls().cert);
-  const db = openDatabase(dbPath);
-  migrate(db);
+  await copyMigratedPglite(pgliteDir);
+  const { store: db, close } = await openPawsStore({ url: null, pgliteDir });
   const now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   const principal = {
@@ -130,7 +130,7 @@ if (mode === "prepare") {
     if (process.argv[4] === "helpers") {
       config.helpers = true;
       config.runnerId = paired.runnerId;
-      await recordLinearInstallation(sqliteDb(db), {
+      await recordLinearInstallation(db, {
         organizationId: "org",
         oauthClientId: "app",
         appUserId: "app-user",
@@ -180,11 +180,11 @@ if (mode === "prepare") {
     daemon.close();
     await browser.stop(true);
     await coordinator.stop();
-    db.close();
+    await close();
   }
 } else if (mode === "coordinator") {
   const config = configuration();
-  const db = openDatabase(dbPath);
+  const { store: db, close } = await openPawsStore({ url: null, pgliteDir });
   const coordinator = await openRunnerCoordinator({
     eventKey: Buffer.alloc(32, 7),
     db,
@@ -199,7 +199,7 @@ if (mode === "prepare") {
   let resumed = false;
   const advance = setInterval(async () => {
     if (nextHelper && existsSync(join(server, "fence")) && !fenced) {
-      await advanceLinearSessionGeneration(sqliteDb(db), "session");
+      await advanceLinearSessionGeneration(db, "session");
       fenced = true;
       writeFileSync(join(server, "fenced"), "fenced");
     }
@@ -235,11 +235,13 @@ if (mode === "prepare") {
   process.once(
     "SIGTERM",
     () =>
-      void coordinator.stop().then(() => {
-        clearInterval(advance);
-        db.close();
-        process.exit(0);
-      }),
+      void coordinator
+        .stop()
+        .then(() => {
+          clearInterval(advance);
+          return close();
+        })
+        .then(() => process.exit(0)),
   );
   writeFileSync(join(server, "ready"), "ready");
 } else if (mode === "worker") {
