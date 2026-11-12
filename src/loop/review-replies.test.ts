@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
@@ -11,14 +11,11 @@ import {
   getWorkItem,
   insertQueuedItem,
   listJobs,
-  migrate,
-  openDatabase,
   PULL_COMMENT_SETTLE_MS,
   recordItemPullRequest,
   unpostedReviewReplies,
   unreportedReviewReplies,
   type PullFeedbackWait,
-  sqliteDb,
   syncSteps,
 } from "../db";
 import {
@@ -46,6 +43,7 @@ import {
   type ReviewReplyGitHub,
 } from "./review-replies";
 import { worktreeBranch } from "./sources";
+import { tempStore } from "../../test/pglite";
 
 const THREADS: FakeReviewThread[] = [
   {
@@ -86,22 +84,28 @@ const FILTER: PullCommentFilter = {
   ignoredMarkers: () => [],
 };
 
+const open: (() => Promise<void>)[] = [];
+
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
+});
+
 async function setup() {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
+  open.push(close);
   await insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
-  await bindWorkItemRepository(sqliteDb(db), "eng-1", {
+  await bindWorkItemRepository(db, "eng-1", {
     owner: "acme",
     repo: "one",
     remoteUrl: "https://github.com/acme/one.git",
   });
-  await beginImplementRun(sqliteDb(db), "eng-1", 1);
-  await enterMergeQueue(sqliteDb(db), "eng-1", {
+  await beginImplementRun(db, "eng-1", 1);
+  await enterMergeQueue(db, "eng-1", {
     phase: "merge_queue",
     baseSha: "b",
     wipCommit: "h",
   });
-  await recordItemPullRequest(sqliteDb(db), {
+  await recordItemPullRequest(db, {
     itemId: "eng-1",
     pullNumber: 7,
     pullUrl: null,
@@ -142,7 +146,7 @@ async function setup() {
   let wait: PullFeedbackWait | undefined;
   const send = (event: string, payload: Record<string, unknown>) =>
     acceptGitHubDelivery(
-      sqliteDb(db),
+      db,
       {
         deliveryId: `d-${(delivery += 1)}`,
         event,
@@ -157,7 +161,7 @@ async function setup() {
   const pull = async () => ({
     number: 7,
     head: {
-      ref: worktreeBranch((await getWorkItem(sqliteDb(db), "eng-1"))!),
+      ref: worktreeBranch((await getWorkItem(db, "eng-1"))!),
       sha: "h",
       repo: { id: 11 },
     },
@@ -213,14 +217,14 @@ async function setup() {
 }
 
 const jobs = async (db: Awaited<ReturnType<typeof setup>>["db"], queue: string) =>
-  (await listJobs(sqliteDb(db))).filter((job) => job.queue === queue);
+  (await listJobs(db)).filter((job) => job.queue === queue);
 const report = async (
   db: Awaited<ReturnType<typeof setup>>["db"],
   finalMessage: string,
   sessionId: string | null = "s-1",
 ) => {
-  const item = (await getWorkItem(sqliteDb(db), "eng-1"))!;
-  return checkReviewReplies(sqliteDb(db), {
+  const item = (await getWorkItem(db, "eng-1"))!;
+  return checkReviewReplies(db, {
     item,
     runId: item.currentRunId ?? "",
     sessionId,
@@ -317,14 +321,14 @@ describe("a review and the comments after it reach the agent together", () => {
       path: "src/cache.ts",
     });
     // The comment job runs first and leaves the comments to the waiting review.
-    expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("wait");
-    expect(await handlePullReview(sqliteDb(db), 601, caps)).toBe("restarted");
+    expect(await handlePullComments(db, "eng-1", caps)).toBe("wait");
+    expect(await handlePullReview(db, 601, caps)).toBe("restarted");
     const text = await handoffText(db);
     expect(text).toContain("@pascal requested changes on pull request #7.");
     expect(text).toContain("Bug: the cache key ignores the tenant.");
     expect(await jobs(db, JOB_KIND.resume)).toHaveLength(1);
-    expect((await getPullComment(sqliteDb(db), "inline", 9101))?.outcome).toBe("covered");
-    expect(await handlePullComments(sqliteDb(db), "eng-1", caps)).toBe("done");
+    expect((await getPullComment(db, "inline", 9101))?.outcome).toBe("covered");
+    expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
   });
 });
 
@@ -345,7 +349,7 @@ describe("Paws replies to every handed-off comment", () => {
       body: "Please fix the ranking.",
     });
     await conversation({ id: 3001, author: "pascal", body: "Why does this skip the cache?" });
-    expect(await handlePullReview(sqliteDb(db), 601, caps)).toBe("restarted");
+    expect(await handlePullReview(db, 601, caps)).toBe("restarted");
     const text = await handoffText(db);
     expect(text).toContain("End your final message with a `Review replies` section");
     expect(text).toContain(
@@ -356,10 +360,7 @@ describe("Paws replies to every handed-off comment", () => {
     // A thread from an earlier round is not asked about again.
     expect(text).not.toContain("R4.");
     expect(
-      (await unreportedReviewReplies(sqliteDb(db), "eng-1")).map((reply) => [
-        reply.number,
-        reply.target,
-      ]),
+      (await unreportedReviewReplies(db, "eng-1")).map((reply) => [reply.number, reply.target]),
     ).toEqual([
       [1, "thread"],
       [2, "review"],
@@ -385,7 +386,7 @@ describe("Paws replies to every handed-off comment", () => {
     });
     await review({ id: 601, author: "pascal", state: "changes_requested", body: "" });
     await conversation({ id: 3001, author: "pascal", body: "Why does this skip the cache?" });
-    expect(await handlePullReview(sqliteDb(db), 601, caps)).toBe("restarted");
+    expect(await handlePullReview(db, 601, caps)).toBe("restarted");
 
     const final = [
       "I fixed the sort order and left the cache key alone.",
@@ -400,7 +401,7 @@ describe("Paws replies to every handed-off comment", () => {
     const head = "abcdef1234567890";
     expect(
       await postReviewReplies(
-        sqliteDb(db),
+        db,
         { itemId: "eng-1", pullNumber: 7, head, now: () => 3_000 },
         github,
       ),
@@ -425,10 +426,10 @@ describe("Paws replies to every handed-off comment", () => {
       "**Not changed.** The cache is bypassed for a fresh read.",
     );
 
-    expect(await unpostedReviewReplies(sqliteDb(db), "eng-1", 7)).toEqual([]);
+    expect(await unpostedReviewReplies(db, "eng-1", 7)).toEqual([]);
     expect(
       await postReviewReplies(
-        sqliteDb(db),
+        db,
         { itemId: "eng-1", pullNumber: 7, head, now: () => 4_000 },
         github,
       ),
@@ -438,7 +439,7 @@ describe("Paws replies to every handed-off comment", () => {
   test("answered and unreported threads stay open", async () => {
     const { db, github, replies } = await setup();
     await recordReplyTargets(
-      sqliteDb(db),
+      db,
       "eng-1",
       "restart-answers",
       [1, 2].map((number) => ({
@@ -455,7 +456,7 @@ describe("Paws replies to every handed-off comment", () => {
     // Without a tracker session to ask in, a missing entry is stored as unreported.
     expect(await report(db, "R1 answered: A fresh read is required.", null)).toBe("complete");
     await postReviewReplies(
-      sqliteDb(db),
+      db,
       {
         itemId: "eng-1",
         pullNumber: 7,
@@ -467,13 +468,13 @@ describe("Paws replies to every handed-off comment", () => {
     expect(replies.replies[0]!.body).toContain("**Answered.** A fresh read is required.");
     expect(replies.replies[1]!.body).toContain("did not report on it");
     expect(replies.resolved).toEqual([]);
-    expect(await unpostedReviewReplies(sqliteDb(db), "eng-1", 7)).toEqual([]);
+    expect(await unpostedReviewReplies(db, "eng-1", 7)).toEqual([]);
   });
 
   test("a permanently failed resolution leaves later replies and resolutions independent", async () => {
     const { db, github, replies } = await setup();
     await recordReplyTargets(
-      sqliteDb(db),
+      db,
       "eng-1",
       "restart-fix",
       [
@@ -521,15 +522,15 @@ describe("Paws replies to every handed-off comment", () => {
         await github.resolveReviewThread(threadId);
       },
     };
-    await expect(postReviewReplies(sqliteDb(db), input, failing)).rejects.toThrow(
+    await expect(postReviewReplies(db, input, failing)).rejects.toThrow(
       "GitHub review replies failed",
     );
     expect(replies.replies).toHaveLength(2);
     expect(replies.comments).toHaveLength(1);
     expect(replies.resolved).toEqual(["RT_1"]);
     expect(attempts).toEqual(["RT_0", "RT_1"]);
-    expect(await unpostedReviewReplies(sqliteDb(db), "eng-1", 7)).toEqual([]);
-    expect(await postReviewReplies(sqliteDb(db), input, failing)).toBe(0);
+    expect(await unpostedReviewReplies(db, "eng-1", 7)).toEqual([]);
+    expect(await postReviewReplies(db, input, failing)).toBe(0);
     expect(replies.replies).toHaveLength(2);
     expect(replies.comments).toHaveLength(1);
     expect(attempts).toEqual(["RT_0", "RT_1"]);
@@ -541,7 +542,7 @@ describe("Paws replies to every handed-off comment", () => {
   ])("Paws replies from %s never come back as new comments", async (author, body) => {
     const { db, conversation } = await setup();
     await conversation({ id: 3002, author, body });
-    expect(await getPullComment(sqliteDb(db), "conversation", 3002)).toBeNull();
+    expect(await getPullComment(db, "conversation", 3002)).toBeNull();
   });
 });
 
@@ -563,7 +564,7 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
       body: "Fix the ranking.",
     });
     await conversation({ id: 3001, author: "pascal", body: "Why skip the cache?" });
-    expect(await handlePullReview(sqliteDb(db), 601, caps)).toBe("restarted");
+    expect(await handlePullReview(db, 601, caps)).toBe("restarted");
     return context;
   }
   // The turn the restart handed the reply list to ends with `finalMessage`.
@@ -572,9 +573,9 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
     finalMessage: string,
     now = 5_000,
   ) {
-    await applyWorkItemEvent(sqliteDb(db), "eng-1", "dispatched");
-    const item = (await getWorkItem(sqliteDb(db), "eng-1"))!;
-    return checkReviewReplies(sqliteDb(db), {
+    await applyWorkItemEvent(db, "eng-1", "dispatched");
+    const item = (await getWorkItem(db, "eng-1"))!;
+    return checkReviewReplies(db, {
       item,
       runId: item.currentRunId!,
       sessionId: "s-1",
@@ -587,24 +588,22 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
 
   test("a missing entry sends the turn straight back with that entry, spending no fix round", async () => {
     const { db } = await handedOff();
-    const rounds = await fixRounds(sqliteDb(db), "eng-1");
+    const rounds = await fixRounds(db, "eng-1");
     const final = "## Review replies\nR1 fixed: Sorted descending.\nR3 not changed: A fresh read.";
-    const runId = (await getWorkItem(sqliteDb(db), "eng-1"))!.currentRunId!;
+    const runId = (await getWorkItem(db, "eng-1"))!.currentRunId!;
     expect(await turnEnds(db, final)).toBe("sent_back");
-    expect((await getRun(sqliteDb(db), runId))!.status).toBe("ended");
+    expect((await getRun(db, runId))!.status).toBe("ended");
     const sentBack = await latestHandoff(db);
     expect(sentBack.reason).toBe("follow_up");
     expect(sentBack.handoff).toContain("R2. Review by @pascal: Fix the ranking.");
     expect(sentBack.handoff).not.toContain("R1.");
     expect(sentBack.handoff).not.toContain("R3.");
     expect(sentBack.handoff).toContain("A summary saying you fixed everything is not a reply");
-    expect(await fixRounds(sqliteDb(db), "eng-1")).toBe(rounds);
+    expect(await fixRounds(db, "eng-1")).toBe(rounds);
     // Closeout does not start: the item waits for the agent again.
-    expect((await getWorkItem(sqliteDb(db), "eng-1"))!.state).toBe("queued");
+    expect((await getWorkItem(db, "eng-1"))!.state).toBe("queued");
     // The replies given are kept; only R2 still waits for one.
-    expect(
-      (await unreportedReviewReplies(sqliteDb(db), "eng-1")).map((reply) => reply.number),
-    ).toEqual([2]);
+    expect((await unreportedReviewReplies(db, "eng-1")).map((reply) => reply.number)).toEqual([2]);
   });
 
   test("the third incomplete end in the same round asks the team", async () => {
@@ -612,17 +611,14 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
     expect(await turnEnds(db, "R1 fixed: Sorted.\nR3 not changed: Fresh read.")).toBe("sent_back");
     expect(await turnEnds(db, "I fixed everything.")).toBe("sent_back");
     expect(await turnEnds(db, "All comments are addressed.")).toBe("asked");
-    expect((await getWorkItem(sqliteDb(db), "eng-1"))!.state).toBe("awaiting_input");
-    expect(
-      (await getRun(sqliteDb(db), (await getWorkItem(sqliteDb(db), "eng-1"))!.currentRunId!))!
-        .status,
-    ).toBe("ended");
-    const question = (await findOpenQuestion(sqliteDb(db), "s-1"))!;
+    expect((await getWorkItem(db, "eng-1"))!.state).toBe("awaiting_input");
+    expect((await getRun(db, (await getWorkItem(db, "eng-1"))!.currentRunId!))!.status).toBe(
+      "ended",
+    );
+    const question = (await findOpenQuestion(db, "s-1"))!;
     expect(question.body).toContain("R2. Review by @pascal: Fix the ranking.");
     expect(question.body).not.toContain("R1.");
-    expect(
-      (await unreportedReviewReplies(sqliteDb(db), "eng-1")).map((reply) => reply.number),
-    ).toEqual([2]);
+    expect((await unreportedReviewReplies(db, "eng-1")).map((reply) => reply.number)).toEqual([2]);
   });
 
   test("an entry without text is missing", async () => {
@@ -630,9 +626,7 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
     const final = "R1 fixed: Sorted.\nR2 fixed: **\nR3 not changed: Fresh read.";
     expect(await turnEnds(db, final)).toBe("sent_back");
     expect((await latestHandoff(db)).handoff).toContain("R2. Review by @pascal");
-    expect(
-      (await unreportedReviewReplies(sqliteDb(db), "eng-1")).map((reply) => reply.number),
-    ).toEqual([2]);
+    expect((await unreportedReviewReplies(db, "eng-1")).map((reply) => reply.number)).toEqual([2]);
   });
 
   test("an emoji is a reply", async () => {
@@ -644,13 +638,13 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
 
   test("a turn end another writer overtook keeps nothing and sends nothing", async () => {
     const { db } = await handedOff();
-    await applyWorkItemEvent(sqliteDb(db), "eng-1", "dispatched");
-    const item = (await getWorkItem(sqliteDb(db), "eng-1"))!;
+    await applyWorkItemEvent(db, "eng-1", "dispatched");
+    const item = (await getWorkItem(db, "eng-1"))!;
     const resumes = (await jobs(db, JOB_KIND.resume)).length;
-    await applyWorkItemEvent(sqliteDb(db), "eng-1", "turn_ended");
+    await applyWorkItemEvent(db, "eng-1", "turn_ended");
     const final = "R1 fixed: Sorted.";
     expect(
-      await checkReviewReplies(sqliteDb(db), {
+      await checkReviewReplies(db, {
         item,
         runId: item.currentRunId!,
         sessionId: "s-1",
@@ -659,9 +653,9 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
       }),
     ).toBe("stale");
     expect(await jobs(db, JOB_KIND.resume)).toHaveLength(resumes);
-    expect(
-      (await unreportedReviewReplies(sqliteDb(db), "eng-1")).map((reply) => reply.number),
-    ).toEqual([1, 2, 3]);
+    expect((await unreportedReviewReplies(db, "eng-1")).map((reply) => reply.number)).toEqual([
+      1, 2, 3,
+    ]);
   });
 
   test("a complete section goes on to Closeout", async () => {
@@ -670,8 +664,8 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
     const final = "R1 fixed: Sorted.\nR2 fixed: Ranked.\nR3 not changed: Fresh read.";
     expect(await turnEnds(db, final)).toBe("complete");
     expect(await jobs(db, JOB_KIND.resume)).toHaveLength(resumes);
-    expect((await getWorkItem(sqliteDb(db), "eng-1"))!.state).toBe("running");
-    expect(await unreportedReviewReplies(sqliteDb(db), "eng-1")).toEqual([]);
+    expect((await getWorkItem(db, "eng-1"))!.state).toBe("running");
+    expect(await unreportedReviewReplies(db, "eng-1")).toEqual([]);
   });
 });
 

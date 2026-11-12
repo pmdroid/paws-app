@@ -2,22 +2,16 @@ import { journalCaught } from "../journal";
 import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import {
-  getConversation,
-  insertQueuedItem,
-  migrate,
-  openDatabase,
-  saveConversation,
-  sqliteDb,
-} from "../db";
+import { getConversation, insertQueuedItem, openPawsStore, saveConversation } from "../db";
 import { tmpdir } from "node:os";
 import { interpretRepositoryAnswer } from "./repository-selection";
+import { copyMigratedPglite } from "../../test/pglite";
 
 test("lost repository interpreter ownership persists cleanup failure before aborted reply handling", async () => {
   const home = mkdtempSync(join(tmpdir(), "paws-selector-cleanup-"));
-  const databasePath = join(home, "cleanup.db");
-  let db = openDatabase(databasePath);
-  migrate(db);
+  const pgliteDir = join(home, "pglite");
+  await copyMigratedPglite(pgliteDir);
+  let { store: db, close } = await openPawsStore({ url: null, pgliteDir });
   const marker = join(home, "owner.json");
   const trace = join(home, "trace.json");
   const script = join(home, "script.json");
@@ -42,7 +36,7 @@ test("lost repository interpreter ownership persists cleanup failure before abor
     signal: controller.signal,
     launch: () => ({ command: process.execPath, args: [wrapper, trace, script], env: process.env }),
     async onCleanupFailure() {
-      await saveConversation(sqliteDb(db), "item", "[]", null, true);
+      await saveConversation(db, "item", "[]", null, true);
     },
   }).catch((error: unknown) => error);
   try {
@@ -71,10 +65,10 @@ test("lost repository interpreter ownership persists cleanup failure before abor
     process.kill(owner.anchor, "SIGKILL");
     controller.abort();
     expect(await pending).toMatchObject({ name: "AbortError" });
-    expect((await getConversation(sqliteDb(db), "item")).blocked).toBe(true);
-    db.close();
-    db = openDatabase(databasePath);
-    expect((await getConversation(sqliteDb(db), "item")).blocked).toBe(true);
+    expect((await getConversation(db, "item")).blocked).toBe(true);
+    await close();
+    ({ store: db, close } = await openPawsStore({ url: null, pgliteDir }));
+    expect((await getConversation(db, "item")).blocked).toBe(true);
   } finally {
     controller.abort();
     await pending;
@@ -90,7 +84,7 @@ test("lost repository interpreter ownership persists cleanup failure before abor
         );
       }
     }
-    db.close();
+    await close();
     rmSync(home, { recursive: true, force: true });
   }
 }, 15_000);

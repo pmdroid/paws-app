@@ -262,6 +262,13 @@ function* insertJobSteps(q: Q, input: NewJob, skipDuplicateKey: boolean) {
       id: job.id,
     }),
   );
+  if (row && q.dialect === "postgres") {
+    const { jobActivation } = q.t;
+    const activation = (yield* q.one(
+      q.orm.insert(jobActivation).values({ jobId: row.id }).returning({ id: jobActivation.id }),
+    ))!;
+    yield* q.exec(q.orm.update(job).set({ activationId: activation.id }).where(eq(job.id, row.id)));
+  }
   return row?.id;
 }
 
