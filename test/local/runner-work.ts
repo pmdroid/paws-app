@@ -3,21 +3,22 @@ import { generateKeyPairSync } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { dirname, join } from "node:path";
+import { and, count, desc, eq, inArray, isNull } from "drizzle-orm";
 import {
   beginImplementRun,
   applyWorkItemEvent,
   bindLinearSessionTask,
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
+  getWorkItem,
   insertQueuedItem,
-  migrate,
-  openDatabase,
+  openPawsStore,
   putWorkspaceUser,
   recordLinearInstallation,
   recordRunnerSkills,
   runAgentSetup,
   saveSkill,
-  sqliteDb,
+  type Db,
 } from "../../src/db";
 import { createRunnerControl } from "../../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../../src/runner-identity";
@@ -35,8 +36,9 @@ import { createRunnerHelpers } from "../../src/runner-helpers";
 import { createRemoteAgentRunner } from "../../src/runner-backend";
 import { createRunnerHealth } from "../../src/runner-health";
 import { createRunnerResults } from "../../src/runner-results";
-import { openQuestion } from "../../src/questions";
-import { answerQuestion } from "../questions";
+import { answerQuestionSteps, openQuestion } from "../../src/questions";
+import { seed } from "../dialects";
+import { pgliteServer } from "../pglite";
 import {
   issueWorkspaceBootstrap,
   workspaceId,
@@ -44,23 +46,34 @@ import {
   type WorkspacePrincipal,
 } from "../../src/workspace";
 
+async function storedCommands(db: Db, ids?: string[]): Promise<number> {
+  const row = await db.run((q) =>
+    q.one(
+      q.orm
+        .select({ n: count() })
+        .from(q.t.runnerCommand)
+        .where(ids ? inArray(q.t.runnerCommand.id, ids) : undefined),
+    ),
+  );
+  return Number(row!.n);
+}
+
 export async function probeRunnerWork(
   root: string,
   observe: (name: string, passed: boolean, observed: unknown) => void,
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const path = join(root, "paws.sqlite");
-  const db = openDatabase(path);
-  migrate(db);
+  const postgres = await pgliteServer();
+  const db = postgres.store;
   let now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "fixture-work", now);
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-work", now);
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "fixture-work",
     name: "Fixture",
@@ -78,7 +91,7 @@ export async function probeRunnerWork(
   const issuer = join(root, "issuer");
   const authority = await initializeRunnerAuthority(issuer);
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority,
     certificateRoot: issuer,
     disconnect() {},
@@ -100,7 +113,7 @@ export async function probeRunnerWork(
   const keyPath = join(root, "fixture-signing.pem");
   writeFileSync(keyPath, keys.privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "fixture",
     privateKey: keys.privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -127,8 +140,8 @@ export async function probeRunnerWork(
     now,
     sessionKey: "fixture-session",
   });
-  const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
-  await recordLinearInstallation(sqliteDb(db), {
+  const { run } = await beginImplementRun(db, item.id, now);
+  await recordLinearInstallation(db, {
     organizationId: "fixture-work",
     oauthClientId: "fixture-app",
     appUserId: "fixture-app-user",
@@ -136,7 +149,7 @@ export async function probeRunnerWork(
     teamId: "fixture-team",
     observedAtMs: now,
   });
-  await bindLinearSessionTask(sqliteDb(db), "fixture-session", item.delegationId, {
+  await bindLinearSessionTask(db, "fixture-session", item.delegationId, {
     actorId: "owner",
   });
   const repository = {
@@ -145,7 +158,7 @@ export async function probeRunnerWork(
     remoteUrl: "https://github.com/fixture/repository.git",
     baseSha: "a".repeat(40),
   };
-  await bindWorkItemRepository(sqliteDb(db), item.id, repository);
+  await bindWorkItemRepository(db, item.id, repository);
   const command: Extract<RunnerCommand, { type: "run" }> = {
     id: workspaceId(),
     runnerId: firstRunner,
@@ -162,11 +175,13 @@ export async function probeRunnerWork(
   };
   try {
     await assert.rejects(work.assign(command), /repository access/);
-    db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-      workspace.id,
-      "fixture/repository",
-      "fixture-team",
-    ]);
+    await seed(db, (q) =>
+      q.orm.insert(q.t.workspaceRepository).values({
+        workspaceId: workspace.id,
+        repository: "fixture/repository",
+        teamId: "fixture-team",
+      }),
+    );
     await assert.rejects(
       work.assign({
         ...command,
@@ -184,26 +199,26 @@ export async function probeRunnerWork(
       sizeBytes: 4,
       updatedAt: now,
     };
-    await saveSkill(sqliteDb(db), {
+    await saveSkill(db, {
       ...pin,
       name: "impeccable",
       version: "2.4.1",
       agents: ["claude", "codex"],
     });
-    await saveSkill(sqliteDb(db), {
+    await saveSkill(db, {
       ...pin,
       name: "claude-only",
       version: "1.0.0",
       agents: ["claude"],
     });
-    await saveSkill(sqliteDb(db), {
+    await saveSkill(db, {
       ...pin,
       name: "updating",
       version: "3.0.0",
       agents: ["codex"],
     });
     await recordRunnerSkills(
-      sqliteDb(db),
+      db,
       firstRunner,
       [
         { name: "claude-only", version: "1.0.0", sha256: pin.sha256, status: "installed" },
@@ -235,7 +250,7 @@ export async function probeRunnerWork(
       true,
     );
     assert.equal(assigned.leaseUntil, now + 60_000);
-    assert.deepEqual(await runAgentSetup(sqliteDb(db), run.id), {
+    assert.deepEqual(await runAgentSetup(db, run.id), {
       runnerId: firstRunner,
       skills: [
         { name: "impeccable", version: "2.4.1", status: "installed" },
@@ -265,12 +280,12 @@ export async function probeRunnerWork(
       leaseMs: 60_000,
       unmappedAndChangedRepositoryDenied: true,
     });
-    const before = await restartSnapshot(root, path, keyPath, firstRunner, now);
+    const before = await restartSnapshot(root, postgres.url, keyPath, firstRunner, now);
     assert.deepEqual(before.commands, [command.id]);
     await work.acknowledge(firstRunner, command.id);
     await work.acknowledge(firstRunner, command.id);
     await assert.rejects(work.acknowledge(secondRunner, command.id), /unknown/);
-    const after = await restartSnapshot(root, path, keyPath, firstRunner, now);
+    const after = await restartSnapshot(root, postgres.url, keyPath, firstRunner, now);
     assert.deepEqual(after.commands, []);
     observe(
       "command delivery survives process restart and acknowledgments are durable and idempotent",
@@ -294,11 +309,9 @@ export async function probeRunnerWork(
     const beforeStall = now;
     now = command.expiresAt + 1000;
     const stallMs = now - beforeStall;
-    await recoverRunnerWorkStall(sqliteDb(db), beforeStall, stallMs);
-    const extended = db
-      .query<{ expires_at: number }, []>("SELECT expires_at FROM runner_work_grant")
-      .get()!;
-    assert.equal(extended.expires_at, grant.expiresAt + stallMs);
+    await recoverRunnerWorkStall(db, beforeStall, stallMs);
+    const extended = await db.run((q) => q.one(q.orm.select().from(q.t.runnerWorkGrant)));
+    assert.equal(extended!.expiresAt, grant.expiresAt + stallMs);
     await work.event({
       ...grantInput,
       token: grant.token,
@@ -306,13 +319,15 @@ export async function probeRunnerWork(
       event: { type: "progress", text: "Working" },
     });
     assert.deepEqual((await work.heartbeat(firstRunner)).fenced, []);
-    // Restore this fixture's delivery deadline for its later normal-expiry assertions.
-    db.run("UPDATE runner_command SET expires_at=? WHERE id=?", [command.expiresAt, command.id]);
+    await seed(db, (q) =>
+      q.orm
+        .update(q.t.runnerCommand)
+        .set({ expiresAt: command.expiresAt })
+        .where(eq(q.t.runnerCommand.id, command.id)),
+    );
     now = beforeStall;
-    const stored = db
-      .query<{ token_hash: string }, []>("SELECT token_hash FROM runner_work_grant")
-      .get()!;
-    assert.notEqual(stored.token_hash, grant.token);
+    const stored = await db.run((q) => q.one(q.orm.select().from(q.t.runnerWorkGrant)));
+    assert.notEqual(stored!.tokenHash, grant.token);
     const event = {
       ...grantInput,
       token: grant.token,
@@ -381,23 +396,29 @@ export async function probeRunnerWork(
     await assert.rejects(work.event({ ...event, runnerId: secondRunner, sequence: 2 }), /fenced/);
     assert.equal((await work.authorizeAsync(event)).command.id, command.id);
     await assert.rejects(work.authorizeAsync({ ...event, token: "wrong" }), /grant/);
-    db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-      workspace.id,
-      "fixture/other",
-      "fixture-team",
-    ]);
-    db.run(
-      "UPDATE work_item_repository SET repo='other',remote_url='https://github.com/fixture/other.git' WHERE item_id=?",
-      [item.id],
+    await seed(
+      db,
+      (q) =>
+        q.orm.insert(q.t.workspaceRepository).values({
+          workspaceId: workspace.id,
+          repository: "fixture/other",
+          teamId: "fixture-team",
+        }),
+      (q) =>
+        q.orm
+          .update(q.t.workItemRepository)
+          .set({ repo: "other", remoteUrl: "https://github.com/fixture/other.git" })
+          .where(eq(q.t.workItemRepository.itemId, item.id)),
     );
     await assert.rejects(work.authorizeAsync(event), /repository binding changed/);
     await assert.rejects(work.event({ ...event, sequence: 2 }), /repository binding changed/);
     await assert.rejects(work.issueGrant(grantInput), /repository binding changed/);
-    db.run("UPDATE work_item_repository SET repo=?,remote_url=? WHERE item_id=?", [
-      repository.repo,
-      repository.remoteUrl,
-      item.id,
-    ]);
+    await seed(db, (q) =>
+      q.orm
+        .update(q.t.workItemRepository)
+        .set({ repo: repository.repo, remoteUrl: repository.remoteUrl })
+        .where(eq(q.t.workItemRepository.itemId, item.id)),
+    );
     observe(
       "repository credentials and events remain bound to the exact assigned repository after configuration changes",
       true,
@@ -414,10 +435,10 @@ export async function probeRunnerWork(
         wrongRunnerDenied: true,
       },
     );
-    await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
+    await applyWorkItemEvent(db, item.id, "blocking_question");
     await assert.rejects(work.authorizeAsync(event), /matching open question/);
     assert.equal((await work.heartbeat(firstRunner)).leases.length, 1);
-    const question = await openQuestion(sqliteDb(db), {
+    const question = await openQuestion(db, {
       itemId: item.id,
       runId: run.id,
       sessionId: "fixture-session",
@@ -426,12 +447,14 @@ export async function probeRunnerWork(
     });
     assert.equal((await work.authorizeAsync(event)).command.id, command.id);
     assert.equal((await work.heartbeat(firstRunner)).leases.length, 1);
-    await answerQuestion(db, question.id, { answer: "Yes", answeredBy: "owner", now: now + 1 });
+    await db.transaction((q) =>
+      answerQuestionSteps(q, question.id, { answer: "Yes", answeredBy: "owner", now: now + 1 }),
+    );
     assert.equal((await work.event(event)).duplicate, true);
     await assert.rejects(work.event({ ...event, sequence: 2 }), /matching open question/);
     await assert.rejects(work.authorizeAsync(event), /matching open question/);
     assert.equal((await work.heartbeat(firstRunner)).leases.length, 1);
-    await applyWorkItemEvent(sqliteDb(db), item.id, "answer_received");
+    await applyWorkItemEvent(db, item.id, "answer_received");
     assert.equal((await work.authorizeAsync(event)).command.id, command.id);
     observe(
       "a live remote task retains its lease while its own Linear question awaits an answer",
@@ -469,7 +492,12 @@ export async function probeRunnerWork(
     const heartbeat = await work.heartbeat(firstRunner);
     assert.equal(heartbeat.leases[0]!.expiresAt, now + 60_000);
     const cap = command.expiresAt - 30_000;
-    db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [command.expiresAt, run.id]);
+    await seed(db, (q) =>
+      q.orm
+        .update(q.t.runnerWork)
+        .set({ leaseUntil: command.expiresAt })
+        .where(eq(q.t.runnerWork.runId, run.id)),
+    );
     now = cap;
     assert.equal((await work.heartbeat(firstRunner)).leases[0]!.expiresAt, command.expiresAt);
     now = command.expiresAt;
@@ -538,9 +566,7 @@ export async function probeRunnerWork(
     observe("durable cancellation revokes grants before delivering the stop command", true, {
       lateCandidateDenied: true,
       cancelCommandPersisted: true,
-      originalRunState: db
-        .query<{ state: string }, [string]>("SELECT state FROM work_item WHERE id=?")
-        .get(item.id)!.state,
+      originalRunState: (await getWorkItem(db, item.id))!.state,
     });
     const third = { ...secondCommand, id: workspaceId(), generation: 3 };
     await work.acknowledge(secondRunner, previousCancellationId);
@@ -569,8 +595,8 @@ export async function probeRunnerWork(
         now,
         sessionKey: "fixture-session",
       });
-      const started = await beginImplementRun(sqliteDb(db), blocked.id, now);
-      await bindWorkItemRepository(sqliteDb(db), blocked.id, repository);
+      const started = await beginImplementRun(db, blocked.id, now);
+      await bindWorkItemRepository(db, blocked.id, repository);
       await work.assign({
         ...replacement,
         id: workspaceId(),
@@ -579,7 +605,12 @@ export async function probeRunnerWork(
         generation: 1,
       });
       await work.finish(started.run.id, 1);
-      db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [blocked.id]);
+      await seed(db, (q) =>
+        q.orm
+          .update(q.t.workItem)
+          .set({ cancelRequested: 1 })
+          .where(eq(q.t.workItem.id, blocked.id)),
+      );
     }
     const probeId = workspaceId();
     await work.enqueue({
@@ -602,15 +633,15 @@ export async function probeRunnerWork(
       true,
       { revokedRunnerDenied: true, completionDenied: true, heartbeatDenied: true },
     );
-    const contenders = [];
+    const contenders: (typeof replacement)[] = [];
     for (let index = 0; index < 2; index++) {
       const queued = await insertQueuedItem(db, {
         id: `capacity-${index}`,
         now,
         sessionKey: "fixture-session",
       });
-      const started = await beginImplementRun(sqliteDb(db), queued.id, now);
-      await bindWorkItemRepository(sqliteDb(db), queued.id, repository);
+      const started = await beginImplementRun(db, queued.id, now);
+      await bindWorkItemRepository(db, queued.id, repository);
       contenders.push({
         ...replacement,
         id: workspaceId(),
@@ -628,7 +659,7 @@ export async function probeRunnerWork(
           process.execPath,
           "--no-env-file",
           join(import.meta.dir, "../fixtures/runner-capacity-claim.ts"),
-          path,
+          postgres.url,
           keyPath,
           commandPath,
           barrier,
@@ -671,25 +702,23 @@ export async function probeRunnerWork(
         claims.some((claim) => claim.accepted && claim.commandId === value.id),
       )!;
       const waiting = contenders.find((value) => value.id !== winner.id)!;
+      assert.equal(await storedCommands(db, [contenders[0]!.id, contenders[1]!.id]), 1);
       assert.equal(
-        db
-          .query<{ count: number }, [string, string]>(
-            "SELECT COUNT(*) AS count FROM runner_command WHERE id IN (?,?)",
+        (
+          await db.run((q) =>
+            q.all(
+              q.orm
+                .select()
+                .from(q.t.runnerWork)
+                .where(inArray(q.t.runnerWork.runId, [contenders[0]!.runId, contenders[1]!.runId])),
+            ),
           )
-          .get(contenders[0]!.id, contenders[1]!.id)!.count,
-        1,
-      );
-      assert.equal(
-        db
-          .query<{ count: number }, [string, string]>(
-            "SELECT COUNT(*) AS count FROM runner_work WHERE run_id IN (?,?)",
-          )
-          .get(contenders[0]!.runId, contenders[1]!.runId)!.count,
+        ).length,
         1,
       );
       await assert.rejects(work.assign(waiting), /occupied/);
       const helpers = createRunnerHelpers({
-        store: sqliteDb(db),
+        store: db,
         keyId: "fixture",
         privateKey: keys.privateKey,
         now: () => now,
@@ -741,20 +770,14 @@ export async function probeRunnerWork(
         issuedAt: now,
         expiresAt: now + 60_000,
       };
-      const commandsBeforeTeardown = db
-        .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM runner_command")
-        .get()!.count;
+      const commandsBeforeTeardown = await storedCommands(db);
       await assert.rejects(work.assign(afterCancel), /(?:cancellation|free slot)/);
       await assert.rejects(helpers.dispatch(helperInput), /(?:cancellation|free slot|busy)/);
-      assert.equal(
-        db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM runner_command").get()!
-          .count,
-        commandsBeforeTeardown,
-      );
-      const waitingForTeardown = openDatabase(path);
+      assert.equal(await storedCommands(db), commandsBeforeTeardown);
+      const waitingForTeardown = await openPawsStore({ url: postgres.url, pgliteDir: "" });
       try {
         const reconstructed = createRunnerWork({
-          store: sqliteDb(waitingForTeardown),
+          store: waitingForTeardown.store,
           keyId: "fixture",
           privateKey: keys.privateKey,
           eventKey: Buffer.alloc(32, 7),
@@ -763,7 +786,7 @@ export async function probeRunnerWork(
         await assert.rejects(reconstructed.assign(afterCancel), /(?:cancellation|free slot)/);
         await reconstructed.acknowledge(firstRunner, cancellationId);
       } finally {
-        waitingForTeardown.close();
+        await waitingForTeardown.close();
       }
       await confirmStopped(firstRunner, released);
       await confirmStopped(firstRunner, waiting);
@@ -786,27 +809,21 @@ export async function probeRunnerWork(
       await work.heartbeat(firstRunner, 1);
       await helpers.finish(helper.command.id);
       await work.assign(review);
-      const commandCount = db
-        .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM runner_command")
-        .get()!.count;
+      const commandCount = await storedCommands(db);
       await assert.rejects(
         work.assign({ ...released, id: workspaceId(), generation: 3 }),
         /occupied/,
       );
-      assert.equal(
-        db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM runner_command").get()!
-          .count,
-        commandCount,
-      );
+      assert.equal(await storedCommands(db), commandCount);
       await work.finish(waiting.runId, 3);
       await work.assign({ ...review, id: workspaceId(), generation: 4 });
       await work.finish(waiting.runId, 4);
       await work.assign({ ...review, id: workspaceId(), generation: 5 });
       const backend = createRemoteAgentRunner({
-        store: sqliteDb(db),
+        store: db,
         work,
-        health: createRunnerHealth({ store: sqliteDb(db), work, now: () => now }),
-        results: createRunnerResults({ store: sqliteDb(db), work, now: () => now }),
+        health: createRunnerHealth({ store: db, work, now: () => now }),
+        results: createRunnerResults({ store: db, work, now: () => now }),
         now: () => now,
         pollIntervalMs: 1,
         async fetchCandidate() {
@@ -819,23 +836,31 @@ export async function probeRunnerWork(
       });
       const repeatedCancelTask = backend.cancelItem(waiting.itemId);
       let retriedAfterReceipt: Promise<void> | undefined;
-      const until = async (ready: () => boolean) => {
-        for (let tick = 0; tick < 100 && !ready(); tick++) await delay(1);
+      const until = async (ready: () => Promise<boolean>) => {
+        for (let tick = 0; tick < 100 && !(await ready()); tick++) await delay(1);
       };
-      const cancels = () =>
-        db
-          .query<{ count: number }, [string]>(
-            "SELECT COUNT(*) AS count FROM runner_command WHERE run_id=? AND generation=5 AND kind='cancel'",
-          )
-          .get(waiting.runId)!.count;
-      // Cancellation reads the store before it sends the command.
-      await until(() => cancels() > 0);
-      assert.equal(cancels(), 1);
-      const pendingCancellation = db
-        .query<{ id: string }, [string]>(
-          "SELECT id FROM runner_command WHERE run_id=? AND kind='cancel' AND acknowledged_at IS NULL ORDER BY ordinal DESC LIMIT 1",
-        )
-        .get(waiting.runId)!;
+      const cancelCommands = (generation?: number) =>
+        db.run((q) =>
+          q.all(
+            q.orm
+              .select()
+              .from(q.t.runnerCommand)
+              .where(
+                and(
+                  eq(q.t.runnerCommand.runId, waiting.runId),
+                  eq(q.t.runnerCommand.kind, "cancel"),
+                  generation === undefined
+                    ? isNull(q.t.runnerCommand.acknowledgedAt)
+                    : eq(q.t.runnerCommand.generation, generation),
+                ),
+              )
+              .orderBy(desc(q.t.runnerCommand.ordinal)),
+          ),
+        );
+      const cancels = async () => (await cancelCommands(5)).length;
+      await until(async () => (await cancels()) > 0);
+      assert.equal(await cancels(), 1);
+      const pendingCancellation = (await cancelCommands())[0]!;
       try {
         assert(pendingCancellation);
         await delay(5);
@@ -866,14 +891,9 @@ export async function probeRunnerWork(
       await work.assign({ ...review, id: workspaceId(), generation: 7 });
       const unacknowledged = backend.cancelItem(waiting.itemId);
       const rejected = assert.rejects(unacknowledged, /free slot/);
-      const latestCancel = () =>
-        db
-          .query<{ id: string; expiresAt: number }, [string]>(
-            "SELECT id,expires_at AS expiresAt FROM runner_command WHERE run_id=? AND generation=7 AND kind='cancel' ORDER BY ordinal DESC LIMIT 1",
-          )
-          .get(waiting.runId);
-      await until(() => latestCancel() !== null);
-      const expiredCancel = latestCancel()!;
+      const latestCancel = async () => (await cancelCommands(7))[0] ?? null;
+      await until(async () => (await latestCancel()) !== null);
+      const expiredCancel = (await latestCancel())!;
       now = expiredCancel.expiresAt + 1;
       await rejected;
       await assert.rejects(
@@ -888,8 +908,8 @@ export async function probeRunnerWork(
       );
       await assert.rejects(helpers.dispatch(helperInput), /(?:cancellation|free slot|busy)/);
       const retriedCancel = backend.cancelItem(waiting.itemId);
-      await until(() => latestCancel()?.id !== expiredCancel.id);
-      const replacementCancellation = latestCancel()!;
+      await until(async () => (await latestCancel())?.id !== expiredCancel.id);
+      const replacementCancellation = (await latestCancel())!;
       assert.notEqual(replacementCancellation.id, expiredCancel.id);
       await work.acknowledge(firstRunner, replacementCancellation.id);
       await confirmStopped(firstRunner, {
@@ -899,11 +919,14 @@ export async function probeRunnerWork(
       });
       await retriedCancel;
       assert.equal(
-        db
-          .query<{ acknowledgedAt: number | null }, [string]>(
-            "SELECT acknowledged_at AS acknowledgedAt FROM runner_command WHERE id=?",
-          )
-          .get(expiredCancel.id)!.acknowledgedAt,
+        (await db.run((q) =>
+          q.one(
+            q.orm
+              .select()
+              .from(q.t.runnerCommand)
+              .where(eq(q.t.runnerCommand.id, expiredCancel.id)),
+          ),
+        ))!.acknowledgedAt,
         null,
       );
       await backend.cancelItem(waiting.itemId);
@@ -964,13 +987,13 @@ export async function probeRunnerWork(
       }
     }
   } finally {
-    db.close();
+    await postgres.close();
   }
 }
 
 async function restartSnapshot(
   root: string,
-  path: string,
+  url: string,
   keyPath: string,
   runnerId: string,
   now: number,
@@ -980,7 +1003,7 @@ async function restartSnapshot(
       process.execPath,
       "--no-env-file",
       join(import.meta.dir, "../fixtures/runner-work-restart.ts"),
-      path,
+      url,
       keyPath,
       runnerId,
       String(now),

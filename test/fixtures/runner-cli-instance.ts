@@ -1,13 +1,7 @@
 import assert from "node:assert/strict";
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  consumeWorkspaceBootstrap,
-  migrate,
-  openDatabase,
-  putWorkspaceUser,
-  sqliteDb,
-} from "../../src/db";
+import { consumeWorkspaceBootstrap, openPawsStore, putWorkspaceUser } from "../../src/db";
 import { initializeRunnerCoordinator, openRunnerCoordinator } from "../../src/runner-coordinator";
 import { publishRunnerJob } from "../../src/runner-execution";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
@@ -61,21 +55,20 @@ if (process.argv[2] === "job") {
   assert.equal(generated.exitCode, 0, generated.stderr.toString());
   chmodSync(key, 0o600);
   const tls = { key: readFileSync(key, "utf8"), cert: readFileSync(cert, "utf8") };
-  const db = openDatabase(join(root, "paws.db"));
-  migrate(db);
+  const { store: db, close } = await openPawsStore({ url: null, pgliteDir: join(root, "pglite") });
   const now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   const principal = {
@@ -131,7 +124,7 @@ if (process.argv[2] === "job") {
     stopping = true;
     await browser.stop(true);
     await coordinator.stop();
-    db.close();
+    await close();
   };
   process.once("SIGTERM", () => void stop());
   process.once("SIGINT", () => void stop());
