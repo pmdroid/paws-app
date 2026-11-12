@@ -4,18 +4,12 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { ArtifactRejectedError, runAgent } from "../src/acp";
 import type { FakeScript } from "../src/acp/testing/script";
-import {
-  insertQueuedItem,
-  listEvidence,
-  listOutbox,
-  migrate,
-  openDatabase,
-  sqliteDb,
-} from "../src/db";
+import { insertQueuedItem, listEvidence, listOutbox } from "../src/db";
 import { createEvidenceStore, EvidenceRejectedError } from "../src/evidence";
 import { createLinearFileTransfer } from "../src/linear";
 import { createEvidenceArtifactPublisher, createLinearArtifactPublisher } from "../src/loop";
 import { tempHome } from "./helpers";
+import { tempStore } from "./pglite";
 
 const homes: string[] = [];
 
@@ -63,8 +57,7 @@ async function setup() {
     cwd: workspace,
     encoding: "utf8",
   }).stdout.trim();
-  const db = openDatabase(join(home, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   await insertQueuedItem(db, { id: "item", sessionKey: "session" });
   const linearUploads: string[] = [];
   const files = createLinearFileTransfer({
@@ -91,10 +84,11 @@ async function setup() {
     fetch: async (_url, request) =>
       new Response(null, { status: request?.method === "PUT" ? 200 : 404 }),
   });
-  const store = createEvidenceStore({ store: sqliteDb(db), root: join(home, "evidence") });
+  const store = createEvidenceStore({ store: db, root: join(home, "evidence") });
   let sequence = 0;
   return {
     db,
+    close,
     head,
     workspace,
     linearUploads,
@@ -118,7 +112,7 @@ async function setup() {
         args: [resolve(import.meta.dir, "../src/acp/testing/fake-agent.ts"), trace, script],
         env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home },
         publishArtifact: await createEvidenceArtifactPublisher({
-          store: sqliteDb(db),
+          store: db,
           evidence: {
             save: (input) =>
               store.save(input).catch((error: unknown) => {
@@ -131,7 +125,7 @@ async function setup() {
           itemId: "item",
           sessionId: "session",
           linear: await createLinearArtifactPublisher({
-            store: sqliteDb(db),
+            store: db,
             files,
             secretsDir: join(home, "secrets"),
             itemId: "item",
@@ -162,7 +156,7 @@ test("a video with a check id lands in the evidence store and the agent gets the
       { type: "publish_artifact", path: "proof.webm", checkId: "browser-proof" },
     ]);
     expect(artifact.ok).toBe(true);
-    const [evidence, ...rest] = await listEvidence(sqliteDb(f.db), "item");
+    const [evidence, ...rest] = await listEvidence(f.db, "item");
     expect(rest).toHaveLength(0);
     expect(evidence).toMatchObject({
       runId: "run-1",
@@ -175,10 +169,10 @@ test("a video with a check id lands in the evidence store and the agent gets the
     });
     const link = `https://paws.example/evidence/${evidence!.id}`;
     expect(artifact.text).toBe(`[proof.webm](<${link}>)`);
-    expect(await listOutbox(sqliteDb(f.db), "session")).toHaveLength(0);
+    expect(await listOutbox(f.db, "session")).toHaveLength(0);
     expect(f.linearUploads).toHaveLength(0);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -190,14 +184,14 @@ test("a screenshot with a check id is evidence for the first attempt", async () 
       { type: "publish_artifact", path: "shot.png", checkId: "browser-proof" },
     ]);
     expect(artifact.ok).toBe(true);
-    expect((await listEvidence(sqliteDb(f.db), "item"))[0]).toMatchObject({
+    expect((await listEvidence(f.db, "item"))[0]).toMatchObject({
       attempt: 1,
       mediaType: "image/png",
     });
     expect(artifact.text?.startsWith("[shot.png](<https://paws.example/evidence/")).toBe(true);
     expect(f.linearUploads).toHaveLength(0);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -211,9 +205,9 @@ test("artifacts without a check id and other file types still upload to Linear",
       (await f.run([{ type: "publish_artifact", path: "notes.txt", checkId: "browser-proof" }])).ok,
     ).toBe(true);
     expect(f.linearUploads).toEqual(["shot.png", "notes.txt"]);
-    expect(await listEvidence(sqliteDb(f.db), "item")).toHaveLength(0);
+    expect(await listEvidence(f.db, "item")).toHaveLength(0);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -226,7 +220,7 @@ test("the 10 MB cap still applies without a check id", async () => {
     expect(artifact.error).toContain(`artifact exceeds ${10 * 1024 * 1024} bytes`);
     expect(f.linearUploads).toHaveLength(0);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -239,10 +233,10 @@ test("a screenshot over the evidence cap is refused and the agent gets the error
     ]);
     expect(artifact.ok).toBe(false);
     expect(artifact.error).toContain(`artifact exceeds ${20 * 1024 * 1024} bytes`);
-    expect(await listEvidence(sqliteDb(f.db), "item")).toHaveLength(0);
+    expect(await listEvidence(f.db, "item")).toHaveLength(0);
     expect(f.linearUploads).toHaveLength(0);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -261,9 +255,9 @@ test("evidence store refusals and unknown checks reach the agent", async () => {
     ]);
     expect(unknown.ok).toBe(false);
     expect(unknown.error).toContain("Closeout check no-such-check is not required");
-    expect(await listEvidence(sqliteDb(f.db), "item")).toHaveLength(0);
+    expect(await listEvidence(f.db, "item")).toHaveLength(0);
     expect(f.linearUploads).toHaveLength(0);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
