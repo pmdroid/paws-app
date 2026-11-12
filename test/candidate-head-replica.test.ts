@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
 import {
   candidateRef,
   ensureBareMirror,
@@ -26,12 +25,12 @@ import {
   getRun,
   getWorkItem,
   listWorkItems,
-  migrate,
-  openDatabase,
+  postgresDb,
   putWorkspaceUser,
   recordItemCandidate,
   syncWorkspaceMember,
-  sqliteDb,
+  type Db,
+  type PgliteDb,
 } from "../src/db";
 import { createFakeGitHub } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
@@ -39,7 +38,9 @@ import { attachOrchestrator, type AgentLaunch } from "../src/loop";
 import { findOpenQuestion } from "../src/questions";
 import { githubClient } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
+import { seed } from "./dialects";
 import { cloneRunner, runnerCheckout } from "./helpers";
+import { pgliteDb } from "./pglite";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -60,13 +61,12 @@ function instance(input: {
   root: string;
   name: string;
   bare: string;
-  dbPath: string;
+  shared: PgliteDb;
   checksRuns: string[];
 }) {
   const pawsRoot = path.join(input.root, input.name);
   const home = path.join(input.root, `${input.name}-home`);
-  const db = openDatabase(input.dbPath);
-  migrate(db);
+  const db = postgresDb(input.shared);
   const clock: Clock = { now: () => Date.now(), mono: () => performance.now() };
   const jobs = new JobLoop(db, clock);
   const outbox = new OutboxDispatcher(db, clock);
@@ -105,7 +105,7 @@ function instance(input: {
   const runner = async (options: RunAgentOptions): Promise<RunAgentResult> => {
     const result = await clone(options);
     if (options.role !== "implementer" || options.checkpoint === false) return result;
-    const item = (await listWorkItems(sqliteDb(db)))[0]!;
+    const item = (await listWorkItems(db))[0]!;
     const mirror = mirrorPath(options.pawsRoot, repository.owner, repository.repo);
     const sha = await git("--git-dir", mirror, "rev-parse", candidateRef(options.itemId));
     await git(
@@ -116,7 +116,7 @@ function instance(input: {
       input.bare,
       `${sha}:refs/heads/${item.branchName}`,
     );
-    await recordItemCandidate(sqliteDb(db), {
+    await recordItemCandidate(db, {
       itemId: item.id,
       sha,
       branch: item.branchName,
@@ -143,7 +143,7 @@ function instance(input: {
   };
   const github = createFakeGitHub();
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -176,28 +176,27 @@ test("instance B verifies and merges the candidate instance A imported, from the
   const root = await mkdtemp(path.join(tmpdir(), "paws-candidate-replica-"));
   const checkMark = path.join(root, "check-ran");
   const bare = await originWithPolicy(root, checkMark);
-  await mkdir(path.join(root, "shared"), { recursive: true });
-  const dbPath = path.join(root, "shared", "paws.db");
+  const shared = await pgliteDb();
   const checksRuns: string[] = [];
-  const a = instance({ root, name: "a", bare, dbPath, checksRuns });
-  const b = instance({ root, name: "b", bare, dbPath, checksRuns });
+  const a = instance({ root, name: "a", bare, shared, checksRuns });
+  const b = instance({ root, name: "b", bare, shared, checksRuns });
   try {
     await a.orchestrator.onLinearEvent(created());
-    a.db.run("UPDATE work_item SET delegated_by = 'delegator-1'");
+    await seed(a.db, (q) => q.orm.update(q.t.workItem).set({ delegatedBy: "delegator-1" }));
     const turn = a.jobs.tick();
     await attachRunnerLease(a.db);
     await turn;
     await a.flush();
 
-    const item = (await listWorkItems(sqliteDb(b.db)))[0]!;
-    expect((await getWorkItem(sqliteDb(b.db), item.id))?.state).toBe("awaiting_input");
-    const recorded = (await getItemCandidate(sqliteDb(b.db), item.id))!;
+    const item = (await listWorkItems(b.db))[0]!;
+    expect((await getWorkItem(b.db, item.id))?.state).toBe("awaiting_input");
+    const recorded = (await getItemCandidate(b.db, item.id))!;
     expect(recorded.branch).toBe(item.branchName);
     expect(checksRuns).toEqual([`a:${recorded.sha}`]);
 
     // Run files stay on local disk for now; only the mirror differs between the instances.
     await cp(path.join(a.pawsRoot, "runs"), path.join(b.pawsRoot, "runs"), { recursive: true });
-    const question = (await findOpenQuestion(sqliteDb(b.db), "ses_1"))!;
+    const question = (await findOpenQuestion(b.db, "ses_1"))!;
     expect(
       await b.orchestrator.decideLinkAsk({
         questionId: question.id,
@@ -221,24 +220,23 @@ test("instance B verifies and merges the candidate instance A imported, from the
         "refs/paws/candidates",
       ),
     ).toBe(recorded.sha);
-    expect((await getWorkItem(sqliteDb(b.db), item.id))?.state).toBe("merge_queue");
+    expect((await getWorkItem(b.db, item.id))?.state).toBe("merge_queue");
 
     for (
       let tick = 0;
-      tick < 20 && (await getWorkItem(sqliteDb(b.db), item.id))?.state !== "merged";
+      tick < 20 && (await getWorkItem(b.db, item.id))?.state !== "merged";
       tick++
     ) {
       await b.jobs.tick();
       await b.flush();
     }
-    expect((await getWorkItem(sqliteDb(b.db), item.id))?.state).toBe("merged");
+    expect((await getWorkItem(b.db, item.id))?.state).toBe("merged");
     expect(b.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([recorded.sha]);
     expect(a.github.merged).toEqual([]);
   } finally {
     await a.orchestrator.shutdown();
     await b.orchestrator.shutdown();
-    a.db.close();
-    b.db.close();
+    await shared.$client.close();
     await rm(root, { recursive: true, force: true });
   }
 }, 120_000);
@@ -379,20 +377,24 @@ async function originWithPolicy(root: string, checkMark: string): Promise<string
   return bare;
 }
 
-async function attachRunnerLease(db: Database): Promise<void> {
+async function attachRunnerLease(db: Db): Promise<void> {
   for (let attempt = 0; attempt < 2000; attempt += 1) {
-    const item = (await listWorkItems(sqliteDb(db)))[0];
-    const run = item?.currentRunId ? await getRun(sqliteDb(db), item.currentRunId) : null;
+    const item = (await listWorkItems(db))[0];
+    const run = item?.currentRunId ? await getRun(db, item.currentRunId) : null;
     if (run?.status === "active") {
       const now = Date.now();
-      const userId = await putWorkspaceUser(sqliteDb(db), {
+      const userId = await putWorkspaceUser(db, {
         id: "user-1",
         linearUserId: "user-linear",
         name: "Owner",
         email: "owner@example.invalid",
       });
-      db.run("INSERT INTO workspace VALUES(?,?,?,?)", ["ws-1", "org-1", "Workspace", now]);
-      await syncWorkspaceMember(sqliteDb(db), {
+      await seed(db, (q) =>
+        q.orm
+          .insert(q.t.workspace)
+          .values({ id: "ws-1", linearOrganizationId: "org-1", name: "Workspace", createdAt: now }),
+      );
+      await syncWorkspaceMember(db, {
         workspaceId: "ws-1",
         userId,
         role: "admin",
@@ -400,14 +402,29 @@ async function attachRunnerLease(db: Database): Promise<void> {
         teamIds: [],
         now,
       });
-      db.run(
-        "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
-        ["runner-1", "ws-1", userId, "Runner", now, now],
-      );
-      db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,1)", ["runner-1"]);
-      db.run(
-        "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES(?,?,?,1,0,?,?,0)",
-        [run.id, "runner-1", "ws-1", `cmd-${run.id}`, now + 60_000],
+      await seed(
+        db,
+        (q) =>
+          q.orm.insert(q.t.runner).values({
+            id: "runner-1",
+            workspaceId: "ws-1",
+            ownerUserId: userId,
+            name: "Runner",
+            status: "active",
+            createdAt: now,
+            lastSeenAt: now,
+          }),
+        (q) => q.orm.insert(q.t.runnerCapacity).values({ runnerId: "runner-1", capacity: 1 }),
+        (q) =>
+          q.orm.insert(q.t.runnerWork).values({
+            runId: run.id,
+            runnerId: "runner-1",
+            workspaceId: "ws-1",
+            generation: 1,
+            runnerFence: 0,
+            commandId: `cmd-${run.id}`,
+            leaseUntil: now + 60_000,
+          }),
       );
       return;
     }
