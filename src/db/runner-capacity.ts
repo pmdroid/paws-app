@@ -153,6 +153,10 @@ export function* runnerSlotsHeldBetweenCommandsSteps(
           inArray(r.status, ["active", "provisioning"]),
           sql`NOT ${teardownUnresolved}`,
           sql`NOT ${ciWaitingSql(q, "r")}`,
+          sql`NOT EXISTS(SELECT 1 FROM runner_execution_usage u WHERE u.run_id=w.run_id
+            AND u.runner_id<>w.runner_id AND u.ended_at IS NOT NULL AND NOT EXISTS(
+              SELECT 1 FROM runner_execution_usage mine WHERE mine.run_id=u.run_id
+              AND mine.runner_id=w.runner_id AND mine.started_at>=u.started_at))`,
         ),
       ),
   );
