@@ -37,11 +37,11 @@ test("a turn announcement and activity UUID survive restart without advancing tw
   const original = await withHomeStore(home, async (db) => {
     await turn(db, "first");
     expect(await announceLinearTurn(db, "session", "first", 2)).toBe(true);
-    const original = (await listOutbox(db))[0]!;
-    expect(original.generation).toBe(1);
-    expect(original.delivery).toBe("critical");
-    expect((original.payload as { id: string }).id).toMatch(/^[0-9a-f-]{36}$/);
-    return original;
+    const row = (await listOutbox(db))[0]!;
+    expect(row.generation).toBe(1);
+    expect(row.delivery).toBe("critical");
+    expect((row.payload as { id: string }).id).toMatch(/^[0-9a-f-]{36}$/);
+    return row;
   });
   await withHomeStore(home, async (db) => {
     expect(await announceLinearTurn(db, "session", "first", 3)).toBe(false);

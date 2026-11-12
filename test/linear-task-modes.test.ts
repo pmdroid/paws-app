@@ -109,11 +109,11 @@ test("answer mode and full prepared response survive reopen as a terminal comple
   const home = tempHome();
   const response = "Full public answer. ".repeat(1_000);
   const item = await withHomeStore(home, async (db) => {
-    const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-    await beginImplementRun(db, item.id, 1);
-    await saveTaskMode(db, item.id, "answer");
-    await completeAnswerTask(db, item.id, response);
-    return item;
+    const queued = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
+    await beginImplementRun(db, queued.id, 1);
+    await saveTaskMode(db, queued.id, "answer");
+    await completeAnswerTask(db, queued.id, response);
+    return queued;
   });
   await withHomeStore(home, async (restored) => {
     expect(await getTaskMode(restored, item.id)).toBe("answer");
