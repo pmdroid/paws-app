@@ -29,6 +29,7 @@ import {
   shareRunnerAgentState,
   shareRunnerWorkRoot,
 } from "./accounts";
+import { setJournalSink } from "../journal";
 import { executionScope, executionTag, startTime } from "./processes";
 
 const roots: string[] = [];
@@ -268,7 +269,7 @@ test("agent state written by the runner is shared with the agent group before pa
   const mode = (path: string) => statSync(join(root, path)).mode & 0o7777;
   expect(mode(".local")).toBe(0o770);
   expect([mode(".cache"), mode(".cache/mise"), mode(".cache/mise/downloads")]).toEqual([
-    0o770, 0o770, 0o770,
+    0o770, 0o700, 0o700,
   ]);
   expect([mode("work"), mode("work/run"), mode(".paws-accounts/binding")]).toEqual([
     0o700, 0o700, 0o700,
@@ -280,6 +281,90 @@ test("agent state written by the runner is shared with the agent group before pa
   expect(statSync(outside).mode & 0o777).toBe(0o600);
   shareRunnerAgentState(root, owners);
   expect(mode(".codex/auth.json")).toBe(0o660);
+});
+
+test("sharing agent state leaves tool caches unwalked, however many files they hold", () => {
+  const root = agentHome();
+  const owners = { runnerUid: process.getuid!(), agentGid: process.getgid!() };
+  const lines: string[] = [];
+  const restore = setJournalSink((line) => lines.push(line));
+  for (const folder of [".cache/golangci-lint", ".bun/install", ".local/share/mise/installs"])
+    mkdirSync(join(root, folder), { recursive: true, mode: 0o700 });
+  for (let i = 0; i < 1_200; i++) writeFileSync(join(root, ".cache/golangci-lint", `${i}`), "");
+  for (const path of [".cache/golangci-lint", ".bun/install", ".local/share/mise/installs"])
+    chmodSync(join(root, path), 0o700);
+  mkdirSync(join(root, ".codex"), { mode: 0o700 });
+  writeFileSync(join(root, ".codex/auth.json"), "{}", { mode: 0o600 });
+  chmodSync(join(root, ".codex/auth.json"), 0o600);
+  try {
+    shareRunnerAgentState(root, owners, 1_000);
+  } finally {
+    restore();
+  }
+  const mode = (path: string) => statSync(join(root, path)).mode & 0o777;
+  expect(mode(".codex/auth.json")).toBe(0o660);
+  expect([
+    mode(".cache/golangci-lint"),
+    mode(".bun/install"),
+    mode(".local/share/mise/installs"),
+  ]).toEqual([0o700, 0o700, 0o700]);
+  expect(lines).toEqual([]);
+});
+
+test("agent state past the cap is journaled and does not fail the run", () => {
+  const root = agentHome();
+  const owners = { runnerUid: process.getuid!(), agentGid: process.getgid!() };
+  const lines: string[] = [];
+  mkdirSync(join(root, ".claude"), { mode: 0o700 });
+  writeFileSync(join(root, ".claude/.credentials.json"), "{}", { mode: 0o600 });
+  chmodSync(join(root, ".claude/.credentials.json"), 0o600);
+  mkdirSync(join(root, ".claude/projects"), { recursive: true });
+  for (let i = 0; i < 20; i++) writeFileSync(join(root, ".claude/projects", `${i}`), "");
+  mkdirSync(join(root, ".codex"), { mode: 0o700 });
+  writeFileSync(join(root, ".codex/auth.json"), "{}", { mode: 0o600 });
+  chmodSync(join(root, ".codex/auth.json"), 0o600);
+  const restore = setJournalSink((line) => lines.push(line));
+  try {
+    expect(() => shareRunnerAgentState(root, owners, 10)).not.toThrow();
+  } finally {
+    restore();
+  }
+  expect(statSync(join(root, ".claude/.credentials.json")).mode & 0o777).toBe(0o660);
+  expect(statSync(join(root, ".codex/auth.json")).mode & 0o777).toBe(0o660);
+  expect(lines).toEqual([
+    `runner agent state not fully shared folder=${join(root, ".claude")} limit=10`,
+  ]);
+});
+
+test("OpenCode credentials are shared even when .local/share passes the cap", () => {
+  const root = agentHome();
+  const owners = { runnerUid: process.getuid!(), agentGid: process.getgid!() };
+  mkdirSync(join(root, ".local/share/opencode"), { recursive: true });
+  writeFileSync(join(root, ".local/share/opencode/auth.json"), "{}", { mode: 0o600 });
+  chmodSync(join(root, ".local/share/opencode/auth.json"), 0o600);
+  for (const tool of ["aaa", "zzz"]) {
+    mkdirSync(join(root, ".local/share", tool));
+    for (let i = 0; i < 20; i++) writeFileSync(join(root, ".local/share", tool, `${i}`), "");
+  }
+  const restore = setJournalSink(() => {});
+  try {
+    shareRunnerAgentState(root, owners, 10);
+  } finally {
+    restore();
+  }
+  expect(statSync(join(root, ".local/share/opencode/auth.json")).mode & 0o777).toBe(0o660);
+});
+
+test("a .local that links elsewhere is not followed into its state folders", () => {
+  const root = agentHome();
+  const outside = agentHome();
+  const owners = { runnerUid: process.getuid!(), agentGid: process.getgid!() };
+  mkdirSync(join(outside, "share"));
+  writeFileSync(join(outside, "share/secret"), "", { mode: 0o600 });
+  chmodSync(join(outside, "share/secret"), 0o600);
+  symlinkSync(outside, join(root, ".local"));
+  shareRunnerAgentState(root, owners);
+  expect(statSync(join(outside, "share/secret")).mode & 0o777).toBe(0o600);
 });
 
 test("sharing an account home keeps its binding, holds and sign-in lock at 0640", () => {

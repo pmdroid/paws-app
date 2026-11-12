@@ -1,6 +1,7 @@
-import { journalCaught } from "../journal";
+import { journal, journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
 import {
+  type Dirent,
   chmodSync,
   closeSync,
   constants,
@@ -51,6 +52,17 @@ const HOME_FOLDERS = [
   ".local/share",
   ".local/state",
   ".cache",
+] as const;
+
+const AGENT_STATE = [
+  ".claude",
+  ".claude.json",
+  ".codex",
+  ".grok",
+  ".config",
+  ".local/share/opencode",
+  ".local/share",
+  ".local/state",
 ] as const;
 
 const ManifestSchema = z.strictObject({
@@ -407,7 +419,11 @@ export function accountHomeVerdict(
   return "repair";
 }
 
-export function shareRunnerAgentState(home: string, owners: RunnerAccountOwners): void {
+export function shareRunnerAgentState(
+  home: string,
+  owners: RunnerAccountOwners,
+  limit = 1_000_000,
+): void {
   let names: string[];
   try {
     names = readdirSync(home);
@@ -415,11 +431,19 @@ export function shareRunnerAgentState(home: string, owners: RunnerAccountOwners)
     if (["ENOENT", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) return;
     throw error;
   }
-  shareRunnerPaths(
-    names.filter((name) => !SHARED_ELSEWHERE.has(name)).map((name) => join(home, name)),
-    owners,
-    { limit: 1_000_000 },
-  );
+  const top = names.filter((name) => !SHARED_ELSEWHERE.has(name)).map((name) => join(home, name));
+  shareRunnerPaths(top, owners, { depth: 0 });
+  for (const folder of AGENT_STATE) {
+    const parts = folder.split("/");
+    const parents = parts.slice(1).map((_, i) => join(home, ...parts.slice(0, i + 1)));
+    if (!parents.every((parent) => lstatSync(parent, { throwIfNoEntry: false })?.isDirectory()))
+      continue;
+    shareRunnerPaths([join(home, folder)], owners, {
+      limit,
+      skip: join(home, ".local/share/mise"),
+      over: (root) => journal(`runner agent state not fully shared folder=${root} limit=${limit}`),
+    });
+  }
 }
 
 /**
@@ -519,13 +543,25 @@ export function* removeRunnerTreeSteps(path: string): Generator<void, void> {
 function shareRunnerPaths(
   roots: readonly string[],
   owners: RunnerAccountOwners,
-  bounds: { depth?: number; limit?: number; shallow?: string } = {},
+  bounds: {
+    depth?: number;
+    limit?: number;
+    shallow?: string;
+    skip?: string;
+    over?: (root: string) => void;
+  } = {},
 ): void {
   const self = process.getuid?.();
   const limit = bounds.limit ?? SHARE_LIMIT;
   let seen = 0;
+  let over = false;
   const visit = (path: string, depth: number) => {
-    if (++seen > limit) throw new RunnerAccountHomeError("Agent state has too many files");
+    if (over || path === bounds.skip) return;
+    if (++seen > limit) {
+      if (!bounds.over) throw new RunnerAccountHomeError("Agent state has too many files");
+      over = true;
+      return;
+    }
     let info;
     try {
       info = lstatSync(path);
@@ -554,16 +590,20 @@ function shareRunnerPaths(
       }
     }
     if (!info.isDirectory() || depth === bounds.depth || path === bounds.shallow) return;
-    let names: string[];
+    let entries: Dirent[];
     try {
-      names = readdirSync(path);
+      entries = readdirSync(path, { withFileTypes: true });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EACCES") return;
       throw error;
     }
-    for (const name of names) visit(join(path, name), depth + 1);
+    for (const entry of entries.toSorted((a, b) => +a.isDirectory() - +b.isDirectory()))
+      visit(join(path, entry.name), depth + 1);
   };
-  for (const root of roots) visit(root, 0);
+  for (const root of roots) {
+    visit(root, 0);
+    if (over) return bounds.over?.(root);
+  }
 }
 
 function shareWithAgents(descriptor: number, owners: RunnerAccountOwners): void {

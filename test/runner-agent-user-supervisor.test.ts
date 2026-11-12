@@ -344,7 +344,7 @@ test("a failed MainPID query with no result stops the unit and fails the launch"
   expect(fake.calls.map((call) => call[0])).toEqual(["start", "show", "stop"]);
 });
 
-test("an account-bound paws-agent run shares the agent home's mise folders and keeps the binding 0640", async () => {
+test("an account-bound paws-agent run shares the agent home's state, not its mise folders, and keeps the binding 0640", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-agent-user-"));
   roots.push(root);
   const account = {
@@ -365,9 +365,11 @@ test("an account-bound paws-agent run shares the agent home's mise folders and k
   expect(fake.calls.map((call) => call[0])).toEqual(["start", "show"]);
   const mode = (path: string) => statSync(path).mode & 0o777;
   expect([
+    mode(join(agentHome, ".cache")),
+    mode(join(agentHome, ".local/share")),
     mode(join(agentHome, ".cache/mise")),
     mode(join(agentHome, ".local/share/mise")),
-  ]).toEqual([0o770, 0o770]);
+  ]).toEqual([0o770, 0o770, 0o700, 0o700]);
   expect(mode(join(bindingHome, "account.json"))).toBe(0o640);
   await supervisor.stop(id);
 });
