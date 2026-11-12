@@ -2540,10 +2540,14 @@ export class Orchestrator {
       message.op !== "catchup" &&
       message.op !== "linear.catchup"
     ) {
-      const orderingKey = message.orderingKey;
+      const payloadItemId = readString(message.payload, "itemId");
+      const sessionId =
+        message.op === "linear.remaining_issues" && payloadItemId
+          ? ((await this.store.run((q) => getWorkItemSteps(q, payloadItemId)))?.sessionKey ??
+            payloadItemId)
+          : message.orderingKey;
       const itemId =
-        readString(message.payload, "itemId") ??
-        (await this.store.run((q) => workItemForSessionSteps(q, orderingKey)))?.id;
+        payloadItemId ?? (await this.store.run((q) => workItemForSessionSteps(q, sessionId)))?.id;
       const issueId =
         readString(message.payload, "linearIssueId") ??
         readString(message.payload, "issueId") ??
@@ -2556,7 +2560,7 @@ export class Orchestrator {
             ?.humanActorId)
       )
         throw new Error("Linear workflow updates require verified human task ownership.");
-      await this.options.linearAccess.assertDelivery(message.orderingKey, context.signal, {
+      await this.options.linearAccess.assertDelivery(sessionId, context.signal, {
         itemId,
         issueId,
         stop: message.delivery === "stop",
