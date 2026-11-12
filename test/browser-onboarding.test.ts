@@ -127,14 +127,12 @@ function rows(db: Db, table: Table) {
 
 const foreignWorkspace = (db: Db) =>
   seed(db, (q) =>
-    q.orm
-      .insert(q.t.workspace)
-      .values({
-        id: "foreign",
-        linearOrganizationId: "foreign-org",
-        name: "Foreign",
-        createdAt: 0,
-      }),
+    q.orm.insert(q.t.workspace).values({
+      id: "foreign",
+      linearOrganizationId: "foreign-org",
+      name: "Foreign",
+      createdAt: 0,
+    }),
   );
 import { readStoredToken } from "../src/linear";
 import { createWorkspaceAccess } from "../src/workspace";

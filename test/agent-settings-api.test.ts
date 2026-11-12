@@ -537,16 +537,14 @@ describe("reviewer profile validation", () => {
     const runner = async (name: string, status: string) => {
       const id = workspaceId();
       await seed(db, (q) =>
-        q.orm
-          .insert(q.t.runner)
-          .values({
-            id,
-            workspaceId: workspace,
-            ownerUserId: userId,
-            name,
-            status,
-            createdAt: now,
-          }),
+        q.orm.insert(q.t.runner).values({
+          id,
+          workspaceId: workspace,
+          ownerUserId: userId,
+          name,
+          status,
+          createdAt: now,
+        }),
       );
       return id;
     };
