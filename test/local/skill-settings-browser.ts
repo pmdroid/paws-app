@@ -4,21 +4,20 @@ import { chromium } from "@playwright/test";
 import { mkdtempSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { migrate, openDatabase, sqliteDb } from "../../src/db";
 import { handleSkillSettingsRequest } from "../../src/settings";
 import { addSkill, fakeSkillResolver } from "../../src/skills";
+import { tempStore } from "../pglite";
 
 const root = resolve(import.meta.dir, "../..");
 const output = mkdtempSync(join(tmpdir(), "paws-skill-settings-browser-"));
-const db = openDatabase(join(output, "paws.db"));
-migrate(db);
+const { db, close } = await tempStore();
 const resolver = fakeSkillResolver((request) => {
   const name = request.kind === "npm" ? request.package : "review-paws";
   return new Map([["SKILL.md", new TextEncoder().encode(`---\nname: ${name}\n---\n`)]]);
 });
 const skillsRoot = join(output, "skills");
 await addSkill(
-  { store: sqliteDb(db), root: skillsRoot, resolver, now: Date.now() },
+  { store: db, root: skillsRoot, resolver, now: Date.now() },
   { kind: "git", url: "https://github.com/pmdroid/skills.git", subfolder: "review-paws" },
   { agents: ["claude"] },
 );
@@ -52,7 +51,7 @@ const server = Bun.serve({
       });
     if (url.pathname === "/api/settings/skills")
       return (await handleSkillSettingsRequest(req, {
-        store: sqliteDb(db),
+        store: db,
         root: skillsRoot,
         resolver,
         csrfToken: "synthetic-csrf",
@@ -117,4 +116,5 @@ try {
 } finally {
   await browser.close();
   server.stop(true);
+  await close();
 }
