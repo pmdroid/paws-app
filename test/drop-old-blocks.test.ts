@@ -1,5 +1,5 @@
 import { syncSteps } from "../src/runner-backend";
-import { confirmFakeMerge } from "./fake-workspace";
+import { confirmFakeMergePg } from "./fake-workspace";
 import { expect, test } from "bun:test";
 import { FakeClock } from "../src/core";
 import {
@@ -9,25 +9,42 @@ import {
   insertRun,
   listOutbox,
   listWorkItemBlocks,
-  legacyMigrate,
-  migrations,
-  openDatabase,
   recordLinearInstallation,
   saveRunResult,
   setCurrentRun,
-  sqliteDb,
+  type Q,
 } from "../src/db";
 import { createItemReconciler, intakeDelegatedIssue, readyItemsSteps } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
 import { Orchestrator } from "../src/loop";
-import { legacyTempDb, tempHome } from "./helpers";
+import { eq } from "drizzle-orm";
+import { tempHome } from "./helpers";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 import { workspaceAdmission } from "./fake-workspace";
 
-test("migration 059 drops the old block tables and task_block holds each dependent", async () => {
-  const db = legacyTempDb();
+test("task_block holds each dependent", async () => {
+  const { db, close } = await tempStore();
+  const block = (blocker: string, blocked: string) => (q: Q) =>
+    q.orm
+      .insert(q.t.taskBlock)
+      .values({ blockerLinearIssueId: blocker, blockedLinearIssueId: blocked });
+  const queued = (id: string, delegation: string, position: number, session: string) => (q: Q) =>
+    q.orm.insert(q.t.workItem).values({
+      id,
+      delegationId: delegation,
+      linearIssueId: id,
+      linearIdentifier: id,
+      title: id,
+      state: "queued",
+      branchName: `paws/${id}`,
+      position,
+      createdAt: 1000,
+      sessionKey: session,
+    });
   const clock = new FakeClock(1_000);
   const orchestrator = new Orchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
@@ -37,52 +54,45 @@ test("migration 059 drops the old block tables and task_block holds each depende
   });
   let closeReconciler: (() => Promise<void>) | undefined;
   try {
-    expect(migrations.some((migration) => migration.id === "059_drop_old_blocks")).toBe(true);
-    expect(
-      db.query("SELECT 1 FROM schema_migration WHERE id = '059_drop_old_blocks'").get(),
-    ).toBeTruthy();
-    expect(
-      db
-        .query<{ name: string }, []>(
-          `SELECT name FROM sqlite_master
-           WHERE name IN ('work_item_block','external_dep','epic_execution_control','external_dep_blocker')
-              OR tbl_name IN ('work_item_block','external_dep','epic_execution_control')`,
-        )
-        .all(),
-    ).toEqual([]);
-
-    for (const [id, position] of [
-      ["hold-0", 0],
-      ["hold-1", 1],
-    ] as const) {
-      db.run(
-        "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES(?,?,?,?,?,'queued',?,?,1000,'hold-session')",
-        [id, "hold", id, id, id, `paws/${id}`, position],
-      );
-    }
-    db.run(
-      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('stale-1','stale','hold-1','stale-1','stale','cancelled','paws/stale-1',0,5000)",
-    );
-    db.run(
-      "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('hold-0','hold-1')",
+    await seed(
+      db,
+      queued("hold-0", "hold", 0, "hold-session"),
+      queued("hold-1", "hold", 1, "hold-session"),
+      (q) =>
+        q.orm.insert(q.t.workItem).values({
+          id: "stale-1",
+          delegationId: "stale",
+          linearIssueId: "hold-1",
+          linearIdentifier: "stale-1",
+          title: "stale",
+          state: "cancelled",
+          branchName: "paws/stale-1",
+          position: 0,
+          createdAt: 5000,
+        }),
+      block("hold-0", "hold-1"),
     );
     const edge = {
       delegationId: "hold",
       blockerLinearIssueId: "hold-0",
       blockedLinearIssueId: "hold-1",
     };
-    expect(await listWorkItemBlocks(sqliteDb(db))).toEqual([edge]);
-    expect(await listWorkItemBlocks(sqliteDb(db), "hold")).toEqual([edge]);
-    expect(await listWorkItemBlocks(sqliteDb(db), "stale")).toEqual([]);
+    expect(await listWorkItemBlocks(db)).toEqual([edge]);
+    expect(await listWorkItemBlocks(db, "hold")).toEqual([edge]);
+    expect(await listWorkItemBlocks(db, "stale")).toEqual([]);
 
     await orchestrator.reconcileExecution();
     expect(
-      db.query<{ id: string }, []>("SELECT item_id AS id FROM scheduler_admission").all(),
+      await db.run((q) =>
+        q.all(q.orm.select({ id: q.t.schedulerAdmission.itemId }).from(q.t.schedulerAdmission)),
+      ),
     ).toEqual([{ id: "hold-0" }]);
     expect(await orchestrator.dependencyHandoff("hold-1")).toBeUndefined();
-    await confirmFakeMerge(db, "hold-0");
-    db.run("UPDATE work_item SET state = 'merged' WHERE id = 'hold-0'");
-    const run = await insertRun(sqliteDb(db), {
+    await confirmFakeMergePg(db, "hold-0");
+    await seed(db, (q) =>
+      q.orm.update(q.t.workItem).set({ state: "merged" }).where(eq(q.t.workItem.id, "hold-0")),
+    );
+    const run = await insertRun(db, {
       itemId: "hold-0",
       now: clock.now(),
       status: "ended",
@@ -90,23 +100,17 @@ test("migration 059 drops the old block tables and task_block holds each depende
       agent: "codex",
       freshSession: true,
     });
-    await saveRunResult(sqliteDb(db), run.id, "Published the schema.", clock.now());
-    await setCurrentRun(sqliteDb(db), "hold-0", run.id);
+    await saveRunResult(db, run.id, "Published the schema.", clock.now());
+    await setCurrentRun(db, "hold-0", run.id);
     expect(await orchestrator.dependencyHandoff("hold-1")).toBe(
       "Completed dependencies:\nhold-0: Published the schema.",
     );
 
-    for (const [id, position] of [
-      ["notice-0", 0],
-      ["notice-1", 1],
-    ] as const) {
-      db.run(
-        "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES(?,?,?,?,?,'queued',?,?,1000,'notice-session')",
-        [id, "notice", id, id, id, `paws/${id}`, position],
-      );
-    }
-    db.run(
-      "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('notice-0','notice-1')",
+    await seed(
+      db,
+      queued("notice-0", "notice", 0, "notice-session"),
+      queued("notice-1", "notice", 1, "notice-session"),
+      block("notice-0", "notice-1"),
     );
     orchestrator.applyDelegationChanges({
       delegationId: "notice",
@@ -118,7 +122,7 @@ test("migration 059 drops the old block tables and task_block holds each depende
       parentCanceled: false,
     });
     expect(
-      (await listOutbox(sqliteDb(db))).some((row) => {
+      (await listOutbox(db)).some((row) => {
         const body = (row.payload as { body?: string }).body ?? "";
         return body.includes("notice-1") && body.includes("remain held");
       }),
@@ -142,14 +146,24 @@ test("migration 059 drops the old block tables and task_block holds each depende
     });
     lifecycle.issues.set("b", { ...lifecycle.issue, id: "b" });
     lifecycle.issues.set("outside", { ...lifecycle.issue, id: "outside", stateType: "started" });
-    const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    const intake = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "parent",
       now: 1000,
     });
     expect(intake.ok).toBe(true);
     if (!intake.ok) return;
-    db.run("INSERT OR IGNORE INTO workspace VALUES('workspace','org','Workspace',1000)");
-    await recordLinearInstallation(sqliteDb(db), {
+    await seed(db, (q) =>
+      q.orm
+        .insert(q.t.workspace)
+        .values({
+          id: "workspace",
+          linearOrganizationId: "org",
+          name: "Workspace",
+          createdAt: 1000,
+        })
+        .onConflictDoNothing(),
+    );
+    await recordLinearInstallation(db, {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -157,17 +171,15 @@ test("migration 059 drops the old block tables and task_block holds each depende
       teamId: "team",
       observedAtMs: 1000,
     });
-    await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, {
+    await bindLinearSessionTask(db, "session", intake.delegation.id, {
       actorId: "owner",
     });
     const blocked = intake.items.find((item) => item.linearIssueId === "b");
     expect(blocked).toBeDefined();
-    db.run(
-      "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('outside','b')",
-    );
+    await seed(db, block("outside", "b"));
     tracker.deps.set("parent", [{ blockerLinearIssueId: "outside", blockedLinearIssueId: "b" }]);
     const reconciler = createItemReconciler({
-      store: sqliteDb(db),
+      store: db,
       tracker,
       lifecycle,
       onChanges: () => syncSteps(() => {}),
@@ -180,49 +192,12 @@ test("migration 059 drops the old block tables and task_block holds each depende
       { itemId: blocked!.id, workspaceId: "workspace" },
     ]);
     expect(
-      (
-        await sqliteDb(db).run((q) =>
-          readyItemsSteps(q, { itemId: blocked!.id, workspaceId: "workspace" }),
-        )
-      ).readyItemIds,
+      (await db.run((q) => readyItemsSteps(q, { itemId: blocked!.id, workspaceId: "workspace" })))
+        .readyItemIds,
     ).not.toContain(blocked!.id);
   } finally {
     await closeReconciler?.();
     await orchestrator.shutdown();
-    db.close();
-  }
-});
-
-test("migration 059 is append-only and runs after the task_block copy", () => {
-  const db = openDatabase(":memory:");
-  try {
-    legacyMigrate(db);
-    const ids = db
-      .query<{ id: string }, []>("SELECT id FROM schema_migration ORDER BY rowid")
-      .all()
-      .map((row) => row.id);
-    expect(ids.indexOf("073_grok_runner_login")).toBeLessThan(
-      ids.indexOf("074_browser_installation"),
-    );
-    expect(ids.indexOf("058_one_active_item")).toBeLessThan(ids.indexOf("059_drop_old_blocks"));
-    expect(ids.indexOf("059_drop_old_blocks")).toBeLessThan(
-      ids.indexOf("060_session_link_on_item"),
-    );
-    expect(ids.indexOf("060_session_link_on_item")).toBeLessThan(
-      ids.indexOf("061_drop_old_session_link"),
-    );
-    expect(ids.indexOf("061_drop_old_session_link")).toBeLessThan(
-      ids.indexOf("062_item_dependency_snapshot"),
-    );
-    expect(ids.indexOf("062_item_dependency_snapshot")).toBeLessThan(
-      ids.indexOf("063_item_reconciliation"),
-    );
-    expect(ids.indexOf("063_item_reconciliation")).toBeLessThan(
-      ids.indexOf("064_work_item_without_epic_fk"),
-    );
-    expect(ids.indexOf("064_work_item_without_epic_fk")).toBeLessThan(ids.indexOf("065_drop_epic"));
-    expect(ids.indexOf("065_drop_epic")).toBeLessThan(ids.indexOf("066_repository_catalog"));
-  } finally {
-    db.close();
+    await close();
   }
 });
