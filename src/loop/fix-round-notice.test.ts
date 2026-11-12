@@ -8,12 +8,10 @@ import {
   getWorkItem,
   insertQueuedItem,
   listJobs,
-  migrate,
-  openDatabase,
   pendingPullComments,
   settlePullComments,
   recordItemPullRequest,
-  sqliteDb,
+  type Db,
 } from "../db";
 import {
   commentOnPullRequest,
@@ -29,24 +27,24 @@ import { acceptGitHubDelivery } from "./merge-jobs";
 import { restart } from "./operations";
 import { recordReplyTargets } from "./review-replies";
 import { worktreeBranch } from "./sources";
+import { tempStore } from "../../test/pglite";
 
 async function setup() {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const db = (await tempStore()).db;
   const clock = new FakeClock(1_000);
   await insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
-  await bindWorkItemRepository(sqliteDb(db), "eng-1", {
+  await bindWorkItemRepository(db, "eng-1", {
     owner: "acme",
     repo: "one",
     remoteUrl: "https://github.com/acme/one.git",
   });
-  await beginImplementRun(sqliteDb(db), "eng-1", 1);
-  await enterMergeQueue(sqliteDb(db), "eng-1", {
+  await beginImplementRun(db, "eng-1", 1);
+  await enterMergeQueue(db, "eng-1", {
     phase: "merge_queue",
     baseSha: "b",
     wipCommit: "h",
   });
-  await recordItemPullRequest(sqliteDb(db), {
+  await recordItemPullRequest(db, {
     itemId: "eng-1",
     pullNumber: 7,
     pullUrl: null,
@@ -66,7 +64,7 @@ async function setup() {
   const tracker = createFakeTracker();
   outbox.setHandler((row) =>
     row.target === "linear"
-      ? deliverLinearOutbox(row, tracker, async () => {}, undefined, sqliteDb(db))
+      ? deliverLinearOutbox(row, tracker, async () => {}, undefined, db)
       : deliverGitHubOutbox(row, {
           commentOnPullRequest: (prNumber, body) =>
             commentOnPullRequest({ ...access, prNumber, body }),
@@ -74,7 +72,7 @@ async function setup() {
         }),
   );
   const startRestart = async (reason: RestartReason, body: string, jobKey: string) => {
-    await restart(sqliteDb(db), (await getWorkItem(sqliteDb(db), "eng-1"))!, {
+    await restart(db, (await getWorkItem(db, "eng-1"))!, {
       reason,
       body,
       jobKey,
@@ -82,8 +80,8 @@ async function setup() {
     });
   };
   const turnStarts = async () => {
-    const job = (await listJobs(sqliteDb(db))).find((entry) => entry.queue === JOB_KIND.resume)!;
-    await sqliteDb(db).transaction((q) => fixRoundNoticeSteps(q, job, clock.now()));
+    const job = (await listJobs(db)).find((entry) => entry.queue === JOB_KIND.resume)!;
+    await db.transaction((q) => fixRoundNoticeSteps(q, job, clock.now()));
     await drain();
   };
   const drain = async () => {
@@ -106,7 +104,7 @@ test("a review restart posts one working-on-it comment and 👀 on each comment,
   const { db, github, clock, startRestart, turnStarts } = await setup();
   await startRestart("review", "Fix the review.", "review:eng-1:601");
   await recordReplyTargets(
-    sqliteDb(db),
+    db,
     "eng-1",
     "review:eng-1:601",
     [target(1, "thread", 9001), target(2, "thread", 9101), target(3, "conversation", 5001)],
@@ -119,11 +117,14 @@ test("a review restart posts one working-on-it comment and 👀 on each comment,
   expect(github.comments).toHaveLength(1);
   expect(github.comments[0]!.prNumber).toBe(7);
   expect(github.comments[0]!.body).toStartWith("🐾 Paws is working on this: 3 review comments.");
-  expect(github.reactions).toEqual([
-    { on: "review", commentId: 9001, content: "eyes" },
-    { on: "review", commentId: 9101, content: "eyes" },
-    { on: "conversation", commentId: 5001, content: "eyes" },
-  ]);
+  expect(github.reactions).toHaveLength(3);
+  expect(github.reactions).toEqual(
+    expect.arrayContaining([
+      { on: "review", commentId: 9001, content: "eyes" },
+      { on: "review", commentId: 9101, content: "eyes" },
+      { on: "conversation", commentId: 5001, content: "eyes" },
+    ]),
+  );
 });
 
 test("a conflict restart names the merge conflict and reacts to nothing", async () => {
@@ -145,7 +146,7 @@ test("Paws does not read its own working-on-it comment back as a new comment", a
 
   const comment = (id: number, body: string) =>
     acceptGitHubDelivery(
-      sqliteDb(db),
+      db,
       {
         deliveryId: `d-${id}`,
         event: "issue_comment",
@@ -170,9 +171,7 @@ test("Paws does not read its own working-on-it comment back as a new comment", a
   await comment(6001, github.comments[0]!.body);
   await comment(6002, "And rename the helper.");
 
-  expect(
-    (await pendingPullComments(sqliteDb(db), "eng-1")).map((entry) => entry.commentId),
-  ).toEqual([6002]);
+  expect((await pendingPullComments(db, "eng-1")).map((entry) => entry.commentId)).toEqual([6002]);
 });
 
 const FILTER = {
@@ -183,13 +182,13 @@ const FILTER = {
 };
 
 async function inlineComment(
-  db: Parameters<typeof sqliteDb>[0],
+  db: Db,
   now: number,
   input: { id: number; author: string; body: string; app?: number },
 ) {
-  const branch = worktreeBranch((await getWorkItem(sqliteDb(db), "eng-1"))!);
+  const branch = worktreeBranch((await getWorkItem(db, "eng-1"))!);
   return acceptGitHubDelivery(
-    sqliteDb(db),
+    db,
     {
       deliveryId: `inline-${input.id}`,
       event: "pull_request_review_comment",
@@ -222,11 +221,11 @@ test("an inline comment gets 👀 when it arrives, and the fix round adds no sec
 
   expect(github.reactions).toEqual([{ on: "review", commentId: 9001, content: "eyes" }]);
   expect(github.comments).toEqual([]);
-  expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
+  expect((await listJobs(db)).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
 
   await startRestart("review", "Fix the review.", "review:eng-1:601");
   await recordReplyTargets(
-    sqliteDb(db),
+    db,
     "eng-1",
     "review:eng-1:601",
     [target(1, "thread", 9001)],
@@ -248,7 +247,7 @@ test("comments Paws ignores get no 👀 and no Linear thought", async () => {
   await inlineComment(db, clock.now(), { id: 4, author: "pascal", body: "<!-- status --> ok" });
   await drain();
 
-  expect(await pendingPullComments(sqliteDb(db), "eng-1")).toEqual([]);
+  expect(await pendingPullComments(db, "eng-1")).toEqual([]);
   expect(github.reactions).toEqual([]);
   expect(tracker.progress).toEqual([]);
 });
@@ -262,7 +261,7 @@ test("an inline comment tells the Linear session before the fix round starts", a
   await drain();
 
   expect(tracker.progress).toMatchObject([{ sessionId: "s-1", kind: "thought", body: SEEN }]);
-  expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
+  expect((await listJobs(db)).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
 });
 
 test("three comments in one collection window post one thought, the next window another", async () => {
@@ -275,12 +274,7 @@ test("three comments in one collection window post one thought, the next window 
   expect(tracker.progress.map((update) => update.body)).toEqual([SEEN]);
 
   await startRestart("review", "Fix the review.", "review:eng-1:601");
-  await settlePullComments(
-    sqliteDb(db),
-    await pendingPullComments(sqliteDb(db), "eng-1"),
-    "restarted",
-    clock.now(),
-  );
+  await settlePullComments(db, await pendingPullComments(db, "eng-1"), "restarted", clock.now());
   await inlineComment(db, clock.now(), { id: 4, author: "kyoto", body: "One more." });
   await drain();
   expect(tracker.progress.map((update) => update.body)).toEqual([

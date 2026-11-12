@@ -10,19 +10,16 @@ import {
   getWorkItem,
   insertQueuedItem,
   listJobs,
-  migrate,
-  openDatabase,
-  sqliteDb,
 } from "../db";
 import { startFreshBudgetSteps } from "./time-budget";
+import { tempStore } from "../../test/pglite";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 
 async function harness(toml: string, projectId: string | null = null) {
   const clock = new FakeClock(20_000);
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const db = (await tempStore()).db;
   const config = parseConfigToml(toml);
   const limits = resolveTimeLimits(config, projectId, config.maxAwakeMs ?? DEFAULT_MAX_AWAKE_MS);
   const item = await insertQueuedItem(db, {
@@ -31,20 +28,20 @@ async function harness(toml: string, projectId: string | null = null) {
     limits,
     now: clock.now(),
   });
-  await beginImplementRun(sqliteDb(db), item.id, clock.now());
-  await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
+  await beginImplementRun(db, item.id, clock.now());
+  await accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
   const work = async (ms: number, reason?: RestartReason) => {
     if (reason) {
-      await applyWorkItemEvent(sqliteDb(db), item.id, "restart", { kind: "restart", reason });
-      await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
-      await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
+      await applyWorkItemEvent(db, item.id, "restart", { kind: "restart", reason });
+      await applyWorkItemEvent(db, item.id, "dispatched");
+      await accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
     }
     clock.advance(ms);
-    return await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
+    return await accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
   };
   const question = async () =>
     (
-      (await listJobs(sqliteDb(db))).find((job) => job.queue === "item.ask")?.payload as
+      (await listJobs(db)).find((job) => job.queue === "item.ask")?.payload as
         | { body: string }
         | undefined
     )?.body;
@@ -55,7 +52,7 @@ test("3 h of implementation and 2 h of CI fixes reach only the implementation li
   const { db, id, work, question } = await harness("[time_limits]\nimplementation_minutes = 180\n");
   expect((await work(2 * HOUR)).asked).toBeUndefined();
   expect((await work(2 * HOUR, "ci")).asked).toBeUndefined();
-  expect(await getWorkItem(sqliteDb(db), id)).toMatchObject({
+  expect(await getWorkItem(db, id)).toMatchObject({
     implementMs: 2 * HOUR,
     fixMs: 2 * HOUR,
   });
@@ -72,10 +69,10 @@ test("with fixes_minutes = 60, the second hour of fixes asks and names the fixes
   expect((await work(MINUTE)).asked).toBe(true);
   expect(await question()).toStartWith("The fixes stage reached its 1 h limit; continue or stop?");
 
-  await sqliteDb(db).transaction((q) =>
+  await db.transaction((q) =>
     startFreshBudgetSteps(q, { itemId: id, sessionId: null, key: "q", stage: "fixes", now: 0 }),
   );
-  expect(await getWorkItem(sqliteDb(db), id)).toMatchObject({
+  expect(await getWorkItem(db, id)).toMatchObject({
     implementMs: 30 * MINUTE,
     fixMs: 0,
     maxFixMs: HOUR,
@@ -85,20 +82,20 @@ test("with fixes_minutes = 60, the second hour of fixes asks and names the fixes
 test("Closeout time does not count by default", async () => {
   const { clock, db, id, work } = await harness("");
   await work(10 * MINUTE);
-  await applyWorkItemEvent(sqliteDb(db), id, "turn_ended");
-  await enqueueJob(sqliteDb(db), {
+  await applyWorkItemEvent(db, id, "turn_ended");
+  await enqueueJob(db, {
     queue: JOB_KIND.reverify,
     payload: { itemId: id },
     now: clock.now(),
   });
-  await claimNextJob(sqliteDb(db), {
+  await claimNextJob(db, {
     now: clock.now(),
     leaseMs: 24 * HOUR,
     queues: [JOB_KIND.reverify],
   });
-  await accrueAwake(sqliteDb(db), id, clock.mono(), clock.now());
+  await accrueAwake(db, id, clock.mono(), clock.now());
   clock.advance(5 * HOUR);
-  const result = await accrueAwake(sqliteDb(db), id, clock.mono(), clock.now());
+  const result = await accrueAwake(db, id, clock.mono(), clock.now());
   expect(result.asked).toBeUndefined();
   expect(result.item).toMatchObject({ state: "verifying", closeoutMs: 5 * HOUR });
 });

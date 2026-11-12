@@ -11,15 +11,16 @@ import {
   insertQueuedItem,
   JobLoop,
   markCloseoutAccepted,
-  migrate,
-  openDatabase,
   OutboxDispatcher,
-  sqliteDb,
+  type Db,
 } from "../db";
 import { createFakeTracker } from "../linear";
 import { mergeAcceptedWork } from "./accepted-work";
 import { MERGE_OWNER_POLL_MS } from "./merge-jobs";
 import { attachOrchestrator } from "./orchestrator";
+import { seed } from "../../test/dialects";
+import { and, eq } from "drizzle-orm";
+import { tempStore } from "../../test/pglite";
 
 const ITEM = "pas-1305";
 const HEAD = "a".repeat(40);
@@ -30,14 +31,13 @@ afterEach(async () => {
 
 async function hungTurn() {
   const root = await mkdtemp(join(tmpdir(), "paws-merge-turn-"));
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   const clock = new FakeClock(1_000_000);
   const tracker = createFakeTracker();
   const lines: string[] = [];
   const jobs = new JobLoop(db, clock);
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     jobs,
     outbox: new OutboxDispatcher(db, clock),
     pawsRoot: root,
@@ -46,8 +46,8 @@ async function hungTurn() {
     journal: (line) => lines.push(line),
   });
   await insertQueuedItem(db, { id: ITEM, sessionKey: "", now: clock.now() });
-  await beginImplementRun(sqliteDb(db), ITEM, clock.now());
-  await markCloseoutAccepted(sqliteDb(db), ITEM, HEAD);
+  await beginImplementRun(db, ITEM, clock.now());
+  await markCloseoutAccepted(db, ITEM, HEAD);
   const read = tracker.issueMergeContext.bind(tracker);
   let entered!: () => void;
   const reached = new Promise<void>((resolve) => (entered = resolve));
@@ -61,7 +61,7 @@ async function hungTurn() {
     await released;
     return read(issueId);
   };
-  const resumeId = await enqueueJob(sqliteDb(db), {
+  const resumeId = await enqueueJob(db, {
     queue: JOB_KIND.resume,
     payload: { itemId: ITEM, reason: "answer" },
     now: clock.now(),
@@ -72,38 +72,43 @@ async function hungTurn() {
     release();
     await turn.catch(() => undefined);
     await orchestrator.shutdown().catch(() => undefined);
-    db.close();
+    await close();
     await rm(root, { recursive: true, force: true });
   });
   return { db, clock, jobs, lines, resumeId };
 }
 
-async function mergeJob(db: ReturnType<typeof openDatabase>, now: number) {
-  return await enqueueJob(sqliteDb(db), {
+async function mergeJob(db: Db, now: number) {
+  return await enqueueJob(db, {
     queue: JOB_KIND.merge,
     payload: { itemId: ITEM, head: HEAD },
     now,
   });
 }
 
-async function parkedForTurn(db: ReturnType<typeof openDatabase>, id: number, now: number) {
-  const job = (await getJob(sqliteDb(db), id))!;
+async function parkedForTurn(db: Db, id: number, now: number) {
+  const job = (await getJob(db, id))!;
   return job.status === "pending" && job.attempts === 0 && job.runAt === now + MERGE_OWNER_POLL_MS;
 }
 
 test("a Merge answer that ends a hung turn's job no longer parks the merge behind it", async () => {
   const { db, clock, jobs, lines, resumeId } = await hungTurn();
-  expect(await mergeAcceptedWork(sqliteDb(db), ITEM, { now: clock.now() })).toBe(true);
-  expect((await getJob(sqliteDb(db), resumeId))?.status).toBe("cancelled");
-  expect((await getWorkItem(sqliteDb(db), ITEM))?.state).toBe("merge_queue");
-  const merge = db
-    .query<{ id: number }, [string]>("SELECT id FROM job WHERE queue = ? AND status = 'pending'")
-    .get(JOB_KIND.merge)!.id;
+  expect(await mergeAcceptedWork(db, ITEM, { now: clock.now() })).toBe(true);
+  expect((await getJob(db, resumeId))?.status).toBe("cancelled");
+  expect((await getWorkItem(db, ITEM))?.state).toBe("merge_queue");
+  const merge = (await db.run((q) =>
+    q.one(
+      q.orm
+        .select({ id: q.t.job.id })
+        .from(q.t.job)
+        .where(and(eq(q.t.job.queue, JOB_KIND.merge), eq(q.t.job.status, "pending"))),
+    ),
+  ))!.id;
 
   expect((await jobs.tick([JOB_KIND.merge]))?.id).toBe(merge);
 
   expect(await parkedForTurn(db, merge, clock.now())).toBe(false);
-  expect((await getJob(sqliteDb(db), merge))?.attempts).toBe(1);
+  expect((await getJob(db, merge))?.attempts).toBe(1);
   expect(lines).toContain(
     `merge for item ${ITEM} dropped the stale context of ${JOB_KIND.resume} job ${resumeId}, which is no longer running`,
   );
@@ -129,9 +134,12 @@ test("a merge parked behind a running job journals why, once per ten minutes", a
 
 test("a context whose job finished in the job table is dropped and the merge goes ahead", async () => {
   const { db, clock, jobs, lines, resumeId } = await hungTurn();
-  db.run("UPDATE job SET status = 'done', locked_by = NULL, locked_until = NULL WHERE id = ?", [
-    resumeId,
-  ]);
+  await seed(db, (q) =>
+    q.orm
+      .update(q.t.job)
+      .set({ status: "done", lockedBy: null, lockedUntil: null })
+      .where(eq(q.t.job.id, resumeId)),
+  );
   const merge = await mergeJob(db, clock.now());
 
   await jobs.tick([JOB_KIND.merge]);

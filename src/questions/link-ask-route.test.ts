@@ -1,27 +1,28 @@
 import { expect, test } from "bun:test";
-import { insertQueuedItem, migrate, openDatabase, syncWorkspaceMember, sqliteDb } from "../db";
+import { like } from "drizzle-orm";
+import { insertQueuedItem, putWorkspaceUser, syncWorkspaceMember } from "../db";
 import { openLinkAsk } from "./link-ask";
 import { handleLinkAskAnswer, LINK_ASK_ANSWER_PATH, type LinkAskAnswer } from "./link-ask-route";
+import { seed } from "../../test/dialects";
+import { tempStore } from "../../test/pglite";
 
 const NOW = 1_700_000_000_000;
 
 async function setup(active = true, kind: "risk" | "bypass" | "rule" = "risk") {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const db = (await tempStore()).db;
   await insertQueuedItem(db, { id: "PAS-633", sessionKey: "ses_1" });
-  db.run("INSERT INTO workspace (id, linear_organization_id, name, created_at) VALUES (?,?,?,?)", [
-    "ws",
-    "org",
-    "Kyku",
-    NOW,
-  ]);
-  db.run("INSERT INTO workspace_user (id, linear_user_id, name, email) VALUES (?,?,?,?)", [
-    "user-1",
-    "linear-1",
-    "Sam",
-    "sam@example.com",
-  ]);
-  await syncWorkspaceMember(sqliteDb(db), {
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: "ws", linearOrganizationId: "org", name: "Kyku", createdAt: NOW }),
+  );
+  await putWorkspaceUser(db, {
+    id: "user-1",
+    linearUserId: "linear-1",
+    name: "Sam",
+    email: "sam@example.com",
+  });
+  await syncWorkspaceMember(db, {
     workspaceId: "ws",
     userId: "user-1",
     role: "member",
@@ -29,7 +30,7 @@ async function setup(active = true, kind: "risk" | "bypass" | "rule" = "risk") {
     teamIds: [],
     now: NOW,
   });
-  const { question } = await openLinkAsk(sqliteDb(db), {
+  const { question } = await openLinkAsk(db, {
     asker: { itemId: "PAS-633", runId: null, sessionId: "ses_1" },
     kind,
     head: "7f65200aa",
@@ -52,7 +53,7 @@ const post = (body: unknown) =>
 test("a decision goes to the loop with the signed-in person's Linear id", async () => {
   const { db, questionId, calls } = await setup();
   const response = await handleLinkAskAnswer(post({ questionId, decision: "approve" }), {
-    store: sqliteDb(db),
+    store: db,
     principal: { workspaceId: "ws", userId: "user-1" },
     sessionIds: ["ses_1"],
     submit: async (input) => (calls.push(input), "answered"),
@@ -72,7 +73,7 @@ test("a decision goes to the loop with the signed-in person's Linear id", async 
 test("someone the loop refuses gets 403 and an Audit history row", async () => {
   const { db, questionId } = await setup();
   const response = await handleLinkAskAnswer(post({ questionId, decision: "approve" }), {
-    store: sqliteDb(db),
+    store: db,
     principal: { workspaceId: "ws", userId: "user-1" },
     sessionIds: ["ses_1"],
     submit: async () => "forbidden",
@@ -80,16 +81,24 @@ test("someone the loop refuses gets 403 and an Audit history row", async () => {
   });
   expect(response?.status).toBe(403);
   expect(
-    db
-      .query("SELECT action, subject FROM workspace_access_audit WHERE action LIKE 'decision.%'")
-      .all(),
+    await db.run((q) =>
+      q.all(
+        q.orm
+          .select({
+            action: q.t.workspaceAccessAudit.action,
+            subject: q.t.workspaceAccessAudit.subject,
+          })
+          .from(q.t.workspaceAccessAudit)
+          .where(like(q.t.workspaceAccessAudit.action, "decision.%")),
+      ),
+    ),
   ).toEqual([{ action: "decision.refused", subject: "PAS-633 7f65200 risk" }]);
 });
 
 test("an inactive member is refused before the loop sees the decision", async () => {
   const { db, questionId, calls } = await setup(false);
   const response = await handleLinkAskAnswer(post({ questionId, decision: "approve" }), {
-    store: sqliteDb(db),
+    store: db,
     principal: { workspaceId: "ws", userId: "user-1" },
     sessionIds: ["ses_1"],
     submit: async (input) => (calls.push(input), "answered"),
@@ -105,7 +114,7 @@ test("signed out, another session, a wrong decision or no note are refused", asy
   expect(
     (
       await handleLinkAskAnswer(post({ questionId, decision: "approve" }), {
-        store: sqliteDb(db),
+        store: db,
         principal: undefined,
         sessionIds: undefined,
         submit,
@@ -115,7 +124,7 @@ test("signed out, another session, a wrong decision or no note are refused", asy
   expect(
     (
       await handleLinkAskAnswer(post({ questionId, decision: "approve" }), {
-        store: sqliteDb(db),
+        store: db,
         principal,
         sessionIds: ["other"],
         submit,
@@ -125,7 +134,7 @@ test("signed out, another session, a wrong decision or no note are refused", asy
   expect(
     (
       await handleLinkAskAnswer(post({ questionId, decision: "answer", note: "x" }), {
-        store: sqliteDb(db),
+        store: db,
         principal,
         sessionIds: ["ses_1"],
         submit,
@@ -135,7 +144,7 @@ test("signed out, another session, a wrong decision or no note are refused", asy
   expect(
     (
       await handleLinkAskAnswer(post({ questionId, decision: "changes", note: " " }), {
-        store: sqliteDb(db),
+        store: db,
         principal,
         sessionIds: ["ses_1"],
         submit,
@@ -147,7 +156,7 @@ test("signed out, another session, a wrong decision or no note are refused", asy
 test("a bypass approval sends each selected check with its reason", async () => {
   const { db, questionId, calls } = await setup(true, "bypass");
   const options = {
-    store: sqliteDb(db),
+    store: db,
     principal: { workspaceId: "ws", userId: "user-1" },
     sessionIds: ["ses_1"],
     submit: (async (input) => (calls.push(input), "answered")) as LinkAskAnswer,
@@ -190,7 +199,7 @@ test("a bypass approval sends each selected check with its reason", async () => 
 
 test("a rounds ask takes Stop without a note and refuses Approve", async () => {
   const { db, calls } = await setup();
-  const { question } = await openLinkAsk(sqliteDb(db), {
+  const { question } = await openLinkAsk(db, {
     asker: { itemId: "PAS-633", runId: null, sessionId: "ses_1" },
     kind: "rounds",
     head: "4b317d5aa",
@@ -200,7 +209,7 @@ test("a rounds ask takes Stop without a note and refuses Approve", async () => {
     now: NOW,
   });
   const options = {
-    store: sqliteDb(db),
+    store: db,
     principal: { workspaceId: "ws", userId: "user-1" },
     sessionIds: ["ses_1"],
     submit: (async (input) => (calls.push(input), "answered")) as LinkAskAnswer,
@@ -230,7 +239,7 @@ test("Stop on the Risk card goes to the loop without a note; it does not fit oth
   const response = await handleLinkAskAnswer(
     post({ questionId: risk.questionId, decision: "stop" }),
     {
-      store: sqliteDb(risk.db),
+      store: risk.db,
       principal,
       sessionIds: ["ses_1"],
       submit: async (input) => (risk.calls.push(input), "answered"),
@@ -242,7 +251,7 @@ test("Stop on the Risk card goes to the loop without a note; it does not fit oth
   const refused = await handleLinkAskAnswer(
     post({ questionId: bypass.questionId, decision: "stop" }),
     {
-      store: sqliteDb(bypass.db),
+      store: bypass.db,
       principal,
       sessionIds: ["ses_1"],
       submit: async (input) => (bypass.calls.push(input), "answered"),
@@ -255,7 +264,7 @@ test("Stop on the Risk card goes to the loop without a note; it does not fit oth
 test("approving a rule break needs a reason, which goes to the loop as the note", async () => {
   const { db, questionId, calls } = await setup(true, "rule");
   const options = {
-    store: sqliteDb(db),
+    store: db,
     principal: { workspaceId: "ws", userId: "user-1" },
     sessionIds: ["ses_1"],
     submit: (async (input) => (calls.push(input), "answered")) as LinkAskAnswer,
