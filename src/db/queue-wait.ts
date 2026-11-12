@@ -78,6 +78,12 @@ export function* saveQueuePositionsSteps(
           ownerCap: ownerCaps.get(itemId) ?? null,
           updatedAt: now,
         }));
+  if (q.dialect === "postgres")
+    yield* q.exec(
+      q.orm
+        .select({ lock: sql`pg_advisory_xact_lock(hashtextextended(${"queue-position"}, 0))` })
+        .from(sql`(SELECT 1) AS lock_scope`),
+    );
   yield* q.exec(q.orm.delete(q.t.queuePosition));
   if (rows.length > 0) yield* q.exec(q.orm.insert(q.t.queuePosition).values(rows));
 }
