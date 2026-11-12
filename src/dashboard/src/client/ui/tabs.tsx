@@ -25,8 +25,9 @@ const tabsListVariants = cva(
   {
     variants: {
       variant: {
-        default: "min-h-control max-w-full rounded-base border-2 border-border bg-background p-1",
-        line: "gap-1 border-b-2 border-border bg-transparent data-[orientation=vertical]:border-r-2 data-[orientation=vertical]:border-b-0",
+        default:
+          "max-w-full gap-1 border-b border-border data-[orientation=vertical]:border-r data-[orientation=vertical]:border-b-0",
+        line: "max-w-full gap-1 border-b border-border data-[orientation=vertical]:border-r data-[orientation=vertical]:border-b-0",
       },
     },
     defaultVariants: {
@@ -55,9 +56,8 @@ function TabsTrigger({ className, ...props }: React.ComponentProps<typeof TabsPr
     <TabsPrimitive.Tab
       data-slot="tabs-trigger"
       className={cn(
-        "relative inline-flex min-h-control min-w-0 flex-1 items-center justify-center whitespace-normal rounded-base border-2 border-transparent px-4 py-2 gap-1.5 text-sm font-heading ring-offset-secondary-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 data-disabled:pointer-events-none data-disabled:opacity-50 data-active:bg-main data-active:text-main-foreground data-active:border-border data-[orientation=vertical]:w-full data-[orientation=vertical]:justify-start [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
-        "after:pointer-events-none after:absolute after:bg-main after:opacity-0 after:transition-opacity after:hidden group-data-[variant=line]/tabs-list:after:block data-[orientation=horizontal]:after:inset-x-0 data-[orientation=horizontal]:after:-bottom-0.5 data-[orientation=horizontal]:after:h-1 data-[orientation=vertical]:after:inset-y-0 data-[orientation=vertical]:after:-right-0.5 data-[orientation=vertical]:after:w-1",
-        "group-data-[variant=line]/tabs-list:data-active:border-transparent group-data-[variant=line]/tabs-list:data-active:bg-transparent group-data-[variant=line]/tabs-list:data-active:text-foreground group-data-[variant=line]/tabs-list:data-active:after:opacity-100",
+        "relative -mb-px inline-flex min-h-control min-w-0 items-center justify-center whitespace-normal border-b-2 border-transparent px-3 py-1.5 gap-1.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 data-disabled:pointer-events-none data-disabled:opacity-50 data-active:border-foreground data-active:text-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        "data-[orientation=vertical]:-mr-px data-[orientation=vertical]:mb-0 data-[orientation=vertical]:w-full data-[orientation=vertical]:justify-start data-[orientation=vertical]:border-b-0 data-[orientation=vertical]:border-r-2",
         className,
       )}
       {...props}
