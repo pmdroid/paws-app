@@ -62,6 +62,7 @@ const findings: FindingsResponse = {
 };
 const groups: FindingGroupsResponse = {
   canRun: true,
+  canChange: true,
   enabled: true,
   lastRun: {
     id: "run",
