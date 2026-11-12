@@ -14,11 +14,8 @@ import {
   listJobs,
   listOutbox,
   listRebaseReturns,
-  migrate,
-  openDatabase,
   pendingPullComments,
   recordItemPullRequest,
-  sqliteDb,
   syncSteps,
 } from "../db";
 import { REBASE_CONFLICT_INSTRUCTION, ciFixHandoff, returnToAgent } from "../merge";
@@ -38,6 +35,7 @@ import {
 } from "./pull-comments";
 import type { PullReviewCapabilities } from "./pull-reviews";
 import { worktreeBranch } from "./sources";
+import { tempStore } from "../../test/pglite";
 
 const FILTER: PullCommentFilter = {
   appId: async () => "42",
@@ -50,23 +48,22 @@ const FINDINGS = "Closeout found: `src/rank.ts:30` sorts the wrong way round.";
 const CHECKS = [{ name: "test (0/2)", url: "https://ci.example/acme/one/1" }];
 
 async function setup(state: "running" | "verifying" | "merge_queue") {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const db = (await tempStore()).db;
   await insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
-  await bindWorkItemRepository(sqliteDb(db), "eng-1", {
+  await bindWorkItemRepository(db, "eng-1", {
     owner: "acme",
     repo: "one",
     remoteUrl: "https://github.com/acme/one.git",
   });
-  await beginImplementRun(sqliteDb(db), "eng-1", 1);
-  if (state === "verifying") await applyWorkItemEvent(sqliteDb(db), "eng-1", "turn_ended");
+  await beginImplementRun(db, "eng-1", 1);
+  if (state === "verifying") await applyWorkItemEvent(db, "eng-1", "turn_ended");
   if (state === "merge_queue")
-    await enterMergeQueue(sqliteDb(db), "eng-1", {
+    await enterMergeQueue(db, "eng-1", {
       phase: "merge_queue",
       baseSha: "b",
       wipCommit: "h",
     });
-  await recordItemPullRequest(sqliteDb(db), {
+  await recordItemPullRequest(db, {
     itemId: "eng-1",
     pullNumber: 7,
     pullUrl: null,
@@ -91,7 +88,7 @@ async function setup(state: "running" | "verifying" | "merge_queue") {
   let delivery = 0;
   const send = (event: string, payload: Record<string, unknown>) =>
     acceptGitHubDelivery(
-      sqliteDb(db),
+      db,
       {
         deliveryId: `d-${(delivery += 1)}`,
         event,
@@ -106,7 +103,7 @@ async function setup(state: "running" | "verifying" | "merge_queue") {
   const pull = async () => ({
     number: 7,
     head: {
-      ref: worktreeBranch((await getWorkItem(sqliteDb(db), "eng-1"))!),
+      ref: worktreeBranch((await getWorkItem(db, "eng-1"))!),
       sha: "h",
       repo: { id: 11 },
     },
@@ -140,12 +137,8 @@ async function setup(state: "running" | "verifying" | "merge_queue") {
     reason: "conflict" | "ci" | "findings",
     lead: string,
   ): Promise<number | null> => {
-    const reads = await readPendingFeedback(
-      sqliteDb(db),
-      (await getWorkItem(sqliteDb(db), "eng-1"))!,
-      caps,
-    );
-    const restarted = await sqliteDb(db).transaction(function* (q) {
+    const reads = await readPendingFeedback(db, (await getWorkItem(db, "eng-1"))!, caps);
+    const restarted = await db.transaction(function* (q) {
       const current = (yield* getWorkItemSteps(q, "eng-1"))!;
       return yield* restartWithFeedbackSteps(q, current, {
         reason,
@@ -175,19 +168,19 @@ async function setup(state: "running" | "verifying" | "merge_queue") {
 
 type Db = Awaited<ReturnType<typeof setup>>["db"];
 const resumeJobs = async (db: Db) =>
-  (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
+  (await listJobs(db)).filter((job) => job.queue === JOB_KIND.resume);
 const handoffs = async (db: Db) =>
   (await resumeJobs(db)).map((job) => job.payload as { handoff: string; reason: string });
 const feedbackThoughts = async (db: Db) =>
-  (await listOutbox(sqliteDb(db)))
+  (await listOutbox(db))
     .filter((row) => row.op === "activity" && row.idempotencyKey.startsWith("pull-feedback:"))
     .map((row) => (row.payload as { body: string }).body);
 const BOT_FINDING = "Medium: the cache key ignores the tenant.";
 
 async function backToMergeQueue(db: Db) {
-  await applyWorkItemEvent(sqliteDb(db), "eng-1", "dispatched");
-  await applyWorkItemEvent(sqliteDb(db), "eng-1", "turn_ended");
-  await applyWorkItemEvent(sqliteDb(db), "eng-1", "closeout_accepted");
+  await applyWorkItemEvent(db, "eng-1", "dispatched");
+  await applyWorkItemEvent(db, "eng-1", "turn_ended");
+  await applyWorkItemEvent(db, "eng-1", "closeout_accepted");
 }
 
 describe("a send-back carries the feedback waiting on the item", () => {
@@ -209,14 +202,14 @@ describe("a send-back carries the feedback waiting on the item", () => {
     expect(handoff).toContain(`\`src/cache.ts:40\`: ${BOT_FINDING}`);
     expect(handoff.indexOf(COMMENT_FIX_INSTRUCTION)).toBeGreaterThan(digest);
     expect(replies).toBeGreaterThan(digest);
-    expect((await getPullComment(sqliteDb(h.db), "inline", 9001))?.outcome).toBe("restarted");
+    expect((await getPullComment(h.db, "inline", 9001))?.outcome).toBe("restarted");
     expect(await feedbackThoughts(h.db)).toEqual([
       "@cursor[bot] commented on pull request #7. The agent is working on the comments.",
     ]);
-    expect(await fixRounds(sqliteDb(h.db), "eng-1")).toBe(1);
+    expect(await fixRounds(h.db, "eng-1")).toBe(1);
 
     await backToMergeQueue(h.db);
-    expect(await handlePullComments(sqliteDb(h.db), "eng-1", h.caps)).toBe("done");
+    expect(await handlePullComments(h.db, "eng-1", h.caps)).toBe("done");
     expect(await handoffs(h.db)).toHaveLength(1);
   });
 
@@ -230,8 +223,8 @@ describe("a send-back carries the feedback waiting on the item", () => {
     expect(restarted?.handoff.startsWith(FINDINGS)).toBe(true);
     expect(restarted?.handoff).toContain("@pascal in the conversation:");
     expect(restarted?.handoff).not.toContain(REBASED_LINES_NOTE);
-    expect((await getPullComment(sqliteDb(h.db), "conversation", 9101))?.outcome).toBe("restarted");
-    expect(await fixRounds(sqliteDb(h.db), "eng-1")).toBe(1);
+    expect((await getPullComment(h.db, "conversation", 9101))?.outcome).toBe("restarted");
+    expect(await fixRounds(h.db, "eng-1")).toBe(1);
   });
 
   test("a CI restart carries the failed checks and the comment, in one fix round", async () => {
@@ -244,8 +237,8 @@ describe("a send-back carries the feedback waiting on the item", () => {
     expect(restarted?.handoff.indexOf("CI failed on the pull request.")).toBe(0);
     expect(restarted?.handoff).toContain("- test (0/2)");
     expect(restarted?.handoff).toContain(BOT_FINDING);
-    expect((await getPullComment(sqliteDb(h.db), "inline", 9201))?.outcome).toBe("restarted");
-    expect(await fixRounds(sqliteDb(h.db), "eng-1")).toBe(1);
+    expect((await getPullComment(h.db, "inline", 9201))?.outcome).toBe("restarted");
+    expect(await fixRounds(h.db, "eng-1")).toBe(1);
   });
 
   test("with the fix rounds spent, the conflict goes back alone and the comment asks", async () => {
@@ -256,13 +249,13 @@ describe("a send-back carries the feedback waiting on the item", () => {
     expect(await handoffs(h.db)).toEqual([
       expect.objectContaining({ reason: "conflict", handoff: REBASE_CONFLICT_INSTRUCTION }),
     ]);
-    expect(await fixRounds(sqliteDb(h.db), "eng-1")).toBe(0);
-    expect(await pendingPullComments(sqliteDb(h.db), "eng-1")).toHaveLength(2);
+    expect(await fixRounds(h.db, "eng-1")).toBe(0);
+    expect(await pendingPullComments(h.db, "eng-1")).toHaveLength(2);
 
     await backToMergeQueue(h.db);
-    expect(await handlePullComments(sqliteDb(h.db), "eng-1", h.caps)).toBe("asked");
-    expect((await findOpenQuestion(sqliteDb(h.db), "s-1"))?.body).toContain(BOT_FINDING);
-    expect((await getWorkItem(sqliteDb(h.db), "eng-1"))?.state).toBe("awaiting_input");
+    expect(await handlePullComments(h.db, "eng-1", h.caps)).toBe("asked");
+    expect((await findOpenQuestion(h.db, "s-1"))?.body).toContain(BOT_FINDING);
+    expect((await getWorkItem(h.db, "eng-1"))?.state).toBe("awaiting_input");
     expect(await handoffs(h.db)).toHaveLength(1);
   });
 
@@ -270,14 +263,14 @@ describe("a send-back carries the feedback waiting on the item", () => {
     const h = await setup("running");
     h.setBusy(true);
     await h.inline(9401, "cursor[bot]", BOT_FINDING);
-    expect(await handlePullComments(sqliteDb(h.db), "eng-1", h.caps)).toBe("wait");
+    expect(await handlePullComments(h.db, "eng-1", h.caps)).toBe("wait");
     expect(await handoffs(h.db)).toHaveLength(0);
-    expect((await getWorkItem(sqliteDb(h.db), "eng-1"))?.state).toBe("running");
+    expect((await getWorkItem(h.db, "eng-1"))?.state).toBe("running");
 
-    await applyWorkItemEvent(sqliteDb(h.db), "eng-1", "turn_ended");
+    await applyWorkItemEvent(h.db, "eng-1", "turn_ended");
     await h.sendBack("conflict", REBASE_CONFLICT_INSTRUCTION);
     expect((await handoffs(h.db))[0]?.handoff).toContain(BOT_FINDING);
-    expect((await getPullComment(sqliteDb(h.db), "inline", 9401))?.outcome).toBe("restarted");
+    expect((await getPullComment(h.db, "inline", 9401))?.outcome).toBe("restarted");
   });
 
   test("an ignored bot's comment is not carried", async () => {
@@ -285,7 +278,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
     await h.conversation(9501, "codecov[bot]", "Coverage: 91%.");
     await h.sendBack("conflict", REBASE_CONFLICT_INSTRUCTION);
     expect((await handoffs(h.db))[0]?.handoff).toBe(REBASE_CONFLICT_INSTRUCTION);
-    expect(await fixRounds(sqliteDb(h.db), "eng-1")).toBe(0);
+    expect(await fixRounds(h.db, "eng-1")).toBe(0);
     expect(await feedbackThoughts(h.db)).toEqual([]);
   });
 });
@@ -295,25 +288,25 @@ describe("a comment restart on a conflicting pull request", () => {
     const h = await setup("merge_queue");
     h.setConflict({ head: "h", base: "main-2" });
     await h.inline(9601, "cursor[bot]", BOT_FINDING);
-    expect(await handlePullComments(sqliteDb(h.db), "eng-1", h.caps)).toBe("restarted");
+    expect(await handlePullComments(h.db, "eng-1", h.caps)).toBe("restarted");
     const [restarted] = await handoffs(h.db);
     expect(await handoffs(h.db)).toHaveLength(1);
     expect(restarted?.reason).toBe("review");
     expect(restarted?.handoff.indexOf(REBASE_CONFLICT_INSTRUCTION)).toBe(0);
     expect(restarted?.handoff).toContain(REBASED_LINES_NOTE);
     expect(restarted?.handoff).toContain(BOT_FINDING);
-    expect(await listRebaseReturns(sqliteDb(h.db), "eng-1", 0)).toEqual([
+    expect(await listRebaseReturns(h.db, "eng-1", 0)).toEqual([
       expect.objectContaining({ reason: "merge", base: "main-2" }),
     ]);
-    expect(await fixRounds(sqliteDb(h.db), "eng-1")).toBe(1);
+    expect(await fixRounds(h.db, "eng-1")).toBe(1);
   });
 
   test("without a conflict has no rebase instruction", async () => {
     const h = await setup("merge_queue");
     await h.inline(9701, "cursor[bot]", BOT_FINDING);
-    expect(await handlePullComments(sqliteDb(h.db), "eng-1", h.caps)).toBe("restarted");
+    expect(await handlePullComments(h.db, "eng-1", h.caps)).toBe("restarted");
     expect((await handoffs(h.db))[0]?.handoff).not.toContain(REBASE_CONFLICT_INSTRUCTION);
-    expect(await listRebaseReturns(sqliteDb(h.db), "eng-1", 0)).toEqual([]);
+    expect(await listRebaseReturns(h.db, "eng-1", 0)).toEqual([]);
   });
 });
 
@@ -321,7 +314,7 @@ test("the merge lane's rebase return carries the stored comment", async () => {
   const h = await setup("merge_queue");
   h.setBusy(true);
   await h.inline(9801, "cursor[bot]", BOT_FINDING);
-  const returned = await returnToAgent(sqliteDb(h.db), {
+  const returned = await returnToAgent(h.db, {
     itemId: "eng-1",
     reason: "rebase-conflict",
     admit: () => syncSteps(() => true),
@@ -347,6 +340,6 @@ test("the merge lane's rebase return carries the stored comment", async () => {
   expect(restarted?.reason).toBe("conflict");
   expect(restarted?.handoff.indexOf(REBASE_CONFLICT_INSTRUCTION)).toBe(0);
   expect(restarted?.handoff).toContain(`\`src/cache.ts:40\`: ${BOT_FINDING}`);
-  expect((await getPullComment(sqliteDb(h.db), "inline", 9801))?.outcome).toBe("restarted");
-  expect(await fixRounds(sqliteDb(h.db), "eng-1")).toBe(1);
+  expect((await getPullComment(h.db, "inline", 9801))?.outcome).toBe("restarted");
+  expect(await fixRounds(h.db, "eng-1")).toBe(1);
 });

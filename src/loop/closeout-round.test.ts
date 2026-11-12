@@ -5,15 +5,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { runCloseoutGate, snapshotRetryBaseline, type FixRunner } from "../closeout";
-import {
-  insertQueuedItem,
-  listCloseoutRounds,
-  migrate,
-  openDatabase,
-  startCloseoutRound,
-  sqliteDb,
-} from "../db";
+import { insertQueuedItem, listCloseoutRounds, startCloseoutRound } from "../db";
 import { recoveryOptions } from "./closeout-recovery";
+import { tempStore } from "../../test/pglite";
 
 const exec = promisify(execFile);
 const TASK = "PAS-390-task";
@@ -37,9 +31,8 @@ test("a re-check of a rebased head retains the spent check budget", async () => 
   const dir = path.join(root, "repo");
   const home = path.join(root, "home");
   const pawsHome = path.join(root, "paws");
-  const db = openDatabase(":memory:");
+  const { db, close } = await tempStore();
   try {
-    migrate(db);
     await insertQueuedItem(db, { id: "item-390" });
     await mkdir(home);
     await mkdir(pawsHome);
@@ -78,7 +71,7 @@ test("a re-check of a rebased head retains the spent check budget", async () => 
 
     const baseline = await snapshotRetryBaseline(TASK, pawsHome);
     expect(
-      await startCloseoutRound(sqliteDb(db), {
+      await startCloseoutRound(db, {
         itemId: "item-390",
         head: rebased,
         retryBaseline: baseline,
@@ -86,20 +79,20 @@ test("a re-check of a rebased head retains the spent check budget", async () => 
       }),
     ).toBe(true);
     expect(
-      await startCloseoutRound(sqliteDb(db), {
+      await startCloseoutRound(db, {
         itemId: "item-390",
         head: rebased,
         retryBaseline: [],
         startedAt: 2,
       }),
     ).toBe(false);
-    expect(await listCloseoutRounds(sqliteDb(db), "item-390")).toEqual([
+    expect(await listCloseoutRounds(db, "item-390")).toEqual([
       { itemId: "item-390", head: rebased, retryBaseline: baseline, startedAt: 1 },
     ]);
 
     const recheck = await runCloseoutGate({
       ...input,
-      ...(await recoveryOptions(sqliteDb(db), "item-390")),
+      ...(await recoveryOptions(db, "item-390")),
       maxFixAttempts: 5,
     });
     expect(recheck.outcome).toBe("exhausted");
@@ -108,7 +101,7 @@ test("a re-check of a rebased head retains the spent check budget", async () => 
     expect(kept).toEqual(expect.arrayContaining(baseline));
     expect(kept.length).toBe(baseline.length);
   } finally {
-    db.close();
+    await close();
     await rm(root, { recursive: true, force: true });
   }
 }, 60_000);
