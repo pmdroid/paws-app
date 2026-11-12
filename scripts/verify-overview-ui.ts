@@ -124,16 +124,19 @@ try {
     await expect(page.getByRole("heading", { level: 2, name: /Needs you/ })).toBeVisible();
     if (!before) {
       await expect(page.locator("h1")).toHaveCount(1);
-      const progress = page.getByRole("region", { name: /In progress/ });
-      for (const [id, phase] of [
-        ["ENG-102", "Fixing merge conflicts"],
-        ["ENG-105", "Checking"],
-        ["ENG-106", "Implementing"],
-        ["ENG-101", "Waiting to merge"],
+      const items = page.getByRole("region", { name: /Items/ });
+      for (const [id, state] of [
+        ["ENG-102", "running"],
+        ["ENG-105", "verifying"],
+        ["ENG-106", "running"],
+        ["ENG-101", "merge_queue"],
+        ["ENG-107", "queued"],
       ])
-        await expect(progress.locator(`[data-item="${id}"]`)).toContainText(phase);
-      await expect(page.getByRole("region", { name: /Queued/ })).toContainText(
-        "blocked by ENG-101, ENG-103",
+        await expect(items.locator(`[data-issue-id="${id}"]`)).toContainText(state);
+      await expect(items).toContainText("blocked by ENG-101, ENG-103");
+      await expect(items.locator("[data-issue-id=ENG-98]")).toHaveCount(0);
+      await expect(page.getByRole("group", { name: "Work at a glance" })).toContainText(
+        "In flight",
       );
       await expect(page.getByRole("region", { name: /Recently merged/ })).toContainText(
         "Audit event schema v2",
