@@ -967,7 +967,7 @@ export function createRemoteAgentRunner(options: {
           if (options.transcripts && existsSync(transcript))
             previousTranscript = readFileSync(transcript);
           if (input.prepareOnly) {
-            const id = randomUUID();
+            const id = Bun.randomUUIDv7();
             const issuedAt = now();
             try {
               await store.transaction(function* (q) {
@@ -1373,7 +1373,7 @@ export function createRemoteAgentRunner(options: {
               }
               // A runner command does not carry the caller's session, so a resume replays.
               const replayed = input.resume?.replayPrompt ?? input.prompt;
-              const commandId = randomUUID();
+              const commandId = Bun.randomUUIDv7();
               const githubRead =
                 !taskScope &&
                 input.role === "implementer" &&
