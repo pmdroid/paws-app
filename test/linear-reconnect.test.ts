@@ -4,11 +4,9 @@ import {
   getLinearSessionAccess,
   isLinearAppRevoked,
   listLinearInstallationRevocations,
-  migrate,
-  openDatabase,
+  openPawsStore,
   recordLinearInstallation,
   revokeLinearInstallation,
-  sqliteDb,
 } from "../src/db";
 import { createLinearReconnect } from "../src/onboarding";
 import {
@@ -17,11 +15,14 @@ import {
   writeStoredToken,
   type StoredLinearToken,
 } from "../src/linear";
+import { sql } from "drizzle-orm";
+import { seed } from "./dialects";
 import { tempHome } from "./helpers";
+import { copyMigratedPglite } from "./pglite";
 
-const cleanup: (() => void)[] = [];
-afterEach(() => {
-  for (const close of cleanup.splice(0).reverse()) close();
+const cleanup: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of cleanup.splice(0).reverse()) await close();
 });
 const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
 const verified = () =>
@@ -30,17 +31,25 @@ const verified = () =>
 async function fixture(known = true) {
   const home = tempHome();
   const secretsDir = join(home, "secrets");
-  const db = openDatabase(join(home, "paws.db"));
-  cleanup.push(() => db.close());
-  migrate(db);
+  const pgliteDir = join(home, "pglite");
+  await copyMigratedPglite(pgliteDir);
+  const open = await openPawsStore({ url: null, pgliteDir });
+  let closed = false;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    await open.close();
+  };
+  cleanup.push(close);
+  const db = open.store;
   if (known)
-    await recordLinearInstallation(sqliteDb(db), {
+    await recordLinearInstallation(db, {
       ...scope,
       sessionId: "session",
       teamId: "team",
       observedAtMs: 1,
     });
-  await revokeLinearInstallation(sqliteDb(db), { ...scope, eventKey: "first", createdAtMs: 10 });
+  await revokeLinearInstallation(db, { ...scope, eventKey: "first", createdAtMs: 10 });
   const previous: StoredLinearToken = {
     accessToken: "fake-old-access",
     refreshToken: "fake-old-refresh",
@@ -49,8 +58,8 @@ async function fixture(known = true) {
     actor: "app",
   };
   const next = { ...previous, accessToken: "fake-new-access", refreshToken: "fake-new-refresh" };
-  await writeStoredToken(sqliteDb(db), secretsDir, previous);
-  return { home, secretsDir, db, previous, next };
+  await writeStoredToken(db, secretsDir, previous);
+  return { home, secretsDir, pgliteDir, db, close, previous, next };
 }
 
 test("verified host reconnection persists a new credential and restores the same installation across reopen", async () => {
@@ -62,21 +71,20 @@ test("verified host reconnection persists a new credential and restores the same
       requests.push({ url: String(url), init });
       return verified();
     },
-  })(sqliteDb(f.db), f.home);
+  })(f.db, f.home);
   expect(await reconnect.complete({ clientId: "client", token: f.next })).toBe(true);
-  expect(await readStoredToken(sqliteDb(f.db), f.secretsDir)).toEqual(f.next);
-  const reopened = openDatabase(join(f.home, "paws.db"));
+  expect(await readStoredToken(f.db, f.secretsDir)).toEqual(f.next);
+  await f.close();
+  const reopened = await openPawsStore({ url: null, pgliteDir: f.pgliteDir });
   try {
-    expect(await getLinearSessionAccess(sqliteDb(reopened), "session")).toBe("allowed");
-    expect(await isLinearAppRevoked(sqliteDb(reopened), scope)).toBe(false);
-    expect(await listLinearInstallationRevocations(sqliteDb(reopened))).toEqual([]);
-    expect(reopened.query("SELECT * FROM linear_app_revocation").get()).toMatchObject({
-      revoked_at: 10,
-      generation: 1,
-      restored_after: 20,
-    });
+    expect(await getLinearSessionAccess(reopened.store, "session")).toBe("allowed");
+    expect(await isLinearAppRevoked(reopened.store, scope)).toBe(false);
+    expect(await listLinearInstallationRevocations(reopened.store)).toEqual([]);
+    expect(
+      await reopened.store.run((q) => q.all(q.orm.select().from(q.t.linearAppRevocation))),
+    ).toMatchObject([{ revokedAt: 10, generation: 1, restoredAfter: 20 }]);
   } finally {
-    reopened.close();
+    await reopened.close();
   }
   expect(requests).toHaveLength(1);
   expect(requests[0]?.url).toBe("https://api.linear.app/graphql");
@@ -95,27 +103,25 @@ test("an unchanged credential cannot restore access or make a verification reque
       requests++;
       return verified();
     },
-  })(sqliteDb(f.db), f.home);
+  })(f.db, f.home);
   await expect(reconnect.complete({ clientId: "client", token: f.previous })).rejects.toThrow(
     "new authorization grant",
   );
   expect(requests).toBe(0);
-  expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("revoked");
+  expect(await getLinearSessionAccess(f.db, "session")).toBe("revoked");
 });
 
 test("a claimed OAuth client without a verified app user cannot restore a revoked installation", async () => {
   const f = await fixture(false);
   const reconnect = await createLinearReconnect({ now: () => 20, fetch: async () => verified() })(
-    sqliteDb(f.db),
+    f.db,
     f.home,
   );
   await expect(reconnect.complete({ clientId: "client", token: f.next })).rejects.toThrow(
     "verified installation",
   );
-  expect(await readStoredToken(sqliteDb(f.db), f.secretsDir)).toEqual(f.previous);
-  expect(
-    await isLinearAppRevoked(sqliteDb(f.db), { oauthClientId: "client", appUserId: null }),
-  ).toBe(true);
+  expect(await readStoredToken(f.db, f.secretsDir)).toEqual(f.previous);
+  expect(await isLinearAppRevoked(f.db, { oauthClientId: "client", appUserId: null })).toBe(true);
 });
 
 test.each(["human", "other-app", "unauthorized", "errors", "missing"])(
@@ -138,10 +144,10 @@ test.each(["human", "other-app", "unauthorized", "errors", "missing"])(
           },
         });
       },
-    })(sqliteDb(f.db), f.home);
+    })(f.db, f.home);
     await expect(reconnect.complete({ clientId: "client", token: f.next })).rejects.toThrow();
-    expect(await readStoredToken(sqliteDb(f.db), f.secretsDir)).toEqual(f.previous);
-    expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("revoked");
+    expect(await readStoredToken(f.db, f.secretsDir)).toEqual(f.previous);
+    expect(await getLinearSessionAccess(f.db, "session")).toBe("revoked");
   },
 );
 
@@ -157,22 +163,22 @@ test.each(["revocation", "credential"])(
         started.resolve();
         return released.promise;
       },
-    })(sqliteDb(f.db), f.home);
+    })(f.db, f.home);
     const pending = reconnect.complete({ clientId: "client", token: f.next });
     await started.promise;
     const expected =
       kind === "credential" ? { ...f.previous, accessToken: "fake-operator-access" } : f.previous;
-    if (kind === "credential") await writeStoredToken(sqliteDb(f.db), f.secretsDir, expected);
+    if (kind === "credential") await writeStoredToken(f.db, f.secretsDir, expected);
     else
-      await revokeLinearInstallation(sqliteDb(f.db), {
+      await revokeLinearInstallation(f.db, {
         ...scope,
         eventKey: "during",
         createdAtMs: 25,
       });
     released.resolve(verified());
     await expect(pending).rejects.toThrow();
-    expect(await readStoredToken(sqliteDb(f.db), f.secretsDir)).toEqual(expected);
-    expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("revoked");
+    expect(await readStoredToken(f.db, f.secretsDir)).toEqual(expected);
+    expect(await getLinearSessionAccess(f.db, "session")).toBe("revoked");
   },
 );
 
@@ -181,64 +187,70 @@ test.each([20, 25])(
   async (createdAtMs) => {
     const f = await fixture();
     const reconnect = await createLinearReconnect({ now: () => 20, fetch: async () => verified() })(
-      sqliteDb(f.db),
+      f.db,
       f.home,
     );
     await reconnect.complete({ clientId: "client", token: f.next });
     expect(
-      await revokeLinearInstallation(sqliteDb(f.db), {
+      await revokeLinearInstallation(f.db, {
         ...scope,
         eventKey: "delayed",
         createdAtMs,
       }),
     ).toEqual(["session"]);
-    expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("revoked");
-    expect((await listLinearInstallationRevocations(sqliteDb(f.db)))[0]?.generation).toBe(2);
+    expect(await getLinearSessionAccess(f.db, "session")).toBe("revoked");
+    expect((await listLinearInstallationRevocations(f.db))[0]?.generation).toBe(2);
   },
 );
 
 test("historical revocation before the captured grant start stays deduped and cannot cancel the new installation", async () => {
   const f = await fixture();
   const reconnect = await createLinearReconnect({ now: () => 20, fetch: async () => verified() })(
-    sqliteDb(f.db),
+    f.db,
     f.home,
   );
   await reconnect.complete({ clientId: "client", token: f.next });
   for (let i = 0; i < 2; i++) {
     expect(
-      await revokeLinearInstallation(sqliteDb(f.db), {
+      await revokeLinearInstallation(f.db, {
         ...scope,
         eventKey: "historical",
         createdAtMs: 19,
       }),
     ).toEqual([]);
-    expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("allowed");
+    expect(await getLinearSessionAccess(f.db, "session")).toBe("allowed");
   }
 });
 
 test("a failed restoration write leaves both the credential and fence unchanged", async () => {
   const f = await fixture();
   const reconnect = await createLinearReconnect({ now: () => 20, fetch: async () => verified() })(
-    sqliteDb(f.db),
+    f.db,
     f.home,
   );
-  f.db.run(
-    "CREATE TRIGGER fail_restore BEFORE UPDATE ON linear_app_revocation BEGIN SELECT RAISE(ABORT, 'restore failed'); END",
+  await seed(
+    f.db,
+    (q) =>
+      q.orm.execute(
+        sql`CREATE FUNCTION fail_restore() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'restore failed'; END $$ LANGUAGE plpgsql`,
+      ),
+    (q) =>
+      q.orm.execute(
+        sql`CREATE TRIGGER fail_restore BEFORE UPDATE ON linear_app_revocation FOR EACH ROW EXECUTE FUNCTION fail_restore()`,
+      ),
   );
-  await expect(reconnect.complete({ clientId: "client", token: f.next })).rejects.toThrow(
-    "restore failed",
-  );
-  expect(await readStoredToken(sqliteDb(f.db), f.secretsDir)).toEqual(f.previous);
-  expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("revoked");
+  const error = (await reconnect
+    .complete({ clientId: "client", token: f.next })
+    .catch((e: unknown) => e)) as Error;
+  expect(String(error.cause)).toContain("restore failed");
+  expect(await readStoredToken(f.db, f.secretsDir)).toEqual(f.previous);
+  expect(await getLinearSessionAccess(f.db, "session")).toBe("revoked");
 });
 
 test("a refresh started before revocation cannot overwrite the verified host reconnect credential", async () => {
   const f = await fixture();
   await (
-    await createLinearReconnect({ now: () => 20, fetch: async () => verified() })(
-      sqliteDb(f.db),
-      f.home,
-    )
+    await createLinearReconnect({ now: () => 20, fetch: async () => verified() })(f.db, f.home)
   ).complete({
     clientId: "client",
     token: f.next,
@@ -250,7 +262,7 @@ test("a refresh started before revocation cannot overwrite the verified host rec
     secretsDir: f.secretsDir,
     clientId: "client",
     clientSecret: "fake-secret",
-    isAuthorized: async () => !(await isLinearAppRevoked(sqliteDb(f.db), scope)),
+    isAuthorized: async () => !(await isLinearAppRevoked(f.db, scope)),
     fetch: async () => {
       started.resolve();
       return released.promise;
@@ -258,7 +270,7 @@ test("a refresh started before revocation cannot overwrite the verified host rec
   });
   const pending = auth.ensureFresh();
   await started.promise;
-  await revokeLinearInstallation(sqliteDb(f.db), {
+  await revokeLinearInstallation(f.db, {
     ...scope,
     eventKey: "next-revocation",
     createdAtMs: 30,
@@ -269,10 +281,7 @@ test("a refresh started before revocation cannot overwrite the verified host rec
     refreshToken: "fake-reconnected-refresh",
   };
   await (
-    await createLinearReconnect({ now: () => 40, fetch: async () => verified() })(
-      sqliteDb(f.db),
-      f.home,
-    )
+    await createLinearReconnect({ now: () => 40, fetch: async () => verified() })(f.db, f.home)
   ).complete({
     clientId: "client",
     token: latest,
@@ -285,6 +294,6 @@ test("a refresh started before revocation cannot overwrite the verified host rec
     }),
   );
   expect(await pending).toBe(latest.accessToken);
-  expect(await readStoredToken(sqliteDb(f.db), f.secretsDir)).toEqual(latest);
-  expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("allowed");
+  expect(await readStoredToken(f.db, f.secretsDir)).toEqual(latest);
+  expect(await getLinearSessionAccess(f.db, "session")).toBe("allowed");
 });
