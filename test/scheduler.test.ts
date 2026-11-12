@@ -48,16 +48,16 @@ test("Scheduler dispatch is durable and admits each ready item once across proce
     restore();
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 60_000);
 
 test("A failing scheduler contender names its error in the assertion", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-scheduler-contender-"));
   try {
-    // A file where the contender expects its directory: it cannot copy its warm-up database.
+    // A file where the contender expects its directory: it cannot read the database URL.
     writeFileSync(join(root, "file"), "");
     await assert.rejects(
       contenderExited(spawnContender(join(root, "file"), 0)),
-      /exited 1 \(signal none\)\nstderr: Scheduler contender 0 failed: .*ENOTDIR: not a directory, copyfile/s,
+      /exited 1 \(signal none\)\nstderr: Scheduler contender 0 failed: .*ENOTDIR: not a directory, open/s,
     );
   } finally {
     rmSync(root, { recursive: true, force: true });

@@ -192,6 +192,7 @@ export async function serverPostgres(base: string, max?: number): Promise<TestPo
 
 export async function pgliteServer(
   env: Record<string, string | undefined> = process.env,
+  options: { maxConnections?: number } = {},
 ): Promise<TestPostgres> {
   const base = env.PAWS_TEST_DATABASE_URL;
   if (base) return await serverPostgres(base);
@@ -200,7 +201,7 @@ export async function pgliteServer(
     db: syncedSession(client),
     host: "127.0.0.1",
     port: 0,
-    maxConnections: 8,
+    maxConnections: options.maxConnections ?? 8,
   });
   await server.start();
   const url = `postgres://postgres@${server.getServerConn()}/postgres?max=1&prepare=false`;
