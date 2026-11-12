@@ -243,6 +243,20 @@ export async function actionableDue(
 }
 
 function* insertJobSteps(q: Q, input: NewJob, skipDuplicateKey: boolean) {
+  if (q.dialect === "sqlite") return yield* insertJobRowSteps(q, input, skipDuplicateKey);
+  return yield* q.transaction(function* (t) {
+    const id = yield* insertJobRowSteps(t, input, skipDuplicateKey);
+    if (id === undefined) return id;
+    const { job, jobActivation } = t.t;
+    const activation = (yield* t.one(
+      t.orm.insert(jobActivation).values({ jobId: id }).returning({ id: jobActivation.id }),
+    ))!;
+    yield* t.exec(t.orm.update(job).set({ activationId: activation.id }).where(eq(job.id, id)));
+    return id;
+  });
+}
+
+function* insertJobRowSteps(q: Q, input: NewJob, skipDuplicateKey: boolean) {
   const { job } = q.t;
   const now = input.now ?? Date.now();
   const payload = input.payload ?? {};
@@ -262,13 +276,6 @@ function* insertJobSteps(q: Q, input: NewJob, skipDuplicateKey: boolean) {
       id: job.id,
     }),
   );
-  if (row && q.dialect === "postgres") {
-    const { jobActivation } = q.t;
-    const activation = (yield* q.one(
-      q.orm.insert(jobActivation).values({ jobId: row.id }).returning({ id: jobActivation.id }),
-    ))!;
-    yield* q.exec(q.orm.update(job).set({ activationId: activation.id }).where(eq(job.id, row.id)));
-  }
   return row?.id;
 }
 
