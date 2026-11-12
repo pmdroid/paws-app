@@ -3,12 +3,12 @@ import { existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { FakeScript } from "../src/acp/testing/script";
 import { FakeClock } from "../src/core";
-import { sqliteDb, JobLoop, listOutbox, migrate, openDatabase, OutboxDispatcher } from "../src/db";
+import { JobLoop, listOutbox, OutboxDispatcher } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator, KEEPALIVE_MS, LINEAR_STALE_MS } from "../src/loop";
-import { emptyReview, repoLayout, stateOf } from "./e2e-harness";
+import { emptyReview, repoLayout, stateOfPg, tickWithRestartsPg } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
-import { tickWithRestarts } from "./helpers";
+import { tempStore } from "./pglite";
 
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
 
@@ -47,8 +47,7 @@ test("keepalive stays under Linear's stale window at 25 minutes", () => {
 
 test("the running keepalive names the agent's current plan step, never a bare Working on", async () => {
   const layout = await repoLayout("paws-keepalive-");
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const clock = new FakeClock(Date.now());
   const tracker = createFakeTracker([
     {
@@ -73,7 +72,7 @@ test("the running keepalive names the agent's current plan step, never a bare Wo
     return interval(handler, delay);
   }) as typeof setInterval);
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -121,7 +120,7 @@ test("the running keepalive names the agent's current plan step, never a bare Wo
   const thoughts = () =>
     tracker.progress.filter((update) => update.kind === "thought").map((update) => update.body);
   const hasPlan = async () =>
-    (await listOutbox(sqliteDb(db))).some(
+    (await listOutbox(db)).some(
       (row) =>
         row.op === "linear.session.plan" &&
         JSON.stringify(row.payload).includes("rank runners by load share"),
@@ -129,7 +128,7 @@ test("the running keepalive names the agent's current plan step, never a bare Wo
   let running: Promise<unknown> | undefined;
   try {
     await orchestrator.onLinearEvent(event("created", null));
-    running = tickWithRestarts(jobs, orchestrator, db);
+    running = tickWithRestartsPg(jobs, orchestrator, db);
     for (let i = 0; i < 1_000 && ticks.length === 0; i++) await Bun.sleep(10);
     expect(ticks).toHaveLength(1);
 
@@ -155,7 +154,7 @@ test("the running keepalive names the agent's current plan step, never a bare Wo
     while ((await outbox.tick()).length > 0) await outbox.idle();
     expect(thoughts().at(-1)).toBe("Step 3 of 5: rank runners by load share.");
     expect(thoughts()).not.toContain("Working on ENG-25.");
-    const keepalives = (await listOutbox(sqliteDb(db))).filter(
+    const keepalives = (await listOutbox(db)).filter(
       (row) => row.op === "activity" && row.idempotencyKey.includes(":keep:"),
     );
     expect(keepalives.map((row) => (row.payload as { ephemeral?: boolean }).ephemeral)).toEqual([
@@ -166,14 +165,14 @@ test("the running keepalive names the agent's current plan step, never a bare Wo
     await orchestrator.onLinearEvent(event("prompted", "stop"));
     writeFileSync(release, "go");
     await running;
-    expect(stateOf(db, "ENG-25")).toBe("paused");
+    expect(await stateOfPg(db, "ENG-25")).toBe("paused");
   } finally {
     for (const file of [planned, release])
       if (file !== "" && !existsSync(file)) writeFileSync(file, "go");
     await running;
     await orchestrator.shutdown();
     intervalSpy.mockRestore();
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }, 20_000);

@@ -1,4 +1,4 @@
-import { tickWithRestarts } from "./helpers";
+import { tickWithRestartsPg } from "./e2e-harness";
 import { execFileSync } from "node:child_process";
 import {
   appendFileSync,
@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
 import { worktreePath } from "../src/acp";
-import { sqliteDb, JobLoop, OutboxDispatcher, getWorkItem, migrate, openDatabase } from "../src/db";
+import { JobLoop, OutboxDispatcher, getWorkItem, listWorkItems, openPawsStore } from "../src/db";
 import { systemClock, defaultBriefTemplate } from "../src/core";
 import { writeBriefTemplates } from "../src/config";
 import {
@@ -23,6 +23,7 @@ import {
 } from "../src/linear";
 import { attachOrchestrator, itemPathId } from "../src/loop";
 import { workspaceAdmission } from "./fake-workspace";
+import { copyMigratedPglite } from "./pglite";
 
 const agent = new URL("./fixtures/brief-agent.ts", import.meta.url).pathname;
 const childDescription =
@@ -125,9 +126,10 @@ test.each([
       externalLinks: [],
       pullRequest: null,
     });
-    const dbPath = join(root, "paws.db");
-    let db = openDatabase(dbPath);
-    migrate(db);
+    const pgliteDir = join(root, "pglite");
+    await copyMigratedPglite(pgliteDir);
+    let open = await openPawsStore({ url: null, pgliteDir });
+    let db = open.store;
     const launch = (input: { purpose: string; role: string }) => ({
       command: process.execPath,
       args: [agent, input.purpose, evidence, input.role],
@@ -137,7 +139,7 @@ test.each([
     let jobs = new JobLoop(db, systemClock);
     let outbox = new OutboxDispatcher(db, systemClock);
     let orchestrator = attachOrchestrator({
-      store: sqliteDb(db),
+      store: db,
       admission: workspaceAdmission(db),
       jobs,
       outbox,
@@ -166,16 +168,16 @@ test.each([
           guidance: [{ body: "Team instruction", origin: { type: "team", id: "team" } }],
         }),
       });
-      const itemId = db.query<{ id: string }, []>("SELECT id FROM work_item").get()?.id;
+      const itemId = (await listWorkItems(db))[0]?.id;
       expect(itemId).toBeDefined();
-      db.close();
+      await open.close();
       tracker.epics.clear();
-      db = openDatabase(dbPath);
-      migrate(db);
+      open = await openPawsStore({ url: null, pgliteDir });
+      db = open.store;
       jobs = new JobLoop(db, systemClock);
       outbox = new OutboxDispatcher(db, systemClock);
       orchestrator = attachOrchestrator({
-        store: sqliteDb(db),
+        store: db,
         admission: workspaceAdmission(db),
         jobs,
         outbox,
@@ -189,8 +191,8 @@ test.each([
         template: `${workspace}\n\n${defaultBriefTemplate()}`,
         projects: override ? { "acme/widgets": `${override}\n\n${defaultBriefTemplate()}` } : {},
       });
-      await tickWithRestarts(jobs, orchestrator, db);
-      const item = await getWorkItem(sqliteDb(db), itemId!);
+      await tickWithRestartsPg(jobs, orchestrator, db);
+      const item = await getWorkItem(db, itemId!);
       const prompts = readFileSync(evidence, "utf8")
         .trim()
         .split("\n")
@@ -244,7 +246,7 @@ test.each([
         "BODY_ONLY_37_雪-fixed",
       );
     } finally {
-      db.close();
+      await open.close();
       rmSync(root, { recursive: true, force: true });
     }
   },

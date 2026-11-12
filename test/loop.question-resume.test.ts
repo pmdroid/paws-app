@@ -1,4 +1,5 @@
-import { workspaceAdmission, workspaceDispatch } from "./fake-workspace";
+import { workspaceAdmission, workspaceDispatchPg } from "./fake-workspace";
+import { tempStore } from "./pglite";
 import { execFile, execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
@@ -6,6 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "bun:test";
+import { and, eq, isNull } from "drizzle-orm";
 import { createCloseoutGate } from "../src/closeout";
 import { systemClock, JOB_KIND } from "../src/core";
 import {
@@ -15,15 +17,12 @@ import {
   getWorkItem,
   listJobs,
   listWorkItems,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recoverOnStartup,
   runnerHasCapacity,
   syncWorkspaceMember,
-  sqliteDb,
+  type Db,
 } from "../src/db";
-import type { Database } from "bun:sqlite";
 import { findOpenQuestion, handoffNote } from "../src/questions";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { worktreePath } from "../src/acp";
@@ -63,6 +62,7 @@ Report findings. An empty list means the change is fine.
 `;
 
 const SEEDED_TEST = `import { expect, test } from "bun:test";
+import { and, eq, isNull } from "drizzle-orm";
 import { existsSync } from "node:fs";
 
 test("seeded check", () => {
@@ -76,7 +76,7 @@ const ASK_TURN_REPLY =
 test("asking ends the run and an answer resumes through verification", async () => {
   const fixture = await askOnce();
   try {
-    const item = (await listWorkItems(sqliteDb(fixture.db)))[0]!;
+    const item = (await listWorkItems(fixture.db))[0]!;
     const tree = worktreePath(fixture.layout.pawsRoot, itemPathId(item));
     const head = (await exec("git", ["-C", tree, "rev-parse", "HEAD"])).stdout.trim();
     expect(await exec("git", ["-C", tree, "show", `HEAD:during-question.txt`])).toMatchObject({
@@ -90,7 +90,7 @@ test("asking ends the run and an answer resumes through verification", async () 
     });
     expect(item.checkpoint).toMatchObject({ phase: "awaiting_input", wipCommit: head });
     expect(item.state).toBe("awaiting_input");
-    expect((await getRun(sqliteDb(fixture.db), item.currentRunId!))?.status).toBe("ended");
+    expect((await getRun(fixture.db, item.currentRunId!))?.status).toBe("ended");
     expect(
       fixture.results
         .map(
@@ -98,28 +98,34 @@ test("asking ends the run and an answer resumes through verification", async () 
         )
         .find((result) => result.askTeam)?.askTeam?.text,
     ).toBe(ASK_TURN_REPLY);
-    expect(await runnerHasCapacity(sqliteDb(fixture.db), fixture.runnerId, Date.now())).toBe(true);
+    expect(await runnerHasCapacity(fixture.db, fixture.runnerId, Date.now())).toBe(true);
     expect(
-      fixture.db
-        .query<{ n: number }, [string]>(
-          "SELECT count(*) AS n FROM runner_work WHERE runner_id = ? AND ended_at IS NULL",
-        )
-        .get(fixture.runnerId)?.n,
-    ).toBe(0);
+      await fixture.db.run((q) =>
+        q.all(
+          q.orm
+            .select({ runId: q.t.runnerWork.runId })
+            .from(q.t.runnerWork)
+            .where(
+              and(eq(q.t.runnerWork.runnerId, fixture.runnerId), isNull(q.t.runnerWork.endedAt)),
+            ),
+        ),
+      ),
+    ).toEqual([]);
     expect(
-      fixture.db
-        .query<{ n: number }, [string]>(
-          "SELECT count(*) AS n FROM runner_work_grant WHERE run_id = ?",
-        )
-        .get(item.currentRunId!)?.n,
-    ).toBe(0);
+      await fixture.db.run((q) =>
+        q.all(
+          q.orm
+            .select({ runId: q.t.runnerWorkGrant.runId })
+            .from(q.t.runnerWorkGrant)
+            .where(eq(q.t.runnerWorkGrant.runId, item.currentRunId!)),
+        ),
+      ),
+    ).toEqual([]);
     expect(fixture.tracker.questions[0]?.body).toContain("Include archived rows?");
     expect(fixture.tracker.questions[0]?.options).toEqual(["yes", "no"]);
 
     await fixture.orchestrator.onLinearEvent(prompted("parquet"));
-    const resume = (await listJobs(sqliteDb(fixture.db))).find(
-      (job) => job.queue === JOB_KIND.resume,
-    );
+    const resume = (await listJobs(fixture.db)).find((job) => job.queue === JOB_KIND.resume);
     expect(resume?.status).toBe("pending");
     expect(resume?.payload).toMatchObject({
       itemId: item.id,
@@ -133,7 +139,7 @@ test("asking ends the run and an answer resumes through verification", async () 
     });
 
     await drive(fixture, ["verifying", "merge_queue", "merged"]);
-    const state = (await getWorkItem(sqliteDb(fixture.db), item.id))?.state ?? "";
+    const state = (await getWorkItem(fixture.db, item.id))?.state ?? "";
     expect(["verifying", "merge_queue", "merged"]).toContain(state);
     expect(fixture.prompts.some((prompt) => prompt.includes("Answer: parquet"))).toBe(true);
     const received = fixture.results
@@ -146,13 +152,13 @@ test("asking ends the run and an answer resumes through verification", async () 
     expect(firstRequest.length).toBeGreaterThan(10);
     expect(received.find((prompt) => prompt.includes("Answer: parquet"))).toContain(firstRequest);
     expect(fixture.resumeHeads).toEqual([head]);
-    const resumed = (await getWorkItem(sqliteDb(fixture.db), item.id))!;
+    const resumed = (await getWorkItem(fixture.db, item.id))!;
     expect(resumed.currentRunId).toBe(item.currentRunId);
-    const status = (await getRun(sqliteDb(fixture.db), resumed.currentRunId!))?.status ?? "";
+    const status = (await getRun(fixture.db, resumed.currentRunId!))?.status ?? "";
     expect(["active", "ended"]).toContain(status);
   } finally {
     await fixture.orchestrator.shutdown();
-    fixture.db.close();
+    await fixture.close();
     await fixture.layout.cleanup();
   }
 }, 90_000);
@@ -160,25 +166,23 @@ test("asking ends the run and an answer resumes through verification", async () 
 test("startup leaves an open question parked and its answer resumes the run", async () => {
   const fixture = await askOnce();
   try {
-    const item = (await listWorkItems(sqliteDb(fixture.db)))[0]!;
-    const open = await findOpenQuestion(sqliteDb(fixture.db), "ses_1");
+    const item = (await listWorkItems(fixture.db))[0]!;
+    const open = await findOpenQuestion(fixture.db, "ses_1");
     expect(open?.status).toBe("open");
-    const jobsBefore = (await listJobs(sqliteDb(fixture.db))).filter(
-      (job) => job.queue === JOB_KIND.resume,
+    const jobsBefore = (await listJobs(fixture.db)).filter((job) => job.queue === JOB_KIND.resume);
+    expect(await recoverOnStartup(fixture.db)).toEqual([{ type: "none" }]);
+    expect((await getWorkItem(fixture.db, item.id))?.state).toBe("awaiting_input");
+    expect((await listJobs(fixture.db)).filter((job) => job.queue === JOB_KIND.resume)).toEqual(
+      jobsBefore,
     );
-    expect(await recoverOnStartup(sqliteDb(fixture.db))).toEqual([{ type: "none" }]);
-    expect((await getWorkItem(sqliteDb(fixture.db), item.id))?.state).toBe("awaiting_input");
-    expect(
-      (await listJobs(sqliteDb(fixture.db))).filter((job) => job.queue === JOB_KIND.resume),
-    ).toEqual(jobsBefore);
-    expect((await getRun(sqliteDb(fixture.db), item.currentRunId!))?.status).toBe("ended");
+    expect((await getRun(fixture.db, item.currentRunId!))?.status).toBe("ended");
 
     await fixture.orchestrator.onLinearEvent(prompted("parquet"));
-    expect(await getWorkItem(sqliteDb(fixture.db), item.id)).toMatchObject({
+    expect(await getWorkItem(fixture.db, item.id)).toMatchObject({
       state: "queued",
       recoveryAttempts: 0,
     });
-    const resume = (await listJobs(sqliteDb(fixture.db))).find(
+    const resume = (await listJobs(fixture.db)).find(
       (job) => job.queue === JOB_KIND.resume && job.status === "pending",
     );
     expect(resume?.jobKey).toBe(`resume:answer:${open!.id}`);
@@ -196,7 +200,7 @@ test("startup leaves an open question parked and its answer resumes the run", as
     expect(fixture.prompts.some((prompt) => prompt.includes("Answer: parquet"))).toBe(true);
   } finally {
     await fixture.orchestrator.shutdown();
-    fixture.db.close();
+    await fixture.close();
     await fixture.layout.cleanup();
   }
 }, 90_000);
@@ -204,12 +208,10 @@ test("startup leaves an open question parked and its answer resumes the run", as
 test("an answer that arrives before the asking turn ends resumes once after the run ends", async () => {
   const fixture = await askOnce("parquet");
   try {
-    const item = (await listWorkItems(sqliteDb(fixture.db)))[0]!;
+    const item = (await listWorkItems(fixture.db))[0]!;
     expect(fixture.resumeJobsDuringTurn).toEqual([1]);
-    expect((await getRun(sqliteDb(fixture.db), item.currentRunId!))?.status).toBe("ended");
-    const resumes = (await listJobs(sqliteDb(fixture.db))).filter(
-      (job) => job.queue === JOB_KIND.resume,
-    );
+    expect((await getRun(fixture.db, item.currentRunId!))?.status).toBe("ended");
+    const resumes = (await listJobs(fixture.db)).filter((job) => job.queue === JOB_KIND.resume);
     expect(resumes).toHaveLength(1);
     expect(resumes[0]?.payload).toMatchObject({
       itemId: item.id,
@@ -224,7 +226,7 @@ test("an answer that arrives before the asking turn ends resumes once after the 
     expect(fixture.prompts.some((prompt) => prompt.includes("Answer: parquet"))).toBe(true);
   } finally {
     await fixture.orchestrator.shutdown();
-    fixture.db.close();
+    await fixture.close();
     await fixture.layout.cleanup();
   }
 }, 90_000);
@@ -240,7 +242,7 @@ test("a resume after a restart repeats no Linear read the first run already made
     const firstRun = [...fixture.reads];
     const restarted = await fixture.restart();
     orchestrator = restarted.orchestrator;
-    await recoverOnStartup(sqliteDb(fixture.db));
+    await recoverOnStartup(fixture.db);
     await restarted.orchestrator.onLinearEvent(prompted("parquet"));
     await drive({ db: fixture.db, jobs: restarted.jobs }, ["verifying", "merge_queue", "merged"]);
     const resumed = fixture.prompts.find((prompt) => prompt.includes("Answer: parquet"));
@@ -248,14 +250,15 @@ test("a resume after a restart repeats no Linear read the first run already made
     expect(fixture.reads).toEqual(firstRun);
   } finally {
     await orchestrator.shutdown();
-    fixture.db.close();
+    await fixture.close();
     await fixture.layout.cleanup();
   }
 }, 90_000);
 
 async function askOnce(answerDuringTurn?: string): Promise<{
   layout: { pawsRoot: string; cleanup: () => Promise<void> };
-  db: Database;
+  db: Db;
+  close: () => Promise<void>;
   jobs: JobLoop;
   orchestrator: ReturnType<typeof attachOrchestrator>;
   tracker: ReturnType<typeof createFakeTracker>;
@@ -293,8 +296,7 @@ async function askOnce(answerDuringTurn?: string): Promise<{
     reads.push(`activities ${sessionId}`);
     return [];
   };
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const prompts: string[] = [];
@@ -394,7 +396,7 @@ async function askOnce(answerDuringTurn?: string): Promise<{
       setImmediate(() => {
         answered = orchestrator.onLinearEvent(prompted(answerDuringTurn)).then(async () => {
           resumeJobsDuringTurn.push(
-            (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume).length,
+            (await listJobs(db)).filter((job) => job.queue === JOB_KIND.resume).length,
           );
         });
       });
@@ -402,7 +404,7 @@ async function askOnce(answerDuringTurn?: string): Promise<{
   }
   const attach = (loop: JobLoop, dispatcher: OutboxDispatcher) =>
     attachOrchestrator({
-      store: sqliteDb(db),
+      store: db,
       admission: workspaceAdmission(db),
       jobs: loop,
       outbox: dispatcher,
@@ -431,6 +433,7 @@ async function askOnce(answerDuringTurn?: string): Promise<{
   return {
     layout,
     db,
+    close,
     jobs,
     orchestrator,
     tracker,
@@ -451,11 +454,11 @@ async function askOnce(answerDuringTurn?: string): Promise<{
   };
 }
 
-function leaseActiveRun(db: Database): Promise<string> {
+function leaseActiveRun(db: Db): Promise<string> {
   return (async () => {
     for (let attempt = 0; attempt < 2000; attempt += 1) {
-      const item = (await listWorkItems(sqliteDb(db)))[0];
-      const run = item?.currentRunId ? await getRun(sqliteDb(db), item.currentRunId) : null;
+      const item = (await listWorkItems(db))[0];
+      const run = item?.currentRunId ? await getRun(db, item.currentRunId) : null;
       if (run?.status === "active") return await attachLease(db, run.id);
       await Bun.sleep(10);
     }
@@ -463,16 +466,22 @@ function leaseActiveRun(db: Database): Promise<string> {
   })();
 }
 
-async function attachLease(db: Database, runId: string): Promise<string> {
+async function attachLease(db: Db, runId: string): Promise<string> {
   const now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: "user-1",
     linearUserId: "user-linear",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  db.run("INSERT INTO workspace VALUES(?,?,?,?)", ["ws-1", "org-1", "Workspace", now]);
-  await syncWorkspaceMember(sqliteDb(db), {
+  await db.run((q) =>
+    q.exec(
+      q.orm
+        .insert(q.t.workspace)
+        .values({ id: "ws-1", linearOrganizationId: "org-1", name: "Workspace", createdAt: now }),
+    ),
+  );
+  await syncWorkspaceMember(db, {
     workspaceId: "ws-1",
     userId,
     role: "admin",
@@ -480,38 +489,54 @@ async function attachLease(db: Database, runId: string): Promise<string> {
     teamIds: [],
     now,
   });
-  db.run(
-    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
-    ["runner-1", "ws-1", userId, "Runner", now, now],
-  );
-  db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,1)", ["runner-1"]);
-  db.run(
-    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence,teardown_confirmed_at) VALUES(?,?,?,1,0,?,?,0,?)",
-    [runId, "runner-1", "ws-1", `cmd-${runId}`, now + 60_000, now],
-  );
-  db.run("INSERT INTO runner_work_grant(token_hash,run_id,generation,expires_at) VALUES(?,?,1,?)", [
-    `grant-${runId}`,
-    runId,
-    now + 60_000,
-  ]);
+  await db.run(function* (q) {
+    yield* q.exec(
+      q.orm.insert(q.t.runner).values({
+        id: "runner-1",
+        workspaceId: "ws-1",
+        ownerUserId: userId,
+        name: "Runner",
+        status: "active",
+        createdAt: now,
+        lastSeenAt: now,
+      }),
+    );
+    yield* q.exec(q.orm.insert(q.t.runnerCapacity).values({ runnerId: "runner-1", capacity: 1 }));
+    yield* q.exec(
+      q.orm.insert(q.t.runnerWork).values({
+        runId,
+        runnerId: "runner-1",
+        workspaceId: "ws-1",
+        generation: 1,
+        runnerFence: 0,
+        commandId: `cmd-${runId}`,
+        leaseUntil: now + 60_000,
+        lastSequence: 0,
+        teardownConfirmedAt: now,
+      }),
+    );
+    yield* q.exec(
+      q.orm.insert(q.t.runnerWorkGrant).values({
+        tokenHash: `grant-${runId}`,
+        runId,
+        generation: 1,
+        expiresAt: now + 60_000,
+      }),
+    );
+  });
   return "runner-1";
 }
 
-async function drive(
-  fixture: { db: Database; jobs: JobLoop },
-  states: readonly string[],
-): Promise<void> {
+async function drive(fixture: { db: Db; jobs: JobLoop }, states: readonly string[]): Promise<void> {
   const deadline = Date.now() + 60_000;
   let idle = 0;
   while (Date.now() < deadline) {
-    const state = (
-      await getWorkItem(sqliteDb(fixture.db), (await listWorkItems(sqliteDb(fixture.db)))[0]!.id)
-    )?.state;
+    const state = (await getWorkItem(fixture.db, (await listWorkItems(fixture.db))[0]!.id))?.state;
     if (state && states.includes(state)) return;
     if (state === "failed") {
-      throw new Error(JSON.stringify(await listJobs(sqliteDb(fixture.db))));
+      throw new Error(JSON.stringify(await listJobs(fixture.db)));
     }
-    await workspaceDispatch(fixture.db, { now: Date.now() });
+    await workspaceDispatchPg(fixture.db, { now: Date.now() });
     const job = await fixture.jobs.tick();
     if (job === null) {
       idle += 1;
@@ -605,8 +630,7 @@ test("the implementer's prompt includes the project overview with its mock links
     name: "Exports",
     content: "## Mocks\n\n![Export page](https://uploads.linear.app/workspace/export-mock.png)",
   });
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const prompts: { purpose: string; prompt: string }[] = [];
@@ -623,7 +647,7 @@ test("the implementer's prompt includes the project overview with its mock links
     return { command: process.execPath, args: [fakeAgent, "", scriptPath], env: process.env };
   };
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -652,7 +676,7 @@ test("the implementer's prompt includes the project overview with its mock links
     expect(implement?.prompt).toContain("Project overview: Exports");
     expect(implement?.prompt).toContain("https://uploads.linear.app/workspace/export-mock.png");
   } finally {
-    db.close();
+    await close();
     await layout.cleanup();
   }
 });

@@ -14,13 +14,13 @@ import {
   getLinearSession,
   getWorkItem,
   insertQueuedItem,
-  migrate,
-  openDatabase,
-  sqliteDb,
+  openPawsStore,
+  type Db,
 } from "../../src/db";
 import { Orchestrator } from "../../src/loop";
 import { registerScheduler, saveSchedulingContextSteps } from "../../src/scheduler";
-import { workspaceAdmission, workspaceDispatch } from "../fake-workspace";
+import { workspaceAdmission, workspaceDispatchPg } from "../fake-workspace";
+import { copyMigratedPglite, tempStore } from "../pglite";
 
 export async function probeSchedulerRuntime(
   root: string,
@@ -28,9 +28,10 @@ export async function probeSchedulerRuntime(
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const clock = new FakeClock(1000);
-  const databasePath = join(root, "paws.sqlite");
-  let db = openDatabase(databasePath);
-  migrate(db);
+  const pgliteDir = join(root, "pglite");
+  await copyMigratedPglite(pgliteDir);
+  let open = await openPawsStore({ url: null, pgliteDir });
+  let db = open.store;
   const repository = {
     owner: "owner",
     repo: "repo",
@@ -40,25 +41,41 @@ export async function probeSchedulerRuntime(
     ["original", "merge_queue", 0],
     ["blocker", "queued", 1],
   ] as const) {
-    db.run(
-      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES(?,'epic',?,?,?, ?,?,?,1000,'session')",
-      [id, id, id, id, state, `paws/${id}`, position],
+    await db.run((q) =>
+      q.exec(
+        q.orm.insert(q.t.workItem).values({
+          id,
+          delegationId: "epic",
+          linearIssueId: id,
+          linearIdentifier: id,
+          title: id,
+          state,
+          branchName: `paws/${id}`,
+          position,
+          createdAt: 1000,
+          sessionKey: "session",
+        }),
+      ),
     );
-    await bindWorkItemRepository(sqliteDb(db), id, repository);
-    await sqliteDb(db).run((q) =>
+    await bindWorkItemRepository(db, id, repository);
+    await db.run((q) =>
       saveSchedulingContextSteps(q, { itemId: id, projectId: "project", paths: ["src/shared"] }),
     );
   }
-  db.run(
-    "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('blocker','original')",
+  await db.run((q) =>
+    q.exec(
+      q.orm
+        .insert(q.t.taskBlock)
+        .values({ blockerLinearIssueId: "blocker", blockedLinearIssueId: "original" }),
+    ),
   );
-  await ensureLinearSession(sqliteDb(db), {
+  await ensureLinearSession(db, {
     sessionId: "session",
     issueId: "parent",
     now: clock.now(),
   });
-  await bindLinearSessionTask(sqliteDb(db), "session", "epic");
-  await activateLinearItem(sqliteDb(db), "session", "original");
+  await bindLinearSessionTask(db, "session", "epic");
+  await activateLinearItem(db, "session", "original");
   const heldLoop = new JobLoop(db, clock);
   let heldTicks = 0;
   await registerScheduler(
@@ -74,22 +91,22 @@ export async function probeSchedulerRuntime(
     "the durable custom hook replaces standalone admission while reconciliation is held",
     firstTick.queue === "scheduler.tick" &&
       heldTicks === 1 &&
-      (await getLinearSession(sqliteDb(db), "session"))?.activeItemId === "original" &&
-      db.query("SELECT 1 FROM scheduler_admission").get() === null,
+      (await getLinearSession(db, "session"))?.activeItemId === "original" &&
+      (await admissions(db)).length === 0,
     {
       queue: firstTick.queue,
       heldTicks,
-      activeItemId: (await getLinearSession(sqliteDb(db), "session"))?.activeItemId,
+      activeItemId: (await getLinearSession(db, "session"))?.activeItemId,
     },
   );
-  db.close();
+  await open.close();
   clock.advance(30000);
-  db = openDatabase(databasePath);
-  migrate(db);
+  open = await openPawsStore({ url: null, pgliteDir });
+  db = open.store;
   const jobs = new JobLoop(db, clock);
   const events: string[] = [];
   const orchestrator = new Orchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     clock,
@@ -101,57 +118,54 @@ export async function probeSchedulerRuntime(
     await registerScheduler(
       jobs,
       async () => {
-        events.push(`reconcile:${(await getLinearSession(sqliteDb(db), "session"))?.activeItemId}`);
+        events.push(`reconcile:${(await getLinearSession(db, "session"))?.activeItemId}`);
         await orchestrator.reconcileExecution();
       },
       clock.now(),
     );
     const tick = await jobs.tick();
-    const admission = db
-      .query<{ item_id: string }, []>("SELECT item_id FROM scheduler_admission")
-      .get();
+    const [admission] = await admissions(db);
     observe(
       "after restart the same recurring tick yields the merge session and admits the blocker in one dispatch",
       tick?.id === firstTick.id &&
-        (await getJob(sqliteDb(db), firstTick.id))?.fireCount === 2 &&
+        (await getJob(db, firstTick.id))?.fireCount === 2 &&
         JSON.stringify(events) === JSON.stringify(["reconcile:original"]) &&
-        admission?.item_id === "blocker" &&
-        (await getLinearSession(sqliteDb(db), "session"))?.activeItemId === null,
+        admission?.itemId === "blocker" &&
+        (await getLinearSession(db, "session"))?.activeItemId === null,
       {
         tick: tick?.id,
-        fireCount: (await getJob(sqliteDb(db), firstTick.id))?.fireCount,
+        fireCount: (await getJob(db, firstTick.id))?.fireCount,
         events,
         admission,
       },
     );
     jobs.register(JOB_KIND.start, async (job) => {
       const itemId = (job.payload as { itemId: string }).itemId;
-      await activateLinearItem(sqliteDb(db), "session", itemId);
-      await applyWorkItemEvent(sqliteDb(db), itemId, "dispatched");
+      await activateLinearItem(db, "session", itemId);
+      await applyWorkItemEvent(db, itemId, "dispatched");
     });
     const start = await jobs.tick();
     observe(
       "the admitted blocker claims and activates the yielded canonical session",
       start?.queue === JOB_KIND.start &&
-        (await getWorkItem(sqliteDb(db), "blocker"))?.state === "running" &&
-        (await getLinearSession(sqliteDb(db), "session"))?.activeItemId === "blocker" &&
-        (await getWorkItem(sqliteDb(db), "original"))?.state === "merge_queue",
+        (await getWorkItem(db, "blocker"))?.state === "running" &&
+        (await getLinearSession(db, "session"))?.activeItemId === "blocker" &&
+        (await getWorkItem(db, "original"))?.state === "merge_queue",
       {
         queue: start?.queue,
-        state: (await getWorkItem(sqliteDb(db), "blocker"))?.state,
-        activeItemId: (await getLinearSession(sqliteDb(db), "session"))?.activeItemId,
+        state: (await getWorkItem(db, "blocker"))?.state,
+        activeItemId: (await getLinearSession(db, "session"))?.activeItemId,
       },
     );
   } finally {
     await orchestrator.shutdown();
-    db.close();
+    await open.close();
   }
-  const defaults = openDatabase(join(root, "default.sqlite"));
-  migrate(defaults);
+  const { db: defaults, close } = await tempStore();
   try {
     await insertQueuedItem(defaults, { id: "default", now: clock.now() });
-    await bindWorkItemRepository(sqliteDb(defaults), "default", repository);
-    await sqliteDb(defaults).run((q) =>
+    await bindWorkItemRepository(defaults, "default", repository);
+    await defaults.run((q) =>
       saveSchedulingContextSteps(q, {
         itemId: "default",
         projectId: "project",
@@ -159,7 +173,7 @@ export async function probeSchedulerRuntime(
       }),
     );
     const loop = new JobLoop(defaults, clock);
-    const run = () => workspaceDispatch(defaults, { now: clock.now() });
+    const run = () => workspaceDispatchPg(defaults, { now: clock.now() });
     await registerScheduler(
       loop,
       async () => {
@@ -168,17 +182,21 @@ export async function probeSchedulerRuntime(
       clock.now(),
     );
     const tick = await loop.tick();
-    const count = defaults
-      .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM scheduler_admission")
-      .get()!.count;
+    const count = (await admissions(defaults)).length;
     observe(
       "without a custom hook the durable tick and returned dispatcher retain default behavior",
       tick?.queue === "scheduler.tick" && count === 1 && (await run()).length === 0,
       { queue: tick?.queue, admissions: count },
     );
   } finally {
-    defaults.close();
+    await close();
   }
+}
+
+function admissions(db: Db) {
+  return db.run((q) =>
+    q.all(q.orm.select({ itemId: q.t.schedulerAdmission.itemId }).from(q.t.schedulerAdmission)),
+  );
 }
 
 if (import.meta.main) {

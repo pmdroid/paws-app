@@ -14,13 +14,11 @@ import {
   getRun,
   listJobs,
   listWorkItems,
-  migrate,
-  openDatabase,
-  sqliteDb,
 } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator, type AgentLaunch } from "../src/loop";
 import { workspaceAdmission } from "./fake-workspace";
+import { tempStore } from "./pglite";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -42,8 +40,7 @@ for (const delivered of [true, false, "completed"] as const)
     await exec("git", ["-C", seed, "add", "."]);
     await exec("git", ["-C", seed, "commit", "-m", "init"]);
     await exec("git", ["-C", seed, "push", "origin", "HEAD:main"]);
-    const db = openDatabase(path.join(pawsRoot, "paws.db"));
-    migrate(db);
+    const { db, close } = await tempStore();
     const jobs = new JobLoop(db, systemClock);
     const outbox = new OutboxDispatcher(db, systemClock);
     const tracker = createFakeTracker([
@@ -70,7 +67,7 @@ for (const delivered of [true, false, "completed"] as const)
     };
     const forwarded: { itemId: string; body: string }[] = [];
     const orchestrator = attachOrchestrator({
-      store: sqliteDb(db),
+      store: db,
       admission: workspaceAdmission(db),
       jobs,
       outbox,
@@ -97,24 +94,21 @@ for (const delivered of [true, false, "completed"] as const)
     try {
       await orchestrator.onLinearEvent(event("created", null));
       const running = jobs.tick();
-      const item = (await listWorkItems(sqliteDb(db)))[0]!;
+      const item = (await listWorkItems(db))[0]!;
       for (let attempt = 0; attempt < 500; attempt++) {
-        const current = (await listWorkItems(sqliteDb(db)))[0]!;
-        if (
-          current.currentRunId &&
-          (await getRun(sqliteDb(db), current.currentRunId))?.status === "active"
-        )
+        const current = (await listWorkItems(db))[0]!;
+        if (current.currentRunId && (await getRun(db, current.currentRunId))?.status === "active")
           break;
         await Bun.sleep(10);
       }
-      const runId = (await listWorkItems(sqliteDb(db)))[0]!.currentRunId!;
+      const runId = (await listWorkItems(db))[0]!.currentRunId!;
       if (delivered === "completed") {
-        await enqueueOutboxOnce(sqliteDb(db), {
+        await enqueueOutboxOnce(db, {
           target: "linear",
           op: "activity",
           orderingKey: "ses_1",
           delivery: "ordered",
-          idempotencyKey: `pull-request-ready:${item.id}:${await getLinearSessionGeneration(sqliteDb(db), "ses_1")}`,
+          idempotencyKey: `pull-request-ready:${item.id}:${await getLinearSessionGeneration(db, "ses_1")}`,
           payload: { sessionId: "ses_1", kind: "response", body: "Opened pull request #1." },
         });
         while ((await outbox.tick()).length > 0) await outbox.idle();
@@ -124,10 +118,10 @@ for (const delivered of [true, false, "completed"] as const)
       expect(forwarded).toEqual(
         delivered === "completed" ? [] : [{ itemId: item.id, body: "Also cover the empty state" }],
       );
-      const resumes = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
+      const resumes = (await listJobs(db)).filter((job) => job.queue === JOB_KIND.resume);
       if (delivered === true) {
-        expect((await getRun(sqliteDb(db), runId))?.status).toBe("active");
-        expect((await listWorkItems(sqliteDb(db)))[0]!.currentRunId).toBe(runId);
+        expect((await getRun(db, runId))?.status).toBe("active");
+        expect((await listWorkItems(db))[0]!.currentRunId).toBe(runId);
         expect(resumes).toHaveLength(0);
         await orchestrator.onLinearEvent({ ...event("prompted", null), signal: "stop" });
       } else {
@@ -139,7 +133,7 @@ for (const delivered of [true, false, "completed"] as const)
       }
       await running;
     } finally {
-      db.close();
+      await close();
       await rm(root, { recursive: true, force: true });
     }
   }, 60_000);
