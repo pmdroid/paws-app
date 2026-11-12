@@ -1,5 +1,4 @@
 import { afterEach, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
 import {
   appendCloseoutOutput,
   beginImplementRun,
@@ -8,20 +7,21 @@ import {
   finishCloseoutProgress,
   insertQueuedItem,
   joinMergeQueue,
-  migrate,
-  openDatabase,
   recordPushOutage,
   savePolicyRunnerWarning,
   upsertCloseoutStep,
-  sqliteDb,
+  type Db,
 } from "../../../db";
 import { parseMergeQueueResponse } from "../contract";
 import { createLiveStatusProvider } from "./provider";
+import { seed } from "../../../../test/dialects";
+import { tempStore } from "../../../../test/pglite";
+import { queriesDuring } from "../../../../test/query-log";
 
-const open: Database[] = [];
+const open: (() => Promise<void>)[] = [];
 
-afterEach(() => {
-  for (const db of open.splice(0)) db.close();
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
 });
 
 const DETAIL_TABLES = [
@@ -39,16 +39,7 @@ const DETAIL_TABLES = [
   "visual_review",
 ];
 
-function recordQueries(db: Database): string[] {
-  const seen: string[] = [];
-  const query = db.query.bind(db);
-  const prepare = db.prepare.bind(db);
-  db.query = ((sql: string) => (seen.push(sql), query(sql))) as typeof db.query;
-  db.prepare = ((sql: string) => (seen.push(sql), prepare(sql))) as typeof db.prepare;
-  return seen;
-}
-
-async function queued(db: Database, id: string, session: string, at: number) {
+async function queued(db: Db, id: string, session: string, at: number) {
   const head = "c".repeat(40);
   const item = await insertQueuedItem(db, {
     id,
@@ -56,13 +47,13 @@ async function queued(db: Database, id: string, session: string, at: number) {
     sessionKey: session,
     now: at,
   });
-  await beginImplementRun(sqliteDb(db), item.id, at);
-  await enterMergeQueue(sqliteDb(db), item.id, {
+  await beginImplementRun(db, item.id, at);
+  await enterMergeQueue(db, item.id, {
     phase: "merge_queue",
     baseSha: head,
     wipCommit: head,
   });
-  await enqueueOutbox(sqliteDb(db), {
+  await enqueueOutbox(db, {
     target: "linear",
     op: "activity",
     orderingKey: session,
@@ -74,7 +65,7 @@ async function queued(db: Database, id: string, session: string, at: number) {
     },
     now: at,
   });
-  await joinMergeQueue(sqliteDb(db), {
+  await joinMergeQueue(db, {
     itemId: item.id,
     repository: "acme/platform",
     now: at * 10,
@@ -87,7 +78,7 @@ async function queued(db: Database, id: string, session: string, at: number) {
     policyPath: null,
   };
   await upsertCloseoutStep(
-    sqliteDb(db),
+    db,
     item.id,
     identity,
     {
@@ -112,7 +103,7 @@ async function queued(db: Database, id: string, session: string, at: number) {
     at,
   );
   await appendCloseoutOutput(
-    sqliteDb(db),
+    db,
     item.id,
     identity,
     "test",
@@ -121,19 +112,18 @@ async function queued(db: Database, id: string, session: string, at: number) {
     false,
     at,
   );
-  await finishCloseoutProgress(sqliteDb(db), item.id, identity, "accepted", at);
+  await finishCloseoutProgress(db, item.id, identity, "accepted", at);
 }
 
 test("the merge queue reads queue facts, issue summaries and banners for the reader's sessions only", async () => {
-  const db = openDatabase(":memory:");
-  open.push(db);
-  migrate(db);
+  const { db, close } = await tempStore();
+  open.push(close);
   const now = Date.now();
   await queued(db, "ENG-1", "ses_mine", 1);
   await queued(db, "ENG-2", "ses_mine", 2);
   await queued(db, "ENG-3", "ses_other", 3);
   await insertQueuedItem(db, { id: "ENG-4", title: "Not merging", sessionKey: "ses_mine", now: 4 });
-  await recordPushOutage(sqliteDb(db), {
+  await recordPushOutage(db, {
     repository: "acme/platform",
     error: "denied",
     jobId: null,
@@ -141,27 +131,39 @@ test("the merge queue reads queue facts, issue summaries and banners for the rea
     now,
     delayMs: () => 60_000,
   });
-  await savePolicyRunnerWarning(sqliteDb(db), {
+  await savePolicyRunnerWarning(db, {
     repository: "acme/platform",
     policyDigest: `sha256:${"a".repeat(64)}`,
     runnerVersion: "0.1.48",
     keys: [{ key: "items[].ci", needs: "0.1.49" }],
     checkedAt: now,
   });
-  db.run(
-    "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('w','org','W',0)",
-  );
-  db.run(
-    "INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES('w','acme/platform','team')",
-  );
-  db.run(
-    `INSERT INTO linear_session (session_id, organization_id, oauth_client_id, app_user_id, team_id,
-      installation_observed_at, created_at) VALUES ('ses_mine', 'org', 'fixture', 'app', 'team', 1, 0)`,
+  await seed(
+    db,
+    (q) =>
+      q.orm
+        .insert(q.t.workspace)
+        .values({ id: "w", linearOrganizationId: "org", name: "W", createdAt: 0 }),
+    (q) =>
+      q.orm
+        .insert(q.t.workspaceRepository)
+        .values({ workspaceId: "w", repository: "acme/platform", teamId: "team" }),
+    (q) =>
+      q.orm.insert(q.t.linearSession).values({
+        sessionId: "ses_mine",
+        organizationId: "org",
+        oauthClientId: "fixture",
+        appUserId: "app",
+        teamId: "team",
+        installationObservedAt: 1,
+        createdAt: 0,
+      }),
   );
 
-  const seen = recordQueries(db);
-  const provider = createLiveStatusProvider(sqliteDb(db), { sessionIds: ["ses_mine"], env: {} });
-  const parsed = parseMergeQueueResponse(JSON.parse(JSON.stringify(await provider.mergeQueue())));
+  const provider = createLiveStatusProvider(db, { sessionIds: ["ses_mine"], env: {} });
+  let read: unknown;
+  const reads = await queriesDuring(db, async () => (read = await provider.mergeQueue()));
+  const parsed = parseMergeQueueResponse(JSON.parse(JSON.stringify(read)));
   if (!parsed.ok) throw new Error(parsed.error);
   const queue = parsed.response;
 
@@ -189,9 +191,8 @@ test("the merge queue reads queue facts, issue summaries and banners for the rea
   expect(queue.pushOutages.map((outage) => outage.repository)).toEqual(["acme/platform"]);
   expect(queue.policyRunnerWarnings.map((warning) => warning.runnerVersion)).toEqual(["0.1.48"]);
   expect(JSON.stringify(queue)).not.toContain("check output");
-  const reads = seen.join("\n");
-  for (const table of DETAIL_TABLES) expect(reads).not.toMatch(new RegExp(`\\b${table}\\b`));
-  seen.length = 0;
-  await provider.issue("ENG-1");
-  expect(seen.join("\n")).toMatch(/\bcloseout_step\b/);
+  for (const table of DETAIL_TABLES)
+    expect(reads.join("\n")).not.toMatch(new RegExp(`\\b${table}\\b`));
+  const issueReads = await queriesDuring(db, () => provider.issue("ENG-1"));
+  expect(issueReads.join("\n")).toMatch(/\bcloseout_step\b/);
 });

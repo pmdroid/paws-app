@@ -1,33 +1,32 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
 import {
   applyWorkItemEvent,
   beginImplementRun,
   insertLinkAsk,
   insertQueuedItem,
-  migrate,
-  openDatabase,
-  sqliteDb,
+  type Db,
 } from "../../../db";
 import { parseQuestionDetailResponse, parseQuestionListResponse } from "../contract";
 import { createLiveStatusProvider } from "./provider";
+import { seed } from "../../../../test/dialects";
+import { queriesDuring } from "../../../../test/query-log";
+import { tempStore } from "../../../../test/pglite";
 
 const NOW = 1_700_000_000_000;
 
-const open: Database[] = [];
-afterEach(() => {
-  for (const db of open.splice(0)) db.close();
+const open: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
 });
 
-function database(): Database {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  open.push(db);
+async function database() {
+  const { db, close } = await tempStore();
+  open.push(close);
   return db;
 }
 
 async function asking(
-  db: Database,
+  db: Db,
   id: string,
   session: string,
   question: string,
@@ -39,55 +38,43 @@ async function asking(
     sessionKey: session,
     now: NOW - 10_000,
   });
-  await beginImplementRun(sqliteDb(db), id, NOW - 9_000);
-  await applyWorkItemEvent(sqliteDb(db), id, "blocking_question");
-  db.run(
-    "INSERT INTO question (id, item_id, session_id, kind, body, options, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'open', ?)",
-    [
-      question,
-      id,
-      session,
+  await beginImplementRun(db, id, NOW - 9_000);
+  await applyWorkItemEvent(db, id, "blocking_question");
+  await seed(db, (q) =>
+    q.orm.insert(q.t.question).values({
+      id: question,
+      itemId: id,
+      sessionId: session,
       kind,
-      `Which way for ${id}?`,
-      JSON.stringify(["Left", "Right"]),
-      NOW - 8_000,
-    ],
+      body: `Which way for ${id}?`,
+      options: ["Left", "Right"],
+      status: "open",
+      createdAt: NOW - 8_000,
+    }),
   );
 }
 
-function provider(db: Database, sessionIds?: readonly string[]) {
-  return createLiveStatusProvider(sqliteDb(db), {
+function provider(db: Db, sessionIds?: readonly string[]) {
+  return createLiveStatusProvider(db, {
     now: () => new Date(NOW),
     env: {},
     ...(sessionIds === undefined ? {} : { sessionIds }),
   });
 }
 
-async function tablesRead(db: Database, read: () => Promise<unknown>): Promise<Set<string>> {
+async function tablesRead(db: Db, read: () => Promise<unknown>): Promise<Set<string>> {
   const tables = new Set<string>();
-  const query = db.query.bind(db);
-  const prepare = db.prepare.bind(db);
-  // Drizzle prepares its statements and quotes table names.
-  const record = (sql: string) => {
-    for (const match of sql.matchAll(/\b(?:FROM|JOIN)\s+"?([a-z_]+)/gi)) tables.add(match[1]!);
-  };
-  db.query = ((sql: string) => (record(sql), query(sql))) as typeof db.query;
-  db.prepare = ((sql: string) => (record(sql), prepare(sql))) as typeof db.prepare;
-  try {
-    await read();
-  } finally {
-    db.query = query;
-    db.prepare = prepare;
-  }
+  for (const query of await queriesDuring(db, read))
+    for (const match of query.matchAll(/\b(?:FROM|JOIN)\s+"?([a-z_]+)/gi)) tables.add(match[1]!);
   return tables;
 }
 
 describe("question resources", () => {
   test("the list carries the snapshot's open questions with the issue each card names", async () => {
-    const db = database();
+    const db = await database();
     await asking(db, "ENG-1", "s1", "q-1");
     await asking(db, "ENG-2", "s1b", "q-2", "link");
-    await insertLinkAsk(sqliteDb(db), {
+    await insertLinkAsk(db, {
       questionId: "q-2",
       itemId: "ENG-2",
       kind: "risk",
@@ -121,7 +108,7 @@ describe("question resources", () => {
   });
 
   test("a question outside the reader's sessions reads like an unknown one", async () => {
-    const db = database();
+    const db = await database();
     await asking(db, "ENG-1", "s1", "q-1");
     await asking(db, "ENG-2", "s2", "q-2");
     const live = provider(db, ["s1"]);
@@ -141,7 +128,7 @@ describe("question resources", () => {
   });
 
   test("the list reads no Closeout, evidence, merge, CI or delivery rows", async () => {
-    const db = database();
+    const db = await database();
     await asking(db, "ENG-1", "s1", "q-1");
     const live = provider(db, ["s1"]);
     const unread = [
