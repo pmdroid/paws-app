@@ -15,6 +15,7 @@ import type { AgentSettings } from "../agent-settings";
 import { settingsRequest } from "./agent-settings";
 import { esc } from "./format";
 import { readCsrfToken } from "./csrf";
+import { routeHref } from "./route";
 
 const CI_FIX_ATTEMPTS_DEFAULT = 3;
 const CI_FIX_ATTEMPTS_MAX = 10;
@@ -210,17 +211,32 @@ export function renderMergeSettings(view: View): string {
     </fieldset>${view.busy ? `<p class="settings-message" role="status">${esc(view.busy)}</p>` : ""}</form>`;
 }
 
-/** Read-only: the files that caused merge-queue conflicts in the last 7 days. */
+const HOT_FILES_SHOWN = 10;
+
+function issueLink(id: string): string {
+  return `<a class="lin-id" href="${esc(routeHref({ view: "issues", id }))}">${esc(id)}</a>`;
+}
+
+function hotFileRow(file: HotFile): string {
+  const holds = (file.holds ?? [])
+    .map((hold) => `<p>Holding ${issueLink(hold.held)} until ${issueLink(hold.holder)} merges</p>`)
+    .join("");
+  return `<li class="hot-file"><code>${esc(file.path)}</code><span class="sub">${esc(file.repository)} · ${file.conflicts} ${file.conflicts === 1 ? "conflict" : "conflicts"} in 7 days</span><span class="row wrap">${file.items.map(issueLink).join("")}</span>${holds}</li>`;
+}
+
 function hotFileSection(files: readonly HotFile[]): string {
-  const body = files.length
-    ? `<ul class="risk-file">${files
-        .map(
-          (file) =>
-            `<li><code>${esc(file.path)}</code> <span class="sub">${esc(file.repository)} · ${file.conflicts} ${file.conflicts === 1 ? "conflict" : "conflicts"} (${esc(file.items.join(", "))})</span></li>`,
-        )
-        .join("")}</ul>`
-    : '<p class="sub">No merge-queue conflicts in the last 7 days.</p>';
-  return `<section class="settings-section" id="merge-hot-files"><div class="settings-label"><h2>Conflict-prone files</h2><p class="sub">Files that sent work back for a merge-queue conflict in the last 7 days. A queued item that changes one of them waits while a running or merge-queue item changes it too, until that one merges. Read-only.</p></div><div class="col">${body}</div></section>`;
+  const sorted = [...files].sort(
+    (left, right) =>
+      Number(Boolean(right.holds?.length)) - Number(Boolean(left.holds?.length)) ||
+      right.conflicts - left.conflicts,
+  );
+  const rows = (list: readonly HotFile[]) =>
+    `<ul class="risk-file">${list.map(hotFileRow).join("")}</ul>`;
+  const rest = sorted.slice(HOT_FILES_SHOWN);
+  const body = sorted.length
+    ? `${rows(sorted.slice(0, HOT_FILES_SHOWN))}${rest.length ? `<details><summary>Show all ${sorted.length}</summary>${rows(rest)}</details>` : ""}`
+    : '<p class="sub">No merge conflicts in the last 7 days, so nothing is held back.</p>';
+  return `<section class="settings-section" id="merge-hot-files"><div class="settings-label"><h2>Conflict-prone files</h2><p class="sub">These files caused merge conflicts in the last 7 days. Paws starts only one item at a time that changes them, so the next one doesn't hit the same conflict.</p></div><div class="col min-w-0">${body}</div></section>`;
 }
 
 /** Whether high-risk pull requests wait for an approval in Paws, and why not. */

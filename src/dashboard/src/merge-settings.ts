@@ -44,6 +44,8 @@ export type HotFile = {
   conflicts: number;
   /** Linear identifiers of the items the conflicts sent back. */
   items: string[];
+  /** Current overlap holds on the file: `held` waits for `holder` to merge. */
+  holds?: { held: string; holder: string }[];
 };
 export type MergeSettingsView = Omit<MergeSettings, "highRiskPaths"> & {
   /** Missing from an engine that does not list them; the page then leaves them alone. */

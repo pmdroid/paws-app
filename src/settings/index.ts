@@ -11,6 +11,7 @@ export type {
   HighRiskRepositoryView,
   HotFileView,
   MergeSettingsOptions,
+  OverlapHoldView,
 } from "./merging";
 export { HOOK_SETTINGS_PATH, handleHookSettingsRequest } from "./hooks";
 export type { HookSettingsOptions } from "./hooks";

@@ -1,5 +1,5 @@
 import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtures";
-// Settings → Merging lists the conflict-prone files read-only, and an issue the scheduler holds
+// Settings → Merging lists the conflict-prone files and what each holds, and an issue the scheduler holds
 // for one shows which item it waits for.
 // Usage: bun run build:dashboard && bun --no-env-file scripts/verify-hot-files-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
@@ -57,6 +57,15 @@ const server = Bun.serve({
             conflicts: 3,
             items: ["PAS-763"],
           },
+          ...Array.from({ length: 9 }, (_, index) => ({
+            repository: "acme/platform",
+            path: `packages/very-long-package-name-${index}/src/deeply/nested/directory/structure/with/a/long-file-name.ts`,
+            conflicts: 1,
+            items: ["PAS-770"],
+          })),
+        ],
+        overlapHolds: async () => [
+          { held: "PAS-790", holder: "PAS-785", files: ["src/dashboard/src/live/provider.ts"] },
         ],
       })) ??
       (await handleStatusRequest(request, { provider, csrfToken: "ui-fixture" })) ??
@@ -72,7 +81,7 @@ const browser = await chromium.launch({
 });
 const errors: string[] = [];
 try {
-  for (const width of [1440, 390]) {
+  for (const width of [1440, 390, 375]) {
     const page = await browser.newPage({ viewport: { width, height: 1000 } });
     page.on("pageerror", (error) => errors.push(error.message));
     await page.emulateMedia({ colorScheme: "light" });
@@ -80,7 +89,12 @@ try {
     const section = page.locator("#merge-hot-files");
     await expect(section.getByRole("heading", { name: "Conflict-prone files" })).toBeVisible();
     await expect(section).toContainText("src/dashboard/src/live/provider.ts");
-    await expect(section).toContainText("4 conflicts (PAS-785, PAS-761)");
+    await expect(section).toContainText("4 conflicts in 7 days");
+    await expect(section.locator("li").first()).toContainText(
+      "Holding PAS-790 until PAS-785 merges",
+    );
+    await expect(section.getByText("Show all 12")).toBeVisible();
+    await section.getByText("Show all 12").click();
     await expect(section.locator("textarea, input, select")).toHaveCount(0);
     await expect
       .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))

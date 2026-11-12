@@ -49,7 +49,12 @@ export type MergeSettingsOptions = {
   highRiskFile?: (repo: string) => Promise<HighRiskFile | null>;
   /** The files that caused merge-queue conflicts in the last 7 days, shown read-only. */
   hotFiles?: () => Promise<HotFileView[]>;
+  /** Current overlap holds: `held` waits for `holder` to merge because both change `files`. */
+  overlapHolds?: () => Promise<OverlapHoldView[]>;
 };
+
+export type OverlapHold = { held: string; holder: string };
+export type OverlapHoldView = OverlapHold & { files: string[] };
 
 /** One conflict-prone file under Settings › Merging. */
 export type HotFileView = {
@@ -57,6 +62,7 @@ export type HotFileView = {
   path: string;
   conflicts: number;
   items: string[];
+  holds?: OverlapHold[];
 };
 
 /** `paths` is null when the commit has no `.paws/high-risk-paths`. */
@@ -120,7 +126,7 @@ export async function handleMergeSettingsRequest(
       ignoredComments: ignoredCommentsView(policy, options),
       ...(options.githubQueues ? await githubQueueView(options.githubQueues) : {}),
       ...(options.upToDateRules ? await upToDateRuleView(options.upToDateRules) : {}),
-      ...(options.hotFiles ? await hotFileView(options.hotFiles) : {}),
+      ...(options.hotFiles ? await hotFileView(options.hotFiles, options.overlapHolds) : {}),
     });
   }
   if (request.method !== "PUT") return json({ error: "Method not allowed" }, 405);
@@ -458,13 +464,27 @@ async function upToDateRuleView(
 
 async function hotFileView(
   read: () => Promise<HotFileView[]>,
+  readHolds?: () => Promise<OverlapHoldView[]>,
 ): Promise<{ hotFiles?: HotFileView[] }> {
+  let files: HotFileView[];
   try {
-    return { hotFiles: await read() };
+    files = await read();
   } catch (caughtError) {
     journalCaught(caughtError, "merging.hotFileView.read", null);
     return {};
   }
+  const holds = await (readHolds?.() ?? Promise.resolve([])).catch((caughtError) => {
+    journalCaught(caughtError, "merging.hotFileView.readHolds", null);
+    return [];
+  });
+  return {
+    hotFiles: files.map((file) => {
+      const named = holds
+        .filter((hold) => hold.files.includes(file.path))
+        .map(({ held, holder }) => ({ held, holder }));
+      return named.length ? { ...file, holds: named } : file;
+    }),
+  };
 }
 
 /** One line per changed choice, for the audit history. */

@@ -327,6 +327,20 @@ describe("Merging settings API", () => {
     expect(body.riskGate).toEqual({ on: false, reason });
   });
 
+  test("GET adds the overlap holds to each conflict-prone file they name", async () => {
+    const { options } = fixture();
+    const file = { repository: "acme/platform", path: "src/a.ts", conflicts: 2, items: ["PAS-1"] };
+    const body = (await (await handleMergeSettingsRequest(request(), {
+      ...options,
+      hotFiles: async () => [file, { ...file, path: "src/b.ts" }],
+      overlapHolds: async () => [{ held: "PAS-3", holder: "PAS-2", files: ["src/a.ts"] }],
+    }))!.json()) as { hotFiles?: unknown };
+    expect(body.hotFiles).toEqual([
+      { ...file, holds: [{ held: "PAS-3", holder: "PAS-2" }] },
+      { ...file, path: "src/b.ts" },
+    ]);
+  });
+
   test("PUT saves to config.toml, keeps other settings and audits each change", async () => {
     const { options, audits } = fixture();
     writeFileSync(

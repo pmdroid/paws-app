@@ -358,3 +358,46 @@ test("automatic high-risk approval is disabled while the risk gate is off", () =
   expect(html).toContain("checked disabled> Let high-risk");
   expect(html).toContain("Turn on the risk gate before changing this setting.");
 });
+
+describe("Conflict-prone files", () => {
+  const file = (path: string, conflicts: number) => ({
+    repository: "acme/platform",
+    path,
+    conflicts,
+    items: ["PAS-1"],
+  });
+  const render = (hotFiles: MergeSettingsView["hotFiles"]) =>
+    renderMergeSettings({ data: { ...data(), hotFiles }, busy: null, error: null, saved: false });
+
+  test("explains the list and puts a held file first with links to the items", () => {
+    const html = render([
+      file("src/busy.ts", 5),
+      { ...file("src/held.ts", 1), holds: [{ held: "PAS-3", holder: "PAS-2" }] },
+    ]);
+    expect(html).toContain(
+      "These files caused merge conflicts in the last 7 days. Paws starts only one item at a time that changes them, so the next one doesn't hit the same conflict.",
+    );
+    expect(html).not.toContain("Read-only");
+    expect(html.indexOf("src/held.ts")).toBeLessThan(html.indexOf("src/busy.ts"));
+    expect(html).toContain(
+      'Holding <a class="lin-id" href="/issues/PAS-3">PAS-3</a> until <a class="lin-id" href="/issues/PAS-2">PAS-2</a> merges',
+    );
+    expect(html).toContain('<a class="lin-id" href="/issues/PAS-1">PAS-1</a>');
+    expect(html).toContain("1 conflict in 7 days");
+    expect(html).toContain("5 conflicts in 7 days");
+    expect(html).not.toContain("Show all");
+  });
+
+  test("shows ten files and a toggle for the rest", () => {
+    const html = render(
+      Array.from({ length: 12 }, (_, index) => file(`src/f${index}.ts`, 12 - index)),
+    );
+    expect(html).toContain("<summary>Show all 12</summary>");
+    expect(html.indexOf("src/f9.ts")).toBeLessThan(html.indexOf("Show all"));
+    expect(html.indexOf("src/f10.ts")).toBeGreaterThan(html.indexOf("Show all"));
+  });
+
+  test("says nothing is held back without conflicts", () => {
+    expect(render([])).toContain("No merge conflicts in the last 7 days, so nothing is held back.");
+  });
+});
