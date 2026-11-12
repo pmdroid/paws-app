@@ -60,7 +60,7 @@ const runner = () => ({
   running: sessions,
   agents: [{ agent: "claude", status: "signed_in", checkedAt: now }],
 });
-let role = "owner";
+let role = "admin";
 const moves: string[] = [];
 const server = Bun.serve({
   hostname: "127.0.0.1",
@@ -81,7 +81,7 @@ const server = Bun.serve({
     if (/^\/api\/runners\/[^/]+\/sessions\/move$/.test(path) && request.method === "POST") {
       if (request.headers.get("x-paws-csrf") !== "fixture")
         return Response.json({ error: "CSRF" }, { status: 403 });
-      if (role !== "owner") return Response.json({ error: "Forbidden" }, { status: 403 });
+      if (role !== "admin") return Response.json({ error: "Forbidden" }, { status: 403 });
       moves.push(path);
       for (const session of sessions)
         session.move =
@@ -127,8 +127,8 @@ try {
     const moveAll = (page: Awaited<ReturnType<typeof open>>) =>
       page.getByRole("button", { name: "Move running work" });
 
-    // Owner: two sessions on the draining runner, then Move running work, then Drained.
-    role = "owner";
+    // Admin: two sessions on the draining runner, then Move running work, then Drained.
+    role = "admin";
     sessions = fresh();
     outcome = "moving";
     const page = await open();
