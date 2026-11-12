@@ -1,8 +1,7 @@
 import { expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { eq } from "drizzle-orm";
+import { rmSync } from "node:fs";
 import { createGitHubInstallationCheck, createGitHubTokenProvider } from "../src/auth";
 import {
   FakeClock,
@@ -10,8 +9,9 @@ import {
   policyCoauthors,
   type GitCommitPolicy,
 } from "../src/core";
+import { pawsPaths } from "../src/config";
 import * as dbApi from "../src/db";
-import { saveRunCommitPolicy, sqliteDb, syncSteps } from "../src/db";
+import { saveRunCommitPolicy, syncSteps } from "../src/db";
 import { INSTALLATION_PERMISSIONS } from "../src/github";
 import {
   createFakeTracker,
@@ -20,33 +20,34 @@ import {
 } from "../src/linear";
 import { attachOrchestrator, GitHubInstallationCheck } from "../src/loop";
 import * as workspace from "../src/workspace";
+import { migratedHome } from "./helpers";
 
 test("onboarded authoritative creator resumes once with current App and no personal GitHub consent", async () => {
-  const root = mkdtempSync(join(tmpdir(), "paws-joined-onboarding-"));
-  const path = join(root, "paws.sqlite");
-  let db = dbApi.openDatabase(path);
-  dbApi.migrate(db);
+  const root = await migratedHome();
+  const reopen = () => dbApi.openPawsStore({ url: null, pgliteDir: pawsPaths(root).pgliteDir });
+  let database = await reopen();
+  let db = database.store;
   const clock = new FakeClock(Date.now());
   const now = () => clock.now();
   const origin = "https://paws.example.invalid";
-  const owner = await dbApi.putWorkspaceUser(sqliteDb(db), {
+  const owner = await dbApi.putWorkspaceUser(db, {
     id: "owner",
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  await dbApi.consumeWorkspaceBootstrap(sqliteDb(db), {
+  await dbApi.consumeWorkspaceBootstrap(db, {
     id: "workspace",
     organizationId: "org",
     name: "Workspace",
     userId: owner,
     tokenHash: workspace.workspaceTokenHash(
-      await workspace.issueWorkspaceBootstrap(sqliteDb(db), "org", now()),
+      await workspace.issueWorkspaceBootstrap(db, "org", now()),
     ),
     now: now(),
   });
-  await dbApi.ensureLinearSession(sqliteDb(db), { sessionId: "session", issueId: "issue" });
-  await dbApi.recordLinearInstallation(sqliteDb(db), {
+  await dbApi.ensureLinearSession(db, { sessionId: "session", issueId: "issue" });
+  await dbApi.recordLinearInstallation(db, {
     sessionId: "session",
     organizationId: "org",
     oauthClientId: "client",
@@ -110,7 +111,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
   let continuations = 0;
   const build = () => {
     const assignments = workspace.createWorkspaceAssignments({
-      store: sqliteDb(db),
+      store: db,
       origin,
       clientId: "client",
       memberships,
@@ -146,7 +147,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
       },
     });
     const access = workspace.createWorkspaceAccess({
-      store: sqliteDb(db),
+      store: db,
       assignments,
       publicUrl: origin,
       clientId: "client",
@@ -171,7 +172,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
       }) as typeof fetch,
     });
     const orchestrator = attachOrchestrator({
-      store: sqliteDb(db),
+      store: db,
       jobs: new dbApi.JobLoop(db, clock),
       outbox: new dbApi.OutboxDispatcher(db, clock),
       pawsRoot: root,
@@ -195,10 +196,10 @@ test("onboarded authoritative creator resumes once with current App and no perso
     expect(
       await runtime.assignments.authorize({ ...event, deliveryId: "duplicate" }),
     ).toMatchObject({ outcome: "refused" });
-    expect(await dbApi.workspaceLinearMember(sqliteDb(db), "workspace", "creator")).toBeNull();
-    expect(await dbApi.listWorkItems(sqliteDb(db))).toHaveLength(0);
-    expect(await dbApi.listOutbox(sqliteDb(db))).toHaveLength(1);
-    const prompt = (await dbApi.listOutbox(sqliteDb(db)))[0]!.payload as {
+    expect(await dbApi.workspaceLinearMember(db, "workspace", "creator")).toBeNull();
+    expect(await dbApi.listWorkItems(db)).toHaveLength(0);
+    expect(await dbApi.listOutbox(db)).toHaveLength(1);
+    const prompt = (await dbApi.listOutbox(db))[0]!.payload as {
       auth: { url: string; userId: string };
     };
     expect(prompt.auth.userId).toBe("creator");
@@ -208,8 +209,9 @@ test("onboarded authoritative creator resumes once with current App and no perso
     expect(provider.searchParams.get("actor")).toBe("user");
     await runtime.access.stop();
     await runtime.orchestrator.shutdown();
-    db.close();
-    db = dbApi.openDatabase(path);
+    await database.close();
+    database = await reopen();
+    db = database.store;
     runtime = build();
     const callback = () =>
       runtime.access.handle(
@@ -227,20 +229,27 @@ test("onboarded authoritative creator resumes once with current App and no perso
     await jobs.tick();
     await jobs.tick();
     expect(
-      (await dbApi.listJobs(sqliteDb(db)))
+      (await dbApi.listJobs(db))
         .filter((job) => job.queue === "workspace.assignment")
         .map((job) => job.lastError),
     ).toEqual([null]);
     expect(continuations).toBe(1);
-    expect(await dbApi.listWorkItems(sqliteDb(db))).toHaveLength(1);
-    const itemId = (await dbApi.listWorkItems(sqliteDb(db)))[0]!.id;
-    expect(await dbApi.delegatedLinearUserId(sqliteDb(db), itemId)).toBe("creator");
+    expect(await dbApi.listWorkItems(db)).toHaveLength(1);
+    const itemId = (await dbApi.listWorkItems(db))[0]!.id;
+    expect(await dbApi.delegatedLinearUserId(db, itemId)).toBe("creator");
     expect(
-      db.query("SELECT 1 FROM workspace_access_audit WHERE action='assignment.resumed'").all(),
+      await db.run((q) =>
+        q.all(
+          q.orm
+            .select()
+            .from(q.t.workspaceAccessAudit)
+            .where(eq(q.t.workspaceAccessAudit.action, "assignment.resumed")),
+        ),
+      ),
     ).toHaveLength(1);
     expect(await runtime.assignments.authorize(event)).toMatchObject({ outcome: "refused" });
-    await dbApi.beginImplementRun(sqliteDb(db), itemId, now());
-    const current = async () => (await dbApi.getWorkItem(sqliteDb(db), itemId))!;
+    await dbApi.beginImplementRun(db, itemId, now());
+    const current = async () => (await dbApi.getWorkItem(db, itemId))!;
     const privateKeyPem = generateKeyPairSync("rsa", {
       modulusLength: 2048,
       privateKeyEncoding: { type: "pkcs8", format: "pem" },
@@ -300,10 +309,10 @@ test("onboarded authoritative creator resumes once with current App and no perso
     });
     const policy = async (): Promise<GitCommitPolicy> => ({
       bot: await botProvider.botIdentity!(),
-      credit: await workspace.delegatorCommitCredit(sqliteDb(db), (await current()).id),
+      credit: await workspace.delegatorCommitCredit(db, (await current()).id),
     });
     auth = new GitHubInstallationCheck(
-      sqliteDb(db),
+      db,
       {
         check: (_item, signal) => installation("acme/widgets", "write", signal),
         administrators: () => syncSteps(() => ["owner"]),
@@ -321,11 +330,9 @@ test("onboarded authoritative creator resumes once with current App and no perso
     await auth.recover();
     expect((await current()).state).toBe("running");
     expect(policyCoauthors(await policy())).toEqual([]);
-    expect(
-      (await dbApi.listJobs(sqliteDb(db))).filter((job) => job.queue === "run.resume"),
-    ).toHaveLength(1);
-    const member = (await dbApi.workspaceLinearMember(sqliteDb(db), "workspace", "creator"))!;
-    const login = await workspace.issueWorkspaceSession(sqliteDb(db), {
+    expect((await dbApi.listJobs(db)).filter((job) => job.queue === "run.resume")).toHaveLength(1);
+    const member = (await dbApi.workspaceLinearMember(db, "workspace", "creator"))!;
+    const login = await workspace.issueWorkspaceSession(db, {
       workspaceId: "workspace",
       userId: member.userId,
       now: now(),
@@ -336,10 +343,10 @@ test("onboarded authoritative creator resumes once with current App and no perso
       sessionHash: login.session.tokenHash,
     };
     const request = { stateHash: "synthetic-state", browserHash: "synthetic-browser", now: now() };
-    await dbApi.beginGitHubAttribution(sqliteDb(db), binding, request);
-    const revision = await dbApi.consumeGitHubAttribution(db, binding, request);
+    await dbApi.beginGitHubAttribution(db, binding, request);
+    const { revision } = await dbApi.consumeGitHubAttributionRequest(db, binding, request);
     await dbApi.saveGitHubAttribution(
-      sqliteDb(db),
+      db,
       binding,
       {
         id: 7,
@@ -353,9 +360,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
     await Promise.all([auth.recover(), auth.recover()]);
     await auth.recover();
     expect((await current()).state).toBe("running");
-    expect(
-      (await dbApi.listJobs(sqliteDb(db))).filter((job) => job.queue === "run.resume"),
-    ).toHaveLength(1);
+    expect((await dbApi.listJobs(db)).filter((job) => job.queue === "run.resume")).toHaveLength(1);
     const captured = await policy();
     expect(appBotCommitIdentity(captured.bot)).toEqual({
       name: "Paws",
@@ -364,18 +369,12 @@ test("onboarded authoritative creator resumes once with current App and no perso
     expect(policyCoauthors(await policy())).toEqual([
       { id: 7, login: "creator", name: "Creator", email: "7+creator@users.noreply.github.com" },
     ]);
-    await saveRunCommitPolicy(sqliteDb(db), (await current()).currentRunId!, captured);
-    const persisted = dbApi.openDatabase(path);
-    try {
-      expect(
-        (await dbApi.getRun(sqliteDb(persisted), (await current()).currentRunId!))!.checkpoint!
-          .commitPolicy,
-      ).toEqual(captured);
-    } finally {
-      persisted.close();
-    }
+    await saveRunCommitPolicy(db, (await current()).currentRunId!, captured);
+    expect(
+      (await dbApi.getRun(db, (await current()).currentRunId!))!.checkpoint!.commitPolicy,
+    ).toEqual(captured);
     await dbApi.revokeGitHubAttribution(
-      sqliteDb(db),
+      db,
       { workspaceId: "workspace", userId: member.userId, sessionHash: login.session.tokenHash },
       now(),
     );
@@ -383,16 +382,16 @@ test("onboarded authoritative creator resumes once with current App and no perso
     expect(await auth.ensure(await current(), "publication", signal)).toBe(true);
     await auth.recover();
     expect((await current()).state).toBe("running");
-    expect(
-      (await dbApi.listJobs(sqliteDb(db))).filter((job) => job.queue === "run.reverify"),
-    ).toHaveLength(0);
+    expect((await dbApi.listJobs(db)).filter((job) => job.queue === "run.reverify")).toHaveLength(
+      0,
+    );
     expect(requests).toContain("/app/installations/22/access_tokens");
     expect(requests).not.toContain("/user");
   } finally {
     auth?.close();
     await runtime.access.stop();
     await runtime.orchestrator.shutdown();
-    db.close();
+    await database.close();
     rmSync(root, { recursive: true, force: true });
   }
 });

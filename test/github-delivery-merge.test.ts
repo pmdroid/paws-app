@@ -4,7 +4,7 @@ import path from "node:path";
 import { expect, test } from "bun:test";
 import type { FakeScript } from "../src/acp/testing/script";
 import { JOB_KIND, systemClock } from "../src/core";
-import { sqliteDb, JobLoop, OutboxDispatcher, listJobs, migrate, openDatabase } from "../src/db";
+import { JobLoop, OutboxDispatcher, listJobs } from "../src/db";
 import { createFakeGitHub, fakeMergeReadiness, type GitHubResponse } from "../src/github";
 import { createFakeTracker } from "../src/linear";
 import { acceptGitHubDelivery, attachOrchestrator } from "../src/loop";
@@ -13,10 +13,11 @@ import {
   githubClient,
   isMergeReadiness,
   repoLayout,
-  stateOf,
+  stateOfPg,
   writeOk,
 } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
+import { tempStore } from "./pglite";
 
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
 const { privateKey } = generateKeyPairSync("rsa", {
@@ -36,15 +37,14 @@ test("a green check_suite delivery for the pull request's head merges it before 
       subIssues: [],
     },
   ]);
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const client = githubClient(layout.bare, createFakeGitHub());
   let green = false;
   let sequence = 0;
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -87,7 +87,7 @@ test("a green check_suite delivery for the pull request's head merges it before 
     },
   });
   const parkedForCi = async () =>
-    (await listJobs(sqliteDb(db))).find(
+    (await listJobs(db)).find(
       (job) =>
         job.queue === JOB_KIND.merge &&
         job.status === "pending" &&
@@ -110,18 +110,22 @@ test("a green check_suite delivery for the pull request's head merges it before 
       payload: "{}",
     });
     const deadline = Date.now() + 90_000;
-    while (Date.now() < deadline && !(await parkedForCi()) && stateOf(db, "ENG-9") !== "failed") {
+    while (
+      Date.now() < deadline &&
+      !(await parkedForCi()) &&
+      (await stateOfPg(db, "ENG-9")) !== "failed"
+    ) {
       if ((await jobs.tick()) === null) {
         await outbox.tick();
         await Bun.sleep(25);
       }
     }
     const parked = await parkedForCi();
-    expect(parked, stateOf(db, "ENG-9") ?? "").toBeDefined();
+    expect(parked, (await stateOfPg(db, "ENG-9")) ?? "").toBeDefined();
     const head = (parked!.payload as { ciWaitHead: string }).ciWaitHead;
     green = true;
     await acceptGitHubDelivery(
-      sqliteDb(db),
+      db,
       {
         deliveryId: "delivery-1",
         event: "check_suite",
@@ -132,17 +136,17 @@ test("a green check_suite delivery for the pull request's head merges it before 
       },
       Date.now(),
     );
-    while (Date.now() < parked!.runAt && stateOf(db, "ENG-9") !== "merged") {
+    while (Date.now() < parked!.runAt && (await stateOfPg(db, "ENG-9")) !== "merged") {
       if ((await jobs.tick()) === null) {
         await outbox.tick();
         await Bun.sleep(25);
       }
     }
-    expect(stateOf(db, "ENG-9")).toBe("merged");
+    expect(await stateOfPg(db, "ENG-9")).toBe("merged");
     expect(Date.now()).toBeLessThan(parked!.runAt);
   } finally {
     await orchestrator.shutdown().catch(() => undefined);
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }, 120_000);

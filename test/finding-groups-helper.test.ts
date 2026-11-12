@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { sql, type SQL } from "drizzle-orm";
 import { generateKeyPairSync } from "node:crypto";
 import { createRunnerHelpers } from "../src/runner-helpers";
 import { createFindingGroupHelper } from "../src/runner-backend";
@@ -8,22 +9,33 @@ import {
   putWorkspaceUser,
   syncWorkspaceMember,
   recordRunnerHostStatus,
-  sqliteDb,
   syncSteps,
+  type Db,
+  type PgDb,
 } from "../src/db";
-import { tempDb } from "./helpers";
+import { tempStore } from "./pglite";
+
+const exec = (db: Db, query: SQL) => (db as PgDb).orm.execute(query);
+type Rows = Record<string, unknown>[];
+const one = async (db: Db, query: SQL) => {
+  const result = (await exec(db, query)) as Rows | { rows: Rows };
+  return (Array.isArray(result) ? result : result.rows)[0];
+};
 
 async function seed() {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   let now = Date.now();
-  db.run("INSERT INTO workspace VALUES('ws','org','Workspace',1)");
-  await putWorkspaceUser(sqliteDb(db), {
+  await exec(
+    db,
+    sql`INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('ws','org','Workspace',1)`,
+  );
+  await putWorkspaceUser(db, {
     id: "admin",
     linearUserId: "linear-admin",
     name: "Admin",
     email: "admin@example.invalid",
   });
-  await syncWorkspaceMember(sqliteDb(db), {
+  await syncWorkspaceMember(db, {
     workspaceId: "ws",
     userId: "admin",
     role: "admin",
@@ -31,7 +43,7 @@ async function seed() {
     teamIds: [],
     now,
   });
-  await recordLinearInstallation(sqliteDb(db), {
+  await recordLinearInstallation(db, {
     sessionId: "reporting-session",
     organizationId: "org",
     oauthClientId: "client",
@@ -40,22 +52,26 @@ async function seed() {
     observedAtMs: now,
   });
   // Reporting sessions are often already stopped when the daily job runs.
-  db.run("UPDATE linear_session SET stopped_at=?", [now - 1000]);
-  db.run(
-    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('runner','ws','admin','Runner','active',?,?)",
-    [now, now],
+  await exec(db, sql`UPDATE linear_session SET stopped_at=${now - 1000}`);
+  await exec(
+    db,
+    sql`INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('runner','ws','admin','Runner','active',${now},${now})`,
   );
-  db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('runner','codex',1)");
-  await recordRunnerHostStatus(sqliteDb(db), "runner", { runnerVersion: "0.1.53" }, now);
+  await exec(
+    db,
+    sql`INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('runner','codex',1)`,
+  );
+  await recordRunnerHostStatus(db, "runner", { runnerVersion: "0.1.53" }, now);
   const { privateKey } = generateKeyPairSync("ed25519");
   const helpers = createRunnerHelpers({
-    store: sqliteDb(db),
+    store: db,
     keyId: "key",
     privateKey,
     now: () => now,
   });
   return {
     db,
+    close,
     now,
     helpers,
     advance: (ms: number) => {
@@ -69,7 +85,7 @@ test("daily helper uses an admin runner, accepts a stopped reporting session, an
   try {
     let dispatches = 0;
     const helper = createFindingGroupHelper({
-      store: sqliteDb(f.db),
+      store: f.db,
       profile: () => ({ agent: "codex", model: null }),
       helpers: async () => ({
         ...f.helpers,
@@ -102,7 +118,7 @@ test("daily helper uses an admin runner, accepts a stopped reporting session, an
     ).toEqual({ text: '{"groups":[]}', tokens: 456 });
     expect(dispatches).toBe(1);
     expect(
-      f.db.query("SELECT 1 FROM runner_helper WHERE ended_at IS NOT NULL").get(),
+      await one(f.db, sql`SELECT 1 FROM runner_helper WHERE ended_at IS NOT NULL`),
     ).not.toBeNull();
     const input = {
       runnerId: "runner",
@@ -112,21 +128,21 @@ test("daily helper uses an admin runner, accepts a stopped reporting session, an
       prompt: "Group findings",
     };
     const dispatched = await f.helpers.dispatch(input);
-    f.db.run("UPDATE workspace_member SET role='member'");
+    await exec(f.db, sql`UPDATE workspace_member SET role='member'`);
     await expect(f.helpers.current(dispatched.command.id)).rejects.toThrow("authority changed");
     await f.helpers.finish(dispatched.command.id);
     await expect(f.helpers.dispatch(input)).rejects.toThrow("authority changed");
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
 test("daily helper refuses older runners and cannot read a session from another workspace", async () => {
   const f = await seed();
   try {
-    await recordRunnerHostStatus(sqliteDb(f.db), "runner", { runnerVersion: "0.1.50" }, f.now);
+    await recordRunnerHostStatus(f.db, "runner", { runnerVersion: "0.1.50" }, f.now);
     const helper = createFindingGroupHelper({
-      store: sqliteDb(f.db),
+      store: f.db,
       profile: () => ({ agent: "codex", model: null }),
       helpers: async () => f.helpers,
     });
@@ -138,8 +154,8 @@ test("daily helper refuses older runners and cannot read a session from another 
         signal: new AbortController().signal,
       }),
     ).rejects.toThrow("No paired runner");
-    expect(f.db.query("SELECT 1 FROM runner_helper").get()).toBeNull();
-    await recordLinearInstallation(sqliteDb(f.db), {
+    expect(await one(f.db, sql`SELECT 1 FROM runner_helper`)).toBeUndefined();
+    await recordLinearInstallation(f.db, {
       sessionId: "other-session",
       organizationId: "other-org",
       oauthClientId: "client",
@@ -157,7 +173,7 @@ test("daily helper refuses older runners and cannot read a session from another 
       }),
     ).rejects.toThrow("authority changed");
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -166,7 +182,7 @@ test("grouping accepts a result after one minute, records usage, and rejects err
     const f = await seed();
     try {
       const helper = createFindingGroupHelper({
-        store: sqliteDb(f.db),
+        store: f.db,
         profile: () => ({ agent: "codex", model: null }),
         helpers: async () => ({
           ...f.helpers,
@@ -199,20 +215,14 @@ test("grouping accepts a result after one minute, records usage, and rejects err
       });
       if (failed) await expect(result).rejects.toThrow();
       else expect(await result).toMatchObject({ text: '{"groups":[]}', tokens: 456 });
-      const usage = f.db
-        .query<{ ended: number | null }, []>("SELECT ended_at AS ended FROM runner_execution_usage")
-        .get();
+      const usage = await one(f.db, sql`SELECT ended_at AS ended FROM runner_execution_usage`);
       expect(usage?.ended).not.toBeNull();
       if (failed)
         expect(
-          f.db
-            .query<{ expired: number }, []>(
-              "SELECT auth_expired AS expired FROM runner_agent_policy",
-            )
-            .get()?.expired,
+          (await one(f.db, sql`SELECT auth_expired AS expired FROM runner_agent_policy`))?.expired,
         ).toBe(1);
     } finally {
-      f.db.close();
+      await f.close();
     }
   }
 });
@@ -220,14 +230,18 @@ test("grouping accepts a result after one minute, records usage, and rejects err
 test("pre-dispatch refusals try the next admin runner without issuing a second helper", async () => {
   const f = await seed();
   try {
-    f.db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) SELECT 'runner2',workspace_id,owner_user_id,'Second','active',created_at,last_seen_at FROM runner WHERE id='runner'",
+    await exec(
+      f.db,
+      sql`INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) SELECT 'runner2',workspace_id,owner_user_id,'Second','active',created_at,last_seen_at FROM runner WHERE id='runner'`,
     );
-    f.db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('runner2','codex',1)");
-    await recordRunnerHostStatus(sqliteDb(f.db), "runner2", { runnerVersion: "0.1.53" }, f.now);
+    await exec(
+      f.db,
+      sql`INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('runner2','codex',1)`,
+    );
+    await recordRunnerHostStatus(f.db, "runner2", { runnerVersion: "0.1.53" }, f.now);
     let attempts = 0;
     const helper = createFindingGroupHelper({
-      store: sqliteDb(f.db),
+      store: f.db,
       profile: () => ({ agent: "codex", model: null }),
       helpers: async () => ({
         ...f.helpers,
@@ -257,11 +271,9 @@ test("pre-dispatch refusals try the next admin runner without issuing a second h
       signal: new AbortController().signal,
     });
     expect(attempts).toBe(2);
-    expect(
-      f.db.query<{ count: number }, []>("SELECT count(*) AS count FROM runner_helper").get()?.count,
-    ).toBe(1);
+    expect((await one(f.db, sql`SELECT count(*)::int AS count FROM runner_helper`))?.count).toBe(1);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -270,7 +282,7 @@ test("one-runner foreground placement preempts grouping and fences its old lease
   const f = await seed();
   try {
     const profile = { agent: "codex" as const, model: null };
-    const placement = createRunnerPlacement({ store: sqliteDb(f.db), now: () => f.now });
+    const placement = createRunnerPlacement({ store: f.db, now: () => f.now });
     await placement.candidates({
       sessionId: "reporting-session",
       findingGroups: true,
@@ -285,7 +297,7 @@ test("one-runner foreground placement preempts grouping and fences its old lease
       profile,
       prompt: "Group findings",
     });
-    await sqliteDb(f.db).transaction((q) =>
+    await f.db.transaction((q) =>
       placement.startedSteps(q, {
         commandId: maintenance.command.id,
         runnerId: "runner",
@@ -296,7 +308,7 @@ test("one-runner foreground placement preempts grouping and fences its old lease
         startedAt: f.now,
       }),
     );
-    await recordLinearInstallation(sqliteDb(f.db), {
+    await recordLinearInstallation(f.db, {
       sessionId: "interactive",
       organizationId: "org",
       oauthClientId: "client",
@@ -304,8 +316,9 @@ test("one-runner foreground placement preempts grouping and fences its old lease
       teamId: "team",
       observedAtMs: f.now,
     });
-    f.db.run(
-      "UPDATE linear_session SET creator_id='linear-admin',issue_id='issue' WHERE session_id='interactive'",
+    await exec(
+      f.db,
+      sql`UPDATE linear_session SET creator_id='linear-admin',issue_id='issue' WHERE session_id='interactive'`,
     );
     const candidates = await placement.candidates({
       sessionId: "interactive",
@@ -331,22 +344,28 @@ test("one-runner foreground placement preempts grouping and fences its old lease
       "finding_groups",
     );
     // A failure after fencing must roll back the fence and usage changes as well.
-    f.db.exec(
-      "CREATE TEMP TRIGGER refuse_helper BEFORE INSERT ON runner_helper BEGIN SELECT RAISE(ABORT, 'Admission failed'); END",
+    await exec(
+      f.db,
+      sql`CREATE FUNCTION refuse_helper() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'Admission failed'; END $$ LANGUAGE plpgsql`,
     );
-    await expect(
-      f.helpers.dispatch({
+    await exec(
+      f.db,
+      sql`CREATE TRIGGER refuse_helper BEFORE INSERT ON runner_helper FOR EACH ROW EXECUTE FUNCTION refuse_helper()`,
+    );
+    const refused = (await f.helpers
+      .dispatch({
         runnerId: "runner",
         sessionId: "interactive",
         purpose: "classify",
         profile,
         prompt: "Classify",
-      }),
-    ).rejects.toThrow("Admission failed");
+      })
+      .catch((error: unknown) => error)) as Error;
+    expect(String(refused.cause)).toContain("Admission failed");
     expect((await f.helpers.current(maintenance.command.id)).command.purpose).toBe(
       "finding_groups",
     );
-    f.db.exec("DROP TRIGGER refuse_helper");
+    await exec(f.db, sql`DROP TRIGGER refuse_helper ON runner_helper`);
     const foreground = await f.helpers.dispatch({
       runnerId: "runner",
       sessionId: "interactive",
@@ -357,14 +376,15 @@ test("one-runner foreground placement preempts grouping and fences its old lease
     expect(foreground.command.purpose).toBe("classify");
     await expect(f.helpers.current(maintenance.command.id)).rejects.toThrow("unavailable");
     expect(
-      f.db
-        .query<{ outcome: string }, [string]>(
-          "SELECT outcome FROM runner_execution_usage WHERE command_id=?",
+      (
+        await one(
+          f.db,
+          sql`SELECT outcome FROM runner_execution_usage WHERE command_id=${maintenance.command.id}`,
         )
-        .get(maintenance.command.id)?.outcome,
+      )?.outcome,
     ).toBe("preempted");
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -372,12 +392,12 @@ test("cleanup accounting cannot replace a local abort and reports cancellation i
   const { createRemoteSessionAgentRunner } = await import("../src/runner-backend");
   const f = await seed();
   try {
-    f.db.run("UPDATE linear_session SET stopped_at=NULL");
+    await exec(f.db, sql`UPDATE linear_session SET stopped_at=NULL`);
     const abort = new AbortController();
     const original = new Error("Original stop");
     const outcomes: string[] = [];
     const runner = createRemoteSessionAgentRunner({
-      store: sqliteDb(f.db),
+      store: f.db,
       helpers: {
         ...f.helpers,
         *dispatchSteps(q, input) {
@@ -416,11 +436,10 @@ test("cleanup accounting cannot replace a local abort and reports cancellation i
     ).rejects.toBe(original);
     expect(outcomes).toEqual(["cancelled"]);
     expect(
-      f.db.query<{ ended: number | null }, []>("SELECT ended_at AS ended FROM runner_helper").get()
-        ?.ended,
+      (await one(f.db, sql`SELECT ended_at AS ended FROM runner_helper`))?.ended,
     ).not.toBeNull();
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -428,13 +447,18 @@ test("ranking idle and excluded runners never fences maintenance on another runn
   const { createRunnerPlacement } = await import("../src/runner-placement");
   const f = await seed();
   try {
-    f.db.run(
-      "UPDATE linear_session SET stopped_at=NULL,creator_id='linear-admin',issue_id='issue'",
+    await exec(
+      f.db,
+      sql`UPDATE linear_session SET stopped_at=NULL,creator_id='linear-admin',issue_id='issue'`,
     );
-    f.db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) SELECT 'idle',workspace_id,owner_user_id,'Idle','active',created_at,last_seen_at FROM runner WHERE id='runner'",
+    await exec(
+      f.db,
+      sql`INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) SELECT 'idle',workspace_id,owner_user_id,'Idle','active',created_at,last_seen_at FROM runner WHERE id='runner'`,
     );
-    f.db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('idle','codex',1)");
+    await exec(
+      f.db,
+      sql`INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('idle','codex',1)`,
+    );
     const profile = { agent: "codex" as const, model: null };
     const maintenance = await f.helpers.dispatch({
       runnerId: "runner",
@@ -443,7 +467,7 @@ test("ranking idle and excluded runners never fences maintenance on another runn
       profile,
       prompt: "Group",
     });
-    const placement = createRunnerPlacement({ store: sqliteDb(f.db), now: () => f.now });
+    const placement = createRunnerPlacement({ store: f.db, now: () => f.now });
     const request = {
       sessionId: "reporting-session",
       profile,
@@ -469,7 +493,7 @@ test("ranking idle and excluded runners never fences maintenance on another runn
       "finding_groups",
     );
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -477,11 +501,11 @@ test("a failed receipt completion is retried by cleanup before the original erro
   const { createRunnerPlacement } = await import("../src/runner-placement");
   const f = await seed();
   try {
-    const placement = createRunnerPlacement({ store: sqliteDb(f.db) });
+    const placement = createRunnerPlacement({ store: f.db });
     const original = new Error("Transient receipt failure");
     let attempts = 0;
     const helper = createFindingGroupHelper({
-      store: sqliteDb(f.db),
+      store: f.db,
       profile: () => ({ agent: "codex", model: null }),
       placement: {
         ...placement,
@@ -519,25 +543,23 @@ test("a failed receipt completion is retried by cleanup before the original erro
     ).rejects.toBe(original);
     expect(attempts).toBe(2);
     expect(
-      f.db
-        .query<{ ended: number | null }, []>("SELECT ended_at AS ended FROM runner_execution_usage")
-        .get()?.ended,
+      (await one(f.db, sql`SELECT ended_at AS ended FROM runner_execution_usage`))?.ended,
     ).not.toBeNull();
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
 test("grouping runs on a later admin's runner when the earlier admin has none", async () => {
   const f = await seed();
   try {
-    await putWorkspaceUser(sqliteDb(f.db), {
+    await putWorkspaceUser(f.db, {
       id: "aaa",
       linearUserId: "linear-aaa",
       name: "Aaa",
       email: "aaa@example.invalid",
     });
-    await syncWorkspaceMember(sqliteDb(f.db), {
+    await syncWorkspaceMember(f.db, {
       workspaceId: "ws",
       userId: "aaa",
       role: "admin",
@@ -547,7 +569,7 @@ test("grouping runs on a later admin's runner when the earlier admin has none", 
     });
     let runnerId = "";
     const helper = createFindingGroupHelper({
-      store: sqliteDb(f.db),
+      store: f.db,
       profile: () => ({ agent: "codex", model: null }),
       helpers: async () => ({
         ...f.helpers,
@@ -576,12 +598,11 @@ test("grouping runs on a later admin's runner when the earlier admin has none", 
       signal: new AbortController().signal,
     });
     expect(runnerId).toBe("runner");
-    expect(
-      f.db.query<{ userId: string }, []>("SELECT owner_user_id AS userId FROM runner").get()
-        ?.userId,
-    ).toBe("admin");
+    expect((await one(f.db, sql`SELECT owner_user_id AS "userId" FROM runner`))?.userId).toBe(
+      "admin",
+    );
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -589,15 +610,17 @@ test("grouping does not dispatch a session the runner owner cannot authorize", a
   const f = await seed();
   try {
     await insertQueuedItem(f.db, { id: "outside", sessionKey: "reporting-session", now: f.now });
-    f.db.run(
-      "INSERT INTO work_item_repository(item_id,owner,repo,remote_url) VALUES('outside','other','secret','https://github.com/other/secret.git')",
+    await exec(
+      f.db,
+      sql`INSERT INTO work_item_repository(item_id,owner,repo,remote_url) VALUES('outside','other','secret','https://github.com/other/secret.git')`,
     );
-    f.db.run(
-      "INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES('ws','acme/allowed','team')",
+    await exec(
+      f.db,
+      sql`INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES('ws','acme/allowed','team')`,
     );
     let attempts = 0;
     const helper = createFindingGroupHelper({
-      store: sqliteDb(f.db),
+      store: f.db,
       profile: () => ({ agent: "codex", model: null }),
       helpers: async () => ({
         ...f.helpers,
@@ -617,6 +640,6 @@ test("grouping does not dispatch a session the runner owner cannot authorize", a
     ).rejects.toThrow("No paired runner");
     expect(attempts).toBe(0);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });

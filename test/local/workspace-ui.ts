@@ -1,26 +1,20 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  insertQueuedItem,
-  migrate,
-  openDatabase,
-  recordLinearInstallation,
-  sqliteDb,
-} from "../../src/db";
+import { insertQueuedItem, recordLinearInstallation } from "../../src/db";
 import { createLinearMembershipReads } from "../../src/linear";
 import { startServer } from "../../src/server";
 import { createWorkspaceAccess, type WorkspaceAccess } from "../../src/workspace";
+import { tempStore } from "../pglite";
 
 const root = process.env.PAWS_VERIFY_ROOT;
 if (root === undefined) throw new Error("Use scripts/verify-local.ts workspace-serve.");
-const db = openDatabase(join(root, "workspace-ui.sqlite"));
-migrate(db);
+const { db, close } = await tempStore();
 await insertQueuedItem(db, {
   id: "fixture-item",
   sessionKey: "fixture-session",
   title: "Verify workspace access",
 });
-await recordLinearInstallation(sqliteDb(db), {
+await recordLinearInstallation(db, {
   sessionId: "fixture-session",
   organizationId: "fixture-org",
   teamId: "fixture-team",
@@ -43,7 +37,7 @@ const server = startServer({
 const origin = `http://127.0.0.1:${server.port}`;
 ready.resolve(
   createWorkspaceAccess({
-    store: sqliteDb(db),
+    store: db,
     githubAttributionClient: {
       clientId: "fixture-github",
       clientSecret: "synthetic-browser-secret",
@@ -121,6 +115,10 @@ clearTimeout(deadline);
 await server.stop(true);
 writeFileSync(
   join(root, "workspace-ui-audit.json"),
-  JSON.stringify(db.query("SELECT * FROM workspace_access_audit").all(), null, 2),
+  JSON.stringify(
+    await db.run((q) => q.all(q.orm.select().from(q.t.workspaceAccessAudit))),
+    null,
+    2,
+  ),
 );
-db.close();
+await close();

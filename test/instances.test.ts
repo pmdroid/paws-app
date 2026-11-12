@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { join } from "node:path";
 import { OUTBOX_ACTIVITY } from "../src/core";
 import {
   enqueueJob,
@@ -7,14 +6,12 @@ import {
   heartbeatInstance,
   INSTANCE_DEAD_MS,
   liveInstances,
-  migrate,
-  openDatabase,
+  openPawsStore,
   registerInstance,
   startLoops,
-  sqliteDb,
 } from "../src/db";
 import { tempHome } from "./helpers";
-import { pgliteServer } from "./pglite";
+import { pgliteServer, tempStore } from "./pglite";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 
@@ -111,49 +108,42 @@ describe("instances", () => {
   }, 40_000);
 
   test("a heartbeat keeps one instance live while the other expires", async () => {
-    const path = join(tempHome(), "paws.db");
-    const acme = openDatabase(path);
-    migrate(acme);
-    const other = openDatabase(path);
+    const server = await pgliteServer();
+    const acme = server.store;
+    const other = await openPawsStore({ url: server.url, pgliteDir: "" });
     try {
-      const a = await registerInstance(sqliteDb(acme), {
+      const a = await registerInstance(acme, {
         role: "all",
         host: "acme-a",
         version: null,
         now: 0,
       });
-      const b = await registerInstance(sqliteDb(other), {
+      const b = await registerInstance(other.store, {
         role: "all",
         host: "acme-b",
         version: "0.1.2",
         now: 0,
       });
-      expect(await heartbeatInstance(sqliteDb(acme), a.id, 50_000)).toBe(true);
-      expect((await liveInstances(sqliteDb(other), 59_999)).map((row) => row.id)).toEqual([
-        a.id,
-        b.id,
-      ]);
-      expect((await liveInstances(sqliteDb(other), 60_000)).map((row) => row.id)).toEqual([a.id]);
-      expect(await heartbeatInstance(sqliteDb(acme), "01JACMEGONE00000000000000", 60_000)).toBe(
-        false,
-      );
+      expect(await heartbeatInstance(acme, a.id, 50_000)).toBe(true);
+      expect((await liveInstances(other.store, 59_999)).map((row) => row.id)).toEqual([a.id, b.id]);
+      expect((await liveInstances(other.store, 60_000)).map((row) => row.id)).toEqual([a.id]);
+      expect(await heartbeatInstance(acme, "01JACMEGONE00000000000000", 60_000)).toBe(false);
     } finally {
-      other.close();
-      acme.close();
+      await other.close();
+      await server.close();
     }
   });
 
   test("job and outbox claims record the instance id", async () => {
-    const db = openDatabase(":memory:");
-    migrate(db);
-    const instance = await registerInstance(sqliteDb(db), {
+    const { db, close } = await tempStore();
+    const instance = await registerInstance(db, {
       role: "all",
       host: "acme",
       version: null,
       now: Date.now(),
     });
-    await enqueueJob(sqliteDb(db), { queue: "acme.work", now: Date.now() });
-    await enqueueOutbox(sqliteDb(db), {
+    await enqueueJob(db, { queue: "acme.work", now: Date.now() });
+    await enqueueOutbox(db, {
       target: OUTBOX_ACTIVITY.target,
       op: OUTBOX_ACTIVITY.op,
       orderingKey: "acme-session",
@@ -179,7 +169,7 @@ describe("instances", () => {
       await Bun.sleep(5);
     controller.abort();
     await loops.stop();
-    db.close();
+    await close();
     expect(claims.job?.startsWith(`${instance.id}:`)).toBe(true);
     expect(claims.outbox).toBe(`outbox:${instance.id}`);
   });

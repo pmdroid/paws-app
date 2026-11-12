@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { emitJobReady, sqliteDb } from "../src/db";
+import { emitJobReady, sqliteDb, type Db } from "../src/db";
 import {
   answerQuestionSteps,
   answerSteps,
@@ -37,6 +37,14 @@ export function answerQuestion(
   input: Parameters<typeof answerQuestionSteps>[2],
 ): Promise<StoredQuestion | null> {
   return sqliteDb(db).transaction((q) => answerQuestionSteps(q, id, input));
+}
+
+export function answerQuestionPg(
+  db: Db,
+  id: string,
+  input: Parameters<typeof answerQuestionSteps>[2],
+): Promise<StoredQuestion | null> {
+  return db.transaction((q) => answerQuestionSteps(q, id, input));
 }
 
 type LoopAskArgs = Parameters<typeof loopAskSteps> extends [unknown, ...infer Rest] ? Rest : never;
