@@ -4,15 +4,9 @@ import type { WorkItemRecord } from "./items";
 import { parsedJson, jsonValue } from "./json-text";
 import { ulid } from "./ulid";
 
-export const FIX_RECORD_REASONS = [
-  "ci",
-  "review",
-  "conflict",
-  "findings",
-  "suggested",
-  "follow_up",
-] as const;
-export type FixReason = (typeof FIX_RECORD_REASONS)[number];
+const REASONS = "ci review conflict findings suggested follow_up";
+export const FIX_RECORD_REASONS = REASONS.split(" ") as readonly FixReason[];
+export type FixReason = "ci" | "review" | "conflict" | "findings" | "suggested" | "follow_up";
 
 export type FixOutcome = "fixed" | "not_fixed" | "asked" | "abandoned";
 
@@ -26,36 +20,25 @@ export type FixTriggers = {
 
 export type FixRound = { reason?: FixReason; triggers?: FixTriggers; headBefore?: string | null };
 
-export type FixRecord = {
-  id: string;
-  itemId: string;
-  runId: string | null;
-  linearIdentifier: string;
-  repository: string | null;
+type Row = Q["t"]["fixRecord"]["$inferSelect"];
+export type FixRecord = Omit<Row, "reason" | "outcome" | "triggers"> & {
   reason: FixReason;
-  triggers: FixTriggers;
-  round: number;
-  startedAt: number;
-  endedAt: number | null;
   outcome: FixOutcome | null;
-  headBefore: string | null;
-  headAfter: string | null;
-  agent: string | null;
-  model: string | null;
-  durationMs: number | null;
+  triggers: FixTriggers;
 };
 
 const EXCERPT_CHARS = 200;
 
-export function commentTriggers(
-  comments: readonly { commentId: number; author: string | null; body: string }[],
-): FixTriggers["comments"] {
-  return comments.map((comment) => ({
-    id: comment.commentId,
-    author: comment.author,
-    excerpt: comment.body.trim().slice(0, EXCERPT_CHARS),
+export const checkTriggers = (checks: readonly { name: string; url: string | null }[]) =>
+  checks.map(({ name, url }) => ({ name, url }));
+
+type Comment = { commentId: number; author: string | null; body: string };
+export const commentTriggers = (comments: readonly Comment[]) =>
+  comments.map(({ commentId: id, author, body }) => ({
+    id,
+    author,
+    excerpt: body.trim().slice(0, EXCERPT_CHARS),
   }));
-}
 
 function triggerKeys(triggers: FixTriggers): Set<string> {
   return new Set([
@@ -66,14 +49,14 @@ function triggerKeys(triggers: FixTriggers): Set<string> {
     ]),
     ...(triggers.closeoutChecks ?? []).map((id) => `closeout:${id}`),
     ...(triggers.findings ?? []).map((id) => `finding:${id}`),
+    ...(triggers.base ? [`base:${triggers.base}`] : []),
   ]);
 }
 
 function sameTrigger(open: FixRecord, reason: FixReason, triggers: FixTriggers): boolean {
-  if (open.reason !== reason) return false;
   const before = triggerKeys(open.triggers);
   const after = triggerKeys(triggers);
-  if (before.size === 0 && after.size === 0) return reason === "conflict";
+  if (before.size === 0 && after.size === 0) return open.reason === reason && reason === "conflict";
   return [...after].some((key) => before.has(key));
 }
 
@@ -81,15 +64,11 @@ export function* fixRecordSteps(
   q: Q,
   item: WorkItemRecord,
   input: { reason: FixReason; triggers: FixTriggers; headBefore: string | null; now: number },
-): Steps<string> {
+): Steps<void> {
   const { fixRecord, workItemRepository } = q.t;
   for (const open of yield* openFixRecordsSteps(q, item.id))
     if (sameTrigger(open, input.reason, input.triggers))
-      yield* endFixRecordSteps(q, open, {
-        outcome: "not_fixed",
-        head: input.headBefore,
-        now: input.now,
-      });
+      yield* endFixRecordSteps(q, open, { ...input, outcome: "not_fixed", head: input.headBefore });
   const count = yield* q.one(
     q.orm
       .select({ n: sql<number>`COUNT(*)`.mapWith(Number) })
@@ -99,10 +78,9 @@ export function* fixRecordSteps(
   const repository = yield* q.one(
     q.orm.select().from(workItemRepository).where(eq(workItemRepository.itemId, item.id)),
   );
-  const id = ulid();
   yield* q.exec(
     q.orm.insert(fixRecord).values({
-      id,
+      id: ulid(),
       itemId: item.id,
       runId: item.currentRunId,
       linearIdentifier: item.linearIdentifier,
@@ -114,7 +92,6 @@ export function* fixRecordSteps(
       headBefore: input.headBefore,
     }),
   );
-  return id;
 }
 
 export function* closeFixRecordsSteps(
@@ -179,7 +156,6 @@ export type FixRecordFilter = {
   reason?: FixReason;
   repository?: string;
   sessionIds?: readonly string[];
-  limit?: number;
 };
 
 export function listFixRecords(store: Db, filter: FixRecordFilter = {}): Promise<FixRecord[]> {
@@ -200,13 +176,13 @@ export function listFixRecords(store: Db, filter: FixRecordFilter = {}): Promise
         .leftJoin(workItem, eq(workItem.id, fixRecord.itemId))
         .where(where)
         .orderBy(asc(fixRecord.startedAt), asc(fixRecord.id))
-        .limit(filter.limit ?? 1000),
+        .limit(1000),
     );
     return rows.map(({ row }) => mapRow(q, row));
   });
 }
 
-function mapRow(q: Q, row: Q["t"]["fixRecord"]["$inferSelect"]): FixRecord {
+function mapRow(q: Q, row: Row): FixRecord {
   return {
     ...row,
     reason: row.reason as FixReason,

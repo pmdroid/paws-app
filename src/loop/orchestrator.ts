@@ -102,6 +102,7 @@ import { acceptedResumeNeedsTurn, mergeAcceptedWork, settleRejectedPush } from "
 import { restartForPushConflict } from "./push-conflict";
 import {
   saveHumanRetryWindowSteps,
+  checkTriggers,
   type FixRound,
   type RestartHandoff,
   activateLinearItemSteps,
@@ -5188,7 +5189,7 @@ export class Orchestrator {
       now: this.now(),
       jobKey: `ci-failed:${item.id}:recheck:${head}`,
       fix: {
-        triggers: { checks: checks.map(({ name, url }) => ({ name, url })) },
+        triggers: { checks: checkTriggers(checks) },
         headBefore: head,
       },
     });

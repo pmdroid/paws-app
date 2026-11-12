@@ -3,6 +3,7 @@ import {
   emitJobReady,
   openItemIdsForRepositorySteps,
   enqueueOutboxOnceSteps,
+  checkTriggers,
   commentTriggers,
   fixRoundsSteps,
   getPullReviewSteps,
@@ -260,9 +261,7 @@ export async function handlePullReview(
               { commentId: review.reviewId, author: review.reviewer, body: review.body },
               ...comments,
             ]),
-            ...(failure
-              ? { checks: failure.failedChecks.map(({ name, url }) => ({ name, url })) }
-              : {}),
+            ...(failure ? { checks: checkTriggers(failure.failedChecks) } : {}),
           },
           headBefore: review.head ?? head,
         },

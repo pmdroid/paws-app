@@ -12,13 +12,9 @@ export async function handleFixRecordsRequest(
   const since = params.get("since");
   const reason = params.get("reason");
   const repository = params.get("repository");
-  if (since !== null && !/^\d+$/.test(since))
-    return Response.json({ error: "since is a time in milliseconds." }, { status: 400 });
-  if (reason !== null && !FIX_RECORD_REASONS.includes(reason as FixReason))
-    return Response.json(
-      { error: `reason is one of ${FIX_RECORD_REASONS.join(", ")}.` },
-      { status: 400 },
-    );
+  const bad = since !== null && !/^\d+$/.test(since) ? "since" : "reason";
+  if (bad === "since" || (reason !== null && !FIX_RECORD_REASONS.includes(reason as FixReason)))
+    return Response.json({ error: `Invalid ${bad}.` }, { status: 400 });
   const records = await listFixRecords(options.store, {
     ...(since === null ? {} : { since: Number(since) }),
     ...(reason === null ? {} : { reason: reason as FixReason }),

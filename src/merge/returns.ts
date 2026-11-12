@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
+  checkTriggers,
   emitJobReady,
   enqueueOutboxOnceSteps,
   getLinearSessionGenerationSteps,
@@ -65,7 +66,9 @@ export async function ciFixes(db: Database, itemId: string): Promise<number> {
 }
 
 /** The pull request a conflict return is about, for the line in the item's Linear session. */
-export type MergeConflictNotice = { sessionId: string | null; pullNumber: number; head: string };
+export type MergeConflictNotice = { sessionId: string | null; pullNumber: number; head: string } & {
+  base?: string | null;
+};
 
 /**
  * Tell the Linear session that main moved and the pull request went back to rebase. The key carries
@@ -142,10 +145,13 @@ function* returnToAgentSteps(q: Q, input: MergeReturn): Steps<{ armed: boolean }
     jobKey,
     now: input.now,
     fix: {
-      triggers: input.failedChecks
-        ? { checks: input.failedChecks.map(({ name, url }) => ({ name, url })) }
-        : {},
-      ...(input.conflict ? { headBefore: input.conflict.head } : {}),
+      triggers: {
+        ...(input.failedChecks && {
+          checks: checkTriggers(input.failedChecks),
+        }),
+        ...(input.conflict?.base && { base: input.conflict.base }),
+      },
+      ...(input.conflict && { headBefore: input.conflict.head }),
     },
   };
   const restarted = (yield* (input.restart ?? restartSteps)(q, current, handoff)) ?? {

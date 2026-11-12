@@ -244,11 +244,8 @@ function* requireWorkItemSteps(q: Q, id: string): Steps<WorkItemRecord> {
   return item;
 }
 
-const FIX_ENDINGS: Partial<Record<WorkItemState, FixOutcome>> = {
-  awaiting_input: "asked",
-  cancelled: "abandoned",
-  failed: "abandoned",
-};
+const FIX_ENDINGS: Partial<Record<WorkItemState, FixOutcome>> = { awaiting_input: "asked" };
+FIX_ENDINGS.cancelled = FIX_ENDINGS.failed = "abandoned";
 
 export function* applyWorkItemEventSteps(
   q: Q,

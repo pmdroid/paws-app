@@ -1,5 +1,6 @@
 import type { StoredReviewFinding } from "../closeout";
 import {
+  checkTriggers,
   commentTriggers,
   fixRoundsSteps,
   getItemPullRequestSteps,
@@ -188,12 +189,10 @@ export function* restartWithFeedbackSteps(
 
 const FIX_REASONS: readonly string[] = ["findings", "ci", "review"];
 
-function feedbackFix(fix: FixRound | undefined, feedback: PendingFeedback | null): FixRound {
+export function feedbackFix(fix: FixRound | undefined, feedback: PendingFeedback | null): FixRound {
   const triggers = { ...fix?.triggers };
-  if (feedback?.failure)
-    triggers.checks ??= feedback.failure.failedChecks.map(({ name, url }) => ({ name, url }));
-  if (feedback && feedback.comments.length > 0)
-    triggers.comments ??= commentTriggers(feedback.comments);
+  if (feedback?.failure) triggers.checks ??= checkTriggers(feedback.failure.failedChecks);
+  if (feedback?.comments.length) triggers.comments ??= commentTriggers(feedback.comments);
   const headBefore = fix?.headBefore ?? feedback?.failure?.head;
   return { ...fix, triggers, ...(headBefore === undefined ? {} : { headBefore }) };
 }

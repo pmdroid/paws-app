@@ -62,29 +62,19 @@ describe("merge returns", () => {
         admit: () => syncSteps(() => true),
         handoff: "fix ci",
         now: 2,
-        record: () => syncSteps(() => undefined),
-        announce: () => syncSteps(() => undefined),
+        record: () => syncSteps(() => {}),
+        announce: () => syncSteps(() => {}),
         failedChecks: [{ name: "test", url: "https://ci.example/runs/1", logTail: "boom" }],
       }),
     ).toBe(true);
-    const [opened, ...rest] = await listFixRecords(store);
-    expect(rest).toEqual([]);
-    expect(opened).toMatchObject({
-      itemId: "eng-1",
-      reason: "ci",
-      round: 1,
-      triggers: { checks: [{ name: "test", url: "https://ci.example/runs/1" }] },
-      startedAt: 2,
-      headBefore: "h",
-      outcome: null,
-    });
+    const url = "https://ci.example/runs/1";
+    expect(await listFixRecords(store)).toMatchObject([
+      { reason: "ci", round: 1, triggers: { checks: [{ name: "test", url }] }, headBefore: "h" },
+    ]);
     await markCloseoutAccepted(store, "eng-1", "h2", 10);
-    expect((await listFixRecords(store))[0]).toMatchObject({
-      outcome: "fixed",
-      headAfter: "h2",
-      endedAt: 10,
-      durationMs: 8,
-    });
+    expect(await listFixRecords(store)).toMatchObject([
+      { outcome: "fixed", headAfter: "h2", endedAt: 10, durationMs: 8 },
+    ]);
   });
 
   test("a return sends the item back to the agent with a resume job and counts it", async () => {

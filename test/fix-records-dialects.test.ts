@@ -7,7 +7,12 @@ const comment = (id: number): FixTriggers => ({
   comments: [{ id, author: "reviewer", excerpt: "Rename this helper." }],
 });
 
-async function sendBack(db: Db, reason: "review" | "ci", triggers: FixTriggers, now: number) {
+async function sendBack(
+  db: Db,
+  reason: "review" | "ci" | "conflict",
+  triggers: FixTriggers,
+  now: number,
+) {
   const item = (await getWorkItem(db, "item"))!;
   await restart(db, item, { reason, body: reason, now, fix: { triggers, headBefore: `h${now}` } });
 }
@@ -33,6 +38,28 @@ forEachDialect((open) => {
     }
   });
 
+  test("a conflict on another base is a new trigger, and a bundled comment matches its review", async () => {
+    const { db, close } = await open();
+    try {
+      await insertWorkItem(db, "item");
+      await sendBack(db, "conflict", { base: "a" }, 1);
+      await sendBack(db, "conflict", { base: "b" }, 2);
+      await sendBack(db, "conflict", { base: "b" }, 3);
+      await sendBack(db, "ci", { checks: [{ name: "lint", url: null }], ...comment(9) }, 4);
+      await sendBack(db, "review", comment(9), 5);
+      const rows = await listFixRecords(db);
+      expect(rows.map((row) => [row.reason, row.outcome])).toEqual([
+        ["conflict", null],
+        ["conflict", "not_fixed"],
+        ["conflict", null],
+        ["ci", "not_fixed"],
+        ["review", null],
+      ]);
+    } finally {
+      await close();
+    }
+  });
+
   test("the API filters fix rounds by reason and since", async () => {
     const { db, close } = await open();
     try {
@@ -40,24 +67,20 @@ forEachDialect((open) => {
       await sendBack(db, "ci", { checks: [{ name: "test", url: null }] }, 1);
       await sendBack(db, "review", comment(1), 5);
       await sendBack(db, "ci", { checks: [{ name: "lint", url: null }] }, 9);
-      const read = async (query: string) => {
-        const response = await handleFixRecordsRequest(
-          new Request(`http://paws.test/api/fix-records${query}`),
-          { store: db },
+      const get = (query: string) =>
+        handleFixRecordsRequest(new Request(`http://paws.test/api/fix-records${query}`), {
+          store: db,
+        });
+      const read = async (query: string) =>
+        ((await (await get(query)).json()) as { records: { startedAt: number }[] }).records.map(
+          (record) => record.startedAt,
         );
-        const { records } = (await response.json()) as { records: { startedAt: number }[] };
-        return records.map((record) => record.startedAt);
-      };
       expect(await read("")).toEqual([1, 5, 9]);
       expect(await read("?reason=ci")).toEqual([1, 9]);
       expect(await read("?since=5")).toEqual([5, 9]);
       expect(await read("?reason=ci&since=2")).toEqual([9]);
       expect(await read("?repository=acme/app")).toEqual([]);
-      const bad = await handleFixRecordsRequest(
-        new Request("http://paws.test/api/fix-records?reason=nope"),
-        { store: db },
-      );
-      expect(bad.status).toBe(400);
+      expect((await get("?reason=nope")).status).toBe(400);
     } finally {
       await close();
     }

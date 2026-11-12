@@ -28,6 +28,7 @@ import { askSteps } from "./operations";
 import {
   authors,
   deliverFeedbackSteps,
+  feedbackFix,
   feedbackHandoff,
   hasFeedback,
   pendingFeedbackSteps,
@@ -342,6 +343,7 @@ export async function handlePullComments(
         body: feedbackHandoff(rebase ? [REBASE_CONFLICT_INSTRUCTION] : [], feedback),
         jobKey,
         now,
+        fix: feedbackFix(rebase?.base ? { triggers: { base: rebase.base } } : undefined, feedback),
       });
       if (restarted === null) return "wait";
       job.ready = restarted.armed;
