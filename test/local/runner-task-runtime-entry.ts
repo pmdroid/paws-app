@@ -7,12 +7,11 @@ import {
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
-  migrate,
   openDatabase,
+  openPawsStore,
   putWorkspaceUser,
   recordLinearInstallation,
   saveTaskMode,
-  sqliteDb,
 } from "../../src/db";
 import { createFakeGitHub } from "../../src/github";
 import { createLocalRunnerTranscriptObjects } from "../../src/runner-transcripts";
@@ -69,8 +68,10 @@ function git(input: string[], cwd = root) {
   return child.stdout.toString().trim();
 }
 async function coordinator(port: number) {
-  const db = openDatabase(join(server, "paws.db"));
-  migrate(db);
+  const { store: db, close } = await openPawsStore({
+    url: null,
+    pgliteDir: join(server, "pglite"),
+  });
   const service = await openRunnerCoordinator({
     eventKey: Buffer.alloc(32, 7),
     db,
@@ -85,7 +86,7 @@ async function coordinator(port: number) {
     },
     onError: () => {},
   });
-  return { db, service };
+  return { db, close, service };
 }
 if (mode === "agent") {
   const script = join(root, "scripts", "current.json");
@@ -161,20 +162,20 @@ if (mode === "agent") {
     join(root, "origin"),
   );
   git(["clone", "--bare", "origin", "origin.git"]);
-  const { db, service } = await coordinator(0);
+  const { db, close, service } = await coordinator(0);
   const now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "fixture@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   const principal = {
@@ -202,11 +203,15 @@ if (mode === "agent") {
   if (paired.phase !== "paired") throw new Error("Runner enrollment failed");
   await service.control.setStatus(principal, paired.runnerId, "active");
   assert(paired.phase === "paired");
-  db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-    workspace.id,
-    "fixture/repository",
-    "team",
-  ]);
+  await db.run((q) =>
+    q.exec(
+      q.orm.insert(q.t.workspaceRepository).values({
+        workspaceId: workspace.id,
+        repository: "fixture/repository",
+        teamId: "team",
+      }),
+    ),
+  );
   for (const purpose of ["answer", "artifact"] as const)
     for (const repository of [false, true]) {
       const sessionId = "task-session-" + configuration.commands.length;
@@ -215,8 +220,8 @@ if (mode === "agent") {
         now,
         sessionKey: sessionId,
       });
-      const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
-      await recordLinearInstallation(sqliteDb(db), {
+      const { run } = await beginImplementRun(db, item.id, now);
+      await recordLinearInstallation(db, {
         organizationId: "org",
         oauthClientId: "fixture",
         appUserId: "app",
@@ -224,15 +229,15 @@ if (mode === "agent") {
         teamId: "team",
         observedAtMs: now,
       });
-      await bindLinearSessionTask(sqliteDb(db), sessionId, item.delegationId, { actorId: "owner" });
-      await saveTaskMode(sqliteDb(db), item.id, purpose, 0, repository);
+      await bindLinearSessionTask(db, sessionId, item.delegationId, { actorId: "owner" });
+      await saveTaskMode(db, item.id, purpose, 0, repository);
       const binding = {
         owner: "fixture",
         repo: "repository",
         remoteUrl: "https://github.com/fixture/repository.git",
         baseSha,
       };
-      if (repository) await bindWorkItemRepository(sqliteDb(db), item.id, binding);
+      if (repository) await bindWorkItemRepository(db, item.id, binding);
       const scope = await service.work.scopeTask(run.id, workspace.id);
       const command: Task = {
         type: "task",
@@ -263,9 +268,9 @@ if (mode === "agent") {
   daemon.close();
   await browser.stop(true);
   await service.stop();
-  db.close();
+  await close();
 } else if (mode === "coordinator") {
-  const { db, service } = await coordinator(config().runnerPort);
+  const { close, service } = await coordinator(config().runnerPort);
   const answered = new Set<string>();
   const timer = setInterval(async () => {
     for (const command of config().commands)
@@ -287,11 +292,15 @@ if (mode === "agent") {
   process.once(
     "SIGTERM",
     () =>
-      void service.stop().then(() => {
-        clearInterval(timer);
-        db.close();
-        process.exit(0);
-      }),
+      void service
+        .stop()
+        .then(() => {
+          clearInterval(timer);
+          return close();
+        })
+        .then(() => {
+          process.exit(0);
+        }),
   );
   writeFileSync(join(server, "ready"), "ready");
 } else {
