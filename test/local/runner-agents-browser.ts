@@ -1,6 +1,6 @@
 import { fixtureProvider, fullStatusFixture } from "../../src/dashboard/test/fixtures";
-// Captures a runner card's coding agents before, during and after an update, at desktop and
-// 390 px, for visual proof. The Update and Update all runners buttons are clicked for real.
+// Captures the coding agent versions dialog before, during and after an update, at desktop and
+// 375 px, for visual proof. The Update all runners button is clicked for real.
 // Usage: bun run build:dashboard && bun --no-env-file test/local/runner-agents-browser.ts <evidence-directory>
 import { chromium, type Page } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -172,32 +172,28 @@ async function capture(page: Page, name: string, selector: string, width: number
 }
 
 try {
-  for (const width of [1440, 390]) {
+  for (const width of [1440, 375]) {
     stage = "before";
     const page = await browser.newPage({ viewport: { width, height: 1000 } });
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(`http://127.0.0.1:${server.port}/dashboard/runners/${id}`);
-    await capture(page, "1-before", block, width);
-    // Update on the card sends the eligible version.
-    await page.getByRole("button", { name: "Update to 0.31.0" }).click();
-    await page.getByText("0.31.0 was sent to the runner").waitFor();
-    await capture(page, "2-installing", block, width);
-    stage = "waiting";
-    await page.reload();
-    await capture(page, "3-waiting", block, width);
-    stage = "failed";
-    await page.reload();
-    await capture(page, "4-failed", block, width);
-    stage = "after";
-    await page.reload();
-    await capture(page, "5-after", block, width);
-    // The runner list offers Update all runners while an agent is behind.
-    stage = "before";
-    await page.goto(`http://127.0.0.1:${server.port}/dashboard/runners`);
-    await capture(page, "6-update-all", '[aria-labelledby="agent-catalog-heading"]', width);
+    await capture(page, "1-runner", block, width);
+    const list = async () => {
+      await page.goto(`http://127.0.0.1:${server.port}/dashboard/runners`);
+      await page.locator("[data-agents-open]").click();
+    };
+    await list();
+    await capture(page, "2-before", "#agents-dialog", width);
     await page.getByRole("button", { name: "Update all runners" }).click();
     await page.getByText("Sent 1 coding agent update to your runners.").waitFor();
+    await capture(page, "3-installing", "#agents-dialog", width);
+    for (stage of ["waiting", "failed", "after"] as const) {
+      await list();
+      await capture(page, `4-${stage}`, "#agents-dialog", width);
+    }
+    await page.keyboard.press("Escape");
+    await page.locator("#agents-dialog").waitFor({ state: "detached" });
     observations.push({ width, errors });
     await page.close();
   }

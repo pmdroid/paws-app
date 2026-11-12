@@ -1120,7 +1120,9 @@ describe("coding agent versions", () => {
         },
         { agent: "grok", offered: null, refused: [], checkedAt: at },
       ],
+      [],
       at,
+      { manages: false, busy: false, behind: 0 },
     );
     expect(html).toContain("Coding agent versions");
     expect(html).toContain('<span class="mono">0.88.0</span>');
@@ -1128,10 +1130,6 @@ describe("coding agent versions", () => {
     expect(html).toContain("claude-agent-acp@0.89.0 changed &lt;after&gt;.");
     expect(html).toContain("Checked 2 h ago");
     expect(html).toContain("No version is eligible yet");
-  });
-
-  test("is left out before the first catalog refresh", () => {
-    expect(agentCatalogMarkup([], 0)).toBe("");
   });
 });
 

@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
   agentCatalogMarkup,
   codingAgentsBehind,
+  codingAgentsButtonMarkup,
   runnerCodingAgentsMarkup,
   runnerDetailMarkup,
   type AgentCatalogEntry,
@@ -56,69 +57,70 @@ const runner: Runner = {
 };
 const view = { now, serverVersion: null, policy: null, userId: null, role: "admin", busy: false };
 
-describe("runner card coding agents", () => {
-  test("shows each installed version, the newest eligible one, and Update", () => {
-    const html = runnerCodingAgentsMarkup([claude, codex], owner);
-    expect(html).toContain(
-      '<b>Claude</b><span class="mono">2.0.0</span><span class="muted">Newest eligible <span class="mono">2.1.0</span></span></span><span class="tag warn">Update available</span>',
+const modal = (runners: Runner[], manages = true, behind = 1) =>
+  agentCatalogMarkup(catalog, runners, now, { manages, busy: false, behind });
+const card = (codingAgents: RunnerCodingAgent[]) => modal([{ ...runner, codingAgents }]);
+
+describe("coding agent versions", () => {
+  test("the header button shows how many agents are behind", () => {
+    expect(codingAgentsBehind([runner], catalog)).toBe(1);
+    expect(
+      codingAgentsBehind([{ ...runner, codingAgents: [pending("installing")] }], catalog),
+    ).toBe(0);
+    expect(codingAgentsButtonMarkup(1)).toContain(
+      'Update coding agents <span class="cnt" aria-label="1 behind">1</span></button>',
     );
-    expect(html).toContain(
-      `<button class="btn" data-agent-update="claude" data-runner="${owner.runnerId}" data-version="2.1.0"`,
-    );
-    expect(html).toContain(">Update to 2.1.0</button>");
-    // Update is the only action: the Codex row, already up to date, has no button.
-    expect(html.match(/<button/g)).toHaveLength(1);
-    expect(html).toContain(
-      '<b>Codex</b><span class="mono">0.9.0</span></span><span class="tag ok">Up to date</span>',
-    );
-    expect(html).not.toContain('data-agent-update="codex"');
+    expect(codingAgentsButtonMarkup(0)).toContain(">Coding agents up to date</button>");
   });
 
-  test("only an eligible version is offered, and members who do not manage runners get no buttons", () => {
-    const ineligible = runnerCodingAgentsMarkup([claude], {
-      ...owner,
-      catalog: [{ agent: "claude", offered: null, refused: [], checkedAt: now }],
-    });
-    expect(ineligible).toContain("No eligible version yet");
-    expect(ineligible).not.toContain("data-agent-update");
-    // An older version than the one installed is never offered as an update.
-    expect(
-      runnerCodingAgentsMarkup([claude], {
-        ...owner,
-        catalog: [{ agent: "claude", offered: "1.9.0", refused: [], checkedAt: now }],
-      }),
-    ).not.toContain("data-agent-update");
-    const member = runnerCodingAgentsMarkup([claude], { ...owner, manages: false });
-    expect(member).not.toContain("<button");
-    expect(member).toContain("Update available");
+  test("the dialog lists each runner's version next to the newest eligible one", () => {
+    const html = modal([runner]);
+    expect(html).toStartWith('<dialog id="agents-dialog" aria-labelledby="agents-heading">');
+    expect(html).toContain(
+      '<b>goldbox</b><span class="mono">2.0.0</span><span class="muted">Newest eligible <span class="mono">2.1.0</span></span></span><span class="tag warn">Update available</span>',
+    );
+    expect(html).toContain(
+      '<b>goldbox</b><span class="mono">0.9.0</span></span><span class="tag ok">Up to date</span>',
+    );
+    expect(html).toContain("1 coding agent on your runners is behind the newest eligible version.");
+    expect(renderToStaticMarkup(<>{themedMarkup(html)}</>)).toContain("Update all runners");
   });
 
   test("an update in flight shows Installing, the sessions it waits for, or the error", () => {
-    const installing = runnerCodingAgentsMarkup([pending("installing")], owner);
+    const installing = card([pending("installing")]);
     expect(installing).toContain('<span class="tag running">Installing</span>');
     expect(installing).toContain("Installing 2.1.0. Sessions use 2.0.0 until it is in place.");
-    expect(installing).not.toContain("<button");
 
-    const waiting = runnerCodingAgentsMarkup([pending("waiting", { sessions: 2 })], owner);
+    const waiting = card([pending("waiting", { sessions: 2 })]);
     expect(waiting).toContain('<span class="tag running">Waiting for 2 sessions to finish</span>');
     expect(waiting).toContain("Switches to 2.1.0 when they end. They keep 2.0.0.");
 
     const error =
       "Coding agent claude 2.1.0 was not installed: npm's integrity is not the one Paws sent";
-    const failed = runnerCodingAgentsMarkup([pending("failed", { error })], owner);
+    const failed = card([pending("failed", { error })]);
     expect(failed).toContain('<span class="tag bad">Install failed</span>');
     expect(failed).toContain(
       `<p class="runner-skill-error" role="note">${error.replace("'", "&#39;")}</p>`,
     );
-    // After a failure the person can try the update again.
-    expect(failed).toContain(">Update to 2.1.0</button>");
   });
 
-  test("the runner card has a Coding agents block, and older runners say how to get one", () => {
-    const detail = runnerDetailMarkup(runner, { ...view, catalog });
+  test("Update all runners is the only action, for admins while an agent is behind", () => {
+    const admin = modal([runner]);
+    expect(admin.match(/<button[^>]*data-agents-update-all/g)).toHaveLength(1);
+    expect(admin).not.toContain("data-agent-update=");
+    const member = modal([runner], false);
+    expect(member).not.toContain("Update all runners");
+    expect(member).toContain('<span class="mono">2.0.0</span>');
+    expect(modal([runner], true, 0)).not.toContain("Update all runners");
+  });
+
+  test("the runner page keeps one line of versions", () => {
+    const detail = runnerDetailMarkup(runner, view);
     expect(detail).toContain(`<h3 id="runner-${owner.runnerId}-coding-agents">Coding agents</h3>`);
-    expect(detail).toContain(">Update to 2.1.0</button>");
-    expect(renderToStaticMarkup(<>{themedMarkup(detail)}</>)).toContain("Update to 2.1.0");
+    expect(runnerCodingAgentsMarkup([claude, codex])).toBe(
+      '<p class="runner-skill-name" data-coding-agents><span><b>Claude</b> <span class="mono">2.0.0</span></span><span aria-hidden="true">·</span><span><b>Codex</b> <span class="mono">0.9.0</span></span></p>',
+    );
+    expect(detail).not.toContain('<button class="btn" data-agent-update');
     expect(runnerDetailMarkup({ ...runner, codingAgents: [] }, view)).toContain(
       "This runner does not report its coding agent versions.",
     );
@@ -127,21 +129,5 @@ describe("runner card coding agents", () => {
     expect(runnerDetailMarkup({ ...runner, status: "revoked" }, view)).not.toContain(
       "-coding-agents",
     );
-  });
-
-  test("Update all runners appears for admins while an agent is behind", () => {
-    expect(codingAgentsBehind([runner], catalog)).toBe(1);
-    expect(
-      codingAgentsBehind([{ ...runner, codingAgents: [pending("installing")] }], catalog),
-    ).toBe(0);
-    const list = agentCatalogMarkup(catalog, now, { manages: true, busy: false, behind: 1 });
-    expect(list).toContain(">Update all runners</button>");
-    expect(list).toContain("1 coding agent on your runners is behind the newest eligible version.");
-    expect(
-      agentCatalogMarkup(catalog, now, { manages: false, busy: false, behind: 1 }),
-    ).not.toContain("Update all runners");
-    expect(
-      agentCatalogMarkup(catalog, now, { manages: true, busy: false, behind: 0 }),
-    ).not.toContain("Update all runners");
   });
 });

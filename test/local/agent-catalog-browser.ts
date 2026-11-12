@@ -84,13 +84,14 @@ const browser = await chromium.launch({
 });
 const errors: string[] = [];
 try {
-  for (const width of [1280, 390])
+  for (const width of [1280, 375])
     for (const scheme of ["light", "dark"] as const) {
       const page = await browser.newPage({ viewport: { width, height: 900 } });
       await page.emulateMedia({ colorScheme: scheme });
       page.on("pageerror", (error) => errors.push(error.message));
       await page.goto(`http://127.0.0.1:${server.port}/dashboard/runners`);
-      await page.locator("#agent-catalog-heading").waitFor();
+      await page.locator("[data-agents-open]").click();
+      await page.locator("#agents-heading").waitFor();
       await page.screenshot({
         path: join(directory, `agent-catalog-${width}-${scheme}.png`),
         fullPage: true,
