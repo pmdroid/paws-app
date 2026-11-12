@@ -22,6 +22,7 @@ import {
   runnerTargetForRestoreSteps,
   runRunnerAvailabilitySteps,
   runRunnerNameSteps,
+  runnerRepositoryListsSteps,
   storedRunnerNameSteps,
   updateRunnerStatusSteps,
   type Db,
@@ -83,6 +84,18 @@ function* insertEnrollmentSteps(q: Q) {
     workspaceId: "acme",
     userId: "owner",
     name: "laptop",
+    expiresAt: NOW + 100,
+    now: NOW,
+  });
+}
+
+function* insertEnrollmentStepsWith(q: Q, id: string, tokenHash: string) {
+  yield* createRunnerEnrollmentSteps(q, {
+    id,
+    tokenHash,
+    workspaceId: "acme",
+    userId: "owner",
+    name: id,
     expiresAt: NOW + 100,
     now: NOW,
   });
@@ -394,6 +407,42 @@ forEachDialect((connect) => {
     });
   });
 
+  test("an enrollment's starting repository list becomes the runner's page list", async () => {
+    const db = await open();
+    await db.run((q) => insertRunnerSteps(q, "box"));
+    await db.transaction(function* (q) {
+      yield* createRunnerEnrollmentSteps(q, {
+        id: "dashboard",
+        tokenHash: "token",
+        workspaceId: "acme",
+        userId: "owner",
+        name: "laptop",
+        expiresAt: NOW + 100,
+        now: NOW,
+        adminRepositories: [],
+      });
+      yield* insertEnrollmentStepsWith(q, "vm", "token-vm");
+    });
+    await db.transaction((q) => enrollSteps(q));
+    await db.transaction(function* (q) {
+      return yield* enrollRunnerSteps(q, {
+        tokenHash: "token-vm",
+        runnerId: "vm-runner",
+        name: "vm",
+        certificate: certificate("vm"),
+        now: NOW,
+      });
+    });
+    expect(await db.run((q) => runnerRepositoryListsSteps(q, "paired"))).toEqual({
+      admin: [],
+      host: null,
+    });
+    expect(await db.run((q) => runnerRepositoryListsSteps(q, "vm-runner"))).toEqual({
+      admin: null,
+      host: null,
+    });
+  });
+
   test("an enrollment pairs one runner once and refuses past the pending limit", async () => {
     const db = await open();
     await db.run((q) => insertRunnerSteps(q, "box"));
@@ -404,6 +453,7 @@ forEachDialect((connect) => {
       userId: "owner",
       name: "laptop",
       expiresAt: NOW + 100,
+      adminRepositories: null,
     };
     expect(await db.run((q) => findRunnerEnrollmentSteps(q, "token", NOW))).toEqual(enrollment);
     expect(await db.run((q) => findRunnerEnrollmentSteps(q, "token", NOW + 100))).toBeNull();

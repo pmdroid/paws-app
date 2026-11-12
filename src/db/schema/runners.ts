@@ -517,6 +517,7 @@ export const runnerEnrollment = sqliteTable(
     expiresAt: integer("expires_at").notNull(),
     usedAt: integer("used_at"),
     runnerId: text("runner_id").references(() => runner.id),
+    adminRepositories: text("admin_repositories"),
   },
   (table) => [
     foreignKey(() => ({
@@ -524,6 +525,10 @@ export const runnerEnrollment = sqliteTable(
       foreignColumns: [workspaceMember.workspaceId, workspaceMember.userId],
       name: "runner_enrollment_workspace_id_user_id_workspace_member_workspace_id_user_id_fk",
     })),
+    check(
+      "runner_enrollment_check_1",
+      sql`admin_repositories IS NULL OR json_valid(admin_repositories)`,
+    ),
     unique().on(table.tokenHash),
     index("runner_enrollment_expiry")
       .on(table.expiresAt)
