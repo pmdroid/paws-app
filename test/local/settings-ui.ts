@@ -1,6 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { migrate, openDatabase, sqliteDb } from "../../src/db";
 import { INSTALLATION_PERMISSIONS } from "../../src/github";
 import { startServer } from "../../src/server";
 import {
@@ -8,11 +7,11 @@ import {
   issueWorkspaceBootstrap,
   type WorkspaceAccess,
 } from "../../src/workspace";
+import { tempStore } from "../pglite";
 
 const root = process.env.PAWS_VERIFY_ROOT;
 if (root === undefined) throw new Error("Use scripts/verify-local.ts workspace-serve.");
-const db = openDatabase(join(root, "workspace-ui.sqlite"));
-migrate(db);
+const { db, close } = await tempStore();
 const home = join(root, "home");
 mkdirSync(home, { recursive: true, mode: 0o700 });
 const key = join(home, "fixture.key");
@@ -58,11 +57,15 @@ const provider = Bun.serve({
       if (body.unavailable !== undefined) unavailable = body.unavailable;
       if (body.hiddenRepository !== undefined) hiddenRepository = body.hiddenRepository;
       if (body.permissionsReady !== undefined) permissionsReady = body.permissionsReady;
-      if (body.disconnect) db.run("DELETE FROM workspace_github_connection");
+      if (body.disconnect) await db.run((q) => q.exec(q.orm.delete(q.t.workspaceGithubConnection)));
       if (body.expire)
-        db.run("UPDATE workspace_session SET authenticated_at=?", [
-          Date.now() - 2 * 24 * 60 * 60_000,
-        ]);
+        await db.run((q) =>
+          q.exec(
+            q.orm
+              .update(q.t.workspaceSession)
+              .set({ authenticatedAt: Date.now() - 2 * 24 * 60 * 60_000 }),
+          ),
+        );
       return Response.json({ ok: true });
     }
     if (unavailable) return Response.json({ error: "Synthetic GitHub outage" }, { status: 503 });
@@ -167,7 +170,7 @@ const server = startServer({
 const origin = `https://127.0.0.1:${server.port}`;
 ready.resolve(
   createWorkspaceAccess({
-    store: sqliteDb(db),
+    store: db,
     githubAttributionClient: {
       clientId: "Iv1.fixture",
       clientSecret: "synthetic-client-secret",
@@ -232,7 +235,7 @@ writeFileSync(
   JSON.stringify({
     origin,
     control: `http://127.0.0.1:${provider.port}/__fixture`,
-    bootstrap: await issueWorkspaceBootstrap(sqliteDb(db), "fixture-org"),
+    bootstrap: await issueWorkspaceBootstrap(db, "fixture-org"),
   }),
 );
 console.log(`Workspace browser fixture: ${origin}/dashboard/`);
@@ -247,6 +250,10 @@ await server.stop(true);
 await provider.stop(true);
 writeFileSync(
   join(root, "workspace-ui-audit.json"),
-  JSON.stringify(db.query("SELECT * FROM workspace_access_audit").all(), null, 2),
+  JSON.stringify(
+    await db.run((q) => q.all(q.orm.select().from(q.t.workspaceAccessAudit))),
+    null,
+    2,
+  ),
 );
-db.close();
+await close();

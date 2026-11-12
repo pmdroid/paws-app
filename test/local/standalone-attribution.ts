@@ -13,41 +13,52 @@ import {
   beginGitHubAttribution,
   beginImplementRun,
   bindLinearSessionTask,
-  consumeGitHubAttribution,
+  consumeGitHubAttributionRequest,
   getItemRunCommitPolicy,
   getWorkItem,
   insertQueuedItem,
   listJobs,
-  migrate,
-  openDatabase,
+  openPawsStore,
   putWorkspaceUser,
   recordLinearInstallation,
   revokeGitHubAttribution,
   saveGitHubAttribution,
   saveRunCommitPolicy,
   syncWorkspaceMember,
-  sqliteDb,
   syncSteps,
 } from "../../src/db";
 import { GitHubInstallationCheck } from "../../src/loop";
 import { signRunnerCommand, verifyRunnerCommand } from "../../src/runner-protocol";
 import { delegatorCommitCredit, issueWorkspaceSession } from "../../src/workspace";
+import { copyMigratedPglite } from "../pglite";
 
 export async function probeStandaloneAttribution(root: string) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const observations: string[] = [];
   const now = Date.now();
-  const dbPath = join(root, "paws.db");
-  const db = openDatabase(dbPath);
-  migrate(db);
-  db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',?)", [now]);
-  await putWorkspaceUser(sqliteDb(db), {
+  const pgliteDir = join(root, "pglite");
+  await copyMigratedPglite(pgliteDir);
+  let opened = await openPawsStore({ url: null, pgliteDir });
+  const db = opened.store;
+  await db.run((q) =>
+    q.exec(
+      q.orm
+        .insert(q.t.workspace)
+        .values({
+          id: "workspace",
+          linearOrganizationId: "org",
+          name: "Workspace",
+          createdAt: now,
+        }),
+    ),
+  );
+  await putWorkspaceUser(db, {
     id: "steerer",
     linearUserId: "steerer",
     name: "Task Steerer",
     email: "steerer@example.invalid",
   });
-  await syncWorkspaceMember(sqliteDb(db), {
+  await syncWorkspaceMember(db, {
     workspaceId: "workspace",
     userId: "steerer",
     role: "member",
@@ -55,7 +66,7 @@ export async function probeStandaloneAttribution(root: string) {
     teamIds: ["team"],
     now,
   });
-  const session = await issueWorkspaceSession(sqliteDb(db), {
+  const session = await issueWorkspaceSession(db, {
     workspaceId: "workspace",
     userId: "steerer",
     now,
@@ -67,14 +78,14 @@ export async function probeStandaloneAttribution(root: string) {
   };
   const consent = async () => {
     const stateHash = randomUUID();
-    await beginGitHubAttribution(sqliteDb(db), binding, { stateHash, browserHash: stateHash, now });
-    const revision = await consumeGitHubAttribution(db, binding, {
+    await beginGitHubAttribution(db, binding, { stateHash, browserHash: stateHash, now });
+    const { revision } = await consumeGitHubAttributionRequest(db, binding, {
       stateHash,
       browserHash: stateHash,
       now,
     });
     await saveGitHubAttribution(
-      sqliteDb(db),
+      db,
       binding,
       {
         id: 8,
@@ -87,7 +98,7 @@ export async function probeStandaloneAttribution(root: string) {
     );
   };
   const item = await insertQueuedItem(db, { id: "item", sessionKey: "session", now });
-  await recordLinearInstallation(sqliteDb(db), {
+  await recordLinearInstallation(db, {
     organizationId: "org",
     oauthClientId: "client",
     appUserId: "app",
@@ -95,12 +106,12 @@ export async function probeStandaloneAttribution(root: string) {
     teamId: "team",
     observedAtMs: now,
   });
-  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "steerer" });
-  const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
+  await bindLinearSessionTask(db, "session", item.delegationId, { actorId: "steerer" });
+  const { run } = await beginImplementRun(db, item.id, now);
   const bot = { appId: "99", id: 88, login: "paws-test[bot]" };
   const policyForItem = async (): Promise<GitCommitPolicy> => ({
     bot,
-    credit: await delegatorCommitCredit(sqliteDb(db), item.id),
+    credit: await delegatorCommitCredit(db, item.id),
   });
   const requests: string[] = [];
   const realFetch = globalThis.fetch;
@@ -112,7 +123,7 @@ export async function probeStandaloneAttribution(root: string) {
     { preconnect: realFetch.preconnect },
   ) as typeof fetch;
   const auth = new GitHubInstallationCheck(
-    sqliteDb(db),
+    db,
     {
       check: async () => true,
       identity: () => syncSteps(() => "workspace-repository"),
@@ -126,18 +137,11 @@ export async function probeStandaloneAttribution(root: string) {
     assert.deepEqual(policy, { bot, credit: null });
     assert.equal(policyCoauthors(policy).length, 0);
     assert.equal(
-      await auth.ensure(
-        (await getWorkItem(sqliteDb(db), item.id))!,
-        "initial",
-        new AbortController().signal,
-      ),
+      await auth.ensure((await getWorkItem(db, item.id))!, "initial", new AbortController().signal),
       true,
     );
-    assert.equal((await getWorkItem(sqliteDb(db), item.id))!.state, "running");
-    assert.equal(
-      (await listJobs(sqliteDb(db))).filter((job) => job.queue === "run.resume").length,
-      0,
-    );
+    assert.equal((await getWorkItem(db, item.id))!.state, "running");
+    assert.equal((await listJobs(db)).filter((job) => job.queue === "run.resume").length, 0);
     observations.push(
       "an unlinked delegator gets a bot-only policy and the App gate starts work without waiting",
     );
@@ -154,28 +158,21 @@ export async function probeStandaloneAttribution(root: string) {
       commitPolicyMessage("work", await policyForItem()),
       "work\n\nCo-authored-by: Task Steerer <8+steerer@users.noreply.github.com>\n",
     );
-    await revokeGitHubAttribution(sqliteDb(db), binding, now);
+    await revokeGitHubAttribution(db, binding, now);
     assert.equal((await policyForItem()).credit, null);
     assert.equal(
-      await auth.ensure(
-        (await getWorkItem(sqliteDb(db), item.id))!,
-        "initial",
-        new AbortController().signal,
-      ),
+      await auth.ensure((await getWorkItem(db, item.id))!, "initial", new AbortController().signal),
       true,
     );
-    assert.equal((await getWorkItem(sqliteDb(db), item.id))!.state, "running");
+    assert.equal((await getWorkItem(db, item.id))!.state, "running");
     assert.deepEqual(requests, []);
     observations.push(
       "linking credits exactly the delegator from a local lookup, and revoking credit creates no hold",
     );
-    await saveRunCommitPolicy(sqliteDb(db), run.id, policy);
-    const reopened = openDatabase(dbPath);
-    try {
-      assert.deepEqual(await getItemRunCommitPolicy(sqliteDb(reopened), item.id), policy);
-    } finally {
-      reopened.close();
-    }
+    await saveRunCommitPolicy(db, run.id, policy);
+    await opened.close();
+    opened = await openPawsStore({ url: null, pgliteDir });
+    assert.deepEqual(await getItemRunCommitPolicy(opened.store, item.id), policy);
     const keys = generateKeyPairSync("ed25519");
     const envelope = signRunnerCommand({
       keyId: "proof",
@@ -211,7 +208,7 @@ export async function probeStandaloneAttribution(root: string) {
     });
     assert(verified.ok);
     observations.push(
-      "standalone attribution persists across SQLite reopen and passes signed runner command validation",
+      "standalone attribution persists across a database reopen and passes signed runner command validation",
     );
     const home = join(root, "home"),
       tree = join(root, "tree");
@@ -284,7 +281,7 @@ export async function probeStandaloneAttribution(root: string) {
   } finally {
     auth.close();
     globalThis.fetch = realFetch;
-    db.close();
+    await opened.close();
   }
 }
 
