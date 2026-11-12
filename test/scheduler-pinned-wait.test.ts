@@ -10,27 +10,30 @@ import {
   releasePinnedSlot,
   runnerHasCapacity,
   syncWorkspaceMember,
-  sqliteDb,
+  type Db,
 } from "../src/db";
+import { eq, sql, type SQL } from "drizzle-orm";
 import { saveSchedulingContextSteps } from "../src/scheduler";
-import { tempDb } from "./helpers";
-import { workspaceDispatch } from "./fake-workspace";
+import { workspaceDispatchPg as workspaceDispatch } from "./fake-workspace";
+import { tempStore } from "./pglite";
 
 const NOW = 1_000_000;
 const BACKOFF = NOW + 4 * 60_000;
 
+const exec = (db: Db, query: SQL) => db.run((q) => q.exec(q.orm.execute(query)));
+
 // Runner A has one slot, held by `busy`. X resumes pinned to A and waits for that slot on its
 // backoff; Y is queued with a lower priority and no dependents.
 async function fixture() {
-  const db = tempDb();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const { db, close } = await tempStore();
+  const userId = await putWorkspaceUser(db, {
     id: "user-1",
     linearUserId: "user-linear",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  db.run("INSERT INTO workspace VALUES(?,?,?,?)", ["ws-1", "org-1", "Workspace", 0]);
-  await syncWorkspaceMember(sqliteDb(db), {
+  await exec(db, sql`INSERT INTO workspace VALUES('ws-1','org-1','Workspace',0)`);
+  await syncWorkspaceMember(db, {
     workspaceId: "ws-1",
     userId,
     role: "admin",
@@ -38,30 +41,30 @@ async function fixture() {
     teamIds: [],
     now: 0,
   });
-  db.run(
-    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('A','ws-1',?,'A','active',0,?)",
-    [userId, NOW],
+  await exec(
+    db,
+    sql`INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('A','ws-1',${userId},'A','active',0,${NOW})`,
   );
-  db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES('A',1)");
+  await exec(db, sql`INSERT INTO runner_capacity(runner_id,capacity) VALUES('A',1)`);
   const work = (runId: string, ended: number | null) =>
-    db.run(
-      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at,teardown_confirmed_at) VALUES(?,'A','ws-1',1,0,?,?,?,?)",
-      [runId, `cmd-${runId}`, NOW + 60_000, ended, ended],
+    exec(
+      db,
+      sql`INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at,teardown_confirmed_at) VALUES(${runId},'A','ws-1',1,0,${`cmd-${runId}`},${NOW + 60_000},${ended},${ended})`,
     );
 
   await insertQueuedItem(db, { id: "busy", now: 0 });
-  await applyWorkItemEvent(sqliteDb(db), "busy", "dispatched");
-  const busy = (await insertRun(sqliteDb(db), { itemId: "busy", now: 0, status: "active" })).id;
-  work(busy, null);
+  await applyWorkItemEvent(db, "busy", "dispatched");
+  const busy = (await insertRun(db, { itemId: "busy", now: 0, status: "active" })).id;
+  await work(busy, null);
 
   await insertQueuedItem(db, { id: "X", now: 1 });
-  await sqliteDb(db).run((q) => saveSchedulingContextSteps(q, { itemId: "X", priority: 1 }));
-  await applyWorkItemEvent(sqliteDb(db), "X", "dispatched");
-  const lost = (await insertRun(sqliteDb(db), { itemId: "X", now: 1, status: "lost" })).id;
-  db.run("UPDATE work_item SET current_run_id=? WHERE id='X'", [lost]);
-  work(lost, NOW - 1);
-  await applyWorkItemEvent(sqliteDb(db), "X", "lease_expired");
-  const resume = await enqueueJob(sqliteDb(db), {
+  await db.run((q) => saveSchedulingContextSteps(q, { itemId: "X", priority: 1 }));
+  await applyWorkItemEvent(db, "X", "dispatched");
+  const lost = (await insertRun(db, { itemId: "X", now: 1, status: "lost" })).id;
+  await exec(db, sql`UPDATE work_item SET current_run_id=${lost} WHERE id='X'`);
+  await work(lost, NOW - 1);
+  await applyWorkItemEvent(db, "X", "lease_expired");
+  const resume = await enqueueJob(db, {
     queue: JOB_KIND.resume,
     payload: {
       itemId: "X",
@@ -75,138 +78,139 @@ async function fixture() {
   });
 
   await insertQueuedItem(db, { id: "Y", now: 2 });
-  await sqliteDb(db).run((q) => saveSchedulingContextSteps(q, { itemId: "Y", priority: 4 }));
+  await db.run((q) => saveSchedulingContextSteps(q, { itemId: "Y", priority: 4 }));
 
-  const runAt = () =>
-    db.query<{ runAt: number }, [number]>("SELECT run_at AS runAt FROM job WHERE id=?").get(resume)!
-      .runAt;
-  const free = (at: number) => {
-    db.run("UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE run_id=?", [
-      at,
-      at,
-      busy,
-    ]);
-    db.run("UPDATE run SET status='ended' WHERE id=?", [busy]);
+  const runAt = async () =>
+    (await db.run((q) =>
+      q.one(q.orm.select({ runAt: q.t.job.runAt }).from(q.t.job).where(eq(q.t.job.id, resume))),
+    ))!.runAt;
+  const free = async (at: number) => {
+    await exec(
+      db,
+      sql`UPDATE runner_work SET ended_at=${at},teardown_confirmed_at=${at} WHERE run_id=${busy}`,
+    );
+    await exec(db, sql`UPDATE run SET status='ended' WHERE id=${busy}`);
   };
-  return { db, runAt, free };
+  return { db, close, runAt, free };
 }
 
 test("a freed slot on the pinned runner goes to the item waiting on it, not to a queued item", async () => {
-  const { db, runAt, free } = await fixture();
+  const { db, close, runAt, free } = await fixture();
   try {
     expect(await workspaceDispatch(db, { now: NOW })).toEqual([]);
-    expect(runAt()).toBe(BACKOFF);
-    free(NOW + 1);
+    expect(await runAt()).toBe(BACKOFF);
+    await free(NOW + 1);
     expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual([]);
-    expect(runAt()).toBe(NOW + 2);
+    expect(await runAt()).toBe(NOW + 2);
     // The wake stands until X's job runs; Y keeps waiting meanwhile.
     expect(await workspaceDispatch(db, { now: NOW + 3 })).toEqual([]);
-    expect(runAt()).toBe(NOW + 2);
+    expect(await runAt()).toBe(NOW + 2);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("a queued item ranked ahead of the waiting item takes the freed slot", async () => {
-  const { db, runAt, free } = await fixture();
+  const { db, close, runAt, free } = await fixture();
   try {
-    await sqliteDb(db).run((q) => saveSchedulingContextSteps(q, { itemId: "Y", priority: 1 }));
-    await sqliteDb(db).run((q) => saveSchedulingContextSteps(q, { itemId: "X", priority: 4 }));
-    free(NOW + 1);
+    await db.run((q) => saveSchedulingContextSteps(q, { itemId: "Y", priority: 1 }));
+    await db.run((q) => saveSchedulingContextSteps(q, { itemId: "X", priority: 4 }));
+    await free(NOW + 1);
     expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual(["Y"]);
-    expect(runAt()).toBe(BACKOFF);
+    expect(await runAt()).toBe(BACKOFF);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("a wait on an offline pinned runner reserves nothing", async () => {
-  const { db, runAt } = await fixture();
+  const { db, close, runAt } = await fixture();
   try {
-    db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('B','ws-1','user-1','B','active',0,?)",
-      [NOW + 120_000],
+    await exec(
+      db,
+      sql`INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('B','ws-1','user-1','B','active',0,${NOW + 120_000})`,
     );
-    db.run("UPDATE runner SET last_seen_at=0 WHERE id='A'");
+    await exec(db, sql`UPDATE runner SET last_seen_at=0 WHERE id='A'`);
     expect(await workspaceDispatch(db, { now: NOW + 120_000 })).toEqual(["Y"]);
-    expect(runAt()).toBe(BACKOFF);
+    expect(await runAt()).toBe(BACKOFF);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("a wait past its hold reserves nothing", async () => {
-  const { db, runAt, free } = await fixture();
+  const { db, close, runAt, free } = await fixture();
   try {
-    db.run("UPDATE job SET payload=json_set(payload,'$.capacityWait.holdMs',1000) WHERE queue=?", [
-      JOB_KIND.resume,
-    ]);
-    free(NOW + 1);
+    await exec(
+      db,
+      sql`UPDATE job SET payload=jsonb_set(payload,'{capacityWait,holdMs}','1000') WHERE queue=${JOB_KIND.resume}`,
+    );
+    await free(NOW + 1);
     expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual(["Y"]);
-    expect(runAt()).toBe(BACKOFF);
+    expect(await runAt()).toBe(BACKOFF);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("with another runner free, the waiting item's slot stays off limits to the queued item", async () => {
-  const { db, runAt, free } = await fixture();
+  const { db, close, runAt, free } = await fixture();
   try {
-    db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('B','ws-1','user-1','B','active',0,?)",
-      [NOW],
+    await exec(
+      db,
+      sql`INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('B','ws-1','user-1','B','active',0,${NOW})`,
     );
-    free(NOW + 1);
+    await free(NOW + 1);
     // A and B each have a free slot: X is woken for A, and Y is admitted for B.
     expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual(["Y"]);
-    expect(runAt()).toBe(NOW + 2);
+    expect(await runAt()).toBe(NOW + 2);
     // Placement keeps Y off A while X holds A's slot, and gives X its own slot.
-    const reserved = await pinnedSlotsReserved(sqliteDb(db), "A", "Y", NOW + 2);
+    const reserved = await pinnedSlotsReserved(db, "A", "Y", NOW + 2);
     expect(reserved).toBe(1);
-    expect(await runnerHasCapacity(sqliteDb(db), "A", NOW + 2, "", reserved)).toBe(false);
-    expect(await pinnedSlotsReserved(sqliteDb(db), "B", "Y", NOW + 2)).toBe(0);
-    expect(await pinnedSlotsReserved(sqliteDb(db), "A", "X", NOW + 2)).toBe(0);
+    expect(await runnerHasCapacity(db, "A", NOW + 2, "", reserved)).toBe(false);
+    expect(await pinnedSlotsReserved(db, "B", "Y", NOW + 2)).toBe(0);
+    expect(await pinnedSlotsReserved(db, "A", "X", NOW + 2)).toBe(0);
     // Once X is placed the reservation is gone.
-    await releasePinnedSlot(sqliteDb(db), "X");
-    expect(await pinnedSlotsReserved(sqliteDb(db), "A", "Y", NOW + 2)).toBe(0);
+    await releasePinnedSlot(db, "X");
+    expect(await pinnedSlotsReserved(db, "A", "Y", NOW + 2)).toBe(0);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("a waiting item ranked behind a queued item that took the last slot reserves nothing", async () => {
-  const { db, runAt, free } = await fixture();
+  const { db, close, runAt, free } = await fixture();
   try {
-    await sqliteDb(db).run((q) => saveSchedulingContextSteps(q, { itemId: "Y", priority: 1 }));
-    await sqliteDb(db).run((q) => saveSchedulingContextSteps(q, { itemId: "X", priority: 4 }));
-    free(NOW + 1);
+    await db.run((q) => saveSchedulingContextSteps(q, { itemId: "Y", priority: 1 }));
+    await db.run((q) => saveSchedulingContextSteps(q, { itemId: "X", priority: 4 }));
+    await free(NOW + 1);
     expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual(["Y"]);
-    expect(await pinnedSlotsReserved(sqliteDb(db), "A", "Y", NOW + 2)).toBe(0);
-    expect(runAt()).toBe(BACKOFF);
+    expect(await pinnedSlotsReserved(db, "A", "Y", NOW + 2)).toBe(0);
+    expect(await runAt()).toBe(BACKOFF);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("a waiting item on a full runner holds the slot that frees next", async () => {
-  const { db } = await fixture();
+  const { db, close } = await fixture();
   try {
     expect(await workspaceDispatch(db, { now: NOW })).toEqual([]);
-    expect(await pinnedSlotsReserved(sqliteDb(db), "A", "Y", NOW)).toBe(1);
+    expect(await pinnedSlotsReserved(db, "A", "Y", NOW)).toBe(1);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("a reservation is released when its runner goes offline", async () => {
-  const { db } = await fixture();
+  const { db, close } = await fixture();
   try {
     expect(await workspaceDispatch(db, { now: NOW })).toEqual([]);
-    expect(await pinnedSlotsReserved(sqliteDb(db), "A", "Y", NOW)).toBe(1);
-    db.run("UPDATE runner SET last_seen_at=0 WHERE id='A'");
+    expect(await pinnedSlotsReserved(db, "A", "Y", NOW)).toBe(1);
+    await exec(db, sql`UPDATE runner SET last_seen_at=0 WHERE id='A'`);
     await workspaceDispatch(db, { now: NOW + 120_000 });
-    expect(await pinnedSlotsReserved(sqliteDb(db), "A", "Y", NOW + 120_000)).toBe(0);
+    expect(await pinnedSlotsReserved(db, "A", "Y", NOW + 120_000)).toBe(0);
   } finally {
-    db.close();
+    await close();
   }
 });
