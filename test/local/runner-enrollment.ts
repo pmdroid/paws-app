@@ -6,11 +6,8 @@ import { join } from "node:path";
 import {
   consumeWorkspaceBootstrap,
   getRunner,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   syncWorkspaceMember,
-  sqliteDb,
 } from "../../src/db";
 import {
   createRunnerControl,
@@ -18,6 +15,8 @@ import {
   RunnerEnrollmentDenied,
 } from "../../src/runner-control";
 import { openRunnerDaemon } from "../../src/runner-daemon";
+import { and, asc, count, eq, like } from "drizzle-orm";
+import { tempStore } from "../pglite";
 import {
   createRunnerKey,
   describeRunnerCertificate,
@@ -71,19 +70,18 @@ export async function probeRunnerEnrollment(
   observe: (name: string, passed: boolean, observed: unknown) => void,
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const authorityRoot = join(root, "issuer");
   const authority = await initializeRunnerAuthority(authorityRoot);
   let now = Date.now();
-  const ownerUserId = await putWorkspaceUser(sqliteDb(db), {
+  const ownerUserId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "enroll-owner",
     name: "Fixture owner",
     email: "enroll-owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "enroll-org", now);
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const bootstrap = await issueWorkspaceBootstrap(db, "enroll-org", now);
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "enroll-org",
     name: "enroll-org",
@@ -92,13 +90,13 @@ export async function probeRunnerEnrollment(
     now,
   });
   async function person(name: string, active = true) {
-    const userId = await putWorkspaceUser(sqliteDb(db), {
+    const userId = await putWorkspaceUser(db, {
       id: workspaceId(),
       linearUserId: `enroll-${name}`,
       name,
       email: `${name}@example.invalid`,
     });
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: workspace.id,
       userId,
       role: "member",
@@ -118,7 +116,7 @@ export async function probeRunnerEnrollment(
   const member = await person("member");
   const inactive = await person("inactive", false);
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority,
     certificateRoot: authorityRoot,
     disconnect: () => {},
@@ -132,8 +130,9 @@ export async function probeRunnerEnrollment(
       allowedRepositories: catalog,
     }),
   });
-  const runners = () =>
-    db.query<{ count: number }, []>("SELECT count(*) AS count FROM runner").get()!.count;
+  const rows = async (table: "runner" | "runnerEnrollment") =>
+    (await db.run((q) => q.all(q.orm.select({ count: count() }).from(q.t[table]))))[0]!.count;
+  const runners = () => rows("runner");
   const post = (path: string, body: unknown) =>
     new Request(`https://paws.example.invalid${path}`, {
       method: "POST",
@@ -154,11 +153,7 @@ export async function probeRunnerEnrollment(
     assert.deepEqual(await refused!.json(), {
       error: "Connect GitHub and add a repository before adding a runner.",
     });
-    assert.equal(
-      db.query<{ count: number }, []>("SELECT count(*) AS count FROM runner_enrollment").get()!
-        .count,
-      0,
-    );
+    assert.equal(await rows("runnerEnrollment"), 0);
     observe("an empty repository catalog answers 409 and creates no token", true, {
       status: 409,
       tokens: 0,
@@ -179,10 +174,10 @@ export async function probeRunnerEnrollment(
     assert.equal(issued.expiresAt, now + 10 * 60_000);
     assert.equal(issued.config.runnerApiUrl, "https://paws.example.invalid:8788");
     assert.deepEqual(issued.config.allowedRepositories, ["owner/repo"]);
-    const stored = db
-      .query<{ token_hash: string }, []>("SELECT token_hash FROM runner_enrollment")
-      .all();
-    assert.deepEqual(stored, [{ token_hash: workspaceTokenHash(issued.token) }]);
+    const stored = await db.run((q) =>
+      q.all(q.orm.select({ tokenHash: q.t.runnerEnrollment.tokenHash }).from(q.t.runnerEnrollment)),
+    );
+    assert.deepEqual(stored, [{ tokenHash: workspaceTokenHash(issued.token) }]);
     observe("any active member mints a ten-minute token and only its hash is stored", true, {
       inactiveDenied: true,
       hashesOnly: true,
@@ -212,9 +207,9 @@ export async function probeRunnerEnrollment(
     assert.equal(identity.authority, authority.certificate);
     const peer = describeRunnerCertificate(identity.certificate);
     assert.equal((await control.authenticate(peer)).id, identity.runnerId);
-    assert.equal((await getRunner(sqliteDb(db), identity.runnerId))!.ownerUserId, member.userId);
-    assert.equal((await getRunner(sqliteDb(db), identity.runnerId))!.name, "member-host");
-    assert.equal((await getRunner(sqliteDb(db), identity.runnerId))!.status, "paused");
+    assert.equal((await getRunner(db, identity.runnerId))!.ownerUserId, member.userId);
+    assert.equal((await getRunner(db, identity.runnerId))!.name, "member-host");
+    assert.equal((await getRunner(db, identity.runnerId))!.status, "paused");
     observe(
       "one POST with token, name and CSR returns the identity of a member-owned runner",
       true,
@@ -238,15 +233,15 @@ export async function probeRunnerEnrollment(
       RunnerEnrollmentDenied,
     );
     now = Date.now();
-    assert.equal(runners(), 1);
+    assert.equal(await runners(), 1);
     observe("a used, unknown or expired token answers 401 and creates nothing", true, {
       replay: replay.status,
       unknown: unknown.status,
-      runners: runners(),
+      runners: await runners(),
     });
 
     const leaving = await control.createEnrollment(member, { name: "leaving" });
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: workspace.id,
       userId: member.userId,
       role: "member",
@@ -258,25 +253,38 @@ export async function probeRunnerEnrollment(
       () => control.enroll({ token: leaving.token, name: "leaving", csr: host.csr }),
       RunnerEnrollmentDenied,
     );
-    assert.equal(runners(), 1);
+    assert.equal(await runners(), 1);
     observe("a token whose member became inactive before use is refused", true, {
-      runners: runners(),
+      runners: await runners(),
     });
 
-    const audit = db
-      .query<{ user_id: string; action: string; subject: string }, [string]>(
-        "SELECT user_id,action,subject FROM workspace_access_audit WHERE workspace_id=? AND action LIKE 'runner.%' ORDER BY id",
-      )
-      .all(workspace.id);
+    const audit = await db.run((q) =>
+      q.all(
+        q.orm
+          .select({
+            userId: q.t.workspaceAccessAudit.userId,
+            action: q.t.workspaceAccessAudit.action,
+            subject: q.t.workspaceAccessAudit.subject,
+          })
+          .from(q.t.workspaceAccessAudit)
+          .where(
+            and(
+              eq(q.t.workspaceAccessAudit.workspaceId, workspace.id),
+              like(q.t.workspaceAccessAudit.action, "runner.%"),
+            ),
+          )
+          .orderBy(asc(q.t.workspaceAccessAudit.id)),
+      ),
+    );
     assert.deepEqual(
       audit.filter((row) => row.action === "runner.paired"),
-      [{ user_id: member.userId, action: "runner.paired", subject: identity.runnerId }],
+      [{ userId: member.userId, action: "runner.paired", subject: identity.runnerId }],
     );
     const everything = JSON.stringify(
-      db
-        .query("SELECT * FROM workspace_access_audit")
-        .all()
-        .concat(db.query("SELECT * FROM runner_enrollment").all()),
+      await db.run(function* (q) {
+        const audits: unknown[] = yield* q.all(q.orm.select().from(q.t.workspaceAccessAudit));
+        return audits.concat(yield* q.all(q.orm.select().from(q.t.runnerEnrollment)));
+      }),
     );
     for (const token of [issued.token, expiring.token, leaving.token])
       assert(!everything.includes(token));
@@ -284,7 +292,7 @@ export async function probeRunnerEnrollment(
       audited: audit.length,
     });
   } finally {
-    db.close();
+    await close();
   }
 }
 
