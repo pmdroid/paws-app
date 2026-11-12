@@ -8,8 +8,7 @@ import {
   readSecretFile,
   writeSecretFile,
 } from "../src/credentials";
-import { sqliteDb } from "../src/db";
-import { tempDb } from "./helpers";
+import { tempStore } from "./pglite";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -68,25 +67,23 @@ test("legacy credentials migrate atomically and missing keys and tampering fail 
 
 test("an existing install's token file is imported once and sealed in the database", async () => {
   const dir = directory();
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
     const path = join(dir, "linear-oauth.json");
     const token = JSON.stringify({ accessToken: "acme-access", refreshToken: "acme-refresh" });
     writeFileSync(path, token, { mode: 0o600 });
-    expect(await importCredentialFile(sqliteDb(db), dir, "linear", path)).toBe(true);
-    expect(await readCredential(sqliteDb(db), dir, "linear")).toBe(token);
-    const rows = JSON.stringify(db.query("SELECT * FROM credential").all());
+    expect(await importCredentialFile(db, dir, "linear", path)).toBe(true);
+    expect(await readCredential(db, dir, "linear")).toBe(token);
+    const rows = JSON.stringify(await db.run((q) => q.all(q.orm.select().from(q.t.credential))));
     for (const secret of ["acme-access", "acme-refresh"]) expect(rows).not.toContain(secret);
     expect(readFileSync(path, "utf8")).toBe(token);
 
     writeFileSync(path, JSON.stringify({ accessToken: "acme-spent-access" }));
-    expect(await importCredentialFile(sqliteDb(db), dir, "linear", path)).toBe(false);
-    expect(await readCredential(sqliteDb(db), dir, "linear")).toBe(token);
-    expect(
-      await importCredentialFile(sqliteDb(db), dir, "slack", join(dir, "slack-oauth.json")),
-    ).toBe(false);
-    expect(await readCredential(sqliteDb(db), dir, "slack")).toBeNull();
+    expect(await importCredentialFile(db, dir, "linear", path)).toBe(false);
+    expect(await readCredential(db, dir, "linear")).toBe(token);
+    expect(await importCredentialFile(db, dir, "slack", join(dir, "slack-oauth.json"))).toBe(false);
+    expect(await readCredential(db, dir, "slack")).toBeNull();
   } finally {
-    db.close();
+    await close();
   }
 });
