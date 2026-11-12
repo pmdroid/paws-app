@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +14,7 @@ import {
   getWorkItem,
   heartbeatInstance,
   insertQueuedItem,
-  openDatabase,
+  openPawsStore,
   prepareShutdown,
   putWorkspaceUser,
   recordLinearInstallation,
@@ -22,7 +23,6 @@ import {
   runnerHasCapacity,
   stopInstance,
   updateRunnerStatus,
-  sqliteDb,
 } from "../src/db";
 import { createRunnerControl } from "../src/runner-control";
 import { RunnerRequestError } from "../src/runner-daemon";
@@ -38,7 +38,9 @@ import { createRunnerResults } from "../src/runner-results";
 import { openRunnerRuntime } from "../src/runner-runtime";
 import { createRunnerWork, runnerFailureStatus } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { migratedDatabase } from "./helpers";
+import { seed } from "./dialects";
+import { copyMigratedPglite } from "./pglite";
+import { addWorkspaceRepository, setRunnerStatus } from "./runner-rows";
 
 const MINUTE = 60_000;
 const STEP = 15_000;
@@ -54,32 +56,29 @@ const repository = {
 
 async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) {
   const root = mkdtempSync(join(tmpdir(), "paws-offline-authority-"));
-  const path = join(root, "paws.db");
+  const pgliteDir = join(root, "pglite");
+  await copyMigratedPglite(pgliteDir);
   const clock = { at: Date.now(), monotonic: 0 };
   const pawsNow = () => clock.at;
-  let db = migratedDatabase(path);
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  let { store: db, close } = await openPawsStore({ url: null, pgliteDir });
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", pawsNow())),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", pawsNow())),
     now: pawsNow(),
   });
-  db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-    workspace.id,
-    "fixture/repository",
-    "team",
-  ]);
+  await addWorkspaceRepository(db, workspace.id, "fixture/repository", "team");
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -101,14 +100,15 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
       )
     ).token,
   });
-  db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
-  db.run(
-    "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.59',?)",
-    [runnerId, pawsNow()],
+  await setRunnerStatus(db, runnerId, "active");
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.runnerHostStatus)
+      .values({ runnerId, runnerVersion: "0.1.59", reportedAt: pawsNow() }),
   );
   const item = await insertQueuedItem(db, { id: "item", now: pawsNow(), sessionKey: "session" });
-  const { run } = await beginImplementRun(sqliteDb(db), item.id, pawsNow());
-  await recordLinearInstallation(sqliteDb(db), {
+  const { run } = await beginImplementRun(db, item.id, pawsNow());
+  await recordLinearInstallation(db, {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",
@@ -116,27 +116,27 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
     teamId: "team",
     observedAtMs: pawsNow(),
   });
-  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
-  await bindWorkItemRepository(sqliteDb(db), item.id, repository);
+  await bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+  await bindWorkItemRepository(db, item.id, repository);
   const start = async () =>
-    await registerInstance(sqliteDb(db), {
+    await registerInstance(db, {
       role: "all",
       host: "acme",
       version: null,
       now: pawsNow(),
     });
   let instance = await start();
-  await claimRun(sqliteDb(db), run.id, instance.id);
+  await claimRun(db, run.id, instance.id);
   const keys = generateKeyPairSync("ed25519");
   const open = () => {
     const work = createRunnerWork({
-      store: sqliteDb(db),
+      store: db,
       keyId: "fixture",
       privateKey: keys.privateKey,
       eventKey: Buffer.alloc(32, 7),
       now: pawsNow,
     });
-    return { work, results: createRunnerResults({ store: sqliteDb(db), work, now: pawsNow }) };
+    return { work, results: createRunnerResults({ store: db, work, now: pawsNow }) };
   };
   let paws = open();
   const command = (generation: number): Extract<RunnerCommand, { type: "run" }> => ({
@@ -328,9 +328,8 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
 
   const replaced: number[] = [];
   const pawsStep = async () => {
-    await heartbeatInstance(sqliteDb(db), instance.id, clock.at);
-    if ((await closeExpiredRunnerLeases(sqliteDb(db), clock.at)).includes(run.id))
-      replaced.push(clock.at);
+    await heartbeatInstance(db, instance.id, clock.at);
+    if ((await closeExpiredRunnerLeases(db, clock.at)).includes(run.id)) replaced.push(clock.at);
   };
   const executing = () => stops === 0 && !finished;
   const overlaps: number[] = [];
@@ -370,18 +369,15 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
         if (replaced.length > 0 && executing()) overlaps.push(clock.at);
       }
     },
-    leaseUntil: () =>
-      db
-        .query<{ lease_until: number }, [string]>(
-          "SELECT lease_until FROM runner_work WHERE run_id=?",
-        )
-        .get(run.id)!.lease_until,
-    workEnded: () =>
-      db
-        .query<{ ended: number | null }, [string]>(
-          "SELECT ended_at AS ended FROM runner_work WHERE run_id=?",
-        )
-        .get(run.id)!.ended !== null,
+    workEnded: async () =>
+      (await db.run((q) =>
+        q.one(
+          q.orm
+            .select({ ended: q.t.runnerWork.endedAt })
+            .from(q.t.runnerWork)
+            .where(eq(q.t.runnerWork.runId, run.id)),
+        ),
+      ))!.ended !== null,
     finish() {
       writeFileSync(
         join(resultsDir.root, execution, "result.json"),
@@ -403,20 +399,20 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
     },
     async pawsOutage(ms: number) {
       link = "paws-down";
-      await prepareShutdown(sqliteDb(db), clock.at, undefined, instance.id);
-      await stopInstance(sqliteDb(db), instance.id, clock.at);
-      db.close();
+      await prepareShutdown(db, clock.at, undefined, instance.id);
+      await stopInstance(db, instance.id, clock.at);
+      await close();
       await this.advance(ms, false);
-      db = openDatabase(path);
+      ({ store: db, close } = await openPawsStore({ url: null, pgliteDir }));
       instance = await start();
       paws = open();
       link = "up";
-      return await recoverOnStartup(sqliteDb(db), clock.at, RUNNER_OFFLINE_BUDGET_MS, instance.id);
+      return await recoverOnStartup(db, clock.at, RUNNER_OFFLINE_BUDGET_MS, instance.id);
     },
     nextGeneration: () => paws.work.assign(command(2)),
     async cleanup() {
       await runtime.stop();
-      db.close();
+      await close();
       rmSync(root, { recursive: true, force: true });
     },
   };
@@ -431,9 +427,9 @@ test.skipIf(!linuxUser)(
       f.setLink("partitioned");
       await f.advance(RUNNER_OFFLINE_BUDGET_MS - RUNNER_AUTHORITY_STOP_MS - 2 * STEP);
       expect(f.replaced).toEqual([]);
-      expect(f.workEnded()).toBe(false);
+      expect(await f.workEnded()).toBe(false);
       expect(f.executing()).toBe(true);
-      expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("running");
+      expect((await getWorkItem(f.db, f.item.id))?.state).toBe("running");
       await expect(f.nextGeneration()).rejects.toThrow();
       f.finish();
       f.setLink("up");
@@ -460,7 +456,7 @@ test.skipIf(!linuxUser)(
       expect(f.overlaps).toEqual([]);
       expect(f.stopped()).toBe(1);
       expect(f.errors.join("\n")).toContain("lease deadline passed");
-      expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("recovering");
+      expect((await getWorkItem(f.db, f.item.id))?.state).toBe("recovering");
       f.finish();
       f.setLink("up");
       await f.tickUntil(() => f.refusedResults.length > 0 || f.posted.length > 0);
@@ -517,7 +513,7 @@ test.skipIf(!linuxUser)(
     const f = await fixture();
     try {
       await f.advance(STEP);
-      await updateRunnerStatus(sqliteDb(f.db), {
+      await updateRunnerStatus(f.db, {
         runnerId: f.runnerId,
         workspaceId: f.workspaceId,
         userId: f.userId,
@@ -547,17 +543,15 @@ test.skipIf(!linuxUser)(
       f.setLink("partitioned");
       await f.advance(RUNNER_OFFLINE_BUDGET_MS / 2);
       await expect(f.nextGeneration()).rejects.toThrow("Run assignment generation conflicts.");
-      expect(await runnerHasCapacity(sqliteDb(f.db), f.runnerId, f.clock.at)).toBe(false);
+      expect(await runnerHasCapacity(f.db, f.runnerId, f.clock.at)).toBe(false);
       await f.advance(RUNNER_OFFLINE_BUDGET_MS / 2 + 2 * STEP);
       expect(f.replaced).toHaveLength(1);
       expect(f.overlaps).toEqual([]);
-      expect(await runnerHasCapacity(sqliteDb(f.db), f.runnerId, f.clock.at)).toBe(false);
+      expect(await runnerHasCapacity(f.db, f.runnerId, f.clock.at)).toBe(false);
       f.finish();
       f.setLink("up");
-      await f.tickUntil(
-        async () => await runnerHasCapacity(sqliteDb(f.db), f.runnerId, f.clock.at),
-      );
-      expect(await runnerHasCapacity(sqliteDb(f.db), f.runnerId, f.clock.at)).toBe(true);
+      await f.tickUntil(async () => await runnerHasCapacity(f.db, f.runnerId, f.clock.at));
+      expect(await runnerHasCapacity(f.db, f.runnerId, f.clock.at)).toBe(true);
       await f.tickUntil(() => f.refusedResults.length > 0);
       expect(f.posted.map((result) => result.stopReason)).not.toContain("end_turn");
     } finally {
