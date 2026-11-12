@@ -3,7 +3,7 @@ import { Window } from "happy-dom";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { TranscriptEntry } from "../contract";
-import { parseTranscript, TranscriptSessions, transcriptRunId } from "./transcript";
+import { entryKind, parseTranscript, TranscriptSessions, transcriptRunId } from "./transcript";
 
 test("the transcript page reads its run from the engine path", () => {
   expect(transcriptRunId("/dashboard/runs/run_01-abc/transcript")).toBe("run_01-abc");
@@ -19,6 +19,65 @@ test("the transcript page accepts only well-formed entries", () => {
   expect(parseTranscript([{ ...entry, kind: "shell" }])).toBeNull();
   expect(parseTranscript([{ ...entry, text: 1 }])).toBeNull();
   expect(parseTranscript({ entries: [entry] })).toBeNull();
+});
+
+test("each transcript line kind renders its label in the decided color", async () => {
+  const window = new Window({ url: "http://127.0.0.1:8787/dashboard/runs/run_1/transcript" });
+  const names = ["window", "document", "navigator", "Node", "Element", "HTMLElement", "Event"];
+  const saved = names.map((name) => [name, (globalThis as Record<string, unknown>)[name]] as const);
+  for (const name of names)
+    (globalThis as Record<string, unknown>)[name] =
+      name === "window" ? window : (window as unknown as Record<string, unknown>)[name];
+  (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
+  try {
+    const line = (kind: TranscriptEntry["kind"], text: string): TranscriptEntry => ({
+      at: "2026-11-03T12:04:18.000Z",
+      kind,
+      text,
+      session: 1,
+    });
+    const container = window.document.createElement("div");
+    window.document.body.appendChild(container);
+    const root = createRoot(container as unknown as HTMLElement);
+    await act(async () =>
+      root.render(
+        createElement(TranscriptSessions, {
+          entries: [
+            line("system", "I'll fix the renewal window."),
+            line("ok", "18 pass · 0 fail"),
+            line("prompt", "Closeout findings: test failed"),
+            line("system", "Agent turn ended: end_turn"),
+            line("err", "lease expired"),
+            line("tool", "Read · completed"),
+            line("thought", "thinking"),
+            line("action", "edit"),
+            line("elicitation", "Which window?"),
+          ],
+        }),
+      ),
+    );
+    const labels = [...container.querySelectorAll("[data-kind]")].map((label) => [
+      label.textContent,
+      label.className.split(" ").find((name) => name.startsWith("text-")),
+    ]);
+    expect(labels).toEqual([
+      ["agent", "text-state-running"],
+      ["result", "text-state-ok"],
+      ["handoff", "text-state-recovering"],
+      ["turn", "text-state-verifying"],
+      ["error", "text-state-failed"],
+      ["tool", "text-muted-foreground"],
+      ["thought", "text-muted-foreground"],
+      ["action", "text-muted-foreground"],
+      ["question", "text-muted-foreground"],
+    ]);
+    expect(entryKind(line("system", "Agent turn ended: cancelled")).label).toBe("turn");
+    await act(async () => root.unmount());
+  } finally {
+    for (const [name, value] of saved) (globalThis as Record<string, unknown>)[name] = value;
+    delete (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT;
+    await window.happyDOM.close();
+  }
 });
 
 test("the transcript page shows the latest session and keeps earlier ones behind a button", async () => {
