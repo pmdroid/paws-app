@@ -118,6 +118,7 @@ for (const [body, existing] of [
     } finally {
       release.resolve();
       await intake;
+      await orchestrator.shutdown();
       await outbox.idle();
       await close();
     }
@@ -166,6 +167,7 @@ test("acknowledgement retry and duplicate replay preserve one activity UUID", as
     expect(await listOutbox(db)).toHaveLength(1);
     expect((await listOutbox(db))[0]?.status).toBe("sent");
   } finally {
+    await orchestrator.shutdown();
     await close();
   }
 });
@@ -221,6 +223,7 @@ test("an old prompted intake failure cannot terminate a newer session generation
   } finally {
     release.resolve();
     await old;
+    await orchestrator.shutdown();
     await close();
   }
 });
@@ -403,6 +406,44 @@ test("a merged item settles its delegation without a delegation summary", async 
   } finally {
     await orchestrator.shutdown();
     await outbox.idle();
+    await close();
+  }
+});
+
+test("shutdown waits for work a Linear event started", async () => {
+  const { db: store, close } = await tempStore();
+  const late: string[] = [];
+  let fenced = false;
+  const db = new Proxy(store, {
+    get: (target, key) =>
+      key === "run" || key === "transaction"
+        ? (body: never) => {
+            if (fenced) late.push(new Error(key).stack ?? key);
+            return fenced ? Promise.reject(new Error("store fenced")) : target[key](body);
+          }
+        : Reflect.get(target, key),
+  });
+  await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
+  const outbox = new OutboxDispatcher(db, systemClock);
+  const orchestrator = attachOrchestrator({
+    store: db,
+    pawsRoot: tempHome(),
+    tracker: createFakeTracker(),
+    jobs: new JobLoop(db, systemClock),
+    outbox,
+    authorizeLinearEvent: async () => {
+      await Bun.sleep(0);
+      return { outcome: "accepted" };
+    },
+  });
+  try {
+    const received = orchestrator.onLinearEvent(created());
+    await orchestrator.shutdown();
+    fenced = true;
+    await Promise.allSettled([received]);
+    await outbox.idle();
+    expect(late).toEqual([]);
+  } finally {
     await close();
   }
 });
