@@ -1,13 +1,13 @@
 import { createPrivateKey } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { openDatabase, sqliteDb } from "../../src/db";
+import { openPawsStore } from "../../src/db";
 import { createRunnerWork } from "../../src/runner-work";
 
-const [path, keyPath, runnerId, at] = process.argv.slice(2);
-const db = openDatabase(path!);
+const [url, keyPath, runnerId, at] = process.argv.slice(2);
+const { store, close } = await openPawsStore({ url: url!, pgliteDir: "" });
 try {
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store,
     keyId: "fixture",
     privateKey: createPrivateKey(readFileSync(keyPath!)),
     eventKey: Buffer.alloc(32, 7),
@@ -21,5 +21,5 @@ try {
     }),
   );
 } finally {
-  db.close();
+  await close();
 }
