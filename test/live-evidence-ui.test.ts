@@ -174,7 +174,7 @@ describe("live evidence", () => {
       item,
 
       "checkout.webm",
-      "e2e · attempt 2",
+      'Closeout attempt 2 · check <span class="text-foreground">e2e</span>',
 
       "Claude",
       "3.0 MB",
@@ -183,11 +183,11 @@ describe("live evidence", () => {
       HEAD.slice(0, 7),
       'data-action="evidence-copy"',
       `href="/api/evidence/${VIDEO}" download="checkout.webm">Download</a>`,
-      `<div id="evidence-player" data-evidence="${VIDEO}"></div>`,
+      `<div id="evidence-player" data-evidence="${VIDEO}"`,
       'aria-label="More from this issue"',
       `href="/issues/${item}#check=2/e2e">Closeout output</a>`,
       `href="/evidence/${IMAGE}"`,
-      'alt="Cart &lt;total&gt;.png"',
+      ">Cart &lt;total&gt;.png</a>",
     ])
       expect(html).toContain(text);
     expect(html).toContain(OTHER_RUN);

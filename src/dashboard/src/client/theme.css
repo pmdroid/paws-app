@@ -399,8 +399,7 @@ a.evidence-thumb:focus-visible {
 .closeout-section,
 .run-activity,
 .check-list,
-.run-heading,
-.evidence-aside {
+.run-heading {
   display: flex;
   min-width: 0;
   flex-direction: column;
@@ -768,20 +767,6 @@ a.evidence-thumb:focus-visible {
 .check-terminal .ansi-fg-7 {
   color: #f5f1ff;
 }
-.evidence-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 2.5fr) minmax(18rem, 1fr);
-  gap: 1.5rem;
-  align-items: start;
-}
-.evidence-layout > * {
-  min-width: 0;
-}
-.evidence-aside .card {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
 @media (max-width: 900px) {
   .check-row .chk {
     grid-template-columns: 1.75rem minmax(0, 1fr) auto 1rem;
@@ -794,9 +779,6 @@ a.evidence-thumb:focus-visible {
     grid-row: 3;
     grid-column: 2 / -1;
     white-space: normal;
-  }
-  .evidence-layout {
-    grid-template-columns: minmax(0, 1fr);
   }
 }
 @media (max-width: 500px) {
@@ -825,12 +807,6 @@ a.evidence-thumb:focus-visible {
 .run-page > .crumbs,
 #page-content > div > .crumbs {
   display: none;
-}
-.evidence-aside .evidence-more {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-.evidence-aside .evidence-more > li {
-  padding: 0;
 }
 .check-name {
   font-weight: 700;
