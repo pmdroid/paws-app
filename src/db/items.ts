@@ -1233,7 +1233,7 @@ export function* completeMergedItemSteps(
     yield* enqueueOutboxOnceSteps(q, {
       target: "linear",
       op: "linear.remaining_issues",
-      orderingKey: current.linearIssueId,
+      orderingKey: sessionId,
       idempotencyKey: `remaining:${current.id}`,
       payload: {
         itemId: current.id,

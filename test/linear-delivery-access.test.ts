@@ -1,20 +1,28 @@
 import { expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { join } from "node:path";
+import { parsePullRequest } from "../src/acp";
 import { systemClock } from "../src/core";
 import {
   advanceLinearSessionGeneration,
   applyWorkItemEvent,
+  beginImplementRun,
   bindLinearSessionTask,
+  completeMergedItem,
+  enterMergeQueue,
   enqueueOutboxOnce,
   ensureLinearSession,
   getLinearSessionGeneration,
   getWorkItem,
   insertQueuedItem,
   JobLoop,
+  listOutbox,
   OutboxDispatcher,
+  recordConfirmedRemoteMerge,
   recordLinearInstallation,
   requireLinearTaskDelegation,
   revokeLinearInstallation,
+  savePullRequestDraft,
   syncSteps,
   type Db,
 } from "../src/db";
@@ -245,6 +253,109 @@ test("fresh delegation removal prevents a final response without workflow mutati
     expect(f.tracker.statuses).toEqual([]);
     expect(f.lifecycle.started).toEqual([]);
     expect(await outboxStatuses(f.db)).toEqual(["pending"]);
+  } finally {
+    await f.close();
+  }
+});
+
+async function mergeWithRemaining(f: Awaited<ReturnType<typeof fixture>>) {
+  await beginImplementRun(f.db, f.item.id, 1);
+  await enterMergeQueue(f.db, f.item.id, { phase: "merge_queue" });
+  const part = (n: number) => ({ title: `Part ${n}`, scope: `\`src/part-${n}.ts\`` });
+  await savePullRequestDraft(
+    f.db,
+    f.item.id,
+    parsePullRequest({ title: "Part 1", body: "Body", remaining: [part(2), part(3)] }),
+    2,
+  );
+  await recordConfirmedRemoteMerge(f.db, {
+    itemId: f.item.id,
+    repositoryOwner: "acme",
+    repositoryName: "app",
+    pullNumber: 7,
+    pullUrl: "https://github.com/acme/app/pull/7",
+    mergeSha: "abc",
+    confirmedAt: 3,
+  });
+  expect((await completeMergedItem(f.db, { itemId: f.item.id, now: 4 }))?.state).toBe("merged");
+}
+
+async function keyRemainingByIssue(f: Awaited<ReturnType<typeof fixture>>) {
+  await f.db.run((q) =>
+    q.exec(
+      q.orm
+        .update(q.t.outbox)
+        .set({ orderingKey: f.item.linearIssueId })
+        .where(eq(q.t.outbox.op, "linear.remaining_issues")),
+    ),
+  );
+}
+
+async function remainingRows(db: Db) {
+  return await db.run((q) =>
+    q.all(
+      q.orm
+        .select({ id: q.t.outbox.id, op: q.t.outbox.op, orderingKey: q.t.outbox.orderingKey })
+        .from(q.t.outbox),
+    ),
+  );
+}
+
+test("a merge with two remaining parts files both sub-issues after the Merged activity", async () => {
+  const f = await fixture();
+  const postedBeforeFiling: string[] = [];
+  const createSubIssues = f.tracker.createSubIssues.bind(f.tracker);
+  f.tracker.createSubIssues = async (request, options) => {
+    postedBeforeFiling.push(...f.tracker.progress.map((update) => update.body));
+    return await createSubIssues(request, options);
+  };
+  try {
+    await mergeWithRemaining(f);
+    expect((await remainingRows(f.db)).map((row) => [row.op, row.orderingKey])).toEqual([
+      ["activity", "session"],
+      ["linear.remaining_issues", "session"],
+    ]);
+    await f.outbox.tick();
+    await f.outbox.idle();
+    await f.outbox.tick();
+    await f.outbox.idle();
+    expect(postedBeforeFiling).toHaveLength(1);
+    expect(postedBeforeFiling[0]).toStartWith("Merged #7");
+    expect((f.tracker.subIssues.get(f.item.linearIssueId) ?? []).length).toBe(2);
+    expect(await outboxStatuses(f.db)).toEqual(["sent", "sent"]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a remaining-issues row keyed by the issue id resolves its session from the item", async () => {
+  const f = await fixture();
+  try {
+    await mergeWithRemaining(f);
+    await keyRemainingByIssue(f);
+    await f.outbox.tick();
+    await f.outbox.idle();
+    await f.outbox.tick();
+    await f.outbox.idle();
+    expect((f.tracker.subIssues.get(f.item.linearIssueId) ?? []).length).toBe(2);
+  } finally {
+    await f.close();
+  }
+});
+
+test("remaining issues are not filed once a person stopped Paws and removed its access", async () => {
+  const f = await fixture();
+  try {
+    await mergeWithRemaining(f);
+    await keyRemainingByIssue(f);
+    await revokeLinearInstallation(f.db, { ...f.scope, eventKey: "removed", createdAtMs: 10 });
+    await advanceLinearSessionGeneration(f.db, "session", { stop: true, now: 10 });
+    await f.outbox.tick();
+    await f.outbox.idle();
+    const row = (await listOutbox(f.db)).find((r) => r.op === "linear.remaining_issues")!;
+    expect(row.status).not.toBe("sent");
+    expect(row.error).toBe("Linear delivery access was stopped or superseded.");
+    expect(f.tracker.subIssueRequests).toEqual([]);
   } finally {
     await f.close();
   }
