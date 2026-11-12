@@ -1,67 +1,94 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import type { Database } from "bun:sqlite";
-import { sqliteDb, applyWorkItemEvent } from "../src/db";
+import { eq } from "drizzle-orm";
+import { applyWorkItemEvent, type Db } from "../src/db";
 import { hasPendingDelegationChanges } from "../src/intake";
-import { tempDb } from "./helpers";
+import { seed as insert } from "./dialects";
+import { tempStore } from "./pglite";
 
-function item(db: Database, id: string, state: string) {
-  db.run(
-    `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at)
-     VALUES(?,'delegation',?,?,?,?,?,0,0)`,
-    [id, `issue-${id}`, id, id, state, `paws/${id}`],
+function item(db: Db, id: string, state: string) {
+  return insert(db, (q) =>
+    q.orm.insert(q.t.workItem).values({
+      id,
+      delegationId: "delegation",
+      linearIssueId: `issue-${id}`,
+      linearIdentifier: id,
+      title: id,
+      state,
+      branchName: `paws/${id}`,
+      position: 0,
+      createdAt: 0,
+    }),
   );
 }
 
-function reconciliationRows(db: Database, id: string) {
-  return {
-    requests: db.query("SELECT 1 FROM item_reconciliation_request WHERE item_id=?").all(id).length,
-    effects: db.query("SELECT 1 FROM item_reconciliation_effect WHERE item_id=?").all(id).length,
-  };
+async function reconciliationRows(db: Db, id: string) {
+  return await db.run(function* (q) {
+    const { itemReconciliationRequest: request, itemReconciliationEffect: effect } = q.t;
+    const requests = yield* q.all(q.orm.select().from(request).where(eq(request.itemId, id)));
+    const effects = yield* q.all(q.orm.select().from(effect).where(eq(effect.itemId, id)));
+    return { requests: requests.length, effects: effects.length };
+  });
 }
 
-function seed(db: Database) {
-  db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',0)");
-  item(db, "cancelled", "running");
-  item(db, "live", "queued");
+async function seed(db: Db) {
+  await insert(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: "workspace", linearOrganizationId: "org", name: "Workspace", createdAt: 0 }),
+  );
+  await item(db, "cancelled", "running");
+  await item(db, "live", "queued");
   for (const id of ["cancelled", "live"])
-    db.run("INSERT INTO item_reconciliation_request VALUES(?,'workspace','token')", [id]);
+    await insert(db, (q) =>
+      q.orm
+        .insert(q.t.itemReconciliationRequest)
+        .values({ itemId: id, workspaceId: "workspace", token: "token" }),
+    );
 }
 
 test("cancelling an item with a pending request leaves no reconciliation rows for it", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
-    seed(db);
-    await applyWorkItemEvent(sqliteDb(db), "cancelled", "cancel");
-    assert.deepEqual(reconciliationRows(db, "cancelled"), { requests: 0, effects: 0 });
-    assert.deepEqual(reconciliationRows(db, "live"), { requests: 1, effects: 0 });
+    await seed(db);
+    await applyWorkItemEvent(db, "cancelled", "cancel");
+    assert.deepEqual(await reconciliationRows(db, "cancelled"), { requests: 0, effects: 0 });
+    assert.deepEqual(await reconciliationRows(db, "live"), { requests: 1, effects: 0 });
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("the delegation of a cancelled item is no longer held as reconciling", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
-    seed(db);
-    db.run("DELETE FROM item_reconciliation_request WHERE item_id='live'");
-    assert.equal(await hasPendingDelegationChanges(sqliteDb(db), "delegation"), true);
-    await applyWorkItemEvent(sqliteDb(db), "cancelled", "cancel");
-    assert.equal(await hasPendingDelegationChanges(sqliteDb(db), "delegation"), false);
+    await seed(db);
+    await insert(db, (q) =>
+      q.orm
+        .delete(q.t.itemReconciliationRequest)
+        .where(eq(q.t.itemReconciliationRequest.itemId, "live")),
+    );
+    assert.equal(await hasPendingDelegationChanges(db, "delegation"), true);
+    await applyWorkItemEvent(db, "cancelled", "cancel");
+    assert.equal(await hasPendingDelegationChanges(db, "delegation"), false);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("cancelling an item keeps the effects a running reconcile still publishes", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
-    seed(db);
+    await seed(db);
     for (const kind of ["spec", "removed", "canceled"])
-      db.run("INSERT INTO item_reconciliation_effect VALUES('cancelled',?,'token')", [kind]);
-    await applyWorkItemEvent(sqliteDb(db), "cancelled", "cancel");
-    assert.deepEqual(reconciliationRows(db, "cancelled"), { requests: 0, effects: 3 });
+      await insert(db, (q) =>
+        q.orm
+          .insert(q.t.itemReconciliationEffect)
+          .values({ itemId: "cancelled", kind, token: "token" }),
+      );
+    await applyWorkItemEvent(db, "cancelled", "cancel");
+    assert.deepEqual(await reconciliationRows(db, "cancelled"), { requests: 0, effects: 3 });
   } finally {
-    db.close();
+    await close();
   }
 });

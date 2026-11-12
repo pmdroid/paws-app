@@ -1,25 +1,20 @@
 import { expect, test } from "bun:test";
-import {
-  insertQueuedItem,
-  insertRun,
-  migrate,
-  openDatabase,
-  putWorkspaceUser,
-  syncWorkspaceMember,
-  sqliteDb,
-} from "../src/db";
+import { insertQueuedItem, insertRun, putWorkspaceUser, syncWorkspaceMember } from "../src/db";
 import { startServer } from "../src/server";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const DAY = 24 * 60 * 60 * 1000;
 
 test("run, session and verdict links resolve through stored records the signed-in member can see", async () => {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  db.run(
-    "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',0)",
+  const { db, close } = await tempStore();
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: "workspace", linearOrganizationId: "org", name: "Workspace", createdAt: 0 }),
   );
-  await putWorkspaceUser(sqliteDb(db), {
+  await putWorkspaceUser(db, {
     id: "member",
     linearUserId: "member",
     name: "member",
@@ -27,7 +22,7 @@ test("run, session and verdict links resolve through stored records the signed-i
   });
   let teamIds = ["team"];
   const member = async () =>
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: "workspace",
       userId: "member",
       role: "member",
@@ -40,25 +35,30 @@ test("run, session and verdict links resolve through stored records the signed-i
     ["session-mine", "team"],
     ["session-other", "other-team"],
   ])
-    db.run(
-      `INSERT INTO linear_session (session_id, organization_id, oauth_client_id, app_user_id, team_id,
-        installation_observed_at, created_at) VALUES (?, 'org', 'fixture', 'app', ?, 1, 0)`,
-      [session!, team!],
+    await seed(db, (q) =>
+      q.orm.insert(q.t.linearSession).values({
+        sessionId: session!,
+        organizationId: "org",
+        oauthClientId: "fixture",
+        appUserId: "app",
+        teamId: team!,
+        installationObservedAt: 1,
+        createdAt: 0,
+      }),
     );
   const old = Date.now() - 30 * DAY;
   await insertQueuedItem(db, { id: "PAS-1", sessionKey: "session-mine", now: old });
   await insertQueuedItem(db, { id: "PAS-5", sessionKey: "session-mine", now: old + 1 });
   await insertQueuedItem(db, { id: "PAS-2", sessionKey: "session-other", now: old });
   const runs = [];
-  for (const at of [0, 1])
-    runs.push((await insertRun(sqliteDb(db), { itemId: "PAS-1", now: old + at })).id);
-  const hidden = (await insertRun(sqliteDb(db), { itemId: "PAS-2", now: old })).id;
-  db.run("UPDATE work_item SET state = 'merged'");
+  for (const at of [0, 1]) runs.push((await insertRun(db, { itemId: "PAS-1", now: old + at })).id);
+  const hidden = (await insertRun(db, { itemId: "PAS-2", now: old })).id;
+  await seed(db, (q) => q.orm.update(q.t.workItem).set({ state: "merged" }));
   const reservation = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
   const port = reservation.port!;
   await reservation.stop(true);
   const access = createWorkspaceAccess({
-    store: sqliteDb(db),
+    store: db,
     publicUrl: `http://127.0.0.1:${port}`,
     clientId: "fixture",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -84,7 +84,7 @@ test("run, session and verdict links resolve through stored records the signed-i
   try {
     for (const path of [`/runs/${runs[0]}`, "/sessions/session-mine", "/verdicts/PAS-1"])
       expect((await fetch(alias(path))).status).toBe(401);
-    const session = await issueWorkspaceSession(sqliteDb(db), {
+    const session = await issueWorkspaceSession(db, {
       workspaceId: "workspace",
       userId: "member",
       now: Date.now(),
@@ -136,6 +136,6 @@ test("run, session and verdict links resolve through stored records the signed-i
     expect(transcript.headers.get("location")).toBe(`/dashboard/runs/${runs[0]}/transcript`);
   } finally {
     await server.stop(true);
-    db.close();
+    await close();
   }
 });

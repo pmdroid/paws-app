@@ -3,9 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { count, sql } from "drizzle-orm";
-import { openPglite, pgSchema, postgresDb, schema, sqliteDb, type Q } from "../src/db";
+import { openPglite, pgSchema, postgresDb, schema, type Q } from "../src/db";
 import { forEachDialect, insertWorkItem, insertWorkItemSteps } from "./dialects";
-import { tempDb } from "./helpers";
 
 function* itemCount(q: Q) {
   const row = yield* q.one(q.orm.select({ n: count() }).from(q.t.workItem));
@@ -79,18 +78,6 @@ forEachDialect((open) => {
       await close();
     }
   });
-});
-
-test("on SQLite db.run() settles before it returns", async () => {
-  const database = tempDb();
-  try {
-    const db = sqliteDb(database);
-    const done = insertWorkItem(db, "a");
-    expect(Bun.peek.status(done)).toBe("fulfilled");
-    expect(await db.run(itemCount)).toBe(1);
-  } finally {
-    database.close();
-  }
 });
 
 test("the Postgres and SQLite schemas export the same table names", () => {

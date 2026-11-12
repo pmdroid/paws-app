@@ -12,11 +12,22 @@ import {
   recordAgentCloseout,
   releaseRunCapacity,
   setCurrentRun,
-  sqliteDb,
 } from "../src/db";
 import { createLiveStatusProvider } from "../src/dashboard/src/live/provider";
 import { parseIssueDetailResponse, parseIssueListResponse } from "../src/dashboard/src/contract";
-import { tempDb, tempHome } from "./helpers";
+import { tempHome } from "./helpers";
+import { tempStore } from "./pglite";
+
+const openStores: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of openStores.splice(0)) await close();
+});
+
+async function openStore() {
+  const { db, close } = await tempStore();
+  openStores.push(close);
+  return db;
+}
 
 const homes: string[] = [];
 
@@ -72,9 +83,9 @@ if (!text.includes("fixed")) {
   git(workspace, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
   const head = git(workspace, ["rev-parse", "HEAD"]);
 
-  const db = tempDb();
+  const db = await openStore();
   await insertQueuedItem(db, { id: "ENG-7", title: "Escape quotes", now: 1 });
-  const { run } = await beginImplementRun(sqliteDb(db), "ENG-7", 2);
+  const { run } = await beginImplementRun(db, "ENG-7", 2);
   const main = join(workspace, "src", "main.ts");
   const steps: FakeScript["steps"] = [
     { type: "fs_write", path: main, content: "export const state = 'broken';\n" },
@@ -105,7 +116,7 @@ if (!text.includes("fixed")) {
     closeoutProgress: {
       async record(progress) {
         clock += 1_000;
-        await recordAgentCloseout(sqliteDb(db), run.id, "ENG-7", progress, clock);
+        await recordAgentCloseout(db, run.id, "ENG-7", progress, clock);
       },
     },
   });
@@ -113,11 +124,11 @@ if (!text.includes("fixed")) {
   expect(recorded.closeouts).toHaveLength(4);
   expect(recorded.closeouts[1]).toStartWith("test failed (exit 1).");
   expect(recorded.closeouts[2]).toBe("test passed.");
-  expect((await listAgentCloseout(sqliteDb(db), [run.id])).map((event) => event.sequence)).toEqual([
+  expect((await listAgentCloseout(db, [run.id])).map((event) => event.sequence)).toEqual([
     1, 2, 3, 4, 5, 6, 7, 8,
   ]);
 
-  const provider = createLiveStatusProvider(sqliteDb(db), { now: () => new Date(clock) });
+  const provider = createLiveStatusProvider(db, { now: () => new Date(clock) });
   const list = parseIssueListResponse(JSON.parse(JSON.stringify(await provider.issues())));
   if (!list.ok) throw new Error(list.error);
   expect(list.response.agentCloseout.find((entry) => entry.runId === run.id)).toEqual({
@@ -170,9 +181,9 @@ if (!text.includes("fixed")) {
 }, 30_000);
 
 test("a running check reports how long it has run and a later stale report sends it back to pending", async () => {
-  const db = tempDb();
+  const db = await openStore();
   await insertQueuedItem(db, { id: "ENG-8", title: "Stale", now: 1 });
-  const { run } = await beginImplementRun(sqliteDb(db), "ENG-8", 2);
+  const { run } = await beginImplementRun(db, "ENG-8", 2);
   const head = "a".repeat(40);
   const attempt = {
     head,
@@ -182,8 +193,8 @@ test("a running check reports how long it has run and a later stale report sends
     attempt: 1,
     maxAttempts: null,
   };
-  await recordAgentCloseout(sqliteDb(db), run.id, "ENG-8", { type: "started", ...attempt }, 10_000);
-  const running = (await createLiveStatusProvider(sqliteDb(db), {
+  await recordAgentCloseout(db, run.id, "ENG-8", { type: "started", ...attempt }, 10_000);
+  const running = (await createLiveStatusProvider(db, {
     now: () => new Date(25_000),
   }).issue("ENG-8"))!.agentCloseout.find((entry) => entry.runId === run.id)!;
   expect(running.attempts.at(-1)!.checks[0]).toMatchObject({
@@ -192,7 +203,7 @@ test("a running check reports how long it has run and a later stale report sends
     active: true,
   });
   await recordAgentCloseout(
-    sqliteDb(db),
+    db,
     run.id,
     "ENG-8",
     {
@@ -209,7 +220,7 @@ test("a running check reports how long it has run and a later stale report sends
     26_000,
   );
   await recordAgentCloseout(
-    sqliteDb(db),
+    db,
     run.id,
     "ENG-8",
     {
@@ -229,21 +240,21 @@ test("a running check reports how long it has run and a later stale report sends
     },
     27_000,
   );
-  const stale = (await createLiveStatusProvider(sqliteDb(db)).issue("ENG-8"))!.agentCloseout.find(
+  const stale = (await createLiveStatusProvider(db).issue("ENG-8"))!.agentCloseout.find(
     (entry) => entry.runId === run.id,
   )!;
   expect(stale.attempts.at(-1)!.checks[0]!.state).toBe("pending");
-  const stored = (await listAgentCloseout(sqliteDb(db), [run.id]))[1]!.progress;
+  const stored = (await listAgentCloseout(db, [run.id]))[1]!.progress;
   expect(stored.type === "finished" && stored.truncated).toBe(true);
   expect(stored.type === "finished" && Buffer.byteLength(stored.stdout)).toBe(64 * 1024);
 });
 
 test("a check still running when its run ended stops at the run's end and points to the task's newer run", async () => {
-  const db = tempDb();
+  const db = await openStore();
   await insertQueuedItem(db, { id: "ENG-10", title: "Restart", now: 1 });
-  const { run } = await beginImplementRun(sqliteDb(db), "ENG-10", 2);
+  const { run } = await beginImplementRun(db, "ENG-10", 2);
   await recordAgentCloseout(
-    sqliteDb(db),
+    db,
     run.id,
     "ENG-10",
     {
@@ -257,11 +268,11 @@ test("a check still running when its run ended stops at the run's end and points
     },
     10_000,
   );
-  await releaseRunCapacity(sqliteDb(db), run.id, 575_000);
-  const next = await insertRun(sqliteDb(db), { itemId: "ENG-10", now: 600_000 });
-  await setCurrentRun(sqliteDb(db), "ENG-10", next.id);
+  await releaseRunCapacity(db, run.id, 575_000);
+  const next = await insertRun(db, { itemId: "ENG-10", now: 600_000 });
+  await setCurrentRun(db, "ENG-10", next.id);
   await recordAgentCloseout(
-    sqliteDb(db),
+    db,
     next.id,
     "ENG-10",
     {
@@ -278,9 +289,7 @@ test("a check still running when its run ended stops at the run's end and points
   const parsed = parseIssueDetailResponse(
     JSON.parse(
       JSON.stringify(
-        await createLiveStatusProvider(sqliteDb(db), { now: () => new Date(3_600_000) }).issue(
-          "ENG-10",
-        ),
+        await createLiveStatusProvider(db, { now: () => new Date(3_600_000) }).issue("ENG-10"),
       ),
     ),
   );
@@ -304,9 +313,9 @@ test("a check still running when its run ended stops at the run's end and points
 });
 
 test("an evidence check takes its state from the report and lets the round finish", async () => {
-  const db = tempDb();
+  const db = await openStore();
   await insertQueuedItem(db, { id: "ENG-9", title: "Proof", now: 1 });
-  const { run } = await beginImplementRun(sqliteDb(db), "ENG-9", 2);
+  const { run } = await beginImplementRun(db, "ENG-9", 2);
   const head = "c".repeat(40);
   const proof = {
     id: "visual-proof",
@@ -317,7 +326,7 @@ test("an evidence check takes its state from the report and lets the round finis
   const lint = { head, id: "lint", kind: "command", command: "bun run lint", attempt: 1 };
   const report = async (lintStatus: string, status: string, at: number) =>
     await recordAgentCloseout(
-      sqliteDb(db),
+      db,
       run.id,
       "ENG-9",
       {
@@ -340,14 +349,14 @@ test("an evidence check takes its state from the report and lets the round finis
     );
   await report("missing", "missing", 10_000);
   await recordAgentCloseout(
-    sqliteDb(db),
+    db,
     run.id,
     "ENG-9",
     { type: "started", ...lint, maxAttempts: null },
     11_000,
   );
   await recordAgentCloseout(
-    sqliteDb(db),
+    db,
     run.id,
     "ENG-9",
     {
@@ -366,7 +375,7 @@ test("an evidence check takes its state from the report and lets the round finis
   );
   const attemptOf = async () => {
     const parsed = parseIssueDetailResponse(
-      JSON.parse(JSON.stringify(await createLiveStatusProvider(sqliteDb(db)).issue("ENG-9"))),
+      JSON.parse(JSON.stringify(await createLiveStatusProvider(db).issue("ENG-9"))),
     );
     if (!parsed.ok) throw new Error(parsed.error);
     return parsed.response.agentCloseout.find((entry) => entry.runId === run.id)!.attempts.at(-1)!;

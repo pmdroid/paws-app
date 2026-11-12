@@ -1,19 +1,19 @@
 import { afterEach, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   insertQueuedItem,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   saveVisualReviewMarks,
   syncWorkspaceMember,
-  sqliteDb,
 } from "../src/db";
 import { createEvidenceStore, evidencePath } from "../src/evidence";
 import { startServer } from "../src/server";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
+import { json, seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const HEAD = "c".repeat(40);
 const encode = (value: string) => [...new TextEncoder().encode(value)];
@@ -49,12 +49,13 @@ afterEach(() => {
 type Evidence = { id: string; itemId: string; checkId: string; attempt: number };
 
 async function fixture() {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  db.run(
-    "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',0)",
+  const { db, close } = await tempStore();
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: "workspace", linearOrganizationId: "org", name: "Workspace", createdAt: 0 }),
   );
-  await putWorkspaceUser(sqliteDb(db), {
+  await putWorkspaceUser(db, {
     id: "member",
     linearUserId: "member",
     name: "member",
@@ -62,7 +63,7 @@ async function fixture() {
   });
   let teamIds = ["team"];
   const member = async () =>
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: "workspace",
       userId: "member",
       role: "member",
@@ -75,20 +76,28 @@ async function fixture() {
     ["session-mine", "team"],
     ["session-other", "other-team"],
   ])
-    db.run(
-      `INSERT INTO linear_session (session_id, organization_id, oauth_client_id, app_user_id, team_id,
-        installation_observed_at, created_at) VALUES (?, 'org', 'fixture', 'app', ?, 1, 0)`,
-      [session!, team!],
+    await seed(db, (q) =>
+      q.orm.insert(q.t.linearSession).values({
+        sessionId: session!,
+        organizationId: "org",
+        oauthClientId: "fixture",
+        appUserId: "app",
+        teamId: team!,
+        installationObservedAt: 1,
+        createdAt: 0,
+      }),
     );
   await insertQueuedItem(db, { id: "PAS-1", sessionKey: "session-mine", now: Date.now() });
   await insertQueuedItem(db, { id: "PAS-OLD", sessionKey: "session-mine" });
-  db.run("UPDATE work_item SET state = 'merged' WHERE id = 'PAS-OLD'");
+  await seed(db, (q) =>
+    q.orm.update(q.t.workItem).set({ state: "merged" }).where(eq(q.t.workItem.id, "PAS-OLD")),
+  );
   await insertQueuedItem(db, { id: "PAS-2", sessionKey: "session-other", now: Date.now() });
 
   const home = mkdtempSync(join(tmpdir(), "paws-evidence-resources-"));
   homes.push(home);
   const evidenceDir = join(home, "evidence");
-  const store = createEvidenceStore({ store: sqliteDb(db), root: evidenceDir });
+  const store = createEvidenceStore({ store: db, root: evidenceDir });
   const save = (itemId: string, source: Uint8Array, displayName: string, attempt = 1) =>
     store.save({
       itemId,
@@ -103,16 +112,27 @@ async function fixture() {
   const old = await save("PAS-OLD", PNG, "old.png");
   const oldSecond = await save("PAS-OLD", PNG, "old-second.png", 2);
   const hidden = await save("PAS-2", PNG, "hidden.png");
-  db.run(
-    `INSERT INTO question (id, item_id, session_id, body, status, created_at)
-     VALUES ('question', 'PAS-OLD', 'session-mine', 'Review', 'open', 0)`,
+  await seed(
+    db,
+    (q) =>
+      q.orm.insert(q.t.question).values({
+        id: "question",
+        itemId: "PAS-OLD",
+        sessionId: "session-mine",
+        body: "Review",
+        status: "open",
+        createdAt: 0,
+      }),
+    (q) =>
+      q.orm.insert(q.t.visualReview).values({
+        questionId: "question",
+        itemId: "PAS-OLD",
+        checkId: "visual-proof",
+        evidenceIds: json(db, [old.id]),
+        createdAt: 0,
+      }),
   );
-  db.run(
-    `INSERT INTO visual_review (question_id, item_id, check_id, evidence_ids, created_at)
-     VALUES ('question', 'PAS-OLD', 'visual-proof', ?, 0)`,
-    [JSON.stringify([old.id])],
-  );
-  await saveVisualReviewMarks(sqliteDb(db), [
+  await saveVisualReviewMarks(db, [
     {
       id: MARK_ID,
       questionId: "question",
@@ -128,7 +148,7 @@ async function fixture() {
   const port = reservation.port!;
   await reservation.stop(true);
   const access = createWorkspaceAccess({
-    store: sqliteDb(db),
+    store: db,
     publicUrl: `http://127.0.0.1:${port}`,
     clientId: "fixture",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -151,7 +171,7 @@ async function fixture() {
     workspaceAccess: access,
     evidenceDir,
   });
-  const session = await issueWorkspaceSession(sqliteDb(db), {
+  const session = await issueWorkspaceSession(db, {
     workspaceId: "workspace",
     userId: "member",
     now: Date.now(),
@@ -174,7 +194,7 @@ async function fixture() {
     },
     async close() {
       await server.stop(true);
-      db.close();
+      await close();
     },
   };
 }

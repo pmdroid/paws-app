@@ -3,7 +3,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { envelopeSubkey } from "../src/credentials";
-import { getEvidenceObject, insertQueuedItem, migrate, openDatabase, sqliteDb } from "../src/db";
+import { getEvidenceObject, insertQueuedItem, type Db } from "../src/db";
 import {
   createEvidenceStore,
   EvidenceRejectedError,
@@ -17,6 +17,18 @@ import {
   RUN_FILE_CHUNK_BYTES,
   withSealedRunFileObjects,
 } from "../src/run-files";
+import { tempStore } from "./pglite";
+
+const openStores: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of openStores.splice(0)) await close();
+});
+
+async function openStore() {
+  const { db, close } = await tempStore();
+  openStores.push(close);
+  return db;
+}
 
 const HEAD = "b".repeat(40);
 const WEBM = new Uint8Array([
@@ -31,14 +43,14 @@ afterEach(() => {
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
 });
 
-function instance(db: ReturnType<typeof openDatabase>, objects: EvidenceObjects) {
+function instance(db: Db, objects: EvidenceObjects) {
   const home = mkdtempSync(join(tmpdir(), "paws-evidence-objects-"));
   homes.push(home);
   const root = join(home, "evidence");
-  const store = createEvidenceStore({ store: sqliteDb(db), root, objects });
+  const store = createEvidenceStore({ store: db, root, objects });
   const get = (id: string, headers: Record<string, string> = {}) =>
     handleEvidenceRequest(new Request(`http://acme.test/api/evidence/${id}`, { headers }), {
-      store: sqliteDb(db),
+      store: db,
       root,
       objects,
       sessionIds: ["session-acme"],
@@ -47,8 +59,7 @@ function instance(db: ReturnType<typeof openDatabase>, objects: EvidenceObjects)
 }
 
 async function setup() {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const db = await openStore();
   await insertQueuedItem(db, { id: "item-acme", sessionKey: "session-acme" });
   const s3 = createFakeRunFileObjects();
   const save = (store: ReturnType<typeof instance>["store"], source: Uint8Array) =>
@@ -109,7 +120,7 @@ describe("evidence in the run file object store", () => {
     const a = instance(db, () => null);
     const saved = await save(a.store, VIDEO);
     expect(s3.writes).toEqual([]);
-    expect(await getEvidenceObject(sqliteDb(db), saved.id)).toBeNull();
+    expect(await getEvidenceObject(db, saved.id)).toBeNull();
     expect(existsSync(join(a.root, saved.id))).toBe(true);
     expect(new Uint8Array(await (await a.get(saved.id)).arrayBuffer())).toEqual(VIDEO);
   });
@@ -120,24 +131,22 @@ describe("evidence in the run file object store", () => {
     const objects = () => (configured ? s3 : null);
     const a = instance(db, objects);
     const saved = await save(a.store, VIDEO);
-    expect(await uploadLocalEvidence(sqliteDb(db), { root: a.root, objects })).toBe(0);
+    expect(await uploadLocalEvidence(db, { root: a.root, objects })).toBe(0);
 
     configured = true;
-    expect(await uploadLocalEvidence(sqliteDb(db), { root: a.root, objects }, () => 42)).toBe(1);
-    expect(await getEvidenceObject(sqliteDb(db), saved.id)).toMatchObject({
+    expect(await uploadLocalEvidence(db, { root: a.root, objects }, () => 42)).toBe(1);
+    expect(await getEvidenceObject(db, saved.id)).toMatchObject({
       sizeBytes: VIDEO.length,
       storedAt: 42,
     });
-    expect(await uploadLocalEvidence(sqliteDb(db), { root: a.root, objects })).toBe(0);
+    expect(await uploadLocalEvidence(db, { root: a.root, objects })).toBe(0);
     expect(s3.writes.length).toBe(3);
     expect(existsSync(join(a.root, saved.id))).toBe(true);
 
     rmSync(join(a.root, saved.id));
     const b = instance(db, objects);
     expect(new Uint8Array(await (await b.get(saved.id)).arrayBuffer())).toEqual(VIDEO);
-    expect(await readEvidenceBytes(sqliteDb(db), { root: b.root, objects }, saved.id)).toEqual(
-      VIDEO,
-    );
+    expect(await readEvidenceBytes(db, { root: b.root, objects }, saved.id)).toEqual(VIDEO);
   });
 
   test("migrated evidence still reads from its local copy once S3 is turned off", async () => {
@@ -147,7 +156,7 @@ describe("evidence in the run file object store", () => {
     const a = instance(db, objects);
     const saved = await save(a.store, VIDEO);
     configured = true;
-    expect(await uploadLocalEvidence(sqliteDb(db), { root: a.root, objects })).toBe(1);
+    expect(await uploadLocalEvidence(db, { root: a.root, objects })).toBe(1);
     configured = false;
     const response = await a.get(saved.id);
     expect(response.status).toBe(200);
@@ -170,15 +179,15 @@ describe("evidence in the run file object store", () => {
       },
     };
     const both = await Promise.all([
-      uploadLocalEvidence(sqliteDb(db), { root: a.root, objects }),
-      uploadLocalEvidence(sqliteDb(db), { root: a.root, objects: () => flaky }),
+      uploadLocalEvidence(db, { root: a.root, objects }),
+      uploadLocalEvidence(db, { root: a.root, objects: () => flaky }),
     ]);
     expect(both.reduce((left, right) => left + right)).toBe(1);
     failing = true;
-    expect(await uploadLocalEvidence(sqliteDb(db), { root: a.root, objects: () => flaky })).toBe(0);
+    expect(await uploadLocalEvidence(db, { root: a.root, objects: () => flaky })).toBe(0);
     rmSync(join(a.root, saved.id));
     expect(new Uint8Array(await (await a.get(saved.id)).arrayBuffer())).toEqual(VIDEO);
-    const prefix = (await getEvidenceObject(sqliteDb(db), saved.id))!.prefix;
+    const prefix = (await getEvidenceObject(db, saved.id))!.prefix;
     expect([...s3.objects.keys()].every((key) => key.startsWith(`${prefix}/`))).toBe(true);
   });
 
