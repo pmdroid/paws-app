@@ -3,6 +3,7 @@ import { Window } from "happy-dom";
 import type { CheckoutSettings, CheckoutSettingsUpdate } from "../checkout-settings";
 import { createCheckoutSettings } from "./checkout-settings";
 import { initializeWorkspaceAccess, showWorkspaceSettingsPage } from "./workspace";
+import { settleReactWork } from "./settle-react";
 
 const realFetch = globalThis.fetch;
 const DOM_GLOBALS = [
@@ -92,6 +93,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  await settleReactWork();
   await new Promise((resolve) => setTimeout(resolve, 20));
   globalThis.fetch = realFetch;
   for (const [name, value] of saved) (globalThis as Record<string, unknown>)[name] = value;

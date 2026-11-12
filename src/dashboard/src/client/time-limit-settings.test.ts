@@ -7,6 +7,7 @@ import {
   timeLimitDraft,
   type TimeLimitSettings,
 } from "./time-limit-settings";
+import { settleReactWork } from "./settle-react";
 
 const DEFAULTS: TimeLimitSettings = {
   configured: false,
@@ -78,6 +79,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  await settleReactWork();
   globalThis.fetch = realFetch;
   for (const [name, value] of saved) (globalThis as Record<string, unknown>)[name] = value;
   saved.clear();
