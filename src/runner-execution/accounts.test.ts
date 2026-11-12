@@ -356,6 +356,23 @@ test("a work root the runner made 0700 is shared with the agent group before paw
   expect(statSync(fresh).isDirectory()).toBe(true);
 });
 
+test("preparing a work root shares .paws/runs without visiting the run folders in it", () => {
+  const work = join(agentHome(), "work");
+  const owners = { runnerUid: process.getuid!(), agentGid: process.getgid!() };
+  const runs = join(work, ".paws", "runs");
+  mkdirSync(runs, { recursive: true, mode: 0o700 });
+  chmodSync(runs, 0o700);
+  for (let index = 0; index < 1_500; index++) {
+    const run = join(runs, String(index));
+    mkdirSync(run, { mode: 0o700 });
+    for (let file = 0; file < 99; file++) writeFileSync(join(run, String(file)), "");
+  }
+  chmodSync(join(runs, "0"), 0o700);
+  prepareRunnerWorkRoot(work, owners);
+  expect(statSync(runs).mode & 0o777).toBe(0o770);
+  expect(statSync(join(runs, "0")).mode & 0o777).toBe(0o700);
+});
+
 function permitted(attempt: (probe: string) => void): boolean {
   const probe = mkdtempSync(join(tmpdir(), "paws-work-root-probe-"));
   try {

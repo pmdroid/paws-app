@@ -55,5 +55,6 @@ export {
   RUNNER_WORK_SWEEP_EVERY_MS,
   createRunnerWorkCleaner,
   openRunnerCheckoutToGroup,
+  openRunnerRunStatesToGroup,
   type RunnerWorkCleaner,
 } from "./work-root";

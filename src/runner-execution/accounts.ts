@@ -477,6 +477,7 @@ export function prepareRunnerWorkRoot(
       .filter((name) => name.startsWith(".paws") && !name.startsWith(".paws-skills-"))
       .map((name) => join(workRoot, name)),
     owners,
+    { shallow: join(workRoot, ".paws", "runs") },
   );
   if (!checkout) return;
   const path = join(workRoot, checkout.name);
@@ -518,7 +519,7 @@ export function* removeRunnerTreeSteps(path: string): Generator<void, void> {
 function shareRunnerPaths(
   roots: readonly string[],
   owners: RunnerAccountOwners,
-  bounds: { depth?: number; limit?: number } = {},
+  bounds: { depth?: number; limit?: number; shallow?: string } = {},
 ): void {
   const self = process.getuid?.();
   const limit = bounds.limit ?? SHARE_LIMIT;
@@ -552,7 +553,7 @@ function shareRunnerPaths(
         }
       }
     }
-    if (!info.isDirectory() || depth === bounds.depth) return;
+    if (!info.isDirectory() || depth === bounds.depth || path === bounds.shallow) return;
     let names: string[];
     try {
       names = readdirSync(path);
