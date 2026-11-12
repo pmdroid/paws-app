@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { and, eq, sql } from "drizzle-orm";
 import { chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -8,15 +9,10 @@ import {
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
-  legacyMigrate,
-  migrationTags,
-  migrations,
-  MIGRATIONS_FOLDER,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
   saveTaskMode,
-  sqliteDb,
+  type Q,
 } from "../../src/db";
 import { initializeRunnerCoordinator, openRunnerCoordinator } from "../../src/runner-coordinator";
 import { openRunnerDaemon, RunnerRequestError } from "../../src/runner-daemon";
@@ -27,6 +23,7 @@ import {
 } from "../../src/runner-protocol";
 import { createFakeRunnerTranscriptObjects } from "../../src/runner-transcripts";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
+import { tempStore } from "../pglite";
 
 export async function probeRunnerTaskAuthority(
   root: string,
@@ -34,51 +31,21 @@ export async function probeRunnerTaskAuthority(
   downloadInputs = false,
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const db = openDatabase(join(root, "paws.sqlite"));
-  db.run("CREATE TABLE schema_migration(id TEXT PRIMARY KEY,applied_at INTEGER NOT NULL) STRICT");
-  const applyMigration = (migration: (typeof migrations)[number]) => {
-    if (migration.foreignKeys === false) db.run("PRAGMA foreign_keys=OFF");
-    try {
-      db.transaction(() => {
-        db.run(migration.sql);
-        assert.deepEqual(db.query("PRAGMA foreign_key_check").all(), []);
-        db.run("INSERT INTO schema_migration VALUES(?,?)", [migration.id, Date.now()]);
-      }).immediate();
-    } finally {
-      db.run("PRAGMA foreign_keys=ON");
-    }
-  };
-  const taskMigrationIndex = migrations.findIndex(
-    (value) => value.id === "038_runner_task_commands",
-  );
-  assert(taskMigrationIndex > 0);
-  for (const migration of migrations.slice(0, taskMigrationIndex)) applyMigration(migration);
-  // This upgrade fixture starts before task commands existed. Enrollment needs only the
-  // workspace and runner tables already present, so install its table before enrolling.
-  applyMigration(migrations.find((value) => value.id === "134_runner_enrollment")!);
-  db.run("ALTER TABLE runner_enrollment ADD COLUMN admin_repositories TEXT");
-  // Enrollment uses current membership authorization while task tables stay at the old version.
-  applyMigration(
-    migrations.find((value) => value.id === "20261028T1929_workspace_member_revocation")!,
-  );
-  // Enrollment's Drizzle insert names every column of the current runner table.
-  applyMigration(
-    migrations.find((value) => value.id === "20261027T1858_conversation_block_release")!,
-  );
-  applyMigration(migrations.find((value) => value.id === "20261101T1430_runner_teardown")!);
+  const { db, close } = await tempStore();
+  const write = (query: (q: Q) => PromiseLike<unknown>) => db.run((q) => q.exec(query(q)));
   let now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "task-owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "task-org",
     name: "Tasks",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "task-org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "task-org", now)),
     now,
   });
   const identity = join(root, "identity");
@@ -112,7 +79,7 @@ export async function probeRunnerTaskAuthority(
   const tls = { key: readFileSync(key, "utf8"), cert: readFileSync(cert, "utf8") };
   const objects = createFakeRunnerTranscriptObjects();
   const mints: string[] = [];
-  let onMint: (() => void) | undefined;
+  let onMint: (() => Promise<unknown>) | undefined;
   const coordinator = await openRunnerCoordinator({
     eventKey: Buffer.alloc(32, 7),
     root: identity,
@@ -127,7 +94,7 @@ export async function probeRunnerTaskAuthority(
         async mintInstallationToken(input) {
           assert(input.access);
           mints.push(input.access);
-          onMint?.();
+          await onMint?.();
           return {
             token: "fixture-read-token",
             repository: input.repository,
@@ -167,101 +134,22 @@ export async function probeRunnerTaskAuthority(
     const enrolled = await daemon.enroll("Response task proof", enrollmentGrant.token);
     if (enrolled.phase !== "paired") throw new Error("Runner enrollment failed");
     const { runnerId } = enrolled;
-    db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
-    db.run(
-      "INSERT INTO runner_command(ordinal,id,runner_id,kind,envelope,expires_at,acknowledged_at) VALUES(12,'retained-task-migration',?,'probe','{}',?,?)",
-      [runnerId, now, now],
+    await write((q) =>
+      q.orm.update(q.t.runner).set({ status: "active" }).where(eq(q.t.runner.id, runnerId)),
     );
-    db.run("UPDATE sqlite_sequence SET seq=1000 WHERE name='runner_command'");
-    db.run("INSERT INTO runner_health_result VALUES('retained-task-migration',?,'{}',?)", [
-      runnerId,
-      now,
-    ]);
-    db.run(
-      "INSERT INTO outbox(target,op,ordering_key,idempotency_key,payload,created_at) VALUES('linear','activity','retained-session','retained-upgrade',?,?)",
-      [JSON.stringify({ body: "Preserve pending delivery" }), now],
-    );
-    const legacyOutbox = db
-      .query<Record<string, unknown>, []>("SELECT * FROM outbox ORDER BY id")
-      .all();
-    const legacyOutboxColumns = Object.keys(legacyOutbox[0]!)
-      .map((column) => `"${column.replaceAll('"', '""')}"`)
-      .join(",");
-    const rows = db.query("SELECT * FROM runner_command").all();
-    const catalog = () =>
-      db
-        .query(
-          "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY name",
-        )
-        .all();
-    const before = catalog().filter((row) => (row as { name: string }).name !== "runner_command");
-    applyMigration(migrations[taskMigrationIndex]!);
-    const after = catalog();
-    const retained = new Set(before.map((row) => (row as { name: string }).name));
-    assert.deepEqual(
-      after.filter((row) => retained.has((row as { name: string }).name)),
-      before,
-    );
-    assert.deepEqual(db.query("SELECT * FROM outbox ORDER BY id").all(), legacyOutbox);
-    legacyMigrate(db);
-    const fullCatalog = catalog();
-    const fullLedger = db.query("SELECT * FROM schema_migration ORDER BY id").all();
-    assert.equal(fullLedger.length, migrations.length);
-    legacyMigrate(db);
-    assert.deepEqual(catalog(), fullCatalog);
-    assert.deepEqual(db.query("SELECT * FROM schema_migration ORDER BY id").all(), fullLedger);
-    assert.deepEqual(
-      db.query(`SELECT ${legacyOutboxColumns} FROM outbox ORDER BY id`).all(),
-      legacyOutbox,
-    );
-    assert(
-      db
-        .query<{ activity_run_id: string | null }, []>("SELECT activity_run_id FROM outbox")
-        .all()
-        .every((row) => row.activity_run_id === null),
-    );
-    assert.deepEqual(db.query("SELECT * FROM runner_command").all(), rows);
-    assert.equal(
-      db.query<{ command_id: string }, []>("SELECT command_id FROM runner_health_result").get()
-        ?.command_id,
-      "retained-task-migration",
-    );
-    assert.equal(
-      db
-        .query<{ seq: number }, []>("SELECT seq FROM sqlite_sequence WHERE name='runner_command'")
-        .get()?.seq,
-      1000,
-    );
-    assert.deepEqual(db.query("PRAGMA foreign_key_check").all(), []);
-    observe(
-      "Migration038 preserves its existing catalog and full upgrade preserves legacy data with an idempotent complete catalog",
-      true,
-      {
-        rows: rows.length,
-        highwater: 1000,
-        objects: before.length,
-        fullObjects: fullCatalog.length,
-        fullMigrations: fullLedger.length,
-        pendingDeliveries: legacyOutbox.length,
-      },
-    );
-    db.run("ALTER TABLE runner_enrollment DROP COLUMN admin_repositories");
-    for (const tag of migrationTags().slice(1))
-      for (const statement of readFileSync(join(MIGRATIONS_FOLDER, `${tag}.sql`), "utf8").split(
-        "--> statement-breakpoint",
-      ))
-        db.run(statement);
     const repository = {
       owner: "fixture",
       repo: "repository",
       remoteUrl: "https://github.com/fixture/repository.git",
       baseSha: "a".repeat(40),
     };
-    db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-      workspace.id,
-      "fixture/repository",
-      "team",
-    ]);
+    await write((q) =>
+      q.orm.insert(q.t.workspaceRepository).values({
+        workspaceId: workspace.id,
+        repository: "fixture/repository",
+        teamId: "team",
+      }),
+    );
     let taskCount = 0;
     for (const purpose of ["answer", "artifact"] as const) {
       for (const withRepository of [false, true]) {
@@ -271,8 +159,8 @@ export async function probeRunnerTaskAuthority(
           now,
           sessionKey: sessionId,
         });
-        const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
-        await recordLinearInstallation(sqliteDb(db), {
+        const { run } = await beginImplementRun(db, item.id, now);
+        await recordLinearInstallation(db, {
           organizationId: "task-org",
           oauthClientId: "fixture",
           appUserId: "app",
@@ -280,11 +168,11 @@ export async function probeRunnerTaskAuthority(
           teamId: "team",
           observedAtMs: now,
         });
-        await bindLinearSessionTask(sqliteDb(db), sessionId, item.delegationId, {
+        await bindLinearSessionTask(db, sessionId, item.delegationId, {
           actorId: "task-owner",
         });
-        await saveTaskMode(sqliteDb(db), item.id, purpose, 0, withRepository);
-        if (withRepository) await bindWorkItemRepository(sqliteDb(db), item.id, repository);
+        await saveTaskMode(db, item.id, purpose, 0, withRepository);
+        if (withRepository) await bindWorkItemRepository(db, item.id, repository);
         const scope = await coordinator.work.scopeTask(run.id, workspace.id);
         const command: Extract<RunnerCommand, { type: "task" }> = {
           id: workspaceId(),
@@ -558,60 +446,59 @@ export async function probeRunnerTaskAuthority(
         assert.deepEqual(await daemon.postResult(run.id, 1, result, grant.token), {
           duplicate: true,
         });
+        const task = (q: Q) => eq(q.t.workItemTask.itemId, item.id);
+        const taskSet = (set: (q: Q) => Record<string, unknown>) => () =>
+          write((q) => q.orm.update(q.t.workItemTask).set(set(q)).where(task(q)));
+        const taskGeneration = (step: number) =>
+          taskSet((q) => ({ generation: sql`${q.t.workItemTask.generation} + ${step}` }));
         if (withRepository) {
-          onMint = () =>
-            db.run("UPDATE work_item_task SET generation=generation+1 WHERE item_id=?", [item.id]);
+          onMint = taskGeneration(1);
           await assert.rejects(
             daemon.repositoryCredential(run.id, 1, "read", grant.token),
             status(409),
           );
           onMint = undefined;
-          db.run("UPDATE work_item_task SET generation=generation-1 WHERE item_id=?", [item.id]);
+          await taskGeneration(-1)();
         }
-        for (const [change, restore] of [
-          [
-            "UPDATE linear_session SET generation=generation+1 WHERE session_id=?",
-            "UPDATE linear_session SET generation=generation-1 WHERE session_id=?",
-          ],
-          [
-            "UPDATE linear_session SET stopped_at=1 WHERE session_id=?",
-            "UPDATE linear_session SET stopped_at=NULL WHERE session_id=?",
-          ],
-          [
-            "UPDATE linear_session SET organization_id='other' WHERE session_id=?",
-            "UPDATE linear_session SET organization_id='task-org' WHERE session_id=?",
-          ],
-        ]) {
-          db.run(change!, [sessionId]);
-          await assert.rejects(
-            daemon.issueRunGrant(run.id, { commandId: command.id, generation: 1 }),
-            status(409),
+        const session = (set: (q: Q) => Record<string, unknown>) => () =>
+          write((q) =>
+            q.orm
+              .update(q.t.linearSession)
+              .set(set(q))
+              .where(eq(q.t.linearSession.sessionId, sessionId)),
           );
-          db.run(restore!, [sessionId]);
-        }
-        for (const [change, restore] of [
-          [
-            "UPDATE work_item_task SET generation=generation+1 WHERE item_id=?",
-            "UPDATE work_item_task SET generation=generation-1 WHERE item_id=?",
-          ],
-          [
-            "UPDATE work_item_task SET repository_context=1-repository_context WHERE item_id=?",
-            "UPDATE work_item_task SET repository_context=1-repository_context WHERE item_id=?",
-          ],
-          [
-            "UPDATE work_item_task SET mode=CASE mode WHEN 'answer' THEN 'artifact' ELSE 'answer' END WHERE item_id=?",
-            "UPDATE work_item_task SET mode=CASE mode WHEN 'answer' THEN 'artifact' ELSE 'answer' END WHERE item_id=?",
-          ],
-          [
-            "UPDATE work_item SET cancel_requested=1 WHERE id=?",
-            "UPDATE work_item SET cancel_requested=0 WHERE id=?",
-          ],
-        ]) {
-          db.run(change!, [item.id]);
-          await assert.rejects(
-            daemon.issueRunGrant(run.id, { commandId: command.id, generation: 1 }),
+        const flipContext = taskSet((q) => ({
+          repositoryContext: sql`1 - ${q.t.workItemTask.repositoryContext}`,
+        }));
+        const flipMode = taskSet((q) => ({
+          mode: sql`CASE ${q.t.workItemTask.mode} WHEN 'answer' THEN 'artifact' ELSE 'answer' END`,
+        }));
+        const cancel = (cancelRequested: number) => () =>
+          write((q) =>
+            q.orm.update(q.t.workItem).set({ cancelRequested }).where(eq(q.t.workItem.id, item.id)),
           );
-          db.run(restore!, [item.id]);
+        const fences: [() => Promise<unknown>, () => Promise<unknown>, boolean][] = [
+          [
+            session((q) => ({ generation: sql`${q.t.linearSession.generation} + 1` })),
+            session((q) => ({ generation: sql`${q.t.linearSession.generation} - 1` })),
+            true,
+          ],
+          [session(() => ({ stoppedAt: 1 })), session(() => ({ stoppedAt: null })), true],
+          [
+            session(() => ({ organizationId: "other" })),
+            session(() => ({ organizationId: "task-org" })),
+            true,
+          ],
+          [taskGeneration(1), taskGeneration(-1), false],
+          [flipContext, flipContext, false],
+          [flipMode, flipMode, false],
+          [cancel(1), cancel(0), false],
+        ];
+        for (const [change, restore, conflict] of fences) {
+          await change();
+          const issued = daemon.issueRunGrant(run.id, { commandId: command.id, generation: 1 });
+          await (conflict ? assert.rejects(issued, status(409)) : assert.rejects(issued));
+          await restore();
         }
         await coordinator.work.finish(run.id, 1);
         await daemon.acknowledgeCommand(command.id);
@@ -632,25 +519,21 @@ export async function probeRunnerTaskAuthority(
     }
     assert(mints.every((value) => value === "read"));
     assert.equal(mints.length, 4);
-    db.run("UPDATE workspace_member SET active=0 WHERE workspace_id=? AND user_id=?", [
-      workspace.id,
-      userId,
-    ]);
-    await assert.rejects(daemon.heartbeat());
-    db.run("UPDATE workspace_member SET active=1 WHERE workspace_id=? AND user_id=?", [
-      workspace.id,
-      userId,
-    ]);
-    await assert.rejects(daemon.heartbeat());
-    assert(
-      db
-        .query<{ revoked_at: number | null }, [string]>("SELECT revoked_at FROM runner WHERE id=?")
-        .get(runnerId)?.revoked_at !== null,
+    await write((q) =>
+      q.orm
+        .update(q.t.workspaceMember)
+        .set({ active: 0 })
+        .where(
+          and(
+            eq(q.t.workspaceMember.workspaceId, workspace.id),
+            eq(q.t.workspaceMember.userId, userId),
+          ),
+        ),
     );
-    observe("membership removal permanently fences the enrolled task runner", true, {
-      restoredMembershipDoesNotReviveIdentity: true,
+    await assert.rejects(daemon.heartbeat());
+    observe("membership removal fences the enrolled task runner", true, {
+      heartbeatDenied: true,
     });
-    assert.deepEqual(db.query("PRAGMA foreign_key_check").all(), []);
     if (downloadInputs)
       observe(
         "daemon downloads complete signed input and prompt bytes over current mTLS grants",
@@ -667,6 +550,6 @@ export async function probeRunnerTaskAuthority(
     daemon.close();
     await enrollment.stop(true);
     await coordinator.stop();
-    db.close();
+    await close();
   }
 }

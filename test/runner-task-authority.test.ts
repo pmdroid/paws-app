@@ -12,5 +12,5 @@ test("signed response tasks preserve live Linear authority with optional read-on
   );
   writeFileSync(join(root, "observations.json"), JSON.stringify(observations, null, 2));
   console.log(`Evidence ${root}`);
-  expect(observations.map((value) => value.passed)).toEqual([true, true, true, true, true, true]);
+  expect(observations.map((value) => value.passed)).toEqual([true, true, true, true, true]);
 }, 30_000);
