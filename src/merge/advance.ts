@@ -484,7 +484,11 @@ export async function advanceMerge(
       REBASE_CONFLICT_INSTRUCTION,
       {
         thought: () => REBASE_CONFLICT_THOUGHT,
-        conflict: { pullNumber: pull.number, head: result?.head ?? published.head },
+        conflict: {
+          pullNumber: pull.number,
+          head: result?.head ?? published.head,
+          base: conflict.base,
+        },
         record: (q, jobId) =>
           recordRebaseReturnSteps(q, {
             itemId: item.id,

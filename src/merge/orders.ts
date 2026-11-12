@@ -308,7 +308,7 @@ export function sendBack(
     record: (q: Q, jobId: number, attempt: number) => Steps<void>;
     failedChecks?: readonly FailedCiCheck[];
     pullNumber?: number | null;
-    conflict?: { pullNumber: number; head: string };
+    conflict?: { pullNumber: number; head: string; base?: string | null };
   },
 ): Promise<boolean> {
   return returnToAgent(store, {
@@ -494,7 +494,7 @@ export async function waitConflict(
       REBASE_CONFLICT_INSTRUCTION,
       {
         thought: () => REBASE_CONFLICT_THOUGHT,
-        conflict: { pullNumber: prNumber, head: read.head },
+        conflict: { pullNumber: prNumber, head: read.head, base },
         record: (q, jobId) =>
           recordRebaseReturnSteps(q, {
             itemId: item.id,
@@ -682,7 +682,7 @@ export async function mergeThroughGitHubQueue(
             {
               thought: () =>
                 `GitHub's merge queue removed the pull request for a conflict${why}. Sent it back to the agent to rebase.`,
-              conflict: { pullNumber: pull.number, head },
+              conflict: { pullNumber: pull.number, head, base },
               record: (q, jobId) =>
                 recordRebaseReturnSteps(q, {
                   itemId: item.id,

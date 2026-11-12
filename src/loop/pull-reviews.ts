@@ -3,6 +3,8 @@ import {
   emitJobReady,
   openItemIdsForRepositorySteps,
   enqueueOutboxOnceSteps,
+  checkTriggers,
+  commentTriggers,
   fixRoundsSteps,
   getPullReviewSteps,
   pendingPullCommentsSteps,
@@ -253,6 +255,16 @@ export async function handlePullReview(
           .join("\n\n"),
         jobKey,
         now: caps.now(),
+        fix: {
+          triggers: {
+            comments: commentTriggers([
+              { commentId: review.reviewId, author: review.reviewer, body: review.body },
+              ...comments,
+            ]),
+            ...(failure ? { checks: checkTriggers(failure.failedChecks) } : {}),
+          },
+          headBefore: review.head ?? head,
+        },
       });
       if (restarted === null) return "wait";
       armed = restarted.armed;

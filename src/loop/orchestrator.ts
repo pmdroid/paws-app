@@ -102,6 +102,8 @@ import { acceptedResumeNeedsTurn, mergeAcceptedWork, settleRejectedPush } from "
 import { restartForPushConflict } from "./push-conflict";
 import {
   saveHumanRetryWindowSteps,
+  checkTriggers,
+  type FixRound,
   type RestartHandoff,
   activateLinearItemSteps,
   bindLinearSessionTaskSteps,
@@ -5120,6 +5122,7 @@ export class Orchestrator {
       sessionId: this.activitySession(current),
       now: this.now(),
       jobKey: `conflict:${item.id}:recheck:${head}`,
+      fix: { triggers: { base: conflict.base }, headBefore: head },
     });
     if (restarted === null) return null;
     yield* recordRebaseReturnSteps(q, {
@@ -5185,6 +5188,10 @@ export class Orchestrator {
       sessionId: this.activitySession(current),
       now: this.now(),
       jobKey: `ci-failed:${item.id}:recheck:${head}`,
+      fix: {
+        triggers: { checks: checkTriggers(checks) },
+        headBefore: head,
+      },
     });
     if (restarted === null) return null;
     this.options.journal?.(
@@ -5202,6 +5209,7 @@ export class Orchestrator {
       reads: FeedbackReads | null;
       limit: number;
       attempts: ReturnType<typeof fixAttemptLimit>;
+      fix: FixRound;
     },
   ): Steps<boolean> {
     const latest = yield* getWorkItemSteps(q, itemId);
@@ -5214,6 +5222,7 @@ export class Orchestrator {
       sessionId: this.activitySession(latest),
       now: this.now(),
       limit: input.attempts,
+      fix: input.fix,
     });
     return restarted?.armed ?? false;
   }
@@ -5228,6 +5237,7 @@ export class Orchestrator {
       now: handoff.now,
       ...(handoff.jobKey === undefined ? {} : { jobKey: handoff.jobKey }),
       ...(handoff.limit === undefined ? {} : { limit: handoff.limit }),
+      ...(handoff.fix === undefined ? {} : { fix: handoff.fix }),
       lead: [handoff.body],
       reads: yield* storedFeedbackReadsSteps(q, item, handoff.now),
       ci: false,
@@ -5304,6 +5314,15 @@ export class Orchestrator {
           reads,
           limit,
           attempts: fixAttemptLimit(limit, rounds + 1, result?.fixesLeft ?? null),
+          fix: {
+            triggers: {
+              closeoutChecks: free.filter((check) => check.state === "failed").map(({ id }) => id),
+              findings: reviews.flatMap((review) =>
+                review.findings.map((finding) => `${review.itemId}:${finding.location}`),
+              ),
+            },
+            headBefore: result?.head ?? null,
+          },
         }),
       );
       if (armed) emitJobReady(this.store);

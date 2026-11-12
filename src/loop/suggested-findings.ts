@@ -201,6 +201,7 @@ export async function startSuggestionTurn(
       body: SUGGESTION_TURN_HANDOFF,
       jobKey: suggestionTurnJobKey(item.id),
       now: input.now,
+      fix: { reason: "suggested", headBefore: input.head },
     });
     if (job === null) return "none";
     armed = job.armed;

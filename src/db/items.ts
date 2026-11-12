@@ -59,6 +59,7 @@ import {
   type WorkBrief,
 } from "../core";
 import { cancelOpenJobsSteps, emitJobReady, enqueueJobOnceSteps, type Job } from "./jobs";
+import { closeFixRecordsSteps, type FixOutcome } from "./fix-records";
 import { journal } from "./journal";
 import { enqueueOutboxOnceSteps } from "./outbox";
 import { getLinearSessionGenerationSteps } from "./linear-sessions";
@@ -243,6 +244,9 @@ function* requireWorkItemSteps(q: Q, id: string): Steps<WorkItemRecord> {
   return item;
 }
 
+const FIX_ENDINGS: Partial<Record<WorkItemState, FixOutcome>> = { awaiting_input: "asked" };
+FIX_ENDINGS.cancelled = FIX_ENDINGS.failed = "abandoned";
+
 export function* applyWorkItemEventSteps(
   q: Q,
   id: string,
@@ -280,6 +284,8 @@ export function* applyWorkItemEventSteps(
       q.orm.delete(itemReconciliationRequest).where(eq(itemReconciliationRequest.itemId, id)),
     );
   const next = yield* requireWorkItemSteps(q, id);
+  const ended = FIX_ENDINGS[next.state];
+  if (ended) yield* closeFixRecordsSteps(q, id, { outcome: ended, now: record.now ?? Date.now() });
   yield* q.exec(
     q.orm.insert(workItemEvent).values({
       itemId: id,
@@ -959,12 +965,13 @@ export function awakeBreakdown(item: WorkItemRecord): AwakeBreakdown {
 }
 
 /** Closeout accepted `head`. The time cap no longer fails this task. */
-export function* markCloseoutAcceptedSteps(q: Q, id: string, head: string) {
+export function* markCloseoutAcceptedSteps(q: Q, id: string, head: string, now = Date.now()) {
   yield* setItemSteps(q, id, { acceptedHead: head });
+  yield* closeFixRecordsSteps(q, id, { outcome: "fixed", head, now });
 }
 
-export async function markCloseoutAccepted(store: Db, id: string, head: string): Promise<void> {
-  await store.run((q) => markCloseoutAcceptedSteps(q, id, head));
+export async function markCloseoutAccepted(store: Db, id: string, head: string, now?: number) {
+  await store.transaction((q) => markCloseoutAcceptedSteps(q, id, head, now));
 }
 
 function* extendAwakeCapSteps(q: Q, id: string, stage: TimeStage, extraMs: number) {

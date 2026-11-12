@@ -22,6 +22,7 @@ import {
   markCloseoutAccepted,
   markJobAwakeWait,
   legacyMigrate,
+  migrate,
   openDatabase,
   recoverOnStartup,
   saveCheckpoint,
@@ -54,7 +55,7 @@ async function verifyingJob(db: ReturnType<typeof openDatabase>, itemId: string,
 async function acceptedItem(maxAwakeMs: number) {
   const clock = new FakeClock(20_000);
   const db = openDatabase(":memory:");
-  legacyMigrate(db);
+  migrate(db);
   const item = await insertQueuedItem(db, {
     id: "eng-7",
     sessionKey: "ses",
@@ -82,7 +83,7 @@ async function acceptedItem(maxAwakeMs: number) {
 
 test("the job loop bills only active agent and Closeout work across every waiting stage", async () => {
   const db = openDatabase(":memory:");
-  legacyMigrate(db);
+  migrate(db);
   const clock = new FakeClock(20_000);
   const item = await insertQueuedItem(db, { maxAwakeMs: 30 * MINUTE, now: clock.now() });
   const jobs = new JobLoop(db, clock, { leaseMs: 24 * 60 * MINUTE });
@@ -355,7 +356,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
   test("without an accepted candidate or a session the cap fails and says how the time was spent", async () => {
     const clock = new FakeClock(20_000);
     const db = openDatabase(":memory:");
-    legacyMigrate(db);
+    migrate(db);
     const item = await insertQueuedItem(db, { maxAwakeMs: 30 * MINUTE, now: 0 });
     db.run("UPDATE work_item SET session_key = NULL WHERE id = ?", [item.id]);
     await beginImplementRun(sqliteDb(db), item.id, clock.now());
