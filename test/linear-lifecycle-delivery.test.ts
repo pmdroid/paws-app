@@ -383,12 +383,13 @@ test("a merged item settles its delegation without a delegation summary", async 
       subIssues: [{ linearIssueId: item.linearIssueId, identifier: "ENG-1", title: "Task" }],
     },
   ]);
+  const outbox = new OutboxDispatcher(db, systemClock);
   const orchestrator = attachOrchestrator({
     store: db,
     pawsRoot: tempHome(),
     tracker,
     jobs: new JobLoop(db, systemClock),
-    outbox: new OutboxDispatcher(db, systemClock),
+    outbox,
   });
   try {
     await orchestrator.onLinearEvent({ ...created(), issueId: "lin-ENG-1" });
@@ -400,6 +401,7 @@ test("a merged item settles its delegation without a delegation summary", async 
     expect(tracker.progress.some((update) => update.body.includes("Epic abandoned"))).toBe(false);
   } finally {
     await orchestrator.shutdown();
+    await outbox.idle();
     await close();
   }
 });
