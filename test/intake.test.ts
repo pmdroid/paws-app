@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { eq, notInArray } from "drizzle-orm";
+import { eq, notInArray, sql } from "drizzle-orm";
 import { WORK_ITEM_STATES } from "../src/core";
-import { listTaskBlockers, migrations, syncSteps, sqliteDb } from "../src/db";
+import { listTaskBlockers, migrations, syncSteps, type Db, type Q } from "../src/db";
 import { cycleMessage, intakeDelegatedIssue, orderByBlocks, queueMessage } from "../src/intake";
 import { createFakeTracker, type EpicSnapshot } from "../src/linear";
-import { tempDb } from "./helpers";
+import { tempStore } from "./pglite";
 
 const parent: EpicSnapshot = {
   linearIssueId: "parent",
@@ -18,25 +18,93 @@ const parent: EpicSnapshot = {
   ],
 };
 
+const epicTables = (db: Db) => db.run((q) => epicTablesSteps(q));
+
+function epicTablesSteps(q: Q) {
+  return q.all(
+    q.orm
+      .select({ name: sql<string>`table_name` })
+      .from(sql`information_schema.tables`)
+      .where(sql`table_name = 'epic'`),
+  );
+}
+
+const workItems = (db: Db) =>
+  db.run((q) =>
+    q.all(q.orm.select({ id: q.t.workItem.id, state: q.t.workItem.state }).from(q.t.workItem)),
+  );
+
+const parentDelegations = (db: Db) =>
+  db.run((q) =>
+    q.all(q.orm.select({ id: q.t.parentDelegation.delegationId }).from(q.t.parentDelegation)),
+  );
+
+const setStates = (db: Db, state: string, id?: string) =>
+  db.run((q) =>
+    q.exec(
+      q.orm
+        .update(q.t.workItem)
+        .set({ state })
+        .where(id === undefined ? undefined : eq(q.t.workItem.id, id)),
+    ),
+  );
+
+function* seedOwnerSteps(q: Q) {
+  yield* q.exec(
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: "workspace", linearOrganizationId: "org", name: "Workspace", createdAt: 1000 }),
+  );
+  yield* q.exec(
+    q.orm.insert(q.t.workspaceUser).values({
+      id: "person",
+      linearUserId: "linear-person",
+      name: "Person",
+      email: "person@example.test",
+    }),
+  );
+}
+
+function* adoptSteps(q: Q) {
+  yield* q.exec(
+    q.orm.insert(q.t.parentDelegation).values({
+      delegationId: "adopted",
+      workspaceId: "workspace",
+      organizationId: "org",
+      parentIssueId: "parent",
+      parentIdentifier: "ENG-1",
+      title: "Parent",
+      sessionId: "ses_1",
+      ownerUserId: "person",
+      edges: [],
+      createdAt: 1,
+    }),
+  );
+  return true;
+}
+
 describe("intake", () => {
-  test("the migrated schema accepts every work-item state", () => {
-    const db = tempDb();
-    const schema = (name: string) =>
-      db.query<{ sql: string }, [string]>("SELECT sql FROM sqlite_master WHERE name = ?").get(name)
-        ?.sql;
-    expect(
-      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").get(),
-    ).toBeNull();
-    for (const state of WORK_ITEM_STATES) expect(schema("work_item")).toContain(`'${state}'`);
+  test("the migrated schema accepts every work-item state", async () => {
+    const { db, close } = await tempStore();
+    const check = await db.run((q) =>
+      q.one(
+        q.orm
+          .select({ definition: sql<string>`pg_get_constraintdef(oid)` })
+          .from(sql`pg_constraint`)
+          .where(sql`conname = 'work_item_check_1'`),
+      ),
+    );
+    expect(await epicTables(db)).toEqual([]);
+    for (const state of WORK_ITEM_STATES) expect(check?.definition).toContain(`'${state}'`);
     expect(migrations[0]?.id).toBe("001_jobs_outbox");
-    db.close();
+    await close();
   });
 
   test("orders a parent by a blocks edge and keeps the original tie break", async () => {
-    const db = tempDb();
+    const { db, close } = await tempStore();
     const tracker = createFakeTracker([parent]);
     tracker.deps.set("parent", [{ blockerLinearIssueId: "a", blockedLinearIssueId: "b" }]);
-    const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    const result = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
     });
@@ -49,23 +117,28 @@ describe("intake", () => {
     expect(tracker.progress.map((update) => update.body)).toEqual([
       queueMessage(["ENG-2", "ENG-3", "ENG-4"], false),
     ]);
-    const blocks = db
-      .query<{ blocker: string; blocked: string }, []>(
-        "SELECT blocker_linear_issue_id AS blocker, blocked_linear_issue_id AS blocked FROM task_block",
-      )
-      .all();
+    const blocks = await db.run((q) =>
+      q.all(
+        q.orm
+          .select({
+            blocker: q.t.taskBlock.blockerLinearIssueId,
+            blocked: q.t.taskBlock.blockedLinearIssueId,
+          })
+          .from(q.t.taskBlock),
+      ),
+    );
     expect(blocks).toEqual([{ blocker: "a", blocked: "b" }]);
-    const again = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    const again = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
     });
     expect(again.ok && again.alreadyExisted).toBe(true);
     expect(tracker.progress).toHaveLength(1);
-    db.close();
+    await close();
   });
 
   test("a lone delegated issue is a queue of one", async () => {
-    const db = tempDb();
+    const { db, close } = await tempStore();
     const tracker = createFakeTracker([
       {
         linearIssueId: "only",
@@ -75,7 +148,7 @@ describe("intake", () => {
         subIssues: [],
       },
     ]);
-    const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    const result = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "only",
       sessionId: "ses_9",
     });
@@ -88,11 +161,11 @@ describe("intake", () => {
       branchName: "paws/eng-9",
     });
     expect(tracker.progress[0]?.body).toBe("Picked up ENG-9.");
-    db.close();
+    await close();
   });
 
   test("adopting a parent finishes the delegation without items and leaves the parent session to its summary", async () => {
-    const db = tempDb();
+    const { db, close } = await tempStore();
     const tracker = createFakeTracker([
       {
         linearIssueId: "parent",
@@ -103,25 +176,14 @@ describe("intake", () => {
       },
     ]);
     let epicExisted = true;
-    const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    const result = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
-      adoptParent: () =>
-        syncSteps(() => {
-          epicExisted =
-            db
-              .query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'")
-              .get() !== null;
-          db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-          db.run(
-            "INSERT INTO workspace_user VALUES('person','linear-person','Person','person@example.test')",
-          );
-          db.run(
-            `INSERT INTO parent_delegation(delegation_id,workspace_id,organization_id,parent_issue_id,parent_identifier,title,session_id,owner_user_id,edges,created_at)
-           VALUES('adopted','workspace','org','parent','ENG-1','Parent','ses_1','person','[]',1)`,
-          );
-          return true;
-        }),
+      adoptParent: function* (q) {
+        epicExisted = (yield* epicTablesSteps(q)).length > 0;
+        yield* seedOwnerSteps(q);
+        return yield* adoptSteps(q);
+      },
     });
     expect(epicExisted).toBe(false);
     expect(result.ok).toBe(true);
@@ -130,11 +192,9 @@ describe("intake", () => {
     expect(result.items).toEqual([]);
     expect(result.delegation.state).toBe("done");
     expect(result.delegation.id).toBe("adopted");
-    expect(
-      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
-    ).toEqual([]);
+    expect(await epicTables(db)).toEqual([]);
     expect(tracker.progress.map((update) => update.body)).toEqual([]);
-    const again = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    const again = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
       adoptParent: () => {
@@ -146,13 +206,13 @@ describe("intake", () => {
     expect(again.items).toEqual([]);
     expect(again.delegation.id).toBe(result.delegation.id);
     expect(tracker.progress).toHaveLength(0);
-    db.close();
+    await close();
   });
 
   test("adoptParent false keeps the ordered multi-item delegation", async () => {
-    const db = tempDb();
+    const { db, close } = await tempStore();
     const tracker = createFakeTracker([parent]);
-    const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    const result = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
       adoptParent: () => syncSteps(() => false),
@@ -164,19 +224,19 @@ describe("intake", () => {
     expect(tracker.progress.map((update) => update.body)).toEqual([
       queueMessage(["ENG-2", "ENG-3", "ENG-4"], false),
     ]);
-    expect(db.query("SELECT delegation_id FROM parent_delegation").all()).toHaveLength(0);
-    db.close();
+    expect(await parentDelegations(db)).toHaveLength(0);
+    await close();
   });
 
   test("a blocks cycle does not adopt a parent", async () => {
-    const db = tempDb();
+    const { db, close } = await tempStore();
     const tracker = createFakeTracker([parent]);
     tracker.deps.set("a", [
       { blockerLinearIssueId: "a", blockedLinearIssueId: "b" },
       { blockerLinearIssueId: "b", blockedLinearIssueId: "a" },
     ]);
     let called = false;
-    const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    const result = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
       adoptParent: () =>
@@ -189,18 +249,18 @@ describe("intake", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toBe("cycle");
-    expect(db.query("SELECT delegation_id FROM parent_delegation").all()).toHaveLength(0);
-    db.close();
+    expect(await parentDelegations(db)).toHaveLength(0);
+    await close();
   });
 
   test("a blocks cycle is reported and nothing is queued", async () => {
-    const db = tempDb();
+    const { db, close } = await tempStore();
     const tracker = createFakeTracker([parent]);
     tracker.deps.set("a", [
       { blockerLinearIssueId: "a", blockedLinearIssueId: "b" },
       { blockerLinearIssueId: "b", blockedLinearIssueId: "a" },
     ]);
-    const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    const result = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
     });
@@ -209,8 +269,7 @@ describe("intake", () => {
     expect(result.reason).toBe("cycle");
     expect(result.identifiers).toEqual(["ENG-2", "ENG-3"]);
     expect(result.delegation.state).toBe("stalled");
-    const items = db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get();
-    expect(items?.n).toBe(0);
+    expect(await workItems(db)).toHaveLength(0);
     expect(tracker.progress[0]).toMatchObject({
       kind: "error",
       body: cycleMessage(["ENG-2", "ENG-3"]),
@@ -226,30 +285,30 @@ describe("intake", () => {
       ],
     );
     expect(ordered.ok).toBe(false);
-    db.close();
+    await close();
   });
 
   test("intake stores internal and external task blocks for the queued issues", async () => {
-    const db = tempDb();
+    const { db, close } = await tempStore();
     const tracker = createFakeTracker([parent]);
     tracker.deps.set("parent", [
       { blockerLinearIssueId: "a", blockedLinearIssueId: "b" },
       { blockerLinearIssueId: "outside", blockedLinearIssueId: "b" },
       { blockerLinearIssueId: "b", blockedLinearIssueId: "outside" },
     ]);
-    const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    const result = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
     });
     expect(result.ok).toBe(true);
-    expect(await listTaskBlockers(sqliteDb(db), "b")).toEqual(["a", "outside"]);
-    expect(await listTaskBlockers(sqliteDb(db), "a")).toEqual([]);
-    expect(await listTaskBlockers(sqliteDb(db), "outside")).toEqual([]);
-    db.close();
+    expect(await listTaskBlockers(db, "b")).toEqual(["a", "outside"]);
+    expect(await listTaskBlockers(db, "a")).toEqual([]);
+    expect(await listTaskBlockers(db, "outside")).toEqual([]);
+    await close();
   });
 
   test("an issue already active in another session is rejected and creates nothing", async () => {
-    const db = tempDb();
+    const { db, close } = await tempStore();
     const tracker = createFakeTracker([
       {
         linearIssueId: "only",
@@ -259,7 +318,7 @@ describe("intake", () => {
         subIssues: [],
       },
     ]);
-    const first = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    const first = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "only",
       sessionId: "ses_1",
       taskKey: "first",
@@ -268,7 +327,7 @@ describe("intake", () => {
     const message =
       "ENG-9 has an unfinished attempt in another Paws session. Reply in that session to continue, or stop it before starting a new one.";
     await expect(
-      intakeDelegatedIssue(sqliteDb(db), tracker, {
+      intakeDelegatedIssue(db, tracker, {
         linearIssueId: "only",
         sessionId: "ses_2",
         taskKey: "second",
@@ -277,20 +336,16 @@ describe("intake", () => {
     expect(tracker.progress).toContainEqual(
       expect.objectContaining({ sessionId: "ses_2", kind: "error", body: message }),
     );
-    expect(
-      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
-    ).toHaveLength(0);
-    expect(db.query("SELECT id FROM work_item").all()).toHaveLength(1);
-    expect(db.query<{ state: string }, []>("SELECT state FROM work_item").get()?.state).toBe(
-      "queued",
-    );
-    db.close();
+    expect(await epicTables(db)).toHaveLength(0);
+    expect(await workItems(db)).toHaveLength(1);
+    expect((await workItems(db))[0]?.state).toBe("queued");
+    await close();
   });
 
   test.each(["merged", "completed", "cancelled"] as const)(
     "delegating an issue whose earlier item is %s creates a new item",
     async (state) => {
-      const db = tempDb();
+      const { db, close } = await tempStore();
       const tracker = createFakeTracker([
         {
           linearIssueId: "only",
@@ -300,14 +355,14 @@ describe("intake", () => {
           subIssues: [],
         },
       ]);
-      const first = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+      const first = await intakeDelegatedIssue(db, tracker, {
         linearIssueId: "only",
         sessionId: "ses_1",
         taskKey: "first",
       });
       if (!first.ok) throw new Error("expected intake");
-      db.run("UPDATE work_item SET state = ? WHERE id = ?", [state, first.items[0]!.id]);
-      const second = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+      await setStates(db, state, first.items[0]!.id);
+      const second = await intakeDelegatedIssue(db, tracker, {
         linearIssueId: "only",
         sessionId: "ses_2",
         taskKey: "second",
@@ -318,13 +373,13 @@ describe("intake", () => {
       expect(second.items).toHaveLength(1);
       expect(second.items[0]?.state).toBe("queued");
       expect(second.items[0]?.id).not.toBe(first.items[0]?.id);
-      expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(2);
-      db.close();
+      expect(await workItems(db)).toHaveLength(2);
+      await close();
     },
   );
 
   test("beforeAdmit cancels the previous item before the replacement is inserted", async () => {
-    const db = tempDb();
+    const { db, close } = await tempStore();
     const tracker = createFakeTracker([
       {
         linearIssueId: "only",
@@ -334,14 +389,14 @@ describe("intake", () => {
         subIssues: [],
       },
     ]);
-    const first = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    const first = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "only",
       sessionId: "ses_1",
       taskKey: "first",
     });
     if (!first.ok) throw new Error("expected intake");
     let activeBefore = -1;
-    const second = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    const second = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "only",
       sessionId: "ses_1",
       taskKey: "second",
@@ -364,18 +419,16 @@ describe("intake", () => {
     expect(activeBefore).toBe(1);
     expect(second.ok).toBe(true);
     if (!second.ok) return;
-    expect(
-      db
-        .query<{ state: string }, [string]>("SELECT state FROM work_item WHERE id = ?")
-        .get(first.items[0]!.id)?.state,
-    ).toBe("cancelled");
+    expect((await workItems(db)).find((row) => row.id === first.items[0]!.id)?.state).toBe(
+      "cancelled",
+    );
     expect(second.items[0]?.state).toBe("queued");
-    expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(2);
-    db.close();
+    expect(await workItems(db)).toHaveLength(2);
+    await close();
   });
 
   test("a repeated delegation of the same issue replays without an epic row", async () => {
-    const db = tempDb();
+    const { db, close } = await tempStore();
     const tracker = createFakeTracker([
       {
         linearIssueId: "only",
@@ -385,17 +438,15 @@ describe("intake", () => {
         subIssues: [],
       },
     ]);
-    const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    const result = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "only",
       sessionId: "ses_9",
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.delegation.state).toBe("running");
-    expect(
-      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
-    ).toEqual([]);
-    const again = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    expect(await epicTables(db)).toEqual([]);
+    const again = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "only",
       sessionId: "ses_9",
     });
@@ -404,26 +455,24 @@ describe("intake", () => {
     expect(again.delegation.id).toBe(result.delegation.id);
     expect(again.items.map((item) => item.id)).toEqual(result.items.map((item) => item.id));
     expect(tracker.progress).toHaveLength(1);
-    db.run("UPDATE work_item SET state = 'cancelled'");
-    const cancelled = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    await setStates(db, "cancelled");
+    const cancelled = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "only",
       sessionId: "ses_9",
     });
     expect(cancelled.ok && cancelled.delegation.state).toBe("cancelled");
-    db.run("UPDATE work_item SET state = 'merged'");
-    const done = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    await setStates(db, "merged");
+    const done = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "only",
       sessionId: "ses_9",
     });
     expect(done.ok && done.delegation.state).toBe("done");
-    expect(
-      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
-    ).toEqual([]);
-    db.close();
+    expect(await epicTables(db)).toEqual([]);
+    await close();
   });
 
   test("an adopted parent replays from its parent delegation", async () => {
-    const db = tempDb();
+    const { db, close } = await tempStore();
     const tracker = createFakeTracker([
       {
         linearIssueId: "parent",
@@ -433,22 +482,12 @@ describe("intake", () => {
         subIssues: [{ linearIssueId: "only", identifier: "ENG-2", title: "Only child" }],
       },
     ]);
-    db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-    db.run(
-      "INSERT INTO workspace_user VALUES('person','linear-person','Person','person@example.test')",
-    );
-    const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    await db.run(seedOwnerSteps);
+    const result = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
       taskKey: "parent-task",
-      adoptParent: () =>
-        syncSteps(() => {
-          db.run(
-            `INSERT INTO parent_delegation(delegation_id,workspace_id,organization_id,parent_issue_id,parent_identifier,title,session_id,owner_user_id,edges,created_at)
-           VALUES('adopted','workspace','org','parent','ENG-1','Parent','ses_1','person','[]',1)`,
-          );
-          return true;
-        }),
+      adoptParent: adoptSteps,
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -461,10 +500,8 @@ describe("intake", () => {
       title: "Parent",
       state: "done",
     });
-    expect(
-      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
-    ).toEqual([]);
-    const again = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    expect(await epicTables(db)).toEqual([]);
+    const again = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
       taskKey: "parent-followup",
@@ -477,20 +514,18 @@ describe("intake", () => {
     expect(again.delegation.id).toBe("adopted");
     expect(again.items).toEqual([]);
     expect(tracker.progress).toHaveLength(0);
-    expect(
-      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
-    ).toEqual([]);
-    db.close();
+    expect(await epicTables(db)).toEqual([]);
+    await close();
   });
 
   test("a cycle stores no epic row and reports the cycle again", async () => {
-    const db = tempDb();
+    const { db, close } = await tempStore();
     const tracker = createFakeTracker([parent]);
     tracker.deps.set("a", [
       { blockerLinearIssueId: "a", blockedLinearIssueId: "b" },
       { blockerLinearIssueId: "b", blockedLinearIssueId: "a" },
     ]);
-    const result = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    const result = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
     });
@@ -500,11 +535,9 @@ describe("intake", () => {
     expect(result.identifiers).toEqual(["ENG-2", "ENG-3"]);
     expect(result.delegation.state).toBe("stalled");
     expect(result.alreadyExisted).toBe(false);
-    expect(
-      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
-    ).toEqual([]);
-    expect(db.query("SELECT id FROM work_item").all()).toEqual([]);
-    const again = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    expect(await epicTables(db)).toEqual([]);
+    expect(await workItems(db)).toEqual([]);
+    const again = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
     });
@@ -517,9 +550,7 @@ describe("intake", () => {
       cycleMessage(["ENG-2", "ENG-3"]),
       cycleMessage(["ENG-2", "ENG-3"]),
     ]);
-    expect(
-      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
-    ).toEqual([]);
-    db.close();
+    expect(await epicTables(db)).toEqual([]);
+    await close();
   });
 });
