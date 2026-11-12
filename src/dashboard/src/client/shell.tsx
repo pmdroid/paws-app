@@ -296,7 +296,7 @@ export function mountShell(): {
       <div className="flex min-h-dvh bg-background text-foreground">
         <a
           href="#content"
-          className="sr-only fixed left-4 top-4 z-50 rounded-base border-2 border-border bg-main p-3 text-main-foreground focus:not-sr-only"
+          className="sr-only fixed left-4 top-4 z-50 rounded-base border border-border bg-main p-3 text-main-foreground focus:not-sr-only"
           onClick={(event) => {
             event.preventDefault();
             document.querySelector<HTMLElement>("#content")?.focus();
