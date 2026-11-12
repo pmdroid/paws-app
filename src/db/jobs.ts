@@ -696,11 +696,18 @@ export async function parkLeasedJob(
   return store.run((q) => parkLeasedJobSteps(q, job, input));
 }
 
-export function* retryLeasedJobSteps(q: Q, job: Job, runAt: number, error: string) {
+export function* retryLeasedJobSteps(
+  q: Q,
+  job: Job,
+  runAt: number,
+  error: string,
+  attempts = job.attempts,
+) {
   return (
     (yield* updateLeasedSteps(q, job, {
       status: "pending",
       runAt,
+      attempts,
       lockedBy: null,
       lockedUntil: null,
       lastError: error,

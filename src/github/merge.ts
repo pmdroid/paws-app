@@ -1,4 +1,4 @@
-import { journalCaught } from "../journal";
+import { journal, journalCaught } from "../journal";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
@@ -15,12 +15,15 @@ import { pushOutageCause } from "./transport";
 import { readPullMergeable } from "./pull-mergeable";
 import { waitForMergeReadiness, type Readiness } from "./readiness";
 import { readPullReview, type PullReview } from "./review";
-import { isTransient } from "../core";
+import { isTransient, sleep as pause } from "../core";
 import {
   GitCommandError,
+  GitHubHttpError,
+  SquashServerError,
   UPSTREAM_MAIN_REF,
   type GitExec,
   type GitHubClient,
+  type GitHubResponse,
   type SerialMergeResult,
 } from "./types";
 
@@ -316,7 +319,9 @@ export async function squashPull(
     };
   // A stop or withdrawn publication during the reads must still win.
   if (await input.isCancelled?.()) return cancelled(branch);
-  const merged = await squash(input, token, expectedHead, summary);
+  const sent = await squash(input, token, expectedHead, summary);
+  if (sent instanceof SquashServerError && (await pullUnmerged(input, token))) throw sent;
+  const merged = sent instanceof SquashServerError ? null : sent;
   // A server error or an unreadable success response can arrive after GitHub committed the merge.
   // Keep the caller's durable marker until a pull request read establishes the outcome.
   if (
@@ -619,34 +624,73 @@ async function rebaseOnto(
   }
 }
 
+const SQUASH_RETRY_MS = [30_000, 120_000];
+const COMMIT_MESSAGE_LIMIT = 32 * 1024;
+const TRUNCATED_LINE = "… message truncated by Paws";
+
+function capCommitMessage(message: string): string {
+  const bytes = Buffer.from(message);
+  if (bytes.length <= COMMIT_MESSAGE_LIMIT) return message;
+  const room = COMMIT_MESSAGE_LIMIT - Buffer.byteLength(`\n${TRUNCATED_LINE}`);
+  const kept = new TextDecoder().decode(bytes.subarray(0, room)).replace(/\uFFFD+$/, "");
+  return `${kept}\n${TRUNCATED_LINE}`;
+}
+
 async function squash(
   input: SerialMergeInput,
   token: string,
   head: string,
   summary: string,
-): Promise<{ status: number; body: unknown } | null> {
+): Promise<GitHubResponse | SquashServerError | null> {
+  const title = input.commitTitle ?? input.issue;
+  const message = capCommitMessage(
+    `${fixesLine(input.issue)}\n\n${(input.commitMessage ?? summary).trim()}\n`,
+  );
   const request: Parameters<GitHubClient["request"]>[0] = {
     method: "PUT",
     path: repoApiPath(input.owner, input.repo, `/pulls/${input.prNumber}/merge`),
     token,
-    body: {
-      merge_method: "squash",
-      sha: head,
-      commit_title: input.commitTitle ?? input.issue,
-      commit_message: `${fixesLine(input.issue)}\n\n${(input.commitMessage ?? summary).trim()}\n`,
-    },
+    body: { merge_method: "squash", sha: head, commit_title: title, commit_message: message },
   };
   await input.beforeMergeCall?.(head);
-  try {
-    return await input.client.request(request);
-  } catch (error) {
-    // Cancellation belongs to the owner. It must retain the marker and propagate normally.
-    if ((await input.isCancelled?.()) || (error instanceof Error && error.name === "AbortError"))
-      throw error;
-    // Only the PUT was attempted here. Preparation and request construction errors propagate.
-    journalCaught(error, "merge.squash.request", input.issue);
-    return null;
+  for (const [attempt, delay] of [...SQUASH_RETRY_MS, null].entries()) {
+    let response: GitHubResponse;
+    try {
+      response = await input.client.request(request);
+    } catch (error) {
+      // Cancellation belongs to the owner. It must retain the marker and propagate normally.
+      if ((await input.isCancelled?.()) || (error instanceof Error && error.name === "AbortError"))
+        throw error;
+      if (!(error instanceof GitHubHttpError) || error.status < 500) {
+        // Only the PUT was attempted here. Preparation and request construction errors propagate.
+        journalCaught(error, "merge.squash.request", input.issue);
+        return null;
+      }
+      response = error;
+    }
+    if (response.status < 500 || response.status > 599)
+      return attempt === 0 || (isRecord(response.body) && response.body.merged === true)
+        ? response
+        : null;
+    const body =
+      typeof response.body === "string" ? response.body : (JSON.stringify(response.body) ?? "");
+    journal(
+      `merge.squash ${input.issue}: #${input.prNumber} GitHub HTTP ${response.status}, request id ${response.requestId ?? "none"}, commit_title ${title.length} chars, commit_message ${message.length} chars, body ${body.slice(0, 500)}`,
+    );
+    if (delay === null) return new SquashServerError(response);
+    await (input.sleep ?? pause)(delay);
+    if (await input.isCancelled?.()) return null;
   }
+  return null;
+}
+
+async function pullUnmerged(input: SerialMergeInput, token: string): Promise<boolean> {
+  const pull = repoApiPath(input.owner, input.repo, `/pulls/${input.prNumber}`);
+  const read = await input.client.request({ method: "GET", path: pull, token }).catch((error) => {
+    journalCaught(error, "merge.squash.readPull", input.issue);
+    return null;
+  });
+  return read?.status === 200 && isRecord(read.body) && read.body.merged === false;
 }
 
 function operationToken(input: FetchUpstreamMainInput, purpose: "push" | "merge"): Promise<string> {

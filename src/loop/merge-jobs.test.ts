@@ -22,6 +22,7 @@ import {
   openDatabase,
   sqliteDb,
 } from "../db";
+import { SquashServerError } from "../github";
 import { answerSteps } from "../questions";
 import {
   MERGE_BACKSTOP_POLL_MS,
@@ -364,6 +365,33 @@ describe("merge job retries", () => {
     });
     clock.advance(29_000);
     expect(await loop.tick()).toBeNull();
+  });
+
+  test("a squash GitHub kept answering with 5xx waits for its backoff without spending the attempt", async () => {
+    const { db, clock } = queue();
+    await insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    const id = await enqueueJob(sqliteDb(db), {
+      queue: JOB_KIND.merge,
+      payload: { itemId: "eng-1" },
+      now: clock.now(),
+    });
+    const loop = new JobLoop(db, clock, { leaseMs: 60_000 });
+    loop.register(JOB_KIND.merge, async (job) => {
+      await retryMergeLater(
+        sqliteDb(db),
+        job,
+        clock.now(),
+        30_000,
+        new SquashServerError({ status: 500, body: {} }),
+      );
+    });
+    await loop.tick();
+    expect(await getJob(sqliteDb(db), id)).toMatchObject({
+      status: "pending",
+      attempts: 0,
+      runAt: clock.now() + 30_000,
+      lastError: "GitHub HTTP 500",
+    });
   });
 });
 
