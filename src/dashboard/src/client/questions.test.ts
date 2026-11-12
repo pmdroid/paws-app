@@ -145,11 +145,28 @@ describe("question cards", () => {
 
   test("a card names its issue and agent from the resource and keeps its Linear links", () => {
     const html = renderQuestions(view({ list: list("q-1") }));
-    expect(html).toContain('href="/issues/PAS-1"');
-    expect(html).toContain('title="Ship it"');
-    expect(html).toContain('<span class="agent">claude</span>');
+    expect(html).toContain(
+      '<span class="st awaiting_input">Question</span><a class="lin-id" href="/issues/PAS-1">PAS-1</a><span class="min-w-0">Ship it</span>',
+    );
+    expect(html).toContain('<span class="mono dim">claude · 1h ago</span>');
+    expect(html).toContain("Oldest first. An answered question leaves this list.");
     expect(html).toContain('href="https://linear.app/paws/issue/PAS-1"');
     expect(html).not.toContain(" hl");
+  });
+
+  test("a review rounds link ask shows its kind and opens its decision card", () => {
+    const ask = card("q-1");
+    ask.linkAsk = {
+      kind: "rounds",
+      head: "b".repeat(40),
+      title: "Three review rounds found more.",
+      detail: "",
+      link: "https://paws.example/dashboard/issues/PAS-1#review-rounds",
+    };
+    const html = renderQuestions(view({ list: { ...list(), questions: [ask] } }));
+    expect(html).toContain('<span class="st awaiting_input">Review rounds</span>');
+    expect(html).toContain('<a class="lin-id" href="/issues/PAS-1">PAS-1</a>');
+    expect(html).toContain('href="/issues/PAS-1#review-rounds"');
   });
 
   test("a link ask card opens its decision card on the issue page", () => {
@@ -175,7 +192,11 @@ describe("question cards", () => {
       "This question is answered",
     );
     expect(renderQuestions(view({ selected: "q-1" }))).toContain("Loading questions");
-    expect(renderQuestions(view({ list: list() }))).toContain("No open questions.");
+    const empty = renderQuestions(view({ list: list() }));
+    expect(empty).toContain(
+      "No open questions. Paws asks here when the agent or Closeout needs a person, such as a spent fix budget or a bypass.",
+    );
+    expect(empty).not.toContain("Oldest first");
     expect(renderQuestions(view({ error: "Engine responded 500" }))).toContain(
       "Questions unavailable",
     );
