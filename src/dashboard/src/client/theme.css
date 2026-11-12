@@ -432,13 +432,13 @@ a.evidence-thumb:focus-visible {
 }
 .run-step.done,
 .closeout-result.accepted {
-  background: #c8f2d7;
-  color: #064e30;
+  background: color-mix(in srgb, var(--state-ok) 12%, transparent);
+  color: var(--state-ok);
 }
 .run-step.failed,
 .closeout-result:is(.exhausted, .rejected, .blocked) {
-  background: #ffd0d0;
-  color: #8b1717;
+  background: color-mix(in srgb, var(--state-failed) 12%, transparent);
+  color: var(--state-failed);
 }
 .run-step.now {
   background: var(--main);
@@ -462,8 +462,8 @@ a.evidence-thumb:focus-visible {
   border-radius: 0;
 }
 .run-step.needs {
-  background: #ffe08a;
-  color: #4a3500;
+  background: color-mix(in srgb, var(--state-awaiting) 12%, transparent);
+  color: var(--state-awaiting);
 }
 .journey-now {
   display: flex;
@@ -479,20 +479,16 @@ a.evidence-thumb:focus-visible {
   max-width: 70ch;
 }
 .journey-needs {
-  background: #fff4cc;
-  color: #3d2c00;
+  background: color-mix(in srgb, var(--state-awaiting) 8%, transparent);
 }
 .journey-failed {
-  background: #ffe3e3;
-  color: #6f1212;
+  background: color-mix(in srgb, var(--state-failed) 8%, transparent);
 }
-.dark .journey-needs {
-  background: #4a3a10;
-  color: #ffeab0;
+.journey-needs h2 {
+  color: var(--state-awaiting);
 }
-.dark .journey-failed {
-  background: #4d1c1c;
-  color: #ffd6d6;
+.journey-failed h2 {
+  color: var(--state-failed);
 }
 .issue-folds {
   display: flex;
