@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import {
   askedQuestionRowSteps,
   insertQuestionRowSteps,
@@ -77,7 +76,8 @@ type QuestionInsert = NewQuestion & {
 };
 
 export function* insertQuestionSteps(q: Q, input: QuestionInsert): Steps<StoredQuestion> {
-  const id = randomUUID();
+  const ordered = Bun.randomUUIDv7();
+  const id = `${ordered.slice(0, 14)}4${ordered.slice(15)}`;
   const now = input.now ?? Date.now();
   yield* insertQuestionRowSteps(q, {
     id,
