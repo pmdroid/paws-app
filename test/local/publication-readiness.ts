@@ -1,6 +1,6 @@
 import { syncSteps } from "../../src/runner-backend";
 import assert from "node:assert/strict";
-import type { Database } from "bun:sqlite";
+import { eq, sql } from "drizzle-orm";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,17 +15,15 @@ import {
   enqueueJob,
   getWorkItem,
   insertRun,
-  migrate,
-  openDatabase,
   recordLinearInstallation,
   saveCheckpoint,
   saveTaskMode,
   setCurrentRun,
-  sqliteDb,
   applyWorkItemEventSteps,
   saveCheckpointSteps,
   setCurrentRunSteps,
   markRunSteps,
+  type Db,
   type Q,
   type Steps,
 } from "../../src/db";
@@ -39,9 +37,10 @@ import {
 } from "../../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../../src/linear";
 import { createAdmission } from "../../src/scheduler";
+import { tempStore } from "../pglite";
 
-function mergeAdmission(db: Database) {
-  const admission = createAdmission({ db: sqliteDb(db) });
+function mergeAdmission(db: Db) {
+  const admission = createAdmission({ db });
   return async (itemId: string) => (await admission.canMerge(itemId)).ok;
 }
 
@@ -53,8 +52,7 @@ export async function probePublicationReadiness(root: string) {
   async function fixture(name: string, withChildren = false) {
     const dir = join(root, name);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const db = openDatabase(join(dir, "paws.sqlite"));
-    migrate(db);
+    const { db, close } = await tempStore();
     const clock = new FakeClock(1000);
     const tracker = createFakeTracker([
       {
@@ -85,13 +83,22 @@ export async function probePublicationReadiness(root: string) {
     });
     for (const id of ["issue", "free", "manual", "outside"])
       lifecycle.issues.set(id, { ...lifecycle.issue, id });
-    const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    const intake = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: withChildren ? "parent" : "issue",
       now: clock.now(),
     });
     assert(intake.ok);
-    db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-    await recordLinearInstallation(sqliteDb(db), {
+    await db.run((q) =>
+      q.exec(
+        q.orm.insert(q.t.workspace).values({
+          id: "workspace",
+          linearOrganizationId: "org",
+          name: "Workspace",
+          createdAt: 1000,
+        }),
+      ),
+    );
+    await recordLinearInstallation(db, {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -99,7 +106,7 @@ export async function probePublicationReadiness(root: string) {
       teamId: "team",
       observedAtMs: 1000,
     });
-    await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, {
+    await bindLinearSessionTask(db, "session", intake.delegation.id, {
       actorId: "human",
     });
     const itemId = intake.items.find((item) => item.linearIssueId === "issue")!.id;
@@ -107,7 +114,7 @@ export async function probePublicationReadiness(root: string) {
     let onChanges = (_q: Q, _changes: ItemChanges): Steps<void> => syncSteps(() => {});
     let afterChanges = async (_changes: ItemChanges) => {};
     const reconciler = createItemReconciler({
-      store: sqliteDb(db),
+      store: db,
       tracker,
       lifecycle,
       onChanges: (q, changes) => onChanges(q, changes),
@@ -115,19 +122,19 @@ export async function probePublicationReadiness(root: string) {
       now: () => clock.now(),
     });
     await reconciler.reconcile({ itemId, workspaceId: target.workspaceId });
-    await applyWorkItemEvent(sqliteDb(db), itemId, "dispatched");
-    await applyWorkItemEvent(sqliteDb(db), itemId, "turn_ended");
-    await applyWorkItemEvent(sqliteDb(db), itemId, "closeout_accepted");
-    const run = await insertRun(sqliteDb(db), {
+    await applyWorkItemEvent(db, itemId, "dispatched");
+    await applyWorkItemEvent(db, itemId, "turn_ended");
+    await applyWorkItemEvent(db, itemId, "closeout_accepted");
+    const run = await insertRun(db, {
       itemId,
       agent: "scripted-producer",
       kind: "implement",
       status: "ended",
       now: clock.now(),
     });
-    await setCurrentRun(sqliteDb(db), itemId, run.id);
+    await setCurrentRun(db, itemId, run.id);
     const candidate = { sha: "a".repeat(40), baseSha: "b".repeat(40) };
-    await saveCheckpoint(sqliteDb(db), itemId, {
+    await saveCheckpoint(db, itemId, {
       phase: "merge_queue",
       wipCommit: candidate.sha,
       baseSha: candidate.baseSha,
@@ -139,7 +146,7 @@ export async function probePublicationReadiness(root: string) {
       return load(id);
     };
     async function queue() {
-      return await enqueueJob(sqliteDb(db), {
+      return await enqueueJob(db, {
         queue: JOB_KIND.merge,
         payload: { itemId },
         now: clock.now(),
@@ -147,7 +154,7 @@ export async function probePublicationReadiness(root: string) {
     }
     async function claim() {
       await queue();
-      const job = await claimNextJob(sqliteDb(db), {
+      const job = await claimNextJob(db, {
         workerId: "publication-proof",
         leaseMs: 10_000,
         now: clock.now(),
@@ -175,7 +182,7 @@ export async function probePublicationReadiness(root: string) {
       },
       async close() {
         await reconciler.close();
-        db.close();
+        await close();
       },
     };
   }
@@ -184,13 +191,13 @@ export async function probePublicationReadiness(root: string) {
     try {
       const first = await f.claim();
       const guard = createPublicationReadiness({
-        store: sqliteDb(f.db),
+        store: f.db,
         reconciler: f.reconciler,
         canMerge: mergeAdmission(f.db),
         now: () => f.clock.now(),
       });
       const beforeGeneration = (
-        await sqliteDb(f.db).run((q) =>
+        await f.db.run((q) =>
           readyItemsSteps(q, {
             itemId: f.itemId,
             workspaceId: "workspace",
@@ -199,7 +206,7 @@ export async function probePublicationReadiness(root: string) {
       ).generation;
       assert(await guard.publicationReady(f.itemId, "publish", undefined, f.candidate));
       const publishGeneration = (
-        await sqliteDb(f.db).run((q) =>
+        await f.db.run((q) =>
           readyItemsSteps(q, {
             itemId: f.itemId,
             workspaceId: "workspace",
@@ -221,14 +228,14 @@ export async function probePublicationReadiness(root: string) {
           beforeGeneration,
           publishGeneration,
           mergeGeneration: (
-            await sqliteDb(f.db).run((q) =>
+            await f.db.run((q) =>
               readyItemsSteps(q, { itemId: f.itemId, workspaceId: "workspace" }),
             )
           ).generation,
-          state: (await getWorkItem(sqliteDb(f.db), f.itemId))!.state,
+          state: (await getWorkItem(f.db, f.itemId))!.state,
         },
       );
-      assert(await completeJob(sqliteDb(f.db), first, f.clock.now()));
+      assert(await completeJob(f.db, first, f.clock.now()));
       await f.claim();
       assert(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate));
       assert.equal(f.loads(), 3);
@@ -255,7 +262,7 @@ export async function probePublicationReadiness(root: string) {
         yield* markRunSteps(q, f.run.id, "lost", f.clock.now());
       });
       const guard = createPublicationReadiness({
-        store: sqliteDb(f.db),
+        store: f.db,
         reconciler: f.reconciler,
         canMerge: mergeAdmission(f.db),
         now: () => f.clock.now(),
@@ -264,21 +271,24 @@ export async function probePublicationReadiness(root: string) {
       f.tracker.epics.get("issue")!.description = "Acceptance criteria changed without a webhook";
       if (await guard.publicationReady(f.itemId, "merge", undefined, f.candidate)) mergeCalls++;
       assert.equal(mergeCalls, 0);
-      assert.equal((await getWorkItem(sqliteDb(f.db), f.itemId))!.state, "queued");
-      assert.equal((await getWorkItem(sqliteDb(f.db), f.itemId))!.currentRunId, null);
-      assert.equal(
-        f.db
-          .query<{ revision: number }, [string]>(
-            "SELECT revision FROM work_item_specification WHERE item_id=?",
-          )
-          .get(f.itemId)!.revision,
-        2,
+      assert.equal((await getWorkItem(f.db, f.itemId))!.state, "queued");
+      assert.equal((await getWorkItem(f.db, f.itemId))!.currentRunId, null);
+      assert.deepEqual(
+        await f.db.run((q) =>
+          q.all(
+            q.orm
+              .select({ revision: q.t.workItemSpecification.revision })
+              .from(q.t.workItemSpecification)
+              .where(eq(q.t.workItemSpecification.itemId, f.itemId)),
+          ),
+        ),
+        [{ revision: 2 }],
       );
       observe(
         "A missed criteria webhook is discovered before an old approved candidate can merge",
         {
           mergeCalls,
-          state: (await getWorkItem(sqliteDb(f.db), f.itemId))!.state,
+          state: (await getWorkItem(f.db, f.itemId))!.state,
           loads: f.loads(),
         },
       );
@@ -294,7 +304,7 @@ export async function probePublicationReadiness(root: string) {
       let joined = false;
       let mergeCalls = 0;
       const guard = createPublicationReadiness({
-        store: sqliteDb(f.db),
+        store: f.db,
         reconciler: f.reconciler,
         canMerge: mergeAdmission(f.db),
         now: () => f.clock.now(),
@@ -303,7 +313,7 @@ export async function probePublicationReadiness(root: string) {
         (_q, changes) =>
           syncSteps(() => {
             if (!changes.specChangedItemIds.includes(f.itemId)) return;
-            void applyLinearCommand(sqliteDb(f.db), {
+            void applyLinearCommand(f.db, {
               type: "cancel",
               itemId: f.itemId,
               source: "linear",
@@ -347,19 +357,22 @@ export async function probePublicationReadiness(root: string) {
       }
       for (
         let tries = 0;
-        tries < 100 && (await hasPendingDelegationChanges(sqliteDb(f.db), f.target.delegationId));
+        tries < 100 && (await hasPendingDelegationChanges(f.db, f.target.delegationId));
         tries++
       )
         await Bun.sleep(10);
       assert(joined);
       assert(exited);
       assert.equal(mergeCalls, 0);
-      assert(!(await hasPendingDelegationChanges(sqliteDb(f.db), f.target.delegationId)));
-      const job = f.db
-        .query<{ status: string; worker: string | null }, []>(
-          "SELECT status,locked_by AS worker FROM job WHERE queue='github.merge'",
-        )
-        .get()!;
+      assert(!(await hasPendingDelegationChanges(f.db, f.target.delegationId)));
+      const job = (await f.db.run((q) =>
+        q.one(
+          q.orm
+            .select({ status: q.t.job.status, worker: q.t.job.lockedBy })
+            .from(q.t.job)
+            .where(eq(q.t.job.queue, "github.merge")),
+        ),
+      ))!;
       assert.equal(job.status, "cancelled");
       observe(
         "Canonical cancellation aborts a running owned job awaiting its own shared refresh and joins without deadlock",
@@ -368,7 +381,7 @@ export async function probePublicationReadiness(root: string) {
           joined,
           mergeCalls,
           job,
-          state: (await getWorkItem(sqliteDb(f.db), f.itemId))!.state,
+          state: (await getWorkItem(f.db, f.itemId))!.state,
         },
       );
     } finally {
@@ -384,21 +397,21 @@ export async function probePublicationReadiness(root: string) {
         throw new Error("Scripted temporary Linear read failure");
       };
       const guard = createPublicationReadiness({
-        store: sqliteDb(f.db),
+        store: f.db,
         reconciler: f.reconciler,
         canMerge: mergeAdmission(f.db),
         now: () => f.clock.now(),
       });
       assert.equal(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate), false);
-      assert(await hasPendingDelegationChanges(sqliteDb(f.db), f.target.delegationId));
+      assert(await hasPendingDelegationChanges(f.db, f.target.delegationId));
       f.tracker.loadEpic = original;
       assert(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate));
-      assert(!(await hasPendingDelegationChanges(sqliteDb(f.db), f.target.delegationId)));
+      assert(!(await hasPendingDelegationChanges(f.db, f.target.delegationId)));
       observe(
         "Failed authoritative reads hold publication durably and repaired reads release the same candidate",
         {
           loads: f.loads(),
-          pending: await hasPendingDelegationChanges(sqliteDb(f.db), f.target.delegationId),
+          pending: await hasPendingDelegationChanges(f.db, f.target.delegationId),
         },
       );
     } finally {
@@ -409,31 +422,36 @@ export async function probePublicationReadiness(root: string) {
     const f = await fixture("new-blocker", true);
     try {
       let job = await f.claim();
-      const manual = f.db
-        .query<{ id: string }, []>("SELECT id FROM work_item WHERE linear_issue_id='manual'")
-        .get()!.id;
-      const independent = f.db
-        .query<{ id: string }, []>("SELECT id FROM work_item WHERE linear_issue_id='free'")
-        .get()!.id;
-      await applyWorkItemEvent(sqliteDb(f.db), manual, "dispatched");
-      await applyWorkItemEvent(sqliteDb(f.db), manual, "run_failed");
-      await applyWorkItemEvent(sqliteDb(f.db), manual, "take_over");
-      await saveTaskMode(sqliteDb(f.db), manual, "code");
+      const itemFor = async (issue: string) =>
+        (await f.db.run((q) =>
+          q.one(
+            q.orm
+              .select({ id: q.t.workItem.id })
+              .from(q.t.workItem)
+              .where(eq(q.t.workItem.linearIssueId, issue)),
+          ),
+        ))!.id;
+      const manual = await itemFor("manual");
+      const independent = await itemFor("free");
+      await applyWorkItemEvent(f.db, manual, "dispatched");
+      await applyWorkItemEvent(f.db, manual, "run_failed");
+      await applyWorkItemEvent(f.db, manual, "take_over");
+      await saveTaskMode(f.db, manual, "code");
       f.tracker.deps.set("parent", [
         { blockerLinearIssueId: "outside", blockedLinearIssueId: "issue" },
         { blockerLinearIssueId: "manual", blockedLinearIssueId: "issue" },
       ]);
       const guard = createPublicationReadiness({
-        store: sqliteDb(f.db),
+        store: f.db,
         reconciler: f.reconciler,
         canMerge: mergeAdmission(f.db),
         now: () => f.clock.now(),
       });
       assert.equal(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate), false);
-      assert.equal((await getWorkItem(sqliteDb(f.db), f.itemId))!.state, "merge_queue");
+      assert.equal((await getWorkItem(f.db, f.itemId))!.state, "merge_queue");
       assert.deepEqual(
         (
-          await sqliteDb(f.db).run((q) =>
+          await f.db.run((q) =>
             readyItemsSteps(q, { itemId: independent, workspaceId: "workspace" }),
           )
         ).readyItemIds,
@@ -443,13 +461,13 @@ export async function probePublicationReadiness(root: string) {
       assert.equal(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate), false);
       f.lifecycle.issues.get("manual")!.stateType = "completed";
       assert(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate));
-      assert(await completeJob(sqliteDb(f.db), job, f.clock.now()));
+      assert(await completeJob(f.db, job, f.clock.now()));
       job = await f.claim();
       f.lifecycle.issues.get("manual")!.stateType = "started";
       assert.equal(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate), false);
       f.lifecycle.issues.get("manual")!.stateType = "canceled";
       assert(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate));
-      assert(await completeJob(sqliteDb(f.db), job, f.clock.now()));
+      assert(await completeJob(f.db, job, f.clock.now()));
       job = await f.claim();
       f.lifecycle.issues.get("manual")!.stateType = "completed";
       f.tracker.deps.set("parent", [
@@ -459,7 +477,7 @@ export async function probePublicationReadiness(root: string) {
       assert.equal(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate), false);
       assert.deepEqual(
         (
-          await sqliteDb(f.db).run((q) =>
+          await f.db.run((q) =>
             readyItemsSteps(q, { itemId: independent, workspaceId: "workspace" }),
           )
         ).readyItemIds,
@@ -469,9 +487,9 @@ export async function probePublicationReadiness(root: string) {
         "Fresh unfinished or cyclic blockers hold a verified candidate while exact completed or canceled manual and external blockers release it and unrelated work stays ready",
         {
           loads: f.loads(),
-          state: (await getWorkItem(sqliteDb(f.db), f.itemId))!.state,
+          state: (await getWorkItem(f.db, f.itemId))!.state,
           independentReady: (
-            await sqliteDb(f.db).run((q) =>
+            await f.db.run((q) =>
               readyItemsSteps(q, { itemId: independent, workspaceId: "workspace" }),
             )
           ).readyItemIds,
@@ -488,20 +506,27 @@ export async function probePublicationReadiness(root: string) {
       const load = f.tracker.loadEpic;
       f.tracker.loadEpic = async (id) => {
         const value = await load(id);
-        f.db.run("UPDATE linear_session SET generation=generation+1 WHERE session_id='session'");
+        await f.db.run((q) =>
+          q.exec(
+            q.orm
+              .update(q.t.linearSession)
+              .set({ generation: sql`${q.t.linearSession.generation} + 1` })
+              .where(eq(q.t.linearSession.sessionId, "session")),
+          ),
+        );
         return value;
       };
       const guard = createPublicationReadiness({
-        store: sqliteDb(f.db),
+        store: f.db,
         reconciler: f.reconciler,
         canMerge: mergeAdmission(f.db),
         now: () => f.clock.now(),
       });
       assert.equal(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate), false);
-      assert(await hasPendingDelegationChanges(sqliteDb(f.db), f.target.delegationId));
+      assert(await hasPendingDelegationChanges(f.db, f.target.delegationId));
       observe(
         "A session generation change during the fresh read cannot approve the old publication context",
-        { pending: await hasPendingDelegationChanges(sqliteDb(f.db), f.target.delegationId) },
+        { pending: await hasPendingDelegationChanges(f.db, f.target.delegationId) },
       );
     } finally {
       await f.close();
@@ -513,7 +538,7 @@ export async function probePublicationReadiness(root: string) {
       await f.claim();
       let permitted = false;
       const guard = createPublicationReadiness({
-        store: sqliteDb(f.db),
+        store: f.db,
         reconciler: f.reconciler,
         canMerge: async (itemId) => permitted && (await mergeAdmission(f.db)(itemId)),
         now: () => f.clock.now(),
