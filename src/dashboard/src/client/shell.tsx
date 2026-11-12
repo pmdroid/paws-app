@@ -32,7 +32,8 @@ import { parseRoute, routePath, routerBase, type Route } from "./route";
 import { NAVIGATION, PAGES } from "./navigation";
 import { SETTINGS_PAGES } from "./settings-pages";
 import { AppearanceControl, initializeAppearance } from "./appearance";
-import { CommandPalette } from "./command-palette";
+import { CommandPalette, shortcutLabel } from "./command-palette";
+import { createShortcuts, PAGE_SHORTCUTS } from "./shortcuts";
 import { Button } from "./ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetTitle, SheetTrigger } from "./ui/sheet";
 import {
@@ -76,6 +77,42 @@ const ControllerRegions = memo(function ControllerRegions() {
     </>
   );
 });
+
+const KBD = "rounded border border-border px-1";
+
+function ShortcutsHelp({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange(next: boolean): void;
+}) {
+  const rows = [
+    ...PAGE_SHORTCUTS.map((shortcut) => [shortcut.keys, shortcut.label]),
+    [shortcutLabel(), "Jump to…"],
+    ["?", "Keyboard shortcuts"],
+  ];
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent side="right" className="p-5">
+        <SheetTitle className="pr-10">Keyboard shortcuts</SheetTitle>
+        <SheetDescription className="sr-only">
+          Keys that move between dashboard pages
+        </SheetDescription>
+        <dl className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-2 font-mono text-xs">
+          {rows.map(([keys, label]) => (
+            <div key={keys} className="contents">
+              <dt>
+                <kbd className={KBD}>{keys}</kbd>
+              </dt>
+              <dd className="text-muted-foreground">{label}</dd>
+            </div>
+          ))}
+        </dl>
+      </SheetContent>
+    </Sheet>
+  );
+}
 
 /** Pages whose entry carries a count, such as the tasks waiting to merge. */
 export type NavigationCounts = Partial<Record<Route["view"], number>>;
@@ -251,12 +288,24 @@ export function mountShell(): {
           : { ...current, ...value },
       );
     const [open, setOpen] = useState(false);
+    const [help, setHelp] = useState(false);
     const menu = useRef<HTMLButtonElement>(null);
     const navigating = useRef(false);
     authenticate = (value) => {
       setAuthenticated(value);
-      if (!value) setOpen(false);
+      if (!value) {
+        setOpen(false);
+        setHelp(false);
+      }
     };
+    useEffect(() => {
+      if (!authenticated) return;
+      const shortcuts = createShortcuts({
+        navigate: (path) => void router.navigate(path),
+        openHelp: () => setHelp(true),
+      });
+      return shortcuts.dispose;
+    }, [authenticated]);
     useEffect(() => {
       const media = window.matchMedia("(min-width: 768px)");
       const close = () => {
@@ -304,7 +353,7 @@ export function mountShell(): {
             </div>
           </Sidebar>
         )}
-        <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 flex-1 flex-col">
           <header className="sticky top-0 z-20 flex min-h-13 flex-wrap items-center justify-between gap-3 border-b border-border bg-background px-4 py-2">
             <div className="flex min-w-0 items-center gap-3">
               {authenticated && (
@@ -373,6 +422,22 @@ export function mountShell(): {
           >
             <ControllerRegions />
           </div>
+          {authenticated && (
+            <footer className="mt-auto hidden flex-wrap gap-x-5 gap-y-1 border-t border-border px-4 py-3 font-mono text-[11px] text-subtle-foreground sm:px-6 md:flex lg:px-8">
+              {[
+                ["g i", "issues"],
+                ["g q", "questions"],
+                ["g m", "merge queue"],
+                ["?", "shortcuts"],
+              ].map(([keys, label]) => (
+                <span key={keys} className="flex items-center gap-1.5">
+                  <kbd className={KBD}>{keys}</kbd>
+                  {label}
+                </span>
+              ))}
+            </footer>
+          )}
+          {authenticated && <ShortcutsHelp open={help} onOpenChange={setHelp} />}
         </div>
       </div>
     );
