@@ -6,11 +6,13 @@ import {
   handleAgentSettingsRequest,
   type AgentSettingsOptions,
 } from "../src/settings";
-import { migrate, openDatabase, putWorkspaceUser, syncWorkspaceMember, sqliteDb } from "../src/db";
+import { putWorkspaceUser, syncWorkspaceMember } from "../src/db";
 import { workspaceId } from "../src/workspace";
 import { loadConfigFile, readAgentSettings, type AgentSettings } from "../src/config";
 import { startServer } from "../src/server";
+import { seed } from "./dialects";
 import { tempHome } from "./helpers";
+import { tempStore } from "./pglite";
 
 function fixture() {
   const configPath = join(tempHome(), "config.toml");
@@ -510,18 +512,21 @@ describe("reviewer profile validation", () => {
   });
 
   test("runner readiness counts only active runners with the agent ready and signed in", async () => {
-    const db = openDatabase(join(tempHome(), "paws.db"));
-    migrate(db);
+    const { db, close } = await tempStore();
     const now = Date.now();
-    const userId = await putWorkspaceUser(sqliteDb(db), {
+    const userId = await putWorkspaceUser(db, {
       id: workspaceId(),
       linearUserId: "reviewer-owner",
       name: "Owner",
       email: "owner@example.invalid",
     });
     const workspace = workspaceId();
-    db.run("INSERT INTO workspace VALUES(?,?,?,?)", [workspace, workspace, "Review", now]);
-    await syncWorkspaceMember(sqliteDb(db), {
+    await seed(db, (q) =>
+      q.orm
+        .insert(q.t.workspace)
+        .values({ id: workspace, linearOrganizationId: workspace, name: "Review", createdAt: now }),
+    );
+    await syncWorkspaceMember(db, {
       workspaceId: workspace,
       userId,
       role: "admin",
@@ -529,32 +534,39 @@ describe("reviewer profile validation", () => {
       teamIds: [],
       now,
     });
-    const runner = (name: string, status: string) => {
+    const runner = async (name: string, status: string) => {
       const id = workspaceId();
-      db.run(
-        "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES(?,?,?,?,?,?)",
-        [id, workspace, userId, name, status, now],
+      await seed(db, (q) =>
+        q.orm
+          .insert(q.t.runner)
+          .values({
+            id,
+            workspaceId: workspace,
+            ownerUserId: userId,
+            name,
+            status,
+            createdAt: now,
+          }),
       );
       return id;
     };
-    const ready = runner("ready", "active");
-    const expired = runner("expired", "active");
-    runner("blank", "active");
-    const paused = runner("paused", "paused");
-    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [ready]);
-    db.run(
-      "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?,'codex',1,1)",
-      [expired],
+    const ready = await runner("ready", "active");
+    const expired = await runner("expired", "active");
+    await runner("blank", "active");
+    const paused = await runner("paused", "paused");
+    await seed(db, (q) =>
+      q.orm.insert(q.t.runnerAgentPolicy).values([
+        { runnerId: ready, agent: "codex", ready: 1 },
+        { runnerId: expired, agent: "codex", ready: 1, authExpired: 1 },
+        { runnerId: paused, agent: "codex", ready: 1 },
+      ]),
     );
-    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [paused]);
-    expect(await activeRunnerReadiness(sqliteDb(db), "codex")).toEqual([
+    expect(await activeRunnerReadiness(db, "codex")).toEqual([
       { name: "blank", ready: false },
       { name: "expired", ready: false },
       { name: "ready", ready: true },
     ]);
-    expect(
-      (await activeRunnerReadiness(sqliteDb(db), "claude")).every((entry) => !entry.ready),
-    ).toBe(true);
-    db.close();
+    expect((await activeRunnerReadiness(db, "claude")).every((entry) => !entry.ready)).toBe(true);
+    await close();
   });
 });
