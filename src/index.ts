@@ -305,7 +305,12 @@ import {
 import { itemReviews } from "./dashboard";
 import { createSkillResolver, createSkillUpdates, SKILL_UPDATE_INTERVAL } from "./skills";
 import { createAgentCatalog, createNpmRegistry } from "./agent-catalog";
-import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "./deployment";
+import {
+  loadPublicTls,
+  publicTlsProxy,
+  validatePublicTls,
+  PUBLIC_TLS_RESTART_EXIT,
+} from "./deployment";
 import {
   canAct,
   isWorkspaceAdmin,
@@ -406,7 +411,12 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   let runtime = loadRuntime(envSource);
   if (runtime.configError !== null) throw new Error(runtime.configError);
   const publicDashboard = envSource.PAWS_PUBLIC_DASHBOARD === "1";
-  const tls = publicDashboard ? validatePublicTls(envSource) : loadPublicTls(envSource);
+  const proxy = publicTlsProxy(envSource);
+  const tls = proxy
+    ? undefined
+    : publicDashboard
+      ? validatePublicTls(envSource)
+      : loadPublicTls(envSource);
   const runnerConfig = loadRunnerControl(envSource, runtime.env);
   let repositoryAccess = options?.runnerRepositoryAccess;
   const remotePlacementReady = runnerConfig !== null;
@@ -467,7 +477,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     const reconnect = await linearRevoked();
     return startBrowserOnboarding(
       runtime,
-      tls!,
+      tls,
       (server) => startPaws(envSource, { ...options, server }),
       envSource,
       database,
@@ -1273,6 +1283,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         executionControls?.handle(...args) ??
         Response.json({ error: "Execution controls are starting." }, { status: 503 }),
       ...(tls ? { tls } : {}),
+      ...(proxy ? { proxy } : {}),
       ...(workspace
         ? {
             workspaceAccess:
@@ -2739,6 +2750,10 @@ if (import.meta.main) {
   if (command === "public-tls") {
     try {
       if (argv.length !== 2 || argv[1] !== "validate") throw new Error("Invalid command");
+      if (publicTlsProxy(process.env)) {
+        console.log("Public HTTPS is terminated by the proxy; no certificate to validate.");
+        process.exit(0);
+      }
       validatePublicTls(process.env);
       console.log("Public HTTPS certificate is valid.");
       process.exit(0);

@@ -92,6 +92,7 @@ export type ServerOptions = {
   server?: Bun.Server<undefined>;
   onboarding?: (request: Request, client: WorkspaceClient) => Promise<Response | null>;
   tls?: PublicTls;
+  proxy?: boolean;
   workspaceAccess?: WorkspaceAccess | Promise<WorkspaceAccess>;
   /** `POST /api/runner-enrollments`, where a host enrolls itself with a member's token. */
   runnerHostEnrollment?: (request: Request) => Promise<Response>;
@@ -249,9 +250,14 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
     hostname,
     port,
     ...(options.tls ? { tls: options.tls, development: false } : {}),
-    fetch(request: Request, current?: Bun.Server<undefined>) {
+    fetch(received: Request, current?: Bun.Server<undefined>) {
       if (stopping) return new Response("Paws is stopping.", { status: 503 });
-      const ip = current?.requestIP(request)?.address ?? null;
+      const peer = current?.requestIP(received)?.address ?? null;
+      const forwarded = options.proxy
+        ? received.headers.get("x-forwarded-for")?.split(",").at(-1)?.trim()
+        : undefined;
+      const ip = forwarded || peer;
+      const request = options.proxy ? publicRequest(received) : received;
       const operation = (async () =>
         (await options.onboarding?.(request, { ip })) ??
         route(request, {
@@ -311,6 +317,13 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
     await Promise.allSettled([...requests]);
   };
   return server;
+}
+
+function publicRequest(request: Request): Request {
+  const url = new URL(request.url);
+  if (url.protocol !== "http:") return request;
+  url.protocol = "https:";
+  return new Request(url.href, request);
 }
 
 type Secrets = {
