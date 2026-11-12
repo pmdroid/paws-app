@@ -1,9 +1,9 @@
 import { openedView, fullStatusFixture, pageData, type FullStatus } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
-import { render, type RenderModel } from "./render";
+import { issueRowMatches, NO_PROJECT_FILTER, render, type RenderModel } from "./render";
 import { parseRoute } from "./route";
 import { checkKey } from "./closeout";
-import { esc } from "./format";
+import { clock24, esc } from "./format";
 
 /** `snapshot` is the full fixture; the model gets its list and, on an issue page, its detail. */
 function model(
@@ -18,6 +18,20 @@ function model(
     ...rest,
     ...(snapshot === null ? { route, snapshot: null } : pageData(snapshot, route)),
   };
+}
+
+/** The overview's tile values in order: In flight, Awaiting input, Merge queue, Queued. */
+function tiles(html: string): number[] {
+  return [...html.matchAll(/data-stat-value>(\d+)</g)].map((match) => Number(match[1]));
+}
+
+/** Issue ids of the overview's items table, top to bottom. */
+function tableIds(html: string): string[] {
+  return [...html.matchAll(/<tr data-issue-id="([^"]+)"/g)].map((match) => match[1]!);
+}
+
+function tableRow(html: string, id: string): string {
+  return html.slice(html.indexOf(`data-issue-id="${id}"`)).split("</tr>")[0]!;
 }
 
 describe("status views", () => {
@@ -40,12 +54,12 @@ describe("status views", () => {
     const running = render(model({ snapshot })).content;
     expect(running).toContain(`href="/issues/${item.id}"`);
     expect(running).not.toContain('href="/runs/');
-    expect(running).toContain('<span class="st running">Implementing</span>');
+    expect(tableRow(running, item.id)).toContain('<span class="st running">running</span>');
+    expect(tiles(running)).toEqual([1, 0, 0, 0]);
     item.state = "queued";
     item.runId = null;
     const queued = render(model({ snapshot })).content;
-    expect(queued).toContain('Queued <span class="cnt">1</span>');
-    expect(queued).toContain('In progress <span class="cnt">0</span>');
+    expect(tiles(queued)).toEqual([0, 0, 0, 1]);
     expect(queued).toContain("Waiting for a free runner");
     expect(queued).toContain('href="/issues"');
     expect(queued).not.toContain('href="/runs/old-run"');
@@ -103,8 +117,8 @@ describe("status views", () => {
     expect(view.top).not.toContain("Refresh");
     expect(view.banner).toBe("");
     expect(view.content).toContain('Needs you <span class="cnt">2</span>');
-    expect(view.content).toContain('In progress <span class="cnt">2</span>');
-    expect(view.content).toContain('Queued <span class="cnt">1</span>');
+    expect(tableIds(view.content)).toEqual(["ENG-102", "ENG-103", "ENG-100", "ENG-101", "ENG-104"]);
+    expect(tiles(view.content)).toEqual([1, 2, 1, 1]);
     expect(view.content).toContain('href="/questions/Q-41"');
     expect(view.content).toContain("Answer question");
     expect(view.content).toContain("Closeout requirement unit exhausted (3/3)");
@@ -117,44 +131,87 @@ describe("status views", () => {
     expect(view.content).not.toContain('href="/queue"');
     expect(view.content).not.toContain("/epics");
     expect(view.content).not.toContain("javascript:");
-    expect(view.content.match(/Signed URL delivery/g)).toHaveLength(1);
-    expect(view.content.match(/Retention policy enforcement job/g)).toHaveLength(1);
+    expect(view.content.match(/Signed URL delivery/g)).toHaveLength(2);
+    expect(view.content.match(/Retention policy enforcement job/g)).toHaveLength(2);
   });
 
-  test("overview rows carry the issue page's phase pill and reason", () => {
+  test("overview tiles count open work and the items table lists it active first, then queued", () => {
     const snapshot = fullStatusFixture();
     snapshot.questions = [];
     snapshot.verdicts = [];
     const at = (minutes: number) =>
       new Date(Date.parse(snapshot.generatedAt) - minutes * 60_000).toISOString();
-    const fixing = snapshot.items.find((entry) => entry.id === "ENG-102")!;
-    fixing.timeline = [
-      {
-        at: at(9),
-        kind: "restart",
-        from: "merge_queue",
-        to: "queued",
-        event: "restart",
-        reason: "conflict",
-        actor: null,
-      },
-    ];
+    const byId = (id: string) => snapshot.items.find((entry) => entry.id === id)!;
+    const extra = (id: string, state: FullStatus["items"][number]["state"]) => ({
+      ...byId("ENG-102"),
+      id,
+      title: `Extra ${id}`,
+      state,
+      runId: null,
+    });
+    byId("ENG-101").state = "verifying";
+    byId("ENG-100").state = "queued";
+    byId("ENG-104").held = { reason: "blocked", blockers: ["ENG-103"] };
+    snapshot.items.splice(0, 0, extra("ENG-110", "queued"));
+    snapshot.items.push(extra("ENG-111", "running"));
+    snapshot.mergeQueue = snapshot.mergeQueue.slice(0, 1);
+    const fixing = byId("ENG-102");
     fixing.doing = { kind: "running", runners: ["agentbox"], since: at(8), stalled: false };
     fixing.activeMs = 74 * 60_000;
-    snapshot.items.find((entry) => entry.id === "ENG-100")!.state = "verifying";
     const html = render(model({ snapshot })).content;
-    const row = (id: string) => html.slice(html.indexOf(`data-item="${id}"`)).split("</li>")[0]!;
-    expect(row("ENG-102")).toContain('<span class="st running">Fixing merge conflicts</span>');
-    expect(row("ENG-102")).toContain("Main moved under this pull request.");
-    expect(row("ENG-102")).toContain("Running on agentbox.");
-    expect(row("ENG-102")).toContain("1.2 h active");
-    expect(row("ENG-100")).toContain('<span class="st verifying">Checking</span>');
-    expect(row("ENG-100")).toContain("Closeout is running the checks and reviews.");
-    expect(row("ENG-101")).toContain('<span class="st merge_queue">Waiting to merge</span>');
-    const order = ["ENG-103", "ENG-100", "ENG-102", "ENG-101", "ENG-104"].map((id) =>
-      html.indexOf(`data-item="${id}"`),
+    expect(tiles(html)).toEqual([3, 1, 1, 3]);
+    snapshot.items = snapshot.items.filter((item) => item.id !== "ENG-104");
+    const view = render(model({ snapshot })).content;
+    expect(tiles(view)).toEqual([3, 1, 1, 2]);
+    expect(tableIds(view)).toEqual([
+      "ENG-102",
+      "ENG-111",
+      "ENG-101",
+      "ENG-103",
+      "ENG-110",
+      "ENG-100",
+    ]);
+    expect(tableRow(view, "ENG-102")).toContain("Running on agentbox · 1.2 h active");
+    expect(tableRow(view, "ENG-102")).toContain('href="/issues/ENG-102"');
+    expect(tableRow(view, "ENG-103")).toContain(
+      '<span class="st awaiting_input">awaiting_input</span>',
     );
-    expect(order).toEqual([...order].sort((left, right) => left - right));
+    expect(tableRow(view, "ENG-110")).toContain("Waiting for a free runner");
+    expect(tableIds(view)).not.toContain("ENG-99");
+    expect(view.slice(view.indexOf("merged-heading"))).toContain("Audit event schema v2");
+    expect(html).toContain("In flight");
+    expect(html).toContain("1 held");
+  });
+
+  test("a lifecycle entry reads `event → state` with its time and reason", () => {
+    const snapshot = fullStatusFixture();
+    const item = snapshot.items.find((entry) => entry.id === "ENG-102")!;
+    item.timeline = [
+      {
+        at: "2026-10-09T20:58:00.000Z",
+        kind: "restart",
+        from: "verifying",
+        to: "queued",
+        event: "restart",
+        reason: "findings",
+        actor: "Ada",
+      },
+    ];
+    const page = render(
+      model({
+        snapshot,
+        route: { view: "issues", id: "ENG-102" },
+        closeout: openedView({ "section\ndetails:ENG-102": true }),
+      }),
+    ).content;
+    const entry = page.slice(page.indexOf('<li data-kind="restart">'));
+    expect(entry).toContain('<span class="timeline-dot" data-state="queued" aria-hidden="true">');
+    expect(entry).toContain(
+      '<p class="timeline-move font-mono text-xs">restart <span class="text-muted-foreground"><span aria-hidden="true">→</span><span class="sr-only">to</span> queued</span></p>',
+    );
+    expect(entry).toContain(
+      `>${clock24("2026-10-09T20:58:00.000Z")}</time> · Back to the agent for Closeout findings. · by Ada</p>`,
+    );
   });
 
   test("the issue page splits the time line by stage", () => {
@@ -185,7 +242,7 @@ describe("status views", () => {
     const views = () => {
       const overview = render(model({ snapshot })).content;
       return {
-        overview: overview.slice(overview.indexOf('data-item="ENG-102"')).split("</li>")[0]!,
+        overview: tableRow(overview, "ENG-102"),
         issues: issueRow(
           render(model({ snapshot, route: { view: "issues", id: null } })).content,
           "ENG-102",
@@ -195,14 +252,13 @@ describe("status views", () => {
     };
     item.doing = { kind: "running", runners: ["agentbox"], since: null, phase: "preparing" };
     const preparing = views();
-    expect(preparing.overview).toContain(`${label}.`);
-    expect(preparing.overview).not.toContain("The agent is working on the issue.");
+    expect(preparing.overview).toContain(label);
     expect(preparing.issues).toContain(label);
     expect(preparing.page).toContain(`Implementing · ${label}`);
     item.doing = { ...item.doing, phase: "agent" };
     const agent = views();
     for (const html of Object.values(agent)) expect(html).not.toContain("Preparing");
-    expect(agent.overview).toContain("The agent is working on the issue. Running on agentbox.");
+    expect(agent.overview).toContain("Running on agentbox · 3 min active");
     expect(agent.issues).toContain("Running on agentbox");
   });
 
@@ -219,7 +275,7 @@ describe("status views", () => {
     const paused = render(model({ snapshot })).content;
     expect(paused).toContain("This issue is paused.");
     expect(paused.match(/data-item="ENG-102"/g)).toHaveLength(1);
-    expect(paused.indexOf('data-item="ENG-102"')).toBeLessThan(paused.indexOf("work-heading"));
+    expect(tableIds(paused)).toContain("ENG-102");
   });
 
   test("overview lists a verdict as needing a person only while the item is stopped on it", () => {
@@ -237,7 +293,7 @@ describe("status views", () => {
     verdict.decision = "exhausted";
     const verifying = render(model({ snapshot })).content;
     expect(verifying).toContain('Needs you <span class="cnt">0</span>');
-    expect(verifying).toContain('In progress <span class="cnt">1</span>');
+    expect(tiles(verifying)).toEqual([1, 0, 0, 0]);
     expect(verifying).not.toContain("Automatic retries are used up.");
     item.state = "awaiting_input";
     run.state = "awaiting_input";
@@ -253,10 +309,10 @@ describe("status views", () => {
     snapshot.questions = [];
     snapshot.items = snapshot.items.filter((item) => item.state === "merged");
     const html = render(model({ snapshot })).content;
-    expect(html).toContain('In progress <span class="cnt">0</span>');
+    expect(tiles(html)).toEqual([0, 0, 1, 0]);
+    expect(tableIds(html)).toEqual([]);
     expect(html).toContain("Nothing needs your attention.");
-    expect(html).toContain("No work is running right now.");
-    expect(html).toContain("Nothing is waiting for a runner.");
+    expect(html).toContain("No open work right now.");
     const merged = html.slice(html.indexOf("merged-heading"));
     expect(merged).toContain("Audit event schema v2");
     expect(merged).toContain("PR #474");
@@ -269,6 +325,26 @@ describe("status views", () => {
     expect(html).toContain('href="/questions/Q-41"');
     snapshot.questions = [];
     expect(render(model({ snapshot })).content).toContain("Delegate an issue to Paws in Linear.");
+  });
+
+  test("overview shows the setup checklist until every step is done", () => {
+    const snapshot = fullStatusFixture();
+    snapshot.items = [];
+    snapshot.questions = [];
+    const first = model({ snapshot });
+    first.overview!.setup = { github: true, runner: false, agent: false, delegated: false };
+    const html = render(first).content;
+    const steps = [...html.matchAll(/data-setup-step="(\w+)"/g)].map((match) => match[1]);
+    expect(steps).toEqual(["done", "done", "next", "todo", "todo"]);
+    expect(html).toContain("Set up Paws");
+    expect(html).toContain('href="/runners"');
+    expect(html).not.toContain('href="/settings/integrations"');
+    expect(html).toContain(
+      "Questions, the merge queue and findings fill as work moves through Paws.",
+    );
+    const done = model({ snapshot });
+    done.overview!.setup = { github: true, runner: true, agent: true, delegated: true };
+    expect(render(done).content).not.toContain("data-setup-checklist");
   });
 
   test("overview lists every active issue with no cap", () => {
@@ -284,8 +360,7 @@ describe("status views", () => {
     snapshot.questions = [];
     snapshot.verdicts = [];
     const html = render(model({ snapshot })).content;
-    expect(html).toContain('In progress <span class="cnt">9</span>');
-    expect(html.match(/class="work-row"/g)).toHaveLength(9);
+    expect(tableIds(html)).toHaveLength(9);
     expect(html).toContain("Item 8");
     expect(html).not.toContain("View all");
   });
@@ -304,14 +379,12 @@ describe("status views", () => {
     expect(issueRow(active, "ENG-99")).not.toContain('data-issue-state="done"');
   });
 
-  test("issues list shows the owner, project, and unmerged blockers", () => {
+  test("issues list shows the project and unmerged blockers", () => {
     const html = render(model({ route: { view: "issues", id: null } })).content;
     const blocked = issueRow(html, "ENG-104");
-    expect(blocked).toContain("Aisha Khan");
     expect(blocked).toContain("Audit log export");
     expect(blocked).toContain("Blocked by ENG-101, ENG-102, ENG-103");
     const solo = issueRow(html, "ENG-102");
-    expect(solo).toContain("Aisha Khan");
     expect(solo).not.toContain("Audit log export");
     expect(solo).not.toContain("Blocked by");
     const detail = render(model({ route: { view: "issues", id: "ENG-101" } })).content;
@@ -321,6 +394,40 @@ describe("status views", () => {
     expect(detail).toContain("PR #479");
     expect(detail).not.toContain('href="/issues/ENG-99"');
     expect(detail).toContain('href="/issues/ENG-104"');
+  });
+
+  test("the issues list is one table row per issue with blockers under the title", () => {
+    const snapshot = fullStatusFixture();
+    snapshot.items = snapshot.items.filter((item) =>
+      ["ENG-101", "ENG-102", "ENG-104"].includes(item.id),
+    );
+    snapshot.items.find((item) => item.id === "ENG-104")!.blockers = ["ENG-101", "ENG-102"];
+    const html = render(model({ snapshot, route: { view: "issues", id: null } })).content;
+    expect(html).toContain('<table class="run-table issues-table">');
+    const rows = [...html.matchAll(/<tr class="issue-row"[^>]*data-issue-id="([^"]+)"[^>]*>/g)];
+    expect(rows.map((row) => row[1]).sort()).toEqual(["ENG-101", "ENG-102", "ENG-104"]);
+    const title = issueRow(html, "ENG-104").split("<td>")[2]!;
+    expect(title).toContain('<div class="text-xs text-muted-foreground" data-blockers>');
+    expect(title).toContain('href="/issues/ENG-101">ENG-101</a>');
+    expect(title).toContain('href="/issues/ENG-102">ENG-102</a>');
+    expect(issueRow(html, "ENG-102").split("<td>")[2]).not.toContain("data-blockers");
+    const filtered = rows.filter((row) =>
+      issueRowMatches(
+        {
+          state: /data-issue-state="([^"]+)"/.exec(row[0])?.[1],
+          project: /data-issue-project="([^"]+)"/.exec(row[0])?.[1],
+        },
+        { state: "all", project: NO_PROJECT_FILTER },
+      ),
+    );
+    expect(filtered.map((row) => row[1]).sort()).toEqual(
+      snapshot.items
+        .filter((item) => !item.project)
+        .map((item) => item.id)
+        .sort(),
+    );
+    expect(filtered.length).toBeGreaterThan(0);
+    expect(filtered.length).toBeLessThan(rows.length);
   });
 
   test("a queued item shows its place in line on the run and issue pages", () => {
@@ -336,7 +443,7 @@ describe("status views", () => {
     expect(page).toContain("Queued, 2nd in line. 4 of 4 runner slots are busy.");
     expect(page).toContain('<span class="result-icon" aria-hidden="true">2</span>');
     expect(page).toContain(`Paws starts ${item.id} when a slot frees.`);
-    expect(page).toContain('<span class="st queued">Queued</span>');
+    expect(page).toContain('<span class="st queued">queued</span>');
     item.queue = { position: 11, busySlots: 1, totalSlots: 1 };
     const issue = render(model({ snapshot, route: { view: "issues", id: item.id } })).content;
     expect(issue).toContain("Queued, 11th in line. 1 of 1 runner slot is busy.");
@@ -650,8 +757,8 @@ function issueRow(html: string, id: string): string {
   const marker = `data-issue-id="${id}"`;
   const at = html.indexOf(marker);
   if (at < 0) throw new Error(`missing issue row ${id}`);
-  const start = html.lastIndexOf("<li", at);
-  const end = html.indexOf("</li>", at);
+  const start = html.lastIndexOf("<tr", at);
+  const end = html.indexOf("</tr>", at);
   return html.slice(start, end);
 }
 

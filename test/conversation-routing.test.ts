@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { and, eq, isNull } from "drizzle-orm";
 import { generateKeyPairSync } from "node:crypto";
 import { FakeClock, JOB_KIND } from "../src/core";
 import {
@@ -17,15 +18,12 @@ import {
   listJobs,
   listOutbox,
   listPendingLinearTurns,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
   recordRunnerCapacity,
   recordLinearTurn,
   recordRunnerHostStatus,
   runnerTaskSlots,
-  sqliteDb,
 } from "../src/db";
 import type { AcceptedLinearEvent } from "../src/linear";
 import {
@@ -40,6 +38,8 @@ import { createConversationTurns } from "../src/runner-backend";
 import { createRunnerHelpers } from "../src/runner-helpers";
 import { RUNNER_CONVERSATION_MS } from "../src/runner-protocol";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
+import { json, seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const T0 = Date.parse("2026-11-07T20:00:00.000Z");
 const PASCAL = "user-pascal";
@@ -51,36 +51,37 @@ afterEach(async () => {
 });
 
 async function setup(options: { version?: string; conversations?: number } = {}) {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close: closeDb } = await tempStore();
   const clock = new FakeClock(T0);
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@acme.test",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org-acme",
     name: "Acme",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org-acme", T0)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org-acme", T0)),
     now: T0,
   });
-  db.run(
-    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('runner',?,?,'Acme box','active',?,?)",
-    [workspace.id, userId, T0, T0],
+  await seed(db, (q) =>
+    q.orm.insert(q.t.runner).values({
+      id: "runner",
+      workspaceId: workspace.id,
+      ownerUserId: userId,
+      name: "Acme box",
+      status: "active",
+      createdAt: T0,
+      lastSeenAt: T0,
+    }),
   );
-  await recordRunnerCapacity(sqliteDb(db), "runner", 1, 1, options.conversations ?? 2);
-  await recordRunnerHostStatus(
-    sqliteDb(db),
-    "runner",
-    { runnerVersion: options.version ?? "0.1.77" },
-    T0,
-  );
+  await recordRunnerCapacity(db, "runner", 1, 1, options.conversations ?? 2);
+  await recordRunnerHostStatus(db, "runner", { runnerVersion: options.version ?? "0.1.77" }, T0);
   const helpers = createRunnerHelpers({
-    store: sqliteDb(db),
+    store: db,
     keyId: "acme",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     now: () => clock.now(),
@@ -92,24 +93,24 @@ async function setup(options: { version?: string; conversations?: number } = {})
     wait: () => ({ quietMs: 0, maxMs: 0 }),
   };
   const orchestrator = new Orchestrator({
-    store: sqliteDb(db),
+    store: db,
     clock,
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     pawsRoot: "/nonexistent-paws-root",
     linearComments: policy,
     conversations: async () =>
-      createConversationTurns({ store: sqliteDb(db), helpers, now: () => clock.now() }),
+      createConversationTurns({ store: db, helpers, now: () => clock.now() }),
   });
   cleanup.push(async () => {
     await orchestrator.shutdown();
-    db.close();
+    await closeDb();
   });
 
   async function item(id: string, state: "merge_queue" | "running" | "queued" = "merge_queue") {
     const session = `ses-${id}`;
     await insertQueuedItem(db, { id, now: T0, sessionKey: session });
-    await recordLinearInstallation(sqliteDb(db), {
+    await recordLinearInstallation(db, {
       organizationId: "org-acme",
       oauthClientId: "app",
       appUserId: "paws-app",
@@ -117,7 +118,7 @@ async function setup(options: { version?: string; conversations?: number } = {})
       teamId: TEAM,
       observedAtMs: T0,
     });
-    const { run } = await beginImplementRun(sqliteDb(db), id, T0);
+    const { run } = await beginImplementRun(db, id, T0);
     const command = `command-${id}`;
     const payload = Buffer.from(
       JSON.stringify({
@@ -126,32 +127,50 @@ async function setup(options: { version?: string; conversations?: number } = {})
         profile: { agent: "claude", model: "acme-model" },
       }),
     ).toString("base64url");
-    db.run(
-      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at,teardown_confirmed_at) VALUES(?,'runner',?,1,0,?,?,?,?)",
-      [
-        run.id,
-        workspace.id,
-        command,
-        T0 + 3_600_000,
-        state === "running" ? null : T0,
-        state === "running" ? null : T0,
-      ],
-    );
-    db.run(
-      "INSERT INTO runner_command(id,runner_id,run_id,generation,kind,envelope,expires_at) VALUES(?,'runner',?,1,'run',?,?)",
-      [command, run.id, JSON.stringify({ payload }), T0 + 3_600_000],
-    );
-    db.run(
-      "INSERT INTO runner_result(run_id,generation,command_id,payload,received_at) VALUES(?,1,?,?,?)",
-      [run.id, command, JSON.stringify({ stopReason: "end_turn", sessionId: `claude-${id}` }), T0],
+    const ended = state === "running" ? null : T0;
+    await seed(
+      db,
+      (q) =>
+        q.orm.insert(q.t.runnerWork).values({
+          runId: run.id,
+          runnerId: "runner",
+          workspaceId: workspace.id,
+          generation: 1,
+          runnerFence: 0,
+          commandId: command,
+          leaseUntil: T0 + 3_600_000,
+          endedAt: ended,
+          teardownConfirmedAt: ended,
+        }),
+      (q) =>
+        q.orm.insert(q.t.runnerCommand).values({
+          id: command,
+          runnerId: "runner",
+          runId: run.id,
+          generation: 1,
+          kind: "run",
+          envelope: json(db, { payload }),
+          expiresAt: T0 + 3_600_000,
+        }),
+      (q) =>
+        q.orm.insert(q.t.runnerResult).values({
+          runId: run.id,
+          generation: 1,
+          commandId: command,
+          payload: json(db, { stopReason: "end_turn", sessionId: `claude-${id}` }),
+          receivedAt: T0,
+        }),
     );
     if (state === "merge_queue")
-      await enterMergeQueue(sqliteDb(db), id, {
+      await enterMergeQueue(db, id, {
         phase: "merge_queue",
         baseSha: "b",
         wipCommit: "h",
       });
-    if (state === "queued") db.run("UPDATE work_item SET state='queued' WHERE id=?", [id]);
+    if (state === "queued")
+      await seed(db, (q) =>
+        q.orm.update(q.t.workItem).set({ state: "queued" }).where(eq(q.t.workItem.id, id)),
+      );
     return { id, session, runId: run.id };
   }
 
@@ -198,9 +217,9 @@ async function setup(options: { version?: string; conversations?: number } = {})
     say: async (itemId: string, id: string, body: string) => {
       expect(await orchestrator.onLinearEvent(comment(itemId, id, body))).toBe(true);
     },
-    deliver: (itemId: string) => deliverLinearComments(sqliteDb(db), itemId, caps()),
+    deliver: (itemId: string) => deliverLinearComments(db, itemId, caps()),
     turn: async (session: string, key: string, body: string) =>
-      await recordLinearTurn(sqliteDb(db), {
+      await recordLinearTurn(db, {
         eventKey: key,
         activityId: null,
         sessionId: session,
@@ -211,7 +230,7 @@ async function setup(options: { version?: string; conversations?: number } = {})
         now: clock.now(),
       }),
     reply: async (session: string, body: string) => {
-      await recordLinearTurn(sqliteDb(db), {
+      await recordLinearTurn(db, {
         eventKey: `turn:${session}:1`,
         activityId: null,
         sessionId: session,
@@ -224,19 +243,28 @@ async function setup(options: { version?: string; conversations?: number } = {})
       await orchestrator["resumeLinearSession"](session);
     },
     brief: async (itemId: string) =>
-      linearCommentBrief(sqliteDb(db), (await getWorkItem(sqliteDb(db), itemId))!, {
+      linearCommentBrief(db, (await getWorkItem(db, itemId))!, {
         now: () => clock.now(),
         policy,
       }),
-    conversations: () =>
-      Promise.all(
-        db
-          .query<{ id: string; sessionId: string }, []>(
-            "SELECT id, session_id AS sessionId FROM runner_helper WHERE purpose='conversation' AND ended_at IS NULL ORDER BY rowid",
-          )
-          .all()
-          .map(async (row) => ({ ...row, command: (await helpers.current(row.id)).command })),
-      ),
+    conversations: async () => {
+      const rows = await db.run((q) =>
+        q.all(
+          q.orm
+            .select({ id: q.t.runnerHelper.id, sessionId: q.t.runnerHelper.sessionId })
+            .from(q.t.runnerHelper)
+            .where(
+              and(eq(q.t.runnerHelper.purpose, "conversation"), isNull(q.t.runnerHelper.endedAt)),
+            ),
+        ),
+      );
+      const open = await Promise.all(
+        rows.map(async (row) => ({ ...row, command: (await helpers.current(row.id)).command })),
+      );
+      return open.sort((a, b) =>
+        (a.command.conversation?.itemId ?? "").localeCompare(b.command.conversation?.itemId ?? ""),
+      );
+    },
     answer: (
       commandId: string,
       result: { text: string; replies?: string[]; startWork?: string; timedOut?: boolean },
@@ -255,12 +283,11 @@ async function setup(options: { version?: string; conversations?: number } = {})
         ...(result.startWork ? { startWork: result.startWork } : {}),
       }),
     responses: async (session: string) =>
-      (await listOutbox(sqliteDb(db), session))
+      (await listOutbox(db, session))
         .filter((row) => (row.payload as { kind: string }).kind === "response")
         .map((row) => (row.payload as { body: string }).body),
-    resumes: async () =>
-      (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume),
-    taskSlots: async () => await runnerTaskSlots(sqliteDb(db), clock.now(), clock.now() - 60_000),
+    resumes: async () => (await listJobs(db)).filter((job) => job.queue === JOB_KIND.resume),
+    taskSlots: async () => await runnerTaskSlots(db, clock.now(), clock.now() - 60_000),
   };
 }
 
@@ -283,9 +310,9 @@ test("with every work slot busy, a message on an idle item starts a conversation
   });
   expect(started!.command.prompt).toContain("Why does checkout retry the card twice?");
   expect(await f.taskSlots()).toEqual(slots);
-  expect((await getWorkItem(sqliteDb(f.db), "acme-1"))!.state).toBe("merge_queue");
+  expect((await getWorkItem(f.db, "acme-1"))!.state).toBe("merge_queue");
   expect(await f.resumes()).toEqual([]);
-  expect((await getLinearComment(sqliteDb(f.db), "c-1"))!.state).toBe("delivered");
+  expect((await getLinearComment(f.db, "c-1"))!.state).toBe("delivered");
 
   await f.answer(started!.id, {
     text: "Done.",
@@ -296,7 +323,7 @@ test("with every work slot busy, a message on an idle item starts a conversation
     "The gateway retries once on a network timeout; Paws does not retry.",
   ]);
   expect(await f.conversations()).toEqual([]);
-  expect((await getWorkItem(sqliteDb(f.db), "acme-1"))!.state).toBe("merge_queue");
+  expect((await getWorkItem(f.db, "acme-1"))!.state).toBe("merge_queue");
 });
 
 test("a reply in the Linear session of an idle item goes to a conversation, not a restart", async () => {
@@ -307,8 +334,8 @@ test("a reply in the Linear session of an idle item goes to a conversation, not 
   expect(await f.deliver("acme-1")).toBe("wait");
   const [started] = await f.conversations();
   expect(started!.command.prompt).toContain("Is the retry covered by a test?");
-  expect(await listPendingLinearTurns(sqliteDb(f.db), acme.session)).toEqual([]);
-  expect((await getWorkItem(sqliteDb(f.db), "acme-1"))!.state).toBe("merge_queue");
+  expect(await listPendingLinearTurns(f.db, acme.session)).toEqual([]);
+  expect((await getWorkItem(f.db, "acme-1"))!.state).toBe("merge_queue");
 });
 
 test("a turn that ends without a reply posts its final message as the reply", async () => {
@@ -319,7 +346,7 @@ test("a turn that ends without a reply posts its final message as the reply", as
   await f.answer((await f.conversations())[0]!.id, { text: "It is src/checkout/form.tsx." });
   expect(await f.deliver("acme-1")).toBe("done");
   expect(await f.responses(acme.session)).toEqual(["It is src/checkout/form.tsx."]);
-  expect((await getWorkItem(sqliteDb(f.db), "acme-1"))!.state).toBe("queued");
+  expect((await getWorkItem(f.db, "acme-1"))!.state).toBe("queued");
 });
 
 test("three messages on three items with a conversation limit of 2: two run and the third waits for a conversation slot", async () => {
@@ -335,7 +362,7 @@ test("three messages on three items with a conversation limit of 2: two run and 
     "acme-1",
     "acme-2",
   ]);
-  expect((await getLinearComment(sqliteDb(f.db), "c-acme-3"))!.state).toBe("queued");
+  expect((await getLinearComment(f.db, "c-acme-3"))!.state).toBe("queued");
   expect(await f.resumes()).toEqual([]);
 
   await f.answer((await f.conversations())[0]!.id, { text: "acme-1 renames the flag." });
@@ -357,8 +384,8 @@ test("a timeout posts the timeout reply once and keeps the session", async () =>
   expect(await f.deliver("acme-1")).toBe("done");
   expect(await f.deliver("acme-1")).toBe("done");
   expect(await f.responses(acme.session)).toEqual([CONVERSATION_TIMEOUT_REPLY]);
-  expect((await getLinearSession(sqliteDb(f.db), acme.session))!.stoppedAt).toBeNull();
-  expect((await getWorkItem(sqliteDb(f.db), "acme-1"))!.state).toBe("merge_queue");
+  expect((await getLinearSession(f.db, acme.session))!.stoppedAt).toBeNull();
+  expect((await getWorkItem(f.db, "acme-1"))!.state).toBe("merge_queue");
 });
 
 test("a helper that expires without a result posts the timeout reply once", async () => {
@@ -371,7 +398,7 @@ test("a helper that expires without a result posts the timeout reply once", asyn
   expect(await f.deliver("acme-1")).toBe("done");
   expect(await f.deliver("acme-1")).toBe("done");
   expect(await f.responses(acme.session)).toEqual([CONVERSATION_TIMEOUT_REPLY]);
-  expect((await getLinearSession(sqliteDb(f.db), acme.session))!.stoppedAt).toBeNull();
+  expect((await getLinearSession(f.db, acme.session))!.stoppedAt).toBeNull();
 });
 
 test("a message while a work turn runs is delivered at the turn boundary, as today", async () => {
@@ -403,35 +430,37 @@ test("a queued item's start job waits while a conversation runs on its session",
   await f.say("acme-1", "c-1", "What is left to do?");
   expect(await f.deliver("acme-1")).toBe("wait");
   const [started] = await f.conversations();
-  const jobId = await enqueueJob(sqliteDb(f.db), {
+  const jobId = await enqueueJob(f.db, {
     queue: JOB_KIND.start,
     payload: { itemId: "acme-1" },
     now: f.clock.now(),
   });
-  f.db.run("UPDATE run SET status='ended' WHERE item_id='acme-1'");
-  await saveSchedulerAdmission(sqliteDb(f.db), {
+  await seed(f.db, (q) =>
+    q.orm.update(q.t.run).set({ status: "ended" }).where(eq(q.t.run.itemId, "acme-1")),
+  );
+  await saveSchedulerAdmission(f.db, {
     itemId: "acme-1",
     jobId,
     repositoryKey: "acme/web",
     sessionId: null,
     now: f.clock.now(),
   });
-  const job = (await claimNextJob(sqliteDb(f.db), {
+  const job = (await claimNextJob(f.db, {
     now: f.clock.now(),
     queues: [JOB_KIND.start],
   }))!;
   const current = { isCurrent: async () => true };
   expect(await f.orchestrator["waitingForConversation"](job, current)).toBe(true);
-  expect((await listJobs(sqliteDb(f.db))).find((entry) => entry.id === job.id)).toMatchObject({
+  expect((await listJobs(f.db)).find((entry) => entry.id === job.id)).toMatchObject({
     status: "pending",
     attempts: job.attempts - 1,
   });
-  expect((await getWorkItem(sqliteDb(f.db), "acme-1"))!.state).toBe("queued");
+  expect((await getWorkItem(f.db, "acme-1"))!.state).toBe("queued");
 
   await f.answer(started!.id, { text: "Only the tests." });
   expect(await f.deliver("acme-1")).toBe("done");
   f.clock.advance(60_000);
-  const again = (await claimNextJob(sqliteDb(f.db), {
+  const again = (await claimNextJob(f.db, {
     now: f.clock.now(),
     queues: [JOB_KIND.start],
   }))!;
@@ -447,15 +476,15 @@ test("session replies past the prompt budget wait for the next conversation", as
   const [first] = await f.conversations();
   expect(first!.command.prompt).toContain("First:");
   expect(first!.command.prompt).not.toContain("Second:");
-  expect(
-    (await listPendingLinearTurns(sqliteDb(f.db), acme.session)).map((turn) => turn.eventKey),
-  ).toEqual(["turn-2"]);
+  expect((await listPendingLinearTurns(f.db, acme.session)).map((turn) => turn.eventKey)).toEqual([
+    "turn-2",
+  ]);
 
   await f.answer(first!.id, { text: "Read the first one." });
   expect(await f.deliver("acme-1")).toBe("wait");
   const [second] = await f.conversations();
   expect(second!.command.prompt).toContain("Second:");
-  expect(await listPendingLinearTurns(sqliteDb(f.db), acme.session)).toEqual([]);
+  expect(await listPendingLinearTurns(f.db, acme.session)).toEqual([]);
 });
 
 test("start_work in a conversation on a 0.1.77 runner restarts the item with the plan and posts it, holding no slot while it waits", async () => {
@@ -484,7 +513,7 @@ test("start_work in a conversation on a 0.1.77 runner restarts the item with the
   expect(await f.resumes()).toHaveLength(1);
   expect(resume!.payload).toMatchObject({ itemId: "acme-1", reason: "follow_up" });
   expect((resume!.payload as { handoff: string }).handoff).toContain(plan);
-  expect((await getWorkItem(sqliteDb(f.db), "acme-1"))!.state).toBe("queued");
+  expect((await getWorkItem(f.db, "acme-1"))!.state).toBe("queued");
   // Waiting in line holds neither a conversation nor a work slot: only acme-busy holds one.
   expect(await f.conversations()).toEqual([]);
   expect((await f.taskSlots())[0]).toMatchObject({ used: 1, capacity: 1 });
@@ -496,7 +525,9 @@ test("start_work after the item moved on posts that the work did not start", asy
   await f.say("acme-1", "c-1", "Please rename the flag.");
   expect(await f.deliver("acme-1")).toBe("wait");
   const [started] = await f.conversations();
-  f.db.run("UPDATE work_item SET cancel_requested=1 WHERE id='acme-1'");
+  await seed(f.db, (q) =>
+    q.orm.update(q.t.workItem).set({ cancelRequested: 1 }).where(eq(q.t.workItem.id, "acme-1")),
+  );
   await f.answer(started!.id, { text: "", startWork: "Rename the flag." });
   expect(await f.deliver("acme-1")).toBe("done");
   expect(await f.resumes()).toEqual([]);

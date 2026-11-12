@@ -36,7 +36,7 @@ await createRetro(sqliteDb(w.db), {
   settingsRevision: 1,
   now: END,
 });
-const reviews = createRetroReviewHttp({ db: w.db, artifactRoot: w.root, now: w.now });
+const reviews = createRetroReviewHttp({ store: sqliteDb(w.db), artifactRoot: w.root, now: w.now });
 let scheduleState: "ready" | "waiting" | "generating" | "failed" = "ready";
 const schedule = () => ({
   saved: true,
@@ -91,7 +91,7 @@ const port = reservation.port!;
 await reservation.stop(true);
 const origin = `http://127.0.0.1:${port}`;
 const access = createWorkspaceAccess({
-  db: w.db,
+  store: sqliteDb(w.db),
   publicUrl: origin,
   clientId: "client",
   installedOrganization: { id: "org", name: "Kyku" },
@@ -124,7 +124,7 @@ const server = startServer({
   },
 });
 const cookieFor = async (userId: string) =>
-  `${WORKSPACE_COOKIE}=${(await issueWorkspaceSession(w.db, { workspaceId: "ws", userId, now: Date.now() })).token}`;
+  `${WORKSPACE_COOKIE}=${(await issueWorkspaceSession(sqliteDb(w.db), { workspaceId: "ws", userId, now: Date.now() })).token}`;
 const ada = await cookieFor("user-ada");
 const admin = await cookieFor("user-admin");
 
@@ -164,7 +164,9 @@ async function layout(page: Page, name: string, width: number, theme: string) {
     return { overflow, sizes };
   });
   expect([name, width, theme, result.overflow <= 0]).toEqual([name, width, theme, true]);
-  const small = result.sizes.filter((size) => size.height < 44);
+  // Controls are 2.25rem tall from 768 px up and 2.75rem (44 px touch targets) below.
+  const floor = width >= 768 ? 36 : 44;
+  const small = result.sizes.filter((size) => size.height < floor);
   expect([name, width, theme, small]).toEqual([name, width, theme, []]);
   checked.push({
     page: name,
@@ -301,7 +303,7 @@ try {
   linear.fail("createIssue", "lose");
   const deliver = (at: number) =>
     deliverImprovements({
-      db: w.db,
+      store: sqliteDb(w.db),
       owner: "verify",
       linearFor: async () => linear,
       sourceUrl: (id) => `${origin}/dashboard/improvements/${id}`,
@@ -331,7 +333,11 @@ try {
   w.db.run("UPDATE work_item SET linear_issue_id = ?, state = 'running' WHERE id = 'work-x'", [
     issueId,
   ]);
-  await syncImprovementOutcomes({ db: w.db, linearFor: async () => linear, now: w.now });
+  await syncImprovementOutcomes({
+    store: sqliteDb(w.db),
+    linearFor: async () => linear,
+    now: w.now,
+  });
   await expect(desk.locator(".improvement-detail-pane")).toContainText("Working", {
     timeout: 8_000,
   });
@@ -341,7 +347,11 @@ try {
     "INSERT INTO remote_merge_fact VALUES ('work-x', 'acme', 'a', 42, 'https://gh/pull/42', ?, ?)",
     [MERGE, END + 3_000],
   );
-  await syncImprovementOutcomes({ db: w.db, linearFor: async () => linear, now: w.now });
+  await syncImprovementOutcomes({
+    store: sqliteDb(w.db),
+    linearFor: async () => linear,
+    now: w.now,
+  });
   await expect(desk.locator("#improvements-page")).toContainText("Merged · awaiting verification", {
     timeout: 8_000,
   });

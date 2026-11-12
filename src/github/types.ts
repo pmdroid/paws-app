@@ -125,7 +125,10 @@ export type OpenedPull = {
   number: number;
   url: string | null;
   body: string;
+  memberRefused?: { login: string; status: number };
 };
+
+export type PullRequestMember = { login: string; token: string };
 
 export type PublishResult =
   | {

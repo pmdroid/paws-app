@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
@@ -17,14 +18,11 @@ import {
   listJobs,
   listOutbox,
   markCloseoutAccepted,
-  migrate,
-  openDatabase,
   pendingPullCiFailures,
   recordItemPullRequest,
   saveCheckpoint,
   unreportedReviewReplies,
   type PullFeedbackWait,
-  sqliteDb,
 } from "../db";
 import {
   createFakeMergeQueue,
@@ -45,6 +43,8 @@ import { CI_REVIEW_WAIT_SOURCE } from "./pull-ci";
 import { handlePullComments, type PullCommentFilter } from "./pull-comments";
 import { handlePullReview, type PullReviewCapabilities } from "./pull-reviews";
 import { worktreeBranch } from "./sources";
+import { seed } from "../../test/dialects";
+import { tempStore } from "../../test/pglite";
 
 const HEAD = "a".repeat(40);
 const LOG = "bun test v1.4.2\n✗ ranks ties by name\n 1 fail";
@@ -70,22 +70,21 @@ const failing = (): Nodes => [
 ];
 
 async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 }) {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const db = (await tempStore()).db;
   await insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
-  await bindWorkItemRepository(sqliteDb(db), "eng-1", {
+  await bindWorkItemRepository(db, "eng-1", {
     owner: "acme",
     repo: "one",
     remoteUrl: "https://github.com/acme/one.git",
   });
-  await beginImplementRun(sqliteDb(db), "eng-1", 1);
-  await enterMergeQueue(sqliteDb(db), "eng-1", {
+  await beginImplementRun(db, "eng-1", 1);
+  await enterMergeQueue(db, "eng-1", {
     phase: "merge_queue",
     baseSha: "b",
     wipCommit: HEAD,
   });
-  await markCloseoutAccepted(sqliteDb(db), "eng-1", HEAD);
-  await recordItemPullRequest(sqliteDb(db), {
+  await markCloseoutAccepted(db, "eng-1", HEAD);
+  await recordItemPullRequest(db, {
     itemId: "eng-1",
     pullNumber: 7,
     pullUrl: "https://github.com/acme/one/pull/7",
@@ -152,7 +151,7 @@ async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 
     ask,
     now: () => clock,
     stopped: async () => {
-      const item = await sqliteDb(db).run((q) => getWorkItemSteps(q, "eng-1"));
+      const item = await db.run((q) => getWorkItemSteps(q, "eng-1"));
       return item === null || item.state === "cancelled" || item.cancelRequested;
     },
     session: (item) => item.sessionKey,
@@ -204,38 +203,45 @@ async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 
     mergedOutsideLane: async () => null,
     completed: unused("completed"),
   };
-  const mergeJob = await enqueueVerifiedMerge(sqliteDb(db), {
+  const mergeJob = await enqueueVerifiedMerge(db, {
     itemId: "eng-1",
     head: HEAD,
     summary: "Closeout accepted.",
     now: clock,
   });
-  db.run("UPDATE job SET run_at = ? WHERE id = ?", [clock + 30_000, mergeJob]);
+  await seed(db, (q) =>
+    q.orm
+      .update(q.t.job)
+      .set({ runAt: clock + 30_000 })
+      .where(eq(q.t.job.id, mergeJob)),
+  );
   let jobs = 0;
   const evaluate = async (): Promise<MergeStep> => {
     jobs += 1;
-    const job = (await getJob(sqliteDb(db), mergeJob))!;
-    return advanceMerge(sqliteDb(db), { itemId: "eng-1", payload: job.payload, jobId: jobs }, lane);
+    const job = (await getJob(db, mergeJob))!;
+    return advanceMerge(db, { itemId: "eng-1", payload: job.payload, jobId: jobs }, lane);
   };
   const finished = new Set<number>();
   const feedbackJobs = async () =>
-    (await listJobs(sqliteDb(db))).filter(
+    (await listJobs(db)).filter(
       (job) =>
         (job.queue === JOB_KIND.pullComments || job.queue === JOB_KIND.pullReview) &&
         job.status === "pending" &&
         !finished.has(job.id),
     );
+  const jobStatus = (id: number, status: string) =>
+    seed(db, (q) => q.orm.update(q.t.job).set({ status }).where(eq(q.t.job.id, id)));
   const runDue = async (): Promise<string[]> => {
     const steps: string[] = [];
     for (const job of (await feedbackJobs()).filter((due) => due.runAt <= clock)) {
       const payload = job.payload as { reviewId?: number; pullCommentsFor?: string };
       // Claimed like the scheduler does: a running job is no longer the pending one to gather into.
-      db.run("UPDATE job SET status = 'running' WHERE id = ?", [job.id]);
+      await jobStatus(job.id, "running");
       const step =
         payload.reviewId !== undefined
-          ? await handlePullReview(sqliteDb(db), payload.reviewId, feedback)
-          : await handlePullComments(sqliteDb(db), payload.pullCommentsFor!, feedback);
-      if (step === "wait") db.run("UPDATE job SET status = 'pending' WHERE id = ?", [job.id]);
+          ? await handlePullReview(db, payload.reviewId, feedback)
+          : await handlePullComments(db, payload.pullCommentsFor!, feedback);
+      if (step === "wait") await jobStatus(job.id, "pending");
       else finished.add(job.id);
       steps.push(step);
     }
@@ -244,7 +250,7 @@ async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 
   let delivery = 0;
   const send = (event: string, payload: Record<string, unknown>, id?: string) =>
     acceptGitHubDelivery(
-      sqliteDb(db),
+      db,
       {
         deliveryId: id ?? `d-${(delivery += 1)}`,
         event,
@@ -256,7 +262,7 @@ async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 
       clock,
       FILTER(wait),
     );
-  const branch = async () => worktreeBranch((await getWorkItem(sqliteDb(db), "eng-1"))!);
+  const branch = async () => worktreeBranch((await getWorkItem(db, "eng-1"))!);
   const checkRun = async (head = HEAD, headBranch?: string, id?: string) =>
     send(
       "check_run",
@@ -296,7 +302,7 @@ async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 
   return {
     db,
     state,
-    mergeJob: async () => (await getJob(sqliteDb(db), mergeJob))!,
+    mergeJob: async () => (await getJob(db, mergeJob))!,
     evaluate,
     runDue,
     feedbackJobs,
@@ -327,12 +333,12 @@ const ask: typeof rawAsk = function* (q, asker, ...args) {
 };
 
 const resumes = async (db: Awaited<ReturnType<typeof setup>>["db"]) =>
-  (await listJobs(sqliteDb(db)))
+  (await listJobs(db))
     .filter((job) => job.queue === JOB_KIND.resume)
     .map((job) => job.payload as { handoff: string; reason: string });
 
 const thoughts = async (db: Awaited<ReturnType<typeof setup>>["db"]) =>
-  (await listOutbox(sqliteDb(db)))
+  (await listOutbox(db))
     .filter((row) => row.idempotencyKey.startsWith("pull-feedback:"))
     .map((row) => (row.payload as { body: string }).body);
 
@@ -345,7 +351,7 @@ describe("failed CI while a pull request waits for review", () => {
     expect(await h.checkRun(HEAD, undefined, "check-1")).toBe(false);
 
     expect(await h.evaluate()).toMatchObject({ kind: "wait", reason: "review", queued: true });
-    expect(await getPullCiFailure(sqliteDb(h.db), "eng-1", HEAD)).toMatchObject({
+    expect(await getPullCiFailure(h.db, "eng-1", HEAD)).toMatchObject({
       pullNumber: 7,
       observedAt: observed,
       handledAt: null,
@@ -359,10 +365,10 @@ describe("failed CI while a pull request waits for review", () => {
       expect(await h.runDue()).toEqual([]);
     }
     expect((await h.feedbackJobs()).map((job) => job.runAt)).toEqual([observed + 60_000]);
-    expect((await getPullCiFailure(sqliteDb(h.db), "eng-1", HEAD))?.observedAt).toBe(observed);
+    expect((await getPullCiFailure(h.db, "eng-1", HEAD))?.observedAt).toBe(observed);
     expect(await resumes(h.db)).toEqual([]);
-    expect(await fixRounds(sqliteDb(h.db), "eng-1")).toBe(0);
-    expect(await listCiRounds(sqliteDb(h.db), "eng-1")).toEqual([]);
+    expect(await fixRounds(h.db, "eng-1")).toBe(0);
+    expect(await listCiRounds(h.db, "eng-1")).toEqual([]);
 
     h.tick(observed + 60_000 - h.now());
     expect(await h.runDue()).toEqual(["restarted"]);
@@ -371,8 +377,8 @@ describe("failed CI while a pull request waits for review", () => {
     expect(resume?.handoff).toContain(CI_REVIEW_WAIT_SOURCE);
     expect(resume?.handoff).toContain("- test (https://ci.example/1)");
     expect(resume?.handoff).toContain(`End of the \`test\` log:\n\`\`\`\n${LOG}\n\`\`\``);
-    expect(await fixRounds(sqliteDb(h.db), "eng-1")).toBe(1);
-    expect(await listCiRounds(sqliteDb(h.db), "eng-1")).toMatchObject([
+    expect(await fixRounds(h.db, "eng-1")).toBe(1);
+    expect(await listCiRounds(h.db, "eng-1")).toMatchObject([
       { head: HEAD, next: "agent", fix: 1, fixLimit: 3 },
     ]);
     expect(await thoughts(h.db)).toEqual([
@@ -384,7 +390,7 @@ describe("failed CI while a pull request waits for review", () => {
     h.tick(400_000);
     expect(await h.runDue()).toEqual([]);
     expect(await resumes(h.db)).toHaveLength(1);
-    expect(await fixRounds(sqliteDb(h.db), "eng-1")).toBe(1);
+    expect(await fixRounds(h.db, "eng-1")).toBe(1);
   });
 
   test("a delivery for another head or branch does not wake the merge job or repair the candidate", async () => {
@@ -395,7 +401,7 @@ describe("failed CI while a pull request waits for review", () => {
     expect((await h.mergeJob()).runAt).toBe(parked);
     expect(await h.evaluate()).toMatchObject({ kind: "wait", reason: "review" });
     expect(h.state.ciReads).toEqual([HEAD]);
-    expect(await pendingPullCiFailures(sqliteDb(h.db), "eng-1")).toEqual([]);
+    expect(await pendingPullCiFailures(h.db, "eng-1")).toEqual([]);
     h.tick(400_000);
     expect(await h.runDue()).toEqual([]);
     expect(await resumes(h.db)).toEqual([]);
@@ -405,7 +411,7 @@ describe("failed CI while a pull request waits for review", () => {
     const h = await setup();
     await h.evaluate();
     const moved = "c".repeat(40);
-    await saveCheckpoint(sqliteDb(h.db), "eng-1", {
+    await saveCheckpoint(h.db, "eng-1", {
       phase: "merge_queue",
       baseSha: "b",
       wipCommit: moved,
@@ -413,7 +419,7 @@ describe("failed CI while a pull request waits for review", () => {
     h.state.ci = () => [{ name: "test", conclusion: null, detailsUrl: null }];
     h.tick(10_000);
     expect(await h.evaluate()).toMatchObject({ kind: "wait", reason: "review" });
-    expect((await getPullCiFailure(sqliteDb(h.db), "eng-1", HEAD))?.outcome).toBe("dropped");
+    expect((await getPullCiFailure(h.db, "eng-1", HEAD))?.outcome).toBe("dropped");
     h.tick(60_000);
     expect(await h.runDue()).toEqual(["done"]);
     expect(await resumes(h.db)).toEqual([]);
@@ -440,11 +446,11 @@ describe("failed CI while a pull request waits for review", () => {
     expect(resume?.handoff).toContain("Rename the helper.");
     expect(resume?.handoff).toContain("Also add a test for ties.");
     expect(resume?.handoff).toContain(`End of the \`test\` log:`);
-    expect(
-      (await unreportedReviewReplies(sqliteDb(h.db), "eng-1")).map((reply) => reply.commentId),
-    ).toEqual([1, 2]);
-    expect(await fixRounds(sqliteDb(h.db), "eng-1")).toBe(1);
-    expect(await listCiRounds(sqliteDb(h.db), "eng-1")).toMatchObject([
+    expect((await unreportedReviewReplies(h.db, "eng-1")).map((reply) => reply.commentId)).toEqual([
+      1, 2,
+    ]);
+    expect(await fixRounds(h.db, "eng-1")).toBe(1);
+    expect(await listCiRounds(h.db, "eng-1")).toMatchObject([
       { head: HEAD, next: "agent", fix: 1 },
     ]);
   });
@@ -455,7 +461,7 @@ describe("failed CI while a pull request waits for review", () => {
     await h.conversation(1, "pascal", "First note.");
     h.tick(30_000);
     expect(await h.evaluate()).toMatchObject({ kind: "wait", reason: "review" });
-    expect(await pendingPullCiFailures(sqliteDb(h.db), "eng-1")).toHaveLength(1);
+    expect(await pendingPullCiFailures(h.db, "eng-1")).toHaveLength(1);
     expect((await h.feedbackJobs()).map((job) => job.runAt)).toEqual([start + 90_000]);
     for (let at = 80_000; at <= 280_000; at += 50_000) {
       h.tick(start + at - h.now());
@@ -469,7 +475,7 @@ describe("failed CI while a pull request waits for review", () => {
     expect(await resumes(h.db)).toHaveLength(1);
     expect((await resumes(h.db))[0]?.handoff).toContain("Note at 280000.");
     expect((await resumes(h.db))[0]?.handoff).toContain(CI_REVIEW_WAIT_SOURCE);
-    expect(await fixRounds(sqliteDb(h.db), "eng-1")).toBe(1);
+    expect(await fixRounds(h.db, "eng-1")).toBe(1);
   });
 
   test("CI after the comments still lets the feedback settle under custom wait settings", async () => {
@@ -502,7 +508,7 @@ describe("failed CI while a pull request waits for review", () => {
     const reviewJob = async () =>
       (await h.feedbackJobs()).find((job) => job.queue === JOB_KIND.pullReview);
     expect((await reviewJob())?.runAt).toBe(start + 60_000);
-    expect(await pendingPullCiFailures(sqliteDb(h.db), "eng-1")).toHaveLength(1);
+    expect(await pendingPullCiFailures(h.db, "eng-1")).toHaveLength(1);
     h.tick(30_000);
     await h.checkRun();
     await h.evaluate();
@@ -517,11 +523,11 @@ describe("failed CI while a pull request waits for review", () => {
     expect(resume?.handoff).toContain("This sorts the wrong way round.");
     expect(resume?.handoff).toContain(CI_REVIEW_WAIT_SOURCE);
     expect(await resumes(h.db)).toHaveLength(1);
-    expect(await fixRounds(sqliteDb(h.db), "eng-1")).toBe(1);
-    expect(await listCiRounds(sqliteDb(h.db), "eng-1")).toMatchObject([
+    expect(await fixRounds(h.db, "eng-1")).toBe(1);
+    expect(await listCiRounds(h.db, "eng-1")).toMatchObject([
       { head: HEAD, next: "agent", fix: 1 },
     ]);
-    expect((await getPullCiFailure(sqliteDb(h.db), "eng-1", HEAD))?.outcome).toBe("restarted");
+    expect((await getPullCiFailure(h.db, "eng-1", HEAD))?.outcome).toBe("restarted");
   });
 
   test("changes requested earlier still lets CI be seen, and goes back once for CI", async () => {
@@ -531,7 +537,7 @@ describe("failed CI while a pull request waits for review", () => {
     h.tick(60_000);
     expect(await h.runDue()).toEqual(["restarted"]);
     expect((await resumes(h.db)).map((resume) => resume.reason)).toEqual(["ci"]);
-    expect((await getWorkItem(sqliteDb(h.db), "eng-1"))?.state).toBe("queued");
+    expect((await getWorkItem(h.db, "eng-1"))?.state).toBe("queued");
   });
 
   test("pending, green or unreadable CI waits for the review without spending a round", async () => {
@@ -542,7 +548,7 @@ describe("failed CI while a pull request waits for review", () => {
     expect(await h.evaluate()).toMatchObject({ kind: "wait", reason: "review" });
     h.state.readable = false;
     expect(await h.evaluate()).toMatchObject({ kind: "wait", reason: "review" });
-    expect(await pendingPullCiFailures(sqliteDb(h.db), "eng-1")).toEqual([]);
+    expect(await pendingPullCiFailures(h.db, "eng-1")).toEqual([]);
     expect(await h.feedbackJobs()).toEqual([]);
 
     h.state.readable = true;
@@ -551,17 +557,17 @@ describe("failed CI while a pull request waits for review", () => {
     h.state.readable = false;
     h.tick(10_000);
     expect(await h.evaluate()).toMatchObject({ kind: "wait", reason: "review" });
-    expect(await pendingPullCiFailures(sqliteDb(h.db), "eng-1")).toHaveLength(1);
+    expect(await pendingPullCiFailures(h.db, "eng-1")).toHaveLength(1);
 
     h.state.readable = true;
     h.state.ci = () => [{ name: "test", conclusion: null, detailsUrl: null }];
     expect(await h.evaluate()).toMatchObject({ kind: "wait", reason: "review" });
-    expect((await getPullCiFailure(sqliteDb(h.db), "eng-1", HEAD))?.outcome).toBe("cleared");
+    expect((await getPullCiFailure(h.db, "eng-1", HEAD))?.outcome).toBe("cleared");
     h.tick(60_000);
     expect(await h.runDue()).toEqual(["done"]);
     expect(await resumes(h.db)).toEqual([]);
-    expect(await fixRounds(sqliteDb(h.db), "eng-1")).toBe(0);
-    expect(await listCiRounds(sqliteDb(h.db), "eng-1")).toEqual([]);
+    expect(await fixRounds(h.db, "eng-1")).toBe(0);
+    expect(await listCiRounds(h.db, "eng-1")).toEqual([]);
   });
 
   test("with the fix rounds spent it asks once with budget_spent, and replays do not ask again", async () => {
@@ -570,20 +576,20 @@ describe("failed CI while a pull request waits for review", () => {
     await h.evaluate();
     h.tick(60_000);
     expect(await h.runDue()).toEqual(["asked"]);
-    const question = await findOpenQuestion(sqliteDb(h.db), "s-1");
+    const question = await findOpenQuestion(h.db, "s-1");
     expect(question?.reason).toBe("budget_spent");
     expect(question?.body).toContain(
       "CI failed on the pull request (https://github.com/acme/one/pull/7)",
     );
     expect(question?.body).toContain("- test (https://ci.example/1)");
-    expect(await listCiRounds(sqliteDb(h.db), "eng-1")).toMatchObject([
+    expect(await listCiRounds(h.db, "eng-1")).toMatchObject([
       { head: HEAD, next: "asked", fix: null },
     ]);
 
     await h.checkRun();
     h.tick(60_000);
     expect(await h.runDue()).toEqual([]);
-    const asks = (await listOutbox(sqliteDb(h.db))).filter((row) => row.op === "elicitation");
+    const asks = (await listOutbox(h.db)).filter((row) => row.op === "elicitation");
     expect(asks).toHaveLength(1);
     expect(await resumes(h.db)).toEqual([]);
   });
@@ -591,34 +597,34 @@ describe("failed CI while a pull request waits for review", () => {
   test("cancellation or a superseded item version cannot restart from the recorded failure", async () => {
     const cancelled = await setup();
     await cancelled.evaluate();
-    cancelled.db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = 'eng-1'");
+    await seed(cancelled.db, (q) =>
+      q.orm.update(q.t.workItem).set({ cancelRequested: 1 }).where(eq(q.t.workItem.id, "eng-1")),
+    );
     cancelled.tick(60_000);
     expect(await cancelled.runDue()).toEqual(["dropped"]);
     expect(await resumes(cancelled.db)).toEqual([]);
 
     const superseded = await setup();
     await superseded.evaluate();
-    await applyWorkItemEvent(sqliteDb(superseded.db), "eng-1", "reverify_requested");
-    await applyWorkItemEvent(sqliteDb(superseded.db), "eng-1", "closeout_accepted");
+    await applyWorkItemEvent(superseded.db, "eng-1", "reverify_requested");
+    await applyWorkItemEvent(superseded.db, "eng-1", "closeout_accepted");
     superseded.tick(60_000);
     expect(await superseded.runDue()).toEqual(["done"]);
-    expect((await getPullCiFailure(sqliteDb(superseded.db), "eng-1", HEAD))?.outcome).toBe(
-      "dropped",
-    );
+    expect((await getPullCiFailure(superseded.db, "eng-1", HEAD))?.outcome).toBe("dropped");
     expect(await resumes(superseded.db)).toEqual([]);
-    expect(await fixRounds(sqliteDb(superseded.db), "eng-1")).toBe(0);
+    expect(await fixRounds(superseded.db, "eng-1")).toBe(0);
   });
   test("a failure whose head moved before the batch ran is dropped without a restart or a round", async () => {
     const h = await setup();
     await h.evaluate();
-    expect(await pendingPullCiFailures(sqliteDb(h.db), "eng-1")).toHaveLength(1);
+    expect(await pendingPullCiFailures(h.db, "eng-1")).toHaveLength(1);
     h.state.pullHead = "d".repeat(40);
     h.tick(60_000);
     expect(await h.runDue()).toEqual(["done"]);
-    expect((await getPullCiFailure(sqliteDb(h.db), "eng-1", HEAD))?.outcome).toBe("dropped");
+    expect((await getPullCiFailure(h.db, "eng-1", HEAD))?.outcome).toBe("dropped");
     expect(await resumes(h.db)).toEqual([]);
-    expect(await fixRounds(sqliteDb(h.db), "eng-1")).toBe(0);
-    expect(await listCiRounds(sqliteDb(h.db), "eng-1")).toEqual([]);
+    expect(await fixRounds(h.db, "eng-1")).toBe(0);
+    expect(await listCiRounds(h.db, "eng-1")).toEqual([]);
   });
 
   test("a head GitHub cannot return keeps the failure pending until the head is read", async () => {
@@ -627,14 +633,14 @@ describe("failed CI while a pull request waits for review", () => {
     h.state.pullHead = null;
     h.tick(60_000);
     expect(await h.runDue()).toEqual(["wait"]);
-    expect((await getPullCiFailure(sqliteDb(h.db), "eng-1", HEAD))?.handledAt).toBeNull();
+    expect((await getPullCiFailure(h.db, "eng-1", HEAD))?.handledAt).toBeNull();
     expect(await resumes(h.db)).toEqual([]);
-    expect(await fixRounds(sqliteDb(h.db), "eng-1")).toBe(0);
+    expect(await fixRounds(h.db, "eng-1")).toBe(0);
 
     h.state.pullHead = HEAD;
     expect(await h.runDue()).toEqual(["restarted"]);
     expect((await resumes(h.db)).map((resume) => resume.reason)).toEqual(["ci"]);
-    expect(await fixRounds(sqliteDb(h.db), "eng-1")).toBe(1);
+    expect(await fixRounds(h.db, "eng-1")).toBe(1);
   });
 
   test("a failure recorded while a due comment batch reads GitHub waits for its own window", async () => {
@@ -642,7 +648,7 @@ describe("failed CI while a pull request waits for review", () => {
     h.state.ci = () => [{ name: "test", conclusion: null, detailsUrl: null }];
     await h.conversation(1, "pascal", "Rename the helper.");
     await h.evaluate();
-    expect(await pendingPullCiFailures(sqliteDb(h.db), "eng-1")).toEqual([]);
+    expect(await pendingPullCiFailures(h.db, "eng-1")).toEqual([]);
     h.tick(60_000);
     h.state.ci = failing;
     let observed = 0;
@@ -656,9 +662,9 @@ describe("failed CI while a pull request waits for review", () => {
     expect(resume?.reason).toBe("review");
     expect(resume?.handoff).toContain("Rename the helper.");
     expect(resume?.handoff).not.toContain(CI_REVIEW_WAIT_SOURCE);
-    expect(await fixRounds(sqliteDb(h.db), "eng-1")).toBe(1);
-    expect(await listCiRounds(sqliteDb(h.db), "eng-1")).toEqual([]);
-    expect(await getPullCiFailure(sqliteDb(h.db), "eng-1", HEAD)).toMatchObject({
+    expect(await fixRounds(h.db, "eng-1")).toBe(1);
+    expect(await listCiRounds(h.db, "eng-1")).toEqual([]);
+    expect(await getPullCiFailure(h.db, "eng-1", HEAD)).toMatchObject({
       observedAt: observed,
       handledAt: null,
     });
@@ -680,7 +686,7 @@ describe("failed CI while a pull request waits for review", () => {
     expect(await h.runDue()).toEqual(["restarted"]);
     expect((await resumes(h.db)).map((resume) => resume.reason)).toEqual(["review"]);
     expect((await resumes(h.db))[0]?.handoff).not.toContain(CI_REVIEW_WAIT_SOURCE);
-    expect(await listCiRounds(sqliteDb(h.db), "eng-1")).toEqual([]);
-    expect((await getPullCiFailure(sqliteDb(h.db), "eng-1", HEAD))?.handledAt).toBeNull();
+    expect(await listCiRounds(h.db, "eng-1")).toEqual([]);
+    expect((await getPullCiFailure(h.db, "eng-1", HEAD))?.handledAt).toBeNull();
   });
 });

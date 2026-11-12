@@ -11,22 +11,19 @@ import {
   getWorkItem,
   insertQueuedItem,
   mergeCallInFlight,
-  migrate,
-  openDatabase,
   recordItemPullRequest,
-  sqliteDb,
 } from "../db";
 import type { GitHubResponse } from "../github";
 import { Orchestrator } from "./orchestrator";
+import { tempStore } from "../../test/pglite";
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "paws-merge-outcome-"));
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   const clock = new FakeClock(1_000);
   let response: () => Promise<GitHubResponse> = async () => ({ status: 502, body: {} });
   const orchestrator = new Orchestrator({
-    store: sqliteDb(db),
+    store: db,
     clock,
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
@@ -40,20 +37,20 @@ async function fixture() {
     }),
   });
   await insertQueuedItem(db, { id: "item", now: clock.now() });
-  await bindWorkItemRepository(sqliteDb(db), "item", {
+  await bindWorkItemRepository(db, "item", {
     owner: "acme",
     repo: "app",
     remoteUrl: "unused",
   });
   return {
     db,
-    read: async () => orchestrator["mergedOutsideLane"]((await getWorkItem(sqliteDb(db), "item"))!),
+    read: async () => orchestrator["mergedOutsideLane"]((await getWorkItem(db, "item"))!),
     respond: (next: typeof response) => {
       response = next;
     },
     cleanup: async () => {
       await orchestrator.shutdown();
-      db.close();
+      await close();
       await rm(root, { recursive: true, force: true });
     },
   };
@@ -63,9 +60,9 @@ test("a missing pull record with a durable marker reports an error instead of pa
   const f = await fixture();
   try {
     expect(await f.read()).toBeNull();
-    await beginMergeCall(sqliteDb(f.db), "item", "h", 1_000);
+    await beginMergeCall(f.db, "item", "h", 1_000);
     await expect(f.read()).rejects.toThrow("pull request record is missing");
-    expect(await mergeCallInFlight(sqliteDb(f.db), "item")).toBe(true);
+    expect(await mergeCallInFlight(f.db, "item")).toBe(true);
   } finally {
     await f.cleanup();
   }
@@ -76,22 +73,22 @@ test.each([404, 403, 502, "timeout"])(
   async (failure) => {
     const f = await fixture();
     try {
-      await recordItemPullRequest(sqliteDb(f.db), {
+      await recordItemPullRequest(f.db, {
         itemId: "item",
         pullNumber: 7,
         pullUrl: null,
         openedAt: 1_000,
       });
-      await beginMergeCall(sqliteDb(f.db), "item", "h", 1_000);
+      await beginMergeCall(f.db, "item", "h", 1_000);
       f.respond(async () => {
         if (failure === "timeout") throw new DOMException("Read timed out", "TimeoutError");
         return { status: failure as number, body: {} };
       });
       expect(await f.read()).toBe("unknown");
-      expect(await mergeCallInFlight(sqliteDb(f.db), "item")).toBe(true);
+      expect(await mergeCallInFlight(f.db, "item")).toBe(true);
       f.respond(async () => ({ status: 200, body: { merged: false } }));
       expect(await f.read()).toBeNull();
-      expect(await mergeCallInFlight(sqliteDb(f.db), "item")).toBe(true);
+      expect(await mergeCallInFlight(f.db, "item")).toBe(true);
     } finally {
       await f.cleanup();
     }

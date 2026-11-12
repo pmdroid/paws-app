@@ -157,23 +157,25 @@ export function renderEvidencePage(
   const others = page.related.filter((entry) => entry.id !== evidence.id);
   const issue = `<a class="lin-id" href="${esc(routeHref({ view: "issues", id: evidence.itemId }))}">${esc(evidence.itemId)}</a>`;
   const more = others.length
-    ? `<ul class="evidence-more">${others
+    ? `<ul class="flex flex-wrap gap-2">${others
         .map(
           (entry) =>
-            `<li><a class="evidence-thumb" href="${esc(evidencePageHref(entry.id))}" aria-label="${esc(`${kindLabel(entry.kind)} ${entry.displayName}`)}">${thumbnailMedia(entry, engineUrl)}</a></li>`,
+            `<li><a class="tag" href="${esc(evidencePageHref(entry.id))}" aria-label="${esc(`${kindLabel(entry.kind)} ${entry.displayName}`)}">${esc(entry.displayName)}</a></li>`,
         )
         .join("")}</ul>`
     : '<p class="muted">No other evidence from this issue.</p>';
-  return `<nav class="crumbs" aria-label="Breadcrumb"><span>Evidence</span><span>/</span>${issue}<span>/</span><span class="mono">${esc(evidence.id)}</span></nav>
-    <header class="run-heading"><div class="row">${issue}<span class="tag">${esc(evidence.checkId)}</span><span class="mono muted">${esc(page.project.repo)} · head ${esc(evidence.headCommit.slice(0, 7))}</span></div><h1>${esc(evidence.displayName)}</h1><p class="muted">Anyone signed in to Paws with access to ${esc(page.project.repo)} sees this evidence.</p></header>
-    <div class="evidence-layout"><div>
-      <div id="evidence-player" data-evidence="${esc(evidence.id)}"></div>
-
-    </div><aside class="evidence-aside"><div class="card"><div class="row"><button type="button" class="primary" data-action="evidence-copy" data-evidence="${esc(evidence.id)}">Copy link</button><a class="btn" href="${esc(file)}" download="${esc(evidence.displayName)}">Download</a></div><div class="kv"><span class="k">Issue</span><a class="lin-id" href="${esc(routeHref({ view: "issues", id: evidence.itemId }))}">${esc(evidence.itemId)}</a><span class="k">Check</span><span>${esc(evidence.checkId)} · attempt ${evidence.attempt}</span><span class="k">Published</span><span>${esc(evidence.publisher)} · ${esc(new Date(evidence.publishedAt).toLocaleString())}</span><span class="k">File</span><span>${esc(evidence.mediaType)} · ${esc(sizeLabel(evidence.sizeBytes))}${measure ? ` · ${esc(measure)}` : ""}</span></div><p class="muted">Stored on this Paws server, never uploaded to Linear.</p></div><section class="card" aria-label="More from this issue">
-        <div class="between"><h3>More from this issue</h3><a href="${esc(closeoutOutputHref(evidence))}">Closeout output</a></div>
-        ${more}
-      </section>
-    </aside></div>`;
+  const facts = [
+    new Date(evidence.publishedAt).toLocaleString(),
+    evidence.mediaType,
+    sizeLabel(evidence.sizeBytes),
+    ...(measure ? [measure] : []),
+  ];
+  return `<header class="run-heading"><p class="evidence-context font-mono text-xs text-muted-foreground">${issue} · Closeout attempt ${evidence.attempt} · check <span class="text-foreground">${esc(evidence.checkId)}</span></p><h1>${esc(evidence.displayName)}</h1><p class="muted">${esc(evidence.publisher)} published it from ${esc(page.project.repo)} at ${esc(evidence.headCommit.slice(0, 7))}. Anyone signed in to Paws with access to ${esc(page.project.repo)} sees it; it is never uploaded to Linear.</p></header>
+    <div class="aspect-video w-full min-w-0 overflow-hidden rounded-md border border-border bg-card [&_[data-evidence-media]]:size-full [&_[data-evidence-media]]:rounded-none [&_[data-evidence-media]]:border-0 [&_[data-evidence-media]]:bg-transparent [&_img]:size-full [&_img]:max-h-full [&_img]:object-contain [&_.video-js]:!size-full [&_.video-js]:!pt-0">
+      <div id="evidence-player" data-evidence="${esc(evidence.id)}" class="size-full"></div>
+    </div>
+    <div class="flex flex-wrap items-center justify-between gap-3"><span class="font-mono text-xs text-muted-foreground">${facts.map(esc).join(" · ")}</span><div class="row"><button type="button" data-action="evidence-copy" data-evidence="${esc(evidence.id)}">Copy link</button><a class="btn" href="${esc(file)}" download="${esc(evidence.displayName)}">Download</a><a class="btn" href="${esc(closeoutOutputHref(evidence))}">Closeout output</a></div></div>
+    <section class="flex flex-col gap-2" aria-label="More from this issue"><h3>More from this issue</h3>${more}</section>`;
 }
 
 /**

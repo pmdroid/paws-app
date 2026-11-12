@@ -10,6 +10,7 @@ import {
   type GitHubClient,
   type OpenedPull,
   type PublishResult,
+  type PullRequestMember,
 } from "./types";
 
 export async function pushBranch(
@@ -65,26 +66,38 @@ export async function openPullRequest(
     description?: string;
     evidence: string;
     reviewer?: string;
+    member?: PullRequestMember;
     client: GitHubClient;
   } & GitHubCredentialInput,
 ): Promise<OpenedPull> {
   const branch = branchForIssue(input.branchKey ?? input.issue);
   const body = publishedPullRequestBody(input);
   const token = await acquireOperationToken(input, "pr");
-  const created = await input.client.request({
-    method: "POST",
-    path: repoApiPath(input.owner, input.repo, "/pulls"),
-    token,
-    body: {
-      title: input.title ?? input.issue,
-      head: branch,
-      base: "main",
-      body,
-    },
-  });
+  const create = (as: string) =>
+    input.client.request({
+      method: "POST",
+      path: repoApiPath(input.owner, input.repo, "/pulls"),
+      token: as,
+      body: {
+        title: input.title ?? input.issue,
+        head: branch,
+        base: "main",
+        body,
+      },
+    });
+  let created = await create(input.member?.token ?? token);
+  let refused: OpenedPull["memberRefused"];
+  if (input.member && [401, 403, 404].includes(created.status)) {
+    refused = { login: input.member.login, status: created.status };
+    created = await create(token);
+  }
   if (created.status === 201) {
-    const pull = pullFrom(created.body, body);
-    if (input.reviewer)
+    const pull = {
+      ...pullFrom(created.body, body),
+      ...(refused ? { memberRefused: refused } : {}),
+    };
+    const author = input.member && !refused ? input.member.login : null;
+    if (input.reviewer && input.reviewer.toLowerCase() !== author?.toLowerCase())
       await input.client.request({
         method: "POST",
         path: repoApiPath(input.owner, input.repo, `/pulls/${pull.number}/requested_reviewers`),
@@ -218,6 +231,7 @@ export async function publishAccepted(
     title?: string;
     description?: string;
     reviewer?: string;
+    member?: PullRequestMember;
     remoteUrl?: string;
     gitExec?: GitExec;
     client: GitHubClient;

@@ -9,11 +9,8 @@ import {
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
-  sqliteDb,
 } from "../../src/db";
 import {
   assertScopedToken,
@@ -36,23 +33,37 @@ import {
   workspaceTokenHash,
   type WorkspacePrincipal,
 } from "../../src/workspace";
+import { eq } from "drizzle-orm";
+import { seed } from "../dialects";
+import { tempStore } from "../pglite";
 
 export async function probeRunnerRepositoryAccess(
   root: string,
   observe: (name: string, passed: boolean, observed: unknown) => void,
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
+  const activate = (id: string) =>
+    db.run(function* (q) {
+      yield* q.exec(
+        q.orm.update(q.t.runner).set({ status: "active" }).where(eq(q.t.runner.id, id)),
+      );
+    });
+  const addRepository = (repository: string) =>
+    seed(db, (q) =>
+      q.orm
+        .insert(q.t.workspaceRepository)
+        .values({ workspaceId: workspace.id, repository, teamId: "fixture-team" }),
+    );
   let now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "fixture-owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "fixture-repository", now);
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-repository", now);
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "fixture-repository",
     name: "Fixture",
@@ -67,16 +78,12 @@ export async function probeRunnerRepositoryAccess(
     authenticatedAt: now,
     teamIds: [],
   };
-  db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-    workspace.id,
-    "fixture/repository",
-    "fixture-team",
-  ]);
+  await addRepository("fixture/repository");
   const authorityRoot = join(root, "issuer");
   const authority = await initializeRunnerAuthority(authorityRoot);
   const client = await createRunnerKey(join(root, "client"));
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority,
     certificateRoot: authorityRoot,
     now: () => now,
@@ -88,7 +95,7 @@ export async function probeRunnerRepositoryAccess(
     token: (await control.createEnrollment(principal, pending)).token,
   });
   const { runnerId } = identity;
-  db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
+  await activate(runnerId);
   now = Date.now();
 
   assert.equal(identity.status, "approved");
@@ -100,13 +107,13 @@ export async function probeRunnerRepositoryAccess(
     token: (await control.createEnrollment(principal, reviewRequest)).token,
   });
   const reviewRunnerId = reviewIdentity.runnerId;
-  db.run("UPDATE runner SET status='active' WHERE id=?", [reviewRunnerId]);
+  await activate(reviewRunnerId);
   now = Date.now();
   assert.equal(reviewIdentity.status, "approved");
   if (reviewIdentity.status !== "approved") throw new Error("Review enrollment was not approved");
   const reviewCertificate = reviewIdentity.certificate;
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -146,8 +153,8 @@ export async function probeRunnerRepositoryAccess(
       now,
       sessionKey: sessionId,
     });
-    const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
-    await recordLinearInstallation(sqliteDb(db), {
+    const { run } = await beginImplementRun(db, item.id, now);
+    await recordLinearInstallation(db, {
       organizationId: "fixture-repository",
       oauthClientId: "fixture-app",
       appUserId: "fixture-app-user",
@@ -155,7 +162,7 @@ export async function probeRunnerRepositoryAccess(
       teamId: "fixture-team",
       observedAtMs: now,
     });
-    await bindLinearSessionTask(sqliteDb(db), sessionId, item.delegationId, {
+    await bindLinearSessionTask(db, sessionId, item.delegationId, {
       actorId: "fixture-owner",
     });
     const repository = {
@@ -164,7 +171,7 @@ export async function probeRunnerRepositoryAccess(
       remoteUrl: "https://github.com/fixture/repository.git",
       baseSha: "a".repeat(40),
     };
-    await bindWorkItemRepository(sqliteDb(db), item.id, repository);
+    await bindWorkItemRepository(db, item.id, repository);
     const command: Extract<RunnerCommand, { type: "run" | "review" }> = {
       id: workspaceId(),
       runnerId: targetRunner,
@@ -413,28 +420,44 @@ export async function probeRunnerRepositoryAccess(
     ][] = [
       [
         "cancelled",
-        ({ item }) => {
-          db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [item.id]);
-        },
+        ({ item }) =>
+          db.run(function* (q) {
+            yield* q.exec(
+              q.orm
+                .update(q.t.workItem)
+                .set({ cancelRequested: 1 })
+                .where(eq(q.t.workItem.id, item.id)),
+            );
+          }),
       ],
       [
         "changed branch",
-        ({ item }) => {
-          db.run("UPDATE work_item SET branch_name='paws/changed' WHERE id=?", [item.id]);
-        },
+        ({ item }) =>
+          db.run(function* (q) {
+            yield* q.exec(
+              q.orm
+                .update(q.t.workItem)
+                .set({ branchName: "paws/changed" })
+                .where(eq(q.t.workItem.id, item.id)),
+            );
+          }),
       ],
       [
         "changed repository",
-        ({ item }) => {
-          db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-            workspace.id,
-            "other/other",
-            "fixture-team",
-          ]);
-          db.run(
-            "UPDATE work_item_repository SET owner='other',repo='other',remote_url='https://github.com/other/other.git' WHERE item_id=?",
-            [item.id],
-          );
+        async ({ item }) => {
+          await addRepository("other/other");
+          await db.run(function* (q) {
+            yield* q.exec(
+              q.orm
+                .update(q.t.workItemRepository)
+                .set({
+                  owner: "other",
+                  repo: "other",
+                  remoteUrl: "https://github.com/other/other.git",
+                })
+                .where(eq(q.t.workItemRepository.itemId, item.id)),
+            );
+          });
         },
       ],
       [
@@ -465,12 +488,15 @@ export async function probeRunnerRepositoryAccess(
       assert([403, 409].includes(response.status), `${name}: ${response.status}`);
       assert(!response.body.includes("fake-installation-token"));
       fenced.push(name);
-      const current = db
-        .query<{ generation: number }, [string]>(
-          "SELECT generation FROM runner_work WHERE run_id=?",
-        )
-        .get(entry.command.runId)!;
-      await work.finish(entry.command.runId, current.generation);
+      const [current] = await db.run((q) =>
+        q.all(
+          q.orm
+            .select({ generation: q.t.runnerWork.generation })
+            .from(q.t.runnerWork)
+            .where(eq(q.t.runnerWork.runId, entry.command.runId)),
+        ),
+      );
+      await work.finish(entry.command.runId, current!.generation);
     }
     observe(
       "authorization is rechecked after asynchronous token minting without releasing stale credentials",
@@ -483,11 +509,13 @@ export async function probeRunnerRepositoryAccess(
     const denied = await exchange(revoked, "read");
     assert.equal(denied.status, 403);
     assert(!denied.body.includes("fake-installation-token"));
-    const persisted = JSON.stringify(db.query("SELECT * FROM runner_work_grant").all());
+    const persisted = JSON.stringify(
+      await db.run((q) => q.all(q.orm.select().from(q.t.runnerWorkGrant))),
+    );
     assert(!persisted.includes("fake-installation-token"));
     assert(!persisted.includes(revoked.grant.token));
     observe(
-      "revocation during minting denies delivery and SQLite retains only run-grant hashes",
+      "revocation during minting denies delivery and the store retains only run-grant hashes",
       true,
       {
         status: denied.status,
@@ -496,7 +524,7 @@ export async function probeRunnerRepositoryAccess(
     );
   } finally {
     await listener?.stop();
-    db.close();
+    await close();
   }
 }
 

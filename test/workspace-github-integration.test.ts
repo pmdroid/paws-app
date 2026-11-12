@@ -2,14 +2,13 @@ import { expect, test } from "bun:test";
 import {
   consumeWorkspaceBootstrap,
   listJobs,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   replaceWorkspaceRepositories,
   syncWorkspaceMember,
   workspaceMember,
-  sqliteDb,
+  type Db,
 } from "../src/db";
+import { eq } from "drizzle-orm";
 import {
   handleWorkspaceGitHubIntegration,
   issueWorkspaceBootstrap,
@@ -17,33 +16,45 @@ import {
   workspaceTokenHash,
   type WorkspacePrincipal,
 } from "../src/workspace";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
+
+function audits(db: Db, action: string) {
+  return db.run((q) =>
+    q.all(
+      q.orm
+        .select()
+        .from(q.t.workspaceAccessAudit)
+        .where(eq(q.t.workspaceAccessAudit.action, action)),
+    ),
+  );
+}
 
 async function fixture() {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   const now = 1000000;
-  await putWorkspaceUser(sqliteDb(db), {
+  await putWorkspaceUser(db, {
     id: "owner",
     linearUserId: "linear-owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  await consumeWorkspaceBootstrap(sqliteDb(db), {
+  await consumeWorkspaceBootstrap(db, {
     id: "workspace",
     organizationId: "org",
     name: "Workspace",
     userId: "owner",
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   for (const role of ["admin", "member"] as const) {
-    await putWorkspaceUser(sqliteDb(db), {
+    await putWorkspaceUser(db, {
       id: role,
       linearUserId: `linear-${role}`,
       name: role,
       email: `${role}@example.invalid`,
     });
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: "workspace",
       userId: role,
       role,
@@ -52,7 +63,7 @@ async function fixture() {
       now,
     });
   }
-  await replaceWorkspaceRepositories(sqliteDb(db), {
+  await replaceWorkspaceRepositories(db, {
     workspaceId: "workspace",
     actorId: "owner",
     repositories: [{ repository: "acme/widgets", teamId: "team" }],
@@ -60,6 +71,7 @@ async function fixture() {
   });
   return {
     db,
+    close,
     now,
     async request(
       role: string,
@@ -70,7 +82,7 @@ async function fixture() {
         check?: () => Promise<boolean>;
       } = {},
     ) {
-      const issued = await issueWorkspaceSession(sqliteDb(db), {
+      const issued = await issueWorkspaceSession(db, {
         workspaceId: "workspace",
         userId: role,
         now: options.stale ? now - 16 * 60000 : now,
@@ -90,7 +102,7 @@ async function fixture() {
           },
         }),
         {
-          store: sqliteDb(db),
+          store: db,
           principal,
           session: issued.session,
           origin: "https://paws.example",
@@ -110,15 +122,11 @@ test("signed-in admins, including the one who connected the workspace, can reval
     expect((await f.request("admin", { stale: true })).status).toBe(200);
     expect((await f.request("admin", { csrf: false })).status).toBe(403);
     expect((await f.request("admin", { origin: "https://other.example" })).status).toBe(403);
-    expect(await listJobs(sqliteDb(f.db))).toHaveLength(3);
-    expect(
-      f.db
-        .query("SELECT * FROM workspace_access_audit WHERE action='github.integration.revalidated'")
-        .all(),
-    ).toHaveLength(3);
-    expect((await workspaceMember(sqliteDb(f.db), "workspace", "admin"))?.role).toBe("admin");
+    expect(await listJobs(f.db)).toHaveLength(3);
+    expect(await audits(f.db, "github.integration.revalidated")).toHaveLength(3);
+    expect((await workspaceMember(f.db, "workspace", "admin"))?.role).toBe("admin");
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -126,9 +134,9 @@ test("Paws admin permission never overrides missing GitHub installation authorit
   const f = await fixture();
   try {
     expect((await f.request("admin", { check: async () => false })).status).toBe(409);
-    expect(await listJobs(sqliteDb(f.db))).toHaveLength(0);
+    expect(await listJobs(f.db)).toHaveLength(0);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -139,18 +147,21 @@ test("in-flight administrator demotion rejects recovery transaction and is audit
       (
         await f.request("admin", {
           check: async () => {
-            f.db.run("UPDATE workspace_member SET role='member' WHERE user_id='admin'");
+            await seed(f.db, (q) =>
+              q.orm
+                .update(q.t.workspaceMember)
+                .set({ role: "member" })
+                .where(eq(q.t.workspaceMember.userId, "admin")),
+            );
             return true;
           },
         })
       ).status,
     ).toBe(403);
-    expect(await listJobs(sqliteDb(f.db))).toHaveLength(0);
-    expect(
-      f.db.query("SELECT * FROM workspace_access_audit WHERE action='access.denied'").all(),
-    ).toHaveLength(1);
+    expect(await listJobs(f.db)).toHaveLength(0);
+    expect(await audits(f.db, "access.denied")).toHaveLength(1);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -161,7 +172,7 @@ test("repository scope mutation during revalidation cannot enqueue recovery", as
       (
         await f.request("owner", {
           check: async () => {
-            await replaceWorkspaceRepositories(sqliteDb(f.db), {
+            await replaceWorkspaceRepositories(f.db, {
               workspaceId: "workspace",
               actorId: "owner",
               repositories: [{ repository: "acme/other", teamId: "team" }],
@@ -172,8 +183,8 @@ test("repository scope mutation during revalidation cannot enqueue recovery", as
         })
       ).status,
     ).toBe(403);
-    expect(await listJobs(sqliteDb(f.db))).toHaveLength(0);
+    expect(await listJobs(f.db)).toHaveLength(0);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });

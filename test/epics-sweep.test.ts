@@ -1,18 +1,13 @@
 import { syncSteps } from "../src/runner-backend";
 import { expect, test } from "bun:test";
-import {
-  bindLinearSessionTask,
-  migrate,
-  openDatabase,
-  recordLinearInstallation,
-  sqliteDb,
-} from "../src/db";
+import { bindLinearSessionTask, recordLinearInstallation } from "../src/db";
 import { createItemReconciler, intakeDelegatedIssue, SWEEP_FULL_REFRESH_MS } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 async function sweepFixture() {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   const tracker = createFakeTracker([
     {
       linearIssueId: "parent",
@@ -30,13 +25,17 @@ async function sweepFixture() {
     delegateId: "app",
   });
   lifecycle.issues.set("child", { ...lifecycle.issue, id: "child" });
-  const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+  const intake = await intakeDelegatedIssue(db, tracker, {
     linearIssueId: "parent",
     now: 1000,
   });
   if (!intake.ok) throw new Error("intake failed");
-  db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-  await recordLinearInstallation(sqliteDb(db), {
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: "workspace", linearOrganizationId: "org", name: "Workspace", createdAt: 1000 }),
+  );
+  await recordLinearInstallation(db, {
     organizationId: "org",
     oauthClientId: "client",
     appUserId: "app",
@@ -44,12 +43,12 @@ async function sweepFixture() {
     teamId: "team",
     observedAtMs: 1000,
   });
-  await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, { actorId: "human" });
+  await bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "human" });
   let clock = 10_000;
   let reads = 0;
   let failNext = false;
   const reconciler = createItemReconciler({
-    store: sqliteDb(db),
+    store: db,
     tracker: {
       ...tracker,
       listDeps: tracker.listDeps.bind(tracker),
@@ -67,7 +66,7 @@ async function sweepFixture() {
     now: () => clock,
   });
   return {
-    db,
+    close,
     reconciler,
     reads: () => reads,
     failNextRead() {
@@ -89,7 +88,7 @@ test("a sweep right after another with no Linear change reads nothing", async ()
     expect(fixture.reads()).toBe(1);
   } finally {
     await fixture.reconciler.close();
-    fixture.db.close();
+    await fixture.close();
   }
 });
 
@@ -108,7 +107,7 @@ test("a sweep re-reads a delegation whose issue change was not reconciled", asyn
     expect(fixture.reads()).toBe(3);
   } finally {
     await fixture.reconciler.close();
-    fixture.db.close();
+    await fixture.close();
   }
 });
 
@@ -122,6 +121,6 @@ test("a sweep re-reads a delegation untouched for longer than the full refresh w
     expect(fixture.reads()).toBe(2);
   } finally {
     await fixture.reconciler.close();
-    fixture.db.close();
+    await fixture.close();
   }
 });

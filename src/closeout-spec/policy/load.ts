@@ -46,28 +46,9 @@ export type LoadPolicyInput = {
  *
  * The entry is `.agents/closeout.yaml` on `refs/heads/main` of `origin`.
  */
-export function loadPolicy(input: LoadPolicyInput): PolicyLoadOutcome {
-  if (input.policyRoot !== undefined) {
-    const root = resolve(input.policyRoot);
-    if (!input.policyRoot.trim() || !isDirectory(root))
-      return blocked("local", "local policy root is not a directory");
-    const loaded = loadHomePolicy(root);
-    if (!loaded.ok) return blocked("local", loaded.message);
-    if (loaded.absent)
-      return blocked("local", `local policy is missing: ${join(root, PUBLIC_POLICY_PATH)}`);
-    return {
-      ok: true,
-      policy: present("local", loaded.policy, join(root, loaded.policy.entryPath)),
-      warnings: [
-        {
-          code: "local-policy",
-          message: `Using configured local policy ${join(root, loaded.policy.entryPath)}.`,
-        },
-        ...keyWarnings(loaded.policy),
-      ],
-    };
-  }
-  const confirmed = confirmedOriginMain(input);
+export async function loadPolicy(input: LoadPolicyInput): Promise<PolicyLoadOutcome> {
+  if (input.policyRoot !== undefined) return loadLocalPolicy(input.policyRoot);
+  const confirmed = await confirmedOriginMain(input);
   if (!confirmed.ok) return blocked("repo", confirmed.message);
   const staged = materialize(input.git, input.repo, confirmed.commit);
   if (!staged.ok)
@@ -79,6 +60,27 @@ export function loadPolicy(input: LoadPolicyInput): PolicyLoadOutcome {
     return { ok: false, source: "repo", message: loaded.message, main: confirmed.commit };
   if (loaded.absent) return { ok: true, policy: ABSENT_POLICY, warnings: [] };
   return { ok: true, policy: present("repo", loaded.policy), warnings: keyWarnings(loaded.policy) };
+}
+
+export function loadLocalPolicy(policyRoot: string): PolicyLoadOutcome {
+  const root = resolve(policyRoot);
+  if (!policyRoot.trim() || !isDirectory(root))
+    return blocked("local", "local policy root is not a directory");
+  const loaded = loadHomePolicy(root);
+  if (!loaded.ok) return blocked("local", loaded.message);
+  if (loaded.absent)
+    return blocked("local", `local policy is missing: ${join(root, PUBLIC_POLICY_PATH)}`);
+  return {
+    ok: true,
+    policy: present("local", loaded.policy, join(root, loaded.policy.entryPath)),
+    warnings: [
+      {
+        code: "local-policy",
+        message: `Using configured local policy ${join(root, loaded.policy.entryPath)}.`,
+      },
+      ...keyWarnings(loaded.policy),
+    ],
+  };
 }
 
 /** `published` is the task's videos and screenshots, which Paws adds for the agent session. */
@@ -93,7 +95,7 @@ export type PolicyFilesLoad =
     }
   | { ok: false; message: string };
 
-export function loadPolicyFiles(input: LoadPolicyInput): PolicyFilesLoad {
+export async function loadPolicyFiles(input: LoadPolicyInput): Promise<PolicyFilesLoad> {
   if (input.policyRoot !== undefined) {
     const root = resolve(input.policyRoot);
     if (!input.policyRoot.trim() || !isDirectory(root))
@@ -103,7 +105,7 @@ export function loadPolicyFiles(input: LoadPolicyInput): PolicyFilesLoad {
       ? { ok: false, message: `local policy is missing: ${join(root, PUBLIC_POLICY_PATH)}` }
       : local;
   }
-  const staged = originMainFiles(input);
+  const staged = await originMainFiles(input);
   if (!staged.ok) return staged;
   const loaded = loadMemoryPolicy(staged.files);
   if (!loaded.ok) return loaded;
@@ -141,11 +143,11 @@ export type RootFilesLoad =
  * result. A name that is a symlink, a directory or larger than
  * {@link ROOT_FILE_MAX_BYTES} fails the load.
  */
-export function loadOriginMainRootFiles(
+export async function loadOriginMainRootFiles(
   input: Pick<LoadPolicyInput, "repo" | "git">,
   names: readonly string[],
-): RootFilesLoad {
-  const confirmed = confirmedOriginMain(input);
+): Promise<RootFilesLoad> {
+  const confirmed = await confirmedOriginMain(input);
   if (!confirmed.ok) return confirmed;
   return loadRootFilesAt(input, confirmed.commit, names);
 }
@@ -192,24 +194,24 @@ export function loadCommitPolicy(
   return { ok: true, policy: loaded.absent ? null : loaded.policy };
 }
 
-function originMainFiles(
+async function originMainFiles(
   input: LoadPolicyInput,
-): { ok: true; files: Map<string, Uint8Array> } | { ok: false; message: string } {
-  const confirmed = confirmedOriginMain(input);
+): Promise<{ ok: true; files: Map<string, Uint8Array> } | { ok: false; message: string }> {
+  const confirmed = await confirmedOriginMain(input);
   if (!confirmed.ok) return confirmed;
   return materialize(input.git, input.repo, confirmed.commit);
 }
 
 /** The `origin/main` commit when the fetch and `ls-remote` name the same one. */
-export function confirmedOriginMain(
+export async function confirmedOriginMain(
   input: Pick<LoadPolicyInput, "repo" | "git">,
-): { ok: true; commit: string } | { ok: false; message: string } {
+): Promise<{ ok: true; commit: string } | { ok: false; message: string }> {
   for (let attempt = 1; ; attempt++) {
-    const fetched = input.git.fetchOriginMain(input.repo);
+    const fetched = await input.git.fetchOriginMain(input.repo);
     if (!fetched.ok) return { ok: false, message: unavailable(fetched.stderr) };
     const commit = fetched.commit.trim().toLowerCase();
     if (!isSha(commit)) return { ok: false, message: "origin/main is unavailable" };
-    const listed = input.git.lsRemoteOriginMain(input.repo);
+    const listed = await input.git.lsRemoteOriginMain(input.repo);
     if (!listed.ok) return { ok: false, message: unavailable(listed.stderr) };
     const remote = remoteSha(listed.stdout);
     if (remote === undefined) return { ok: false, message: "origin/main is unavailable" };

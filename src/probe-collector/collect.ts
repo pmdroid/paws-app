@@ -176,7 +176,7 @@ export async function collectProbes(options: CollectOptions): Promise<CollectRes
   }
 
   const yaml = renderProposal({ repository, main, rules, skipped });
-  const invalid = validateProposal(yaml, rules);
+  const invalid = await validateProposal(yaml, rules);
   if (invalid)
     throw new Error(`The proposed rules do not validate as a Closeout policy: ${invalid}`);
   await writeFile(options.out, yaml);

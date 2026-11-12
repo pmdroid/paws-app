@@ -177,8 +177,9 @@ try {
   await page.goto(`http://127.0.0.1:${server.port}/dashboard/findings`);
   await expect(page.locator("#finding-1")).toBeVisible();
   const beforeFilters = groupsReads;
-  await page.locator("[data-findings-filter=severity]").selectOption("P1");
-  await expect(page.locator("[data-findings-filter=severity]")).toHaveValue("P1");
+  await page.locator("[data-findings-severity=P1]").click();
+  await expect(page.locator("[data-findings-severity=P1]")).toHaveAttribute("aria-pressed", "true");
+  await expect(page).toHaveURL(/severity=P1/);
   expect(groupsReads).toBe(beforeFilters);
   await page.getByRole("button", { name: "Groups", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("Could not load groups");

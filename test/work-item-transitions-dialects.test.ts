@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { JOB_KIND, type Checkpoint } from "../src/core";
 import {
@@ -13,7 +13,6 @@ import {
   enqueueOutboxOnceSteps,
   failWorkItemSteps,
   getRunSteps,
-  getWorkItem,
   getWorkItemSteps,
   listWorkItemEventRowsSteps,
   markJobAwakeWaitSteps,
@@ -26,11 +25,10 @@ import {
   type Db,
   type Job,
   type WorkItemRecord,
-  sqliteDb,
   syncSteps,
 } from "../src/db";
-import { forEachDialect, insertWorkItem, json, withoutForeignKeys } from "./dialects";
-import { tempDb } from "./helpers";
+import { insertWorkItem, json, withoutForeignKeys } from "./dialects";
+import { tempStore } from "./pglite";
 
 function parsed(value: unknown): Record<string, unknown> {
   return (typeof value === "string" ? JSON.parse(value) : value) as Record<string, unknown>;
@@ -138,7 +136,8 @@ function asJob(id: number, payload: unknown, lockedBy: string, attempts: number)
   return { id, payload, lockedBy, attempts } as Job;
 }
 
-forEachDialect((open) => {
+describe("postgres", () => {
+  const open = () => tempStore();
   test("a transition moves state, records its event and drops the idle clock", async () => {
     const { db, close } = await open();
     try {
@@ -612,30 +611,4 @@ forEachDialect((open) => {
       await close();
     }
   });
-});
-
-test("the sync wrapper announces a new job after its transaction commits", async () => {
-  const database = tempDb();
-  try {
-    database.run(
-      `INSERT INTO work_item (id, delegation_id, linear_issue_id, linear_identifier, title, state, branch_name, position, created_at)
-       VALUES ('i','d','l','PAS-1','t','running','paws/i',0,0)`,
-    );
-    const during: boolean[] = [];
-    const stop = onJobReady(() => during.push(database.inTransaction));
-    try {
-      await deferWorkItem(sqliteDb(database), (await getWorkItem(sqliteDb(database), "i"))!, {
-        retry: 1,
-        delayMs: 1,
-        handoff: null,
-        message: null,
-        now: 1,
-      });
-      expect(during).toEqual([false]);
-    } finally {
-      stop();
-    }
-  } finally {
-    database.close();
-  }
 });

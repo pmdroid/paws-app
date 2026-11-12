@@ -166,19 +166,25 @@ type SchedulerAdmission = {
   runnerId?: string;
 };
 
-export function* saveSchedulerAdmissionSteps(q: Q, row: SchedulerAdmission, orIgnore = false) {
-  const insert = q.orm.insert(q.t.schedulerAdmission).values({
-    itemId: row.itemId,
-    jobId: row.jobId,
-    projectKey: "*",
-    repositoryKey: row.repositoryKey,
-    sessionId: row.sessionId,
-    paths: jsonValue(q, []),
-    hot: 0,
-    createdAt: row.now,
-  });
-  yield* q.exec(orIgnore ? insert.onConflictDoNothing() : insert);
-  if (row.runnerId) {
+export function* saveSchedulerAdmissionSteps(q: Q, row: SchedulerAdmission) {
+  const { schedulerAdmission } = q.t;
+  const inserted = yield* q.all(
+    q.orm
+      .insert(schedulerAdmission)
+      .values({
+        itemId: row.itemId,
+        jobId: row.jobId,
+        projectKey: "*",
+        repositoryKey: row.repositoryKey,
+        sessionId: row.sessionId,
+        paths: jsonValue(q, []),
+        hot: 0,
+        createdAt: row.now,
+      })
+      .onConflictDoNothing({ target: schedulerAdmission.itemId })
+      .returning({ itemId: schedulerAdmission.itemId }),
+  );
+  if (inserted.length && row.runnerId) {
     const job = q.t.job;
     const saved = yield* q.one(
       q.orm
@@ -201,12 +207,8 @@ export function* saveSchedulerAdmissionSteps(q: Q, row: SchedulerAdmission, orIg
   }
 }
 
-export async function saveSchedulerAdmission(
-  store: Db,
-  row: SchedulerAdmission,
-  orIgnore = false,
-): Promise<void> {
-  await store.run((q) => saveSchedulerAdmissionSteps(q, row, orIgnore));
+export async function saveSchedulerAdmission(store: Db, row: SchedulerAdmission): Promise<void> {
+  await store.transaction((q) => saveSchedulerAdmissionSteps(q, row));
 }
 
 export function* schedulerItemsSteps(q: Q, now: number) {

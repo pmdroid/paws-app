@@ -3,17 +3,15 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { and, eq } from "drizzle-orm";
 import {
   consumeWorkspaceBootstrap,
   listRunnerAgents,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   saveAgentVersions,
   saveNpmPackage,
   type AgentVersionRow,
   type RunnerAgentView,
-  sqliteDb,
 } from "../src/db";
 import { createRunnerControl, createRunnerHttp } from "../src/runner-control";
 import { RunnerAgentTargetSchema, type RunnerAgentTarget } from "../src/runner-protocol";
@@ -25,9 +23,12 @@ import {
   workspaceTokenHash,
   type WorkspacePrincipal,
 } from "../src/workspace";
+import { tempStore } from "./pglite";
 
 const roots: string[] = [];
-afterEach(() => {
+const stores: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of stores.splice(0)) await close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -37,17 +38,17 @@ const DAY = 24 * 60 * 60 * 1000;
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "paws-runner-agents-"));
   roots.push(root);
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
+  stores.push(close);
   let now = 1_800_000_000_000;
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "fixture-host", now);
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-host", now);
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "fixture-host",
     name: "Fixture",
@@ -64,7 +65,7 @@ async function fixture() {
   };
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -84,7 +85,7 @@ async function fixture() {
   };
   const runnerId = await pair("goldbox");
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -105,7 +106,7 @@ async function fixture() {
       nativeVersion: status === "eligible" ? `${version}-native` : null,
       checkedAt: now,
     }) satisfies AgentVersionRow;
-  await saveAgentVersions(sqliteDb(db), [
+  await saveAgentVersions(db, [
     row("claude", "2.0.0", "eligible", "A"),
     row("claude", "2.1.0", "eligible", "B"),
     row("claude", "2.2.0", "waiting", "C"),
@@ -119,7 +120,7 @@ async function fixture() {
     seed: string,
   ) =>
     await saveNpmPackage(
-      sqliteDb(db),
+      db,
       name,
       null,
       Object.fromEntries(
@@ -215,7 +216,7 @@ test("a heartbeat with agents is stored and shown on the runner card", async () 
     },
     { agent: "codex", current: "0.9.0", pending: null, reportedAt: runner.now() },
   ];
-  expect(await listRunnerAgents(sqliteDb(runner.db), runner.runnerId)).toEqual(expected);
+  expect(await listRunnerAgents(runner.db, runner.runnerId)).toEqual(expected);
   expect((await runner.list()).runners[0]!.codingAgents).toEqual(expected);
 });
 
@@ -228,7 +229,7 @@ test("a malformed agent report is refused", async () => {
     { agent: "claude", version: "1.0.0", status: "failed", error: "x".repeat(501) },
   ])
     expect((await runner.heartbeat({ agents: [agent] })).status).toBe(403);
-  expect(await listRunnerAgents(sqliteDb(runner.db), runner.runnerId)).toEqual([]);
+  expect(await listRunnerAgents(runner.db, runner.runnerId)).toEqual([]);
 });
 
 test("Update sends the eligible version with its integrity, and the card follows the install", async () => {
@@ -264,9 +265,8 @@ test("Update sends the eligible version with its integrity, and the card follows
   ]);
   const target = sent[0]!.id;
   const pending = async () =>
-    (await listRunnerAgents(sqliteDb(runner.db), runner.runnerId)).find(
-      (entry) => entry.agent === "claude",
-    )!.pending;
+    (await listRunnerAgents(runner.db, runner.runnerId)).find((entry) => entry.agent === "claude")!
+      .pending;
   expect(await pending()).toMatchObject({ version: "2.1.0", status: "requested" });
 
   await runner.heartbeat({
@@ -293,7 +293,7 @@ test("Update sends the eligible version with its integrity, and the card follows
     ],
   });
   expect(done.body!.agents).toEqual([]);
-  expect((await listRunnerAgents(sqliteDb(runner.db), runner.runnerId))[0]).toMatchObject({
+  expect((await listRunnerAgents(runner.db, runner.runnerId))[0]).toMatchObject({
     current: "2.1.0",
     pending: null,
   });
@@ -314,7 +314,7 @@ test("an install the runner reports failed shows its error until someone asks ag
       { agent: "claude", version: "2.1.0", status: "failed", target: first!.id, error },
     ],
   });
-  expect((await listRunnerAgents(sqliteDb(runner.db), runner.runnerId))[0]!.pending).toMatchObject({
+  expect((await listRunnerAgents(runner.db, runner.runnerId))[0]!.pending).toMatchObject({
     status: "failed",
     error,
   });
@@ -329,7 +329,7 @@ test("an install the runner reports failed shows its error until someone asks ag
     })
   ).body!.agents as { id: string }[];
   expect(second!.id).not.toBe(first!.id);
-  expect((await listRunnerAgents(sqliteDb(runner.db), runner.runnerId))[0]!.pending).toMatchObject({
+  expect((await listRunnerAgents(runner.db, runner.runnerId))[0]!.pending).toMatchObject({
     status: "requested",
     error: null,
   });
@@ -356,11 +356,16 @@ test("a version that is not eligible cannot be chosen", async () => {
 
   // A version that stops being eligible after it was chosen is no longer sent.
   await runner.update("claude", "2.1.0");
-  runner.db.run("UPDATE agent_version SET status='refused', reason=? WHERE version='2.1.0'", [
-    "Its integrity changed.",
-  ]);
+  await runner.db.run((q) =>
+    q.exec(
+      q.orm
+        .update(q.t.agentVersion)
+        .set({ status: "refused", reason: "Its integrity changed." })
+        .where(eq(q.t.agentVersion.version, "2.1.0")),
+    ),
+  );
   expect((await runner.heartbeat({ agents: installed })).body!.agents).toEqual([]);
-  expect((await listRunnerAgents(sqliteDb(runner.db), runner.runnerId))[0]!.pending).toMatchObject({
+  expect((await listRunnerAgents(runner.db, runner.runnerId))[0]!.pending).toMatchObject({
     status: "failed",
     error: "Paws no longer offers Claude 2.1.0: Its integrity changed.",
   });
@@ -439,7 +444,7 @@ test("Update all runners never moves a runner back, and asks again after a faile
   }[];
   expect(second!.version).toBe("2.1.0");
   expect(second!.id).not.toBe(first!.id);
-  expect((await listRunnerAgents(sqliteDb(runner.db), runner.runnerId))[0]!.pending).toMatchObject({
+  expect((await listRunnerAgents(runner.db, runner.runnerId))[0]!.pending).toMatchObject({
     status: "requested",
   });
 });
@@ -447,9 +452,18 @@ test("Update all runners never moves a runner back, and asks again after a faile
 test("a version whose native package changed integrity on npm is not sent", async () => {
   const runner = await fixture();
   await runner.heartbeat({ agents: installed });
-  runner.db.run(
-    "UPDATE npm_package_version SET changed_integrity=? WHERE package=? AND version=?",
-    [integrity("Z"), "@anthropic-ai/claude-agent-sdk-linux-x64", "2.1.0-native"],
+  await runner.db.run((q) =>
+    q.exec(
+      q.orm
+        .update(q.t.npmPackageVersion)
+        .set({ changedIntegrity: integrity("Z") })
+        .where(
+          and(
+            eq(q.t.npmPackageVersion.package, "@anthropic-ai/claude-agent-sdk-linux-x64"),
+            eq(q.t.npmPackageVersion.version, "2.1.0-native"),
+          ),
+        ),
+    ),
   );
   expect(await runner.update("claude", "2.1.0")).toEqual({
     status: 400,

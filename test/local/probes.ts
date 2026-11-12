@@ -1,4 +1,5 @@
 import { probeRunnerInputsClock } from "./runner-inputs-clock";
+import { tempStore } from "../pglite";
 import { probeSchedulerRuntime } from "./scheduler-runtime";
 import { probeScheduler } from "./scheduler";
 import { probeEpicReconciliation } from "./intake-reconciliation";
@@ -39,10 +40,7 @@ import {
   getWorkItem,
   insertQueuedItem,
   listJobs,
-  migrate,
-  openDatabase,
   recoverOnStartup,
-  sqliteDb,
 } from "../../src/db";
 import { enqueueVerifiedMerge } from "../../src/loop";
 import { probeHostAcp } from "./host-acp";
@@ -126,8 +124,7 @@ export async function probeBoundaries(
   await probeGitCancellation(join(root, "git-cancellation"), observe);
   await probeRunnerWorker(join(root, "runner-worker"), observe);
   const clock = new FakeClock(1000);
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   try {
     const checkpoint = {
       phase: "merge_queue" as const,
@@ -135,31 +132,31 @@ export async function probeBoundaries(
       wipCommit: "b".repeat(40),
     };
     const recovering = await insertQueuedItem(db, { id: "recovering-item", now: clock.now() });
-    await beginImplementRun(sqliteDb(db), recovering.id, clock.now());
-    await enterMergeQueue(sqliteDb(db), recovering.id, checkpoint);
-    const original = await enqueueVerifiedMerge(sqliteDb(db), {
+    await beginImplementRun(db, recovering.id, clock.now());
+    await enterMergeQueue(db, recovering.id, checkpoint);
+    const original = await enqueueVerifiedMerge(db, {
       itemId: recovering.id,
       head: checkpoint.wipCommit,
       summary: "Accepted synthetic candidate",
       now: clock.now(),
     });
-    await recoverOnStartup(sqliteDb(db), clock.now());
-    if ((await getWorkItem(sqliteDb(db), recovering.id))?.state === "verifying")
-      await applyWorkItemEvent(sqliteDb(db), recovering.id, "closeout_accepted");
-    const reverification = await claimNextJob(sqliteDb(db), {
+    await recoverOnStartup(db, clock.now());
+    if ((await getWorkItem(db, recovering.id))?.state === "verifying")
+      await applyWorkItemEvent(db, recovering.id, "closeout_accepted");
+    const reverification = await claimNextJob(db, {
       now: clock.now(),
       queues: [JOB_KIND.reverify],
     });
     if (reverification === null) throw new Error("Recovery did not schedule re-verification");
-    const retry = await enqueueVerifiedMerge(sqliteDb(db), {
+    const retry = await enqueueVerifiedMerge(db, {
       itemId: recovering.id,
       head: checkpoint.wipCommit,
       summary: "Reverified synthetic candidate",
       now: clock.now(),
       reverifyJobId: reverification.id,
     });
-    await completeJob(sqliteDb(db), reverification, clock.now());
-    const runnable = await claimNextJob(sqliteDb(db), {
+    await completeJob(db, reverification, clock.now());
+    const runnable = await claimNextJob(db, {
       now: clock.now(),
       queues: [JOB_KIND.merge],
     });
@@ -170,7 +167,7 @@ export async function probeBoundaries(
         original,
         retry,
         claimedRetry: runnable?.id ?? null,
-        jobs: (await listJobs(sqliteDb(db))).map(({ id, queue, status }) => ({
+        jobs: (await listJobs(db)).map(({ id, queue, status }) => ({
           id,
           queue,
           status,
@@ -178,7 +175,7 @@ export async function probeBoundaries(
       },
     );
   } finally {
-    db.close();
+    await close();
   }
 }
 import { probeRunnerOrchestration } from "./runner-orchestration";

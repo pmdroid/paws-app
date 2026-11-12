@@ -56,7 +56,7 @@ function SheetContent({
         data-slot="sheet-content"
         data-side={side}
         className={cn(
-          "bg-background data-open:animate-in data-closed:animate-out fixed z-50 flex min-h-0 flex-col gap-4 overflow-hidden border-2 border-border outline-none transition ease-in-out data-closed:duration-300 data-open:duration-500",
+          "bg-secondary-background text-foreground data-open:animate-in data-closed:animate-out fixed z-50 flex min-h-0 flex-col gap-4 overflow-hidden border-border outline-none transition ease-in-out data-closed:duration-300 data-open:duration-500",
           side === "right" &&
             "data-closed:slide-out-to-right data-open:slide-in-from-right inset-y-0 right-0 h-dvh max-h-dvh w-3/4 border-l sm:max-w-sm",
           side === "left" &&

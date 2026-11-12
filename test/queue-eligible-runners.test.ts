@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
+import { eq } from "drizzle-orm";
 import { FakeClock } from "../src/core";
 import {
   JobLoop,
@@ -11,32 +11,39 @@ import {
   listOutbox,
   putWorkspaceUser,
   recordLinearInstallation,
+  listJobs,
   syncWorkspaceMember,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import { Orchestrator } from "../src/loop";
 import { itemOwnerHasEligibleRunnerSteps } from "../src/runner-placement";
-import { tempDb, tempHome } from "./helpers";
+import { tempHome } from "./helpers";
 import { workspaceAdmission } from "./fake-workspace";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const DAY = 24 * 60 * 60 * 1000;
 const START = 1_000;
 
 /** A workspace where `other` owns one busy single-slot runner and `me` owns none. */
-async function workspace(db: Database) {
-  db.run("INSERT INTO workspace VALUES('ws','org','Workspace',0)");
+async function workspace(db: Db) {
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: "ws", linearOrganizationId: "org", name: "Workspace", createdAt: 0 }),
+  );
   const users: Record<string, string> = {};
   for (const [name, role] of [
     ["other", "admin"],
     ["me", "member"],
   ] as const) {
-    users[name] = await putWorkspaceUser(sqliteDb(db), {
+    users[name] = await putWorkspaceUser(db, {
       id: name,
       linearUserId: `linear-${name}`,
       name,
       email: `${name}@example.invalid`,
     });
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: "ws",
       userId: users[name]!,
       role,
@@ -45,21 +52,24 @@ async function workspace(db: Database) {
       now: 0,
     });
   }
-  addRunner(db, "theirs", users.other!, START);
+  await addRunner(db, "theirs", users.other!, START);
   // An item with no delegator. It takes the only slot.
   await insertQueuedItem(db, { id: "busy", now: -1, sessionKey: "busy-session" });
   const item = await insertQueuedItem(db, { id: "mine", now: START, sessionKey: "session" });
-  db.run("UPDATE work_item SET linear_identifier='PAS-1',owner_user_id=? WHERE id='mine'", [
-    users.me!,
-  ]);
-  await ensureLinearSession(sqliteDb(db), {
+  await seed(db, (q) =>
+    q.orm
+      .update(q.t.workItem)
+      .set({ linearIdentifier: "PAS-1", ownerUserId: users.me! })
+      .where(eq(q.t.workItem.id, "mine")),
+  );
+  await ensureLinearSession(db, {
     sessionId: "session",
     issueId: item.linearIssueId,
     organizationId: "org",
     creatorId: "linear-me",
     now: START,
   });
-  await recordLinearInstallation(sqliteDb(db), {
+  await recordLinearInstallation(db, {
     sessionId: "session",
     organizationId: "org",
     oauthClientId: "client",
@@ -67,23 +77,34 @@ async function workspace(db: Database) {
     teamId: "team",
     observedAtMs: 0,
   });
-  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId);
+  await bindLinearSessionTask(db, "session", item.delegationId);
   return users;
 }
 
-function addRunner(db: Database, id: string, ownerId: string, seenAt: number): void {
-  db.run(
-    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,'ws',?,?,'active',0,?)",
-    [id, ownerId, id, seenAt],
+function addRunner(db: Db, id: string, ownerId: string, seenAt: number): Promise<void> {
+  return seed(
+    db,
+    (q) =>
+      q.orm.insert(q.t.runner).values({
+        id,
+        workspaceId: "ws",
+        ownerUserId: ownerId,
+        name: id,
+        status: "active",
+        createdAt: 0,
+        lastSeenAt: seenAt,
+      }),
+    (q) => q.orm.insert(q.t.runnerCapacity).values({ runnerId: id, capacity: 1 }),
+    (q) =>
+      q.orm
+        .insert(q.t.runnerAgentPolicy)
+        .values(["claude", "codex"].map((agent) => ({ runnerId: id, agent, ready: 1 }))),
   );
-  db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,1)", [id]);
-  for (const agent of ["claude", "codex"])
-    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,?,1)", [id, agent]);
 }
 
-function orchestrator(db: Database, clock: FakeClock) {
+function orchestrator(db: Db, clock: FakeClock) {
   return new Orchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
@@ -95,30 +116,31 @@ function orchestrator(db: Database, clock: FakeClock) {
   });
 }
 
-async function bodies(db: Database, kind: string): Promise<string[]> {
-  return (await listOutbox(sqliteDb(db)))
+async function bodies(db: Db, kind: string): Promise<string[]> {
+  return (await listOutbox(db))
     .map((row) => row.payload as { kind?: string; body?: string })
     .filter((payload) => payload.kind === kind)
     .map((payload) => payload.body ?? "");
 }
 
-function startJobs(db: Database, itemId: string): number {
-  return db
-    .query<{ count: number }, [string]>(
-      "SELECT count(*) AS count FROM job WHERE queue='item.start' AND status='pending' AND json_extract(payload,'$.itemId')=?",
-    )
-    .get(itemId)!.count;
+async function startJobs(db: Db, itemId: string): Promise<number> {
+  return (await listJobs(db)).filter(
+    (job) =>
+      job.queue === "item.start" &&
+      job.status === "pending" &&
+      (job.payload as { itemId?: string }).itemId === itemId,
+  ).length;
 }
 
 test("a delegator with no runner they may use is not queued behind busy slots and never times out", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const clock = new FakeClock(START);
   const paws = orchestrator(db, clock);
   try {
     const users = await workspace(db);
     await paws.reconcileExecution();
     await paws.reconcileExecution();
-    expect(startJobs(db, "busy")).toBe(1);
+    expect(await startJobs(db, "busy")).toBe(1);
     expect((await bodies(db, "thought")).filter((body) => body.startsWith("Queued"))).toEqual([]);
     expect(
       (await bodies(db, "thought")).filter((body) => body.includes("runner you can use")),
@@ -128,9 +150,9 @@ test("a delegator with no runner they may use is not queued behind busy slots an
 
     // Well past the start timeout, with the other runner still online and busy.
     clock.advance(2 * DAY);
-    db.run("UPDATE runner SET last_seen_at=?", [clock.now()]);
+    await seed(db, (q) => q.orm.update(q.t.runner).set({ lastSeenAt: clock.now() }));
     await paws.reconcileExecution();
-    expect((await getWorkItem(sqliteDb(db), "mine"))?.state).toBe("queued");
+    expect((await getWorkItem(db, "mine"))?.state).toBe("queued");
     expect(await bodies(db, "error")).toEqual([]);
     expect(
       (await bodies(db, "thought")).filter((body) => body.includes("runner you can use")),
@@ -138,27 +160,29 @@ test("a delegator with no runner they may use is not queued behind busy slots an
     expect((await bodies(db, "thought")).filter((body) => body.startsWith("Queued"))).toEqual([]);
 
     // Once the delegator pairs a runner with a free slot, the scheduler starts the item.
-    addRunner(db, "own", users.me!, clock.now());
+    await addRunner(db, "own", users.me!, clock.now());
     await paws.reconcileExecution();
-    expect(startJobs(db, "mine")).toBe(1);
+    expect(await startJobs(db, "mine")).toBe(1);
   } finally {
     await paws.shutdown();
-    db.close();
+    await close();
   }
 });
 
 test("a delegator whose only runner is busy still gets the queue notice with the position", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const clock = new FakeClock(START);
   const paws = orchestrator(db, clock);
   try {
     const users = await workspace(db);
     // The delegator's runner is the only active one, and the other item takes its slot.
-    db.run("UPDATE runner SET status='paused' WHERE id='theirs'");
-    addRunner(db, "own", users.me!, START);
+    await seed(db, (q) =>
+      q.orm.update(q.t.runner).set({ status: "paused" }).where(eq(q.t.runner.id, "theirs")),
+    );
+    await addRunner(db, "own", users.me!, START);
     await paws.reconcileExecution();
-    expect(startJobs(db, "busy")).toBe(1);
-    expect(startJobs(db, "mine")).toBe(0);
+    expect(await startJobs(db, "busy")).toBe(1);
+    expect(await startJobs(db, "mine")).toBe(0);
     expect(await bodies(db, "thought")).toContain(
       "Queued, 1st in line. 1 of 1 runner slot is busy. Paws starts PAS-1 when a slot frees.",
     );
@@ -167,6 +191,6 @@ test("a delegator whose only runner is busy still gets the queue notice with the
     ).toEqual([]);
   } finally {
     await paws.shutdown();
-    db.close();
+    await close();
   }
 });

@@ -100,6 +100,18 @@ export async function pgliteDb(
   return db;
 }
 
+export async function tempStore(
+  env: Record<string, string | undefined> = process.env,
+): Promise<{ db: Db; close(): Promise<void> }> {
+  const base = env.PAWS_TEST_DATABASE_URL;
+  if (base) {
+    const server = await serverPostgres(base, 1);
+    return { db: server.store, close: server.close };
+  }
+  const pg = await pgliteDb();
+  return { db: postgresDb(pg), close: () => pg.$client.close() };
+}
+
 const EXTENDED = new Set([..."PBDECH"].map((type) => type.charCodeAt(0)));
 
 function syncedSession(client: PGlite): PGlite {

@@ -1,59 +1,79 @@
 import { expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
 import {
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordPushOutage,
   savePolicyRunnerWarning,
   sessionRepositoriesAllowed,
   syncWorkspaceMember,
   workspaceSessionIds,
-  sqliteDb,
 } from "../src/db";
 import { startServer } from "../src/server";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
+import { seed as insert } from "./dialects";
+import { tempStore } from "./pglite";
 
 const REPOSITORIES = ["fixture/team-a", "fixture/private-team-b", "Fixture/Catalog"];
 
-async function seed(): Promise<Database> {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  for (const [id, org] of [
+async function seed() {
+  const { db, close } = await tempStore();
+  const workspaces = [
     ["workspace", "org"],
     ["foreign", "org-foreign"],
-  ])
-    db.run(
-      "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES(?,?,'Workspace',0)",
-      [id!, org!],
-    );
-  for (const [workspace, repository, team] of [
+  ];
+  const repositories = [
     ["workspace", "fixture/team-a", "team-a"],
     ["workspace", "fixture/private-team-b", "team-b"],
     ["foreign", "fixture/private-team-b", "team-a"],
-  ])
-    db.run("INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES(?,?,?)", [
-      workspace!,
-      repository!,
-      team!,
-    ]);
-  db.run(
-    `INSERT INTO repository_catalog(repository, owner, repo, remote_url, default_branch, refreshed_at)
-     VALUES ('fixture/catalog', 'Fixture', 'Catalog', 'https://github.com/Fixture/Catalog.git', 'main', 0)`,
-  );
-  for (const [session, org, team] of [
+  ];
+  const sessions = [
     ["session-a", "org", "team-a"],
     ["session-b", "org", "team-b"],
     ["session-c", "org", "team-c"],
     ["session-foreign", "org-foreign", "team-a"],
-  ])
-    db.run(
-      `INSERT INTO linear_session (session_id, organization_id, oauth_client_id, app_user_id, team_id,
-        installation_observed_at, created_at) VALUES (?, ?, 'fixture', 'app', ?, 1, 0)`,
-      [session!, org!, team!],
-    );
+  ];
+  await insert(
+    db,
+    (q) =>
+      q.orm.insert(q.t.workspace).values(
+        workspaces.map(([id, org]) => ({
+          id: id!,
+          linearOrganizationId: org!,
+          name: "Workspace",
+          createdAt: 0,
+        })),
+      ),
+    (q) =>
+      q.orm.insert(q.t.workspaceRepository).values(
+        repositories.map(([workspaceId, repository, teamId]) => ({
+          workspaceId: workspaceId!,
+          repository: repository!,
+          teamId: teamId!,
+        })),
+      ),
+    (q) =>
+      q.orm.insert(q.t.repositoryCatalog).values({
+        repository: "fixture/catalog",
+        owner: "Fixture",
+        repo: "Catalog",
+        remoteUrl: "https://github.com/Fixture/Catalog.git",
+        defaultBranch: "main",
+        refreshedAt: 0,
+      }),
+    (q) =>
+      q.orm.insert(q.t.linearSession).values(
+        sessions.map(([sessionId, organizationId, teamId]) => ({
+          sessionId: sessionId!,
+          organizationId: organizationId!,
+          oauthClientId: "fixture",
+          appUserId: "app",
+          teamId: teamId!,
+          installationObservedAt: 1,
+          createdAt: 0,
+        })),
+      ),
+  );
   for (const repository of REPOSITORIES) {
-    await recordPushOutage(sqliteDb(db), {
+    await recordPushOutage(db, {
       repository,
       error: `Synthetic diagnostic for ${repository}`,
       jobId: null,
@@ -61,7 +81,7 @@ async function seed(): Promise<Database> {
       now: 0,
       delayMs: () => 60_000,
     });
-    await savePolicyRunnerWarning(sqliteDb(db), {
+    await savePolicyRunnerWarning(db, {
       repository,
       policyDigest: `sha256:policy-${repository}`,
       runnerVersion: "0.1.0",
@@ -69,13 +89,13 @@ async function seed(): Promise<Database> {
       checkedAt: 0,
     });
   }
-  return db;
+  return { db, close };
 }
 
 test("diagnostics follow the team repository policy of the authorized sessions", async () => {
-  const db = await seed();
+  const { db, close } = await seed();
   const allowed = async (sessions: string[]) => [
-    ...(await sessionRepositoriesAllowed(sqliteDb(db), sessions, REPOSITORIES)),
+    ...(await sessionRepositoriesAllowed(db, sessions, REPOSITORIES)),
   ];
   expect(await allowed([])).toEqual([]);
   expect(await allowed(["session-a"])).toEqual(["fixture/team-a"]);
@@ -85,22 +105,22 @@ test("diagnostics follow the team repository policy of the authorized sessions",
     "fixture/team-a",
     "fixture/private-team-b",
   ]);
-  db.close();
+  await close();
 });
 
 test("a member's overview, merge queue and issue list hold only their teams' diagnostics", async () => {
-  const db = await seed();
+  const { db, close } = await seed();
   for (const [user, role, teams] of [
     ["member", "member", ["team-a"]],
     ["admin", "admin", []],
   ] as const) {
-    await putWorkspaceUser(sqliteDb(db), {
+    await putWorkspaceUser(db, {
       id: user,
       linearUserId: user,
       name: user,
       email: `${user}@x.test`,
     });
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: "workspace",
       userId: user,
       role,
@@ -113,7 +133,7 @@ test("a member's overview, merge queue and issue list hold only their teams' dia
   const port = reservation.port!;
   await reservation.stop(true);
   const access = createWorkspaceAccess({
-    store: sqliteDb(db),
+    store: db,
     publicUrl: `http://127.0.0.1:${port}`,
     clientId: "fixture",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -132,7 +152,7 @@ test("a member's overview, merge queue and issue list hold only their teams' dia
   const server = startServer({ port, hostname: "127.0.0.1", db, workspaceAccess: access });
   const cookie = async (userId: string) => ({
     headers: {
-      cookie: `${WORKSPACE_COOKIE}=${(await issueWorkspaceSession(sqliteDb(db), { workspaceId: "workspace", userId, now: Date.now() })).token}`,
+      cookie: `${WORKSPACE_COOKIE}=${(await issueWorkspaceSession(db, { workspaceId: "workspace", userId, now: Date.now() })).token}`,
     },
   });
   const member = await cookie("member");
@@ -163,12 +183,12 @@ test("a member's overview, merge queue and issue list hold only their teams' dia
           expect(text).not.toContain(hidden);
       }
     }
-    expect(await workspaceSessionIds(sqliteDb(db), "workspace", "admin", "fixture")).toEqual([
+    expect(await workspaceSessionIds(db, "workspace", "admin", "fixture")).toEqual([
       "session-a",
       "session-b",
       "session-c",
     ]);
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: "workspace",
       userId: "member",
       role: "member",
@@ -179,6 +199,6 @@ test("a member's overview, merge queue and issue list hold only their teams' dia
     expect(repositories(await read("/api/overview", member))).toEqual([[], []]);
   } finally {
     await server.stop(true);
-    db.close();
+    await close();
   }
 });

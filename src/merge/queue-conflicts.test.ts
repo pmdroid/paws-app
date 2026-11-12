@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { JOB_KIND } from "../core";
 import {
   enqueueJob,
@@ -8,43 +9,44 @@ import {
   listOutbox,
   recordRebaseReturn,
   returnToMergeQueue,
-  sqliteDb,
 } from "../db";
 import { findOpenQuestion } from "../questions";
-import { mergeHarness, pendingCi, type MergeHarness } from "./advance-harness";
+import { mergeHarnessPg, pendingCi, type MergeHarnessPg } from "./advance-harness";
+import { seed } from "../../test/dialects";
+import { tempStore } from "../../test/pglite";
 import { MAX_REBASE_RETURNS } from "./budget";
 import { REBASE_CONFLICT_INSTRUCTION, REBASE_CONFLICT_THOUGHT } from "./orders";
 import { mainMoved } from "./queue-conflicts";
 import type { MergeStep } from "./step";
 
-let harness: MergeHarness | undefined;
+let harness: MergeHarnessPg | undefined;
 
 afterEach(async () => {
   await harness?.cleanup();
   harness = undefined;
 });
 
-async function start(): Promise<MergeHarness> {
-  harness = await mergeHarness({ settings: { order: "queue" } });
+async function start(): Promise<MergeHarnessPg> {
+  harness = await mergeHarnessPg(await tempStore(), { settings: { order: "queue" } });
   return harness;
 }
 
-async function queued(h: MergeHarness): Promise<string[]> {
-  return (await listMergeQueues(sqliteDb(h.db))).map((entry) => entry.itemId);
+async function queued(h: MergeHarnessPg): Promise<string[]> {
+  return (await listMergeQueues(h.db)).map((entry) => entry.itemId);
 }
 
-async function restarts(h: MergeHarness) {
-  return (await listJobs(sqliteDb(h.db)))
+async function restarts(h: MergeHarnessPg) {
+  return (await listJobs(h.db))
     .filter((job) => job.queue === JOB_KIND.resume)
     .map((job) => job.payload as { itemId: string; handoff: string; reason: string });
 }
 
-async function sweeps(h: MergeHarness) {
-  return (await listJobs(sqliteDb(h.db))).filter((job) => job.queue === JOB_KIND.queueConflicts);
+async function sweeps(h: MergeHarnessPg) {
+  return (await listJobs(h.db)).filter((job) => job.queue === JOB_KIND.queueConflicts);
 }
 
 /** Three tasks in the acme/app queue; the third changes the file main is about to change. */
-async function threeQueued(h: MergeHarness): Promise<void> {
+async function threeQueued(h: MergeHarnessPg): Promise<void> {
   await h.addItem("ENG-1");
   await h.addItem("ENG-2");
   await h.addItem("ENG-3", { file: "ok.txt", content: "third\n" });
@@ -80,11 +82,11 @@ describe("queued pull requests that conflict with main", () => {
 
     const main = await h.moveMain("ok.txt", "main moved\n");
     h.state.lazyMergeable.set(3, 2);
-    await mainMoved(sqliteDb(h.db), { repository: "acme/app", main, now: h.clock.now() });
+    await mainMoved(h.db, { repository: "acme/app", main, now: h.clock.now() });
     expect(await sweeps(h)).toHaveLength(1);
     expect(await h.sweep(main)).toEqual(["ENG-3"]);
 
-    expect((await getWorkItem(sqliteDb(h.db), "ENG-3"))?.state).toBe("queued");
+    expect((await getWorkItem(h.db, "ENG-3"))?.state).toBe("queued");
     expect(await restarts(h)).toEqual([
       expect.objectContaining({
         itemId: "ENG-3",
@@ -93,7 +95,7 @@ describe("queued pull requests that conflict with main", () => {
       }),
     ]);
     expect(h.state.pullReads.get(3)).toBe(3);
-    expect((await getWorkItem(sqliteDb(h.db), "ENG-2"))?.state).toBe("merge_queue");
+    expect((await getWorkItem(h.db, "ENG-2"))?.state).toBe("merge_queue");
     expect(h.state.pullReads.get(2)).toBe(1);
     expect(h.state.pullReads.get(1)).toBe(frontReads);
     expect(h.bodies("thought")).toEqual([REBASE_CONFLICT_THOUGHT]);
@@ -108,8 +110,8 @@ describe("queued pull requests that conflict with main", () => {
     const h = await start();
     await threeQueued(h);
     const main = await h.moveMain("ok.txt", "main moved\n");
-    await mainMoved(sqliteDb(h.db), { repository: "acme/app", main, now: h.clock.now() });
-    await mainMoved(sqliteDb(h.db), { repository: "acme/app", main, now: h.clock.now() + 5 });
+    await mainMoved(h.db, { repository: "acme/app", main, now: h.clock.now() });
+    await mainMoved(h.db, { repository: "acme/app", main, now: h.clock.now() + 5 });
     expect(await sweeps(h)).toHaveLength(1);
 
     expect(await h.sweep(main)).toEqual(["ENG-3"]);
@@ -118,10 +120,10 @@ describe("queued pull requests that conflict with main", () => {
 
     // Back in the queue on the same head: main moves again and it still conflicts.
     await h.requeue("ENG-3");
-    await returnToMergeQueue(sqliteDb(h.db), "ENG-3");
+    await returnToMergeQueue(h.db, "ENG-3");
     const again = await h.moveMain("README.md", "main again\n");
     expect(await h.sweep(again)).toEqual([]);
-    expect((await getWorkItem(sqliteDb(h.db), "ENG-3"))?.state).toBe("merge_queue");
+    expect((await getWorkItem(h.db, "ENG-3"))?.state).toBe("merge_queue");
     expect((await restarts(h)).map((payload) => payload.itemId)).toEqual(["ENG-3"]);
     expect(h.bodies("thought")).toEqual([REBASE_CONFLICT_THOUGHT]);
   });
@@ -133,7 +135,7 @@ describe("queued pull requests that conflict with main", () => {
     expect(await h.sweep(main)).toEqual(["ENG-3"]);
     expect(await h.sweep(main)).toEqual([]);
 
-    const notices = (await listOutbox(sqliteDb(h.db), "ses-ENG-3")).filter((row) =>
+    const notices = (await listOutbox(h.db, "ses-ENG-3")).filter((row) =>
       row.idempotencyKey.startsWith("merge-conflict:"),
     );
     expect(notices).toHaveLength(1);
@@ -157,7 +159,7 @@ describe("queued pull requests that conflict with main", () => {
     expect(await queued(h)).toEqual(["ENG-1", "ENG-2", "ENG-4"]);
 
     await h.requeue("ENG-3");
-    await returnToMergeQueue(sqliteDb(h.db), "ENG-3");
+    await returnToMergeQueue(h.db, "ENG-3");
     expect(await queued(h)).toEqual(["ENG-1", "ENG-2", "ENG-3", "ENG-4"]);
     expect(await h.pass("ENG-3")).toMatchObject({
       kind: "wait",
@@ -167,8 +169,10 @@ describe("queued pull requests that conflict with main", () => {
     expect(await queued(h)).toEqual(["ENG-1", "ENG-2", "ENG-3", "ENG-4"]);
 
     // The kept place is spent: a later return to the agent leaves the queue as before.
-    h.db.run("UPDATE work_item SET state = 'verifying' WHERE id = 'ENG-3'");
-    await returnToMergeQueue(sqliteDb(h.db), "ENG-3");
+    await seed(h.db, (q) =>
+      q.orm.update(q.t.workItem).set({ state: "verifying" }).where(eq(q.t.workItem.id, "ENG-3")),
+    );
+    await returnToMergeQueue(h.db, "ENG-3");
     expect(await queued(h)).toEqual(["ENG-1", "ENG-2", "ENG-4"]);
   });
 
@@ -176,7 +180,7 @@ describe("queued pull requests that conflict with main", () => {
     const h = await start();
     await threeQueued(h);
     for (let round = 1; round <= MAX_REBASE_RETURNS; round++)
-      await recordRebaseReturn(sqliteDb(h.db), {
+      await recordRebaseReturn(h.db, {
         itemId: "ENG-2",
         jobId: 900 + round,
         candidate: `old-${round}`,
@@ -189,18 +193,20 @@ describe("queued pull requests that conflict with main", () => {
     await h.git(h.bare, "update-ref", "refs/heads/paws/ENG-2", "refs/heads/paws/ENG-3");
     h.state.onPullRead = async (number) => {
       const itemId = `ENG-${number}`;
-      const id = await enqueueJob(sqliteDb(h.db), {
+      const id = await enqueueJob(h.db, {
         queue: JOB_KIND.merge,
         payload: { itemId },
         now: h.clock.now(),
       });
-      h.db.run("UPDATE job SET status = 'running' WHERE id = ?", [id]);
+      await seed(h.db, (q) =>
+        q.orm.update(q.t.job).set({ status: "running" }).where(eq(q.t.job.id, id)),
+      );
     };
     expect(await h.sweep(null)).toEqual([]);
     expect(await restarts(h)).toEqual([]);
-    expect(await findOpenQuestion(sqliteDb(h.db), "ses-ENG-2")).toBeNull();
-    expect((await getWorkItem(sqliteDb(h.db), "ENG-2"))?.state).toBe("merge_queue");
-    expect((await getWorkItem(sqliteDb(h.db), "ENG-3"))?.state).toBe("merge_queue");
+    expect(await findOpenQuestion(h.db, "ses-ENG-2")).toBeNull();
+    expect((await getWorkItem(h.db, "ENG-2"))?.state).toBe("merge_queue");
+    expect((await getWorkItem(h.db, "ENG-3"))?.state).toBe("merge_queue");
     expect(h.bodies("thought")).toEqual([]);
   });
 
@@ -208,7 +214,7 @@ describe("queued pull requests that conflict with main", () => {
     const h = await start();
     await threeQueued(h);
     for (let round = 1; round <= MAX_REBASE_RETURNS; round++)
-      await recordRebaseReturn(sqliteDb(h.db), {
+      await recordRebaseReturn(h.db, {
         itemId: "ENG-3",
         jobId: 900 + round,
         candidate: `old-${round}`,
@@ -220,8 +226,8 @@ describe("queued pull requests that conflict with main", () => {
     const main = await h.moveMain("ok.txt", "main moved\n");
     expect(await h.sweep(main)).toEqual(["ENG-3"]);
     expect(await restarts(h)).toEqual([]);
-    expect((await getWorkItem(sqliteDb(h.db), "ENG-3"))?.state).toBe("awaiting_input");
-    expect((await findOpenQuestion(sqliteDb(h.db), "ses-ENG-3"))?.body).toContain(
+    expect((await getWorkItem(h.db, "ENG-3"))?.state).toBe("awaiting_input");
+    expect((await findOpenQuestion(h.db, "ses-ENG-3"))?.body).toContain(
       `The branch still conflicts with main after ${MAX_REBASE_RETURNS} attempts`,
     );
   });
@@ -232,7 +238,7 @@ describe("queued pull requests that conflict with main", () => {
     h.state.ci = pendingCi;
     await h.pass("ENG-1");
     expect(await queued(h)).toEqual(["ENG-1"]);
-    await mainMoved(sqliteDb(h.db), {
+    await mainMoved(h.db, {
       repository: "acme/app",
       main: "a".repeat(40),
       now: h.clock.now(),

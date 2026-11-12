@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { eq, ne, sql } from "drizzle-orm";
 import {
   insertQueuedItem,
   recordReviewFindings,
@@ -10,7 +11,6 @@ import {
   putWorkspaceUser,
   syncWorkspaceMember,
   JobLoop,
-  sqliteDb,
   recoverFindingGroupRuns,
   recordLinearInstallation,
 } from "../src/db";
@@ -24,14 +24,19 @@ import {
 import { createFakeFindingIssueAdapter } from "../src/linear";
 import { handleFindingGroupsRequest } from "../src/dashboard";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
-import { tempDb } from "./helpers";
+import { seed as write } from "./dialects";
+import { tempStore } from "./pglite";
 
 const epoch = Date.parse("2026-10-28T06:00:00Z");
 async function seed() {
-  const db = tempDb();
-  db.run("INSERT INTO workspace VALUES('ws','org','Workspace',1)");
+  const { db, close } = await tempStore();
+  await write(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: "ws", linearOrganizationId: "org", name: "Workspace", createdAt: 1 }),
+  );
   await insertQueuedItem(db, { id: "item", sessionKey: "session", title: "Task", now: 1 });
-  await recordReviewFindings(sqliteDb(db), {
+  await recordReviewFindings(db, {
     itemId: "item",
     repository: "acme/app",
     head: "a".repeat(40),
@@ -56,13 +61,13 @@ async function seed() {
       },
     ],
   });
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: "ada",
     linearUserId: "linear-ada",
     name: "Ada",
     email: "ada@example.invalid",
   });
-  await syncWorkspaceMember(sqliteDb(db), {
+  await syncWorkspaceMember(db, {
     workspaceId: "ws",
     userId,
     role: "admin",
@@ -71,12 +76,12 @@ async function seed() {
     now: 1,
   });
   const sources = async (): Promise<GroupingInput[]> =>
-    (await listReviewFindings(sqliteDb(db))).map((f) => ({
+    (await listReviewFindings(db)).map((f) => ({
       ...f,
       teamId: "team",
       sessionId: "session",
     }));
-  const ids = (await listReviewFindings(sqliteDb(db))).map((f) => f.id);
+  const ids = (await listReviewFindings(db)).map((f) => f.id);
   const text = JSON.stringify({
     groups: [
       {
@@ -101,7 +106,7 @@ async function seed() {
   ]);
   let now = epoch;
   const grouping = await createFindingGrouping({
-    store: sqliteDb(db),
+    store: db,
     sources: () => sources(),
     helper: helper.run,
     issues,
@@ -109,6 +114,7 @@ async function seed() {
   });
   return {
     db,
+    close,
     sources,
     ids,
     helper,
@@ -127,7 +133,7 @@ test("daily grouping validates ids, deduplicates membership and limits suggestio
       f.grouping.run("ws", new AbortController().signal),
       f.grouping.run("ws", new AbortController().signal),
     ]);
-    const groups = await listFindingGroups(sqliteDb(f.db), "ws");
+    const groups = await listFindingGroups(f.db, "ws");
     expect(groups).toHaveLength(2);
     expect(groups.find((g) => g.title === "Use constant-time comparisons")!.suggestedIssue).toBe(
       "PAS-20",
@@ -149,7 +155,7 @@ test("daily grouping validates ids, deduplicates membership and limits suggestio
       "status",
     ])
       expect(input).toContain(`"${key}"`);
-    expect(await lastFindingGroupRun(sqliteDb(f.db), "ws")).toMatchObject({
+    expect(await lastFindingGroupRun(f.db, "ws")).toMatchObject({
       status: "completed",
       tokens: 123,
       groupCount: 2,
@@ -161,7 +167,7 @@ test("daily grouping validates ids, deduplicates membership and limits suggestio
     expect(f.helper.calls).toHaveLength(1);
     expect(f.issues.reads).toHaveLength(1);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -169,10 +175,15 @@ test("filed groups survive replacement and are not regrouped", async () => {
   const f = await seed();
   try {
     await f.grouping.run("ws", new AbortController().signal);
-    const group = (await listFindingGroups(sqliteDb(f.db), "ws"))[0]!;
-    f.db.run("UPDATE finding_group SET status='filed' WHERE id=?", [group.id]);
+    const group = (await listFindingGroups(f.db, "ws"))[0]!;
+    await write(f.db, (q) =>
+      q.orm
+        .update(q.t.findingGroup)
+        .set({ status: "filed" })
+        .where(eq(q.t.findingGroup.id, group.id)),
+    );
     for (const id of group.memberIds)
-      await markReviewFindingFiled(sqliteDb(f.db), {
+      await markReviewFindingFiled(f.db, {
         key: (await f.sources()).find((r) => r.id === id)!.key,
         issue: "PAS-1",
         by: "Ada",
@@ -180,7 +191,7 @@ test("filed groups survive replacement and are not regrouped", async () => {
       });
     f.nextDay();
     await f.grouping.run("ws", new AbortController().signal);
-    const next = await listFindingGroups(sqliteDb(f.db), "ws");
+    const next = await listFindingGroups(f.db, "ws");
     expect(next.find((g) => g.id === group.id)?.status).toBe("filed");
     expect(
       next
@@ -190,7 +201,7 @@ test("filed groups survive replacement and are not regrouped", async () => {
     ).toBe(false);
     expect(f.helper.calls).toHaveLength(2);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -198,7 +209,7 @@ test("empty findings and failed helpers never spend extra turns on the same UTC 
   const f = await seed();
   try {
     const empty = await createFindingGrouping({
-      store: sqliteDb(f.db),
+      store: f.db,
       sources: () => [],
       issues: f.issues,
       helper: f.helper.run,
@@ -208,7 +219,7 @@ test("empty findings and failed helpers never spend extra turns on the same UTC 
     expect(f.helper.calls).toHaveLength(0);
     expect(f.issues.reads).toHaveLength(0);
     const failed = await createFindingGrouping({
-      store: sqliteDb(f.db),
+      store: f.db,
       sources: f.sources,
       issues: f.issues,
       helper: async () => {
@@ -219,9 +230,9 @@ test("empty findings and failed helpers never spend extra turns on the same UTC 
     await expect(failed.run("ws", new AbortController().signal)).rejects.toThrow("offline");
     await failed.run("ws", new AbortController().signal);
     expect(f.issues.reads).toHaveLength(1);
-    expect((await lastFindingGroupRun(sqliteDb(f.db), "ws"))?.status).toBe("failed");
+    expect((await lastFindingGroupRun(f.db, "ws"))?.status).toBe("failed");
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -246,7 +257,7 @@ test("output schema rejects malformed groups and suggestions from another team",
     );
     expect(groups[0]!.suggestedIssue).toBeNull();
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -271,7 +282,7 @@ test("scheduler honors HH:MM UTC and manual grouping can run before that time", 
     await jobs.tick(["findings.group"]);
     expect(calls).toEqual(["ws"]);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -282,7 +293,7 @@ async function post(f: Awaited<ReturnType<typeof seed>>, body: unknown, sessionI
       body: JSON.stringify(body),
     }),
     {
-      store: sqliteDb(f.db),
+      store: f.db,
       principal: { workspaceId: "ws", userId: "ada" },
       services: { issues: f.issues },
       now: () => epoch,
@@ -295,7 +306,7 @@ for (const action of ["file", "add"] as const)
     const f = await seed();
     try {
       await f.grouping.run("ws", new AbortController().signal);
-      const group = (await listFindingGroups(sqliteDb(f.db), "ws")).find((g) => g.suggestedIssue)!;
+      const group = (await listFindingGroups(f.db, "ws")).find((g) => g.suggestedIssue)!;
       const denied = await post(f, { action, id: group.id }, []);
       expect(denied.status).toBe(403);
       expect(f.issues.files).toHaveLength(0);
@@ -312,7 +323,7 @@ for (const action of ["file", "add"] as const)
           filedIssue: action === "file" ? "PAS-1" : "PAS-20",
         });
     } finally {
-      f.db.close();
+      await f.close();
     }
   });
 
@@ -320,25 +331,23 @@ test("dismissal requires a reason, observers are denied and only admins can run 
   const f = await seed();
   try {
     await f.grouping.run("ws", new AbortController().signal);
-    const group = (await listFindingGroups(sqliteDb(f.db), "ws"))[0]!;
+    const group = (await listFindingGroups(f.db, "ws"))[0]!;
     expect((await post(f, { action: "dismiss", id: group.id, reason: " " })).status).toBe(400);
     expect(
       (await post(f, { action: "dismiss", id: group.id, reason: "Intended behavior" })).status,
     ).toBe(200);
-    expect(
-      (await listFindingGroups(sqliteDb(f.db), "ws")).find((g) => g.id === group.id),
-    ).toMatchObject({
+    expect((await listFindingGroups(f.db, "ws")).find((g) => g.id === group.id)).toMatchObject({
       status: "dismissed",
       statusReason: "Intended behavior",
     });
-    f.db.run("UPDATE workspace_member SET role='member'");
+    await write(f.db, (q) => q.orm.update(q.t.workspaceMember).set({ role: "member" }));
     expect((await post(f, { action: "run" })).status).toBe(403);
-    f.db.run("UPDATE workspace_member SET role='observer'");
+    await write(f.db, (q) => q.orm.update(q.t.workspaceMember).set({ role: "observer" }));
     expect((await post(f, { action: "file", id: group.id })).status).toBe(403);
-    f.db.run("UPDATE workspace_member SET role='admin'");
+    await write(f.db, (q) => q.orm.update(q.t.workspaceMember).set({ role: "admin" }));
     expect((await post(f, { action: "run" })).status).toBe(409);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -349,9 +358,11 @@ test("group actions require the workspace CSRF token and same origin", async () 
   const port = reservation.port!;
   await reservation.stop(true);
   const origin = `http://127.0.0.1:${port}`;
-  f.db.run("UPDATE workspace_member SET source='manual',manual_role='admin'");
+  await write(f.db, (q) =>
+    q.orm.update(q.t.workspaceMember).set({ source: "manual", manualRole: "admin" }),
+  );
   const access = createWorkspaceAccess({
-    store: sqliteDb(f.db),
+    store: f.db,
     publicUrl: origin,
     clientId: "fixture",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -375,7 +386,7 @@ test("group actions require the workspace CSRF token and same origin", async () 
     findingGroups: { issues: f.issues },
   });
   try {
-    const session = await issueWorkspaceSession(sqliteDb(f.db), {
+    const session = await issueWorkspaceSession(f.db, {
       workspaceId: "ws",
       userId: "ada",
       now: Date.now(),
@@ -413,7 +424,7 @@ test("group actions require the workspace CSRF token and same origin", async () 
     expect(f.issues.comments).toHaveLength(0);
   } finally {
     await server.stop(true);
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -421,7 +432,7 @@ test("a lost Linear reply keeps the action retryable and protects its members du
   const f = await seed();
   try {
     await f.grouping.run("ws", new AbortController().signal);
-    const group = (await listFindingGroups(sqliteDb(f.db), "ws")).find((g) => g.suggestedIssue)!;
+    const group = (await listFindingGroups(f.db, "ws")).find((g) => g.suggestedIssue)!;
     const file = f.issues.file;
     let lost = true;
     f.issues.file = async (input) => {
@@ -433,9 +444,9 @@ test("a lost Linear reply keeps the action retryable and protects its members du
       return identifier;
     };
     expect((await post(f, { action: "file", id: group.id })).status).toBe(502);
-    expect(
-      (await listFindingGroups(sqliteDb(f.db), "ws")).find((g) => g.id === group.id)?.action,
-    ).toBe("file");
+    expect((await listFindingGroups(f.db, "ws")).find((g) => g.id === group.id)?.action).toBe(
+      "file",
+    );
     const { handleFindingsRequest } = await import("../src/dashboard");
     const dismiss = await handleFindingsRequest(
       new Request("http://localhost/api/findings", {
@@ -446,21 +457,21 @@ test("a lost Linear reply keeps the action retryable and protects its members du
           reason: "Changed my mind",
         }),
       }),
-      { store: sqliteDb(f.db), principal: { workspaceId: "ws", userId: "ada" } },
+      { store: f.db, principal: { workspaceId: "ws", userId: "ada" } },
     );
     expect(dismiss!.status).toBe(409);
-    f.db.run("UPDATE review_finding SET severity='P3'");
+    await write(f.db, (q) => q.orm.update(q.t.reviewFinding).set({ severity: "P3" }));
     f.nextDay();
     await f.grouping.run("ws", new AbortController().signal);
     expect(
-      (await listFindingGroups(sqliteDb(f.db), "ws")).filter((g) =>
+      (await listFindingGroups(f.db, "ws")).filter((g) =>
         g.memberIds.some((id) => group.memberIds.includes(id)),
       ),
     ).toHaveLength(1);
     expect((await post(f, { action: "file", id: group.id })).status).toBe(200);
     expect(f.issues.files).toHaveLength(1);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -488,7 +499,7 @@ test("large inputs fit the helper schema and rotate overflow without another fin
     const helper = createFakeGroupingHelper('{"groups":[]}');
     let now = epoch;
     const grouping = await createFindingGrouping({
-      store: sqliteDb(f.db),
+      store: f.db,
       sources: () => findings,
       issues: f.issues,
       helper: helper.run,
@@ -499,7 +510,7 @@ test("large inputs fit the helper schema and rotate overflow without another fin
     await grouping.run("ws", new AbortController().signal);
     expect(helper.calls).toHaveLength(2);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -507,19 +518,25 @@ test("fenced model JSON parses and interrupted runs recover without spending ano
   const f = await seed();
   try {
     expect(validateGroups('```json\n{"groups":[]}\n```', await f.sources(), [])).toEqual([]);
-    f.db.run(
-      "INSERT INTO finding_group_run(id,workspace_id,day,started_at,fingerprint,status) VALUES('crashed','ws','2026-10-28',?,'old','running')",
-      [epoch],
+    await write(f.db, (q) =>
+      q.orm.insert(q.t.findingGroupRun).values({
+        id: "crashed",
+        workspaceId: "ws",
+        day: "2026-10-28",
+        startedAt: epoch,
+        fingerprint: "old",
+        status: "running",
+      }),
     );
-    await recoverFindingGroupRuns(sqliteDb(f.db), epoch + 12 * 60000);
-    expect(await lastFindingGroupRun(sqliteDb(f.db), "ws")).toMatchObject({
+    await recoverFindingGroupRuns(f.db, epoch + 12 * 60000);
+    expect(await lastFindingGroupRun(f.db, "ws")).toMatchObject({
       status: "failed",
       finishedAt: epoch + 12 * 60000,
     });
     await f.grouping.run("ws", new AbortController().signal);
     expect(f.helper.calls).toHaveLength(0);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -527,19 +544,17 @@ test("a definitive Linear refusal releases the group so a member can dismiss it"
   const f = await seed();
   try {
     await f.grouping.run("ws", new AbortController().signal);
-    const group = (await listFindingGroups(sqliteDb(f.db), "ws"))[0]!;
+    const group = (await listFindingGroups(f.db, "ws"))[0]!;
     f.issues.file = async () => {
       throw Object.assign(new Error("Team has no Triage state"), { noFindingWrite: true });
     };
     expect((await post(f, { action: "file", id: group.id })).status).toBe(502);
-    expect(
-      (await listFindingGroups(sqliteDb(f.db), "ws")).find((g) => g.id === group.id)?.action,
-    ).toBeNull();
+    expect((await listFindingGroups(f.db, "ws")).find((g) => g.id === group.id)?.action).toBeNull();
     expect(
       (await post(f, { action: "dismiss", id: group.id, reason: "Track separately" })).status,
     ).toBe(200);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -547,18 +562,20 @@ test("reopened findings can join new groups while acted-on group history survive
   const f = await seed();
   try {
     await f.grouping.run("ws", new AbortController().signal);
-    const group = (await listFindingGroups(sqliteDb(f.db), "ws"))[0]!;
+    const group = (await listFindingGroups(f.db, "ws"))[0]!;
     await post(f, { action: "dismiss", id: group.id, reason: "Already handled" });
-    f.db.run("UPDATE review_finding SET status='open',status_at=?", [epoch + 1000]);
+    await write(f.db, (q) =>
+      q.orm.update(q.t.reviewFinding).set({ status: "open", statusAt: epoch + 1000 }),
+    );
     f.nextDay();
     await f.grouping.run("ws", new AbortController().signal);
-    const groups = await listFindingGroups(sqliteDb(f.db), "ws");
+    const groups = await listFindingGroups(f.db, "ws");
     expect(groups.find((g) => g.id === group.id)?.status).toBe("dismissed");
     expect(groups.filter((g) => g.status === "open").flatMap((g) => g.memberIds)).toContain(
       group.memberIds[0]!,
     );
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -567,7 +584,7 @@ test("claimed Linear actions reconcile even after a review marks members gone", 
     const f = await seed();
     try {
       await f.grouping.run("ws", new AbortController().signal);
-      const group = (await listFindingGroups(sqliteDb(f.db), "ws")).find((g) => g.suggestedIssue)!;
+      const group = (await listFindingGroups(f.db, "ws")).find((g) => g.suggestedIssue)!;
       let first = true;
       if (action === "file") {
         const file = f.issues.file;
@@ -590,7 +607,7 @@ test("claimed Linear actions reconcile even after a review marks members gone", 
         };
       }
       expect((await post(f, { action, id: group.id })).status).toBe(502);
-      f.db.run("UPDATE review_finding SET status='gone'");
+      await write(f.db, (q) => q.orm.update(q.t.reviewFinding).set({ status: "gone" }));
       expect((await post(f, { action, id: group.id })).status).toBe(200);
       expect(f.issues.files.length + f.issues.comments.length).toBe(1);
       expect(
@@ -599,7 +616,7 @@ test("claimed Linear actions reconcile even after a review marks members gone", 
           .every((row) => row.status === "filed"),
       ).toBe(true);
     } finally {
-      f.db.close();
+      await f.close();
     }
   }
 });
@@ -609,24 +626,33 @@ test("untouched groups follow individual dismissals immediately and locks are wo
   const f = await seed();
   try {
     await f.grouping.run("ws", new AbortController().signal);
-    const group = (await listFindingGroups(sqliteDb(f.db), "ws"))[0]!;
-    f.db.run("DELETE FROM finding_group WHERE id<>?", [group.id]);
-    f.db.run("UPDATE finding_group SET member_ids=?", [JSON.stringify(f.ids)]);
+    const group = (await listFindingGroups(f.db, "ws"))[0]!;
+    await write(
+      f.db,
+      (q) => q.orm.delete(q.t.findingGroup).where(ne(q.t.findingGroup.id, group.id)),
+      (q) => q.orm.update(q.t.findingGroup).set({ memberIds: f.ids }),
+    );
     const dismiss = (id: number, workspaceId = "ws") =>
       handleFindingsRequest(
         new Request("http://localhost/api/findings", {
           method: "POST",
           body: JSON.stringify({ action: "dismiss", id, reason: "Handle individually" }),
         }),
-        { store: sqliteDb(f.db), principal: { workspaceId, userId: "ada" } },
+        { store: f.db, principal: { workspaceId, userId: "ada" } },
       );
     expect((await dismiss(f.ids[0]!))!.status).toBe(200);
-    expect((await listFindingGroups(sqliteDb(f.db), "ws"))[0]!.memberIds).toEqual([f.ids[1]!]);
+    expect((await listFindingGroups(f.db, "ws"))[0]!.memberIds).toEqual([f.ids[1]!]);
     expect((await post(f, { action: "file", id: group.id })).status).toBe(200);
-    f.db.run("UPDATE finding_group SET status='open',action='file'");
-    f.db.run("UPDATE review_finding SET status='open'");
-    f.db.run("INSERT INTO workspace VALUES('other','other-org','Other',1)");
-    await syncWorkspaceMember(sqliteDb(f.db), {
+    await write(
+      f.db,
+      (q) => q.orm.update(q.t.findingGroup).set({ status: "open", action: "file" }),
+      (q) => q.orm.update(q.t.reviewFinding).set({ status: "open" }),
+      (q) =>
+        q.orm
+          .insert(q.t.workspace)
+          .values({ id: "other", linearOrganizationId: "other-org", name: "Other", createdAt: 1 }),
+    );
+    await syncWorkspaceMember(f.db, {
       workspaceId: "other",
       userId: "ada",
       role: "admin",
@@ -637,7 +663,7 @@ test("untouched groups follow individual dismissals immediately and locks are wo
     expect((await dismiss(f.ids[1]!, "other"))!.status).toBe(200);
     expect((await dismiss(f.ids[1]!))!.status).toBe(409);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -652,7 +678,7 @@ test("schema accepts harmless additional keys, omitted issue suggestions and JSO
     expect(groups).toHaveLength(1);
     expect(groups[0]!.suggestedIssue).toBeNull();
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -668,7 +694,7 @@ test("overflow advances by a full batch and keeps groups outside the current bat
     const batches: number[][] = [];
     let now = epoch;
     const grouping = await createFindingGrouping({
-      store: sqliteDb(f.db),
+      store: f.db,
       sources: () => rows,
       issues: f.issues,
       now: () => now,
@@ -688,16 +714,16 @@ test("overflow advances by a full batch and keeps groups outside the current bat
       },
     });
     await grouping.run("ws", new AbortController().signal);
-    const before = (await listFindingGroups(sqliteDb(f.db), "ws"))[0]!;
+    const before = (await listFindingGroups(f.db, "ws"))[0]!;
     now += 86400000;
     await grouping.run("ws", new AbortController().signal);
     expect(batches[1]![0]).toBe(batches[0]!.at(-1)! + 1);
     expect(batches[0]!.some((id) => batches[1]!.includes(id))).toBe(false);
     expect(
-      (await listFindingGroups(sqliteDb(f.db), "ws")).find((g) => g.id === before.id)?.memberIds,
+      (await listFindingGroups(f.db, "ws")).find((g) => g.id === before.id)?.memberIds,
     ).toEqual(before.memberIds);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -707,13 +733,11 @@ test("unchanged runs record why they skipped without reading Linear or spending 
     await f.grouping.run("ws", new AbortController().signal);
     f.nextDay();
     await f.grouping.run("ws", new AbortController().signal);
-    expect((await lastFindingGroupRun(sqliteDb(f.db), "ws"))?.skipReason).toContain(
-      "No findings changed",
-    );
+    expect((await lastFindingGroupRun(f.db, "ws"))?.skipReason).toContain("No findings changed");
     expect(f.helper.calls).toHaveLength(1);
     expect(f.issues.reads).toHaveLength(1);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -721,7 +745,7 @@ test("admin grouping covers findings reported by teams outside that admin's memb
   const { workspaceGroupingSources } = await import("../src/finding-groups");
   const f = await seed();
   try {
-    await syncWorkspaceMember(sqliteDb(f.db), {
+    await syncWorkspaceMember(f.db, {
       workspaceId: "ws",
       userId: "ada",
       role: "admin",
@@ -733,7 +757,7 @@ test("admin grouping covers findings reported by teams outside that admin's memb
       ["session", "team-x"],
       ["session-y", "team-y"],
     ])
-      await recordLinearInstallation(sqliteDb(f.db), {
+      await recordLinearInstallation(f.db, {
         sessionId: sessionId!,
         organizationId: "org",
         oauthClientId: "client",
@@ -747,7 +771,7 @@ test("admin grouping covers findings reported by teams outside that admin's memb
       title: "Other team finding",
       now: 3,
     });
-    await recordReviewFindings(sqliteDb(f.db), {
+    await recordReviewFindings(f.db, {
       itemId: "team-y-item",
       repository: "acme/app",
       head: "a".repeat(40),
@@ -764,11 +788,11 @@ test("admin grouping covers findings reported by teams outside that admin's memb
         },
       ],
     });
-    const rows = await workspaceGroupingSources(sqliteDb(f.db), "ws", "client");
+    const rows = await workspaceGroupingSources(f.db, "ws", "client");
     expect(rows.some((row) => row.teamId === "team-x")).toBe(true);
     expect(rows.some((row) => row.teamId === "team-y")).toBe(true);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -776,13 +800,13 @@ test("grouping authority is an admin who owns a runner, not an earlier admin wit
   const { groupingAuthorityUser, workspaceGroupingSources } = await import("../src/finding-groups");
   const f = await seed();
   try {
-    await putWorkspaceUser(sqliteDb(f.db), {
+    await putWorkspaceUser(f.db, {
       id: "aaa",
       linearUserId: "linear-aaa",
       name: "Aaa",
       email: "aaa@example.invalid",
     });
-    await syncWorkspaceMember(sqliteDb(f.db), {
+    await syncWorkspaceMember(f.db, {
       workspaceId: "ws",
       userId: "aaa",
       role: "admin",
@@ -790,7 +814,7 @@ test("grouping authority is an admin who owns a runner, not an earlier admin wit
       teamIds: [],
       now: 2,
     });
-    await recordLinearInstallation(sqliteDb(f.db), {
+    await recordLinearInstallation(f.db, {
       sessionId: "session",
       organizationId: "org",
       oauthClientId: "client",
@@ -798,15 +822,21 @@ test("grouping authority is an admin who owns a runner, not an earlier admin wit
       teamId: "team",
       observedAtMs: 3,
     });
-    f.db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('runner','ws','ada','Runner','active',1,1)",
+    await write(f.db, (q) =>
+      q.orm.insert(q.t.runner).values({
+        id: "runner",
+        workspaceId: "ws",
+        ownerUserId: "ada",
+        name: "Runner",
+        status: "active",
+        createdAt: 1,
+        lastSeenAt: 1,
+      }),
     );
-    expect(await groupingAuthorityUser(sqliteDb(f.db), "ws")).toBe("ada");
-    expect((await workspaceGroupingSources(sqliteDb(f.db), "ws", "client")).length).toBeGreaterThan(
-      0,
-    );
+    expect(await groupingAuthorityUser(f.db, "ws")).toBe("ada");
+    expect((await workspaceGroupingSources(f.db, "ws", "client")).length).toBeGreaterThan(0);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -823,7 +853,7 @@ test("a partial grouping cycle processes each finding and then skips unchanged s
     let calls = 0;
     let now = epoch;
     const grouping = await createFindingGrouping({
-      store: sqliteDb(f.db),
+      store: f.db,
       sources: () => rows,
       issues: f.issues,
       now: () => now,
@@ -844,11 +874,9 @@ test("a partial grouping cycle processes each finding and then skips unchanged s
     const completedCalls = calls;
     await grouping.run("ws", new AbortController().signal);
     expect(calls).toBe(completedCalls);
-    expect((await lastFindingGroupRun(sqliteDb(f.db), "ws"))?.skipReason).toContain(
-      "No findings changed",
-    );
+    expect((await lastFindingGroupRun(f.db, "ws"))?.skipReason).toContain("No findings changed");
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -864,7 +892,7 @@ test("daily finding updates do not reset the overflow cursor", async () => {
     const covered = new Set<number>();
     let now = epoch;
     const grouping = await createFindingGrouping({
-      store: sqliteDb(f.db),
+      store: f.db,
       sources: () => rows,
       issues: f.issues,
       now: () => now,
@@ -883,7 +911,7 @@ test("daily finding updates do not reset the overflow cursor", async () => {
     }
     expect(covered.size).toBe(rows.length);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -900,7 +928,7 @@ test("invalid model groups do not discard valid groups", async () => {
     expect(groups[0]!.title).toHaveLength(200);
     expect(groups[0]!.memberIds).toEqual(f.ids);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -908,24 +936,32 @@ test("dismissal conflicts roll back group completion and release the claim", asy
   const f = await seed();
   try {
     await f.grouping.run("ws", new AbortController().signal);
-    const group = (await listFindingGroups(sqliteDb(f.db), "ws"))[0]!;
+    const group = (await listFindingGroups(f.db, "ws"))[0]!;
     const member = group.memberIds[0]!;
-    f.db.exec(
-      `CREATE TEMP TRIGGER member_changed AFTER UPDATE OF action ON finding_group WHEN NEW.action='dismiss' BEGIN UPDATE review_finding SET status='filed' WHERE id=${member}; END`,
+    await write(
+      f.db,
+      (q) =>
+        q.orm.execute(
+          sql.raw(
+            `CREATE FUNCTION member_changed() RETURNS trigger AS $$ BEGIN UPDATE review_finding SET status='filed' WHERE id=${member}; RETURN NEW; END $$ LANGUAGE plpgsql`,
+          ),
+        ),
+      (q) =>
+        q.orm.execute(
+          sql`CREATE TRIGGER member_changed AFTER UPDATE OF action ON finding_group FOR EACH ROW WHEN (NEW.action = 'dismiss') EXECUTE FUNCTION member_changed()`,
+        ),
     );
     expect((await post(f, { action: "dismiss", id: group.id, reason: "Not needed" })).status).toBe(
       409,
     );
-    expect(
-      (await listFindingGroups(sqliteDb(f.db), "ws")).find((row) => row.id === group.id),
-    ).toMatchObject({
+    expect((await listFindingGroups(f.db, "ws")).find((row) => row.id === group.id)).toMatchObject({
       status: "open",
       action: null,
       statusReason: null,
     });
     expect((await f.sources()).find((row) => row.id === member)?.status).toBe("filed");
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -949,7 +985,7 @@ test("overflow resumes after a stable ID when earlier findings close and wraps i
     expect(tail.cycleComplete).toBe(true);
     expect(tail.nextFindingCursor).toBe(tail.open.at(-1)!.id);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -965,7 +1001,7 @@ test("persisted overflow IDs survive closures between daily runs", async () => {
     let now = epoch;
     const batches: number[][] = [];
     const grouping = await createFindingGrouping({
-      store: sqliteDb(f.db),
+      store: f.db,
       issues: f.issues,
       sources: () => rows,
       now: () => now,
@@ -984,7 +1020,7 @@ test("persisted overflow IDs survive closures between daily runs", async () => {
     await grouping.run("ws", new AbortController().signal);
     expect(batches[1]![0]).toBe(batches[0]!.at(-1)! + 10);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -992,17 +1028,17 @@ test("recovered runs cannot publish groups or overwrite interrupted history", as
   const f = await seed();
   try {
     await f.grouping.run("ws", new AbortController().signal);
-    const before = await listFindingGroups(sqliteDb(f.db), "ws");
+    const before = await listFindingGroups(f.db, "ws");
     let now = epoch + 86400000;
     const grouping = await createFindingGrouping({
-      store: sqliteDb(f.db),
+      store: f.db,
       issues: f.issues,
       sources: async () =>
         (await f.sources()).map((row) => ({ ...row, text: row.text + " changed" })),
       now: () => now,
       helper: async () => {
         now += 12 * 60000;
-        await recoverFindingGroupRuns(sqliteDb(f.db), now);
+        await recoverFindingGroupRuns(f.db, now);
         return {
           text: JSON.stringify({
             groups: [{ title: "Fix", summary: "Shared fix", scope: "src", findingIds: f.ids }],
@@ -1013,14 +1049,14 @@ test("recovered runs cannot publish groups or overwrite interrupted history", as
     await expect(grouping.run("ws", new AbortController().signal)).rejects.toThrow(
       "no longer owns",
     );
-    expect(await listFindingGroups(sqliteDb(f.db), "ws")).toEqual(before);
-    expect(await lastFindingGroupRun(sqliteDb(f.db), "ws")).toMatchObject({
+    expect(await listFindingGroups(f.db, "ws")).toEqual(before);
+    expect(await lastFindingGroupRun(f.db, "ws")).toMatchObject({
       status: "failed",
       error: "Grouping interrupted before completion",
       finishedAt: now,
     });
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -1030,7 +1066,7 @@ test("a preempted turn consumes the daily allowance and retries on the next UTC 
     let now = epoch;
     let attempts = 0;
     const grouping = await createFindingGrouping({
-      store: sqliteDb(f.db),
+      store: f.db,
       issues: f.issues,
       sources: f.sources,
       now: () => now,
@@ -1040,7 +1076,7 @@ test("a preempted turn consumes the daily allowance and retries on the next UTC 
       },
     });
     await expect(grouping.run("ws", new AbortController().signal)).rejects.toThrow("preempted");
-    expect(await lastFindingGroupRun(sqliteDb(f.db), "ws")).toMatchObject({
+    expect(await lastFindingGroupRun(f.db, "ws")).toMatchObject({
       status: "failed",
       error: "Grouping helper preempted",
     });
@@ -1049,18 +1085,26 @@ test("a preempted turn consumes the daily allowance and retries on the next UTC 
     now += 86400000;
     await grouping.run("ws", new AbortController().signal);
     expect(attempts).toBe(2);
-    expect((await lastFindingGroupRun(sqliteDb(f.db), "ws"))?.status).toBe("completed");
+    expect((await lastFindingGroupRun(f.db, "ws"))?.status).toBe("completed");
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
 test("legacy position cursors start a fresh ID-based pass", async () => {
   const f = await seed();
   try {
-    f.db.run(
-      "INSERT INTO finding_group_run(id,workspace_id,day,started_at,finished_at,fingerprint,status,finding_cursor) VALUES('legacy','ws','2026-10-27',?,?,'legacy-snapshot','completed',100)",
-      [epoch - 86400000, epoch - 86400000],
+    await write(f.db, (q) =>
+      q.orm.insert(q.t.findingGroupRun).values({
+        id: "legacy",
+        workspaceId: "ws",
+        day: "2026-10-27",
+        startedAt: epoch - 86400000,
+        finishedAt: epoch - 86400000,
+        fingerprint: "legacy-snapshot",
+        status: "completed",
+        findingCursor: 100,
+      }),
     );
     const source = (await f.sources())[0]!;
     let firstId = 0;
@@ -1070,7 +1114,7 @@ test("legacy position cursors start a fresh ID-based pass", async () => {
       text: "x".repeat(4000),
     }));
     const grouping = await createFindingGrouping({
-      store: sqliteDb(f.db),
+      store: f.db,
       issues: f.issues,
       sources: () => rows,
       now: () => epoch,
@@ -1083,28 +1127,28 @@ test("legacy position cursors start a fresh ID-based pass", async () => {
     await grouping.run("ws", new AbortController().signal);
     expect(firstId).toBe(10);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
 test("a workspace with grouping off spends no turn and cannot run now", async () => {
   const f = await seed();
   try {
-    await setFindingGrouping(sqliteDb(f.db), "ws", false);
+    await setFindingGrouping(f.db, "ws", false);
     await f.grouping.run("ws", new AbortController().signal);
     expect(f.helper.calls).toHaveLength(0);
     expect(f.issues.reads).toHaveLength(0);
-    expect(await lastFindingGroupRun(sqliteDb(f.db), "ws")).toBeNull();
+    expect(await lastFindingGroupRun(f.db, "ws")).toBeNull();
     expect((await post(f, { action: "run" })).status).toBe(409);
     const listing = await handleFindingGroupsRequest(
       new Request("http://localhost/api/finding-groups"),
-      { store: sqliteDb(f.db), principal: { workspaceId: "ws", userId: "ada" } },
+      { store: f.db, principal: { workspaceId: "ws", userId: "ada" } },
     );
     expect(await listing!.json()).toMatchObject({ canRun: false, enabled: false });
-    await setFindingGrouping(sqliteDb(f.db), "ws", true);
+    await setFindingGrouping(f.db, "ws", true);
     await f.grouping.run("ws", new AbortController().signal);
     expect(f.helper.calls).toHaveLength(1);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });

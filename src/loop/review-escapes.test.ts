@@ -9,9 +9,6 @@ import {
   insertQueuedItem,
   listReviewEscapes,
   markCloseoutAccepted,
-  migrate,
-  openDatabase,
-  sqliteDb,
   syncSteps,
 } from "../db";
 import { returnToAgent, type FailedCiCheck } from "../merge";
@@ -21,6 +18,8 @@ import {
   settleReviewEscapes,
   testOrDocPath,
 } from "./review-escapes";
+import { seed } from "../../test/dialects";
+import { tempStore } from "../../test/pglite";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -48,19 +47,18 @@ async function accepted() {
   await run(root, "commit", "-qm", "rank");
   const head = await run(root, "rev-parse", "HEAD");
 
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const db = (await tempStore()).db;
   await insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
-  await beginImplementRun(sqliteDb(db), "eng-1", 1);
-  await enterMergeQueue(sqliteDb(db), "eng-1", {
+  await beginImplementRun(db, "eng-1", 1);
+  await enterMergeQueue(db, "eng-1", {
     phase: "merge_queue",
     baseSha: base,
     wipCommit: head,
   });
-  await markCloseoutAccepted(sqliteDb(db), "eng-1", head);
+  await markCloseoutAccepted(db, "eng-1", head);
 
   const ciFailed = (checks: FailedCiCheck[]) =>
-    returnToAgent(sqliteDb(db), {
+    returnToAgent(db, {
       itemId: "eng-1",
       reason: "ci-failed",
       admit: (_q, returns) => syncSteps(() => returns < 3),
@@ -79,7 +77,7 @@ async function accepted() {
     return run(root, "rev-parse", "HEAD");
   };
   const settle = (fixHead: string) =>
-    settleReviewEscapes(sqliteDb(db), {
+    settleReviewEscapes(db, {
       itemId: "eng-1",
       fixHead,
       base,
@@ -95,7 +93,7 @@ describe("review escapes found after the pull request", () => {
     expect(await ciFailed([{ name: "test", url: null }])).toBe(true);
     // The item is back with the agent; the same failure read again starts no second round.
     expect(await ciFailed([{ name: "test", url: null }])).toBe(false);
-    const [candidate, ...rest] = await listReviewEscapes(sqliteDb(db));
+    const [candidate, ...rest] = await listReviewEscapes(db);
     expect(rest).toEqual([]);
     expect(candidate).toMatchObject({
       itemId: "eng-1",
@@ -109,7 +107,7 @@ describe("review escapes found after the pull request", () => {
 
     const fix = await commit({ "README.md": "demo\n\nHow to rank.\n" });
     expect(await settle(fix)).toBe(1);
-    expect(await listReviewEscapes(sqliteDb(db))).toEqual([
+    expect(await listReviewEscapes(db)).toEqual([
       expect.objectContaining({
         fixHead: fix,
         files: ["README.md"],
@@ -129,7 +127,7 @@ describe("review escapes found after the pull request", () => {
       "src/rank.test.ts": "// covers rank\n",
     });
     await settle(fix);
-    expect((await listReviewEscapes(sqliteDb(db)))[0]).toMatchObject({
+    expect((await listReviewEscapes(db))[0]).toMatchObject({
       fixHead: fix,
       files: ["src/rank.test.ts", "src/rank.ts"],
       escape: true,
@@ -143,7 +141,7 @@ describe("review escapes found after the pull request", () => {
     await formatted.settle(
       await formatted.commit({ "src/rank.ts": "export const rank  = (a: number) => a;\n\n" }),
     );
-    expect((await listReviewEscapes(sqliteDb(formatted.db)))[0]).toMatchObject({
+    expect((await listReviewEscapes(formatted.db))[0]).toMatchObject({
       files: ["src/rank.ts"],
       escape: false,
       notEscapeReason: "tests_docs_format",
@@ -154,7 +152,7 @@ describe("review escapes found after the pull request", () => {
     await flaky.settle(
       await flaky.commit({ "src/rank.ts": "export const rank = (a: number) => a + 0;\n" }),
     );
-    expect((await listReviewEscapes(sqliteDb(flaky.db)))[0]).toMatchObject({
+    expect((await listReviewEscapes(flaky.db))[0]).toMatchObject({
       escape: false,
       notEscapeReason: "flake",
     });
@@ -162,9 +160,9 @@ describe("review escapes found after the pull request", () => {
 
   test("no candidate when Closeout has not accepted a head", async () => {
     const { db, ciFailed } = await accepted();
-    db.run("UPDATE work_item SET accepted_head = NULL");
+    await seed(db, (q) => q.orm.update(q.t.workItem).set({ acceptedHead: null }));
     expect(await ciFailed([{ name: "test", url: null }])).toBe(true);
-    expect(await listReviewEscapes(sqliteDb(db))).toEqual([]);
+    expect(await listReviewEscapes(db)).toEqual([]);
   });
 });
 

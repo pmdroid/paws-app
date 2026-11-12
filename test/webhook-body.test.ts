@@ -1,10 +1,9 @@
-import { sqliteDb } from "../src/db";
 import { expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import { handleGitHubWebhook } from "../src/github";
 import { createInboxStore, handleLinearWebhook, type InboxStore } from "../src/linear";
 import { handleSlackWebhook } from "../src/slack";
-import { tempDb } from "./helpers";
+import { tempStore } from "./pglite";
 
 const secret = "synthetic-webhook-body-secret";
 const now = 1_700_000_000_000;
@@ -58,13 +57,11 @@ function endpoints(store: InboxStore): Endpoint[] {
 
 for (const name of ["github", "linear", "slack"]) {
   async function withEndpoint(run: (endpoint: Endpoint) => Promise<void>) {
-    const db = tempDb();
+    const { db, close } = await tempStore();
     try {
-      await run(
-        endpoints(createInboxStore(sqliteDb(db))).find((endpoint) => endpoint.name === name)!,
-      );
+      await run(endpoints(createInboxStore(db)).find((endpoint) => endpoint.name === name)!);
     } finally {
-      db.close();
+      await close();
     }
   }
 

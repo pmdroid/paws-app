@@ -121,7 +121,7 @@ function returnConflict(
     handoff: REBASE_CONFLICT_INSTRUCTION,
     now: caps.now(),
     keepPlace: true,
-    conflict: { sessionId: caps.session(item), pullNumber, head },
+    conflict: { sessionId: caps.session(item), pullNumber, head, base: conflict.base },
     ...(caps.restart ? { restart: caps.restart } : {}),
     announce: (q, running, _, key) => caps.voice.thought(q, running, REBASE_CONFLICT_THOUGHT, key),
     record: (q, jobId) =>

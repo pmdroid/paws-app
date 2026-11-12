@@ -5,11 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   insertQueuedItem,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   saveVisualReviewMarks,
-  sqliteDb,
   syncWorkspaceMember,
   type VisualReviewMark,
 } from "../src/db";
@@ -21,6 +18,8 @@ import {
   type VisualReviewChanges,
 } from "../src/evidence";
 import { openVisualReviewSteps } from "../src/questions";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const HEAD = "a".repeat(40);
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7, 7, 7]);
@@ -33,13 +32,12 @@ afterEach(() => {
 });
 
 async function harness(active = true) {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const db = (await tempStore()).db;
   await insertQueuedItem(db, { id: "item", sessionKey: "ses_1" });
   const home = mkdtempSync(join(tmpdir(), "paws-review-marks-"));
   roots.push(home);
   const root = join(home, "evidence");
-  const store = createEvidenceStore({ store: sqliteDb(db), root });
+  const store = createEvidenceStore({ store: db, root });
   const shot = (name: string, source: Uint8Array) =>
     store.save({
       itemId: "item",
@@ -53,7 +51,7 @@ async function harness(active = true) {
   const first = await shot("first.png", PNG);
   const second = await shot("second.png", PNG);
   const other = await shot("other.png", PNG);
-  const { question } = await sqliteDb(db).transaction((q) =>
+  const { question } = await db.transaction((q) =>
     openVisualReviewSteps(q, {
       itemId: "item",
       runId: "run-1",
@@ -64,14 +62,18 @@ async function harness(active = true) {
       now: 1,
     }),
   );
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: "user-ada",
     linearUserId: "delegator-1",
     name: "Ada",
     email: "ada@example.invalid",
   });
-  db.run("INSERT INTO workspace VALUES(?,?,?,?)", ["ws-1", "org-1", "Workspace", 1]);
-  await syncWorkspaceMember(sqliteDb(db), {
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: "ws-1", linearOrganizationId: "org-1", name: "Workspace", createdAt: 1 }),
+  );
+  await syncWorkspaceMember(db, {
     workspaceId: "ws-1",
     userId,
     role: "admin",
@@ -98,7 +100,7 @@ async function harness(active = true) {
         body: new Uint8Array(body),
       }),
       {
-        store: sqliteDb(db),
+        store: db,
         root,
         principal: options.signedIn === false ? undefined : { workspaceId: "ws-1", userId },
         sessionIds: options.sessionIds ?? ["ses_1"],
@@ -193,7 +195,7 @@ describe("POST /api/visual-review-changes", () => {
     const get = await handleVisualReviewChanges(
       new Request("https://paws.example/api/visual-review-changes"),
       {
-        store: sqliteDb(openDatabase(":memory:")),
+        store: h.db,
         root: h.root,
         principal: { workspaceId: "ws-1", userId: "user-ada" },
         sessionIds: [],
@@ -258,10 +260,10 @@ test("a stored mark is served like evidence to members who can see the task", as
   const h = await harness();
   await h.send(h.form({ questionId: h.questionId, [`mark:${h.first.id}`]: MARKED }));
   const [mark] = h.calls[0]!.marks;
-  await saveVisualReviewMarks(sqliteDb(h.db), [mark!]);
+  await saveVisualReviewMarks(h.db, [mark!]);
   const get = (sessionIds: string[]) =>
     handleEvidenceRequest(new Request(`https://paws.example/api/evidence/${mark!.id}`), {
-      store: sqliteDb(h.db),
+      store: h.db,
       root: h.root,
       sessionIds,
     });

@@ -1,16 +1,17 @@
 import { expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
+import { asc, like } from "drizzle-orm";
 import {
   bindWorkItemRepository,
   insertQueuedItem,
   putWorkspaceUser,
   recordReviewFindings,
   syncWorkspaceMember,
+  type Db,
   type ReviewFindingReport,
-  sqliteDb,
 } from "../src/db";
 import { handleFindingsRequest, type FindingsResponse } from "../src/dashboard";
-import { tempDb } from "./helpers";
+import { seed as write } from "./dialects";
+import { tempStore } from "./pglite";
 
 const URL_BASE = "http://127.0.0.1:8787/api/findings";
 
@@ -26,20 +27,21 @@ function finding(patch: Partial<ReviewFindingReport>): ReviewFindingReport {
   };
 }
 
-async function seed(active = true): Promise<Database> {
-  const db = tempDb();
+async function seed(active = true): Promise<{ db: Db; close(): Promise<void> }> {
+  const store = await tempStore();
+  const db = store.db;
   for (const [id, repo] of [
     ["item-a", "platform"],
     ["item-b", "web"],
   ] as const) {
     await insertQueuedItem(db, { id, sessionKey: `session-${id}`, now: 1, title: `Title ${id}` });
-    await bindWorkItemRepository(sqliteDb(db), id, {
+    await bindWorkItemRepository(db, id, {
       owner: "acme",
       repo,
       remoteUrl: `https://github.com/acme/${repo}`,
     });
   }
-  await recordReviewFindings(sqliteDb(db), {
+  await recordReviewFindings(db, {
     itemId: "item-a",
     repository: "acme/platform",
     head: "a".repeat(40),
@@ -50,7 +52,7 @@ async function seed(active = true): Promise<Database> {
     ],
     reviewed: [],
   });
-  await recordReviewFindings(sqliteDb(db), {
+  await recordReviewFindings(db, {
     itemId: "item-b",
     repository: "acme/web",
     head: "c".repeat(40),
@@ -58,14 +60,18 @@ async function seed(active = true): Promise<Database> {
     findings: [finding({ severity: "P3", location: "src/view.tsx:9" })],
     reviewed: [],
   });
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: "user-ada",
     linearUserId: "linear-ada",
     name: "Ada",
     email: "ada@example.invalid",
   });
-  db.run("INSERT INTO workspace VALUES(?,?,?,?)", ["ws-1", "org-1", "Workspace", 1]);
-  await syncWorkspaceMember(sqliteDb(db), {
+  await write(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: "ws-1", linearOrganizationId: "org-1", name: "Workspace", createdAt: 1 }),
+  );
+  await syncWorkspaceMember(db, {
     workspaceId: "ws-1",
     userId,
     role: "member",
@@ -73,19 +79,19 @@ async function seed(active = true): Promise<Database> {
     teamIds: [],
     now: 1,
   });
-  return db;
+  return store;
 }
 
-async function list(db: Database, query = "", sessionIds?: string[]): Promise<FindingsResponse> {
+async function list(db: Db, query = "", sessionIds?: string[]): Promise<FindingsResponse> {
   const response = await handleFindingsRequest(new Request(`${URL_BASE}${query}`), {
-    store: sqliteDb(db),
+    store: db,
     ...(sessionIds ? { sessionIds } : {}),
   });
   expect(response!.status).toBe(200);
   return (await response!.json()) as FindingsResponse;
 }
 
-function post(db: Database, body: unknown, signedIn = true) {
+function post(db: Db, body: unknown, signedIn = true) {
   return handleFindingsRequest(
     new Request(URL_BASE, {
       method: "POST",
@@ -93,7 +99,7 @@ function post(db: Database, body: unknown, signedIn = true) {
       body: JSON.stringify(body),
     }),
     {
-      store: sqliteDb(db),
+      store: db,
       now: () => 5000,
       ...(signedIn ? { principal: { workspaceId: "ws-1", userId: "user-ada" } } : {}),
     },
@@ -101,7 +107,7 @@ function post(db: Database, body: unknown, signedIn = true) {
 }
 
 test("the list is newest last seen first, filters, and counts severities over the other filters", async () => {
-  const db = await seed();
+  const { db, close } = await seed();
   try {
     const all = await list(db);
     expect(all.findings.map((entry) => entry.path)).toEqual([
@@ -135,12 +141,12 @@ test("the list is newest last seen first, filters, and counts severities over th
     expect(mine.findings.map((entry) => entry.path)).toEqual(["src/view.tsx"]);
     expect(mine.repositories).toEqual(["acme/web"]);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("a member dismisses with a reason and reopens; others and bad requests are refused", async () => {
-  const db = await seed();
+  const { db, close } = await seed();
   try {
     const [first] = (await list(db)).findings;
     expect((await post(db, { id: first!.id, action: "dismiss", reason: "x" }, false))!.status).toBe(
@@ -173,23 +179,27 @@ test("a member dismisses with a reason and reopens; others and bad requests are 
       statusBy: "Ada",
     });
     expect(
-      db
-        .query(
-          "SELECT action FROM workspace_access_audit WHERE action LIKE 'finding.%' ORDER BY id",
-        )
-        .all(),
+      await db.run((q) =>
+        q.all(
+          q.orm
+            .select({ action: q.t.workspaceAccessAudit.action })
+            .from(q.t.workspaceAccessAudit)
+            .where(like(q.t.workspaceAccessAudit.action, "finding.%"))
+            .orderBy(asc(q.t.workspaceAccessAudit.id)),
+        ),
+      ),
     ).toEqual([{ action: "finding.dismiss" }, { action: "finding.reopen" }]);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("an inactive member cannot change a finding", async () => {
-  const db = await seed(false);
+  const { db, close } = await seed(false);
   try {
     const [first] = (await list(db)).findings;
     expect((await post(db, { id: first!.id, action: "dismiss", reason: "no" }))!.status).toBe(403);
   } finally {
-    db.close();
+    await close();
   }
 });

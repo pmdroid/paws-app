@@ -7,36 +7,37 @@ import {
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
   revokeLinearInstallation,
   getLinearSessionAccess,
   syncWorkspaceMember,
   saveCheckpoint,
-  sqliteDb,
+  type Q,
 } from "../../src/db";
 import { createRunnerPlacement, type PlacementRequest } from "../../src/runner-placement";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
 import type { RunnerResult } from "../../src/runner-protocol";
+import { count, eq, isNotNull, ne, sql } from "drizzle-orm";
+import { seed } from "../dialects";
+import { tempStore } from "../pglite";
 
 export async function probeRunnerPlacement(
   root: string,
   observe: (name: string, passed: boolean, observed: unknown) => void,
 ) {
   mkdirSync(root, { recursive: true });
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
+  const change = (statement: (q: Q) => PromiseLike<unknown>) => seed(db, statement);
   let now = Date.now();
-  const owner = await putWorkspaceUser(sqliteDb(db), {
+  const owner = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const token = await issueWorkspaceBootstrap(sqliteDb(db), "org", now);
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const token = await issueWorkspaceBootstrap(db, "org", now);
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Test",
@@ -45,8 +46,8 @@ export async function probeRunnerPlacement(
     now,
   });
   const item = await insertQueuedItem(db, { id: "placement", now, sessionKey: "session" });
-  const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
-  await recordLinearInstallation(sqliteDb(db), {
+  const { run } = await beginImplementRun(db, item.id, now);
+  await recordLinearInstallation(db, {
     organizationId: "org",
     oauthClientId: "app-client",
     appUserId: "app",
@@ -54,18 +55,20 @@ export async function probeRunnerPlacement(
     teamId: "team",
     observedAtMs: now,
   });
-  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
-  await bindWorkItemRepository(sqliteDb(db), item.id, {
+  await bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+  await bindWorkItemRepository(db, item.id, {
     owner: "fixture",
     repo: "repository",
     remoteUrl: "https://github.com/fixture/repository.git",
   });
-  db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-    workspace.id,
-    "fixture/repository",
-    "team",
-  ]);
-  db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [owner, item.id]);
+  await change((q) =>
+    q.orm
+      .insert(q.t.workspaceRepository)
+      .values({ workspaceId: workspace.id, repository: "fixture/repository", teamId: "team" }),
+  );
+  await change((q) =>
+    q.orm.update(q.t.workItem).set({ ownerUserId: owner }).where(eq(q.t.workItem.id, item.id)),
+  );
   for (const [id, user] of [
     ["own", "owner"],
     ["second", "owner"],
@@ -75,14 +78,14 @@ export async function probeRunnerPlacement(
     const userId =
       user === "owner"
         ? owner
-        : await putWorkspaceUser(sqliteDb(db), {
+        : await putWorkspaceUser(db, {
             id: workspaceId(),
             linearUserId: user!,
             name: user!,
             email: `${user}@example.invalid`,
           });
     if (user !== "owner")
-      await syncWorkspaceMember(sqliteDb(db), {
+      await syncWorkspaceMember(db, {
         workspaceId: workspace.id,
         userId,
         role: "member",
@@ -90,19 +93,40 @@ export async function probeRunnerPlacement(
         teamIds: ["team"],
         now,
       });
-    db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
-      [id!, workspace.id, userId, id!, now, now],
+    await seed(
+      db,
+      (q) =>
+        q.orm.insert(q.t.runner).values({
+          id: id!,
+          workspaceId: workspace.id,
+          ownerUserId: userId,
+          name: id!,
+          status: "active",
+          createdAt: now,
+          lastSeenAt: now,
+        }),
+      (q) =>
+        q.orm.insert(q.t.runnerPolicy).values({ runnerId: id!, sharing: user === "owner" ? 0 : 1 }),
+      (q) =>
+        q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: id!, agent: "codex", ready: 1 }),
     );
-    db.run("INSERT INTO runner_policy(runner_id,sharing) VALUES(?,?)", [
-      id!,
-      user === "owner" ? 0 : 1,
-    ]);
-    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [id!]);
   }
+  const setSharing = (sharing: number) =>
+    change((q) =>
+      q.orm.update(q.t.runnerPolicy).set({ sharing }).where(eq(q.t.runnerPolicy.runnerId, "own")),
+    );
+  const lastSeen = (lastSeenAt: number) =>
+    change((q) => q.orm.update(q.t.runner).set({ lastSeenAt }).where(eq(q.t.runner.id, "second")));
+  const setActive = (active: number) =>
+    change((q) =>
+      q.orm
+        .update(q.t.workspaceMember)
+        .set({ active })
+        .where(eq(q.t.workspaceMember.userId, owner)),
+    );
   let installationObservation = now;
   const observeInstallation = async (teamId: string) =>
-    await recordLinearInstallation(sqliteDb(db), {
+    await recordLinearInstallation(db, {
       organizationId: "org",
       oauthClientId: "app-client",
       appUserId: "app",
@@ -110,7 +134,7 @@ export async function probeRunnerPlacement(
       teamId,
       observedAtMs: ++installationObservation,
     });
-  const placement = createRunnerPlacement({ store: sqliteDb(db), now: () => now });
+  const placement = createRunnerPlacement({ store: db, now: () => now });
   const request: PlacementRequest = {
     itemId: item.id,
     profile: { agent: "codex", model: "implementation-model" },
@@ -128,7 +152,7 @@ export async function probeRunnerPlacement(
     const profile = { agent: "codex" as const, model };
     await placement.candidates({ ...request, purpose, role, profile });
     const commandId = workspaceId();
-    await sqliteDb(db).transaction((q) =>
+    await db.transaction((q) =>
       placement.startedSteps(q, {
         commandId,
         runnerId,
@@ -178,14 +202,19 @@ export async function probeRunnerPlacement(
       sharedExcluded: true,
     });
     await placement.candidates(request);
-    await saveCheckpoint(sqliteDb(db), item.id, {
+    await saveCheckpoint(db, item.id, {
       phase: "running",
       baseSha: "a".repeat(40),
       wipCommit: "b".repeat(40),
     });
-    db.run("UPDATE work_item SET awake_ms=awake_ms+1000 WHERE id=?", [item.id]);
+    await change((q) =>
+      q.orm
+        .update(q.t.workItem)
+        .set({ awakeMs: sql`${q.t.workItem.awakeMs} + 1000` })
+        .where(eq(q.t.workItem.id, item.id)),
+    );
     const progressCommand = workspaceId();
-    await sqliteDb(db).transaction((q) =>
+    await db.transaction((q) =>
       placement.startedSteps(q, {
         commandId: progressCommand,
         runnerId: "own",
@@ -197,7 +226,7 @@ export async function probeRunnerPlacement(
         startedAt: now,
       }),
     );
-    await sqliteDb(db).transaction((q) =>
+    await db.transaction((q) =>
       placement.finishedSteps(q, {
         commandId: progressCommand,
         runnerId: "own",
@@ -212,7 +241,7 @@ export async function probeRunnerPlacement(
     );
     await assert.rejects(
       () =>
-        sqliteDb(db).transaction((q) =>
+        db.transaction((q) =>
           placement.startedSteps(q, {
             commandId: workspaceId(),
             runnerId: "own",
@@ -232,7 +261,7 @@ export async function probeRunnerPlacement(
     const quotaCommand = await start("own");
     assert.equal(
       (
-        await sqliteDb(db).transaction((q) =>
+        await db.transaction((q) =>
           placement.finishedSteps(q, {
             commandId: quotaCommand,
             runnerId: "own",
@@ -247,17 +276,24 @@ export async function probeRunnerPlacement(
       true,
     );
     assert(!(await ids()).includes("own"));
-    const quota = db
-      .query<{ reset: number; cooldown: number }, []>(
-        "SELECT resets_at AS reset,cooldown_until AS cooldown FROM runner_agent_policy WHERE runner_id='own'",
-      )
-      .get()!;
+    const [quota] = await db.run((q) =>
+      q.all(
+        q.orm
+          .select({
+            reset: q.t.runnerAgentPolicy.resetsAt,
+            cooldown: q.t.runnerAgentPolicy.cooldownUntil,
+          })
+          .from(q.t.runnerAgentPolicy)
+          .where(eq(q.t.runnerAgentPolicy.runnerId, "own")),
+      ),
+    );
+    if (!quota) throw new Error("Missing quota for own");
     assert.equal(quota.reset, now + 1_800_000);
     assert.equal(quota.cooldown, quota.reset);
     now += 1_800_001;
-    db.run("UPDATE runner SET last_seen_at=?", [now]);
+    await change((q) => q.orm.update(q.t.runner).set({ lastSeenAt: now }));
     const probe = await start("own", "prepare");
-    await sqliteDb(db).transaction((q) =>
+    await db.transaction((q) =>
       placement.finishedSteps(q, {
         commandId: probe,
         runnerId: "own",
@@ -265,13 +301,16 @@ export async function probeRunnerPlacement(
         result: result(probe),
       }),
     );
-    assert.equal(
-      db
-        .query<{ state: string }, []>(
-          "SELECT quota_state AS state FROM runner_agent_policy WHERE runner_id='own'",
-        )
-        .get()!.state,
-      "exhausted",
+    assert.deepEqual(
+      await db.run((q) =>
+        q.all(
+          q.orm
+            .select({ state: q.t.runnerAgentPolicy.quotaState })
+            .from(q.t.runnerAgentPolicy)
+            .where(eq(q.t.runnerAgentPolicy.runnerId, "own")),
+        ),
+      ),
+      [{ state: "exhausted" }],
     );
     observe(
       "Provider exhaustion records its reset and a login probe cannot erase exhaustion",
@@ -279,7 +318,7 @@ export async function probeRunnerPlacement(
       quota,
     );
     const authCommand = await start("second");
-    await sqliteDb(db).transaction((q) =>
+    await db.transaction((q) =>
       placement.finishedSteps(q, {
         commandId: authCommand,
         runnerId: "second",
@@ -288,8 +327,36 @@ export async function probeRunnerPlacement(
       }),
     );
     assert(!(await ids()).includes("second"));
-    const fencedSignedOut = await start("second", "prepare");
-    await sqliteDb(db).transaction((q) =>
+    const onlySecond = async (place: () => Promise<string>) => {
+      const policy = (q: Q) => q.t.runnerAgentPolicy;
+      const others = await db.run((q) =>
+        q.all(
+          q.orm
+            .select({ id: policy(q).runnerId, ready: policy(q).ready })
+            .from(policy(q))
+            .where(ne(policy(q).runnerId, "second")),
+        ),
+      );
+      await change((q) =>
+        q.orm
+          .update(policy(q))
+          .set({ ready: 0 })
+          .where(ne(policy(q).runnerId, "second")),
+      );
+      try {
+        return await place();
+      } finally {
+        for (const other of others)
+          await change((q) =>
+            q.orm
+              .update(policy(q))
+              .set({ ready: other.ready })
+              .where(eq(policy(q).runnerId, other.id)),
+          );
+      }
+    };
+    const fencedSignedOut = await onlySecond(() => start("second", "prepare"));
+    await db.transaction((q) =>
       placement.finishedSteps(q, {
         commandId: fencedSignedOut,
         runnerId: "second",
@@ -298,8 +365,8 @@ export async function probeRunnerPlacement(
       }),
     );
     assert(!(await ids()).includes("second"));
-    const login = await start("second", "prepare");
-    await sqliteDb(db).transaction((q) =>
+    const login = await onlySecond(() => start("second", "prepare"));
+    await db.transaction((q) =>
       placement.finishedSteps(q, {
         commandId: login,
         runnerId: "second",
@@ -309,7 +376,7 @@ export async function probeRunnerPlacement(
     );
     assert((await ids()).includes("second"));
     const fencedSignedIn = await start("second");
-    await sqliteDb(db).transaction((q) =>
+    await db.transaction((q) =>
       placement.finishedSteps(q, {
         commandId: fencedSignedIn,
         runnerId: "second",
@@ -325,7 +392,7 @@ export async function probeRunnerPlacement(
       readyAfterFence: true,
     });
     const implemented = await start("own");
-    await sqliteDb(db).transaction((q) =>
+    await db.transaction((q) =>
       placement.finishedSteps(q, {
         commandId: implemented,
         runnerId: "own",
@@ -345,7 +412,7 @@ export async function probeRunnerPlacement(
     const conflictCommand = await start("second", "work", "reviewer", "review-model");
     assert.equal(
       (
-        await sqliteDb(db).transaction((q) =>
+        await db.transaction((q) =>
           placement.finishedSteps(q, {
             commandId: conflictCommand,
             runnerId: "second",
@@ -356,11 +423,18 @@ export async function probeRunnerPlacement(
       ).retryable,
       true,
     );
-    const rejectedReview = db
-      .query<{ outcome: string; endedAt: number | null }, [string]>(
-        "SELECT outcome,ended_at AS endedAt FROM runner_execution_usage WHERE command_id=?",
-      )
-      .get(conflictCommand)!;
+    const [rejectedReview] = await db.run((q) =>
+      q.all(
+        q.orm
+          .select({
+            outcome: q.t.runnerExecutionUsage.outcome,
+            endedAt: q.t.runnerExecutionUsage.endedAt,
+          })
+          .from(q.t.runnerExecutionUsage)
+          .where(eq(q.t.runnerExecutionUsage.commandId, conflictCommand)),
+      ),
+    );
+    if (!rejectedReview) throw new Error("Missing the rejected review receipt");
     assert.equal(rejectedReview.outcome, "model_conflict");
     assert.notEqual(rejectedReview.endedAt, null);
     observe(
@@ -374,10 +448,10 @@ export async function probeRunnerPlacement(
       { preferred: "second", sameModelDenied: true },
     );
     await placement.candidates(request);
-    db.run("UPDATE runner_policy SET sharing=1 WHERE runner_id='own'");
+    await setSharing(1);
     await assert.rejects(
       () =>
-        sqliteDb(db).transaction((q) =>
+        db.transaction((q) =>
           placement.startedSteps(q, {
             commandId: workspaceId(),
             runnerId: "own",
@@ -391,50 +465,45 @@ export async function probeRunnerPlacement(
         ),
       /selection authority changed/,
     );
-    db.run("UPDATE runner_policy SET sharing=0 WHERE runner_id='own'");
+    await setSharing(0);
     observe("Policy changes between selection and assignment cannot admit stale authority", true, {
       denied: true,
     });
-    db.run("UPDATE runner SET last_seen_at=0 WHERE id='second'");
+    await lastSeen(0);
     assert(!(await ids()).includes("second"));
-    db.run("UPDATE runner SET last_seen_at=? WHERE id='second'", [now]);
-    db.run("UPDATE workspace_member SET active=0 WHERE user_id=?", [owner]);
+    await lastSeen(now);
+    await setActive(0);
     await assert.rejects(ids(), /not an active workspace member/);
-    db.run("UPDATE workspace_member SET active=1 WHERE user_id=?", [owner]);
+    await setActive(1);
     observe("Offline hosts and revoked workspace members are excluded", true, {
       offlineDenied: true,
       revokedDenied: true,
     });
-    const reopened = openDatabase(join(root, "paws.sqlite"));
-    try {
-      assert(
-        reopened
-          .query<{ count: number }, []>(
-            "SELECT COUNT(*) AS count FROM runner_execution_usage WHERE ended_at IS NOT NULL",
-          )
-          .get()!.count >= 5,
-      );
-    } finally {
-      reopened.close();
-    }
-    observe(
-      "Provider observations and attributed execution usage persist across connections",
-      true,
-      { persisted: true },
+    const [ended] = await db.run((q) =>
+      q.all(
+        q.orm
+          .select({ count: count() })
+          .from(q.t.runnerExecutionUsage)
+          .where(isNotNull(q.t.runnerExecutionUsage.endedAt)),
+      ),
     );
-    await revokeLinearInstallation(sqliteDb(db), {
+    assert(ended!.count >= 5);
+    observe("Provider observations and attributed execution usage persist", true, {
+      persisted: true,
+    });
+    await revokeLinearInstallation(db, {
       eventKey: "placement-revocation",
       organizationId: "org",
       oauthClientId: "app-client",
       createdAtMs: ++installationObservation,
     });
     await assert.rejects(ids(), /Runner (?:task|session authority) is unavailable/);
-    assert.equal(await getLinearSessionAccess(sqliteDb(db), "session"), "revoked");
+    assert.equal(await getLinearSessionAccess(db, "session"), "revoked");
     observe("App revocation fences selection", true, {
       revoked: true,
     });
   } finally {
-    db.close();
+    await close();
   }
 }
 if (import.meta.main) {

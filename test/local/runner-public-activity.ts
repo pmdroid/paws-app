@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, readdirSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
-import { sqliteDb, beginImplementRun, insertQueuedItem, migrate, openDatabase } from "../../src/db";
+import { beginImplementRun, insertQueuedItem, openDatabase } from "../../src/db";
 import { openExecutionJournal, type WorkCommand } from "../../src/runner-journal";
 import { RunnerEventSchema } from "../../src/runner-protocol";
 import { createLiveStatusProvider, handleStatusRequest } from "../../src/dashboard";
+import { tempStore } from "../pglite";
 
 export async function probeRunnerPublicActivity(root: string) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const db = openDatabase(join(root, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const item = await insertQueuedItem(db, { id: "activity-item", sessionKey: "visible-session" });
-  const { run } = await beginImplementRun(sqliteDb(db), item.id, 1000);
+  const { run } = await beginImplementRun(db, item.id, 1000);
   const journalRoot = join(root, "journal");
   mkdirSync(journalRoot, { mode: 0o700 });
   let journal = openExecutionJournal(journalRoot);
@@ -158,7 +158,7 @@ export async function probeRunnerPublicActivity(root: string) {
         .join(""),
     );
     const options = {
-      store: sqliteDb(db),
+      store: db,
       closeoutHome: root,
       sessionIds: ["visible-session"],
       env: { API_KEY: "tool-secret-fixture" },
@@ -212,7 +212,7 @@ export async function probeRunnerPublicActivity(root: string) {
       assert(!references.includes(join(directory, "acp.jsonl")));
     }
     const statusRun = (
-      await createLiveStatusProvider(sqliteDb(db), {
+      await createLiveStatusProvider(db, {
         pawsHome: root,
         sessionIds: options.sessionIds,
         env: options.env,
@@ -247,7 +247,7 @@ export async function probeRunnerPublicActivity(root: string) {
     return observations;
   } finally {
     journal.close();
-    db.close();
+    await close();
   }
 }
 

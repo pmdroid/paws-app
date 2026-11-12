@@ -5,11 +5,8 @@ import {
   blockerCheckedAt,
   listTaskBlockers,
   listWorkItems,
-  migrate,
-  openDatabase,
   recordLinearInstallation,
   saveItemHolds,
-  sqliteDb,
 } from "../src/db";
 import {
   BLOCKED_RELATIONS_POLL_MS,
@@ -21,13 +18,14 @@ import {
   relationsPollIntervalMs,
 } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const BLOCKED_BY_B = [{ blockerLinearIssueId: "acme-b", blockedLinearIssueId: "acme-child" }];
 
 async function blockedFixture(options: { blocked?: boolean; lowBudget?: boolean } = {}) {
   let clock = 10_000;
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   const tracker = createFakeTracker([
     {
       linearIssueId: "acme-parent",
@@ -46,13 +44,20 @@ async function blockedFixture(options: { blocked?: boolean; lowBudget?: boolean 
   });
   lifecycle.issues.set("acme-child", { ...lifecycle.issue, id: "acme-child" });
   lifecycle.issues.set("acme-b", { ...lifecycle.issue, id: "acme-b" });
-  const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+  const intake = await intakeDelegatedIssue(db, tracker, {
     linearIssueId: "acme-parent",
     now: 1000,
   });
   if (!intake.ok) throw new Error("intake failed");
-  db.run("INSERT INTO workspace VALUES('acme-workspace','acme-org','Acme',1000)");
-  await recordLinearInstallation(sqliteDb(db), {
+  await seed(db, (q) =>
+    q.orm.insert(q.t.workspace).values({
+      id: "acme-workspace",
+      linearOrganizationId: "acme-org",
+      name: "Acme",
+      createdAt: 1000,
+    }),
+  );
+  await recordLinearInstallation(db, {
     organizationId: "acme-org",
     oauthClientId: "acme-client",
     appUserId: "acme-app",
@@ -60,13 +65,13 @@ async function blockedFixture(options: { blocked?: boolean; lowBudget?: boolean 
     teamId: "acme-team",
     observedAtMs: 1000,
   });
-  await bindLinearSessionTask(sqliteDb(db), "acme-session", intake.delegation.id, {
+  await bindLinearSessionTask(db, "acme-session", intake.delegation.id, {
     actorId: "acme-human",
   });
   if (options.blocked !== false) tracker.deps.set("acme-child", BLOCKED_BY_B);
   let epicReads = 0;
   const reconciler = createItemReconciler({
-    store: sqliteDb(db),
+    store: db,
     tracker: {
       ...tracker,
       async loadEpic(id) {
@@ -79,17 +84,13 @@ async function blockedFixture(options: { blocked?: boolean; lowBudget?: boolean 
     now: () => clock,
   });
   await reconciler.sweep({ now: clock });
-  const child = (await listWorkItems(sqliteDb(db))).find(
-    (item) => item.linearIssueId === "acme-child",
-  )!;
+  const child = (await listWorkItems(db)).find((item) => item.linearIssueId === "acme-child")!;
   if (options.blocked !== false)
-    await saveItemHolds(sqliteDb(db), [
-      { itemId: child.id, reason: "blocked", blockers: ["ACME-12"] },
-    ]);
+    await saveItemHolds(db, [{ itemId: child.id, reason: "blocked", blockers: ["ACME-12"] }]);
   tracker.blockerReads.length = 0;
   let executionReconciles = 0;
   const polls = createRelationsPolls({
-    store: sqliteDb(db),
+    store: db,
     reconciler,
     lowBudget: async () => options.lowBudget ?? false,
     reconcileExecution: () => executionReconciles++,
@@ -108,22 +109,22 @@ async function blockedFixture(options: { blocked?: boolean; lowBudget?: boolean 
     },
     async [Symbol.asyncDispose]() {
       await reconciler.close();
-      db.close();
+      await close();
     },
   };
 }
 
 test("the fast relations poll unblocks an item whose blocker was removed in Linear", async () => {
   await using fixture = await blockedFixture();
-  expect(await listTaskBlockers(sqliteDb(fixture.db), "acme-child")).toEqual(["acme-b"]);
+  expect(await listTaskBlockers(fixture.db, "acme-child")).toEqual(["acme-b"]);
   expect(await fixture.polls.intervalMs()).toBe(BLOCKED_RELATIONS_POLL_MS);
   fixture.tracker.deps.set("acme-child", []);
   fixture.advance(BLOCKED_RELATIONS_POLL_MS);
   expect(await fixture.polls.blocked()).toHaveLength(1);
-  expect(await listTaskBlockers(sqliteDb(fixture.db), "acme-child")).toEqual([]);
+  expect(await listTaskBlockers(fixture.db, "acme-child")).toEqual([]);
   expect(fixture.executionReconciles()).toBe(1);
   expect(fixture.tracker.blockerReads).toEqual([["acme-child"]]);
-  expect(await blockerCheckedAt(sqliteDb(fixture.db), fixture.child.id)).toBe(
+  expect(await blockerCheckedAt(fixture.db, fixture.child.id)).toBe(
     10_000 + BLOCKED_RELATIONS_POLL_MS,
   );
 });
@@ -151,7 +152,7 @@ test("a low Linear budget keeps the relations poll at five minutes with blocked 
 test("Check blockers now reads the item at once and refuses a second press within 15 s", async () => {
   await using fixture = await blockedFixture();
   const route = createBlockerCheckRoute({
-    store: sqliteDb(fixture.db),
+    store: fixture.db,
     polls: fixture.polls,
     blockedItemIds: fixture.reconciler.blockedItemIds,
   });
@@ -186,7 +187,7 @@ test("Check blockers now reads the item at once and refuses a second press withi
 test("Check blockers now reports a failed Linear read instead of an unchanged check", async () => {
   await using fixture = await blockedFixture();
   const route = createBlockerCheckRoute({
-    store: sqliteDb(fixture.db),
+    store: fixture.db,
     polls: fixture.polls,
     blockedItemIds: fixture.reconciler.blockedItemIds,
   });

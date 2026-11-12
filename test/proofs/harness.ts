@@ -95,7 +95,7 @@ function scriptedAgent(
   return { launch, launches };
 }
 
-export type GitHubCall = { method: string; path: string; outcome: string };
+export type GitHubCall = { method: string; path: string; outcome: string; token: string };
 
 function fixtureGitHub(input: {
   pulls: FakeGitHub;
@@ -103,6 +103,7 @@ function fixtureGitHub(input: {
   origin: string;
   ciPending?: boolean;
   noCi?: boolean;
+  refusedToken?: { token: string; status: number };
 }): {
   client: GitHubClient;
   /** `dirty`: GitHub reports the pull request conflicting with main and runs no checks on it. */
@@ -151,6 +152,8 @@ function fixtureGitHub(input: {
     if (required) return required;
     const number = Number(/\/(?:pulls|issues)\/(\d+)/.exec(path)?.[1]);
     if (method === "POST" && path.endsWith("/pulls")) {
+      if (request.token === input.refusedToken?.token)
+        return { status: input.refusedToken.status, body: { message: "Resource not accessible" } };
       const body = request.body as { title: string; head: string; base: string; body: string };
       if (pulls.opened.some((pull, index) => pull.head === body.head && !closed.has(index + 1)))
         return { status: 422, body: { message: "A pull request already exists" } };
@@ -205,7 +208,12 @@ function fixtureGitHub(input: {
   }
   const client: GitHubClient = {
     async request(request) {
-      const call = { method: request.method, path: request.path, outcome: "pending" };
+      const call = {
+        method: request.method,
+        path: request.path,
+        outcome: "pending",
+        token: request.token,
+      };
       calls.push(call);
       try {
         const response = await respond(request);
@@ -267,6 +275,7 @@ export type Proof = {
   policy?: string;
   files?: Record<string, string>;
   reviewer?: CodexReviewer;
+  member?: { login: string; token: string; refused?: number };
   agent(input: LaunchInput): FakeStep[];
   run(context: ProofContext): Promise<void>;
 };
@@ -316,6 +325,9 @@ export async function runProof(name: string, proof: Proof, dir: string) {
     origin: bare,
     ciPending: proof.ciPending,
     noCi: proof.noCi,
+    ...(proof.member?.refused
+      ? { refusedToken: { token: proof.member.token, status: proof.member.refused } }
+      : {}),
   });
   const database = await openPawsStore({
     url: process.env.PAWS_DATABASE_URL ?? null,
@@ -346,6 +358,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
       tokenProvider: { mode: "token", tokenFor: async () => "proof-fake-token" },
     }),
     launch,
+    ...(proof.member ? { pullRequestMember: async () => proof.member! } : {}),
   });
   const actions: { at: string; action: string }[] = [];
   const assertions: Assertion[] = [];

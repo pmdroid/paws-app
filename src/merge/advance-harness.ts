@@ -24,6 +24,7 @@ import {
   saveCheckpointSteps,
   DEFAULT_PULL_FEEDBACK_WAIT,
   type PullFeedbackWait,
+  type Db,
   type TaskMergeSettings,
   sqliteDb,
   syncSteps,
@@ -103,17 +104,30 @@ export function pendingCi(): CheckNodes {
   return [{ name: "ci", conclusion: null, detailsUrl: null }];
 }
 
-export async function mergeHarness(
-  options: {
-    settings?: Partial<Pick<TaskMergeSettings, "order" | "mainMoved">>;
-    queue?: FakeMergeQueue;
-    /**
-     * Runner-backed items: the lane reads each head from `refs/paws/candidates/<id>` in one bare
-     * mirror, and an item's clone stands in for its runner.
-     */
-    mirror?: boolean;
-  } = {},
+type HarnessOptions = {
+  settings?: Partial<Pick<TaskMergeSettings, "order" | "mainMoved">>;
+  queue?: FakeMergeQueue;
+  /**
+   * Runner-backed items: the lane reads each head from `refs/paws/candidates/<id>` in one bare
+   * mirror, and an item's clone stands in for its runner.
+   */
+  mirror?: boolean;
+};
+
+export async function mergeHarness(options: HarnessOptions = {}) {
+  const db: Database = openDatabase(":memory:");
+  migrate(db);
+  return { ...(await harness(sqliteDb(db), options, async () => db.close())), db };
+}
+
+export async function mergeHarnessPg(
+  open: { db: Db; close(): Promise<void> },
+  options: HarnessOptions = {},
 ) {
+  return { ...(await harness(open.db, options, open.close)), db: open.db };
+}
+
+async function harness(store: Db, options: HarnessOptions, close: () => Promise<void>) {
   const root = await mkdtemp(path.join(tmpdir(), "paws-advance-"));
   const bare = path.join(root, "origin.git");
   const mirror = options.mirror ? path.join(root, "repos", "acme", "app.git") : undefined;
@@ -136,9 +150,6 @@ export async function mergeHarness(
     if (mirror) await git(mirror, "fetch", "-q", item.worktree, `+HEAD:${candidate(item.id)}`);
   };
 
-  const db: Database = openDatabase(":memory:");
-  migrate(db);
-  const store = sqliteDb(db);
   const clock = new FakeClock(1_000_000);
   const github = createFakeGitHub();
   const items = new Map<string, HarnessItem>();
@@ -379,7 +390,7 @@ export async function mergeHarness(
     await git(worktree, "push", "-q", "origin", `HEAD:paws/${id}`);
     const head = await git(worktree, "rev-parse", "HEAD");
     const base = await git(worktree, "rev-parse", "origin/main");
-    await insertQueuedItem(db, { id, now: clock.now(), sessionKey: `ses-${id}` });
+    await insertQueuedItem(store, { id, now: clock.now(), sessionKey: `ses-${id}` });
     const { run } = await beginImplementRun(store, id, clock.now());
     await enterMergeQueue(store, id, {
       phase: "merge_queue",
@@ -663,7 +674,6 @@ export async function mergeHarness(
   }
 
   return {
-    db,
     clock,
     github,
     root,
@@ -687,13 +697,14 @@ export async function mergeHarness(
     bodies: (kind?: Line["kind"]) =>
       lines.filter((line) => kind === undefined || line.kind === kind).map((line) => line.body),
     cleanup: async () => {
-      db.close();
+      await close();
       await rm(root, { recursive: true, force: true });
     },
   };
 }
 
 export type MergeHarness = Awaited<ReturnType<typeof mergeHarness>>;
+export type MergeHarnessPg = Awaited<ReturnType<typeof mergeHarnessPg>>;
 
 const ask: typeof rawAsk = function* (q, asker, ...args) {
   const result = yield* rawAsk(q, asker, ...args);

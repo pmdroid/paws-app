@@ -217,7 +217,7 @@ async function runCase(name: string): Promise<void> {
     const published = expectFile.git === true || expectFile.check === "validate";
     const sha = published ? publishFixture(repo) : "";
     if (expectFile.check === "validate") {
-      checkValidate(name, expectFile, repo);
+      await checkValidate(name, expectFile, repo);
       return;
     }
     if (expectFile.check === "digest") {
@@ -234,8 +234,8 @@ async function runCase(name: string): Promise<void> {
   }
 }
 
-function checkValidate(name: string, expectFile: ExpectFile, repo: string): void {
-  const result = validate(repo, emptyHome(repo));
+async function checkValidate(name: string, expectFile: ExpectFile, repo: string): Promise<void> {
+  const result = await validate(repo, emptyHome(repo));
   if (result.ok !== expectFile.ok) {
     const message = result.ok ? "validation succeeded" : result.message;
     throw new Error(`${name}: ${message}`);
@@ -269,7 +269,7 @@ async function checkDecision(
   repo: string,
   sha: string,
 ): Promise<void> {
-  const loaded = validate(repo, emptyHome(repo));
+  const loaded = await validate(repo, emptyHome(repo));
   if (!loaded.ok || loaded.digest === null) {
     throw new Error(`${name}: policy did not load${loaded.ok ? "" : `: ${loaded.message}`}`);
   }
@@ -380,7 +380,7 @@ async function crossCheck(bin: string, name: string): Promise<void> {
     copyFixture(name, repo);
     const sha = publishFixture(repo);
     if (expectFile.check === "validate") {
-      const ours = validate(repo, home);
+      const ours = await validate(repo, home);
       const ran = reference(bin, repo, home, ["validate", "--json"]);
       const body = json(ran.stdout);
       if (ours.ok) {
@@ -407,7 +407,7 @@ async function crossCheck(bin: string, name: string): Promise<void> {
       if (before.ok && after.ok) expect(after.digest).not.toBe(before.digest);
       return;
     }
-    const loaded = validate(repo, home);
+    const loaded = await validate(repo, home);
     if (!loaded.ok || loaded.digest === null) throw new Error(`${name}: policy did not load`);
     writeEvidence(repo, expectFile.records ?? [], sha, sha, loaded.digest);
     const candidate = candidateOf(expectFile);

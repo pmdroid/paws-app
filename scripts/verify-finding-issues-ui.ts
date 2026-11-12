@@ -141,6 +141,9 @@ try {
       await page.emulateMedia({ colorScheme: scheme });
       await page.goto(`http://127.0.0.1:${server.port}/dashboard/issues/ENG-100`);
       const card = page.locator("section.review-findings");
+      // The issue page folds Review findings closed until it is opened.
+      const open = () => page.getByRole("button", { name: /^Review findings/ }).click();
+      await open();
       await expect(card.getByRole("heading", { name: "Review findings" })).toBeVisible();
       const buttons = card.getByRole("button", { name: "File an issue" });
       // One per pre-existing finding, from both reviews; none on the blocking finding.
@@ -164,6 +167,7 @@ try {
       await shot("after");
       // A reload reads the filed issue from the issue page's data.
       await page.reload();
+      await open();
       await expect(card.getByRole("link", { name: "PAS-123 filed" })).toBeVisible();
       await page.close();
     }

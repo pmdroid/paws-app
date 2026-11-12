@@ -682,7 +682,7 @@ export function* attachSessionUpdatesSteps(q: Q, id: number, now: number) {
         payload:
           q.dialect === "sqlite"
             ? sql`json_set(${outbox.payload}, '$.session', json(${merged}))`
-            : sql`jsonb_set(${outbox.payload}, '{session}', ${merged}::jsonb)`,
+            : sql`jsonb_set(${outbox.payload}, '{session}', ${merged}::text::jsonb)`,
       })
       .where(and(eq(outbox.id, id), eq(outbox.status, "pending"), unlockedAt(q, now)))
       .returning({ id: outbox.id }),

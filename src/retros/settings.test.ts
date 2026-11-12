@@ -7,14 +7,12 @@ import {
   failRetroAttempt,
   freezeRetroInput,
   getRetro,
-  migrate,
-  openDatabase,
   publishRetro,
   recordRetroEvidence,
   retroRepositories,
   startRetroAttempt,
   writeRetroArtifact,
-  sqliteDb,
+  type Db,
 } from "../db";
 import type { AgentModelCatalog } from "../runner-models";
 import {
@@ -31,13 +29,17 @@ import {
   saveRetroSettings,
   type RetroSettingsDraft,
 } from "./index";
+import { seed } from "../../test/dialects";
+import { tempStore } from "../../test/pglite";
 
 const APP = "pmdroid/paws-app";
 const LANDING = "pmdroid/landing";
 const DAY = 86_400_000;
 const roots: string[] = [];
-afterEach(() => {
+const stores: { close(): Promise<void> }[] = [];
+afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const store of stores.splice(0)) await store.close();
 });
 
 const effort = (id: string) => ({ id, name: id });
@@ -75,10 +77,15 @@ const CATALOGS: AgentModelCatalog[] = [
   },
 ];
 
-function harness() {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  db.run("INSERT INTO workspace VALUES ('ws', 'org', 'Kyku', 0)");
+async function harness() {
+  const store = await tempStore();
+  stores.push(store);
+  const { db } = store;
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: "ws", linearOrganizationId: "org", name: "Kyku", createdAt: 0 }),
+  );
   const root = mkdtempSync(join(tmpdir(), "paws-retro-settings-"));
   roots.push(root);
   return { db, root: join(root, "artifacts") };
@@ -93,7 +100,7 @@ function draft(change: Partial<RetroSettingsDraft> = {}): RetroSettingsDraft {
 }
 
 function save(
-  db: ReturnType<typeof harness>["db"],
+  db: Db,
   input: {
     expectedRevision: number;
     draft: unknown;
@@ -102,7 +109,7 @@ function save(
     now?: number;
   },
 ) {
-  return saveRetroSettings(sqliteDb(db), {
+  return saveRetroSettings(db, {
     workspaceId: "ws",
     actorId: "admin-1",
     expectedRevision: input.expectedRevision,
@@ -114,7 +121,7 @@ function save(
 }
 
 function freeze(
-  db: ReturnType<typeof harness>["db"],
+  db: Db,
   input: {
     id: string;
     start: number;
@@ -122,7 +129,7 @@ function freeze(
     catalogs?: AgentModelCatalog[] | null;
   },
 ) {
-  return sqliteDb(db).transaction((q) =>
+  return db.transaction((q) =>
     freezeRetroRunSteps(q, {
       id: input.id,
       workspaceId: "ws",
@@ -137,13 +144,13 @@ function freeze(
 }
 
 async function collectAndQueue(
-  db: ReturnType<typeof harness>["db"],
+  db: Db,
   root: string,
   retroId: string,
   cursors: Record<string, number>,
 ) {
-  expect((await beginRetroCollection(sqliteDb(db), { retroId, now: 1 })).ok).toBe(true);
-  await recordRetroEvidence(sqliteDb(db), retroId, [
+  expect((await beginRetroCollection(db, { retroId, now: 1 })).ok).toBe(true);
+  await recordRetroEvidence(db, retroId, [
     {
       evidenceId: "e1",
       repository: APP,
@@ -154,19 +161,19 @@ async function collectAndQueue(
     },
   ]);
   for (const kind of ["digest", "manifest"] as const)
-    await writeRetroArtifact(sqliteDb(db), root, {
+    await writeRetroArtifact(db, root, {
       retroId,
       kind,
       bytes: new TextEncoder().encode(`${kind} ${retroId}`),
       now: 1,
     });
-  await freezeRetroInput(sqliteDb(db), { retroId, endCursors: cursors, now: 1 });
+  await freezeRetroInput(db, { retroId, endCursors: cursors, now: 1 });
 }
 
 describe("saving retro settings", () => {
   test("before a save the proposed defaults show at revision 0", async () => {
-    const { db } = harness();
-    const view = await readRetroSettings(sqliteDb(db), {
+    const { db } = await harness();
+    const view = await readRetroSettings(db, {
       workspaceId: "ws",
       accessibleRepositories: [APP],
     });
@@ -177,7 +184,7 @@ describe("saving retro settings", () => {
   });
 
   test("each save is one revision across every field", async () => {
-    const { db } = harness();
+    const { db } = await harness();
     const first = await save(db, { expectedRevision: 0, draft: draft() });
     expect(first.ok && first.view.revision).toBe(1);
     const second = await save(db, {
@@ -197,7 +204,7 @@ describe("saving retro settings", () => {
       now: 2,
     });
     expect(second.ok).toBe(true);
-    const view = await readRetroSettings(sqliteDb(db), {
+    const view = await readRetroSettings(db, {
       workspaceId: "ws",
       accessibleRepositories: [APP, LANDING],
     });
@@ -212,7 +219,7 @@ describe("saving retro settings", () => {
   });
 
   test("a stale expected revision keeps the draft and returns the saved revision", async () => {
-    const { db } = harness();
+    const { db } = await harness();
     await save(db, { expectedRevision: 0, draft: draft() });
     await save(db, {
       expectedRevision: 1,
@@ -227,7 +234,7 @@ describe("saving retro settings", () => {
   });
 
   test("out-of-range values, a broken prompt and a bad time zone are rejected", async () => {
-    const { db } = harness();
+    const { db } = await harness();
     const result = await save(db, {
       expectedRevision: 0,
       draft: draft({
@@ -248,13 +255,12 @@ describe("saving retro settings", () => {
       "schedule.timeZone",
     ]);
     expect(
-      (await readRetroSettings(sqliteDb(db), { workspaceId: "ws", accessibleRepositories: [] }))
-        .saved,
+      (await readRetroSettings(db, { workspaceId: "ws", accessibleRepositories: [] })).saved,
     ).toBe(false);
   });
 
   test("an inaccessible repository is rejected", async () => {
-    const { db } = harness();
+    const { db } = await harness();
     const result = await save(db, {
       expectedRevision: 0,
       draft: draft({ repositories: [APP, "someone/private"] }),
@@ -263,7 +269,7 @@ describe("saving retro settings", () => {
   });
 
   test("an unsupported model or effort is not an unavailable catalog", async () => {
-    const { db } = harness();
+    const { db } = await harness();
     expect(
       await save(db, {
         expectedRevision: 0,
@@ -291,7 +297,7 @@ describe("saving retro settings", () => {
   });
 
   test("the agent default saves without a catalog", async () => {
-    const { db } = harness();
+    const { db } = await harness();
     const result = await save(db, {
       expectedRevision: 0,
       draft: draft({ agentProfile: { agent: "grok", model: null, effort: null } }),
@@ -308,7 +314,7 @@ describe("saving retro settings", () => {
   });
 
   test("changing the agent resets choices the new agent does not offer", async () => {
-    const { db } = harness();
+    const { db } = await harness();
     await save(db, { expectedRevision: 0, draft: draft() });
     const result = await save(db, {
       expectedRevision: 1,
@@ -342,7 +348,7 @@ describe("frozen retro runs", () => {
   });
 
   test("a queued run and its retries keep their values after a new save", async () => {
-    const { db, root } = harness();
+    const { db, root } = await harness();
     await save(db, {
       expectedRevision: 0,
       draft: draft({ agentProfile: { agent: "codex", model: null, effort: null } }),
@@ -365,21 +371,21 @@ describe("frozen retro runs", () => {
       rendered.push(text);
       return text;
     };
-    const prompt = await freezeRetroPrompt(sqliteDb(db), root, { retroId: "r1", render, now: 3 });
+    const prompt = await freezeRetroPrompt(db, root, { retroId: "r1", render, now: 3 });
     if (!prompt.ok) throw new Error(prompt.reason);
     expect(prompt.prompt).toContain("digest r1");
     expect(prompt.prompt).not.toContain("Changed.");
 
-    const limits = retroAttemptLimits((await getRetro(sqliteDb(db), "r1"))!.executionLimits);
+    const limits = retroAttemptLimits((await getRetro(db, "r1"))!.executionLimits);
     expect(limits).toEqual({ maxAttempts: 2, activeExecutionMs: 15 * 60_000 });
-    const attempt = (await startRetroAttempt(sqliteDb(db), {
+    const attempt = (await startRetroAttempt(db, {
       retroId: "r1",
       owner: "runner-a",
       now: 4,
       leaseMs: 1000,
       maxAttempts: limits.maxAttempts,
     }))!;
-    await failRetroAttempt(sqliteDb(db), {
+    await failRetroAttempt(db, {
       retroId: "r1",
       ...attempt,
       owner: "runner-a",
@@ -387,7 +393,7 @@ describe("frozen retro runs", () => {
       now: 5,
     });
     expect(
-      await startRetroAttempt(sqliteDb(db), {
+      await startRetroAttempt(db, {
         retroId: "r1",
         owner: "runner-b",
         now: 6,
@@ -395,7 +401,7 @@ describe("frozen retro runs", () => {
         ...limits,
       }),
     ).toEqual({ attempt: 2 });
-    const retry = await freezeRetroPrompt(sqliteDb(db), root, { retroId: "r1", render, now: 7 });
+    const retry = await freezeRetroPrompt(db, root, { retroId: "r1", render, now: 7 });
     expect(retry).toEqual(prompt);
     expect(rendered).toHaveLength(1);
 
@@ -409,7 +415,7 @@ describe("frozen retro runs", () => {
   });
 
   test("a run leaves out a repository whose access was revoked and a save cannot add it back", async () => {
-    const { db } = harness();
+    const { db } = await harness();
     await save(db, { expectedRevision: 0, draft: draft({ repositories: [APP, LANDING] }) });
     const frozen = await freeze(db, { id: "r1", start: 0, accessible: [APP] });
     expect(frozen.ok && frozen.retro.repositories).toEqual([APP]);
@@ -422,7 +428,7 @@ describe("frozen retro runs", () => {
   });
 
   test("a run needs a saved revision", async () => {
-    const { db } = harness();
+    const { db } = await harness();
     expect(await freeze(db, { id: "r1", start: 0 })).toMatchObject({
       ok: false,
       reason: "no_settings",
@@ -432,9 +438,9 @@ describe("frozen retro runs", () => {
 
 describe("repository selection", () => {
   test("a newly enabled repository starts with its retained history", async () => {
-    const { db, root } = harness();
+    const { db, root } = await harness();
     const publish = async (retroId: string, owner: string) => {
-      const attempt = (await startRetroAttempt(sqliteDb(db), {
+      const attempt = (await startRetroAttempt(db, {
         retroId,
         owner,
         now: 1,
@@ -442,7 +448,7 @@ describe("repository selection", () => {
       }))!;
       expect(
         (
-          await publishRetro(sqliteDb(db), {
+          await publishRetro(db, {
             retroId,
             ...attempt,
             owner,
@@ -461,24 +467,24 @@ describe("repository selection", () => {
 
     await save(db, { expectedRevision: 1, draft: draft({ repositories: [LANDING] }) });
     expect((await freeze(db, { id: "r2", start: 7 * DAY })).ok).toBe(true);
-    expect((await beginRetroCollection(sqliteDb(db), { retroId: "r2", now: 3 })).ok).toBe(true);
-    expect(await retroRepositories(sqliteDb(db), "r2")).toEqual([
+    expect((await beginRetroCollection(db, { retroId: "r2", now: 3 })).ok).toBe(true);
+    expect(await retroRepositories(db, "r2")).toEqual([
       { repository: LANDING, startCursor: 0, endCursor: null },
     ]);
   });
 
   test("re-enabling a repository continues from its last reported cursor", async () => {
-    const { db, root } = harness();
+    const { db, root } = await harness();
     await save(db, { expectedRevision: 0, draft: draft({ repositories: [APP] }) });
     await freeze(db, { id: "r1", start: 0 });
     await collectAndQueue(db, root, "r1", { [APP]: 10 });
-    const attempt = (await startRetroAttempt(sqliteDb(db), {
+    const attempt = (await startRetroAttempt(db, {
       retroId: "r1",
       owner: "a",
       now: 1,
       leaseMs: 1000,
     }))!;
-    await publishRetro(sqliteDb(db), {
+    await publishRetro(db, {
       retroId: "r1",
       ...attempt,
       owner: "a",
@@ -489,8 +495,8 @@ describe("repository selection", () => {
     await save(db, { expectedRevision: 1, draft: draft({ repositories: [LANDING] }) });
     await save(db, { expectedRevision: 2, draft: draft({ repositories: [APP] }) });
     await freeze(db, { id: "r2", start: 21 * DAY });
-    expect((await beginRetroCollection(sqliteDb(db), { retroId: "r2", now: 3 })).ok).toBe(true);
-    expect(await retroRepositories(sqliteDb(db), "r2")).toEqual([
+    expect((await beginRetroCollection(db, { retroId: "r2", now: 3 })).ok).toBe(true);
+    expect(await retroRepositories(db, "r2")).toEqual([
       { repository: APP, startCursor: 10, endCursor: null },
     ]);
   });

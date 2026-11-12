@@ -1,5 +1,4 @@
 import { afterEach, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
 import { parsePullRequest } from "../src/acp";
 import { JOB_KIND } from "../src/core";
 import {
@@ -12,30 +11,30 @@ import {
   listOutbox,
   recordConfirmedRemoteMerge,
   savePullRequestDraft,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import { createFakeTracker } from "../src/linear";
 import { deliverLinearOutbox } from "../src/loop";
-import { tempDb } from "./helpers";
+import { tempStore } from "./pglite";
 
-const databases: Database[] = [];
-afterEach(() => {
-  for (const db of databases.splice(0)) db.close();
+const closes: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of closes.splice(0)) await close();
 });
 
 const PULL_URL = "https://github.com/acme/app/pull/7";
 
 async function itemWithReport(report: Record<string, unknown>) {
-  const db = tempDb();
-  databases.push(db);
+  const { db, close } = await tempStore();
+  closes.push(close);
   const { item } = await beginImplementRun(
-    sqliteDb(db),
+    db,
     (await insertQueuedItem(db, { id: "ACME-1" })).id,
     1,
   );
-  await enqueueJob(sqliteDb(db), { queue: JOB_KIND.resume, payload: { itemId: item.id }, now: 1 });
-  await enterMergeQueue(sqliteDb(db), item.id, { phase: "merge_queue" });
-  await savePullRequestDraft(sqliteDb(db), item.id, parsePullRequest(report), 2);
+  await enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: item.id }, now: 1 });
+  await enterMergeQueue(db, item.id, { phase: "merge_queue" });
+  await savePullRequestDraft(db, item.id, parsePullRequest(report), 2);
   const tracker = createFakeTracker([
     {
       linearIssueId: item.linearIssueId,
@@ -48,8 +47,8 @@ async function itemWithReport(report: Record<string, unknown>) {
   return { db, item, tracker };
 }
 
-async function merge(db: Database, itemId: string) {
-  await recordConfirmedRemoteMerge(sqliteDb(db), {
+async function merge(db: Db, itemId: string) {
+  await recordConfirmedRemoteMerge(db, {
     itemId,
     repositoryOwner: "acme",
     repositoryName: "app",
@@ -58,14 +57,12 @@ async function merge(db: Database, itemId: string) {
     mergeSha: "abc",
     confirmedAt: 3,
   });
-  expect((await completeMergedItem(sqliteDb(db), { itemId, now: 4 }))?.state).toBe("merged");
+  expect((await completeMergedItem(db, { itemId, now: 4 }))?.state).toBe("merged");
 }
 
-async function deliverAll(db: Database, tracker: ReturnType<typeof createFakeTracker>) {
-  for (const row of (await listOutbox(sqliteDb(db))).filter(
-    (message) => message.target === "linear",
-  ))
-    await deliverLinearOutbox(row, tracker, async () => {}, undefined, sqliteDb(db));
+async function deliverAll(db: Db, tracker: ReturnType<typeof createFakeTracker>) {
+  for (const row of (await listOutbox(db)).filter((message) => message.target === "linear"))
+    await deliverLinearOutbox(row, tracker, async () => {}, undefined, db);
 }
 
 test("two parts left for later become two delegated sub-issues after the merge, not before", async () => {
@@ -77,12 +74,10 @@ test("two parts left for later become two delegated sub-issues after the merge, 
       { title: "Move pull-reviews.ts to Steps", scope: "`src/db/pull-reviews.ts`: the reads." },
     ],
   });
-  expect((await getPullRequestDraft(sqliteDb(db), item.id))?.remaining).toHaveLength(2);
+  expect((await getPullRequestDraft(db, item.id))?.remaining).toHaveLength(2);
 
   await deliverAll(db, tracker);
-  expect(
-    (await listOutbox(sqliteDb(db))).filter((row) => row.op === "linear.remaining_issues"),
-  ).toEqual([]);
+  expect((await listOutbox(db)).filter((row) => row.op === "linear.remaining_issues")).toEqual([]);
   expect(tracker.subIssueRequests).toEqual([]);
 
   await merge(db, item.id);
@@ -110,15 +105,13 @@ test("two parts left for later become two delegated sub-issues after the merge, 
 
 test("a report without remaining files nothing after the merge", async () => {
   const { db, item, tracker } = await itemWithReport({ title: "Fix acme", body: "Fixed it." });
-  expect(await getPullRequestDraft(sqliteDb(db), item.id)).toEqual({
+  expect(await getPullRequestDraft(db, item.id)).toEqual({
     title: "Fix acme",
     body: "Fixed it.",
   });
   await merge(db, item.id);
   await deliverAll(db, tracker);
-  expect(
-    (await listOutbox(sqliteDb(db))).filter((row) => row.op === "linear.remaining_issues"),
-  ).toEqual([]);
+  expect((await listOutbox(db)).filter((row) => row.op === "linear.remaining_issues")).toEqual([]);
   expect(tracker.subIssueRequests).toEqual([]);
 });
 

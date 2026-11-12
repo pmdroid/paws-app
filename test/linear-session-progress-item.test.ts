@@ -1,12 +1,13 @@
 import { expect, test } from "bun:test";
 import { FakeClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, insertQueuedItem, sqliteDb } from "../src/db";
+import { JobLoop, OutboxDispatcher, insertQueuedItem } from "../src/db";
 import { createFakeTracker, currentLinearCaller } from "../src/linear";
 import { Orchestrator, createLinearSessionProgress } from "../src/loop";
-import { tempDb, tempHome } from "./helpers";
+import { tempHome } from "./helpers";
+import { tempStore } from "./pglite";
 
 test("a session progress row sent by a plain outbox tick counts under its task", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const clock = new FakeClock(1_000);
   const tracker = createFakeTracker();
   const credited: (string | undefined)[] = [];
@@ -17,7 +18,7 @@ test("a session progress row sent by a plain outbox tick counts under its task",
   };
   const outbox = new OutboxDispatcher(db, clock);
   const orchestrator = new Orchestrator({
-    store: sqliteDb(db),
+    store: db,
     jobs: new JobLoop(db, clock),
     outbox,
     clock,
@@ -27,7 +28,7 @@ test("a session progress row sent by a plain outbox tick counts under its task",
   try {
     const item = await insertQueuedItem(db, { id: "task", now: 1_000, sessionKey: "session" });
     const progress = await createLinearSessionProgress(
-      sqliteDb(db),
+      db,
       "session",
       item.linearIdentifier,
       () => clock.now(),
@@ -41,6 +42,6 @@ test("a session progress row sent by a plain outbox tick counts under its task",
     expect([...new Set(credited)]).toEqual(["task"]);
   } finally {
     await orchestrator.shutdown();
-    db.close();
+    await close();
   }
 });

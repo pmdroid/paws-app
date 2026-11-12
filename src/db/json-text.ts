@@ -25,5 +25,5 @@ export function parsedJson<T>(q: Q, stored: unknown): T {
 
 /** JSON text as a JSON column stores it: the text on SQLite, cast to jsonb on Postgres. */
 export function jsonFromText(q: Q, text: string): SQL {
-  return q.dialect === "sqlite" ? sql`${text}` : sql`${text}::jsonb`;
+  return q.dialect === "sqlite" ? sql`${text}` : sql`${text}::text::jsonb`;
 }

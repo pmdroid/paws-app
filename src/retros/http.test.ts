@@ -1,5 +1,6 @@
-import { expect, test } from "bun:test";
-import { migrate, openDatabase, putWorkspaceUser, syncWorkspaceMember, sqliteDb } from "../db";
+import { afterEach, expect, test } from "bun:test";
+import { listWorkspaceAudit, putWorkspaceUser, syncWorkspaceMember } from "../db";
+import { seed } from "../../test/dialects";
 import type { AgentModelCatalog } from "../runner-models";
 import type { WorkspacePrincipal } from "../workspace";
 import {
@@ -9,6 +10,7 @@ import {
   RETRO_SETTINGS_PATH,
   type RetroSettingsView,
 } from "./index";
+import { tempStore } from "../../test/pglite";
 
 const APP = "pmdroid/paws-app";
 const CATALOGS: AgentModelCatalog[] = [
@@ -29,19 +31,34 @@ const CATALOGS: AgentModelCatalog[] = [
   },
 ];
 
-function fixture(catalogs: AgentModelCatalog[] | null = CATALOGS) {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  db.run("INSERT INTO workspace VALUES ('ws', 'org', 'Kyku', 0)");
-  db.run("INSERT INTO workspace_repository VALUES ('ws', ?, 'team-1')", [APP]);
+const stores: { close(): Promise<void> }[] = [];
+afterEach(async () => {
+  for (const store of stores.splice(0)) await store.close();
+});
+
+async function fixture(catalogs: AgentModelCatalog[] | null = CATALOGS) {
+  const store = await tempStore();
+  stores.push(store);
+  const { db } = store;
+  await seed(
+    db,
+    (q) =>
+      q.orm
+        .insert(q.t.workspace)
+        .values({ id: "ws", linearOrganizationId: "org", name: "Kyku", createdAt: 0 }),
+    (q) =>
+      q.orm
+        .insert(q.t.workspaceRepository)
+        .values({ workspaceId: "ws", repository: APP, teamId: "team-1" }),
+  );
   const member = async (linearUserId: string, role: "admin" | "member", active = true) => {
-    const userId = await putWorkspaceUser(sqliteDb(db), {
+    const userId = await putWorkspaceUser(db, {
       id: `user-${linearUserId}`,
       linearUserId,
       name: linearUserId,
       email: `${linearUserId}@example.invalid`,
     });
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: "ws",
       userId,
       role,
@@ -60,16 +77,15 @@ function fixture(catalogs: AgentModelCatalog[] | null = CATALOGS) {
   };
   const catalog = createFakeRetroCatalog(catalogs);
   const handle = createRetroSettingsHttp({
-    store: sqliteDb(db),
+    store: db,
     catalog: catalog.read,
     now: () => 5,
   });
-  const audit = () =>
-    db
-      .query<{ action: string; subject: string }, []>(
-        "SELECT action, subject FROM workspace_access_audit WHERE action IN ('settings.retros.saved','access.denied') ORDER BY id",
-      )
-      .all();
+  const audit = async () =>
+    (await listWorkspaceAudit(db, "ws", Number.MAX_SAFE_INTEGER)).entries
+      .filter((entry) => ["settings.retros.saved", "access.denied"].includes(entry.action))
+      .map(({ action, subject }) => ({ action, subject }))
+      .reverse();
   return { db, member, handle, catalog, audit };
 }
 
@@ -85,7 +101,7 @@ const settings = () => ({
 });
 
 test("a member reads the settings and an admin saves them with an audit entry", async () => {
-  const { member, handle, audit, catalog } = fixture();
+  const { member, handle, audit, catalog } = await fixture();
   const admin = await member("admin", "admin");
   const reader = await member("reader", "member");
   const before = (await (await handle(get(), reader))!.json()) as RetroSettingsView;
@@ -96,7 +112,7 @@ test("a member reads the settings and an admin saves them with an audit entry", 
   expect(saved!.status).toBe(200);
   expect(await saved!.json()).toMatchObject({ revision: 1, saved: true, canEdit: true });
   expect(catalog.calls).toEqual([{ workspaceId: "ws", userId: admin.userId }]);
-  expect(audit()).toEqual([{ action: "settings.retros.saved", subject: "revision 1" }]);
+  expect(await audit()).toEqual([{ action: "settings.retros.saved", subject: "revision 1" }]);
 
   const after = (await (await handle(get(), reader))!.json()) as RetroSettingsView;
   expect(after.settings.agentProfile).toEqual({
@@ -107,22 +123,22 @@ test("a member reads the settings and an admin saves them with an audit entry", 
 });
 
 test("a member cannot save and the refusal is audited", async () => {
-  const { member, handle, audit } = fixture();
+  const { member, handle, audit } = await fixture();
   const response = await handle(
     put({ expectedRevision: 0, settings: settings() }),
     await member("reader", "member"),
   );
   expect(response!.status).toBe(403);
-  expect(audit()).toEqual([{ action: "access.denied", subject: RETRO_SETTINGS_PATH }]);
+  expect(await audit()).toEqual([{ action: "access.denied", subject: RETRO_SETTINGS_PATH }]);
 });
 
 test("an inactive member cannot read", async () => {
-  const { member, handle } = fixture();
+  const { member, handle } = await fixture();
   expect((await handle(get(), await member("gone", "member", false)))!.status).toBe(403);
 });
 
 test("a conflict returns the saved revision with the unchanged draft", async () => {
-  const { member, handle } = fixture();
+  const { member, handle } = await fixture();
   const admin = await member("admin", "admin");
   await handle(put({ expectedRevision: 0, settings: settings() }), admin);
   const draft = { ...settings(), outputLimits: { maxItems: 2, workedWell: 1 } };
@@ -133,7 +149,7 @@ test("a conflict returns the saved revision with the unchanged draft", async () 
 });
 
 test("inaccessible repositories and unavailable catalogs are told apart", async () => {
-  const { member, handle } = fixture(null);
+  const { member, handle } = await fixture(null);
   const admin = await member("admin", "admin");
   const inaccessible = await handle(
     put({ expectedRevision: 0, settings: { ...settings(), repositories: ["other/repo"] } }),
@@ -149,7 +165,7 @@ test("inaccessible repositories and unavailable catalogs are told apart", async 
 });
 
 test("other paths and methods are not handled as saves", async () => {
-  const { member, handle } = fixture();
+  const { member, handle } = await fixture();
   const admin = await member("admin", "admin");
   expect(await handle(new Request("http://127.0.0.1/api/retros/other"), admin)).toBeNull();
   expect(

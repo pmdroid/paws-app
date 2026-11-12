@@ -1,27 +1,42 @@
-import { describe, expect, test } from "bun:test";
-import {
-  getCandidateRisk,
-  latestCandidateRisk,
-  migrate,
-  openDatabase,
-  saveCandidateRisk,
-  sqliteDb,
-} from "../src/db";
+import { afterEach, describe, expect, test } from "bun:test";
+import { getCandidateRisk, latestCandidateRisk, saveCandidateRisk } from "../src/db";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
-function seeded() {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  db.run(
-    `INSERT INTO work_item (id,delegation_id,linear_issue_id,linear_identifier,title,state,position,version,branch_name,created_at)
-     VALUES ('item','delegation','issue','PAS-755','Risk','merge_queue',0,0,'paws/pas-755',1)`,
+const openStores: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of openStores.splice(0)) await close();
+});
+
+async function openStore() {
+  const { db, close } = await tempStore();
+  openStores.push(close);
+  return db;
+}
+
+async function seeded() {
+  const db = await openStore();
+  await seed(db, (q) =>
+    q.orm.insert(q.t.workItem).values({
+      id: "item",
+      delegationId: "delegation",
+      linearIssueId: "issue",
+      linearIdentifier: "PAS-755",
+      title: "Risk",
+      state: "merge_queue",
+      position: 0,
+      version: 0,
+      branchName: "paws/pas-755",
+      createdAt: 1,
+    }),
   );
   return db;
 }
 
 describe("candidate risk", () => {
   test("stores the tier and matched paths for each candidate head", async () => {
-    const db = seeded();
-    await saveCandidateRisk(sqliteDb(db), {
+    const db = await seeded();
+    await saveCandidateRisk(db, {
       itemId: "item",
       head: "aaa",
       base: "base",
@@ -30,7 +45,7 @@ describe("candidate risk", () => {
       matches: [{ path: "src/auth/session.ts", lists: ["settings", "file"] }],
       classifiedAt: 10,
     });
-    await saveCandidateRisk(sqliteDb(db), {
+    await saveCandidateRisk(db, {
       itemId: "item",
       head: "bbb",
       base: "base",
@@ -38,7 +53,7 @@ describe("candidate risk", () => {
       paths: [],
       classifiedAt: 20,
     });
-    expect(await getCandidateRisk(sqliteDb(db), "item", "aaa")).toEqual({
+    expect(await getCandidateRisk(db, "item", "aaa")).toEqual({
       itemId: "item",
       head: "aaa",
       base: "base",
@@ -47,13 +62,20 @@ describe("candidate risk", () => {
       matches: [{ path: "src/auth/session.ts", lists: ["settings", "file"] }],
       classifiedAt: 10,
     });
-    expect(await getCandidateRisk(sqliteDb(db), "item", "bbb")).not.toHaveProperty("matches");
-    expect((await latestCandidateRisk(sqliteDb(db), "item"))?.head).toBe("bbb");
-    expect(await getCandidateRisk(sqliteDb(db), "item", "ccc")).toBeNull();
-    expect(() =>
-      db.run(
-        "INSERT INTO candidate_risk (item_id, head_sha, base_sha, tier, paths, classified_at) VALUES ('item','x','b','low','[]',1)",
+    expect(await getCandidateRisk(db, "item", "bbb")).not.toHaveProperty("matches");
+    expect((await latestCandidateRisk(db, "item"))?.head).toBe("bbb");
+    expect(await getCandidateRisk(db, "item", "ccc")).toBeNull();
+    await expect(
+      seed(db, (q) =>
+        q.orm.insert(q.t.candidateRisk).values({
+          itemId: "item",
+          headSha: "x",
+          baseSha: "b",
+          tier: "low",
+          paths: [],
+          classifiedAt: 1,
+        }),
       ),
-    ).toThrow();
+    ).rejects.toThrow();
   });
 });

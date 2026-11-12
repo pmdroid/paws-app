@@ -15,6 +15,7 @@ export {
   fixAttemptLimit,
   fixesLeft,
   policyFixBudget,
+  mainFixBudget,
   policyCheckPaths,
   approvalsAtHead,
   fixChangedPaths,

@@ -5,14 +5,17 @@ import { RUNTIME_FILES, runtimeList } from "../src/runtimes";
 
 const encoder = new TextEncoder();
 
-function fromOrigin(files: Record<string, string>) {
+async function fromOrigin(files: Record<string, string>) {
   const git = createFakeGitReader(files);
-  return { git, list: runtimeList(loadOriginMainRootFiles({ repo: "/repo", git }, RUNTIME_FILES)) };
+  return {
+    git,
+    list: runtimeList(await loadOriginMainRootFiles({ repo: "/repo", git }, RUNTIME_FILES)),
+  };
 }
 
 describe("runtime list from origin/main", () => {
-  test("mise.toml keeps only the tools and drops env, hooks, tasks and tool options", () => {
-    const { list } = fromOrigin({
+  test("mise.toml keeps only the tools and drops env, hooks, tasks and tool options", async () => {
+    const { list } = await fromOrigin({
       "mise.toml": `
 min_version = "2024.1.1"
 
@@ -50,8 +53,8 @@ ruby = { version = "3.3", postinstall = "touch /tmp/owned" }
     });
   });
 
-  test(".tool-versions parses, with comments, asdf names and several versions", () => {
-    const { list } = fromOrigin({
+  test(".tool-versions parses, with comments, asdf names and several versions", async () => {
+    const { list } = await fromOrigin({
       ".tool-versions":
         "# runtimes\nnodejs 20.11.1\npython 3.12.2 3.11.8  # two\n\ngolang 1.22.1\n",
     });
@@ -66,14 +69,14 @@ ruby = { version = "3.3", postinstall = "touch /tmp/owned" }
     });
   });
 
-  test("a repo with neither file produces an empty list", () => {
-    const { list, git } = fromOrigin({ "README.md": "hello", ".agents/closeout.yaml": "x" });
+  test("a repo with neither file produces an empty list", async () => {
+    const { list, git } = await fromOrigin({ "README.md": "hello", ".agents/closeout.yaml": "x" });
     expect(list).toEqual({ runtimes: [], notices: [] });
     expect(git.calls.slice(0, 2)).toEqual(["fetch /repo", "ls-remote /repo"]);
   });
 
-  test("any mise backend and registry short name is carried, and a malformed name is refused", () => {
-    const { list } = fromOrigin({
+  test("any mise backend and registry short name is carried, and a malformed name is refused", async () => {
+    const { list } = await fromOrigin({
       "mise.toml":
         '[tools]\nnode = "22"\n"cargo:ripgrep" = "14"\n"npm:@biomejs/biome" = "2"\n"--yes" = "1"\n',
       ".tool-versions": "uv 0.9.1\ngolangci-lint 2.5.0\nbad;tool 1\n",
@@ -89,8 +92,8 @@ ruby = { version = "3.3", postinstall = "touch /tmp/owned" }
     expect(list.notices[0]).toContain("not a mise tool name");
   });
 
-  test("templated or path versions are refused instead of passed to mise", () => {
-    const { list } = fromOrigin({
+  test("templated or path versions are refused instead of passed to mise", async () => {
+    const { list } = await fromOrigin({
       "mise.toml": '[tools]\nnode = "{{ exec(command=\'id\') }}"\npython = "3.12"\n',
       ".tool-versions": "go path:/tmp/go\n",
     });
@@ -98,8 +101,8 @@ ruby = { version = "3.3", postinstall = "touch /tmp/owned" }
     expect(list.notices.map((line) => line.match(/`([^`]+)`/)?.[1])).toEqual(["node", "go"]);
   });
 
-  test("mise.toml wins over .mise.toml and .tool-versions for the same tool", () => {
-    const { list } = fromOrigin({
+  test("mise.toml wins over .mise.toml and .tool-versions for the same tool", async () => {
+    const { list } = await fromOrigin({
       "mise.toml": '[tools]\nnode = "22"\n',
       ".mise.toml": '[tools]\nnode = "20"\nbun = "1.1"\n',
       ".tool-versions": "nodejs 18\ndeno 2.0.0\n",
@@ -111,33 +114,36 @@ ruby = { version = "3.3", postinstall = "touch /tmp/owned" }
     ]);
   });
 
-  test("a file that does not parse leaves a line and no runtimes from it", () => {
-    const { list } = fromOrigin({ "mise.toml": "[tools\nnode = ", ".tool-versions": "java 21\n" });
+  test("a file that does not parse leaves a line and no runtimes from it", async () => {
+    const { list } = await fromOrigin({
+      "mise.toml": "[tools\nnode = ",
+      ".tool-versions": "java 21\n",
+    });
     expect(list.runtimes).toEqual([{ tool: "java", version: "21" }]);
     expect(list.notices).toEqual([
       "Paws could not parse mise.toml on origin/main, so it installs no runtimes from it.",
     ]);
   });
 
-  test("the work tree is not read: an unconfirmed origin/main gives no runtimes", () => {
+  test("the work tree is not read: an unconfirmed origin/main gives no runtimes", async () => {
     const git = createFakeGitReader({ "mise.toml": '[tools]\nnode = "22"\n' });
     git.remoteStdout = `${"b".repeat(40)}\trefs/heads/main\n`;
-    const list = runtimeList(loadOriginMainRootFiles({ repo: "/repo", git }, RUNTIME_FILES));
+    const list = runtimeList(await loadOriginMainRootFiles({ repo: "/repo", git }, RUNTIME_FILES));
     expect(list.runtimes).toEqual([]);
     expect(list.notices[0]).toContain("origin/main is unavailable");
   });
 
-  test("a symlinked mise.toml is not followed", () => {
+  test("a symlinked mise.toml is not followed", async () => {
     const git = createFakeGitReader();
     git.put("mise.toml", "/etc/passwd", "120000");
-    const loaded = loadOriginMainRootFiles({ repo: "/repo", git }, RUNTIME_FILES);
+    const loaded = await loadOriginMainRootFiles({ repo: "/repo", git }, RUNTIME_FILES);
     expect(loaded).toEqual({ ok: false, message: "mise.toml is not a file" });
   });
 
-  test("a mise.toml larger than the read limit is refused", () => {
+  test("a mise.toml larger than the read limit is refused", async () => {
     const git = createFakeGitReader();
     git.put("mise.toml", encoder.encode(`# ${"x".repeat(70_000)}\n`));
-    const loaded = loadOriginMainRootFiles({ repo: "/repo", git }, RUNTIME_FILES);
+    const loaded = await loadOriginMainRootFiles({ repo: "/repo", git }, RUNTIME_FILES);
     expect(loaded.ok).toBe(false);
   });
 });

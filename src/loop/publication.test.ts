@@ -1,18 +1,12 @@
 import { journalCaught } from "../journal";
 import { expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFetchGitHubClient, type GitExec } from "../github";
-import {
-  getWorkItem,
-  migrate,
-  openDatabase,
-  recordLinearInstallation,
-  sqliteDb,
-  syncSteps,
-} from "../db";
+import { getWorkItem, recordLinearInstallation, syncSteps } from "../db";
 import { intakeDelegatedIssue } from "../intake";
 import {
   createFakeLinearAccessReads,
@@ -21,6 +15,8 @@ import {
 } from "../linear";
 import { LinearTaskAccess } from "./linear-task-access";
 import { guardGitHubPublication } from "./publication";
+import { seed } from "../../test/dialects";
+import { tempStore } from "../../test/pglite";
 
 function fixture(gitExec?: GitExec, onCleanupFailure = () => {}) {
   const controller = new AbortController();
@@ -66,8 +62,7 @@ function fixture(gitExec?: GitExec, onCleanupFailure = () => {}) {
 test.each(["push", "pr", "merge"] as const)(
   "human issue cancellation during the access read fences pending %s publication",
   async (purpose) => {
-    const db = openDatabase(":memory:");
-    migrate(db);
+    const { db, close } = await tempStore();
     let pushes = 0;
     const f = fixture(async () => {
       pushes++;
@@ -84,18 +79,20 @@ test.each(["push", "pr", "merge"] as const)(
       },
     ]);
     try {
-      const task = await intakeDelegatedIssue(sqliteDb(db), tracker, { linearIssueId: "issue" });
+      const task = await intakeDelegatedIssue(db, tracker, { linearIssueId: "issue" });
       if (!task.ok) throw new Error("Unexpected dependency cycle");
-      await recordLinearInstallation(sqliteDb(db), {
+      await recordLinearInstallation(db, {
         ...scope,
         sessionId: "session",
         teamId: "team",
         observedAtMs: 1,
       });
-      db.run("UPDATE work_item SET session_key = ? WHERE delegation_id = ?", [
-        "session",
-        task.delegation.id,
-      ]);
+      await seed(db, (q) =>
+        q.orm
+          .update(q.t.workItem)
+          .set({ sessionKey: "session" })
+          .where(eq(q.t.workItem.delegationId, task.delegation.id)),
+      );
       const access = createFakeLinearAccessReads({
         installation: scope,
         sessions: [{ ...scope, sessionId: "session", issueId: "issue", teamId: "team" }],
@@ -109,7 +106,7 @@ test.each(["push", "pr", "merge"] as const)(
         stateType: "started",
       });
       const stopped: string[] = [];
-      const gate = new LinearTaskAccess(sqliteDb(db), {
+      const gate = new LinearTaskAccess(db, {
         access: access.adapter,
         lifecycle,
         oauthClientId: "client",
@@ -119,7 +116,7 @@ test.each(["push", "pr", "merge"] as const)(
             stopped.push(id);
           }),
       });
-      const item = (await getWorkItem(sqliteDb(db), task.items[0]!.id))!;
+      const item = (await getWorkItem(db, task.items[0]!.id))!;
       f.state.verify = () => gate.assert(item, f.controller.signal);
       const started = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();
@@ -146,7 +143,7 @@ test.each(["push", "pr", "merge"] as const)(
       expect(f.requests).toEqual([]);
     } finally {
       f.controller.abort();
-      db.close();
+      await close();
     }
   },
 );

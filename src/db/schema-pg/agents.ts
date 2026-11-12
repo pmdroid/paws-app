@@ -4,12 +4,12 @@ import {
   foreignKey,
   index,
   integer,
-  jsonb,
   pgTable,
   primaryKey,
   text,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { jsonb } from "./types";
 import { sql } from "drizzle-orm";
 import { run, workItem } from "./items";
 import { workspace, workspaceUser } from "./workspace";

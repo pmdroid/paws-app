@@ -1,4 +1,4 @@
-import { journalCaught, journalItemId } from "../journal";
+import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
   and,
@@ -94,7 +94,7 @@ function jobItemId(q: Q): SQL<string | null> {
 
 /** The JSON text bound as a parameter, cast to jsonb on Postgres. */
 function jsonParam(q: Q, text: string): SQL {
-  return q.dialect === "sqlite" ? drizzleSql`${text}` : drizzleSql`${text}::jsonb`;
+  return q.dialect === "sqlite" ? drizzleSql`${text}` : drizzleSql`${text}::text::jsonb`;
 }
 
 /** A payload as the column stores it: JSON text on SQLite, jsonb on Postgres. */
@@ -242,30 +242,35 @@ export async function actionableDue(
   return store.run((q) => actionableDueSteps(q, now));
 }
 
-export function* enqueueJobSteps(q: Q, input: NewJob) {
+function* insertJobSteps(q: Q, input: NewJob, skipDuplicateKey: boolean) {
   const { job } = q.t;
   const now = input.now ?? Date.now();
   const payload = input.payload ?? {};
+  const insert = q.orm.insert(job).values({
+    queue: input.queue,
+    jobKey: input.jobKey ?? null,
+    payload: payloadValue(q, payload),
+    priority: input.priority ?? 5,
+    runAt: input.runAt ?? now,
+    maxAttempts: input.maxAttempts ?? 10,
+    createdAt: now,
+    recurringEveryMs: input.recurringEveryMs ?? null,
+    itemVersion: itemVersionOf(q, jsonParam(q, JSON.stringify(payload))),
+  });
   const row = yield* q.one(
-    q.orm
-      .insert(job)
-      .values({
-        queue: input.queue,
-        jobKey: input.jobKey ?? null,
-        payload: payloadValue(q, payload),
-        priority: input.priority ?? 5,
-        runAt: input.runAt ?? now,
-        maxAttempts: input.maxAttempts ?? 10,
-        createdAt: now,
-        recurringEveryMs: input.recurringEveryMs ?? null,
-        itemVersion: itemVersionOf(q, jsonParam(q, JSON.stringify(payload))),
-      })
-      .returning({ id: job.id }),
+    (skipDuplicateKey ? insert.onConflictDoNothing({ target: job.jobKey }) : insert).returning({
+      id: job.id,
+    }),
   );
-  if (row === undefined) {
+  return row?.id;
+}
+
+export function* enqueueJobSteps(q: Q, input: NewJob) {
+  const id = yield* insertJobSteps(q, input, false);
+  if (id === undefined) {
     throw new Error("enqueueJob did not return an id");
   }
-  return row.id;
+  return id;
 }
 
 /** Insert in the same transaction as the state change that needs the work. */
@@ -282,32 +287,14 @@ export async function enqueueJob(store: Db, job: NewJob): Promise<number> {
  * whether this call added the row.
  */
 export function* enqueueJobOnceSteps(q: Q, job: NewJob) {
-  if (job.jobKey !== undefined) {
-    const existing = yield* findByKeySteps(q, job.jobKey);
-    if (existing) return { id: existing.id, inserted: false };
-  }
-  try {
-    // Under a key, a savepoint, so a duplicate leaves a Postgres transaction usable.
-    const id =
-      job.jobKey === undefined
-        ? yield* enqueueJobSteps(q, job)
-        : yield* q.transaction((tx) => enqueueJobSteps(tx, job));
-    return { id, inserted: true };
-  } catch (error) {
-    if (job.jobKey !== undefined && isUnique(error)) {
-      const existing = yield* findByKeySteps(q, job.jobKey);
-      if (existing) {
-        journalCaught(
-          error,
-          "jobs.enqueueJobOnce.enqueueJob",
-          journalItemId(job.payload),
-          "idempotent job already enqueued",
-        );
-        return { id: existing.id, inserted: false };
-      }
-    }
-    throw error;
-  }
+  if (job.jobKey === undefined) return { id: yield* enqueueJobSteps(q, job), inserted: true };
+  const existing = yield* findByKeySteps(q, job.jobKey);
+  if (existing) return { id: existing.id, inserted: false };
+  const id = yield* insertJobSteps(q, job, true);
+  if (id !== undefined) return { id, inserted: true };
+  const saved = yield* findByKeySteps(q, job.jobKey);
+  if (!saved) throw new Error("enqueueJobOnce found no job for its key");
+  return { id: saved.id, inserted: false };
 }
 
 export async function enqueueJobOnce(store: Db, job: NewJob): Promise<number> {
@@ -818,20 +805,6 @@ function mapJob(q: Q, row: JobRow): Job {
     recurringEveryMs: row.recurringEveryMs,
     fireCount: row.fireCount,
   };
-}
-
-/** SQLite names the constraint; Postgres reports SQLSTATE 23505. */
-function isUnique(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  const code = "code" in error ? String(error.code) : "";
-  const errno = "errno" in error ? String(error.errno) : "";
-  return (
-    code.includes("CONSTRAINT") ||
-    code === "23505" ||
-    errno === "23505" ||
-    error.message.includes("UNIQUE") ||
-    error.message.includes("duplicate key")
-  );
 }
 
 export function errorText(error: unknown): string {

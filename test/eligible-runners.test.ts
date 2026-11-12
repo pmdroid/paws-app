@@ -1,15 +1,11 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { eq } from "drizzle-orm";
 import {
   consumeWorkspaceBootstrap,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
-  sqliteDb,
   syncWorkspaceMember,
+  type Q,
 } from "../src/db";
 import {
   eligibleRunnersSteps,
@@ -19,6 +15,8 @@ import {
   type EligibleRunnersInput,
 } from "../src/runner-placement";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 type Member = { role: "member" | "admin"; active: boolean; teamIds: string[] };
 type Runner = {
@@ -40,33 +38,31 @@ const MEMBERS: Record<string, Member> = {
 };
 
 async function workspace(runners: Record<string, Runner>) {
-  const root = mkdtempSync(join(tmpdir(), "paws-eligible-"));
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const now = Date.now();
-  const founder = await putWorkspaceUser(sqliteDb(db), {
+  const founder = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "founder",
     name: "Founder",
     email: "founder@example.invalid",
   });
-  const ws = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const ws = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Test",
     userId: founder,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   const users: Record<string, string> = {};
   for (const [name, member] of Object.entries(MEMBERS)) {
-    users[name] = await putWorkspaceUser(sqliteDb(db), {
+    users[name] = await putWorkspaceUser(db, {
       id: workspaceId(),
       linearUserId: name,
       name,
       email: `${name}@example.invalid`,
     });
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: ws.id,
       userId: users[name]!,
       ...member,
@@ -74,23 +70,27 @@ async function workspace(runners: Record<string, Runner>) {
     });
   }
   for (const [id, runner] of Object.entries(runners)) {
-    db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at,revoked_at) VALUES(?,?,?,?,?,?,?,?)",
-      [
-        id,
-        ws.id,
-        users[runner.owner]!,
-        id,
-        runner.status ?? "active",
-        now,
-        now - (runner.seenAgoMs ?? 0),
-        runner.status === "revoked" ? now : null,
-      ],
-    );
-    db.run("INSERT INTO runner_policy(runner_id,sharing) VALUES(?,?)", [id, runner.sharing ?? 0]);
-    db.run(
-      "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?,'codex',?,?)",
-      [id, runner.ready ?? 1, runner.authExpired ?? 0],
+    await seed(
+      db,
+      (q) =>
+        q.orm.insert(q.t.runner).values({
+          id,
+          workspaceId: ws.id,
+          ownerUserId: users[runner.owner]!,
+          name: id,
+          status: runner.status ?? "active",
+          createdAt: now,
+          lastSeenAt: now - (runner.seenAgoMs ?? 0),
+          revokedAt: runner.status === "revoked" ? now : null,
+        }),
+      (q) => q.orm.insert(q.t.runnerPolicy).values({ runnerId: id, sharing: runner.sharing ?? 0 }),
+      (q) =>
+        q.orm.insert(q.t.runnerAgentPolicy).values({
+          runnerId: id,
+          agent: "codex",
+          ready: runner.ready ?? 1,
+          authExpired: runner.authExpired ?? 0,
+        }),
     );
   }
   return {
@@ -103,7 +103,7 @@ async function workspace(runners: Record<string, Runner>) {
       const rest = Object.fromEntries(
         Object.entries(given).filter(([, value]) => value !== undefined),
       );
-      return sqliteDb(db).run((q) =>
+      return db.run((q) =>
         eligibleRunnersSteps(q, {
           workspaceId: ws.id,
           teamId: "team",
@@ -116,10 +116,7 @@ async function workspace(runners: Record<string, Runner>) {
         }),
       );
     },
-    close() {
-      db.close();
-      rmSync(root, { recursive: true, force: true });
-    },
+    close,
   };
 }
 
@@ -225,7 +222,7 @@ for (const row of CASES)
         },
       ]);
     } finally {
-      ws.close();
+      await ws.close();
     }
   });
 
@@ -243,7 +240,7 @@ test("eligibleRunners lists every unrevoked runner in the workspace in id order"
       ["c", "lead-shared"],
     ]);
   } finally {
-    ws.close();
+    await ws.close();
   }
 });
 
@@ -252,11 +249,11 @@ test("eligibleRunners reports the work owner's runner as own even when it is sha
   try {
     expect((await ws.check({ leads: ["me"] }))[0]?.reason).toBe("own");
   } finally {
-    ws.close();
+    await ws.close();
   }
 });
 
-test("eligibleRunners reads only SQLite", async () => {
+test("eligibleRunners reads only the database", async () => {
   const ws = await workspace({ mine: { owner: "me" } });
   const real = globalThis.fetch;
   let requests = 0;
@@ -270,7 +267,7 @@ test("eligibleRunners reads only SQLite", async () => {
     expect(requests).toBe(0);
   } finally {
     globalThis.fetch = real;
-    ws.close();
+    await ws.close();
   }
 });
 
@@ -278,13 +275,18 @@ test("a runner with an unacknowledged cancel stays online; capacity accounts for
   const space = await workspace({ box: { owner: "me" } });
   const now = Date.now();
   try {
-    space.db.run(
-      "INSERT INTO runner_command(id,runner_id,kind,envelope,expires_at) VALUES(?,?,'cancel','{}',?)",
-      ["live-cancel", "box", now + 60_000],
+    await seed(space.db, (q) =>
+      q.orm.insert(q.t.runnerCommand).values({
+        id: "live-cancel",
+        runnerId: "box",
+        kind: "cancel",
+        envelope: "{}",
+        expiresAt: now + 60_000,
+      }),
     );
     expect((await space.check({ now })).map((runner) => runner.reason)).toEqual(["own"]);
   } finally {
-    space.close();
+    await space.close();
   }
 });
 
@@ -293,38 +295,73 @@ test("a repository command goes to the item's last runner while it is eligible a
   try {
     const { db, now } = w;
     const repositoryRunner = () =>
-      sqliteDb(db).run((q) => itemRepositoryRunnerSteps(q, { itemId: "item", now }));
-    db.run(
-      "INSERT INTO linear_session(session_id,organization_id,team_id,created_at) VALUES('ses','org','team',?)",
-      [now],
+      db.run((q) => itemRepositoryRunnerSteps(q, { itemId: "item", now }));
+    const version = (runnerVersion: string, runnerId?: string) => (q: Q) =>
+      q.orm
+        .update(q.t.runnerHostStatus)
+        .set({ runnerVersion })
+        .where(runnerId === undefined ? undefined : eq(q.t.runnerHostStatus.runnerId, runnerId));
+    await seed(db, (q) =>
+      q.orm.insert(q.t.linearSession).values({
+        sessionId: "ses",
+        organizationId: "org",
+        teamId: "team",
+        createdAt: now,
+      }),
     );
     await insertQueuedItem(db, { id: "item", now, sessionKey: "ses" });
-    db.run("UPDATE work_item SET owner_user_id=? WHERE id='item'", [w.users.me!]);
-    for (const id of ["first", "last"])
-      db.run(
-        "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.63',?)",
-        [id, now],
-      );
-    db.run(
-      "INSERT INTO run(id,item_id,kind,agent,status,created_at,updated_at) VALUES('run','item','implement','codex','ended',?,?)",
-      [now, now],
-    );
-    db.run(
-      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES('run','last',?,1,0,'cmd',?)",
-      [w.ws.id, now],
+    await seed(
+      db,
+      (q) =>
+        q.orm
+          .update(q.t.workItem)
+          .set({ ownerUserId: w.users.me! })
+          .where(eq(q.t.workItem.id, "item")),
+      (q) =>
+        q.orm.insert(q.t.runnerHostStatus).values(
+          ["first", "last"].map((runnerId) => ({
+            runnerId,
+            runnerVersion: "0.1.63",
+            reportedAt: now,
+          })),
+        ),
+      (q) =>
+        q.orm.insert(q.t.run).values({
+          id: "run",
+          itemId: "item",
+          kind: "implement",
+          agent: "codex",
+          status: "ended",
+          createdAt: now,
+          updatedAt: now,
+        }),
+      (q) =>
+        q.orm.insert(q.t.runnerWork).values({
+          runId: "run",
+          runnerId: "last",
+          workspaceId: w.ws.id,
+          generation: 1,
+          runnerFence: 0,
+          commandId: "cmd",
+          leaseUntil: now,
+        }),
     );
     expect(await repositoryRunner()).toEqual({
       id: "last",
       workspaceId: w.ws.id,
     });
-    db.run("UPDATE runner_host_status SET runner_version='0.1.62' WHERE runner_id='last'");
+    await seed(db, version("0.1.62", "last"));
     expect((await repositoryRunner())?.id).toBe("first");
-    db.run("UPDATE runner_host_status SET runner_version='0.1.63'");
-    db.run("UPDATE runner SET last_seen_at=? WHERE id='last'", [now - RUNNER_ONLINE_MS]);
+    await seed(db, version("0.1.63"), (q) =>
+      q.orm
+        .update(q.t.runner)
+        .set({ lastSeenAt: now - RUNNER_ONLINE_MS })
+        .where(eq(q.t.runner.id, "last")),
+    );
     expect((await repositoryRunner())?.id).toBe("first");
-    db.run("UPDATE runner_host_status SET runner_version='0.1.62' WHERE runner_id='first'");
+    await seed(db, version("0.1.62", "first"));
     expect(await repositoryRunner()).toBeNull();
   } finally {
-    w.close();
+    await w.close();
   }
 });

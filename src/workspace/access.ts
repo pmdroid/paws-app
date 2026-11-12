@@ -58,6 +58,7 @@ export type WorkspaceAccessOptions = {
   now?: () => number;
   slackIdentities?: SlackIdentityReads | null;
   githubAttributionClient?: { clientId: string; clientSecret: string };
+  secretsDir?: string;
   interruptItem?: (itemId: string) => Promise<void>;
   onMemberRevoked?: () => Promise<void>;
   verifyTeam?: (id: string, signal: AbortSignal) => Promise<boolean>;
@@ -183,6 +184,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     store: options.store,
     origin,
     client: options.githubAttributionClient,
+    secretsDir: options.secretsDir,
     refresh: (workspaceKey, userId) => refresh(workspaceKey, userId, true, true),
     fetch: options.fetch,
     now,
@@ -630,6 +632,8 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     organizationId: options.installedOrganization.id,
     clientId: options.clientId,
     refreshMemberships: () => track(refreshMemberships),
+    githubUserToken: (workspaceKey: string, userId: string) =>
+      track(() => attribution.githubUserToken(workspaceKey, userId)),
     async stop() {
       closed = true;
       await Promise.allSettled([...operations]);

@@ -1,5 +1,7 @@
 import type { StoredReviewFinding } from "../closeout";
 import {
+  checkTriggers,
+  commentTriggers,
   fixRoundsSteps,
   getItemPullRequestSteps,
   getPullReviewSteps,
@@ -9,6 +11,7 @@ import {
   recordReviewEscapeSteps,
   recordReviewRepliesSteps,
   settlePullCommentsSteps,
+  type FixRound,
   type Q,
   type Steps,
   type NewReviewReply,
@@ -169,6 +172,7 @@ export function* restartWithFeedbackSteps(
     (feedback === null ? undefined : `${handoff.reason}:${item.id}:${item.version}`);
   const restarted = yield* restartSteps(q, item, {
     ...handoff,
+    fix: feedbackFix(handoff.fix, feedback),
     body: feedbackHandoff(lead, feedback),
     ...(jobKey === undefined ? {} : { jobKey }),
     ...(feedback !== null && fixRound ? { fixRound } : {}),
@@ -184,6 +188,14 @@ export function* restartWithFeedbackSteps(
 }
 
 const FIX_REASONS: readonly string[] = ["findings", "ci", "review"];
+
+export function feedbackFix(fix: FixRound | undefined, feedback: PendingFeedback | null): FixRound {
+  const triggers = { ...fix?.triggers };
+  if (feedback?.failure) triggers.checks ??= checkTriggers(feedback.failure.failedChecks);
+  if (feedback?.comments.length) triggers.comments ??= commentTriggers(feedback.comments);
+  const headBefore = fix?.headBefore ?? feedback?.failure?.head;
+  return { ...fix, triggers, ...(headBefore === undefined ? {} : { headBefore }) };
+}
 
 export function* deliverFeedbackSteps(
   q: Q,

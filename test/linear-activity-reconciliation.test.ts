@@ -1,20 +1,19 @@
 import { expect, test } from "bun:test";
-import { join } from "node:path";
 import {
   OutboxDispatcher,
   advanceOutboxSession,
   enqueueOutbox,
   getOutboxSteps,
   listOutbox,
-  migrate,
-  openDatabase,
   stopOutboxSession,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import { FakeClock } from "../src/core";
 import { createLinearClient, createLinearTracker, type LinearClient } from "../src/linear";
 import { deliverLinearOutbox } from "../src/loop";
-import { tempDb, tempHome } from "./helpers";
+import { tempHome, withHomeStore } from "./helpers";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 function remote() {
   const activities = new Map<string, Record<string, unknown>>();
@@ -68,14 +67,10 @@ function remote() {
   };
 }
 
-function dispatcher(
-  db: ReturnType<typeof tempDb>,
-  clock: FakeClock,
-  tracker: ReturnType<typeof remote>["tracker"],
-) {
+function dispatcher(db: Db, clock: FakeClock, tracker: ReturnType<typeof remote>["tracker"]) {
   const outbox = new OutboxDispatcher(db, clock);
   outbox.setHandler((row, context) =>
-    deliverLinearOutbox(row, tracker, async () => {}, context, sqliteDb(db)),
+    deliverLinearOutbox(row, tracker, async () => {}, context, db),
   );
   return outbox;
 }
@@ -83,71 +78,64 @@ function dispatcher(
 test.each(["response", "select", "auth"])(
   "lost %s acceptance reconciles the persisted UUID after a real database reopen",
   async (kind) => {
-    const path = join(tempHome(), "delivery.db");
-    const db = openDatabase(path);
-    migrate(db);
+    const home = tempHome();
     const clock = new FakeClock(1_000);
     const api = remote();
     const body = "Full useful response. ".repeat(1_000);
-    const id = await enqueueOutbox(sqliteDb(db), {
-      target: "linear",
-      op: kind === "response" ? "activity" : "elicitation",
-      orderingKey: "session",
-      idempotencyKey: "final",
-      payload: {
-        sessionId: "session",
-        kind: "response",
-        body,
-        ...(kind === "select" ? { options: ["yes", "no"] } : {}),
-        ...(kind === "auth"
-          ? {
-              auth: {
-                url: "https://github.com/login/device",
-                userId: "human",
-                providerName: "GitHub",
-              },
-            }
-          : {}),
-      },
+    const { id, callerId } = await withHomeStore(home, async (db) => {
+      const queued = await enqueueOutbox(db, {
+        target: "linear",
+        op: kind === "response" ? "activity" : "elicitation",
+        orderingKey: "session",
+        idempotencyKey: "final",
+        payload: {
+          sessionId: "session",
+          kind: "response",
+          body,
+          ...(kind === "select" ? { options: ["yes", "no"] } : {}),
+          ...(kind === "auth"
+            ? {
+                auth: {
+                  url: "https://github.com/login/device",
+                  userId: "human",
+                  providerName: "GitHub",
+                },
+              }
+            : {}),
+        },
+      });
+      const first = dispatcher(db, clock, api.tracker);
+      await first.tick();
+      await first.idle();
+      const prepared = (await db.run((q) => getOutboxSteps(q, queued)))!;
+      expect(prepared.status).toBe("pending");
+      return { id: queued, callerId: (prepared.payload as { id: string }).id };
     });
-    const first = dispatcher(db, clock, api.tracker);
-    await first.tick();
-    await first.idle();
-    const prepared = (await sqliteDb(db).run((q) => getOutboxSteps(q, id)))!;
-    expect(prepared.status).toBe("pending");
-    const callerId = (prepared.payload as { id: string }).id;
     expect(callerId).toMatch(/^[\da-f-]{36}$/);
     expect(api.created).toHaveLength(1);
     expect(api.created[0]?.["id"]).toBe(callerId);
-    db.close();
-    const reopened = openDatabase(path);
-    try {
-      migrate(reopened);
+    await withHomeStore(home, async (reopened) => {
       clock.advance(2_000);
       const recovered = dispatcher(reopened, clock, api.tracker);
       await recovered.tick();
       await recovered.idle();
-      expect((await sqliteDb(reopened).run((q) => getOutboxSteps(q, id)))?.status).toBe("sent");
-      expect(
-        ((await sqliteDb(reopened).run((q) => getOutboxSteps(q, id)))!.payload as { id: string })
-          .id,
-      ).toBe(callerId);
+      const row = (await reopened.run((q) => getOutboxSteps(q, id)))!;
+      expect(row.status).toBe("sent");
+      expect((row.payload as { id: string }).id).toBe(callerId);
       expect(api.created).toHaveLength(1);
       expect(api.activities.get(callerId)?.["content"]).toMatchObject({ body });
-    } finally {
-      reopened.close();
-    }
+    });
   },
 );
 
 test.each(["mismatch", "incomplete", "unavailable", "malformed metadata", "nonobject metadata"])(
   "a %s reconciliation cannot resend or confirm a terminal reply",
   async (failure) => {
-    const db = tempDb();
+    const { db, close } = await tempStore();
     try {
       const clock = new FakeClock(1_000);
       const api = remote();
-      await enqueueOutbox(sqliteDb(db), {
+      await enqueueOutbox(db, {
         target: "linear",
         op: "activity",
         orderingKey: "session",
@@ -173,20 +161,20 @@ test.each(["mismatch", "incomplete", "unavailable", "malformed metadata", "nonob
       clock.advance(2_000);
       await outbox.tick();
       await outbox.idle();
-      expect((await listOutbox(sqliteDb(db)))[0]?.status).toBe("pending");
+      expect((await listOutbox(db))[0]?.status).toBe("pending");
       expect(api.created).toHaveLength(1);
     } finally {
-      db.close();
+      await close();
     }
   },
 );
 
 test("Stop during an empty reconciliation fences the subsequent mutation before the next dispatcher tick", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
     const clock = new FakeClock(1_000);
     const api = remote();
-    await enqueueOutbox(sqliteDb(db), {
+    await enqueueOutbox(db, {
       target: "linear",
       op: "activity",
       orderingKey: "session",
@@ -206,20 +194,20 @@ test("Stop during an empty reconciliation fences the subsequent mutation before 
     clock.advance(2_000);
     await outbox.tick();
     await reading.promise;
-    await stopOutboxSession(sqliteDb(db), "linear", "session", clock.now());
+    await stopOutboxSession(db, "linear", "session", clock.now());
     pending.resolve({ agentActivities: { nodes: [], pageInfo: { hasNextPage: false } } });
     await outbox.idle();
     expect(api.created).toHaveLength(1);
-    expect((await listOutbox(sqliteDb(db)))[0]?.status).toBe("dropped");
+    expect((await listOutbox(db))[0]?.status).toBe("dropped");
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test.each(["credentials", "reconciliation"])(
   "a generation change during actual client %s prevents activity publication without another tick",
   async (boundary) => {
-    const db = tempDb();
+    const { db, close } = await tempStore();
     const started = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     const queries: string[] = [];
@@ -251,7 +239,7 @@ test.each(["credentials", "reconciliation"])(
           },
         }),
       );
-      await enqueueOutbox(sqliteDb(db), {
+      await enqueueOutbox(db, {
         target: "linear",
         op: "activity",
         orderingKey: "session",
@@ -263,22 +251,23 @@ test.each(["credentials", "reconciliation"])(
           body: "Working",
         },
       });
-      if (boundary === "reconciliation") db.run("UPDATE outbox SET attempts = 1");
+      if (boundary === "reconciliation")
+        await seed(db, (q) => q.orm.update(q.t.outbox).set({ attempts: 1 }));
       const outbox = new OutboxDispatcher(db, new FakeClock(1000));
       outbox.setHandler((row, context) =>
-        deliverLinearOutbox(row, tracker, async () => {}, context, sqliteDb(db)),
+        deliverLinearOutbox(row, tracker, async () => {}, context, db),
       );
       await outbox.tick();
       await started.promise;
-      await advanceOutboxSession(sqliteDb(db), "linear", "session");
+      await advanceOutboxSession(db, "linear", "session");
       release.resolve();
       await outbox.idle();
       expect(queries.some((query) => query.includes("mutation"))).toBe(false);
       expect(queries).toHaveLength(boundary === "credentials" ? 0 : 1);
-      expect((await listOutbox(sqliteDb(db)))[0]?.status).toBe("dropped");
+      expect((await listOutbox(db))[0]?.status).toBe("dropped");
     } finally {
       release.resolve();
-      db.close();
+      await close();
     }
   },
 );

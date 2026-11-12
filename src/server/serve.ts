@@ -1,4 +1,5 @@
 import { createHealthReport, type HealthOptions } from "./health";
+import { FIX_RECORDS_PATH, handleFixRecordsRequest } from "./fix-records";
 import type { JobLoopLiveness } from "../db";
 import { journalCaught } from "../journal";
 import { createGitHubRepositorySetup } from "./github-repository-setup";
@@ -557,6 +558,13 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       ...(principal === undefined ? {} : { principal }),
       ...(sessionIds === undefined ? {} : { sessionIds }),
     }))!;
+  }
+  if (path === FIX_RECORDS_PATH) {
+    if (secrets.store === undefined) return Response.json({ error: "Not found." }, { status: 404 });
+    return handleFixRecordsRequest(request, {
+      store: secrets.store,
+      ...(sessionIds === undefined ? {} : { sessionIds }),
+    });
   }
   if (isEvidenceFilePath(path)) {
     if (secrets.db === undefined || secrets.evidenceDir === undefined)

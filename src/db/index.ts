@@ -58,20 +58,17 @@ export {
 export type { Migration } from "./migration";
 export { incrementalVacuum, openDatabase, truncateWal, withSecureDelete } from "./open";
 export {
+  connectPglite,
   connectPostgres,
   openPawsStore,
   openPglite,
   openPostgres,
   type PawsStore,
+  PgliteInUseError,
   type PgliteDb,
   type PostgresDb,
 } from "./postgres";
-export {
-  checkPostgres,
-  checkSqlite,
-  type MigrationReport,
-  type PostgresConnection,
-} from "./db-check";
+export { checkPostgres, type MigrationReport, type PostgresConnection } from "./db-check";
 export * from "./linear-budget";
 export { closingParen, createTableParts, splitTopLevel, unquoteName } from "./ddl";
 export { orm, type Orm } from "./orm";
@@ -205,3 +202,5 @@ export * from "./visual-review-rows";
 export * from "./github-oauth";
 export * from "./runner-health-reads";
 export * from "./member-vm-delete";
+export * from "./fix-records";
+export * from "./setup-facts";

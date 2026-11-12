@@ -14,7 +14,7 @@ test("the settings navigation has no Decisions page and opens on Agents", () => 
   expect(SETTINGS_PAGES[0]?.id).toBe("agents");
   expect(parseRoute("/settings")).toEqual({ view: "settings" });
   expect(parseRoute("/settings/decisions")).toEqual({ view: "settings" });
-  expect(renderSettingsPage()).toContain('<h1 class="sr-only">Agents</h1>');
+  expect(renderSettingsPage()).toContain('<h1 class="settings-title">Agents</h1>');
 });
 
 test("Agent instructions holds the brief, then skills, then hooks", () => {
@@ -22,12 +22,34 @@ test("Agent instructions holds the brief, then skills, then hooks", () => {
     id: "brief",
     name: "Agent instructions",
     description: "What coding agents are told: the brief, skills and hooks.",
+    when: "When agents keep missing a house rule. Your repository's AGENTS.md already reaches them.",
   });
   const html = renderSettingsPage("brief");
-  expect(html).toContain('<h1 class="sr-only">Agent instructions</h1>');
+  expect(html).toContain('<h1 class="settings-title">Agent instructions</h1>');
   const order = MOVED.map((id) => html.indexOf(`id="${id}"`));
   expect(order.every((at) => at >= 0)).toBe(true);
   expect(order).toEqual([...order].sort((a, b) => a - b));
+});
+
+test("every settings page says when to touch it, beside a page list that marks the current one", () => {
+  for (const page of SETTINGS_PAGES) expect(page.when.trim()).not.toBe("");
+  const html = renderSettingsPage("merging");
+  const doc = new Window().document;
+  doc.body.innerHTML = html;
+  const nav = doc.querySelector('nav[aria-label="Settings pages"]');
+  const links = [...(nav?.querySelectorAll("a") ?? [])];
+  expect(links.map((link) => link.querySelector("span")?.textContent)).toEqual(
+    SETTINGS_PAGES.map((page) => page.name),
+  );
+  const current = links.filter((link) => link.getAttribute("aria-current") === "page");
+  expect(current.map((link) => link.textContent)).toEqual(["Mergingadmin"]);
+  expect(links.find((link) => link.getAttribute("href")?.endsWith("/account"))?.textContent).toBe(
+    "Your accountyou",
+  );
+  expect(doc.querySelector("h1")?.textContent).toBe("Merging");
+  expect(doc.querySelector(".settings-when")?.textContent).toBe(
+    "When to touch this: Before your first merge if you want approvals on risky paths. Otherwise later.",
+  );
 });
 
 test("the Agents page holds no brief, skills or hooks", () => {

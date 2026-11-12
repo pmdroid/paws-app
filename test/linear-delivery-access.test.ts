@@ -15,8 +15,8 @@ import {
   recordLinearInstallation,
   requireLinearTaskDelegation,
   revokeLinearInstallation,
-  sqliteDb,
   syncSteps,
+  type Db,
 } from "../src/db";
 import {
   createFakeLinearAccessReads,
@@ -26,15 +26,16 @@ import {
   createLinearTracker,
 } from "../src/linear";
 import { attachOrchestrator, LinearTaskAccess } from "../src/loop";
-import { tempDb, tempHome } from "./helpers";
+import { tempHome } from "./helpers";
+import { tempStore } from "./pglite";
 
 async function fixture() {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const item = await insertQueuedItem(db);
   const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
-  await ensureLinearSession(sqliteDb(db), { sessionId: "session", issueId: item.linearIssueId });
-  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "human" });
-  await recordLinearInstallation(sqliteDb(db), {
+  await ensureLinearSession(db, { sessionId: "session", issueId: item.linearIssueId });
+  await bindLinearSessionTask(db, "session", item.delegationId, { actorId: "human" });
+  await recordLinearInstallation(db, {
     ...scope,
     sessionId: "session",
     teamId: "team",
@@ -52,7 +53,7 @@ async function fixture() {
     delegateId: "app",
     stateType: "completed",
   });
-  await requireLinearTaskDelegation(sqliteDb(db), {
+  await requireLinearTaskDelegation(db, {
     itemId: item.id,
     issueId: item.linearIssueId,
     teamId: "team",
@@ -61,7 +62,7 @@ async function fixture() {
   });
   const tracker = createFakeTracker([]);
   const outbox = new OutboxDispatcher(db, systemClock);
-  const gate = new LinearTaskAccess(sqliteDb(db), {
+  const gate = new LinearTaskAccess(db, {
     access: access.adapter,
     lifecycle,
     oauthClientId: "client",
@@ -69,7 +70,7 @@ async function fixture() {
     stopSession: () => syncSteps(() => {}),
   });
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     jobs: new JobLoop(db, systemClock),
     outbox,
     tracker,
@@ -78,13 +79,13 @@ async function fixture() {
     linearAccess: gate,
   });
   const enqueue = async (op: "activity" | "status", stop = false) =>
-    await enqueueOutboxOnce(sqliteDb(db), {
+    await enqueueOutboxOnce(db, {
       target: "linear",
       op,
       orderingKey: "session",
       delivery: stop ? "stop" : "terminal",
       idempotencyKey: "delivery",
-      generation: await getLinearSessionGeneration(sqliteDb(db), "session"),
+      generation: await getLinearSessionGeneration(db, "session"),
       payload: {
         sessionId: "session",
         itemId: item.id,
@@ -94,7 +95,14 @@ async function fixture() {
         body: "Confirmed result.",
       },
     });
-  return { db, item, scope, access, lifecycle, tracker, outbox, enqueue, orchestrator };
+  return { db, close, item, scope, access, lifecycle, tracker, outbox, enqueue, orchestrator };
+}
+
+async function outboxStatuses(db: Db): Promise<string[]> {
+  const rows = await db.run((q) =>
+    q.all(q.orm.select({ status: q.t.outbox.status }).from(q.t.outbox)),
+  );
+  return rows.map((row) => row.status);
 }
 
 test.each(["workflow states", "credential acquisition"])(
@@ -141,17 +149,15 @@ test.each(["workflow states", "credential acquisition"])(
       await f.enqueue("status");
       await f.outbox.tick();
       await started.promise;
-      await advanceLinearSessionGeneration(sqliteDb(f.db), "session", { stop: true, now: 10 });
+      await advanceLinearSessionGeneration(f.db, "session", { stop: true, now: 10 });
       release.resolve();
       await f.outbox.idle();
       expect(queries.some((query) => query.includes("mutation"))).toBe(false);
       expect(queries).toHaveLength(boundary === "workflow states" ? 1 : 0);
-      expect(f.db.query<{ status: string }, []>("SELECT status FROM outbox").get()?.status).toBe(
-        "dropped",
-      );
+      expect(await outboxStatuses(f.db)).toEqual(["dropped"]);
     } finally {
       release.resolve();
-      f.db.close();
+      await f.close();
     }
   },
 );
@@ -165,16 +171,16 @@ test("a queued final response verifies live access and survives the task's own c
       "closeout_accepted",
       "merge_accepted",
     ] as const)
-      await applyWorkItemEvent(sqliteDb(f.db), f.item.id, event);
+      await applyWorkItemEvent(f.db, f.item.id, event);
     await f.enqueue("activity");
     await f.outbox.tick();
     await f.outbox.idle();
     expect(f.tracker.progress.map((update) => update.body)).toEqual(["Confirmed result."]);
     expect(f.access.calls.map((call) => call.method)).toEqual(["session", "team"]);
-    expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("merged");
+    expect((await getWorkItem(f.db, f.item.id))?.state).toBe("merged");
     expect(f.lifecycle.started).toEqual([]);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -192,12 +198,12 @@ test("access removed during a fresh publication read prevents the queued mutatio
     await f.enqueue("status");
     await f.outbox.tick();
     await started.promise;
-    await revokeLinearInstallation(sqliteDb(f.db), {
+    await revokeLinearInstallation(f.db, {
       ...f.scope,
       eventKey: "removed",
       createdAtMs: 10,
     });
-    await advanceLinearSessionGeneration(sqliteDb(f.db), "session", { stop: true, now: 10 });
+    await advanceLinearSessionGeneration(f.db, "session", { stop: true, now: 10 });
     release.resolve();
     await f.outbox.idle();
     expect(f.tracker.statuses).toEqual([]);
@@ -206,25 +212,25 @@ test("access removed during a fresh publication read prevents the queued mutatio
     expect(f.lifecycle.started).toEqual([]);
   } finally {
     release.resolve();
-    f.db.close();
+    await f.close();
   }
 });
 
 test("a stopped task can acknowledge removal of delegation while installation access remains valid", async () => {
   const f = await fixture();
   try {
-    await applyWorkItemEvent(sqliteDb(f.db), f.item.id, "cancel");
-    await advanceLinearSessionGeneration(sqliteDb(f.db), "session", { stop: true, now: 10 });
+    await applyWorkItemEvent(f.db, f.item.id, "cancel");
+    await advanceLinearSessionGeneration(f.db, "session", { stop: true, now: 10 });
     f.lifecycle.issue.delegateId = "different-app";
     await f.enqueue("activity", true);
     await f.outbox.tick();
     await f.outbox.idle();
     expect(f.tracker.progress.map((update) => update.body)).toEqual(["Confirmed result."]);
-    expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("cancelled");
+    expect((await getWorkItem(f.db, f.item.id))?.state).toBe("cancelled");
     expect(f.access.calls).toEqual([]);
     expect(f.lifecycle.started).toEqual([]);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -238,10 +244,8 @@ test("fresh delegation removal prevents a final response without workflow mutati
     expect(f.tracker.progress).toEqual([]);
     expect(f.tracker.statuses).toEqual([]);
     expect(f.lifecycle.started).toEqual([]);
-    expect(f.db.query<{ status: string }, []>("SELECT status FROM outbox").get()?.status).toBe(
-      "pending",
-    );
+    expect(await outboxStatuses(f.db)).toEqual(["pending"]);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });

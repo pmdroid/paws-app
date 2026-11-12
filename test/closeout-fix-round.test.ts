@@ -11,17 +11,23 @@ import {
   workspacePolicyFiles,
   type CloseoutSessionEvent,
 } from "../src/closeout-spec";
-import {
-  insertQueuedItem,
-  migrate,
-  openDatabase,
-  type AgentCloseoutEvent,
-  sqliteDb,
-} from "../src/db";
+import { insertQueuedItem, type AgentCloseoutEvent } from "../src/db";
 import { closeoutPrompt, closeoutChecksPrompt } from "../src/loop/agents";
 import { closeoutFocus } from "../src/loop/closeout-focus";
 import { createDbCloseoutProgress } from "../src/loop/closeout-progress";
 import { turnPasses } from "../src/loop/turn-passes";
+import { tempStore } from "./pglite";
+
+const openStores: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of openStores.splice(0)) await close();
+});
+
+async function openStore() {
+  const { db, close } = await tempStore();
+  openStores.push(close);
+  return db;
+}
 
 const exec = promisify(execFile);
 const roots: string[] = [];
@@ -83,8 +89,7 @@ async function seed() {
   await writeFile(path.join(dir, "apps/engine/rocket.ts"), "export const acme = 1;\n");
   await writeFile(path.join(dir, "apps/web/anvil.ts"), "export const acme = 2;\n");
   const head = await commit(dir, "acme rocket and anvil");
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const db = await openStore();
   await insertQueuedItem(db, { id: "acme-1", now: 1, sessionKey: "acme-session" });
   let reviews = 0;
   const gate = () =>
@@ -96,7 +101,7 @@ async function seed() {
       home,
       pawsHome,
       maxFixAttempts: 0,
-      progress: createDbCloseoutProgress(sqliteDb(db), "acme-1"),
+      progress: createDbCloseoutProgress(db, "acme-1"),
       reviewer: {
         async review() {
           reviews += 1;
@@ -156,7 +161,7 @@ test("a findings round lists only the failed check; Closeout then runs in full o
   expect(h1.outcome).not.toBe("accepted");
   expect(repo.ran()).toEqual(["install", "lint", "web-test"]);
 
-  const focus = (await closeoutFocus(sqliteDb(repo.db), "acme-1", "findings"))!;
+  const focus = (await closeoutFocus(repo.db, "acme-1", "findings"))!;
   expect(focus).toMatchObject({ scope: "failed", head: repo.head });
   expect([...focus.passed].sort()).toEqual(["install", "lint", "web-test"]);
 
@@ -197,7 +202,7 @@ test("a review round lists only the checks whose paths include the files the fix
   expect((await runCloseoutGate(repo.gate())).outcome).toBe("accepted");
   repo.ran();
 
-  const focus = (await closeoutFocus(sqliteDb(repo.db), "acme-1", "review"))!;
+  const focus = (await closeoutFocus(repo.db, "acme-1", "review"))!;
   expect(focus.scope).toBe("changed");
   const turn = session(repo.dir, focus);
   expect((await turn.report()).pending).toEqual([]);
@@ -220,7 +225,7 @@ test("a round without a narrower scope keeps every check pending", async () => {
   const repo = await seed();
   await runCloseoutGate(repo.gate());
   repo.ran();
-  expect(await closeoutFocus(sqliteDb(repo.db), "acme-1", "ci")).toBeUndefined();
+  expect(await closeoutFocus(repo.db, "acme-1", "ci")).toBeUndefined();
   const head = repo.head;
   const stale = { scope: "failed", head, policyDigest: "sha256:0", passed: ["lint"] } as const;
   expect((await session(repo.dir, stale).report()).pending).toEqual([

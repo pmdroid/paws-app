@@ -1,5 +1,4 @@
 import { journalCaught } from "../journal";
-import { Database } from "bun:sqlite";
 import { readSecretFile } from "../credentials";
 import { existsSync } from "node:fs";
 import { resolveAdapter } from "../acp";
@@ -23,7 +22,6 @@ import {
   latestGitHubDeliverySteps,
   linearWebhookWarningSteps,
   oldestWorkspaceNameSteps,
-  sqliteDb,
   type Db,
   type LinearWebhookWarning,
 } from "../db";
@@ -31,6 +29,7 @@ import { createFetchGitHubClient, mintInstallationToken, signAppJwt } from "../g
 import { checkDeveloperLogin, grokLoginStatus, type GrokLoginStatus } from "../install";
 import { createLinearClient, readStoredToken } from "../linear";
 import { doctorAgentProfiles } from "./agents";
+import type { SavedStore } from "./store";
 
 /** Core REST calls left for the App installation. Below this, doctor reports no headroom. */
 export const GITHUB_RATE_HEADROOM = 100;
@@ -64,6 +63,7 @@ export type GitHubDoctorFacts = {
 
 export type ProbeFacts = {
   configError: string | null;
+  databaseHeld?: boolean;
   overriddenSections?: string[];
   agentProfiles?: AgentProfiles[];
   grokLogin?: GrokLoginStatus | null;
@@ -103,9 +103,10 @@ export type ProbeFacts = {
 
 const LOGIN_TIMEOUT_MS = 2_500;
 
-export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
+export async function realProbeFacts(env: EnvSource, saved: SavedStore): Promise<ProbeFacts> {
+  const { store } = saved;
   const runtime = loadRuntime(env);
-  const repos = await chosenRepositories(runtime);
+  const repos = await chosenRepositories(runtime, store);
   const repo = splitRepo(repos[0] ?? null);
   const agentProfiles = doctorAgentProfiles(runtime.file);
   const agents = new Set(
@@ -118,11 +119,12 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
     agents.has("grok")
       ? grokLoginStatus({ env, agents: runtime.file.agents, timeoutMs: LOGIN_TIMEOUT_MS })
       : null,
-    linearFact(runtime),
+    linearFact(runtime, store),
     githubDoctorFact(runtime, repo),
   ]);
   return {
     configError: runtime.configError,
+    databaseHeld: saved.held,
     overriddenSections: overriddenConfigSections(pawsPaths(runtime.env.home).configFile),
     agentProfiles,
     grokLogin,
@@ -130,13 +132,11 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
     trackerKind: runtime.trackerKind,
     githubDoctor,
     webhooks: runtime.webhooks,
-    linearWebhook: await readPawsDb(runtime.env.home, (store) =>
-      store.run((q) => linearWebhookWarningSteps(q, Date.now())),
+    linearWebhook: await readPawsDb(store, (db) =>
+      db.run((q) => linearWebhookWarningSteps(q, Date.now())),
     ),
-    githubDelivery: await readPawsDb(runtime.env.home, (store) =>
-      store.run(latestGitHubDeliverySteps),
-    ),
-    workspace: await readPawsDb(runtime.env.home, (store) => store.run(oldestWorkspaceNameSteps)),
+    githubDelivery: await readPawsDb(store, (db) => db.run(latestGitHubDeliverySteps)),
+    workspace: await readPawsDb(store, (db) => db.run(oldestWorkspaceNameSteps)),
     publicUrl: runtime.publicUrl,
     repos,
     team: runtime.linearTeam,
@@ -145,16 +145,19 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
     codexAdapter: agents.has("codex") ? adapterFact("reviewer") : unused,
     claudeLogin,
     codexLogin,
-    closeout: closeoutPolicyFact(runtime, repos),
+    closeout: await closeoutPolicyFact(runtime, repos),
     linear,
     exeDevToken: exeDevTokenStatus(runtime.env.home),
     tailscaleAuthKey: tailscaleAuthKeyStatus(runtime.env.home),
   };
 }
 
-async function storedLinearToken(runtime: ReturnType<typeof loadRuntime>): Promise<string | null> {
+async function storedLinearToken(
+  runtime: ReturnType<typeof loadRuntime>,
+  store: Db | null,
+): Promise<string | null> {
   const secretsDir = pawsPaths(runtime.env.home).secretsDir;
-  const stored = await readPawsDb(runtime.env.home, (store) => readStoredToken(store, secretsDir));
+  const stored = await readPawsDb(store, (db) => readStoredToken(db, secretsDir));
   if (stored) return stored.accessToken;
   try {
     const file: unknown = JSON.parse(readSecretFile(runtime.linearTokenFile, false) ?? "null");
@@ -166,16 +169,10 @@ async function storedLinearToken(runtime: ReturnType<typeof loadRuntime>): Promi
   }
 }
 
-async function readPawsDb<T>(home: string, read: (store: Db) => Promise<T>): Promise<T | null> {
-  const file = pawsPaths(home).db;
-  if (!existsSync(file)) return null;
+async function readPawsDb<T>(store: Db | null, read: (db: Db) => Promise<T>): Promise<T | null> {
+  if (store === null) return null;
   try {
-    const db = new Database(file, { readonly: true });
-    try {
-      return await read(sqliteDb(db));
-    } finally {
-      db.close();
-    }
+    return await read(store);
   } catch (error) {
     journalCaught(error, "probe.readPawsDb.read", null);
     return null;
@@ -219,17 +216,17 @@ function adapterFact(role: "implementer" | "reviewer"): { ok: boolean; detail: s
  * Repositories are checked out on the runner, so Closeout reads each policy from the repository's
  * origin/main there. Doctor can only load the local policy roots `config.toml` names.
  */
-function closeoutPolicyFact(
+async function closeoutPolicyFact(
   runtime: RuntimeConfig,
   repos: readonly string[],
-): ProbeFacts["closeout"] {
+): Promise<ProbeFacts["closeout"]> {
   const home = runtime.env.home;
   const local = repos.flatMap((repo) => {
     const root = closeoutPolicyRoot(runtime.file, home, repo);
     return root === undefined ? [] : [{ repo, root }];
   });
   for (const { repo, root } of local) {
-    const loaded = validate(root, home, root);
+    const loaded = await validate(root, home, root);
     if (!loaded.ok)
       return {
         ok: false,
@@ -248,11 +245,9 @@ function closeoutPolicyFact(
 }
 
 /** Workspace repository choices from the Paws database, then `config.toml` repositories. */
-async function chosenRepositories(runtime: RuntimeConfig): Promise<string[]> {
+async function chosenRepositories(runtime: RuntimeConfig, store: Db | null): Promise<string[]> {
   const chosen =
-    (await readPawsDb(runtime.env.home, (store) =>
-      store.run(distinctWorkspaceRepositoriesSteps),
-    )) ?? [];
+    (await readPawsDb(store, (db) => db.run(distinctWorkspaceRepositoriesSteps))) ?? [];
   return [...new Set([...chosen, ...runtime.repos])];
 }
 
@@ -261,7 +256,10 @@ function oneLine(message: string): string {
   return line.length > 0 ? line : "Fix .agents/closeout.yaml on origin/main.";
 }
 
-async function linearFact(runtime: ReturnType<typeof loadRuntime>): Promise<ProbeFacts["linear"]> {
+async function linearFact(
+  runtime: ReturnType<typeof loadRuntime>,
+  store: Db | null,
+): Promise<ProbeFacts["linear"]> {
   const empty = {
     attempted: false,
     reachable: false,
@@ -270,7 +268,7 @@ async function linearFact(runtime: ReturnType<typeof loadRuntime>): Promise<Prob
     teamFound: false,
     error: null,
   };
-  const credential = runtime.linearAccessToken ?? (await storedLinearToken(runtime));
+  const credential = runtime.linearAccessToken ?? (await storedLinearToken(runtime, store));
   if (credential === null) return empty;
   const token = async () => credential;
   try {

@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { evidencePath } from "../closeout";
 import { reviewRecordsSince } from "../closeout-spec";
-import { getWorkItemRepositorySteps, listWorkItems, openDatabase, sqliteDb } from "../db";
+import { getWorkItemRepositorySteps, listWorkItems, type Db } from "../db";
 import { journalCaught } from "../journal";
 import { itemPathId } from "../loop";
 import { DEFAULT_SINCE_DAYS } from "./sources";
@@ -70,22 +70,18 @@ function parseSince(value: string, now: Date): Date | null {
  */
 export async function readStoredFindings(input: {
   home: string;
-  dbPath: string;
+  store: Db | null;
   owner: string;
   repo: string;
 }): Promise<StoredFinding[]> {
-  if (!existsSync(input.dbPath)) return [];
-  const db = openDatabase(input.dbPath);
+  const store = input.store;
+  if (store === null) return [];
   const tasks: string[] = [];
-  try {
-    for (const item of await listWorkItems(sqliteDb(db))) {
-      const bound = await sqliteDb(db).run((q) => getWorkItemRepositorySteps(q, item.id));
-      if (bound?.owner.toLowerCase() !== input.owner.toLowerCase()) continue;
-      if (bound.repo.toLowerCase() !== input.repo.toLowerCase()) continue;
-      tasks.push(itemPathId(item));
-    }
-  } finally {
-    db.close();
+  for (const item of await listWorkItems(store)) {
+    const bound = await store.run((q) => getWorkItemRepositorySteps(q, item.id));
+    if (bound?.owner.toLowerCase() !== input.owner.toLowerCase()) continue;
+    if (bound.repo.toLowerCase() !== input.repo.toLowerCase()) continue;
+    tasks.push(itemPathId(item));
   }
   const findings: StoredFinding[] = [];
   for (const task of tasks) {

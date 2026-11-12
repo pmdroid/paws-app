@@ -17,7 +17,9 @@ The URL holds the password, so it is a secret: keep `config.toml` at mode `0600`
 
 ## Starting Paws
 
-At start Paws opens the database, applies the Postgres migrations it has not applied yet (`src/db/drizzle-pg/`) and runs on it. Only the running Paws opens `~/.paws/pglite`, so `paws review-score` and `paws login slack` need `[database] url`.
+At start Paws opens the database, applies the Postgres migrations it has not applied yet (`src/db/drizzle-pg/`) and runs on it. PGlite allows one process per directory, so Paws holds `~/.paws/pglite` while it runs, recorded in `~/.paws/pglite.lock` with its process id, and refuses to start when another live process holds it. `paws review-score` and `paws login slack` need `[database] url`.
+
+`paws doctor` and `paws probes collect` read the workspace, its GitHub App and the values saved on the Settings page from the same database: the Postgres at the URL, else `~/.paws/pglite`. While Paws is running and holds PGlite, they use `config.toml` and print one line saying the saved Settings-page values were not read.
 
 A `~/.paws/paws.db` from an earlier release is set aside at the first start: see [Moving to Postgres](database-reset.md).
 
@@ -33,6 +35,6 @@ With a URL set, it connects, applies the pending Postgres migrations, reads back
 ok · Postgres db.example.com:5432/paws · server 17.5 · 1 of 1 migrations applied
 ```
 
-Without a URL, it checks `~/.paws/paws.db` the SQLite way: every migration recorded in it must match the one this Paws ships.
+Without a URL, it checks `~/.paws/pglite` the same way and prints `ok · PGlite ~/.paws/pglite · …`, or that there is no database yet before the first start. While Paws is running it holds that directory, so the check prints `Paws is running; stop it or set [database] url to check` and exits non-zero.
 
 It exits non-zero on any failure, such as an unreachable server, a refused login or a migration that differs, with a message that names the host and database but not the password.

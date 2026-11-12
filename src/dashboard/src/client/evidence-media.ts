@@ -167,8 +167,8 @@ export function galleryHtml(
   const tiles = versions
     .map(
       ({ latest: entry, earlier }) =>
-        `<li class="flex min-w-0 flex-col gap-2 rounded-base border-2 border-border bg-secondary-background p-2 shadow-shadow" data-evidence-tile="${esc(entry.id)}" data-evidence-kind="${entry.kind}">
-          <button type="button" class="evidence-thumb relative block aspect-video w-full overflow-hidden rounded-base border-2 border-border bg-background focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring" data-evidence-open="${esc(entry.id)}" aria-label="${esc(`Open ${kindLabel(entry.kind).toLowerCase()} ${entry.displayName}`)}">${thumbnailMedia(entry, engineUrl)}${entry.kind === "video" ? '<span class="absolute inset-0 m-auto flex size-10 items-center justify-center rounded-base border-2 border-border bg-main text-main-foreground" aria-hidden="true">▶</span>' : ""}</button>
+        `<li class="flex min-w-0 flex-col gap-2 rounded-base border border-border bg-secondary-background p-2" data-evidence-tile="${esc(entry.id)}" data-evidence-kind="${entry.kind}">
+          <button type="button" class="evidence-thumb relative block aspect-video w-full overflow-hidden rounded-base border border-border bg-background focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring" data-evidence-open="${esc(entry.id)}" aria-label="${esc(`Open ${kindLabel(entry.kind).toLowerCase()} ${entry.displayName}`)}">${thumbnailMedia(entry, engineUrl)}${entry.kind === "video" ? '<span class="absolute inset-0 m-auto flex size-10 items-center justify-center rounded-base border border-border bg-main text-main-foreground" aria-hidden="true">▶</span>' : ""}</button>
           <div class="flex min-w-0 items-start justify-between gap-2">
             <div class="flex min-w-0 flex-col text-sm">
               <span class="font-semibold leading-snug" title="${esc(entry.displayName)}">${esc(entry.displayName)}</span>
@@ -216,7 +216,7 @@ function flash(button: HTMLButtonElement | null, label: string): void {
 /** An image, or a video played with video.js. Seeking uses the endpoint's byte ranges. */
 function showMedia(evidence: StatusEvidence, engineUrl: string | null, height: string): Shown {
   const root = document.createElement("div");
-  root.className = "min-w-0 overflow-hidden rounded-base border-2 border-border bg-black";
+  root.className = "min-w-0 overflow-hidden rounded-base border border-border bg-black";
   root.dataset.evidenceMedia = evidence.id;
   const src = evidenceFileUrl(evidence.id, engineUrl);
   if (evidence.kind === "image") {
@@ -263,7 +263,7 @@ type Lightbox = {
 function createLightbox(info: ReadonlyMap<string, MediaInfo>): Lightbox {
   const dialog = document.createElement("dialog");
   dialog.className =
-    "m-auto w-full max-w-[calc(100%-2rem)] rounded-base border-2 border-border bg-background p-0 text-foreground shadow-shadow backdrop:bg-overlay lg:max-w-5xl";
+    "m-auto w-full max-w-[calc(100%-2rem)] rounded-base border border-border bg-background p-0 text-foreground backdrop:bg-overlay lg:max-w-5xl";
   dialog.setAttribute("aria-label", "Evidence");
   document.body.append(dialog);
   let list: StatusEvidence[] = [];
@@ -288,7 +288,7 @@ function createLightbox(info: ReadonlyMap<string, MediaInfo>): Lightbox {
         </div>
       </div>
       <div data-lightbox-stage></div>
-      <div class="flex flex-col gap-3 border-t-2 border-border pt-3"><p class="text-sm">${esc(evidence.checkId)} · attempt ${evidence.attempt} · ${esc(evidence.mediaType)} · ${esc(sizeLabel(evidence.sizeBytes))} · ${esc(mediaSummary(evidence.kind, info.get(evidence.id)))} · published by ${esc(evidence.publisher)}</p><div class="flex flex-wrap gap-2"><input aria-label="Evidence link" class="min-w-0 flex-1 rounded-base border-2 border-border bg-secondary-background px-3 font-mono text-xs" readonly value="${esc(new URL(evidencePageHref(evidence.id), location.href).href)}"><button type="button" class="${PRESSED}" data-lightbox-copy>Copy link</button><a class="${BUTTON}" href="${esc(evidenceFileUrl(evidence.id, engine))}" download="${esc(evidence.displayName)}">Download</a></div></div>
+      <div class="flex flex-col gap-3 border-t border-border pt-3"><p class="text-sm">${esc(evidence.checkId)} · attempt ${evidence.attempt} · ${esc(evidence.mediaType)} · ${esc(sizeLabel(evidence.sizeBytes))} · ${esc(mediaSummary(evidence.kind, info.get(evidence.id)))} · published by ${esc(evidence.publisher)}</p><div class="flex flex-wrap gap-2"><input aria-label="Evidence link" class="min-w-0 flex-1 rounded-base border border-border bg-secondary-background px-3 font-mono text-xs" readonly value="${esc(new URL(evidencePageHref(evidence.id), location.href).href)}"><button type="button" class="${PRESSED}" data-lightbox-copy>Copy link</button><a class="${BUTTON}" href="${esc(evidenceFileUrl(evidence.id, engine))}" download="${esc(evidence.displayName)}">Download</a></div></div>
       <div class="flex justify-between gap-2">
         <button type="button" class="${BUTTON}" data-lightbox-step="-1"${index === 0 ? " disabled" : ""}>← Previous</button>
         <button type="button" class="${BUTTON}" data-lightbox-step="1"${index === list.length - 1 ? " disabled" : ""}>Next →</button>

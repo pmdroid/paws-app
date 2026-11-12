@@ -6,9 +6,11 @@ import {
   pageData,
 } from "../../test/fixtures";
 import { readFileSync } from "node:fs";
+import { Window } from "happy-dom";
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { themedMarkup } from "./theme";
+import { statePill } from "./format";
 import { render } from "./render";
 import { checkListKey } from "./closeout";
 import { identityLinkMarkup } from "./workspace-identities";
@@ -39,7 +41,7 @@ function classNames(html: string, marker: string): string[] {
     .filter((value) => value.split(/\s+/).includes(marker));
 }
 
-test("markup renders Neobrutalism components while retaining action hooks and native form fields", () => {
+test("markup renders ui components while retaining action hooks and native form fields", () => {
   const html = markup(
     '<form id="settings"><label for="agent">Agent</label><select id="agent" name="agent"><option value="claude">Claude</option><option value="codex" selected>Codex</option></select><label><input type="checkbox" name="inherit" checked>Inherit</label><input name="model" value="test"><button type="submit" data-settings="save">Save</button></form>',
   );
@@ -51,6 +53,24 @@ test("markup renders Neobrutalism components while retaining action hooks and na
   expect(html).toContain('value="codex" selected');
   expect(html).toContain('name="inherit"');
   expect(html).toContain('data-settings="save"');
+});
+
+test("state pills render a mono badge with a leading dot in the state's color", () => {
+  const pill = (state: string, label: string) => {
+    const { document } = new Window();
+    document.body.innerHTML = markup(statePill(state, label));
+    return document.body.firstElementChild!;
+  };
+  const running = pill("running", "Running");
+  expect(running.getAttribute("data-slot")).toBe("badge");
+  expect(running.classList.contains("text-state-running")).toBe(true);
+  expect(running.classList.contains("font-mono")).toBe(true);
+  expect(running.firstElementChild?.getAttribute("aria-hidden")).toBe("true");
+  expect(running.firstElementChild?.classList.contains("rounded-full")).toBe(true);
+  expect(running.textContent).toBe("Running");
+  const queued = pill("queued", "Queued");
+  expect(queued.classList.contains("text-muted-foreground")).toBe(true);
+  expect([...queued.classList].some((name) => name.startsWith("text-state-"))).toBe(false);
 });
 
 test("every dashboard view renders without authored inline styles", () => {
@@ -167,7 +187,9 @@ test("issues list shows blockers without positioned CSS", () => {
   });
   expect(rendered.content).toContain("Blocked by");
   expect(rendered.content).not.toContain("style=");
-  expect(markup(rendered.content)).toContain("divide-y-2");
+  expect(markup(rendered.content)).toMatch(
+    /<tr data-slot="table-row" class="[^"]* issue-row" data-issue-state=/,
+  );
 });
 
 describe("runner card", () => {
@@ -212,12 +234,12 @@ describe("runner card", () => {
       ),
     );
 
-  test("gauges fill to their value, lavender when normal and orange when high", () => {
+  test("gauges fill to their value, accent when normal and warn when high", () => {
     const html = card();
     expect(html).toContain('style="width:97%"');
     expect(html).toContain('style="width:43%"');
     const fills = [...html.matchAll(/<span class="([^"]*)" style="width:(\d+)%"/g)];
-    expect(fills.map((match) => [match[2], match[1]!.includes("bg-main")])).toEqual([
+    expect(fills.map((match) => [match[2], match[1]!.includes("bg-state-warn")])).toEqual([
       ["97", true],
       ["43", false],
       ["77", false],

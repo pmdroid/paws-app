@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
-import { join } from "node:path";
+import { eq, like, sql } from "drizzle-orm";
 import { systemClock } from "../src/core";
 import {
   CLEANUP_BLOCKED_NOTICE,
@@ -13,12 +13,9 @@ import {
   getConversation,
   getLinearSession,
   listPendingLinearTurns,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
   syncSteps,
-  sqliteDb,
 } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
@@ -26,6 +23,8 @@ import { remoteCommandsGoneSteps } from "../src/runner-backend";
 import { RUNNER_LIVE_GRACE_MS, createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceTokenHash } from "../src/workspace";
 import { tempHome } from "./helpers";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 function linearEvent(key: string, body: string | null): AcceptedLinearEvent {
   return {
@@ -53,28 +52,33 @@ function linearEvent(key: string, body: string | null): AcceptedLinearEvent {
  */
 async function blockedAfterCleanupFailure() {
   const home = tempHome();
-  const db = openDatabase(join(home, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   let now = Date.now();
-  await putWorkspaceUser(sqliteDb(db), {
+  await putWorkspaceUser(db, {
     id: "owner",
     linearUserId: "owner",
     name: "Owner",
     email: "o@x.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: "workspace",
     organizationId: "org",
     name: "Fixture",
     userId: "owner",
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
-  db.run(
-    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES('agentbox',?,'owner','agentbox','active',?)",
-    [workspace.id, now],
+  await seed(db, (q) =>
+    q.orm.insert(q.t.runner).values({
+      id: "agentbox",
+      workspaceId: workspace.id,
+      ownerUserId: "owner",
+      name: "agentbox",
+      status: "active",
+      createdAt: now,
+    }),
   );
-  await recordLinearInstallation(sqliteDb(db), {
+  await recordLinearInstallation(db, {
     sessionId: "session",
     organizationId: "org",
     oauthClientId: "client",
@@ -92,7 +96,7 @@ async function blockedAfterCleanupFailure() {
     },
   ]);
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     tracker,
     pawsRoot: home,
     jobs: new JobLoop(db, systemClock),
@@ -109,21 +113,37 @@ async function blockedAfterCleanupFailure() {
     },
   });
   await orchestrator.onLinearEvent(linearEvent("created", null));
-  const itemId = (await getLinearSession(sqliteDb(db), "session"))!.activeItemId!;
-  const { run } = await beginImplementRun(sqliteDb(db), itemId, now);
-  db.run(
-    "INSERT INTO runner_command(id,runner_id,run_id,generation,kind,envelope,expires_at,acknowledged_at) VALUES('command','agentbox',?,1,'run','{}',?,?)",
-    [run.id, now + 600_000, now],
+  const itemId = (await getLinearSession(db, "session"))!.activeItemId!;
+  const { run } = await beginImplementRun(db, itemId, now);
+  await seed(
+    db,
+    (q) =>
+      q.orm.insert(q.t.runnerCommand).values({
+        id: "command",
+        runnerId: "agentbox",
+        runId: run.id,
+        generation: 1,
+        kind: "run",
+        envelope: "{}",
+        expiresAt: now + 600_000,
+        acknowledgedAt: now,
+      }),
+    (q) =>
+      q.orm.insert(q.t.runnerWork).values({
+        runId: run.id,
+        runnerId: "agentbox",
+        workspaceId: workspace.id,
+        generation: 1,
+        runnerFence: 0,
+        commandId: "command",
+        leaseUntil: now + 60_000,
+      }),
   );
-  db.run(
-    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,'agentbox',?,1,0,'command',?)",
-    [run.id, workspace.id, now + 60_000],
-  );
-  await applyWorkItemEvent(sqliteDb(db), itemId, "run_failed");
-  await blockConversation(sqliteDb(db), itemId, now);
+  await applyWorkItemEvent(db, itemId, "run_failed");
+  await blockConversation(db, itemId, now);
   const keys = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "fixture",
     privateKey: keys.privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -140,23 +160,33 @@ async function blockedAfterCleanupFailure() {
       now += later;
       await work.heartbeat("agentbox", 1, {}, undefined, undefined, undefined, undefined, live);
     },
-    restarts: () =>
-      db
-        .query<{ payload: string }, []>(
-          "SELECT payload FROM job WHERE job_key LIKE 'linear-turn:%'",
+    restarts: async () =>
+      (
+        await db.run((q) =>
+          q.all(
+            q.orm
+              .select({ payload: q.t.job.payload })
+              .from(q.t.job)
+              .where(like(q.t.job.jobKey, "linear-turn:%")),
+          ),
         )
-        .all(),
-    notices: () =>
-      db
-        .query<{ n: number }, [string]>(
-          "SELECT COUNT(*) AS n FROM outbox WHERE json_extract(payload,'$.body')=?",
+      ).map((row) => ({ payload: JSON.stringify(row.payload) })),
+    notices: async () =>
+      (
+        await db.run((q) =>
+          q.all(
+            q.orm
+              .select({ id: q.t.outbox.id })
+              .from(q.t.outbox)
+              .where(eq(sql`${q.t.outbox.payload}->>'body'`, CLEANUP_BLOCKED_NOTICE)),
+          ),
         )
-        .get(CLEANUP_BLOCKED_NOTICE)!.n,
+      ).length,
     close: () =>
       orchestrator
         .shutdown()
         .catch(() => undefined)
-        .finally(() => db.close()),
+        .finally(close),
   };
 }
 
@@ -166,23 +196,23 @@ test("a blocked reply waits, then is delivered once after the restarted runner r
     await f.orchestrator.onLinearEvent(linearEvent("reply-1", "Please continue"));
     await f.orchestrator.onLinearEvent(linearEvent("reply-2", "And add a test"));
     // The replies wait instead of failing; the session hears why once.
-    expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toHaveLength(2);
-    expect(f.restarts()).toEqual([]);
-    expect(f.notices()).toBe(1);
-    expect((await getConversation(sqliteDb(f.db), f.itemId)).blocked).toBe(true);
+    expect(await listPendingLinearTurns(f.db, "session")).toHaveLength(2);
+    expect(await f.restarts()).toEqual([]);
+    expect(await f.notices()).toBe(1);
+    expect((await getConversation(f.db, f.itemId)).blocked).toBe(true);
 
     // The runner restarted for an update and no longer names the command.
     await f.heartbeat([]);
     await f.orchestrator.releaseCleanupBlocks();
-    expect((await getConversation(sqliteDb(f.db), f.itemId)).blocked).toBe(false);
-    const restarts = f.restarts();
+    expect((await getConversation(f.db, f.itemId)).blocked).toBe(false);
+    const restarts = await f.restarts();
     expect(restarts).toHaveLength(1);
     expect(restarts[0]!.payload).toContain("Please continue");
     expect(restarts[0]!.payload).toContain("And add a test");
 
     await f.orchestrator.releaseCleanupBlocks();
-    expect(f.restarts()).toHaveLength(1);
-    expect(f.notices()).toBe(1);
+    expect(await f.restarts()).toHaveLength(1);
+    expect(await f.notices()).toBe(1);
   } finally {
     await f.close();
   }
@@ -196,15 +226,15 @@ test("a runner that still reports the command keeps the block", async () => {
     await f.heartbeat(live);
     await f.heartbeat(live);
     await f.orchestrator.releaseCleanupBlocks();
-    expect((await getConversation(sqliteDb(f.db), f.itemId)).blocked).toBe(true);
-    expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toHaveLength(1);
-    expect(f.restarts()).toEqual([]);
+    expect((await getConversation(f.db, f.itemId)).blocked).toBe(true);
+    expect(await listPendingLinearTurns(f.db, "session")).toHaveLength(1);
+    expect(await f.restarts()).toEqual([]);
 
     // Once a later report leaves it out, the old agent is gone.
     await f.heartbeat([]);
     await f.orchestrator.releaseCleanupBlocks();
-    expect((await getConversation(sqliteDb(f.db), f.itemId)).blocked).toBe(false);
-    expect(f.restarts()).toHaveLength(1);
+    expect((await getConversation(f.db, f.itemId)).blocked).toBe(false);
+    expect(await f.restarts()).toHaveLength(1);
   } finally {
     await f.close();
   }

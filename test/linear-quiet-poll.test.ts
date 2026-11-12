@@ -8,8 +8,9 @@ import {
   type InboxStore,
   type Sleeper,
 } from "../src/linear";
-import { insertQueuedItem, linearWebhookWarning, sqliteDb } from "../src/db";
-import { tempDb } from "./helpers";
+import { insertQueuedItem, linearWebhookWarning } from "../src/db";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const NOW = 1_700_000_000_000;
 const MINUTE = 60_000;
@@ -17,8 +18,8 @@ const HOUR = 60 * MINUTE;
 
 describe("catch-up poll in a quiet workspace", () => {
   test("a workspace with no Linear activity for 3 hours makes at most 20 poll requests", async () => {
-    const db = tempDb();
-    const store = createInboxStore(sqliteDb(db));
+    const { db, close } = await tempStore();
+    const store = createInboxStore(db);
     expect((await deliver(store, NOW, "secret")).status).toBe(200);
     const clock = fakeClock(NOW, NOW + 3 * HOUR);
     const requests = countingSource(() => emptyData());
@@ -32,15 +33,15 @@ describe("catch-up poll in a quiet workspace", () => {
     });
     await clock.done;
     await poller.stop();
-    db.close();
+    await close();
     expect(requests.count()).toBeGreaterThan(0);
     expect(requests.count()).toBeLessThanOrEqual(20);
   });
 
   test("after a restart with a recent verified webhook stored, one catch-up pass then the backstop", async () => {
-    const db = tempDb();
-    expect((await deliver(createInboxStore(sqliteDb(db)), NOW, "secret")).status).toBe(200);
-    const restarted = createInboxStore(sqliteDb(db));
+    const { db, close } = await tempStore();
+    expect((await deliver(createInboxStore(db), NOW, "secret")).status).toBe(200);
+    const restarted = createInboxStore(db);
     const waits: number[] = [];
     const requests = countingSource(() => emptyData());
     const poller = startCatchUpPoller({
@@ -53,14 +54,14 @@ describe("catch-up poll in a quiet workspace", () => {
     });
     await waitFor(() => waits.length > 0);
     await poller.stop();
-    db.close();
+    await close();
     expect(requests.count()).toBe(1);
     expect(waits).toEqual([12 * MINUTE]);
   });
 
   test("repeated webhook verification failures switch to polling once a minute", async () => {
-    const db = tempDb();
-    const store = createInboxStore(sqliteDb(db));
+    const { db, close } = await tempStore();
+    const store = createInboxStore(db);
     expect((await deliver(store, NOW, "secret")).status).toBe(200);
     for (const _ of [1, 2, 3]) {
       expect((await deliver(store, NOW + MINUTE, "rotated")).status).toBe(401);
@@ -76,16 +77,16 @@ describe("catch-up poll in a quiet workspace", () => {
     });
     await waitFor(() => waits.length > 0);
     await poller.stop();
-    db.close();
+    await close();
     expect(waits).toEqual([MINUTE]);
   });
 
   test("no verified webhook since setup polls once a minute, never faster", async () => {
-    const db = tempDb();
+    const { db, close } = await tempStore();
     const waits: number[] = [];
     const poller = startCatchUpPoller({
       source: countingSource(() => emptyData()).source,
-      store: createInboxStore(sqliteDb(db)),
+      store: createInboxStore(db),
       onEvent: () => {},
       sleeper: recordingSleeper(waits),
       now: () => NOW,
@@ -93,13 +94,13 @@ describe("catch-up poll in a quiet workspace", () => {
     });
     await waitFor(() => waits.length > 0);
     await poller.stop();
-    db.close();
+    await close();
     expect(waits).toEqual([MINUTE]);
   });
 
   test("a prompt the poll finds on a known session that no webhook delivered polls once a minute", async () => {
-    const db = tempDb();
-    const store = createInboxStore(sqliteDb(db));
+    const { db, close } = await tempStore();
+    const store = createInboxStore(db);
     expect((await deliver(store, NOW, "secret")).status).toBe(200);
     const waits: number[] = [];
     const poller = startCatchUpPoller({
@@ -129,15 +130,15 @@ describe("catch-up poll in a quiet workspace", () => {
     await waitFor(() => waits.length > 0);
     await poller.stop();
     expect(await store.get("activity:activity-missed")).not.toBeNull();
-    db.close();
+    await close();
     expect(waits).toEqual([MINUTE]);
   });
 
   test("missed deliveries found by the catch-up poll raise the webhook may be disabled warning", async () => {
-    const db = tempDb();
-    const store = createInboxStore(sqliteDb(db));
+    const { db, close } = await tempStore();
+    const store = createInboxStore(db);
     expect((await deliver(store, NOW, "secret")).status).toBe(200);
-    expect(await linearWebhookWarning(sqliteDb(db), NOW + MINUTE)).toBeNull();
+    expect(await linearWebhookWarning(db, NOW + MINUTE)).toBeNull();
     const missed = startCatchUpPoller({
       source: countingSource(() => missedPrompt()).source,
       store,
@@ -148,7 +149,7 @@ describe("catch-up poll in a quiet workspace", () => {
     });
     await waitFor(async () => (await store.get("activity:activity-missed")) !== null);
     await missed.stop();
-    expect(await linearWebhookWarning(sqliteDb(db), NOW + 20 * MINUTE)).toEqual({
+    expect(await linearWebhookWarning(db, NOW + 20 * MINUTE)).toEqual({
       reason: "missed",
       lastVerifiedMs: NOW,
       missedMs: NOW + 20 * MINUTE,
@@ -157,7 +158,7 @@ describe("catch-up poll in a quiet workspace", () => {
     const waits: number[] = [];
     const restarted = startCatchUpPoller({
       source: countingSource(() => emptyData()).source,
-      store: createInboxStore(sqliteDb(db)),
+      store: createInboxStore(db),
       onEvent: () => {},
       sleeper: recordingSleeper(waits),
       now: () => NOW + 21 * MINUTE,
@@ -168,24 +169,24 @@ describe("catch-up poll in a quiet workspace", () => {
     expect(waits).toEqual([MINUTE]);
 
     expect((await deliver(store, NOW + 22 * MINUTE, "secret")).status).toBe(200);
-    expect(await linearWebhookWarning(sqliteDb(db), NOW + 22 * MINUTE)).toBeNull();
-    db.close();
+    expect(await linearWebhookWarning(db, NOW + 22 * MINUTE)).toBeNull();
+    await close();
   });
 
   test("an hour without a verified delivery warns only while sessions are active", async () => {
-    const db = tempDb();
-    expect((await deliver(createInboxStore(sqliteDb(db)), NOW, "secret")).status).toBe(200);
-    expect(await linearWebhookWarning(sqliteDb(db), NOW + 2 * HOUR)).toBeNull();
+    const { db, close } = await tempStore();
+    expect((await deliver(createInboxStore(db), NOW, "secret")).status).toBe(200);
+    expect(await linearWebhookWarning(db, NOW + 2 * HOUR)).toBeNull();
     await insertQueuedItem(db, { id: "item", sessionKey: "session-webhook" });
-    expect(await linearWebhookWarning(sqliteDb(db), NOW + HOUR)).toBeNull();
-    expect(await linearWebhookWarning(sqliteDb(db), NOW + 2 * HOUR)).toEqual({
+    expect(await linearWebhookWarning(db, NOW + HOUR)).toBeNull();
+    expect(await linearWebhookWarning(db, NOW + 2 * HOUR)).toEqual({
       reason: "silent",
       lastVerifiedMs: NOW,
       missedMs: null,
     });
-    db.run("UPDATE work_item SET state = 'merged'");
-    expect(await linearWebhookWarning(sqliteDb(db), NOW + 2 * HOUR)).toBeNull();
-    db.close();
+    await seed(db, (q) => q.orm.update(q.t.workItem).set({ state: "merged" }));
+    expect(await linearWebhookWarning(db, NOW + 2 * HOUR)).toBeNull();
+    await close();
   });
 });
 

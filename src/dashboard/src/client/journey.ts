@@ -5,7 +5,7 @@ type JourneyItem = Pick<StatusItem, "state" | "timeline" | "doing" | "mergeQueue
 };
 type JourneyRun = Pick<StatusRun, "usagePause">;
 import { doingLabel } from "./doing";
-import { esc, statePill, utcClock } from "./format";
+import { esc, utcClock } from "./format";
 
 export type JourneyStepId =
   | "queued"
@@ -277,10 +277,6 @@ function pillFor(
     done: "merged",
   };
   return [tones[value.step], value.headline];
-}
-
-export function journeyPill(value: Journey): string {
-  return statePill(value.pill[0], value.pill[1]);
 }
 
 export const JOURNEY_ORDER: readonly JourneyStepId[] = [

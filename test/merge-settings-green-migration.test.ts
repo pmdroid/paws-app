@@ -2,14 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { cpSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { migrate as migratePg } from "drizzle-orm/pglite/migrator";
-import {
-  MIGRATIONS_FOLDER,
-  PG_MIGRATIONS_FOLDER,
-  migrate,
-  openDatabase,
-  postgresDb,
-  sqliteDb,
-} from "../src/db";
+import { PG_MIGRATIONS_FOLDER, postgresDb } from "../src/db";
 import { insertWorkItem } from "./dialects";
 import { tempHome } from "./helpers";
 import { pgliteDb } from "./pglite";
@@ -39,30 +32,6 @@ const KEPT_ROW = {
 };
 
 describe("allowing main_moved = green", () => {
-  test("the SQLite table is rebuilt with its rows, still STRICT", async () => {
-    const db = openDatabase(":memory:");
-    try {
-      migrate(db, { migrationsFolder: beforeMigration(MIGRATIONS_FOLDER) });
-      await insertWorkItem(sqliteDb(db), "acme-1");
-      await insertWorkItem(sqliteDb(db), "acme-2");
-      db.run(`${INSERT} ('acme-1', 'queue', 'ci', '{}', 10)`);
-      expect(() => db.run(`${INSERT} ('acme-2', 'queue', 'green', '{}', 10)`)).toThrow();
-
-      migrate(db);
-
-      expect(db.query("SELECT * FROM work_item_merge_settings").all()).toEqual([KEPT_ROW]);
-      expect(
-        db
-          .query("SELECT strict FROM pragma_table_list WHERE name = 'work_item_merge_settings'")
-          .get(),
-      ).toEqual({ strict: 1 });
-      db.run(`${INSERT} ('acme-2', 'queue', 'green', '{}', 10)`);
-      expect(() => db.run("UPDATE work_item_merge_settings SET main_moved = 'acme'")).toThrow();
-    } finally {
-      db.close();
-    }
-  });
-
   test("the Postgres constraint is replaced and keeps the rows", async () => {
     const pg = await pgliteDb({ migrationsFolder: beforeMigration(PG_MIGRATIONS_FOLDER) });
     try {

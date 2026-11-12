@@ -9,6 +9,7 @@ import {
   listDelegationExternalEvidenceSteps,
   listManagedBlockerItemsSteps,
   listPresentDelegationItemsSteps,
+  readDependencyScopeSteps,
   readDependencySnapshotSteps,
   saveDependencySnapshotSteps,
   type Db,
@@ -228,5 +229,27 @@ forEachDialect((connect) => {
       { state: "merged", mode: "code", cancelRequested: 0, mergeSha: "sha" },
       { state: "completed", mode: null, cancelRequested: 0, mergeSha: null },
     ]);
+  });
+
+  test("the dependency scope reads cancel_requested as a number", async () => {
+    const db = await connected(connect);
+    await seed(
+      db,
+      (q) => item(q, "a", { sessionKey: "s1" }),
+      (q) =>
+        q.orm.insert(q.t.linearSession).values({
+          sessionId: "s1",
+          organizationId: "o1",
+          oauthClientId: "c1",
+          appUserId: "u1",
+          teamId: "t1",
+          createdAt: 0,
+        }),
+      (q) =>
+        q.orm
+          .insert(q.t.workspace)
+          .values({ id: "w1", linearOrganizationId: "o1", name: "w", createdAt: 0 }),
+    );
+    expect((await db.run((q) => readDependencyScopeSteps(q, "a", "w1")))?.cancelRequested).toBe(0);
   });
 });

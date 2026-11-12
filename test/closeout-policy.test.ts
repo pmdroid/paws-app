@@ -41,7 +41,7 @@ describe("canonical policy JSON", () => {
     expect(emoji).toBeLessThan(privateUse);
   });
 
-  test("rejects numbers that are not safe integers", () => {
+  test("rejects numbers that are not safe integers", async () => {
     expect(() => canonicalJson(1.5)).toThrow("canonical JSON only accepts safe integers");
     expect(() => canonicalJson(Number.POSITIVE_INFINITY)).toThrow(
       "canonical JSON only accepts safe integers",
@@ -53,7 +53,7 @@ describe("canonical policy JSON", () => {
 });
 
 describe("path matcher", () => {
-  test("matches prefixes, single-segment wildcards, and double star", () => {
+  test("matches prefixes, single-segment wildcards, and double star", async () => {
     expect(pathsMatch("apps/engine/**", "apps/engine/main.ts")).toBe(true);
     expect(pathsMatch("apps/engine/**", "apps/engine/src/main.ts")).toBe(true);
     expect(pathsMatch("apps/engine/**", "apps/engine")).toBe(true);
@@ -77,7 +77,7 @@ describe("path matcher", () => {
 });
 
 describe("local policy override", () => {
-  test("loads without fetching origin and snapshots imported skills with their digest", () => {
+  test("loads without fetching origin and snapshots imported skills with their digest", async () => {
     const root = tempDir();
     mkdirSync(join(root, ".agents/skills/review/references"), { recursive: true });
     writeFileSync(
@@ -91,7 +91,7 @@ describe("local policy override", () => {
     const skillPath = ".agents/skills/review/SKILL.md";
     writeFileSync(join(root, skillPath), "Trusted local review instructions");
     const git = createFakeGitReader();
-    const first = loadPolicy({ repo: "/missing/repo", git, policyRoot: root });
+    const first = await loadPolicy({ repo: "/missing/repo", git, policyRoot: root });
     expect(first.ok).toBe(true);
     if (!first.ok || first.policy.source === "none") throw new Error("expected policy");
     expect(first.policy.source).toBe("local");
@@ -102,24 +102,24 @@ describe("local policy override", () => {
     expect(new TextDecoder().decode(first.policy.skillFiles?.get(skillPath))).toBe(
       "Trusted local review instructions",
     );
-    const second = loadPolicy({ repo: "/missing/repo", git, policyRoot: root });
+    const second = await loadPolicy({ repo: "/missing/repo", git, policyRoot: root });
     expect(second.ok && second.policy.digest).not.toBe(first.policy.digest);
   });
 
-  test("configured missing and malformed local policies block without fallback", () => {
+  test("configured missing and malformed local policies block without fallback", async () => {
     const root = tempDir();
     const git = createFakeGitReader();
-    expect(loadPolicy({ repo: "/missing/repo", git, policyRoot: root })).toMatchObject({
+    expect(await loadPolicy({ repo: "/missing/repo", git, policyRoot: root })).toMatchObject({
       ok: false,
       source: "local",
     });
     mkdirSync(join(root, ".agents"));
     writeFileSync(join(root, PUBLIC_POLICY_PATH), "specVersion: invalid\n");
-    expect(loadPolicy({ repo: "/missing/repo", git, policyRoot: root })).toMatchObject({
+    expect(await loadPolicy({ repo: "/missing/repo", git, policyRoot: root })).toMatchObject({
       ok: false,
       source: "local",
     });
-    expect(loadPolicy({ repo: "/missing/repo", git, policyRoot: "" })).toMatchObject({
+    expect(await loadPolicy({ repo: "/missing/repo", git, policyRoot: "" })).toMatchObject({
       ok: false,
       source: "local",
     });
@@ -128,20 +128,20 @@ describe("local policy override", () => {
 });
 
 describe("policy errors", () => {
-  test("duplicate keys", () => {
-    const { result } = origin({
+  test("duplicate keys", async () => {
+    const { result } = await origin({
       [PUBLIC_POLICY_PATH]: 'specVersion: "0.1"\nspecVersion: "0.1"\n',
     });
     expectBlocked(result, "repo", ".agents/closeout.yaml: duplicated mapping key");
   });
 
-  test("invalid YAML", () => {
-    const { result } = origin({ [PUBLIC_POLICY_PATH]: "items: [\n" });
+  test("invalid YAML", async () => {
+    const { result } = await origin({ [PUBLIC_POLICY_PATH]: "items: [\n" });
     expectBlocked(result, "repo", ".agents/closeout.yaml: invalid YAML");
   });
 
-  test("an unknown field is left out with a warning; the fields it knows stay strict", () => {
-    const { result } = origin({
+  test("an unknown field is left out with a warning; the fields it knows stay strict", async () => {
+    const { result } = await origin({
       [PUBLIC_POLICY_PATH]: `specVersion: "0.1"\nnope: true\nitems:\n${commandItem("lint", "    later: 1")}\n`,
     });
     expect(result.ok).toBe(true);
@@ -156,26 +156,26 @@ describe("policy errors", () => {
           "Ignored policy keys this Closeout does not know: .agents/closeout.yaml:/nope, .agents/closeout.yaml:/items/0/later. A newer runner applies them.",
       },
     ]);
-    const strict = origin({
+    const strict = await origin({
       [PUBLIC_POLICY_PATH]: `specVersion: "0.1"\nnope: true\nitems:\n${commandItem("lint", '    recheck: "yes"')}\n`,
     });
     expectBlocked(strict.result, "repo", ".agents/closeout.yaml: /items/0/recheck must be boolean");
   });
 
-  test("specVersion must be the string 0.1", () => {
-    const quoted = origin({ [PUBLIC_POLICY_PATH]: 'specVersion: "0.9"\n' });
+  test("specVersion must be the string 0.1", async () => {
+    const quoted = await origin({ [PUBLIC_POLICY_PATH]: 'specVersion: "0.9"\n' });
     expectBlocked(
       quoted.result,
       "repo",
       ".agents/closeout.yaml: /specVersion must be equal to constant",
     );
-    const unquoted = origin({ [PUBLIC_POLICY_PATH]: "specVersion: 0.1\n" });
+    const unquoted = await origin({ [PUBLIC_POLICY_PATH]: "specVersion: 0.1\n" });
     expectBlocked(
       unquoted.result,
       "repo",
       ".agents/closeout.yaml: /specVersion must be equal to constant",
     );
-    const renamed = origin({ [PUBLIC_POLICY_PATH]: "version: 1\nitems: []\n" });
+    const renamed = await origin({ [PUBLIC_POLICY_PATH]: "version: 1\nitems: []\n" });
     expectBlocked(
       renamed.result,
       "repo",
@@ -183,8 +183,8 @@ describe("policy errors", () => {
     );
   });
 
-  test("malformed item and unknown kind", () => {
-    const malformed = origin({
+  test("malformed item and unknown kind", async () => {
+    const malformed = await origin({
       [PUBLIC_POLICY_PATH]:
         'specVersion: "0.1"\nitems:\n  - id: check\n    kind: nope\n    gate: beforePR\n',
     });
@@ -193,7 +193,7 @@ describe("policy errors", () => {
       "repo",
       ".agents/closeout.yaml: /items/0 must match exactly one schema in oneOf",
     );
-    const unknown = origin({
+    const unknown = await origin({
       [PUBLIC_POLICY_PATH]:
         'specVersion: "0.1"\nitems:\n  - id: ci\n    kind: ci\n    gate: beforePR\n',
     });
@@ -204,8 +204,8 @@ describe("policy errors", () => {
     );
   });
 
-  test("id and import name regex", () => {
-    const id = origin({
+  test("id and import name regex", async () => {
+    const id = await origin({
       [PUBLIC_POLICY_PATH]:
         'specVersion: "0.1"\nitems:\n  - id: Bad\n    kind: command\n    gate: beforePR\n    exec: ["true"]\n    timeoutSeconds: 30\n',
     });
@@ -214,7 +214,7 @@ describe("policy errors", () => {
       "repo",
       '.agents/closeout.yaml: /items/0/id must match pattern "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"',
     );
-    const imported = origin({
+    const imported = await origin({
       [PUBLIC_POLICY_PATH]:
         'specVersion: "0.1"\nimports:\n  - path: .agents/closeout/child.yaml\n    as: Bad\n',
     });
@@ -225,15 +225,15 @@ describe("policy errors", () => {
     );
   });
 
-  test("setup bounds and entry-only setup", () => {
-    const empty = origin({ [PUBLIC_POLICY_PATH]: 'specVersion: "0.1"\nsetup: []\n' });
+  test("setup bounds and entry-only setup", async () => {
+    const empty = await origin({ [PUBLIC_POLICY_PATH]: 'specVersion: "0.1"\nsetup: []\n' });
     expectBlocked(
       empty.result,
       "repo",
       ".agents/closeout.yaml: /setup must NOT have fewer than 1 items",
     );
     const steps = Array.from({ length: 33 }, (_, index) => stepYaml(`s${index}`)).join("\n");
-    const tooMany = origin({
+    const tooMany = await origin({
       [PUBLIC_POLICY_PATH]: `specVersion: "0.1"\nsetup:\n${steps}\n`,
     });
     expectBlocked(
@@ -241,7 +241,7 @@ describe("policy errors", () => {
       "repo",
       ".agents/closeout.yaml: /setup must NOT have more than 32 items",
     );
-    const { result } = origin({
+    const { result } = await origin({
       [PUBLIC_POLICY_PATH]:
         'specVersion: "0.1"\nimports:\n  - path: .agents/closeout/extra.yaml\n    as: extra\n',
       ".agents/closeout/extra.yaml":
@@ -250,37 +250,44 @@ describe("policy errors", () => {
     expectBlocked(result, "repo", "setup is only allowed on the entry policy");
   });
 
-  test("retry bounds and entry-only retry", () => {
+  test("retry bounds and entry-only retry", async () => {
     expectBlocked(
-      origin({
-        [PUBLIC_POLICY_PATH]:
-          'specVersion: "0.1"\nretry:\n  maxFailedAttemptsPerItem: 0\n  scope: task\n',
-      }).result,
+      (
+        await origin({
+          [PUBLIC_POLICY_PATH]:
+            'specVersion: "0.1"\nretry:\n  maxFailedAttemptsPerItem: 0\n  scope: task\n',
+        })
+      ).result,
       "repo",
       ".agents/closeout.yaml: /retry/maxFailedAttemptsPerItem must be >= 1",
     );
     expectBlocked(
-      origin({
-        [PUBLIC_POLICY_PATH]:
-          'specVersion: "0.1"\nretry:\n  maxFailedAttemptsPerItem: 100001\n  scope: task\n',
-      }).result,
+      (
+        await origin({
+          [PUBLIC_POLICY_PATH]:
+            'specVersion: "0.1"\nretry:\n  maxFailedAttemptsPerItem: 100001\n  scope: task\n',
+        })
+      ).result,
       "repo",
       ".agents/closeout.yaml: /retry/maxFailedAttemptsPerItem must be <= 100000",
     );
     expectBlocked(
-      origin({
-        [PUBLIC_POLICY_PATH]:
-          'specVersion: "0.1"\nretry:\n  maxFailedAttemptsPerItem: 1\n  scope: session\n',
-      }).result,
+      (
+        await origin({
+          [PUBLIC_POLICY_PATH]:
+            'specVersion: "0.1"\nretry:\n  maxFailedAttemptsPerItem: 1\n  scope: session\n',
+        })
+      ).result,
       "repo",
       ".agents/closeout.yaml: /retry/scope must be equal to one of the allowed values",
     );
     expect(
       present(
-        origin({ [PUBLIC_POLICY_PATH]: 'specVersion: "0.1"\nretry:\n  scope: task\n' }).result,
+        (await origin({ [PUBLIC_POLICY_PATH]: 'specVersion: "0.1"\nretry:\n  scope: task\n' }))
+          .result,
       ).retry,
     ).toEqual({ maxFailedAttemptsPerItem: 3, scope: "task" });
-    const { result } = origin({
+    const { result } = await origin({
       [PUBLIC_POLICY_PATH]:
         'specVersion: "0.1"\nimports:\n  - path: .agents/closeout/child.yaml\n    as: child\n',
       ".agents/closeout/child.yaml":
@@ -289,11 +296,11 @@ describe("policy errors", () => {
     expectBlocked(result, "repo", "retry is only allowed on the entry policy");
   });
 
-  test("the review cap is entry-only and absent fields preserve canonical identity", () => {
+  test("the review cap is entry-only and absent fields preserve canonical identity", async () => {
     const text = 'specVersion: "0.1"\nretry:\n  maxFailedAttemptsPerItem: 3\n  scope: task\n';
-    const legacy = present(origin({ [PUBLIC_POLICY_PATH]: text }).result);
+    const legacy = present((await origin({ [PUBLIC_POLICY_PATH]: text })).result);
     const capped = present(
-      origin({ [PUBLIC_POLICY_PATH]: text + "  maxFailedReviewAttempts: 12\n" }).result,
+      (await origin({ [PUBLIC_POLICY_PATH]: text + "  maxFailedReviewAttempts: 12\n" })).result,
     );
     expect(legacy.digest).toBe(
       "sha256:57b6d478e6a18c6877982e4a7d37b0c01219b4b27fdc87e540f45917a6dcb977",
@@ -302,7 +309,7 @@ describe("policy errors", () => {
     expect(policyCanonicalJson(capped)).toContain('"maxFailedReviewAttempts":12');
     const withoutCap = { ...capped, files: legacy.files, retry: legacy.retry };
     expect(policyCanonicalJson(withoutCap)).toBe(policyCanonicalJson(legacy));
-    const imported = origin({
+    const imported = await origin({
       [PUBLIC_POLICY_PATH]:
         'specVersion: "0.1"\nimports:\n  - path: .agents/child.yaml\n    as: child\n',
       ".agents/child.yaml": text + "  maxFailedReviewAttempts: 12\n",
@@ -310,82 +317,98 @@ describe("policy errors", () => {
     expectBlocked(imported.result, "repo", "retry is only allowed on the entry policy");
   });
 
-  test("import escape, missing file, cycle, and duplicate name", () => {
+  test("import escape, missing file, cycle, and duplicate name", async () => {
     expectBlocked(
-      origin({
-        [PUBLIC_POLICY_PATH]:
-          'specVersion: "0.1"\nimports:\n  - path: ../secret.yaml\n    as: secret\n',
-      }).result,
+      (
+        await origin({
+          [PUBLIC_POLICY_PATH]:
+            'specVersion: "0.1"\nimports:\n  - path: ../secret.yaml\n    as: secret\n',
+        })
+      ).result,
       "repo",
       "import path is not repository-relative: ../secret.yaml",
     );
     for (const path of ["/etc/passwd", "~/.agents/closeout.yaml", "a\\b.yaml", "a//b.yaml", "."]) {
       expectBlocked(
-        origin({
-          [PUBLIC_POLICY_PATH]: `specVersion: "0.1"\nimports:\n  - path: ${JSON.stringify(path)}\n    as: secret\n`,
-        }).result,
+        (
+          await origin({
+            [PUBLIC_POLICY_PATH]: `specVersion: "0.1"\nimports:\n  - path: ${JSON.stringify(path)}\n    as: secret\n`,
+          })
+        ).result,
         "repo",
         `import path is not repository-relative: ${path}`,
       );
     }
     expectBlocked(
-      origin({
-        [PUBLIC_POLICY_PATH]:
-          'specVersion: "0.1"\nimports:\n  - path: .agents/closeout/missing.yaml\n    as: missing\n',
-      }).result,
+      (
+        await origin({
+          [PUBLIC_POLICY_PATH]:
+            'specVersion: "0.1"\nimports:\n  - path: .agents/closeout/missing.yaml\n    as: missing\n',
+        })
+      ).result,
       "repo",
       "import is missing: .agents/closeout/missing.yaml",
     );
     expectBlocked(
-      origin({
-        [PUBLIC_POLICY_PATH]:
-          'specVersion: "0.1"\nimports:\n  - path: .agents/closeout/a.yaml\n    as: a\n',
-        ".agents/closeout/a.yaml":
-          'specVersion: "0.1"\nimports:\n  - path: .agents/closeout/b.yaml\n    as: b\n',
-        ".agents/closeout/b.yaml":
-          'specVersion: "0.1"\nimports:\n  - path: .agents/closeout/a.yaml\n    as: a\n',
-      }).result,
+      (
+        await origin({
+          [PUBLIC_POLICY_PATH]:
+            'specVersion: "0.1"\nimports:\n  - path: .agents/closeout/a.yaml\n    as: a\n',
+          ".agents/closeout/a.yaml":
+            'specVersion: "0.1"\nimports:\n  - path: .agents/closeout/b.yaml\n    as: b\n',
+          ".agents/closeout/b.yaml":
+            'specVersion: "0.1"\nimports:\n  - path: .agents/closeout/a.yaml\n    as: a\n',
+        })
+      ).result,
       "repo",
       "import cycle: .agents/closeout.yaml -> .agents/closeout/a.yaml -> .agents/closeout/b.yaml -> .agents/closeout/a.yaml",
     );
     expectBlocked(
-      origin({
-        [PUBLIC_POLICY_PATH]:
-          'specVersion: "0.1"\nimports:\n  - path: .agents/closeout/quality.yaml\n    as: quality\n  - path: .agents/closeout/other.yaml\n    as: quality\n',
-        ".agents/closeout/quality.yaml": commandPolicy("typecheck"),
-      }).result,
+      (
+        await origin({
+          [PUBLIC_POLICY_PATH]:
+            'specVersion: "0.1"\nimports:\n  - path: .agents/closeout/quality.yaml\n    as: quality\n  - path: .agents/closeout/other.yaml\n    as: quality\n',
+          ".agents/closeout/quality.yaml": commandPolicy("typecheck"),
+        })
+      ).result,
       "repo",
       "duplicate import name quality in .agents/closeout.yaml",
     );
   });
 
-  test("duplicate qualified id and setup id collision", () => {
+  test("duplicate qualified id and setup id collision", async () => {
     expectBlocked(
-      origin({
-        [PUBLIC_POLICY_PATH]:
-          'specVersion: "0.1"\nimports:\n  - path: .agents/closeout/quality.yaml\n    as: quality\n',
-        ".agents/closeout/quality.yaml": `${commandPolicy("typecheck").trimEnd()}\n${commandItem("typecheck")}\n`,
-      }).result,
+      (
+        await origin({
+          [PUBLIC_POLICY_PATH]:
+            'specVersion: "0.1"\nimports:\n  - path: .agents/closeout/quality.yaml\n    as: quality\n',
+          ".agents/closeout/quality.yaml": `${commandPolicy("typecheck").trimEnd()}\n${commandItem("typecheck")}\n`,
+        })
+      ).result,
       "repo",
       "duplicate requirement id quality/typecheck",
     );
     expectBlocked(
-      origin({
-        [PUBLIC_POLICY_PATH]: `specVersion: "0.1"\nsetup:\n${stepYaml("markdown")}\nitems:\n${commandItem("markdown")}\n`,
-      }).result,
+      (
+        await origin({
+          [PUBLIC_POLICY_PATH]: `specVersion: "0.1"\nsetup:\n${stepYaml("markdown")}\nitems:\n${commandItem("markdown")}\n`,
+        })
+      ).result,
       "repo",
       "duplicate requirement id markdown",
     );
     expectBlocked(
-      origin({
-        [PUBLIC_POLICY_PATH]: `specVersion: "0.1"\nsetup:\n${stepYaml("js")}\n${stepYaml("js")}\n`,
-      }).result,
+      (
+        await origin({
+          [PUBLIC_POLICY_PATH]: `specVersion: "0.1"\nsetup:\n${stepYaml("js")}\n${stepYaml("js")}\n`,
+        })
+      ).result,
       "repo",
       "duplicate requirement id js",
     );
   });
 
-  test("path patterns", () => {
+  test("path patterns", async () => {
     for (const pattern of [
       "../secret",
       "/etc/passwd",
@@ -398,58 +421,72 @@ describe("policy errors", () => {
       "..",
     ]) {
       expectBlocked(
-        origin({
-          [PUBLIC_POLICY_PATH]: `specVersion: "0.1"\nitems:\n${commandItem("engine", `    paths: [${JSON.stringify(pattern)}]\n`)}\n`,
-        }).result,
+        (
+          await origin({
+            [PUBLIC_POLICY_PATH]: `specVersion: "0.1"\nitems:\n${commandItem("engine", `    paths: [${JSON.stringify(pattern)}]\n`)}\n`,
+          })
+        ).result,
         "repo",
         `path pattern is invalid: ${pattern}`,
       );
     }
     expectBlocked(
-      origin({
-        [PUBLIC_POLICY_PATH]:
-          'specVersion: "0.1"\nitems:\n  - id: engine\n    kind: command\n    gate: beforePR\n    exec: ["true"]\n    timeoutSeconds: 30\n    paths: []\n',
-      }).result,
+      (
+        await origin({
+          [PUBLIC_POLICY_PATH]:
+            'specVersion: "0.1"\nitems:\n  - id: engine\n    kind: command\n    gate: beforePR\n    exec: ["true"]\n    timeoutSeconds: 30\n    paths: []\n',
+        })
+      ).result,
       "repo",
       ".agents/closeout.yaml: /items/0/paths must NOT have fewer than 1 items",
     );
     const many = Array.from({ length: 101 }, (_, index) => `"p${index}"`).join(", ");
     expectBlocked(
-      origin({
-        [PUBLIC_POLICY_PATH]: `specVersion: "0.1"\nitems:\n  - id: engine\n    kind: command\n    gate: beforePR\n    exec: ["true"]\n    timeoutSeconds: 30\n    paths: [${many}]\n`,
-      }).result,
+      (
+        await origin({
+          [PUBLIC_POLICY_PATH]: `specVersion: "0.1"\nitems:\n  - id: engine\n    kind: command\n    gate: beforePR\n    exec: ["true"]\n    timeoutSeconds: 30\n    paths: [${many}]\n`,
+        })
+      ).result,
       "repo",
       ".agents/closeout.yaml: /items/0/paths must NOT have more than 100 items",
     );
   });
 
-  test("review skill path, missing skill, symlink, and non-file", () => {
+  test("review skill path, missing skill, symlink, and non-file", async () => {
     expectBlocked(
-      origin({
-        [PUBLIC_POLICY_PATH]: reviewPolicy(".agents/skills/look/readme.md"),
-        ".agents/skills/look/readme.md": "notes\n",
-      }).result,
+      (
+        await origin({
+          [PUBLIC_POLICY_PATH]: reviewPolicy(".agents/skills/look/readme.md"),
+          ".agents/skills/look/readme.md": "notes\n",
+        })
+      ).result,
       "repo",
       "skill path is not a repository SKILL.md: .agents/skills/look/readme.md",
     );
     expectBlocked(
-      origin({
-        [PUBLIC_POLICY_PATH]: reviewPolicy("../SKILL.md"),
-      }).result,
+      (
+        await origin({
+          [PUBLIC_POLICY_PATH]: reviewPolicy("../SKILL.md"),
+        })
+      ).result,
       "repo",
       "skill path is not a repository SKILL.md: ../SKILL.md",
     );
     expectBlocked(
-      origin({
-        [PUBLIC_POLICY_PATH]: reviewPolicy("SKILL.md"),
-      }).result,
+      (
+        await origin({
+          [PUBLIC_POLICY_PATH]: reviewPolicy("SKILL.md"),
+        })
+      ).result,
       "repo",
       "skill path is not a repository SKILL.md: SKILL.md",
     );
     expectBlocked(
-      origin({
-        [PUBLIC_POLICY_PATH]: reviewPolicy(".agents/skills/missing/SKILL.md"),
-      }).result,
+      (
+        await origin({
+          [PUBLIC_POLICY_PATH]: reviewPolicy(".agents/skills/missing/SKILL.md"),
+        })
+      ).result,
       "repo",
       "skill is missing: .agents/skills/missing/SKILL.md",
     );
@@ -460,7 +497,7 @@ describe("policy errors", () => {
     });
     symlink.put(".agents/skills/look/references/rubric.md", "target", "120000");
     expectBlocked(
-      loadPolicy({ repo: tempDir(), git: symlink, env: {} }),
+      await loadPolicy({ repo: tempDir(), git: symlink, env: {} }),
       "repo",
       "skill file is a symlink: .agents/skills/look/references/rubric.md",
     );
@@ -471,7 +508,7 @@ describe("policy errors", () => {
     });
     gitlink.put(".agents/skills/look/asset.bin", "x", "160000");
     expectBlocked(
-      loadPolicy({ repo: tempDir(), git: gitlink, env: {} }),
+      await loadPolicy({ repo: tempDir(), git: gitlink, env: {} }),
       "repo",
       "skill path is not a file: .agents/skills/look/asset.bin",
     );
@@ -479,17 +516,17 @@ describe("policy errors", () => {
     const entryLink = createFakeGitReader();
     entryLink.put(PUBLIC_POLICY_PATH, 'specVersion: "0.1"\n', "120000");
     expectBlocked(
-      loadPolicy({ repo: tempDir(), git: entryLink, env: {} }),
+      await loadPolicy({ repo: tempDir(), git: entryLink, env: {} }),
       "repo",
       "policy path is not a file: .agents/closeout.yaml",
     );
   });
 
-  test("unreadable git blobs", () => {
+  test("unreadable git blobs", async () => {
     const listed = createFakeGitReader({ [PUBLIC_POLICY_PATH]: 'specVersion: "0.1"\n' });
     listed.listError = "fatal: not a git repository";
     expectBlocked(
-      loadPolicy({ repo: tempDir(), git: listed, env: {} }),
+      await loadPolicy({ repo: tempDir(), git: listed, env: {} }),
       "repo",
       "could not read the policy file",
     );
@@ -497,22 +534,22 @@ describe("policy errors", () => {
     const reader = createFakeGitReader({ [PUBLIC_POLICY_PATH]: 'specVersion: "0.1"\n' });
     reader.readError = "fatal: bad object";
     expectBlocked(
-      loadPolicy({ repo: tempDir(), git: reader, env: {} }),
+      await loadPolicy({ repo: tempDir(), git: reader, env: {} }),
       "repo",
       "could not read the policy file",
     );
   });
 
-  test("an empty existing file is blocked", () => {
+  test("an empty existing file is blocked", async () => {
     expectBlocked(
-      origin({ [PUBLIC_POLICY_PATH]: "" }).result,
+      (await origin({ [PUBLIC_POLICY_PATH]: "" })).result,
       "repo",
       ".agents/closeout.yaml: / must be object",
     );
   });
 
-  test("YAML 1.2 keeps yes as a string", () => {
-    const { result } = origin({
+  test("YAML 1.2 keeps yes as a string", async () => {
+    const { result } = await origin({
       [PUBLIC_POLICY_PATH]: `specVersion: "0.1"
 items:
   - id: look
@@ -535,8 +572,8 @@ items:
 });
 
 describe("resolved policy and digest", () => {
-  test("resolves imports depth-first and keeps setup off the item list", () => {
-    const { result } = origin({
+  test("resolves imports depth-first and keeps setup off the item list", async () => {
+    const { result } = await origin({
       [PUBLIC_POLICY_PATH]: `specVersion: "0.1"
 description: Requires Bun.
 retry:
@@ -596,29 +633,31 @@ ${commandItem("mid")}
     expect(policy.digest).toMatch(/^sha256:[0-9a-f]{64}$/);
   });
 
-  test("identical inputs produce the same digest", () => {
+  test("identical inputs produce the same digest", async () => {
     const files = {
       [PUBLIC_POLICY_PATH]: commandPolicy("typecheck"),
       ".agents/closeout/z.yaml": commandPolicy("lint"),
     };
-    const first = present(origin(files).result);
+    const first = present((await origin(files)).result);
     const second = present(
-      origin({
-        ".agents/closeout/z.yaml": commandPolicy("lint"),
-        [PUBLIC_POLICY_PATH]: commandPolicy("typecheck"),
-      }).result,
+      (
+        await origin({
+          ".agents/closeout/z.yaml": commandPolicy("lint"),
+          [PUBLIC_POLICY_PATH]: commandPolicy("typecheck"),
+        })
+      ).result,
     );
     expect(first.digest).toBe(second.digest);
 
     const git = createFakeGitReader(files);
     const repo = tempDir();
-    const again = loadPolicy({ repo, git, env: {} });
-    const twice = loadPolicy({ repo, git, env: {} });
+    const again = await loadPolicy({ repo, git, env: {} });
+    const twice = await loadPolicy({ repo, git, env: {} });
     expect(present(again).digest).toBe(first.digest);
     expect(present(twice).digest).toBe(first.digest);
   });
 
-  test("a newline in a skill references file changes the digest", () => {
+  test("a newline in a skill references file changes the digest", async () => {
     const rubric = "Review the change.\n";
     const skill = "Follow references/rubric.md\n";
     const files = {
@@ -629,7 +668,7 @@ ${commandItem("mid")}
     };
     const git = createFakeGitReader(files);
     const repo = tempDir();
-    const before = present(loadPolicy({ repo, git, env: {} }));
+    const before = present(await loadPolicy({ repo, git, env: {} }));
     expect(before.files.map((file) => file.path)).toEqual([
       ".agents/closeout.yaml",
       ".agents/skills/adversarial-review/.keep",
@@ -644,7 +683,7 @@ ${commandItem("mid")}
     ]);
 
     git.put(".agents/skills/adversarial-review/references/rubric.md", `${rubric}\n`);
-    const after = present(loadPolicy({ repo, git, env: {} }));
+    const after = present(await loadPolicy({ repo, git, env: {} }));
     expect(after.digest).not.toBe(before.digest);
     expect(after.files.find((file) => file.path.endsWith("references/rubric.md"))?.sha256).toBe(
       sha256(`${rubric}\n`),
@@ -658,10 +697,11 @@ ${commandItem("mid")}
     expect(json.indexOf('"failOn"')).toBeLessThan(json.indexOf('"skill"'));
   });
 
-  test("description and retry change the digest and paths are stored in order", () => {
-    const plain = present(origin({ [PUBLIC_POLICY_PATH]: 'specVersion: "0.1"\n' }).result);
+  test("description and retry change the digest and paths are stored in order", async () => {
+    const plain = present((await origin({ [PUBLIC_POLICY_PATH]: 'specVersion: "0.1"\n' })).result);
     const described = present(
-      origin({ [PUBLIC_POLICY_PATH]: 'specVersion: "0.1"\ndescription: Requires Bun.\n' }).result,
+      (await origin({ [PUBLIC_POLICY_PATH]: 'specVersion: "0.1"\ndescription: Requires Bun.\n' }))
+        .result,
     );
     expect(plain.items).toEqual([]);
     expect(plain.setup).toEqual([]);
@@ -671,10 +711,12 @@ ${commandItem("mid")}
     expect(described.digest).not.toBe(plain.digest);
 
     const retry = present(
-      origin({
-        [PUBLIC_POLICY_PATH]:
-          'specVersion: "0.1"\nretry:\n  maxFailedAttemptsPerItem: 2\n  scope: candidate\n',
-      }).result,
+      (
+        await origin({
+          [PUBLIC_POLICY_PATH]:
+            'specVersion: "0.1"\nretry:\n  maxFailedAttemptsPerItem: 2\n  scope: candidate\n',
+        })
+      ).result,
     );
     expect(policyCanonicalJson(retry)).toContain(
       '"retry":{"maxFailedAttemptsPerItem":2,"scope":"candidate"}',
@@ -682,24 +724,26 @@ ${commandItem("mid")}
     expect(retry.digest).not.toBe(plain.digest);
 
     const scoped = present(
-      origin({
-        [PUBLIC_POLICY_PATH]: `specVersion: "0.1"\nitems:\n${commandItem("engine", '    paths: ["src/**", "apps/engine/"]\n')}\n`,
-      }).result,
+      (
+        await origin({
+          [PUBLIC_POLICY_PATH]: `specVersion: "0.1"\nitems:\n${commandItem("engine", '    paths: ["src/**", "apps/engine/"]\n')}\n`,
+        })
+      ).result,
     );
     expect(scoped.items[0]?.paths).toEqual(["src/**", "apps/engine/"]);
     expect(policyCanonicalJson(scoped)).toContain('"paths":["src/**","apps/engine/"]');
   });
 
-  test("an executable policy file still loads", () => {
+  test("an executable policy file still loads", async () => {
     const git = createFakeGitReader();
     git.put(PUBLIC_POLICY_PATH, commandPolicy("typecheck"), "100755");
-    const policy = present(loadPolicy({ repo: tempDir(), git, env: {} }));
+    const policy = present(await loadPolicy({ repo: tempDir(), git, env: {} }));
     expect(policy.items.map((item) => item.id)).toEqual(["typecheck"]);
   });
 });
 
 describe("origin/main source", () => {
-  test("work tree edits do not change the policy from origin/main", () => {
+  test("work tree edits do not change the policy from origin/main", async () => {
     const committed = reviewPolicy(".agents/skills/look/SKILL.md");
     const skill = "remote skill\n";
     const git = createFakeGitReader({
@@ -710,7 +754,7 @@ describe("origin/main source", () => {
     writeRepoFile(repo, PUBLIC_POLICY_PATH, commandPolicy("local-only"));
     writeRepoFile(repo, ".agents/skills/look/SKILL.md", "local skill\n");
 
-    const first = present(loadPolicy({ repo, git, env: {} }));
+    const first = present(await loadPolicy({ repo, git, env: {} }));
     expect(first.source).toBe("repo");
     expect(first.entryPath).toBe(".agents/closeout.yaml");
     expect(first.items.map((item) => item.id)).toEqual(["look"]);
@@ -720,21 +764,21 @@ describe("origin/main source", () => {
 
     writeRepoFile(repo, PUBLIC_POLICY_PATH, commandPolicy("changed-again"));
     writeRepoFile(repo, ".agents/skills/look/SKILL.md", "still local\n");
-    const second = present(loadPolicy({ repo, git, env: {} }));
+    const second = present(await loadPolicy({ repo, git, env: {} }));
     expect(second.digest).toBe(first.digest);
 
     git.put(".agents/skills/look/SKILL.md", "remote skill changed\n");
-    const third = present(loadPolicy({ repo, git, env: {} }));
+    const third = present(await loadPolicy({ repo, git, env: {} }));
     expect(third.digest).not.toBe(first.digest);
   });
 
-  test("a mismatching second answer blocks and does not read the global file", () => {
+  test("a mismatching second answer blocks and does not read the global file", async () => {
     const home = tempDir();
     writeRepoFile(home, PUBLIC_POLICY_PATH, commandPolicy("global-check"));
     const git = createFakeGitReader({ [PUBLIC_POLICY_PATH]: commandPolicy("remote-check") });
     git.remoteStdout = `${"b".repeat(40)}\trefs/heads/main\n`;
     const repo = tempDir();
-    const result = loadPolicy({ repo, git, home, env: {} });
+    const result = await loadPolicy({ repo, git, home, env: {} });
     expectBlocked(
       result,
       "repo",
@@ -745,7 +789,7 @@ describe("origin/main source", () => {
     );
   });
 
-  test("an empty second answer and a failed fetch or ls-remote block", () => {
+  test("an empty second answer and a failed fetch or ls-remote block", async () => {
     const home = tempDir();
     writeRepoFile(home, PUBLIC_POLICY_PATH, commandPolicy("global-check"));
     const repo = tempDir();
@@ -753,7 +797,7 @@ describe("origin/main source", () => {
     const mismatch = createFakeGitReader({ [PUBLIC_POLICY_PATH]: commandPolicy("remote-check") });
     mismatch.remoteStdout = "";
     expectBlocked(
-      loadPolicy({ repo, git: mismatch, home, env: {} }),
+      await loadPolicy({ repo, git: mismatch, home, env: {} }),
       "repo",
       "origin/main is unavailable",
     );
@@ -761,7 +805,7 @@ describe("origin/main source", () => {
     const fetchFailed = createFakeGitReader();
     fetchFailed.fetchError = "fatal: 'origin' does not appear to be a git repository";
     expectBlocked(
-      loadPolicy({ repo, git: fetchFailed, home, env: {} }),
+      await loadPolicy({ repo, git: fetchFailed, home, env: {} }),
       "repo",
       "origin/main is unavailable: fatal: 'origin' does not appear to be a git repository",
     );
@@ -770,7 +814,7 @@ describe("origin/main source", () => {
     const fetchQuiet = createFakeGitReader();
     fetchQuiet.fetchError = "";
     expectBlocked(
-      loadPolicy({ repo, git: fetchQuiet, home, env: {} }),
+      await loadPolicy({ repo, git: fetchQuiet, home, env: {} }),
       "repo",
       "origin/main is unavailable",
     );
@@ -778,23 +822,23 @@ describe("origin/main source", () => {
     const remoteFailed = createFakeGitReader();
     remoteFailed.remoteError = "fatal: Could not read from remote repository.";
     expectBlocked(
-      loadPolicy({ repo, git: remoteFailed, home, env: {} }),
+      await loadPolicy({ repo, git: remoteFailed, home, env: {} }),
       "repo",
       "origin/main is unavailable: fatal: Could not read from remote repository.",
     );
   });
 
-  test("uppercase ls-remote output confirms the fetched commit", () => {
+  test("uppercase ls-remote output confirms the fetched commit", async () => {
     const git = createFakeGitReader({ [PUBLIC_POLICY_PATH]: 'specVersion: "0.1"\n' });
     git.remoteStdout = `${"A".repeat(40)}\trefs/heads/main\n`;
-    const policy = present(loadPolicy({ repo: tempDir(), git, env: {} }));
+    const policy = present(await loadPolicy({ repo: tempDir(), git, env: {} }));
     expect(policy.source).toBe("repo");
   });
 
-  test("a committed empty policy is still a policy", () => {
+  test("a committed empty policy is still a policy", async () => {
     const home = tempDir();
     writeRepoFile(home, PUBLIC_POLICY_PATH, commandPolicy("global-check"));
-    const result = loadPolicy({
+    const result = await loadPolicy({
       repo: tempDir(),
       git: createFakeGitReader({ [PUBLIC_POLICY_PATH]: 'specVersion: "0.1"\n' }),
       home,
@@ -806,10 +850,10 @@ describe("origin/main source", () => {
     expect(result.ok && result.warnings).toEqual([]);
   });
 
-  test("a broken remote policy does not fall back to the home file", () => {
+  test("a broken remote policy does not fall back to the home file", async () => {
     const home = tempDir();
     writeRepoFile(home, PUBLIC_POLICY_PATH, commandPolicy("global-check"));
-    const result = loadPolicy({
+    const result = await loadPolicy({
       repo: tempDir(),
       git: createFakeGitReader({
         [PUBLIC_POLICY_PATH]: 'specVersion: "0.1"\nspecVersion: "0.1"\n',
@@ -820,7 +864,7 @@ describe("origin/main source", () => {
     expectBlocked(result, "repo", ".agents/closeout.yaml: duplicated mapping key");
   });
 
-  test("a home policy file is ignored when origin/main has no policy", () => {
+  test("a home policy file is ignored when origin/main has no policy", async () => {
     const home = tempDir();
     writeRepoFile(home, PUBLIC_POLICY_PATH, commandPolicy("home-check"));
     const absent = {
@@ -835,26 +879,28 @@ describe("origin/main source", () => {
         files: [],
       },
     };
-    expect(loadPolicy({ repo: tempDir(), git: createFakeGitReader(), home, env: {} })).toEqual(
-      absent,
-    );
+    expect(
+      await loadPolicy({ repo: tempDir(), git: createFakeGitReader(), home, env: {} }),
+    ).toEqual(absent);
     writeRepoFile(home, PUBLIC_POLICY_PATH, 'specVersion: "0.9"\n');
-    expect(loadPolicy({ repo: tempDir(), git: createFakeGitReader(), home, env: {} })).toEqual(
+    expect(
+      await loadPolicy({ repo: tempDir(), git: createFakeGitReader(), home, env: {} }),
+    ).toEqual(absent);
+    expect(await loadPolicy({ repo: tempDir(), git: createFakeGitReader(), env: {} })).toEqual(
       absent,
     );
-    expect(loadPolicy({ repo: tempDir(), git: createFakeGitReader(), env: {} })).toEqual(absent);
     expect(NO_CLOSEOUT_POLICY).toBe("no closeout policy");
   });
 });
 
-function origin(files: Record<string, string>): {
+async function origin(files: Record<string, string>): Promise<{
   result: PolicyLoadOutcome;
   git: FakeGitReader;
   repo: string;
-} {
+}> {
   const git = createFakeGitReader(files);
   const repo = tempDir();
-  return { git, repo, result: loadPolicy({ repo, git, env: {} }) };
+  return { git, repo, result: await loadPolicy({ repo, git, env: {} }) };
 }
 
 function present(result: PolicyLoadOutcome): ResolvedPolicyPresent {

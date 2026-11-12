@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
+import { eq, sql } from "drizzle-orm";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,15 +7,15 @@ import {
   createRetro,
   getRetro,
   listRetroEvidence,
-  migrate,
-  openDatabase,
   publishRetro,
   readRetroActivity,
   readRetroArtifact,
   retroRepositories,
   saveRetroSettingsRevision,
   startRetroAttempt,
-  sqliteDb,
+  getWorkItem,
+  type Db,
+  type Q,
 } from "../db";
 import {
   boundRetroDigest,
@@ -24,6 +24,8 @@ import {
   redactRetroText,
   type RetroDigest,
 } from "./index";
+import { json, seed } from "../../test/dialects";
+import { tempStore } from "../../test/pglite";
 
 const REPO = "pmdroid/paws-app";
 const OTHER = "pmdroid/paws-site";
@@ -32,90 +34,113 @@ const T0 = Date.UTC(2026, 9, 1);
 const at = (days: number, ms = 0) => T0 + days * DAY + ms;
 
 const roots: string[] = [];
-afterEach(() => {
+const closes: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of closes.splice(0)) await close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function world() {
-  const db = openDatabase(":memory:");
-  migrate(db);
+async function world() {
+  const { db, close } = await tempStore();
   const root = mkdtempSync(join(tmpdir(), "paws-retro-digest-"));
   roots.push(root);
-  workspace(db, "ws", "org", "team");
+  closes.push(close);
+  await workspace(db, "ws", "org", "team");
   return { db, root };
 }
 
-function workspace(db: Database, id: string, org: string, team: string) {
-  db.run("INSERT INTO workspace VALUES (?, ?, ?, 0)", [id, org, id]);
-  for (const repository of [REPO, OTHER])
-    db.run("INSERT INTO workspace_repository VALUES (?, ?, ?)", [id, repository, team]);
+async function workspace(db: Db, id: string, org: string, team: string) {
+  await seed(
+    db,
+    (q) =>
+      q.orm.insert(q.t.workspace).values({ id, linearOrganizationId: org, name: id, createdAt: 0 }),
+    ...[REPO, OTHER].map(
+      (repository) => (q: Q) =>
+        q.orm.insert(q.t.workspaceRepository).values({ workspaceId: id, repository, teamId: team }),
+    ),
+  );
 }
 
 let serial = 0;
-function item(
-  db: Database,
+async function item(
+  db: Db,
   identifier: string,
   input: { createdAt: number; repository?: string; org?: string; team?: string; state?: string },
-): string {
+): Promise<string> {
   const id = `item-${identifier}`;
   const session = `session-${identifier}`;
-  db.run(
-    `INSERT INTO linear_session (session_id, issue_id, organization_id, team_id, created_at)
-     VALUES (?, ?, ?, ?, ?)`,
-    [session, `issue-${identifier}`, input.org ?? "org", input.team ?? "team", input.createdAt],
-  );
-  db.run(
-    `INSERT INTO work_item (id, delegation_id, linear_issue_id, linear_identifier, title, state,
-       branch_name, position, created_at, session_key, delegated_by, agent_ms, waiting_ms)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'Jane Doe', 5000, 700)`,
-    [
-      id,
-      `delegation-${identifier}`,
-      `issue-${identifier}`,
-      identifier,
-      `Work on ${identifier}`,
-      input.state ?? "queued",
-      `paws/${identifier}`,
-      input.createdAt,
-      session,
-    ],
-  );
   const [owner, repo] = (input.repository ?? REPO).split("/");
-  db.run("INSERT INTO work_item_repository VALUES (?, ?, ?, ?)", [id, owner!, repo!, "git@x"]);
+  await seed(
+    db,
+    (q) =>
+      q.orm.insert(q.t.linearSession).values({
+        sessionId: session,
+        issueId: `issue-${identifier}`,
+        organizationId: input.org ?? "org",
+        teamId: input.team ?? "team",
+        createdAt: input.createdAt,
+      }),
+    (q) =>
+      q.orm.insert(q.t.workItem).values({
+        id,
+        delegationId: `delegation-${identifier}`,
+        linearIssueId: `issue-${identifier}`,
+        linearIdentifier: identifier,
+        title: `Work on ${identifier}`,
+        state: input.state ?? "queued",
+        branchName: `paws/${identifier}`,
+        position: 0,
+        createdAt: input.createdAt,
+        sessionKey: session,
+        delegatedBy: "Jane Doe",
+        agentMs: 5000,
+        waitingMs: 700,
+      }),
+    (q) =>
+      q.orm
+        .insert(q.t.workItemRepository)
+        .values({ itemId: id, owner: owner!, repo: repo!, remoteUrl: "git@x" }),
+  );
   return id;
 }
 
-function transition(
-  db: Database,
+async function transition(
+  db: Db,
   itemId: string,
   input: { at: number; from: string; to: string; kind?: string; reason?: string; version?: number },
 ) {
-  const version =
-    input.version ??
-    db
-      .query<{ v: number }, [string]>(
-        "SELECT coalesce(max(version), 0) + 1 AS v FROM work_item_event WHERE item_id = ?",
-      )
-      .get(itemId)!.v;
-  db.run(
-    `INSERT INTO work_item_event (item_id, version, at, from_state, to_state, event, kind, reason)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      itemId,
-      version,
-      input.at,
-      input.from,
-      input.to,
-      `${input.from}_to_${input.to}`,
-      input.kind ?? "transition",
-      input.reason ?? null,
-    ],
-  );
-  db.run("UPDATE work_item SET version = ?, state = ? WHERE id = ?", [version, input.to, itemId]);
+  await db.run(function* (q) {
+    const { workItem, workItemEvent } = q.t;
+    const version =
+      input.version ??
+      (yield* q.one(
+        q.orm
+          .select({
+            v: sql<number>`coalesce(max(${workItemEvent.version}), 0) + 1`.mapWith(Number),
+          })
+          .from(workItemEvent)
+          .where(eq(workItemEvent.itemId, itemId)),
+      ))!.v;
+    yield* q.exec(
+      q.orm.insert(workItemEvent).values({
+        itemId,
+        version,
+        at: input.at,
+        fromState: input.from,
+        toState: input.to,
+        event: `${input.from}_to_${input.to}`,
+        kind: input.kind ?? "transition",
+        reason: input.reason ?? null,
+      }),
+    );
+    yield* q.exec(
+      q.orm.update(workItem).set({ version, state: input.to }).where(eq(workItem.id, itemId)),
+    );
+  });
 }
 
-function question(
-  db: Database,
+async function question(
+  db: Db,
   itemId: string,
   input: {
     createdAt: number;
@@ -126,45 +151,88 @@ function question(
     reason?: string;
     eventKey?: string;
   },
-): string {
+): Promise<string> {
   const id = `q-${++serial}`;
-  db.run(
-    `INSERT INTO question (id, item_id, session_id, kind, reason, body, status, answer, answered_by,
-       created_at, answered_at, answer_event_key) VALUES (?, ?, 's', ?, ?, ?, ?, ?, 'Jane Doe', ?, ?, ?)`,
-    [
+  await seed(db, (q) =>
+    q.orm.insert(q.t.question).values({
       id,
       itemId,
-      input.kind ?? "agent",
-      input.reason ?? null,
-      input.body ?? "How should I continue?",
-      input.answeredAt === undefined ? "open" : "answered",
-      input.answeredAt === undefined ? null : (input.answer ?? "Fetch the branch and rebase."),
-      input.createdAt,
-      input.answeredAt ?? null,
-      input.eventKey ?? null,
-    ],
+      sessionId: "s",
+      kind: input.kind ?? "agent",
+      reason: input.reason ?? null,
+      body: input.body ?? "How should I continue?",
+      status: input.answeredAt === undefined ? "open" : "answered",
+      answer:
+        input.answeredAt === undefined ? null : (input.answer ?? "Fetch the branch and rebase."),
+      answeredBy: "Jane Doe",
+      createdAt: input.createdAt,
+      answeredAt: input.answeredAt ?? null,
+      answerEventKey: input.eventKey ?? null,
+    }),
   );
   return id;
 }
 
-function message(
-  db: Database,
+async function message(
+  db: Db,
   itemId: string,
   input: { eventKey: string; at: number; body: string; activityId?: string },
 ) {
-  const session = db
-    .query<{ s: string }, [string]>("SELECT session_key AS s FROM work_item WHERE id = ?")
-    .get(itemId)!.s;
-  db.run(
-    `INSERT INTO linear_turn (event_key, activity_id, session_id, actor_id, body, payload,
-       created_at_ms, received_at, item_id, state) VALUES (?, ?, ?, 'linear-user-9', ?, '{}', ?, ?, ?, 'applied')`,
-    [input.eventKey, input.activityId ?? null, session, input.body, input.at, input.at, itemId],
+  const session = (await getWorkItem(db, itemId))!.sessionKey;
+  await seed(db, (q) =>
+    q.orm.insert(q.t.linearTurn).values({
+      eventKey: input.eventKey,
+      activityId: input.activityId ?? null,
+      sessionId: session!,
+      actorId: "linear-user-9",
+      body: input.body,
+      payload: json(db, {}),
+      createdAtMs: input.at,
+      receivedAt: input.at,
+      itemId,
+      state: "applied",
+    }),
   );
 }
 
-async function settings(db: Database, repositories: string[], workspaceId = "ws") {
+function progressRow(q: Q, id: string, itemId: string, head: string, time: number) {
+  return q.orm.insert(q.t.closeoutProgress).values({
+    id,
+    itemId,
+    taskId: "t",
+    base: "b",
+    head,
+    policyDigest: "d",
+    startedAt: time,
+    updatedAt: time,
+  });
+}
+
+function stepRow(
+  q: Q,
+  progressId: string,
+  stepId: string,
+  state: string,
+  command: string,
+  ordinal: number,
+  finishedAt: number,
+) {
+  return q.orm.insert(q.t.closeoutStep).values({
+    progressId,
+    stepId,
+    kind: "command",
+    state,
+    command,
+    attempt: 1,
+    ordinal,
+    exitCode: state === "failed" ? 1 : 0,
+    finishedAt,
+  });
+}
+
+async function settings(db: Db, repositories: string[], workspaceId = "ws") {
   return (
-    await saveRetroSettingsRevision(sqliteDb(db), {
+    await saveRetroSettingsRevision(db, {
       workspaceId,
       prompt: "Review {{digest}}",
       agentProfile: { agent: "codex" },
@@ -179,11 +247,11 @@ async function settings(db: Database, repositories: string[], workspaceId = "ws"
 }
 
 async function collect(
-  db: Database,
+  db: Db,
   root: string,
   input: { id: string; start: number; end: number; repositories?: string[]; secrets?: string[] },
 ) {
-  await createRetro(sqliteDb(db), {
+  await createRetro(db, {
     id: input.id,
     workspaceId: "ws",
     windowStart: input.start,
@@ -192,7 +260,7 @@ async function collect(
     settingsRevision: await settings(db, input.repositories ?? [REPO]),
     now: input.end,
   });
-  const result = await collectRetroDigest(sqliteDb(db), {
+  const result = await collectRetroDigest(db, {
     retroId: input.id,
     artifactRoot: root,
     now: input.end,
@@ -202,14 +270,14 @@ async function collect(
   return result.digest;
 }
 
-async function publish(db: Database, retroId: string, now: number) {
-  const started = (await startRetroAttempt(sqliteDb(db), {
+async function publish(db: Db, retroId: string, now: number) {
+  const started = (await startRetroAttempt(db, {
     retroId,
     owner: "w",
     now,
     leaseMs: 60_000,
   }))!;
-  const published = await publishRetro(sqliteDb(db), {
+  const published = await publishRetro(db, {
     retroId,
     attempt: started.attempt,
     owner: "w",
@@ -225,17 +293,17 @@ const counted = (digest: RetroDigest) =>
 
 describe("incremental retro windows", () => {
   test("the first retro starts at its window and a later one counts a new answer on an old item", async () => {
-    const { db, root } = world();
-    const old = item(db, "PAS-100", { createdAt: at(1) });
-    const first = question(db, old, { createdAt: at(1, 5), answeredAt: at(2) });
+    const { db, root } = await world();
+    const old = await item(db, "PAS-100", { createdAt: at(1) });
+    const first = await question(db, old, { createdAt: at(1, 5), answeredAt: at(2) });
     const first_digest = await collect(db, root, { id: "r1", start: at(0), end: at(3) });
     expect(first_digest.windows).toEqual([{ repository: REPO, start: at(0), end: at(3) }]);
     expect(first_digest.counts.answeredQuestions.evidenceIds).toEqual([`question:${first}`]);
     expect(first_digest.counts.sessions.newWorkItems).toBe(1);
     await publish(db, "r1", at(3, 1));
 
-    const second = question(db, old, { createdAt: at(4), answeredAt: at(5) });
-    const fresh = item(db, "PAS-101", { createdAt: at(4) });
+    const second = await question(db, old, { createdAt: at(4), answeredAt: at(5) });
+    const fresh = await item(db, "PAS-101", { createdAt: at(4) });
     const digest = await collect(db, root, { id: "r2", start: at(3), end: at(6) });
     expect(digest.windows[0]!.start).toBe(at(3));
     expect(digest.counts.sessions.workItems).toBe(2);
@@ -246,20 +314,20 @@ describe("incremental retro windows", () => {
     expect(session.contextEvidenceIds).toEqual([`work_item:${old}`, `question:${first}`]);
     expect(counted(digest)).not.toContain(`question:${first}`);
     expect(digest.sessions.map((entry) => entry.itemId).sort()).toEqual([old, fresh].sort());
-    expect((await getRetro(sqliteDb(db), "r2"))!.state).toBe("queued");
-    expect(await retroRepositories(sqliteDb(db), "r2")).toEqual([
+    expect((await getRetro(db, "r2"))!.state).toBe("queued");
+    expect(await retroRepositories(db, "r2")).toEqual([
       { repository: REPO, startCursor: at(3), endCursor: at(6) },
     ]);
   });
 
   test("a record at the window start counts and one at the cutoff does not", async () => {
-    const { db, root } = world();
-    const id = item(db, "PAS-1", { createdAt: at(0) });
+    const { db, root } = await world();
+    const id = await item(db, "PAS-1", { createdAt: at(0) });
     await collect(db, root, { id: "r1", start: at(0), end: at(2) });
     await publish(db, "r1", at(2));
-    const atStart = question(db, id, { createdAt: at(2), answeredAt: at(2) });
-    const beforeCut = question(db, id, { createdAt: at(2), answeredAt: at(4) - 1 });
-    const atCut = question(db, id, { createdAt: at(3), answeredAt: at(4) });
+    const atStart = await question(db, id, { createdAt: at(2), answeredAt: at(2) });
+    const beforeCut = await question(db, id, { createdAt: at(2), answeredAt: at(4) - 1 });
+    const atCut = await question(db, id, { createdAt: at(3), answeredAt: at(4) });
     const digest = await collect(db, root, { id: "r2", start: at(2), end: at(4) });
     expect(digest.counts.answeredQuestions.evidenceIds).toEqual(
       [`question:${atStart}`, `question:${beforeCut}`].sort(),
@@ -268,12 +336,12 @@ describe("incremental retro windows", () => {
   });
 
   test("consecutive retros never count the same record twice and an overlapping one waits", async () => {
-    const { db, root } = world();
-    const id = item(db, "PAS-1", { createdAt: at(0) });
+    const { db, root } = await world();
+    const id = await item(db, "PAS-1", { createdAt: at(0) });
     for (let day = 0; day < 6; day += 1)
-      transition(db, id, { at: at(day, 1), from: "queued", to: "running" });
+      await transition(db, id, { at: at(day, 1), from: "queued", to: "running" });
     await collect(db, root, { id: "r1", start: at(0), end: at(3) });
-    await createRetro(sqliteDb(db), {
+    await createRetro(db, {
       id: "r-overlap",
       workspaceId: "ws",
       windowStart: at(1),
@@ -283,14 +351,14 @@ describe("incremental retro windows", () => {
       now: at(4),
     });
     expect(
-      await collectRetroDigest(sqliteDb(db), {
+      await collectRetroDigest(db, {
         retroId: "r-overlap",
         artifactRoot: root,
         now: at(4),
       }),
     ).toEqual({ ok: false, reason: "busy", busy: [{ repository: REPO, retroId: "r1" }] });
     await publish(db, "r1", at(3));
-    const first = (await listRetroEvidence(sqliteDb(db), "r1")).map((entry) => entry.evidenceId);
+    const first = (await listRetroEvidence(db, "r1")).map((entry) => entry.evidenceId);
     const digest = await collect(db, root, { id: "r2", start: at(3), end: at(7) });
     const both = new Set([
       ...first.filter((e) => e.startsWith("work_item_event")),
@@ -303,31 +371,35 @@ describe("incremental retro windows", () => {
   });
 
   test("an empty window still freezes a digest and a manifest", async () => {
-    const { db, root } = world();
+    const { db, root } = await world();
     const digest = await collect(db, root, { id: "r1", start: at(0), end: at(1) });
     expect(digest.sessions).toEqual([]);
     expect(digest.counts.sessions.workItems).toBe(0);
     expect(digest.rates.every((entry) => entry.value === null && entry.denominator === 0)).toBe(
       true,
     );
-    expect((await readRetroArtifact(sqliteDb(db), root, "r1", "digest")).ok).toBe(true);
-    const manifest = await readRetroArtifact(sqliteDb(db), root, "r1", "manifest");
+    expect((await readRetroArtifact(db, root, "r1", "digest")).ok).toBe(true);
+    const manifest = await readRetroArtifact(db, root, "r1", "manifest");
     expect(
       manifest.ok && JSON.parse(new TextDecoder().decode(manifest.bytes)).prompt.sessionsIncluded,
     ).toBe(0);
-    expect((await getRetro(sqliteDb(db), "r1"))!.state).toBe("queued");
+    expect((await getRetro(db, "r1"))!.state).toBe("queued");
   });
 
   test("collection stays inside the workspace and the teams that may read the repository", async () => {
-    const { db, root } = world();
-    workspace(db, "ws2", "org2", "team2");
-    const mine = item(db, "PAS-1", { createdAt: at(1) });
-    item(db, "ACME-1", { createdAt: at(1), org: "org2", team: "team2" });
-    item(db, "PAS-2", { createdAt: at(1), team: "team-without-repositories" });
-    db.run(
-      "INSERT INTO workspace_repository VALUES ('ws', 'other/repo', 'team-without-repositories')",
+    const { db, root } = await world();
+    await workspace(db, "ws2", "org2", "team2");
+    const mine = await item(db, "PAS-1", { createdAt: at(1) });
+    await item(db, "ACME-1", { createdAt: at(1), org: "org2", team: "team2" });
+    await item(db, "PAS-2", { createdAt: at(1), team: "team-without-repositories" });
+    await seed(db, (q) =>
+      q.orm.insert(q.t.workspaceRepository).values({
+        workspaceId: "ws",
+        repository: "other/repo",
+        teamId: "team-without-repositories",
+      }),
     );
-    item(db, "PAS-3", { createdAt: at(1), repository: OTHER });
+    await item(db, "PAS-3", { createdAt: at(1), repository: OTHER });
     const digest = await collect(db, root, { id: "r1", start: at(0), end: at(2) });
     expect(digest.sessions.map((entry) => entry.itemId)).toEqual([mine]);
     expect(digest.coverage.unauthorizedItems).toBe(1);
@@ -335,8 +407,8 @@ describe("incremental retro windows", () => {
   });
 
   test("re-enabling a repository resumes its watermark and a new one starts at the retro window", async () => {
-    const { db, root } = world();
-    item(db, "PAS-1", { createdAt: at(0) });
+    const { db, root } = await world();
+    await item(db, "PAS-1", { createdAt: at(0) });
     await collect(db, root, { id: "r1", start: at(0), end: at(2), repositories: [REPO, OTHER] });
     await publish(db, "r1", at(2));
     await collect(db, root, { id: "r2", start: at(2), end: at(4), repositories: [REPO] });
@@ -351,7 +423,11 @@ describe("incremental retro windows", () => {
       { repository: REPO, start: at(4), end: at(6) },
       { repository: OTHER, start: at(2), end: at(6) },
     ]);
-    db.run("INSERT INTO workspace_repository VALUES ('ws', 'pmdroid/new', 'team')");
+    await seed(db, (q) =>
+      q.orm
+        .insert(q.t.workspaceRepository)
+        .values({ workspaceId: "ws", repository: "pmdroid/new", teamId: "team" }),
+    );
     await publish(db, "r3", at(6));
     const added = await collect(db, root, {
       id: "r4",
@@ -365,12 +441,26 @@ describe("incremental retro windows", () => {
 
 describe("evidence quality", () => {
   test("an answer mirrored into linear_turn counts once and duplicate messages collapse", async () => {
-    const { db, root } = world();
-    const id = item(db, "PAS-1", { createdAt: at(0) });
-    question(db, id, { createdAt: at(0, 1), answeredAt: at(0, 2), eventKey: "delivery-1" });
-    message(db, id, { eventKey: "delivery-1", at: at(0, 2), body: "Fetch the branch and rebase." });
-    message(db, id, { eventKey: "delivery-2", activityId: "a2", at: at(0, 3), body: "Ship it" });
-    message(db, id, { eventKey: "delivery-3", activityId: "a3", at: at(0, 3), body: "Ship it " });
+    const { db, root } = await world();
+    const id = await item(db, "PAS-1", { createdAt: at(0) });
+    await question(db, id, { createdAt: at(0, 1), answeredAt: at(0, 2), eventKey: "delivery-1" });
+    await message(db, id, {
+      eventKey: "delivery-1",
+      at: at(0, 2),
+      body: "Fetch the branch and rebase.",
+    });
+    await message(db, id, {
+      eventKey: "delivery-2",
+      activityId: "a2",
+      at: at(0, 3),
+      body: "Ship it",
+    });
+    await message(db, id, {
+      eventKey: "delivery-3",
+      activityId: "a3",
+      at: at(0, 3),
+      body: "Ship it ",
+    });
     const digest = await collect(db, root, { id: "r1", start: at(0), end: at(1) });
     expect(digest.counts.answeredQuestions.events).toBe(1);
     expect(digest.counts.humanMessages.evidenceIds).toEqual(["linear_turn:delivery-2"]);
@@ -378,25 +468,42 @@ describe("evidence quality", () => {
     expect(digest.coverage.duplicateMessages).toEqual(["linear_turn:delivery-3"]);
     const ids = digest.records.map((record) => record.evidenceId);
     expect(new Set(ids).size).toBe(ids.length);
-    expect(
-      (await listRetroEvidence(sqliteDb(db), "r1")).map((entry) => entry.evidenceId).sort(),
-    ).toEqual([...ids].sort());
+    expect((await listRetroEvidence(db, "r1")).map((entry) => entry.evidenceId).sort()).toEqual(
+      [...ids].sort(),
+    );
   });
 
   test("a failed Closeout step under a long progress id keeps its evidence id within 200 characters", async () => {
-    const { db, root } = world();
-    const id = item(db, "PAS-1", { createdAt: at(0) });
+    const { db, root } = await world();
+    const id = await item(db, "PAS-1", { createdAt: at(0) });
     const longProgress = `${id}\nPAS-1-${id}\n${"a".repeat(40)}\n${"b".repeat(64)}\n${"c".repeat(40)}`;
     const other = `${longProgress}x`;
-    db.run(
-      "INSERT INTO closeout_progress (id, item_id, task_id, base, head, policy_digest, started_at, updated_at) VALUES (?, ?, 't', 'b', 'h1', 'd', ?, ?), (?, ?, 't', 'b', 'h2', 'd', ?, ?)",
-      [longProgress, id, at(0, 3), at(0, 3), other, id, at(0, 4), at(0, 4)],
-    );
-    db.run(
-      `INSERT INTO closeout_step (progress_id, step_id, kind, state, command, attempt, ordinal, exit_code, finished_at)
-       VALUES (?, 'build-status', 'command', 'failed', 'bun run build', 1, 1, 1, ?),
-              (?, 'build-status', 'command', 'failed', 'bun run build', 1, 1, 1, ?)`,
-      [longProgress, at(0, 3), other, at(0, 4)],
+    await seed(
+      db,
+      ...[
+        [longProgress, "h1", at(0, 3)],
+        [other, "h2", at(0, 4)],
+      ].map(
+        ([progress, head, when]) =>
+          (q: Q) =>
+            progressRow(q, progress as string, id, head as string, when as number),
+      ),
+      ...[
+        [longProgress, at(0, 3)],
+        [other, at(0, 4)],
+      ].map(
+        ([progress, when]) =>
+          (q: Q) =>
+            stepRow(
+              q,
+              progress as string,
+              "build-status",
+              "failed",
+              "bun run build",
+              1,
+              when as number,
+            ),
+      ),
     );
     const digest = await collect(db, root, { id: "r1", start: at(0), end: at(1) });
     const ids = digest.counts.failedChecks.groups.flatMap((group) => group.evidenceIds);
@@ -410,62 +517,112 @@ describe("evidence quality", () => {
   });
 
   test("restarts, failures, checks, findings, escapes, rebase returns and CI rounds stay separate", async () => {
-    const { db, root } = world();
-    const id = item(db, "PAS-1", { createdAt: at(0) });
-    db.run("INSERT INTO item_pull_request VALUES (?, 42, 'https://pr', ?)", [id, at(0, 5)]);
-    db.run(
-      "INSERT INTO run (id, item_id, kind, agent, status, created_at, updated_at) VALUES ('run-1', ?, 'agent', 'codex', 'ended', ?, ?), ('run-2', ?, 'agent', 'codex', 'ended', ?, ?)",
-      [id, at(0, 1), at(0, 2), id, at(0, 6), at(0, 7)],
+    const { db, root } = await world();
+    const id = await item(db, "PAS-1", { createdAt: at(0) });
+    await seed(
+      db,
+      (q) =>
+        q.orm
+          .insert(q.t.itemPullRequest)
+          .values({ itemId: id, pullNumber: 42, pullUrl: "https://pr", openedAt: at(0, 5) }),
+      (q) =>
+        q.orm.insert(q.t.run).values(
+          [
+            ["run-1", at(0, 1), at(0, 2)],
+            ["run-2", at(0, 6), at(0, 7)],
+          ].map(([runId, createdAt, updatedAt]) => ({
+            id: runId as string,
+            itemId: id,
+            kind: "agent",
+            agent: "codex",
+            status: "ended",
+            createdAt: createdAt as number,
+            updatedAt: updatedAt as number,
+          })),
+        ),
     );
-    transition(db, id, { at: at(0, 1), from: "queued", to: "running" });
-    transition(db, id, {
+    await transition(db, id, { at: at(0, 1), from: "queued", to: "running" });
+    await transition(db, id, {
       at: at(0, 2),
       from: "running",
       to: "running",
       kind: "restart",
       reason: "answer",
     });
-    transition(db, id, {
+    await transition(db, id, {
       at: at(0, 3),
       from: "running",
       to: "running",
       kind: "restart",
       reason: "ci",
     });
-    transition(db, id, { at: at(0, 4), from: "running", to: "failed" });
-    db.run(
-      "INSERT INTO closeout_progress (id, item_id, task_id, base, head, policy_digest, started_at, updated_at) VALUES ('p1', ?, 't', 'b', 'h1', 'd', ?, ?)",
-      [id, at(0, 3), at(0, 3)],
+    await transition(db, id, { at: at(0, 4), from: "running", to: "failed" });
+    await seed(
+      db,
+      (q) => progressRow(q, "p1", id, "h1", at(0, 3)),
+      (q) => stepRow(q, "p1", "test", "failed", "bun test", 1, at(0, 3)),
+      (q) => stepRow(q, "p1", "lint", "passed", "bun lint", 2, at(0, 3)),
+      (q) =>
+        q.orm.insert(q.t.reviewFinding).values({
+          id: 7,
+          dedupeKey: "k7",
+          repository: REPO,
+          path: "src/a.ts",
+          lines: "1",
+          severity: "P1",
+          review: "review",
+          text: "Race on restart",
+          bugClass: "race",
+          why: "pre-existing",
+          firstItemId: id,
+          firstHead: "h",
+          firstSeenAt: at(0, 3),
+          lastItemId: id,
+          lastHead: "h",
+          lastSeenAt: at(0, 3),
+        }),
+      (q) =>
+        q.orm
+          .insert(q.t.reviewFindingItem)
+          .values({ findingId: 7, itemId: id, headSha: "h", seenAt: at(0, 3) }),
+      (q) =>
+        q.orm.insert(q.t.reviewEscape).values(
+          (
+            [
+              [1, "e1", "ci", 1],
+              [2, "e2", "review", null],
+            ] as const
+          ).map(([escapeId, triggerKey, trigger, isEscape]) => ({
+            id: escapeId,
+            triggerKey,
+            itemId: id,
+            trigger,
+            acceptedHead: "h",
+            detail: json(db, {}),
+            recordedAt: at(0, 5),
+            isEscape,
+          })),
+        ),
+      (q) =>
+        q.orm.insert(q.t.rebaseReturn).values([
+          { jobId: 1, activationId: 1, itemId: id, reason: "push", recordedAt: at(0, 5) },
+          { jobId: 2, activationId: 1, itemId: id, reason: "merge", recordedAt: null },
+        ]),
+      (q) =>
+        q.orm.insert(q.t.ciRound).values({
+          itemId: id,
+          head: "h1",
+          runId: null,
+          next: "asked",
+          fix: 2,
+          fixLimit: 2,
+          checks: json(db, [
+            { name: "test", state: "failed" },
+            { name: "lint", state: "passed" },
+          ]),
+          recordedAt: at(0, 5),
+        }),
     );
-    db.run(
-      `INSERT INTO closeout_step (progress_id, step_id, kind, state, command, attempt, ordinal, exit_code, finished_at)
-       VALUES ('p1', 'test', 'command', 'failed', 'bun test', 1, 1, 1, ?),
-              ('p1', 'lint', 'command', 'passed', 'bun lint', 1, 2, 0, ?)`,
-      [at(0, 3), at(0, 3)],
-    );
-    db.run(
-      `INSERT INTO review_finding (id, dedupe_key, repository, path, lines, severity, review, text,
-         bug_class, why, first_item_id, first_head, first_seen_at, last_item_id, last_head, last_seen_at)
-       VALUES (7, 'k7', ?, 'src/a.ts', '1', 'P1', 'review', 'Race on restart', 'race', 'pre-existing', ?, 'h', ?, ?, 'h', ?)`,
-      [REPO, id, at(0, 3), id, at(0, 3)],
-    );
-    db.run("INSERT INTO review_finding_item VALUES (7, ?, 'h', ?)", [id, at(0, 3)]);
-    db.run(
-      "INSERT INTO review_escape (id, trigger_key, item_id, trigger, accepted_head, detail, recorded_at, is_escape) VALUES (1, 'e1', ?, 'ci', 'h', '{}', ?, 1), (2, 'e2', ?, 'review', 'h', '{}', ?, NULL)",
-      [id, at(0, 5), id, at(0, 5)],
-    );
-    db.run(
-      "INSERT INTO rebase_return (job_id, activation_id, item_id, reason, recorded_at) VALUES (1, 1, ?, 'push', ?), (2, 1, ?, 'merge', NULL)",
-      [id, at(0, 5), id],
-    );
-    db.run("INSERT INTO ci_round VALUES (?, 'h1', NULL, 'asked', 2, 2, ?, ?)", [
-      id,
-      JSON.stringify([
-        { name: "test", state: "failed" },
-        { name: "lint", state: "passed" },
-      ]),
-      at(0, 5),
-    ]);
     const digest = await collect(db, root, { id: "r1", start: at(0), end: at(1) });
     const c = digest.counts;
     expect(c.sessions.workItems).toBe(1);
@@ -501,20 +658,20 @@ describe("evidence quality", () => {
   });
 
   test("cutoff state is reconstructed from transitions and timing separates lifetime from interval", async () => {
-    const { db, root } = world();
-    const id = item(db, "PAS-1", { createdAt: at(0) });
-    transition(db, id, { at: at(0, 100), from: "queued", to: "running" });
-    transition(db, id, {
+    const { db, root } = await world();
+    const id = await item(db, "PAS-1", { createdAt: at(0) });
+    await transition(db, id, { at: at(0, 100), from: "queued", to: "running" });
+    await transition(db, id, {
       at: at(0, 400),
       from: "running",
       to: "awaiting_input",
       kind: "ask",
       reason: "help",
     });
-    transition(db, id, { at: at(2), from: "awaiting_input", to: "running" });
-    const gap = item(db, "PAS-2", { createdAt: at(0) });
-    transition(db, gap, { at: at(0, 50), from: "queued", to: "running", version: 3 });
-    const quiet = item(db, "PAS-3", { createdAt: at(0, 10), state: "queued" });
+    await transition(db, id, { at: at(2), from: "awaiting_input", to: "running" });
+    const gap = await item(db, "PAS-2", { createdAt: at(0) });
+    await transition(db, gap, { at: at(0, 50), from: "queued", to: "running", version: 3 });
+    const quiet = await item(db, "PAS-3", { createdAt: at(0, 10), state: "queued" });
     const digest = await collect(db, root, { id: "r1", start: at(0), end: at(1) });
     const session = digest.sessions.find((entry) => entry.itemId === id)!;
     expect(session.stateAtCutoff).toEqual({
@@ -544,10 +701,10 @@ describe("evidence quality", () => {
   });
 
   test("identity fields and known secrets never reach the stored digest or evidence", async () => {
-    const { db, root } = world();
-    const id = item(db, "PAS-1", { createdAt: at(0) });
+    const { db, root } = await world();
+    const id = await item(db, "PAS-1", { createdAt: at(0) });
     const token = `ghp_${"a".repeat(36)}`;
-    question(db, id, {
+    await question(db, id, {
       createdAt: at(0, 1),
       answeredAt: at(0, 2),
       answer: `Use ${token} and lin_api_${"b".repeat(32)}, ask @pascal or jane@example.com; also s3cret-value-123`,
@@ -558,9 +715,9 @@ describe("evidence quality", () => {
       end: at(1),
       secrets: ["s3cret-value-123"],
     });
-    const stored = await readRetroArtifact(sqliteDb(db), root, "r1", "digest");
+    const stored = await readRetroArtifact(db, root, "r1", "digest");
     const text = stored.ok ? new TextDecoder().decode(stored.bytes) : "";
-    const evidence = JSON.stringify(await listRetroEvidence(sqliteDb(db), "r1"));
+    const evidence = JSON.stringify(await listRetroEvidence(db, "r1"));
     for (const leaked of [
       token,
       "lin_api_",
@@ -582,11 +739,11 @@ describe("evidence quality", () => {
 
 describe("bounded prompt view", () => {
   test("truncation is deterministic per session and never changes the counts", async () => {
-    const { db, root } = world();
+    const { db, root } = await world();
     for (let index = 0; index < 12; index += 1) {
-      const id = item(db, `PAS-${100 + index}`, { createdAt: at(0, index) });
+      const id = await item(db, `PAS-${100 + index}`, { createdAt: at(0, index) });
       for (let n = 0; n < 8; n += 1)
-        question(db, id, {
+        await question(db, id, {
           createdAt: at(0, 50),
           answeredAt: at(0, 100 + n),
           body: "x".repeat(400),
@@ -604,7 +761,7 @@ describe("bounded prompt view", () => {
     );
     expect(included + omitted).toBe(counted(digest).length);
     expect(omitted).toBeGreaterThan(0);
-    const manifest = await readRetroArtifact(sqliteDb(db), root, "r1", "manifest");
+    const manifest = await readRetroArtifact(db, root, "r1", "manifest");
     expect(manifest.ok).toBe(true);
   });
 });
@@ -621,24 +778,24 @@ describe("October retro fixture", () => {
   ];
 
   test("seven issues account for the 19 answered push-recovery questions", async () => {
-    const { db, root } = world();
-    PUSH_RECOVERY.forEach(([identifier, answers], index) => {
-      const id = item(db, identifier, { createdAt: at(22, index) });
+    const { db, root } = await world();
+    for (const [index, [identifier, answers]] of PUSH_RECOVERY.entries()) {
+      const id = await item(db, identifier, { createdAt: at(22, index) });
       for (let n = 0; n < answers; n += 1)
-        question(db, id, {
+        await question(db, id, {
           createdAt: at(23, n),
           answeredAt: at(24, index * 10 + n),
           reason: "push_rejected",
           body: "The push was rejected. How should I recover?",
           answer: "Fetch the branch and rebase onto its current tip.",
         });
-      question(db, id, {
+      await question(db, id, {
         createdAt: at(25),
         answeredAt: at(25, 1),
         kind: "visual-review",
         reason: "screenshots",
       });
-    });
+    }
     const digest = await collect(db, root, { id: "october", start: at(22), end: at(28) });
     const push = digest.counts.answeredQuestions.groups.find(
       (g) => g.key === "agent/push_rejected",
@@ -650,7 +807,7 @@ describe("October retro fixture", () => {
     );
     expect(push.evidenceIds.every((id) => id.startsWith("question:"))).toBe(true);
     expect(digest.counts.sessions.workItems).toBe(7);
-    const snapshot = await readRetroActivity(sqliteDb(db), {
+    const snapshot = await readRetroActivity(db, {
       workspaceId: "ws",
       repositories: [REPO],
       before: at(28),

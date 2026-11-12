@@ -4,17 +4,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createGitHubInstallationCheck } from "../src/auth";
-import {
-  sqliteDb,
-  beginImplementRun,
-  getWorkItem,
-  insertQueuedItem,
-  listOutbox,
-  migrate,
-  openDatabase,
-  syncSteps,
-} from "../src/db";
+import { beginImplementRun, getWorkItem, insertQueuedItem, listOutbox, syncSteps } from "../src/db";
 import { GitHubInstallationCheck, type GitHubIntegration } from "../src/loop";
+import { tempStore } from "./pglite";
 
 const key = generateKeyPairSync("rsa", {
   modulusLength: 2048,
@@ -73,8 +65,7 @@ async function scene() {
     },
     fetch,
   });
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   const clock = { now: 1_000 };
   const integration: GitHubIntegration = {
     check: (_item, signal) => installation("acme/widgets", "read", signal),
@@ -83,9 +74,9 @@ async function scene() {
     identity: () => syncSteps(() => "member:acme/widgets"),
     unavailableRetryMs: [0],
   };
-  const auth = new GitHubInstallationCheck(sqliteDb(db), integration, () => clock.now);
+  const auth = new GitHubInstallationCheck(db, integration, () => clock.now);
   await insertQueuedItem(db, { id: "PAS-1055", sessionKey: "session-1055", title: "PAS-1055" });
-  await beginImplementRun(sqliteDb(db), "PAS-1055", 1_000);
+  await beginImplementRun(db, "PAS-1055", 1_000);
   return {
     db,
     auth,
@@ -93,14 +84,14 @@ async function scene() {
     clock,
     integration,
     installation,
-    item: async () => (await getWorkItem(sqliteDb(db), "PAS-1055"))!,
+    item: async () => (await getWorkItem(db, "PAS-1055"))!,
     signal: new AbortController().signal,
-    questions: () => db.query<{ status: string }, []>("SELECT status FROM question").all(),
-    elicitations: async () =>
-      (await listOutbox(sqliteDb(db))).filter((entry) => entry.op === "elicitation"),
-    close() {
+    questions: () =>
+      db.run((q) => q.all(q.orm.select({ status: q.t.question.status }).from(q.t.question))),
+    elicitations: async () => (await listOutbox(db)).filter((entry) => entry.op === "elicitation"),
+    async close() {
       auth.close();
-      db.close();
+      await close();
     },
   };
 }
@@ -117,10 +108,10 @@ test("a DNS failure posts no github-auth question, and the item proceeds once Gi
   try {
     expect(await s.auth.ensure(await s.item(), "initial", s.signal)).toBe(true);
     expect((await s.item()).state).toBe("running");
-    expect(s.questions()).toHaveLength(0);
-    expect(await listOutbox(sqliteDb(s.db))).toHaveLength(0);
+    expect(await s.questions()).toHaveLength(0);
+    expect(await listOutbox(s.db)).toHaveLength(0);
   } finally {
-    s.close();
+    await s.close();
   }
 });
 
@@ -130,10 +121,10 @@ test("a 404 for the repository installation still posts the admin question", asy
   try {
     expect(await s.auth.ensure(await s.item(), "initial", s.signal)).toBe(false);
     expect((await s.item()).state).toBe("awaiting_input");
-    expect(s.questions()).toEqual([{ status: "open" }]);
+    expect(await s.questions()).toEqual([{ status: "open" }]);
     expect(await s.elicitations()).toHaveLength(1);
   } finally {
-    s.close();
+    await s.close();
   }
 });
 
@@ -144,14 +135,14 @@ test("an open github-auth question closes on the recheck once access works, and 
     await s.auth.ensure(await s.item(), "initial", s.signal);
     s.github.mode = "dns";
     await s.auth.recover();
-    expect(s.questions()).toEqual([{ status: "open" }]);
+    expect(await s.questions()).toEqual([{ status: "open" }]);
     expect((await s.item()).state).toBe("awaiting_input");
     s.github.mode = "ok";
     await s.auth.recover();
-    expect(s.questions()).toEqual([{ status: "answered" }]);
+    expect(await s.questions()).toEqual([{ status: "answered" }]);
     expect((await s.item()).state).toBe("running");
   } finally {
-    s.close();
+    await s.close();
   }
 });
 
@@ -166,13 +157,13 @@ test("an outage past ten minutes posts one network status line and no admin ques
   };
   try {
     expect(await s.auth.ensure(await s.item(), "initial", s.signal)).toBe(true);
-    const lines = (await listOutbox(sqliteDb(s.db))).map((entry) => JSON.stringify(entry.payload));
+    const lines = (await listOutbox(s.db)).map((entry) => JSON.stringify(entry.payload));
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain(`Can't reach GitHub: ${DNS}`);
-    expect(s.questions()).toHaveLength(0);
+    expect(await s.questions()).toHaveLength(0);
     expect(await s.elicitations()).toHaveLength(0);
   } finally {
-    s.close();
+    await s.close();
   }
 });
 
@@ -188,7 +179,7 @@ test("a 5xx or 429 from GitHub is transient, not a repository the installation d
       expect(await s.installation("acme/widgets", "read", s.signal)).toBe(false);
     }
   } finally {
-    s.close();
+    await s.close();
   }
 });
 
@@ -203,11 +194,11 @@ test("an authorization that can't reach Linear doesn't cancel the item; a defini
     expect(await s.auth.ensure(await s.item(), "initial", s.signal)).toBe(true);
     expect((await s.item()).state).toBe("running");
     expect((await s.item()).cancelRequested).toBe(false);
-    expect(s.questions()).toHaveLength(0);
+    expect(await s.questions()).toHaveLength(0);
     s.integration.authorize = async () => ({ denied: true, reason: "You're not in Pascal." });
     expect(await s.auth.ensure(await s.item(), "initial", s.signal, { fresh: true })).toBe(false);
     expect((await s.item()).state).toBe("cancelled");
   } finally {
-    s.close();
+    await s.close();
   }
 });

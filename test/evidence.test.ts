@@ -3,15 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  getEvidence,
-  insertQueuedItem,
-  migrate,
-  openDatabase,
-  putWorkspaceUser,
-  syncWorkspaceMember,
-  sqliteDb,
-} from "../src/db";
+import { getEvidence, insertQueuedItem, putWorkspaceUser, syncWorkspaceMember } from "../src/db";
 import {
   createEvidenceStore,
   EvidenceRejectedError,
@@ -23,6 +15,19 @@ import {
 } from "../src/evidence";
 import { startServer } from "../src/server";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
+
+const openStores: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of openStores.splice(0)) await close();
+});
+
+async function openStore() {
+  const { db, close } = await tempStore();
+  openStores.push(close);
+  return db;
+}
 
 const HEAD = "a".repeat(40);
 const text = (value: string) => [...new TextEncoder().encode(value)];
@@ -46,15 +51,14 @@ afterEach(() => {
 });
 
 async function harness(limits?: { video: number; image: number }) {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const db = await openStore();
   await insertQueuedItem(db, { id: "item", sessionKey: "session-visible" });
   await insertQueuedItem(db, { id: "hidden", sessionKey: "session-hidden" });
   const home = mkdtempSync(join(tmpdir(), "paws-evidence-"));
   roots.push(home);
   const root = join(home, "evidence");
   const store = createEvidenceStore({
-    store: sqliteDb(db),
+    store: db,
     root,
     now: () => 1_700_000_000_000,
     ...(limits ? { limits } : {}),
@@ -77,7 +81,7 @@ describe("evidence store", () => {
     const { db, root, store, input } = await harness();
     const saved = await store.save(input(PNG));
     expect(saved.id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
-    expect(await getEvidence(sqliteDb(db), saved.id)).toEqual({
+    expect(await getEvidence(db, saved.id)).toEqual({
       id: saved.id,
       itemId: "item",
       runId: "run-1",
@@ -126,7 +130,7 @@ describe("evidence store", () => {
       expect((error as EvidenceRejectedError).reason).toBe("type");
     }
     expect(readdirSync(root)).toEqual([]);
-    expect(db.query("SELECT count(*) AS n FROM evidence").get()).toEqual({ n: 0 });
+    expect(await db.run((q) => q.all(q.orm.select().from(q.t.evidence)))).toEqual([]);
   });
 
   test("a file over the cap for its kind is refused", async () => {
@@ -167,7 +171,7 @@ describe("GET /api/evidence/:id", () => {
       sessionIds: string[] | null = ["session-visible"],
     ) =>
       handleEvidenceRequest(new Request(`http://paws.test/api/evidence/${id}`, init), {
-        store: sqliteDb(h.db),
+        store: h.db,
         root: h.root,
         sessionIds: sessionIds ?? undefined,
       }).then((response) => response!);
@@ -251,7 +255,7 @@ test("the server refuses evidence without a session and hides it from members wi
   roots.push(home);
   const evidenceDir = join(home, "evidence");
   await insertQueuedItem(f.db, { id: "evidence-item", sessionKey: "session-elsewhere" });
-  const saved = await createEvidenceStore({ store: sqliteDb(f.db), root: evidenceDir }).save({
+  const saved = await createEvidenceStore({ store: f.db, root: evidenceDir }).save({
     itemId: "evidence-item",
     runId: "run",
     checkId: "e2e",
@@ -265,7 +269,7 @@ test("the server refuses evidence without a session and hides it from members wi
   await reservation.stop(true);
   const origin = `http://127.0.0.1:${port}`;
   const access = createWorkspaceAccess({
-    store: sqliteDb(f.db),
+    store: f.db,
     publicUrl: origin,
     clientId: "fixture",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -288,7 +292,7 @@ test("the server refuses evidence without a session and hides it from members wi
     workspaceAccess: access,
     evidenceDir,
   });
-  const session = await issueWorkspaceSession(sqliteDb(f.db), { ...f.actor, now: Date.now() });
+  const session = await issueWorkspaceSession(f.db, { ...f.actor, now: Date.now() });
   const url = (id: string) => `http://127.0.0.1:${server.port}/api/evidence/${id}`;
   try {
     expect((await fetch(url(saved.id))).status).toBe(401);
@@ -300,24 +304,25 @@ test("the server refuses evidence without a session and hides it from members wi
     expect(await denied.text()).toBe(await unknown.text());
   } finally {
     await server.stop(true);
-    f.db.close();
+    await f.close();
   }
 });
 
 /** A database with one workspace member who has no access to other sessions' evidence. */
 async function memberWorkspace() {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  db.run(
-    "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',0)",
+  const { db, close } = await tempStore();
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: "workspace", linearOrganizationId: "org", name: "Workspace", createdAt: 0 }),
   );
-  await putWorkspaceUser(sqliteDb(db), {
+  await putWorkspaceUser(db, {
     id: "actor",
     linearUserId: "actor",
     name: "actor",
     email: "actor@example.test",
   });
-  await syncWorkspaceMember(sqliteDb(db), {
+  await syncWorkspaceMember(db, {
     workspaceId: "workspace",
     userId: "actor",
     role: "member",
@@ -325,5 +330,5 @@ async function memberWorkspace() {
     teamIds: ["team"],
     now: Date.now(),
   });
-  return { db, actor: { workspaceId: "workspace", userId: "actor" } };
+  return { db, close, actor: { workspaceId: "workspace", userId: "actor" } };
 }
