@@ -365,11 +365,11 @@ export async function probeRunnerResults(root: string, observe: Observe) {
       await work.finish(run.id, generation);
     }
     const receipts = await db.run(function* (q) {
-      const [results] = yield* q.all(q.orm.select({ count: count() }).from(q.t.runnerResult));
+      const [stored] = yield* q.all(q.orm.select({ count: count() }).from(q.t.runnerResult));
       const [answers] = yield* q.all(
         q.orm.select({ count: count() }).from(q.t.runnerQuestionAnswer),
       );
-      return { results: results!.count, answers: answers!.count };
+      return { results: stored!.count, answers: answers!.count };
     });
     assert.deepEqual(receipts, { results: 2, answers: 6 });
     observe("result and answer receipts persist", true, receipts);
