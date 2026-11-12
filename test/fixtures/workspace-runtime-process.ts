@@ -78,7 +78,9 @@ if (mode === "public")
     }),
   );
 await migratedHome(source.PAWS_HOME!);
-const paws = await startPaws(source);
+const paws = await startPaws(source, {
+  healthStatfs: () => ({ bavail: 100 * 1024 ** 3, blocks: 200 * 1024 ** 3, bsize: 1 }),
+});
 const tls = source.PAWS_PUBLIC_DASHBOARD === "1";
 const origin = `${tls ? "https" : "http"}://127.0.0.1:${paws.server.port}`;
 const observations: { name: string; passed: boolean; observed: unknown }[] = [];
