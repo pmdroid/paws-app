@@ -3159,6 +3159,7 @@ export class Orchestrator {
         item &&
         // A push outage holds the item; it never fails it (PAS-867).
         !pushOutageCause(error) &&
+        !(error instanceof SquashServerError) &&
         !this.shuttingDown &&
         (await context.isCurrent()) &&
         !this.jobContexts.has(item.id) &&

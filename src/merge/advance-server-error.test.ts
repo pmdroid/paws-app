@@ -54,4 +54,22 @@ describe("GitHub 5xx on the squash merge", () => {
     expect(await h.pass(item.id)).toEqual({ kind: "merged" });
     expect((await listJobs(h.db)).filter((job) => job.queue === JOB_KIND.reverify)).toEqual([]);
   });
+
+  test("main moving during the retry wait stops the squash before it is sent again", async () => {
+    const { h, item, squashLines } = await serverErrors([500]);
+    let puts = 0;
+    const answer = h.state.mergeDenial!;
+    h.state.mergeDenial = async () => {
+      puts += 1;
+      const denied = await answer();
+      if (denied) await h.moveMain("other.txt", "moved\n");
+      return denied;
+    };
+    expect(await h.pass(item.id)).not.toEqual({ kind: "merged" });
+    expect(puts).toBe(1);
+    expect(squashLines()).toHaveLength(1);
+    expect(h.state.sleeps).toEqual([30_000]);
+    expect(h.github.merged).toEqual([]);
+    expect(await mergeCallInFlight(h.db, item.id)).toBe(false);
+  });
 });

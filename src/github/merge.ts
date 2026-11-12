@@ -289,39 +289,47 @@ export async function squashPull(
   input.onCredential?.("merge", token);
   const gitExec = input.gitExec ?? defaultGitExec();
   const url = input.remoteUrl ?? githubHttpsUrl(input.owner, input.repo);
-  await fetchMain(input.worktree, url, token, gitExec, input.sleep);
-  const baseNow = await git(input.worktree, ["rev-parse", UPSTREAM_MAIN_REF], gitExec);
-  if (baseNow !== expected.base)
-    return {
-      merged: false,
-      outcome: "sha_moved",
-      branch,
-      base: baseNow,
+  const ready = async (): Promise<SerialMergeResult | null> => {
+    await fetchMain(input.worktree, url, token, gitExec, input.sleep);
+    const baseNow = await git(input.worktree, ["rev-parse", UPSTREAM_MAIN_REF], gitExec);
+    if (baseNow !== expected.base)
+      return {
+        merged: false,
+        outcome: "sha_moved",
+        branch,
+        base: baseNow,
+        head: expectedHead,
+        message: "main moved before merge",
+      };
+    // CI or review threads can change while main is fetched, and GitHub's expected-head guard only
+    // refuses a moved head. Read them once more for S; anything but ready stops the squash.
+    const recheck = await waitForMergeReadiness({
+      ...input,
       head: expectedHead,
-      message: "main moved before merge",
-    };
-  // CI or review threads can change while main is fetched, and GitHub's expected-head guard only
-  // refuses a moved head. Read them once more for S; anything but ready stops the squash.
-  const recheck = await waitForMergeReadiness({
-    ...input,
-    head: expectedHead,
-    token: async () => token,
-    releaseWhilePending: true,
-  });
-  if (recheck.outcome !== "ready")
-    return {
-      merged: false,
-      outcome: recheck.outcome === "sha_moved" ? "sha_moved" : "blocked",
-      branch,
-      head: expectedHead,
-      message: recheck.message,
-      readiness: recheck,
-    };
-  // A stop or withdrawn publication during the reads must still win.
-  if (await input.isCancelled?.()) return cancelled(branch);
-  const sent = await squash(input, token, expectedHead, summary);
-  if (sent instanceof SquashServerError && (await pullUnmerged(input, token))) throw sent;
-  const merged = sent instanceof SquashServerError ? null : sent;
+      token: async () => token,
+      releaseWhilePending: true,
+    });
+    if (recheck.outcome !== "ready")
+      return {
+        merged: false,
+        outcome: recheck.outcome === "sha_moved" ? "sha_moved" : "blocked",
+        branch,
+        head: expectedHead,
+        message: recheck.message,
+        readiness: recheck,
+      };
+    // A stop or withdrawn publication during the reads must still win.
+    return (await input.isCancelled?.()) ? cancelled(branch) : null;
+  };
+  const stopped = await ready();
+  if (stopped) return stopped;
+  const sent = await squash(input, token, expectedHead, summary, ready);
+  const failed = sent instanceof SquashServerError || (sent !== null && "stopped" in sent);
+  if (failed && (await pullUnmerged(input, token))) {
+    if ("stopped" in sent) return sent.stopped;
+    throw sent;
+  }
+  const merged = failed ? null : sent;
   // A server error or an unreadable success response can arrive after GitHub committed the merge.
   // Keep the caller's durable marker until a pull request read establishes the outcome.
   if (
@@ -641,7 +649,8 @@ async function squash(
   token: string,
   head: string,
   summary: string,
-): Promise<GitHubResponse | SquashServerError | null> {
+  ready: () => Promise<SerialMergeResult | null>,
+): Promise<GitHubResponse | SquashServerError | { stopped: SerialMergeResult } | null> {
   const title = input.commitTitle ?? input.issue;
   const message = capCommitMessage(
     `${fixesLine(input.issue)}\n\n${(input.commitMessage ?? summary).trim()}\n`,
@@ -679,7 +688,8 @@ async function squash(
     );
     if (delay === null) return new SquashServerError(response);
     await (input.sleep ?? pause)(delay);
-    if (await input.isCancelled?.()) return null;
+    const stopped = await ready();
+    if (stopped) return { stopped };
   }
   return null;
 }
