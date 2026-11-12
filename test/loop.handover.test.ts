@@ -1,24 +1,22 @@
-import { cloneRunner, tickWithRestarts } from "./helpers";
 import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { expect, test } from "bun:test";
 import { runAgent, type RunAgentOptions, type RunAgentResult } from "../src/acp";
 import { systemClock } from "../src/core";
-import {
-  sqliteDb,
-  JobLoop,
-  OutboxDispatcher,
-  getWorkItem,
-  listWorkItems,
-  migrate,
-  openDatabase,
-  saveCheckpoint,
-} from "../src/db";
+import { JobLoop, OutboxDispatcher, getWorkItem, listWorkItems, saveCheckpoint } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
-import { emptyReview, repoLayout, stateOf, writeOk } from "./e2e-harness";
+import {
+  cloneRunnerPg,
+  emptyReview,
+  repoLayout,
+  stateOfPg,
+  tickWithRestartsPg,
+  writeOk,
+} from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
+import { tempStore } from "./pglite";
 
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
 
@@ -55,8 +53,7 @@ async function handOver(options: {
   failure?: "commit" | "snapshot" | "publication";
 }) {
   const layout = await repoLayout("paws-handover-loop-");
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const tracker = createFakeTracker([
     {
       linearIssueId: "issue",
@@ -74,7 +71,7 @@ async function handOver(options: {
   const prompts: string[] = [];
   const repository = { owner: "pmdroid", repo: "paws-demo" };
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -88,7 +85,7 @@ async function handOver(options: {
         throw new Error("This fixture does not request a routing helper");
       },
       agentForItem() {
-        return cloneRunner(
+        return cloneRunnerPg(
           repository,
           async (input: RunAgentOptions): Promise<RunAgentResult> => {
             if (input.prepareOnly) return runAgent(input);
@@ -123,7 +120,7 @@ async function handOver(options: {
             git(["add", "-A"]);
             git(["commit", "-q", "-m", "Save work in progress"]);
             wip = git(["rev-parse", "HEAD"]);
-            await saveCheckpoint(sqliteDb(db), (await listWorkItems(sqliteDb(db)))[0]!.id, {
+            await saveCheckpoint(db, (await listWorkItems(db))[0]!.id, {
               phase: "running",
               baseSha: git(["rev-parse", "HEAD~1"]),
               wipCommit: wip,
@@ -165,7 +162,7 @@ async function handOver(options: {
     const deadline = Date.now() + 60_000;
     const started = () => handed;
     while (Date.now() < deadline && !started()) {
-      const job = await tickWithRestarts(jobs, orchestrator, db);
+      const job = await tickWithRestartsPg(jobs, orchestrator, db);
       // The follow-up after a failed handover waits for admission like any resumed turn.
       await orchestrator.reconcileExecution();
       await jobs.tick(["run.resume"]);
@@ -176,26 +173,29 @@ async function handOver(options: {
     }
     // Let the turn that handed over settle and its outbox rows post.
     for (let index = 0; index < 50; index++) {
-      const job = await tickWithRestarts(jobs, orchestrator, db);
+      const job = await tickWithRestartsPg(jobs, orchestrator, db);
       await outbox.tick();
       await outbox.idle();
       if (job === null) await Bun.sleep(10);
     }
-    const item = (await listWorkItems(sqliteDb(db)))[0]!;
+    const item = (await listWorkItems(db))[0]!;
     return {
       wip,
       prompts,
-      state: stateOf(db, "ENG-8"),
-      checkpoint: (await getWorkItem(sqliteDb(db), item.id))?.checkpoint,
+      state: await stateOfPg(db, "ENG-8"),
+      checkpoint: (await getWorkItem(db, item.id))?.checkpoint,
       questions: tracker.questions.map((question) => question.body),
       detail: JSON.stringify({
-        items: db.query("SELECT linear_identifier, state FROM work_item").all(),
+        items: (await listWorkItems(db)).map((row) => ({
+          linear_identifier: row.linearIdentifier,
+          state: row.state,
+        })),
         progress: tracker.progress.map((update) => `${update.kind}: ${update.body}`),
       }),
     };
   } finally {
     await orchestrator.shutdown().catch(() => undefined);
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }
