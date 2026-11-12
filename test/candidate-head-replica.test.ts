@@ -38,7 +38,7 @@ import { attachOrchestrator, type AgentLaunch } from "../src/loop";
 import { findOpenQuestion } from "../src/questions";
 import { githubClient } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
-import { seed } from "./dialects";
+import { seed as seedRows } from "./dialects";
 import { cloneRunner, runnerCheckout } from "./helpers";
 import { pgliteDb } from "./pglite";
 
@@ -182,7 +182,7 @@ test("instance B verifies and merges the candidate instance A imported, from the
   const b = instance({ root, name: "b", bare, shared, checksRuns });
   try {
     await a.orchestrator.onLinearEvent(created());
-    await seed(a.db, (q) => q.orm.update(q.t.workItem).set({ delegatedBy: "delegator-1" }));
+    await seedRows(a.db, (q) => q.orm.update(q.t.workItem).set({ delegatedBy: "delegator-1" }));
     const turn = a.jobs.tick();
     await attachRunnerLease(a.db);
     await turn;
@@ -389,7 +389,7 @@ async function attachRunnerLease(db: Db): Promise<void> {
         name: "Owner",
         email: "owner@example.invalid",
       });
-      await seed(db, (q) =>
+      await seedRows(db, (q) =>
         q.orm
           .insert(q.t.workspace)
           .values({ id: "ws-1", linearOrganizationId: "org-1", name: "Workspace", createdAt: now }),
@@ -402,7 +402,7 @@ async function attachRunnerLease(db: Db): Promise<void> {
         teamIds: [],
         now,
       });
-      await seed(
+      await seedRows(
         db,
         (q) =>
           q.orm.insert(q.t.runner).values({
