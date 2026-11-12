@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { issueRowMatches, NO_PROJECT_FILTER, render, type RenderModel } from "./render";
 import { parseRoute } from "./route";
 import { checkKey } from "./closeout";
-import { esc } from "./format";
+import { clock24, esc } from "./format";
 
 /** `snapshot` is the full fixture; the model gets its list and, on an issue page, its detail. */
 function model(
@@ -181,6 +181,37 @@ describe("status views", () => {
     expect(view.slice(view.indexOf("merged-heading"))).toContain("Audit event schema v2");
     expect(html).toContain("In flight");
     expect(html).toContain("1 held");
+  });
+
+  test("a lifecycle entry reads `event → state` with its time and reason", () => {
+    const snapshot = fullStatusFixture();
+    const item = snapshot.items.find((entry) => entry.id === "ENG-102")!;
+    item.timeline = [
+      {
+        at: "2026-10-09T20:58:00.000Z",
+        kind: "restart",
+        from: "verifying",
+        to: "queued",
+        event: "restart",
+        reason: "findings",
+        actor: "Ada",
+      },
+    ];
+    const page = render(
+      model({
+        snapshot,
+        route: { view: "issues", id: "ENG-102" },
+        closeout: openedView({ "section\ndetails:ENG-102": true }),
+      }),
+    ).content;
+    const entry = page.slice(page.indexOf('<li data-kind="restart">'));
+    expect(entry).toContain('<span class="timeline-dot" data-state="queued" aria-hidden="true">');
+    expect(entry).toContain(
+      '<p class="timeline-move font-mono text-xs">restart <span class="text-muted-foreground"><span aria-hidden="true">→</span><span class="sr-only">to</span> queued</span></p>',
+    );
+    expect(entry).toContain(
+      `>${clock24("2026-10-09T20:58:00.000Z")}</time> · Back to the agent for Closeout findings. · by Ada</p>`,
+    );
   });
 
   test("the issue page splits the time line by stage", () => {
@@ -392,7 +423,7 @@ describe("status views", () => {
     expect(page).toContain("Queued, 2nd in line. 4 of 4 runner slots are busy.");
     expect(page).toContain('<span class="result-icon" aria-hidden="true">2</span>');
     expect(page).toContain(`Paws starts ${item.id} when a slot frees.`);
-    expect(page).toContain('<span class="st queued">Queued</span>');
+    expect(page).toContain('<span class="st queued">queued</span>');
     item.queue = { position: 11, busySlots: 1, totalSlots: 1 };
     const issue = render(model({ snapshot, route: { view: "issues", id: item.id } })).content;
     expect(issue).toContain("Queued, 11th in line. 1 of 1 runner slot is busy.");

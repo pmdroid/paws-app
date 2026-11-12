@@ -251,7 +251,9 @@ describe("one page per issue", () => {
     const snapshot = await snapshotOf(db);
     const own = issuePage(snapshot);
     const sibling = issuePage(snapshot, "PAS-368");
-    expect(own).toContain('<dt>Session</dt><dd><a href="https://linear.app/issue/PAS-367"');
+    expect(own).toContain(
+      'session <span class="text-foreground"><a href="https://linear.app/issue/PAS-367"',
+    );
     expect(own).toContain('shared with <a class="lin-id" href="/issues/PAS-368">PAS-368</a>');
     expect(sibling).toContain('shared with <a class="lin-id" href="/issues/PAS-367">PAS-367</a>');
     expect(sibling).not.toContain("First turn read the issue.");
