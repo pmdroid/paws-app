@@ -1,5 +1,5 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 import { pawsPaths } from "../../src/config";
 import { writeCredential } from "../../src/credentials";
 import {
@@ -475,7 +475,7 @@ export async function probeWorkspaceIdentityLinks(
       process.execPath,
       "--no-env-file",
       "-e",
-      `import { openPawsStore, workspaceIdentityLinks } from ${JSON.stringify(resolve(import.meta.dir, "../../src/db"))};
+      `import { openPawsStore, workspaceIdentityLinks } from ${JSON.stringify(resolvePath(import.meta.dir, "../../src/db"))};
 const { store, close } = await openPawsStore({ url: null, pgliteDir: ${JSON.stringify(pgliteDir)} });
 const links = (await workspaceIdentityLinks(store, ${JSON.stringify(workspace.id)})).filter((link) => link.method === "manual");
 const rows = await store.run((q) => q.all(q.orm.select().from(q.t.workspaceAccessAudit)));

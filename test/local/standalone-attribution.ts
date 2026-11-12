@@ -42,14 +42,12 @@ export async function probeStandaloneAttribution(root: string) {
   const db = opened.store;
   await db.run((q) =>
     q.exec(
-      q.orm
-        .insert(q.t.workspace)
-        .values({
-          id: "workspace",
-          linearOrganizationId: "org",
-          name: "Workspace",
-          createdAt: now,
-        }),
+      q.orm.insert(q.t.workspace).values({
+        id: "workspace",
+        linearOrganizationId: "org",
+        name: "Workspace",
+        createdAt: now,
+      }),
     ),
   );
   await putWorkspaceUser(db, {
