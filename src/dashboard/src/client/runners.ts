@@ -640,37 +640,82 @@ export function runnerCodingAgentsMarkup(
   return `<ul class="runner-skill-list" role="list" aria-label="Coding agent versions on this runner">${rows}</ul>`;
 }
 
+type RowTag = [tone: string, text: string];
+
+/** The Status and Agents cells of a runner's row, as tone and text. */
+function runnerRowTags(
+  runner: Runner,
+  view: { now: number; serverVersion: string | null },
+): { status: RowTag[]; agents: RowTag[] } {
+  const live = runner.status !== "revoked";
+  const agents = runner.agents ?? [];
+  const status: RowTag[] = [
+    availability(runner, view.now),
+    ...(runner.status === "paused" || runner.status === "draining"
+      ? [
+          (runner.status === "paused"
+            ? ["paused", "Paused"]
+            : runnerDrained(runner)
+              ? ["ok", "Drained"]
+              : ["warn", "Draining"]) as RowTag,
+        ]
+      : []),
+    ...(updateAvailable(runner, view.serverVersion)
+      ? [["warn", "Update available"] as RowTag]
+      : []),
+    ...(live && runner.skills?.some((skill) => skill.state === "failed")
+      ? [["bad", "Skill install failed"] as RowTag]
+      : []),
+    ...(live ? (runner.hostWarnings ?? []) : []).map((line): RowTag => ["warn", line]),
+  ];
+  const label = (entry: AgentSignIn) => AGENT_LABELS[entry.agent] ?? entry.agent;
+  return {
+    status,
+    agents: live
+      ? [
+          ...agents
+            .filter((entry) => entry.status === "signed_in")
+            .map((entry): RowTag => ["", label(entry)]),
+          ...agents
+            .filter((entry) => entry.status === "signed_out" || entry.status === "usage_limit")
+            .map((entry): RowTag =>
+              entry.status === "signed_out"
+                ? ["bad", `${label(entry)} signed out`]
+                : ["warn", `${label(entry)} usage limit`],
+            ),
+        ]
+      : [],
+  };
+}
+
+function tagsMarkup(tags: readonly RowTag[]): string {
+  return tags
+    .map(([tone, text]) => `<span class="tag${tone ? ` ${tone}` : ""}">${esc(text)}</span>`)
+    .join("");
+}
+
+/** A 6 px segment gauge and `used/total`, with the long slot label as its title. */
+function slotGaugeMarkup(runner: Runner): string {
+  const slots = runner.slots;
+  if (!slots || runner.status === "revoked") return '<span class="muted">—</span>';
+  const segments = Math.min(slots.total, 12);
+  const filled = slots.total
+    ? Math.round((Math.min(slots.used, slots.total) / slots.total) * segments)
+    : 0;
+  const bar = Array.from(
+    { length: segments },
+    (_, index) =>
+      `<span class="h-1.5 w-3 rounded-full ${index < filled ? "bg-foreground" : "bg-border"}"></span>`,
+  ).join("");
+  return `<span class="flex items-center gap-2 whitespace-nowrap" title="${esc(runnerSlotsLabel(runner.running ?? [], slots))}"><span class="flex gap-0.5" aria-hidden="true">${bar}</span><span class="mono">${slots.used}/${slots.total}</span></span>`;
+}
+
 export function runnerRowMarkup(
   runner: Runner,
   view: { now: number; serverVersion: string | null },
 ): string {
   const id = esc(runner.id);
-  const [tone, state] = availability(runner, view.now);
-  const agents = runner.agents ?? [];
-  const signedIn = agents
-    .filter((entry) => entry.status === "signed_in")
-    .map((entry) => AGENT_LABELS[entry.agent] ?? entry.agent);
-  const tags = [
-    `<span class="tag ${tone}">${state}</span>`,
-    runner.status === "paused" || runner.status === "draining"
-      ? `<span class="tag ${runner.status === "paused" ? "paused" : runnerDrained(runner) ? "ok" : "warn"}">${runner.status === "paused" ? "Paused" : runnerDrained(runner) ? "Drained" : "Draining"}</span>`
-      : "",
-    ...agents
-      .filter((entry) => entry.status === "signed_out" || entry.status === "usage_limit")
-      .map(
-        (entry) =>
-          `<span class="tag ${entry.status === "signed_out" ? "bad" : "warn"}">${esc(AGENT_LABELS[entry.agent] ?? entry.agent)} ${entry.status === "signed_out" ? "signed out" : "usage limit"}</span>`,
-      ),
-    updateAvailable(runner, view.serverVersion)
-      ? '<span class="tag warn">Update available</span>'
-      : "",
-    runner.status !== "revoked" && runner.skills?.some((skill) => skill.state === "failed")
-      ? '<span class="tag bad">Skill install failed</span>'
-      : "",
-    ...(runner.status === "revoked" ? [] : (runner.hostWarnings ?? [])).map(
-      (line) => `<span class="tag warn">${esc(line)}</span>`,
-    ),
-  ].join("");
+  const { status, agents } = runnerRowTags(runner, view);
   const os = [runner.os?.id, runner.os?.version].filter(Boolean).join(" ");
   const meta = [
     runner.metrics
@@ -678,20 +723,46 @@ export function runnerRowMarkup(
       : "Never reported",
     runner.ownerName ? `Owned by ${runner.ownerName}` : "",
     os,
-    runner.version ? `Runner ${runner.version}` : "",
-    runner.slots && runner.status !== "revoked"
-      ? runnerSlotsLabel(runner.running ?? [], runner.slots)
-      : "",
-    runner.status === "revoked"
-      ? ""
-      : signedIn.length
-        ? `${signedIn.join(", ")} signed in`
-        : "No agent signed in",
   ]
     .filter(Boolean)
     .map(esc)
     .join(" · ");
-  return `<li data-runner-row="${id}"><a class="runner-row" href="${esc(routeHref({ view: "runners", id: runner.id }))}" data-focus="open:${id}"><span class="runner-row-name"><b>${esc(runner.name)}</b><span class="muted">${meta}</span></span><span class="runner-row-tags">${tags}</span></a></li>`;
+  const signedIn = agents.some(([tone]) => tone === "");
+  const agentCell =
+    runner.status === "revoked"
+      ? ""
+      : `${tagsMarkup(agents)}${signedIn ? "" : '<span class="muted">No agent signed in</span>'}`;
+  const cell = (body: string) =>
+    `<td><div class="flex min-w-36 flex-wrap items-center gap-1.5 [overflow-wrap:normal]">${body}</div></td>`;
+  return `<tr data-runner-row="${id}"><td><div class="min-w-48 [overflow-wrap:normal]"><a class="font-mono text-sm whitespace-nowrap" href="${esc(routeHref({ view: "runners", id: runner.id }))}" data-focus="open:${id}">${esc(runner.name)}</a><div class="mt-1 text-xs text-muted-foreground">${meta}</div></div></td>${cell(tagsMarkup(status))}<td>${slotGaugeMarkup(runner)}</td>${cell(agentCell)}<td><span class="mono">${esc(runner.version ?? "—")}</span></td></tr>`;
+}
+
+/** Online, slots in use and runners that need attention, from the loaded list alone. */
+export function runnerTilesMarkup(
+  runners: readonly Runner[],
+  view: { now: number; serverVersion: string | null },
+): string {
+  const online = runners.filter((runner) => runnerOnline(runner, view.now)).length;
+  const used = runners.reduce((sum, runner) => sum + (runner.slots?.used ?? 0), 0);
+  const total = runners.reduce((sum, runner) => sum + (runner.slots?.total ?? 0), 0);
+  const attention = runners.filter((runner) => {
+    const { status, agents } = runnerRowTags(runner, view);
+    return [...status, ...agents].some(([tone]) => tone === "warn" || tone === "bad");
+  }).length;
+  const tile = (key: string, label: string, value: string, tone = "") =>
+    `<div class="flex min-w-0 flex-col gap-1 rounded-base border border-border bg-secondary-background p-3 sm:p-4" data-runner-tile="${key}"><span class="text-xs text-muted-foreground">${label}</span><span class="font-mono text-xl ${tone || "text-foreground"}">${value}</span></div>`;
+  return `<div class="grid min-w-0 grid-cols-3 gap-3" aria-label="Runner summary" role="group">${tile("online", "Online", `${online}/${runners.length}`)}${tile("slots", "Slots in use", `${used}/${total}`)}${tile("attention", "Needs attention", String(attention), attention > 0 ? "text-state-awaiting" : "")}</div>`;
+}
+
+/** The runner table: one row per runner with status, slots, agents and version. */
+export function runnerTableMarkup(
+  runners: readonly Runner[],
+  view: { now: number; serverVersion: string | null },
+): string {
+  const head = ["Runner", "Status", "Slots", "Agents", "Version"]
+    .map((name) => `<th scope="col"><span class="whitespace-nowrap">${name}</span></th>`)
+    .join("");
+  return `<div class="min-w-0 overflow-x-auto"><table aria-label="Runners"><thead><tr>${head}</tr></thead><tbody>${runners.map((runner) => runnerRowMarkup(runner, view)).join("")}</tbody></table></div>`;
 }
 
 const PURPOSES: Record<string, string> = {
@@ -936,20 +1007,21 @@ export function runnerStrayMarkup(strays: readonly StrayProcess[]): string {
   return `<p class="muted">Still running as the runner user after their work ended.</p><ul class="slot-list" role="list" aria-label="Stray processes">${rows}</ul>`;
 }
 
+/** A detail page section: hairline border, header row, body. */
+const CARD = "flex min-w-0 flex-col rounded-base border border-border bg-secondary-background";
+
 export function runnerActionsMarkup(
   runner: { id: string; status: RunnerStatus },
   state: { manages: boolean; busy: boolean },
-  copy = "",
 ): string {
-  if (!state.manages || runner.status === "revoked")
-    return copy ? `<div class="row">${copy}</div>` : "";
+  if (!state.manages || runner.status === "revoked") return "";
   const disabled = state.busy ? " disabled" : "";
   const id = esc(runner.id);
   const drain =
     runner.status !== "draining"
       ? `<button class="btn" data-runner-status="draining" data-runner="${id}" data-focus="status:${id}:draining"${disabled}>Drain</button>`
       : "";
-  return `<div class="row">${copy}${drain}<details data-details="revoke:${id}"><summary data-focus="revoke:${id}">Revoke access</summary><p>Disconnect this runner and stop accepting its work.</p><button class="btn" data-runner-status="revoked" data-runner="${id}" data-focus="status:${id}:revoked"${disabled}>Revoke runner</button></details></div>`;
+  return `<div class="row">${drain}<details data-details="revoke:${id}"><summary data-focus="revoke:${id}"><span class="text-state-failed">Revoke access</span></summary><p>Disconnect this runner and stop accepting its work.</p><button class="btn" data-runner-status="revoked" data-runner="${id}" data-focus="status:${id}:revoked"${disabled}><span class="text-state-failed">Revoke runner</span></button></details></div>`;
 }
 
 function firstActivation(runner: Runner): boolean {
@@ -1103,7 +1175,7 @@ export function runnerMetricsMarkup(metrics: Runner["metrics"], now: number): st
             high: false,
           },
   ];
-  return `<section class="runner-host" aria-label="Runner metrics"${stale ? ' data-stale=""' : ""}><dl class="runner-gauges${stale ? " stale" : ""}">${gauges.map(gaugeMarkup).join("")}</dl></section>`;
+  return `<section class="runner-host" aria-label="Runner metrics"${stale ? ' data-stale=""' : ""}><dl class="runner-gauges md:grid-cols-4${stale ? " stale" : ""}">${gauges.map(gaugeMarkup).join("")}</dl></section>`;
 }
 
 function resetTime(at: number, now: number): string {
@@ -1253,9 +1325,10 @@ export function runnerDetailMarkup(
   const capacity = slots
     ? `<span class="gauge-value${slots.total > 0 && slots.used >= slots.total ? " high" : ""}">${esc(runnerSlotsLabel(runner.running ?? [], slots))}</span>`
     : "";
-  const head = `<div class="runner-head"><div class="runner-title"><h2 id="runner-${id}-name">${esc(runner.name)}</h2>${statusLine(runner, view)}<p class="runner-meta" title="${esc(metrics ? new Date(metrics.reportedAt).toLocaleString() : "")}">${meta}</p></div>${pauseMarkup(runner, { manages: manages || owns, busy: view.busy })}</div>`;
+  const copy = `<button class="btn" data-runner-copy="${id}" data-focus="copy:${id}" title="${id}" aria-label="Copy runner ID ${id}">Copy ID</button>`;
+  const head = `<div class="runner-head"><div class="runner-title"><h2 id="runner-${id}-name">${esc(runner.name)}</h2>${statusLine(runner, view)}<p class="runner-meta" title="${esc(metrics ? new Date(metrics.reportedAt).toLocaleString() : "")}">${meta}</p></div><div class="row">${copy}${pauseMarkup(runner, { manages: manages || owns, busy: view.busy })}</div></div>`;
   const block = (key: string, title: string, aside: string, body: string) =>
-    `<section class="runner-block" aria-labelledby="runner-${id}-${key}"><div class="runner-block-head"><h3 id="runner-${id}-${key}">${title}</h3>${aside}</div>${body}</section>`;
+    `<section class="${CARD}" aria-labelledby="runner-${id}-${key}"><div class="runner-block-head border-b border-border px-4 py-2"><h3 id="runner-${id}-${key}">${title}</h3>${aside}</div><div class="flex min-w-0 flex-col gap-3 p-4">${body}</div></section>`;
   const hostWarnings = revoked
     ? ""
     : (runner.hostWarnings ?? [])
@@ -1264,7 +1337,29 @@ export function runnerDetailMarkup(
             `<p class="tag warn whitespace-normal" data-runner-host-warning>${esc(line)}</p>`,
         )
         .join("");
-  const card = `<section class="runner-section" data-runner-card="${id}" aria-labelledby="runner-${id}-name">${head}${hostWarnings}${firstActivation(runner) ? "<p>Sign in the coding agents this runner should use, then turn it on.</p>" : ""}${
+  const skills =
+    revoked || runner.skills === undefined
+      ? ""
+      : block(
+          "skills",
+          "Skills",
+          runner.skills.length
+            ? `<span class="muted">${runner.skills.filter((skill) => skill.state === "up_to_date").length} of ${runner.skills.length} up to date</span>`
+            : "",
+          runnerSkillsMarkup(runner.skills, runner.name),
+        );
+  const runtimes =
+    revoked || runner.runtimes === undefined
+      ? ""
+      : block(
+          "runtimes",
+          "Runtimes",
+          runner.runtimes.length
+            ? `<span class="muted">${runtimeCountLabel(runner.runtimes)}</span>`
+            : "",
+          runnerRuntimesMarkup(runner.runtimes),
+        );
+  const card = `<section class="flex min-w-0 flex-col gap-4" data-runner-card="${id}" aria-labelledby="runner-${id}-name">${head}${hostWarnings}${firstActivation(runner) ? "<p>Sign in the coding agents this runner should use, then turn it on.</p>" : ""}${
     revoked
       ? ""
       : block(
@@ -1294,16 +1389,9 @@ export function runnerDetailMarkup(
           }),
         )
   }${
-    revoked || runner.skills === undefined
-      ? ""
-      : block(
-          "skills",
-          "Skills",
-          runner.skills.length
-            ? `<span class="muted">${runner.skills.filter((skill) => skill.state === "up_to_date").length} of ${runner.skills.length} up to date</span>`
-            : "",
-          runnerSkillsMarkup(runner.skills, runner.name),
-        )
+    skills && runtimes
+      ? `<div class="grid min-w-0 grid-cols-1 items-start gap-4 md:grid-cols-2">${skills}${runtimes}</div>`
+      : skills + runtimes
   }${
     revoked || runner.codingAgents === undefined
       ? ""
@@ -1317,17 +1405,6 @@ export function runnerDetailMarkup(
             manages,
             busy: view.busy,
           }),
-        )
-  }${
-    revoked || runner.runtimes === undefined
-      ? ""
-      : block(
-          "runtimes",
-          "Runtimes",
-          runner.runtimes.length
-            ? `<span class="muted">${runtimeCountLabel(runner.runtimes)}</span>`
-            : "",
-          runnerRuntimesMarkup(runner.runtimes),
         )
   }${block("host", "Runner", "", runnerMetricsMarkup(metrics, view.now))}${
     metrics?.strayProcesses?.length
@@ -1349,16 +1426,18 @@ export function runnerDetailMarkup(
     view.policy === null || revoked
       ? ""
       : `<label class="runner-consent"><input type="checkbox" data-runner-sharing="${id}" data-focus="sharing:${id}"${view.policy.sharing ? " checked" : ""}${editable}><span>Share this runner with members of the same Linear project</span></label>${owns ? "" : '<p class="muted">The runner owner controls its sharing settings.</p>'}`;
-  const copy = `<button class="btn" data-runner-copy="${id}" data-focus="copy:${id}" title="${id}" aria-label="Copy runner ID ${id}">Copy ID</button>`;
   const settings = [
     concurrency ? `<div class="runner-setting"><h3>Slots</h3><div>${concurrency}</div></div>` : "",
     repositories
       ? `<div class="runner-setting"><h3>Repositories</h3><div>${repositories}</div></div>`
       : "",
     sharing ? `<div class="runner-setting"><h3>Sharing</h3><div>${sharing}</div></div>` : "",
-    runnerActionsMarkup(runner, { manages, busy: view.busy }, copy),
   ].join("");
-  return `${card}<section class="runner-section" aria-labelledby="runner-${id}-settings"><h2 id="runner-${id}-settings">Settings</h2><div class="runner-settings">${settings}</div></section>`;
+  const actions = runnerActionsMarkup(runner, { manages, busy: view.busy });
+  const footer = actions
+    ? `<div class="flex min-w-0 justify-end border-t border-border p-4">${actions}</div>`
+    : "";
+  return `${card}<section class="${CARD}" aria-labelledby="runner-${id}-settings"><div class="runner-block-head border-b border-border px-4 py-2"><h3 id="runner-${id}-settings">Settings</h3></div><div class="runner-settings p-4">${settings}</div>${footer}</section>`;
 }
 
 export function createRunners() {
@@ -1597,7 +1676,6 @@ export function createRunners() {
     }
   }
   function listView(now: number, disabled: string, status: string): string {
-    const rows = runners.map((runner) => runnerRowMarkup(runner, { now, serverVersion })).join("");
     const alert = error ? `<p role="alert" class="err">${esc(error)}</p>` : "";
     const adding = addsHosts() && addingHost;
     const expired = enrollment !== null && enrollment.expiresAt <= now;
@@ -1612,9 +1690,6 @@ export function createRunners() {
     const dialog = adding
       ? `<dialog id="runner-add-dialog" aria-labelledby="runner-add-heading"><div class="dialog-body"><div class="between"><h2 id="runner-add-heading">Add a runner</h2><button class="btn" data-runner-add-close data-focus="add-close">Close</button></div>${alert}<form id="runner-enrollment"><label class="field"><span>Runner name</span><input name="host-name" data-focus="host-name" required maxlength="80" autocomplete="off" spellcheck="false" value="${esc(hostName)}"${disabled}></label><label class="runner-consent"><input type="checkbox" name="docker-access" data-focus="docker-access"${dockerAccess ? " checked" : ""}${disabled}><span>Docker for agent jobs</span></label><p class="muted">Agent jobs get a rootless Docker daemon of their own when Docker Engine is installed on the runner.</p><button class="btn primary" type="submit" data-focus="enroll"${disabled}>${enrollment ? "Create a new command" : "Create command"}</button></form>${command}</div></dialog>`
       : "";
-    const empty = addsHosts()
-      ? "<p>No runners are enrolled. Select <b>Add a runner</b> to connect a Linux runner.</p>"
-      : "<p>No runners are enrolled. A workspace member adds a Linux runner with <b>Add a runner</b>.</p>";
     const vm = addsHosts() && memberVm.available ? memberVm.vm : null;
     const createVmSize =
       addsHosts() && memberVm.available && memberVm.vm === null
@@ -1628,9 +1703,16 @@ export function createRunners() {
       addsHosts() && memberVm.available && memberVm.vm === null
         ? `<button class="btn" data-vm-create data-focus="vm-create"${createVmSize ? ' aria-describedby="vm-create-size"' : ""}${disabled}>Create VM</button>`
         : "";
-    const actions = addsHosts()
-      ? `<div class="settings-actions">${createVm}<button class="btn primary" data-runner-add aria-haspopup="dialog" data-focus="add">Add a runner</button></div>`
-      : "";
+    const add =
+      '<button class="btn primary" data-runner-add aria-haspopup="dialog" data-focus="add">Add a runner</button>';
+    const listed = runners.length > 0;
+    const actions =
+      addsHosts() && (listed || busy || error)
+        ? `<div class="settings-actions">${createVm}${add}</div>`
+        : "";
+    const empty = addsHosts()
+      ? `<section class="flex min-w-0 flex-col items-start gap-3 rounded-base border border-dashed border-border p-6" aria-labelledby="runners-empty-heading"><h2 id="runners-empty-heading">No runners are enrolled</h2><p class="muted">A runner is a Linux machine that runs the coding agents. Paws starts no work until one is enrolled and an agent is signed in on it.</p><ol class="m-0 list-decimal pl-5 text-sm [&>li]:py-0.5"><li>Select <b>Add a runner</b> and copy the command.</li><li>Run it on the Linux machine. The runner appears here within a minute.</li><li>Open it and sign in to a coding agent, such as Claude or Codex.</li></ol><div class="settings-actions">${add}${createVm}</div></section>`
+      : "<p>No runners are enrolled. A workspace member adds a Linux runner with <b>Add a runner</b>.</p>";
     const vmSection = `${
       vm
         ? memberVmMarkup(vm, {
@@ -1646,7 +1728,7 @@ export function createRunners() {
           )
         : ""
     }`;
-    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux runners that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding ? "" : alert}${status}${createVmSize}${createVmPool}${vmSection}${runners.length ? `<ul class="runner-rows" role="list" aria-label="Runners">${rows}</ul>` : ""}${!busy && !runners.length && !error ? empty : ""}${agentCatalogMarkup(agentCatalog, now, { manages: manages(), busy, behind: codingAgentsBehind(runners, agentCatalog) })}${dialog}${deleteDialog()}`;
+    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux runners that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding ? "" : alert}${status}${createVmSize}${createVmPool}${vmSection}${listed ? runnerTilesMarkup(runners, { now, serverVersion }) + runnerTableMarkup(runners, { now, serverVersion }) : ""}${!busy && !listed && !error ? empty : ""}${agentCatalogMarkup(agentCatalog, now, { manages: manages(), busy, behind: codingAgentsBehind(runners, agentCatalog) })}${dialog}${deleteDialog()}`;
   }
   function detailView(id: string, now: number, notices: string): string {
     const list = routeHref({ view: "runners", id: null });
@@ -1670,7 +1752,7 @@ export function createRunners() {
         ? { repositoryDraft: repositoryDrafts.get(runner.id)! }
         : {}),
       workspaceRepositories,
-    })}${runnerVm ? runnerVmMarkup(runnerVm, { busy, pools, denied: adoptDenied }) : ""}<section class="runner-section" aria-labelledby="runner-history-heading"><h2 id="runner-history-heading">Execution history</h2>${usageRunner === id ? runnerHistoryMarkup(usage) : '<p class="muted">Loading execution history…</p>'}</section>${deleteDialog()}`;
+    })}${runnerVm ? runnerVmMarkup(runnerVm, { busy, pools, denied: adoptDenied }) : ""}<section class="${CARD}" aria-labelledby="runner-history-heading"><div class="runner-block-head border-b border-border px-4 py-2"><h3 id="runner-history-heading">Execution history</h3></div><div class="flex min-w-0 flex-col gap-3 p-4">${usageRunner === id ? runnerHistoryMarkup(usage) : '<p class="muted">Loading execution history…</p>'}</div></section>${deleteDialog()}`;
   }
   function markup(open: ReadonlySet<string>): string {
     if (setupRequired)
