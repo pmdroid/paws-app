@@ -56,7 +56,7 @@ import { renderMergeQueue } from "./merge-queue";
 import { renderIntake } from "./intake";
 import { renderPushOutages } from "./push-outage";
 import { renderPolicyRunnerWarnings } from "./policy-runners";
-import { itemAge, itemAgeLine, mergedTimesSection, stateTimeBar } from "./state-times";
+import { hoursLabel, itemAge, mergedTimesSection, stateTimeBar } from "./state-times";
 import {
   doingLabel,
   doingTimeLine,
@@ -65,7 +65,7 @@ import {
   itemTime,
   PREPARING_LABEL,
 } from "./doing";
-import { JOURNEY_ORDER, journey, journeyPill, journeyStepper } from "./journey";
+import { journey, journeyPill, journeyStepper } from "./journey";
 import { deadDeliveriesSection } from "./dead-deliveries";
 import { visualReviewSection } from "./visual-review";
 import { LINK_ASK_ACTIONS, LINK_ASK_ANCHORS, linkAskCard, riskCarryOverCard } from "./link-ask";
@@ -299,7 +299,76 @@ function needsYou(overview: OverviewResponse): NeedsYou[] {
 }
 
 const DONE_STATES: readonly string[] = ["merged", "completed", "stopped"];
+const CLOSED_STATES: readonly string[] = [...DONE_STATES, "cancelled"];
 const RECENTLY_MERGED = 5;
+const IN_FLIGHT = ["running", "verifying", "recovering"] as const;
+/** Active states lead the items table in this order; any other open state follows them, then queued. */
+const TABLE_ORDER = [...IN_FLIGHT, "awaiting_input", "paused", "merge_queue", "manual", "failed"];
+
+function tableRank(state: string): number {
+  if (state === "queued") return TABLE_ORDER.length + 1;
+  const at = TABLE_ORDER.indexOf(state);
+  return at === -1 ? TABLE_ORDER.length : at;
+}
+
+function statTile(label: string, value: number, detail: string, tone = ""): string {
+  return `<div class="card stat-tile gap-1"><div class="text-xs text-muted-foreground">${esc(label)}</div><div class="font-mono text-2xl ${tone}" data-stat-value>${value}</div><div class="font-mono text-[11px] text-muted-foreground">${esc(detail)}</div></div>`;
+}
+
+function statTiles(overview: OverviewResponse, open: OverviewIssue[]): string {
+  const inState = (state: string) => open.filter((item) => item.state === state);
+  const flight = IN_FLIGHT.map((state) => [state, inState(state).length] as const);
+  const awaiting = inState("awaiting_input");
+  const oldest = Math.max(
+    0,
+    ...awaiting.map(
+      (item) => item.stateTimes?.states.find((entry) => entry.state === "awaiting_input")?.ms ?? 0,
+    ),
+  );
+  const queued = inState("queued");
+  return `<div class="grid grid-cols-2 md:grid-cols-4 gap-3" role="group" aria-label="Work at a glance">${[
+    statTile(
+      "In flight",
+      flight.reduce((sum, [, count]) => sum + count, 0),
+      flight.map(([state, count]) => `${state} ${count}`).join(" · "),
+    ),
+    statTile(
+      "Awaiting input",
+      awaiting.length,
+      oldest > 0 ? `oldest ${hoursLabel(oldest)}` : awaiting.length ? "waiting" : "nothing waiting",
+      awaiting.length ? "text-state-awaiting" : "",
+    ),
+    statTile("Merge queue", overview.mergeQueueCount, "accepted, waiting to merge"),
+    statTile("Queued", queued.length, `${queued.filter((item) => item.held).length} held`),
+  ].join("")}</div>`;
+}
+
+function itemsTable(open: OverviewIssue[], now: number): string {
+  const rows = [...open]
+    .sort((left, right) => tableRank(left.state) - tableRank(right.state))
+    .map(
+      (item) =>
+        `<tr data-issue-id="${esc(item.id)}"><td><a href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span></a></td><td>${esc(item.title)}</td><td>${statePill(item.state, item.state)}</td><td>${waitingCell(item, now)}</td><td>${itemAge(item) || "—"}</td></tr>`,
+    )
+    .join("");
+  return `<section class="flex min-w-0 flex-col gap-3" aria-labelledby="work-heading"><div class="between"><h2 id="work-heading">Items <span class="cnt">${open.length}</span></h2><a href="${routeHref({ view: "issues", id: null })}">All issues</a></div>
+    ${
+      open.length
+        ? `<div class="overflow-x-auto [&_table]:min-w-[40rem] [&_td]:[overflow-wrap:normal] [&_th]:whitespace-nowrap [&_.lin-id]:whitespace-nowrap [&_.st]:whitespace-nowrap"><table class="run-table"><thead><tr><th>Item</th><th>Title</th><th>State</th><th>Waiting</th><th>Age</th></tr></thead><tbody>${rows}</tbody></table></div>`
+        : '<p class="muted">No open work right now.</p>'
+    }</section>`;
+}
+
+/** What the item waits on: its queue line or hold, else what its runner is doing. */
+function waitingCell(item: OverviewIssue, now: number): string {
+  const wait = waitingFor(item);
+  if (wait) return esc(wait);
+  const label = item.doing?.stalled
+    ? `Stalled: ${doingLabel(item) ?? "no live work and no change for 30 min"}`
+    : doingLabel(item);
+  const line = [label, doingTimeLine(item, now)].filter(Boolean).join(" · ");
+  return line ? `<span data-item-time>${esc(line)}</span>` : "—";
+}
 
 function viewOverview(overview: OverviewResponse): string {
   const warnings = `${renderPushOutages(overview)}${renderPolicyRunnerWarnings(overview)}`;
@@ -307,21 +376,8 @@ function viewOverview(overview: OverviewResponse): string {
   if (!overview.issues.length && !overview.questions.length)
     return `${pageHeading("overview")}${warnings}${intake}<div class="empty">${esc(EMPTY_ISSUES)}</div>`;
   const attention = needsYou(overview);
-  const asked = new Set(attention.map((entry) => entry.itemId));
   const now = Date.parse(overview.generatedAt);
-  const open = overview.issues
-    .filter((item) => !asked.has(item.id) && !DONE_STATES.includes(item.state))
-    .map((item) => ({
-      item,
-      phase: journey(item, item.run ?? undefined, item.verdict ?? undefined),
-    }));
-  const queued = open.filter((entry) => entry.phase.step === "queued");
-  const active = open
-    .filter((entry) => entry.phase.step !== "queued")
-    .sort(
-      (left, right) =>
-        JOURNEY_ORDER.indexOf(left.phase.step) - JOURNEY_ORDER.indexOf(right.phase.step),
-    );
+  const open = overview.issues.filter((item) => !CLOSED_STATES.includes(item.state));
   const merged = overview.issues
     .filter((item) => item.state === "merged")
     .map((item) => ({ item, at: mergedAt(item) }))
@@ -329,23 +385,11 @@ function viewOverview(overview: OverviewResponse): string {
     .slice(0, RECENTLY_MERGED);
   const count = (value: number) => ` <span class="cnt">${value}</span>`;
   return `${pageHeading("overview")}${warnings}
-    <div class="overview-grid"><div class="overview-column">
+    <div class="flex min-w-0 flex-col gap-5">${statTiles(overview, open)}
+    <div class="flex flex-wrap items-start gap-5"><div class="min-w-0 flex-[2_1_36rem]">${itemsTable(open, now)}</div>
+    <div class="flex min-w-0 flex-1 basis-80 max-w-sm flex-col gap-5 max-md:max-w-none">
     <section class="overview-section" aria-labelledby="attention-heading"><h2 id="attention-heading">Needs you${count(attention.length)}</h2>
       ${attention.length ? `<ul class="overview-work" role="list">${attention.map((entry) => `<li class="overview-row" data-item="${esc(entry.itemId)}"><div class="overview-copy"><div><span class="lin-id">${esc(entry.itemId)}</span> <b>${esc(entry.title)}</b></div><p class="muted">${esc(entry.reason)}</p>${ageOf(overview, entry.itemId)}</div><a class="btn${entry.primary ? " primary" : ""}" href="${entry.href}" aria-label="${esc(`${entry.action}: ${entry.itemId}`)}">${esc(entry.action)}</a></li>`).join("")}</ul>` : '<p class="muted">Nothing needs your attention.</p>'}
-    </section>
-    <section class="overview-section" aria-labelledby="work-heading"><div class="between"><h2 id="work-heading">In progress${count(active.length)}</h2><a href="${routeHref({ view: "issues", id: null })}">All issues</a></div>
-      ${
-        active.length
-          ? `<ul class="overview-work" role="list">${active.map(({ item, phase }) => workRow(item, phase.reason, journeyPill(phase), now)).join("")}</ul>`
-          : '<p class="muted">No work is running right now.</p>'
-      }
-    </section></div><div class="overview-column">
-    <section class="overview-section" aria-labelledby="queued-heading"><h2 id="queued-heading">Queued${count(queued.length)}</h2>
-      ${
-        queued.length
-          ? `<ul class="overview-work" role="list">${queued.map(({ item, phase }) => workRow(item, waitingFor(item) ?? phase.reason, "", now)).join("")}</ul>`
-          : '<p class="muted">Nothing is waiting for a runner.</p>'
-      }
     </section>
     ${intake}
     ${
@@ -359,17 +403,7 @@ function viewOverview(overview: OverviewResponse): string {
         : ""
     }
     ${mergedTimesSection(overview.mergedTimes ?? undefined)}
-    </div></div>`;
-}
-
-function workRow(item: OverviewIssue, reason: string, pill: string, now: number): string {
-  const runners = item.doing?.runners.join(", ") ?? "";
-  const facts = [
-    item.doing?.stalled ? "No live work for 30 min" : "",
-    runners && !reason.includes(runners) ? `on ${runners}` : "",
-    doingTimeLine(item, now) ?? itemAgeLine(item) ?? "",
-  ].filter(Boolean);
-  return `<li class="work-row" data-item="${esc(item.id)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${pill}<p class="work-facts"><span>${esc(reason)}</span>${facts.length ? `<span class="muted" data-item-time>${esc(facts.join(" · "))}</span>` : ""}</p></li>`;
+    </div></div></div>`;
 }
 
 function waitingFor(item: OverviewIssue): string | null {
