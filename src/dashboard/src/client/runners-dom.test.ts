@@ -169,3 +169,60 @@ test("with no runners the list explains what a runner is and offers Add a runner
   expect(empty?.querySelector("[data-runner-add]")).not.toBeNull();
   expect(root.querySelector("table")).toBeNull();
 });
+
+async function mountWithAgents(role: string) {
+  const fallback = globalThis.fetch;
+  globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+    const path = new URL(String(url), ORIGIN).pathname;
+    if (path === "/api/auth/session") return Response.json({ userId: "owner", role });
+    if (path === "/api/workspaces/repositories") return Response.json({ repositories: [] });
+    if (path === "/api/runners/coding-agents/update-all") {
+      requests.push({ url: path, init });
+      return Response.json({ requested: 1 });
+    }
+    if (path !== "/api/runners") return fallback(url as string, init);
+    return Response.json({
+      serverVersion: null,
+      agentVersions: [{ agent: "claude", offered: "2.1.0", refused: [], checkedAt: Date.now() }],
+      runners: [
+        { ...runner, codingAgents: [{ agent: "claude", current: "2.0.0", pending: null }] },
+      ],
+    });
+  }) as unknown as typeof fetch;
+  const root = window.document.createElement("div") as unknown as HTMLElement;
+  window.document.body.append(root as unknown as Parameters<typeof window.document.body.append>[0]);
+  createRunners().mount(root, ORIGIN, "live", null);
+  await settle();
+  return root;
+}
+
+test("Update coding agents opens the versions dialog and Update all runners posts update-all", async () => {
+  const root = await mountWithAgents("admin");
+  const open = root.querySelector<HTMLElement>("[data-agents-open]")!;
+  expect(open.textContent).toBe("Update coding agents 1");
+  expect(root.querySelector("#agents-dialog")).toBeNull();
+  open.click();
+  await settle();
+  const dialog = root.querySelector<HTMLDialogElement>("#agents-dialog")!;
+  expect(dialog.open).toBe(true);
+  expect(dialog.textContent).toContain("build-box2.0.0Newest eligible 2.1.0");
+  dialog.querySelector<HTMLElement>("[data-agents-update-all]")!.click();
+  await settle();
+  const post = requests.find((request) => request.init?.method === "POST");
+  expect(post?.url).toBe("/api/runners/coding-agents/update-all");
+  expect(root.querySelector("#agents-dialog")?.textContent).toContain(
+    "Sent 1 coding agent update to your runners.",
+  );
+  root.querySelector<HTMLElement>("[data-agents-close]")!.click();
+  await settle();
+  expect(root.querySelector("#agents-dialog")).toBeNull();
+});
+
+test("members who do not manage runners see the versions without Update all runners", async () => {
+  const root = await mountWithAgents("member");
+  root.querySelector<HTMLElement>("[data-agents-open]")!.click();
+  await settle();
+  const dialog = root.querySelector("#agents-dialog")!;
+  expect(dialog.textContent).toContain("Offered 2.1.0");
+  expect(dialog.querySelector("[data-agents-update-all]")).toBeNull();
+});
