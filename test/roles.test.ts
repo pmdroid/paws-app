@@ -1,21 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { join } from "node:path";
 import { loadRuntime } from "../src/config";
 import { OUTBOX_ACTIVITY } from "../src/core";
 import {
   enqueueJobOnce,
   enqueueOutbox,
-  migrate,
-  openDatabase,
   registerInstance,
   startLoops,
   type InstanceRole,
-  sqliteDb,
   type Db,
 } from "../src/db";
-import { asc, eq, isNotNull } from "drizzle-orm";
-import { pgliteServer } from "./pglite";
+import { asc, eq, isNotNull, ne } from "drizzle-orm";
+import { pgliteServer, tempStore } from "./pglite";
 import { createInboxStore, createIntakePollSource, startCatchUpPoller } from "../src/linear";
+import { seed } from "./dialects";
 import { tempHome } from "./helpers";
 
 const ROOT = new URL("..", import.meta.url).pathname;
@@ -53,20 +50,9 @@ async function readyUrl(proc: ReturnType<typeof spawnPaws>): Promise<string> {
   throw new Error(`Paws did not print ready: ${text}`);
 }
 
-function sharedDatabase() {
-  const path = join(tempHome(), "paws.db");
-  const first = openDatabase(path);
-  migrate(first);
-  return { first, second: openDatabase(path) };
-}
-
-function recurringQueues(db: ReturnType<typeof openDatabase>): string[] {
-  return db
-    .query<{ queue: string }, []>(
-      "SELECT queue FROM job WHERE recurring_every_ms IS NOT NULL ORDER BY queue",
-    )
-    .all()
-    .map((row) => row.queue);
+async function sharedDatabase() {
+  const { db, close } = await tempStore();
+  return { first: db, second: db, close };
 }
 
 async function waitFor(done: () => boolean | Promise<boolean>): Promise<void> {
@@ -97,15 +83,15 @@ describe("roles", () => {
   });
 
   test("a web and a worker instance run a recurring job once per interval", async () => {
-    const { first, second } = sharedDatabase();
+    const { first, second, close } = await sharedDatabase();
     const now = Date.now();
-    const web = await registerInstance(sqliteDb(first), {
+    const web = await registerInstance(first, {
       role: "web",
       host: "acme-web",
       version: null,
       now,
     });
-    const worker = await registerInstance(sqliteDb(second), {
+    const worker = await registerInstance(second, {
       role: "worker",
       host: "acme-worker",
       version: null,
@@ -123,7 +109,7 @@ describe("roles", () => {
           jobs.register("acme.catalog.refresh", () => {
             runs.push(role);
           });
-          await enqueueJobOnce(sqliteDb(db), {
+          await enqueueJobOnce(db, {
             queue: "acme.catalog.refresh",
             jobKey: "acme.catalog.refresh",
             recurringEveryMs: 600_000,
@@ -140,22 +126,21 @@ describe("roles", () => {
     controller.abort();
     await Promise.all(loops.map((loop) => loop.stop()));
     expect(runs).toEqual(["worker"]);
-    expect(recurringQueues(first)).toEqual(["acme.catalog.refresh"]);
-    first.close();
-    second.close();
+    expect(await storeRecurringQueues(first)).toEqual(["acme.catalog.refresh"]);
+    await close();
   });
 
   test("recurring jobs are pruned only when no other live instance runs jobs", async () => {
-    const { first, second } = sharedDatabase();
+    const { first, second, close } = await sharedDatabase();
     const now = Date.now();
-    const self = await registerInstance(sqliteDb(first), {
+    const self = await registerInstance(first, {
       role: "all",
       host: "acme-a",
       version: null,
       now,
     });
     for (const queue of ["acme.kept", "acme.legacy"])
-      await enqueueJobOnce(sqliteDb(first), {
+      await enqueueJobOnce(first, {
         queue,
         jobKey: queue,
         recurringEveryMs: 600_000,
@@ -177,23 +162,24 @@ describe("roles", () => {
       await loops.stop();
     };
 
-    await registerInstance(sqliteDb(second), {
+    await registerInstance(second, {
       role: "worker",
       host: "acme-b",
       version: null,
       now,
     });
     await run("all");
-    expect(recurringQueues(first)).toEqual(["acme.kept", "acme.legacy"]);
+    expect(await storeRecurringQueues(first)).toEqual(["acme.kept", "acme.legacy"]);
 
-    second.run("UPDATE instance SET role = 'web' WHERE id != ?", [self.id]);
+    await seed(second, (q) =>
+      q.orm.update(q.t.instance).set({ role: "web" }).where(ne(q.t.instance.id, self.id)),
+    );
     await run("web");
-    expect(recurringQueues(first)).toEqual(["acme.kept", "acme.legacy"]);
+    expect(await storeRecurringQueues(first)).toEqual(["acme.kept", "acme.legacy"]);
 
     await run("all");
-    expect(recurringQueues(first)).toEqual(["acme.kept"]);
-    first.close();
-    second.close();
+    expect(await storeRecurringQueues(first)).toEqual(["acme.kept"]);
+    await close();
   });
 
   test("a web process beside a worker claims nothing and keeps the worker's recurring jobs", async () => {
@@ -261,7 +247,7 @@ describe("roles", () => {
     }
   }, 40_000);
   test("two instances' catch-up pollers share one due time and poll once per interval", async () => {
-    const { first, second } = sharedDatabase();
+    const { first, second, close } = await sharedDatabase();
     let clock = 1_700_000_000_000;
     let requests = 0;
     const source = createIntakePollSource(
@@ -281,7 +267,7 @@ describe("roles", () => {
     const [web, worker] = [first, second].map((db) =>
       startCatchUpPoller({
         source,
-        store: createInboxStore(sqliteDb(db)),
+        store: createInboxStore(db),
         onEvent: () => {},
         timer: false,
         now: () => clock,
@@ -296,8 +282,7 @@ describe("roles", () => {
     await worker!.pollDue();
     expect(requests).toBeGreaterThan(afterFirst);
     await Promise.all([web!.stop(), worker!.stop()]);
-    first.close();
-    second.close();
+    await close();
   });
 
   test("a second worker leaves a refresh that already ran for its next interval", async () => {
@@ -331,9 +316,8 @@ describe("roles", () => {
     }
   }, 40_000);
   test("a web instance's outbox claims nothing, even on a direct tick", async () => {
-    const db = openDatabase(":memory:");
-    migrate(db);
-    await enqueueOutbox(sqliteDb(db), {
+    const { db, close } = await tempStore();
+    await enqueueOutbox(db, {
       target: OUTBOX_ACTIVITY.target,
       op: OUTBOX_ACTIVITY.op,
       orderingKey: "acme-session",
@@ -365,6 +349,6 @@ describe("roles", () => {
     expect(delivered).toEqual([]);
     await run("all");
     expect(delivered).toHaveLength(1);
-    db.close();
+    await close();
   });
 });

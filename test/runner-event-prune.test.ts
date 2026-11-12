@@ -1,90 +1,150 @@
 import { expect, test } from "bun:test";
-import { migrate, openDatabase, sqliteDb } from "../src/db";
+import { and, eq } from "drizzle-orm";
+import type { Q } from "../src/db";
 import { pruneRunnerEvents } from "../src/runner-work";
+import { seed, withoutForeignKeys } from "./dialects";
+import { tempStore } from "./pglite";
 
 const DAY = 86_400_000;
 const NOW = 100 * DAY;
 
-function setup() {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  db.run("PRAGMA foreign_keys=OFF");
+async function setup() {
+  const { db, close } = await tempStore();
+  await withoutForeignKeys(db);
   const run = (
     id: string,
     endedDaysAgo: number,
     events: number,
     options: { status?: string; workEnded?: boolean } = {},
-  ) => {
-    db.run(
-      "INSERT INTO run(id,item_id,kind,agent,status,created_at,updated_at) VALUES(?,'item','agent','codex',?,0,?)",
-      [id, options.status ?? "ended", NOW - endedDaysAgo * DAY],
+  ) =>
+    seed(
+      db,
+      (q) =>
+        q.orm.insert(q.t.run).values({
+          id,
+          itemId: "item",
+          kind: "agent",
+          agent: "codex",
+          status: options.status ?? "ended",
+          createdAt: 0,
+          updatedAt: NOW - endedDaysAgo * DAY,
+        }),
+      (q) =>
+        q.orm.insert(q.t.runnerWork).values({
+          runId: id,
+          runnerId: "runner",
+          workspaceId: "workspace",
+          generation: 1,
+          runnerFence: 0,
+          commandId: `command-${id}`,
+          leaseUntil: 0,
+          endedAt: options.workEnded === false ? null : 0,
+        }),
+      ...Array.from(
+        { length: Math.ceil(events / 1000) },
+        (_, chunk) => (q: Q) =>
+          q.orm.insert(q.t.runnerEvent).values(
+            Array.from({ length: Math.min(1000, events - chunk * 1000) }, (_row, index) => ({
+              runId: id,
+              generation: 1,
+              sequence: chunk * 1000 + index + 1,
+              payload: "sealed",
+              receivedAt: 0,
+              keyId: "key",
+              type: "progress",
+            })),
+          ),
+      ),
     );
-    db.run(
-      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at) VALUES(?,'runner','workspace',1,0,?,0,?)",
-      [id, `command-${id}`, options.workEnded === false ? null : 0],
-    );
-    const insert = db.query(
-      "INSERT INTO runner_event(run_id,generation,sequence,payload,received_at,key_id,type) VALUES(?,1,?,'\"sealed\"',0,'key',?)",
-    );
-    db.transaction(() => {
-      for (let sequence = 1; sequence <= events; sequence++) insert.run(id, sequence, "progress");
-    })();
-  };
   const item = (id: string, state: string, runId: string) =>
-    db.run(
-      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,current_run_id) VALUES(?,'d',?,?,'t',?,?,0,0,?)",
-      [id, id, id, state, `paws/${id}`, runId],
+    seed(db, (q) =>
+      q.orm.insert(q.t.workItem).values({
+        id,
+        delegationId: "d",
+        linearIssueId: id,
+        linearIdentifier: id,
+        title: "t",
+        state,
+        branchName: `paws/${id}`,
+        position: 0,
+        createdAt: 0,
+        currentRunId: runId,
+      }),
     );
-  const count = (runId: string) =>
-    db
-      .query<{ n: number }, [string]>("SELECT count(*) AS n FROM runner_event WHERE run_id=?")
-      .get(runId)!.n;
-  return { db, run, item, count };
+  const ask = (runId: string) =>
+    seed(db, (q) =>
+      q.orm
+        .update(q.t.runnerEvent)
+        .set({ type: "question" })
+        .where(and(eq(q.t.runnerEvent.runId, runId), eq(q.t.runnerEvent.sequence, 2))),
+    );
+  const count = async (runId: string) =>
+    (
+      await db.run((q) =>
+        q.all(q.orm.select().from(q.t.runnerEvent).where(eq(q.t.runnerEvent.runId, runId))),
+      )
+    ).length;
+  const runs = async () => (await db.run((q) => q.all(q.orm.select().from(q.t.run)))).length;
+  return {
+    db,
+    close,
+    run,
+    item,
+    ask,
+    count,
+    runs,
+  };
 }
 
 test("the prune deletes events of runs that ended over a week ago and keeps the rest", async () => {
-  const { db, run, item, count } = setup();
-  run("old", 8, 3);
-  run("lost", 30, 2, { status: "lost" });
-  run("recent", 6, 3);
-  run("active", 30, 2, { status: "active" });
-  run("current", 30, 2);
-  item("open", "awaiting_input", "current");
-  run("finished", 30, 2);
-  item("done", "merged", "finished");
-  run("open-work", 30, 2, { workEnded: false });
-  run("asked", 30, 3);
-  db.run("UPDATE runner_event SET type='question' WHERE run_id='asked' AND sequence=2");
-  run("answered", 30, 3);
-  db.run("UPDATE runner_event SET type='question' WHERE run_id='answered' AND sequence=2");
-  db.run("INSERT INTO runner_question_answer VALUES('answered',1,2,'yes',0)");
+  const { db, close, run, item, ask, count, runs } = await setup();
+  await run("old", 8, 3);
+  await run("lost", 30, 2, { status: "lost" });
+  await run("recent", 6, 3);
+  await run("active", 30, 2, { status: "active" });
+  await run("current", 30, 2);
+  await item("open", "awaiting_input", "current");
+  await run("finished", 30, 2);
+  await item("done", "merged", "finished");
+  await run("open-work", 30, 2, { workEnded: false });
+  await run("asked", 30, 3);
+  await ask("asked");
+  await run("answered", 30, 3);
+  await ask("answered");
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.runnerQuestionAnswer)
+      .values({ runId: "answered", generation: 1, sequence: 2, answer: "yes", createdAt: 0 }),
+  );
 
-  expect(await pruneRunnerEvents({ store: sqliteDb(db), now: NOW })).toEqual({ deleted: 9 });
-  expect(count("old")).toBe(0);
-  expect(count("lost")).toBe(0);
-  expect(count("finished")).toBe(0);
-  expect(count("recent")).toBe(3);
-  expect(count("active")).toBe(2);
-  expect(count("current")).toBe(2);
-  expect(count("open-work")).toBe(2);
-  expect(count("asked")).toBe(3);
-  expect(count("answered")).toBe(1);
-  expect(db.query("SELECT count(*) AS n FROM run").get()).toEqual({ n: 9 });
+  expect(await pruneRunnerEvents({ store: db, now: NOW })).toEqual({ deleted: 9 });
+  expect(await count("old")).toBe(0);
+  expect(await count("lost")).toBe(0);
+  expect(await count("finished")).toBe(0);
+  expect(await count("recent")).toBe(3);
+  expect(await count("active")).toBe(2);
+  expect(await count("current")).toBe(2);
+  expect(await count("open-work")).toBe(2);
+  expect(await count("asked")).toBe(3);
+  expect(await count("answered")).toBe(1);
+  expect(await runs()).toBe(9);
 
-  expect(await pruneRunnerEvents({ store: sqliteDb(db), now: NOW })).toEqual({ deleted: 0 });
+  expect(await pruneRunnerEvents({ store: db, now: NOW })).toEqual({ deleted: 0 });
+  await close();
 });
 
 test("the prune deletes at most 5,000 events per transaction", async () => {
-  const { db, run, count } = setup();
-  run("big", 8, 12_001);
+  const { db, close, run, count } = await setup();
+  await run("big", 8, 12_001);
   const batches: number[] = [];
   expect(
     await pruneRunnerEvents({
-      store: sqliteDb(db),
+      store: db,
       now: NOW,
       onBatch: (deleted) => batches.push(deleted),
     }),
   ).toEqual({ deleted: 12_001 });
   expect(batches).toEqual([5_000, 5_000, 2_001]);
-  expect(count("big")).toBe(0);
+  expect(await count("big")).toBe(0);
+  await close();
 });
