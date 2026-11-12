@@ -167,7 +167,7 @@ const SCRIPT = String.raw`(() => {
   };
   const quote = (value) => "'" + value.replaceAll("'", "'\\''") + "'";
   const command = (enrollment) => {
-    const config = JSON.stringify({ ...enrollment.config, concurrency: 2 });
+    const config = JSON.stringify(enrollment.config);
     return [
       "curl -fsSL https://get.paws.boo | sudo sh",
       "printf '%s\\n' " + quote(enrollment.token) + " | sudo install -o root -g root -m 0600 /dev/stdin /etc/paws-runner/enrollment-token",
@@ -291,7 +291,7 @@ const SCRIPT = String.raw`(() => {
       } else {
         const intro = document.createElement("p");
         intro.className = "detail";
-        intro.textContent = "Run this on the Linux host. It installs the runner, writes its config for this Paws and enrolls with a single-use token. This step completes when the runner enrolls.";
+        intro.textContent = "Run this on the Linux host. It installs the runner, writes its config for this Paws and enrolls with a single-use token. It takes one slot per 2 CPUs and 4 GB of memory on the host, from 1 to 16; concurrency in /etc/paws-runner/config.json overrides it. This step completes when the runner enrolls.";
         const pre = document.createElement("pre");
         pre.id = "host-command-text";
         pre.textContent = command(enrollment);
