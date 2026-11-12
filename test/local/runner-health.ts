@@ -4,14 +4,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { request } from "node:https";
 import { join } from "node:path";
-import {
-  consumeWorkspaceBootstrap,
-  migrate,
-  openDatabase,
-  putWorkspaceUser,
-  syncWorkspaceMember,
-  sqliteDb,
-} from "../../src/db";
+import { consumeWorkspaceBootstrap, putWorkspaceUser, syncWorkspaceMember } from "../../src/db";
 import { createRunnerControl } from "../../src/runner-control";
 import { createRunnerHealth } from "../../src/runner-health";
 import {
@@ -27,24 +20,25 @@ import {
 } from "../../src/runner-protocol";
 import { createRunnerWork } from "../../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
+import { pgliteServer } from "../pglite";
+import { eq } from "drizzle-orm";
 
 export async function probeRunnerHealth(
   root: string,
   observe: (name: string, passed: boolean, observed: unknown) => void,
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const path = join(root, "paws.sqlite");
-  const db = openDatabase(path);
-  migrate(db);
+  const postgres = await pgliteServer();
+  const db = postgres.store;
   let now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "health-owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "health-org", now);
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const bootstrap = await issueWorkspaceBootstrap(db, "health-org", now);
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "health-org",
     name: "Fixture",
@@ -59,13 +53,13 @@ export async function probeRunnerHealth(
     authenticatedAt: now,
     teamIds: [],
   };
-  const memberId = await putWorkspaceUser(sqliteDb(db), {
+  const memberId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "health-member",
     name: "Member",
     email: "member@example.invalid",
   });
-  await syncWorkspaceMember(sqliteDb(db), {
+  await syncWorkspaceMember(db, {
     workspaceId: workspace.id,
     userId: memberId,
     role: "member",
@@ -78,7 +72,7 @@ export async function probeRunnerHealth(
   now = Date.now();
   let listener: Awaited<ReturnType<typeof startRunnerListener>> | undefined;
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority,
     certificateRoot: authorityRoot,
     disconnect: (fingerprint) => listener?.revoke(fingerprint),
@@ -92,18 +86,22 @@ export async function probeRunnerHealth(
   });
   const { runnerId } = identity;
 
-  db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
+  await db.run(function* (q) {
+    yield* q.exec(
+      q.orm.update(q.t.runner).set({ status: "active" }).where(eq(q.t.runner.id, runnerId)),
+    );
+  });
   assert.equal(identity.status, "approved");
   if (identity.status !== "approved") throw new Error("Expected approved fixture identity");
   const signing = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "health-fixture",
     privateKey: signing.privateKey,
     eventKey: Buffer.alloc(32, 7),
     now: () => now,
   });
-  const health = createRunnerHealth({ store: sqliteDb(db), work, now: () => now });
+  const health = createRunnerHealth({ store: db, work, now: () => now });
   const requestInput = {
     type: "probe" as const,
     profile: { agent: "codex" as const, model: null },
@@ -349,7 +347,7 @@ export async function probeRunnerHealth(
         process.execPath,
         "--no-env-file",
         new URL("../fixtures/runner-health-restart.ts", import.meta.url).pathname,
-        path,
+        postgres.url,
         runnerId,
         pending.commandId,
         String(now),
@@ -417,6 +415,6 @@ export async function probeRunnerHealth(
     );
   } finally {
     await listener?.stop();
-    db.close();
+    await postgres.close();
   }
 }

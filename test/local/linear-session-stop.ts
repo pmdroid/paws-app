@@ -4,8 +4,6 @@ import { join } from "node:path";
 import { createHmac } from "node:crypto";
 import { FakeClock, JOB_KIND } from "../../src/core";
 import {
-  openDatabase,
-  migrate,
   insertQueuedItem,
   beginImplementRun,
   applyWorkItemEvent,
@@ -19,7 +17,6 @@ import {
   listOutbox,
   OutboxDispatcher,
   recordItemPullRequest,
-  sqliteDb,
 } from "../../src/db";
 import {
   createInboxStore,
@@ -28,16 +25,16 @@ import {
   handleLinearWebhook,
 } from "../../src/linear";
 import { Orchestrator } from "../../src/loop";
+import { tempStore } from "../pglite";
 
 export async function probeLinearSessionStop(root: string) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const db = openDatabase(join(root, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const clock = new FakeClock(10_000);
   const jobs = new JobLoop(db, clock);
   let joined = 0;
   const orchestrator = new Orchestrator({
-    store: sqliteDb(db),
+    store: db,
     jobs,
     clock,
     outbox: new OutboxDispatcher(db, clock),
@@ -51,13 +48,13 @@ export async function probeLinearSessionStop(root: string) {
   try {
     for (const field of ["dismissedAt", "archivedAt", "stopping"] as const) {
       const old = await insertQueuedItem(db, { id: `old-${field}`, sessionKey: `old-${field}` });
-      await beginImplementRun(sqliteDb(db), old.id, clock.now());
-      await applyWorkItemEvent(sqliteDb(db), old.id, "blocking_question");
+      await beginImplementRun(db, old.id, clock.now());
+      await applyWorkItemEvent(db, old.id, "blocking_question");
       const replacement = await insertQueuedItem(db, {
         id: `new-${field}`,
         sessionKey: `new-${field}`,
       });
-      await ensureLinearSession(sqliteDb(db), {
+      await ensureLinearSession(db, {
         sessionId: old.sessionKey!,
         issueId: old.linearIssueId,
         organizationId: "organization",
@@ -65,7 +62,7 @@ export async function probeLinearSessionStop(root: string) {
         creatorId: "user",
         now: 1,
       });
-      const store = createInboxStore(sqliteDb(db));
+      const store = createInboxStore(db);
       await store.commit({
         dedupeKey: `session:${old.sessionKey}:created`,
         deliveryId: null,
@@ -114,7 +111,7 @@ export async function probeLinearSessionStop(root: string) {
       const poller = startCatchUpPoller({
         source,
         store,
-        db: sqliteDb(db),
+        db: db,
         now: () => clock.now(),
         sleeper: {
           wait: () =>
@@ -137,9 +134,9 @@ export async function probeLinearSessionStop(root: string) {
       await sleeping;
       await poller.pollNow();
       await poller.stop();
-      assert.equal((await getWorkItem(sqliteDb(db), old.id))?.state, "paused");
-      assert.equal((await getLinearSession(sqliteDb(db), old.sessionKey!))?.stoppedAt, 9_000);
-      assert.equal((await getWorkItem(sqliteDb(db), replacement.id))?.state, "queued");
+      assert.equal((await getWorkItem(db, old.id))?.state, "paused");
+      assert.equal((await getLinearSession(db, old.sessionKey!))?.stoppedAt, 9_000);
+      assert.equal((await getWorkItem(db, replacement.id))?.state, "queued");
       observations.push({
         case: field,
         oldStopped: true,
@@ -148,14 +145,14 @@ export async function probeLinearSessionStop(root: string) {
       });
     }
     const queued = await insertQueuedItem(db, { id: "queued-stop" });
-    await enqueueCommand(sqliteDb(db), {
+    await enqueueCommand(db, {
       type: "stop",
       source: "linear",
       itemId: queued.id,
       requestedAt: clock.now(),
     });
     await jobs.tick();
-    assert.equal((await getWorkItem(sqliteDb(db), queued.id))?.state, "paused");
+    assert.equal((await getWorkItem(db, queued.id))?.state, "paused");
     observations.push({ case: "claimed-stop-job", passed: true });
     assert.equal(joined, 3);
     for (const field of ["stop", "archivedAt", "dismissedAt", "stopping"] as const) {
@@ -165,14 +162,14 @@ export async function probeLinearSessionStop(root: string) {
       });
       // The item waits in the merge queue with an open pull request.
       for (const step of ["dispatched", "turn_ended", "closeout_accepted"] as const)
-        await applyWorkItemEvent(sqliteDb(db), old.id, step);
-      await recordItemPullRequest(sqliteDb(db), {
+        await applyWorkItemEvent(db, old.id, step);
+      await recordItemPullRequest(db, {
         itemId: old.id,
         pullNumber: 42,
         pullUrl: null,
         openedAt: 1,
       });
-      await enqueueJob(sqliteDb(db), {
+      await enqueueJob(db, {
         queue: JOB_KIND.merge,
         payload: { itemId: old.id },
         now: clock.now(),
@@ -181,7 +178,7 @@ export async function probeLinearSessionStop(root: string) {
         id: `webhook-new-${field}`,
         sessionKey: `webhook-new-${field}`,
       });
-      await ensureLinearSession(sqliteDb(db), {
+      await ensureLinearSession(db, {
         sessionId: old.sessionKey!,
         issueId: old.linearIssueId,
         organizationId: "organization",
@@ -211,7 +208,7 @@ export async function probeLinearSessionStop(root: string) {
         port: 0,
         fetch: (request) =>
           handleLinearWebhook(request, "test-webhook-secret", {
-            store: createInboxStore(sqliteDb(db)),
+            store: createInboxStore(db),
             now: () => clock.now(),
             onEvent: (event) => {
               done = orchestrator.onLinearEvent(event);
@@ -222,7 +219,7 @@ export async function probeLinearSessionStop(root: string) {
       try {
         const unsigned = await fetch(server.url, { method: "POST", body });
         assert.equal(unsigned.status, 401);
-        assert.equal((await getWorkItem(sqliteDb(db), old.id))?.state, "merge_queue");
+        assert.equal((await getWorkItem(db, old.id))?.state, "merge_queue");
         for (let attempt = 0; attempt < 2; attempt++) {
           const response = await fetch(server.url, {
             method: "POST",
@@ -232,22 +229,22 @@ export async function probeLinearSessionStop(root: string) {
           assert.equal(response.status, 200);
           await done;
         }
-        assert.equal((await getWorkItem(sqliteDb(db), old.id))?.state, "paused");
-        assert.equal((await getWorkItem(sqliteDb(db), replacement.id))?.state, "queued");
+        assert.equal((await getWorkItem(db, old.id))?.state, "paused");
+        assert.equal((await getWorkItem(db, replacement.id))?.state, "queued");
         // A stop or archive from Linear leaves the pull request and the issue status alone.
         assert.ok(
-          !(await listJobs(sqliteDb(db))).some(
+          !(await listJobs(db)).some(
             (job) =>
               job.queue === JOB_KIND.closeStoppedPull &&
               (job.payload as { itemId?: string }).itemId === old.id,
           ),
         );
-        const sessionRows = (await listOutbox(sqliteDb(db))).filter(
+        const sessionRows = (await listOutbox(db)).filter(
           (row) => row.orderingKey === old.sessionKey,
         );
         assert.ok(!sessionRows.some((row) => row.op === "status"));
         assert.ok(
-          (await listOutbox(sqliteDb(db))).every(
+          (await listOutbox(db)).every(
             (row) => row.op !== "status" || (row.payload as { itemId?: string }).itemId !== old.id,
           ),
         );
@@ -259,7 +256,7 @@ export async function probeLinearSessionStop(root: string) {
           ),
         );
         assert.ok(
-          !(await listJobs(sqliteDb(db))).some(
+          !(await listJobs(db)).some(
             (job) =>
               job.queue === JOB_KIND.merge &&
               job.status === "pending" &&
@@ -281,7 +278,7 @@ export async function probeLinearSessionStop(root: string) {
     return observations;
   } finally {
     await orchestrator.shutdown();
-    db.close();
+    await close();
   }
 }
 if (import.meta.main) console.log(await probeLinearSessionStop(process.argv[2]!));

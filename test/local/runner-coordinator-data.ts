@@ -8,11 +8,8 @@ import {
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
-  sqliteDb,
 } from "../../src/db";
 import { initializeRunnerCoordinator, openRunnerCoordinator } from "../../src/runner-coordinator";
 import { openRunnerDaemon, RunnerRequestError } from "../../src/runner-daemon";
@@ -25,6 +22,9 @@ import { S3Client } from "bun";
 import { createFetchGitHubClient, createGitHubApp } from "../../src/github";
 import { RUNNER_LEASE_GRACE_MS, type RunnerCommand } from "../../src/runner-protocol";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
+import { tempStore } from "../pglite";
+import { eq } from "drizzle-orm";
+import { seed } from "../dialects";
 
 export async function probeRunnerCoordinatorData(
   root: string,
@@ -32,17 +32,16 @@ export async function probeRunnerCoordinatorData(
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
   let now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "relay-owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "relay-org", now);
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const bootstrap = await issueWorkspaceBootstrap(db, "relay-org", now);
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "relay-org",
     name: "Relay",
@@ -199,10 +198,14 @@ export async function probeRunnerCoordinatorData(
     const enrolled = await daemon.enroll("Coordinator data", enrollmentGrant.token);
     if (enrolled.phase !== "paired") throw new Error("Runner enrollment failed");
     const { runnerId } = enrolled;
-    db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
+    await db.run(function* (q) {
+      yield* q.exec(
+        q.orm.update(q.t.runner).set({ status: "active" }).where(eq(q.t.runner.id, runnerId)),
+      );
+    });
     const item = await insertQueuedItem(db, { id: "relay-item", now, sessionKey: "relay-session" });
-    const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
-    await recordLinearInstallation(sqliteDb(db), {
+    const { run } = await beginImplementRun(db, item.id, now);
+    await recordLinearInstallation(db, {
       organizationId: "relay-org",
       oauthClientId: "fixture",
       appUserId: "app",
@@ -210,7 +213,7 @@ export async function probeRunnerCoordinatorData(
       teamId: "team",
       observedAtMs: now,
     });
-    await bindLinearSessionTask(sqliteDb(db), "relay-session", item.delegationId, {
+    await bindLinearSessionTask(db, "relay-session", item.delegationId, {
       actorId: "relay-owner",
     });
     const repository = {
@@ -219,12 +222,12 @@ export async function probeRunnerCoordinatorData(
       remoteUrl: "https://github.com/fixture/repository.git",
       baseSha: "a".repeat(40),
     };
-    await bindWorkItemRepository(sqliteDb(db), item.id, repository);
-    db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-      workspace.id,
-      "fixture/repository",
-      "team",
-    ]);
+    await bindWorkItemRepository(db, item.id, repository);
+    await seed(db, (q) =>
+      q.orm
+        .insert(q.t.workspaceRepository)
+        .values({ workspaceId: workspace.id, repository: "fixture/repository", teamId: "team" }),
+    );
     const command: Extract<RunnerCommand, { type: "run" }> = {
       type: "run",
       id: workspaceId(),
@@ -402,6 +405,6 @@ export async function probeRunnerCoordinatorData(
     await coordinator.stop();
     await githubApi.stop(true);
     await objectServer.stop(true);
-    db.close();
+    await close();
   }
 }

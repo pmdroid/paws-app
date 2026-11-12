@@ -16,11 +16,8 @@ import {
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
-  sqliteDb,
 } from "../../src/db";
 import { createRunnerControl } from "../../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../../src/runner-identity";
@@ -36,22 +33,24 @@ import {
 } from "../../src/runner-artifacts";
 import { createRunnerWork } from "../../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
+import { tempStore } from "../pglite";
+import { eq } from "drizzle-orm";
+import { seed } from "../dialects";
 
 type Observe = (name: string, passed: boolean, observed: unknown) => void;
 export async function probeRunnerArtifacts(root: string, observe: Observe) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
   try {
     const now = Date.now();
-    const userId = await putWorkspaceUser(sqliteDb(db), {
+    const userId = await putWorkspaceUser(db, {
       id: workspaceId(),
       linearUserId: "owner",
       name: "Owner",
       email: "owner@example.invalid",
     });
-    const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "fixture-org", now);
-    const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+    const bootstrap = await issueWorkspaceBootstrap(db, "fixture-org", now);
+    const workspace = await consumeWorkspaceBootstrap(db, {
       id: workspaceId(),
       organizationId: "fixture-org",
       name: "Fixture",
@@ -62,7 +61,7 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
     const authorityRoot = join(root, "issuer");
     const authority = await initializeRunnerAuthority(authorityRoot);
     const control = createRunnerControl({
-      store: sqliteDb(db),
+      store: db,
       authority,
       certificateRoot: authorityRoot,
       disconnect() {},
@@ -80,14 +79,18 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
         ).token,
       })
     ).runnerId;
-    db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
+    await db.run(function* (q) {
+      yield* q.exec(
+        q.orm.update(q.t.runner).set({ status: "active" }).where(eq(q.t.runner.id, runnerId)),
+      );
+    });
     const item = await insertQueuedItem(db, {
       id: "result-item",
       now,
       sessionKey: "result-session",
     });
-    const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
-    await recordLinearInstallation(sqliteDb(db), {
+    const { run } = await beginImplementRun(db, item.id, now);
+    await recordLinearInstallation(db, {
       organizationId: "fixture-org",
       oauthClientId: "fixture",
       appUserId: "app",
@@ -95,7 +98,7 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
       teamId: "team",
       observedAtMs: now,
     });
-    await bindLinearSessionTask(sqliteDb(db), "result-session", item.delegationId, {
+    await bindLinearSessionTask(db, "result-session", item.delegationId, {
       actorId: "owner",
     });
     const repository = {
@@ -104,15 +107,15 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
       remoteUrl: "https://github.com/fixture/repository.git",
       baseSha: "a".repeat(40),
     };
-    await bindWorkItemRepository(sqliteDb(db), item.id, repository);
-    db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-      workspace.id,
-      "fixture/repository",
-      "team",
-    ]);
+    await bindWorkItemRepository(db, item.id, repository);
+    await seed(db, (q) =>
+      q.orm
+        .insert(q.t.workspaceRepository)
+        .values({ workspaceId: workspace.id, repository: "fixture/repository", teamId: "team" }),
+    );
     const keys = generateKeyPairSync("ed25519");
     const work = createRunnerWork({
-      store: sqliteDb(db),
+      store: db,
       keyId: "fixture",
       privateKey: keys.privateKey,
       eventKey: Buffer.alloc(32, 7),
@@ -372,6 +375,6 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
       finishedGrant: 409,
     });
   } finally {
-    db.close();
+    await close();
   }
 }
