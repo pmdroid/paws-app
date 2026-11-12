@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { setJournalSink, systemClock } from "../src/core";
 import {
   JobLoop,
@@ -14,7 +15,7 @@ import {
   listWorkItems,
   putWorkspaceUser,
   recordLinearInstallation,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import { syncItemDependencies } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
@@ -29,7 +30,8 @@ import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { dispatch } from "../src/scheduler";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { migratedDatabase } from "./helpers";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const GITHUB_URL = "https://github.com/acme/fixture.git";
 const gitConfig = ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"] as const;
@@ -44,7 +46,7 @@ afterAll(() => {
 });
 
 type Fixture = {
-  db: ReturnType<typeof migratedDatabase>;
+  db: Db;
   runnerId: string;
   placement: RunnerPlacement;
 };
@@ -89,26 +91,30 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
     GIT_CONFIG_VALUE_0: GITHUB_URL,
   });
 
-  const db = migratedDatabase(join(root, "paws.db"));
+  const { db, close } = await tempStore();
   const now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
-  db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, "acme/fixture", "team"]);
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspaceRepository)
+      .values({ workspaceId: workspace.id, repository: "acme/fixture", teamId: "team" }),
+  );
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -125,26 +131,30 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
     ...enrollment,
     token: (await control.createEnrollment(owner, enrollment)).token,
   });
-  db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
-  db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);
-  db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [runnerId]);
+  await seed(
+    db,
+    (q) => q.orm.update(q.t.runner).set({ status: "active" }).where(eq(q.t.runner.id, runnerId)),
+    (q) => q.orm.insert(q.t.runnerPolicy).values({ runnerId: runnerId }),
+    (q) =>
+      q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: runnerId, agent: "claude", ready: 1 }),
+  );
 
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
   await work.heartbeat(runnerId, 8);
-  const results = createRunnerResults({ store: sqliteDb(db), work });
-  const health = createRunnerHealth({ store: sqliteDb(db), work });
+  const results = createRunnerResults({ store: db, work });
+  const health = createRunnerHealth({ store: db, work });
   const backend = createRemoteAgentRunner({
-    store: sqliteDb(db),
+    store: db,
     work,
     results,
     health,
     pollIntervalMs: 5,
-    placement: wrap({ db, runnerId, placement: createRunnerPlacement({ store: sqliteDb(db) }) }),
+    placement: wrap({ db, runnerId, placement: createRunnerPlacement({ store: db }) }),
     async fetchCandidate() {
       throw new Error("This fixture does not return a candidate");
     },
@@ -164,7 +174,7 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
   const jobs = new JobLoop(db, systemClock, { concurrency: 2, pollMs: 5 });
   const outbox = new OutboxDispatcher(db, systemClock);
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     jobs,
     outbox,
     pawsRoot: root,
@@ -233,8 +243,8 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
       updatedAtMs: Date.now(),
       payload: "{}",
     });
-    const item = (await listWorkItems(sqliteDb(db))).find((row) => row.sessionKey === "session-1")!;
-    await recordLinearInstallation(sqliteDb(db), {
+    const item = (await listWorkItems(db)).find((row) => row.sessionKey === "session-1")!;
+    await recordLinearInstallation(db, {
       organizationId: "org",
       oauthClientId: "app",
       appUserId: "app-user",
@@ -242,9 +252,11 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
       teamId: "team",
       observedAtMs: now,
     });
-    await bindLinearSessionTask(sqliteDb(db), "session-1", item.delegationId, { actorId: "owner" });
-    db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, item.id]);
-    await syncItemDependencies(sqliteDb(db), {
+    await bindLinearSessionTask(db, "session-1", item.delegationId, { actorId: "owner" });
+    await seed(db, (q) =>
+      q.orm.update(q.t.workItem).set({ ownerUserId: userId }).where(eq(q.t.workItem.id, item.id)),
+    );
+    await syncItemDependencies(db, {
       itemId: item.id,
       workspaceId: workspace.id,
       expectedGeneration: 0,
@@ -258,20 +270,20 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
         projectId: "project",
       }),
     });
-    await dispatch(sqliteDb(db), { now: Date.now() });
+    await dispatch(db, { now: Date.now() });
     loop = jobs.run(controller.signal, (ms) => Bun.sleep(ms));
     const deadline = Date.now() + 20_000;
     while (
       Date.now() < deadline &&
       !runs.length &&
-      (await getWorkItem(sqliteDb(db), item.id))?.state !== "failed"
+      (await getWorkItem(db, item.id))?.state !== "failed"
     )
       await Bun.sleep(10);
     return {
       runnerId,
       runs: [...runs],
-      state: (await getWorkItem(sqliteDb(db), item.id))?.state,
-      events: (await listWorkItemEventRows(sqliteDb(db), item.id)).map((row) => row.event),
+      state: (await getWorkItem(db, item.id))?.state,
+      events: (await listWorkItemEventRows(db, item.id)).map((row) => row.event),
     };
   } finally {
     controller.abort();
@@ -279,7 +291,7 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
     await runner;
     await orchestrator.shutdown().catch(() => undefined);
     await loop;
-    db.close();
+    await close();
     rmSync(root, { recursive: true, force: true });
   }
 }
@@ -293,9 +305,12 @@ test("a runner that restarts between selection and assignment gets the item agai
       // The second work placement is the admission check just before assignment. The runner
       // restarts right after it and reports its agent again, so the admission no longer holds.
       if (request.purpose === "work" && chosen.length && ++restarts === 2)
-        db.run("UPDATE runner_agent_policy SET resolved_model='after-restart' WHERE runner_id=?", [
-          runnerId,
-        ]);
+        await seed(db, (q) =>
+          q.orm
+            .update(q.t.runnerAgentPolicy)
+            .set({ resolvedModel: "after-restart" })
+            .where(eq(q.t.runnerAgentPolicy.runnerId, runnerId)),
+        );
       return chosen;
     },
   }));

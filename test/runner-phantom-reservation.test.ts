@@ -1,5 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,11 +11,8 @@ import {
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
-  sqliteDb,
 } from "../src/db";
 import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerControl } from "../src/runner-control";
@@ -25,18 +23,21 @@ import type { RunnerCommand } from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const roots: string[] = [];
-afterEach(() => {
+const open: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "paws-phantom-"));
   roots.push(root);
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
-  const store = sqliteDb(db);
+  const { db: store, close } = await tempStore();
+  open.push(close);
   let clock = Date.now();
   const userId = await putWorkspaceUser(store, {
     id: workspaceId(),
@@ -52,11 +53,11 @@ async function fixture() {
     tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(store, "acme", clock)),
     now: clock,
   });
-  db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-    workspace.id,
-    "acme/fixture",
-    "acme-team",
-  ]);
+  await seed(store, (q) =>
+    q.orm
+      .insert(q.t.workspaceRepository)
+      .values({ workspaceId: workspace.id, repository: "acme/fixture", teamId: "acme-team" }),
+  );
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
     store,
@@ -75,10 +76,16 @@ async function fixture() {
         )
       ).token,
     });
-    db.exec(`UPDATE runner SET status='active' WHERE id='${runnerId}';
-      INSERT INTO runner_policy(runner_id) VALUES('${runnerId}');
-      INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('${runnerId}','codex',${ready});
-      INSERT INTO runner_capacity(runner_id,capacity) VALUES('${runnerId}',1);`);
+    await seed(
+      store,
+      (q) => q.orm.update(q.t.runner).set({ status: "active" }).where(eq(q.t.runner.id, runnerId)),
+      (q) => q.orm.insert(q.t.runnerPolicy).values({ runnerId: runnerId }),
+      (q) =>
+        q.orm
+          .insert(q.t.runnerAgentPolicy)
+          .values({ runnerId: runnerId, agent: "codex", ready: ready }),
+    );
+    await seed(store, (q) => q.orm.insert(q.t.runnerCapacity).values({ runnerId, capacity: 1 }));
     return runnerId;
   };
   const agentbox = await enroll("agentbox", 1);
@@ -108,7 +115,7 @@ async function fixture() {
   const item = async (held = false) => {
     const id = `acme-${++sequence}`;
     const sessionId = `acme-session-${sequence}`;
-    const record = await insertQueuedItem(db, { id, now: clock, sessionKey: sessionId });
+    const record = await insertQueuedItem(store, { id, now: clock, sessionKey: sessionId });
     const { run } = await beginImplementRun(store, id, clock);
     await recordLinearInstallation(store, {
       organizationId: "acme",
@@ -119,7 +126,9 @@ async function fixture() {
       observedAtMs: clock,
     });
     await bindLinearSessionTask(store, sessionId, record.delegationId, { actorId: "acme-owner" });
-    db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
+    await seed(store, (q) =>
+      q.orm.update(q.t.workItem).set({ ownerUserId: userId }).where(eq(q.t.workItem.id, id)),
+    );
     await bindWorkItemRepository(store, id, {
       owner: "acme",
       repo: "fixture",
@@ -127,9 +136,18 @@ async function fixture() {
     });
     mkdirSync(join(root, id), { recursive: true });
     if (held)
-      db.run(
-        "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at,teardown_confirmed_at) VALUES(?,?,?,1,0,?,0,?,?)",
-        [run.id, goldbox, workspace.id, `ended-${id}`, clock, clock],
+      await seed(store, (q) =>
+        q.orm.insert(q.t.runnerWork).values({
+          runId: run.id,
+          runnerId: goldbox,
+          workspaceId: workspace.id,
+          generation: 1,
+          runnerFence: 0,
+          commandId: `ended-${id}`,
+          leaseUntil: 0,
+          endedAt: clock,
+          teardownConfirmedAt: clock,
+        }),
       );
     return backend.forItem(id)({
       profile: { agent: "codex", model: "model" },
@@ -154,7 +172,7 @@ async function fixture() {
     throw new Error(`no probe on ${runnerId}`);
   };
   return {
-    db,
+    db: store,
     agentbox,
     goldbox,
     health,
@@ -183,7 +201,12 @@ async function failOnAgentbox(f: Awaited<ReturnType<typeof fixture>>, fail = tru
     });
     expect((await failed).errorMessage).toBe("agent exited with code 1");
   }
-  f.db.run("UPDATE runner_agent_policy SET ready=1 WHERE runner_id=?", [f.goldbox]);
+  await seed(f.db, (q) =>
+    q.orm
+      .update(q.t.runnerAgentPolicy)
+      .set({ ready: 1 })
+      .where(eq(q.t.runnerAgentPolicy.runnerId, f.goldbox)),
+  );
   f.tick(90_000);
   await f.heartbeat(f.goldbox);
 }
