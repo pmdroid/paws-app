@@ -18,10 +18,19 @@ export function isDashboardPage(pathname: string): boolean {
   return pathname === "/" || isDashboardPath(pathname) || isLegacyDashboardPath(pathname);
 }
 
+const MOVED_PAGES: Record<string, string> = { "/settings/findings": "/findings" };
+
 export function legacyDashboardLocation(pathname: string, search = ""): string | null {
-  if (!isLegacyDashboardPath(pathname)) return null;
-  const rest = pathname.slice(LEGACY_DASHBOARD_PATH.length).replace(/^\/+/, "/");
-  return `${DASHBOARD_PATH}${rest || "/"}${search}`;
+  const base = isLegacyDashboardPath(pathname)
+    ? LEGACY_DASHBOARD_PATH
+    : isDashboardPath(pathname)
+      ? DASHBOARD_PATH
+      : null;
+  if (base === null) return null;
+  const rest = pathname.slice(base.length).replace(/^\/+/, "/");
+  const moved = MOVED_PAGES[rest.replace(/\/$/, "")];
+  if (base === DASHBOARD_PATH && moved === undefined) return null;
+  return `${DASHBOARD_PATH}${moved ?? (rest || "/")}${search}`;
 }
 
 export function dashboardPath(page = "/"): string {

@@ -264,7 +264,7 @@ function noticeMarkup(state: RetroSettingsState): string {
 }
 
 export function renderRetroSettings(state: RetroSettingsState): string {
-  const findings = `<p class="sub">Daily findings keep their own toggle and cadence in <a href="${esc(routeHref({ view: "settings", page: "findings" }))}">Finding settings</a>.</p>`;
+  const findings = `<p class="sub">Daily findings keep their own switch on the <a href="${esc(routeHref({ view: "findings" }))}">Findings page</a>.</p>`;
   if (state.denied)
     return `<section class="card col" aria-labelledby="retro-settings-heading"><h2 id="retro-settings-heading">Retro settings</h2><p role="alert">${esc(state.notice?.message ?? "You no longer have access to retro settings in this workspace.")}</p>${findings}</section>`;
   const view = state.view;

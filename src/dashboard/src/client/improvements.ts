@@ -927,7 +927,7 @@ function renderHistory(view: ImprovementsView): string {
 
 function renderSettings(view: ImprovementsView): string {
   const schedule = view.schedule;
-  const daily = `<section class="card col" aria-labelledby="settings-daily"><h2 id="settings-daily">Daily findings</h2><p>Daily grouping keeps its own settings.</p><a class="btn" href="${esc(routeHref({ view: "settings", page: "findings" }))}">Finding settings</a></section>`;
+  const daily = `<section class="card col" aria-labelledby="settings-daily"><h2 id="settings-daily">Daily findings</h2><p>Daily grouping is switched on the Findings page.</p><a class="btn" href="${esc(routeHref({ view: "findings" }))}">Findings page</a></section>`;
   const form = `<div class="card" data-retro-settings=""></div>`;
   if (schedule === null)
     return `${daily}<div class="empty" role="status">Loading the retro schedule…</div>${form}`;

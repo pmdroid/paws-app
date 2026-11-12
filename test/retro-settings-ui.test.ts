@@ -248,7 +248,7 @@ test("the form shows proposed values from the API and the signed-in runner catal
   expect(t.$<InputEl>("#retro-active-minutes").value).toBe("15");
   expect(t.text()).toContain("Every Monday, 09:00 UTC.");
   expect(t.text()).toContain("spends no execution minutes");
-  expect(t.text()).toContain("Finding settings");
+  expect(t.text()).toContain("Findings page");
 });
 
 test("changing agent or model resets incompatible choices", async () => {
