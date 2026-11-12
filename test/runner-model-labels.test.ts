@@ -1,19 +1,25 @@
-import { expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { afterEach, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
+import { and, eq } from "drizzle-orm";
 import { createRunnerWork } from "../src/runner-work";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { migrate, openDatabase, putWorkspaceUser, syncWorkspaceMember, sqliteDb } from "../src/db";
+import { putWorkspaceUser, syncWorkspaceMember } from "../src/db";
 import { createRunnerModels } from "../src/runner-models";
 import { createRunnerPlacementBrowser } from "../src/runner-placement";
 import { workspaceId } from "../src/workspace";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
+
+const open: (() => Promise<void>)[] = [];
+
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
+});
 
 async function fixture() {
-  const db = openDatabase(join(mkdtempSync(join(tmpdir(), "paws-model-labels-")), "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
+  open.push(close);
   const now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "labels-owner",
     name: "Owner",
@@ -21,8 +27,12 @@ async function fixture() {
   });
   const workspace = workspaceId(),
     runnerId = workspaceId();
-  db.run("INSERT INTO workspace VALUES(?,?,?,?)", [workspace, workspace, "Labels", now]);
-  await syncWorkspaceMember(sqliteDb(db), {
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: workspace, linearOrganizationId: workspace, name: "Labels", createdAt: now }),
+  );
+  await syncWorkspaceMember(db, {
     workspaceId: workspace,
     userId,
     role: "admin",
@@ -30,44 +40,56 @@ async function fixture() {
     teamIds: [],
     now,
   });
-  db.run(
-    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
-    [runnerId, workspace, userId, "Labels host", now, now],
+  await seed(
+    db,
+    (q) =>
+      q.orm.insert(q.t.runner).values({
+        id: runnerId,
+        workspaceId: workspace,
+        ownerUserId: userId,
+        name: "Labels host",
+        status: "active",
+        createdAt: now,
+        lastSeenAt: now,
+      }),
+    (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId, agent: "claude", ready: 1 }),
+    (q) =>
+      q.orm.insert(q.t.agentModelCatalog).values({
+        runnerId,
+        userId,
+        agent: "claude",
+        model: "",
+        resultJson: {
+          executionId: "01M5GCQ27RE0YMKT767K0P3451",
+          commandId: "probe-1",
+          role: "reviewer",
+          stopReason: "end_turn",
+          timedOut: false,
+          cancelled: false,
+          authRequired: false,
+          agentExited: true,
+          models: [
+            { id: "default", name: "Default (recommended)" },
+            { id: "opus", name: "Opus 5.5" },
+            { id: "opus[1m]", name: "Opus", description: "Opus 5.5 (1M context)" },
+          ],
+          efforts: [{ id: "high", name: "High" }],
+        },
+        updatedAt: now,
+      }),
   );
-  db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [runnerId]);
-  db.run("INSERT INTO agent_model_catalog VALUES(?,?,'claude','',?,?)", [
-    runnerId,
-    userId,
-    JSON.stringify({
-      executionId: "01M5GCQ27RE0YMKT767K0P3451",
-      commandId: "probe-1",
-      role: "reviewer",
-      stopReason: "end_turn",
-      timedOut: false,
-      cancelled: false,
-      authRequired: false,
-      agentExited: true,
-      models: [
-        { id: "default", name: "Default (recommended)" },
-        { id: "opus", name: "Opus 5.5" },
-        { id: "opus[1m]", name: "Opus", description: "Opus 5.5 (1M context)" },
-      ],
-      efforts: [{ id: "high", name: "High" }],
-    }),
-    now,
-  ]);
   return { db, now, runnerId, userId, principal: { workspaceId: workspace, userId } };
 }
 
 test("the catalog lists the 1M entry next to its standard model", async () => {
   const { db, principal } = await fixture();
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "labels",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
-  const [catalog] = await createRunnerModels({ store: sqliteDb(db), work }).read(principal);
+  const [catalog] = await createRunnerModels({ store: db, work }).read(principal);
   expect(catalog?.models.map(({ id, name, longContext }) => ({ id, name, longContext }))).toEqual([
     { id: "opus", name: "Opus 5.5", longContext: false },
     { id: "opus[1m]", name: "Opus 5.5 · 1M context", longContext: true },
@@ -76,11 +98,22 @@ test("the catalog lists the 1M entry next to its standard model", async () => {
 
 test("a runner's run history labels the model it ran", async () => {
   const { db, now, runnerId, userId, principal } = await fixture();
-  db.run(
-    "INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,agent,model,resolved_model,role,purpose,started_at,ended_at,outcome) VALUES('run-1',?,?,'claude','opus[1m]','opus[1m]','implementer','work',?,?,'success')",
-    [runnerId, userId, now - 1000, now],
+  await seed(db, (q) =>
+    q.orm.insert(q.t.runnerExecutionUsage).values({
+      commandId: "run-1",
+      runnerId,
+      ownerUserId: userId,
+      agent: "claude",
+      model: "opus[1m]",
+      resolvedModel: "opus[1m]",
+      role: "implementer",
+      purpose: "work",
+      startedAt: now - 1000,
+      endedAt: now,
+      outcome: "success",
+    }),
   );
-  const response = await createRunnerPlacementBrowser({ store: sqliteDb(db) })(
+  const response = await createRunnerPlacementBrowser({ store: db })(
     new Request("http://127.0.0.1/api/runners/usage"),
     { ...principal, role: "admin", authenticatedAt: now, teamIds: [] },
   );
@@ -94,14 +127,42 @@ test("a runner's run history labels the model it ran", async () => {
 
 test("a runner's history names the issue each execution worked on", async () => {
   const { db, now, runnerId, userId, principal } = await fixture();
-  db.run(
-    "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('item-1','del-1','issue-1','PAS-367','Parse config files','running','paws/pas-367',0,1)",
+  await seed(
+    db,
+    (q) =>
+      q.orm.insert(q.t.workItem).values({
+        id: "item-1",
+        delegationId: "del-1",
+        linearIssueId: "issue-1",
+        linearIdentifier: "PAS-367",
+        title: "Parse config files",
+        state: "running",
+        branchName: "paws/pas-367",
+        position: 0,
+        createdAt: 1,
+      }),
+    (q) =>
+      q.orm.insert(q.t.runnerExecutionUsage).values([
+        {
+          commandId: "work-1",
+          runnerId,
+          ownerUserId: userId,
+          itemId: "item-1",
+          role: "implementer",
+          purpose: "work",
+          startedAt: now - 1000,
+        },
+        {
+          commandId: "prepare-1",
+          runnerId,
+          ownerUserId: userId,
+          role: "implementer",
+          purpose: "prepare",
+          startedAt: now - 2000,
+        },
+      ]),
   );
-  db.run(
-    "INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,item_id,role,purpose,started_at) VALUES('work-1',?,?,'item-1','implementer','work',?),('prepare-1',?,?,NULL,'implementer','prepare',?)",
-    [runnerId, userId, now - 1000, runnerId, userId, now - 2000],
-  );
-  const response = await createRunnerPlacementBrowser({ store: sqliteDb(db) })(
+  const response = await createRunnerPlacementBrowser({ store: db })(
     new Request("http://127.0.0.1/api/runners/usage"),
     { ...principal, role: "admin", authenticatedAt: now, teamIds: [] },
   );
@@ -118,35 +179,38 @@ test("a runner's history names the issue each execution worked on", async () => 
 
 test("the catalog reports the agent's default model and effort", async () => {
   const { db, runnerId, principal } = await fixture();
-  const result = (model: string, effort: string) =>
-    JSON.stringify({
-      executionId: "01M5GCQ27RE0YMKT767K0P3451",
-      commandId: `probe-${model}`,
-      role: "reviewer",
-      stopReason: "end_turn",
-      timedOut: false,
-      cancelled: false,
-      authRequired: false,
-      agentExited: true,
-      identity: { session: "s", model, provider: "anthropic" },
-      models: [{ id: "opus", name: "Opus 5.5" }],
-      efforts: [
-        { id: "high", name: "High" },
-        { id: "max", name: "Max" },
-      ],
-      effort,
-    });
-  db.run("UPDATE agent_model_catalog SET result_json=? WHERE runner_id=? AND model=''", [
-    result("opus", "high"),
-    runnerId,
-  ]);
+  const result = (model: string, effort: string) => ({
+    executionId: "01M5GCQ27RE0YMKT767K0P3451",
+    commandId: `probe-${model}`,
+    role: "reviewer",
+    stopReason: "end_turn",
+    timedOut: false,
+    cancelled: false,
+    authRequired: false,
+    agentExited: true,
+    identity: { session: "s", model, provider: "anthropic" },
+    models: [{ id: "opus", name: "Opus 5.5" }],
+    efforts: [
+      { id: "high", name: "High" },
+      { id: "max", name: "Max" },
+    ],
+    effort,
+  });
+  await seed(db, (q) =>
+    q.orm
+      .update(q.t.agentModelCatalog)
+      .set({ resultJson: result("opus", "high") })
+      .where(
+        and(eq(q.t.agentModelCatalog.runnerId, runnerId), eq(q.t.agentModelCatalog.model, "")),
+      ),
+  );
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "labels",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
-  const [catalog] = await createRunnerModels({ store: sqliteDb(db), work }).read(principal);
+  const [catalog] = await createRunnerModels({ store: db, work }).read(principal);
   expect(catalog?.defaultModel).toBe("opus");
   expect(catalog?.models.find((model) => model.id === "opus")?.defaultEffort).toBe("high");
 });
