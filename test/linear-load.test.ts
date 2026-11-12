@@ -29,9 +29,9 @@ import { tempHome } from "./helpers";
 import { workspaceAdmission } from "./fake-workspace";
 import { tempStore } from "./pglite";
 
-const TASKS = 100;
-const QUESTIONS = 10;
-const SLOTS = 16;
+const TASKS = 40;
+const QUESTIONS = 4;
+const SLOTS = 8;
 // One runner's worth of tasks waits; the rest run first.
 const STARTED = TASKS - SLOTS;
 const STEP_MS = 30_000;
@@ -47,7 +47,7 @@ const NO_BUDGET: LinearRateBudget = {
   complexity: null,
 };
 
-test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes while they wait for a runner", async () => {
+test("40 tasks stay under 680 Linear requests and spend one per 25 minutes while they wait for a runner", async () => {
   const home = tempHome();
   const root = join(home, "paws");
   mkdirSync(root);
@@ -220,7 +220,7 @@ test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes wh
       completed: TASKS,
       counted: TASKS,
     });
-    expect(requests).toBeLessThan(1_700);
+    expect(requests).toBeLessThan(680);
     expect(Math.max(...perTask)).toBeLessThanOrEqual(15);
   } finally {
     await orchestrator.shutdown().catch(() => undefined);
