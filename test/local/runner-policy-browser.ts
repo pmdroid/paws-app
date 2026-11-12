@@ -1,14 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  consumeWorkspaceBootstrap,
-  migrate,
-  openDatabase,
-  putWorkspaceUser,
-  syncWorkspaceMember,
-  sqliteDb,
-} from "../../src/db";
+import { consumeWorkspaceBootstrap, putWorkspaceUser, syncWorkspaceMember } from "../../src/db";
 import { createRunnerPlacementBrowser } from "../../src/runner-placement";
 import {
   issueWorkspaceBootstrap,
@@ -16,23 +9,25 @@ import {
   workspaceTokenHash,
   type WorkspacePrincipal,
 } from "../../src/workspace";
+import { eq } from "drizzle-orm";
+import { seed } from "../dialects";
+import { tempStore } from "../pglite";
 
 export async function probeRunnerPolicyBrowser(
   root: string,
   observe: (name: string, passed: boolean, observed: unknown) => void,
 ) {
   mkdirSync(root, { recursive: true });
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
   let now = Date.now();
-  const admin = await putWorkspaceUser(sqliteDb(db), {
+  const admin = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "admin",
     name: "Admin",
     email: "admin@example.invalid",
   });
-  const token = await issueWorkspaceBootstrap(sqliteDb(db), "org", now);
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const token = await issueWorkspaceBootstrap(db, "org", now);
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Test",
@@ -40,13 +35,13 @@ export async function probeRunnerPolicyBrowser(
     tokenHash: workspaceTokenHash(token),
     now,
   });
-  const member = await putWorkspaceUser(sqliteDb(db), {
+  const member = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "member",
     name: "Member",
     email: "member@example.invalid",
   });
-  await syncWorkspaceMember(sqliteDb(db), {
+  await syncWorkspaceMember(db, {
     workspaceId: workspace.id,
     userId: member,
     role: "member",
@@ -55,9 +50,16 @@ export async function probeRunnerPolicyBrowser(
     now,
   });
   const runnerId = workspaceId();
-  db.run(
-    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,'Member host','active',?,?)",
-    [runnerId, workspace.id, member, now, now],
+  await seed(db, (q) =>
+    q.orm.insert(q.t.runner).values({
+      id: runnerId,
+      workspaceId: workspace.id,
+      ownerUserId: member,
+      name: "Member host",
+      status: "active",
+      createdAt: now,
+      lastSeenAt: now,
+    }),
   );
   const principal = (userId: string, role: WorkspacePrincipal["role"]): WorkspacePrincipal => ({
     workspaceId: workspace.id,
@@ -66,7 +68,7 @@ export async function probeRunnerPolicyBrowser(
     authenticatedAt: now,
     teamIds: ["team"],
   });
-  const browser = createRunnerPlacementBrowser({ store: sqliteDb(db), now: () => now });
+  const browser = createRunnerPlacementBrowser({ store: db, now: () => now });
   const request = async (path: string, actor: WorkspacePrincipal, value?: unknown) =>
     browser(
       new Request("https://paws.example.invalid" + path, {
@@ -131,18 +133,34 @@ export async function probeRunnerPolicyBrowser(
     );
     observe("Cross-workspace settings changes fail closed", true, { denied: 1 });
     const ownRunner = workspaceId();
-    db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES(?,?,?,'Admin host','active',?)",
-      [ownRunner, workspace.id, admin, now],
+    await seed(
+      db,
+      (q) =>
+        q.orm.insert(q.t.runner).values({
+          id: ownRunner,
+          workspaceId: workspace.id,
+          ownerUserId: admin,
+          name: "Admin host",
+          status: "active",
+          createdAt: now,
+        }),
+      (q) =>
+        q.orm.insert(q.t.runnerExecutionUsage).values(
+          [
+            ["member-usage", member, runnerId],
+            ["admin-usage", admin, ownRunner],
+          ].map(([commandId, ownerUserId, host]) => ({
+            commandId: commandId!,
+            runnerId: host!,
+            ownerUserId: ownerUserId!,
+            role: "implementer",
+            purpose: "helper",
+            startedAt: now,
+            endedAt: now + 1000,
+            outcome: "success",
+          })),
+        ),
     );
-    for (const [id, userId, host] of [
-      ["member-usage", member, runnerId],
-      ["admin-usage", admin, ownRunner],
-    ])
-      db.run(
-        "INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,role,purpose,started_at,ended_at,outcome) VALUES(?,?,?,'implementer','helper',?,?,'success')",
-        [id!, host!, userId!, now, now + 1000],
-      );
     const privateUsage = (await (await request("/api/runners/usage", memberPrincipal))!.json()) as {
       usage: { ownerUserId: string }[];
     };
@@ -166,11 +184,18 @@ export async function probeRunnerPolicyBrowser(
       adminRows: 2,
       hostRows: 1,
     });
-    db.run("UPDATE workspace_member SET active=0 WHERE user_id=?", [member]);
+    await db.run(function* (q) {
+      yield* q.exec(
+        q.orm
+          .update(q.t.workspaceMember)
+          .set({ active: 0 })
+          .where(eq(q.t.workspaceMember.userId, member)),
+      );
+    });
     assert.equal((await request("/api/runners/usage", memberPrincipal))!.status, 403);
     observe("Removed membership revokes both settings and usage access", true, { revoked: true });
   } finally {
-    db.close();
+    await close();
   }
 }
 if (import.meta.main) {
