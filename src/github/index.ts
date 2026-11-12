@@ -121,6 +121,7 @@ export {
   GitCommandError,
   GitHubTokenError,
   GitHubHttpError,
+  SquashServerError,
   AGENT_READ_PERMISSIONS,
   INSTALLATION_PERMISSIONS,
   MAX_TOKEN_TTL_MS,
