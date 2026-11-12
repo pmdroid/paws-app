@@ -205,6 +205,10 @@ function replace(node: DOMNode): ReactElement | undefined {
       return styled(
         "flex flex-col gap-3 rounded-base border border-border bg-secondary-background p-4 transition-colors hover:bg-accent",
       );
+    if (has("seg"))
+      return styled(
+        "inline-flex min-h-control items-center gap-2 rounded-base px-3 text-sm font-medium text-muted-foreground no-underline transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring aria-[current=page]:bg-accent aria-[current=page]:text-foreground",
+      );
     if (has("btn", "nav", "tab") || attribs["aria-current"])
       return styled(
         buttonVariants({
@@ -227,6 +231,7 @@ function replace(node: DOMNode): ReactElement | undefined {
         stateColor((...names) => names.includes(attribs["data-state"] ?? "")),
       ),
     );
+  if (has("improvement-label")) return styled("text-sm font-normal text-muted-foreground");
   if (/^h[1-6]$/.test(name))
     return styled(
       name === "h1"
@@ -359,7 +364,24 @@ function replace(node: DOMNode): ReactElement | undefined {
     );
   if (has("improvement-list-pane"))
     return styled("flex min-w-0 flex-col gap-3 md:max-h-[80vh] md:overflow-y-auto md:p-1");
-  if (has("improvement-detail-pane", "improvement-detail", "improvement-part"))
+  if (has("segmented"))
+    return styled(
+      "inline-flex max-w-full flex-wrap items-center gap-1 self-start rounded-base border border-border p-1",
+    );
+  if (has("improvement-detail"))
+    return styled(
+      "@container flex min-w-0 flex-col gap-4 rounded-base border border-border bg-secondary-background p-4 [overflow-wrap:anywhere]",
+    );
+  if (has("improvement-head"))
+    return styled(
+      "-mx-4 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 pb-3 [&>h2]:min-w-0 [&>h2]:text-base",
+    );
+  if (has("improvement-period"))
+    return styled("ml-auto font-mono text-xs whitespace-nowrap text-muted-foreground");
+  if (has("improvement-fields"))
+    return styled("grid min-w-0 grid-cols-1 gap-x-8 gap-y-4 @md:grid-cols-2 [&>*]:min-w-0");
+  if (has("improvement-field")) return styled("flex min-w-0 flex-col gap-1");
+  if (has("improvement-detail-pane", "improvement-part"))
     return styled("flex min-w-0 flex-col gap-3 [overflow-wrap:anywhere]");
   if (name === "ul" && has("improvement-rows"))
     return styled("flex min-w-0 list-none flex-col gap-2 p-0");
