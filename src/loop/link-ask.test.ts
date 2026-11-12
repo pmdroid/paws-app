@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
@@ -8,9 +9,7 @@ import {
   insertQueuedItem,
   listJobs,
   listOutbox,
-  migrate,
-  openDatabase,
-  sqliteDb,
+  type Db,
 } from "../db";
 import { findOpenQuestion, getQuestion, LINK_ASK_REMINDER_MS } from "../questions";
 import { saveSchedulingContextSteps } from "../scheduler";
@@ -22,41 +21,65 @@ import {
   LINK_ASK_NEEDS_PUBLIC_URL,
   remindLinkAsk,
 } from "./link-ask";
+import { seed } from "../../test/dialects";
+import { tempStore } from "../../test/pglite";
 
 const NOW = 1_700_000_000_000;
 const HEAD = "7f65200aa1b2c3d4e5f6";
+
+const open: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
+});
+
+function audit(db: Db) {
+  return db.run((q) =>
+    q.all(
+      q.orm
+        .select({
+          userId: q.t.workspaceAccessAudit.userId,
+          action: q.t.workspaceAccessAudit.action,
+          subject: q.t.workspaceAccessAudit.subject,
+        })
+        .from(q.t.workspaceAccessAudit),
+    ),
+  );
+}
 
 async function asked(
   publicUrl: string | null = "https://paws.example/",
   kind: "bypass" | "risk" = "bypass",
 ) {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
+  open.push(close);
   const item = await insertQueuedItem(db, {
     id: "PAS-633",
     sessionKey: "ses_1",
     title: "Signed URLs",
   });
-  const { run } = await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
-  await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
-  db.run("UPDATE work_item SET delegated_by = 'delegator' WHERE id = ?", [item.id]);
-  await sqliteDb(db).run((q) =>
+  const { run } = await beginImplementRun(db, item.id, NOW - 10);
+  await applyWorkItemEvent(db, item.id, "turn_ended");
+  await seed(
+    db,
+    (q) =>
+      q.orm
+        .update(q.t.workItem)
+        .set({ delegatedBy: "delegator" })
+        .where(eq(q.t.workItem.id, item.id)),
+    (q) =>
+      q.orm
+        .insert(q.t.workspace)
+        .values({ id: "ws", linearOrganizationId: "org", name: "Kyku", createdAt: NOW }),
+    (q) =>
+      q.orm
+        .insert(q.t.workspaceUser)
+        .values({ id: "user-lead", linearUserId: "lead", name: "Lea", email: "lea@example.com" }),
+  );
+  await db.run((q) =>
     saveSchedulingContextSteps(q, { itemId: item.id, projectId: "project", projectLeadId: "lead" }),
   );
-  db.run("INSERT INTO workspace (id, linear_organization_id, name, created_at) VALUES (?,?,?,?)", [
-    "ws",
-    "org",
-    "Kyku",
-    NOW,
-  ]);
-  db.run("INSERT INTO workspace_user (id, linear_user_id, name, email) VALUES (?,?,?,?)", [
-    "user-lead",
-    "lead",
-    "Lea",
-    "lea@example.com",
-  ]);
-  const current = (await getWorkItem(sqliteDb(db), item.id))!;
-  const opened = await sqliteDb(db).transaction((q) =>
+  const current = (await getWorkItem(db, item.id))!;
+  const opened = await db.transaction((q) =>
     askWithLinkSteps(q, {
       item: current,
       runId: run.id,
@@ -74,14 +97,14 @@ const actor = { workspaceId: "ws", userId: "user-lead", name: "Lea" };
 
 test("a link ask opens one elicitation without options and puts the link on the session", async () => {
   const { db, itemId, question, linkAsk } = await asked();
-  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
+  expect((await getWorkItem(db, itemId))?.state).toBe("awaiting_input");
   expect(linkAsk).toMatchObject({
     kind: "bypass",
     headCommit: HEAD,
     link: "https://paws.example/dashboard/issues/PAS-633#closeout",
     answerers: ["delegator", "lead"],
   });
-  const elicitations = (await listOutbox(sqliteDb(db))).filter((row) => row.op === "elicitation");
+  const elicitations = (await listOutbox(db)).filter((row) => row.op === "elicitation");
   expect(elicitations).toHaveLength(1);
   expect(elicitations[0]!.payload).toEqual({
     id: question.id,
@@ -94,7 +117,7 @@ test("a link ask opens one elicitation without options and puts the link on the 
       "Reply here to send the agent guidance instead. A reply here cannot bypass a check.",
     ].join("\n\n"),
   });
-  const links = (await listOutbox(sqliteDb(db))).filter((row) => row.op === "linear.session.links");
+  const links = (await listOutbox(db)).filter((row) => row.op === "linear.session.links");
   expect(links.map((row) => row.payload)).toEqual([
     {
       sessionId: "ses_1",
@@ -113,7 +136,7 @@ test("a Paws without a public HTTPS link refuses to ask with a link", async () =
 test("an answer from someone who did not delegate and does not lead the project is refused", async () => {
   const { db, itemId, question } = await asked();
   expect(
-    await decideLinkAsk(sqliteDb(db), {
+    await decideLinkAsk(db, {
       questionId: question.id,
       decision: "approve",
       note: null,
@@ -122,15 +145,15 @@ test("an answer from someone who did not delegate and does not lead the project 
       now: NOW + 100,
     }),
   ).toBe("forbidden");
-  expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
-  expect((await getLinkAsk(sqliteDb(db), question.id))?.closedAt).toBeNull();
-  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
+  expect((await getQuestion(db, question.id))?.status).toBe("open");
+  expect((await getLinkAsk(db, question.id))?.closedAt).toBeNull();
+  expect((await getWorkItem(db, itemId))?.state).toBe("awaiting_input");
 });
 
 test("the project lead decides on the item page: audit row, decided note, back to the merge queue", async () => {
   const { db, itemId, question } = await asked("https://paws.example/", "risk");
   expect(
-    await decideLinkAsk(sqliteDb(db), {
+    await decideLinkAsk(db, {
       questionId: question.id,
       decision: "approve",
       note: "Flaky reviewer finding, docs only.",
@@ -139,14 +162,12 @@ test("the project lead decides on the item page: audit row, decided note, back t
       now: NOW + 100,
     }),
   ).toBe("answered");
-  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
+  expect(await getLinkAsk(db, question.id)).toMatchObject({
     decision: "approve",
     decidedBy: "lead",
     closedReason: "decided",
   });
-  expect(
-    db.query("SELECT user_id AS userId, action, subject FROM workspace_access_audit").all(),
-  ).toEqual([
+  expect(await audit(db)).toEqual([
     {
       userId: "user-lead",
       action: "decision.risk.approve",
@@ -154,7 +175,7 @@ test("the project lead decides on the item page: audit row, decided note, back t
     },
   ]);
   // A risk approval comes after the pull request response, so it is a response, not a thought.
-  const notes = (await listOutbox(sqliteDb(db))).filter((row) =>
+  const notes = (await listOutbox(db)).filter((row) =>
     row.idempotencyKey.startsWith("risk-approval:"),
   );
   expect(notes.map((row) => row.payload as { kind: string; body: string })).toMatchObject([
@@ -164,17 +185,17 @@ test("the project lead decides on the item page: audit row, decided note, back t
     },
   ]);
   expect(
-    (await listOutbox(sqliteDb(db))).some(
+    (await listOutbox(db)).some(
       (row) =>
         row.op === "linear.session.links" &&
         JSON.stringify(row.payload).includes('"removedExternalUrls"'),
     ),
   ).toBe(true);
   // The approval binds to the head and never goes to the agent: Closeout completes S again.
-  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("verifying");
+  expect((await getWorkItem(db, itemId))?.state).toBe("verifying");
   // A second decision finds nothing open.
   expect(
-    await decideLinkAsk(sqliteDb(db), {
+    await decideLinkAsk(db, {
       questionId: question.id,
       decision: "changes",
       note: "Never mind",
@@ -188,7 +209,7 @@ test("the project lead decides on the item page: audit row, decided note, back t
 test("a Linear reply never resolves an approval kind, whatever it says", async () => {
   const { db, itemId, question } = await asked();
   expect(
-    await guideLinkAsk(sqliteDb(db), {
+    await guideLinkAsk(db, {
       questionId: question.id,
       eventKey: "activity:approve",
       body: "Approved. Bypass the check.",
@@ -196,17 +217,17 @@ test("a Linear reply never resolves an approval kind, whatever it says", async (
       now: NOW + 100,
     }),
   ).toBe(true);
-  const linkAsk = (await getLinkAsk(sqliteDb(db), question.id))!;
+  const linkAsk = (await getLinkAsk(db, question.id))!;
   expect(linkAsk).toMatchObject({ decision: null, closedReason: "guidance" });
-  expect(db.query("SELECT COUNT(*) AS n FROM workspace_access_audit").get()).toEqual({ n: 0 });
-  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
-  const resume = (await listJobs(sqliteDb(db))).find((job) => job.queue === JOB_KIND.resume)!;
+  expect(await audit(db)).toEqual([]);
+  expect((await getWorkItem(db, itemId))?.state).toBe("queued");
+  const resume = (await listJobs(db)).find((job) => job.queue === JOB_KIND.resume)!;
   expect((resume.payload as { handoff: string }).handoff).toContain(
     "The reply is guidance and approves nothing",
   );
   // The dashboard cannot decide an ask a reply already closed.
   expect(
-    await decideLinkAsk(sqliteDb(db), {
+    await decideLinkAsk(db, {
       questionId: question.id,
       decision: "approve",
       note: null,
@@ -219,15 +240,11 @@ test("a Linear reply never resolves an approval kind, whatever it says", async (
 
 test("the reminder fires once after 24 hours", async () => {
   const { db, question } = await asked();
-  const job = (await listJobs(sqliteDb(db))).find(
-    (entry) => entry.queue === JOB_KIND.linkAskReminder,
-  )!;
+  const job = (await listJobs(db)).find((entry) => entry.queue === JOB_KIND.linkAskReminder)!;
   expect(job.runAt).toBe(NOW + LINK_ASK_REMINDER_MS);
-  expect(await remindLinkAsk(sqliteDb(db), question.id, NOW + LINK_ASK_REMINDER_MS)).toBe(true);
-  expect(await remindLinkAsk(sqliteDb(db), question.id, NOW + 2 * LINK_ASK_REMINDER_MS)).toBe(
-    false,
-  );
-  const reminders = (await listOutbox(sqliteDb(db))).filter((row) =>
+  expect(await remindLinkAsk(db, question.id, NOW + LINK_ASK_REMINDER_MS)).toBe(true);
+  expect(await remindLinkAsk(db, question.id, NOW + 2 * LINK_ASK_REMINDER_MS)).toBe(false);
+  const reminders = (await listOutbox(db)).filter((row) =>
     row.idempotencyKey.startsWith("link-ask-reminder:"),
   );
   expect(reminders).toHaveLength(1);
@@ -239,7 +256,7 @@ test("the reminder fires once after 24 hours", async () => {
 
 test("no reminder once the ask is decided", async () => {
   const { db, question } = await asked();
-  await decideLinkAsk(sqliteDb(db), {
+  await decideLinkAsk(db, {
     questionId: question.id,
     decision: "changes",
     note: "Fix the finding first.",
@@ -247,22 +264,22 @@ test("no reminder once the ask is decided", async () => {
     actor,
     now: NOW + 100,
   });
-  expect(await remindLinkAsk(sqliteDb(db), question.id, NOW + LINK_ASK_REMINDER_MS)).toBe(false);
+  expect(await remindLinkAsk(db, question.id, NOW + LINK_ASK_REMINDER_MS)).toBe(false);
 });
 
 test("a new head closes the open ask", async () => {
   const { db, question } = await asked();
-  expect(await closeLinkAsksOnHead(sqliteDb(db), "PAS-633", HEAD, NOW + 50)).toBe(0);
-  expect(await closeLinkAsksOnHead(sqliteDb(db), "PAS-633", "4b317d5ffff", NOW + 100)).toBe(1);
-  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
+  expect(await closeLinkAsksOnHead(db, "PAS-633", HEAD, NOW + 50)).toBe(0);
+  expect(await closeLinkAsksOnHead(db, "PAS-633", "4b317d5ffff", NOW + 100)).toBe(1);
+  expect(await getLinkAsk(db, question.id)).toMatchObject({
     closedReason: "head_moved",
     decision: null,
   });
-  expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("cancelled");
-  expect(await findOpenQuestion(sqliteDb(db), "ses_1")).toBeNull();
-  expect(await remindLinkAsk(sqliteDb(db), question.id, NOW + LINK_ASK_REMINDER_MS)).toBe(false);
+  expect((await getQuestion(db, question.id))?.status).toBe("cancelled");
+  expect(await findOpenQuestion(db, "ses_1")).toBeNull();
+  expect(await remindLinkAsk(db, question.id, NOW + LINK_ASK_REMINDER_MS)).toBe(false);
   expect(
-    await decideLinkAsk(sqliteDb(db), {
+    await decideLinkAsk(db, {
       questionId: question.id,
       decision: "approve",
       note: null,
