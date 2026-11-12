@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { FakeClock, JOB_KIND } from "../src/core";
 import {
@@ -14,7 +13,10 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
   syncWorkspaceMember,
-  sqliteDb,
+  enqueueJob,
+  enqueueRunnerSetupCheck,
+  listJobs,
+  type Db,
 } from "../src/db";
 import { writeAgentSettings } from "../src/config";
 import { createFakeTracker, type FakeTracker } from "../src/linear";
@@ -24,28 +26,35 @@ import {
   itemOwnerHasEligibleRunnerSteps,
   itemOwnerRunnerSetupNeedSteps,
 } from "../src/runner-placement";
-import { tempDb, tempHome } from "./helpers";
+import { and, eq } from "drizzle-orm";
+import { seed } from "./dialects";
+import { tempHome } from "./helpers";
 import { workspaceAdmission } from "./fake-workspace";
+import { tempStore } from "./pglite";
 
 const DAY = 24 * 60 * 60 * 1000;
 const START = 1_000;
 const RUNNERS_URL = "https://paws.example/dashboard/runners";
 
 /** A workspace where `other` owns one online, free runner and `me` delegates PAS-1. */
-async function workspace(db: Database) {
-  db.run("INSERT INTO workspace VALUES('ws','org','Workspace',0)");
+async function workspace(db: Db) {
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: "ws", linearOrganizationId: "org", name: "Workspace", createdAt: 0 }),
+  );
   const users: Record<string, string> = {};
   for (const [name, role] of [
     ["other", "admin"],
     ["me", "member"],
   ] as const) {
-    users[name] = await putWorkspaceUser(sqliteDb(db), {
+    users[name] = await putWorkspaceUser(db, {
       id: name,
       linearUserId: `linear-${name}`,
       name,
       email: `${name}@example.invalid`,
     });
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: "ws",
       userId: users[name]!,
       role,
@@ -54,19 +63,22 @@ async function workspace(db: Database) {
       now: 0,
     });
   }
-  addRunner(db, "theirs", users.other!, START, 1);
+  await addRunner(db, "theirs", users.other!, START, 1);
   const item = await insertQueuedItem(db, { id: "mine", now: START, sessionKey: "session" });
-  db.run("UPDATE work_item SET linear_identifier='PAS-1',owner_user_id=? WHERE id='mine'", [
-    users.me!,
-  ]);
-  await ensureLinearSession(sqliteDb(db), {
+  await seed(db, (q) =>
+    q.orm
+      .update(q.t.workItem)
+      .set({ linearIdentifier: "PAS-1", ownerUserId: users.me! })
+      .where(eq(q.t.workItem.id, "mine")),
+  );
+  await ensureLinearSession(db, {
     sessionId: "session",
     issueId: item.linearIssueId,
     organizationId: "org",
     creatorId: "linear-me",
     now: START,
   });
-  await recordLinearInstallation(sqliteDb(db), {
+  await recordLinearInstallation(db, {
     sessionId: "session",
     organizationId: "org",
     oauthClientId: "client",
@@ -74,33 +86,72 @@ async function workspace(db: Database) {
     teamId: "team",
     observedAtMs: 0,
   });
-  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId);
+  await bindLinearSessionTask(db, "session", item.delegationId);
   return users;
 }
 
-function addRunner(db: Database, id: string, ownerId: string, seenAt: number, ready: number) {
-  db.run(
-    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,'ws',?,?,'active',0,?)",
-    [id, ownerId, id, seenAt],
+function addRunner(db: Db, id: string, ownerId: string, seenAt: number, ready: number) {
+  return seed(
+    db,
+    (q) =>
+      q.orm.insert(q.t.runner).values({
+        id,
+        workspaceId: "ws",
+        ownerUserId: ownerId,
+        name: id,
+        status: "active",
+        createdAt: 0,
+        lastSeenAt: seenAt,
+      }),
+    (q) => q.orm.insert(q.t.runnerCapacity).values({ runnerId: id, capacity: 1 }),
+    (q) =>
+      q.orm
+        .insert(q.t.runnerAgentPolicy)
+        .values(["claude", "codex"].map((agent) => ({ runnerId: id, agent, ready }))),
   );
-  db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,1)", [id]);
-  for (const agent of ["claude", "codex"])
-    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,?,?)", [
-      id,
-      agent,
-      ready,
-    ]);
+}
+
+function seen(db: Db, lastSeenAt: number, id?: string) {
+  return seed(db, (q) =>
+    q.orm
+      .update(q.t.runner)
+      .set({ lastSeenAt })
+      .where(id === undefined ? undefined : eq(q.t.runner.id, id)),
+  );
+}
+
+function signIn(db: Db, runnerId: string, agent?: string) {
+  return seed(db, (q) =>
+    q.orm
+      .update(q.t.runnerAgentPolicy)
+      .set({ ready: 1 })
+      .where(
+        and(
+          eq(q.t.runnerAgentPolicy.runnerId, runnerId),
+          agent === undefined ? undefined : eq(q.t.runnerAgentPolicy.agent, agent),
+        ),
+      ),
+  );
+}
+
+function share(db: Db, runnerId: string, sharing: number) {
+  return seed(db, (q) =>
+    q.orm
+      .insert(q.t.runnerPolicy)
+      .values({ runnerId, sharing })
+      .onConflictDoUpdate({ target: q.t.runnerPolicy.runnerId, set: { sharing } }),
+  );
 }
 
 /** The orchestrator as `src/index.ts` wires it when work runs on runners. */
 function orchestrator(
-  db: Database,
+  db: Db,
   clock: FakeClock,
   jobs = new JobLoop(db, clock),
   extra: { tracker?: FakeTracker; pawsRoot?: string } = {},
 ) {
   return new Orchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox: new OutboxDispatcher(db, clock),
@@ -111,30 +162,30 @@ function orchestrator(
     ownerHasRunner: (q, itemId, agent, now) =>
       itemOwnerHasEligibleRunnerSteps(q, { itemId, agent, now }),
     runnerSetupNeed: async (itemId, agent, now) =>
-      sqliteDb(db).run((q) => itemOwnerRunnerSetupNeedSteps(q, { itemId, agent, now })),
+      db.run((q) => itemOwnerRunnerSetupNeedSteps(q, { itemId, agent, now })),
     eligibleRunner: async (itemId, agent, now) =>
-      sqliteDb(db).run((q) => itemOwnerEligibleRunnerSteps(q, { itemId, agent, now })),
+      db.run((q) => itemOwnerEligibleRunnerSteps(q, { itemId, agent, now })),
     ...extra,
   });
 }
 
-async function thoughts(db: Database): Promise<string[]> {
-  return (await listOutbox(sqliteDb(db)))
+async function thoughts(db: Db): Promise<string[]> {
+  return (await listOutbox(db))
     .map((row) => row.payload as { kind?: string; body?: string })
     .filter((payload) => payload.kind === "thought")
     .map((payload) => payload.body ?? "");
 }
 
-function itemJobs(db: Database, itemId: string): number {
-  return db
-    .query<{ count: number }, [string]>(
-      "SELECT count(*) AS count FROM job WHERE status IN ('pending','running') AND json_extract(payload,'$.itemId')=?",
-    )
-    .get(itemId)!.count;
+async function itemJobs(db: Db, itemId: string): Promise<number> {
+  return (await listJobs(db)).filter(
+    (job) =>
+      (job.status === "pending" || job.status === "running") &&
+      (job.payload as { itemId?: string }).itemId === itemId,
+  ).length;
 }
 
 test("a delegator without a runner, beside another member's free runner, is held with one thought for a day", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const clock = new FakeClock(START);
   const jobs = new JobLoop(db, clock);
   const paws = orchestrator(db, clock, jobs);
@@ -142,50 +193,50 @@ test("a delegator without a runner, beside another member's free runner, is held
     const users = await workspace(db);
     await paws.reconcileExecution();
     await paws.reconcileExecution();
-    expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toMatchObject({
+    expect(await getRunnerSetupHold(db, "mine")).toMatchObject({
       reason: "no-runner",
       ownerUserId: users.me,
     });
     expect(await thoughts(db)).toEqual([
       `You don't have a runner Paws can use yet. Create a VM or add a host here: ${RUNNERS_URL}. I'll start on my own once it's ready.`,
     ]);
-    expect(itemJobs(db, "mine")).toBe(0);
+    expect(await itemJobs(db, "mine")).toBe(0);
 
     // A fake day later, with the other runner still online and free: no new write, no job, no
     // failure.
-    const outbox = (await listOutbox(sqliteDb(db))).length;
+    const outbox = (await listOutbox(db)).length;
     for (const step of [60_000, 60 * 60_000, DAY]) {
       clock.advance(step);
-      db.run("UPDATE runner SET last_seen_at=?", [clock.now()]);
+      await seen(db, clock.now());
       await paws.reconcileExecution();
     }
-    expect((await getWorkItem(sqliteDb(db), "mine"))?.state).toBe("queued");
-    expect((await listOutbox(sqliteDb(db))).length).toBe(outbox);
-    expect(itemJobs(db, "mine")).toBe(0);
+    expect((await getWorkItem(db, "mine"))?.state).toBe("queued");
+    expect((await listOutbox(db)).length).toBe(outbox);
+    expect(await itemJobs(db, "mine")).toBe(0);
 
     // The scheduler tick alone never ends the hold. The delegator's own runner queues a check,
     // and that job ends the hold and lets the scheduler start the item.
-    addRunner(db, "own", users.me!, clock.now(), 1);
+    await addRunner(db, "own", users.me!, clock.now(), 1);
     await paws.reconcileExecution();
-    expect(itemJobs(db, "mine")).toBe(0);
+    expect(await itemJobs(db, "mine")).toBe(0);
     while ((await jobs.tick([JOB_KIND.runnerSetupCheck])) !== null);
-    expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toBeNull();
-    expect(itemJobs(db, "mine")).toBe(1);
+    expect(await getRunnerSetupHold(db, "mine")).toBeNull();
+    expect(await itemJobs(db, "mine")).toBe(1);
   } finally {
     await paws.shutdown();
-    db.close();
+    await close();
   }
 });
 
 test("a delegator whose own runner needs its agent signed in hears the runner and the agent", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const clock = new FakeClock(START);
   const paws = orchestrator(db, clock);
   try {
     const users = await workspace(db);
-    addRunner(db, "member-vm", users.me!, START, 0);
+    await addRunner(db, "member-vm", users.me!, START, 0);
     await paws.reconcileExecution();
-    expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toMatchObject({
+    expect(await getRunnerSetupHold(db, "mine")).toMatchObject({
       reason: "agent-not-signed-in",
       runnerId: "member-vm",
     });
@@ -195,43 +246,42 @@ test("a delegator whose own runner needs its agent signed in hears the runner an
     );
   } finally {
     await paws.shutdown();
-    db.close();
+    await close();
   }
 });
 
 const HOLD_LINE = `You don't have a runner Paws can use yet. Create a VM or add a host here: ${RUNNERS_URL}. I'll start on my own once it's ready.`;
 
-function checkJobs(db: Database): string[] {
-  return db
-    .query<{ owner: string }, [string]>(
-      "SELECT json_extract(payload,'$.ownerUserId') AS owner FROM job WHERE queue=? AND status='pending' ORDER BY id",
-    )
-    .all(JOB_KIND.runnerSetupCheck)
-    .map((row) => row.owner);
+async function checkJobs(db: Db): Promise<string[]> {
+  return (await listJobs(db))
+    .filter((job) => job.queue === JOB_KIND.runnerSetupCheck && job.status === "pending")
+    .map((job) => (job.payload as { ownerUserId: string }).ownerUserId);
 }
 
 /** Drop the checks that setting up a fixture queued, so a test sees only its own trigger. */
-function forgetChecks(db: Database) {
-  db.run("DELETE FROM job WHERE queue=?", [JOB_KIND.runnerSetupCheck]);
+function forgetChecks(db: Db) {
+  return seed(db, (q) => q.orm.delete(q.t.job).where(eq(q.t.job.queue, JOB_KIND.runnerSetupCheck)));
 }
 
 /**
  * `me` holds PAS-1 for runner setup with the state `prepare` leaves, and no check is pending.
  * Returns the harness to fire one trigger and run the jobs it queued, once each.
  */
-async function held(prepare: (db: Database, users: Record<string, string>, now: number) => void) {
-  const db = tempDb();
+async function held(
+  prepare: (db: Db, users: Record<string, string>, now: number) => Promise<void>,
+) {
+  const { db, close } = await tempStore();
   const clock = new FakeClock(START);
   const jobs = new JobLoop(db, clock);
   const paws = orchestrator(db, clock, jobs);
   const users = await workspace(db);
   await paws.reconcileExecution();
-  expect(await getRunnerSetupHold(sqliteDb(db), "mine")).not.toBeNull();
-  prepare(db, users, clock.now());
+  expect(await getRunnerSetupHold(db, "mine")).not.toBeNull();
+  await prepare(db, users, clock.now());
   while ((await jobs.tick([JOB_KIND.runnerSetupCheck])) !== null);
   // The prepared state alone is not enough, or the fixture would have resumed already.
-  expect(await getRunnerSetupHold(sqliteDb(db), "mine")).not.toBeNull();
-  forgetChecks(db);
+  expect(await getRunnerSetupHold(db, "mine")).not.toBeNull();
+  await forgetChecks(db);
   return {
     db,
     clock,
@@ -245,74 +295,92 @@ async function held(prepare: (db: Database, users: Record<string, string>, now: 
     },
     async close() {
       await paws.shutdown();
-      db.close();
+      await close();
     },
   };
 }
 
 const TRIGGERS: {
   name: string;
-  prepare: (db: Database, users: Record<string, string>, now: number) => void;
-  fire: (db: Database, users: Record<string, string>, now: number) => void;
+  prepare: (db: Db, users: Record<string, string>, now: number) => Promise<void>;
+  fire: (db: Db, users: Record<string, string>, now: number) => Promise<void>;
   runner: string;
 }[] = [
   {
     name: "a runner they own enrolls",
-    prepare() {},
-    fire(db, users, now) {
-      addRunner(db, "own", users.me!, now, 1);
+    async prepare() {},
+    async fire(db, users, now) {
+      await addRunner(db, "own", users.me!, now, 1);
     },
     runner: "own",
   },
   {
     name: "their member VM reaches ready",
-    prepare(db, users, now) {
+    async prepare(db, users, now) {
       // The runner is up, but placement only reaches it once the VM job finishes. Its own writes
       // are dropped here, so only the VM step queues a check.
-      addRunner(db, "vm", users.me!, now, 0);
-      db.run(
-        `INSERT INTO member_vm(id,workspace_id,user_id,vm_name,step,runner_id,step_started_at,created_at,updated_at)
-         VALUES('vm','ws',?,'paws-me','health','vm',?,?,?)`,
-        [users.me!, now, now, now],
+      await addRunner(db, "vm", users.me!, now, 0);
+      await seed(db, (q) =>
+        q.orm.insert(q.t.memberVm).values({
+          id: "vm",
+          workspaceId: "ws",
+          userId: users.me!,
+          vmName: "paws-me",
+          step: "health",
+          runnerId: "vm",
+          stepStartedAt: now,
+          createdAt: now,
+          updatedAt: now,
+        }),
       );
     },
-    fire(db, _users, now) {
-      db.run("UPDATE runner_agent_policy SET ready=1 WHERE runner_id='vm'");
-      db.run("DELETE FROM job WHERE queue=?", [JOB_KIND.runnerSetupCheck]);
-      db.run("UPDATE member_vm SET step='ready',updated_at=? WHERE id='vm'", [now]);
+    async fire(db, _users, now) {
+      await signIn(db, "vm");
+      await forgetChecks(db);
+      await seed(db, (q) =>
+        q.orm
+          .update(q.t.memberVm)
+          .set({ step: "ready", updatedAt: now })
+          .where(eq(q.t.memberVm.id, "vm")),
+      );
     },
     runner: "vm",
   },
   {
     name: "their runner heartbeats back online",
-    prepare(db, users, now) {
-      addRunner(db, "own", users.me!, now - 10 * 60_000, 1);
+    async prepare(db, users, now) {
+      await addRunner(db, "own", users.me!, now - 10 * 60_000, 1);
     },
-    fire(db, _users, now) {
-      db.run("UPDATE runner SET last_seen_at=? WHERE id='own'", [now]);
+    async fire(db, _users, now) {
+      await seen(db, now, "own");
     },
     runner: "own",
   },
   {
     name: "an agent becomes ready on their runner",
-    prepare(db, users, now) {
-      addRunner(db, "own", users.me!, now, 0);
+    async prepare(db, users, now) {
+      await addRunner(db, "own", users.me!, now, 0);
     },
-    fire(db) {
-      db.run("UPDATE runner_agent_policy SET ready=1 WHERE runner_id='own'");
+    async fire(db) {
+      await signIn(db, "own");
     },
     runner: "own",
   },
   {
     name: "the project lead turns on sharing",
-    prepare(db) {
-      db.run(
-        "INSERT INTO work_item_scheduling(item_id,project_id,project_known,project_lead_id) VALUES('mine','project',1,'linear-other')",
+    async prepare(db) {
+      await seed(db, (q) =>
+        q.orm.insert(q.t.workItemScheduling).values({
+          itemId: "mine",
+          projectId: "project",
+          projectKnown: 1,
+          projectLeadId: "linear-other",
+        }),
       );
-      db.run("INSERT INTO runner_policy(runner_id,sharing) VALUES('theirs',0)");
+      await share(db, "theirs", 0);
     },
-    fire(db) {
-      db.run("UPDATE runner_policy SET sharing=1 WHERE runner_id='theirs'");
+    async fire(db) {
+      await share(db, "theirs", 1);
     },
     runner: "theirs",
   },
@@ -323,85 +391,70 @@ for (const trigger of TRIGGERS)
     const fixture = await held(trigger.prepare);
     try {
       const { db, users, clock } = fixture;
-      expect(checkJobs(db)).toEqual([]);
-      trigger.fire(db, users, clock.now());
-      expect(checkJobs(db)).toEqual([users.me!]);
+      expect(await checkJobs(db)).toEqual([]);
+      await trigger.fire(db, users, clock.now());
+      await enqueueRunnerSetupCheck(db, users.me!, clock.now());
+      expect(await checkJobs(db)).toEqual([users.me!]);
       expect(await fixture.runChecks()).toBe(1);
-      expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toBeNull();
+      expect(await getRunnerSetupHold(db, "mine")).toBeNull();
       expect(await thoughts(db)).toEqual([HOLD_LINE, `Starting PAS-1 on ${trigger.runner}.`]);
-      expect(itemJobs(db, "mine")).toBe(1);
+      expect(await itemJobs(db, "mine")).toBe(1);
     } finally {
       await fixture.close();
     }
   });
 
 test("a runner that becomes usable for another member leaves this member's hold alone", async () => {
-  const fixture = await held((db) => {
-    db.run("INSERT INTO runner_policy(runner_id,sharing) VALUES('theirs',0)");
-  });
+  const fixture = await held((db) => share(db, "theirs", 0));
   try {
     const { db, users, clock } = fixture;
-    // Their own runner, not shared, queues no check for this member.
-    addRunner(db, "third", users.other!, clock.now(), 1);
-    db.run("UPDATE runner SET last_seen_at=? WHERE id='theirs'", [clock.now() + 120_000]);
-    expect(checkJobs(db)).toEqual([]);
-    // A shared runner wakes every holder, and the check finds it is not this member's to use:
-    // its owner leads no project of this item.
-    db.run("UPDATE runner_policy SET sharing=1 WHERE runner_id='theirs'");
-    expect(checkJobs(db)).toEqual([users.me!]);
+    await addRunner(db, "third", users.other!, clock.now(), 1);
+    await seen(db, clock.now() + 120_000, "theirs");
+    await share(db, "theirs", 1);
+    await enqueueRunnerSetupCheck(db, users.me!, clock.now());
+    expect(await checkJobs(db)).toEqual([users.me!]);
     await fixture.runChecks();
-    expect(await getRunnerSetupHold(sqliteDb(db), "mine")).not.toBeNull();
+    expect(await getRunnerSetupHold(db, "mine")).not.toBeNull();
     expect(await thoughts(db)).toEqual([HOLD_LINE]);
-    expect(itemJobs(db, "mine")).toBe(0);
+    expect(await itemJobs(db, "mine")).toBe(0);
   } finally {
     await fixture.close();
   }
 });
 
-test("a runner write without a held item queues no check", async () => {
-  const db = tempDb();
-  try {
-    const users = await workspace(db);
-    addRunner(db, "own", users.me!, START, 0);
-    db.run("UPDATE runner SET last_seen_at=? WHERE id='own'", [START + 10 * 60_000]);
-    db.run("UPDATE runner_agent_policy SET ready=1 WHERE runner_id='own'");
-    db.run("INSERT INTO runner_policy(runner_id,sharing) VALUES('own',1)");
-    expect(checkJobs(db)).toEqual([]);
-  } finally {
-    db.close();
-  }
-});
-
 test("two triggers at once resume the item once", async () => {
-  const fixture = await held((db, users, now) => {
-    addRunner(db, "own", users.me!, now - 10 * 60_000, 0);
-  });
+  const fixture = await held((db, users, now) =>
+    addRunner(db, "own", users.me!, now - 10 * 60_000, 0),
+  );
   try {
     const { db, users, clock } = fixture;
-    // Two writes that each make the runner usable queue one pending check.
-    db.run("UPDATE runner SET last_seen_at=? WHERE id='own'", [clock.now()]);
-    db.run("UPDATE runner_agent_policy SET ready=1 WHERE runner_id='own'");
-    expect(checkJobs(db)).toEqual([users.me!]);
+    await seen(db, clock.now(), "own");
+    await enqueueRunnerSetupCheck(db, users.me!, clock.now());
+    await signIn(db, "own");
+    await enqueueRunnerSetupCheck(db, users.me!, clock.now());
+    expect(await checkJobs(db)).toEqual([users.me!]);
     // Two checks running at the same time still resume it once.
-    db.run(
-      "INSERT INTO job(queue,payload,run_at,created_at) VALUES(?,json_object('ownerUserId',?),0,0)",
-      [JOB_KIND.runnerSetupCheck, users.me!],
-    );
+    await enqueueJob(db, {
+      queue: JOB_KIND.runnerSetupCheck,
+      payload: { ownerUserId: users.me! },
+      runAt: 0,
+      now: 0,
+    });
     await Promise.all([
       fixture.jobs.tick([JOB_KIND.runnerSetupCheck]),
       fixture.jobs.tick([JOB_KIND.runnerSetupCheck]),
     ]);
-    expect(checkJobs(db)).toEqual([]);
-    expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toBeNull();
+    expect(await checkJobs(db)).toEqual([]);
+    expect(await getRunnerSetupHold(db, "mine")).toBeNull();
     expect(await thoughts(db)).toEqual([HOLD_LINE, "Starting PAS-1 on own."]);
-    expect(itemJobs(db, "mine")).toBe(1);
+    expect(await itemJobs(db, "mine")).toBe(1);
   } finally {
     await fixture.close();
   }
 });
 
 /** Acme's default implementer is Claude; the Codex preset is reachable only through its label. */
-function labelled(db: Database, clock: FakeClock, jobs: JobLoop, presets = true) {
+function labelled(db: Db, clock: FakeClock, jobs: JobLoop, presets = true) {
   const pawsRoot = tempHome();
   writeAgentSettings(join(pawsRoot, "config.toml"), {
     defaults: {
@@ -420,7 +473,7 @@ function labelled(db: Database, clock: FakeClock, jobs: JobLoop, presets = true)
   };
   const paws = orchestrator(db, clock, jobs, { tracker, pawsRoot });
   const label = async (implementer: string) =>
-    tracker.repositoryHints.set((await getWorkItem(sqliteDb(db), "mine"))!.linearIssueId, {
+    tracker.repositoryHints.set((await getWorkItem(db, "mine"))!.linearIssueId, {
       mentions: [],
       issueLabels: [],
       parentLabels: [],
@@ -430,43 +483,50 @@ function labelled(db: Database, clock: FakeClock, jobs: JobLoop, presets = true)
   return { paws, label, counted };
 }
 
-const onlyCodex = (db: Database, runner: string) =>
-  db.run("UPDATE runner_agent_policy SET ready=(agent='codex') WHERE runner_id=?", [runner]);
+const onlyCodex = async (db: Db, runner: string) => {
+  await seed(db, (q) =>
+    q.orm
+      .update(q.t.runnerAgentPolicy)
+      .set({ ready: 0 })
+      .where(eq(q.t.runnerAgentPolicy.runnerId, runner)),
+  );
+  await signIn(db, runner, "codex");
+};
 
 test("an Acme issue labelled Codex starts on its owner's Codex-only runner", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const clock = new FakeClock(START);
   const jobs = new JobLoop(db, clock);
   const { paws, label, counted } = labelled(db, clock, jobs);
   try {
     const users = await workspace(db);
-    addRunner(db, "own", users.me!, START, 1);
-    onlyCodex(db, "own");
+    await addRunner(db, "own", users.me!, START, 1);
+    await onlyCodex(db, "own");
     await label("Codex");
     await paws.reconcileExecution();
-    expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toBeNull();
+    expect(await getRunnerSetupHold(db, "mine")).toBeNull();
     await Bun.sleep(0);
     expect(counted.reads).toBe(1);
-    expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toBeNull();
-    expect(itemJobs(db, "mine")).toBe(1);
+    expect(await getRunnerSetupHold(db, "mine")).toBeNull();
+    expect(await itemJobs(db, "mine")).toBe(1);
   } finally {
     await paws.shutdown();
-    db.close();
+    await close();
   }
 });
 
 test("a labelled Acme issue is held for its labelled agent and resumes when that agent signs in", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const clock = new FakeClock(START);
   const jobs = new JobLoop(db, clock);
   const { paws, label, counted } = labelled(db, clock, jobs);
   try {
     const users = await workspace(db);
-    addRunner(db, "own", users.me!, START, 0);
+    await addRunner(db, "own", users.me!, START, 0);
     await label("Codex");
     await paws.reconcileExecution();
     await Bun.sleep(0);
-    expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toMatchObject({
+    expect(await getRunnerSetupHold(db, "mine")).toMatchObject({
       reason: "agent-not-signed-in",
     });
     expect(await thoughts(db)).toHaveLength(1);
@@ -474,21 +534,21 @@ test("a labelled Acme issue is held for its labelled agent and resumes when that
     await paws.reconcileExecution();
     await Bun.sleep(0);
     expect(counted.reads).toBe(1);
-    onlyCodex(db, "own");
+    await onlyCodex(db, "own");
     clock.advance(60_000);
-    db.run("UPDATE runner SET last_seen_at=?", [clock.now()]);
+    await seen(db, clock.now());
     await paws.reconcileExecution();
     while ((await jobs.tick([JOB_KIND.runnerSetupCheck])) !== null);
-    expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toBeNull();
-    expect(itemJobs(db, "mine")).toBe(1);
+    expect(await getRunnerSetupHold(db, "mine")).toBeNull();
+    expect(await itemJobs(db, "mine")).toBe(1);
   } finally {
     await paws.shutdown();
-    db.close();
+    await close();
   }
 });
 
 test("without presets a label can't change the agent, so a hold costs no Linear read", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const clock = new FakeClock(START);
   const jobs = new JobLoop(db, clock);
   const { paws, counted } = labelled(db, clock, jobs, false);
@@ -497,9 +557,9 @@ test("without presets a label can't change the agent, so a hold costs no Linear 
     await paws.reconcileExecution();
     await Bun.sleep(0);
     expect(counted.reads).toBe(0);
-    expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toMatchObject({ reason: "no-runner" });
+    expect(await getRunnerSetupHold(db, "mine")).toMatchObject({ reason: "no-runner" });
   } finally {
     await paws.shutdown();
-    db.close();
+    await close();
   }
 });

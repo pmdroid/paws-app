@@ -8,13 +8,10 @@ import {
   consumeWorkspaceBootstrap,
   insertQueuedItem,
   insertRun,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
   replaceWorkspaceRepositories,
   syncWorkspaceMember,
-  sqliteDb,
 } from "../src/db";
 import { createLinearMembershipReads } from "../src/linear";
 import { createRunnerControl, createRunnerHttp } from "../src/runner-control";
@@ -29,6 +26,8 @@ import {
   WORKSPACE_COOKIE,
   type WorkspaceAccess,
 } from "../src/workspace";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -47,8 +46,7 @@ type Listed = {
 test("GET /api/runners lists only tasks in the caller's authorized sessions", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-runner-task-authorization-"));
   roots.push(root);
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const now = Date.now();
   const teams: Record<string, string[]> = {
     owner: ["team-a"],
@@ -58,21 +56,21 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
   };
   const users = {} as Record<keyof typeof teams, string>;
   for (const name of Object.keys(teams))
-    users[name] = await putWorkspaceUser(sqliteDb(db), {
+    users[name] = await putWorkspaceUser(db, {
       id: workspaceId(),
       linearUserId: name,
       name,
       email: `${name}@example.invalid`,
     });
   const workspace = { id: workspaceId(), organizationId: "org", name: "Workspace" };
-  await consumeWorkspaceBootstrap(sqliteDb(db), {
+  await consumeWorkspaceBootstrap(db, {
     ...workspace,
     userId: users["owner"]!,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   for (const name of ["member", "administrator", "nobody"])
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: workspace.id,
       userId: users[name]!,
       role: name === "administrator" ? "admin" : "member",
@@ -81,9 +79,15 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
       now,
     });
   const runnerId = workspaceId();
-  db.run(
-    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES(?,?,?,?,'active',?)",
-    [runnerId, workspace.id, users["owner"]!, "Shared host", now],
+  await seed(db, (q) =>
+    q.orm.insert(q.t.runner).values({
+      id: runnerId,
+      workspaceId: workspace.id,
+      ownerUserId: users["owner"]!,
+      name: "Shared host",
+      status: "active",
+      createdAt: now,
+    }),
   );
   const runIds: Record<string, string> = {};
   for (const [id, teamId, repo, title] of [
@@ -93,7 +97,7 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
   ] as const) {
     await insertQueuedItem(db, { id, title, ...(teamId ? { sessionKey: `session-${id}` } : {}) });
     if (teamId && repo) {
-      await recordLinearInstallation(sqliteDb(db), {
+      await recordLinearInstallation(db, {
         sessionId: `session-${id}`,
         organizationId: "org",
         teamId,
@@ -101,22 +105,28 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
         oauthClientId: "client",
         observedAtMs: now,
       });
-      await bindWorkItemRepository(sqliteDb(db), id, {
+      await bindWorkItemRepository(db, id, {
         owner: "fixture",
         repo,
         remoteUrl: `https://example.invalid/fixture/${repo}`,
       });
     }
-    const run = await insertRun(sqliteDb(db), { itemId: id, now, status: "active" });
+    const run = await insertRun(db, { itemId: id, now, status: "active" });
     runIds[id] = run.id;
-    db.run(
-      `INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until)
-      VALUES(?,?,?,1,0,?,?)`,
-      [run.id, runnerId, workspace.id, `cmd-${id}`, now + 600_000],
+    await seed(db, (q) =>
+      q.orm.insert(q.t.runnerWork).values({
+        runId: run.id,
+        runnerId,
+        workspaceId: workspace.id,
+        generation: 1,
+        runnerFence: 0,
+        commandId: `cmd-${id}`,
+        leaseUntil: now + 600_000,
+      }),
     );
   }
   const mapping = async (teamA: boolean) =>
-    await replaceWorkspaceRepositories(sqliteDb(db), {
+    await replaceWorkspaceRepositories(db, {
       workspaceId: workspace.id,
       actorId: users["owner"]!,
       repositories: [
@@ -127,7 +137,7 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
     });
   await mapping(true);
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority: await initializeRunnerAuthority(join(root, "issuer")),
     certificateRoot: join(root, "issuer"),
     disconnect() {},
@@ -138,7 +148,7 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
   const server = startServer({
     hostname: "127.0.0.1",
     port: 0,
-    db,
+    store: db,
     webhooks: false,
     statusEnv: {},
     workspaceAccess: ready.promise,
@@ -148,7 +158,7 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
   const origin = `http://127.0.0.1:${server.port}`;
   ready.resolve(
     createWorkspaceAccess({
-      store: sqliteDb(db),
+      store: db,
       publicUrl: origin,
       clientId: "client",
       installedOrganization: { id: "org", name: "Workspace" },
@@ -175,7 +185,7 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
     }),
   );
   const cookie = async (name: string) => ({
-    cookie: `${WORKSPACE_COOKIE}=${(await issueWorkspaceSession(sqliteDb(db), { workspaceId: workspace.id, userId: users[name]!, now })).token}`,
+    cookie: `${WORKSPACE_COOKIE}=${(await issueWorkspaceSession(db, { workspaceId: workspace.id, userId: users[name]!, now })).token}`,
   });
   const sessions: Record<string, { cookie: string }> = {};
   for (const name of ["member", "administrator", "nobody"]) sessions[name] = await cookie(name);
@@ -218,7 +228,7 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
     await mapping(false);
     expect(identifiers((await list("member")).body)).toEqual([]);
     expect(identifiers((await list("administrator")).body)).toEqual(["PRIVATE-42"]);
-    await changeLinearTeamAccess(sqliteDb(db), {
+    await changeLinearTeamAccess(db, {
       eventKey: "fixture-team-b-removal",
       organizationId: "org",
       oauthClientId: "client",
@@ -231,7 +241,7 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
     expect(identifiers((await list("administrator")).body)).toEqual([]);
 
     expect((await fetch(`${origin}/api/runners`)).status).toBe(401);
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: workspace.id,
       userId: users["member"]!,
       role: "member",
@@ -244,6 +254,6 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
     expect(await revoked.text()).not.toContain("AUDIT-1");
   } finally {
     await server.stop(true);
-    db.close();
+    await close();
   }
 });
