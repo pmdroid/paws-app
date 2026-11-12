@@ -164,7 +164,7 @@ describe("issue page", () => {
     );
     expect(body).toContain('<span class="tag">2 times</span>');
     expect(body).toContain(
-      '<p class="timeline-meta mono muted"><time datetime="2026-10-09T21:01:00.000Z"',
+      '<p class="timeline-meta mono muted text-muted-foreground"><time datetime="2026-10-09T21:01:00.000Z"',
     );
     expect(body).toMatch(/runner_lost .*recovering.* · recovered .*running/);
   });

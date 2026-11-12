@@ -796,7 +796,7 @@ function stateChanges(item: StatusItem): number {
 function itemTimeline(item: StatusItem): string {
   if (!item.timeline?.length) return "";
   return `<section class="item-timeline" aria-labelledby="item-timeline-heading"><h3 id="item-timeline-heading">State changes</h3>
-    <ol class="timeline-list flex flex-col gap-3" role="list">${timelineGroups(item.timeline)
+    <ol class="timeline-list" role="list">${timelineGroups(item.timeline)
       .map((group) => (group.length === 1 ? itemTimelineEntry(group[0]!) : timelineLoop(group)))
       .join("")}</ol></section>`;
 }
@@ -844,7 +844,7 @@ function timelineDot(to: string): string {
 }
 
 function timelineEntry(kind: string, to: string, move: string, meta: string[]): string {
-  return `<li data-kind="${esc(kind)}">${timelineDot(to)}<div class="timeline-body">${move}<p class="timeline-meta mono muted">${meta.filter(Boolean).join(" · ")}</p></div></li>`;
+  return `<li data-kind="${esc(kind)}">${timelineDot(to)}<div class="timeline-body">${move}<p class="timeline-meta mono muted text-muted-foreground">${meta.filter(Boolean).join(" · ")}</p></div></li>`;
 }
 
 function timelineLoop(group: readonly StatusItemEvent[]): string {
