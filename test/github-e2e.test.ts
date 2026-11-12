@@ -1,4 +1,4 @@
-import { tickWithRestarts } from "./helpers";
+import { stateOfPg as stateOf, tickWithRestartsPg } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
 import { execFile } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
@@ -7,18 +7,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
 import type { FakeScript } from "../src/acp/testing/script";
 import { systemClock } from "../src/core";
-import {
-  sqliteDb,
-  JobLoop,
-  OutboxDispatcher,
-  getWorkItem,
-  listJobs,
-  migrate,
-  openDatabase,
-} from "../src/db";
+import { JobLoop, OutboxDispatcher, listJobs, listWorkItems, type Db } from "../src/db";
 import {
   INSTALLATION_PERMISSIONS,
   createFakeGitHub,
@@ -29,6 +20,7 @@ import {
 } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator, itemPathId, type AgentLaunch } from "../src/loop";
+import { tempStore } from "./pglite";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -62,8 +54,7 @@ test("a Linear delegation publishes and merges three GitHub pull requests with o
   const github = createFakeGitHub();
   const apiPaths: string[] = [];
   const client = githubClient(layout.bare, github, apiPaths);
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   let scripts = 0;
@@ -85,7 +76,7 @@ test("a Linear delegation publishes and merges three GitHub pull requests with o
     };
   };
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -114,9 +105,13 @@ test("a Linear delegation publishes and merges three GitHub pull requests with o
       );
       if (question && !delivered) {
         delivered = true;
-        whileAsking = ["DEMO-2", "DEMO-3", "DEMO-4"]
-          .map((identifier) => stateOf(db, identifier) ?? "missing")
-          .join("/");
+        whileAsking = (
+          await Promise.all(
+            ["DEMO-2", "DEMO-3", "DEMO-4"].map(
+              async (identifier) => (await stateOf(db, identifier)) ?? "missing",
+            ),
+          )
+        ).join("/");
         await orchestrator.onLinearEvent(reply(question.sessionId, "yes"));
       }
       await Bun.sleep(20);
@@ -125,12 +120,12 @@ test("a Linear delegation publishes and merges three GitHub pull requests with o
 
   try {
     const appeared = Date.now() + 10_000;
-    while (Date.now() < appeared && stateOf(db, "DEMO-2") === null) await Bun.sleep(20);
-    expect(stateOf(db, "DEMO-2"), await debug(layout, db)).not.toBeNull();
+    while (Date.now() < appeared && (await stateOf(db, "DEMO-2")) === null) await Bun.sleep(20);
+    expect(await stateOf(db, "DEMO-2"), await debug(layout, db)).not.toBeNull();
     const deadline = Date.now() + 90_000;
     let idle = 0;
-    while (Date.now() < deadline && !delegationMerged(db)) {
-      const job = await tickWithRestarts(jobs, orchestrator, db);
+    while (Date.now() < deadline && !(await delegationMerged(db))) {
+      const job = await tickWithRestartsPg(jobs, orchestrator, db);
       if (job === null) {
         idle += 1;
         if (idle > 3) break;
@@ -143,19 +138,15 @@ test("a Linear delegation publishes and merges three GitHub pull requests with o
     await answerer;
 
     expect(whileAsking, await debug(layout, db)).toBe("merged/merged/awaiting_input");
-    expect(delegationMerged(db), await debug(layout, db)).toBe(true);
+    expect(await delegationMerged(db), await debug(layout, db)).toBe(true);
     expect(
-      ["DEMO-2", "DEMO-3", "DEMO-4"].map((id) => stateOf(db, id)),
+      await Promise.all(["DEMO-2", "DEMO-3", "DEMO-4"].map((id) => stateOf(db, id))),
       await debug(layout, db),
     ).toEqual(["merged", "merged", "merged"]);
+    const items = await listWorkItems(db);
     expect(github.opened.map((pull) => pull.head)).toEqual(
       ["DEMO-2", "DEMO-3", "DEMO-4"].map(
-        (identifier) =>
-          db
-            .query<{ branch: string }, [string]>(
-              "SELECT branch_name AS branch FROM work_item WHERE linear_identifier=?",
-            )
-            .get(identifier)!.branch,
+        (identifier) => items.find((item) => item.linearIdentifier === identifier)!.branchName,
       ),
     );
     expect(github.opened.map((pull) => pull.body.split("\n")[0])).toEqual([
@@ -185,7 +176,7 @@ test("a Linear delegation publishes and merges three GitHub pull requests with o
     expect(github.minted).toHaveLength(0);
   } finally {
     stop = true;
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }, 120_000);
@@ -313,11 +304,9 @@ function reply(sessionId: string, body: string): AcceptedLinearEvent {
   };
 }
 
-async function runDirectory(db: Database, identifier: string): Promise<string> {
-  const row = db
-    .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_identifier = ?")
-    .get(identifier)!;
-  return itemPathId((await getWorkItem(sqliteDb(db), row.id))!);
+async function runDirectory(db: Db, identifier: string): Promise<string> {
+  const items = await listWorkItems(db);
+  return itemPathId(items.find((item) => item.linearIdentifier === identifier)!);
 }
 
 function created(issueId: string): AcceptedLinearEvent {
@@ -511,28 +500,17 @@ async function seedCloseoutPolicy(seed: string): Promise<void> {
   await writeFile(path.join(seed, "README.md"), "paws demo\n");
 }
 
-function stateOf(db: Database, identifier: string): string | null {
-  const row = db
-    .query<{ state: string }, [string]>("SELECT state FROM work_item WHERE linear_identifier = ?")
-    .get(identifier);
-  return row?.state ?? null;
-}
-
-function delegationMerged(db: Database): boolean {
-  const items = db.query<{ state: string }, []>("SELECT state FROM work_item").all();
+async function delegationMerged(db: Db): Promise<boolean> {
+  const items = await listWorkItems(db);
   return items.length > 0 && items.every((item) => item.state === "merged");
 }
 
-async function debug(layout: { pawsRoot: string }, db: Database): Promise<string> {
+async function debug(layout: { pawsRoot: string }, db: Db): Promise<string> {
   try {
-    const jobs = (await listJobs(sqliteDb(db))).map(
+    const jobs = (await listJobs(db)).map(
       (job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`,
     );
-    const items = db
-      .query<{ linear_identifier: string; state: string }, []>(
-        "SELECT linear_identifier, state FROM work_item ORDER BY position",
-      )
-      .all();
+    const items = (await listWorkItems(db)).map((item) => [item.linearIdentifier, item.state]);
     return JSON.stringify({ paws: layout.pawsRoot, items, jobs });
   } catch {
     return "db closed";
