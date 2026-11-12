@@ -1,14 +1,14 @@
 import { createHash, generateKeyPairSync } from "node:crypto";
-import { openDatabase, sqliteDb } from "../../src/db";
+import { openPawsStore } from "../../src/db";
 import { createRunnerInputStore } from "../../src/runner-inputs";
 import { RUNNER_INPUT_CHUNK_BYTES } from "../../src/runner-protocol";
 import { createRunnerWork } from "../../src/runner-work";
 
 const input = await Bun.stdin.json();
-const db = openDatabase(input.dbPath);
+const { store: db, close } = await openPawsStore({ url: input.url, pgliteDir: "" });
 try {
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "restart",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -28,5 +28,5 @@ try {
   }
   console.log(JSON.stringify({ sizeBytes, sha256: hash.digest("hex") }));
 } finally {
-  db.close();
+  await close();
 }

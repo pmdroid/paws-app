@@ -1,17 +1,12 @@
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  consumeWorkspaceBootstrap,
-  migrate,
-  openDatabase,
-  putWorkspaceUser,
-  sqliteDb,
-} from "../../src/db";
+import { consumeWorkspaceBootstrap, putWorkspaceUser } from "../../src/db";
 import { initializeRunnerCoordinator, openRunnerCoordinator } from "../../src/runner-coordinator";
 import { openRunnerDaemon, RunnerRequestError } from "../../src/runner-daemon";
 import type { RunnerHealthResult } from "../../src/runner-protocol";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
+import { tempStore } from "../pglite";
 
 export async function probeRunnerDaemonHealth(
   root: string,
@@ -50,22 +45,20 @@ export async function probeRunnerDaemonHealth(
   assert.equal(generated.exitCode, 0, generated.stderr.toString());
   chmodSync(keyPath, 0o600);
   const tls = { key: readFileSync(keyPath, "utf8"), cert: readFileSync(certPath, "utf8") };
-  const dbPath = join(root, "paws.db");
-  let db = openDatabase(dbPath);
-  migrate(db);
+  const { db, close } = await tempStore();
   const now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   const principal = {
@@ -195,9 +188,6 @@ export async function probeRunnerDaemonHealth(
     );
     daemon.close();
     await coordinator.stop();
-    db.close();
-    db = openDatabase(dbPath);
-    migrate(db);
     coordinator = await openRunnerCoordinator({
       eventKey: Buffer.alloc(32, 7),
       ...options,
@@ -223,6 +213,6 @@ export async function probeRunnerDaemonHealth(
     daemon.close();
     await browser.stop(true);
     await coordinator.stop();
-    db.close();
+    await close();
   }
 }

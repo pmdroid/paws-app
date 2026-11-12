@@ -9,13 +9,13 @@ import {
   bindLinearSessionTask,
   enqueueJob,
   getWorkItem,
-  migrate,
-  openDatabase,
+  listJobs,
   recordLinearInstallation,
-  sqliteDb,
 } from "../../src/db";
 import { Orchestrator } from "../../src/loop";
 import { createAdmission } from "../../src/scheduler";
+import { seed } from "../dialects";
+import { tempStore } from "../pglite";
 
 export async function probeMergeDependencyYield(
   root: string,
@@ -26,14 +26,32 @@ export async function probeMergeDependencyYield(
     const label = guard ? "rejected" : "missing";
     const directory = join(root, label);
     mkdirSync(directory, { recursive: true });
-    const db = openDatabase(join(directory, "paws.sqlite"));
-    migrate(db);
+    const { db, close } = await tempStore();
     const clock = new FakeClock(1000);
-    db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-    db.run(
-      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('item','epic','issue','WS-2','Guarded','merge_queue','paws/ws-2',0,1000,'session')",
+    await seed(
+      db,
+      (q) =>
+        q.orm.insert(q.t.workspace).values({
+          id: "workspace",
+          linearOrganizationId: "org",
+          name: "Workspace",
+          createdAt: 1000,
+        }),
+      (q) =>
+        q.orm.insert(q.t.workItem).values({
+          id: "item",
+          delegationId: "epic",
+          linearIssueId: "issue",
+          linearIdentifier: "WS-2",
+          title: "Guarded",
+          state: "merge_queue",
+          branchName: "paws/ws-2",
+          position: 0,
+          createdAt: 1000,
+          sessionKey: "session",
+        }),
     );
-    await recordLinearInstallation(sqliteDb(db), {
+    await recordLinearInstallation(db, {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -41,16 +59,16 @@ export async function probeMergeDependencyYield(
       teamId: "team",
       observedAtMs: 1000,
     });
-    await bindLinearSessionTask(sqliteDb(db), "session", "epic");
+    await bindLinearSessionTask(db, "session", "epic");
     const jobs = new JobLoop(db, clock);
     let gitHubCalls = 0;
     const orchestrator = new Orchestrator({
-      store: sqliteDb(db),
+      store: db,
       jobs,
       outbox: new OutboxDispatcher(db, clock),
       clock,
       pawsRoot: directory,
-      ...(guard ? { admission: createAdmission({ db: sqliteDb(db), authority: guard }) } : {}),
+      ...(guard ? { admission: createAdmission({ db: db, authority: guard }) } : {}),
       repositories: [
         { owner: "owner", repo: "repo", remoteUrl: "https://example.invalid/repo.git" },
       ],
@@ -67,23 +85,26 @@ export async function probeMergeDependencyYield(
       }),
     });
     try {
-      await enqueueJob(sqliteDb(db), {
+      await enqueueJob(db, {
         queue: JOB_KIND.merge,
         payload: { itemId: "item" },
         now: clock.now(),
       });
       await jobs.tick();
-      const successor = db.query("SELECT queue,status FROM job WHERE status='pending'").get();
+      const successor =
+        (await listJobs(db))
+          .filter((job) => job.status === "pending")
+          .map(({ queue, status }) => ({ queue, status }))[0] ?? null;
       observe(
         `workspace publication fails closed with a ${label} canonical dependency guard`,
-        (await getWorkItem(sqliteDb(db), "item"))?.state === "merge_queue" &&
+        (await getWorkItem(db, "item"))?.state === "merge_queue" &&
           gitHubCalls === 0 &&
           successor !== null,
-        { state: (await getWorkItem(sqliteDb(db), "item"))?.state, gitHubCalls, successor },
+        { state: (await getWorkItem(db, "item"))?.state, gitHubCalls, successor },
       );
     } finally {
       await orchestrator.shutdown();
-      db.close();
+      await close();
     }
   }
 }

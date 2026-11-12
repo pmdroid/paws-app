@@ -1,13 +1,8 @@
+import { eq } from "drizzle-orm";
 import { fileURLToPath } from "node:url";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  consumeWorkspaceBootstrap,
-  migrate,
-  openDatabase,
-  putWorkspaceUser,
-  sqliteDb,
-} from "../../src/db";
+import { consumeWorkspaceBootstrap, putWorkspaceUser } from "../../src/db";
 import { startServer } from "../../src/server";
 import {
   createWorkspaceAccess,
@@ -18,12 +13,13 @@ import {
   WORKSPACE_COOKIE,
   type WorkspaceAccess,
 } from "../../src/workspace";
+import { tempStore } from "../pglite";
 
 type Observe = (name: string, passed: boolean, observed: unknown) => void;
 
 export async function probeWorkspaceRuntime(root: string, observe: Observe) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  await probeWorkspaceHttpDrain(join(root, "http-drain.db"), observe);
+  await probeWorkspaceHttpDrain(observe);
   const key = join(root, "local.key");
   const cert = join(root, "local.crt");
   const certificate = Bun.spawnSync(
@@ -108,25 +104,24 @@ export async function probeWorkspaceRuntime(root: string, observe: Observe) {
   }
 }
 
-async function probeWorkspaceHttpDrain(path: string, observe: Observe) {
-  const db = openDatabase(path);
-  migrate(db);
+async function probeWorkspaceHttpDrain(observe: Observe) {
+  const { db, close } = await tempStore();
   const now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Workspace",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
-  const session = await issueWorkspaceSession(sqliteDb(db), {
+  const session = await issueWorkspaceSession(db, {
     userId,
     workspaceId: workspace.id,
     now,
@@ -146,7 +141,14 @@ async function probeWorkspaceHttpDrain(path: string, observe: Observe) {
       entered.resolve();
       await gate.promise;
       try {
-        db.query("SELECT id FROM workspace WHERE id=?").get(workspace.id);
+        await db.run((q) =>
+          q.one(
+            q.orm
+              .select({ id: q.t.workspace.id })
+              .from(q.t.workspace)
+              .where(eq(q.t.workspace.id, workspace.id)),
+          ),
+        );
         readCompleted = true;
       } catch (caught) {
         error = String(caught);
@@ -156,7 +158,7 @@ async function probeWorkspaceHttpDrain(path: string, observe: Observe) {
   });
   const origin = `http://127.0.0.1:${server.port}`;
   const access = createWorkspaceAccess({
-    store: sqliteDb(db),
+    store: db,
     publicUrl: origin,
     clientId: "client",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -182,8 +184,8 @@ async function probeWorkspaceHttpDrain(path: string, observe: Observe) {
   }).catch(() => null);
   await entered.promise;
   let stopped = false;
-  const stopping = Promise.all([server.stop(true), access.stop()]).then(() => {
-    db.close();
+  const stopping = Promise.all([server.stop(true), access.stop()]).then(async () => {
+    await close();
     stopped = true;
   });
   await Bun.sleep(10);
