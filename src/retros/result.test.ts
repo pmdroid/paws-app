@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,11 +7,10 @@ import {
   getRetro,
   listRetroAttempts,
   listRetroItems,
-  migrate,
-  openDatabase,
   saveRetroSettingsRevision,
   startRetroAttempt,
-  sqliteDb,
+  type Db,
+  type Q,
 } from "../db";
 import {
   collectRetroDigest,
@@ -35,6 +33,8 @@ import {
   fixturePattern,
   pushEvidence,
 } from "./result.fixtures";
+import { seed } from "../../test/dialects";
+import { tempStore } from "../../test/pglite";
 
 const digest = fixtureDigest();
 const LIMITS = { maxItems: 5, workedWell: 3 };
@@ -304,55 +304,83 @@ describe("rendering", () => {
 
 describe("settling an attempt", () => {
   const roots: string[] = [];
-  afterEach(() => {
+  const closes: (() => Promise<void>)[] = [];
+  afterEach(async () => {
+    for (const close of closes.splice(0)) await close();
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   });
 
-  function seed(db: Database, identifier: string, answers: number) {
+  async function activity(db: Db, identifier: string, answers: number) {
     const id = `item-${identifier}`;
-    db.run(
-      `INSERT INTO linear_session (session_id, issue_id, organization_id, team_id, created_at)
-       VALUES (?, ?, 'org', 'team', 0)`,
-      [`session-${identifier}`, `issue-${identifier}`],
-    );
-    db.run(
-      `INSERT INTO work_item (id, delegation_id, linear_issue_id, linear_identifier, title, state,
-         branch_name, position, created_at, session_key)
-       VALUES (?, ?, ?, ?, ?, 'running', ?, 0, ?, ?)`,
-      [
-        id,
-        `delegation-${identifier}`,
-        `issue-${identifier}`,
-        identifier,
-        `Work on ${identifier}`,
-        `paws/${identifier}`,
-        FIXTURE_START,
-        `session-${identifier}`,
-      ],
-    );
     const [owner, repo] = FIXTURE_REPO.split("/");
-    db.run("INSERT INTO work_item_repository VALUES (?, ?, ?, 'git@x')", [id, owner!, repo!]);
-    for (let n = 0; n < answers; n += 1)
-      db.run(
-        `INSERT INTO question (id, item_id, session_id, kind, reason, body, status, answer, answered_by,
-           created_at, answered_at) VALUES (?, ?, 's', 'agent', 'push_rejected', 'How do I recover?',
-           'answered', 'Fetch and rebase.', 'someone', ?, ?)`,
-        [`q-${identifier}-${n}`, id, FIXTURE_START + n, FIXTURE_START + n + 1],
-      );
+    await seed(
+      db,
+      (q) =>
+        q.orm.insert(q.t.linearSession).values({
+          sessionId: `session-${identifier}`,
+          issueId: `issue-${identifier}`,
+          organizationId: "org",
+          teamId: "team",
+          createdAt: 0,
+        }),
+      (q) =>
+        q.orm.insert(q.t.workItem).values({
+          id,
+          delegationId: `delegation-${identifier}`,
+          linearIssueId: `issue-${identifier}`,
+          linearIdentifier: identifier,
+          title: `Work on ${identifier}`,
+          state: "running",
+          branchName: `paws/${identifier}`,
+          position: 0,
+          createdAt: FIXTURE_START,
+          sessionKey: `session-${identifier}`,
+        }),
+      (q) =>
+        q.orm
+          .insert(q.t.workItemRepository)
+          .values({ itemId: id, owner: owner!, repo: repo!, remoteUrl: "git@x" }),
+      ...Array.from(
+        { length: answers },
+        (_, n) => (q: Q) =>
+          q.orm.insert(q.t.question).values({
+            id: `q-${identifier}-${n}`,
+            itemId: id,
+            sessionId: "s",
+            kind: "agent",
+            reason: "push_rejected",
+            body: "How do I recover?",
+            status: "answered",
+            answer: "Fetch and rebase.",
+            answeredBy: "someone",
+            createdAt: FIXTURE_START + n,
+            answeredAt: FIXTURE_START + n + 1,
+          }),
+      ),
+    );
   }
 
   async function world(withActivity: boolean) {
-    const db = openDatabase(":memory:");
-    migrate(db);
+    const { db, close } = await tempStore();
     const root = mkdtempSync(join(tmpdir(), "paws-retro-result-"));
     roots.push(root);
-    db.run("INSERT INTO workspace VALUES ('ws', 'org', 'ws', 0)");
-    db.run("INSERT INTO workspace_repository VALUES ('ws', ?, 'team')", [FIXTURE_REPO]);
+    closes.push(close);
+    await seed(
+      db,
+      (q) =>
+        q.orm
+          .insert(q.t.workspace)
+          .values({ id: "ws", linearOrganizationId: "org", name: "ws", createdAt: 0 }),
+      (q) =>
+        q.orm
+          .insert(q.t.workspaceRepository)
+          .values({ workspaceId: "ws", repository: FIXTURE_REPO, teamId: "team" }),
+    );
     if (withActivity) {
-      seed(db, "PAS-817", 4);
-      seed(db, "PAS-843", 5);
+      await activity(db, "PAS-817", 4);
+      await activity(db, "PAS-843", 5);
     }
-    const { revision } = await saveRetroSettingsRevision(sqliteDb(db), {
+    const { revision } = await saveRetroSettingsRevision(db, {
       workspaceId: "ws",
       prompt: "Review {{digest}}",
       agentProfile: { agent: "codex" },
@@ -363,7 +391,7 @@ describe("settling an attempt", () => {
       createdBy: "user-1",
       now: 1,
     });
-    await createRetro(sqliteDb(db), {
+    await createRetro(db, {
       id: "r1",
       workspaceId: "ws",
       windowStart: FIXTURE_START,
@@ -372,7 +400,7 @@ describe("settling an attempt", () => {
       settingsRevision: revision,
       now: FIXTURE_END,
     });
-    const collected = await collectRetroDigest(sqliteDb(db), {
+    const collected = await collectRetroDigest(db, {
       retroId: "r1",
       artifactRoot: root,
       now: FIXTURE_END,
@@ -381,16 +409,16 @@ describe("settling an attempt", () => {
     return { db, root, digest: collected.digest, sha: collected.digestSha256 };
   }
 
-  const start = async (db: Database, now: number) =>
-    await startRetroAttempt(sqliteDb(db), {
+  const start = async (db: Db, now: number) =>
+    await startRetroAttempt(db, {
       retroId: "r1",
       owner: "w",
       now,
       leaseMs: 60_000,
       maxAttempts: 2,
     });
-  const settle = (db: Database, root: string, attempt: number, output: string | null) =>
-    settleRetroAttempt(sqliteDb(db), root, {
+  const settle = (db: Db, root: string, attempt: number, output: string | null) =>
+    settleRetroAttempt(db, root, {
       retroId: "r1",
       attempt,
       owner: "w",
@@ -405,8 +433,8 @@ describe("settling an attempt", () => {
     if (!settled.ok) throw new Error(settled.reason);
     expect(settled.report.generation).toBe("empty_input");
     expect(settled.report.digestSha256).toBe(sha);
-    expect((await getRetro(sqliteDb(db), "r1"))!.state).toBe("published");
-    expect(await listRetroItems(sqliteDb(db), "r1")).toEqual([]);
+    expect((await getRetro(db, "r1"))!.state).toBe("published");
+    expect(await listRetroItems(db, "r1")).toEqual([]);
   });
 
   test("invalid output records a diagnostic and retries against the same digest", async () => {
@@ -418,10 +446,10 @@ describe("settling an attempt", () => {
       recorded: true,
       retryable: true,
     });
-    expect((await listRetroAttempts(sqliteDb(db), "r1"))[0]!.error).toBe(
+    expect((await listRetroAttempts(db, "r1"))[0]!.error).toBe(
       `invalid_json against digest ${sha.slice(0, 12)}: result invalid_json`,
     );
-    expect((await getRetro(sqliteDb(db), "r1"))!.state).toBe("failed");
+    expect((await getRetro(db, "r1"))!.state).toBe("failed");
     const second = (await start(db, FIXTURE_END + 2))!;
     expect(second.attempt).toBe(2);
     expect(await settle(db, root, second.attempt, null)).toMatchObject({
@@ -429,7 +457,7 @@ describe("settling an attempt", () => {
       reason: "invalid_result",
       retryable: false,
     });
-    expect((await getRetro(sqliteDb(db), "r1"))!.digestSha256).toBe(sha);
+    expect((await getRetro(db, "r1"))!.digestSha256).toBe(sha);
     expect(await start(db, FIXTURE_END + 3)).toBeNull();
   });
 
@@ -438,7 +466,7 @@ describe("settling an attempt", () => {
     const output = JSON.stringify(one());
     const settled = await settle(db, root, (await start(db, FIXTURE_END + 1))!.attempt, output);
     if (!settled.ok) throw new Error(settled.reason);
-    const [stored] = await listRetroItems(sqliteDb(db), "r1");
+    const [stored] = await listRetroItems(db, "r1");
     expect(stored).toMatchObject({
       actionStep: "issue",
       area: "Git recovery",
@@ -446,8 +474,6 @@ describe("settling an attempt", () => {
       evidenceIds: fixturePattern().evidenceIds as string[],
       verificationCriterion: fixturePattern().verification as string,
     });
-    expect(
-      ((await getRetro(sqliteDb(db), "r1"))!.result as { items: unknown[] }).items,
-    ).toHaveLength(1);
+    expect(((await getRetro(db, "r1"))!.result as { items: unknown[] }).items).toHaveLength(1);
   });
 });
