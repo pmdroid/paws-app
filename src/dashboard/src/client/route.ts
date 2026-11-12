@@ -66,6 +66,7 @@ export function matchRoute(path: string): Route | null {
     case "questions":
       return { view: "questions", id };
     case "settings":
+      if (id === "findings") return { view: "findings" };
       return SETTINGS_PAGES.some((entry) => entry.id === id)
         ? { view: "settings", page: id as SettingsPage }
         : { view: "settings" };

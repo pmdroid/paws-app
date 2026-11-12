@@ -22,6 +22,7 @@ import {
   type FindingsResponse,
 } from "../findings";
 import { readCsrfToken } from "./csrf";
+import { findingSettingsRequest, renderGroupingRow } from "./finding-settings";
 import { esc } from "./format";
 import { routeHref } from "./route";
 import { renderMarkup } from "./theme";
@@ -50,13 +51,14 @@ const STATUS_LABEL: Record<FindingStatus, string> = {
 /** The Findings page: the severity control and filters in one row, then one row per finding. */
 export function renderFindings(view: FindingsView): string {
   const tabs = `<div class="row" role="group" aria-label="Findings view"><button class="btn${view.mode !== "groups" ? " on" : ""}" type="button" data-findings-mode="findings" aria-pressed="${view.mode !== "groups"}">Findings</button><button class="btn${view.mode === "groups" ? " on" : ""}" type="button" data-findings-mode="groups" aria-pressed="${view.mode === "groups"}">Groups</button></div>`;
+  const top = `${renderGroupingRow(view.groups, view.local, view.busy)}${tabs}`;
   if (view.mode === "groups")
-    return `${tabs}${(view.groupsError ?? view.error) ? `<p role="alert" class="checkout-error">${esc(view.groupsError ?? view.error ?? "")} <button class="btn" data-findings-action="reload">Retry</button></p>` : ""}<p role="status">${esc(view.message)}</p>${renderFindingGroups(view.groups ?? null, view.local, view.busy)}`;
+    return `${top}${(view.groupsError ?? view.error) ? `<p role="alert" class="checkout-error">${esc(view.groupsError ?? view.error ?? "")} <button class="btn" data-findings-action="reload">Retry</button></p>` : ""}<p role="status">${esc(view.message)}</p>${renderFindingGroups(view.groups ?? null, view.local, view.busy)}`;
   const intro = `<p>Review findings that did not block a merge: in code the change did not touch, or below the review's <code>failOn</code>. Each is listed once, however many issues reported it.</p>`;
   const message = `<p class="muted" role="status" data-findings-message="">${esc(view.message)}</p>`;
   if (view.error && !view.data)
-    return `${tabs}${intro}<div class="empty" role="status"><div>Findings unavailable</div>${esc(view.error)}<div><button class="btn primary" type="button" data-findings-action="reload">Retry</button></div></div>`;
-  if (!view.data) return `${tabs}${intro}<div class="empty" role="status">Loading findings…</div>`;
+    return `${top}${intro}<div class="empty" role="status"><div>Findings unavailable</div>${esc(view.error)}<div><button class="btn primary" type="button" data-findings-action="reload">Retry</button></div></div>`;
+  if (!view.data) return `${top}${intro}<div class="empty" role="status">Loading findings…</div>`;
   const data = view.data;
   const error = view.error ? `<p class="checkout-error" role="alert">${esc(view.error)}</p>` : "";
   const list = data.findings.length
@@ -66,7 +68,7 @@ export function renderFindings(view: FindingsView): string {
     data.total > data.findings.length
       ? `<p class="muted">Showing the ${data.findings.length} seen last of ${data.total}. Narrow the filters to see the rest.</p>`
       : "";
-  return `${tabs}${intro}${filters(data, view.filter)}${error}${message}${list}${cut}`;
+  return `${top}${intro}${filters(data, view.filter)}${error}${message}${list}${cut}`;
 }
 
 function counts(data: FindingsResponse, filter: FindingFilter): string {
@@ -311,6 +313,23 @@ export function createFindings(): {
     await loadGroups();
     if (!view.error) await load();
   };
+  const setGrouping = async (grouping: boolean) => {
+    if (!engine || view.busy) return;
+    view.busy = true;
+    paint();
+    try {
+      await findingSettingsRequest(engine, { grouping });
+      view.message = grouping ? "Daily grouping is on." : "Daily grouping is off.";
+      view.error = null;
+    } catch (error) {
+      journalCaught(error, "findings.setGrouping", null);
+      view.error = error instanceof Error ? error.message : "Could not change grouping.";
+    } finally {
+      view.busy = false;
+    }
+    await loadGroups();
+    paint();
+  };
   const formFilter = (form: HTMLFormElement): FindingFilter =>
     parseFindingQuery(
       new URLSearchParams(
@@ -358,6 +377,10 @@ export function createFindings(): {
   };
   const change = (event: Event) => {
     const target = event.target as HTMLElement;
+    if (target instanceof HTMLInputElement && target.name === "finding-grouping") {
+      void setGrouping(target.checked);
+      return;
+    }
     if (!(target instanceof HTMLSelectElement) || target.dataset.findingsFilter === undefined)
       return;
     const form = target.closest<HTMLFormElement>("form[data-findings-filters]");

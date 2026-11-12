@@ -36,3 +36,12 @@ test("old status links map to the same page under /dashboard on this origin", ()
   expect(legacyDashboardLocation("/statuses")).toBeNull();
   expect(legacyDashboardLocation("/dashboard/issues")).toBeNull();
 });
+
+test("the old Settings › Findings page redirects to the Findings page", () => {
+  expect(legacyDashboardLocation("/dashboard/settings/findings")).toBe("/dashboard/findings");
+  expect(legacyDashboardLocation("/dashboard/settings/findings/", "?x=1")).toBe(
+    "/dashboard/findings?x=1",
+  );
+  expect(legacyDashboardLocation("/status/settings/findings")).toBe("/dashboard/findings");
+  expect(legacyDashboardLocation("/dashboard/settings/agents")).toBeNull();
+});

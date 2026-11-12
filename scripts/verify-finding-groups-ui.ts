@@ -62,6 +62,7 @@ const findings: FindingsResponse = {
 };
 const groups: FindingGroupsResponse = {
   canRun: true,
+  canChange: true,
   enabled: true,
   lastRun: {
     id: "run",
@@ -141,6 +142,8 @@ try {
       await page.setViewportSize({ width, height: 1000 });
       await page.emulateMedia({ colorScheme: theme as "light" | "dark", reducedMotion: "reduce" });
       await page.goto(`http://127.0.0.1:${server.port}/dashboard/findings`);
+      await expect(page.getByRole("switch")).toBeChecked();
+      await page.screenshot({ path: join(output, `grouping-${theme}-${width}.png`) });
       await page.getByRole("button", { name: "Groups", exact: true }).click();
       await expect(
         page.getByRole("heading", { name: "Use constant-time comparisons for secrets" }),
