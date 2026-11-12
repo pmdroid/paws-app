@@ -740,7 +740,7 @@ describe("improvement inbox", () => {
     expect(t.text()).toContain("Each retro keeps its frozen report");
     expect(t.find('a[href="/dashboard/improvements/reports/r1"]')).toBeTruthy();
     await t.open("/improvements/settings");
-    expect(t.text()).toContain("Daily grouping keeps its own settings");
+    expect(t.text()).toContain("Daily grouping is switched on the Findings page");
     expect(t.text()).toContain("A manual retro uses the same saved settings");
     await t.click('[data-improvement-action="run-retro"]');
     expect(t.text()).toContain("Retro requested");

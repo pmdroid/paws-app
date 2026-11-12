@@ -6,6 +6,7 @@ import type { FindingGroupsResponse } from "../finding-groups";
 
 const data: FindingGroupsResponse = {
   canRun: true,
+  canChange: true,
   enabled: true,
   lastRun: {
     id: "run",
@@ -93,7 +94,11 @@ test("run now is admin-only, remote views are read-only and actions disable whil
     'data-group-action="file" data-group-id="group" disabled',
   );
   expect(
-    renderFindingGroups({ groups: [], lastRun: null, canRun: true, enabled: true }, true, false),
+    renderFindingGroups(
+      { groups: [], lastRun: null, canRun: true, canChange: true, enabled: true },
+      true,
+      false,
+    ),
   ).toContain("No groups yet");
 });
 

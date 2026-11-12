@@ -26,7 +26,7 @@ export function renderFindingGroups(
   if (!data) return '<div class="empty" role="status">Loading groups…</div>';
   const run = data.lastRun;
   const stats = !data.enabled
-    ? "Daily grouping is off. An admin can turn it on in Settings → Findings."
+    ? "Daily grouping is off. An admin can turn it on above."
     : run
       ? `Last run ${esc(new Date(run.startedAt).toISOString().slice(0, 16).replace("T", " "))} UTC · ${run.finishedAt === null ? "Running" : `${((run.finishedAt - run.startedAt) / 1000).toFixed(1)} s`} · ${run.tokens === null ? "Token use unavailable" : `${run.tokens} tokens`} · ${run.groupCount} group${run.groupCount === 1 ? "" : "s"}${run.skipReason ? ` · Skipped: ${esc(run.skipReason)}` : ""}${run.status === "failed" ? " · Failed. Check runner availability and try again tomorrow." : ""}`
       : "No grouping run yet. Scheduled daily at the configured UTC time.";

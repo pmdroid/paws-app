@@ -28,12 +28,6 @@ export const SETTINGS_PAGES = [
     when: "When agents keep missing a house rule. Your repository's AGENTS.md already reaches them.",
   },
   {
-    id: "findings",
-    name: "Findings",
-    description: "Choose how Paws groups review findings for your team.",
-    when: "After a week of merged work, when the Findings page has entries.",
-  },
-  {
     id: "integrations",
     name: "Integrations",
     description: "Connect the services your workspace uses.",
@@ -78,5 +72,5 @@ function settingsNav(page: SettingsPage): string {
 
 export function renderSettingsPage(page: SettingsPage = "agents"): string {
   const current = SETTINGS_PAGES.find((entry) => entry.id === page)!;
-  return `${settingsNav(page)}<div class="settings-body min-w-0 space-y-4"><h1 class="settings-title">${current.name}</h1><p class="sub">${current.description}</p><p class="settings-when rounded-base border border-border px-3 py-2 text-sm text-muted-foreground"><b class="font-medium text-foreground">When to touch this:</b> ${current.when}</p>${page === "agents" ? '<div id="agent-settings" class="agent-settings"></div>' : page === "brief" ? '<div id="brief-settings" class="agent-settings"></div><div id="skill-settings" class="skill-settings"></div><div id="hook-settings" class="skill-settings"></div>' : page === "merging" ? '<div id="merge-settings" class="agent-settings"></div>' : page === "limits" ? '<div id="queue-settings" class="skill-settings"></div><div id="time-limit-settings" class="skill-settings"></div>' : page === "findings" ? '<div id="finding-settings" class="skill-settings"></div>' : ""}</div>`;
+  return `${settingsNav(page)}<div class="settings-body min-w-0 space-y-4"><h1 class="settings-title">${current.name}</h1><p class="sub">${current.description}</p><p class="settings-when rounded-base border border-border px-3 py-2 text-sm text-muted-foreground"><b class="font-medium text-foreground">When to touch this:</b> ${current.when}</p>${page === "agents" ? '<div id="agent-settings" class="agent-settings"></div>' : page === "brief" ? '<div id="brief-settings" class="agent-settings"></div><div id="skill-settings" class="skill-settings"></div><div id="hook-settings" class="skill-settings"></div>' : page === "merging" ? '<div id="merge-settings" class="agent-settings"></div>' : page === "limits" ? '<div id="queue-settings" class="skill-settings"></div><div id="time-limit-settings" class="skill-settings"></div>' : ""}</div>`;
 }

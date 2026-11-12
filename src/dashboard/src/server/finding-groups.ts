@@ -100,6 +100,8 @@ export async function handleFindingGroupsRequest(
       groups: [],
       lastRun: null,
       canRun: enabled && workspaceMemberUsable(member) && ["admin", "owner"].includes(member.role),
+      canChange:
+        !principal || (workspaceMemberUsable(member) && ["admin", "owner"].includes(member.role)),
       enabled,
     };
     if (workspaceId && (!principal || workspaceMemberUsable(member))) {
@@ -167,7 +169,7 @@ export async function handleFindingGroupsRequest(
       return Response.json({ error: "Finding grouping is unavailable." }, { status: 503 });
     if (!(await findingGroupingEnabled(store, principal.workspaceId)))
       return Response.json(
-        { error: "Daily grouping is off. Turn it on in Settings → Findings." },
+        { error: "Daily grouping is off. Turn it on at the top of the Findings page." },
         { status: 409 },
       );
     const day = new Date(now).toISOString().slice(0, 10);

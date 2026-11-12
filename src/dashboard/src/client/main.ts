@@ -44,7 +44,6 @@ import { createSkillSettings } from "./skills";
 import { createMergeSettings } from "./merge-settings";
 import { createHookSettings } from "./hooks";
 import { createBriefSettings } from "./brief-settings";
-import { createFindingSettings } from "./finding-settings";
 import { createTimeLimitSettings } from "./time-limit-settings";
 import { createQueueSettings } from "./queue-settings";
 import { createCheckoutSettings } from "./checkout-settings";
@@ -80,7 +79,6 @@ const skillSettings = createSkillSettings();
 const mergeSettings = createMergeSettings(() => paint());
 const hookSettings = createHookSettings();
 const briefSettings = createBriefSettings();
-const findingSettings = createFindingSettings();
 const timeLimitSettings = createTimeLimitSettings();
 const queueSettings = createQueueSettings(() => settings.stale());
 const checkoutSettings = createCheckoutSettings();
@@ -469,8 +467,6 @@ function paint(): void {
   if (timeLimitRoot) timeLimitSettings.mount(timeLimitRoot, currentEngine());
   const briefSettingsRoot = document.querySelector<HTMLElement>("#brief-settings");
   if (briefSettingsRoot) briefSettings.mount(briefSettingsRoot, currentEngine());
-  const findingSettingsRoot = document.querySelector<HTMLElement>("#finding-settings");
-  if (findingSettingsRoot) findingSettings.mount(findingSettingsRoot, currentEngine());
   const sessionRoot = document.querySelector<HTMLElement>("#linear-session-start");
   if (sessionRoot)
     sessionStart.mount(
