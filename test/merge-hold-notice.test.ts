@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
 import {
   enqueueOutbox,
   getWorkItem,
@@ -7,45 +6,57 @@ import {
   recordRebaseReturn,
   restart,
   saveCandidatePaths,
-  sqliteDb,
+  type Db,
 } from "../src/db";
-import { joinFakeWorkspace, workspaceDispatch } from "./fake-workspace";
-import { tempDb } from "./helpers";
+import { joinFakeWorkspacePg, workspaceDispatchPg } from "./fake-workspace";
+import { tempStore } from "./pglite";
 
 const NOW = 30 * 24 * 60 * 60 * 1000;
 const TOOLKIT = "libs/acme/toolkit.py";
 const PROJECT = "pyproject.toml";
 
+async function insertItem(db: Db, id: string, state: string, position: number): Promise<void> {
+  await db.run(function* (q) {
+    yield* q.exec(
+      q.orm.insert(q.t.workItem).values({
+        id,
+        delegationId: id,
+        linearIssueId: `issue-${id}`,
+        linearIdentifier: id,
+        title: id,
+        state,
+        branchName: `paws/${id}`,
+        position,
+        createdAt: 0,
+      }),
+    );
+    yield* q.exec(
+      q.orm.insert(q.t.workItemRepository).values({
+        itemId: id,
+        owner: "acme",
+        repo: "app",
+        remoteUrl: "https://github.com/acme/app.git",
+      }),
+    );
+  });
+}
+
 async function item(
-  db: Database,
+  db: Db,
   id: string,
   state: string,
   position: number,
   paths: string[],
 ): Promise<void> {
-  db.run(
-    `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at)
-     VALUES(?,?,?,?,?,?,?,?,0)`,
-    [id, id, `issue-${id}`, id, id, state, `paws/${id}`, position],
-  );
-  db.run(
-    "INSERT INTO work_item_repository(item_id,owner,repo,remote_url) VALUES(?,'acme','app','https://github.com/acme/app.git')",
-    [id],
-  );
-  await joinFakeWorkspace(db, id);
-  await saveCandidatePaths(sqliteDb(db), { itemId: id, head: `head-${id}`, paths, recordedAt: 1 });
+  await insertItem(db, id, state, position);
+  await joinFakeWorkspacePg(db, id);
+  await saveCandidatePaths(db, { itemId: id, head: `head-${id}`, paths, recordedAt: 1 });
 }
 
 /** A file that caused a merge-queue conflict lately, so the overlap gate holds work on it. */
-async function hot(db: Database, files: string[]): Promise<void> {
-  db.run(
-    `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at)
-     VALUES('earlier','earlier','issue-earlier','earlier','earlier','merged','paws/earlier',0,0)`,
-  );
-  db.run(
-    "INSERT INTO work_item_repository(item_id,owner,repo,remote_url) VALUES('earlier','acme','app','https://github.com/acme/app.git')",
-  );
-  await recordRebaseReturn(sqliteDb(db), {
+async function hot(db: Db, files: string[]): Promise<void> {
+  await insertItem(db, "earlier", "merged", 0);
+  await recordRebaseReturn(db, {
     itemId: "earlier",
     jobId: 9000,
     candidate: "head-earlier",
@@ -55,8 +66,8 @@ async function hot(db: Database, files: string[]): Promise<void> {
   });
 }
 
-async function respond(db: Database, id: string): Promise<void> {
-  await enqueueOutbox(sqliteDb(db), {
+async function respond(db: Db, id: string): Promise<void> {
+  await enqueueOutbox(db, {
     target: "linear",
     op: "activity",
     orderingKey: `session-${id}`,
@@ -66,8 +77,8 @@ async function respond(db: Database, id: string): Promise<void> {
   });
 }
 
-async function sendBack(db: Database, id: string, reason: "conflict" | "ci"): Promise<void> {
-  await restart(sqliteDb(db), (await getWorkItem(sqliteDb(db), id))!, {
+async function sendBack(db: Db, id: string, reason: "conflict" | "ci"): Promise<void> {
+  await restart(db, (await getWorkItem(db, id))!, {
     reason,
     body: "Rebase.",
     jobKey: `${reason}:${id}`,
@@ -75,8 +86,8 @@ async function sendBack(db: Database, id: string, reason: "conflict" | "ci"): Pr
   });
 }
 
-async function holds(db: Database, id: string) {
-  return (await listOutbox(sqliteDb(db), `session-${id}`))
+async function holds(db: Db, id: string) {
+  return (await listOutbox(db, `session-${id}`))
     .filter((row) => row.idempotencyKey.startsWith("merge-hold:"))
     .map((row) => ({
       key: row.idempotencyKey,
@@ -87,7 +98,7 @@ async function holds(db: Database, id: string) {
 }
 
 async function held(
-  db: Database,
+  db: Db,
   id: string,
   reason: "conflict" | "ci",
   respondFirst = true,
@@ -98,13 +109,13 @@ async function held(
 }
 
 test("an item sent back to rebase and held behind another posts one line naming blocker and files", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
     await hot(db, [TOOLKIT, PROJECT]);
     await item(db, "ACME-1", "running", 1, [TOOLKIT, PROJECT]);
     await held(db, "ACME-2", "conflict");
 
-    for (const offset of [0, 1, 2]) await workspaceDispatch(db, { now: NOW + offset });
+    for (const offset of [0, 1, 2]) await workspaceDispatchPg(db, { now: NOW + offset });
 
     expect(await holds(db, "ACME-2")).toEqual([
       {
@@ -115,41 +126,41 @@ test("an item sent back to rebase and held behind another posts one line naming 
       },
     ]);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("two items held behind one blocker each get their own line", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
     await hot(db, [TOOLKIT, PROJECT]);
     await item(db, "ACME-1", "running", 1, [TOOLKIT, PROJECT]);
     await held(db, "ACME-2", "conflict");
     await held(db, "ACME-3", "conflict");
 
-    await workspaceDispatch(db, { now: NOW });
-    await workspaceDispatch(db, { now: NOW + 1 });
+    await workspaceDispatchPg(db, { now: NOW });
+    await workspaceDispatchPg(db, { now: NOW + 1 });
 
     expect(await holds(db, "ACME-2")).toHaveLength(1);
     expect(await holds(db, "ACME-3")).toHaveLength(1);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("a hold says nothing without a conflict restart or before the pull request response", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
     await hot(db, [TOOLKIT]);
     await item(db, "ACME-1", "running", 1, [TOOLKIT]);
     await held(db, "ACME-2", "ci");
     await held(db, "ACME-3", "conflict", false);
 
-    await workspaceDispatch(db, { now: NOW });
+    await workspaceDispatchPg(db, { now: NOW });
 
     expect(await holds(db, "ACME-2")).toEqual([]);
     expect(await holds(db, "ACME-3")).toEqual([]);
   } finally {
-    db.close();
+    await close();
   }
 });
