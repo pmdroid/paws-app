@@ -183,7 +183,7 @@ export class RunnerSetupRequired extends Error {
     super(
       need.reason === "no-runner"
         ? "The delegator has no runner Paws can use"
-        : `Runner ${need.runnerName} needs ${need.agent} signed in`,
+        : `${need.agent} isn't signed in on runner ${need.runnerName}`,
     );
   }
 }

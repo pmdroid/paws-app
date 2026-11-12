@@ -167,6 +167,32 @@ test("a solo item runs on its owner's runners and not another member's shared ru
   }
 });
 
+test("a preflight never goes to a paused runner", async () => {
+  const placed = await placeItem();
+  try {
+    placed.db.run("UPDATE runner SET status='paused' WHERE id='own'");
+    for (const role of ["implementer", "reviewer"] as const)
+      expect(await placed.ids({ role, purpose: "prepare" })).toEqual(["second"]);
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});
+
+test("a preflight skips a runner whose agent is signed out while another is signed in", async () => {
+  const placed = await placeItem();
+  try {
+    placed.db.run("UPDATE runner_agent_policy SET ready=0,auth_expired=1 WHERE runner_id='own'");
+    const prepare = { role: "reviewer", purpose: "prepare" } as const;
+    expect(await placed.ids(prepare)).toEqual(["second"]);
+    placed.db.run("UPDATE runner_agent_policy SET ready=0,auth_expired=1 WHERE runner_id='second'");
+    expect((await placed.ids(prepare)).toSorted()).toEqual(["own", "second"]);
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});
+
 test("work goes only to runners whose reported repositories include the item's repository", async () => {
   const placed = await placeItem();
   try {
