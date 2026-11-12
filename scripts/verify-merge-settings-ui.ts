@@ -89,7 +89,9 @@ try {
     expect(saved.repositories).toEqual({
       "acme/platform": { packages: ["apps/*", "packages/*"] },
     });
-    await expect(page.locator("#default-main-help")).toContainText("acme/platform");
+    await expect(page.locator("#default-main-help")).toHaveText(
+      "A Closeout re-check starts with a fresh retry budget.",
+    );
 
     await expect(page.getByRole("heading", { name: "Ignored PR comments" })).toBeVisible();
     await expect(page.locator("#ignore-bots-0")).toHaveValue(/codecov\[bot\]/);

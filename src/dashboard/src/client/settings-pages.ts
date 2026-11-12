@@ -11,8 +11,7 @@ export const SETTINGS_PAGES = [
   {
     id: "merging",
     name: "Merging",
-    description:
-      "Choose how accepted pull requests reach main, for the workspace, a Linear project, or a kind of issue.",
+    description: "Choose how accepted pull requests reach main.",
     when: "Before your first merge if you want approvals on risky paths. Otherwise later.",
   },
   {
