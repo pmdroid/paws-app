@@ -10,90 +10,90 @@ import {
   listOutbox,
   requireLinearTaskDelegation,
   saveTaskMode,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import { createFakeTracker, createLinearTracker, type LinearClient } from "../src/linear";
 import { deliverLinearOutbox } from "../src/loop";
-import { tempDb } from "./helpers";
+import { tempStore } from "./pglite";
 
-const statusRows = async (db: ReturnType<typeof tempDb>) =>
-  (await listOutbox(sqliteDb(db))).filter((row) => row.target === "linear" && row.op === "status");
+const statusRows = async (db: Db) =>
+  (await listOutbox(db)).filter((row) => row.target === "linear" && row.op === "status");
 
 for (const [type, source] of [
   ["stop", "linear"],
   ["cancel", "dashboard"],
 ] as const)
   test(`a ${source} ${type} leaves the issue status to people`, async () => {
-    const db = tempDb();
+    const { db, close } = await tempStore();
     try {
       const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-      await beginImplementRun(sqliteDb(db), item.id, 1);
+      await beginImplementRun(db, item.id, 1);
       const command = { type, source, itemId: item.id, requestedAt: 5 };
-      expect((await applyLinearCommand(sqliteDb(db), command, 5)).applied).toBe(true);
+      expect((await applyLinearCommand(db, command, 5)).applied).toBe(true);
       expect(await statusRows(db)).toEqual([]);
       // Deliver everything the stop queued, as the outbox worker does.
       const tracker = createFakeTracker();
       for (let round = 0; round < 10; round += 1)
-        for (const head of await claimOutboxHeads(sqliteDb(db), { now: 10 + round })) {
-          expect(await isOutboxCurrent(sqliteDb(db), head)).toBe(true);
+        for (const head of await claimOutboxHeads(db, { now: 10 + round })) {
+          expect(await isOutboxCurrent(db, head)).toBe(true);
           if (head.op === "status") await deliverLinearOutbox(head, tracker, async () => {});
-          await completeOutbox(sqliteDb(db), head, 10 + round);
+          await completeOutbox(db, head, 10 + round);
         }
       expect(tracker.statuses).toEqual([]);
     } finally {
-      db.close();
+      await close();
     }
   });
 
 test("a cancel from the issue closing in Linear enqueues no status", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
     const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-    await beginImplementRun(sqliteDb(db), item.id, 1);
+    await beginImplementRun(db, item.id, 1);
     const command = { type: "cancel", source: "linear", itemId: item.id, requestedAt: 5 } as const;
     expect(
-      (await applyLinearCommand(sqliteDb(db), command, 5, "Closed: the issue was closed.")).applied,
+      (await applyLinearCommand(db, command, 5, "Closed: the issue was closed.")).applied,
     ).toBe(true);
     expect(await statusRows(db)).toEqual([]);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("an issue delegated without a human actor gets no status change", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
     const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-    await requireLinearTaskDelegation(sqliteDb(db), {
+    await requireLinearTaskDelegation(db, {
       itemId: item.id,
       issueId: item.linearIssueId,
       teamId: "team",
       appUserId: "app",
     });
-    await beginImplementRun(sqliteDb(db), item.id, 1);
+    await beginImplementRun(db, item.id, 1);
     const command = {
       type: "cancel",
       source: "dashboard",
       itemId: item.id,
       requestedAt: 5,
     } as const;
-    expect((await applyLinearCommand(sqliteDb(db), command, 5)).applied).toBe(true);
+    expect((await applyLinearCommand(db, command, 5)).applied).toBe(true);
     expect(await statusRows(db)).toEqual([]);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("an answer task completing leaves the issue status alone", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
     const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-    await beginImplementRun(sqliteDb(db), item.id, 1);
-    await saveTaskMode(sqliteDb(db), item.id, "answer");
-    await completeAnswerTask(sqliteDb(db), item.id, "The answer.", 3);
+    await beginImplementRun(db, item.id, 1);
+    await saveTaskMode(db, item.id, "answer");
+    await completeAnswerTask(db, item.id, "The answer.", 3);
     expect(await statusRows(db)).toEqual([]);
   } finally {
-    db.close();
+    await close();
   }
 });
 

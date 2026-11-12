@@ -1,4 +1,3 @@
-import { sqliteDb } from "../src/db";
 import { expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -9,7 +8,8 @@ import {
   type AcceptedLinearEvent,
   type LinearClient,
 } from "../src/linear";
-import { tempDb, tempHome } from "./helpers";
+import { tempHome } from "./helpers";
+import { tempStore } from "./pglite";
 
 const commentId = "bac3f259-220f-4671-a193-42c764c92f23";
 
@@ -35,9 +35,9 @@ function session() {
   };
 }
 
-function setup(options: { fail?: boolean; returned?: unknown } = {}) {
-  const db = tempDb();
-  const store = createInboxStore(sqliteDb(db));
+async function setup(options: { fail?: boolean; returned?: unknown } = {}) {
+  const { db, close } = await tempStore();
+  const store = createInboxStore(db);
   const calls: { query: string; variables: unknown; signal: AbortSignal | undefined }[] = [];
   const seen: AcceptedLinearEvent[] = [];
   const client: LinearClient = {
@@ -59,11 +59,11 @@ function setup(options: { fail?: boolean; returned?: unknown } = {}) {
       if (options.fail) throw new Error("interrupted intake");
     },
   });
-  return { db, store, start, calls, seen };
+  return { db, close, store, start, calls, seen };
 }
 
 test("explicit issue creation persists authoritative context and links Linear to its Paws conversation", async () => {
-  const env = setup();
+  const env = await setup();
   const signal = new AbortController().signal;
   expect(
     await env.start({ kind: "issue", id: "ENG-1" }, "http://127.0.0.1:8787/dashboard/", signal),
@@ -93,22 +93,22 @@ test("explicit issue creation persists authoritative context and links Linear to
   await Promise.resolve();
   await env.start({ kind: "issue", id: "ENG-1" }, "http://127.0.0.1:8787/dashboard/");
   expect(env.seen).toHaveLength(1);
-  env.db.close();
+  await env.close();
 });
 
 test("comment creation keeps selected thread text and assets and interrupted intake replays", async () => {
-  const env = setup({ fail: true });
+  const env = await setup({ fail: true });
   await env.start({ kind: "comment", id: commentId }, "http://localhost/dashboard/");
   expect(env.calls[0]?.query).toContain("$input: AgentSessionCreateOnComment!");
   expect(env.calls[0]?.variables).toMatchObject({ input: { commentId } });
   await Promise.resolve();
-  const replay = await createInboxStore(sqliteDb(env.db)).listUnhandled();
+  const replay = await createInboxStore(env.db).listUnhandled();
   expect(replay).toHaveLength(1);
   expect(JSON.parse(replay[0]!.payload).promptContext).toContain(
     "uploads.linear.app/org/image.png",
   );
   expect(replay[0]?.dedupeKey).toBe("session:session:created");
-  env.db.close();
+  await env.close();
 });
 
 test("wrong app, mismatched thread and unsuccessful mutation never enter intake", async () => {
@@ -117,18 +117,18 @@ test("wrong app, mismatched thread and unsuccessful mutation never enter intake"
     { ...session(), issue: null },
     { ...session(), sourceComment: null },
   ]) {
-    const env = setup({ returned });
+    const env = await setup({ returned });
     await expect(
       env.start({ kind: "comment", id: commentId }, "http://localhost/dashboard/"),
     ).rejects.toThrow();
     expect(await env.store.listUnhandled()).toHaveLength(0);
     expect(env.seen).toHaveLength(0);
-    env.db.close();
+    await env.close();
   }
 });
 
 test("production explicit session intake stays pending when follow-up fails and replays after restart", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const secretsDir = join(tempHome(), "secrets");
   mkdirSync(secretsDir, { recursive: true });
   const attempts: string[] = [];
@@ -142,7 +142,7 @@ test("production explicit session intake stays pending when follow-up fails and 
   };
   const first = await openLinear({
     db,
-    store: sqliteDb(db),
+    store: db,
     secretsDir,
     env: { LINEAR_ACCESS_TOKEN: "host-only-token" },
     fetch: fetchImpl,
@@ -154,11 +154,11 @@ test("production explicit session intake stays pending when follow-up fails and 
   await first.startSession!({ kind: "issue", id: "ENG-1" }, "http://127.0.0.1/dashboard/");
   for (let attempt = 0; attempt < 50 && attempts.length === 0; attempt++) await Bun.sleep(1);
   await Bun.sleep(5);
-  const reopened = createInboxStore(sqliteDb(db));
+  const reopened = createInboxStore(db);
   expect(await reopened.listUnhandled()).toHaveLength(1);
   const second = await openLinear({
     db,
-    store: sqliteDb(db),
+    store: db,
     secretsDir,
     env: { LINEAR_ACCESS_TOKEN: "host-only-token" },
     fetch: fetchImpl,
@@ -173,5 +173,5 @@ test("production explicit session intake stays pending when follow-up fails and 
   running.stop();
   expect(await reopened.listUnhandled()).toHaveLength(0);
   expect(attempts).toEqual(["failed", "recovered"]);
-  db.close();
+  await close();
 });

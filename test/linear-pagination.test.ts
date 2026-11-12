@@ -1,15 +1,14 @@
-import { sqliteDb } from "../src/db";
 import { describe, expect, test } from "bun:test";
 import { createInboxStore, createIntakePollSource, startCatchUpPoller } from "../src/linear";
 import type { LinearClient } from "../src/linear";
-import { tempDb } from "./helpers";
+import { tempStore } from "./pglite";
 
 const NOW = 1_700_000_000_000;
 
 describe("Linear session pagination", () => {
   test("discovers a session beyond the first 50 within one pass and then advances the cursor", async () => {
-    const db = tempDb();
-    const store = createInboxStore(sqliteDb(db));
+    const { db, close } = await tempStore();
+    const store = createInboxStore(db);
     const seen: string[] = [];
     let calls = 0;
     const client: LinearClient = {
@@ -53,7 +52,7 @@ describe("Linear session pagination", () => {
       expect(await store.getCursor("linear")).toBe(NOW);
     } finally {
       await poller.stop();
-      db.close();
+      await close();
     }
   });
 

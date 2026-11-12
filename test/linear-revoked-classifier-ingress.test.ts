@@ -9,17 +9,17 @@ import {
   isLinearAppRevoked,
   JobLoop,
   OutboxDispatcher,
-  sqliteDb,
   getLinearSessionSteps,
 } from "../src/db";
 import { attachOrchestrator, handleLinearAdministration, LinearTaskAccess } from "../src/loop";
 import { startServer } from "../src/server";
-import { tempDb, tempHome } from "./helpers";
+import { tempHome } from "./helpers";
+import { tempStore } from "./pglite";
 
 test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
   "signed %s fences the owned zero-item ACP classifier",
   async (mode) => {
-    const db = tempDb();
+    const { db, close } = await tempStore();
     const home = tempHome();
     const root = join(home, "paws");
     mkdirSync(root);
@@ -39,7 +39,7 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
     const outbox = new OutboxDispatcher(db, systemClock);
     let launches = 0;
     const orchestrator = attachOrchestrator({
-      store: sqliteDb(db),
+      store: db,
       jobs,
       outbox,
       pawsRoot: root,
@@ -58,7 +58,7 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
     });
     const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
     const secret = "fake-webhook-secret";
-    await writeStoredToken(sqliteDb(db), join(root, "secrets"), {
+    await writeStoredToken(db, join(root, "secrets"), {
       accessToken: "fake-access",
       refreshToken: "fake-refresh",
       expiresAtMs: Date.now() + 600_000,
@@ -72,20 +72,20 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
     const requests: string[] = [];
     const opened = await openLinear({
       db,
-      store: sqliteDb(db),
+      store: db,
       secretsDir: join(root, "secrets"),
       env: { LINEAR_CLIENT_ID: "client", LINEAR_APP_USER_ID: "app" },
-      isAuthorized: async () => !(await isLinearAppRevoked(sqliteDb(db), scope)),
+      isAuthorized: async () => !(await isLinearAppRevoked(db, scope)),
       beforeEvent: async (event) => {
         if (
-          await handleLinearAdministration(sqliteDb(db), event, {
+          await handleLinearAdministration(db, event, {
             ...scope,
             notify: () => {
               throw new Error("The classifier has no work item to cancel");
             },
             revalidate: (sessionIds) => gate.revalidateSessions(sessionIds),
             interrupt: async (sessionId) => {
-              expect(await isLinearAppRevoked(sqliteDb(db), scope)).toBe(true);
+              expect(await isLinearAppRevoked(db, scope)).toBe(true);
               await orchestrator.interruptLinearSession(sessionId);
               joined = true;
             },
@@ -121,7 +121,7 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
         });
       },
     });
-    gate = new LinearTaskAccess(sqliteDb(db), {
+    gate = new LinearTaskAccess(db, {
       access: opened.access,
       lifecycle: opened.issueLifecycle,
       oauthClientId: "client",
@@ -192,8 +192,8 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
         expect(joined).toBe(true);
         expect(launches).toBe(0);
         expect(requests.every((query) => !query.includes("mutation"))).toBe(true);
-        expect((await getLinearSession(sqliteDb(db), "session"))?.stoppedAt).not.toBeNull();
-        expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(0);
+        expect((await getLinearSession(db, "session"))?.stoppedAt).not.toBeNull();
+        expect(await db.run((q) => q.all(q.orm.select().from(q.t.workItem)))).toEqual([]);
         return;
       }
       for (let i = 0; i < 1_000; i++) {
@@ -205,7 +205,7 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
         await Bun.sleep(5);
       }
       expect(JSON.parse(readFileSync(trace, "utf8")).methods).toContain("session/prompt");
-      expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(0);
+      expect(await db.run((q) => q.all(q.orm.select().from(q.t.workItem)))).toEqual([]);
       const before = requests.length;
       lostTeam = mode !== "revoked";
       const administration =
@@ -226,7 +226,7 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
           await Bun.sleep(5);
         }
         expect(failedRead).toBe(true);
-        expect(await createInboxStore(sqliteDb(db)).listUnhandled()).not.toEqual([]);
+        expect(await createInboxStore(db).listUnhandled()).not.toEqual([]);
         expect((await post(administration, "administration")).status).toBe(200);
       }
       for (let i = 0; i < 1_000; i++) {
@@ -234,25 +234,21 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
         await Bun.sleep(5);
       }
       expect(joined).toBe(true);
-      expect((await getLinearSession(sqliteDb(db), "session"))?.stoppedAt).not.toBeNull();
-      expect((await getLinearSession(sqliteDb(db), "session"))?.generation).toBe(1);
+      expect((await getLinearSession(db, "session"))?.stoppedAt).not.toBeNull();
+      expect((await getLinearSession(db, "session"))?.generation).toBe(1);
       expect(JSON.parse(readFileSync(trace, "utf8")).methods).toContain("session/cancel");
       if (mode === "revoked") expect(requests).toHaveLength(before);
       else expect(requests.slice(before).every((query) => !query.includes("mutation"))).toBe(true);
       expect(launches).toBe(1);
       expect(tracker.progress).toEqual([]);
-      for (
-        let i = 0;
-        i < 100 && (await createInboxStore(sqliteDb(db)).listUnhandled()).length > 0;
-        i++
-      )
+      for (let i = 0; i < 100 && (await createInboxStore(db).listUnhandled()).length > 0; i++)
         await Bun.sleep(5);
-      expect(await createInboxStore(sqliteDb(db)).listUnhandled()).toEqual([]);
-      expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(0);
+      expect(await createInboxStore(db).listUnhandled()).toEqual([]);
+      expect(await db.run((q) => q.all(q.orm.select().from(q.t.workItem)))).toEqual([]);
     } finally {
       await orchestrator.shutdown();
       server.stop(true);
-      db.close();
+      await close();
     }
   },
   15_000,
