@@ -31,7 +31,6 @@
   --border: #e4e4e7;
   --ring: #18181b;
   --overlay: rgb(0 0 0 / 40%);
-  --shadow: 0 0 #0000;
   --state-running: #0369a1;
   --state-verifying: #6d28d9;
   --state-awaiting: #a16207;
@@ -61,7 +60,6 @@
   --border: #27272a;
   --ring: #a1a1aa;
   --overlay: rgb(0 0 0 / 60%);
-  --shadow: 0 0 #0000;
   --state-running: #7dd3fc;
   --state-verifying: #c4b5fd;
   --state-awaiting: #fcd34d;
@@ -98,16 +96,11 @@
   --color-state-warn: var(--state-warn);
   --color-gauge: var(--accent);
   --spacing-sidebar: 14.5rem;
-  --spacing-boxShadowX: 0px;
-  --spacing-boxShadowY: 0px;
-  --spacing-reverseBoxShadowX: 0px;
-  --spacing-reverseBoxShadowY: 0px;
   --radius-base: 6px;
   --font-weight-base: 400;
   --font-weight-heading: 600;
   --font-sans: "Bricolage", sans-serif;
   --font-mono: "DM Mono", ui-monospace, monospace;
-  --shadow-shadow: var(--shadow);
 }
 
 @layer base {
@@ -386,7 +379,7 @@ a.evidence-thumb {
   display: block;
   aspect-ratio: 16 / 9;
   overflow: hidden;
-  border: 2px solid var(--border);
+  border: 1px solid var(--border);
   border-radius: var(--radius-base, 5px);
   background: var(--background);
 }
@@ -417,8 +410,8 @@ a.evidence-thumb:focus-visible {
   list-style: none;
   padding: 0;
   overflow: hidden;
-  border: 2px solid var(--border);
-  border-radius: 5px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
   background: var(--secondary-background);
 }
 .run-stepper.with-review {
@@ -435,17 +428,17 @@ a.evidence-thumb:focus-visible {
   font-weight: 700;
 }
 .run-step + .run-step {
-  border-left: 2px solid var(--border);
+  border-left: 1px solid var(--border);
 }
 .run-step.done,
 .closeout-result.accepted {
-  background: #c8f2d7;
-  color: #064e30;
+  background: color-mix(in srgb, var(--state-ok) 12%, transparent);
+  color: var(--state-ok);
 }
 .run-step.failed,
 .closeout-result:is(.exhausted, .rejected, .blocked) {
-  background: #ffd0d0;
-  color: #8b1717;
+  background: color-mix(in srgb, var(--state-failed) 12%, transparent);
+  color: var(--state-failed);
 }
 .run-step.now {
   background: var(--main);
@@ -456,22 +449,21 @@ a.evidence-thumb:focus-visible {
   min-width: 0;
   flex-direction: column;
   overflow: hidden;
-  border: 2px solid var(--border);
-  border-radius: 5px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
   background: var(--secondary-background);
-  box-shadow: var(--shadow);
 }
 .journey .journey-stepper {
   grid-template-columns: none;
   grid-auto-columns: minmax(0, 1fr);
   grid-auto-flow: column;
   border: 0;
-  border-bottom: 2px solid var(--border);
+  border-bottom: 1px solid var(--border);
   border-radius: 0;
 }
 .run-step.needs {
-  background: #ffe08a;
-  color: #4a3500;
+  background: color-mix(in srgb, var(--state-awaiting) 12%, transparent);
+  color: var(--state-awaiting);
 }
 .journey-now {
   display: flex;
@@ -487,20 +479,16 @@ a.evidence-thumb:focus-visible {
   max-width: 70ch;
 }
 .journey-needs {
-  background: #fff4cc;
-  color: #3d2c00;
+  background: color-mix(in srgb, var(--state-awaiting) 8%, transparent);
 }
 .journey-failed {
-  background: #ffe3e3;
-  color: #6f1212;
+  background: color-mix(in srgb, var(--state-failed) 8%, transparent);
 }
-.dark .journey-needs {
-  background: #4a3a10;
-  color: #ffeab0;
+.journey-needs h2 {
+  color: var(--state-awaiting);
 }
-.dark .journey-failed {
-  background: #4d1c1c;
-  color: #ffd6d6;
+.journey-failed h2 {
+  color: var(--state-failed);
 }
 .issue-folds {
   display: flex;
@@ -519,8 +507,8 @@ a.evidence-thumb:focus-visible {
   display: flex;
   align-items: center;
   gap: 1rem;
-  border: 2px solid var(--border);
-  border-radius: 5px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
   padding: 1rem;
   background: var(--secondary-background);
 }
@@ -562,8 +550,8 @@ a.evidence-thumb:focus-visible {
 }
 .review-finding {
   gap: 0.5rem;
-  border: 2px solid var(--border);
-  border-radius: 5px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
   padding: 0.75rem 1rem;
   background: var(--secondary-background);
 }
@@ -591,8 +579,8 @@ a.evidence-thumb:focus-visible {
 }
 .result-icon {
   padding: 0.5rem 0.75rem;
-  border: 2px solid var(--border);
-  border-radius: 5px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
   background: var(--secondary-background);
   color: var(--foreground);
 }
@@ -606,10 +594,10 @@ a.evidence-thumb:focus-visible {
   box-shadow: none;
 }
 .attempt-tabs button:first-child {
-  border-radius: 5px 0 0 5px;
+  border-radius: 6px 0 0 6px;
 }
 .attempt-tabs button:last-child {
-  border-radius: 0 5px 5px 0;
+  border-radius: 0 6px 6px 0;
 }
 .attempt-round {
   font-size: 0.75rem;
@@ -636,8 +624,8 @@ a.evidence-thumb:focus-visible {
   align-items: center;
   gap: 0.8rem;
   padding: 0.65rem 0.85rem;
-  border: 2px solid var(--border);
-  border-radius: 5px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
   background: var(--secondary-background);
   text-align: left;
 }
@@ -660,8 +648,8 @@ a.evidence-thumb:focus-visible {
 }
 .run-details > * {
   min-width: 0;
-  border: 2px solid var(--border);
-  border-radius: 5px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
   padding: 1rem 1.25rem;
   background: var(--secondary-background);
 }
@@ -686,12 +674,9 @@ a.evidence-thumb:focus-visible {
 .check-row {
   min-width: 0;
   overflow: hidden;
-  border: 2px solid var(--border);
-  border-radius: 5px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
   background: var(--secondary-background);
-}
-.check-row:has(.check-detail) {
-  box-shadow: var(--shadow);
 }
 .check-row .chk {
   display: grid;
@@ -718,21 +703,21 @@ a.evidence-thumb:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 .check-detail {
-  border-top: 2px solid var(--border);
+  border-top: 1px solid var(--border);
   padding: 0.85rem;
 }
 .check-terminal {
   min-width: 0;
   overflow: hidden;
-  border: 2px solid var(--border);
-  border-radius: 5px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
   background: #171221;
   color: #f5f1ff;
 }
 .terminal-toolbar {
   padding: 0.4rem 0.6rem;
   background: #251e33;
-  border-bottom: 2px solid #101317;
+  border-bottom: 1px solid #101317;
   font-size: 0.75rem;
 }
 .check-terminal .out {
@@ -794,7 +779,7 @@ a.evidence-thumb:focus-visible {
     border-left: 0;
   }
   .run-step:nth-child(n + 3) {
-    border-top: 2px solid var(--border);
+    border-top: 1px solid var(--border);
   }
   .closeout-result {
     align-items: start;
@@ -847,7 +832,7 @@ dialog.review-draw {
   flex-direction: column;
   gap: 0.25rem;
   padding: 0.25rem;
-  border: 2px solid var(--border);
+  border: 1px solid var(--border);
   border-radius: var(--radius-base, 5px);
   background: var(--secondary-background);
   font-size: 0.75rem;
@@ -930,9 +915,8 @@ dialog.review-draw {
   min-width: 0;
   height: 2.25rem;
   overflow: hidden;
-  border: 2px solid var(--border);
-  border-radius: 5px;
-  box-shadow: var(--shadow);
+  border: 1px solid var(--border);
+  border-radius: 6px;
 }
 .time-seg {
   display: flex;
@@ -955,7 +939,7 @@ dialog.review-draw {
   }
 }
 .time-seg + .time-seg {
-  border-left: 2px solid var(--border);
+  border-left: 1px solid var(--border);
 }
 .time-seg[data-current] {
   background-image: repeating-linear-gradient(
@@ -985,7 +969,7 @@ dialog.review-draw {
   width: 0.875rem;
   height: 0.875rem;
   margin-right: 0.375rem;
-  border: 2px solid var(--border);
+  border: 1px solid var(--border);
   border-radius: 3px;
   vertical-align: -0.125rem;
 }
@@ -1068,8 +1052,8 @@ dialog.review-draw {
 /* The finding or output tail of a check the "Closeout needs your help" card offers to bypass. */
 .bypass-finding {
   margin: 0.5rem 0;
-  border: 2px solid var(--border);
-  border-radius: 5px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
   padding: 0.75rem 1rem;
   background: color-mix(in srgb, var(--foreground) 6%, var(--secondary-background));
   font-size: 0.875rem;
@@ -1092,7 +1076,7 @@ dialog.review-draw {
   flex-direction: column;
   gap: 0.5rem;
   padding-bottom: 1rem;
-  border-bottom: 2px solid var(--border);
+  border-bottom: 1px solid var(--border);
 }
 
 /* Repository rules on the issue page (src/dashboard/src/client/rules.ts). */
@@ -1106,7 +1090,7 @@ dialog.review-draw {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  border-top: 2px solid var(--border);
+  border-top: 1px solid var(--border);
   padding: 0.85rem;
 }
 .rule-decision p {
@@ -1160,7 +1144,7 @@ a.visual-review-frame {
   position: relative;
   display: block;
   overflow: hidden;
-  border: 2px solid var(--border);
+  border: 1px solid var(--border);
   border-radius: var(--radius-base, 5px);
   background: var(--background);
   cursor: crosshair;
