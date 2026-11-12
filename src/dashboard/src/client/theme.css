@@ -1268,3 +1268,30 @@ a.visual-review-frame:focus-visible {
 .risk-lists textarea {
   font-family: var(--font-mono, ui-monospace, monospace);
 }
+
+/* Settings: the page list sits beside the body from md up, workspace sections included. */
+@media (min-width: 48rem) {
+  #content:has(> #page-content > div > .settings-nav) {
+    display: grid;
+    grid-template-columns: 12rem minmax(0, 1fr);
+    grid-template-rows: auto 1fr;
+    column-gap: 2rem;
+    row-gap: 2rem;
+    align-items: start;
+  }
+  #content > #page-content:has(> div > .settings-nav),
+  #page-content > div:has(> .settings-nav) {
+    display: contents;
+  }
+  #page-content > div > .settings-nav {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+    position: sticky;
+    top: 1rem;
+  }
+  #content:has(> #page-content > div > .settings-nav) > :not(#page-content),
+  #page-content > div > .settings-body {
+    grid-column: 2;
+    margin: 0;
+  }
+}

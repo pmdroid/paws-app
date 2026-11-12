@@ -14,23 +14,14 @@ import {
   Terminal,
   CircleHelp,
   Server,
-  Bot,
-  Plug,
-  KeyRound,
-  Users,
-  UserRound,
-  History,
   Menu,
-  BookOpen,
-  GitMerge,
   GitPullRequestArrow,
   Bug,
-  Hourglass,
   Lightbulb,
+  Settings,
 } from "lucide-react";
 import { parseRoute, routePath, routerBase, type Route } from "./route";
 import { NAVIGATION, PAGES } from "./navigation";
-import { SETTINGS_PAGES } from "./settings-pages";
 import { AppearanceControl, initializeAppearance } from "./appearance";
 import { CommandPalette, shortcutLabel } from "./command-palette";
 import { createShortcuts, PAGE_SHORTCUTS } from "./shortcuts";
@@ -54,15 +45,6 @@ const ICONS = {
   improvements: Lightbulb,
   questions: CircleHelp,
   runners: Server,
-  agents: Bot,
-  brief: BookOpen,
-  merging: GitMerge,
-  limits: Hourglass,
-  integrations: Plug,
-  members: Users,
-  workspace: KeyRound,
-  account: UserRound,
-  audit: History,
 };
 const ControllerRegions = memo(function ControllerRegions() {
   return (
@@ -167,28 +149,18 @@ function Navigation({
           </SidebarMenu>
         </SidebarGroup>
       ))}
-      <SidebarGroup aria-label="Settings">
-        <h2 className="px-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-          Settings
-        </h2>
-        <SidebarMenu>
-          {SETTINGS_PAGES.map((page) => {
-            const Icon = ICONS[page.id];
-            return (
-              <li key={page.id}>
-                <SidebarMenuLink
-                  to={routePath({ view: "settings", page: page.id })}
-                  active={route.view === "settings" && (route.page ?? "agents") === page.id}
-                  onClick={onNavigate}
-                >
-                  <Icon className="size-4 shrink-0" aria-hidden="true" />
-                  <span>{page.name}</span>
-                </SidebarMenuLink>
-              </li>
-            );
-          })}
-        </SidebarMenu>
-      </SidebarGroup>
+      <SidebarMenu className="mt-5">
+        <li>
+          <SidebarMenuLink
+            to={routePath({ view: "settings", page: "agents" })}
+            active={route.view === "settings"}
+            onClick={onNavigate}
+          >
+            <Settings className="size-4 shrink-0" aria-hidden="true" />
+            <span>Settings</span>
+          </SidebarMenuLink>
+        </li>
+      </SidebarMenu>
     </nav>
   );
 }
@@ -196,18 +168,17 @@ function Navigation({
 function Breadcrumb({
   authenticated,
   route,
-  detail,
+  detail: shown,
 }: {
   authenticated: boolean;
   route: Route;
   detail: { issueId: string | null; entityId: string } | null;
 }) {
+  const detail =
+    route.view === "settings" ? { issueId: null, entityId: route.page ?? "agents" } : shown;
   const current = "text-foreground";
   const slash = <span aria-hidden="true">/</span>;
-  const title =
-    route.view === "settings"
-      ? SETTINGS_PAGES.find((page) => page.id === (route.page ?? "agents"))!.name
-      : PAGES[route.view].title;
+  const title = route.view === "settings" ? "settings" : PAGES[route.view].title;
   return (
     <nav
       aria-label="Breadcrumb"
