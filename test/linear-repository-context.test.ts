@@ -9,10 +9,10 @@ import {
   getWorkItem,
   getLinearSessionGeneration,
   getWorkItemRepository,
-  migrate,
-  openDatabase,
+  openPawsStore,
   taskRequiresRepository,
-  sqliteDb,
+  type Db,
+  type PawsStore,
 } from "../src/db";
 import {
   createFakeTracker,
@@ -22,6 +22,7 @@ import {
 import { attachOrchestrator, type AgentLaunch } from "../src/loop";
 import { findOpenQuestion } from "../src/questions";
 import { tempHome } from "./helpers";
+import { copyMigratedPglite } from "./pglite";
 import { workspaceAdmission } from "./fake-workspace";
 
 const scenarios = [
@@ -61,9 +62,10 @@ test.each(
       "Seed",
     ]);
     const initialHead = (await git(["-C", source, "rev-parse", "HEAD"])).trim();
-    const dbPath = join(root, "paws.db");
-    let db = openDatabase(dbPath);
-    migrate(db);
+    const dbPath = join(root, "pglite");
+    await copyMigratedPglite(dbPath);
+    let open: PawsStore = await openPawsStore({ url: null, pgliteDir: dbPath });
+    let db: Db = open.store;
     const tracker = createFakeTracker([
       {
         linearIssueId: "issue",
@@ -173,7 +175,7 @@ test.each(
       const jobs = new JobLoop(db, systemClock);
       const outbox = new OutboxDispatcher(db, systemClock);
       const orchestrator = attachOrchestrator({
-        store: sqliteDb(db),
+        store: db,
         admission: workspaceAdmission(db),
         jobs,
         outbox,
@@ -218,7 +220,7 @@ test.each(
                 },
                 agentForItem(itemId) {
                   return async (options) => {
-                    expect((await getWorkItem(sqliteDb(db), itemId))?.currentRunId).not.toBeNull();
+                    expect((await getWorkItem(db, itemId))?.currentRunId).not.toBeNull();
                     return runAgent({
                       ...options,
                       ...launchFixture({
@@ -253,11 +255,13 @@ test.each(
         payload: JSON.stringify({ agentSession: { creatorId: "human" } }),
       };
       await f.orchestrator.onLinearEvent(event);
-      const itemId = db.query<{ id: string }, []>("SELECT id FROM work_item").get()!.id;
+      const itemId = (await db.run((q) =>
+        q.one(q.orm.select({ id: q.t.workItem.id }).from(q.t.workItem)),
+      ))!.id;
       expect(purposes).toEqual([]);
       if (scenario === "clarify") {
         await f.jobs.tick();
-        expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
+        expect((await getWorkItem(db, itemId))?.state).toBe("awaiting_input");
         await f.orchestrator.onLinearEvent({
           ...event,
           dedupeKey: "clarification",
@@ -272,12 +276,13 @@ test.each(
       }
       if (repositoryChoice) {
         await f.jobs.tick();
-        expect((await findOpenQuestion(sqliteDb(db), "session"))?.options).toHaveLength(2);
-        expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
+        expect((await findOpenQuestion(db, "session"))?.options).toHaveLength(2);
+        expect((await getWorkItem(db, itemId))?.state).toBe("awaiting_input");
       }
-      db.close();
-      db = openDatabase(dbPath);
-      migrate(db);
+      await f.outbox.idle();
+      await open.close();
+      open = await openPawsStore({ url: null, pgliteDir: dbPath });
+      db = open.store;
       f = attach();
       if (repositoryChoice) {
         await f.orchestrator.onLinearEvent({
@@ -291,12 +296,12 @@ test.each(
           activityCreatedAtMs: Date.now() + 1,
           actorId: "human",
         });
-        expect(await getLinearSessionGeneration(sqliteDb(db), "session")).toBe(0);
+        expect(await getLinearSessionGeneration(db, "session")).toBe(0);
       }
       await f.jobs.tick();
-      expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("completed");
-      expect(await getWorkItemRepository(sqliteDb(db), itemId)).toEqual(repository);
-      expect(await taskRequiresRepository(sqliteDb(db), itemId)).toBe(true);
+      expect((await getWorkItem(db, itemId))?.state).toBe("completed");
+      expect(await getWorkItemRepository(db, itemId)).toEqual(repository);
+      expect(await taskRequiresRepository(db, itemId)).toBe(true);
       expect(purposes).toEqual(
         scenario === "clarify"
           ? ["classify", "classify", mode]
@@ -321,7 +326,7 @@ test.each(
       expect(tracker.progress.some((update) => update.kind === "response")).toBe(true);
     } finally {
       await f.outbox.idle();
-      db.close();
+      await open.close();
     }
   },
   20_000,
