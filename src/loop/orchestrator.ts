@@ -2885,7 +2885,8 @@ export class Orchestrator {
     for (const hold of holds) {
       const item = await this.store.run((q) => getWorkItemSteps(q, hold.itemId));
       if (!item || item.state !== "queued" || item.cancelRequested) continue;
-      const runner = await eligibleRunner(item.id, await this.implementerAgent(item, config), now);
+      const agent = hold.agent ?? (await this.implementerAgent(item, config));
+      const runner = await eligibleRunner(item.id, agent, now);
       if (!runner) continue;
       resumed =
         (await this.store.transaction((q) =>
@@ -10616,6 +10617,7 @@ export class Orchestrator {
         prompt: "",
         signal,
       }).catch((error: unknown) => {
+        if (error instanceof RunnerSetupRequired) throw error;
         throw new Error(
           `${role} preparation failed: ${error instanceof Error ? error.message : String(error)}`,
           { cause: error },

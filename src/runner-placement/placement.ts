@@ -473,6 +473,13 @@ export function createRunnerPlacement(options: {
       const rank = (helper?.preempts ? 1000 : 0) + reviewRank * 10 + (runner.own ? 0 : 1);
       ranked.push({ runner, ...fit, rank, extra: runner.quotaState === "spent_extra" });
     }
+    const signedIn = (entry: (typeof ranked)[number]) =>
+      entry.runner.ready === 1 && entry.runner.authExpired === 0;
+    if (input.purpose === "prepare" && ranked.some(signedIn))
+      for (const entry of ranked.filter((other) => !signedIn(other))) {
+        input.onRejected?.(entry.runner.id, "agent not signed in");
+        ranked.splice(ranked.indexOf(entry), 1);
+      }
     // A run leaving its pinned runner goes first to a free runner that can restore its saved
     // agent session, the agent version that wrote it ahead of other versions. It never waits
     // for a busy one: the others follow, and the restore falls back there with its reason.
