@@ -117,7 +117,10 @@ export function statusLabel(rule: Pick<ProposedRule, "check">): string {
  * Validate the proposal as a Closeout policy, with each probe saved from its commented copy
  * in the file. Returns null when it validates, else what is wrong.
  */
-export function validateProposal(yaml: string, rules: readonly ProposedRule[]): string | null {
+export async function validateProposal(
+  yaml: string,
+  rules: readonly ProposedRule[],
+): Promise<string | null> {
   const scripts = proposalScripts(yaml);
   for (const rule of rules)
     if (scripts.get(rule.probe) !== new TextDecoder().decode(rule.bytes).replace(/\r\n?/g, "\n"))
@@ -133,7 +136,7 @@ export function validateProposal(yaml: string, rules: readonly ProposedRule[]): 
       mkdirSync(dirname(join(repo, probe)), { recursive: true });
       writeFileSync(join(repo, probe), text);
     }
-    const result = validate(repo, home, repo);
+    const result = await validate(repo, home, repo);
     return result.ok ? null : result.message;
   } finally {
     rmSync(root, { recursive: true, force: true });

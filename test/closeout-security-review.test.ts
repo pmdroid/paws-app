@@ -19,9 +19,9 @@ afterEach(() => {
 });
 
 describe("security review in this repository's Closeout policy", () => {
-  test("is a separate review with its own skill on high-risk paths", () => {
-    const security = securityReview();
-    const general = policyItems().find(
+  test("is a separate review with its own skill on high-risk paths", async () => {
+    const security = await securityReview();
+    const general = (await policyItems()).find(
       (item) => item.id === "independent-review",
     ) as ResolvedReview;
     expect(security).toMatchObject({
@@ -52,8 +52,8 @@ describe("security review in this repository's Closeout policy", () => {
   });
 });
 
-function policyItems() {
-  const loaded = loadPolicy({
+async function policyItems() {
+  const loaded = await loadPolicy({
     repo: REPOSITORY,
     git: createFakeGitReader(),
     policyRoot: REPOSITORY,
@@ -62,8 +62,8 @@ function policyItems() {
   return loaded.policy.items;
 }
 
-function securityReview(): ResolvedReview {
-  return policyItems().find((item) => item.id === "security-review") as ResolvedReview;
+async function securityReview(): Promise<ResolvedReview> {
+  return (await policyItems()).find((item) => item.id === "security-review") as ResolvedReview;
 }
 
 function fixture(path: string, content: string) {

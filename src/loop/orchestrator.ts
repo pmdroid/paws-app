@@ -187,7 +187,7 @@ import {
 } from "../config";
 import {
   fixAttemptLimit,
-  policyFixBudget,
+  mainFixBudget,
   approvalsAtHead,
   awaitsVisualReview,
   createCloseoutGate,
@@ -5029,7 +5029,7 @@ export class Orchestrator {
     const github = repository ? this.githubForRepository(repository) : null;
     if (!repository || !github) return null;
     const { home, policyRoot } = await this.closeoutHome(item);
-    const mappings = ciMappings(worktree, home, policyRoot);
+    const mappings = await ciMappings(worktree, home, policyRoot);
     if (mappings.length === 0) return null;
     const signal = await this.signalForItem(item.id);
     const short = head.slice(0, 7);
@@ -6513,8 +6513,8 @@ export class Orchestrator {
   }
 
   private *fixRoundLimitSteps(q: Q, item: WorkItemRecord): Steps<number> {
-    const { home, policyRoot } = yield* this.closeoutHomeSteps(q, item);
-    return policyFixBudget((yield* this.itemHeadSteps(q, item)).repo, home, policyRoot) ?? 3;
+    const { policyRoot } = yield* this.closeoutHomeSteps(q, item);
+    return mainFixBudget((yield* this.itemHeadSteps(q, item)).repo, policyRoot) ?? 3;
   }
 
   /**
@@ -9709,7 +9709,7 @@ export class Orchestrator {
   ): Promise<ResolvedEvidence[]> {
     const repository = await this.repositoryForItem(item);
     if (!repository) return [];
-    const required = visualReviewRequirements(
+    const required = await visualReviewRequirements(
       worktree,
       this.options.home,
       this.options.closeoutPolicyRoot?.(repository),
@@ -10569,7 +10569,7 @@ export class Orchestrator {
           ...placement,
           checkoutExclusions: (await this.runCheckout(item)).agent,
         }).then((created) => ({ path: created.path, repo: created.path }));
-    const required = (this.options.reviewRequirements ?? reviewRequirements)(
+    const required = await (this.options.reviewRequirements ?? reviewRequirements)(
       worktree.repo,
       this.options.home,
       this.options.closeoutPolicyRoot?.(repository),
@@ -10715,7 +10715,7 @@ export class Orchestrator {
           }
         : {}),
       closeoutPolicy: async () => {
-        const load = trustedPolicyFiles(repo, home, policyRoot);
+        const load = await trustedPolicyFiles(repo, home, policyRoot);
         // The runner parses the policy with its own release: say which keys it would leave out.
         if (load.ok && !load.absent)
           await checkPolicyRunners(this.store, {

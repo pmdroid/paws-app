@@ -155,8 +155,8 @@ test("the trusted policy comes from origin/main, not from the worktree", async (
   const clone = directory();
   git(clone, "clone", "-q", origin, ".");
   writeFileSync(join(clone, ".agents", "closeout.yaml"), policy("edited-on-branch"));
-  const first = trustedPolicyFiles(clone);
-  const digests = candidatePolicyDigests(clone) as PolicyDigests | null;
+  const first = await trustedPolicyFiles(clone);
+  const digests = (await candidatePolicyDigests(clone)) as PolicyDigests | null;
   expect(digests?.paths).toContain(".agents/closeout.yaml");
   expect(digests?.digest).toBe(first.ok && !first.absent ? first.digest : undefined);
   expect(first.ok && !first.absent && first.digest).toBe(
@@ -165,13 +165,13 @@ test("the trusted policy comes from origin/main, not from the worktree", async (
   writeFileSync(join(seed, ".agents", "closeout.yaml"), policy("typecheck"));
   git(seed, "commit", "-q", "-am", "change policy");
   git(seed, "push", "-q", "origin", "HEAD:main");
-  const second = trustedPolicyFiles(clone);
+  const second = await trustedPolicyFiles(clone);
   expect(second.ok && !second.absent && second.digest).toBe(
     (trusted("typecheck") as { digest: string }).digest,
   );
 });
 
-test("main's policy that does not load reports its error and the commit that broke it", () => {
+test("main's policy that does not load reports its error and the commit that broke it", async () => {
   const origin = directory();
   git(origin, "init", "-q", "--bare", "-b", "main");
   const seed = workspace(policy("lint"));
@@ -186,14 +186,14 @@ test("main's policy that does not load reports its error and the commit that bro
   git(seed, "push", "-q", "origin", "HEAD:main");
   const clone = directory();
   git(clone, "clone", "-q", origin, ".");
-  expect(candidatePolicyDigests(clone)).toMatchObject({
+  expect(await candidatePolicyDigests(clone)).toMatchObject({
     ok: false,
     path: ".agents/closeout.yaml",
     main: git(seed, "rev-parse", "HEAD"),
     commit: broke,
   });
   git(clone, "remote", "set-url", "origin", join(origin, "missing"));
-  expect(candidatePolicyDigests(clone)).toBeNull();
+  expect(await candidatePolicyDigests(clone)).toBeNull();
 });
 
 test("policy files round trip through the runner answer and bad answers block", () => {

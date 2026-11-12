@@ -242,7 +242,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     runnersUrl: RUNNERS_URL,
     ...(delegatorRunner === "reviewer-signed-out"
       ? {
-          reviewRequirements: () => ({
+          reviewRequirements: async () => ({
             ok: true as const,
             items: [
               {
