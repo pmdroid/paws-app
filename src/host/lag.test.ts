@@ -22,7 +22,7 @@ test("a ten second stall journals once with the operation and recovers once", ()
   sample();
   clock.advance(1000);
   sample();
-  expect(lines).toEqual(["event loop stalled 10000 ms operation=job:linear.delivery"]);
+  expect(lines).toEqual(["event loop stalled 10000 ms operation=job:linear.delivery before=idle"]);
   expect(recovered).toEqual([[10_000, 0]]);
 });
 
@@ -69,7 +69,7 @@ test("awaiting and completed jobs are excluded from stall attribution", async ()
   sample();
   resolve();
   await pending;
-  expect(lines).toEqual(["event loop stalled 9000 ms operation=job:blocking"]);
+  expect(lines).toEqual(["event loop stalled 9000 ms operation=job:blocking before=idle"]);
 });
 
 test("synchronous work after an await retains its operation without attributing the await", async () => {
@@ -95,5 +95,32 @@ test("synchronous work after an await retains its operation without attributing 
   resume();
   await task;
   sample();
-  expect(lines).toEqual(["event loop stalled 10000 ms operation=job:continuation"]);
+  expect(lines).toEqual(["event loop stalled 10000 ms operation=job:continuation before=idle"]);
+});
+
+test("an operation active at the last responsive tick and finished after the stall is named in before=", async () => {
+  const clock = new FakeClock();
+  const lines: string[] = [];
+  const sample = createLagWatchdog({
+    clock,
+    log: (line) => lines.push(line),
+    recover: async () => {},
+  });
+  let finish!: () => void;
+  const task = trackHostOperation(
+    "job:closeout",
+    () =>
+      new Promise<void>((done) => {
+        finish = done;
+      }),
+  );
+  clock.advance(1000);
+  sample();
+  clock.advance(60_000);
+  finish();
+  await task;
+  sample();
+  clock.advance(1000);
+  sample();
+  expect(lines).toEqual(["event loop stalled 59000 ms operation=idle before=job:closeout"]);
 });
