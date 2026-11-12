@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { FakeClock, JOB_KIND, MAX_TRANSIENT_RETRIES } from "../core";
 import {
   applyWorkItemEvent,
@@ -7,33 +8,40 @@ import {
   getWorkItem,
   insertQueuedItem,
   listJobs,
-  migrate,
-  openDatabase,
-  sqliteDb,
 } from "../db";
 import { answerSteps } from "../questions";
 import { askSteps } from "./operations";
 import { questionEffects } from "./question-effects";
+import { seed } from "../../test/dialects";
+import { tempStore } from "../../test/pglite";
+
+const open: (() => Promise<void>)[] = [];
+
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
+});
 
 test("an answer restarts the task with a fresh transient-retry count", async () => {
   const clock = new FakeClock(20_000);
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
+  open.push(close);
   const item = await insertQueuedItem(db, { id: "acme-7", sessionKey: "ses", now: clock.now() });
-  await beginImplementRun(sqliteDb(db), item.id, clock.now());
-  await deferWorkItem(sqliteDb(db), (await getWorkItem(sqliteDb(db), item.id))!, {
+  await beginImplementRun(db, item.id, clock.now());
+  await deferWorkItem(db, (await getWorkItem(db, item.id))!, {
     retry: MAX_TRANSIENT_RETRIES,
     delayMs: 0,
     handoff: null,
     message: null,
     now: clock.now(),
   });
-  const deferred = (await listJobs(sqliteDb(db))).find((job) => job.queue === JOB_KIND.resume)!;
+  const deferred = (await listJobs(db)).find((job) => job.queue === JOB_KIND.resume)!;
   expect(deferred.payload).toMatchObject({ retry: MAX_TRANSIENT_RETRIES });
-  db.run("UPDATE job SET status='done' WHERE id=?", [deferred.id]);
-  await applyWorkItemEvent(sqliteDb(db), item.id, "recovered");
-  const running = (await getWorkItem(sqliteDb(db), item.id))!;
-  await sqliteDb(db).transaction((q) =>
+  await seed(db, (q) =>
+    q.orm.update(q.t.job).set({ status: "done" }).where(eq(q.t.job.id, deferred.id)),
+  );
+  await applyWorkItemEvent(db, item.id, "recovered");
+  const running = (await getWorkItem(db, item.id))!;
+  await db.transaction((q) =>
     askSteps(
       q,
       { itemId: item.id, runId: running.currentRunId, sessionId: "ses" },
@@ -45,7 +53,7 @@ test("an answer restarts the task with a fresh transient-retry count", async () 
   clock.advance(60_000);
   expect(
     (
-      await sqliteDb(db).transaction((q) =>
+      await db.transaction((q) =>
         answerSteps(
           q,
           {
@@ -55,13 +63,13 @@ test("an answer restarts the task with a fresh transient-retry count", async () 
             answeredBy: "pascal",
             now: clock.now(),
           },
-          questionEffects(sqliteDb(db), { now: clock.now() }),
+          questionEffects(db, { now: clock.now() }),
         ),
       )
     ).status,
   ).toBe("answered");
-  expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("queued");
-  const restarted = (await listJobs(sqliteDb(db))).find(
+  expect((await getWorkItem(db, item.id))?.state).toBe("queued");
+  const restarted = (await listJobs(db)).find(
     (job) => job.queue === JOB_KIND.resume && job.status === "pending",
   )!;
   expect(restarted.payload).toMatchObject({ itemId: item.id, reason: "answer" });
