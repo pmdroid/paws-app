@@ -3,22 +3,22 @@ import {
   beginImplementRun,
   enterMergeQueue,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   syncWorkspaceMember,
-  sqliteDb,
 } from "../src/db";
 import { startServer } from "../src/server";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 test("the merge queue needs a Paws session, shows only the member's sessions and follows membership changes", async () => {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  db.run(
-    "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',0)",
+  const { db, close } = await tempStore();
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: "workspace", linearOrganizationId: "org", name: "Workspace", createdAt: 0 }),
   );
-  await putWorkspaceUser(sqliteDb(db), {
+  await putWorkspaceUser(db, {
     id: "member",
     linearUserId: "member",
     name: "member",
@@ -26,7 +26,7 @@ test("the merge queue needs a Paws session, shows only the member's sessions and
   });
   let teamIds = ["team"];
   const member = async () =>
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: "workspace",
       userId: "member",
       role: "member",
@@ -35,23 +35,30 @@ test("the merge queue needs a Paws session, shows only the member's sessions and
       now: Date.now(),
     });
   await member();
-  for (const [session, team] of [
-    ["session-mine", "team"],
-    ["session-other", "other-team"],
-  ])
-    db.run(
-      `INSERT INTO linear_session (session_id, organization_id, oauth_client_id, app_user_id, team_id,
-        installation_observed_at, created_at) VALUES (?, 'org', 'fixture', 'app', ?, 1, 0)`,
-      [session!, team!],
-    );
+  await seed(db, (q) =>
+    q.orm.insert(q.t.linearSession).values(
+      [
+        ["session-mine", "team"],
+        ["session-other", "other-team"],
+      ].map(([sessionId, teamId]) => ({
+        sessionId: sessionId!,
+        organizationId: "org",
+        oauthClientId: "fixture",
+        appUserId: "app",
+        teamId,
+        installationObservedAt: 1,
+        createdAt: 0,
+      })),
+    ),
+  );
   const head = "c".repeat(40);
   for (const [id, sessionKey] of [
     ["PAS-1", "session-mine"],
     ["PAS-2", "session-other"],
   ] as const) {
     await insertQueuedItem(db, { id, sessionKey });
-    await beginImplementRun(sqliteDb(db), id, Date.now());
-    await enterMergeQueue(sqliteDb(db), id, {
+    await beginImplementRun(db, id, Date.now());
+    await enterMergeQueue(db, id, {
       phase: "merge_queue",
       baseSha: head,
       wipCommit: head,
@@ -61,7 +68,7 @@ test("the merge queue needs a Paws session, shows only the member's sessions and
   const port = reservation.port!;
   await reservation.stop(true);
   const access = createWorkspaceAccess({
-    store: sqliteDb(db),
+    store: db,
     publicUrl: `http://127.0.0.1:${port}`,
     clientId: "fixture",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -78,7 +85,7 @@ test("the merge queue needs a Paws session, shows only the member's sessions and
     },
   });
   const server = startServer({ port, hostname: "127.0.0.1", db, workspaceAccess: access });
-  const session = await issueWorkspaceSession(sqliteDb(db), {
+  const session = await issueWorkspaceSession(db, {
     workspaceId: "workspace",
     userId: "member",
     now: Date.now(),
@@ -108,6 +115,6 @@ test("the merge queue needs a Paws session, shows only the member's sessions and
     expect(await queued(revoked)).toEqual(["PAS-2"]);
   } finally {
     await server.stop(true);
-    db.close();
+    await close();
   }
 });

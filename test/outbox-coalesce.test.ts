@@ -1,19 +1,19 @@
 import { expect, test } from "bun:test";
 import { FakeClock } from "../src/core";
-import { enqueueOutbox, LINEAR_PROGRESS_INTERVAL_MS, OutboxDispatcher, sqliteDb } from "../src/db";
+import { enqueueOutbox, LINEAR_PROGRESS_INTERVAL_MS, OutboxDispatcher } from "../src/db";
 import { createFakeTracker } from "../src/linear";
 import { createLinearSessionProgress, deliverLinearOutbox } from "../src/loop";
-import { tempDb } from "./helpers";
+import { tempStore } from "./pglite";
 
-function harness() {
-  const db = tempDb();
+async function harness() {
+  const { db, close } = await tempStore();
   const clock = new FakeClock(1_000_000);
   const tracker = createFakeTracker();
   const dispatcher = new OutboxDispatcher(db, clock, {
     progressIntervalMs: LINEAR_PROGRESS_INTERVAL_MS,
   });
   dispatcher.setHandler((row, context) =>
-    deliverLinearOutbox(row, tracker, async () => {}, context, sqliteDb(db)),
+    deliverLinearOutbox(row, tracker, async () => {}, context, db),
   );
   const flush = async () => {
     while ((await dispatcher.tick()).length > 0) await dispatcher.idle();
@@ -22,7 +22,7 @@ function harness() {
     tracker.progress.length + tracker.questions.length + tracker.sessionUpdates.length;
   let key = 0;
   const activity = async (payload: Record<string, unknown>) =>
-    await enqueueOutbox(sqliteDb(db), {
+    await enqueueOutbox(db, {
       target: "linear",
       op: "activity",
       orderingKey: "session",
@@ -30,14 +30,12 @@ function harness() {
       payload: { sessionId: "session", ...payload },
       now: clock.now(),
     });
-  return { db, clock, tracker, dispatcher, flush, requests, activity };
+  return { db, close, clock, tracker, dispatcher, flush, requests, activity };
 }
 
 test("a run producing 50 progress events in a minute sends at most a few Linear requests", async () => {
-  const { db, clock, tracker, flush, requests, activity } = harness();
-  const progress = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1", () =>
-    clock.now(),
-  );
+  const { db, close, clock, tracker, flush, requests, activity } = await harness();
+  const progress = await createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
   for (let index = 0; index < 50; index++) {
     if (index % 5 === 4) {
       await activity({ kind: "thought", body: `Working ${index}`, ephemeral: true });
@@ -58,15 +56,15 @@ test("a run producing 50 progress events in a minute sends at most a few Linear 
     if (index % 5 !== 4 && index % 7 !== 3) expect(bodies).toContain(`Thought ${index}`);
   }
   expect(tracker.sessionUpdates.at(-1)?.plan?.[0]?.content).toBe("Step 45");
-  db.close();
+  await close();
 });
 
 test("questions, errors and links go out at once and keep their order", async () => {
-  const { db, clock, tracker, flush, activity } = harness();
+  const { db, close, clock, tracker, flush, activity } = await harness();
   await activity({ kind: "thought", body: "First" });
   await flush();
   await activity({ kind: "thought", body: "Second" });
-  await enqueueOutbox(sqliteDb(db), {
+  await enqueueOutbox(db, {
     target: "linear",
     op: "elicitation",
     orderingKey: "session",
@@ -86,14 +84,12 @@ test("questions, errors and links go out at once and keep their order", async ()
     "Third",
     "Failed",
   ]);
-  db.close();
+  await close();
 });
 
 test("pending plan, summary and links for one session go out as one update", async () => {
-  const { db, clock, tracker, flush } = harness();
-  const progress = await createLinearSessionProgress(sqliteDb(db), "session", "ENG-1", () =>
-    clock.now(),
-  );
+  const { db, close, clock, tracker, flush } = await harness();
+  const progress = await createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
   await progress.plan([{ content: "Build", status: "inProgress" }]);
   await flush();
   await progress.plan([{ content: "Build", status: "completed" }]);
@@ -123,5 +119,5 @@ test("pending plan, summary and links for one session go out as one update", asy
   await flush();
   expect(tracker.sessionUpdates).toHaveLength(3);
   expect(tracker.sessionUpdates[2]?.summary).toBe("ENG-1: merging");
-  db.close();
+  await close();
 });

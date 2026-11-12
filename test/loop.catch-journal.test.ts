@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { sql } from "drizzle-orm";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,18 +15,17 @@ import {
   insertQueuedItem,
   JobLoop,
   listCloseoutRounds,
-  migrate,
   readSettingSteps,
-  sqliteDb,
   updateSettingSteps,
-  openDatabase,
   OutboxDispatcher,
   recordConfirmedRemoteMerge,
   type WorkItemRecord,
+  type PgDb,
 } from "../src/db";
 import { createFakeTracker } from "../src/linear";
 import { attachOrchestrator, itemPathId } from "../src/loop";
 import { handleMergeSettingsRequest } from "../src/settings";
+import { tempStore } from "./pglite";
 
 type Operations = {
   startCloseoutRound(item: WorkItemRecord, head: string): Promise<void>;
@@ -35,13 +35,12 @@ type Operations = {
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "paws-catch-journal-"));
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   const clock = new FakeClock(1_000);
   const tracker = createFakeTracker();
   const lines: string[] = [];
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     pawsRoot: root,
@@ -58,7 +57,7 @@ async function fixture() {
     item,
     operations: orchestrator as unknown as Operations,
     async close() {
-      db.close();
+      await close();
       await rm(root, { recursive: true, force: true });
     },
   };
@@ -71,7 +70,7 @@ test("startCloseoutRound journals a failed retry baseline and preserves the fall
     await mkdir(directory, { recursive: true });
     await writeFile(join(directory, "evidence"), "not a directory");
     await f.operations.startCloseoutRound(f.item, "new-head");
-    expect(await listCloseoutRounds(sqliteDb(f.db), f.item.id)).toEqual([]);
+    expect(await listCloseoutRounds(f.db, f.item.id)).toEqual([]);
     expect(f.lines).toHaveLength(1);
     expect(f.lines[0]).toContain("item=item-715");
     expect(f.lines[0]).toContain("operation=orchestrator.startCloseoutRound");
@@ -88,13 +87,13 @@ test("mergeSettingsFor journals the read failure once and leaves settings retrya
       throw new Error("Linear context unavailable");
     };
     await f.operations.mergeSettingsFor(f.item);
-    expect(await getTaskMergeSettings(sqliteDb(f.db), f.item.id)).toBeNull();
+    expect(await getTaskMergeSettings(f.db, f.item.id)).toBeNull();
     expect(f.lines).toEqual([
       "catch item=item-715 operation=orchestrator.mergeSettingsFor.issueMergeContext error=Linear context unavailable",
     ]);
     f.tracker.issueMergeContext = async () => ({ projectId: null, labels: [] });
     await f.operations.mergeSettingsFor(f.item);
-    expect(await getTaskMergeSettings(sqliteDb(f.db), f.item.id)).not.toBeNull();
+    expect(await getTaskMergeSettings(f.db, f.item.id)).not.toBeNull();
     expect(f.lines).toHaveLength(1);
   } finally {
     await f.close();
@@ -105,8 +104,15 @@ test("mergeSettingsFor names a refused value and continues on the workspace defa
   const f = await fixture();
   try {
     await writeFile(join(f.root, "config.toml"), '[merge]\nmain_moved = "overlap"\n');
-    f.db.exec(
-      "CREATE TRIGGER refuse BEFORE INSERT ON work_item_merge_settings BEGIN SELECT RAISE(ABORT, 'CHECK constraint failed: main_moved'); END",
+    await (f.db as PgDb).orm.execute(
+      sql.raw(
+        "CREATE FUNCTION refuse() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'CHECK constraint failed: main_moved'; END $$ LANGUAGE plpgsql",
+      ),
+    );
+    await (f.db as PgDb).orm.execute(
+      sql.raw(
+        "CREATE TRIGGER refuse BEFORE INSERT ON work_item_merge_settings FOR EACH ROW EXECUTE FUNCTION refuse()",
+      ),
     );
     f.tracker.issueMergeContext = async () => ({ projectId: null, labels: [] });
     expect(await f.operations.mergeSettingsFor(f.item)).toEqual({
@@ -114,10 +120,11 @@ test("mergeSettingsFor names a refused value and continues on the workspace defa
       mainMoved: "overlap",
       resolved: { sources: { order: "default", mainMoved: "default" } },
     });
-    expect(await getTaskMergeSettings(sqliteDb(f.db), f.item.id)).toBeNull();
-    expect(f.lines).toEqual([
-      "catch item=item-715 operation=orchestrator.mergeSettingsFor.keep order=queue main_moved=overlap code=SQLITE_CONSTRAINT_TRIGGER error=CHECK constraint failed: main_moved",
-    ]);
+    expect(await getTaskMergeSettings(f.db, f.item.id)).toBeNull();
+    expect(f.lines).toHaveLength(1);
+    expect(f.lines[0]).toStartWith(
+      'catch item=item-715 operation=orchestrator.mergeSettingsFor.keep order=queue main_moved=overlap error=Failed query: insert into "work_item_merge_settings"',
+    );
   } finally {
     await f.close();
   }
@@ -126,7 +133,7 @@ test("mergeSettingsFor names a refused value and continues on the workspace defa
 test("a Settings › Merging save reaches the next item without a restart; config.toml [merge] does not", async () => {
   const f = await fixture();
   const configPath = join(f.root, "config.toml");
-  const store = sqliteDb(f.db);
+  const store = f.db;
   const settings = await useSettingsStore(configPath, {
     read: () => store.run((q) => readSettingSteps(q, CONFIG_SETTINGS_KEY)),
     update: (change) =>
@@ -169,9 +176,9 @@ test("removeWorktree failure is journaled once after the confirmed merge", async
   const f = await fixture();
   try {
     const repository = { owner: "test", repo: "repo", remoteUrl: "unused" };
-    await beginImplementRun(sqliteDb(f.db), f.item.id, 1_000);
-    await enterMergeQueue(sqliteDb(f.db), f.item.id, { phase: "merge_queue" });
-    await recordConfirmedRemoteMerge(sqliteDb(f.db), {
+    await beginImplementRun(f.db, f.item.id, 1_000);
+    await enterMergeQueue(f.db, f.item.id, { phase: "merge_queue" });
+    await recordConfirmedRemoteMerge(f.db, {
       itemId: f.item.id,
       repositoryOwner: repository.owner,
       repositoryName: repository.repo,
@@ -183,8 +190,8 @@ test("removeWorktree failure is journaled once after the confirmed merge", async
 
     await mkdir(mirrorPath(f.root, repository.owner, repository.repo), { recursive: true });
     await mkdir(worktreePath(f.root, itemPathId(f.item)), { recursive: true });
-    await f.operations.completeMerge((await getWorkItem(sqliteDb(f.db), f.item.id))!, repository);
-    expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("merged");
+    await f.operations.completeMerge((await getWorkItem(f.db, f.item.id))!, repository);
+    expect((await getWorkItem(f.db, f.item.id))?.state).toBe("merged");
     expect(f.lines).toHaveLength(1);
     expect(f.lines[0]).toContain("item=item-715");
     expect(f.lines[0]).toContain("operation=orchestrator.completeMerge.removeWorktree");

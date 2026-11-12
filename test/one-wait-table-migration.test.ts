@@ -2,14 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { cpSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { migrate as migratePg } from "drizzle-orm/pglite/migrator";
-import {
-  MIGRATIONS_FOLDER,
-  migrate,
-  openDatabase,
-  PG_MIGRATIONS_FOLDER,
-  postgresDb,
-  sqliteDb,
-} from "../src/db";
+import { PG_MIGRATIONS_FOLDER, postgresDb } from "../src/db";
 import { insertWorkItem } from "./dialects";
 import { tempHome } from "./helpers";
 import { pgliteDb } from "./pglite";
@@ -41,29 +34,6 @@ const MERGED = [
 ];
 
 describe("queue_wait merges into item_wait", () => {
-  test("on SQLite", async () => {
-    const db = openDatabase(":memory:");
-    try {
-      migrate(db, { migrationsFolder: before(MIGRATIONS_FOLDER) });
-      for (const id of ["a", "b", "c"]) await insertWorkItem(sqliteDb(db), id);
-      for (const statement of OLD_ROWS) db.run(statement);
-      migrate(db);
-      expect(
-        db
-          .query(
-            "SELECT item_id AS itemId, kind, version, since FROM item_wait ORDER BY item_id, kind",
-          )
-          .all(),
-      ).toEqual(MERGED);
-      expect(db.query("SELECT 1 FROM sqlite_master WHERE name = 'queue_wait'").get()).toBeNull();
-      expect(
-        db.query<{ strict: number }, []>("SELECT strict FROM pragma_table_list('item_wait')").get(),
-      ).toEqual({ strict: 1 });
-    } finally {
-      db.close();
-    }
-  });
-
   test("on Postgres", async () => {
     const pg = await pgliteDb({ migrationsFolder: before(PG_MIGRATIONS_FOLDER) });
     try {
