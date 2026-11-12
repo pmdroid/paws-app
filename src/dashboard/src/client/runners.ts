@@ -520,18 +520,26 @@ function availability(runner: Runner, now: number): [string, string] {
 
 const AGENT_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex", grok: "Grok" };
 
-/** The agent versions Paws offers: published on npm at least 48 hours ago, integrity unchanged. */
+/** The header button that opens the coding agent versions dialog, with how many agents are behind. */
+export function codingAgentsButtonMarkup(behind: number): string {
+  const label = behind
+    ? `Update coding agents <span class="cnt" aria-label="${behind} behind">${behind}</span>`
+    : "Coding agents up to date";
+  return `<button class="btn" data-agents-open aria-haspopup="dialog" data-focus="agents-open">${label}</button>`;
+}
+
+/** The agent versions Paws offers and the ones each runner runs: published on npm at least 48 hours ago, integrity unchanged. */
 export function agentCatalogMarkup(
   entries: readonly AgentCatalogEntry[],
+  runners: readonly Runner[],
   now: number,
-  update?: { manages: boolean; busy: boolean; behind: number },
+  update: { manages: boolean; busy: boolean; behind: number; notice?: string },
 ): string {
-  if (!entries.length) return "";
-  const rows = entries
+  const sections = entries
     .map((entry) => {
       const name = AGENT_NAMES[entry.agent] ?? entry.agent;
       const offered = entry.offered
-        ? `<span class="mono">${esc(entry.offered)}</span>`
+        ? `Offered <span class="mono">${esc(entry.offered)}</span>`
         : '<span class="muted">No version is eligible yet</span>';
       const refused = entry.refused
         .map(
@@ -539,17 +547,25 @@ export function agentCatalogMarkup(
             `<p class="runner-skill-error" role="note"><b>Refused <span class="mono">${esc(item.version)}</span>.</b> ${esc(item.reason)}</p>`,
         )
         .join("");
-      return `<li class="runner-skill" data-agent-catalog="${esc(entry.agent)}"><span class="runner-skill-name"><b>${esc(name)}</b>${offered}</span><span class="muted">Checked ${esc(updatedLabel(entry.checkedAt, now))}</span>${refused}</li>`;
+      const installed = codingAgentRows(
+        listedRunners(runners).flatMap((runner) =>
+          (runner.codingAgents ?? [])
+            .filter((agent) => agent.agent === entry.agent)
+            .map((agent) => ({ ...agent, name: runner.name })),
+        ),
+        { catalog: entries },
+      );
+      return `<div class="flex min-w-0 flex-col gap-2" data-agent-catalog="${esc(entry.agent)}"><h3>${esc(name)}</h3><p class="runner-skill-name">${offered}<span class="muted">Checked ${esc(updatedLabel(entry.checkedAt, now))}</span></p>${refused}${installed ? `<ul class="runner-skill-list" role="list" aria-label="${esc(name)} on your runners">${installed}</ul>` : '<p class="muted">No runner reports this agent.</p>'}</div>`;
     })
     .join("");
   const all =
-    update?.manages && update.behind > 0
+    update.manages && update.behind > 0
       ? `<button class="btn primary" data-agents-update-all data-focus="agents-update-all"${update.busy ? " disabled" : ""}>Update all runners</button>`
       : "";
-  const behind = update?.behind
-    ? `<p class="muted">${update.behind === 1 ? "1 coding agent on your runners is" : `${update.behind} coding agents on your runners are`} behind the newest eligible version.</p>`
+  const behind = update.behind
+    ? `<p>${update.behind === 1 ? "1 coding agent on your runners is" : `${update.behind} coding agents on your runners are`} behind the newest eligible version.</p>`
     : "";
-  return `<section class="runner-section" aria-labelledby="agent-catalog-heading"><div class="between"><h2 id="agent-catalog-heading">Coding agent versions</h2>${all}</div><p class="muted">Paws offers a version once it has been on npm for 2 days, is not deprecated or a prerelease, and its integrity has not changed.</p>${behind}<ul class="runner-skill-list" role="list" aria-label="Coding agent versions">${rows}</ul></section>`;
+  return `<dialog id="agents-dialog" aria-labelledby="agents-heading"><div class="dialog-body"><div class="between"><h2 id="agents-heading">Coding agent versions</h2><button class="btn" data-agents-close data-focus="agents-close">Close</button></div>${update.notice ?? ""}<p class="muted">Paws offers a version once it has been on npm for 2 days, is not deprecated or a prerelease, and its integrity has not changed.</p>${behind}${all ? `<div class="settings-actions">${all}</div>` : ""}${sections}</div></dialog>`;
 }
 
 /** The newest eligible version of `agent` when the runner runs an older one and has not asked for it. */
@@ -585,23 +601,14 @@ export function sessionsLabel(sessions: number | null): string {
   return `Waiting for ${sessions} ${sessions === 1 ? "session" : "sessions"} to finish`;
 }
 
-/** Each coding agent on a runner card: its version, the newest eligible one, and an update in flight. */
-export function runnerCodingAgentsMarkup(
-  agents: readonly RunnerCodingAgent[],
-  view: {
-    runnerId: string;
-    catalog: readonly AgentCatalogEntry[];
-    manages: boolean;
-    busy: boolean;
-  },
+/** Each runner's copy of one coding agent: its version, the newest eligible one, and an update in flight. */
+function codingAgentRows(
+  agents: readonly (RunnerCodingAgent & { name: string })[],
+  view: { catalog: readonly AgentCatalogEntry[] },
 ): string {
-  if (!agents.length)
-    return '<p class="muted">This runner does not report its coding agent versions. Update the runner package to manage them here.</p>';
-  const runner = esc(view.runnerId);
-  const disabled = view.busy ? " disabled" : "";
-  const rows = agents
+  return agents
     .map((entry) => {
-      const name = AGENT_NAMES[entry.agent] ?? entry.agent;
+      const name = entry.name;
       const offered = view.catalog.find((item) => item.agent === entry.agent)?.offered ?? null;
       const update = codingAgentUpdate(entry, view.catalog);
       const pending = entry.pending;
@@ -624,19 +631,24 @@ export function runnerCodingAgentsMarkup(
       } else if (update) tag = ["warn", "Update available"];
       else tag = ["ok", "Up to date"];
       const newest =
-        offered === null
-          ? '<span class="muted">No eligible version yet</span>'
-          : offered === entry.current
-            ? ""
-            : `<span class="muted">Newest eligible <span class="mono">${esc(offered)}</span></span>`;
-      const actions =
-        view.manages && update
-          ? `<button class="btn" data-agent-update="${esc(entry.agent)}" data-runner="${runner}" data-version="${esc(update)}" data-focus="agent-update:${runner}:${esc(entry.agent)}"${disabled}>Update to ${esc(update)}</button>`
-          : "";
-      return `<li class="runner-skill" data-coding-agent="${esc(entry.agent)}"><span class="runner-skill-name"><b>${esc(name)}</b><span class="mono">${esc(current)}</span>${newest}</span><span class="tag ${tag[0]}">${esc(tag[1])}</span>${detail ? `<p class="muted">${esc(detail)}</p>` : ""}${error}${actions ? `<div class="runner-agent-actions">${actions}</div>` : ""}</li>`;
+        offered === null || offered === entry.current
+          ? ""
+          : `<span class="muted">Newest eligible <span class="mono">${esc(offered)}</span></span>`;
+      return `<li class="runner-skill" data-coding-agent="${esc(entry.agent)}"><span class="runner-skill-name"><b>${esc(name)}</b><span class="mono">${esc(current)}</span>${newest}</span><span class="tag ${tag[0]}">${esc(tag[1])}</span>${detail ? `<p class="muted">${esc(detail)}</p>` : ""}${error}</li>`;
     })
     .join("");
-  return `<ul class="runner-skill-list" role="list" aria-label="Coding agent versions on this runner">${rows}</ul>`;
+}
+
+/** The coding agent versions a runner reports, on one line. */
+export function runnerCodingAgentsMarkup(agents: readonly RunnerCodingAgent[]): string {
+  if (!agents.length)
+    return '<p class="muted">This runner does not report its coding agent versions. Update the runner package to manage them here.</p>';
+  return `<p class="runner-skill-name" data-coding-agents>${agents
+    .map(
+      (entry) =>
+        `<span><b>${esc(AGENT_NAMES[entry.agent] ?? entry.agent)}</b> <span class="mono">${esc(entry.current ?? "not reported")}</span></span>`,
+    )
+    .join('<span aria-hidden="true">·</span>')}</p>`;
 }
 
 type RowTag = [tone: string, text: string];
@@ -1291,8 +1303,6 @@ export function runnerDetailMarkup(
     concurrencyDraft?: string;
     repositoryDraft?: readonly string[] | null;
     workspaceRepositories?: readonly string[];
-    /** The agent catalog, for the newest eligible versions. */
-    catalog?: readonly AgentCatalogEntry[];
   },
 ): string {
   const id = esc(runner.id);
@@ -1394,17 +1404,7 @@ export function runnerDetailMarkup(
   }${
     revoked || runner.codingAgents === undefined
       ? ""
-      : block(
-          "coding-agents",
-          "Coding agents",
-          "",
-          runnerCodingAgentsMarkup(runner.codingAgents, {
-            runnerId: runner.id,
-            catalog: view.catalog ?? [],
-            manages,
-            busy: view.busy,
-          }),
-        )
+      : block("coding-agents", "Coding agents", "", runnerCodingAgentsMarkup(runner.codingAgents))
   }${block("host", "Runner", "", runnerMetricsMarkup(metrics, view.now))}${
     metrics?.strayProcesses?.length
       ? block("strays", "Stray processes", "", runnerStrayMarkup(metrics.strayProcesses))
@@ -1453,6 +1453,7 @@ export function createRunners() {
   let usage: Usage[] = [];
   let usageRunner: string | null = null;
   let addingHost = false;
+  let showingAgents = false;
   let hostName = "";
   let dockerAccess = true;
   let enrollment: HostEnrollment | null = null;
@@ -1705,9 +1706,11 @@ export function createRunners() {
     const add =
       '<button class="btn primary" data-runner-add aria-haspopup="dialog" data-focus="add">Add a runner</button>';
     const listed = runners.length > 0;
+    const behind = codingAgentsBehind(runners, agentCatalog);
+    const agents = agentCatalog.length ? codingAgentsButtonMarkup(behind) : "";
     const actions =
-      addsHosts() && (listed || busy || error)
-        ? `<div class="settings-actions">${createVm}${add}</div>`
+      agents || (addsHosts() && (listed || busy || error))
+        ? `<div class="settings-actions">${agents}${addsHosts() && (listed || busy || error) ? createVm + add : ""}</div>`
         : "";
     const empty = addsHosts()
       ? `<section class="flex min-w-0 flex-col items-start gap-3 rounded-base border border-dashed border-border p-6" aria-labelledby="runners-empty-heading"><h2 id="runners-empty-heading">No runners are enrolled</h2><p class="muted">A runner is a Linux machine that runs the coding agents. Paws starts no work until one is enrolled and an agent is signed in on it.</p><ol class="m-0 list-decimal pl-5 text-sm [&>li]:py-0.5"><li>Select <b>Add a runner</b> and copy the command.</li><li>Run it on the Linux machine. The runner appears here within a minute.</li><li>Open it and sign in to a coding agent, such as Claude or Codex.</li></ol><div class="settings-actions">${add}${createVm}</div></section>`
@@ -1727,7 +1730,7 @@ export function createRunners() {
           )
         : ""
     }`;
-    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux runners that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding ? "" : alert}${status}${createVmSize}${createVmPool}${vmSection}${listed ? runnerTilesMarkup(runners, { now, serverVersion }) + runnerTableMarkup(runners, { now, serverVersion }) : ""}${!busy && !listed && !error ? empty : ""}${agentCatalogMarkup(agentCatalog, now, { manages: manages(), busy, behind: codingAgentsBehind(runners, agentCatalog) })}${dialog}${deleteDialog()}`;
+    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux runners that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding || showingAgents ? "" : alert + status}${createVmSize}${createVmPool}${vmSection}${listed ? runnerTilesMarkup(runners, { now, serverVersion }) + runnerTableMarkup(runners, { now, serverVersion }) : ""}${!busy && !listed && !error ? empty : ""}${showingAgents && agentCatalog.length ? agentCatalogMarkup(agentCatalog, runners, now, { manages: manages(), busy, behind, notice: alert + status }) : ""}${dialog}${deleteDialog()}`;
   }
   function detailView(id: string, now: number, notices: string): string {
     const list = routeHref({ view: "runners", id: null });
@@ -1743,7 +1746,6 @@ export function createRunners() {
       userId: session?.userId ?? null,
       role: session?.role ?? null,
       busy,
-      catalog: agentCatalog,
       ...(concurrencyDrafts.has(runner.id)
         ? { concurrencyDraft: concurrencyDrafts.get(runner.id)! }
         : {}),
@@ -2075,17 +2077,29 @@ export function createRunners() {
         });
       });
     }
-    for (const button of root!.querySelectorAll<HTMLElement>("[data-agent-update]"))
-      button.addEventListener("click", () => {
-        const { agentUpdate: agent, runner, version } = button.dataset;
-        void change(async () => {
-          await api(
-            `/api/runners/${encodeURIComponent(runner!)}/coding-agents/${encodeURIComponent(agent!)}/update`,
-            { version },
-          );
-          feedback = `${AGENT_NAMES[agent!] ?? agent} ${version} was sent to the runner. It installs at the next heartbeat and switches once no session uses the old version.`;
-        });
+    root!.querySelector("[data-agents-open]")?.addEventListener("click", () => {
+      showingAgents = true;
+      error = "";
+      feedback = "";
+      refocus("agents-close");
+      paint();
+    });
+    const agentsDialog = root!.querySelector<HTMLDialogElement>("#agents-dialog");
+    if (agentsDialog) {
+      if (!agentsDialog.open) agentsDialog.showModal();
+      agentsDialog.addEventListener("close", () => {
+        if (!agentsDialog.isConnected || !showingAgents) return;
+        showingAgents = false;
+        refocus("agents-open");
+        paint();
       });
+      agentsDialog.addEventListener("click", (event) => {
+        if (event.target === agentsDialog) agentsDialog.close();
+      });
+      agentsDialog
+        .querySelector("[data-agents-close]")
+        ?.addEventListener("click", () => agentsDialog.close());
+    }
     root!.querySelector("[data-agents-update-all]")?.addEventListener(
       "click",
       () =>
