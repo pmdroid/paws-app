@@ -1,6 +1,6 @@
 import { openedView, fullStatusFixture, pageData, type FullStatus } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
-import { render, type RenderModel } from "./render";
+import { issueRowMatches, NO_PROJECT_FILTER, render, type RenderModel } from "./render";
 import { parseRoute } from "./route";
 import { checkKey } from "./closeout";
 import { esc } from "./format";
@@ -328,14 +328,12 @@ describe("status views", () => {
     expect(issueRow(active, "ENG-99")).not.toContain('data-issue-state="done"');
   });
 
-  test("issues list shows the owner, project, and unmerged blockers", () => {
+  test("issues list shows the project and unmerged blockers", () => {
     const html = render(model({ route: { view: "issues", id: null } })).content;
     const blocked = issueRow(html, "ENG-104");
-    expect(blocked).toContain("Aisha Khan");
     expect(blocked).toContain("Audit log export");
     expect(blocked).toContain("Blocked by ENG-101, ENG-102, ENG-103");
     const solo = issueRow(html, "ENG-102");
-    expect(solo).toContain("Aisha Khan");
     expect(solo).not.toContain("Audit log export");
     expect(solo).not.toContain("Blocked by");
     const detail = render(model({ route: { view: "issues", id: "ENG-101" } })).content;
@@ -345,6 +343,40 @@ describe("status views", () => {
     expect(detail).toContain("PR #479");
     expect(detail).not.toContain('href="/issues/ENG-99"');
     expect(detail).toContain('href="/issues/ENG-104"');
+  });
+
+  test("the issues list is one table row per issue with blockers under the title", () => {
+    const snapshot = fullStatusFixture();
+    snapshot.items = snapshot.items.filter((item) =>
+      ["ENG-101", "ENG-102", "ENG-104"].includes(item.id),
+    );
+    snapshot.items.find((item) => item.id === "ENG-104")!.blockers = ["ENG-101", "ENG-102"];
+    const html = render(model({ snapshot, route: { view: "issues", id: null } })).content;
+    expect(html).toContain('<table class="run-table issues-table">');
+    const rows = [...html.matchAll(/<tr class="issue-row"[^>]*data-issue-id="([^"]+)"[^>]*>/g)];
+    expect(rows.map((row) => row[1]).sort()).toEqual(["ENG-101", "ENG-102", "ENG-104"]);
+    const title = issueRow(html, "ENG-104").split("<td>")[2]!;
+    expect(title).toContain('<div class="text-xs text-muted-foreground" data-blockers>');
+    expect(title).toContain('href="/issues/ENG-101">ENG-101</a>');
+    expect(title).toContain('href="/issues/ENG-102">ENG-102</a>');
+    expect(issueRow(html, "ENG-102").split("<td>")[2]).not.toContain("data-blockers");
+    const filtered = rows.filter((row) =>
+      issueRowMatches(
+        {
+          state: /data-issue-state="([^"]+)"/.exec(row[0])?.[1],
+          project: /data-issue-project="([^"]+)"/.exec(row[0])?.[1],
+        },
+        { state: "all", project: NO_PROJECT_FILTER },
+      ),
+    );
+    expect(filtered.map((row) => row[1]).sort()).toEqual(
+      snapshot.items
+        .filter((item) => !item.project)
+        .map((item) => item.id)
+        .sort(),
+    );
+    expect(filtered.length).toBeGreaterThan(0);
+    expect(filtered.length).toBeLessThan(rows.length);
   });
 
   test("a queued item shows its place in line on the run and issue pages", () => {
@@ -674,8 +706,8 @@ function issueRow(html: string, id: string): string {
   const marker = `data-issue-id="${id}"`;
   const at = html.indexOf(marker);
   if (at < 0) throw new Error(`missing issue row ${id}`);
-  const start = html.lastIndexOf("<li", at);
-  const end = html.indexOf("</li>", at);
+  const start = html.lastIndexOf("<tr", at);
+  const end = html.indexOf("</tr>", at);
   return html.slice(start, end);
 }
 

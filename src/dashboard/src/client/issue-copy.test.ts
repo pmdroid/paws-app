@@ -107,7 +107,7 @@ describe("pages outside the issue page talk about issues", () => {
     expect(reason("ENG-103")).toBe("Waiting for a free runner");
     const themed = renderToStaticMarkup(createElement(Fragment, null, themedMarkup(html)));
     expect(themed).toMatch(
-      /class="[^"]*flex-wrap[^"]*"[^>]*><span[^>]*>[^<]*<\/span><span[^>]*data-wait-reason/,
+      /<td[^>]*class="[^"]*hidden sm:table-cell[^"]*"[^>]*><span[^>]*data-wait-reason/,
     );
     expect(themed).not.toMatch(/(?:^|[\s"])(?:min-)?w-\[\d/);
   });

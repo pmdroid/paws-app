@@ -187,7 +187,9 @@ test("issues list shows blockers without positioned CSS", () => {
   });
   expect(rendered.content).toContain("Blocked by");
   expect(rendered.content).not.toContain("style=");
-  expect(markup(rendered.content)).toContain("divide-y-2");
+  expect(markup(rendered.content)).toMatch(
+    /<tr data-slot="table-row" class="[^"]* issue-row" data-issue-state=/,
+  );
 });
 
 describe("runner card", () => {
