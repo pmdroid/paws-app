@@ -1,5 +1,10 @@
-import type { QuestionCard, QuestionDetailResponse, QuestionListResponse } from "../contract";
-import { agentChip, ago, avatar, esc, linkList } from "./format";
+import type {
+  LinkAskKind,
+  QuestionCard,
+  QuestionDetailResponse,
+  QuestionListResponse,
+} from "../contract";
+import { ago, avatar, esc, linkList } from "./format";
 import { LINK_ASK_ACTIONS, LINK_ASK_ANCHORS } from "./link-ask";
 import { PAGES } from "./navigation";
 import {
@@ -8,6 +13,19 @@ import {
   questionAnswerMessage,
 } from "./question-answer";
 import { routeHref } from "./route";
+
+/** The header badge for each link ask kind; the same headings as its decision card on the issue page. */
+const KIND_BADGES: Record<LinkAskKind, string> = {
+  bypass: "Closeout bypass",
+  screenshots: "Visual review",
+  risk: "Risk",
+  question: "Question",
+  rounds: "Review rounds",
+  rule: "Rule break",
+};
+
+const EMPTY =
+  "No open questions. Paws asks here when the agent or Closeout needs a person, such as a spent fix budget or a bypass.";
 
 export interface QuestionsView {
   selected: string | null;
@@ -25,7 +43,8 @@ export function renderQuestions(view: QuestionsView): string {
     const cards = list.questions
       .map((question) => questionCard(question, list.generatedAt, false))
       .join("");
-    return `${heading}${cards || '<div class="empty">No open questions.</div>'}`;
+    if (!cards) return `${heading}<div class="empty">${EMPTY}</div>`;
+    return `${heading}${cards}<p class="muted">Oldest first. An answered question leaves this list.</p>`;
   }
   const back = `<p><a href="${routeHref({ view: "questions", id: null })}">All questions</a></p>`;
   if (view.missing)
@@ -67,13 +86,14 @@ function questionCard(question: QuestionCard, generatedAt: string, highlight: bo
     : decide || links
       ? ""
       : '<span class="dim">Answer in the source conversation to continue.</span>';
+  const badge = question.linkAsk ? KIND_BADGES[question.linkAsk.kind] : "Question";
   return `<article class="q${highlight ? " hl" : ""}" id="q-${esc(question.id)}">
     <div class="qh">
-      <div class="row wrap min-w-0"><span class="lin-id">${esc(question.id)}</span><span class="tag${question.kind === "exhausted" ? " bad" : ""}">${esc(question.kind)}</span><span class="tag">${esc(question.urgency)}</span><a class="lin-id" href="${issueHref}" title="${esc(question.issue.title)}">${esc(question.issue.id)}</a>${agentChip(question.issue.agent)}</div>
-      <div class="claim">${claimed}<span class="dim">${esc(ago(question.askedAt, generatedAt))}</span></div>
-      <div class="title min-w-0">${esc(question.title)}</div>
+      <div class="row wrap min-w-0"><span class="st awaiting_input">${badge}</span><a class="lin-id" href="${issueHref}">${esc(question.issue.id)}</a><span class="min-w-0">${esc(question.issue.title)}</span></div>
+      <span class="mono dim">${esc(question.issue.agent)} · ${esc(ago(question.askedAt, generatedAt))}</span>
     </div>
-    <div class="qb"><div class="muted">${esc(question.body)}</div>
+    <div class="qb"><div class="row wrap min-w-0"><b>${esc(question.title)}</b><span class="tag${question.kind === "exhausted" ? " bad" : ""}">${esc(question.kind)}</span><span class="tag">${esc(question.urgency)}</span></div>
+      <div class="claim">${claimed}</div><div class="muted">${esc(question.body)}</div>
       ${question.context ? `<div class="ctx">${esc(question.context)}</div>` : ""}
       ${question.answerable ? questionAnswerForm(question, options, disabled) : options ? `<div class="opts">${options}</div>` : ""}
       <div class="row">${decide}${links}${note}</div>
