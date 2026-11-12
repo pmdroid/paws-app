@@ -57,6 +57,7 @@ import {
 } from "./improvement-fixtures";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { settleReactWork } from "../src/dashboard/src/client/settle-react";
 
 const DOM_GLOBALS = [
   "window",
@@ -88,6 +89,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  await settleReactWork();
   for (const name of DOM_GLOBALS) (globalThis as Record<string, unknown>)[name] = saved.get(name);
   await window.happyDOM.close();
 });

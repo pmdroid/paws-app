@@ -5,6 +5,7 @@ import { createHookSettings, type HookListing } from "./hooks";
 import { parseRoute } from "./route";
 import { SETTINGS_PAGES, renderSettingsPage } from "./settings-pages";
 import { createSkillSettings, type SkillListing } from "./skills";
+import { settleReactWork } from "./settle-react";
 
 const MOVED = ["brief-settings", "skill-settings", "hook-settings"];
 
@@ -127,6 +128,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  await settleReactWork();
   globalThis.fetch = realFetch;
   for (const [name, value] of saved) (globalThis as Record<string, unknown>)[name] = value;
   saved.clear();
