@@ -141,10 +141,10 @@ try {
       await shot("activity-issues");
 
       await page.goto(`${origin}/dashboard/issues/ENG-105`);
-      await expect(
-        page.getByText("Waiting for a slot on agentbox · 1.9 h active · waiting 26 min"),
-      ).toBeVisible();
-      await expect(page.locator(".run-heading .st").first()).toHaveText("Waiting for a slot");
+      await expect(page.locator("[data-item-now]").first()).toHaveText(
+        "1.9 h active · waiting 26 min",
+      );
+      await expect(page.getByText("Waiting for a slot on agentbox.").first()).toBeVisible();
       await shot("activity-issue-page");
 
       await page.goto(`${origin}/dashboard/runners/${runner.id}`);

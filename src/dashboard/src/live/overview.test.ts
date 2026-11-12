@@ -184,7 +184,7 @@ describe("overview resource", () => {
       env: {},
     }).overview();
     const html = overviewHtml(overview);
-    const attention = section(html, "attention-heading", "work-heading");
+    const attention = html.slice(html.indexOf('id="attention-heading"')).split("</section>")[0]!;
     expect(attention).toContain(`/issues/ENG-4#${LINK_ASK_ANCHORS.risk}`);
     expect(overview.questions).toEqual([
       {
@@ -203,7 +203,7 @@ describe("overview resource", () => {
       verdict: { decision: "running" },
     });
     expect(attention).not.toContain("ENG-5");
-    expect(section(html, "work-heading", "queued-heading")).toContain("ENG-5");
+    expect(section(html, "work-heading", "attention-heading")).toContain("ENG-5");
   });
 
   test("reads no check output, evidence, CI rounds, agent Closeout or merge queue detail", async () => {
