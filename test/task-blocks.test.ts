@@ -1,17 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import {
-  enqueueJob,
-  getWorkItem,
-  insertQueuedItem,
-  listTaskBlockers,
-  legacyMigrate,
-  migrations,
-  openDatabase,
-  saveTaskBlocks,
-  type TaskBlock,
-  sqliteDb,
-} from "../src/db";
-import { tempDb } from "./helpers";
+import { sql } from "drizzle-orm";
+import { listTaskBlockers, saveTaskBlocks, type PgDb, type TaskBlock } from "../src/db";
+import { tempStore } from "./pglite";
 
 function edge(blockerLinearIssueId: string, blockedLinearIssueId: string): TaskBlock {
   return { blockerLinearIssueId, blockedLinearIssueId };
@@ -19,173 +9,69 @@ function edge(blockerLinearIssueId: string, blockedLinearIssueId: string): TaskB
 
 describe("task blocks", () => {
   test("saves and lists blockers sorted", async () => {
-    const db = tempDb();
+    const { db, close } = await tempStore();
     await saveTaskBlocks(
-      sqliteDb(db),
+      db,
       ["a", "b"],
       [edge("m", "a"), edge("a-blocker", "a"), edge("a-blocker", "a"), edge("z", "b")],
     );
-    expect(await listTaskBlockers(sqliteDb(db), "a")).toEqual(["a-blocker", "m"]);
-    expect(await listTaskBlockers(sqliteDb(db), "b")).toEqual(["z"]);
-    expect(await listTaskBlockers(sqliteDb(db), "missing")).toEqual([]);
-    db.close();
+    expect(await listTaskBlockers(db, "a")).toEqual(["a-blocker", "m"]);
+    expect(await listTaskBlockers(db, "b")).toEqual(["z"]);
+    expect(await listTaskBlockers(db, "missing")).toEqual([]);
+    await close();
   });
 
   test("saving again replaces the old blockers", async () => {
-    const db = tempDb();
-    await saveTaskBlocks(
-      sqliteDb(db),
-      ["a", "b"],
-      [edge("x", "a"), edge("y", "a"), edge("z", "b")],
-    );
-    await saveTaskBlocks(sqliteDb(db), ["a"], [edge("y", "a")]);
-    expect(await listTaskBlockers(sqliteDb(db), "a")).toEqual(["y"]);
-    expect(await listTaskBlockers(sqliteDb(db), "b")).toEqual(["z"]);
-    await saveTaskBlocks(sqliteDb(db), ["a"], []);
-    expect(await listTaskBlockers(sqliteDb(db), "a")).toEqual([]);
-    expect(await listTaskBlockers(sqliteDb(db), "b")).toEqual(["z"]);
-    db.close();
+    const { db, close } = await tempStore();
+    await saveTaskBlocks(db, ["a", "b"], [edge("x", "a"), edge("y", "a"), edge("z", "b")]);
+    await saveTaskBlocks(db, ["a"], [edge("y", "a")]);
+    expect(await listTaskBlockers(db, "a")).toEqual(["y"]);
+    expect(await listTaskBlockers(db, "b")).toEqual(["z"]);
+    await saveTaskBlocks(db, ["a"], []);
+    expect(await listTaskBlockers(db, "a")).toEqual([]);
+    expect(await listTaskBlockers(db, "b")).toEqual(["z"]);
+    await close();
   });
 
   test("rejects an edge whose blocked issue is outside the set", async () => {
-    const db = tempDb();
-    await saveTaskBlocks(sqliteDb(db), ["a"], [edge("x", "a")]);
-    await expect(
-      saveTaskBlocks(sqliteDb(db), ["a"], [edge("y", "a"), edge("z", "b")]),
-    ).rejects.toThrow(Error);
-    expect(await listTaskBlockers(sqliteDb(db), "a")).toEqual(["x"]);
-    expect(await listTaskBlockers(sqliteDb(db), "b")).toEqual([]);
-    db.close();
+    const { db, close } = await tempStore();
+    await saveTaskBlocks(db, ["a"], [edge("x", "a")]);
+    await expect(saveTaskBlocks(db, ["a"], [edge("y", "a"), edge("z", "b")])).rejects.toThrow(
+      Error,
+    );
+    expect(await listTaskBlockers(db, "a")).toEqual(["x"]);
+    expect(await listTaskBlockers(db, "b")).toEqual([]);
+    await close();
   });
 
   test("rejects a self block", async () => {
-    const db = tempDb();
-    await saveTaskBlocks(sqliteDb(db), ["a"], [edge("x", "a")]);
-    await expect(saveTaskBlocks(sqliteDb(db), ["a"], [edge("a", "a")])).rejects.toThrow(/CHECK/);
-    expect(await listTaskBlockers(sqliteDb(db), "a")).toEqual(["x"]);
-    db.close();
+    const { db, close } = await tempStore();
+    await saveTaskBlocks(db, ["a"], [edge("x", "a")]);
+    await expect(saveTaskBlocks(db, ["a"], [edge("a", "a")])).rejects.toMatchObject({
+      cause: { message: expect.stringContaining("violates check constraint") },
+    });
+    expect(await listTaskBlockers(db, "a")).toEqual(["x"]);
+    await close();
   });
 
-  test("migration 058 keeps the newer active item and rejects a second", async () => {
-    const db = openDatabase(":memory:");
-    db.run(
-      "CREATE TABLE schema_migration (id TEXT PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT",
-    );
-    for (const migration of migrations) {
-      if (
-        migration.id === "058_one_active_item" ||
-        migration.id === "059_drop_old_blocks" ||
-        migration.id === "064_work_item_without_epic_fk" ||
-        migration.id === "065_drop_epic" ||
-        // Copies project_approval_issue.delegation_id, which 065 renames from epic_id.
-        migration.id === "129_parent_delegation" ||
-        // Rebuilds work_item with delegation_id, which 065 adds.
-        migration.id === "130_drop_project_start" ||
-        migration.id === "148_remove_obsolete_work_item_states"
-      )
-        continue;
-      if (migration.foreignKeys === false) db.run("PRAGMA foreign_keys = OFF");
-      db.transaction(() => {
-        db.run(migration.sql);
-        db.run("INSERT INTO schema_migration (id, applied_at) VALUES (?, ?)", [migration.id, 0]);
-      }).immediate();
-      if (migration.foreignKeys === false) db.run("PRAGMA foreign_keys = ON");
-    }
-    const insertLegacyQueued = (id: string, now: number) => {
-      const delegationId = `epic-${id}`;
-      db.run(
-        `INSERT INTO epic (id, linear_issue_id, linear_identifier, title, state, created_at)
-         VALUES (?, ?, ?, 'Work item', 'running', ?)`,
-        [delegationId, `lin-${id}`, id, now],
-      );
-      db.run(
-        `INSERT INTO work_item (
-           id, epic_id, linear_issue_id, linear_identifier, title, state, branch_name, position, created_at, session_key
-         ) VALUES (?, ?, ?, ?, 'Work item', 'queued', ?, 0, ?, 'session')`,
-        [id, delegationId, `lin-item-${id}`, id, `paws/${id}`, now],
-      );
-      return delegationId;
-    };
-    const retiredEpic = insertLegacyQueued("m-older", 1);
-    const survivingEpic = insertLegacyQueued("a-newer", 2);
-    db.run("UPDATE work_item SET linear_issue_id = ? WHERE id = ?", ["shared-issue", "m-older"]);
-    db.run("UPDATE work_item SET linear_issue_id = ?, state = 'running' WHERE id = ?", [
-      "shared-issue",
-      "a-newer",
-    ]);
-    db.run(
-      "INSERT INTO work_item_block(epic_id,blocker_linear_issue_id,blocked_linear_issue_id) VALUES(?,?,?)",
-      [survivingEpic, "inside-blocker", "shared-issue"],
-    );
-    db.run(
-      "INSERT INTO external_dep(epic_id,blocker_linear_issue_id,blocked_linear_issue_id) VALUES(?,?,?)",
-      [survivingEpic, "outside-blocker", "shared-issue"],
-    );
-    db.run(
-      "INSERT INTO external_dep(epic_id,blocker_linear_issue_id,blocked_linear_issue_id) VALUES(?,?,?)",
-      [retiredEpic, "stale-blocker", "shared-issue"],
-    );
-    db.run(
-      "INSERT INTO run(id,item_id,kind,agent,status,created_at,updated_at) VALUES('older-run','m-older','work','claude','active',1,1)",
-    );
-    const job = await enqueueJob(sqliteDb(db), {
-      queue: "item.start",
-      payload: { itemId: "m-older" },
-      now: 1,
-    });
-    legacyMigrate(db, { until: "129_parent_delegation" });
-    expect(await listTaskBlockers(sqliteDb(db), "shared-issue")).toEqual([
-      "inside-blocker",
-      "outside-blocker",
-    ]);
-    expect(
-      db.query<{ status: string }, []>("SELECT status FROM run WHERE id='older-run'").get()?.status,
-    ).toBe("ended");
-    expect(
-      db.query<{ status: string }, [number]>("SELECT status FROM job WHERE id=?").get(job)?.status,
-    ).toBe("cancelled");
-    expect((await getWorkItem(sqliteDb(db), "m-older"))?.cancelRequested).toBe(true);
-    expect((await getWorkItem(sqliteDb(db), "m-older"))?.state).toBe("cancelled");
-    expect((await getWorkItem(sqliteDb(db), "a-newer"))?.state).toBe("running");
-    expect(
-      db.query("SELECT 1 FROM schema_migration WHERE id = '058_one_active_item'").get(),
-    ).toBeTruthy();
-    expect(
-      db
-        .query<{ name: string }, []>(
-          "SELECT name FROM sqlite_master WHERE name = 'work_item_active_issue'",
-        )
-        .get()?.name,
-    ).toBe("work_item_active_issue");
-    const extra = await insertQueuedItem(db, { id: "extra", now: 3 });
-    expect(() =>
-      db.run("UPDATE work_item SET linear_issue_id = ? WHERE id = ?", ["shared-issue", extra.id]),
-    ).toThrow(/UNIQUE/);
-    const done = await insertQueuedItem(db, { id: "done", now: 4 });
-    db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [done.id]);
-    db.run("UPDATE work_item SET linear_issue_id = ? WHERE id = ?", ["shared-issue", done.id]);
-    expect(await getWorkItem(sqliteDb(db), "done")).toMatchObject({
-      state: "merged",
-      linearIssueId: "shared-issue",
-    });
-    expect((await getWorkItem(sqliteDb(db), "a-newer"))?.state).toBe("running");
-    db.close();
-  });
-
-  test("work item has an owner column and no project start column", () => {
-    const db = tempDb();
-    const names = db
-      .query<{ name: string }, []>("PRAGMA table_info(work_item)")
-      .all()
-      .map((column) => column.name);
+  test("work item has an owner column and no project start column", async () => {
+    const { db, close } = await tempStore();
+    const columns = (await (db as PgDb).orm.execute(
+      sql`SELECT column_name FROM information_schema.columns WHERE table_name = 'work_item'`,
+    )) as unknown as { rows: { column_name: string }[] };
+    const names = columns.rows.map((column) => column.column_name);
     expect(names).toContain("owner_user_id");
     expect(names).not.toContain("project_approval_id");
-    const foreignKeys = db
-      .query<{ from: string; table: string; to: string }, []>("PRAGMA foreign_key_list(work_item)")
-      .all();
-    expect(foreignKeys).toContainEqual(
+    const foreignKeys = (await (db as PgDb).orm.execute(
+      sql`SELECT kcu.column_name AS "from", ccu.table_name AS "table", ccu.column_name AS "to"
+          FROM information_schema.table_constraints tc
+          JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = tc.constraint_name
+          JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name
+          WHERE tc.table_name = 'work_item' AND tc.constraint_type = 'FOREIGN KEY'`,
+    )) as unknown as { rows: { from: string; table: string; to: string }[] };
+    expect(foreignKeys.rows).toContainEqual(
       expect.objectContaining({ from: "owner_user_id", table: "workspace_user", to: "id" }),
     );
-    db.close();
+    await close();
   });
 });

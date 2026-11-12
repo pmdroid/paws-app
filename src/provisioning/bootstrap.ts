@@ -518,7 +518,6 @@ function validate(options: ExeDevBootstrapOptions): Pinned {
     runnerApiUrl,
     allowedRepositories: repositories,
     ...(serverCa !== null ? { serverCa } : {}),
-    concurrency: 2,
   });
   return {
     runnerVersion: options.runnerVersion,

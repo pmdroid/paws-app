@@ -20,6 +20,10 @@ LINEAR_ORGANIZATION_ID=your-linear-organization-id \
 bun run paws
 ```
 
+### Behind a proxy
+
+When a proxy in front of Paws terminates HTTPS, such as a Render web service, set `PAWS_PUBLIC_TLS=proxy` and leave out `PAWS_TLS_KEY_PATH` and `PAWS_TLS_CERT_PATH`. `PAWS_PUBLIC_URL` stays the `https:` origin the browser sees. Paws loads no certificate and serves plain HTTP on `PAWS_HOST`:`PAWS_PORT`. It treats each request as arriving on that HTTPS origin and keys the sign-in limits on the last `X-Forwarded-For` entry, which the proxy appends, falling back to the socket peer when the header is missing. Proxy mode trusts that the proxy is the only route to `PAWS_PORT` and that the last `X-Forwarded-For` entry is the client; anything that reaches the port directly can choose its own address. `paws public-tls validate` has no certificate to check. Runner control (`PAWS_RUNNER_HOST`) needs its own certificate and is not available in proxy mode yet.
+
 Open the dashboard and select **Sign in with Linear**. A Linear workspace admin completes the personal sign-in and approves installing Paws into that same workspace. Paws rechecks their admin membership through the new app authorization, stores encrypted credentials, creates the workspace with that person as its first Paws admin, and starts the connected service automatically. The admin continues to **Integrations** to connect GitHub and map repositories to Linear teams.
 
 If Linear revokes the app authorization, the dashboard offers **Reconnect Linear**. A workspace admin signs in and authorizes the same installation again. Paws preserves the workspace and its roles. The stored workspace binds reconnection to its organization. If `LINEAR_ORGANIZATION_ID` is set, it must match that stored organization.

@@ -15,6 +15,7 @@ import {
 import { runRunnerWorker } from "../runner-worker";
 import { describeRunnerFailure, RunnerCliFailure, journalRunnerFailure } from "../runner-failure";
 import { RUNNER_WORK_ROOT, runPairedDaemon } from "./daemon";
+import { hostResources, runnerConcurrency } from "./slots";
 
 export {
   CAUSE_LIMIT,
@@ -24,6 +25,7 @@ export {
   runnerFailureLine,
   journalRunnerFailure,
 } from "../runner-failure";
+export { hostSlots, runnerConcurrency, type HostResources } from "./slots";
 
 const SHARED_UMASK = 0o007;
 
@@ -35,7 +37,7 @@ const configuration = z.strictObject({
     .max(256)
     .optional(),
   serverCa: z.string().max(32768).optional(),
-  concurrency: z.number().int().min(1).max(16).default(2),
+  concurrency: z.number().int().min(1).max(16).optional(),
   conversationConcurrency: z.number().int().min(0).max(16).default(2),
   agentUser: z.enum(RUNNER_AGENT_USERS).default("paws-agent"),
 });
@@ -345,6 +347,7 @@ export async function runRunnerCli(
     const daemon = openRunnerDaemon({
       root: "/var/lib/paws-runner",
       ...config,
+      concurrency: runnerConcurrency(config.concurrency, hostResources, error),
       log: error,
       sampleHost: createRunnerHostSampler({ workRoot: "/var/lib/paws-runner" }),
       accountBindings: () =>

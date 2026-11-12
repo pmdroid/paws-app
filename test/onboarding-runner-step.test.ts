@@ -510,7 +510,7 @@ test("Add a host shows the one command with a single-use token that a reload nev
   const token = /printf '%s\\n' '([^']+)' \| sudo install -o root -g root/.exec(shown)?.[1];
   expect(token).toBeDefined();
   // The same command the Runners page shows (`hostEnrollmentCommand` in the dashboard).
-  const config = JSON.stringify({ ...HOST_CONFIG, concurrency: 2 });
+  const config = JSON.stringify(HOST_CONFIG);
   expect(shown).toBe(
     [
       "curl -fsSL https://get.paws.boo | sudo sh",
