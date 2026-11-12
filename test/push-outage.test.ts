@@ -2,22 +2,16 @@ import { generateKeyPairSync } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { expect, test } from "bun:test";
+import { and, eq } from "drizzle-orm";
 import type { FakeScript } from "../src/acp/testing/script";
 import { JOB_KIND, systemClock } from "../src/core";
-import {
-  JobLoop,
-  OutboxDispatcher,
-  getPushOutage,
-  listJobs,
-  migrate,
-  openDatabase,
-  sqliteDb,
-} from "../src/db";
+import { JobLoop, OutboxDispatcher, getPushOutage, listJobs, type Db } from "../src/db";
 import { createFakeGitHub, defaultGitExec, GitCommandError, type GitExec } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
-import { emptyReview, githubClient, repoLayout, stateOf, writeOk } from "./e2e-harness";
+import { emptyReview, githubClient, repoLayout, stateOfPg, writeOk } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
+import { tempStore } from "./pglite";
 
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
 const { privateKey } = generateKeyPairSync("rsa", {
@@ -33,30 +27,28 @@ const WORKFLOWS =
 test("a push GitHub denies to the App holds the candidate push and merges once pushes work", async () => {
   const run = await delegate(DENIED);
   try {
-    await run.until(
-      async () => (await getPushOutage(sqliteDb(run.db), "pmdroid/paws-demo")) !== null,
-    );
+    await run.until(async () => (await getPushOutage(run.db, "pmdroid/paws-demo")) !== null);
     // Further passes over the held merge job neither fail the item nor ask anyone.
     await run.until(
       () => run.refusals >= 3,
       () => run.probeNow(),
     );
-    expect(stateOf(run.db, "ENG-9"), await run.detail()).toBe("merge_queue");
+    expect(await stateOfPg(run.db, "ENG-9"), await run.detail()).toBe("merge_queue");
     expect(run.progress("elicitation"), await run.detail()).toEqual([]);
     expect(run.progress("error"), await run.detail()).toEqual([]);
-    const merge = (await listJobs(sqliteDb(run.db))).find((job) => job.queue === JOB_KIND.merge)!;
+    const merge = (await listJobs(run.db)).find((job) => job.queue === JOB_KIND.merge)!;
     expect(merge.status, await run.detail()).toBe("pending");
     expect(merge.attempts, await run.detail()).toBe(0);
     expect(merge.payload).toMatchObject({ mergeWait: { reason: "push_outage" } });
-    expect(await getPushOutage(sqliteDb(run.db), "pmdroid/paws-demo")).toMatchObject({
+    expect(await getPushOutage(run.db, "pmdroid/paws-demo")).toMatchObject({
       lastError: DENIED,
       installationUrl: "https://github.com/settings/installations/2",
     });
 
     run.refuse(null);
-    run.probeNow();
-    await run.until(() => stateOf(run.db, "ENG-9") === "merged");
-    expect(await getPushOutage(sqliteDb(run.db), "pmdroid/paws-demo")).toBeNull();
+    await run.probeNow();
+    await run.until(async () => (await stateOfPg(run.db, "ENG-9")) === "merged");
+    expect(await getPushOutage(run.db, "pmdroid/paws-demo")).toBeNull();
     expect(run.progress("elicitation"), await run.detail()).toEqual([]);
     expect(run.progress("error"), await run.detail()).toEqual([]);
   } finally {
@@ -68,13 +60,10 @@ test("a refusal for the workflows permission is no push outage and fails the ite
   const run = await delegate(WORKFLOWS);
   try {
     await run.until(
-      () => stateOf(run.db, "ENG-9") === "failed",
-      () =>
-        run.db.run("UPDATE job SET max_attempts = 2 WHERE queue = ? AND status = 'pending'", [
-          JOB_KIND.merge,
-        ]),
+      async () => (await stateOfPg(run.db, "ENG-9")) === "failed",
+      () => pendingMerge(run.db, { maxAttempts: 2 }),
     );
-    expect(await getPushOutage(sqliteDb(run.db), "pmdroid/paws-demo")).toBeNull();
+    expect(await getPushOutage(run.db, "pmdroid/paws-demo")).toBeNull();
     expect(run.progress("elicitation"), await run.detail()).toEqual([]);
     expect(run.progress("error").join("\n"), await run.detail()).toContain(
       'it lacks the "workflows" permission needed to push a change to .github/workflows/ci.yml',
@@ -95,8 +84,7 @@ async function delegate(refusal: string) {
       subIssues: [],
     },
   ]);
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const jobs = new JobLoop(db, systemClock, { backoffBaseMs: 10 });
   const outbox = new OutboxDispatcher(db, systemClock);
   let refused: string | null = refusal;
@@ -111,7 +99,7 @@ async function delegate(refusal: string) {
   };
   let sequence = 0;
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -156,14 +144,12 @@ async function delegate(refusal: string) {
       refused = next;
     },
     /** The probe's backoff has passed. */
-    probeNow() {
-      db.run("UPDATE job SET run_at = 0 WHERE queue = ? AND status = 'pending'", [JOB_KIND.merge]);
-    },
+    probeNow: () => pendingMerge(db, { runAt: 0 }),
     progress,
-    async until(done: () => boolean | Promise<boolean>, each?: () => void) {
+    async until(done: () => boolean | Promise<boolean>, each?: () => Promise<void>) {
       const deadline = Date.now() + 90_000;
       while (Date.now() < deadline && !(await done())) {
-        each?.();
+        await each?.();
         if ((await jobs.tick()) === null) {
           await outbox.tick();
           await Bun.sleep(25);
@@ -174,18 +160,29 @@ async function delegate(refusal: string) {
     },
     detail: async () =>
       JSON.stringify({
-        state: stateOf(db, "ENG-9"),
-        jobs: (await listJobs(sqliteDb(db))).map(
+        state: await stateOfPg(db, "ENG-9"),
+        jobs: (await listJobs(db)).map(
           (job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`,
         ),
         progress: tracker.progress.map((update) => `${update.kind}: ${update.body}`),
       }),
     async cleanup() {
       await orchestrator.shutdown().catch(() => undefined);
-      db.close();
+      await close();
       await layout.cleanup();
     },
   };
+}
+
+function pendingMerge(db: Db, set: { maxAttempts?: number; runAt?: number }): Promise<void> {
+  return db.run((q) =>
+    q.exec(
+      q.orm
+        .update(q.t.job)
+        .set(set)
+        .where(and(eq(q.t.job.queue, JOB_KIND.merge), eq(q.t.job.status, "pending"))),
+    ),
+  );
 }
 
 function linearEvent(): AcceptedLinearEvent {

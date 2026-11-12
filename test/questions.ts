@@ -18,7 +18,11 @@ import { confirmDecisionSteps, suggestDecisionsSteps } from "../src/decisions";
 type AskArgs = Parameters<typeof askSteps> extends [unknown, unknown, ...infer Rest] ? Rest : never;
 
 export function ask(db: Database, asker: QuestionAsker, ...args: AskArgs): Promise<Asked> {
-  return sqliteDb(db).transaction((q) => askSteps(q, asker, ...args));
+  return askPg(sqliteDb(db), asker, ...args);
+}
+
+export function askPg(db: Db, asker: QuestionAsker, ...args: AskArgs): Promise<Asked> {
+  return db.transaction((q) => askSteps(q, asker, ...args));
 }
 
 export function askPg(db: Db, asker: QuestionAsker, ...args: AskArgs): Promise<Asked> {
@@ -50,7 +54,15 @@ export function answerQuestion(
   id: string,
   input: Parameters<typeof answerQuestionSteps>[2],
 ): Promise<StoredQuestion | null> {
-  return sqliteDb(db).transaction((q) => answerQuestionSteps(q, id, input));
+  return answerQuestionPg(sqliteDb(db), id, input);
+}
+
+export function answerQuestionPg(
+  db: Db,
+  id: string,
+  input: Parameters<typeof answerQuestionSteps>[2],
+): Promise<StoredQuestion | null> {
+  return db.transaction((q) => answerQuestionSteps(q, id, input));
 }
 
 export function answerQuestionPg(
@@ -67,13 +79,15 @@ export function loopAsk(db: Database, ...args: LoopAskArgs) {
   return sqliteDb(db).transaction((q) => loopAskSteps(q, ...args));
 }
 
-export function cancelItemQuestions(
-  db: Database,
-  ...args: Parameters<typeof cancelItemQuestionsSteps> extends [unknown, ...infer Rest]
-    ? Rest
-    : never
-) {
-  return sqliteDb(db).transaction((q) => cancelItemQuestionsSteps(q, ...args));
+type CancelArgs =
+  Parameters<typeof cancelItemQuestionsSteps> extends [unknown, ...infer Rest] ? Rest : never;
+
+export function cancelItemQuestions(db: Database, ...args: CancelArgs) {
+  return cancelItemQuestionsPg(sqliteDb(db), ...args);
+}
+
+export function cancelItemQuestionsPg(db: Db, ...args: CancelArgs) {
+  return db.transaction((q) => cancelItemQuestionsSteps(q, ...args));
 }
 
 export function suggestDecisions(db: Database, questionId: string, text: string) {
