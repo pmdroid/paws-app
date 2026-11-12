@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { createResourceCache, handleStatusRequest, RESOURCE_REUSE_MS } from "./handler";
 import { emptyOverview } from "../live/overview";
-import { migrate, openDatabase, recordPushOutage, sqliteDb } from "../../../db";
+import { recordPushOutage } from "../../../db";
+import { seed } from "../../../../test/dialects";
+import { tempStore } from "../../../../test/pglite";
 
 function poll(headers: Record<string, string> = {}) {
   return new Request("http://127.0.0.1/api/overview", { headers });
@@ -95,22 +98,31 @@ describe("dashboard resource cache", () => {
   });
 
   test("a reader's scope never replays another reader's diagnostics", async () => {
-    const db = openDatabase(":memory:");
-    migrate(db);
-    db.run(
-      "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('w','org','W',0)",
+    const { db, close } = await tempStore();
+    await seed(db, (q) =>
+      q.orm
+        .insert(q.t.workspace)
+        .values({ id: "w", linearOrganizationId: "org", name: "W", createdAt: 0 }),
     );
     for (const team of ["a", "b"]) {
-      db.run("INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES('w',?,?)", [
-        `fixture/team-${team}`,
-        team,
-      ]);
-      db.run(
-        `INSERT INTO linear_session (session_id, organization_id, oauth_client_id, app_user_id, team_id,
-          installation_observed_at, created_at) VALUES (?, 'org', 'fixture', 'app', ?, 1, 0)`,
-        [`s-${team}`, team],
+      await seed(
+        db,
+        (q) =>
+          q.orm
+            .insert(q.t.workspaceRepository)
+            .values({ workspaceId: "w", repository: `fixture/team-${team}`, teamId: team }),
+        (q) =>
+          q.orm.insert(q.t.linearSession).values({
+            sessionId: `s-${team}`,
+            organizationId: "org",
+            oauthClientId: "fixture",
+            appUserId: "app",
+            teamId: team,
+            installationObservedAt: 1,
+            createdAt: 0,
+          }),
       );
-      await recordPushOutage(sqliteDb(db), {
+      await recordPushOutage(db, {
         repository: `fixture/team-${team}`,
         error: "denied",
         jobId: null,
@@ -122,7 +134,7 @@ describe("dashboard resource cache", () => {
     const resourceCache = createResourceCache({ now: () => 0 });
     const read = async (sessionIds: string[]) => {
       const response = await handleStatusRequest(poll(), {
-        store: sqliteDb(db),
+        store: db,
         resourceCache,
         sessionIds,
       });
@@ -134,8 +146,13 @@ describe("dashboard resource cache", () => {
       expect(await read(["s-a"])).toEqual(["fixture/team-a"]);
     }
     expect(await read([])).toEqual([]);
-    db.run("UPDATE workspace_repository SET repository='fixture/other' WHERE team_id='b'");
+    await seed(db, (q) =>
+      q.orm
+        .update(q.t.workspaceRepository)
+        .set({ repository: "fixture/other" })
+        .where(eq(q.t.workspaceRepository.teamId, "b")),
+    );
     expect(await read(["s-a", "s-b"])).toEqual(["fixture/team-a"]);
-    db.close();
+    await close();
   });
 });

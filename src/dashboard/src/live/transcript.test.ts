@@ -10,20 +10,16 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { sqliteDb, beginImplementRun, insertQueuedItem, openDatabase, migrate } from "../../../db";
+import { beginImplementRun, insertQueuedItem } from "../../../db";
 import { createLiveStatusProvider } from "./provider";
 import { fullAgentTranscript } from "./transcript";
 import { render } from "../client/render";
 import { handleStatusRequest } from "../server/handler";
 import { setJournalSink } from "../journal";
+import { tempStore } from "../../../../test/pglite";
 
 function tempHome() {
   return mkdtempSync(join(tmpdir(), "paws-transcript-"));
-}
-function tempDb() {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  return db;
 }
 
 function message(text: string) {
@@ -36,10 +32,10 @@ function message(text: string) {
 }
 
 test("full transcript reads unfinished ACP output, tools and classification while the status view links to it", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const home = tempHome();
   const item = await insertQueuedItem(db, { id: "transcript-item", sessionKey: "visible" });
-  const { run } = await beginImplementRun(sqliteDb(db), item.id, 1000);
+  const { run } = await beginImplementRun(db, item.id, 1000);
   const directory = join(home, "runs", run.id);
   mkdirSync(directory, { recursive: true });
   mkdirSync(`${directory}-classify`);
@@ -75,7 +71,7 @@ test("full transcript reads unfinished ACP output, tools and classification whil
       .map((x) => JSON.stringify(x) + "\n")
       .join("") + "{unfinished",
   );
-  const provider = createLiveStatusProvider(sqliteDb(db), {
+  const provider = createLiveStatusProvider(db, {
     pawsHome: home,
     sessionIds: ["visible"],
     env: { API_KEY: "fixture-secret-value" },
@@ -108,13 +104,13 @@ test("full transcript reads unfinished ACP output, tools and classification whil
   expect(read().at(-1)?.text).toContain("Screenshot captured");
   expect(
     (
-      await createLiveStatusProvider(sqliteDb(db), {
+      await createLiveStatusProvider(db, {
         pawsHome: home,
         sessionIds: ["other"],
       }).issues()
     ).runs,
   ).toEqual([]);
-  db.close();
+  await close();
 });
 
 test("transcript reader refuses outside directories, symlink files and incomplete records", () => {
@@ -131,10 +127,10 @@ test("transcript reader refuses outside directories, symlink files and incomplet
 });
 
 test("the transcript route answers JSON entries when the page asks for them", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const home = tempHome();
   const item = await insertQueuedItem(db, { id: "json-item", sessionKey: "visible" });
-  const { run } = await beginImplementRun(sqliteDb(db), item.id, 1000);
+  const { run } = await beginImplementRun(db, item.id, 1000);
   mkdirSync(join(home, "runs", run.id), { recursive: true });
   writeFileSync(
     join(home, "runs", run.id, "acp.jsonl"),
@@ -143,7 +139,7 @@ test("the transcript route answers JSON entries when the page asks for them", as
       .join(""),
   );
   const url = `http://127.0.0.1/api/runs/transcript?run=${run.id}`;
-  const options = { store: sqliteDb(db), closeoutHome: home, sessionIds: ["visible"] };
+  const options = { store: db, closeoutHome: home, sessionIds: ["visible"] };
   const asked = (await handleStatusRequest(
     new Request(url, { headers: { Accept: "application/json" } }),
     options,
@@ -170,7 +166,7 @@ test("the transcript route answers JSON entries when the page asks for them", as
     { ...options, sessionIds: ["other"] },
   ))!;
   expect(hidden.status).toBe(404);
-  db.close();
+  await close();
 });
 
 test("a failing workspace hook shows on the run page as an error", () => {

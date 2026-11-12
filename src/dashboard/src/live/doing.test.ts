@@ -1,75 +1,93 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
+import { eq, sql } from "drizzle-orm";
 import {
   beginImplementRun,
   enqueueJob,
   insertQueuedItem,
   listRunnerOverview,
-  migrate,
-  openDatabase,
   saveItemHolds,
   startUsagePause,
-  sqliteDb,
+  type Db,
 } from "../../../db";
 import { JOB_KIND } from "../../../core";
 import type { StatusItem } from "../contract";
 import { doingTimeLine, issueTimeLine, itemPill, itemTime } from "../client/doing";
 import { createLiveStatusProvider } from "./provider";
 import { STALL_MS } from "./doing";
+import { seed, withoutForeignKeys } from "../../../../test/dialects";
+import { tempStore } from "../../../../test/pglite";
 
 const MINUTE = 60_000;
 const START = Date.parse("2026-11-01T14:00:00.000Z");
-const open: Database[] = [];
+const open: (() => Promise<void>)[] = [];
 
-afterEach(() => {
-  for (const db of open.splice(0)) db.close();
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
 });
 
-function database(): Database {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  db.run("PRAGMA foreign_keys=OFF");
-  open.push(db);
-  for (const name of ["agentbox", "spare"])
-    db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,'workspace','owner',?,'active',0,?)",
-      [name, name, START],
-    );
-  db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES('agentbox',2)");
+async function database() {
+  const { db, close } = await tempStore();
+  open.push(close);
+  await withoutForeignKeys(db);
+  await seed(
+    db,
+    (q) =>
+      q.orm.insert(q.t.runner).values(
+        ["agentbox", "spare"].map((name) => ({
+          id: name,
+          workspaceId: "workspace",
+          ownerUserId: "owner",
+          name,
+          status: "active",
+          createdAt: 0,
+          lastSeenAt: START,
+        })),
+      ),
+    (q) => q.orm.insert(q.t.runnerCapacity).values({ runnerId: "agentbox", capacity: 2 }),
+  );
   return db;
 }
 
-async function running(db: Database, id: string): Promise<string> {
+async function running(db: Db, id: string): Promise<string> {
   await insertQueuedItem(db, { id, title: id, now: START });
-  const runId = (await beginImplementRun(sqliteDb(db), id, START)).run.id;
-  db.run("UPDATE work_item_event SET at=? WHERE item_id=?", [START, id]);
+  const runId = (await beginImplementRun(db, id, START)).run.id;
+  await seed(db, (q) =>
+    q.orm.update(q.t.workItemEvent).set({ at: START }).where(eq(q.t.workItemEvent.itemId, id)),
+  );
   return runId;
 }
 
-function work(
-  db: Database,
-  runId: string,
-  runner: string,
-  live: boolean,
-  now: number,
-  generation = 1,
-): void {
-  db.run(
-    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at) VALUES(?,?,'workspace',?,0,?,?,?)",
-    [runId, runner, generation, `command-${runId}`, now + 10 * MINUTE, live ? null : now - MINUTE],
+function work(db: Db, runId: string, runner: string, live: boolean, now: number, generation = 1) {
+  return seed(db, (q) =>
+    q.orm.insert(q.t.runnerWork).values({
+      runId,
+      runnerId: runner,
+      workspaceId: "workspace",
+      generation,
+      runnerFence: 0,
+      commandId: `command-${runId}`,
+      leaseUntil: now + 10 * MINUTE,
+      endedAt: live ? null : now - MINUTE,
+    }),
   );
 }
 
-function event(db: Database, runId: string, generation: number, type: string): void {
-  db.run(
-    "INSERT INTO runner_event(run_id,generation,sequence,payload,received_at,type) VALUES(?,?,(SELECT COUNT(*)+1 FROM runner_event WHERE run_id=?1 AND generation=?2),'{}',?,?)",
-    [runId, generation, START, type],
+function event(db: Db, runId: string, generation: number, type: string) {
+  return seed(db, (q) =>
+    q.orm.insert(q.t.runnerEvent).values({
+      runId,
+      generation,
+      sequence: sql`(SELECT COUNT(*) + 1 FROM runner_event WHERE run_id = ${runId} AND generation = ${generation})`,
+      payload: {},
+      receivedAt: START,
+      type,
+    }),
   );
 }
 
-async function item(db: Database, id: string, now: number): Promise<StatusItem> {
+async function item(db: Db, id: string, now: number): Promise<StatusItem> {
   const found = (
-    await createLiveStatusProvider(sqliteDb(db), { now: () => new Date(now) }).issues()
+    await createLiveStatusProvider(db, { now: () => new Date(now) }).issues()
   ).issues.find((entry) => entry.title === id);
 
   if (!found) throw new Error(`no item ${id}`);
@@ -78,11 +96,11 @@ async function item(db: Database, id: string, now: number): Promise<StatusItem> 
 
 describe("what an item does now", () => {
   test("an item with live runner work shows Running on its runner", async () => {
-    const db = database();
+    const db = await database();
     const now = START + 5 * MINUTE;
     const runId = await running(db, "live");
-    work(db, runId, "agentbox", true, now);
-    event(db, runId, 1, "activity");
+    await work(db, runId, "agentbox", true, now);
+    await event(db, runId, 1, "activity");
     const shown = await item(db, "live", now);
     expect(shown.doing).toEqual({
       kind: "running",
@@ -95,37 +113,42 @@ describe("what an item does now", () => {
   });
 
   test("live runner work is preparing until its current generation reports agent activity", async () => {
-    const db = database();
+    const db = await database();
     const now = START + 5 * MINUTE;
     const runId = await running(db, "setup");
-    work(db, runId, "agentbox", true, now, 2);
-    event(db, runId, 1, "activity");
-    event(db, runId, 2, "progress");
-    event(db, runId, 2, "progress");
+    await work(db, runId, "agentbox", true, now, 2);
+    await event(db, runId, 1, "activity");
+    await event(db, runId, 2, "progress");
+    await event(db, runId, 2, "progress");
     const preparing = await item(db, "setup", now);
     expect(preparing.doing).toMatchObject({ kind: "running", phase: "preparing" });
     expect(itemTime(preparing, now)).toContain(
       "Preparing: checking out and installing runtimes on agentbox",
     );
-    event(db, runId, 2, "activity");
+    await event(db, runId, 2, "activity");
     const agent = await item(db, "setup", now);
     expect(agent.doing).toMatchObject({ kind: "running", phase: "agent" });
     expect(itemTime(agent, now)).toContain("Running on agentbox");
   });
 
   test("a run without runner work has no phase", async () => {
-    const db = database();
+    const db = await database();
     const now = START + MINUTE;
     await running(db, "local");
     expect((await item(db, "local", now)).doing?.phase).toBeUndefined();
   });
 
   test("an item parked in a slot wait shows Waiting for a slot with its runners and wait time", async () => {
-    const db = database();
+    const db = await database();
     const now = START + 26 * MINUTE;
     await insertQueuedItem(db, { id: "parked", title: "parked", now: START });
-    db.run("UPDATE work_item SET awake_ms=? WHERE id='parked'", [114 * MINUTE]);
-    await enqueueJob(sqliteDb(db), {
+    await seed(db, (q) =>
+      q.orm
+        .update(q.t.workItem)
+        .set({ awakeMs: 114 * MINUTE })
+        .where(eq(q.t.workItem.id, "parked")),
+    );
+    await enqueueJob(db, {
       queue: JOB_KIND.resume,
       payload: {
         itemId: "parked",
@@ -142,12 +165,21 @@ describe("what an item does now", () => {
   });
 
   test("the issue page splits the item's time by stage and marks stages that are not counted", async () => {
-    const db = database();
+    const db = await database();
     const now = START + MINUTE;
     await running(db, "staged");
-    db.run(
-      "UPDATE work_item SET implement_ms=?, fix_ms=?, closeout_ms=?, max_awake_ms=?, max_fix_ms=0, max_closeout_ms=0 WHERE id='staged'",
-      [130 * MINUTE, 65 * MINUTE, 22 * MINUTE, 180 * MINUTE],
+    await seed(db, (q) =>
+      q.orm
+        .update(q.t.workItem)
+        .set({
+          implementMs: 130 * MINUTE,
+          fixMs: 65 * MINUTE,
+          closeoutMs: 22 * MINUTE,
+          maxAwakeMs: 180 * MINUTE,
+          maxFixMs: 0,
+          maxCloseoutMs: 0,
+        })
+        .where(eq(q.t.workItem.id, "staged")),
     );
     const shown = await item(db, "staged", now);
     expect(shown.stageTimes).toEqual({
@@ -161,9 +193,9 @@ describe("what an item does now", () => {
   });
 
   test("an item with a usage pause shows Paused with the reset time", async () => {
-    const db = database();
+    const db = await database();
     const runId = await running(db, "paused");
-    await startUsagePause(sqliteDb(db), {
+    await startUsagePause(db, {
       runId,
       itemId: "paused",
       agent: "claude",
@@ -181,17 +213,17 @@ describe("what an item does now", () => {
   });
 
   test("a running item whose pinned run waits for its busy runner shows Waiting, not Running", async () => {
-    const db = database();
+    const db = await database();
     const now = START + 10 * MINUTE;
-    work(db, await running(db, "one"), "agentbox", true, now);
-    work(db, await running(db, "two"), "agentbox", true, now);
-    work(db, await running(db, "pinned"), "agentbox", false, now);
-    await saveItemHolds(sqliteDb(db), [{ itemId: "pinned", reason: "slot", blockers: [] }]);
+    await work(db, await running(db, "one"), "agentbox", true, now);
+    await work(db, await running(db, "two"), "agentbox", true, now);
+    await work(db, await running(db, "pinned"), "agentbox", false, now);
+    await saveItemHolds(db, [{ itemId: "pinned", reason: "slot", blockers: [] }]);
     const shown = await item(db, "pinned", now);
     expect(shown.state).toBe("running");
     expect(shown.doing).toMatchObject({ kind: "slot", runners: ["agentbox"] });
     expect(itemTime(shown, now)).toContain("Waiting for a slot on agentbox");
-    const agentbox = (await listRunnerOverview(sqliteDb(db), "workspace", now)).find(
+    const agentbox = (await listRunnerOverview(db, "workspace", now)).find(
       (r) => r.id === "agentbox",
     )!;
     const pinned = agentbox.running.find((session) => session.title === "pinned")!;
@@ -200,7 +232,7 @@ describe("what an item does now", () => {
   });
 
   test("an item with no live work and no transition for 30 minutes shows Stalled", async () => {
-    const db = database();
+    const db = await database();
     await running(db, "stuck");
     const fresh = await item(db, "stuck", START + STALL_MS - MINUTE);
     expect(fresh.doing).toMatchObject({ kind: "idle" });
@@ -213,11 +245,11 @@ describe("what an item does now", () => {
 
 describe("runner slots", () => {
   test("live commands and holds between commands stay apart in the runner overview", async () => {
-    const db = database();
+    const db = await database();
     const now = START + 10 * MINUTE;
-    for (const id of ["a", "b"]) work(db, await running(db, id), "agentbox", true, now);
-    for (const id of ["c", "d"]) work(db, await running(db, id), "agentbox", false, now);
-    const agentbox = (await listRunnerOverview(sqliteDb(db), "workspace", now)).find(
+    for (const id of ["a", "b"]) await work(db, await running(db, id), "agentbox", true, now);
+    for (const id of ["c", "d"]) await work(db, await running(db, id), "agentbox", false, now);
+    const agentbox = (await listRunnerOverview(db, "workspace", now)).find(
       (r) => r.id === "agentbox",
     )!;
     expect(agentbox.slots).toEqual({ used: 4, total: 2 });

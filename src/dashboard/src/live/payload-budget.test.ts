@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
+import { eq } from "drizzle-orm";
 import {
   appendCloseoutOutput,
   applyWorkItemEvent,
@@ -7,13 +7,13 @@ import {
   enterMergeQueue,
   finishCloseoutProgress,
   insertQueuedItem,
-  migrate,
   saveEvidence,
-  openDatabase,
   upsertCloseoutStep,
-  sqliteDb,
+  type Db,
 } from "../../../db";
 import { createLiveStatusProvider, handleStatusRequest } from "../engine";
+import { seed } from "../../../../test/dialects";
+import { tempStore } from "../../../../test/pglite";
 
 /** The budget in `docs/dashboard-payload.md`. */
 const LIST_BUDGET_BYTES = 200 * 1024;
@@ -27,17 +27,17 @@ const EVIDENCE_METADATA_BUDGET_BYTES = 16 * 1024;
 /** What `src/db` keeps of one check stream. */
 const OUTPUT_CAP_BYTES = 64 * 1024;
 
-const open: Database[] = [];
+const open: (() => Promise<void>)[] = [];
 
-afterEach(() => {
-  for (const db of open.splice(0)) db.close();
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
 });
 
 const CHECKS = ["install", "lint", "format", "typecheck", "test", "build"];
 const base = "d".repeat(40);
 
 /** Closeout attempts on `item`, each check failing with `stderr` at the stored cap. */
-async function closeout(db: Database, item: string, attempts: number, checks: number, now: number) {
+async function closeout(db: Db, item: string, attempts: number, checks: number, now: number) {
   const stderr = `error: expected 1 to be 2\n${"    at <anonymous> (src/loop/turn.test.ts:42:7)\n".repeat(OUTPUT_CAP_BYTES / 48)}`;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     const at = now + attempt;
@@ -50,7 +50,7 @@ async function closeout(db: Database, item: string, attempts: number, checks: nu
     };
     for (const [ordinal, id] of CHECKS.slice(0, checks).entries()) {
       await upsertCloseoutStep(
-        sqliteDb(db),
+        db,
         item,
         identity,
         {
@@ -74,51 +74,50 @@ async function closeout(db: Database, item: string, attempts: number, checks: nu
         },
         at,
       );
-      await appendCloseoutOutput(sqliteDb(db), item, identity, id, "stderr", stderr, false, at);
-      await appendCloseoutOutput(sqliteDb(db), item, identity, id, "stdout", stderr, false, at);
+      await appendCloseoutOutput(db, item, identity, id, "stderr", stderr, false, at);
+      await appendCloseoutOutput(db, item, identity, id, "stdout", stderr, false, at);
     }
-    await finishCloseoutProgress(sqliteDb(db), item, identity, "rejected", at);
+    await finishCloseoutProgress(db, item, identity, "rejected", at);
   }
 }
 
 describe("status payload budget", () => {
   test("the list stays under 200 KB and an item detail under 1 MB with large check output", async () => {
-    const db = openDatabase(":memory:");
-    open.push(db);
-    migrate(db);
+    const { db, close } = await tempStore();
+    open.push(close);
     const now = Date.now() - 60 * 60 * 1000;
     for (let index = 0; index < 100; index += 1) {
       const id = `PAS-${1000 + index}`;
       await insertQueuedItem(db, { id, title: `Finished item ${index}`, now: now + index });
-      await beginImplementRun(sqliteDb(db), id, now + index);
+      await beginImplementRun(db, id, now + index);
       await closeout(db, id, 1, 2, now + index);
-      await applyWorkItemEvent(sqliteDb(db), id, "cancel", { now: now + index + 10 });
+      await applyWorkItemEvent(db, id, "cancel", { now: now + index + 10 });
     }
     for (let index = 0; index < 10; index += 1) {
       const id = `PAS-${2000 + index}`;
       await insertQueuedItem(db, { id, title: `Open item ${index}`, now: now + index });
-      await beginImplementRun(sqliteDb(db), id, now + index);
-      await enterMergeQueue(sqliteDb(db), id, {
+      await beginImplementRun(db, id, now + index);
+      await enterMergeQueue(db, id, {
         phase: "merge_queue",
         baseSha: base,
         wipCommit: "c".repeat(40),
       });
       await closeout(db, id, 3, CHECKS.length, now + index);
-      db.run(
-        "INSERT INTO question (id, item_id, session_id, body, status, created_at) VALUES (?, ?, ?, ?, 'open', ?)",
-        [
-          `q-${id}`,
-          id,
-          `session-${id}`,
-          `Which retention window should exports use?\n\n${"Context. ".repeat(220)}`,
-          now,
-        ],
+      await seed(db, (q) =>
+        q.orm.insert(q.t.question).values({
+          id: `q-${id}`,
+          itemId: id,
+          sessionId: `session-${id}`,
+          body: `Which retention window should exports use?\n\n${"Context. ".repeat(220)}`,
+          status: "open",
+          createdAt: now,
+        }),
       );
     }
 
     const get = async (path: string) => {
       const response = (await handleStatusRequest(new Request(`http://127.0.0.1${path}`), {
-        store: sqliteDb(db),
+        store: db,
         env: {},
         responseSizes: { record() {}, flush() {} },
       }))!;
@@ -140,7 +139,7 @@ describe("status payload budget", () => {
       CHECK_LOG_BUDGET_BYTES,
     );
 
-    const live = createLiveStatusProvider(sqliteDb(db), { env: {} });
+    const live = createLiveStatusProvider(db, { env: {} });
     const calls: string[] = [];
     const provider = {
       issues: async () => (calls.push("issues"), await live.issues()),
@@ -173,16 +172,18 @@ describe("status payload budget", () => {
 
 describe("evidence gallery budget", () => {
   test("GET /api/evidence stays under 200 KB with eight files on each of the 60 listed issues", async () => {
-    const db = openDatabase(":memory:");
-    open.push(db);
-    migrate(db);
+    const { db, close } = await tempStore();
+    open.push(close);
     const now = Date.now();
     for (let index = 0; index < 110; index += 1) {
       const item = `PAS-${1000 + index}`;
       await insertQueuedItem(db, { id: item, now: now - index });
-      if (index >= 10) db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [item]);
+      if (index >= 10)
+        await seed(db, (q) =>
+          q.orm.update(q.t.workItem).set({ state: "merged" }).where(eq(q.t.workItem.id, item)),
+        );
       for (let file = 0; file < 8; file += 1)
-        await saveEvidence(sqliteDb(db), {
+        await saveEvidence(db, {
           id: `01J${String(index).padStart(3, "0")}${file}`.padEnd(26, "Z"),
           itemId: item,
           runId: `run-${item}`,
@@ -198,7 +199,7 @@ describe("evidence gallery budget", () => {
         });
     }
     const response = await handleStatusRequest(new Request("http://paws.test/api/evidence"), {
-      provider: createLiveStatusProvider(sqliteDb(db)),
+      provider: createLiveStatusProvider(db),
     });
     const body = await response!.text();
     expect(response!.status).toBe(200);
@@ -206,7 +207,7 @@ describe("evidence gallery budget", () => {
     expect(new TextEncoder().encode(body).byteLength).toBeLessThan(LIST_BUDGET_BYTES);
     const metadata = await handleStatusRequest(
       new Request(`http://paws.test/api/evidence/${"01J0000".padEnd(26, "Z")}/metadata`),
-      { provider: createLiveStatusProvider(sqliteDb(db)) },
+      { provider: createLiveStatusProvider(db) },
     );
     expect(metadata!.status).toBe(200);
     expect(Buffer.byteLength(await metadata!.text())).toBeLessThanOrEqual(
