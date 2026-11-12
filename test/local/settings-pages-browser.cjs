@@ -342,9 +342,9 @@ const errors = [];
     for (const width of [1440, 768, 390]) {
       for (const appearance of ["Light", "Dark"]) {
         await page.setViewportSize({ width, height: 1000 });
-        await page
-          .getByRole("combobox", { name: "Appearance" })
-          .selectOption({ label: appearance });
+        const theme = appearance.toLowerCase();
+        if (!(await page.evaluate((t) => document.documentElement.classList.contains(t), theme)))
+          await page.getByRole("button", { name: `Switch to ${theme} theme` }).click();
         for (const name of [
           "Agents",
           "Integrations",

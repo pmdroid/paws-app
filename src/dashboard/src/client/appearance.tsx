@@ -1,6 +1,7 @@
 import { journalCaught } from "../journal";
 import { useSyncExternalStore } from "react";
-import { NativeSelect } from "./ui/native-select";
+import { Moon, Sun } from "lucide-react";
+import { Button } from "./ui/button";
 
 export type Appearance = "system" | "light" | "dark";
 const STORAGE_KEY = "paws.appearance";
@@ -14,6 +15,11 @@ export function parseAppearance(value: string | null): Appearance {
 
 export function resolveAppearance(value: Appearance, dark: boolean): "light" | "dark" {
   return value === "system" ? (dark ? "dark" : "light") : value;
+}
+
+/** The theme a click on the toggle switches to. */
+export function nextAppearance(resolved: "light" | "dark"): "light" | "dark" {
+  return resolved === "dark" ? "light" : "dark";
 }
 
 function notify(): void {
@@ -57,32 +63,31 @@ function subscribe(listener: () => void): () => void {
 }
 
 export function AppearanceControl() {
-  const value = useSyncExternalStore(
+  const resolved = useSyncExternalStore(
     subscribe,
-    () => preference,
-    () => "system" as const,
+    () => resolveAppearance(preference, systemDark),
+    () => "dark" as const,
   );
+  const label = resolved === "dark" ? "Switch to light theme" : "Switch to dark theme";
+  const Icon = resolved === "dark" ? Sun : Moon;
   return (
-    <label className="flex shrink-0 items-center gap-2 text-sm font-semibold">
-      <span className="sr-only sm:not-sr-only">Appearance</span>
-      <NativeSelect
-        aria-label="Appearance"
-        className="w-28"
-        value={value}
-        onChange={(event) => {
-          preference = parseAppearance(event.currentTarget.value);
-          try {
-            localStorage.setItem(STORAGE_KEY, preference);
-          } catch (caughtError2) {
-            journalCaught(caughtError2, "appearance.AppearanceControl.setItem", null);
-          }
-          notify();
-        }}
-      >
-        <option value="system">System</option>
-        <option value="light">Light</option>
-        <option value="dark">Dark</option>
-      </NativeSelect>
-    </label>
+    <Button
+      type="button"
+      variant="neutral"
+      size="icon"
+      aria-label={label}
+      title={label}
+      onClick={() => {
+        preference = nextAppearance(resolved);
+        try {
+          localStorage.setItem(STORAGE_KEY, preference);
+        } catch (caughtError2) {
+          journalCaught(caughtError2, "appearance.AppearanceControl.setItem", null);
+        }
+        notify();
+      }}
+    >
+      <Icon aria-hidden="true" />
+    </Button>
   );
 }
