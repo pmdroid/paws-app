@@ -22,10 +22,10 @@ import {
   listJobs,
   listOutbox,
   listRuns,
-  migrate,
-  openDatabase,
-  sqliteDb,
+  listWorkItemEventRows,
+  listWorkItems,
   syncSteps,
+  type Db,
 } from "../src/db";
 import { HostSupervisor } from "../src/host/supervisor";
 import { WakeDetector } from "../src/host/wake";
@@ -39,8 +39,10 @@ import {
 } from "../src/linear";
 import { HOST_DISK_FULL_THOUGHT, LinearTaskAccess, attachOrchestrator } from "../src/loop";
 import { UsageLimitPause } from "../src/runner-backend";
-import { emptyReview, repoLayout, stateOf, writeOk } from "./e2e-harness";
+import { and, eq, inArray } from "drizzle-orm";
+import { emptyReview, repoLayout, stateOfPg, writeOk } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
+import { tempStore } from "./pglite";
 
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
 
@@ -410,8 +412,7 @@ async function runWithFault(fault: {
   detail: string;
 }> {
   const layout = await repoLayout("paws-faults-");
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const tracker = createFakeTracker([
     {
       linearIssueId: "issue",
@@ -436,13 +437,13 @@ async function runWithFault(fault: {
   });
   const clock = fault.clock ?? systemClock;
   const jobs = new JobLoop(db, clock);
-  const host = new HostSupervisor(sqliteDb(db), clock, new WakeDetector(clock));
+  const host = new HostSupervisor(db, clock, new WakeDetector(clock));
   const outbox = new OutboxDispatcher(db, clock);
   const waits: { delayMs: number; runningJobs: number }[] = [];
   let implementations = 0;
   let sequence = 0;
   let orchestrator: ReturnType<typeof attachOrchestrator>;
-  const gate = new LinearTaskAccess(sqliteDb(db), {
+  const gate = new LinearTaskAccess(db, {
     access: access.adapter,
     lifecycle,
     oauthClientId: scope.oauthClientId,
@@ -451,7 +452,7 @@ async function runWithFault(fault: {
     interruptSession: (sessionId) => orchestrator.interruptLinearSession(sessionId),
   });
   orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -504,7 +505,7 @@ async function runWithFault(fault: {
   const listSessionActivities = tracker.listSessionActivities!;
   if (fault.tracker)
     tracker.listSessionActivities = async (...args) => {
-      if (fault.tracker && remaining > 0 && stateOf(db, "ENG-7") === "running") {
+      if (fault.tracker && remaining > 0 && (await stateOfPg(db, "ENG-7")) === "running") {
         remaining -= 1;
         throw fault.error();
       }
@@ -515,15 +516,23 @@ async function runWithFault(fault: {
       !fault.tracker &&
       !fault.atClassify &&
       remaining > 0 &&
-      stateOf(db, "ENG-7") === "running"
+      (await stateOfPg(db, "ENG-7")) === "running"
     ) {
       remaining -= 1;
       if (fault.loseJobLease) {
-        db.run("UPDATE job SET locked_until=? WHERE status='running' AND queue IN (?, ?)", [
-          clock.now(),
-          JOB_KIND.start,
-          JOB_KIND.resume,
-        ]);
+        await db.run((q) =>
+          q.exec(
+            q.orm
+              .update(q.t.job)
+              .set({ lockedUntil: clock.now() })
+              .where(
+                and(
+                  eq(q.t.job.status, "running"),
+                  inArray(q.t.job.queue, [JOB_KIND.start, JOB_KIND.resume]),
+                ),
+              ),
+          ),
+        );
         leaseLost = true;
       }
       throw fault.error();
@@ -553,18 +562,14 @@ async function runWithFault(fault: {
     while (
       Date.now() < deadline &&
       !["merge_queue", "merged", "failed", "cancelled", "paused"].includes(
-        stateOf(db, "ENG-7") ?? "",
+        (await stateOfPg(db, "ENG-7")) ?? "",
       ) &&
       (fault.untilMs === undefined || clock.now() - startedAt < fault.untilMs)
     ) {
       if (leaseLost) break;
       if (!stopped && fault.stopAtMs !== undefined && clock.now() - startedAt >= fault.stopAtMs) {
-        const itemId = (
-          db.query("SELECT id FROM work_item WHERE linear_identifier='ENG-7'").get() as {
-            id: string;
-          }
-        ).id;
-        await applyLinearCommand(sqliteDb(db), {
+        const itemId = (await itemOf(db))!.id;
+        await applyLinearCommand(db, {
           type: "stop",
           itemId,
           source: "linear",
@@ -572,11 +577,11 @@ async function runWithFault(fault: {
         });
         stopped = true;
       }
-      states.push(stateOf(db, "ENG-7"));
+      states.push(await stateOfPg(db, "ENG-7"));
       if ((await jobs.tick()) === null) {
         await outbox.tick();
         await Bun.sleep(25);
-        const delayed = (await listJobs(sqliteDb(db))).find(
+        const delayed = (await listJobs(db)).find(
           (job) =>
             (job.queue === JOB_KIND.resume || job.queue === JOB_KIND.start) &&
             job.status === "pending" &&
@@ -585,8 +590,7 @@ async function runWithFault(fault: {
         if (fault.clock && delayed) {
           waits.push({
             delayMs: delayed.runAt - clock.now(),
-            runningJobs: (await listJobs(sqliteDb(db))).filter((job) => job.status === "running")
-              .length,
+            runningJobs: (await listJobs(db)).filter((job) => job.status === "running").length,
           });
           fault.clock.advance(delayed.runAt - clock.now());
         }
@@ -594,56 +598,49 @@ async function runWithFault(fault: {
       if (fault.clock) await host.tick();
     }
     const drainBy = Date.now() + 10_000;
-    while (
-      Date.now() < drainBy &&
-      (await listOutbox(sqliteDb(db))).some((row) => row.status === "pending")
-    ) {
+    while (Date.now() < drainBy && (await listOutbox(db)).some((row) => row.status === "pending")) {
       await outbox.tick();
       await outbox.idle();
       await Bun.sleep(10);
     }
     const progress = (kind: string) =>
       tracker.progress.filter((update) => update.kind === kind).map((update) => update.body);
-    const pendingWait = (await listJobs(sqliteDb(db))).find(
+    const pendingWait = (await listJobs(db)).find(
       (job) =>
         job.status === "pending" &&
         (job.payload as { capacityWait?: unknown } | null)?.capacityWait !== undefined,
     );
-    const item = db
-      .query<{ id: string }, []>("SELECT id FROM work_item WHERE linear_identifier='ENG-7'")
-      .get();
-    const recorded = item ? await getWorkItem(sqliteDb(db), item.id) : null;
+    const item = await itemOf(db);
+    const recorded = item ? await getWorkItem(db, item.id) : null;
     return {
-      events: db
-        .query(
-          "SELECT event FROM work_item_event WHERE item_id=(SELECT id FROM work_item WHERE linear_identifier='ENG-7')",
-        )
-        .all()
-        .map((row) => (row as { event: string }).event),
+      events: item
+        ? (await listWorkItemEventRows(db, item.id, 10_000)).map((row) => row.event)
+        : [],
       capacityWait: (pendingWait?.payload as { capacityWait?: unknown } | undefined)?.capacityWait,
       elapsedMs: clock.now() - startedAt,
       awakeMs: recorded?.awakeMs ?? 0,
       waitingMs: recorded?.waitingMs ?? 0,
-      state: stateOf(db, "ENG-7"),
+      state: await stateOfPg(db, "ENG-7"),
       states,
       thoughts: progress("thought"),
       errors: progress("error"),
-      retries: (await listJobs(sqliteDb(db)))
+      retries: (await listJobs(db))
         .filter(
           (job) =>
             job.queue === JOB_KIND.resume ||
             (job.payload as { capacityWait?: unknown }).capacityWait !== undefined,
         )
         .map((job) => (job.payload as { retry?: number }).retry ?? 0),
-      runs: (await listRuns(sqliteDb(db))).map((run) => `${run.kind}:${run.status}`),
-      jobs: (await listJobs(sqliteDb(db))).map(
-        (job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`,
-      ),
+      runs: (await listRuns(db)).map((run) => `${run.kind}:${run.status}`),
+      jobs: (await listJobs(db)).map((job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`),
       implementations,
       waits,
       detail: JSON.stringify({
-        items: db.query("SELECT linear_identifier, state FROM work_item").all(),
-        jobs: (await listJobs(sqliteDb(db))).map(
+        items: (await listWorkItems(db)).map((row) => ({
+          linear_identifier: row.linearIdentifier,
+          state: row.state,
+        })),
+        jobs: (await listJobs(db)).map(
           (job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`,
         ),
         progress: tracker.progress.map((update) => `${update.kind}: ${update.body}`),
@@ -651,7 +648,11 @@ async function runWithFault(fault: {
     };
   } finally {
     await orchestrator.shutdown().catch(() => undefined);
-    db.close();
+    await close();
     await layout.cleanup();
   }
+}
+
+async function itemOf(db: Db) {
+  return (await listWorkItems(db)).find((item) => item.linearIdentifier === "ENG-7");
 }
