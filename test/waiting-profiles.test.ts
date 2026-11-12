@@ -1,25 +1,27 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { tempDb, tempHome } from "./helpers";
+import { tempHome } from "./helpers";
 import { FakeClock } from "../src/core";
 import {
-  sqliteDb,
   JobLoop,
   OutboxDispatcher,
   beginImplementRun,
   insertQueuedItem,
   listOutbox,
   getWorkItem,
+  type Db,
   type WorkItemRecord,
 } from "../src/db";
+import { eq } from "drizzle-orm";
 import { runDir, type RunAgentOptions, type RunAgentResult } from "../src/acp";
 import { writeAgentSettings } from "../src/config";
 import { handleAgentSettingsRequest } from "../src/settings";
 import { createFakeTracker } from "../src/linear";
 import { Orchestrator } from "../src/loop";
-import { findOpenQuestion } from "../src/questions";
-import { answerQuestion } from "./questions";
+import { answerQuestionSteps, findOpenQuestion } from "../src/questions";
+import { seed as seedRows, withoutForeignKeys } from "./dialects";
+import { tempStore } from "./pglite";
 
 const oldProfiles = {
   implementer: { agent: "claude", model: "old" },
@@ -29,16 +31,41 @@ const profiles = {
   implementer: { agent: "codex", model: "new" },
   reviewer: { agent: "claude", model: "review" },
 } as const;
-const cleanups: (() => void)[] = [];
-afterEach(() => {
-  for (const cleanup of cleanups.splice(0)) cleanup();
+const cleanups: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0)) await cleanup();
 });
-function fixture() {
-  const db = tempDb(),
+
+type ItemValues = { state?: string; sessionKey?: string | null };
+
+const setItem = (db: Db, id: string, values: ItemValues) =>
+  seedRows(db, (q) => q.orm.update(q.t.workItem).set(values).where(eq(q.t.workItem.id, id)));
+
+const answerQuestion = (db: Db, id: string, input: Parameters<typeof answerQuestionSteps>[2]) =>
+  db.transaction((q) => answerQuestionSteps(q, id, input));
+
+const setRun = (db: Db, id: string, status: string) =>
+  seedRows(db, (q) => q.orm.update(q.t.run).set({ status }).where(eq(q.t.run.id, id)));
+
+const leaseRun = (db: Db, runId: string, commandId: string, leaseUntil: number, endedAt?: number) =>
+  seedRows(db, (q) =>
+    q.orm.insert(q.t.runnerWork).values({
+      runId,
+      runnerId: "runner",
+      workspaceId: "workspace",
+      generation: 1,
+      runnerFence: 0,
+      commandId,
+      leaseUntil,
+      endedAt,
+    }),
+  );
+async function fixture() {
+  const { db, close } = await tempStore(),
     root = tempHome(),
     clock = new FakeClock(1000);
-  cleanups.push(() => {
-    db.close();
+  cleanups.push(async () => {
+    await close();
     rmSync(root, { recursive: true, force: true });
   });
   const calls: RunAgentOptions[] = [];
@@ -65,7 +92,7 @@ function fixture() {
   const orchestrator = new Orchestrator({
     tracker,
     journal: (line) => journal.push(line),
-    store: sqliteDb(db),
+    store: db,
     pawsRoot: root,
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
@@ -75,8 +102,8 @@ function fixture() {
   let n = 0;
   const seed = async (state: string, snapshot = true) => {
     const queued = await insertQueuedItem(db, { id: `item-${++n}`, now: 1000 });
-    const { item, run } = await beginImplementRun(sqliteDb(db), queued.id, 1000);
-    db.run("UPDATE work_item SET state=? WHERE id=?", [state, item.id]);
+    const { item, run } = await beginImplementRun(db, queued.id, 1000);
+    await setItem(db, item.id, { state });
     const file = join(runDir(root, run.id), "agent-profile.json");
     mkdirSync(runDir(root, run.id), { recursive: true });
     const candidate = { session: "prior", model: "old", provider: "anthropic" };
@@ -104,7 +131,7 @@ function fixture() {
 }
 
 test("saving without the toggle leaves all snapshots byte-for-byte unchanged", async () => {
-  const f = fixture();
+  const f = await fixture();
   const waiting = await f.seed("awaiting_input");
   const before = readFileSync(waiting.file, "utf8");
   for (const apply of [undefined, false]) {
@@ -114,23 +141,20 @@ test("saving without the toggle leaves all snapshots byte-for-byte unchanged", a
 });
 
 test("only unfinished runs without live work leases change; queued items still resolve at start", async () => {
-  const f = fixture();
+  const f = await fixture();
   const waiting = [];
   for (const s of ["awaiting_input", "running", "verifying", "paused", "recovering"])
     waiting.push(await f.seed(s));
   const expired = await f.seed("running"),
     ended = await f.seed("running"),
     executing = await f.seed("running");
-  f.db.run("PRAGMA foreign_keys=OFF");
+  await withoutForeignKeys(f.db);
   for (const [entry, lease, end] of [
-    [expired, 1000, null],
+    [expired, 1000, undefined],
     [ended, 2000, 999],
-    [executing, 2000, null],
+    [executing, 2000, undefined],
   ] as const)
-    f.db.run(
-      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at) VALUES(?,?,?,?,?,?,?,?)",
-      [entry.run.id, "runner", "workspace", 1, 0, entry.run.id, lease, end],
-    );
+    await leaseRun(f.db, entry.run.id, entry.run.id, lease, end);
   const untouched = [executing];
   for (const s of ["completed", "merged", "cancelled", "queued"]) untouched.push(await f.seed(s));
   const original = untouched.map((entry) => readFileSync(entry.file, "utf8"));
@@ -147,7 +171,7 @@ test("only unfinished runs without live work leases change; queued items still r
     expect(readFileSync(entry.file, "utf8")).toBe(original[index]!),
   );
   expect(existsSync(noSnapshot.file)).toBe(false);
-  expect((await getWorkItem(sqliteDb(f.db), queued.id))!.currentRunId).toBeNull();
+  expect((await getWorkItem(f.db, queued.id))!.currentRunId).toBeNull();
   const internals = f.orchestrator as unknown as {
     ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
     profileSnapshot(id: string): unknown;
@@ -157,16 +181,16 @@ test("only unfinished runs without live work leases change; queued items still r
 });
 
 test("agent change announces once at session start, including after a new run", async () => {
-  const f = fixture();
+  const f = await fixture();
   const waiting = await f.seed("awaiting_input");
   await f.save(true);
   const internal = f.orchestrator as unknown as {
     ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
     remoteAgentForItem(id: string): (input: RunAgentOptions) => Promise<RunAgentResult>;
   };
-  f.db.run("UPDATE run SET status='ended' WHERE id=?", [waiting.run.id]);
-  f.db.run("UPDATE work_item SET state='running' WHERE id=?", [waiting.item.id]);
-  const run = await internal.ensureRun((await getWorkItem(sqliteDb(f.db), waiting.item.id))!);
+  await setRun(f.db, waiting.run.id, "ended");
+  await setItem(f.db, waiting.item.id, { state: "running" });
+  const run = await internal.ensureRun((await getWorkItem(f.db, waiting.item.id))!);
   const input: RunAgentOptions = {
     role: "implementer",
     runId: run.id,
@@ -179,7 +203,7 @@ test("agent change announces once at session start, including after a new run", 
   await internal.remoteAgentForItem(waiting.item.id)(input);
   await internal.remoteAgentForItem(waiting.item.id)(input);
   expect(f.calls.map((c) => c.profile)).toEqual([profiles.implementer, profiles.implementer]);
-  const lines = (await listOutbox(sqliteDb(f.db))).filter((row) =>
+  const lines = (await listOutbox(f.db)).filter((row) =>
     (row.payload as { body?: string }).body?.startsWith("Switched to"),
   );
   expect(lines.map((row) => (row.payload as { body: string }).body)).toEqual([
@@ -188,17 +212,17 @@ test("agent change announces once at session start, including after a new run", 
 });
 
 test("a retry resolves profiles from Settings, not the previous run's snapshot", async () => {
-  const f = fixture();
+  const f = await fixture();
   const failed = await f.seed("running");
   writeAgentSettings(join(f.root, "config.toml"), { defaults: profiles, projects: [] });
-  f.db.run("UPDATE run SET status='lost' WHERE id=?", [failed.run.id]);
+  await setRun(f.db, failed.run.id, "lost");
   const internals = f.orchestrator as unknown as {
     ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
     readProfileSnapshot(id: string): unknown;
   };
-  const next = await internals.ensureRun((await getWorkItem(sqliteDb(f.db), failed.item.id))!);
+  const next = await internals.ensureRun((await getWorkItem(f.db, failed.item.id))!);
   expect(next.id).not.toBe(failed.run.id);
-  expect((await getWorkItem(sqliteDb(f.db), failed.item.id))!.currentRunId).toBe(next.id);
+  expect((await getWorkItem(f.db, failed.item.id))!.currentRunId).toBe(next.id);
   expect(internals.readProfileSnapshot(next.id)).toEqual({ profiles });
   expect(JSON.parse(readFileSync(failed.file, "utf8"))).toEqual({
     profiles: oldProfiles,
@@ -207,7 +231,7 @@ test("a retry resolves profiles from Settings, not the previous run's snapshot",
 });
 
 test("a pending agent switch announcement carries to a retry's new run", async () => {
-  const f = fixture();
+  const f = await fixture();
   const waiting = await f.seed("awaiting_input");
   await f.save(true);
   const internals = f.orchestrator as unknown as {
@@ -216,19 +240,19 @@ test("a pending agent switch announcement carries to a retry's new run", async (
   };
   const pending = internals.readProfileSnapshot(waiting.run.id)!.settingsSwitch;
   expect(pending).toMatchObject({ previousAgent: "claude" });
-  f.db.run("UPDATE run SET status='lost' WHERE id=?", [waiting.run.id]);
-  f.db.run("UPDATE work_item SET state='running' WHERE id=?", [waiting.item.id]);
-  const next = await internals.ensureRun((await getWorkItem(sqliteDb(f.db), waiting.item.id))!);
+  await setRun(f.db, waiting.run.id, "lost");
+  await setItem(f.db, waiting.item.id, { state: "running" });
+  const next = await internals.ensureRun((await getWorkItem(f.db, waiting.item.id))!);
   expect(internals.readProfileSnapshot(next.id)).toEqual({ profiles, settingsSwitch: pending });
   // Settings moved back to the original agent: there is no switch left to announce.
   writeAgentSettings(join(f.root, "config.toml"), { defaults: oldProfiles, projects: [] });
-  f.db.run("UPDATE run SET status='lost' WHERE id=?", [next.id]);
-  const back = await internals.ensureRun((await getWorkItem(sqliteDb(f.db), waiting.item.id))!);
+  await setRun(f.db, next.id, "lost");
+  const back = await internals.ensureRun((await getWorkItem(f.db, waiting.item.id))!);
   expect(internals.readProfileSnapshot(back.id)).toEqual({ profiles: oldProfiles });
 });
 
 test("model-only changes preserve candidate and do not announce an agent switch", async () => {
-  const f = fixture();
+  const f = await fixture();
   const waiting = await f.seed("paused");
   writeAgentSettings(join(f.root, "config.toml"), {
     defaults: { ...oldProfiles, implementer: { agent: "claude", model: "new" } },
@@ -242,7 +266,7 @@ test("model-only changes preserve candidate and do not announce an agent switch"
 });
 
 test("an existing remote invocation resolves updated waiting profiles and role-specific fallback", async () => {
-  const f = fixture();
+  const f = await fixture();
   const waiting = await f.seed("running");
   const internal = f.orchestrator as unknown as {
     remoteAgentForItem(id: string): (input: RunAgentOptions) => Promise<RunAgentResult>;
@@ -276,19 +300,19 @@ test("an existing remote invocation resolves updated waiting profiles and role-s
 test.each([false, true])(
   "config edits reconcile a waiting run before it starts, prior observation=%s",
   async (observed) => {
-    const f = fixture();
+    const f = await fixture();
     writeAgentSettings(join(f.root, "config.toml"), { defaults: oldProfiles, projects: [] });
     const waiting = await f.seed("paused");
     const internals = f.orchestrator as unknown as {
       ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
       remoteAgentForItem(id: string): (input: RunAgentOptions) => Promise<RunAgentResult>;
     };
-    if (observed) await internals.ensureRun((await getWorkItem(sqliteDb(f.db), waiting.item.id))!);
+    if (observed) await internals.ensureRun((await getWorkItem(f.db, waiting.item.id))!);
     writeAgentSettings(join(f.root, "config.toml"), { defaults: profiles, projects: [] });
-    f.db.run("UPDATE work_item SET state='running' WHERE id=?", [waiting.item.id]);
-    expect(
-      (await internals.ensureRun((await getWorkItem(sqliteDb(f.db), waiting.item.id))!)).id,
-    ).toBe(waiting.run.id);
+    await setItem(f.db, waiting.item.id, { state: "running" });
+    expect((await internals.ensureRun((await getWorkItem(f.db, waiting.item.id))!)).id).toBe(
+      waiting.run.id,
+    );
     await internals.remoteAgentForItem(waiting.item.id)({
       role: "implementer",
       runId: waiting.run.id,
@@ -307,26 +331,28 @@ test.each([false, true])(
 );
 
 test("automatic reconciliation waits for a live runner lease to end", async () => {
-  const f = fixture();
+  const f = await fixture();
   const waiting = await f.seed("running");
   writeAgentSettings(join(f.root, "config.toml"), { defaults: profiles, projects: [] });
-  f.db.run("PRAGMA foreign_keys=OFF");
-  f.db.run(
-    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,?,?,?,?)",
-    [waiting.run.id, "runner", "workspace", 1, 0, "command", 2000],
-  );
+  await withoutForeignKeys(f.db);
+  await leaseRun(f.db, waiting.run.id, "command", 2000);
   const internals = f.orchestrator as unknown as {
     ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
   };
-  await internals.ensureRun((await getWorkItem(sqliteDb(f.db), waiting.item.id))!);
+  await internals.ensureRun((await getWorkItem(f.db, waiting.item.id))!);
   expect(JSON.parse(readFileSync(waiting.file, "utf8")).profiles).toEqual(oldProfiles);
-  f.db.run("UPDATE runner_work SET ended_at=1000 WHERE run_id=?", [waiting.run.id]);
-  await internals.ensureRun((await getWorkItem(sqliteDb(f.db), waiting.item.id))!);
+  await seedRows(f.db, (q) =>
+    q.orm
+      .update(q.t.runnerWork)
+      .set({ endedAt: 1000 })
+      .where(eq(q.t.runnerWork.runId, waiting.run.id)),
+  );
+  await internals.ensureRun((await getWorkItem(f.db, waiting.item.id))!);
   expect(JSON.parse(readFileSync(waiting.file, "utf8")).profiles).toEqual(profiles);
 });
 
 test("a retired account order in config.toml changes no waiting run and reaches no runner", async () => {
-  const f = fixture();
+  const f = await fixture();
   const config = join(f.root, "config.toml");
   writeAgentSettings(config, { defaults: oldProfiles, projects: [] });
   const waiting = await f.seed("paused");
@@ -352,7 +378,7 @@ test("a retired account order in config.toml changes no waiting run and reaches 
 });
 
 test("Acme labels change only the next run and a failed Linear read retains its labels", async () => {
-  const f = fixture();
+  const f = await fixture();
   writeAgentSettings(join(f.root, "config.toml"), {
     defaults: oldProfiles,
     projects: [],
@@ -362,7 +388,7 @@ test("Acme labels change only the next run and a failed Linear read retains its 
     },
   });
   const failed = await f.seed("running");
-  const item = async () => (await getWorkItem(sqliteDb(f.db), failed.item.id))!;
+  const item = async () => (await getWorkItem(f.db, failed.item.id))!;
   const internals = f.orchestrator as unknown as {
     ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
   };
@@ -376,20 +402,20 @@ test("Acme labels change only the next run and a failed Linear read retains its 
     });
   const snapshot = (id: string) =>
     JSON.parse(readFileSync(join(runDir(f.root, id), "agent-profile.json"), "utf8"));
-  f.db.run("UPDATE run SET status='lost' WHERE id=?", [failed.run.id]);
+  await setRun(f.db, failed.run.id, "lost");
   await labels("Opus");
   const opus = await internals.ensureRun(await item());
   expect(snapshot(opus.id).profiles.implementer.model).toBe("opus");
   await labels("Codex");
   expect((await internals.ensureRun(await item())).id).toBe(opus.id);
   expect(snapshot(opus.id).profiles.implementer.model).toBe("opus");
-  f.db.run("UPDATE run SET status='lost' WHERE id=?", [opus.id]);
+  await setRun(f.db, opus.id, "lost");
   const codex = await internals.ensureRun(await item());
   expect(snapshot(codex.id).profiles.implementer.model).toBe("acme-codex");
   f.tracker.issueRepositoryHints = async () => {
     throw new Error("Linear offline");
   };
-  f.db.run("UPDATE run SET status='lost' WHERE id=?", [codex.id]);
+  await setRun(f.db, codex.id, "lost");
   const fallback = await internals.ensureRun(await item());
   expect(snapshot(fallback.id).profileLabels).toEqual({ implementer: "Codex" });
   expect(snapshot(fallback.id).profiles.implementer.model).toBe("acme-codex");
@@ -409,16 +435,16 @@ type Gate = {
 
 /** A retrying Acme item whose failed run saved old profiles, with labels set in the Linear fake. */
 async function labelled() {
-  const f = fixture();
+  const f = await fixture();
   writeAgentSettings(join(f.root, "config.toml"), {
     defaults: oldProfiles,
     projects: [],
     presets,
   });
   const failed = await f.seed("running");
-  f.db.run("UPDATE work_item SET session_key='acme-session' WHERE id=?", [failed.item.id]);
-  f.db.run("UPDATE run SET status='lost' WHERE id=?", [failed.run.id]);
-  const item = async () => (await getWorkItem(sqliteDb(f.db), failed.item.id))!;
+  await setItem(f.db, failed.item.id, { sessionKey: "acme-session" });
+  await setRun(f.db, failed.run.id, "lost");
+  const item = async () => (await getWorkItem(f.db, failed.item.id))!;
   const gate = f.orchestrator as unknown as Gate;
   const label = async (profileLabels: { implementer?: string; reviewer?: string }) =>
     f.tracker.repositoryHints.set((await item()).linearIssueId, {
@@ -431,8 +457,8 @@ async function labelled() {
   const snapshot = (id: string) =>
     JSON.parse(readFileSync(join(runDir(f.root, id), "agent-profile.json"), "utf8"));
   const bodies = async () =>
-    (await listOutbox(sqliteDb(f.db))).map((row) => (row.payload as { body?: string }).body ?? "");
-  const lose = (id: string) => f.db.run("UPDATE run SET status='lost' WHERE id=?", [id]);
+    (await listOutbox(f.db)).map((row) => (row.payload as { body?: string }).body ?? "");
+  const lose = (id: string) => setRun(f.db, id, "lost");
   return { ...f, item, gate, label, snapshot, bodies, lose };
 }
 
@@ -462,7 +488,7 @@ test("a label that changes the agent is announced by the next run", async () => 
   await f.label({ implementer: "Opus" });
   const opus = await f.gate.ensureRun(await f.item());
   await f.label({ implementer: "Codex" });
-  f.lose(opus.id);
+  await f.lose(opus.id);
   const codex = await f.gate.ensureRun(await f.item());
   expect(f.snapshot(codex.id).settingsSwitch).toMatchObject({ previousAgent: "claude" });
   await f.gate.remoteAgentForItem((await f.item()).id)({
@@ -484,17 +510,21 @@ test("an unknown label asks, starts nothing, and Use the default holds for the i
   await f.label({ implementer: "Acme unknown" });
   const run = await f.gate.ensureRun(await f.item());
   expect(await f.gate.checkProfileLabels(await f.item(), run.id)).toBe(false);
-  const open = (await findOpenQuestion(sqliteDb(f.db), "acme-session"))!;
+  const open = (await findOpenQuestion(f.db, "acme-session"))!;
   expect(open.body).toContain('Implementer label "Acme unknown": no preset has this name');
   expect(open.body).toContain("Available presets: Opus, Codex.");
   expect(open.options).toEqual(["Use the default", "I fixed the label"]);
   expect((await f.item()).state).toBe("awaiting_input");
-  expect(f.db.query("SELECT status FROM run WHERE id=?").get(run.id)).toEqual({ status: "ended" });
+  expect(
+    await f.db.run((q) =>
+      q.one(q.orm.select({ status: q.t.run.status }).from(q.t.run).where(eq(q.t.run.id, run.id))),
+    ),
+  ).toEqual({ status: "ended" });
   await answerQuestion(f.db, open.id, { answer: "Use the default", answeredBy: "acme-user" });
-  f.db.run("UPDATE work_item SET state='running' WHERE id=?", [(await f.item()).id]);
+  await setItem(f.db, (await f.item()).id, { state: "running" });
   expect(await f.gate.checkProfileLabels(await f.item(), run.id)).toBe(true);
   expect(f.snapshot(run.id).profiles.implementer).toEqual(oldProfiles.implementer);
-  f.lose(run.id);
+  await f.lose(run.id);
   const next = await f.gate.ensureRun(await f.item());
   expect(await f.gate.checkProfileLabels(await f.item(), next.id)).toBe(true);
   expect(f.snapshot(next.id).profiles.implementer).toEqual(oldProfiles.implementer);
@@ -505,12 +535,12 @@ test("I fixed the label reads the corrected label before the run goes on", async
   await f.label({ implementer: "Acme unknown" });
   const run = await f.gate.ensureRun(await f.item());
   await f.gate.checkProfileLabels(await f.item(), run.id);
-  await answerQuestion(f.db, (await findOpenQuestion(sqliteDb(f.db), "acme-session"))!.id, {
+  await answerQuestion(f.db, (await findOpenQuestion(f.db, "acme-session"))!.id, {
     answer: "I fixed the label",
     answeredBy: "acme-user",
   });
   await f.label({ implementer: "Opus" });
-  f.db.run("UPDATE work_item SET state='running' WHERE id=?", [(await f.item()).id]);
+  await setItem(f.db, (await f.item()).id, { state: "running" });
   expect(await f.gate.checkProfileLabels(await f.item(), run.id)).toBe(true);
   expect(f.snapshot(run.id).profiles.implementer).toEqual(presets.Opus);
   expect(await f.bodies()).toContain("Implementer: Opus (label)");
@@ -521,7 +551,7 @@ test("a reviewer label equal to the implementer asks the same question", async (
   await f.label({ implementer: "Opus", reviewer: "Opus" });
   const run = await f.gate.ensureRun(await f.item());
   expect(await f.gate.checkProfileLabels(await f.item(), run.id)).toBe(false);
-  const open = (await findOpenQuestion(sqliteDb(f.db), "acme-session"))!;
+  const open = (await findOpenQuestion(f.db, "acme-session"))!;
   expect(open.body).toContain('Reviewer label "Opus"');
   expect(open.options).toEqual(["Use the default", "I fixed the label"]);
 });
@@ -530,7 +560,7 @@ test("without a Linear session an unusable label fails the item instead of hangi
   const f = await labelled();
   await f.label({ implementer: "Acme unknown" });
   const run = await f.gate.ensureRun(await f.item());
-  f.db.run("UPDATE work_item SET session_key=NULL WHERE id=?", [(await f.item()).id]);
+  await setItem(f.db, (await f.item()).id, { sessionKey: null });
   expect(await f.gate.checkProfileLabels(await f.item(), run.id)).toBe(false);
   expect((await f.item()).state).toBe("failed");
 });
@@ -552,6 +582,6 @@ test("without labels a new run saves the Settings profiles and asks nothing", as
   const run = await f.gate.ensureRun(await f.item());
   expect(await f.gate.checkProfileLabels(await f.item(), run.id)).toBe(true);
   expect(f.snapshot(run.id).profiles).toEqual(oldProfiles);
-  expect(await findOpenQuestion(sqliteDb(f.db), "acme-session")).toBeNull();
+  expect(await findOpenQuestion(f.db, "acme-session")).toBeNull();
   expect((await f.bodies()).filter((body) => body.includes("(label)"))).toEqual([]);
 });

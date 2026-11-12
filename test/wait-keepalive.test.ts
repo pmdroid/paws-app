@@ -1,23 +1,40 @@
 import { expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
-import { listOutbox, recordConfirmedRemoteMerge, sqliteDb } from "../src/db";
+import { count, eq } from "drizzle-orm";
+import { listOutbox, recordConfirmedRemoteMerge, type Db } from "../src/db";
 import { recordItemDependenciesSteps } from "../src/intake";
 import { WAIT_KEEPALIVE_MS, type ItemWait } from "../src/scheduler";
-import { joinFakeWorkspace, workspaceDispatch } from "./fake-workspace";
-import { tempDb } from "./helpers";
+import { seed, withoutForeignKeys } from "./dialects";
+import { joinFakeWorkspacePg, workspaceDispatchPg } from "./fake-workspace";
+import { tempStore } from "./pglite";
 
 const MINUTE = 60_000;
 
-function item(db: Database, id: string, delegation: string, state: string) {
-  db.run(
-    `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at)
-     VALUES(?,?,?,?,?,?,?,0,0)`,
-    [id, delegation, `issue-${id}`, id, id, state, `paws/${id}`],
+function item(db: Db, id: string, delegation: string, state: string, position = 0) {
+  return seed(db, (q) =>
+    q.orm.insert(q.t.workItem).values({
+      id,
+      delegationId: delegation,
+      linearIssueId: `issue-${id}`,
+      linearIdentifier: id,
+      title: id,
+      state,
+      branchName: `paws/${id}`,
+      position,
+      createdAt: 0,
+    }),
   );
 }
 
-async function activities(db: Database, sessionId: string) {
-  return (await listOutbox(sqliteDb(db), sessionId))
+function block(db: Db, blocker: string, blocked: string) {
+  return seed(db, (q) =>
+    q.orm
+      .insert(q.t.taskBlock)
+      .values({ blockerLinearIssueId: blocker, blockedLinearIssueId: blocked }),
+  );
+}
+
+async function activities(db: Db, sessionId: string) {
+  return (await listOutbox(db, sessionId))
     .filter((row) => row.op === "activity")
     .map((row) => ({
       key: row.idempotencyKey,
@@ -28,20 +45,26 @@ async function activities(db: Database, sessionId: string) {
 }
 
 async function blockedFixture() {
-  const db = tempDb();
-  item(db, "PAS-618", "first", "running");
-  item(db, "PAS-619", "second", "queued");
-  db.run("INSERT INTO task_block VALUES('issue-PAS-618','issue-PAS-619')");
-  await joinFakeWorkspace(db, "first");
-  await joinFakeWorkspace(db, "second");
-  const workspaceId = db.query<{ id: string }, []>("SELECT id FROM workspace").get()!.id;
-  const generation =
-    db
-      .query<{ generation: number }, [string]>(
-        "SELECT generation FROM item_dependency_snapshot WHERE item_id=?",
-      )
-      .get("PAS-619")?.generation ?? 0;
-  await sqliteDb(db).transaction((q) =>
+  const store = await tempStore();
+  const { db } = store;
+  await item(db, "PAS-618", "first", "running");
+  await item(db, "PAS-619", "second", "queued");
+  await block(db, "issue-PAS-618", "issue-PAS-619");
+  await joinFakeWorkspacePg(db, "first");
+  await joinFakeWorkspacePg(db, "second");
+  const workspaceId = (await db.run((q) =>
+    q.one(q.orm.select({ id: q.t.workspace.id }).from(q.t.workspace)),
+  ))!.id;
+  const snapshot = await db.run((q) =>
+    q.one(
+      q.orm
+        .select({ generation: q.t.itemDependencySnapshot.generation })
+        .from(q.t.itemDependencySnapshot)
+        .where(eq(q.t.itemDependencySnapshot.itemId, "PAS-619")),
+    ),
+  );
+  const generation = snapshot?.generation ?? 0;
+  await db.transaction((q) =>
     recordItemDependenciesSteps(
       q,
       { itemId: "PAS-619", workspaceId, expectedGeneration: generation },
@@ -52,17 +75,17 @@ async function blockedFixture() {
       },
     ),
   );
-  return db;
+  return store;
 }
 
 test("a blocked item gets one thought, then an ephemeral at each 25-minute mark until it starts", async () => {
-  const db = await blockedFixture();
+  const { db, close } = await blockedFixture();
   try {
     const session = "session-second";
     const start = Date.now();
     const waits: ItemWait[][] = [];
     const tick = (minutes: number) =>
-      workspaceDispatch(db, {
+      workspaceDispatchPg(db, {
         now: start + minutes * MINUTE,
         onWaits: (w: readonly ItemWait[]) => waits.push([...w]),
       });
@@ -107,8 +130,10 @@ test("a blocked item gets one thought, then an ephemeral at each 25-minute mark 
     await tick(55);
     expect((await activities(db, session)).filter((row) => row.ephemeral)).toHaveLength(2);
 
-    db.run("UPDATE work_item SET state='merged' WHERE id='PAS-618'");
-    await recordConfirmedRemoteMerge(sqliteDb(db), {
+    await seed(db, (q) =>
+      q.orm.update(q.t.workItem).set({ state: "merged" }).where(eq(q.t.workItem.id, "PAS-618")),
+    );
+    await recordConfirmedRemoteMerge(db, {
       itemId: "PAS-618",
       repositoryOwner: "owner",
       repositoryName: "repo",
@@ -127,33 +152,54 @@ test("a blocked item gets one thought, then an ephemeral at each 25-minute mark 
         (row) => row.ephemeral && row.status === "pending" && row.body.startsWith("Still"),
       ),
     ).toHaveLength(1);
-    expect(db.query("SELECT 1 FROM item_wait").get()).toBeNull();
+    expect(await db.run((q) => q.one(q.orm.select({ n: count() }).from(q.t.itemWait)))).toEqual({
+      n: 0,
+    });
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("a runner-queued item says its place in line every 25 minutes", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
     const start = Date.now();
-    item(db, "PAS-1", "first", "running");
-    item(db, "PAS-2", "second", "queued");
-    item(db, "PAS-3", "third", "queued");
-    db.run("UPDATE work_item SET created_at=1 WHERE id='PAS-3'");
-    for (const delegation of ["first", "second", "third"]) await joinFakeWorkspace(db, delegation);
-    db.run("PRAGMA foreign_keys=OFF");
-    db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('runner','ws','owner','Runner','active',0,?)",
-      [start + 200 * MINUTE],
+    await item(db, "PAS-1", "first", "running");
+    await item(db, "PAS-2", "second", "queued");
+    await item(db, "PAS-3", "third", "queued");
+    await seed(db, (q) =>
+      q.orm.update(q.t.workItem).set({ createdAt: 1 }).where(eq(q.t.workItem.id, "PAS-3")),
     );
-    db.run(
-      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES('run','runner','ws',1,0,'command',?,0)",
-      [start + 200 * MINUTE],
+    for (const delegation of ["first", "second", "third"])
+      await joinFakeWorkspacePg(db, delegation);
+    await withoutForeignKeys(db);
+    await seed(
+      db,
+      (q) =>
+        q.orm.insert(q.t.runner).values({
+          id: "runner",
+          workspaceId: "ws",
+          ownerUserId: "owner",
+          name: "Runner",
+          status: "active",
+          createdAt: 0,
+          lastSeenAt: start + 200 * MINUTE,
+        }),
+      (q) =>
+        q.orm.insert(q.t.runnerWork).values({
+          runId: "run",
+          runnerId: "runner",
+          workspaceId: "ws",
+          generation: 1,
+          runnerFence: 0,
+          commandId: "command",
+          leaseUntil: start + 200 * MINUTE,
+          lastSequence: 0,
+        }),
     );
     const waits: ItemWait[][] = [];
     const tick = (minutes: number) =>
-      workspaceDispatch(db, {
+      workspaceDispatchPg(db, {
         now: start + minutes * MINUTE,
         onWaits: (w: readonly ItemWait[]) => waits.push([...w]),
       });
@@ -173,33 +219,41 @@ test("a runner-queued item says its place in line every 25 minutes", async () =>
     ]);
     expect(WAIT_KEEPALIVE_MS).toBe(25 * MINUTE);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("a sibling at work keeps its session's face, and a paused item posts no ephemeral", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
-    item(db, "PAS-10", "shared", "running");
-    item(db, "PAS-11", "shared", "queued");
-    db.run("UPDATE work_item SET position=1 WHERE id='PAS-11'");
-    db.run("INSERT INTO task_block VALUES('issue-PAS-10','issue-PAS-11')");
-    item(db, "PAS-12", "alone", "paused");
-    await joinFakeWorkspace(db, "shared");
-    await joinFakeWorkspace(db, "alone");
-    db.run(
-      "INSERT INTO workspace_user(id,linear_user_id,name,email) VALUES('u','lu','Pascal','p@x')",
-    );
-    db.run(
-      "INSERT INTO workspace_access_audit(workspace_id,user_id,action,subject,created_at) VALUES(NULL,'u','execution.pause','PAS-12',0)",
+    await item(db, "PAS-10", "shared", "running");
+    await item(db, "PAS-11", "shared", "queued", 1);
+    await block(db, "issue-PAS-10", "issue-PAS-11");
+    await item(db, "PAS-12", "alone", "paused");
+    await joinFakeWorkspacePg(db, "shared");
+    await joinFakeWorkspacePg(db, "alone");
+    await seed(
+      db,
+      (q) =>
+        q.orm
+          .insert(q.t.workspaceUser)
+          .values({ id: "u", linearUserId: "lu", name: "Pascal", email: "p@x" }),
+      (q) =>
+        q.orm.insert(q.t.workspaceAccessAudit).values({
+          workspaceId: null,
+          userId: "u",
+          action: "execution.pause",
+          subject: "PAS-12",
+          createdAt: 0,
+        }),
     );
     const waits: ItemWait[][] = [];
     const start = Date.now();
-    await workspaceDispatch(db, {
+    await workspaceDispatchPg(db, {
       now: start,
       onWaits: (w: readonly ItemWait[]) => waits.push([...w]),
     });
-    await workspaceDispatch(db, {
+    await workspaceDispatchPg(db, {
       now: start + 60 * MINUTE,
       onWaits: (w: readonly ItemWait[]) => waits.push([...w]),
     });
@@ -209,6 +263,6 @@ test("a sibling at work keeps its session's face, and a paused item posts no eph
     expect(await activities(db, "session-alone")).toEqual([]);
     expect((await activities(db, "session-shared")).filter((row) => row.ephemeral)).toEqual([]);
   } finally {
-    db.close();
+    await close();
   }
 });
