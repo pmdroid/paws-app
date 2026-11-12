@@ -5,6 +5,8 @@ import type {
   StatusMergeEntry,
   StatusMergeOutcome,
   StatusMergeSettings,
+  StatusMergeStep,
+  StepState,
 } from "../contract";
 import { ago, esc, safeHref, statePill } from "./format";
 import { routeHref } from "./route";
@@ -14,7 +16,7 @@ export function renderMergeQueue(queue: MergeQueueResponse): string {
   const repositories = groups(queue);
   const intro = `<p>Accepted pull requests merge one at a time per repository, in the order Closeout accepted them.</p>`;
   if (!repositories.length)
-    return `${intro}<div class="empty" role="status">Nothing is waiting to merge.</div>`;
+    return `${intro}<div class="empty" role="status"><p>Nothing is waiting to merge.</p><p class="muted">Pull requests appear here once Closeout accepts them.</p></div>`;
   return `${intro}${repositories.map((group) => section(queue, group)).join("")}`;
 }
 
@@ -68,13 +70,21 @@ function section(queue: MergeQueueResponse, group: Group): string {
     repository === null
       ? "merge-repo-not-known"
       : `merge-repo-${repository.replace(/[^A-Za-z0-9-]/g, "-")}`;
-  const table = group.waiting.length
-    ? `<table class="run-table merge-table"><thead><tr>${queued ? `<th class="run-cell">#</th>` : ""}<th class="run-cell">Issue</th><th class="run-cell hide-phone">Project</th><th class="run-cell hide-phone">Delegated by</th><th class="run-cell">PR</th><th class="run-cell hide-phone">Waiting</th><th class="run-cell">Step</th><th class="run-cell hide-phone">Detail</th></tr></thead><tbody>${group.waiting.map((entry) => row(queue, group, entry)).join("")}</tbody></table>`
-    : `<p class="muted">No pull requests waiting.</p>`;
+  const head = group.waiting.find(
+    (entry) =>
+      entry.position === 1 || (!queued && repository !== null && group.waiting.length === 1),
+  );
+  const rest = group.waiting.filter((entry) => entry !== head);
+  const card = head ? headCard(queue, group, head) : "";
+  const table = rest.length
+    ? `<table class="run-table merge-table"><thead><tr>${queued ? `<th class="run-cell">#</th>` : ""}<th class="run-cell">Issue</th><th class="run-cell hide-phone">Project</th><th class="run-cell hide-phone">Delegated by</th><th class="run-cell">PR</th><th class="run-cell hide-phone">Waiting</th><th class="run-cell">Step</th><th class="run-cell hide-phone">Detail</th></tr></thead><tbody>${rest.map((entry) => row(queue, group, entry)).join("")}</tbody></table>`
+    : head
+      ? ""
+      : `<p class="muted">No pull requests waiting.</p>`;
   const done = group.history.length
     ? `<h3>Done and stopped</h3><ul class="overview-work" role="list">${group.history.map((entry) => outcome(queue, entry)).join("")}</ul>`
     : "";
-  return `<section class="col merge-repo" aria-labelledby="${esc(id)}"><div class="between"><h2 id="${esc(id)}">${repository === null ? "Repository not known" : esc(repository)}</h2>${repository === null ? "" : `<div class="row">${settingsTags(group.settings)}</div>`}</div>${repository === null ? `<p class="muted">Paws has no repository for these tasks.</p>` : queued ? "" : `<p class="muted">No queue here: each pull request merges when green.</p>`}${table}${done}</section>`;
+  return `<section class="col merge-repo" aria-labelledby="${esc(id)}"><div class="between"><h2 id="${esc(id)}">${repository === null ? "Repository not known" : esc(repository)}</h2>${repository === null ? "" : `<div class="row">${settingsTags(group.settings)}</div>`}</div>${repository === null ? `<p class="muted">Paws has no repository for these tasks.</p>` : queued ? "" : `<p class="muted">No queue here: each pull request merges when green.</p>`}${card}${table}${done}</section>`;
 }
 
 function settingsTags(settings: StatusMergeSettings): string {
@@ -101,6 +111,41 @@ const STEP: Record<MergeWaitReason, { label: string; state: string }> = {
   branch_update: { label: "Updating branch", state: "running" },
   closeout: { label: "Closeout re-check", state: "verifying" },
 };
+
+/** What the head waits on, after "waiting on" in its predicate line. */
+const WAITING_ON: Record<MergeWaitReason, string> = {
+  ahead: "the pull requests ahead",
+  ci: "ci",
+  review: "review",
+  branch_update: "branch update",
+  closeout: "Closeout re-check",
+};
+
+/** A step's glyph, in the color `statePill` gives its state. A step has no failed state, so no ✗. */
+const GLYPH: Record<StepState, { glyph: string; color: string }> = {
+  done: { glyph: "✓", color: "text-state-ok" },
+  run: { glyph: "◌", color: "text-state-running" },
+  wait: { glyph: "◌", color: "text-muted-foreground" },
+};
+
+/** The head of a repository's queue: what `mergeable` waits on, one tile per step. */
+function headCard(queue: MergeQueueResponse, group: Group, entry: StatusMergeEntry): string {
+  const item = queue.issues.find((candidate) => candidate.id === entry.itemId);
+  const merging = entry.steps.length > 0 && entry.steps.every((step) => step.state === "done");
+  const verdict = merging
+    ? `<span class="text-state-ok">= true · merging</span>`
+    : `<span class="text-state-awaiting">= false · waiting on ${esc(WAITING_ON[entry.waitingFor])}</span>`;
+  const tiles = entry.steps.length
+    ? `<div class="grid grid-cols-1 sm:grid-cols-2 gap-2">${entry.steps.map(tile).join("")}</div>`
+    : "";
+  const sentence = detail(group, entry, item);
+  return `<section class="card merge-head" data-merge-head="${esc(entry.itemId)}" aria-label="${esc(`Head of the queue: ${entry.itemId}`)}"><div class="col"><div class="between"><span>${issueLink(item, entry.itemId)}</span>${pullLink(item)}</div><div class="font-mono text-base break-words">mergeable(${esc(entry.itemId)}) ${verdict}</div>${tiles}<div class="row">${settingsTags(entry.settings)}</div>${sentence ? `<p class="muted">${esc(sentence)}.</p>` : ""}</div></section>`;
+}
+
+function tile(step: StatusMergeStep): string {
+  const glyph = GLYPH[step.state];
+  return `<div class="border border-border rounded-base px-3 py-2 font-mono text-xs flex min-w-0 items-baseline gap-2" data-merge-step="${esc(step.state)}"><span class="${glyph.color}" aria-hidden="true">${glyph.glyph}</span><span class="sr-only">${esc(step.state)}:</span><span class="min-w-0 break-words">${esc(step.name)}${step.detail ? ` <span class="text-muted-foreground">${esc(step.detail)}</span>` : ""}</span></div>`;
+}
 
 function row(queue: MergeQueueResponse, group: Group, entry: StatusMergeEntry): string {
   const item = queue.issues.find((candidate) => candidate.id === entry.itemId);
