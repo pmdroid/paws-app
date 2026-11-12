@@ -2,10 +2,12 @@ import { afterEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { settleReactWork } from "./settle-react";
 
 const saved = new Map<string, unknown>();
 
 afterEach(async () => {
+  await settleReactWork();
   await new Promise((resolve) => setTimeout(resolve, 10));
   for (const [key, value] of saved) Reflect.set(globalThis, key, value);
   saved.clear();

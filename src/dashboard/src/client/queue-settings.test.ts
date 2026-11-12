@@ -6,6 +6,7 @@ import type { AgentSettings } from "../agent-settings";
 import { SETTINGS_PAGES, renderSettingsPage } from "./settings-pages";
 import { createQueueSettings, queueProblems, renderQueueSettings } from "./queue-settings";
 import { themedMarkup } from "./theme";
+import { settleReactWork } from "./settle-react";
 
 const STORED: AgentSettings = {
   defaults: {
@@ -107,6 +108,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  await settleReactWork();
   globalThis.fetch = realFetch;
   for (const [name, value] of saved) (globalThis as Record<string, unknown>)[name] = value;
   saved.clear();

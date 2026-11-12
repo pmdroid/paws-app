@@ -3,6 +3,7 @@ import { Window } from "happy-dom";
 import type { AgentSettings } from "../agent-settings";
 import type { MergeSettingsView } from "../merge-settings";
 import { createMergeSettings } from "./merge-settings";
+import { settleReactWork } from "./settle-react";
 
 const MERGING: MergeSettingsView = {
   default: { order: "queue", mainMoved: "overlap" },
@@ -52,6 +53,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  await settleReactWork();
   globalThis.fetch = realFetch;
   for (const [name, value] of saved) (globalThis as Record<string, unknown>)[name] = value;
   saved.clear();
