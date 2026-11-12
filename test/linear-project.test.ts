@@ -3,10 +3,7 @@ import { expect, test } from "bun:test";
 import {
   applyLinearIssueProject,
   bindLinearSessionTask,
-  migrate,
-  openDatabase,
   recordLinearInstallation,
-  sqliteDb,
 } from "../src/db";
 import { createItemReconciler, intakeDelegatedIssue } from "../src/intake";
 import {
@@ -17,6 +14,8 @@ import {
   type EpicSnapshot,
 } from "../src/linear";
 import { createLiveStatusProvider } from "../src/dashboard";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const at = Date.parse("2026-10-24T12:00:00.000Z");
 
@@ -34,19 +33,17 @@ function issue(project: { id: string; name: string } | null): EpicSnapshot {
 }
 
 async function delegated(snapshot: EpicSnapshot) {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   const tracker = createFakeTracker([snapshot]);
-  const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+  const intake = await intakeDelegatedIssue(db, tracker, {
     linearIssueId: "issue",
     now: 1000,
   });
   if (!intake.ok) throw new Error("intake failed");
   const projectOf = async () =>
-    (await createLiveStatusProvider(sqliteDb(db)).issues()).issues.find(
-      (item) => item.id === "PAS-608",
-    )?.project;
-  return { db, tracker, intake, projectOf };
+    (await createLiveStatusProvider(db).issues()).issues.find((item) => item.id === "PAS-608")
+      ?.project;
+  return { db, close, tracker, intake, projectOf };
 }
 
 function projectWebhook(data: Record<string, unknown>) {
@@ -65,19 +62,21 @@ function projectWebhook(data: Record<string, unknown>) {
 }
 
 test("an item delegated from a Linear project shows that project", async () => {
-  const { db, projectOf } = await delegated(issue({ id: "runtimes", name: "Runner runtimes" }));
+  const { close, projectOf } = await delegated(issue({ id: "runtimes", name: "Runner runtimes" }));
   expect(await projectOf()).toEqual({ id: "runtimes", name: "Runner runtimes" });
-  db.close();
+  await close();
 });
 
 test("an item with no Linear project shows none", async () => {
-  const { db, projectOf } = await delegated(issue(null));
+  const { close, projectOf } = await delegated(issue(null));
   expect(await projectOf()).toBeNull();
-  db.close();
+  await close();
 });
 
 test("an issue webhook that moves the issue to another project updates it", async () => {
-  const { db, projectOf } = await delegated(issue({ id: "runtimes", name: "Runner runtimes" }));
+  const { db, close, projectOf } = await delegated(
+    issue({ id: "runtimes", name: "Runner runtimes" }),
+  );
   const moved = parseLinearIssueProjectChange(
     projectWebhook({ projectId: "linear", project: { id: "linear", name: "Linear projects" } }),
   );
@@ -86,14 +85,14 @@ test("an issue webhook that moves the issue to another project updates it", asyn
     organizationId: "org",
     project: { id: "linear", name: "Linear projects" },
   });
-  await applyLinearIssueProject(sqliteDb(db), moved!.issueId, moved!.project);
+  await applyLinearIssueProject(db, moved!.issueId, moved!.project);
   expect(await projectOf()).toEqual({ id: "linear", name: "Linear projects" });
 
   const removed = parseLinearIssueProjectChange(projectWebhook({ projectId: null }));
   expect(removed?.project).toBeNull();
-  await applyLinearIssueProject(sqliteDb(db), removed!.issueId, removed!.project);
+  await applyLinearIssueProject(db, removed!.issueId, removed!.project);
   expect(await projectOf()).toBeNull();
-  db.close();
+  await close();
 });
 
 test("a webhook without a project change is not a project change", () => {
@@ -112,11 +111,15 @@ test("a webhook without a project change is not a project change", () => {
 });
 
 test("a reconcile after the issue moved in Linear stores the new project", async () => {
-  const { db, tracker, intake, projectOf } = await delegated(
+  const { db, close, tracker, intake, projectOf } = await delegated(
     issue({ id: "runtimes", name: "Runner runtimes" }),
   );
-  db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-  await recordLinearInstallation(sqliteDb(db), {
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: "workspace", linearOrganizationId: "org", name: "Workspace", createdAt: 1000 }),
+  );
+  await recordLinearInstallation(db, {
     organizationId: "org",
     oauthClientId: "client",
     appUserId: "app",
@@ -124,7 +127,7 @@ test("a reconcile after the issue moved in Linear stores the new project", async
     teamId: "team",
     observedAtMs: 1000,
   });
-  await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id);
+  await bindLinearSessionTask(db, "session", intake.delegation.id);
   const lifecycle = createFakeLinearIssueLifecycle({
     id: "issue",
     teamId: "team",
@@ -133,7 +136,7 @@ test("a reconcile after the issue moved in Linear stores the new project", async
     delegateId: "app",
   });
   const reconciler = createItemReconciler({
-    store: sqliteDb(db),
+    store: db,
     tracker,
     lifecycle,
     onChanges: () => syncSteps(() => {}),
@@ -144,5 +147,5 @@ test("a reconcile after the issue moved in Linear stores the new project", async
   await reconciler.reconcile({ itemId: intake.items[0]!.id, workspaceId: "workspace" });
   expect(await projectOf()).toEqual({ id: "linear", name: "Linear projects" });
   await reconciler.close();
-  db.close();
+  await close();
 });

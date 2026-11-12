@@ -9,7 +9,6 @@ import {
   insertQueuedItem,
   listJobs,
   setJournalSink,
-  sqliteDb,
 } from "../src/db";
 import {
   createInboxStore,
@@ -21,7 +20,7 @@ import {
 } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
 import { getQuestion, openQuestion } from "../src/questions";
-import { tempDb } from "./helpers";
+import { tempStore } from "./pglite";
 
 const NOW = 1_700_000_000_000;
 
@@ -88,30 +87,30 @@ function linearWorld() {
 }
 
 async function askedSession() {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const item = await insertQueuedItem(db, {
     id: "ENG-2",
     sessionKey: "ses_1",
     title: "Export rows",
   });
-  await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
-  await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
-  const question = await openQuestion(sqliteDb(db), {
+  await beginImplementRun(db, item.id, NOW - 10);
+  await applyWorkItemEvent(db, item.id, "blocking_question");
+  const question = await openQuestion(db, {
     itemId: item.id,
     sessionId: "ses_1",
     body: "Include archived rows?",
     now: NOW,
   });
-  return { db, item, question };
+  return { db, close, item, question };
 }
 
 function setup(
-  { db, item, question }: Awaited<ReturnType<typeof askedSession>>,
+  { db, close, item, question }: Awaited<ReturnType<typeof askedSession>>,
   options: { reread?: boolean } = {},
 ) {
   const clock = new FakeClock(NOW + 1_000);
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     pawsRoot: "/tmp/paws-question-reread",
@@ -119,7 +118,7 @@ function setup(
     clock,
   });
   const world = linearWorld();
-  const store = createInboxStore(sqliteDb(db));
+  const store = createInboxStore(db);
   const delivered: AcceptedLinearEvent[] = [];
   let now = NOW + 1_000;
   let wake = () => {};
@@ -130,7 +129,7 @@ function setup(
   const poller = startCatchUpPoller({
     source: options.reread === false ? { poll: (since) => source.poll(since) } : source,
     store,
-    db: sqliteDb(db),
+    db,
     now: () => now,
     sleeper: {
       wait: () =>
@@ -168,8 +167,7 @@ function setup(
       world.prompts.push(prompt);
       return prompt;
     },
-    resumes: async () =>
-      (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume),
+    resumes: async () => (await listJobs(db)).filter((job) => job.queue === JOB_KIND.resume),
     async webhook(prompt: Prompt) {
       const body = JSON.stringify({
         type: "AgentSessionEvent",
@@ -205,7 +203,7 @@ function setup(
     async close() {
       restoreJournal();
       await poller.stop();
-      db.close();
+      await close();
     },
   };
 }
@@ -238,7 +236,7 @@ test("the poll cursor starts where the cycle read activities, so a reply during 
     t.advance(60_000);
     await t.poller.pollNow();
     expect(t.delivered.map((event) => event.activityId)).toContain("reply-1");
-    expect((await getQuestion(sqliteDb(t.db), t.question.id))?.status).toBe("answered");
+    expect((await getQuestion(t.db, t.question.id))?.status).toBe("answered");
   } finally {
     await t.close();
   }
@@ -252,7 +250,7 @@ test("a reply behind the poll cursor with no webhook answers the open question o
     await t.store.setCursor("linear", t.at() + 60_000);
     t.advance(60_000);
     await t.poller.pollNow();
-    expect(await getQuestion(sqliteDb(t.db), t.question.id)).toMatchObject({
+    expect(await getQuestion(t.db, t.question.id)).toMatchObject({
       status: "answered",
       answer: "Yes",
       answerEventKey: "activity:reply-1",
@@ -271,7 +269,7 @@ test("a reply delivered by both a webhook and the poll answers the question once
   try {
     await t.poller.pollNow();
     await t.webhook(t.reply({ at: t.at() + 1_000 }));
-    expect((await getQuestion(sqliteDb(t.db), t.question.id))?.status).toBe("answered");
+    expect((await getQuestion(t.db, t.question.id))?.status).toBe("answered");
     t.advance(60_000);
     await t.poller.pollNow();
     expect(await t.resumes()).toHaveLength(1);
@@ -290,7 +288,7 @@ test("a reply in another issue's thread does not touch the open question", async
     await t.store.setCursor("linear", t.at() + 60_000);
     t.advance(60_000);
     await t.poller.pollNow();
-    expect((await getQuestion(sqliteDb(t.db), t.question.id))?.status).toBe("open");
+    expect((await getQuestion(t.db, t.question.id))?.status).toBe("open");
     expect(await t.resumes()).toHaveLength(0);
     expect(new Set(t.world.threadReads)).toEqual(new Set(["ses_1"]));
   } finally {
@@ -306,7 +304,7 @@ test("an answered question's thread is no longer re-read", async () => {
     t.reply({ at: t.at() + 1_000 });
     t.advance(60_000);
     await t.poller.pollNow();
-    expect((await getQuestion(sqliteDb(t.db), t.question.id))?.status).toBe("answered");
+    expect((await getQuestion(t.db, t.question.id))?.status).toBe("answered");
     const reads = t.world.threadReads.length;
     t.advance(60_000);
     await t.poller.pollNow();

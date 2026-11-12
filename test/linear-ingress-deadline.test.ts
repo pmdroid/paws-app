@@ -1,3 +1,4 @@
+import { eq } from "drizzle-orm";
 import { expect, spyOn, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import { join } from "node:path";
@@ -9,8 +10,8 @@ import {
   ensureLinearSession,
   enqueueOutbox,
   recordLinearInstallation,
-  sqliteDb,
   syncSteps,
+  type Db,
 } from "../src/db";
 import {
   createFakeLinearIssueLifecycle,
@@ -21,7 +22,9 @@ import {
   type TrackerRequestOptions,
 } from "../src/linear";
 import { attachOrchestrator, LinearTaskAccess } from "../src/loop";
-import { tempDb, tempHome } from "./helpers";
+import { tempHome } from "./helpers";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 async function delayed(release: Promise<void>, signal: AbortSignal): Promise<void> {
   signal.throwIfAborted();
@@ -39,8 +42,24 @@ async function delayed(release: Promise<void>, signal: AbortSignal): Promise<voi
   }
 }
 
+function releaseOutbox(db: Db, status?: string): Promise<void> {
+  return seed(db, (q) =>
+    q.orm
+      .update(q.t.outbox)
+      .set({ notBefore: 0 })
+      .where(status === undefined ? undefined : eq(q.t.outbox.status, status)),
+  );
+}
+
+async function handled(db: Db): Promise<number[]> {
+  const rows = await db.run((q) =>
+    q.all(q.orm.select({ handled: q.t.inboxEvent.handled }).from(q.t.inboxEvent)),
+  );
+  return rows.map((row) => row.handled);
+}
+
 async function fixture() {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const home = tempHome();
   const deadlines: AbortController[] = [];
   const originalTimeout = AbortSignal.timeout;
@@ -72,7 +91,7 @@ async function fixture() {
   const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
   const linear = await openLinear({
     db,
-    store: sqliteDb(db),
+    store: db,
     secretsDir: join(home, "secrets"),
     env: { LINEAR_ACCESS_TOKEN: "fixture-token", LINEAR_CLIENT_ID: "client" },
     beforeEvent: (event, ...args: unknown[]) =>
@@ -148,7 +167,7 @@ async function fixture() {
       throw new Error("Unexpected Linear request");
     },
   });
-  gate = new LinearTaskAccess(sqliteDb(db), {
+  gate = new LinearTaskAccess(db, {
     access: linear.access,
     lifecycle: createFakeLinearIssueLifecycle({
       id: "issue",
@@ -163,7 +182,7 @@ async function fixture() {
   });
   const outbox = new OutboxDispatcher(db, systemClock);
   orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     pawsRoot: home,
     tracker: linear.tracker,
     linearAccess: gate,
@@ -227,14 +246,14 @@ async function fixture() {
       delaySession = true;
     },
     async blockOtherSession() {
-      await ensureLinearSession(sqliteDb(db), { sessionId: "other", issueId: "issue" });
-      await recordLinearInstallation(sqliteDb(db), {
+      await ensureLinearSession(db, { sessionId: "other", issueId: "issue" });
+      await recordLinearInstallation(db, {
         ...scope,
         sessionId: "other",
         teamId: "team",
         observedAtMs: Date.now(),
       });
-      await enqueueOutbox(sqliteDb(db), {
+      await enqueueOutbox(db, {
         target: "linear",
         op: "activity",
         orderingKey: "other",
@@ -251,7 +270,7 @@ async function fixture() {
       delayActivity = true;
     },
     async releaseHeld() {
-      db.run("UPDATE outbox SET not_before = 0 WHERE status = 'pending'");
+      await releaseOutbox(db, "pending");
       await outbox.tick();
     },
     async deliver(action: "created" | "prompted" = "created") {
@@ -320,7 +339,7 @@ async function fixture() {
       await orchestrator.shutdown();
       await outbox.idle();
       timeout.mockRestore();
-      db.close();
+      await close();
     },
   };
 }
@@ -337,7 +356,7 @@ test("one initial deadline spans authoritative reads and timeout leaves the inbo
     f.teamRelease.resolve();
     expect(f.sent).toEqual([]);
     expect(f.followedUp).toBe(0);
-    expect(f.db.query("SELECT handled FROM inbox_event").get()).toEqual({ handled: 0 });
+    expect(await handled(f.db)).toEqual([0]);
     await Bun.sleep(0);
     await f.deliver();
     expect(await f.outcome()).toBeNull();
@@ -345,9 +364,7 @@ test("one initial deadline spans authoritative reads and timeout leaves the inbo
     await f.outbox.idle();
     expect(f.sent).toHaveLength(1);
     expect(f.followedUp).toBe(1);
-    expect(
-      f.db.query<{ handled: number }, []>("SELECT handled FROM inbox_event").get()?.handled,
-    ).toBeGreaterThan(0);
+    expect((await handled(f.db))[0]).toBeGreaterThan(0);
   } finally {
     await f.close();
   }
@@ -362,19 +379,19 @@ test("a deadline aborts the held acknowledgement transport and its retry keeps t
     expect(f.followedUp).toBe(1);
     await f.releaseHeld();
     const signal = await f.activityStarted.promise;
-    const original = (await listOutbox(sqliteDb(f.db)))[0]!;
+    const original = (await listOutbox(f.db))[0]!;
     f.deadlines[0]!.abort(new Error("Initial acknowledgement deadline expired"));
     expect(signal.aborted).toBe(true);
     f.activityRelease.resolve();
     await f.outbox.idle();
     expect(f.sent).toEqual([]);
-    expect((await listOutbox(sqliteDb(f.db)))[0]?.status).toBe("pending");
+    expect((await listOutbox(f.db))[0]?.status).toBe("pending");
     await f.releaseHeld();
     await f.outbox.idle();
     expect(f.sent).toEqual([
       { id: (original.payload as { id: string }).id, body: "Picked up this issue." },
     ]);
-    expect(await listOutbox(sqliteDb(f.db))).toHaveLength(1);
+    expect(await listOutbox(f.db)).toHaveLength(1);
   } finally {
     await f.close();
   }
@@ -387,7 +404,7 @@ test("Stop during delayed ingress prevents the first acknowledgement after its d
     await f.deliver();
     await f.teamStarted.promise;
     await f.stop();
-    expect(await getLinearSessionGeneration(sqliteDb(f.db), "session")).toBe(1);
+    expect(await getLinearSessionGeneration(f.db, "session")).toBe(1);
     f.deadlines[0]!.abort(new Error("Initial acknowledgement deadline expired"));
     f.teamRelease.resolve();
     await f.outcome();
@@ -438,7 +455,7 @@ test("another session delivery cannot hold the first acknowledgement's intake op
     expect(outcome).toBeNull();
     expect(otherSettled).toBe(false);
     expect(f.followedUp).toBe(1);
-    const original = (await listOutbox(sqliteDb(f.db), "session"))[0]!;
+    const original = (await listOutbox(f.db, "session"))[0]!;
     expect(original.status).toBe("pending");
     f.otherRelease.resolve();
     await others;
@@ -459,11 +476,11 @@ test("a signed created acknowledgement bypasses and retains dead public history 
     expect((await f.deliver("prompted")).status).toBe(200);
     expect(await f.outcome()).toBeNull();
     for (let attempt = 0; attempt < 5; attempt++) {
-      f.db.run("UPDATE outbox SET not_before = 0");
+      await releaseOutbox(f.db);
       await f.outbox.tick();
       await f.outbox.idle();
     }
-    const progress = (await listOutbox(sqliteDb(f.db), "session")).find(
+    const progress = (await listOutbox(f.db, "session")).find(
       (row) => (row.payload as { body: string }).body === "Picked up ENG-1.",
     )!;
     expect(progress.status).toBe("dead");
@@ -476,9 +493,9 @@ test("a signed created acknowledgement bypasses and retains dead public history 
       "Received your update.",
       "Picked up this issue.",
     ]);
-    expect(
-      (await listOutbox(sqliteDb(f.db), "session")).find((row) => row.id === progress.id)?.status,
-    ).toBe("dead");
+    expect((await listOutbox(f.db, "session")).find((row) => row.id === progress.id)?.status).toBe(
+      "dead",
+    );
     const acknowledgement = f.sent[1]!;
     await Bun.sleep(0);
     await f.deliver();
@@ -499,18 +516,18 @@ test("Stop aborts a critical first acknowledgement and prevents its later retry"
     expect(await f.outcome()).toBeNull();
     await f.releaseHeld();
     const signal = await f.activityStarted.promise;
-    expect((await listOutbox(sqliteDb(f.db), "session"))[0]?.delivery).toBe("critical");
+    expect((await listOutbox(f.db, "session"))[0]?.delivery).toBe("critical");
     await f.stop();
     expect(signal.aborted).toBe(true);
     f.activityRelease.resolve();
     await f.outbox.idle();
     await f.outbox.tick();
     await f.outbox.idle();
-    expect(f.db.query("SELECT count(*) AS n FROM work_item").get()).toEqual({ n: 0 });
+    expect(await f.db.run((q) => q.all(q.orm.select().from(q.t.workItem)))).toEqual([]);
     expect(f.sent).toHaveLength(1);
     expect(f.sent[0]?.body).toMatch(/stopp/i);
-    expect((await listOutbox(sqliteDb(f.db), "session"))[0]?.status).toBe("dropped");
-    f.db.run("UPDATE outbox SET not_before = 0");
+    expect((await listOutbox(f.db, "session"))[0]?.status).toBe("dropped");
+    await releaseOutbox(f.db);
     await f.outbox.tick();
     await f.outbox.idle();
     expect(f.sent).toHaveLength(1);
