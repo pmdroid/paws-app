@@ -1,5 +1,4 @@
-import { expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
+import { afterEach, expect, test } from "bun:test";
 import { JOB_KIND } from "../src/core";
 import {
   applyWorkItemEvent,
@@ -10,12 +9,18 @@ import {
   listOpenQuestions,
   listOutbox,
   syncSteps,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import { questionEffects } from "../src/loop";
 import { elicitationBody, handoffNote, getQuestion, openQuestion } from "../src/questions";
 import { answer, ask } from "./questions";
-import { tempDb } from "./helpers";
+import { tempStore } from "./pglite";
+
+const open: (() => Promise<void>)[] = [];
+
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
+});
 
 test("elicitation keeps select options and a free-text reply", () => {
   const body = elicitationBody("Include archived rows?", "The export is empty today.", ["yes"]);
@@ -39,18 +44,19 @@ test.each([
     context: "Context.",
     now: NOW,
   });
-  expect((await listOutbox(sqliteDb(db)))[0]?.payload).toMatchObject({ body });
+  expect((await listOutbox(db))[0]?.payload).toMatchObject({ body });
 });
 
 async function parked() {
-  const db = tempDb();
+  const { db, close } = await tempStore();
+  open.push(close);
   const item = await insertQueuedItem(db, {
     id: "ENG-2",
     sessionKey: "ses_1",
     title: "Export rows",
   });
-  const { run } = await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
-  await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
+  const { run } = await beginImplementRun(db, item.id, NOW - 10);
+  await applyWorkItemEvent(db, item.id, "blocking_question");
   return { db, asker: { itemId: item.id, runId: run.id, sessionId: "ses_1" } };
 }
 
@@ -62,8 +68,8 @@ const reply = (body: string, deliveryId = "activity:ans") => ({
   now: NOW + 100,
 });
 
-const resumes = async (db: Database) =>
-  (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
+const resumes = async (db: Db) =>
+  (await listJobs(db)).filter((job) => job.queue === JOB_KIND.resume);
 
 test("an answered agent question restarts the same run with the handoff", async () => {
   const { db, asker } = await parked();
@@ -71,18 +77,18 @@ test("an answered agent question restarts the same run with the handoff", async 
     options: ["yes", "no"],
     now: NOW,
   });
-  expect((await listOutbox(sqliteDb(db))).map((row) => row.idempotencyKey)).toEqual([
+  expect((await listOutbox(db)).map((row) => row.idempotencyKey)).toEqual([
     `question:${asked.question.id}`,
   ]);
 
   const outcome = await answer(
     db,
     reply("parquet, please"),
-    questionEffects(sqliteDb(db), { now: NOW + 100 }),
+    questionEffects(db, { now: NOW + 100 }),
   );
 
   expect(outcome.status).toBe("answered");
-  expect((await getWorkItem(sqliteDb(db), asker.itemId))?.state).toBe("queued");
+  expect((await getWorkItem(db, asker.itemId))?.state).toBe("queued");
   expect(await resumes(db)).toEqual([
     expect.objectContaining({
       jobKey: `resume:answer:${asked.question.id}`,
@@ -100,8 +106,7 @@ test("an answered agent question restarts the same run with the handoff", async 
     }),
   ]);
   expect(
-    (await answer(db, reply("parquet, please"), questionEffects(sqliteDb(db), { now: NOW + 100 })))
-      .status,
+    (await answer(db, reply("parquet, please"), questionEffects(db, { now: NOW + 100 }))).status,
   ).toBe("duplicate");
   expect(await resumes(db)).toHaveLength(1);
 });
@@ -111,8 +116,8 @@ test.each(["clarification", "repository"] as const)(
   async (kind) => {
     const { db, asker } = await parked();
     const asked = await ask(db, asker, kind, "Which outcome?", { now: NOW });
-    await answer(db, reply("Change the code"), questionEffects(sqliteDb(db), { now: NOW + 100 }));
-    expect((await getWorkItem(sqliteDb(db), asker.itemId))?.state).toBe("queued");
+    await answer(db, reply("Change the code"), questionEffects(db, { now: NOW + 100 }));
+    expect((await getWorkItem(db, asker.itemId))?.state).toBe("queued");
     expect((await resumes(db)).map((job) => job.jobKey)).toEqual([
       `resume:answer:${asked.question.id}`,
     ]);
@@ -122,21 +127,21 @@ test.each(["clarification", "repository"] as const)(
 test("an answer while the asking run is still live leaves the resume to the end of that run", async () => {
   const { db, asker } = await parked();
   await ask(db, asker, "agent", "Include archived rows?", { now: NOW });
-  const effects = questionEffects(sqliteDb(db), {
+  const effects = questionEffects(db, {
     now: NOW + 100,
     asking: (runId) => runId === asker.runId,
   });
   expect((await answer(db, reply("parquet"), effects)).status).toBe("answered");
-  expect((await getWorkItem(sqliteDb(db), asker.itemId))?.state).toBe("queued");
+  expect((await getWorkItem(db, asker.itemId))?.state).toBe("queued");
   expect(await resumes(db)).toHaveLength(1);
 });
 
 test("a redirecting answer resumes the task without a handoff job", async () => {
   const { db, asker } = await parked();
   await ask(db, asker, "agent", "Include archived rows?", { now: NOW });
-  const effects = questionEffects(sqliteDb(db), { now: NOW + 100, redirect: true });
+  const effects = questionEffects(db, { now: NOW + 100, redirect: true });
   expect((await answer(db, reply("parquet"), effects)).status).toBe("answered");
-  expect((await getWorkItem(sqliteDb(db), asker.itemId))?.state).toBe("queued");
+  expect((await getWorkItem(db, asker.itemId))?.state).toBe("queued");
   expect(await resumes(db)).toHaveLength(1);
 });
 
@@ -154,20 +159,16 @@ test("an agent question queued behind another is delivered once that one is answ
   const queued = await ask(db, asker, "agent", "Include archived rows?", { now: NOW + 1 });
   expect(queued.status).toBe("queued");
 
-  const outcome = await answer(
-    db,
-    reply("Keep waiting"),
-    questionEffects(sqliteDb(db), { now: NOW + 100 }),
-  );
+  const outcome = await answer(db, reply("Keep waiting"), questionEffects(db, { now: NOW + 100 }));
 
   expect(outcome).toMatchObject({
     status: "answered",
     question: { id: waiting.question.id },
     next: { id: queued.question.id, status: "open" },
   });
-  expect((await getWorkItem(sqliteDb(db), asker.itemId))?.state).toBe("awaiting_input");
+  expect((await getWorkItem(db, asker.itemId))?.state).toBe("awaiting_input");
   expect(await resumes(db)).toEqual([]);
-  expect((await listOutbox(sqliteDb(db))).map((row) => row.idempotencyKey)).toEqual([
+  expect((await listOutbox(db)).map((row) => row.idempotencyKey)).toEqual([
     `question:${waiting.question.id}`,
     `question:${queued.question.id}`,
   ]);
@@ -188,7 +189,7 @@ test("an amended question delivers and keeps the added context and options", asy
     context: "Saved decision: archive rows stay out",
     options: ["yes", { label: "Use saved decision", value: "/paws decision 1" }],
   });
-  expect((await listOutbox(sqliteDb(db)))[0]?.payload).toMatchObject({
+  expect((await listOutbox(db))[0]?.payload).toMatchObject({
     body: elicitationBody("Include archived rows?", "Saved decision: archive rows stay out", [
       "yes",
     ]),
@@ -197,20 +198,20 @@ test("an amended question delivers and keeps the added context and options", asy
 });
 
 test("structured choices persist their values and display their labels", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const item = await insertQueuedItem(db, {
     id: "ENG-choices",
     sessionKey: "ses-choices",
     title: "Choose",
   });
   const options = ["Other", { label: "Paws", value: "https://github.com/pmdroid/paws-app" }];
-  const question = await openQuestion(sqliteDb(db), {
+  const question = await openQuestion(db, {
     itemId: item.id,
     sessionId: "ses-choices",
     body: "Which?",
     options,
   });
-  expect((await getQuestion(sqliteDb(db), question.id))?.options).toEqual(options);
-  expect((await listOpenQuestions(sqliteDb(db)))[0]?.options).toEqual(["Other", "Paws"]);
-  db.close();
+  expect((await getQuestion(db, question.id))?.options).toEqual(options);
+  expect((await listOpenQuestions(db))[0]?.options).toEqual(["Other", "Paws"]);
+  await close();
 });
