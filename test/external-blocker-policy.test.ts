@@ -1,19 +1,35 @@
 import { expect, test } from "bun:test";
-import { Database } from "bun:sqlite";
-import {
-  bindLinearSessionTask,
-  migrate,
-  recordLinearInstallation,
-  saveTaskMode,
-  sqliteDb,
-} from "../src/db";
+import { eq } from "drizzle-orm";
+import { bindLinearSessionTask, recordLinearInstallation, saveTaskMode, type Db } from "../src/db";
 import { intakeDelegatedIssue, readyItemsSteps, syncItemDependencies } from "../src/intake";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../src/linear";
 import { inspectPullRequestMerge } from "../src/github";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
+
+function setItem(
+  db: Db,
+  id: string,
+  set: { state?: string; createdAt?: number; cancelRequested?: number },
+): Promise<void> {
+  return seed(db, (q) => q.orm.update(q.t.workItem).set(set).where(eq(q.t.workItem.id, id)));
+}
+
+function recordMerge(db: Db, itemId: string, pullNumber: number, sha: string, at: number) {
+  return seed(db, (q) =>
+    q.orm.insert(q.t.remoteMergeFact).values({
+      itemId,
+      repositoryOwner: "owner",
+      repositoryName: "repo",
+      pullNumber,
+      mergeSha: sha,
+      confirmedAt: at,
+    }),
+  );
+}
 
 async function fixture() {
-  const db = new Database(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   const tracker = createFakeTracker([
     {
       linearIssueId: "parent",
@@ -31,21 +47,46 @@ async function fixture() {
     delegateId: null,
   });
   tracker.deps.set("parent", [{ blockerLinearIssueId: "a", blockedLinearIssueId: "b" }]);
-  const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+  const intake = await intakeDelegatedIssue(db, tracker, {
     linearIssueId: "parent",
     now: 1000,
   });
   if (!intake.ok) throw new Error("Intake failed");
-  db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-  db.run(
-    "INSERT INTO workspace_user VALUES('person','linear-person','Person','person@example.test')",
+  await seed(
+    db,
+    (q) =>
+      q.orm.insert(q.t.workspace).values({
+        id: "workspace",
+        linearOrganizationId: "org",
+        name: "Workspace",
+        createdAt: 1000,
+      }),
+    (q) =>
+      q.orm.insert(q.t.workspaceUser).values({
+        id: "person",
+        linearUserId: "linear-person",
+        name: "Person",
+        email: "person@example.test",
+      }),
+    (q) =>
+      q.orm.insert(q.t.workspaceMember).values({
+        workspaceId: "workspace",
+        userId: "person",
+        role: "member",
+        source: "linear",
+        active: 1,
+        checkedAt: 1000,
+      }),
+    (q) =>
+      q.orm
+        .insert(q.t.workspaceUserTeam)
+        .values({ workspaceId: "workspace", userId: "person", teamId: "team" }),
+    (q) =>
+      q.orm
+        .insert(q.t.workspaceRepository)
+        .values({ workspaceId: "workspace", repository: "owner/repo", teamId: "team" }),
   );
-  db.run(
-    "INSERT INTO workspace_member(workspace_id,user_id,role,source,active,checked_at) VALUES('workspace','person','member','linear',1,1000)",
-  );
-  db.run("INSERT INTO workspace_user_team VALUES('workspace','person','team')");
-  db.run("INSERT INTO workspace_repository VALUES('workspace','owner/repo','team')");
-  await recordLinearInstallation(sqliteDb(db), {
+  await recordLinearInstallation(db, {
     organizationId: "org",
     oauthClientId: "client",
     appUserId: "app",
@@ -53,26 +94,27 @@ async function fixture() {
     teamId: "team",
     observedAtMs: 1000,
   });
-  await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, {
+  await bindLinearSessionTask(db, "session", intake.delegation.id, {
     actorId: "linear-person",
   });
   const itemId = intake.items[0]!.id;
   const target = { workspaceId: "workspace", itemId };
   const refresh = async () =>
-    syncItemDependencies(sqliteDb(db), {
+    syncItemDependencies(db, {
       ...target,
-      expectedGeneration: (await sqliteDb(db).run((q) => readyItemsSteps(q, target))).generation,
+      expectedGeneration: (await db.run((q) => readyItemsSteps(q, target))).generation,
       tracker,
       lifecycle,
     });
   return {
     db,
+    close,
     target,
     tracker,
     lifecycle,
     refresh,
     ready: async () =>
-      (await sqliteDb(db).run((q) => readyItemsSteps(q, target))).readyItemIds.includes(itemId),
+      (await db.run((q) => readyItemsSteps(q, target))).readyItemIds.includes(itemId),
   };
 }
 
@@ -86,7 +128,7 @@ test("an outside blocker completed in Linear releases the item", async () => {
     await f.refresh();
     expect(await f.ready()).toBe(true);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -100,7 +142,7 @@ test("an outside blocker canceled in Linear releases the item; an open one holds
     await f.refresh();
     expect(await f.ready()).toBe(true);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -114,12 +156,12 @@ test("Managed blockers in another delegation require canonical delivery", async 
       description: null,
       subIssues: [],
     });
-    const intake = await intakeDelegatedIssue(sqliteDb(f.db), f.tracker, {
+    const intake = await intakeDelegatedIssue(f.db, f.tracker, {
       linearIssueId: "a",
       now: 2000,
     });
     if (!intake.ok) throw new Error("Intake failed");
-    await recordLinearInstallation(sqliteDb(f.db), {
+    await recordLinearInstallation(f.db, {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -127,26 +169,23 @@ test("Managed blockers in another delegation require canonical delivery", async 
       teamId: "team",
       observedAtMs: 2000,
     });
-    await bindLinearSessionTask(sqliteDb(f.db), "other-session", intake.delegation.id, {
+    await bindLinearSessionTask(f.db, "other-session", intake.delegation.id, {
       actorId: "linear-person",
     });
     const item = intake.items[0]!;
-    await saveTaskMode(sqliteDb(f.db), item.id, "code");
+    await saveTaskMode(f.db, item.id, "code");
     await f.refresh();
     expect(await f.ready()).toBe(false);
-    f.db.run("UPDATE work_item SET state='completed' WHERE id=?", [item.id]);
+    await setItem(f.db, item.id, { state: "completed" });
     expect(await f.ready()).toBe(false);
-    f.db.run("UPDATE work_item SET state='merged' WHERE id=?", [item.id]);
+    await setItem(f.db, item.id, { state: "merged" });
     expect(await f.ready()).toBe(false);
-    f.db.run("INSERT INTO remote_merge_fact VALUES(?,'owner','repo',12,NULL,?,2000)", [
-      item.id,
-      "b".repeat(40),
-    ]);
+    await recordMerge(f.db, item.id, 12, "b".repeat(40), 2000);
     expect(await f.ready()).toBe(true);
-    f.db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [item.id]);
+    await setItem(f.db, item.id, { cancelRequested: 1 });
     expect(await f.ready()).toBe(false);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -160,12 +199,12 @@ test("A blocker whose Paws tasks were all cancelled follows its Linear state", a
       description: null,
       subIssues: [],
     });
-    const intake = await intakeDelegatedIssue(sqliteDb(f.db), f.tracker, {
+    const intake = await intakeDelegatedIssue(f.db, f.tracker, {
       linearIssueId: "a",
       now: 2000,
     });
     if (!intake.ok) throw new Error("Intake failed");
-    await recordLinearInstallation(sqliteDb(f.db), {
+    await recordLinearInstallation(f.db, {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -173,17 +212,17 @@ test("A blocker whose Paws tasks were all cancelled follows its Linear state", a
       teamId: "team",
       observedAtMs: 2000,
     });
-    await bindLinearSessionTask(sqliteDb(f.db), "other-session", intake.delegation.id, {
+    await bindLinearSessionTask(f.db, "other-session", intake.delegation.id, {
       actorId: "linear-person",
     });
-    f.db.run("UPDATE work_item SET state='cancelled' WHERE id=?", [intake.items[0]!.id]);
+    await setItem(f.db, intake.items[0]!.id, { state: "cancelled" });
     await f.refresh();
     expect(await f.ready()).toBe(true);
     f.lifecycle.issue.stateType = "started";
     await f.refresh();
     expect(await f.ready()).toBe(false);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -197,12 +236,12 @@ test("Re-delegated managed blockers follow the latest active item", async () => 
       description: null,
       subIssues: [],
     });
-    const intake = await intakeDelegatedIssue(sqliteDb(f.db), f.tracker, {
+    const intake = await intakeDelegatedIssue(f.db, f.tracker, {
       linearIssueId: "a",
       now: 2000,
     });
     if (!intake.ok) throw new Error("Intake failed");
-    await recordLinearInstallation(sqliteDb(f.db), {
+    await recordLinearInstallation(f.db, {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -210,44 +249,37 @@ test("Re-delegated managed blockers follow the latest active item", async () => 
       teamId: "team",
       observedAtMs: 2000,
     });
-    await bindLinearSessionTask(sqliteDb(f.db), "other-session", intake.delegation.id, {
+    await bindLinearSessionTask(f.db, "other-session", intake.delegation.id, {
       actorId: "linear-person",
     });
     const newer = intake.items[0]!;
-    f.db.run("UPDATE work_item SET state='merged', created_at=3000 WHERE id=?", [newer.id]);
-    f.db.run("INSERT INTO remote_merge_fact VALUES(?,'owner','repo',12,NULL,?,3000)", [
-      newer.id,
-      "b".repeat(40),
-    ]);
-    f.db.run(
-      `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,task_key,session_key)
-       VALUES(?,?,?,?,?,'cancelled',?,?,?,?,?)`,
-      [
-        "older-blocker",
-        intake.delegation.id,
-        "a",
-        "DEP-3",
-        "Code blocker",
-        "paws/dep-3-older",
-        0,
-        1000,
-        "initial:a:item:a:reappearance:1",
-        "other-session",
-      ],
+    await setItem(f.db, newer.id, { state: "merged", createdAt: 3000 });
+    await recordMerge(f.db, newer.id, 12, "b".repeat(40), 3000);
+    await seed(f.db, (q) =>
+      q.orm.insert(q.t.workItem).values({
+        id: "older-blocker",
+        delegationId: intake.delegation.id,
+        linearIssueId: "a",
+        linearIdentifier: "DEP-3",
+        title: "Code blocker",
+        state: "cancelled",
+        branchName: "paws/dep-3-older",
+        position: 0,
+        createdAt: 1000,
+        taskKey: "initial:a:item:a:reappearance:1",
+        sessionKey: "other-session",
+      }),
     );
     await f.refresh();
     expect(await f.ready()).toBe(true);
-    f.db.run("UPDATE work_item SET state='running' WHERE id=?", [newer.id]);
-    f.db.run("UPDATE work_item SET state='merged' WHERE id='older-blocker'");
-    f.db.run(
-      "INSERT INTO remote_merge_fact VALUES('older-blocker','owner','repo',11,NULL,?,1000)",
-      ["c".repeat(40)],
-    );
+    await setItem(f.db, newer.id, { state: "running" });
+    await setItem(f.db, "older-blocker", { state: "merged" });
+    await recordMerge(f.db, "older-blocker", 11, "c".repeat(40), 1000);
     expect(await f.ready()).toBe(false);
-    f.db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [newer.id]);
+    await setItem(f.db, newer.id, { cancelRequested: 1 });
     expect(await f.ready()).toBe(true);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 

@@ -11,7 +11,7 @@ import {
   symlinkSync,
 } from "node:fs";
 import { join } from "node:path";
-import type { Database } from "bun:sqlite";
+import { and, count, eq, inArray } from "drizzle-orm";
 import {
   AGENT_SESSION_CHUNK_BYTES,
   AGENT_SESSION_KEY_FILE,
@@ -33,7 +33,7 @@ import {
   insertQueuedItem,
   putWorkspaceUser,
   recordLinearInstallation,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import {
   planSessionRestoreSteps,
@@ -44,7 +44,9 @@ import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identi
 import type { RunnerCommand } from "../src/runner-protocol";
 import { createRunnerWork, RunnerWorkFencedError, type RunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { tempDb, tempHome } from "./helpers";
+import { tempHome } from "./helpers";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const repository = {
@@ -55,16 +57,16 @@ const repository = {
 };
 
 async function fixture(root: string) {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "session-org", now);
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const bootstrap = await issueWorkspaceBootstrap(db, "session-org", now);
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "session-org",
     name: "Fixture",
@@ -72,15 +74,17 @@ async function fixture(root: string) {
     tokenHash: workspaceTokenHash(bootstrap),
     now,
   });
-  db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-    workspace.id,
-    "fixture/repository",
-    "team",
-  ]);
+  await seed(db, (q) =>
+    q.orm.insert(q.t.workspaceRepository).values({
+      workspaceId: workspace.id,
+      repository: "fixture/repository",
+      teamId: "team",
+    }),
+  );
   const authorityRoot = join(root, "issuer");
   const authority = await initializeRunnerAuthority(authorityRoot);
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority,
     certificateRoot: authorityRoot,
     disconnect() {},
@@ -99,11 +103,13 @@ async function fixture(root: string) {
       ...pending,
       token: (await control.createEnrollment(principal, pending)).token,
     });
-    db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
+    await seed(db, (q) =>
+      q.orm.update(q.t.runner).set({ status: "active" }).where(eq(q.t.runner.id, runnerId)),
+    );
     return runnerId;
   }
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -114,8 +120,8 @@ async function fixture(root: string) {
       now,
       sessionKey: `${name}-session`,
     });
-    const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
-    await recordLinearInstallation(sqliteDb(db), {
+    const { run } = await beginImplementRun(db, item.id, now);
+    await recordLinearInstallation(db, {
       organizationId: "session-org",
       oauthClientId: "app",
       appUserId: "app-user",
@@ -123,10 +129,10 @@ async function fixture(root: string) {
       teamId: "team",
       observedAtMs: now,
     });
-    await bindLinearSessionTask(sqliteDb(db), `${name}-session`, item.delegationId, {
+    await bindLinearSessionTask(db, `${name}-session`, item.delegationId, {
       actorId: "owner",
     });
-    await bindWorkItemRepository(sqliteDb(db), item.id, repository);
+    await bindWorkItemRepository(db, item.id, repository);
     return { itemId: item.id, runId: run.id };
   }
   async function assign(
@@ -163,7 +169,7 @@ async function fixture(root: string) {
     ).token;
     return { runnerId, runId: run.runId, token };
   }
-  return { db, work, userId, workspaceId: workspace.id, enroll, startRun, assign };
+  return { db, close, work, userId, workspaceId: workspace.id, enroll, startRun, assign };
 }
 
 function chunk(generation: number, offset: number, bytes: Uint8Array) {
@@ -201,7 +207,7 @@ describe("agent session snapshots", () => {
   let objects: ReturnType<typeof createFakeAgentSessionObjects>;
   let work: RunnerWork;
   let key: Buffer;
-  let db: Database;
+  let db: Db;
   beforeEach(async () => {
     root = tempHome();
     f = await fixture(root);
@@ -209,8 +215,8 @@ describe("agent session snapshots", () => {
     objects = createFakeAgentSessionObjects();
     key = randomBytes(32);
   });
-  afterEach(() => {
-    db.close();
+  afterEach(async () => {
+    await f.close();
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -373,11 +379,14 @@ describe("agent session snapshots", () => {
       await work.issueGrant({
         runnerId: access.runnerId,
         runId: run.runId,
-        commandId: db
-          .query<{ id: string }, [string]>(
-            "SELECT command_id AS id FROM runner_work WHERE run_id=?",
-          )
-          .get(run.runId)!.id,
+        commandId: (await db.run((q) =>
+          q.one(
+            q.orm
+              .select({ id: q.t.runnerWork.commandId })
+              .from(q.t.runnerWork)
+              .where(eq(q.t.runnerWork.runId, run.runId)),
+          ),
+        ))!.id,
         generation: 1,
       })
     ).token;
@@ -423,15 +432,18 @@ describe("agent session snapshots", () => {
     await expect(sessions.read({ ...moved, generation: 2 }, 3)).rejects.toThrow();
 
     // A runner owned by another member never reads the owner's session.
-    db.run("UPDATE agent_session_snapshot SET owner_user_id=? WHERE run_id=?", [
-      await putWorkspaceUser(sqliteDb(db), {
-        id: workspaceId(),
-        linearUserId: "other",
-        name: "Other",
-        email: "other@example.invalid",
-      }),
-      run.runId,
-    ]);
+    const other = await putWorkspaceUser(db, {
+      id: workspaceId(),
+      linearUserId: "other",
+      name: "Other",
+      email: "other@example.invalid",
+    });
+    await seed(db, (q) =>
+      q.orm
+        .update(q.t.agentSessionSnapshot)
+        .set({ ownerUserId: other })
+        .where(eq(q.t.agentSessionSnapshot.runId, run.runId)),
+    );
     await expect(sessions.read({ ...moved, generation: 2 }, 1)).rejects.toThrow(
       "Agent session request is refused",
     );
@@ -513,12 +525,40 @@ describe("agent session snapshots", () => {
     [...objects.objects.keys()].filter((name) =>
       name.includes(`/${runId}/${generation === undefined ? "" : `${generation}/`}`),
     );
-  const chunkRows = (runId: string, generation: number) =>
-    db
-      .query<{ n: number }, [string, number]>(
-        "SELECT count(*) AS n FROM agent_session_snapshot_chunk WHERE run_id=? AND generation=?",
-      )
-      .get(runId, generation)!.n;
+  const chunkRows = async (runId: string, generation: number) => {
+    const chunks = db.run((q) =>
+      q.one(
+        q.orm
+          .select({ n: count() })
+          .from(q.t.agentSessionSnapshotChunk)
+          .where(
+            and(
+              eq(q.t.agentSessionSnapshotChunk.runId, runId),
+              eq(q.t.agentSessionSnapshotChunk.generation, generation),
+            ),
+          ),
+      ),
+    );
+    return (await chunks)!.n;
+  };
+  const setRunStatus = (status: string, ...ids: string[]) =>
+    seed(db, (q) => q.orm.update(q.t.run).set({ status }).where(inArray(q.t.run.id, ids)));
+  const setItemState = (state: string, id: string) =>
+    seed(db, (q) => q.orm.update(q.t.workItem).set({ state }).where(eq(q.t.workItem.id, id)));
+  const discard = (runId: string, generation?: number) =>
+    seed(db, (q) =>
+      q.orm
+        .update(q.t.agentSessionSnapshot)
+        .set({ status: "discarded" })
+        .where(
+          and(
+            eq(q.t.agentSessionSnapshot.runId, runId),
+            generation === undefined
+              ? undefined
+              : eq(q.t.agentSessionSnapshot.generation, generation),
+          ),
+        ),
+    );
 
   test("a second sealed snapshot discards the first and deletes its chunks", async () => {
     const { sessions, access, run, runnerA } = await sealed();
@@ -534,7 +574,7 @@ describe("agent session snapshots", () => {
     await sessions.finish(next, finishFor(2, second));
 
     expect((await sessions.snapshot(run.runId, 1))?.status).toBe("discarded");
-    expect(chunkRows(run.runId, 1)).toBe(0);
+    expect(await chunkRows(run.runId, 1)).toBe(0);
     expect(objectsOf(run.runId, 1)).toEqual([]);
     expect(objects.deletes.filter((name) => name.includes(`/${run.runId}/1/`))).toHaveLength(3);
     expect((await sessions.snapshot(run.runId, 2))?.status).toBe("sealed");
@@ -560,43 +600,52 @@ describe("agent session snapshots", () => {
       await seal(sessions, await f.assign(run, runnerA, 1), 1);
       await work.finish(run.runId, 1);
     }
-    db.run("UPDATE run SET status='lost' WHERE id=?", [runs.lost.runId]);
-    db.run("UPDATE run SET status='ended' WHERE id IN (?,?)", [
-      runs.replaced.runId,
-      runs.between.runId,
-    ]);
-    db.run("UPDATE work_item SET current_run_id=NULL WHERE id=?", [runs.replaced.itemId]);
+    await setRunStatus("lost", runs.lost.runId);
+    await setRunStatus("ended", runs.replaced.runId, runs.between.runId);
+    await seed(db, (q) =>
+      q.orm
+        .update(q.t.workItem)
+        .set({ currentRunId: null })
+        .where(eq(q.t.workItem.id, runs.replaced.itemId)),
+    );
     for (const state of ["merged", "failed", "cancelled"] as const)
-      db.run("UPDATE work_item SET state=? WHERE id=?", [state, runs[state].itemId]);
+      await setItemState(state, runs[state].itemId);
     await sessions.prune();
 
     for (const name of ["lost", "replaced", "merged", "failed", "cancelled"] as const) {
       const run = runs[name];
       expect((await sessions.snapshot(run.runId, 1))?.status).toBe("discarded");
-      expect(chunkRows(run.runId, 1)).toBe(0);
+      expect(await chunkRows(run.runId, 1)).toBe(0);
       expect(objectsOf(run.runId)).toEqual([]);
     }
     // A restart ends the run between turns and keeps it as the item's run, so its latest
     // snapshot stays until the item finishes.
     expect((await sessions.snapshot(runs.between.runId, 1))?.status).toBe("sealed");
     expect(objectsOf(runs.between.runId)).toHaveLength(3);
-    db.run("UPDATE work_item SET state='completed' WHERE id=?", [runs.between.itemId]);
+    await setItemState("completed", runs.between.itemId);
     await sessions.prune();
-    expect(db.query("SELECT 1 FROM agent_session_snapshot WHERE status='sealed'").all()).toEqual(
-      [],
-    );
+    expect(
+      await db.run((q) =>
+        q.all(
+          q.orm
+            .select({ runId: q.t.agentSessionSnapshot.runId })
+            .from(q.t.agentSessionSnapshot)
+            .where(eq(q.t.agentSessionSnapshot.status, "sealed")),
+        ),
+      ),
+    ).toEqual([]);
     expect(objects.objects.size).toBe(0);
   });
 
   test("a startup sweep deletes objects left by an interrupted prune", async () => {
     const { run } = await sealed();
     // Paws stopped after discarding the row and before deleting any object.
-    db.run("UPDATE agent_session_snapshot SET status='discarded' WHERE run_id=?", [run.runId]);
+    await discard(run.runId);
     expect(objectsOf(run.runId)).toHaveLength(3);
     const restarted = createAgentSessions({ db, work, objects, key });
     await restarted.prune();
     expect(objectsOf(run.runId)).toEqual([]);
-    expect(chunkRows(run.runId, 1)).toBe(0);
+    expect(await chunkRows(run.runId, 1)).toBe(0);
     expect((await restarted.snapshot(run.runId, 1))?.status).toBe("discarded");
   });
 
@@ -608,7 +657,7 @@ describe("agent session snapshots", () => {
     const racing: AgentSessionObjects = {
       async write(name, bytes) {
         await objects.write(name, bytes);
-        db.run("UPDATE work_item SET state='cancelled' WHERE id=?", [run.itemId]);
+        await setItemState("cancelled", run.itemId);
         await sessions.prune();
       },
       read: (name) => objects.read(name),
@@ -624,20 +673,27 @@ describe("agent session snapshots", () => {
     const { sessions, run, runnerA } = await sealed();
     const runnerB = await f.enroll("b");
     const at = Date.now();
-    db.run(
-      "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.43',?)",
-      [runnerB, at],
-    );
-    db.run(
-      "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?,'claude',1,0)",
-      [runnerB],
-    );
-    db.run(
-      "INSERT INTO runner_agent(runner_id,agent,version,status,reported_at) VALUES(?,'claude','0.88.0','current',?)",
-      [runnerB, at],
+    await seed(
+      db,
+      (q) =>
+        q.orm
+          .insert(q.t.runnerHostStatus)
+          .values({ runnerId: runnerB, runnerVersion: "0.1.43", reportedAt: at }),
+      (q) =>
+        q.orm
+          .insert(q.t.runnerAgentPolicy)
+          .values({ runnerId: runnerB, agent: "claude", ready: 1, authExpired: 0 }),
+      (q) =>
+        q.orm.insert(q.t.runnerAgent).values({
+          runnerId: runnerB,
+          agent: "claude",
+          version: "0.88.0",
+          status: "current",
+          reportedAt: at,
+        }),
     );
     const restore = (input: SessionRestoreInput) =>
-      sqliteDb(db).run((q) => planSessionRestoreSteps(q, input));
+      db.run((q) => planSessionRestoreSteps(q, input));
     const plan = () => restore({ runId: run.runId, agent: "claude", targetRunnerId: runnerB });
     expect(await plan()).toMatchObject({ eligible: true, restoreSession: { generation: 1 } });
     expect(
@@ -654,9 +710,7 @@ describe("agent session snapshots", () => {
     expect(await plan()).toMatchObject({ eligible: true, restoreSession: { generation: 2 } });
 
     // The newest row discarded by an interrupted prune is skipped too.
-    db.run("UPDATE agent_session_snapshot SET status='discarded' WHERE run_id=? AND generation=2", [
-      run.runId,
-    ]);
+    await discard(run.runId, 2);
     expect(await plan()).toEqual({ eligible: false, failure: "no_snapshot" });
   });
 });
@@ -835,7 +889,7 @@ describe("agent session storage in S3", () => {
       }
       expect(await collect(sessions.read({ ...access, generation: 1 }, 1))).toEqual(snapshot);
     } finally {
-      f.db.close();
+      await f.close();
     }
   });
 });

@@ -20,14 +20,15 @@ import {
   getWorkItem,
   insertQueuedItem,
   listCloseoutProgress,
-  migrate,
-  openDatabase,
+  openPawsStore,
   saveCheckpoint,
   type CloseoutProgressRecord,
-  sqliteDb,
+  type Db,
+  type PawsStore,
 } from "../src/db";
 import { createDbCloseoutProgress } from "../src/loop/closeout-progress";
 import { createLiveStatusProvider } from "../src/dashboard/src/live/provider";
+import { copyMigratedPglite, tempStore } from "./pglite";
 
 const exec = promisify(execFile);
 const TASK = "ENG-74";
@@ -88,10 +89,9 @@ describe("closeout progress backend", () => {
   });
 
   test("a new running attempt clears earlier output and timestamps and keeps other identities", async () => {
-    const db = openDatabase(":memory:");
-    migrate(db);
+    const db = (await tempStore()).db;
     let clock = 1_000;
-    const progress = createDbCloseoutProgress(sqliteDb(db), "item-1", () => clock);
+    const progress = createDbCloseoutProgress(db, "item-1", () => clock);
     const base = "a".repeat(40);
     const head = "b".repeat(40);
     const otherHead = "c".repeat(40);
@@ -211,12 +211,11 @@ describe("closeout progress backend", () => {
     expect((await only(db, otherBaseSameHead)).steps[0]?.detail).toBe("other-base");
     expect((await only(db, otherPolicy)).steps[0]?.detail).toBe("other-policy");
     expect((await only(db, identity)).decision).toBe("rejected");
-    expect(await listCloseoutProgress(sqliteDb(db))).toHaveLength(4);
+    expect(await listCloseoutProgress(db)).toHaveLength(4);
   });
 
   test("direct evaluation does not publish before a progress identity exists", async () => {
-    const db = openDatabase(":memory:");
-    migrate(db);
+    const db = (await tempStore()).db;
     const result = await evaluateCandidate({
       worktree: "/tmp/closeout-progress-unused",
       taskId: TASK,
@@ -228,10 +227,10 @@ describe("closeout progress backend", () => {
           throw new Error("reviewer should not run");
         },
       },
-      progress: createDbCloseoutProgress(sqliteDb(db), "item-1"),
+      progress: createDbCloseoutProgress(db, "item-1"),
     });
     expect(result.outcome).toBe("invalid");
-    expect(await listCloseoutProgress(sqliteDb(db))).toEqual([]);
+    expect(await listCloseoutProgress(db)).toEqual([]);
   });
 
   test("streams output before the step finishes and a later attempt replaces it", async () => {
@@ -251,14 +250,14 @@ describe("closeout progress backend", () => {
       ]),
     });
     const phase = path.join(repo.root, "phase.txt");
-    const dbPath = path.join(repo.root, "state.sqlite");
+    const dbPath = path.join(repo.root, "pglite");
     const previous = process.env.PAWS_TEST_PHASE;
     process.env.PAWS_TEST_PHASE = phase;
-    const db = openDatabase(dbPath);
-    migrate(db);
+    let open = await storeAt(dbPath);
+    const db = open.store;
     try {
       await writeFile(phase, "one\n");
-      const progress = createDbCloseoutProgress(sqliteDb(db), "item-1", () => Date.now());
+      const progress = createDbCloseoutProgress(db, "item-1", () => Date.now());
       const first = await evaluateCandidate(evalInput(repo, progress));
       expect(first.outcome).toBe("rejected");
       const firstRow = await only(db, await rowIdentity(db));
@@ -280,7 +279,7 @@ describe("closeout progress backend", () => {
         evalInput(
           repo,
           watching(progress, async () => {
-            const current = (await listCloseoutProgress(sqliteDb(db)))[0];
+            const current = (await listCloseoutProgress(db))[0];
             const step = current?.steps[0];
             if (current && step?.state === "running" && step.stdout.includes("OUT:two"))
               live = current;
@@ -314,20 +313,18 @@ describe("closeout progress backend", () => {
       expect(await readFile(secondLog, "utf8")).toContain("OUT:two");
       expect(await readFile(secondLog, "utf8")).not.toContain("OUT:one");
 
-      db.close();
-      const reopened = openDatabase(dbPath);
-      migrate(reopened);
-      const again = (await listCloseoutProgress(sqliteDb(reopened)))[0];
+      await open.close();
+      open = await openPawsStore({ url: null, pgliteDir: dbPath });
+      const again = (await listCloseoutProgress(open.store))[0];
       expect(again?.decision).toBe("rejected");
       expect(again?.steps[0]?.stdout).toContain("OUT:two");
       expect(again?.steps[0]?.stdout).not.toContain("OUT:one");
       expect(again?.steps[0]?.stderr).toContain("ERR:two");
-      reopened.close();
       expect(await readFile(firstLog, "utf8")).toContain("OUT:one");
     } finally {
       if (previous === undefined) delete process.env.PAWS_TEST_PHASE;
       else process.env.PAWS_TEST_PHASE = previous;
-      db.close();
+      await open.close();
       await repo.cleanup();
     }
   });
@@ -337,9 +334,8 @@ describe("closeout progress backend", () => {
       ".agents/closeout.yaml": policy([reviewItem("adversarial-review")], 3),
       ".agents/skills/adversarial-review/SKILL.md": SKILL,
     });
-    const db = openDatabase(":memory:");
-    migrate(db);
-    const progress = createDbCloseoutProgress(sqliteDb(db), "item-1");
+    const db = (await tempStore()).db;
+    const progress = createDbCloseoutProgress(db, "item-1");
     const previous = process.env.DEMO_API_KEY;
     process.env.DEMO_API_KEY = API_KEY;
     let startedAt: number | null = null;
@@ -348,7 +344,7 @@ describe("closeout progress backend", () => {
         ...evalInput(repo, progress),
         reviewer: {
           async review() {
-            const row = (await listCloseoutProgress(sqliteDb(db)))[0];
+            const row = (await listCloseoutProgress(db))[0];
             const step = row?.steps.find((entry) => entry.kind === "review");
             expect(row?.decision).toBeNull();
             expect(row?.decision).not.toBe("accepted");
@@ -361,7 +357,7 @@ describe("closeout progress backend", () => {
         },
       });
       expect(result.outcome).toBe("blocked");
-      const row = (await listCloseoutProgress(sqliteDb(db)))[0];
+      const row = (await listCloseoutProgress(db))[0];
       const step = row?.steps.find((entry) => entry.kind === "review");
       expect(row?.decision).toBe("blocked");
       expect(row?.policyDigest.length).toBeGreaterThan(0);
@@ -374,7 +370,7 @@ describe("closeout progress backend", () => {
       expect(JSON.stringify(row)).not.toContain(API_KEY);
       const invalid = await evaluateCandidate({ ...evalInput(repo, progress), head: "invalid" });
       expect(invalid.outcome).toBe("invalid");
-      expect((await listCloseoutProgress(sqliteDb(db)))[0]).toEqual(row);
+      expect((await listCloseoutProgress(db))[0]).toEqual(row);
     } finally {
       if (previous === undefined) delete process.env.DEMO_API_KEY;
       else process.env.DEMO_API_KEY = previous;
@@ -384,8 +380,7 @@ describe("closeout progress backend", () => {
 
   test("a policy fetch that fails on the network is retried, not blocked", async () => {
     const repo = await originRepo({ ".agents/closeout.yaml": policy([]) });
-    const db = openDatabase(":memory:");
-    migrate(db);
+    const { db, close } = await tempStore();
     try {
       await exec("git", [
         "-C",
@@ -396,7 +391,7 @@ describe("closeout progress backend", () => {
         "http://127.0.0.1:1/x.git",
       ]);
       const thrown = await evaluateCandidate(
-        evalInput(repo, createDbCloseoutProgress(sqliteDb(db), "item-1")),
+        evalInput(repo, createDbCloseoutProgress(db, "item-1")),
       ).catch((error: unknown) => error);
       expect(isTransient(thrown)).toBe(true);
       expect(String(thrown)).toContain("origin/main is unavailable");
@@ -409,11 +404,11 @@ describe("closeout progress backend", () => {
         path.join(repo.root, "gone"),
       ]);
       const missing = await evaluateCandidate(
-        evalInput(repo, createDbCloseoutProgress(sqliteDb(db), "item-1")),
+        evalInput(repo, createDbCloseoutProgress(db, "item-1")),
       );
       expect(missing.outcome).toBe("blocked");
     } finally {
-      db.close();
+      await close();
       await repo.cleanup();
     }
   });
@@ -423,11 +418,10 @@ describe("closeout progress backend", () => {
       ".agents/closeout.yaml": policy([reviewItem("adversarial-review")], 3),
       ".agents/skills/adversarial-review/SKILL.md": SKILL,
     });
-    const db = openDatabase(":memory:");
-    migrate(db);
+    const { db, close } = await tempStore();
     try {
       const thrown = await evaluateCandidate({
-        ...evalInput(repo, createDbCloseoutProgress(sqliteDb(db), "item-1")),
+        ...evalInput(repo, createDbCloseoutProgress(db, "item-1")),
         reviewer: {
           async review() {
             await exec("git", [
@@ -445,7 +439,7 @@ describe("closeout progress backend", () => {
       expect(isTransient(thrown)).toBe(true);
       expect(String(thrown)).toContain("origin/main is unavailable");
     } finally {
-      db.close();
+      await close();
       await repo.cleanup();
     }
   });
@@ -455,16 +449,15 @@ describe("closeout progress backend", () => {
       ".agents/closeout.yaml": policy([reviewItem("adversarial-review")], 3),
       ".agents/skills/adversarial-review/SKILL.md": SKILL,
     });
-    const db = openDatabase(":memory:");
-    migrate(db);
+    const db = (await tempStore()).db;
     await insertQueuedItem(db, { id: "item-1", now: 1 });
-    await beginImplementRun(sqliteDb(db), "item-1", 1, {
+    await beginImplementRun(db, "item-1", 1, {
       phase: "running",
       baseSha: repo.head,
       wipCommit: repo.head,
     });
-    await applyWorkItemEvent(sqliteDb(db), "item-1", "turn_ended");
-    const progress = createDbCloseoutProgress(sqliteDb(db), "item-1");
+    await applyWorkItemEvent(db, "item-1", "turn_ended");
+    const progress = createDbCloseoutProgress(db, "item-1");
     const outage = Object.assign(new Error("503 Service Unavailable"), { status: 503 });
     try {
       const thrown = await evaluateCandidate({
@@ -478,14 +471,14 @@ describe("closeout progress backend", () => {
         },
       }).catch((error: unknown) => error);
       expect(thrown).toBe(outage);
-      const stopped = (await listCloseoutProgress(sqliteDb(db)))[0];
+      const stopped = (await listCloseoutProgress(db))[0];
       const step = stopped?.steps.find((entry) => entry.kind === "review");
       expect(stopped?.steps.some((entry) => entry.state === "running")).toBe(false);
       expect(stopped?.finishedAt).not.toBeNull();
       expect(stopped?.decision).toBe("running");
       expect(step?.state).toBe("pending");
       expect(step?.detail).toBe("Retrying: 503 Service Unavailable");
-      const provider = createLiveStatusProvider(sqliteDb(db));
+      const provider = createLiveStatusProvider(db);
       const verdict = (await provider.issue((await provider.issues()).issues[0]!.id))?.verdicts[0];
       const check = verdict?.checks.find((entry) => entry.id === "adversarial-review");
       expect(verdict?.summary).toBe("Closeout is running.");
@@ -497,7 +490,7 @@ describe("closeout progress backend", () => {
         ...evalInput(repo, progress),
         reviewer: {
           async review() {
-            const row = (await listCloseoutProgress(sqliteDb(db)))[0];
+            const row = (await listCloseoutProgress(db))[0];
             expect(row?.decision).toBeNull();
             expect(row?.finishedAt).toBeNull();
             return { session: "review-session", model: "gpt-5", provider: "openai", findings: [] };
@@ -505,7 +498,7 @@ describe("closeout progress backend", () => {
         },
       });
       expect(retried.outcome).toBe("accepted");
-      const sealed = await listCloseoutProgress(sqliteDb(db));
+      const sealed = await listCloseoutProgress(db);
       expect(sealed).toHaveLength(1);
       expect(sealed[0]?.decision).toBe("accepted");
       expect(sealed[0]?.steps.find((entry) => entry.kind === "review")?.state).toBe("passed");
@@ -522,15 +515,14 @@ describe("closeout progress backend", () => {
       ".agents/closeout.yaml": policy([reviewItem("adversarial-review")], 3),
       ".agents/skills/adversarial-review/SKILL.md": SKILL,
     });
-    const db = openDatabase(":memory:");
-    migrate(db);
+    const db = (await tempStore()).db;
     let startedAt: number | null = null;
     try {
       const result = await evaluateCandidate({
-        ...evalInput(repo, createDbCloseoutProgress(sqliteDb(db), "item-1")),
+        ...evalInput(repo, createDbCloseoutProgress(db, "item-1")),
         reviewer: {
           async review() {
-            const row = (await listCloseoutProgress(sqliteDb(db)))[0];
+            const row = (await listCloseoutProgress(db))[0];
             startedAt = row?.steps.find((entry) => entry.kind === "review")?.startedAt ?? null;
             expect(row?.decision).not.toBe("accepted");
             await wait(20);
@@ -551,7 +543,7 @@ describe("closeout progress backend", () => {
         },
       });
       expect(result.outcome).toBe("rejected");
-      const row = (await listCloseoutProgress(sqliteDb(db)))[0];
+      const row = (await listCloseoutProgress(db))[0];
       const step = row?.steps.find((entry) => entry.kind === "review");
       expect(row?.decision).toBe("rejected");
       expect(step).toMatchObject({ state: "failed", attempt: 1 });
@@ -573,16 +565,15 @@ describe("closeout progress backend", () => {
       ".agents/closeout.yaml": policy([reviewItem("adversarial-review")], 1),
       ".agents/skills/adversarial-review/SKILL.md": SKILL,
     });
-    const db = openDatabase(":memory:");
-    migrate(db);
+    const db = (await tempStore()).db;
     let calls = 0;
     try {
       const result = await evaluateCandidate({
-        ...evalInput(repo, createDbCloseoutProgress(sqliteDb(db), "item-1")),
+        ...evalInput(repo, createDbCloseoutProgress(db, "item-1")),
         reviewer: {
           async review() {
             calls += 1;
-            const row = (await listCloseoutProgress(sqliteDb(db)))[0];
+            const row = (await listCloseoutProgress(db))[0];
             expect(row?.decision).not.toBe("accepted");
             return {
               session: "review-session",
@@ -602,7 +593,7 @@ describe("closeout progress backend", () => {
       });
       expect(result.outcome).toBe("exhausted");
       expect(calls).toBe(1);
-      const row = (await listCloseoutProgress(sqliteDb(db)))[0];
+      const row = (await listCloseoutProgress(db))[0];
       const step = row?.steps.find((entry) => entry.kind === "review");
       expect(row?.decision).toBe("exhausted");
       expect(step).toMatchObject({ state: "exhausted", attempt: 1 });
@@ -630,24 +621,24 @@ describe("closeout progress backend", () => {
         },
       ]),
     });
-    const dbPath = path.join(repo.root, "state.sqlite");
-    const db = openDatabase(dbPath);
-    migrate(db);
+    const dbPath = path.join(repo.root, "pglite");
+    let open = await storeAt(dbPath);
+    const db = open.store;
     await insertQueuedItem(db, { id: "item-1", now: 1 });
-    await beginImplementRun(sqliteDb(db), "item-1", 1, {
+    await beginImplementRun(db, "item-1", 1, {
       phase: "running",
       baseSha: repo.head,
       wipCommit: repo.head,
       turn: 4,
     });
-    await applyWorkItemEvent(sqliteDb(db), "item-1", "turn_ended");
-    await saveCheckpoint(sqliteDb(db), "item-1", {
+    await applyWorkItemEvent(db, "item-1", "turn_ended");
+    await saveCheckpoint(db, "item-1", {
       phase: "verifying",
       baseSha: repo.head,
       wipCommit: repo.head,
       turn: 4,
     });
-    const progress = createDbCloseoutProgress(sqliteDb(db), "item-1", () => Date.now());
+    const progress = createDbCloseoutProgress(db, "item-1", () => Date.now());
     let liveHead: string | undefined;
     try {
       const result = await runCloseoutGate({
@@ -665,8 +656,8 @@ describe("closeout progress backend", () => {
         },
         fixer: committingFixer(repo.dir),
         progress: watching(progress, async () => {
-          const checkpoint = (await getWorkItem(sqliteDb(db), "item-1"))?.checkpoint;
-          const rows = await listCloseoutProgress(sqliteDb(db));
+          const checkpoint = (await getWorkItem(db, "item-1"))?.checkpoint;
+          const rows = await listCloseoutProgress(db);
           const current = rows.find((row) => row.head === checkpoint?.wipCommit);
           const step = current?.steps.find((entry) => entry.id === "probe");
           if (current && step?.stdout.includes("NOW-NEW") && step.state === "running") {
@@ -683,13 +674,13 @@ describe("closeout progress backend", () => {
       });
       expect(result.outcome).toBe("accepted");
       expect(liveHead).toBeDefined();
-      const checkpoint = (await getWorkItem(sqliteDb(db), "item-1"))?.checkpoint;
+      const checkpoint = (await getWorkItem(db, "item-1"))?.checkpoint;
       expect(checkpoint?.phase).toBe("verifying");
       expect(checkpoint?.turn).toBe(4);
       expect(checkpoint?.baseSha).toBe(repo.head);
       expect(checkpoint?.wipCommit).toBe(liveHead);
       expect(checkpoint?.wipCommit).not.toBe(repo.head);
-      const rows = await listCloseoutProgress(sqliteDb(db));
+      const rows = await listCloseoutProgress(db);
       expect(rows).toHaveLength(2);
       const previous = rows.find((row) => row.head === repo.head);
       const current = rows.find((row) => row.head === liveHead);
@@ -703,20 +694,16 @@ describe("closeout progress backend", () => {
       const newLog = evidenceFile(repo.pawsHome, current?.steps[0]?.logPath ?? "");
       expect(await readFile(oldLog, "utf8")).toContain("STILL-OLD");
       expect(await readFile(newLog, "utf8")).toContain("NOW-NEW");
-      db.close();
-      const reopened = openDatabase(dbPath);
-      migrate(reopened);
-      const again = await listCloseoutProgress(sqliteDb(reopened));
+      await open.close();
+      open = await openPawsStore({ url: null, pgliteDir: dbPath });
+      const again = await listCloseoutProgress(open.store);
       expect(again.find((row) => row.head === repo.head)?.decision).toBe("rejected");
       expect(again.find((row) => row.head === liveHead)?.decision).toBe("accepted");
       expect(again.find((row) => row.head === liveHead)?.steps[0]?.stdout).toContain("NOW-NEW");
-      expect((await getWorkItem(sqliteDb(reopened), "item-1"))?.checkpoint?.wipCommit).toBe(
-        liveHead,
-      );
-      reopened.close();
+      expect((await getWorkItem(open.store, "item-1"))?.checkpoint?.wipCommit).toBe(liveHead);
       expect(await readFile(oldLog, "utf8")).toContain("STILL-OLD");
     } finally {
-      db.close();
+      await open.close();
       await repo.cleanup();
     }
   });
@@ -745,8 +732,7 @@ describe("closeout progress backend", () => {
         },
       ]),
     });
-    const db = openDatabase(":memory:");
-    migrate(db);
+    const db = (await tempStore()).db;
     const previous = {
       DEMO_API_KEY: process.env.DEMO_API_KEY,
       DEMO_PASSWORD: process.env.DEMO_PASSWORD,
@@ -762,8 +748,8 @@ describe("closeout progress backend", () => {
       const result = await evaluateCandidate(
         evalInput(
           repo,
-          watching(createDbCloseoutProgress(sqliteDb(db), "item-1"), async () => {
-            const row = (await listCloseoutProgress(sqliteDb(db)))[0];
+          watching(createDbCloseoutProgress(db, "item-1"), async () => {
+            const row = (await listCloseoutProgress(db))[0];
             const step = row?.steps[0];
             if (step?.state !== "running") return;
             const dump = JSON.stringify(step);
@@ -775,7 +761,7 @@ describe("closeout progress backend", () => {
       );
       expect(result.outcome).toBe("accepted");
       expect(runningClean).toBe(true);
-      const row = (await listCloseoutProgress(sqliteDb(db)))[0];
+      const row = (await listCloseoutProgress(db))[0];
       const dump = JSON.stringify(row);
       for (const secret of [API_KEY, PASSWORD, SECRET, TOKEN, GHP, SK]) {
         expect(dump).not.toContain(secret);
@@ -832,11 +818,13 @@ function progressStep(patch: Partial<CloseoutProgressStep>): CloseoutProgressSte
   };
 }
 
-async function only(
-  db: ReturnType<typeof openDatabase>,
-  identity: CloseoutProgressIdentity,
-): Promise<CloseoutProgressRecord> {
-  const found = (await listCloseoutProgress(sqliteDb(db))).find(
+async function storeAt(dir: string): Promise<PawsStore> {
+  await copyMigratedPglite(dir);
+  return await openPawsStore({ url: null, pgliteDir: dir });
+}
+
+async function only(db: Db, identity: CloseoutProgressIdentity): Promise<CloseoutProgressRecord> {
+  const found = (await listCloseoutProgress(db)).find(
     (row) =>
       row.taskId === identity.taskId &&
       row.base === identity.base &&
@@ -847,8 +835,8 @@ async function only(
   return found;
 }
 
-async function rowIdentity(db: ReturnType<typeof openDatabase>): Promise<CloseoutProgressIdentity> {
-  const row = (await listCloseoutProgress(sqliteDb(db)))[0];
+async function rowIdentity(db: Db): Promise<CloseoutProgressIdentity> {
+  const row = (await listCloseoutProgress(db))[0];
   if (row === undefined) throw new Error("missing progress row");
   return {
     taskId: row.taskId,
