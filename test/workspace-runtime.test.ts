@@ -8,8 +8,8 @@ test("public workspace startup and membership refresh shutdown", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-workspace-runtime-"));
   const failed: string[] = [];
   try {
-    await probeWorkspaceRuntime(root, (name, passed) => {
-      if (!passed) failed.push(name);
+    await probeWorkspaceRuntime(root, (name, passed, observed) => {
+      if (!passed) { failed.push(name); console.error("OBSERVED", name, JSON.stringify(observed)); }
     });
     expect(failed).toEqual([]);
   } finally {
