@@ -9,15 +9,14 @@ import {
   getLinearSession,
   getWorkItem,
   JobLoop,
-  migrate,
-  openDatabase,
+  openPawsStore,
   OutboxDispatcher,
-  sqliteDb,
 } from "../src/db";
 import { systemClock } from "../src/core";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator, createTaskPlanner, type AgentLaunch } from "../src/loop";
 import { tempHome } from "./helpers";
+import { copyMigratedPglite, tempStore } from "./pglite";
 
 // The classifiers ignore SIGTERM, so each stop waits out the first grace in
 // full. The second grace bounds how long SIGKILL may take to close the group;
@@ -28,7 +27,7 @@ test.skipIf(process.platform !== "linux")(
   "lost classifier ownership blocks Stop, a new prompt and reopened planning before another writer",
   async () => {
     const home = tempHome();
-    const database = join(home, "planning.db");
+    const pgliteDir = join(home, "pglite");
     const script = join(home, "classifier.ts");
     const ready = join(home, "ready.json");
     const writes = join(home, "descendant-writes");
@@ -43,12 +42,12 @@ test.skipIf(process.platform !== "linux")(
         cancelGraceMs: CANCEL_GRACE_MS,
       };
     };
-    let db = openDatabase(database);
-    migrate(db);
-    await ensureLinearSession(sqliteDb(db), { sessionId: "session" });
+    await copyMigratedPglite(pgliteDir);
+    let open = await openPawsStore({ url: null, pgliteDir });
+    await ensureLinearSession(open.store, { sessionId: "session" });
     const planner = () =>
       createTaskPlanner({
-        store: sqliteDb(db),
+        store: open.store,
         home,
         pawsRoot: join(home, "paws"),
         launch,
@@ -70,9 +69,8 @@ test.skipIf(process.platform !== "linux")(
       await until(() => readFileSync(writes, "utf8").length > before);
       await expect(plan(firstPlanner, "replacement")).rejects.toThrow("cleanup");
       expect(launches).toBe(1);
-      db.close();
-      db = openDatabase(database);
-      migrate(db);
+      await open.close();
+      open = await openPawsStore({ url: null, pgliteDir });
       const reopened = planner();
       await expect(reopened.stop()).rejects.toThrow("cleanup");
       await expect(plan(reopened, "after-restart")).rejects.toThrow("cleanup");
@@ -85,7 +83,7 @@ test.skipIf(process.platform !== "linux")(
             process.kill(pid, "SIGKILL");
           } catch {}
         }
-      db.close();
+      await open.close();
     }
   },
   15000,
@@ -119,8 +117,7 @@ test.skipIf(process.platform !== "linux")(
   "a lost clarification classifier blocks its existing task and administrative shutdown",
   async () => {
     const home = tempHome();
-    const db = openDatabase(join(home, "existing.db"));
-    migrate(db);
+    const { db, close } = await tempStore();
     writeOwnerScript(home);
     const classify = join(home, "initial.json");
     writeFileSync(
@@ -154,7 +151,7 @@ test.skipIf(process.platform !== "linux")(
     });
     const jobs = new JobLoop(db, systemClock);
     const orchestrator = attachOrchestrator({
-      store: sqliteDb(db),
+      store: db,
       admission: workspaceAdmission(db),
       jobs,
       outbox: new OutboxDispatcher(db, systemClock),
@@ -206,9 +203,9 @@ test.skipIf(process.platform !== "linux")(
       process.kill(family!.anchor, "SIGKILL");
       await expect(orchestrator.interruptLinearSession("session")).rejects.toThrow("cleanup");
       await work;
-      const itemId = (await getLinearSession(sqliteDb(db), "session"))!.activeItemId!;
-      expect((await getConversation(sqliteDb(db), itemId)).blocked).toBe(true);
-      expect((await getWorkItem(sqliteDb(db), itemId))?.state).not.toBe("completed");
+      const itemId = (await getLinearSession(db, "session"))!.activeItemId!;
+      expect((await getConversation(db, itemId)).blocked).toBe(true);
+      expect((await getWorkItem(db, itemId))?.state).not.toBe("completed");
       await expect(orchestrator.shutdown()).rejects.toThrow("cleanup");
       expect(launches).toBe(2);
     } finally {
@@ -219,7 +216,7 @@ test.skipIf(process.platform !== "linux")(
             process.kill(pid, "SIGKILL");
           } catch {}
         }
-      db.close();
+      await close();
     }
   },
   15000,
@@ -236,8 +233,7 @@ for (const operation of ["shutdown", "interrupt"] as const)
         mkdirSync(directory);
         writeOwnerScript(directory);
       }
-      const db = openDatabase(join(home, "both.db"));
-      migrate(db);
+      const { db, close } = await tempStore();
       const answer = join(home, "answer.json");
       writeFileSync(
         answer,
@@ -256,7 +252,7 @@ for (const operation of ["shutdown", "interrupt"] as const)
       );
       const jobs = new JobLoop(db, systemClock);
       const orchestrator = attachOrchestrator({
-        store: sqliteDb(db),
+        store: db,
         admission: workspaceAdmission(db),
         jobs,
         outbox: new OutboxDispatcher(db, systemClock),
@@ -323,7 +319,7 @@ for (const operation of ["shutdown", "interrupt"] as const)
         const work = jobs.tick();
         const writer = await waitFamily(liveRoot);
         process.kill(classifier.anchor, "SIGKILL");
-        if (operation === "interrupt") await blockLinearSessionCleanup(sqliteDb(db), "live");
+        if (operation === "interrupt") await blockLinearSessionCleanup(db, "live");
         await expect(
           operation === "shutdown"
             ? orchestrator.shutdown()
@@ -345,7 +341,7 @@ for (const operation of ["shutdown", "interrupt"] as const)
               process.kill(pid, "SIGKILL");
             } catch {}
           }
-        db.close();
+        await close();
       }
     },
     15000,

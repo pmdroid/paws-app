@@ -8,16 +8,7 @@ import { promisify } from "node:util";
 import { expect, test } from "bun:test";
 import type { FakeScript } from "../src/acp/testing/script";
 import { FakeClock } from "../src/core";
-import {
-  JobLoop,
-  OutboxDispatcher,
-  listWorkItems,
-  migrate,
-  openDatabase,
-  putWorkspaceUser,
-  sqliteDb,
-  syncSteps,
-} from "../src/db";
+import { JobLoop, OutboxDispatcher, listWorkItems, putWorkspaceUser, syncSteps } from "../src/db";
 import { createEvidenceStore } from "../src/evidence";
 import { createFakeGitHub, fakeMergeReadiness } from "../src/github";
 import {
@@ -36,6 +27,7 @@ import {
   repoLayout,
 } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
+import { tempStore } from "./pglite";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -311,8 +303,7 @@ async function runTask(input: {
 }) {
   const layout = await repoLayout("paws-lifecycle-budget-");
   await commitOnMain(layout.bare, ".agents/closeout.yaml", input.policy);
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const clock = new FakeClock(Date.now());
   const server = linearServer();
   const jobs = new JobLoop(db, clock);
@@ -326,7 +317,7 @@ async function runTask(input: {
   let orchestrator: ReturnType<typeof attachOrchestrator> | undefined;
   const linear = await openLinear({
     db,
-    store: sqliteDb(db),
+    store: db,
     secretsDir: path.join(layout.pawsRoot, "secrets"),
     env: { LINEAR_ACCESS_TOKEN: "fixture-token", LINEAR_CLIENT_ID: "client" },
     fetch: server.fetch,
@@ -334,7 +325,7 @@ async function runTask(input: {
     followUp: (event) => orchestrator!.onLinearEvent(event),
     progressReporter: (event) => orchestrator!.sessionProgressReporter(event),
   });
-  gate = new LinearTaskAccess(sqliteDb(db), {
+  gate = new LinearTaskAccess(db, {
     access: linearCallerFor(linear.access!, "task-access"),
     lifecycle: linearCallerFor(linear.issueLifecycle!, "task-access"),
     oauthClientId: "client",
@@ -379,7 +370,7 @@ async function runTask(input: {
     };
   };
   orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -388,7 +379,7 @@ async function runTask(input: {
     files: linear.files!,
     evidence: {
       store: createEvidenceStore({
-        store: sqliteDb(db),
+        store: db,
         root: evidenceRoot,
         now: () => clock.now(),
       }),
@@ -432,7 +423,7 @@ async function runTask(input: {
     linearTaskModes: true,
     linearAccess: gate,
   });
-  const state = async () => (await listWorkItems(sqliteDb(db)))[0]?.state ?? null;
+  const state = async () => (await listWorkItems(db))[0]?.state ?? null;
   const deliver = async (body: Record<string, unknown>, delivery: string) => {
     const response = await handleLinearWebhook(signed(body, delivery), "secret", linear.webhook);
     expect(response.status).toBe(200);
@@ -455,12 +446,14 @@ async function runTask(input: {
     while (!["merged", "failed"].includes((await state()) ?? "")) {
       if (Date.now() > deadline) throw new Error(`The task is stuck in ${await state()}`);
       while ((await outbox.tick()).length > 0) await outbox.idle();
-      const open = await findOpenQuestion(sqliteDb(db), "session");
+      const open = await findOpenQuestion(db, "session");
       if (open !== null && open.kind === "link" && !asked.includes("visual-review")) {
         // The screens are approved on the item page; a Linear reply never approves them.
         asked.push("visual-review");
-        const workspaceId = db.query<{ id: string }, []>("SELECT id FROM workspace").get()!.id;
-        const userId = await putWorkspaceUser(sqliteDb(db), {
+        const workspaceId = (
+          await db.run((q) => q.all(q.orm.select({ id: q.t.workspace.id }).from(q.t.workspace)))
+        )[0]!.id;
+        const userId = await putWorkspaceUser(db, {
           id: "user-pascal",
           linearUserId: "pascal",
           name: "Pascal",
@@ -530,7 +523,7 @@ async function runTask(input: {
   } finally {
     await orchestrator.shutdown();
     await outbox.idle();
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }
