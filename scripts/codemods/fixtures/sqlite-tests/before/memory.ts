@@ -8,6 +8,12 @@ function harness() {
   return { db };
 }
 
+function fresh(): Database {
+  const db = openDatabase(":memory:");
+  migrate(db);
+  return db;
+}
+
 async function count(db: ReturnType<typeof harness>["db"]) {
   return await countItems(sqliteDb(db));
 }
@@ -20,6 +26,7 @@ test("a helper that opens the database becomes async", async () => {
   const { db } = harness();
   expect(await countItems(sqliteDb(db))).toBe(await count(db));
   expect(harness().db).toBeDefined();
+  expect(await countItems(sqliteDb(fresh()))).toBe(0);
 });
 
 test("raw calls on a parameter are reported", () => {

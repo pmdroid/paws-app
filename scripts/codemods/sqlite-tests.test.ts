@@ -35,7 +35,10 @@ const at = (sites: { file: string; line: number; text: string }[]) =>
 
 test.each([
   ["tempDb() becomes tempStore() and each close awaits the store's close", "temp.ts"],
-  ["an in-memory openDatabase and its migrate become tempStore() in an async helper", "memory.ts"],
+  [
+    "an in-memory openDatabase and its migrate become tempStore() in an async helper that drops its Database return type",
+    "memory.ts",
+  ],
 ])("%s", (_name, file) => {
   expect(read(dir, file)).toBe(read(join(fixtures, "after"), file));
 });
@@ -46,22 +49,23 @@ test("an assigned database and a file database stay as they are", () => {
 
 test("raw calls and the databases left on SQLite are reported by line", () => {
   expect(at(first.raw)).toEqual([
-    `memory.ts:16 db.query("SELECT * FROM item")`,
+    `memory.ts:22 db.query("SELECT * FROM item")`,
     `temp.ts:8 db.run("INSERT INTO item VALUES ('a')")`,
   ]);
   expect(at(first.sources)).toEqual([
     "left.ts:8 tempDb()",
     `left.ts:13 openDatabase("/tmp/paws.db")`,
     "memory.ts:6 db is never closed",
+    "memory.ts:12 db is never closed",
   ]);
-  expect(first).toMatchObject({ stores: 3, closes: 2, unwrapped: 4, asyncFunctions: 1 });
+  expect(first).toMatchObject({ stores: 4, closes: 2, unwrapped: 5, asyncFunctions: 2 });
   expect(renderReport(first, dir)).toContain("- `memory.ts` 1\n- `temp.ts` 1\n");
 });
 
 test("a second run changes nothing and still reports the raw calls", () => {
   const report = run(dir);
   expect(report).toMatchObject({ stores: 0, unwrapped: 0, files: [] });
-  expect(at(report.raw)).toEqual(at(first.raw));
+  expect(report.raw.map((s) => s.text)).toEqual(first.raw.map((s) => s.text));
   for (const file of ["temp.ts", "memory.ts"])
     expect(read(dir, file)).toBe(read(join(fixtures, "after"), file));
 });

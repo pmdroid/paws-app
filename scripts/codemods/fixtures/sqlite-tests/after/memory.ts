@@ -8,6 +8,11 @@ async function harness() {
   return { db };
 }
 
+async function fresh() {
+  const db = (await tempStore()).db;
+  return db;
+}
+
 async function count(db: Awaited<ReturnType<typeof harness>>["db"]) {
   return await countItems(db);
 }
@@ -20,6 +25,7 @@ test("a helper that opens the database becomes async", async () => {
   const { db } = await harness();
   expect(await countItems(db)).toBe(await count(db));
   expect((await harness()).db).toBeDefined();
+  expect(await countItems(await fresh())).toBe(0);
 });
 
 test("raw calls on a parameter are reported", () => {

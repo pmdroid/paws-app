@@ -179,7 +179,9 @@ function convertFile(sf: SourceFile, pglite: string, report: Report): boolean {
   for (const fn of asyncs) {
     fn.setIsAsync(true);
     const ret = fn.getReturnTypeNode();
-    if (ret && !ret.getText().startsWith("Promise<")) fn.setReturnType(`Promise<${ret.getText()}>`);
+    if (ret && /\bDatabase\b/.test(ret.getText())) fn.removeReturnType();
+    else if (ret && !ret.getText().startsWith("Promise<"))
+      fn.setReturnType(`Promise<${ret.getText()}>`);
     report.asyncFunctions += 1;
   }
   const seen = new Set<Node>();
