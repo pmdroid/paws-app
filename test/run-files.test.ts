@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
+import { eq } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -12,8 +12,10 @@ import {
   RunFileStorageError,
   runFileKeyId,
 } from "../src/run-files";
-import { syncSteps, sqliteDb } from "../src/db";
-import { tempDb, tempHome } from "./helpers";
+import type { Db, Q } from "../src/db";
+import { withoutForeignKeys } from "./dialects";
+import { tempHome } from "./helpers";
+import { tempStore } from "./pglite";
 
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const MARKER = Buffer.from("PLAINTEXT_TRANSCRIPT_MARKER_7d2a");
@@ -27,29 +29,37 @@ const whole = Buffer.concat([first, second]);
 class Refused extends Error {}
 
 describe("run file store", () => {
-  let db: Database;
+  let db: Db;
+  let close: () => Promise<void>;
   let objects: ReturnType<typeof createFakeRunFileObjects>;
   let key: Buffer;
-  beforeEach(() => {
-    db = tempDb();
+  beforeEach(async () => {
+    ({ db, close } = await tempStore());
     // The store only touches the kind's row and chunk tables; the run and command rows it
     // references are another module's concern.
-    db.exec("PRAGMA foreign_keys=OFF");
-    for (const run of ["run-a", "run-b"])
-      db.run(
-        `INSERT INTO runner_transcript(run_id,generation,command_id,workspace_id,execution_id)
-        VALUES(?,1,?,'workspace','execution')`,
-        [run, `command-${run}`],
-      );
+    await withoutForeignKeys(db);
+    await db.run((q) =>
+      q.exec(
+        q.orm.insert(q.t.runnerTranscript).values(
+          ["run-a", "run-b"].map((run) => ({
+            runId: run,
+            generation: 1,
+            commandId: `command-${run}`,
+            workspaceId: "workspace",
+            executionId: "execution",
+          })),
+        ),
+      ),
+    );
     objects = createFakeRunFileObjects();
     key = randomBytes(32);
   });
-  afterEach(() => db.close());
+  afterEach(() => close());
 
   const file = (runId: string) => ({ runId, generation: 1, prefix: `paws/test/${runId}` });
   const store = (storeKey = key, plaintext?: () => Promise<boolean>) =>
     createRunFileChunks({
-      store: sqliteDb(db),
+      store: db,
       kind: "transcript",
       objects,
       key: storeKey,
@@ -58,16 +68,26 @@ describe("run file store", () => {
       },
       plaintext,
     });
-  const state = (runId: string) => () =>
-    syncSteps(() => ({
-      ...file(runId),
-      open: true,
-      sizeBytes: db
-        .query<{ size: number }, [string]>(
-          "SELECT size_bytes AS size FROM runner_transcript WHERE run_id=?",
-        )
-        .get(runId)!.size,
-    }));
+  const state = (runId: string) =>
+    function* (q: Q) {
+      const { runnerTranscript } = q.t;
+      const row = yield* q.one(
+        q.orm
+          .select({ size: runnerTranscript.sizeBytes })
+          .from(runnerTranscript)
+          .where(eq(runnerTranscript.runId, runId)),
+      );
+      return { ...file(runId), open: true, sizeBytes: row!.size };
+    };
+  const setKeyId = (keyId: string | null) =>
+    db.run((q) =>
+      q.exec(
+        q.orm
+          .update(q.t.runnerTranscriptChunk)
+          .set({ keyId })
+          .where(eq(q.t.runnerTranscriptChunk.runId, "run-a")),
+      ),
+    );
   async function upload(runId: string, chunks = store()) {
     for (const [offset, bytes] of [
       [0, first],
@@ -128,7 +148,7 @@ describe("run file store", () => {
     await expect(collect(other, "run-a")).rejects.toThrow(
       "Runner transcript storage is unavailable",
     );
-    db.run("UPDATE runner_transcript_chunk SET key_id=? WHERE run_id='run-a'", ["0".repeat(64)]);
+    await setKeyId("0".repeat(64));
     await expect(collect(store(), "run-a")).rejects.toThrow(RunFileStorageError);
     expect(runFileKeyId("transcript", key)).not.toBe(runFileKeyId("agent_session", key));
   });
@@ -140,7 +160,7 @@ describe("run file store", () => {
       [RUN_FILE_CHUNK_BYTES, second],
     ] as const)
       objects.objects.set(`${file("run-a").prefix}/${offset}-${sha(bytes)}`, bytes);
-    db.run("UPDATE runner_transcript_chunk SET key_id=NULL WHERE run_id='run-a'");
+    await setKeyId(null);
     expect(
       await collect(
         store(key, async () => true),
