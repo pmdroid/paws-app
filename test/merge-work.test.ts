@@ -19,7 +19,6 @@ import {
   sqliteDb,
   type Db,
   type NewJob,
-  type PgDb,
 } from "../src/db";
 import { seed } from "./dialects";
 import { legacyTempDb } from "./helpers";
@@ -36,9 +35,14 @@ const samples = [
 test("the merge-work SQL classifies every job as isMergeWork does", async () => {
   const { db, close } = await tempStore();
   try {
-    const values = samples.map((queue) => `('${queue}')`).join(",");
-    const { rows } = await (db as PgDb).orm.execute<{ queue: string; merge: boolean }>(
-      sql.raw(`SELECT queue, ${mergeLaneSql("s")} AS merge FROM (VALUES ${values}) AS s(queue)`),
+    for (const queue of samples) await enqueueJob(db, { queue, payload: {}, now: 1 });
+    const rows = await db.run((q) =>
+      q.all(
+        q.orm
+          .select({ queue: q.t.job.queue, merge: sql<boolean>`${sql.raw(mergeLaneSql("job"))}` })
+          .from(q.t.job)
+          .orderBy(q.t.job.id),
+      ),
     );
     expect(rows.map((row) => [row.queue, row.merge])).toEqual(
       samples.map((queue) => [queue, isMergeWork(queue)]),
