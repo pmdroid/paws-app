@@ -54,7 +54,7 @@ export type MergeSettingsOptions = {
 };
 
 export type OverlapHold = { held: string; holder: string };
-export type OverlapHoldView = OverlapHold & { files: string[] };
+export type OverlapHoldView = OverlapHold & { repository: string; files: string[] };
 
 /** One conflict-prone file under Settings › Merging. */
 export type HotFileView = {
@@ -480,7 +480,11 @@ async function hotFileView(
   return {
     hotFiles: files.map((file) => {
       const named = holds
-        .filter((hold) => hold.files.includes(file.path))
+        .filter(
+          (hold) =>
+            hold.repository.toLowerCase() === file.repository.toLowerCase() &&
+            hold.files.includes(file.path),
+        )
         .map(({ held, holder }) => ({ held, holder }));
       return named.length ? { ...file, holds: named } : file;
     }),

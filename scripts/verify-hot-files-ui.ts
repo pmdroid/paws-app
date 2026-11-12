@@ -65,7 +65,12 @@ const server = Bun.serve({
           })),
         ],
         overlapHolds: async () => [
-          { held: "PAS-790", holder: "PAS-785", files: ["src/dashboard/src/live/provider.ts"] },
+          {
+            held: "PAS-790",
+            holder: "PAS-785",
+            repository: "acme/platform",
+            files: ["src/dashboard/src/live/provider.ts"],
+          },
         ],
       })) ??
       (await handleStatusRequest(request, { provider, csrfToken: "ui-fixture" })) ??

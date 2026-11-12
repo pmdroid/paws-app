@@ -68,6 +68,7 @@ import {
   auditWorkspaceAccessSteps,
   firstWorkspaceIdSteps,
   getArtifactSteps,
+  getWorkItemRepositorySteps,
   getWorkItemSteps,
   hotFilesSteps,
   listItemHoldsSteps,
@@ -804,10 +805,13 @@ function* overlapHoldsSteps(q: Q): Steps<OverlapHoldView[]> {
   const holds: OverlapHoldView[] = [];
   for (const hold of yield* listItemHoldsSteps(q)) {
     if (hold.reason !== "overlap" || !hold.blockers.length) continue;
+    const binding = yield* getWorkItemRepositorySteps(q, hold.itemId);
+    if (!binding) continue;
     const item = yield* getWorkItemSteps(q, hold.itemId);
     holds.push({
       held: item?.linearIdentifier ?? hold.itemId,
       holder: hold.blockers[0]!,
+      repository: `${binding.owner}/${binding.repo}`,
       files: hold.files ?? [],
     });
   }

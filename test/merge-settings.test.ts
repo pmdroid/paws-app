@@ -333,7 +333,10 @@ describe("Merging settings API", () => {
     const body = (await (await handleMergeSettingsRequest(request(), {
       ...options,
       hotFiles: async () => [file, { ...file, path: "src/b.ts" }],
-      overlapHolds: async () => [{ held: "PAS-3", holder: "PAS-2", files: ["src/a.ts"] }],
+      overlapHolds: async () => [
+        { held: "PAS-3", holder: "PAS-2", repository: "Acme/Platform", files: ["src/a.ts"] },
+        { held: "PAS-5", holder: "PAS-4", repository: "acme/other", files: ["src/a.ts"] },
+      ],
     }))!.json()) as { hotFiles?: unknown };
     expect(body.hotFiles).toEqual([
       { ...file, holds: [{ held: "PAS-3", holder: "PAS-2" }] },
