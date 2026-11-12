@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { is } from "drizzle-orm";
 import { PgUpdateBase } from "drizzle-orm/pg-core";
 import { FakeClock, OUTBOX_ACTIVITY } from "../core";
@@ -17,11 +17,22 @@ import {
 } from "./index";
 import { tempStore } from "../../test/pglite";
 
+const closes: (() => Promise<void>)[] = [];
+
+afterEach(async () => {
+  await Promise.all(closes.splice(0).map((close) => close()));
+});
+
 async function harness(batchSize = 32) {
   const clock = new FakeClock(5_000);
-  const db = (await tempStore()).db;
+  const { db, close } = await tempStore();
+  closes.push(close);
   const dispatcher = new OutboxDispatcher(db, clock, { batchSize, backoffBaseMs: 1_000 });
   return { clock, db, dispatcher };
+}
+
+async function handled(seen: string[], count: number) {
+  while (seen.length < count) await Bun.sleep(1);
 }
 
 describe("transactional outbox", () => {
@@ -119,12 +130,11 @@ describe("transactional outbox", () => {
       }
     });
 
-    // Delivery awaits the database before the handler, so let each claimed head reach it.
     await dispatcher.tick();
-    await Bun.sleep(0);
+    await handled(seen, 1);
     expect(seen).toEqual(["A1"]);
     await dispatcher.tick();
-    await Bun.sleep(0);
+    await handled(seen, 2);
     expect(seen).toEqual(["A1", "B1"]);
     expect(
       (await listOutbox(db, "A")).find((message) => (message.payload as { n: string }).n === "A2")

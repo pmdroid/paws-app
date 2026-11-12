@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import {
   applyWorkItemEventSteps,
   applyWorkItemEvent,
@@ -10,8 +10,15 @@ import {
 import { seed } from "../../test/dialects";
 import { tempStore } from "../../test/pglite";
 
+const closes: (() => Promise<void>)[] = [];
+
+afterEach(async () => {
+  await Promise.all(closes.splice(0).map((close) => close()));
+});
+
 async function harness() {
-  const db = (await tempStore()).db;
+  const { db, close } = await tempStore();
+  closes.push(close);
   const item = await insertQueuedItem(db, { id: "eng-1", sessionKey: "ses", now: 1_000 });
   return { db, item };
 }

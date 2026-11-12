@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { eq, inArray } from "drizzle-orm";
 import { FakeClock, type Checkpoint } from "../core";
 import { RUNNER_LEASE_GRACE_MS } from "../runner-protocol";
@@ -56,15 +56,22 @@ const RENEWAL_MS = 60_000;
 const checkpoint: Checkpoint = { phase: "running", wipCommit: "wip", turn: 2, baseSha: "base" };
 
 /** One running item whose runner renewed its lease at the start time, as `renew()` does. */
+const closes: (() => Promise<void>)[] = [];
+
+afterEach(async () => {
+  await Promise.all(closes.splice(0).map((close) => close()));
+});
+
 async function leased() {
   const clock = new FakeClock(1_000_000);
   const { db, close } = await tempStore();
+  closes.push(close);
   const item = await insertQueuedItem(db, { now: clock.now() });
   const { run } = await beginImplementRun(db, item.id, clock.now(), checkpoint);
   await withoutForeignKeys(db);
   const leaseUntil = clock.now() + RENEWAL_MS;
   await seedWork(db, run.id, "runner", { commandId: "command", leaseUntil });
-  return { clock, db, close, item, run, leaseUntil };
+  return { clock, db, item, run, leaseUntil };
 }
 
 // Paws away for 59 s, for 59 s past the lease (the old 60 s cutoff), at the last grace
@@ -145,7 +152,7 @@ describe("the runner lease grace", () => {
   });
 
   test("the sweep leaves expired work to its live placement owner", async () => {
-    const { db, close, clock, run } = await leased();
+    const { db, clock, run } = await leased();
     const item = (await getRun(db, run.id))!;
     await enqueueJob(db, {
       queue: "run.resume",
@@ -163,12 +170,11 @@ describe("the runner lease grace", () => {
     expect(await runnerSlotsHeldBetweenCommands(db, "runner", clock.now(), run.id)).toBe(0);
     expect((await getRun(db, run.id))?.status).toBe("active");
     expect(await workEnded(db, run.id)).toBeNull();
-    await close();
   });
 
   for (const state of ["verifying", "merge_queue"] as const) {
     test(`expired abandoned ${state} work transitions with its lost run`, async () => {
-      const { db, close, clock, run, item } = await leased();
+      const { db, clock, run, item } = await leased();
       await applyWorkItemEvent(db, item.id, "turn_ended");
       if (state === "merge_queue") await applyWorkItemEvent(db, item.id, "closeout_accepted");
       clock.advance(PAST);
@@ -179,7 +185,6 @@ describe("the runner lease grace", () => {
       );
       expect(await runnerSlotsHeldBetweenCommands(db, "runner", clock.now())).toBe(0);
       expect(await closeExpiredRunnerLeases(db, clock.now())).toEqual([]);
-      await close();
     });
   }
 
@@ -215,7 +220,7 @@ describe("the runner lease grace", () => {
   });
 
   test("recovery retains a delivered current-command result after lease grace", async () => {
-    const { clock, db, close, item, run } = await leased();
+    const { clock, db, item, run } = await leased();
     clock.advance(PAST);
     expect(await runnerHoldsRunWork(db, run.id, clock.now())).toBe(false);
     await seedResult(db, run.id, "other", {});
@@ -239,7 +244,6 @@ describe("the runner lease grace", () => {
     expect((await getRun(db, run.id))?.status).toBe("active");
     await updateWork(db, [run.id], { endedAt: clock.now() });
     expect(await runnerWorkHasResult(db, run.id)).toBe(false);
-    await close();
   });
 
   test("the halt core may release inside the grace once the runner acknowledged a cancel", async () => {
