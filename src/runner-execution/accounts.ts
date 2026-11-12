@@ -60,6 +60,7 @@ const AGENT_STATE = [
   ".codex",
   ".grok",
   ".config",
+  ".local/share/opencode",
   ".local/share",
   ".local/state",
 ] as const;
@@ -432,12 +433,17 @@ export function shareRunnerAgentState(
   }
   const top = names.filter((name) => !SHARED_ELSEWHERE.has(name)).map((name) => join(home, name));
   shareRunnerPaths(top, owners, { depth: 0 });
-  for (const folder of AGENT_STATE)
+  for (const folder of AGENT_STATE) {
+    const parts = folder.split("/");
+    const parents = parts.slice(1).map((_, i) => join(home, ...parts.slice(0, i + 1)));
+    if (!parents.every((parent) => lstatSync(parent, { throwIfNoEntry: false })?.isDirectory()))
+      continue;
     shareRunnerPaths([join(home, folder)], owners, {
       limit,
       skip: join(home, ".local/share/mise"),
       over: (root) => journal(`runner agent state not fully shared folder=${root} limit=${limit}`),
     });
+  }
 }
 
 /**

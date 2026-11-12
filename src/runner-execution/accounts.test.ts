@@ -336,6 +336,37 @@ test("agent state past the cap is journaled and does not fail the run", () => {
   ]);
 });
 
+test("OpenCode credentials are shared even when .local/share passes the cap", () => {
+  const root = agentHome();
+  const owners = { runnerUid: process.getuid!(), agentGid: process.getgid!() };
+  mkdirSync(join(root, ".local/share/opencode"), { recursive: true });
+  writeFileSync(join(root, ".local/share/opencode/auth.json"), "{}", { mode: 0o600 });
+  chmodSync(join(root, ".local/share/opencode/auth.json"), 0o600);
+  for (const tool of ["aaa", "zzz"]) {
+    mkdirSync(join(root, ".local/share", tool));
+    for (let i = 0; i < 20; i++) writeFileSync(join(root, ".local/share", tool, `${i}`), "");
+  }
+  const restore = setJournalSink(() => {});
+  try {
+    shareRunnerAgentState(root, owners, 10);
+  } finally {
+    restore();
+  }
+  expect(statSync(join(root, ".local/share/opencode/auth.json")).mode & 0o777).toBe(0o660);
+});
+
+test("a .local that links elsewhere is not followed into its state folders", () => {
+  const root = agentHome();
+  const outside = agentHome();
+  const owners = { runnerUid: process.getuid!(), agentGid: process.getgid!() };
+  mkdirSync(join(outside, "share"));
+  writeFileSync(join(outside, "share/secret"), "", { mode: 0o600 });
+  chmodSync(join(outside, "share/secret"), 0o600);
+  symlinkSync(outside, join(root, ".local"));
+  shareRunnerAgentState(root, owners);
+  expect(statSync(join(outside, "share/secret")).mode & 0o777).toBe(0o600);
+});
+
 test("sharing an account home keeps its binding, holds and sign-in lock at 0640", () => {
   const root = agentHome();
   const owners = { runnerUid: process.getuid!(), agentGid: process.getgid!() };
