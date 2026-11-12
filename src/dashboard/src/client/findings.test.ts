@@ -71,29 +71,48 @@ describe("Findings page", () => {
     expect(page.content).toContain('<div id="findings-page"></div>');
   });
 
-  test("renders counts per severity, the filters and each finding's facts", () => {
+  test("renders the severity control, the filters and each finding's row", () => {
     const html = renderFindings(
       view({
         filter: { ...DEFAULT_FINDING_FILTER, repository: "acme/platform", path: "src/auth/" },
       }),
     );
-    expect(html).toContain(
-      'data-findings-severity="P2" aria-pressed="false"><span>P2</span> <b>3</b>',
+    const control = html.slice(
+      html.indexOf('aria-label="Findings per severity"'),
+      html.indexOf('<input type="hidden"'),
     );
-    for (const name of ["repository", "severity", "review", "status", "path"])
+    expect(control.match(/<button /g)).toHaveLength(5);
+    expect(control).toContain(
+      'data-findings-severity="" aria-pressed="true"><span>All</span> <span class="font-mono tabular-nums">4</span>',
+    );
+    for (const [severity, count] of [
+      ["P0", 0],
+      ["P1", 1],
+      ["P2", 3],
+      ["P3", 0],
+    ])
+      expect(control).toContain(
+        `data-findings-severity="${severity}" aria-pressed="false"><span>${severity}</span> <span class="font-mono tabular-nums">${count}</span>`,
+      );
+    expect(
+      renderFindings(view({ filter: { ...DEFAULT_FINDING_FILTER, severity: "P2" } })),
+    ).toContain('data-findings-severity="P2" aria-pressed="true"');
+    expect(html).toContain('<input type="hidden" name="severity" value="" />');
+    for (const name of ["repository", "review", "status", "path"])
       expect(html).toContain(`data-findings-filter="${name}"`);
     expect(html).toContain('<option value="acme/platform" selected>acme/platform</option>');
     expect(html).toContain('<option value="security-review">security-review</option>');
     expect(html).toContain('<option value="open" selected>Open</option>');
     expect(html).toContain('value="src/auth/"');
+    expect(html).toContain('<span class="st failed">P1</span>');
     expect(html).toContain("<code>src/auth/token.ts:12-14</code>");
     expect(html).toContain("unchecked null: the handler reads the user before the check.");
+    expect(html).toContain("<span>Pre-existing</span> · seen in 2 issues:");
     expect(html).toContain("<span>independent-review</span>");
-    expect(html).toContain("<span>unchecked null</span>");
-    expect(html).toContain("Reported by 2 issues:");
     expect(html).toContain('href="/issues/PAS-12"');
     expect(html).toContain('href="/issues/PAS-9"');
-    expect(html).toContain("First seen 2026-10-20 08:00 UTC, last seen 2026-10-28 09:30 UTC");
+    expect(html).toContain("last 2026-10-28 09:30 UTC");
+    expect(html).toContain('<summary class="btn sm">Dismiss</summary>');
     expect(html).toContain('data-finding-dismiss="1"');
     expect(html).not.toContain("File an issue");
     // The markup goes through the dashboard theme.
@@ -153,7 +172,9 @@ describe("Findings page", () => {
   });
 
   test("says when nothing matches, and when the list was cut", () => {
-    expect(renderFindings(view({ data: data([]) }))).toContain("No open findings.");
+    expect(renderFindings(view({ data: data([]) }))).toContain(
+      "No open findings. They appear when Closeout accepts a change whose review found something minor or pre-existing.",
+    );
     expect(
       renderFindings(
         view({ data: data([]), filter: { ...DEFAULT_FINDING_FILTER, severity: "P0" } }),
