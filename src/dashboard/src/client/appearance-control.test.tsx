@@ -3,11 +3,13 @@ import { Window } from "happy-dom";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { AppearanceControl, initializeAppearance } from "./appearance";
+import { settleReactWork } from "./settle-react";
 
 const GLOBALS = ["window", "document", "localStorage", "HTMLElement", "Element", "Node"] as const;
 const saved = Object.fromEntries(GLOBALS.map((key) => [key, Reflect.get(globalThis, key)]));
 
 afterEach(async () => {
+  await settleReactWork();
   await new Promise((resolve) => setTimeout(resolve, 10));
   Object.assign(globalThis, saved);
 });
