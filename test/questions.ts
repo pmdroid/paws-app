@@ -25,10 +25,6 @@ export function askPg(db: Db, asker: QuestionAsker, ...args: AskArgs): Promise<A
   return db.transaction((q) => askSteps(q, asker, ...args));
 }
 
-export function askPg(db: Db, asker: QuestionAsker, ...args: AskArgs): Promise<Asked> {
-  return db.transaction((q) => askSteps(q, asker, ...args));
-}
-
 export async function answer(
   db: Database,
   reply: QuestionReply,
@@ -55,14 +51,6 @@ export function answerQuestion(
   input: Parameters<typeof answerQuestionSteps>[2],
 ): Promise<StoredQuestion | null> {
   return answerQuestionPg(sqliteDb(db), id, input);
-}
-
-export function answerQuestionPg(
-  db: Db,
-  id: string,
-  input: Parameters<typeof answerQuestionSteps>[2],
-): Promise<StoredQuestion | null> {
-  return db.transaction((q) => answerQuestionSteps(q, id, input));
 }
 
 export function answerQuestionPg(
