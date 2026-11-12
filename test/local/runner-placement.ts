@@ -288,7 +288,24 @@ export async function probeRunnerPlacement(
       }),
     );
     assert(!(await ids()).includes("second"));
-    const fencedSignedOut = await start("second", "prepare");
+    const onlySecond = async (place: () => Promise<string>) => {
+      const others = db
+        .query<{ id: string; ready: number }, []>(
+          "SELECT runner_id AS id, ready FROM runner_agent_policy WHERE runner_id<>'second'",
+        )
+        .all();
+      db.run("UPDATE runner_agent_policy SET ready=0 WHERE runner_id<>'second'");
+      try {
+        return await place();
+      } finally {
+        for (const other of others)
+          db.run("UPDATE runner_agent_policy SET ready=? WHERE runner_id=?", [
+            other.ready,
+            other.id,
+          ]);
+      }
+    };
+    const fencedSignedOut = await onlySecond(() => start("second", "prepare"));
     await sqliteDb(db).transaction((q) =>
       placement.finishedSteps(q, {
         commandId: fencedSignedOut,
@@ -298,7 +315,7 @@ export async function probeRunnerPlacement(
       }),
     );
     assert(!(await ids()).includes("second"));
-    const login = await start("second", "prepare");
+    const login = await onlySecond(() => start("second", "prepare"));
     await sqliteDb(db).transaction((q) =>
       placement.finishedSteps(q, {
         commandId: login,
