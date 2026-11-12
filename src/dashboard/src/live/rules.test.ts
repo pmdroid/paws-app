@@ -2,7 +2,6 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Database } from "bun:sqlite";
 import {
   applyWorkItemEvent,
   approveCloseoutBypassChecks,
@@ -12,23 +11,22 @@ import {
   finishCloseoutProgress,
   insertLinkAsk,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   saveCloseoutBypassChecks,
   upsertCloseoutStep,
   type CloseoutStepWrite,
-  sqliteDb,
+  type Db,
 } from "../../../db";
 import { parseIssueDetailResponse, parseIssueListResponse } from "../contract";
 import { handleStatusRequest } from "../engine";
 import { createLiveStatusProvider } from "./provider";
+import { seed as insertRows } from "../../../../test/dialects";
+import { tempStore } from "../../../../test/pglite";
 
-const open: Database[] = [];
+const open: (() => Promise<void>)[] = [];
 const homes: string[] = [];
 
-afterEach(() => {
-  for (const db of open) db.close();
-  open.length = 0;
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
 });
 
@@ -43,10 +41,9 @@ const PROBE_SHA = "sha256:" + "a".repeat(64);
  * probe as a command step with `probeArgv`, an evidence record listing the probe's hash, a rule
  * whose paths matched nothing, and the bypass ask Paws opened for the failed rules.
  */
-async function seed(): Promise<{ db: Database; home: string }> {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  open.push(db);
+async function seed(): Promise<{ db: Db; home: string }> {
+  const { db, close } = await tempStore();
+  open.push(close);
   const home = mkdtempSync(join(tmpdir(), "paws-rules-"));
   homes.push(home);
   const item = await insertQueuedItem(db, {
@@ -55,8 +52,8 @@ async function seed(): Promise<{ db: Database; home: string }> {
     sessionKey: "ses_7",
     now: NOW,
   });
-  await beginImplementRun(sqliteDb(db), item.id, NOW);
-  await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
+  await beginImplementRun(db, item.id, NOW);
+  await applyWorkItemEvent(db, item.id, "blocking_question");
   const identity = {
     taskId: item.id,
     base: BASE,
@@ -101,7 +98,7 @@ async function seed(): Promise<{ db: Database; home: string }> {
     step("test", "passed", 4, false, 0),
   ];
   for (const entry of steps) {
-    await upsertCloseoutStep(sqliteDb(db), item.id, identity, entry, NOW);
+    await upsertCloseoutStep(db, item.id, identity, entry, NOW);
     if (entry.evidencePath === null) continue;
     const file = join(home, "closeout", "evidence", item.id, ...entry.evidencePath.split("/"));
     mkdirSync(dirname(file), { recursive: true });
@@ -119,8 +116,8 @@ async function seed(): Promise<{ db: Database; home: string }> {
       }),
     );
   }
-  await finishCloseoutProgress(sqliteDb(db), item.id, identity, "exhausted", NOW + 2_000);
-  await enqueueOutbox(sqliteDb(db), {
+  await finishCloseoutProgress(db, item.id, identity, "exhausted", NOW + 2_000);
+  await enqueueOutbox(db, {
     target: "linear",
     op: "activity",
     orderingKey: "ses_7",
@@ -133,11 +130,18 @@ async function seed(): Promise<{ db: Database; home: string }> {
     now: NOW + 2_000,
   });
   const ask = async (questionId: string, checkId: string, at: number, status: string) => {
-    db.run(
-      "INSERT INTO question (id, item_id, session_id, kind, body, status, created_at) VALUES (?, ?, 'ses_7', 'link', 'Closeout needs your decision', ?, ?)",
-      [questionId, item.id, status, at],
+    await insertRows(db, (q) =>
+      q.orm.insert(q.t.question).values({
+        id: questionId,
+        itemId: item.id,
+        sessionId: "ses_7",
+        kind: "link",
+        body: "Closeout needs your decision",
+        status,
+        createdAt: at,
+      }),
     );
-    await insertLinkAsk(sqliteDb(db), {
+    await insertLinkAsk(db, {
       questionId,
       itemId: item.id,
       kind: "bypass",
@@ -148,18 +152,18 @@ async function seed(): Promise<{ db: Database; home: string }> {
       answerers: ["delegator"],
       createdAt: at,
     });
-    await saveCloseoutBypassChecks(sqliteDb(db), questionId, [
+    await saveCloseoutBypassChecks(db, questionId, [
       { id: checkId, kind: "rule", state: "failed", attempt: 1, message: "probe exited 1" },
     ]);
   };
   await ask("q-bypassed", "restart-and-ask-from-loop", NOW + 3_000, "answered");
-  await approveCloseoutBypassChecks(sqliteDb(db), "q-bypassed", {
+  await approveCloseoutBypassChecks(db, "q-bypassed", {
     checks: [{ checkId: "restart-and-ask-from-loop", reason: "The loop owns this call already." }],
     approvedBy: "user-1",
     approvedByName: "Ada Lovelace",
     now: NOW + 4_000,
   });
-  await closeLinkAsk(sqliteDb(db), "q-bypassed", { reason: "cancelled", now: NOW + 4_000 });
+  await closeLinkAsk(db, "q-bypassed", { reason: "cancelled", now: NOW + 4_000 });
   await ask("q-waiting", "api-contract", NOW + 5_000, "open");
   return { db, home };
 }
@@ -168,7 +172,7 @@ describe("rule results in the issue resources", () => {
   test("the list summarizes each rule as a check of kind rule", async () => {
     const { db, home } = await seed();
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-      store: sqliteDb(db),
+      store: db,
       env: {},
       closeoutHome: home,
     });
@@ -185,7 +189,7 @@ describe("rule results in the issue resources", () => {
   test("the item detail carries each rule's probe hash, exit code, duration and decision", async () => {
     const { db, home } = await seed();
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues/ENG-7"), {
-      store: sqliteDb(db),
+      store: db,
       env: {},
       closeoutHome: home,
     });
@@ -225,7 +229,7 @@ describe("rule results in the issue resources", () => {
 
   test("a rule's probe output loads like a check's log", async () => {
     const { db, home } = await seed();
-    const provider = createLiveStatusProvider(sqliteDb(db), { pawsHome: home });
+    const provider = createLiveStatusProvider(db, { pawsHome: home });
     expect(
       await provider.checkLog({ itemId: "ENG-7", attempt: 1, checkId: "api-contract", run: null }),
     ).toEqual({ stdout: "", stderr: "" });
@@ -233,7 +237,7 @@ describe("rule results in the issue resources", () => {
 
   test("without the evidence record the probe hash is null", async () => {
     const { db } = await seed();
-    const detail = await createLiveStatusProvider(sqliteDb(db), { env: {} }).issue("ENG-7");
+    const detail = await createLiveStatusProvider(db, { env: {} }).issue("ENG-7");
     expect(detail?.verdicts[0]?.checks[0]?.probeSha256).toBeNull();
   });
 });

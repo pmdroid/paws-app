@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
 import {
   appendCloseoutOutput,
   applyWorkItemEvent,
@@ -8,40 +7,40 @@ import {
   enterMergeQueue,
   insertLinkAsk,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   saveCandidateRisk,
   upsertCloseoutStep,
-  sqliteDb,
+  type Db,
 } from "../../../db";
 import { parseOverviewResponse, type OverviewResponse } from "../contract";
 import { render } from "../client/render";
 import { LINK_ASK_ANCHORS } from "../client/link-ask";
 import { createLiveStatusProvider } from "./provider";
+import { seed, withoutForeignKeys } from "../../../../test/dialects";
+import { tempStore } from "../../../../test/pglite";
+import { queriesDuring } from "../../../../test/query-log";
 
 const NOW = 1_700_000_000_000;
 const HEAD = "7f65200aa1b2c3d4";
 
-const open: Database[] = [];
-afterEach(() => {
-  for (const db of open.splice(0)) db.close();
+const open: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
 });
 
-function database(): Database {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  open.push(db);
+async function database() {
+  const { db, close } = await tempStore();
+  open.push(close);
   return db;
 }
 
-async function fixture(): Promise<Database> {
-  const db = database();
+async function fixture(): Promise<Db> {
+  const db = await database();
   await insertQueuedItem(db, { id: "ENG-1", title: "Queued", sessionKey: "s1", now: NOW - 9_000 });
   await insertQueuedItem(db, { id: "ENG-2", title: "Running", sessionKey: "s1", now: NOW - 8_000 });
-  await beginImplementRun(sqliteDb(db), "ENG-2", NOW - 7_900);
+  await beginImplementRun(db, "ENG-2", NOW - 7_900);
   const identity = { taskId: "ENG-2", base: "b".repeat(40), head: HEAD, policyDigest: "sha256:p" };
   await upsertCloseoutStep(
-    sqliteDb(db),
+    db,
     "ENG-2",
     { ...identity, policyPath: null },
     {
@@ -66,7 +65,7 @@ async function fixture(): Promise<Database> {
     NOW - 6_900,
   );
   await appendCloseoutOutput(
-    sqliteDb(db),
+    db,
     "ENG-2",
     { ...identity, policyPath: null },
     "test",
@@ -76,20 +75,27 @@ async function fixture(): Promise<Database> {
     NOW - 6_900,
   );
   await insertQueuedItem(db, { id: "ENG-3", title: "Merging", sessionKey: "s1", now: NOW - 7_000 });
-  await beginImplementRun(sqliteDb(db), "ENG-3", NOW - 6_900);
-  await enterMergeQueue(sqliteDb(db), "ENG-3", {
+  await beginImplementRun(db, "ENG-3", NOW - 6_900);
+  await enterMergeQueue(db, "ENG-3", {
     phase: "merge_queue",
     baseSha: "b".repeat(40),
     wipCommit: "c".repeat(40),
   });
   await insertQueuedItem(db, { id: "ENG-4", title: "Risky", sessionKey: "s1", now: NOW - 6_000 });
-  await beginImplementRun(sqliteDb(db), "ENG-4", NOW - 5_900);
-  await applyWorkItemEvent(sqliteDb(db), "ENG-4", "blocking_question");
-  db.run(
-    "INSERT INTO question (id, item_id, session_id, kind, body, status, created_at) VALUES ('q-risk', 'ENG-4', 's1', 'link', 'High-risk changes', 'open', ?)",
-    [NOW - 5_000],
+  await beginImplementRun(db, "ENG-4", NOW - 5_900);
+  await applyWorkItemEvent(db, "ENG-4", "blocking_question");
+  await seed(db, (q) =>
+    q.orm.insert(q.t.question).values({
+      id: "q-risk",
+      itemId: "ENG-4",
+      sessionId: "s1",
+      kind: "link",
+      body: "High-risk changes",
+      status: "open",
+      createdAt: NOW - 5_000,
+    }),
   );
-  await insertLinkAsk(sqliteDb(db), {
+  await insertLinkAsk(db, {
     questionId: "q-risk",
     itemId: "ENG-4",
     kind: "risk",
@@ -100,7 +106,7 @@ async function fixture(): Promise<Database> {
     answerers: ["delegator"],
     createdAt: NOW - 5_000,
   });
-  await saveCandidateRisk(sqliteDb(db), {
+  await saveCandidateRisk(db, {
     itemId: "ENG-4",
     head: HEAD,
     base: "base",
@@ -114,9 +120,9 @@ async function fixture(): Promise<Database> {
     sessionKey: "s1",
     now: NOW - 4_000,
   });
-  await beginImplementRun(sqliteDb(db), "ENG-5", NOW - 3_900);
-  await applyWorkItemEvent(sqliteDb(db), "ENG-5", "turn_ended");
-  await enqueueJob(sqliteDb(db), {
+  await beginImplementRun(db, "ENG-5", NOW - 3_900);
+  await applyWorkItemEvent(db, "ENG-5", "turn_ended");
+  await enqueueJob(db, {
     queue: "run.reverify",
     payload: { itemId: "ENG-5", reviewerFault: "reviewer-key" },
     runAt: NOW + 900_000,
@@ -129,7 +135,7 @@ async function fixture(): Promise<Database> {
       sessionKey: "s1",
       now: NOW - 2_000,
     });
-    await applyWorkItemEvent(sqliteDb(db), id, "cancel", { now: NOW - 1_000 });
+    await applyWorkItemEvent(db, id, "cancel", { now: NOW - 1_000 });
   }
   return db;
 }
@@ -148,19 +154,10 @@ function section(html: string, heading: string, next: string): string {
   return html.slice(html.indexOf(`id="${heading}"`), html.indexOf(`id="${next}"`));
 }
 
-function recordSql(db: Database): string[] {
-  const statements: string[] = [];
-  const query = db.query.bind(db);
-  const prepare = db.prepare.bind(db);
-  db.query = ((sql: string) => (statements.push(sql), query(sql))) as typeof db.query;
-  db.prepare = ((sql: string) => (statements.push(sql), prepare(sql))) as typeof db.prepare;
-  return statements;
-}
-
 describe("overview resource", () => {
   test("draws Overview from its own resource", async () => {
     const db = await fixture();
-    const live = createLiveStatusProvider(sqliteDb(db), { now: () => new Date(NOW), env: {} });
+    const live = createLiveStatusProvider(db, { now: () => new Date(NOW), env: {} });
     const parsed = parseOverviewResponse(JSON.parse(JSON.stringify(await live.overview())));
     if (!parsed.ok) throw new Error(parsed.error);
     expect(overviewHtml(parsed.response)).toContain('id="attention-heading"');
@@ -179,7 +176,7 @@ describe("overview resource", () => {
 
   test("keeps the risk decision card anchor and does not call a held reviewer check failed", async () => {
     const db = await fixture();
-    const overview = await createLiveStatusProvider(sqliteDb(db), {
+    const overview = await createLiveStatusProvider(db, {
       now: () => new Date(NOW),
       env: {},
     }).overview();
@@ -208,14 +205,16 @@ describe("overview resource", () => {
 
   test("reads no check output, evidence, CI rounds, agent Closeout or merge queue detail", async () => {
     const db = await fixture();
-    const statements = recordSql(db);
-    const live = createLiveStatusProvider(sqliteDb(db), { now: () => new Date(NOW), env: {} });
-    const body = JSON.stringify(await live.overview());
-    const overview = statements.splice(0);
+    const live = createLiveStatusProvider(db, { now: () => new Date(NOW), env: {} });
+    let body = "";
+    const overview = await queriesDuring(db, async () => {
+      body = JSON.stringify(await live.overview());
+    });
     // The issue pages and the merge queue do read those tables.
-    for (const issue of (await live.issues()).issues) await live.issue(issue.id);
-    await live.mergeQueue();
-    const detail = statements.splice(0);
+    const detail = await queriesDuring(db, async () => {
+      for (const issue of (await live.issues()).issues) await live.issue(issue.id);
+      await live.mergeQueue();
+    });
     // A whole closeout_step row, as raw SQL or as Drizzle writes it.
     const wholeStep = /SELECT \* FROM closeout_step|"stdout".* from "closeout_step"/s;
     const unrelated = [
@@ -241,7 +240,7 @@ describe("overview resource", () => {
   test("lists only the reader's sessions", async () => {
     const db = await fixture();
     await insertQueuedItem(db, { id: "ENG-9", title: "Elsewhere", sessionKey: "s2", now: NOW });
-    const mine = await createLiveStatusProvider(sqliteDb(db), {
+    const mine = await createLiveStatusProvider(db, {
       now: () => new Date(NOW),
       env: {},
       sessionIds: ["s2"],
@@ -252,34 +251,43 @@ describe("overview resource", () => {
   });
 
   test("setup reads which first-run steps are done", async () => {
-    const db = database();
+    const db = await database();
     const read = () =>
-      createLiveStatusProvider(sqliteDb(db), { now: () => new Date(NOW), env: {} }).overview();
+      createLiveStatusProvider(db, { now: () => new Date(NOW), env: {} }).overview();
     expect((await read()).setup).toEqual({
       github: false,
       runner: false,
       agent: false,
       delegated: false,
     });
-    db.run("PRAGMA foreign_keys=OFF");
-    db.run(
-      `INSERT INTO workspace_github_connection(workspace_id,generation,secret_id,installation_id,repositories)
-       VALUES('ws',1,'secret-1','42','["pmdroid/paws-app"]')`,
+    await withoutForeignKeys(db);
+    const runner = { workspaceId: "ws", ownerUserId: "owner", status: "active", createdAt: 0 };
+    await seed(
+      db,
+      (q) =>
+        q.orm.insert(q.t.workspaceGithubConnection).values({
+          workspaceId: "ws",
+          generation: 1,
+          secretId: "secret-1",
+          installationId: "42",
+          repositories: '["pmdroid/paws-app"]',
+        }),
+      (q) =>
+        q.orm.insert(q.t.runner).values([
+          { ...runner, id: "box", name: "box" },
+          { ...runner, id: "old", name: "old", status: "revoked", revokedAt: 1 },
+        ]),
+      (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: "old", agent: "claude", ready: 1 }),
     );
-    db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES('box','ws','owner','box','active',0)",
-    );
-    db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,revoked_at) VALUES('old','ws','owner','old','revoked',0,1)",
-    );
-    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('old','claude',1)");
     expect((await read()).setup).toEqual({
       github: true,
       runner: true,
       agent: false,
       delegated: false,
     });
-    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('box','claude',1)");
+    await seed(db, (q) =>
+      q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: "box", agent: "claude", ready: 1 }),
+    );
     await insertQueuedItem(db, { id: "ENG-1", title: "First", sessionKey: "s1", now: NOW });
     expect((await read()).setup).toEqual({
       github: true,
@@ -290,9 +298,9 @@ describe("overview resource", () => {
   });
 
   test("the parser rejects an overview without setup", async () => {
-    const db = database();
+    const db = await database();
     const body = JSON.parse(
-      JSON.stringify(await createLiveStatusProvider(sqliteDb(db), { env: {} }).overview()),
+      JSON.stringify(await createLiveStatusProvider(db, { env: {} }).overview()),
     );
     expect(parseOverviewResponse(body).ok).toBe(true);
     delete body.setup;
