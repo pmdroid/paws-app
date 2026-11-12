@@ -69,6 +69,11 @@ export function CommandPalette({ onNavigate }: { onNavigate(path: string): void 
     setActive(0);
   }, [open]);
 
+  useEffect(() => {
+    if (open)
+      document.getElementById(`${listbox}-${current}`)?.scrollIntoView?.({ block: "nearest" });
+  }, [open, listbox, current]);
+
   const choose = (item: PaletteItem | undefined) => {
     if (!item) return;
     navigated.current = true;

@@ -78,8 +78,12 @@ test("Ctrl K opens the palette, Down then Enter opens the second item and Escape
   const options = window.document.querySelectorAll('[role="option"]');
   expect(input.getAttribute("aria-activedescendant")).toBe(options[0]!.id);
 
+  const scrolled: string[] = [];
+  for (const option of options)
+    Reflect.set(option, "scrollIntoView", () => scrolled.push(option.id));
   await press(input, "ArrowDown");
   expect(input.getAttribute("aria-activedescendant")).toBe(options[1]!.id);
+  expect(scrolled).toEqual([options[1]!.id]);
   await press(input, "Enter");
   expect(paths).toEqual([paletteItems("")[1]!.path]);
   expect(dialog()).toBeNull();
