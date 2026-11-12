@@ -331,24 +331,33 @@ test("a job enqueued after the loop read its next run time wakes it before the p
   await close();
 });
 
-test("a job enqueued while the loop sleeps starts within 50ms", async () => {
+async function eventually(check: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (check()) return;
+    await Bun.sleep(10);
+  }
+}
+
+test("a job enqueued while the loop sleeps starts without waiting for the poll", async () => {
   const { db, close } = await tempStore();
   const loop = new JobLoop(db, systemClock, { pollMs: 60_000 });
-  let startedAt = 0;
+  let started = false;
   loop.register("work", () => {
-    startedAt = Date.now();
+    started = true;
   });
+  let sleeps = 0;
+  const untilAborted = (_ms: number, signal?: AbortSignal) =>
+    new Promise<void>((resolve) => {
+      sleeps += 1;
+      signal?.addEventListener("abort", () => resolve(), { once: true });
+    });
   const controller = new AbortController();
-  const running = loop.run(controller.signal);
-  await Bun.sleep(20);
-  const enqueuedAt = Date.now();
-  await enqueueJob(db, { queue: "work", now: enqueuedAt });
-  for (let attempt = 0; attempt < 40; attempt++) {
-    if (startedAt !== 0) break;
-    await Bun.sleep(1);
-  }
-  expect(startedAt).toBeGreaterThan(0);
-  expect(startedAt - enqueuedAt).toBeLessThan(50);
+  const running = loop.run(controller.signal, untilAborted);
+  await eventually(() => sleeps > 0);
+  expect(sleeps).toBe(1);
+  await enqueueJob(db, { queue: "work", now: Date.now() });
+  await eventually(() => started);
+  expect(started).toBe(true);
   controller.abort();
   await running;
   await close();
