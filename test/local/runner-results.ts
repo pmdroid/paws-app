@@ -2,17 +2,15 @@ import assert from "node:assert/strict";
 import { createPublicKey, generateKeyPairSync } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { and, asc, count, eq } from "drizzle-orm";
 import {
   beginImplementRun,
   bindLinearSessionTask,
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
-  sqliteDb,
 } from "../../src/db";
 import { createRunnerControl } from "../../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../../src/runner-identity";
@@ -25,22 +23,23 @@ import {
 import { createRunnerResults } from "../../src/runner-results";
 import { createRunnerWork } from "../../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
+import { seed } from "../dialects";
+import { tempStore } from "../pglite";
 
 type Observe = (name: string, passed: boolean, observed: unknown) => void;
 export async function probeRunnerResults(root: string, observe: Observe) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
   try {
     const now = Date.now();
-    const userId = await putWorkspaceUser(sqliteDb(db), {
+    const userId = await putWorkspaceUser(db, {
       id: workspaceId(),
       linearUserId: "owner",
       name: "Owner",
       email: "owner@example.invalid",
     });
-    const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "fixture-org", now);
-    const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+    const bootstrap = await issueWorkspaceBootstrap(db, "fixture-org", now);
+    const workspace = await consumeWorkspaceBootstrap(db, {
       id: workspaceId(),
       organizationId: "fixture-org",
       name: "Fixture",
@@ -51,7 +50,7 @@ export async function probeRunnerResults(root: string, observe: Observe) {
     const authorityRoot = join(root, "issuer");
     const authority = await initializeRunnerAuthority(authorityRoot);
     const control = createRunnerControl({
-      store: sqliteDb(db),
+      store: db,
       authority,
       certificateRoot: authorityRoot,
       disconnect() {},
@@ -69,14 +68,18 @@ export async function probeRunnerResults(root: string, observe: Observe) {
         ).token,
       })
     ).runnerId;
-    db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
+    await db.run(function* (q) {
+      yield* q.exec(
+        q.orm.update(q.t.runner).set({ status: "active" }).where(eq(q.t.runner.id, runnerId)),
+      );
+    });
     const item = await insertQueuedItem(db, {
       id: "result-item",
       now,
       sessionKey: "result-session",
     });
-    const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
-    await recordLinearInstallation(sqliteDb(db), {
+    const { run } = await beginImplementRun(db, item.id, now);
+    await recordLinearInstallation(db, {
       organizationId: "fixture-org",
       oauthClientId: "fixture",
       appUserId: "app",
@@ -84,7 +87,7 @@ export async function probeRunnerResults(root: string, observe: Observe) {
       teamId: "team",
       observedAtMs: now,
     });
-    await bindLinearSessionTask(sqliteDb(db), "result-session", item.delegationId, {
+    await bindLinearSessionTask(db, "result-session", item.delegationId, {
       actorId: "owner",
     });
     const repository = {
@@ -93,20 +96,22 @@ export async function probeRunnerResults(root: string, observe: Observe) {
       remoteUrl: "https://github.com/fixture/repository.git",
       baseSha: "a".repeat(40),
     };
-    await bindWorkItemRepository(sqliteDb(db), item.id, repository);
-    db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-      workspace.id,
-      "fixture/repository",
-      "team",
-    ]);
+    await bindWorkItemRepository(db, item.id, repository);
+    await seed(db, (q) =>
+      q.orm.insert(q.t.workspaceRepository).values({
+        workspaceId: workspace.id,
+        repository: "fixture/repository",
+        teamId: "team",
+      }),
+    );
     const keys = generateKeyPairSync("ed25519");
     const work = createRunnerWork({
-      store: sqliteDb(db),
+      store: db,
       keyId: "fixture",
       privateKey: keys.privateKey,
       eventKey: Buffer.alloc(32, 7),
     });
-    const results = createRunnerResults({ store: sqliteDb(db), work });
+    const results = createRunnerResults({ store: db, work });
     let generation = 0;
     function verify(envelope: unknown) {
       const verified = verifyRunnerCommand(envelope, {
@@ -215,16 +220,22 @@ export async function probeRunnerResults(root: string, observe: Observe) {
         event: { type: "question", text: "Which fixture?", options: ["A", "B"] },
       });
       assert.equal((await results.events(run.id, generation, 1)).length, 1);
-      const stored = db
-        .query<{ payload: string; type: string }, [string, number]>(
-          "SELECT payload,type FROM runner_event WHERE run_id=? AND generation=? ORDER BY sequence",
-        )
-        .all(run.id, generation);
+      const stored = await db.run((q) =>
+        q.all(
+          q.orm
+            .select({ payload: q.t.runnerEvent.payload, type: q.t.runnerEvent.type })
+            .from(q.t.runnerEvent)
+            .where(
+              and(eq(q.t.runnerEvent.runId, run.id), eq(q.t.runnerEvent.generation, generation)),
+            )
+            .orderBy(asc(q.t.runnerEvent.sequence)),
+        ),
+      );
       assert.deepEqual(
         stored.map((row) => row.type),
         ["progress", "question"],
       );
-      assert(!stored.some((row) => /Working|Which fixture/.test(row.payload)));
+      assert(!stored.some((row) => /Working|Which fixture/.test(JSON.stringify(row.payload))));
       assert.deepEqual(
         (await results.events(run.id, generation, 0)).map((row) => row.event),
         [
@@ -281,14 +292,20 @@ export async function probeRunnerResults(root: string, observe: Observe) {
       assert.deepEqual(await results.answers({ ...access, after: 4 }), []);
       if (type === "run") {
         assert.equal(await results.deliverFollowUp(item.id, "Also cover the empty state"), false);
-        db.run(
-          "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?)",
-          [runnerId, "0.1.11", Date.now()],
+        await seed(db, (q) =>
+          q.orm
+            .insert(q.t.runnerHostStatus)
+            .values({ runnerId, runnerVersion: "0.1.11", reportedAt: Date.now() }),
         );
         assert.equal(await results.deliverFollowUp(item.id, "Also cover the empty state"), false);
-        db.run("UPDATE runner_host_status SET runner_version='0.1.12' WHERE runner_id=?", [
-          runnerId,
-        ]);
+        await db.run(function* (q) {
+          yield* q.exec(
+            q.orm
+              .update(q.t.runnerHostStatus)
+              .set({ runnerVersion: "0.1.12" })
+              .where(eq(q.t.runnerHostStatus.runnerId, runnerId)),
+          );
+        });
         assert.equal(await results.deliverFollowUp(item.id, "Also cover the empty state"), true);
         const followUps = await results.fetch(
           new Request(`https://runner.invalid/v1/runs/${run.id}/follow-ups`, {
@@ -347,28 +364,16 @@ export async function probeRunnerResults(root: string, observe: Observe) {
       );
       await work.finish(run.id, generation);
     }
-    db.close();
-    const reopened = openDatabase(join(root, "paws.sqlite"));
-    try {
-      assert.equal(
-        reopened.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM runner_result").get()!
-          .count,
-        2,
+    const receipts = await db.run(function* (q) {
+      const [results] = yield* q.all(q.orm.select({ count: count() }).from(q.t.runnerResult));
+      const [answers] = yield* q.all(
+        q.orm.select({ count: count() }).from(q.t.runnerQuestionAnswer),
       );
-      assert.equal(
-        reopened
-          .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM runner_question_answer")
-          .get()!.count,
-        6,
-      );
-      observe("result and answer receipts persist after SQLite reopen", true, {
-        results: 2,
-        answers: 6,
-      });
-    } finally {
-      reopened.close();
-    }
+      return { results: results!.count, answers: answers!.count };
+    });
+    assert.deepEqual(receipts, { results: 2, answers: 6 });
+    observe("result and answer receipts persist", true, receipts);
   } finally {
-    db.close();
+    await close();
   }
 }
