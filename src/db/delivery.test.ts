@@ -166,6 +166,7 @@ describe("critical Linear delivery", () => {
     let maximum = 0;
     const events: string[] = [];
     const progress = await enqueue("progress");
+    const started = deferred();
     dispatcher.setHandler(async (row, context) => {
       if (row.orderingKey !== "A") {
         events.push(row.idempotencyKey);
@@ -175,7 +176,8 @@ describe("critical Linear delivery", () => {
       maximum = Math.max(maximum, concurrent);
       try {
         events.push(row.idempotencyKey);
-        if (row.idempotencyKey === "progress")
+        if (row.idempotencyKey === "progress") {
+          started.resolve();
           await new Promise<void>((_resolve, reject) => {
             context.signal.addEventListener(
               "abort",
@@ -186,11 +188,13 @@ describe("critical Linear delivery", () => {
               { once: true },
             );
           });
+        }
       } finally {
         concurrent -= 1;
       }
     });
     await dispatcher.tick();
+    await started.promise;
     await enqueue("final", { payload: { kind: "response", body: "Done" } });
     await enqueue("other", { orderingKey: "B" });
     await dispatcher.tick();
@@ -207,13 +211,18 @@ describe("critical Linear delivery", () => {
   test("a transport ignoring abort remains serialized beyond the lease and records uncertainty", async () => {
     const { db, clock, dispatcher, enqueue } = await setup();
     const gate = deferred();
+    const started = deferred();
     const delivered: string[] = [];
     const progress = await enqueue("progress");
     dispatcher.setHandler(async (row) => {
       delivered.push(row.idempotencyKey);
-      if (row.idempotencyKey === "progress") await gate.promise;
+      if (row.idempotencyKey === "progress") {
+        started.resolve();
+        await gate.promise;
+      }
     });
     await dispatcher.tick();
+    await started.promise;
     await enqueue("final", { payload: { kind: "response", body: "Done" } });
     clock.advance(120000);
     expect(await dispatcher.tick()).toHaveLength(0);
