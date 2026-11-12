@@ -10,14 +10,12 @@ import {
   insertQueuedItem,
   applyWorkItemEvent,
   listOutbox,
-  migrate,
-  openDatabase,
   saveTaskMode,
-  sqliteDb,
 } from "../src/db";
 import { classifyTask, parseTaskClassification } from "../src/loop";
 import { createLiveStatusProvider } from "../src/dashboard";
-import { tempDb, tempHome } from "./helpers";
+import { tempHome, withHomeStore } from "./helpers";
+import { tempStore } from "./pglite";
 
 test("task classification accepts supported modes and explicit clarification", () => {
   expect(parseTaskClassification('{"mode":"code"}')).toEqual({ mode: "code" });
@@ -108,73 +106,60 @@ test.each(["code", "answer", "artifact", "plan"] as const)(
 );
 
 test("answer mode and full prepared response survive reopen as a terminal completion", async () => {
-  const file = join(tempHome(), "paws.db");
-  const db = openDatabase(file);
-  migrate(db);
-  const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-  await beginImplementRun(sqliteDb(db), item.id, 1);
-  await saveTaskMode(sqliteDb(db), item.id, "answer");
+  const home = tempHome();
   const response = "Full public answer. ".repeat(1_000);
-  await completeAnswerTask(sqliteDb(db), item.id, response);
-  db.close();
-  const restored = openDatabase(file);
-  try {
-    expect(await getTaskMode(sqliteDb(restored), item.id)).toBe("answer");
-    expect((await getWorkItem(sqliteDb(restored), item.id))?.state).toBe("completed");
-    expect(isTerminalWorkItemState((await getWorkItem(sqliteDb(restored), item.id))!.state)).toBe(
-      true,
-    );
-    const dashboard = await createLiveStatusProvider(sqliteDb(restored)).issues();
+  const item = await withHomeStore(home, async (db) => {
+    const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
+    await beginImplementRun(db, item.id, 1);
+    await saveTaskMode(db, item.id, "answer");
+    await completeAnswerTask(db, item.id, response);
+    return item;
+  });
+  await withHomeStore(home, async (restored) => {
+    expect(await getTaskMode(restored, item.id)).toBe("answer");
+    expect((await getWorkItem(restored, item.id))?.state).toBe("completed");
+    expect(isTerminalWorkItemState((await getWorkItem(restored, item.id))!.state)).toBe(true);
+    const dashboard = await createLiveStatusProvider(restored).issues();
     expect(dashboard.issues[0]?.state).toBe("completed");
     expect(dashboard.runs[0]?.state).toBe("done");
-    expect((await listOutbox(sqliteDb(restored), "session"))[0]?.payload).toEqual({
+    expect((await listOutbox(restored, "session"))[0]?.payload).toEqual({
       sessionId: "session",
       kind: "response",
       body: response,
     });
-    await expect(applyWorkItemEvent(sqliteDb(restored), item.id, "restart")).rejects.toThrow();
-  } finally {
-    restored.close();
-  }
+    await expect(applyWorkItemEvent(restored, item.id, "restart")).rejects.toThrow();
+  });
 });
 
 test.each(["code", "artifact"] as const)(
   "%s cannot complete at the answer boundary",
   async (mode) => {
-    const db = tempDb();
+    const { db, close } = await tempStore();
     try {
       const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-      await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
-      await saveTaskMode(sqliteDb(db), item.id, mode);
-      await expect(completeAnswerTask(sqliteDb(db), item.id, "Done")).rejects.toThrow(
-        "Only answer tasks",
-      );
-      expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("running");
-      expect(await listOutbox(sqliteDb(db))).toEqual([]);
-      await expect(saveTaskMode(sqliteDb(db), item.id, "answer")).rejects.toThrow(
-        "already selected",
-      );
+      await applyWorkItemEvent(db, item.id, "dispatched");
+      await saveTaskMode(db, item.id, mode);
+      await expect(completeAnswerTask(db, item.id, "Done")).rejects.toThrow("Only answer tasks");
+      expect((await getWorkItem(db, item.id))?.state).toBe("running");
+      expect(await listOutbox(db)).toEqual([]);
+      await expect(saveTaskMode(db, item.id, "answer")).rejects.toThrow("already selected");
     } finally {
-      db.close();
+      await close();
     }
   },
 );
 
 test("Stop and empty responses cannot complete an answer task", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
     const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-    await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
-    await saveTaskMode(sqliteDb(db), item.id, "answer");
-    await expect(completeAnswerTask(sqliteDb(db), item.id, " ")).rejects.toThrow(
-      "prepared response",
-    );
-    await applyWorkItemEvent(sqliteDb(db), item.id, "cancel");
-    await expect(completeAnswerTask(sqliteDb(db), item.id, "Done")).rejects.toThrow(
-      "no longer running",
-    );
-    expect(await listOutbox(sqliteDb(db))).toEqual([]);
+    await applyWorkItemEvent(db, item.id, "dispatched");
+    await saveTaskMode(db, item.id, "answer");
+    await expect(completeAnswerTask(db, item.id, " ")).rejects.toThrow("prepared response");
+    await applyWorkItemEvent(db, item.id, "cancel");
+    await expect(completeAnswerTask(db, item.id, "Done")).rejects.toThrow("no longer running");
+    expect(await listOutbox(db)).toEqual([]);
   } finally {
-    db.close();
+    await close();
   }
 });
