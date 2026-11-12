@@ -1,29 +1,28 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
-import { sqliteDb, applyWorkItemEvent, insertQueuedItem, migrate, openDatabase } from "../../../db";
+import { applyWorkItemEvent, insertQueuedItem, type Db } from "../../../db";
 import type { WorkItemEvent } from "../../../core";
 import { parseIssueListResponse, type IssueListResponse } from "../contract";
 import { createLiveStatusProvider } from "./provider";
 import { stateTotals } from "./state-times";
+import { tempStore } from "../../../../test/pglite";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
 const T0 = Date.parse("2026-10-28T00:00:00.000Z");
 
-const open: Database[] = [];
-afterEach(() => {
-  for (const db of open.splice(0)) db.close();
+const open: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
 });
 
-function database(): Database {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  open.push(db);
+async function database() {
+  const { db, close } = await tempStore();
+  open.push(close);
   return db;
 }
 
-async function issueList(db: Database, now: number): Promise<IssueListResponse> {
-  const provider = createLiveStatusProvider(sqliteDb(db), { now: () => new Date(now), env: {} });
+async function issueList(db: Db, now: number): Promise<IssueListResponse> {
+  const provider = createLiveStatusProvider(db, { now: () => new Date(now), env: {} });
   const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(await provider.issues())));
   if (!parsed.ok) throw new Error(parsed.error);
   return parsed.response;
@@ -31,7 +30,7 @@ async function issueList(db: Database, now: number): Promise<IssueListResponse> 
 
 /** Applies each event `minutes` after `start`. */
 async function walk(
-  db: Database,
+  db: Db,
   id: string,
   start: number,
   steps: [number, WorkItemEvent, ("restart" | "ask")?][],
@@ -39,10 +38,10 @@ async function walk(
   for (const [minutes, event, kind] of steps) {
     const now = start + minutes * MIN;
     if (kind === "restart")
-      await applyWorkItemEvent(sqliteDb(db), id, event, { kind, reason: "findings", now });
+      await applyWorkItemEvent(db, id, event, { kind, reason: "findings", now });
     else if (kind === "ask")
-      await applyWorkItemEvent(sqliteDb(db), id, event, { kind, reason: "budget", now });
-    else await applyWorkItemEvent(sqliteDb(db), id, event, { now });
+      await applyWorkItemEvent(db, id, event, { kind, reason: "budget", now });
+    else await applyWorkItemEvent(db, id, event, { now });
   }
 }
 
@@ -52,7 +51,7 @@ function minutesByState(states: { state: string; ms: number }[]): Record<string,
 
 describe("state times", () => {
   test("an item with a crash, a question, a rejected Closeout and a restart: its states add up to its age", async () => {
-    const db = database();
+    const db = await database();
     await insertQueuedItem(db, { id: "PAS-1", now: T0 });
     await walk(db, "PAS-1", T0, [
       [10, "dispatched"],
@@ -87,7 +86,7 @@ describe("state times", () => {
   });
 
   test("the current state counts up to now and a merged item stops at its merge", async () => {
-    const db = database();
+    const db = await database();
     await insertQueuedItem(db, { id: "PAS-2", now: T0 });
     await walk(db, "PAS-2", T0, [[5, "dispatched"]]);
     const at = async (now: number) =>
@@ -117,7 +116,7 @@ describe("state times", () => {
   });
 
   test("the last 24 hours: median and p90 from start to merge and the average per state", async () => {
-    const db = database();
+    const db = await database();
     const now = T0 + 24 * HOUR;
     // Ten items merged today, taking 10, 20, … 100 minutes: queued 5, verifying 2, merge queue 1.
     for (let k = 1; k <= 10; k += 1) {
@@ -160,7 +159,7 @@ describe("state times", () => {
   });
 
   test("no merged times while nothing merged in the last 24 hours", async () => {
-    const db = database();
+    const db = await database();
     await insertQueuedItem(db, { id: "PAS-3", now: T0 });
     expect((await issueList(db, T0 + HOUR)).mergedTimes).toBeNull();
   });

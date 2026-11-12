@@ -1,38 +1,37 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
+import { eq } from "drizzle-orm";
 import {
-  sqliteDb,
   applyWorkItemEvent,
   beginImplementRun,
   enterMergeQueue,
   insertQueuedItem,
-  migrate,
-  openDatabase,
+  type Db,
 } from "../../../db";
 import { parseIssueDetailResponse, parseIssueListResponse } from "../contract";
 import { createLiveStatusProvider, STATUS_RECENT_LIMIT, STATUS_RECENT_MS } from "./provider";
+import { seed } from "../../../../test/dialects";
+import { tempStore } from "../../../../test/pglite";
 
 const NOW = 1_700_000_000_000;
 
-const open: Database[] = [];
-afterEach(() => {
-  for (const db of open.splice(0)) db.close();
+const open: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
 });
 
-function database(): Database {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  open.push(db);
+async function database() {
+  const { db, close } = await tempStore();
+  open.push(close);
   return db;
 }
 
-async function finish(db: Database, id: string, at: number): Promise<void> {
+async function finish(db: Db, id: string, at: number): Promise<void> {
   await insertQueuedItem(db, { id, title: id, now: at - 1_000 });
-  await applyWorkItemEvent(sqliteDb(db), id, "cancel", { now: at });
+  await applyWorkItemEvent(db, id, "cancel", { now: at });
 }
 
-function provider(db: Database, sessionIds?: readonly string[]) {
-  return createLiveStatusProvider(sqliteDb(db), {
+function provider(db: Db, sessionIds?: readonly string[]) {
+  return createLiveStatusProvider(db, {
     now: () => new Date(NOW),
     env: {},
     ...(sessionIds === undefined ? {} : { sessionIds }),
@@ -41,7 +40,7 @@ function provider(db: Database, sessionIds?: readonly string[]) {
 
 describe("issue resources", () => {
   test("the list keeps every open issue and the 50 latest finished in a day; older issues open directly", async () => {
-    const db = database();
+    const db = await database();
     await insertQueuedItem(db, { id: "ENG-OPEN", title: "Open", now: NOW - 7 * STATUS_RECENT_MS });
     await finish(db, "ENG-OLD", NOW - STATUS_RECENT_MS - 60_000);
     for (let index = 0; index < STATUS_RECENT_LIMIT + 5; index += 1)
@@ -59,22 +58,22 @@ describe("issue resources", () => {
   });
 
   test("the list carries the snapshot's issue rows, runs and summaries and nothing else", async () => {
-    const db = database();
+    const db = await database();
     await insertQueuedItem(db, {
       id: "ENG-1",
       title: "Running",
       sessionKey: "s1",
       now: NOW - 9_000,
     });
-    await beginImplementRun(sqliteDb(db), "ENG-1", NOW - 8_000);
+    await beginImplementRun(db, "ENG-1", NOW - 8_000);
     await insertQueuedItem(db, {
       id: "ENG-2",
       title: "Merging",
       sessionKey: "s1",
       now: NOW - 7_000,
     });
-    await beginImplementRun(sqliteDb(db), "ENG-2", NOW - 6_000);
-    await enterMergeQueue(sqliteDb(db), "ENG-2", {
+    await beginImplementRun(db, "ENG-2", NOW - 6_000);
+    await enterMergeQueue(db, "ENG-2", {
       phase: "merge_queue",
       baseSha: "b".repeat(40),
       wipCommit: "c".repeat(40),
@@ -96,26 +95,34 @@ describe("issue resources", () => {
   });
 
   test("the detail names the current session and keeps the earlier one with when it ended", async () => {
-    const db = database();
+    const db = await database();
     const identify = (id: string) =>
-      db.run(
-        "UPDATE work_item SET linear_identifier = 'PAS-367', linear_issue_id = 'lin' WHERE id = ?",
-        [id],
+      seed(db, (q) =>
+        q.orm
+          .update(q.t.workItem)
+          .set({ linearIdentifier: "PAS-367", linearIssueId: "lin" })
+          .where(eq(q.t.workItem.id, id)),
       );
     await insertQueuedItem(db, { id: "OLD", title: "Keep runs", sessionKey: "earlier", now: 0 });
-    identify("OLD");
-    await beginImplementRun(sqliteDb(db), "OLD", NOW - 7_200_000);
-    db.run("UPDATE work_item SET state = 'cancelled' WHERE id = 'OLD'");
-    db.run("UPDATE run SET status = 'ended', updated_at = ? WHERE item_id = 'OLD'", [
-      NOW - 3_600_000,
-    ]);
+    await identify("OLD");
+    await beginImplementRun(db, "OLD", NOW - 7_200_000);
+    await seed(
+      db,
+      (q) =>
+        q.orm.update(q.t.workItem).set({ state: "cancelled" }).where(eq(q.t.workItem.id, "OLD")),
+      (q) =>
+        q.orm
+          .update(q.t.run)
+          .set({ status: "ended", updatedAt: NOW - 3_600_000 })
+          .where(eq(q.t.run.itemId, "OLD")),
+    );
     await insertQueuedItem(db, {
       id: "NEW",
       title: "Keep runs",
       sessionKey: "current",
       now: NOW - 1,
     });
-    identify("NEW");
+    await identify("NEW");
     const live = provider(db);
     const parsed = parseIssueDetailResponse(
       JSON.parse(JSON.stringify(await live.issue("PAS-367"))),
