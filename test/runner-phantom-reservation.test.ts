@@ -64,26 +64,21 @@ async function fixture() {
     certificateRoot: issuer,
     disconnect() {},
   });
-  const owner = {
-    workspaceId: workspace.id,
-    userId,
-    role: "admin" as const,
-    authenticatedAt: clock,
-    teamIds: [],
-  };
   const enroll = async (name: string, ready: number) => {
     const enrollment = { name, csr: (await createRunnerKey(join(root, name))).csr };
     const { runnerId } = await control.enroll({
       ...enrollment,
-      token: (await control.createEnrollment(owner, enrollment)).token,
+      token: (
+        await control.createEnrollment(
+          { workspaceId: workspace.id, userId, role: "admin", authenticatedAt: clock, teamIds: [] },
+          enrollment,
+        )
+      ).token,
     });
-    db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
-    db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);
-    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',?)", [
-      runnerId,
-      ready,
-    ]);
-    db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,1)", [runnerId]);
+    db.exec(`UPDATE runner SET status='active' WHERE id='${runnerId}';
+      INSERT INTO runner_policy(runner_id) VALUES('${runnerId}');
+      INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('${runnerId}','codex',${ready});
+      INSERT INTO runner_capacity(runner_id,capacity) VALUES('${runnerId}',1);`);
     return runnerId;
   };
   const agentbox = await enroll("agentbox", 1);
@@ -108,8 +103,7 @@ async function fixture() {
       throw new Error("This fixture does not return a candidate");
     },
   });
-  await work.heartbeat(agentbox, 1);
-  await work.heartbeat(goldbox, 1);
+  for (const id of [agentbox, goldbox]) await work.heartbeat(id, 1);
   let sequence = 0;
   const item = async (held = false) => {
     const id = `acme-${++sequence}`;
@@ -152,17 +146,11 @@ async function fixture() {
     });
   };
   const probe = async (runnerId: string) => {
-    const until = performance.now() + 5_000;
-    while (performance.now() < until) {
-      const found = (await work.commands(runnerId))
-        .map(
-          (envelope) =>
-            JSON.parse(Buffer.from(envelope.payload, "base64url").toString()) as RunnerCommand,
-        )
-        .find((command) => command.type === "probe");
-      if (found) return found;
-      await Bun.sleep(5);
-    }
+    for (const until = performance.now() + 5_000; performance.now() < until; await Bun.sleep(5))
+      for (const envelope of await work.commands(runnerId)) {
+        const command = JSON.parse(Buffer.from(envelope.payload, "base64url").toString());
+        if (command.type === "probe") return command as RunnerCommand;
+      }
     throw new Error(`no probe on ${runnerId}`);
   };
   return {
@@ -177,27 +165,30 @@ async function fixture() {
   };
 }
 
-async function failOnAgentbox(f: Awaited<ReturnType<typeof fixture>>, held = false) {
-  const failed = f.item(held);
+async function failOnAgentbox(f: Awaited<ReturnType<typeof fixture>>, fail = true) {
+  const failed = f.item(true);
+  void failed.catch(() => undefined);
   const command = await f.probe(f.agentbox);
-  await f.health.submit(f.agentbox, {
-    executionId: workspaceId(),
-    commandId: command.id,
-    role: "implementer",
-    stopReason: "end_turn",
-    timedOut: false,
-    cancelled: false,
-    authRequired: false,
-    agentExited: true,
-    errorMessage: "agent exited with code 1",
-  });
-  expect((await failed).errorMessage).toBe("agent exited with code 1");
+  if (fail) {
+    await f.health.submit(f.agentbox, {
+      executionId: workspaceId(),
+      commandId: command.id,
+      role: "implementer",
+      stopReason: "end_turn",
+      timedOut: false,
+      cancelled: false,
+      authRequired: false,
+      agentExited: true,
+      errorMessage: "agent exited with code 1",
+    });
+    expect((await failed).errorMessage).toBe("agent exited with code 1");
+  }
   f.db.run("UPDATE runner_agent_policy SET ready=1 WHERE runner_id=?", [f.goldbox]);
-  f.tick(120_000);
+  f.tick(90_000);
   await f.heartbeat(f.goldbox);
 }
 
-test("a run whose preflight failed on an offline runner does not count against another", async () => {
+test("a run held on B whose preflight failed on A, with A then offline, does not count against B", async () => {
   const f = await fixture();
   await failOnAgentbox(f);
   const next = f.item();
@@ -205,9 +196,9 @@ test("a run whose preflight failed on an offline runner does not count against a
   expect((await f.probe(f.goldbox)).type).toBe("probe");
 });
 
-test("a full runner's rejection names what fills it", async () => {
+test("a run held between commands keeps its slot, and the rejection names what fills it", async () => {
   const f = await fixture();
-  await failOnAgentbox(f, true);
+  await failOnAgentbox(f, false);
   const warn = spyOn(console, "warn").mockImplementation(() => undefined);
   try {
     await expect(f.item()).rejects.toBeInstanceOf(RunnerCapacityWait);

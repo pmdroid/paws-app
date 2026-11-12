@@ -627,22 +627,22 @@ export function createRemoteAgentRunner(options: {
       function* full(q: Q) {
         const runId = item!.currentRunId!;
         const { capacity, occupied } = yield* runnerOccupancySteps(q, runner.id, now(), runId);
-        const unassigned = (yield* unassignedSteps(q, runId)).get(runner.id) ?? 0;
+        const pending = (yield* unassignedSteps(q, runId)).get(runner.id) ?? 0;
         const between = yield* runnerSlotsHeldBetweenCommandsSteps(q, runner.id, now(), runId);
         const pinned = yield* pinnedSlotsReservedSteps(q, runner.id, itemId, now());
-        return occupied + unassigned + between + pinned < capacity
+        return occupied + pending + between + pinned < capacity
           ? null
-          : `${NO_FREE_CAPACITY} (work ${occupied}, unassigned ${unassigned}, between commands ${between}, pinned ${pinned} of ${capacity})`;
+          : `${NO_FREE_CAPACITY} (work ${occupied}, unassigned ${pending}, between commands ${between}, pinned ${pinned} of ${capacity})`;
       }
-      const busy = await store.run(full);
-      if (busy) {
-        rejected.push(`${runner.id}${busy}`);
+      const filled = await store.run(full);
+      if (filled) {
+        rejected.push(`${runner.id}${filled}`);
         continue;
       }
       try {
         const taken = await store.transaction(function* (q) {
-          const busy = yield* full(q);
-          if (busy) return busy;
+          const filledNow = yield* full(q);
+          if (filledNow) return filledNow;
           if (
             !(yield* q.transaction((inner) =>
               reserveRunnerSlotSteps(inner, {
