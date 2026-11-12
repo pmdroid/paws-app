@@ -1,5 +1,4 @@
 import { afterEach, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
 import { FakeClock } from "../src/core";
 import {
   accrueAwake,
@@ -12,76 +11,73 @@ import {
   listJobs,
   listWorkItemEventRows,
   markCloseoutAccepted,
-  migrate,
-  openDatabase,
   restartedFromMergeQueue,
   saveCheckpoint,
   savePlanProposal,
   saveTaskMode,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import { questionEffects, restart } from "../src/loop";
 import { answer, loopAsk } from "./questions";
 import { parseIssueListResponse } from "../src/dashboard";
 import { createLiveStatusProvider } from "../src/dashboard/src/live/provider";
+import { tempStore } from "./pglite";
 
 const MINUTE = 60_000;
-const open: Database[] = [];
-afterEach(() => {
-  for (const db of open.splice(0)) db.close();
+const open: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
 });
 
-function database(): Database {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  open.push(db);
+async function database() {
+  const { db, close } = await tempStore();
+  open.push(close);
   return db;
 }
 
-async function history(db: Database, itemId: string, fromVersion = 0): Promise<string[]> {
-  return (await listWorkItemEventRows(sqliteDb(db), itemId))
+async function history(db: Db, itemId: string, fromVersion = 0): Promise<string[]> {
+  return (await listWorkItemEventRows(db, itemId))
     .filter((row) => row.version > fromVersion)
     .map((row) => `${row.fromState} -${row.event}-> ${row.toState}`);
 }
 
-async function reply(db: Database, body: string, now: number) {
+async function reply(db: Db, body: string, now: number) {
   return await answer(
     db,
     { sessionId: "ses", deliveryId: `reply:${body}:${now}`, body, answeredBy: "pascal", now },
-    questionEffects(sqliteDb(db), { now }),
+    questionEffects(db, { now }),
   );
 }
 
 async function askedAtTimeLimit() {
   const clock = new FakeClock(Date.now());
-  const db = database();
+  const db = await database();
   const item = await insertQueuedItem(db, {
     id: "eng-7",
     sessionKey: "ses",
     limits: { fixes: 30 * MINUTE },
     now: clock.now(),
   });
-  await beginImplementRun(sqliteDb(db), item.id, clock.now());
+  await beginImplementRun(db, item.id, clock.now());
   const now = clock.now();
-  await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended", { now });
-  await applyWorkItemEvent(sqliteDb(db), item.id, "closeout_accepted", { now });
-  await markCloseoutAccepted(sqliteDb(db), item.id, "accepted");
-  await applyWorkItemEvent(sqliteDb(db), item.id, "restart", {
+  await applyWorkItemEvent(db, item.id, "turn_ended", { now });
+  await applyWorkItemEvent(db, item.id, "closeout_accepted", { now });
+  await markCloseoutAccepted(db, item.id, "accepted");
+  await applyWorkItemEvent(db, item.id, "restart", {
     kind: "restart",
     reason: "review",
     now,
   });
-  await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched", { now });
-  await saveCheckpoint(sqliteDb(db), item.id, {
+  await applyWorkItemEvent(db, item.id, "dispatched", { now });
+  await saveCheckpoint(db, item.id, {
     phase: "running",
     baseSha: "base",
     wipCommit: "accepted",
   });
-  await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
+  await accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
   clock.advance(31 * MINUTE);
-  await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
-  const request = (await listJobs(sqliteDb(db))).find((job) => job.queue === "item.ask")!
-    .payload as {
+  await accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
+  const request = (await listJobs(db)).find((job) => job.queue === "item.ask")!.payload as {
     body: string;
     options: string[];
   };
@@ -89,14 +85,14 @@ async function askedAtTimeLimit() {
     db,
     {
       itemId: item.id,
-      runId: (await getWorkItem(sqliteDb(db), item.id))!.currentRunId,
+      runId: (await getWorkItem(db, item.id))!.currentRunId,
       sessionId: "ses",
     },
     "time-limit",
     request.body,
     { options: request.options, now: clock.now() },
   );
-  const asked = (await getWorkItem(sqliteDb(db), item.id))!;
+  const asked = (await getWorkItem(db, item.id))!;
   expect(asked.state).toBe("awaiting_input");
   return { clock, db, itemId: item.id, askedAt: asked.version };
 }
@@ -110,7 +106,7 @@ test("Merge at the time limit records one acceptance, no agent turn, and no runn
   ]);
 
   clock.advance(5 * MINUTE);
-  const provider = createLiveStatusProvider(sqliteDb(db), {
+  const provider = createLiveStatusProvider(db, {
     now: () => new Date(clock.now()),
     env: {},
   });
@@ -122,12 +118,12 @@ test("Merge at the time limit records one acceptance, no agent turn, and no runn
   expect(ms.awaiting_input).toBe(10 * MINUTE);
   expect(ms.merge_queue).toBe(5 * MINUTE);
 
-  await restart(sqliteDb(db), (await getWorkItem(sqliteDb(db), itemId))!, {
+  await restart(db, (await getWorkItem(db, itemId))!, {
     reason: "ci",
     body: "CI failed",
     now: clock.now(),
   });
-  expect(await restartedFromMergeQueue(sqliteDb(db), itemId)).toBe(true);
+  expect(await restartedFromMergeQueue(db, itemId)).toBe(true);
 });
 
 test("Stop at the time limit records answer_stopped from the wait, not a run failure", async () => {
@@ -137,10 +133,10 @@ test("Stop at the time limit records answer_stopped from the wait, not a run fai
 });
 
 test("an answered runner wait re-verifies without passing through running", async () => {
-  const db = database();
+  const db = await database();
   const item = await insertQueuedItem(db, { id: "eng-8", sessionKey: "ses", now: 1_000 });
-  const { run } = await beginImplementRun(sqliteDb(db), item.id, 1_000);
-  await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
+  const { run } = await beginImplementRun(db, item.id, 1_000);
+  await applyWorkItemEvent(db, item.id, "turn_ended");
   await loopAsk(
     db,
     { itemId: item.id, runId: run.id, sessionId: "ses" },
@@ -148,19 +144,19 @@ test("an answered runner wait re-verifies without passing through running", asyn
     "The runner is paused. Keep waiting or move?",
     { options: ["Keep waiting", "Move"], now: 2_000 },
   );
-  const askedAt = (await getWorkItem(sqliteDb(db), item.id))!.version;
+  const askedAt = (await getWorkItem(db, item.id))!.version;
   expect((await reply(db, "Keep waiting", 3_000)).status).toBe("answered");
   expect(await history(db, item.id, askedAt)).toEqual([
     "awaiting_input -reverify_requested-> verifying",
   ]);
-  expect((await listJobs(sqliteDb(db))).some((job) => job.queue === "run.reverify")).toBe(true);
+  expect((await listJobs(db)).some((job) => job.queue === "run.reverify")).toBe(true);
 });
 
 test("Discarding a plan completes it from the wait with one answer_completed", async () => {
-  const db = database();
+  const db = await database();
   const item = await insertQueuedItem(db, { id: "eng-9", sessionKey: "ses", now: 1_000 });
-  await saveTaskMode(sqliteDb(db), item.id, "plan");
-  const { run } = await beginImplementRun(sqliteDb(db), item.id, 1_000);
+  await saveTaskMode(db, item.id, "plan");
+  const { run } = await beginImplementRun(db, item.id, 1_000);
   const asked = await loopAsk(
     db,
     { itemId: item.id, runId: run.id, sessionId: "ses" },
@@ -168,7 +164,7 @@ test("Discarding a plan completes it from the wait with one answer_completed", a
     "File these sub-issues?",
     { options: ["Create", "Edit", "Discard"], now: 2_000 },
   );
-  await savePlanProposal(sqliteDb(db), {
+  await savePlanProposal(db, {
     questionId: asked.question.id,
     itemId: item.id,
     parentIssueId: "issue-9",
@@ -178,7 +174,7 @@ test("Discarding a plan completes it from the wait with one answer_completed", a
     ],
     now: 2_000,
   });
-  const askedAt = (await getWorkItem(sqliteDb(db), item.id))!.version;
+  const askedAt = (await getWorkItem(db, item.id))!.version;
   expect((await reply(db, "Discard", 3_000)).status).toBe("answered");
   expect(await history(db, item.id, askedAt)).toEqual([
     "awaiting_input -answer_completed-> completed",
@@ -186,17 +182,15 @@ test("Discarding a plan completes it from the wait with one answer_completed", a
 });
 
 test("a failure in the merge queue records work_failed, not a lease expiry", async () => {
-  const db = database();
+  const db = await database();
   const item = await insertQueuedItem(db, { id: "eng-10", sessionKey: "ses", now: 1_000 });
-  await beginImplementRun(sqliteDb(db), item.id, 1_000);
-  await enterMergeQueue(sqliteDb(db), item.id, {
+  await beginImplementRun(db, item.id, 1_000);
+  await enterMergeQueue(db, item.id, {
     phase: "merge_queue",
     baseSha: "base",
     wipCommit: "head",
   });
-  const queued = (await getWorkItem(sqliteDb(db), item.id))!;
-  expect(await failWorkItem(sqliteDb(db), queued, "merge_error", "The merge failed.", 2_000)).toBe(
-    true,
-  );
+  const queued = (await getWorkItem(db, item.id))!;
+  expect(await failWorkItem(db, queued, "merge_error", "The merge failed.", 2_000)).toBe(true);
   expect(await history(db, item.id, queued.version)).toEqual(["merge_queue -work_failed-> failed"]);
 });
