@@ -1,17 +1,15 @@
 import { afterEach, expect, test } from "bun:test";
-import { join } from "node:path";
-import type { Database } from "bun:sqlite";
+import { eq } from "drizzle-orm";
+import { pawsPaths } from "../src/config";
 import {
   advanceLinearSessionGeneration,
   changeLinearTeamAccess,
   getLinearTaskDelegation,
   getWorkItem,
-  migrate,
-  openDatabase,
+  openPawsStore,
   putWorkspaceUser,
   recordLinearInstallation,
   revokeLinearInstallation,
-  sqliteDb,
   syncSteps,
 } from "../src/db";
 import { intakeDelegatedIssue } from "../src/intake";
@@ -24,18 +22,18 @@ import {
   parseAgentEvent,
 } from "../src/linear";
 import { LinearTaskAccess, stopUndelegatedIssue } from "../src/loop";
-import { tempHome } from "./helpers";
+import { migratedHome } from "./helpers";
 
-const databases: Database[] = [];
-afterEach(() => {
-  for (const db of databases.splice(0)) db.close();
+const databases: { close(): Promise<void> }[] = [];
+afterEach(async () => {
+  for (const db of databases.splice(0)) await db.close();
 });
 const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
 async function fixture(child = false, actorId: string | null = "human") {
-  const path = join(tempHome(), "paws.db");
-  const db = openDatabase(path);
-  databases.push(db);
-  migrate(db);
+  const pgliteDir = pawsPaths(await migratedHome()).pgliteDir;
+  const database = await openPawsStore({ url: null, pgliteDir });
+  databases.push(database);
+  const db = database.store;
   const tracker = createFakeTracker([
     {
       linearIssueId: "parent",
@@ -47,9 +45,9 @@ async function fixture(child = false, actorId: string | null = "human") {
         : [],
     },
   ]);
-  const task = await intakeDelegatedIssue(sqliteDb(db), tracker, { linearIssueId: "parent" });
+  const task = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent" });
   if (!task.ok) throw new Error("Unexpected cycle");
-  await recordLinearInstallation(sqliteDb(db), {
+  await recordLinearInstallation(db, {
     ...scope,
     sessionId: "session",
     teamId: "parent-team",
@@ -58,17 +56,20 @@ async function fixture(child = false, actorId: string | null = "human") {
   const ownerId =
     actorId === null
       ? null
-      : await putWorkspaceUser(sqliteDb(db), {
+      : await putWorkspaceUser(db, {
           id: `user-${actorId}`,
           linearUserId: actorId,
           name: actorId,
           email: `${actorId}@example.invalid`,
         });
-  db.run("UPDATE work_item SET session_key = ?, owner_user_id = ? WHERE delegation_id = ?", [
-    "session",
-    ownerId,
-    task.delegation.id,
-  ]);
+  await db.run((q) =>
+    q.exec(
+      q.orm
+        .update(q.t.workItem)
+        .set({ sessionKey: "session", ownerUserId: ownerId })
+        .where(eq(q.t.workItem.delegationId, task.delegation.id)),
+    ),
+  );
   const access = createFakeLinearAccessReads({
     installation: scope,
     sessions: [{ ...scope, sessionId: "session", issueId: "parent", teamId: "parent-team" }],
@@ -90,7 +91,7 @@ async function fixture(child = false, actorId: string | null = "human") {
   });
   const stopped: string[] = [];
   const clock = { now: 10 };
-  const gate = new LinearTaskAccess(sqliteDb(db), {
+  const gate = new LinearTaskAccess(db, {
     access: access.adapter,
     lifecycle,
     oauthClientId: "client",
@@ -101,8 +102,15 @@ async function fixture(child = false, actorId: string | null = "human") {
       }),
     now: () => clock.now,
   });
-  const item = (await getWorkItem(sqliteDb(db), task.items[0]!.id))!;
-  return { db, path, task, item, access, lifecycle, stopped, gate, clock };
+  const item = (await getWorkItem(db, task.items[0]!.id))!;
+  const reopen = async () => {
+    databases.splice(databases.indexOf(database), 1);
+    await database.close();
+    const reopened = await openPawsStore({ url: null, pgliteDir });
+    databases.push(reopened);
+    return reopened.store;
+  };
+  return { db, reopen, task, item, access, lifecycle, stopped, gate, clock };
 }
 
 test("code preparation starts canonical parent and child while preserving human assignees", async () => {
@@ -112,7 +120,7 @@ test("code preparation starts canonical parent and child while preserving human 
   expect(f.lifecycle.issue.assigneeId).toBe("human-assignee");
   expect(f.lifecycle.issues.get("child")?.assigneeId).toBe("other-human");
   for (const issueId of ["child", "parent"])
-    expect(await getLinearTaskDelegation(sqliteDb(f.db), f.item.id, issueId)).toMatchObject({
+    expect(await getLinearTaskDelegation(f.db, f.item.id, issueId)).toMatchObject({
       appUserId: "app",
       humanActorId: "human",
     });
@@ -145,7 +153,7 @@ test("automation without a delegate does not change status or claim delegation",
   expect(await f.gate.prepare(f.item, new AbortController().signal)).toEqual([]);
   expect(f.lifecycle.issue.stateType).toBe("unstarted");
   expect(f.lifecycle.issue.delegateId).toBeNull();
-  expect(await getLinearTaskDelegation(sqliteDb(f.db), f.item.id, "parent")).toBeNull();
+  expect(await getLinearTaskDelegation(f.db, f.item.id, "parent")).toBeNull();
 });
 
 test("human reassignment keeps a delegated code task running but removal stops every child via its session", async () => {
@@ -179,7 +187,7 @@ test.each(["unknown", "rejected"])(
         if (query.includes("CodeTaskActor")) return { user: { id: "human", app: false } };
         if (query.includes("StartDelegatedIssue")) {
           mutations++;
-          expect(await getLinearTaskDelegation(sqliteDb(f.db), f.item.id, "parent")).toMatchObject({
+          expect(await getLinearTaskDelegation(f.db, f.item.id, "parent")).toMatchObject({
             humanActorId: "human",
             teamId: "parent-team",
           });
@@ -192,7 +200,7 @@ test.each(["unknown", "rejected"])(
         throw new Error("Unexpected query");
       },
     });
-    const gate = new LinearTaskAccess(sqliteDb(f.db), {
+    const gate = new LinearTaskAccess(f.db, {
       access: f.access.adapter,
       lifecycle,
       oauthClientId: "client",
@@ -202,9 +210,8 @@ test.each(["unknown", "rejected"])(
     });
     await expect(gate.prepare(f.item, new AbortController().signal)).rejects.toThrow();
     issue.delegate = null;
-    const reopened = openDatabase(f.path);
-    databases.push(reopened);
-    const recovered = new LinearTaskAccess(sqliteDb(reopened), {
+    const reopened = await f.reopen();
+    const recovered = new LinearTaskAccess(reopened, {
       access: f.access.adapter,
       lifecycle,
       oauthClientId: "client",
@@ -216,16 +223,16 @@ test.each(["unknown", "rejected"])(
       "removed",
     );
     expect(mutations).toBe(1);
-    expect(
-      (await getLinearTaskDelegation(sqliteDb(reopened), f.item.id, "parent"))?.humanActorId,
-    ).toBe("human");
+    expect((await getLinearTaskDelegation(reopened, f.item.id, "parent"))?.humanActorId).toBe(
+      "human",
+    );
   },
 );
 
 test("child-team removal is checked durably even while authoritative reads still return accessible", async () => {
   const f = await fixture(true);
   await f.gate.prepare(f.item, new AbortController().signal);
-  await changeLinearTeamAccess(sqliteDb(f.db), {
+  await changeLinearTeamAccess(f.db, {
     ...scope,
     eventKey: "remove-child",
     createdAtMs: 20,
@@ -240,7 +247,7 @@ test("child-team removal is checked durably even while authoritative reads still
 test("a public-team permission drop triggers fresh team access rather than assuming all teams were removed", async () => {
   const f = await fixture(true);
   await f.gate.prepare(f.item, new AbortController().signal);
-  await changeLinearTeamAccess(sqliteDb(f.db), {
+  await changeLinearTeamAccess(f.db, {
     ...scope,
     eventKey: "public-drop",
     createdAtMs: 20,
@@ -261,9 +268,9 @@ test.each(["generation", "revocation"])(
     const original = f.access.adapter.session;
     f.access.adapter.session = async (...args) => {
       const result = await original(...args);
-      if (change === "generation") await advanceLinearSessionGeneration(sqliteDb(f.db), "session");
+      if (change === "generation") await advanceLinearSessionGeneration(f.db, "session");
       else
-        await revokeLinearInstallation(sqliteDb(f.db), {
+        await revokeLinearInstallation(f.db, {
           ...scope,
           eventKey: "revoke",
           createdAtMs: 20,
@@ -384,7 +391,7 @@ test("a session stop webhook stops the task before its next git operation withou
   await f.gate.prepare(f.item, signal);
   await f.gate.assert(f.item, signal);
   const before = linearReads(f);
-  await advanceLinearSessionGeneration(sqliteDb(f.db), "session", { stop: true, now: f.clock.now });
+  await advanceLinearSessionGeneration(f.db, "session", { stop: true, now: f.clock.now });
   f.gate.invalidate({ sessionId: "session" });
   await expect(f.gate.assert(f.item, signal)).rejects.toThrow("stopped or superseded");
   expect(linearReads(f)).toBe(before);
@@ -429,12 +436,12 @@ test("a task queued behind a blocker is cancelled when its issue is undelegated 
   const f = await fixture(true);
   const cancelled: string[] = [];
   await stopUndelegatedIssue(
-    sqliteDb(f.db),
+    f.db,
     { ...scope, issueId: "parent", createdAtMs: Date.now() },
     { notify: (command) => cancelled.push(command.itemId) },
   );
   expect(cancelled).toEqual([f.item.id]);
-  const item = (await getWorkItem(sqliteDb(f.db), f.item.id))!;
+  const item = (await getWorkItem(f.db, f.item.id))!;
   expect(item.state).toBe("cancelled");
   await expect(f.gate.prepare(item, new AbortController().signal)).rejects.toThrow(
     "Linear task was stopped or superseded.",
@@ -446,9 +453,9 @@ test("a task queued behind a blocker is cancelled when its issue is undelegated 
 test("an undelegation that predates the task leaves it queued", async () => {
   const f = await fixture(true);
   await stopUndelegatedIssue(
-    sqliteDb(f.db),
+    f.db,
     { ...scope, issueId: "parent", createdAtMs: 0 },
     { notify: () => {} },
   );
-  expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("queued");
+  expect((await getWorkItem(f.db, f.item.id))?.state).toBe("queued");
 });
