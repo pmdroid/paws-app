@@ -195,7 +195,7 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (name === "a") {
     if (has("settings-link"))
       return styled(
-        "flex min-h-control items-center gap-3 whitespace-nowrap rounded-base px-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground aria-[current=page]:bg-accent aria-[current=page]:font-medium aria-[current=page]:text-foreground",
+        "-mb-px flex min-h-control items-center whitespace-nowrap border-b-2 border-transparent px-4 py-1.5 text-sm font-medium text-muted-foreground no-underline transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring aria-[current=page]:border-foreground aria-[current=page]:text-foreground",
       );
     if (has("improvement-row"))
       return styled(
@@ -227,7 +227,6 @@ function replace(node: DOMNode): ReactElement | undefined {
     );
   }
   if (name === "h1" && has("sr-only")) return styled("sr-only");
-  if (name === "h1" && has("settings-title")) return styled("text-xl font-semibold tracking-tight");
   if (name === "h1" && has("issue-title")) return styled("text-xl font-semibold tracking-tight");
   if (has("timeline-dot"))
     return styled(
