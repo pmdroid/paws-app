@@ -1,25 +1,35 @@
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { and, asc, count, eq, like, sql } from "drizzle-orm";
 import { FakeClock } from "../../src/core";
 import {
   JobLoop,
   OutboxDispatcher,
   insertRun,
-  migrate,
-  openDatabase,
   saveRunResult,
   setCurrentRun,
   bindLinearSessionTask,
   ensureLinearSession,
   recordLinearInstallation,
   getWorkItem,
-  sqliteDb,
+  type Db,
 } from "../../src/db";
 import { Orchestrator } from "../../src/loop";
 import { readyItemsSteps, syncItemDependencies } from "../../src/intake";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../../src/linear";
-import { confirmFakeMerge, workspaceAdmission } from "../fake-workspace";
+import { confirmFakeMergePg, workspaceAdmission } from "../fake-workspace";
+import { tempStore } from "../pglite";
+
+const pendingStarts = async (db: Db) =>
+  (await db.run((q) =>
+    q.one(
+      q.orm
+        .select({ n: count() })
+        .from(q.t.job)
+        .where(and(eq(q.t.job.queue, "item.start"), eq(q.t.job.status, "pending"))),
+    ),
+  ))!.n;
 
 export async function probeExecutionLifecycle(
   root: string,
@@ -27,11 +37,11 @@ export async function probeExecutionLifecycle(
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const clock = new FakeClock(1000);
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const store = await tempStore();
+  const db = store.db;
   const create = (scheduling?: () => Promise<object>) =>
     new Orchestrator({
-      store: sqliteDb(db),
+      store: db,
       admission: workspaceAdmission(db),
       jobs: new JobLoop(db, clock),
       outbox: new OutboxDispatcher(db, clock),
@@ -41,12 +51,16 @@ export async function probeExecutionLifecycle(
       tracker: createFakeTracker(),
     });
   let orchestrator = create();
-  const state = (id: string) => {
-    const items = db
-      .query<{ state: string }, [string]>(
-        "SELECT state FROM work_item WHERE delegation_id=? ORDER BY position, id",
-      )
-      .all(id);
+  const state = async (id: string) => {
+    const items = await db.run((q) =>
+      q.all(
+        q.orm
+          .select({ state: q.t.workItem.state })
+          .from(q.t.workItem)
+          .where(eq(q.t.workItem.delegationId, id))
+          .orderBy(asc(q.t.workItem.position), asc(q.t.workItem.id)),
+      ),
+    );
     if (
       items.length > 0 &&
       items.every(
@@ -57,75 +71,87 @@ export async function probeExecutionLifecycle(
       return items.every((item) => item.state === "cancelled") ? "cancelled" : "done";
     return "running";
   };
-  const seed = (id: string, states: string[]) => {
-    states.forEach((itemState, index) =>
-      db.run(
-        "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES(?,?,?,?,?,?,?,?,?,?)",
-        [
-          `${id}-${index}`,
-          id,
-          `${id}-${index}`,
-          `${id}-${index}`,
-          id,
-          itemState,
-          `paws/${id}-${index}`,
-          index,
-          clock.now(),
-          `${id}-session`,
-        ],
+  const seed = (id: string, states: string[]) =>
+    db.run((q) =>
+      q.exec(
+        q.orm.insert(q.t.workItem).values(
+          states.map((itemState, index) => ({
+            id: `${id}-${index}`,
+            delegationId: id,
+            linearIssueId: `${id}-${index}`,
+            linearIdentifier: `${id}-${index}`,
+            title: id,
+            state: itemState,
+            branchName: `paws/${id}-${index}`,
+            position: index,
+            createdAt: clock.now(),
+            sessionKey: `${id}-session`,
+          })),
+        ),
       ),
     );
-  };
-  const notices = (id: string) =>
-    db
-      .query<{ n: number }, [string]>(
-        "SELECT COUNT(*) AS n FROM outbox WHERE idempotency_key LIKE ?",
-      )
-      .get(`epic-stalled:${id}:%`)!.n;
+  const notices = async (id: string) =>
+    (await db.run((q) =>
+      q.one(
+        q.orm
+          .select({ n: count() })
+          .from(q.t.outbox)
+          .where(like(q.t.outbox.idempotencyKey, `epic-stalled:${id}:%`)),
+      ),
+    ))!.n;
   try {
-    seed("mixed", ["merged", "cancelled", "completed"]);
-    seed("abandoned", ["cancelled", "cancelled"]);
-    seed("already-stalled", ["merged"]);
-    seed("failed", ["failed"]);
+    await seed("mixed", ["merged", "cancelled", "completed"]);
+    await seed("abandoned", ["cancelled", "cancelled"]);
+    await seed("already-stalled", ["merged"]);
+    await seed("failed", ["failed"]);
     await orchestrator.reconcileExecution();
     observe(
       "mixed completed and cancelled work finishes the epic",
-      state("mixed") === "done",
-      state("mixed"),
+      (await state("mixed")) === "done",
+      await state("mixed"),
     );
     observe(
       "every cancelled item cancels the epic",
-      state("abandoned") === "cancelled",
-      state("abandoned"),
+      (await state("abandoned")) === "cancelled",
+      await state("abandoned"),
     );
     observe(
       "a stalled epic can finish after its last blocker completes",
-      state("already-stalled") === "done",
-      state("already-stalled"),
+      (await state("already-stalled")) === "done",
+      await state("already-stalled"),
     );
     observe(
       "failed work never counts as successful epic completion",
-      state("failed") === "running",
-      state("failed"),
+      (await state("failed")) === "running",
+      await state("failed"),
     );
     clock.advance(10 * 60 * 1000);
     await orchestrator.reconcileExecution();
-    const stallQuestions = db
-      .query<{ n: number }, []>(
-        "SELECT COUNT(*) AS n FROM question WHERE body LIKE '%made no progress%'",
-      )
-      .get()!.n;
+    const stallQuestions = (await db.run((q) =>
+      q.one(
+        q.orm
+          .select({ n: count() })
+          .from(q.t.question)
+          .where(like(q.t.question.body, "%made no progress%")),
+      ),
+    ))!.n;
     observe(
       "a held item no longer produces a stall question after ten minutes",
-      state("failed") === "running" && notices("failed") === 0 && stallQuestions === 0,
-      { state: state("failed"), notices: notices("failed"), stallQuestions },
+      (await state("failed")) === "running" &&
+        (await notices("failed")) === 0 &&
+        stallQuestions === 0,
+      { state: await state("failed"), notices: await notices("failed"), stallQuestions },
     );
-    seed("handoff", ["merged", "queued"]);
-    await confirmFakeMerge(db, "handoff-0");
-    db.run(
-      "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('handoff-0','handoff-1')",
+    await seed("handoff", ["merged", "queued"]);
+    await confirmFakeMergePg(db, "handoff-0");
+    await db.run((q) =>
+      q.exec(
+        q.orm
+          .insert(q.t.taskBlock)
+          .values({ blockerLinearIssueId: "handoff-0", blockedLinearIssueId: "handoff-1" }),
+      ),
     );
-    const run = await insertRun(sqliteDb(db), {
+    const run = await insertRun(db, {
       itemId: "handoff-0",
       now: clock.now(),
       status: "ended",
@@ -133,46 +159,68 @@ export async function probeExecutionLifecycle(
       agent: "codex",
       freshSession: true,
     });
-    await saveRunResult(sqliteDb(db), run.id, "Published the exact API schema.", clock.now());
-    await setCurrentRun(sqliteDb(db), "handoff-0", run.id);
+    await saveRunResult(db, run.id, "Published the exact API schema.", clock.now());
+    await setCurrentRun(db, "handoff-0", run.id);
     assert.equal(
       await orchestrator.dependencyHandoff("handoff-1"),
       "Completed dependencies:\nhandoff-0: Published the exact API schema.",
     );
     await orchestrator.reconcileExecution();
     await orchestrator.reconcileExecution();
-    const starts = db
-      .query<{ payload: string }, []>(
-        "SELECT payload FROM job WHERE queue='item.start' AND json_extract(payload,'$.itemId')='handoff-1'",
-      )
-      .all();
+    const starts = await db.run((q) =>
+      q.all(
+        q.orm
+          .select({ payload: q.t.job.payload })
+          .from(q.t.job)
+          .where(
+            and(
+              eq(q.t.job.queue, "item.start"),
+              eq(sql`${q.t.job.payload}->>'itemId'`, "handoff-1"),
+            ),
+          ),
+      ),
+    );
     observe(
       "dependency completion schedules once with the completed result",
       starts.length === 1 &&
-        JSON.parse(starts[0]!.payload).handoff ===
+        (starts[0]!.payload as { handoff?: string }).handoff ===
           (await orchestrator.dependencyHandoff("handoff-1")),
       starts,
     );
-    db.run("UPDATE run SET checkpoint='null' WHERE id=?", [run.id]);
+    await db.run((q) =>
+      q.exec(
+        q.orm
+          .update(q.t.run)
+          .set({ checkpoint: sql`'null'::jsonb` })
+          .where(eq(q.t.run.id, run.id)),
+      ),
+    );
     observe(
       "a valid JSON null dependency checkpoint falls back to completion",
       (await orchestrator.dependencyHandoff("handoff-1")) ===
         "Completed dependencies:\nhandoff-0: Completed.",
       await orchestrator.dependencyHandoff("handoff-1"),
     );
-    seed("external", ["queued"]);
-    db.run(
-      "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('external-workspace','external-org','External workspace',1)",
+    await seed("external", ["queued"]);
+    await db.run((q) =>
+      q.exec(
+        q.orm.insert(q.t.workspace).values({
+          id: "external-workspace",
+          linearOrganizationId: "external-org",
+          name: "External workspace",
+          createdAt: 1,
+        }),
+      ),
     );
-    await ensureLinearSession(sqliteDb(db), {
+    await ensureLinearSession(db, {
       sessionId: "external-session",
       issueId: "external-parent",
       organizationId: "external-org",
       appUserId: "external-app",
       creatorId: "external-human",
     });
-    await bindLinearSessionTask(sqliteDb(db), "external-session", "external");
-    await recordLinearInstallation(sqliteDb(db), {
+    await bindLinearSessionTask(db, "external-session", "external");
+    await recordLinearInstallation(db, {
       sessionId: "external-session",
       organizationId: "external-org",
       oauthClientId: "external-client",
@@ -191,11 +239,11 @@ export async function probeExecutionLifecycle(
       assigneeId: "external-human",
       delegateId: "external-app",
     });
-    await syncItemDependencies(sqliteDb(db), {
+    await syncItemDependencies(db, {
       itemId: "external-0",
       workspaceId: "external-workspace",
       expectedGeneration: (
-        await sqliteDb(db).run((q) =>
+        await db.run((q) =>
           readyItemsSteps(q, {
             itemId: "external-0",
             workspaceId: "external-workspace",
@@ -210,25 +258,30 @@ export async function probeExecutionLifecycle(
     await orchestrator.reconcileExecution();
     observe(
       "in-progress external work does not produce a human stalled question",
-      state("external") === "running" && notices("external") === 0,
-      { state: state("external"), notices: notices("external") },
+      (await state("external")) === "running" && (await notices("external")) === 0,
+      { state: await state("external"), notices: await notices("external") },
     );
     await orchestrator.shutdown();
     orchestrator = create(async () => ({}));
-    seed("unrelated-active", ["running"]);
+    await seed("unrelated-active", ["running"]);
     await orchestrator.reconcileExecution();
+    const admitted = (
+      await db.run((q) =>
+        q.all(q.orm.select({ itemId: q.t.schedulerAdmission.itemId }).from(q.t.schedulerAdmission)),
+      )
+    ).map((row) => row.itemId);
     observe(
       "configured scheduling runs despite unrelated active work",
-      db.query("SELECT 1 FROM scheduler_admission WHERE item_id='handoff-1'").get() !== null,
-      db.query("SELECT item_id FROM scheduler_admission").all(),
+      admitted.includes("handoff-1"),
+      admitted,
     );
     await orchestrator.shutdown();
-    const guardDb = openDatabase(join(root, "admission.sqlite"));
-    migrate(guardDb);
+    const guardStore = await tempStore();
+    const guardDb = guardStore.db;
     const guardJobs = new JobLoop(guardDb, clock);
     let allowed = true;
     const guard = new Orchestrator({
-      store: sqliteDb(guardDb),
+      store: guardDb,
       jobs: guardJobs,
       outbox: new OutboxDispatcher(guardDb, clock),
       clock,
@@ -236,41 +289,45 @@ export async function probeExecutionLifecycle(
       admission: workspaceAdmission(guardDb, { authority: () => allowed }),
     });
     try {
-      guardDb.run(
-        "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('guard-item','guard','guard','G-1','Guard','queued','paws/guard',0,1)",
+      await guardDb.run((q) =>
+        q.exec(
+          q.orm.insert(q.t.workItem).values({
+            id: "guard-item",
+            delegationId: "guard",
+            linearIssueId: "guard",
+            linearIdentifier: "G-1",
+            title: "Guard",
+            state: "queued",
+            branchName: "paws/guard",
+            position: 0,
+            createdAt: 1,
+          }),
+        ),
       );
       await guard.reconcileExecution();
       allowed = false;
       await guard.reconcileExecution();
       await guardJobs.tick();
       await guard.reconcileExecution();
-      const held = guardDb
-        .query<{ n: number }, []>(
-          "SELECT COUNT(*) AS n FROM job WHERE queue='item.start' AND status='pending'",
-        )
-        .get()!.n;
+      const held = await pendingStarts(guardDb);
       allowed = true;
       await guard.reconcileExecution();
       await guard.reconcileExecution();
-      const resumed = guardDb
-        .query<{ n: number }, []>(
-          "SELECT COUNT(*) AS n FROM job WHERE queue='item.start' AND status='pending'",
-        )
-        .get()!.n;
+      const resumed = await pendingStarts(guardDb);
       observe(
         "a skipped start can be admitted once after reconciliation clears",
         held === 0 &&
           resumed === 1 &&
-          (await getWorkItem(sqliteDb(guardDb), "guard-item"))?.state === "queued",
+          (await getWorkItem(guardDb, "guard-item"))?.state === "queued",
         { held, resumed },
       );
     } finally {
       await guard.shutdown();
-      guardDb.close();
+      await guardStore.close();
     }
   } finally {
     await orchestrator.shutdown();
-    db.close();
+    await store.close();
   }
 }
 
