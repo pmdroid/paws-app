@@ -1,3 +1,4 @@
+import { and, asc, eq, like, or } from "drizzle-orm";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -6,8 +7,6 @@ import {
   changeLinearTeamAccess,
   bindWorkItemRepository,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
   replaceWorkspaceRepositories,
@@ -15,7 +14,6 @@ import {
   MEMBERSHIP_BACKSTOP_MS,
   syncWorkspaceMember,
   workspaceMember,
-  sqliteDb,
 } from "../../src/db";
 import { createLinearMembershipReads } from "../../src/linear";
 import { startServer } from "../../src/server";
@@ -29,41 +27,58 @@ import {
   WORKSPACE_COOKIE,
   type WorkspaceAccess,
 } from "../../src/workspace";
+import { tempStore } from "../pglite";
 
 export async function probeWorkspaceAuthorization(
   root: string,
   observe: (name: string, passed: boolean, observed: unknown) => void,
 ) {
   mkdirSync(root, { recursive: true });
-  const db = openDatabase(join(root, "authorization.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const now = Date.now();
-  const ownerId = await putWorkspaceUser(sqliteDb(db), {
+  const ownerId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const memberId = await putWorkspaceUser(sqliteDb(db), {
+  const memberId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "member",
     name: "Member",
     email: "member@example.invalid",
   });
-  const adminId = await putWorkspaceUser(sqliteDb(db), {
+  const adminId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "administrator",
     name: "Workspace administrator",
     email: "administrator@example.invalid",
   });
   const workspace = { id: workspaceId(), organizationId: "org", name: "Workspace" };
-  await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const updateMember = (
+    userId: string,
+    values: { role?: string; manualRole?: string; checkedAt?: number },
+  ) =>
+    db.run((q) =>
+      q.exec(
+        q.orm
+          .update(q.t.workspaceMember)
+          .set(values)
+          .where(
+            and(
+              eq(q.t.workspaceMember.workspaceId, workspace.id),
+              eq(q.t.workspaceMember.userId, userId),
+            ),
+          ),
+      ),
+    );
+  await consumeWorkspaceBootstrap(db, {
     ...workspace,
     userId: ownerId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
-  await syncWorkspaceMember(sqliteDb(db), {
+  await syncWorkspaceMember(db, {
     workspaceId: workspace.id,
     userId: memberId,
     role: "member",
@@ -71,7 +86,7 @@ export async function probeWorkspaceAuthorization(
     teamIds: ["team-a"],
     now,
   });
-  await syncWorkspaceMember(sqliteDb(db), {
+  await syncWorkspaceMember(db, {
     workspaceId: workspace.id,
     userId: adminId,
     role: "admin",
@@ -79,22 +94,22 @@ export async function probeWorkspaceAuthorization(
     teamIds: ["team-a"],
     now,
   });
-  const owner = await issueWorkspaceSession(sqliteDb(db), {
+  const owner = await issueWorkspaceSession(db, {
     workspaceId: workspace.id,
     userId: ownerId,
     now,
   });
-  let member = await issueWorkspaceSession(sqliteDb(db), {
+  let member = await issueWorkspaceSession(db, {
     workspaceId: workspace.id,
     userId: memberId,
     now,
   });
-  const admin = await issueWorkspaceSession(sqliteDb(db), {
+  const admin = await issueWorkspaceSession(db, {
     workspaceId: workspace.id,
     userId: adminId,
     now,
   });
-  const oldOwner = await issueWorkspaceSession(sqliteDb(db), {
+  const oldOwner = await issueWorkspaceSession(db, {
     workspaceId: workspace.id,
     userId: ownerId,
     now: now - 2 * 24 * 60 * 60_000,
@@ -113,7 +128,7 @@ export async function probeWorkspaceAuthorization(
       title: `${id} private content`,
     });
     if (organizationId !== null)
-      await recordLinearInstallation(sqliteDb(db), {
+      await recordLinearInstallation(db, {
         sessionId: item.sessionKey!,
         organizationId: organizationId!,
         teamId: teamId!,
@@ -126,12 +141,12 @@ export async function probeWorkspaceAuthorization(
     ["own", "allowed"],
     ["unmapped-repo", "private"],
   ])
-    await bindWorkItemRepository(sqliteDb(db), id!, {
+    await bindWorkItemRepository(db, id!, {
       owner: "fixture",
       repo: repo!,
       remoteUrl: `https://example.invalid/fixture/${repo}`,
     });
-  await replaceWorkspaceRepositories(sqliteDb(db), {
+  await replaceWorkspaceRepositories(db, {
     workspaceId: workspace.id,
     actorId: ownerId,
     repositories: [{ repository: "fixture/allowed", teamId: "team-a" }],
@@ -140,7 +155,7 @@ export async function probeWorkspaceAuthorization(
   const ids = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"];
   for (const [index, itemId] of ["own", "foreign"].entries())
     await saveArtifact(
-      sqliteDb(db),
+      db,
       {
         id: ids[index]!,
         itemId,
@@ -193,7 +208,7 @@ export async function probeWorkspaceAuthorization(
   });
   const origin = `http://127.0.0.1:${server.port}`;
   const access = createWorkspaceAccess({
-    store: sqliteDb(db),
+    store: db,
     publicUrl: origin,
     clientId: "client",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -236,14 +251,14 @@ export async function probeWorkspaceAuthorization(
   });
   try {
     for (let index = 0; index < 105; index++)
-      await auditWorkspaceAccess(sqliteDb(db), {
+      await auditWorkspaceAccess(db, {
         workspaceId: workspace.id,
         userId: ownerId,
         action: "fixture.changed",
         subject: `record-${index}`,
         now,
       });
-    await auditWorkspaceAccess(sqliteDb(db), {
+    await auditWorkspaceAccess(db, {
       workspaceId: null,
       userId: null,
       action: "fixture.changed",
@@ -269,7 +284,7 @@ export async function probeWorkspaceAuthorization(
       { status: auditResponse.status, entries: entries.length, nextBefore: history.nextBefore },
     );
     if (history.nextBefore !== undefined && history.nextBefore !== null) {
-      await auditWorkspaceAccess(sqliteDb(db), {
+      await auditWorkspaceAccess(db, {
         workspaceId: workspace.id,
         userId: ownerId,
         action: "fixture.changed",
@@ -388,13 +403,21 @@ export async function probeWorkspaceAuthorization(
       (await skills(owner, { action: "remove", name: "impeccable" })).status,
       (await fetch(`${origin}/api/settings/agents`, { headers: headers(admin) })).status,
     ];
-    const skillAudit = db
-      .query<{ userId: string; action: string; subject: string }, [string]>(
-        `SELECT user_id AS userId, action, subject FROM workspace_access_audit
-         WHERE workspace_id = ? AND (action LIKE 'settings.skill.%' OR subject = '/api/settings/skills')
-         ORDER BY id`,
-      )
-      .all(workspace.id);
+    const skillAudit = await db.run((q) => {
+      const audit = q.t.workspaceAccessAudit;
+      return q.all(
+        q.orm
+          .select({ userId: audit.userId, action: audit.action, subject: audit.subject })
+          .from(audit)
+          .where(
+            and(
+              eq(audit.workspaceId, workspace.id),
+              or(like(audit.action, "settings.skill.%"), eq(audit.subject, "/api/settings/skills")),
+            ),
+          )
+          .orderBy(asc(audit.id)),
+      );
+    });
     observe(
       "only admins change skills, and every skill change is audited",
       JSON.stringify(skillStatuses) === JSON.stringify([403, 403, 200, 200, 200, 200]) &&
@@ -492,7 +515,7 @@ export async function probeWorkspaceAuthorization(
         demotedAdmin.status === 200 &&
         lastAdmin.status === 400 &&
         lastAdminError === "The workspace must keep an active admin." &&
-        (await workspaceMember(sqliteDb(db), workspace.id, ownerId))?.role === "admin" &&
+        (await workspaceMember(db, workspace.id, ownerId))?.role === "admin" &&
         formerRoles.join() === "400,400",
       {
         missingCsrf: missingCsrf.status,
@@ -503,9 +526,7 @@ export async function probeWorkspaceAuthorization(
         formerRoles,
       },
     );
-    db.run("UPDATE workspace_member SET role='admin',manual_role='admin' WHERE user_id=?", [
-      adminId,
-    ]);
+    await updateMember(adminId, { role: "admin", manualRole: "admin" });
     const unmapped = await fetch(`${origin}/api/workspaces/repositories`, {
       method: "PUT",
       headers: headers(owner),
@@ -560,16 +581,12 @@ export async function probeWorkspaceAuthorization(
         status: pageAction.status,
       },
     );
-    const outageSession = await issueWorkspaceSession(sqliteDb(db), {
+    const outageSession = await issueWorkspaceSession(db, {
       workspaceId: workspace.id,
       userId: ownerId,
       now,
     });
-    db.run("UPDATE workspace_member SET checked_at=? WHERE workspace_id=? AND user_id=?", [
-      now - MEMBERSHIP_BACKSTOP_MS - 60_000,
-      workspace.id,
-      ownerId,
-    ]);
+    await updateMember(ownerId, { checkedAt: now - MEMBERSHIP_BACKSTOP_MS - 60_000 });
     membershipFailure = true;
     const outagePage = await fetch(`${origin}/dashboard/`, { headers: headers(outageSession) });
     const outageCsrf = (await outagePage.text()).match(/name="paws-csrf" content="([^"]+)"/)?.[1];
@@ -579,11 +596,7 @@ export async function probeWorkspaceAuthorization(
       headers: { ...headers(outageSession), "x-paws-csrf": outageCsrf ?? "" },
     });
     membershipFailure = false;
-    db.run("UPDATE workspace_member SET checked_at=? WHERE workspace_id=? AND user_id=?", [
-      now,
-      workspace.id,
-      ownerId,
-    ]);
+    await updateMember(ownerId, { checkedAt: now });
     observe(
       "a dashboard reload during a Linear outage supplies logout CSRF while data stays closed",
       outagePage.status === 200 && outageData.status === 503 && outageLogout.status === 200,
@@ -626,14 +639,14 @@ export async function probeWorkspaceAuthorization(
       "an admin cannot give a verified Linear guest a role, and the guest loses access",
       guestPromotion.status === 400 &&
         guestError === "Linear guests can't use Paws." &&
-        (await workspaceMember(sqliteDb(db), workspace.id, memberId))?.active === false &&
+        (await workspaceMember(db, workspace.id, memberId))?.active === false &&
         guestSession.status === 401,
       { status: guestPromotion.status, error: guestError, session: guestSession.status },
     );
     guest = false;
     memberTeams = [];
     await access.refreshMemberships();
-    member = await issueWorkspaceSession(sqliteDb(db), {
+    member = await issueWorkspaceSession(db, {
       workspaceId: workspace.id,
       userId: memberId,
       now,
@@ -690,7 +703,7 @@ export async function probeWorkspaceAuthorization(
     });
     await pendingMembership.promise;
     guest = true;
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: workspace.id,
       userId: memberId,
       role: "member",
@@ -700,7 +713,7 @@ export async function probeWorkspaceAuthorization(
     });
     releaseMembership.resolve();
     const stalePromotion = await delayedPromotion;
-    const cappedMember = (await workspaceMember(sqliteDb(db), workspace.id, memberId))!;
+    const cappedMember = (await workspaceMember(db, workspace.id, memberId))!;
     observe(
       "a delayed promotion cannot restore a member a newer sync found to be a guest",
       stalePromotion.status === 400 && !cappedMember.active,
@@ -710,7 +723,7 @@ export async function probeWorkspaceAuthorization(
     const ownerReadRelease = Promise.withResolvers<void>();
     memberReadBarrier = { entered: ownerReadStarted.resolve, wait: ownerReadRelease.promise };
     guest = false;
-    const beforeDemotion = (await workspaceMember(sqliteDb(db), workspace.id, memberId))!;
+    const beforeDemotion = (await workspaceMember(db, workspace.id, memberId))!;
     await Bun.sleep(2);
     const demotedWrite = fetch(`${origin}/api/workspaces/members`, {
       method: "PUT",
@@ -718,10 +731,10 @@ export async function probeWorkspaceAuthorization(
       body: JSON.stringify({ userId: memberId, role: "admin" }),
     });
     await ownerReadStarted.promise;
-    db.run("UPDATE workspace_member SET role='member' WHERE user_id=?", [ownerId]);
+    await updateMember(ownerId, { role: "member" });
     ownerReadRelease.resolve();
     const deniedOwner = await demotedWrite;
-    const afterDemotion = (await workspaceMember(sqliteDb(db), workspace.id, memberId))!;
+    const afterDemotion = (await workspaceMember(db, workspace.id, memberId))!;
     observe(
       "an admin demoted during membership lookup cannot mutate the target membership",
       deniedOwner.status === 400 &&
@@ -734,7 +747,7 @@ export async function probeWorkspaceAuthorization(
         after: afterDemotion.checkedAt,
       },
     );
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: workspace.id,
       userId: ownerId,
       active: true,
@@ -742,8 +755,8 @@ export async function probeWorkspaceAuthorization(
       teamIds: ["team-a"],
       now: Date.now() + 2,
     });
-    db.run("UPDATE workspace_member SET role='admin' WHERE user_id=?", [ownerId]);
-    await changeLinearTeamAccess(sqliteDb(db), {
+    await updateMember(ownerId, { role: "admin" });
+    await changeLinearTeamAccess(db, {
       eventKey: "fixture-team-removal",
       organizationId: "org",
       oauthClientId: "client",
@@ -764,9 +777,13 @@ export async function probeWorkspaceAuthorization(
   } finally {
     writeFileSync(
       join(root, "audit.json"),
-      JSON.stringify(db.query("SELECT * FROM workspace_access_audit").all(), null, 2),
+      JSON.stringify(
+        await db.run((q) => q.all(q.orm.select().from(q.t.workspaceAccessAudit))),
+        null,
+        2,
+      ),
     );
     await server.stop(true);
-    db.close();
+    await close();
   }
 }
