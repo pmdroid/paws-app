@@ -3,7 +3,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Database } from "bun:sqlite";
+import { eq } from "drizzle-orm";
 import {
   beginImplementRun,
   bindLinearSessionTask,
@@ -12,12 +12,12 @@ import {
   getWorkItem,
   insertQueuedItem,
   listJobs,
-  openDatabase,
+  openPawsStore,
   prepareShutdown,
   putWorkspaceUser,
   recordLinearInstallation,
   recoverOnStartup,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
@@ -29,7 +29,8 @@ import {
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { migratedDatabase } from "./helpers";
+import { seed } from "./dialects";
+import { copyMigratedPglite } from "./pglite";
 
 const repository = {
   owner: "fixture",
@@ -40,32 +41,34 @@ const repository = {
 
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "paws-result-recovery-"));
-  const path = join(root, "paws.db");
+  const path = join(root, "pglite");
   const clock = { at: Date.now() };
   const now = () => clock.at;
-  let db = migratedDatabase(path);
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  await copyMigratedPglite(path);
+  let store = await openPawsStore({ url: null, pgliteDir: path });
+  let db = store.store;
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now())),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now())),
     now: now(),
   });
-  db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-    workspace.id,
-    "fixture/repository",
-    "team",
-  ]);
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspaceRepository)
+      .values({ workspaceId: workspace.id, repository: "fixture/repository", teamId: "team" }),
+  );
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -84,10 +87,12 @@ async function fixture() {
       )
     ).token,
   });
-  db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
+  await seed(db, (q) =>
+    q.orm.update(q.t.runner).set({ status: "active" }).where(eq(q.t.runner.id, runnerId)),
+  );
   const item = await insertQueuedItem(db, { id: "item", now: now(), sessionKey: "session" });
-  const { run } = await beginImplementRun(sqliteDb(db), item.id, now());
-  await recordLinearInstallation(sqliteDb(db), {
+  const { run } = await beginImplementRun(db, item.id, now());
+  await recordLinearInstallation(db, {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",
@@ -95,18 +100,18 @@ async function fixture() {
     teamId: "team",
     observedAtMs: now(),
   });
-  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
-  await bindWorkItemRepository(sqliteDb(db), item.id, repository);
+  await bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+  await bindWorkItemRepository(db, item.id, repository);
   const keys = generateKeyPairSync("ed25519");
   const open = () => {
     const work = createRunnerWork({
-      store: sqliteDb(db),
+      store: db,
       keyId: "fixture",
       privateKey: keys.privateKey,
       eventKey: Buffer.alloc(32, 7),
       now,
     });
-    return { work, results: createRunnerResults({ store: sqliteDb(db), work, now }) };
+    return { work, results: createRunnerResults({ store: db, work, now }) };
   };
   let services = open();
   async function admit(generation: number) {
@@ -154,7 +159,7 @@ async function fixture() {
     run,
     item,
     admit,
-    get db(): Database {
+    get db(): Db {
       return db;
     },
     get work() {
@@ -163,49 +168,48 @@ async function fixture() {
     get results() {
       return services.results;
     },
-    reopen() {
-      db.close();
-      db = openDatabase(path);
+    async reopen() {
+      await store.close();
+      store = await openPawsStore({ url: null, pgliteDir: path });
+      db = store.store;
       services = open();
     },
-    close() {
-      db.close();
+    async close() {
+      await store.close();
       rmSync(root, { recursive: true, force: true });
     },
   };
 }
 
-const resumes = async (db: Database) =>
-  (await listJobs(sqliteDb(db))).filter(
-    (job) => job.queue === "run.resume" && job.status === "pending",
-  );
+const resumes = async (db: Db) =>
+  (await listJobs(db)).filter((job) => job.queue === "run.resume" && job.status === "pending");
 
 test("an accepted result survives a reopen and lease expiry, and recovery reattaches to it", async () => {
   const f = await fixture();
   try {
     const { command, result, submit } = await f.admit(1);
     expect(await submit()).toEqual({ duplicate: false });
-    f.reopen();
+    await f.reopen();
     f.clock.at += 60_001;
     expect(await f.results.read(f.run.id, 1, command.id)).toEqual(result);
     await expect(submit()).rejects.toThrow();
     expect((await f.work.heartbeat(f.runnerId)).fenced).toEqual([]);
-    await prepareShutdown(sqliteDb(f.db), f.clock.at);
-    const decisions = await recoverOnStartup(sqliteDb(f.db), f.clock.at);
+    await prepareShutdown(f.db, f.clock.at);
+    const decisions = await recoverOnStartup(f.db, f.clock.at);
     expect(decisions).toEqual([
       { type: "resume", freshSession: true, checkpoint: null, reattach: true },
     ]);
-    await recoverOnStartup(sqliteDb(f.db), f.clock.at);
+    await recoverOnStartup(f.db, f.clock.at);
     expect(await resumes(f.db)).toHaveLength(1);
     expect((await resumes(f.db))[0]?.payload).not.toHaveProperty("handoff");
-    expect(await getWorkItem(sqliteDb(f.db), f.item.id)).toMatchObject({
+    expect(await getWorkItem(f.db, f.item.id)).toMatchObject({
       state: "running",
       recoveryAttempts: 0,
     });
     await f.work.finish(f.run.id, 1);
     await expect(f.results.read(f.run.id, 1, command.id)).rejects.toThrow();
   } finally {
-    f.close();
+    await f.close();
   }
 }, 30_000);
 
@@ -220,15 +224,15 @@ test("an expired execution without an accepted result follows the existing recov
     expect((await f.work.heartbeat(f.runnerId)).fenced).toEqual([
       { runId: f.run.id, generation: 1 },
     ]);
-    expect(await recoverOnStartup(sqliteDb(f.db), f.clock.at)).toEqual([
+    expect(await recoverOnStartup(f.db, f.clock.at)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
-    expect(await getWorkItem(sqliteDb(f.db), f.item.id)).toMatchObject({
+    expect(await getWorkItem(f.db, f.item.id)).toMatchObject({
       state: "recovering",
       recoveryAttempts: 1,
     });
   } finally {
-    f.close();
+    await f.close();
   }
 }, 30_000);
 
@@ -238,13 +242,15 @@ test("a cancelled item does not consume its accepted result after expiry", async
     const { command, submit } = await f.admit(1);
     await submit();
     f.clock.at += 60_001 + RUNNER_LEASE_GRACE_MS;
-    f.db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [f.item.id]);
+    await seed(f.db, (q) =>
+      q.orm.update(q.t.workItem).set({ cancelRequested: 1 }).where(eq(q.t.workItem.id, f.item.id)),
+    );
     await expect(f.results.read(f.run.id, 1, command.id)).rejects.toThrow();
-    expect(await recoverOnStartup(sqliteDb(f.db), f.clock.at)).toEqual([
+    expect(await recoverOnStartup(f.db, f.clock.at)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
   } finally {
-    f.close();
+    await f.close();
   }
 }, 30_000);
 
@@ -259,10 +265,10 @@ test("a superseding generation fences the earlier accepted result", async () => 
     await expect(f.results.read(f.run.id, 2, first.command.id)).rejects.toThrow();
     expect(await f.results.read(f.run.id, 2, second.command.id)).toBeNull();
     f.clock.at += 60_001 + RUNNER_LEASE_GRACE_MS;
-    expect(await recoverOnStartup(sqliteDb(f.db), f.clock.at)).toEqual([
+    expect(await recoverOnStartup(f.db, f.clock.at)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
   } finally {
-    f.close();
+    await f.close();
   }
 }, 30_000);

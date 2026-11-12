@@ -2,8 +2,8 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
+import { count, eq } from "drizzle-orm";
 import type { AcpEvent } from "../src/acp";
 import { PawsShutdown } from "../src/core";
 import {
@@ -14,13 +14,12 @@ import {
   getWorkItem,
   insertQueuedItem,
   listJobs,
-  openDatabase,
+  openPawsStore,
   prepareShutdown,
   putWorkspaceUser,
   recordLinearInstallation,
   recoverOnStartup,
   saveTaskMode,
-  sqliteDb,
 } from "../src/db";
 import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerControl } from "../src/runner-control";
@@ -35,7 +34,8 @@ import {
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { migratedDatabase } from "./helpers";
+import { seed } from "./dialects";
+import { copyMigratedPglite } from "./pglite";
 
 const ANSWER = "Before the restart. After the restart.";
 const TRANSCRIPT_TIME = "2026-11-03T18:09:14.123Z";
@@ -52,26 +52,28 @@ const TRANSCRIPT = Buffer.from(
 
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "paws-response-restart-"));
-  const path = join(root, "paws.db");
-  let db: Database = migratedDatabase(path);
+  const path = join(root, "pglite");
+  await copyMigratedPglite(path);
+  let store = await openPawsStore({ url: null, pgliteDir: path });
+  let db = store.store;
   const now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -86,12 +88,15 @@ async function fixture() {
       )
     ).token,
   });
-  db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
-  db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);
-  db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [runnerId]);
+  await seed(
+    db,
+    (q) => q.orm.update(q.t.runner).set({ status: "active" }).where(eq(q.t.runner.id, runnerId)),
+    (q) => q.orm.insert(q.t.runnerPolicy).values({ runnerId }),
+    (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId, agent: "claude", ready: 1 }),
+  );
   const item = await insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
-  const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
-  await recordLinearInstallation(sqliteDb(db), {
+  const { run } = await beginImplementRun(db, item.id, now);
+  await recordLinearInstallation(db, {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",
@@ -99,9 +104,11 @@ async function fixture() {
     teamId: "team",
     observedAtMs: now,
   });
-  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
-  db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, item.id]);
-  await saveTaskMode(sqliteDb(db), item.id, "answer");
+  await bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+  await seed(db, (q) =>
+    q.orm.update(q.t.workItem).set({ ownerUserId: userId }).where(eq(q.t.workItem.id, item.id)),
+  );
+  await saveTaskMode(db, item.id, "answer");
   const worktree = join(root, "task");
   mkdirSync(worktree);
 
@@ -109,18 +116,18 @@ async function fixture() {
   let downloads = 0;
   function open() {
     const work = createRunnerWork({
-      store: sqliteDb(db),
+      store: db,
       keyId: "fixture",
       privateKey: keys.privateKey,
       eventKey: Buffer.alloc(32, 7),
     });
-    const results = createRunnerResults({ store: sqliteDb(db), work });
+    const results = createRunnerResults({ store: db, work });
     const backend = createRemoteAgentRunner({
-      store: sqliteDb(db),
+      store: db,
       work,
       results,
-      health: createRunnerHealth({ store: sqliteDb(db), work }),
-      placement: createRunnerPlacement({ store: sqliteDb(db) }),
+      health: createRunnerHealth({ store: db, work }),
+      placement: createRunnerPlacement({ store: db }),
       pollIntervalMs: 5,
       async fetchCandidate() {
         throw new Error("A response task has no candidate");
@@ -140,20 +147,25 @@ async function fixture() {
   const tasks: Extract<RunnerCommand, { type: "task" }>[] = [];
   const sim = { stopped: false, paused: false };
   const handled = new Set<string>();
+  const beat = async () => {
+    const { work } = services;
+    await work.heartbeat(runnerId);
+    for (const envelope of await work.commands(runnerId)) {
+      const command = JSON.parse(
+        Buffer.from(envelope.payload, "base64url").toString(),
+      ) as RunnerCommand;
+      if (handled.has(command.id)) continue;
+      handled.add(command.id);
+      await work.acknowledge(runnerId, command.id);
+      if (command.type === "task") tasks.push(command);
+    }
+  };
+  let beating: Promise<void> = Promise.resolve();
   const runner = (async () => {
     while (!sim.stopped) {
       if (!sim.paused) {
-        const { work } = services;
-        await work.heartbeat(runnerId);
-        for (const envelope of await work.commands(runnerId)) {
-          const command = JSON.parse(
-            Buffer.from(envelope.payload, "base64url").toString(),
-          ) as RunnerCommand;
-          if (handled.has(command.id)) continue;
-          handled.add(command.id);
-          await work.acknowledge(runnerId, command.id);
-          if (command.type === "task") tasks.push(command);
-        }
+        beating = beat();
+        await beating;
       }
       await Bun.sleep(5);
     }
@@ -175,22 +187,26 @@ async function fixture() {
       events.push(event);
     },
   });
-  const until = async (ready: () => boolean) => {
-    for (let i = 0; i < 2_000 && !ready(); i++) await Bun.sleep(5);
-    if (!ready()) throw new Error("Timed out");
+  const until = async (ready: () => boolean | Promise<boolean>) => {
+    for (let i = 0; i < 2_000 && !(await ready()); i++) await Bun.sleep(5);
+    if (!(await ready())) throw new Error("Timed out");
   };
-  const commandCount = (kind?: string) =>
-    db
-      .query<{ count: number }, [string]>(
-        "SELECT count(*) AS count FROM runner_command WHERE ?1='' OR kind=?1",
+  const commandCount = async (kind?: string) =>
+    (
+      await db.run((q) =>
+        q.one(
+          q.orm
+            .select({ count: count() })
+            .from(q.t.runnerCommand)
+            .where(kind === undefined ? undefined : eq(q.t.runnerCommand.kind, kind)),
+        ),
       )
-      .get(kind ?? "")!.count;
-  const consumed = () =>
-    db
-      .query<{ sequence: number }, [string]>(
-        "SELECT consumed_sequence AS sequence FROM runner_work WHERE run_id=?",
-      )
-      .get(run.id)?.sequence ?? 0;
+    )?.count ?? 0;
+  const runnerWork = async () =>
+    await db.run((q) =>
+      q.one(q.orm.select().from(q.t.runnerWork).where(eq(q.t.runnerWork.runId, run.id))),
+    );
+  const consumed = async () => (await runnerWork())?.consumedSequence ?? 0;
 
   return {
     root,
@@ -203,6 +219,7 @@ async function fixture() {
     options,
     until,
     commandCount,
+    runnerWork,
     consumed,
     downloads: () => downloads,
     get db() {
@@ -263,17 +280,19 @@ async function fixture() {
         },
       });
     },
-    restart() {
+    async restart() {
       sim.paused = true;
-      db.close();
-      db = openDatabase(path);
+      await beating;
+      await store.close();
+      store = await openPawsStore({ url: null, pgliteDir: path });
+      db = store.store;
       services = open();
       sim.paused = false;
     },
     async close() {
       sim.stopped = true;
       await runner;
-      db.close();
+      await store.close();
       rmSync(root, { recursive: true, force: true });
     },
   };
@@ -295,35 +314,35 @@ test("an answer task mid-turn keeps running through a Paws restart and finishes 
     await f.until(() => f.tasks.length === 1);
     const command = f.tasks[0]!;
     await f.say(command, 1, "Before the restart.");
-    await f.until(() => f.consumed() === 1);
+    await f.until(async () => (await f.consumed()) === 1);
     expect(await f.say(command, 1, "Before the restart.", "2026-11-03T18:09:13.000Z")).toEqual({
       duplicate: true,
     });
     shutdown.abort(new PawsShutdown());
     expect(await first).not.toBeNull();
-    expect(f.commandCount("cancel")).toBe(0);
+    expect(await f.commandCount("cancel")).toBe(0);
 
-    await prepareShutdown(sqliteDb(f.db));
-    expect(await getWorkItem(sqliteDb(f.db), f.item.id)).toMatchObject({
+    await prepareShutdown(f.db);
+    expect(await getWorkItem(f.db, f.item.id)).toMatchObject({
       state: "running",
       recoveryAttempts: 0,
     });
-    expect((await getRun(sqliteDb(f.db), f.run.id))?.status).toBe("active");
-    f.restart();
-    expect(await recoverOnStartup(sqliteDb(f.db))).toEqual([
+    expect((await getRun(f.db, f.run.id))?.status).toBe("active");
+    await f.restart();
+    expect(await recoverOnStartup(f.db)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null, reattach: true },
     ]);
-    expect(await getWorkItem(sqliteDb(f.db), f.item.id)).toMatchObject({
+    expect(await getWorkItem(f.db, f.item.id)).toMatchObject({
       state: "running",
       recoveryAttempts: 0,
     });
     expect(
-      (await listJobs(sqliteDb(f.db))).filter(
+      (await listJobs(f.db)).filter(
         (job) => job.queue === "run.resume" && job.status === "pending",
       ),
     ).toHaveLength(1);
 
-    const commands = f.commandCount();
+    const commands = await f.commandCount();
     f.events.length = 0;
     const resumed = f.services.backend.forItem(f.item.id)(f.options(new AbortController().signal));
     await f.say(command, 2, "After the restart.");
@@ -333,7 +352,7 @@ test("an answer task mid-turn keeps running through a Paws restart and finishes 
     expect(result).toMatchObject({ stopReason: "end_turn", agentExited: true });
     // The resume read on from the consumed event, on the same command.
     expect(f.tasks).toHaveLength(1);
-    expect(f.commandCount()).toBe(commands);
+    expect(await f.commandCount()).toBe(commands);
     expect(messages(f.events)).toEqual(["After the restart."]);
     const answers = f.events.filter(
       (event) =>
@@ -354,14 +373,12 @@ test("an answer task mid-turn keeps running through a Paws restart and finishes 
         .map((line) => JSON.parse(line))
         .find((line) => line.type === "acp").t,
     ).toBe(TRANSCRIPT_TIME);
+    expect((await f.runnerWork())?.endedAt).not.toBeNull();
     expect(
-      f.db
-        .query<{ endedAt: number | null }, [string]>(
-          "SELECT ended_at AS endedAt FROM runner_work WHERE run_id=?",
-        )
-        .get(f.run.id)?.endedAt,
-    ).not.toBeNull();
-    expect(f.db.query("SELECT 1 FROM runner_result WHERE run_id=?").all(f.run.id)).toHaveLength(1);
+      await f.db.run((q) =>
+        q.all(q.orm.select().from(q.t.runnerResult).where(eq(q.t.runnerResult.runId, f.run.id))),
+      ),
+    ).toHaveLength(1);
   } finally {
     await f.close();
   }
@@ -380,16 +397,16 @@ test("an answer task whose runner lease ran past its grace resumes from the star
     await f.until(() => f.tasks.length === 1);
     shutdown.abort(new PawsShutdown());
     expect(await first).not.toBeNull();
-    expect(f.commandCount("cancel")).toBe(0);
+    expect(await f.commandCount("cancel")).toBe(0);
 
     const later = Date.now() + 60_001 + RUNNER_LEASE_GRACE_MS;
-    await prepareShutdown(sqliteDb(f.db), later);
-    expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("recovering");
-    f.restart();
-    expect(await recoverOnStartup(sqliteDb(f.db), later)).toEqual([
+    await prepareShutdown(f.db, later);
+    expect((await getWorkItem(f.db, f.item.id))?.state).toBe("recovering");
+    await f.restart();
+    expect(await recoverOnStartup(f.db, later)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
-    expect(await getWorkItem(sqliteDb(f.db), f.item.id)).toMatchObject({ recoveryAttempts: 1 });
+    expect(await getWorkItem(f.db, f.item.id)).toMatchObject({ recoveryAttempts: 1 });
   } finally {
     await f.close();
   }

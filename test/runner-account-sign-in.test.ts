@@ -42,6 +42,7 @@ async function fixture(runnerVersion = "0.1.61") {
   const { db, close } = await tempStore();
   stores.push(close);
   const now = 1_800_000_000_000;
+  const clock = { at: now };
   const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
@@ -70,7 +71,7 @@ async function fixture(runnerVersion = "0.1.61") {
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
-    now: () => now,
+    now: () => clock.at,
     serverVersion: "2.3.4",
   });
   const enroll = async (name: string) => {
@@ -90,7 +91,7 @@ async function fixture(runnerVersion = "0.1.61") {
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
-    now: () => now,
+    now: () => clock.at,
   });
   const http = createRunnerWorkHttp(work, {});
   const heartbeat = async (bindings: { bindingId: string; agent: string }[]) =>
@@ -107,10 +108,10 @@ async function fixture(runnerVersion = "0.1.61") {
   const login = createRunnerLogin({
     store: db,
     work,
-    now: () => now,
+    now: () => clock.at,
     onSignedIn: ({ agent }) => signedIn.push(agent),
   });
-  const health = createRunnerHealth({ store: db, work, now: () => now });
+  const health = createRunnerHealth({ store: db, work, now: () => clock.at });
   const account = await createAgentAccount(db, {
     workspaceId: workspace.id,
     agent: "codex",
@@ -142,6 +143,7 @@ async function fixture(runnerVersion = "0.1.61") {
   return {
     db,
     now,
+    clock,
     runnerId,
     otherRunner,
     workspace: workspace.id,
@@ -174,7 +176,8 @@ const policy = async (db: Db, runnerId: string) =>
   )) ?? null;
 
 test("a named sign-in targets only its binding and leaves the default sign-in alone", async () => {
-  const { db, runnerId, principal, login, account, binding, queued, signedIn } = await fixture();
+  const { db, runnerId, principal, login, clock, account, binding, queued, signedIn } =
+    await fixture();
   const named = await login.start(principal, runnerId, "codex", binding.id);
   expect(named.bindingId).toBe(binding.id);
   expect((await login.start(principal, runnerId, "codex", binding.id)).id).toBe(named.id);
@@ -207,6 +210,7 @@ test("a named sign-in targets only its binding and leaves the default sign-in al
   expect((await policy(db, runnerId))?.ready).toBe(1);
   expect(signedIn).toEqual(["codex"]);
 
+  clock.at += 1;
   const again = await login.start(principal, runnerId, "codex", binding.id);
   expect(again.id).not.toBe(named.id);
   expect(
