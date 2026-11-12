@@ -1,5 +1,5 @@
-import { confirmFakeMerge } from "./fake-workspace";
 import { expect, spyOn, test } from "bun:test";
+import { eq, inArray } from "drizzle-orm";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,63 +11,80 @@ import {
   ensureLinearSession,
   getWorkItem,
   insertQueuedItem,
-  sqliteDb,
+  listJobs,
   type Db,
 } from "../src/db";
 import { Orchestrator } from "../src/loop";
 import * as scheduler from "../src/scheduler";
 import type { SchedulerOptions } from "../src/scheduler";
-import { tempDb } from "./helpers";
-import { workspaceDispatch } from "./fake-workspace";
+import { seed } from "./dialects";
+import { confirmFakeMergePg, workspaceDispatchPg } from "./fake-workspace";
+import { tempStore } from "./pglite";
 
-function sameDelegation(db: ReturnType<typeof tempDb>, ids: readonly string[]): void {
-  for (const id of ids) db.run("UPDATE work_item SET delegation_id='shared' WHERE id=?", [id]);
+function setState(db: Db, id: string, state: string) {
+  return seed(db, (q) => q.orm.update(q.t.workItem).set({ state }).where(eq(q.t.workItem.id, id)));
+}
+
+function sameDelegation(db: Db, ids: readonly string[]) {
+  return seed(db, (q) =>
+    q.orm
+      .update(q.t.workItem)
+      .set({ delegationId: "shared" })
+      .where(inArray(q.t.workItem.id, [...ids])),
+  );
 }
 
 test("dispatch asks readiness itself instead of trusting a handed-in ready list", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
     await insertQueuedItem(db, { id: "blocker", now: 1 });
     await insertQueuedItem(db, { id: "blocked", now: 2 });
-    sameDelegation(db, ["blocker", "blocked"]);
-    db.run(
-      "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('lin-item-blocker','lin-item-blocked')",
+    await sameDelegation(db, ["blocker", "blocked"]);
+    await seed(db, (q) =>
+      q.orm.insert(q.t.taskBlock).values({
+        blockerLinearIssueId: "lin-item-blocker",
+        blockedLinearIssueId: "lin-item-blocked",
+      }),
     );
-    expect(await workspaceDispatch(db, { now: 1000 })).toEqual(["blocker"]);
-    await confirmFakeMerge(db, "blocker");
-    db.run("UPDATE work_item SET state='merged' WHERE id='blocker'");
-    expect(await workspaceDispatch(db, { now: 1001 })).toEqual(["blocked"]);
+    expect(await workspaceDispatchPg(db, { now: 1000 })).toEqual(["blocker"]);
+    await confirmFakeMergePg(db, "blocker");
+    await setState(db, "blocker", "merged");
+    expect(await workspaceDispatchPg(db, { now: 1001 })).toEqual(["blocked"]);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("dispatch admits ready Items while another one is in flight", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
     await insertQueuedItem(db, { id: "first", now: 1 });
-    expect(await workspaceDispatch(db, { now: 1000 })).toEqual(["first"]);
-    db.run("UPDATE work_item SET state='running' WHERE id='first'");
-    db.run("UPDATE job SET status='done' WHERE json_extract(payload,'$.itemId')='first'");
+    expect(await workspaceDispatchPg(db, { now: 1000 })).toEqual(["first"]);
+    await setState(db, "first", "running");
+    const started = (await listJobs(db))
+      .filter((job) => (job.payload as { itemId?: string }).itemId === "first")
+      .map((job) => job.id);
+    await seed(db, (q) =>
+      q.orm.update(q.t.job).set({ status: "done" }).where(inArray(q.t.job.id, started)),
+    );
     await insertQueuedItem(db, { id: "second", now: 2 });
     await insertQueuedItem(db, { id: "third", now: 3 });
-    expect(await workspaceDispatch(db, { now: 1001 })).toEqual(["second", "third"]);
+    expect(await workspaceDispatchPg(db, { now: 1001 })).toEqual(["second", "third"]);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("the orchestrator dispatches after the transition's transaction has resolved", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const root = await mkdtemp(join(tmpdir(), "paws-dispatch-"));
-  const sqlite = sqliteDb(db);
   let open = 0;
   const store = {
-    ...sqlite,
+    ...db,
     transaction: async (body) => {
       open++;
       try {
-        return await sqlite.transaction(body);
+        return await db.transaction(body);
       } finally {
         open--;
       }
@@ -75,7 +92,7 @@ test("the orchestrator dispatches after the transition's transaction has resolve
   } as Db;
   const seen: { open: number; state: string | undefined }[] = [];
   const spy = spyOn(scheduler, "dispatch").mockImplementation(async () => {
-    seen.push({ open, state: (await getWorkItem(sqlite, "item"))?.state });
+    seen.push({ open, state: (await getWorkItem(db, "item"))?.state });
     return [];
   });
   try {
@@ -88,45 +105,55 @@ test("the orchestrator dispatches after the transition's transaction has resolve
       pawsRoot: root,
     });
     await insertQueuedItem(db, { id: "item", now: 1 });
-    await beginImplementRun(sqlite, "item", clock.now());
-    const item = (await getWorkItem(sqlite, "item"))!;
+    await beginImplementRun(db, "item", clock.now());
+    const item = (await getWorkItem(db, "item"))!;
     await orchestrator["fail"](item, "broken", "The run broke.");
     expect(seen).toEqual([{ open: 0, state: "failed" }]);
   } finally {
     spy.mockRestore();
-    db.close();
+    await close();
     await rm(root, { recursive: true, force: true });
   }
 });
 
 test("dispatch yields an idle merge session to a ready sibling", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
     await insertQueuedItem(db, { id: "merging", now: 1, sessionKey: "session" });
     await insertQueuedItem(db, { id: "next", now: 2, sessionKey: "session" });
-    sameDelegation(db, ["merging", "next"]);
-    db.run("UPDATE work_item SET state='merge_queue' WHERE id='merging'");
-    await ensureLinearSession(sqliteDb(db), {
+    await sameDelegation(db, ["merging", "next"]);
+    await setState(db, "merging", "merge_queue");
+    await ensureLinearSession(db, {
       sessionId: "session",
       issueId: "lin-item-merging",
       now: 1,
     });
-    db.run("UPDATE linear_session SET active_item_id='merging' WHERE session_id='session'");
-    await workspaceDispatch(db, { now: 1000 });
+    await seed(db, (q) =>
+      q.orm
+        .update(q.t.linearSession)
+        .set({ activeItemId: "merging" })
+        .where(eq(q.t.linearSession.sessionId, "session")),
+    );
+    await workspaceDispatchPg(db, { now: 1000 });
     expect(
-      db
-        .query<{ active: string | null }, []>(
-          "SELECT active_item_id AS active FROM linear_session WHERE session_id='session'",
+      (
+        await db.run((q) =>
+          q.one(
+            q.orm
+              .select({ active: q.t.linearSession.activeItemId })
+              .from(q.t.linearSession)
+              .where(eq(q.t.linearSession.sessionId, "session")),
+          ),
         )
-        .get()?.active,
+      )?.active,
     ).toBeNull();
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("dispatch reports the ready items it left waiting", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
     await insertQueuedItem(db, { id: "first", now: 1 });
     await insertQueuedItem(db, { id: "second", now: 2 });
@@ -136,9 +163,9 @@ test("dispatch reports the ready items it left waiting", async () => {
       ownerCap: 1,
       onWaiting: (ids) => waiting.push(...ids),
     };
-    expect(await workspaceDispatch(db, options)).toEqual(["first"]);
+    expect(await workspaceDispatchPg(db, options)).toEqual(["first"]);
     expect(waiting).toEqual(["second"]);
   } finally {
-    db.close();
+    await close();
   }
 });

@@ -5,7 +5,8 @@ import { expect, spyOn, test } from "bun:test";
 import type { FakeScript } from "../src/acp/testing/script";
 import * as closeoutCommands from "../src/closeout-spec/run/exec";
 import { JOB_KIND, systemClock } from "../src/core";
-import { sqliteDb, JobLoop, OutboxDispatcher, listJobs, migrate, openDatabase } from "../src/db";
+import { and, eq, inArray } from "drizzle-orm";
+import { JobLoop, OutboxDispatcher, listJobs } from "../src/db";
 import { createFakeGitHub, type GitHubResponse } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
@@ -14,10 +15,11 @@ import {
   githubClient,
   isMergeReadiness,
   repoLayout,
-  stateOf,
+  stateOfPg,
   writeOk,
 } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
+import { tempStore } from "./pglite";
 
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
 const { privateKey } = generateKeyPairSync("rsa", {
@@ -107,8 +109,7 @@ async function runWithFault(
       subIssues: [],
     },
   ]);
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const jobs = new JobLoop(db, systemClock, { backoffBaseMs: 10 });
   const outbox = new OutboxDispatcher(db, systemClock);
   const client = githubClient(layout.bare, createFakeGitHub());
@@ -143,7 +144,7 @@ async function runWithFault(
   let sequence = 0;
   let implementations = 0;
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -163,7 +164,7 @@ async function runWithFault(
               ? isMergeReadiness(req)
               : phase === "token mint" &&
                 req.path.endsWith("/access_tokens") &&
-                stateOf(db, "ENG-7") === "merge_queue";
+                (await stateOfPg(db, "ENG-7")) === "merge_queue";
           if (inject(target)) {
             if (fault === "a rate limit")
               return {
@@ -201,12 +202,21 @@ async function runWithFault(
     const deadline = Date.now() + 90_000;
     while (
       Date.now() < deadline &&
-      !["failed", "merged", "awaiting_input"].includes(stateOf(db, "ENG-7") ?? "")
+      !["failed", "merged", "awaiting_input"].includes((await stateOfPg(db, "ENG-7")) ?? "")
     ) {
-      db.run("UPDATE job SET max_attempts = 3 WHERE queue IN (?, ?) AND status = 'pending'", [
-        JOB_KIND.merge,
-        JOB_KIND.reverify,
-      ]);
+      await db.run((q) =>
+        q.exec(
+          q.orm
+            .update(q.t.job)
+            .set({ maxAttempts: 3 })
+            .where(
+              and(
+                inArray(q.t.job.queue, [JOB_KIND.merge, JOB_KIND.reverify]),
+                eq(q.t.job.status, "pending"),
+              ),
+            ),
+        ),
+      );
       if ((await jobs.tick()) === null) {
         await outbox.tick();
         await Bun.sleep(25);
@@ -216,19 +226,19 @@ async function runWithFault(
     const progress = (kind: string) =>
       tracker.progress.filter((update) => update.kind === kind).map((update) => update.body);
     return {
-      state: stateOf(db, "ENG-7"),
+      state: await stateOfPg(db, "ENG-7"),
       errors: progress("error"),
       closed: progress("response").filter((body) => body.startsWith("Closed:")),
       questions: progress("elicitation"),
-      pending: (await listJobs(sqliteDb(db)))
+      pending: (await listJobs(db))
         .filter((job) => job.status === "pending" || job.status === "running")
         .map((job) => job.queue),
       injected,
       injectedAt,
       implementations,
       detail: JSON.stringify({
-        state: stateOf(db, "ENG-7"),
-        jobs: (await listJobs(sqliteDb(db))).map(
+        state: await stateOfPg(db, "ENG-7"),
+        jobs: (await listJobs(db)).map(
           (job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`,
         ),
         progress: tracker.progress.map((update) => `${update.kind}: ${update.body}`),
@@ -238,7 +248,7 @@ async function runWithFault(
     quickWaits.mockRestore();
     flakyCommands.mockRestore();
     await orchestrator.shutdown().catch(() => undefined);
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }

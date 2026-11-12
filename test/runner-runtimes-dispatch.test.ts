@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { expect, test } from "bun:test";
 import { runAgent, type RunAgentOptions, type RunAgentResult } from "../src/acp";
 import type { Clock } from "../src/core";
-import { JobLoop, OutboxDispatcher, migrate, openDatabase, sqliteDb } from "../src/db";
+import { JobLoop, OutboxDispatcher } from "../src/db";
 import { createFakeGitHub } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
@@ -15,6 +15,7 @@ import type { RuntimeList } from "../src/runtimes";
 import { githubClient } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
 import { cloneRunner } from "./helpers";
+import { tempStore } from "./pglite";
 
 const exec = promisify(execFile);
 const { privateKey } = generateKeyPairSync("rsa", {
@@ -38,8 +39,7 @@ test("a runner-backed run gets mise.toml's runtimes from the mirror while origin
   await exec("git", ["-C", seed, "push", "origin", "HEAD:main"]);
   const pawsRoot = path.join(root, "paws");
   await mkdir(pawsRoot, { recursive: true });
-  const db = openDatabase(path.join(pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const clock: Clock = { now: () => Date.now(), mono: () => performance.now() };
   const jobs = new JobLoop(db, clock);
   const outbox = new OutboxDispatcher(db, clock);
@@ -69,7 +69,7 @@ test("a runner-backed run gets mise.toml's runtimes from the mirror while origin
   );
   const github = createFakeGitHub();
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -90,13 +90,13 @@ test("a runner-backed run gets mise.toml's runtimes from the mirror while origin
   });
   try {
     await orchestrator.onLinearEvent(created());
-    db.run("UPDATE work_item SET delegated_by = 'delegator-1'");
+    await db.run((q) => q.exec(q.orm.update(q.t.workItem).set({ delegatedBy: "delegator-1" })));
     await jobs.tick();
     expect(lists).toEqual([{ runtimes: [{ tool: "bun", version: "1.4.2" }], notices: [] }]);
     expect(journal.filter((line) => line.startsWith("runtimes "))).toEqual([]);
   } finally {
     await orchestrator.shutdown();
-    db.close();
+    await close();
     await rm(root, { recursive: true, force: true });
   }
 }, 60_000);
