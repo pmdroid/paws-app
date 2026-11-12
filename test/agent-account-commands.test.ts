@@ -8,10 +8,7 @@ import {
   commandAccount,
   consumeWorkspaceBootstrap,
   createAgentAccount,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
-  sqliteDb,
 } from "../src/db";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
@@ -22,26 +19,27 @@ import {
   workspaceTokenHash,
   type WorkspacePrincipal,
 } from "../src/workspace";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
-const roots: string[] = [];
-afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+const cleanups: (() => void | Promise<void>)[] = [];
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "paws-agent-accounts-"));
-  roots.push(root);
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
+  cleanups.push(close, () => rmSync(root, { recursive: true, force: true }));
   const now = 1_800_000_000_000;
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "fixture-host", now);
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-host", now);
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "fixture-host",
     name: "Fixture",
@@ -58,7 +56,7 @@ async function fixture() {
   };
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -72,7 +70,7 @@ async function fixture() {
     token: (await control.createEnrollment(principal, pending)).token,
   });
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -118,19 +116,19 @@ test("an old runner keeps running the default sign-in and never receives a named
   const { db, now, runnerId, workspace, heartbeat, check, queued } = await fixture();
   expect(await heartbeat({ runnerVersion: "0.1.59" })).toBe(200);
   const legacy = await check();
-  expect(await commandAccount(sqliteDb(db), legacy)).toMatchObject({
+  expect(await commandAccount(db, legacy)).toMatchObject({
     bindingId: `legacy_claude_${runnerId}`,
     accountId: `legacy_claude_${workspace}`,
     named: false,
   });
 
-  const account = await createAgentAccount(sqliteDb(db), {
+  const account = await createAgentAccount(db, {
     workspaceId: workspace,
     agent: "claude",
     label: "B",
     now,
   });
-  const binding = await bindAgentAccount(sqliteDb(db), {
+  const binding = await bindAgentAccount(db, {
     workspaceId: workspace,
     accountId: account.id,
     runnerId,
@@ -160,15 +158,16 @@ test("an old runner keeps running the default sign-in and never receives a named
     }),
   ).toBe(200);
   const accepted = await check(named);
-  expect(await commandAccount(sqliteDb(db), accepted)).toMatchObject({
+  expect(await commandAccount(db, accepted)).toMatchObject({
     bindingId: binding.id,
     named: true,
   });
   // Routine checks go to the runner one at a time: the named one follows the legacy one's result.
   expect(await queued()).toEqual([{ id: legacy, account: undefined }]);
-  db.run(
-    "INSERT INTO runner_health_result(command_id,runner_id,result_json,received_at) VALUES(?,?,'{}',?)",
-    [legacy, runnerId, now],
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.runnerHealthResult)
+      .values({ commandId: legacy, runnerId, resultJson: "{}", receivedAt: now }),
   );
   expect(await queued()).toEqual([{ id: accepted, account: named }]);
   expect(
@@ -177,5 +176,4 @@ test("an old runner keeps running the default sign-in and never receives a named
       accounts: { protocol: 1, bindings: [{ bindingId: "legacy_claude_x", agent: "claude" }] },
     }),
   ).toBe(403);
-  db.close();
 });
