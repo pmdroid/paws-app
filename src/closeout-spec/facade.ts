@@ -13,7 +13,7 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { lstatSync, statSync } from "node:fs";
 import { rename } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { attemptsLeft, evaluate, type EvaluateRequest } from "./evaluate/evaluate";
 import { PAWS_CLOSEOUT_NAME, PAWS_CLOSEOUT_VERSION, type EvaluateTrust } from "./evaluate/trust";
 import { createEvidenceStore } from "./evidence/store";
@@ -186,7 +186,7 @@ export type AddReviewResult = { ok: true; record: ReviewRecord } | { ok: false; 
 export function createGitReader(
   options: { env?: NodeJS.ProcessEnv; fetchTimeoutMs?: number; remoteTimeoutMs?: number } = {},
 ): GitReader {
-  return {
+  const reader: GitReader = {
     async fetchOriginMain(repo) {
       const fetched = await gitNetwork(
         repo,
@@ -217,6 +217,21 @@ export function createGitReader(
     listBlobs: localGitReader.listBlobs,
     readBlob: localGitReader.readBlob,
   };
+  return {
+    ...reader,
+    fetchOriginMain: (repo) => oneFetchAt(repo, () => reader.fetchOriginMain(repo)),
+  };
+}
+
+const fetches = new Map<string, Promise<unknown>>();
+
+function oneFetchAt<T>(repo: string, body: () => Promise<T>): Promise<T> {
+  const key = resolve(repo);
+  const next = (fetches.get(key) ?? Promise.resolve()).then(body, body);
+  const settled = next.catch(() => undefined);
+  fetches.set(key, settled);
+  void settled.then(() => fetches.get(key) === settled && fetches.delete(key));
+  return next;
 }
 
 const localGitReader: Pick<GitReader, "listBlobs" | "readBlob"> = {
