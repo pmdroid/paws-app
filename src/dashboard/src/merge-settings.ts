@@ -2,13 +2,9 @@
 export type MergeOrder = "queue" | "ci-green" | "github-queue";
 export type MainMoved = "overlap" | "green" | "ci" | "closeout";
 export type MergeChoice = { order: MergeOrder; mainMoved: MainMoved };
-export type MergeProject = Partial<MergeChoice> & { id: string };
-export type MergeRule = Partial<MergeChoice> & { project?: string; label: string };
 export type MergeSettings = {
   autoApproveHighRisk?: boolean;
   default: MergeChoice;
-  projects: MergeProject[];
-  rules: MergeRule[];
   /** Replaces every repository's high-risk globs; a repository left out has none. */
   highRiskPaths?: { repository: string; paths: string[] }[];
   /**
@@ -52,8 +48,6 @@ export type HotFile = {
 export type MergeSettingsView = Omit<MergeSettings, "highRiskPaths"> & {
   /** Missing from an engine that does not list them; the page then leaves them alone. */
   highRiskRepositories?: HighRiskRepository[];
-  choices?: { projects: { id: string; name: string }[]; labels: string[] } | null;
-  choicesError?: string;
   /**
    * Configured repositories whose base branch has a GitHub merge queue. Null when Paws could not
    * check; missing from an engine that does not check.

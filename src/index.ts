@@ -76,6 +76,7 @@ import {
   pawsPaths,
   readMergeSettings,
   readQueueSettings,
+  MERGE_OVERRIDES_IGNORED,
   describeOverriddenSections,
   overriddenConfigSections,
   useSettingsStore,
@@ -516,6 +517,11 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   };
   const overriddenSections = overriddenConfigSections(paths.configFile);
   if (overriddenSections.length > 0) journal(describeOverriddenSections(overriddenSections));
+  try {
+    if (loadConfigFile(paths.configFile).ignoredMergeOverrides) journal(MERGE_OVERRIDES_IGNORED);
+  } catch (error) {
+    journalCaught(error, "index.startPaws.ignoredMergeOverrides", null);
+  }
   const reconnectLinear = publicDashboard
     ? createBrowserOnboarding({
         db: store,
@@ -1399,11 +1405,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             ),
           };
         },
-        ...(linear?.tracker?.mergeChoices
-          ? {
-              mergeChoices: (signal: AbortSignal) => linear.tracker!.mergeChoices!({ signal }),
-            }
-          : {}),
         githubQueues: (signal: AbortSignal) =>
           repositoriesWithMergeQueue({
             repositories,

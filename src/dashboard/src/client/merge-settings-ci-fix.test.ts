@@ -7,8 +7,6 @@ import { settleReactWork } from "./settle-react";
 
 const MERGING: MergeSettingsView = {
   default: { order: "queue", mainMoved: "overlap" },
-  projects: [],
-  rules: [],
 };
 const AGENTS: AgentSettings = {
   defaults: {

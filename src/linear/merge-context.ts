@@ -11,18 +11,12 @@ export type LinearMergeContext = {
   labels: string[];
   overview?: ProjectOverview | null;
 };
-export type LinearMergeChoices = { projects: { id: string; name: string }[]; labels: string[] };
 
 const ISSUE_QUERY = `query PawsMergeContext($id: String!) {
   issue(id: $id) {
     project { id name content documents(first: 10, orderBy: updatedAt) { nodes { title content } } }
     labels(first: 100) { nodes { name } }
   }
-}`;
-
-const CHOICES_QUERY = `query PawsMergeChoices {
-  projects(first: 250) { nodes { id name } }
-  issueLabels(first: 250, filter: { isGroup: { eq: false } }) { nodes { name } }
 }`;
 
 function nodes(connection: unknown): Record<string, unknown>[] {
@@ -49,25 +43,6 @@ export function createLinearMergeReads(client: LinearClient, starts?: IssueStart
         projectId: project ? readString(project, "id") : null,
         labels: nodes(issue["labels"]).flatMap((label) => readString(label, "name") ?? []),
         overview: projectOverviewFrom(project),
-      };
-    },
-    async mergeChoices(options?: TrackerRequestOptions): Promise<LinearMergeChoices> {
-      options?.signal?.throwIfAborted();
-      const data = await client.query(CHOICES_QUERY, {}, options);
-      options?.signal?.throwIfAborted();
-      if (!isRecord(data)) throw new Error("Linear returned no merge choices");
-      const projects = nodes(data["projects"]).flatMap((project) => {
-        const id = readString(project, "id");
-        const name = readString(project, "name");
-        return id === null || name === null ? [] : [{ id, name }];
-      });
-      const labels = [
-        ...new Set(nodes(data["issueLabels"]).flatMap((label) => readString(label, "name") ?? [])),
-      ];
-      const byName = (left: string, right: string) => left.localeCompare(right);
-      return {
-        projects: projects.sort((left, right) => byName(left.name, right.name)),
-        labels: labels.sort(byName),
       };
     },
   };

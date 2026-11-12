@@ -60,7 +60,7 @@ export {
 export type { LinearClient } from "./graphql";
 export { createLinearRepositoryMethods } from "./repositories";
 export { createLinearMergeReads } from "./merge-context";
-export type { LinearMergeChoices, LinearMergeContext } from "./merge-context";
+export type { LinearMergeContext } from "./merge-context";
 export type {
   CandidateRepository,
   LinearRepositoryAdapter,

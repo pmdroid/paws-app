@@ -177,7 +177,6 @@ import {
   readAgentSettings,
   resolveAgentProfiles,
   resolveBriefTemplate,
-  resolveMergeSettings,
   suggestedFindingsMode,
   type AgentLabelProblem,
   type AgentProfile,
@@ -6616,9 +6615,9 @@ export class Orchestrator {
   }
 
   /**
-   * Settings → Merging for this task: an issue rule, then the Linear project, then the workspace
-   * default. Resolved from the issue's project and labels once, then kept with the task. A failed
-   * Linear read uses the workspace default for now and tries again next time.
+   * Settings → Merging for this task: the workspace default, kept with the task together with the
+   * issue's Linear project and labels once Linear answers. A failed Linear read tries again next
+   * time.
    */
   private async mergeSettingsFor(
     item: WorkItemRecord,
@@ -6653,13 +6652,10 @@ export class Orchestrator {
         keepTaskLinearReadSteps(q, item.id, "project_overview", overview, this.now()),
       );
     }
-    const resolved = resolveMergeSettings(context ?? { projectId: null, labels: [] }, policy);
     const settings: TaskMergeSettings = {
-      order: resolved.order,
-      mainMoved: resolved.mainMoved,
+      ...policy.default,
       resolved: {
-        sources: resolved.sources,
-        ...(resolved.rule ? { rule: resolved.rule } : {}),
+        sources: { order: "default", mainMoved: "default" },
         ...(context ? { projectId: context.projectId, labels: context.labels } : {}),
       },
     };

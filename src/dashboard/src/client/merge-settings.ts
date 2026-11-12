@@ -50,9 +50,6 @@ type View = {
   field?: string;
   saved: boolean;
   denied?: boolean;
-  projectDraft?: string;
-  ruleProjectDraft?: string;
-  ruleLabelDraft?: string;
   ciFix?: { attempts: number; stored: number } | { error: string };
 };
 
@@ -60,10 +57,6 @@ export function ciFixProblem(attempts: number): string | null {
   return Number.isInteger(attempts) && attempts >= 0 && attempts <= CI_FIX_ATTEMPTS_MAX
     ? null
     : `CI fix attempts: enter a whole number from 0 to ${CI_FIX_ATTEMPTS_MAX}.`;
-}
-
-function projectName(data: MergeSettingsView, id: string): string {
-  return data.choices?.projects.find((project) => project.id === id)?.name ?? id;
 }
 
 function options<T extends string>(names: Partial<Record<T, string>>, selected: T): string {
@@ -100,29 +93,13 @@ function mainMovedHelp(choice: MainMoved, upToDate: readonly string[]): string {
   return `GitHub requires branches to be up to date in ${upToDate.join(", ")}, so merges there always update the branch and wait for CI. Turn that rule off to merge without an update.`;
 }
 
-/** Both selects for one level. `inherited` shows the choice it inherits, disabled. */
 function choiceFields(
   scope: string,
   choice: MergeChoice,
-  inherited: boolean | null,
   repos: { queues: readonly string[]; upToDate: readonly string[] },
-  inheritLabel = "Use workspace default",
 ): string {
-  const disabled = inherited ? "disabled" : "";
-  return `${inherited === null ? "" : `<label class="settings-inherit"><input type="checkbox" name="${scope}-inherit" ${inherited ? "checked" : ""}>${inheritLabel}</label>`}
-    <div class="settings-controls"><div class="settings-field"><label for="${scope}-order">Merge order</label><select id="${scope}-order" name="${scope}-order" aria-describedby="${scope}-order-help" ${disabled}>${options(orderNames(repos.queues, choice.order), choice.order)}</select><small class="sub" id="${scope}-order-help">${esc(orderHelp(choice.order, repos.queues))}</small></div>
-    <div class="settings-field"><label for="${scope}-main">When main moved before the merge</label><select id="${scope}-main" name="${scope}-main" aria-describedby="${scope}-main-help" ${disabled}>${options(MAIN_MOVED, choice.mainMoved)}</select><small class="sub" id="${scope}-main-help">${esc(mainMovedHelp(choice.mainMoved, repos.upToDate))}</small></div></div>`;
-}
-
-function effective(override: Partial<MergeChoice> | undefined, fallback: MergeChoice): MergeChoice {
-  return {
-    order: override?.order ?? fallback.order,
-    mainMoved: override?.mainMoved ?? fallback.mainMoved,
-  };
-}
-
-function overrides(value: Partial<MergeChoice>): boolean {
-  return value.order !== undefined || value.mainMoved !== undefined;
+  return `<div class="settings-controls"><div class="settings-field"><label for="${scope}-order">Merge order</label><select id="${scope}-order" name="${scope}-order" aria-describedby="${scope}-order-help">${options(orderNames(repos.queues, choice.order), choice.order)}</select><small class="sub" id="${scope}-order-help">${esc(orderHelp(choice.order, repos.queues))}</small></div>
+    <div class="settings-field"><label for="${scope}-main">When main moved before the merge</label><select id="${scope}-main" name="${scope}-main" aria-describedby="${scope}-main-help">${options(MAIN_MOVED, choice.mainMoved)}</select><small class="sub" id="${scope}-main-help">${esc(mainMovedHelp(choice.mainMoved, repos.upToDate))}</small></div></div>`;
 }
 
 /** The globs in a High-risk paths box: one per line, blank lines dropped. */
@@ -219,44 +196,9 @@ export function renderMergeSettings(view: View): string {
     : view.saved
       ? '<p class="settings-message" role="status">Merging settings saved. Items that start from now on use them.</p>'
       : "";
-  const choices = data.choices;
-  const listed = new Set(data.projects.map((project) => project.id));
-  const available = choices?.projects.filter((project) => !listed.has(project.id)) ?? [];
-  const projectPicker = choices
-    ? `<select id="merge-new-project" name="new-project"><option value="">Choose a Linear project</option>${available.map((project) => `<option value="${esc(project.id)}" ${project.id === view.projectDraft ? "selected" : ""}>${esc(project.name)}</option>`).join("")}</select>`
-    : `<input id="merge-new-project" name="new-project" value="${esc(view.projectDraft ?? "")}" placeholder="Linear project id" autocapitalize="none" spellcheck="false">`;
-  const ruleProject = `<select id="merge-rule-project" name="rule-project" aria-label="Project"><option value="">Any project</option>${(choices?.projects ?? data.projects.map((project) => ({ id: project.id, name: project.id }))).map((project) => `<option value="${esc(project.id)}" ${project.id === view.ruleProjectDraft ? "selected" : ""}>${esc(project.name)}</option>`).join("")}</select>`;
-  const ruleLabel = choices
-    ? `<select id="merge-rule-label" name="rule-label" aria-label="Label"><option value="">Label</option>${choices.labels.map((label) => `<option value="${esc(label)}" ${label === view.ruleLabelDraft ? "selected" : ""}>${esc(label)}</option>`).join("")}</select>`
-    : `<input id="merge-rule-label" name="rule-label" aria-label="Label" value="${esc(view.ruleLabelDraft ?? "")}" placeholder="Linear label">`;
-  return `${intro}${data.githubQueueError ? `<p class="settings-message" role="status">${esc(data.githubQueueError)}</p>` : ""}${data.choicesError ? `<p class="settings-message err" role="status">${esc(data.choicesError)} Enter a project id or label by hand, or <button class="btn" type="button" data-merge="reload">reload</button>.</p>` : ""}<form id="merge-settings-form"><div id="merge-feedback">${feedback}</div>
+  return `${intro}${data.githubQueueError ? `<p class="settings-message" role="status">${esc(data.githubQueueError)}</p>` : ""}<form id="merge-settings-form"><div id="merge-feedback">${feedback}</div>
     <fieldset class="settings-fields" ${view.busy ? "disabled" : ""}>
-      <section class="settings-section"><div class="settings-label"><h2>Workspace default</h2><p class="sub">Used by every project unless a project or an issue rule says otherwise.</p></div><div class="col">${choiceFields("default", data.default, null, repos)}</div></section>
-      <section class="settings-section"><div class="settings-label"><h2>Projects</h2><p class="sub">Override the default for one Linear project.</p></div><div class="col">
-      ${
-        data.projects.length
-          ? data.projects
-              .map(
-                (project, index) =>
-                  `<section class="settings-project"><div class="between"><h3>${esc(projectName(data, project.id))}</h3><button class="btn" type="button" data-merge="remove-project" data-index="${index}" aria-label="Remove ${esc(projectName(data, project.id))}">Remove</button></div>${choiceFields(`project-${index}`, effective(project, data.default), !overrides(project), repos)}</section>`,
-              )
-              .join("")
-          : '<p class="sub">No project overrides.</p>'
-      }
-      <div class="settings-add"><label for="merge-new-project">Project</label>${projectPicker}<div class="row"><button class="btn" type="button" data-merge="add-project">Add project</button></div></div></div></section>
-      <section class="settings-section"><div class="settings-label"><h2>Issue rules</h2><p class="sub">A rule matches a Linear label in a project, or in any project, and wins over the project setting. The labels are read when an item starts.</p></div><div class="col">
-      ${
-        data.rules.length
-          ? data.rules
-              .map((rule, index) => {
-                const project = data.projects.find((entry) => entry.id === rule.project);
-                const title = `${rule.project === undefined ? "Any project" : projectName(data, rule.project)} · label ${rule.label}`;
-                return `<section class="settings-project"><div class="between"><h3>${esc(title)}</h3><button class="btn" type="button" data-merge="remove-rule" data-index="${index}" aria-label="Remove ${esc(title)}">Remove</button></div>${choiceFields(`rule-${index}`, effective(rule, effective(project, data.default)), !overrides(rule), repos, "Use the project or workspace setting")}</section>`;
-              })
-              .join("")
-          : '<p class="sub">No issue rules.</p>'
-      }
-      <div class="settings-add"><label for="merge-rule-project">New rule</label>${ruleProject}${ruleLabel}<div class="row"><button class="btn" type="button" data-merge="add-rule">Add rule</button></div></div></div></section>
+      <section class="settings-section"><div class="settings-label"><h2>Merging</h2><p class="sub">Used by every project.</p></div><div class="col">${choiceFields("default", data.default, repos)}</div></section>
       ${data.commentWait ? commentWaitSection(data.commentWait) : ""}
       ${checksSection(view.ciFix)}
       ${riskGateSection(data.riskGate)}
@@ -334,8 +276,6 @@ export function mergeSettingsBody(data: MergeSettingsView): MergeSettings {
       ? {}
       : { autoApproveHighRisk: data.autoApproveHighRisk }),
     default: data.default,
-    projects: data.projects,
-    rules: data.rules,
     ...(data.commentWait ? { commentWait: data.commentWait } : {}),
     ...(data.highRiskRepositories
       ? {
@@ -409,22 +349,6 @@ export function createMergeSettings(invalidate: () => void): {
     });
     const data = view.data;
     data.default = read("default", data.default);
-    data.projects = data.projects.map((project, index) => {
-      const scope = `project-${index}`;
-      if (form.querySelector<HTMLInputElement>(`[name="${scope}-inherit"]`)?.checked)
-        return { id: project.id };
-      return { id: project.id, ...read(scope, effective(project, data.default)) };
-    });
-    data.rules = data.rules.map((rule, index) => {
-      const scope = `rule-${index}`;
-      const base = {
-        ...(rule.project === undefined ? {} : { project: rule.project }),
-        label: rule.label,
-      };
-      if (form.querySelector<HTMLInputElement>(`[name="${scope}-inherit"]`)?.checked) return base;
-      const project = data.projects.find((entry) => entry.id === rule.project);
-      return { ...base, ...read(scope, effective(rule, effective(project, data.default))) };
-    });
     if (data.autoApproveHighRisk !== undefined)
       data.autoApproveHighRisk =
         root!.querySelector<HTMLInputElement>('[name="auto-approve-high-risk"]')?.checked ?? false;
@@ -456,9 +380,6 @@ export function createMergeSettings(invalidate: () => void): {
       const text = value("merge-ci-fix-attempts")?.trim();
       if (text !== undefined) view.ciFix.attempts = text === "" ? NaN : Number(text);
     }
-    view.projectDraft = value("new-project")?.trim() ?? "";
-    view.ruleProjectDraft = value("rule-project") ?? "";
-    view.ruleLabelDraft = value("rule-label")?.trim() ?? "";
     view.saved = false;
     view.error = null;
     delete view.field;
@@ -519,43 +440,7 @@ export function createMergeSettings(invalidate: () => void): {
   const click = (event: Event) => {
     const button = (event.target as Element).closest<HTMLButtonElement>("[data-merge]");
     if (!button || view.busy || !engine) return;
-    const action = button.dataset.merge;
-    if (action === "reload") {
-      void load();
-      return;
-    }
-    draft();
-    const data = view.data;
-    if (!data) return;
-    const index = Number(button.dataset.index);
-    if (action === "remove-project") data.projects.splice(index, 1);
-    if (action === "remove-rule") data.rules.splice(index, 1);
-    if (action === "add-project") {
-      const id = view.projectDraft ?? "";
-      if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/.test(id)) view.error = "Choose a Linear project.";
-      else if (data.projects.some((project) => project.id === id))
-        view.error = "This project is already listed.";
-      else {
-        data.projects.push({ id });
-        view.projectDraft = "";
-      }
-    }
-    if (action === "add-rule") {
-      const label = view.ruleLabelDraft ?? "";
-      const project = view.ruleProjectDraft || undefined;
-      if (!label) view.error = "Choose a Linear label for the rule.";
-      else if (
-        data.rules.some(
-          (rule) => rule.project === project && rule.label.toLowerCase() === label.toLowerCase(),
-        )
-      )
-        view.error = "This rule already exists.";
-      else {
-        data.rules.push({ ...(project === undefined ? {} : { project }), label });
-        view.ruleLabelDraft = "";
-      }
-    }
-    paint();
+    if (button.dataset.merge === "reload") void load();
   };
   const submit = (event: Event) => {
     event.preventDefault();
@@ -569,8 +454,6 @@ export function createMergeSettings(invalidate: () => void): {
       return;
     }
     const started = generation;
-    const choices = view.data.choices;
-    const choicesError = view.data.choicesError;
     const { githubQueue, githubQueueError, upToDateRule, riskGate, hotFiles } = view.data;
     void request("Saving merging settings…", async () => {
       if (ciFix && ciFix.attempts !== ciFix.stored) {
@@ -594,8 +477,6 @@ export function createMergeSettings(invalidate: () => void): {
       if (started !== generation) return;
       view.data = {
         ...data,
-        choices,
-        ...(choicesError ? { choicesError } : {}),
         ...(githubQueue === undefined ? {} : { githubQueue }),
         ...(githubQueueError ? { githubQueueError } : {}),
         ...(upToDateRule ? { upToDateRule } : {}),
@@ -610,10 +491,7 @@ export function createMergeSettings(invalidate: () => void): {
     const target = event.target as HTMLInputElement | HTMLSelectElement;
     // A High-risk paths box changes on blur; repainting then would swallow the click that blurred
     // it, such as Save. Submit and the other buttons read it.
-    if (
-      ["new-project", "rule-project", "rule-label", "merge-ci-fix-attempts"].includes(target.name)
-    )
-      return;
+    if (target.name === "merge-ci-fix-attempts") return;
     if (/^(risk|ignore-bots|ignore-markers)-/.test(target.name)) return;
     draft();
     paint();
