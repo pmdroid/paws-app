@@ -123,7 +123,7 @@ function replace(node: DOMNode): ReactElement | undefined {
       return createElement("input", {
         ...props,
         className:
-          "size-5 shrink-0 accent-main focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring",
+          "size-5 shrink-0 accent-foreground focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring",
       });
     }
     if (attribs.type === "hidden") return createElement("input", props);
@@ -180,7 +180,7 @@ function replace(node: DOMNode): ReactElement | undefined {
           attribs.class,
           buttonVariants({
             variant: has("primary") || attribs["aria-pressed"] === "true" ? "default" : "neutral",
-            size: "default",
+            size: has("btn") ? (has("sm") ? "xs" : "sm") : "default",
           }),
         ),
       },
@@ -190,27 +190,27 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (name === "a") {
     if (has("improvement-row"))
       return styled(
-        "flex min-h-control min-w-0 flex-col gap-2 rounded-base border-2 border-border bg-secondary-background px-4 py-3 no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring hover:bg-background aria-[current=true]:bg-main aria-[current=true]:text-main-foreground aria-[current=true]:shadow-shadow",
+        "flex min-h-control min-w-0 flex-col gap-2 rounded-base border border-border bg-secondary-background px-4 py-3 no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring hover:bg-background aria-[current=true]:bg-accent",
       );
     if (has("runner-row"))
       return styled(
-        "flex min-w-0 flex-col gap-3 rounded-base border-2 border-border bg-secondary-background px-4 py-3 shadow-shadow transition-transform hover:translate-x-1 hover:translate-y-1 hover:shadow-none focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring sm:flex-row sm:items-center sm:justify-between",
+        "flex min-w-0 flex-col gap-3 rounded-base border border-border bg-secondary-background px-4 py-3 transition-colors hover:bg-accent focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring sm:flex-row sm:items-center sm:justify-between",
       );
     if (has("node"))
       return styled(
-        "flex flex-col gap-3 rounded-base border-2 border-border bg-secondary-background p-4 shadow-shadow transition-transform hover:translate-x-1 hover:translate-y-1 hover:shadow-none",
+        "flex flex-col gap-3 rounded-base border border-border bg-secondary-background p-4 transition-colors hover:bg-accent",
       );
     if (has("btn", "nav", "tab") || attribs["aria-current"])
       return styled(
         buttonVariants({
           variant: attribs["aria-current"] || has("primary", "on") ? "default" : "neutral",
-          size: "sm",
+          size: has("btn") && has("sm") ? "xs" : "sm",
         }),
       );
     return styled(
       has("work-title")
         ? "font-bold underline-offset-4 hover:underline"
-        : "font-semibold underline decoration-2 underline-offset-4 hover:decoration-main",
+        : "font-semibold underline decoration-1 underline-offset-4 hover:decoration-foreground",
     );
   }
   if (name === "h1" && has("sr-only")) return styled("sr-only");
@@ -244,34 +244,42 @@ function replace(node: DOMNode): ReactElement | undefined {
   )
     return styled(
       has("f")
-        ? "inline-block h-3 w-6 rounded-base border-2 border-border bg-red-200"
+        ? "inline-block h-3 w-6 rounded-base border border-border bg-state-failed"
         : has("p")
-          ? "inline-block h-3 w-6 rounded-base border-2 border-border bg-green-200"
-          : "inline-block h-3 w-6 rounded-base border-2 border-border bg-main",
+          ? "inline-block h-3 w-6 rounded-base border border-border bg-state-ok"
+          : "inline-block h-3 w-6 rounded-base border border-border bg-accent",
     );
   if (has("settings-label", "settings-role")) return styled("flex min-w-0 flex-col gap-4");
   if (has("crumbs")) return styled("flex flex-wrap items-center gap-2");
   if (has("sr-only")) return styled("sr-only");
   if (has("logo", "av"))
     return styled(
-      "inline-block size-9 shrink-0 rounded-base border-2 border-border bg-main text-center text-sm font-bold leading-8 text-main-foreground",
+      "inline-block size-6 shrink-0 rounded-full bg-accent text-center text-[11px] font-semibold leading-6 text-foreground",
     );
-  if (has("st", "tag", "cnt", "n", "kind", "ico", "ph", "pill")) {
-    const state = has("err", "bad", "failed", "exhausted", "needs_human", "rejected", "blocked")
-      ? "bg-red-200 text-black"
-      : has("merged", "completed", "accepted", "passed", "done", "ok")
-        ? "bg-green-200 text-black"
-        : has("awaiting_input", "warn", "paused")
-          ? "bg-yellow-200 text-black"
-          : has("running", "verifying", "now")
-            ? "bg-main text-main-foreground"
-            : "bg-secondary-background";
+  if (has("st", "pill"))
     return (
       <Badge
         {...props}
+        variant="neutral"
         className={cn(
           attribs.class,
-          state,
+          "border-current/35 font-mono text-[11px]",
+          stateColor(has),
+          has("wrap") && "h-auto max-w-full whitespace-normal [overflow-wrap:anywhere]",
+          has("outcome") && "h-auto whitespace-normal",
+        )}
+      >
+        <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-current" />
+        {children()}
+      </Badge>
+    );
+  if (has("tag", "cnt", "n", "kind", "ico", "ph"))
+    return (
+      <Badge
+        {...props}
+        variant="neutral"
+        className={cn(
+          attribs.class,
           has("wrap") && "h-auto max-w-full whitespace-normal [overflow-wrap:anywhere]",
           has("outcome") && "h-auto whitespace-normal",
         )}
@@ -279,13 +287,11 @@ function replace(node: DOMNode): ReactElement | undefined {
         {children()}
       </Badge>
     );
-  }
-  if (name === "code" || has("lin-id"))
-    return styled("rounded-base bg-background px-1.5 py-0.5 font-mono text-xs");
+  if (name === "code" || has("lin-id")) return styled("font-mono text-xs text-foreground");
   if (name === "img")
     return createElement("img", {
       ...props,
-      className: "h-auto max-w-full rounded-base border-2 border-border",
+      className: "h-auto max-w-full rounded-base border border-border",
     });
   if (has("log", "scroll"))
     return createElement(
@@ -295,13 +301,13 @@ function replace(node: DOMNode): ReactElement | undefined {
         "data-log": attribs["data-log"],
         tabIndex: 0,
         className:
-          "max-h-120 overflow-auto rounded-base border-2 border-border bg-secondary-background p-3",
+          "max-h-120 overflow-auto rounded-base border border-border bg-secondary-background p-3 font-mono text-xs",
       },
       children(),
     );
   if (name === "pre")
     return styled(
-      "max-h-120 overflow-auto rounded-base border-2 border-border bg-secondary-background p-4 font-mono text-xs",
+      "max-h-120 overflow-auto rounded-base border border-border bg-secondary-background p-4 font-mono text-xs",
     );
   if (name === "table")
     return (
@@ -363,7 +369,7 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (has("improvement-numbers")) return styled("flex list-none flex-wrap gap-4 p-0");
   if (has("improvement-now"))
     return styled(
-      "flex min-w-0 flex-col gap-2 rounded-base border-2 border-dashed border-border bg-background p-3 [overflow-wrap:anywhere]",
+      "flex min-w-0 flex-col gap-2 rounded-base border border-dashed border-border bg-background p-3 [overflow-wrap:anywhere]",
     );
   if (has("status-meta")) return styled("flex min-w-0 flex-wrap items-center gap-3");
   if (has("status-actions"))
@@ -372,7 +378,7 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (has("issue-filters")) return styled("flex flex-wrap gap-2");
   if (name === "ul" && has("issue-list", "issue-items"))
     return styled(
-      "m-0 list-none divide-y-2 divide-border rounded-base border-2 border-border bg-secondary-background p-0 [&>li]:px-4 [&>li]:py-4",
+      "m-0 list-none divide-y-2 divide-border rounded-base border border-border bg-secondary-background p-0 [&>li]:px-4 [&>li]:py-4",
     );
   if (name === "ul" && has("runner-rows"))
     return styled("m-0 flex list-none flex-col gap-3 p-0 [&>li]:p-0");
@@ -381,8 +387,7 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled("flex min-w-0 flex-wrap gap-2 sm:justify-end [&>.tag]:whitespace-normal");
   if (has("runner-head")) return styled("flex min-w-0 items-start justify-between gap-3");
   if (has("runner-title")) return styled("flex min-w-0 flex-col gap-2");
-  if (has("runner-block"))
-    return styled("flex min-w-0 flex-col gap-3 border-t-2 border-border pt-5");
+  if (has("runner-block")) return styled("flex min-w-0 flex-col gap-3 border-t border-border pt-5");
   if (has("runner-block-head"))
     return styled("flex min-h-control min-w-0 flex-wrap items-center justify-between gap-3");
   if (name === "ul" && has("slot-list"))
@@ -396,11 +401,11 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (has("slot-mark"))
     return styled(
       cn(
-        "h-6 w-3 rounded-base border-2 border-border",
+        "h-6 w-3 rounded-base border border-border",
         has("used")
           ? has("high")
-            ? "bg-main"
-            : "bg-gauge"
+            ? "bg-state-warn"
+            : "bg-accent"
           : has("held")
             ? "bg-secondary-background"
             : "border-dashed bg-secondary-background",
@@ -414,7 +419,7 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (has("slot-note")) return styled("text-sm");
   if (has("runner-drain"))
     return styled(
-      "flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-base border-2 border-border bg-secondary-background px-4 py-3",
+      "flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-base border border-border bg-secondary-background px-4 py-3",
     );
   if (has("runner-drain-state"))
     return styled(
@@ -445,8 +450,7 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled(
       cn(
         "font-heading tabular-nums [overflow-wrap:normal]",
-        has("high") &&
-          "rounded-base border-2 border-border bg-main px-1.5 text-sm text-main-foreground",
+        has("high") && "rounded-base border border-current/35 px-1.5 text-sm text-state-warn",
       ),
     );
   if (has("gauge")) {
@@ -454,13 +458,13 @@ function replace(node: DOMNode): ReactElement | undefined {
     return (
       <span
         {...props}
-        className="flex h-4 w-full overflow-hidden rounded-base border-2 border-border bg-secondary-background"
+        className="flex h-4 w-full overflow-hidden rounded-base border border-border bg-secondary-background"
       >
         <span
           className={cn(
             "h-full shrink-0",
-            attribs["data-level"] === "high" ? "bg-main" : "bg-gauge",
-            fill > 0 && fill < 100 && "border-r-2 border-border",
+            attribs["data-level"] === "high" ? "bg-state-warn" : "bg-accent",
+            fill > 0 && fill < 100 && "border-r border-border",
           )}
           style={{ width: `${fill}%` }}
         />
@@ -492,7 +496,7 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (has("run-setup-group")) return styled("flex min-w-0 flex-col gap-1");
   if (has("runner-skill-error"))
     return styled(
-      "rounded-base border-2 border-border bg-red-200 px-2 py-1 font-mono text-xs text-black",
+      "rounded-base border border-current/35 px-2 py-1 font-mono text-xs text-state-failed",
     );
   if (has("run-setup"))
     return styled(
@@ -556,8 +560,8 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (has("checkout-note"))
     return styled(
       cn(
-        "space-y-1 rounded-base border-2 border-border p-3 text-sm leading-relaxed [overflow-wrap:anywhere]",
-        has("warn") ? "bg-yellow-200 text-black" : "bg-background",
+        "space-y-1 rounded-base border border-border p-3 text-sm leading-relaxed [overflow-wrap:anywhere]",
+        has("warn") ? "border-current/35 text-state-awaiting" : "bg-background",
       ),
     );
   if (has("checkout-add")) return styled("flex min-w-0 flex-col gap-2");
@@ -565,13 +569,13 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled("grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]");
   if (has("checkout-error", "review-file-error", "time-limit-error"))
     return styled(
-      "rounded-base border-2 border-border bg-red-200 px-3 py-2 text-sm leading-relaxed text-black",
+      "rounded-base border border-current/35 px-3 py-2 text-sm leading-relaxed text-state-failed",
     );
   if (has("settings-account")) return styled("flex min-w-0 flex-col items-start gap-4");
   if (has("settings-section")) return styled(SETTINGS_SECTION_LAYOUT);
   if (has("overview-section"))
     return styled(
-      "flex min-w-0 flex-col gap-4 rounded-base border-2 border-border bg-secondary-background p-4 shadow-shadow sm:p-6",
+      "flex min-w-0 flex-col gap-4 rounded-base border border-border bg-secondary-background p-4 sm:p-6",
     );
   if (has("kv")) return styled("grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-3 break-words");
   if (has("board", "dependency-levels"))
@@ -585,7 +589,7 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (has("settings-field")) return styled("flex min-w-0 flex-col gap-2");
   if (name === "dialog")
     return styled(
-      "m-auto w-full max-w-[calc(100%-2rem)] max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-base border-2 border-border bg-background p-0 text-foreground shadow-shadow outline-none backdrop:bg-overlay sm:max-w-lg",
+      "m-auto w-full max-w-[calc(100%-2rem)] max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-base border border-border bg-background p-0 text-foreground outline-none backdrop:bg-overlay sm:max-w-lg",
     );
   if (has("dialog-body")) return styled("flex min-w-0 flex-col gap-4 p-6 [overflow-wrap:anywhere]");
   if (name === "details")
@@ -601,7 +605,7 @@ function replace(node: DOMNode): ReactElement | undefined {
         className={cn(
           attribs.class,
           "min-w-0 bg-secondary-background p-4 sm:p-6",
-          has("selected") && "outline-4 outline-offset-2 outline-main",
+          has("selected") && "outline-2 outline-offset-2 outline-ring",
         )}
       >
         {children()}
@@ -681,17 +685,29 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (name === "li" || has("it", "act", "qe")) return styled("py-3");
   if (has("err-bar"))
     return styled(
-      "flex flex-wrap items-center gap-2 rounded-base border-2 border-border bg-secondary-background p-3 text-sm leading-relaxed",
+      "flex flex-wrap items-center gap-2 rounded-base border border-border bg-secondary-background p-3 text-sm leading-relaxed",
     );
   if (has("empty", "decision", "ctx", "settings-message"))
     return styled(
-      "rounded-base border-2 border-border bg-secondary-background p-4 text-sm leading-relaxed break-words",
+      "rounded-base border border-border bg-secondary-background p-4 text-sm leading-relaxed break-words",
     );
   if (name === "p" || name === "small" || has("dim", "muted", "sub", "k", "clock", "foot", "mono"))
     return styled(has("mono") ? "font-mono text-xs" : "text-sm leading-relaxed");
   if (name === "summary")
     return styled("cursor-pointer text-sm font-bold underline-offset-4 hover:underline");
   return createElement(name, props, children());
+}
+
+function stateColor(has: (...names: string[]) => boolean): string {
+  if (has("running", "now")) return "text-state-running";
+  if (has("verifying")) return "text-state-verifying";
+  if (has("awaiting_input", "paused", "warn")) return "text-state-awaiting";
+  if (has("err", "bad", "failed", "exhausted", "needs_human", "rejected", "blocked"))
+    return "text-state-failed";
+  if (has("merge_queue", "merged", "completed", "accepted", "passed", "done", "ok"))
+    return "text-state-ok";
+  if (has("recovering")) return "text-state-recovering";
+  return "text-muted-foreground";
 }
 
 function tableCell(has: (...names: string[]) => boolean): string | undefined {
