@@ -79,7 +79,7 @@ describe("run file store", () => {
       );
       return { ...file(runId), open: true, sizeBytes: row!.size };
     };
-  const keyId = (keyId: string | null) =>
+  const setKeyId = (keyId: string | null) =>
     db.run((q) =>
       q.exec(
         q.orm
@@ -148,7 +148,7 @@ describe("run file store", () => {
     await expect(collect(other, "run-a")).rejects.toThrow(
       "Runner transcript storage is unavailable",
     );
-    await keyId("0".repeat(64));
+    await setKeyId("0".repeat(64));
     await expect(collect(store(), "run-a")).rejects.toThrow(RunFileStorageError);
     expect(runFileKeyId("transcript", key)).not.toBe(runFileKeyId("agent_session", key));
   });
@@ -160,7 +160,7 @@ describe("run file store", () => {
       [RUN_FILE_CHUNK_BYTES, second],
     ] as const)
       objects.objects.set(`${file("run-a").prefix}/${offset}-${sha(bytes)}`, bytes);
-    await keyId(null);
+    await setKeyId(null);
     expect(
       await collect(
         store(key, async () => true),

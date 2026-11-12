@@ -287,7 +287,7 @@ test("a disabled account can still sign in; a foreign or removed binding cannot"
 });
 
 test("a runner without account sign-in keeps refusing a named sign-in", async () => {
-  const { db, runnerId, principal, login, binding, queued, browser } = await fixture("0.1.59");
+  const { runnerId, principal, login, binding, queued, browser } = await fixture("0.1.59");
   await expect(login.start(principal, runnerId, "codex", binding.id)).rejects.toThrow(/0\.1\.61/);
   const response = (await browser(`codex/login?binding=${binding.id}`))!;
   expect(response.status).toBe(409);

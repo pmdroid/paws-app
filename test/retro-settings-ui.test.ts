@@ -95,7 +95,7 @@ afterEach(async () => {
   for (const close of stores.splice(0)) await close();
 });
 
-const repository = (db: Db, repository: string) =>
+const addRepository = (db: Db, repository: string) =>
   db.run((q) =>
     q.exec(
       q.orm
@@ -118,7 +118,7 @@ async function harness(catalogs: AgentModelCatalog[] | null = CATALOGS) {
         .values({ id: "ws", linearOrganizationId: "org", name: "Kyku", createdAt: 0 }),
     ),
   );
-  await repository(db, APP);
+  await addRepository(db, APP);
   const people: Record<string, WorkspacePrincipal> = {};
   for (const [name, role] of [
     ["admin", "admin"],
@@ -444,7 +444,7 @@ test("invalid limits and provider unavailability are reported separately", async
 
 test("a repository Paws can no longer access is denied beside the list", async () => {
   const t = await harness();
-  await repository(t.db, OLD);
+  await addRepository(t.db, OLD);
   await t.open();
   await t.submit();
   await t.db.run((q) =>

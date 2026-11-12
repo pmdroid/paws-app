@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { FakeClock, JOB_KIND } from "../src/core";
 import {
   JobLoop,
@@ -17,7 +18,7 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
   type Job,
-  sqliteDb,
+  type Q,
 } from "../src/db";
 import { syncItemDependencies } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
@@ -32,7 +33,7 @@ import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { dispatch } from "../src/scheduler";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { migratedDatabase } from "./helpers";
+import { tempStore } from "./pglite";
 
 const GITHUB_URL = "https://github.com/acme/fixture.git";
 const gitConfig = ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"] as const;
@@ -81,28 +82,36 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     GIT_CONFIG_VALUE_0: GITHUB_URL,
   });
 
-  const db = migratedDatabase(join(root, "paws.db"));
+  const { db, close } = await tempStore();
   const now = Date.now();
   // Keep capacity retries in the future while Git and runner setup use real time.
   const clock = new FakeClock(now);
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
-  db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, "acme/fixture", "team"]);
+  await db.run((q) =>
+    q.exec(
+      q.orm
+        .insert(q.t.workspaceRepository)
+        .values({ workspaceId: workspace.id, repository: "acme/fixture", teamId: "team" }),
+    ),
+  );
+  const runnerRow = (q: Q, id: string, values: Partial<typeof q.t.runner.$inferInsert>) =>
+    q.exec(q.orm.update(q.t.runner).set(values).where(eq(q.t.runner.id, id)));
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -123,25 +132,36 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
       ...enrollment,
       token: (await control.createEnrollment(owner, enrollment)).token,
     });
-    db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
-    db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);
-    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [
-      runnerId,
-    ]);
+    await db.run(function* (q) {
+      yield* runnerRow(q, runnerId, { status: "active" });
+      yield* q.exec(q.orm.insert(q.t.runnerPolicy).values({ runnerId }));
+      yield* q.exec(
+        q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId, agent: "claude", ready: 1 }),
+      );
+    });
     return runnerId;
   };
   const busyRunner = await pair("busy");
   const freeRunner = await pair("free");
   const other = await insertQueuedItem(db, { id: "other", now });
-  const otherRun = await insertRun(sqliteDb(db), { itemId: other.id, now, status: "active" });
-  db.run(
-    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,1,0,'other',?)",
-    [otherRun.id, busyRunner, workspace.id, now + 60 * 60_000],
+  const otherRun = await insertRun(db, { itemId: other.id, now, status: "active" });
+  await db.run((q) =>
+    q.exec(
+      q.orm.insert(q.t.runnerWork).values({
+        runId: otherRun.id,
+        runnerId: busyRunner,
+        workspaceId: workspace.id,
+        generation: 1,
+        runnerFence: 0,
+        commandId: "other",
+        leaseUntil: now + 60 * 60_000,
+      }),
+    ),
   );
 
   let workNow = Date.now;
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -164,13 +184,13 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     { runId: otherRun.id, generation: 1 },
   ]);
   await work.heartbeat(freeRunner, 8);
-  const results = createRunnerResults({ store: sqliteDb(db), work });
-  const health = createRunnerHealth({ store: sqliteDb(db), work });
+  const results = createRunnerResults({ store: db, work });
+  const health = createRunnerHealth({ store: db, work });
   const identifiers = ["ENG-1", "ENG-2", "ENG-3", "ENG-4", "ENG-5"];
   const waiting = new Set(identifiers.slice(0, 4));
-  const placement = createRunnerPlacement({ store: sqliteDb(db) });
+  const placement = createRunnerPlacement({ store: db });
   const backend = createRemoteAgentRunner({
-    store: sqliteDb(db),
+    store: db,
     work,
     results,
     health,
@@ -179,7 +199,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
       ...placement,
       async candidates(request) {
         const want = waiting.has(
-          (await getWorkItem(sqliteDb(db), request.itemId ?? ""))?.linearIdentifier ?? "",
+          (await getWorkItem(db, request.itemId ?? ""))?.linearIdentifier ?? "",
         )
           ? busyRunner
           : freeRunner;
@@ -206,7 +226,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
   const jobs = new JobLoop(db, clock, { concurrency: 4, pollMs: 5 });
   const outbox = new OutboxDispatcher(db, clock);
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     jobs,
     outbox,
     clock,
@@ -233,7 +253,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
   const handled = new Set<string>();
   const runner = (async () => {
     while (!sim.stopped) {
-      db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [Date.now(), busyRunner]);
+      await db.run((q) => runnerRow(q, busyRunner, { lastSeenAt: Date.now() }));
       await work.heartbeat(freeRunner, 8);
       for (const envelope of await work.commands(freeRunner)) {
         const command = JSON.parse(
@@ -254,7 +274,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
           });
         if (command.type === "run")
           started.add(
-            (await listWorkItems(sqliteDb(db))).find((item) => item.currentRunId === command.runId)!
+            (await listWorkItems(db)).find((item) => item.currentRunId === command.runId)!
               .linearIdentifier,
           );
       }
@@ -280,10 +300,8 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
         updatedAtMs: Date.now(),
         payload: "{}",
       });
-      const item = (await listWorkItems(sqliteDb(db))).find(
-        (row) => row.sessionKey === `session-${index}`,
-      )!;
-      await recordLinearInstallation(sqliteDb(db), {
+      const item = (await listWorkItems(db)).find((row) => row.sessionKey === `session-${index}`)!;
+      await recordLinearInstallation(db, {
         organizationId: "org",
         oauthClientId: "app",
         appUserId: "app-user",
@@ -291,11 +309,18 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
         teamId: "team",
         observedAtMs: now,
       });
-      await bindLinearSessionTask(sqliteDb(db), `session-${index}`, item.delegationId, {
+      await bindLinearSessionTask(db, `session-${index}`, item.delegationId, {
         actorId: "owner",
       });
-      db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, item.id]);
-      await syncItemDependencies(sqliteDb(db), {
+      await db.run((q) =>
+        q.exec(
+          q.orm
+            .update(q.t.workItem)
+            .set({ ownerUserId: userId })
+            .where(eq(q.t.workItem.id, item.id)),
+        ),
+      );
+      await syncItemDependencies(db, {
         itemId: item.id,
         workspaceId: workspace.id,
         expectedGeneration: 0,
@@ -310,23 +335,27 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
         }),
       });
     }
-    await dispatch(sqliteDb(db), { now: clock.now() });
-    expect(db.query("SELECT item_id FROM scheduler_admission").all()).toHaveLength(5);
+    await dispatch(db, { now: clock.now() });
+    expect(
+      await db.run((q) =>
+        q.all(q.orm.select({ itemId: q.t.schedulerAdmission.itemId }).from(q.t.schedulerAdmission)),
+      ),
+    ).toHaveLength(5);
     loop = jobs.run(controller.signal, (ms) => Bun.sleep(ms));
     const deadline = Date.now() + 20_000;
     const parked = async () =>
-      (await listJobs(sqliteDb(db))).filter(
+      (await listJobs(db)).filter(
         (job) =>
           job.status === "pending" &&
           (job.payload as { capacityWait?: unknown }).capacityWait !== undefined,
       ).length;
     while (Date.now() < deadline && !(started.has("ENG-5") && (await parked()) === 4))
       await Bun.sleep(10);
-    const items = await listWorkItems(sqliteDb(db));
+    const items = await listWorkItems(db);
     const identifierOf = new Map(items.map((item) => [item.id, item.linearIdentifier]));
     const itemJob = (job: Job) =>
       identifierOf.get((job.payload as { itemId: string }).itemId) ?? "";
-    const executions = (await listJobs(sqliteDb(db))).filter((job) =>
+    const executions = (await listJobs(db)).filter((job) =>
       [JOB_KIND.start, JOB_KIND.resume].includes(job.queue as typeof JOB_KIND.start),
     );
     const detail = JSON.stringify({
@@ -368,7 +397,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     sim.stopped = true;
     await runner;
     await loop;
-    db.close();
+    await close();
     rmSync(root, { recursive: true, force: true });
   }
 }, 60_000);

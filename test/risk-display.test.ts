@@ -2,7 +2,7 @@ import { afterEach, expect, spyOn, test } from "bun:test";
 import { writeFileSync, rmSync } from "node:fs";
 import * as fs from "node:fs";
 import { join } from "node:path";
-import { count, eq, sql } from "drizzle-orm";
+import { count, eq, sql, type SQL } from "drizzle-orm";
 import { RiskDisplayReader, riskApprovalFor } from "../src/loop";
 import { createLiveStatusProvider } from "../src/dashboard";
 import { loadConfigFile, readMergeSettings, type MergeSettings } from "../src/config";
@@ -27,10 +27,15 @@ afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
 });
 
-const execute = (db: Db, query: ReturnType<typeof sql>) => (db as PgDb).orm.execute(query);
+const execute = (db: Db, query: SQL) => (db as PgDb).orm.execute(query);
 
 const contextRows = async (db: Db) =>
-  (await execute(db, sql`SELECT xmin::text, * FROM risk_auto_context ORDER BY item_id, head`)).rows;
+  (
+    (await execute(
+      db,
+      sql`SELECT xmin::text, * FROM risk_auto_context ORDER BY item_id, head`,
+    )) as unknown as { rows: unknown[] }
+  ).rows;
 const scenarios = ["clean", "P2", "missing security", "rules change", "off", "unreadable"] as const;
 async function fixture(
   scenario: (typeof scenarios)[number] = "clean",
