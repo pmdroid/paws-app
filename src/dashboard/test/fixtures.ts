@@ -874,6 +874,7 @@ export function overviewOf(full: FullStatus): OverviewResponse {
         pushOutages: full.pushOutages ?? [],
         policyRunnerWarnings: full.policyRunnerWarnings ?? [],
         mergeQueueCount: full.mergeQueue.length,
+        setup: { github: true, runner: true, agent: true, delegated: full.items.length > 0 },
       }),
     ),
   );

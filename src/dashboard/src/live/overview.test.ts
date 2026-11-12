@@ -250,4 +250,52 @@ describe("overview resource", () => {
     expect(mine.questions).toEqual([]);
     expect(mine.mergeQueueCount).toBe(0);
   });
+
+  test("setup reads which first-run steps are done", async () => {
+    const db = database();
+    const read = () =>
+      createLiveStatusProvider(sqliteDb(db), { now: () => new Date(NOW), env: {} }).overview();
+    expect((await read()).setup).toEqual({
+      github: false,
+      runner: false,
+      agent: false,
+      delegated: false,
+    });
+    db.run("PRAGMA foreign_keys=OFF");
+    db.run(
+      `INSERT INTO workspace_github_connection(workspace_id,generation,secret_id,installation_id,repositories)
+       VALUES('ws',1,'secret-1','42','["pmdroid/paws-app"]')`,
+    );
+    db.run(
+      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES('box','ws','owner','box','active',0)",
+    );
+    db.run(
+      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,revoked_at) VALUES('old','ws','owner','old','revoked',0,1)",
+    );
+    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('old','claude',1)");
+    expect((await read()).setup).toEqual({
+      github: true,
+      runner: true,
+      agent: false,
+      delegated: false,
+    });
+    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('box','claude',1)");
+    await insertQueuedItem(db, { id: "ENG-1", title: "First", sessionKey: "s1", now: NOW });
+    expect((await read()).setup).toEqual({
+      github: true,
+      runner: true,
+      agent: true,
+      delegated: true,
+    });
+  });
+
+  test("the parser rejects an overview without setup", async () => {
+    const db = database();
+    const body = JSON.parse(
+      JSON.stringify(await createLiveStatusProvider(sqliteDb(db), { env: {} }).overview()),
+    );
+    expect(parseOverviewResponse(body).ok).toBe(true);
+    delete body.setup;
+    expect(parseOverviewResponse(body).ok).toBe(false);
+  });
 });

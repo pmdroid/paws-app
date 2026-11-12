@@ -10,6 +10,7 @@ import {
   listRunsSteps,
   listVisualReviewsSteps,
   listWorkItemFactsSteps,
+  setupFactsSteps,
   type CloseoutProgressState,
   type ItemHold,
   type Job,
@@ -145,6 +146,7 @@ export async function readOverview(
       (record) =>
         record.state === "merge_queue" || (record.state === "verifying" && places.has(record.id)),
     ).length,
+    setup: await store.run(setupFactsSteps),
   };
 }
 
@@ -161,6 +163,7 @@ export function emptyOverview(now = new Date()): OverviewResponse {
     pushOutages: [],
     policyRunnerWarnings: [],
     mergeQueueCount: 0,
+    setup: { github: false, runner: false, agent: false, delegated: false },
   };
 }
 
