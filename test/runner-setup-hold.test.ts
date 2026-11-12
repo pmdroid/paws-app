@@ -30,6 +30,7 @@ import { createRunnerControl } from "../src/runner-control";
 import { createRunnerHealth } from "../src/runner-health";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
 import { createRunnerPlacement, itemOwnerEligibleRunnerSteps } from "../src/runner-placement";
+import type { RunnerCommand } from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { dispatch } from "../src/scheduler";
@@ -50,7 +51,7 @@ afterAll(() => {
   });
 });
 
-type DelegatorRunner = "none" | "unsigned" | "busy" | "offline";
+type DelegatorRunner = "none" | "unsigned" | "busy" | "offline" | "reviewer-signed-out";
 
 /**
  * A workspace where the owner's runner is online and free, and a member delegates ENG-1. The
@@ -168,7 +169,13 @@ async function delegate(delegatorRunner: DelegatorRunner) {
   await work.heartbeat(freeRunner, 8);
   let memberRunner: string | null = null;
   if (delegatorRunner !== "none") {
-    memberRunner = await pair("member-vm", memberId, delegatorRunner === "busy" ? 1 : 0);
+    const ready = delegatorRunner === "busy" || delegatorRunner === "reviewer-signed-out";
+    memberRunner = await pair("member-vm", memberId, ready ? 1 : 0);
+    if (delegatorRunner === "reviewer-signed-out")
+      db.run(
+        "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?,'codex',0,1)",
+        [memberRunner],
+      );
     if (delegatorRunner === "offline")
       db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 10 * 60_000, memberRunner]);
     else await work.heartbeat(memberRunner, 1);
@@ -233,6 +240,22 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     repositories: [{ owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL }],
     scheduling: async () => ({}),
     runnersUrl: RUNNERS_URL,
+    ...(delegatorRunner === "reviewer-signed-out"
+      ? {
+          reviewRequirements: () => ({
+            ok: true as const,
+            items: [
+              {
+                id: "review",
+                gate: "beforePR" as const,
+                independence: { differentSession: true, differentModel: false },
+                parallel: false,
+                failOn: "P1" as const,
+              },
+            ],
+          }),
+        }
+      : {}),
     eligibleRunner: async (itemId, agent, at) =>
       sqliteDb(db).run((q) => itemOwnerEligibleRunnerSteps(q, { itemId, agent, now: at })),
     launch() {
@@ -249,10 +272,34 @@ async function delegate(delegatorRunner: DelegatorRunner) {
   });
 
   const sim = { stopped: false };
+  const answered = new Set<string>();
   const heartbeats = (async () => {
     while (!sim.stopped) {
       await work.heartbeat(freeRunner, 8);
       if (memberRunner && delegatorRunner !== "offline") await work.heartbeat(memberRunner, 1);
+      if (memberRunner && delegatorRunner === "reviewer-signed-out")
+        for (const envelope of await work.commands(memberRunner)) {
+          const command = JSON.parse(
+            Buffer.from(envelope.payload, "base64url").toString(),
+          ) as RunnerCommand;
+          if (command.type !== "probe" || answered.has(command.id)) continue;
+          answered.add(command.id);
+          await work.acknowledge(memberRunner, command.id);
+          const signedIn = command.profile.agent !== "codex";
+          await health.submit(memberRunner, {
+            executionId: workspaceId(),
+            commandId: command.id,
+            role: "implementer",
+            stopReason: signedIn ? "end_turn" : "error",
+            timedOut: false,
+            cancelled: false,
+            authRequired: false,
+            agentExited: true,
+            ...(signedIn
+              ? { identity: { session: command.id, model: "claude-model", provider: "claude" } }
+              : { errorMessage: "Run failed during agent: agent exited with code 1" }),
+          });
+        }
       await Bun.sleep(5);
     }
   })();
@@ -415,6 +462,26 @@ test("a delegator whose runner needs its agent signed in hears the runner and th
     });
     expect(await fixture.thoughts()).toEqual([
       `Your runner member-vm needs Claude signed in. Sign in on the [Runners page](${RUNNERS_URL}); I'll start right after.`,
+    ]);
+  } finally {
+    await fixture.close();
+  }
+}, 60_000);
+
+test("a reviewer preflight on a runner whose reviewer agent is signed out holds the item without a question", async () => {
+  const fixture = await delegate("reviewer-signed-out");
+  try {
+    const { db, itemId } = fixture;
+    const detail = JSON.stringify(await fixture.thoughts());
+    expect((await getWorkItem(sqliteDb(db), itemId))!.state, detail).toBe("queued");
+    expect(await getRunnerSetupHold(sqliteDb(db), itemId), detail).toMatchObject({
+      reason: "agent-not-signed-in",
+      runnerId: fixture.memberRunner,
+      agent: "codex",
+    });
+    expect(db.query("SELECT 1 FROM question WHERE item_id=?").all(itemId)).toEqual([]);
+    expect(await fixture.thoughts()).toEqual([
+      `Your runner member-vm needs Codex signed in. Sign in on the [Runners page](${RUNNERS_URL}); I'll start right after.`,
     ]);
   } finally {
     await fixture.close();
