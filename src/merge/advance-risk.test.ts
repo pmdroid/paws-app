@@ -1,9 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
-import { sqliteDb, getWorkItem, mergeQueuePosition } from "../db";
-import { mergeHarness, type MergeHarness } from "./advance-harness";
+import { getWorkItem, mergeQueuePosition } from "../db";
+import { mergeHarnessPg, type MergeHarnessPg } from "./advance-harness";
+import { tempStore } from "../../test/pglite";
 import { mergeable, type MergeFacts } from "./mergeable";
 
-let harness: MergeHarness | undefined;
+let harness: MergeHarnessPg | undefined;
 
 afterEach(async () => {
   await harness?.cleanup();
@@ -42,7 +43,7 @@ test("mergeable(S) blocks a high-risk head nobody approved, after Closeout's acc
 });
 
 test("a normal-tier pull request merges as it does today", async () => {
-  const h = (harness = await mergeHarness({ settings: { order: "queue" } }));
+  const h = (harness = await mergeHarnessPg(await tempStore(), { settings: { order: "queue" } }));
   await h.addItem("ENG-1");
   expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
   expect(h.state.riskAsked).toEqual([]);
@@ -50,18 +51,18 @@ test("a normal-tier pull request merges as it does today", async () => {
 });
 
 test("a high-risk head is held out of the merge queue and asked about", async () => {
-  const h = (harness = await mergeHarness({ settings: { order: "queue" } }));
+  const h = (harness = await mergeHarnessPg(await tempStore(), { settings: { order: "queue" } }));
   const item = await h.addItem("ENG-1");
   h.state.risk = () => "missing";
   expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
   expect(h.state.riskAsked).toEqual([item.accepted]);
   expect(h.github.merged).toEqual([]);
-  expect(await mergeQueuePosition(sqliteDb(h.db), "ENG-1")).toBeNull();
-  expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("merge_queue");
+  expect(await mergeQueuePosition(h.db, "ENG-1")).toBeNull();
+  expect((await getWorkItem(h.db, "ENG-1"))?.state).toBe("merge_queue");
 });
 
 test("an approved high-risk head joins the queue and merges", async () => {
-  const h = (harness = await mergeHarness({ settings: { order: "queue" } }));
+  const h = (harness = await mergeHarnessPg(await tempStore(), { settings: { order: "queue" } }));
   const item = await h.addItem("ENG-1");
   h.state.risk = (head) => (head === item.accepted ? "approved" : "missing");
   expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
@@ -70,7 +71,7 @@ test("an approved high-risk head joins the queue and merges", async () => {
 });
 
 test("under ci, a head the lane rebased onto main keeps the approval of the head it came from", async () => {
-  const h = (harness = await mergeHarness({ settings: { mainMoved: "ci" } }));
+  const h = (harness = await mergeHarnessPg(await tempStore(), { settings: { mainMoved: "ci" } }));
   const item = await h.addItem("ENG-1");
   // Approved for the accepted head only; the lane's rebase makes a new head.
   h.state.risk = (head) => (head === item.accepted ? "approved" : "missing");
@@ -84,7 +85,7 @@ test("under ci, a head the lane rebased onto main keeps the approval of the head
 });
 
 test("under ci, a high-risk head nobody approved is asked about before the lane rebases it", async () => {
-  const h = (harness = await mergeHarness({ settings: { mainMoved: "ci" } }));
+  const h = (harness = await mergeHarnessPg(await tempStore(), { settings: { mainMoved: "ci" } }));
   const item = await h.addItem("ENG-1");
   h.state.risk = () => "missing";
   await h.moveMain("side.txt", "side\n");

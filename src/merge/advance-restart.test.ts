@@ -13,12 +13,14 @@ import {
   mergeCallInFlight,
   prepareShutdown,
   recoverOnStartup,
-  sqliteDb,
   applyLinearCommandSteps,
+  beginMergeCall,
 } from "../db";
-import { mergeHarness, pendingCi, type MergeHarness } from "./advance-harness";
+import { eq } from "drizzle-orm";
+import { mergeHarnessPg, pendingCi, type MergeHarnessPg } from "./advance-harness";
+import { tempStore } from "../../test/pglite";
 
-let harness: MergeHarness | undefined;
+let harness: MergeHarnessPg | undefined;
 
 afterEach(async () => {
   await harness?.cleanup();
@@ -26,18 +28,18 @@ afterEach(async () => {
 });
 
 /** Each task's merge job, as Closeout's acceptance queues it. */
-async function enqueueMerges(h: MergeHarness, ids: string[]): Promise<void> {
+async function enqueueMerges(h: MergeHarnessPg, ids: string[]): Promise<void> {
   for (const id of ids)
-    await enqueueJob(sqliteDb(h.db), {
+    await enqueueJob(h.db, {
       queue: JOB_KIND.merge,
       jobKey: `merge:${id}`,
-      payload: { itemId: id, head: (await getWorkItem(sqliteDb(h.db), id))!.checkpoint!.wipCommit },
+      payload: { itemId: id, head: (await getWorkItem(h.db, id))!.checkpoint!.wipCommit },
       now: h.clock.now(),
     });
 }
 
-async function openMergeJob(h: MergeHarness, id: string): Promise<Record<string, unknown>> {
-  const job = (await listJobs(sqliteDb(h.db))).find(
+async function openMergeJob(h: MergeHarnessPg, id: string): Promise<Record<string, unknown>> {
+  const job = (await listJobs(h.db)).find(
     (row) =>
       row.queue === JOB_KIND.merge &&
       (row.status === "pending" || row.status === "running") &&
@@ -47,21 +49,23 @@ async function openMergeJob(h: MergeHarness, id: string): Promise<Record<string,
   return job!.payload as Record<string, unknown>;
 }
 
-async function reverifies(h: MergeHarness) {
-  return (await listJobs(sqliteDb(h.db))).filter((job) => job.queue === JOB_KIND.reverify);
+async function reverifies(h: MergeHarnessPg) {
+  return (await listJobs(h.db)).filter((job) => job.queue === JOB_KIND.reverify);
 }
 
-async function restart(h: MergeHarness): Promise<void> {
-  await prepareShutdown(sqliteDb(h.db), h.clock.now());
+async function restart(h: MergeHarnessPg): Promise<void> {
+  await prepareShutdown(h.db, h.clock.now());
   h.clock.advance(1_000);
-  await recoverOnStartup(sqliteDb(h.db), h.clock.now());
+  await recoverOnStartup(h.db, h.clock.now());
 }
 
 describe("a Paws restart and the merge queue", () => {
   test.each(["token", "fetch"])(
     "a %s failure before the squash PUT keeps normal retry handling",
     async (failure) => {
-      const h = (harness = await mergeHarness({ settings: { order: "queue" } }));
+      const h = (harness = await mergeHarnessPg(await tempStore(), {
+        settings: { order: "queue" },
+      }));
       const item = await h.addItem("ENG-200");
       let tokens = 0;
       let fetches = 0;
@@ -80,13 +84,11 @@ describe("a Paws restart and the merge queue", () => {
           throw error;
       };
       await expect(h.pass(item.id)).rejects.toThrow("preparation failed");
-      expect(await mergeCallInFlight(sqliteDb(h.db), item.id)).toBe(false);
-      expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("merge_queue");
+      expect(await mergeCallInFlight(h.db, item.id)).toBe(false);
+      expect((await getWorkItem(h.db, item.id))?.state).toBe("merge_queue");
       expect(await reverifies(h)).toEqual([]);
       expect(h.github.merged).toEqual([]);
-      expect((await listMergeQueues(sqliteDb(h.db))).map((entry) => entry.itemId)).toEqual([
-        item.id,
-      ]);
+      expect((await listMergeQueues(h.db)).map((entry) => entry.itemId)).toEqual([item.id]);
       h.state.beforeMergeToken = () => {};
       h.state.beforeGit = () => {};
       expect(await h.pass(item.id)).toEqual({ kind: "merged" });
@@ -95,7 +97,7 @@ describe("a Paws restart and the merge queue", () => {
   );
 
   test("an unknown late read does not hide a confirmed merge denial", async () => {
-    const h = (harness = await mergeHarness());
+    const h = (harness = await mergeHarnessPg(await tempStore()));
     const item = await h.addItem("ENG-199");
     h.state.mergeResponseStatus = 403;
     h.state.beforeMergeToken = () => {
@@ -105,12 +107,12 @@ describe("a Paws restart and the merge queue", () => {
       kind: "failed",
       message: "merge failed with status 403",
     });
-    expect(await mergeCallInFlight(sqliteDb(h.db), item.id)).toBe(false);
+    expect(await mergeCallInFlight(h.db, item.id)).toBe(false);
     expect(h.github.merged).toEqual([]);
   });
 
   test("tasks waiting in the queue keep their place and merge in their original order", async () => {
-    const h = (harness = await mergeHarness({ settings: { order: "queue" } }));
+    const h = (harness = await mergeHarnessPg(await tempStore(), { settings: { order: "queue" } }));
     const ids = ["ENG-201", "ENG-202", "ENG-203"];
     for (const id of ids) await h.addItem(id);
     await enqueueMerges(h, ids);
@@ -119,14 +121,13 @@ describe("a Paws restart and the merge queue", () => {
       expect(await h.pass(id, await openMergeJob(h, id))).toMatchObject({ kind: "wait" });
       h.clock.advance(1_000);
     }
-    expect((await listMergeQueues(sqliteDb(h.db))).map((entry) => entry.itemId)).toEqual(ids);
+    expect((await listMergeQueues(h.db)).map((entry) => entry.itemId)).toEqual(ids);
 
     await restart(h);
 
     expect(await reverifies(h)).toEqual([]);
-    for (const id of ids)
-      expect((await getWorkItem(sqliteDb(h.db), id))?.state).toBe("merge_queue");
-    expect((await listMergeQueues(sqliteDb(h.db))).map((entry) => entry.itemId)).toEqual(ids);
+    for (const id of ids) expect((await getWorkItem(h.db, id))?.state).toBe("merge_queue");
+    expect((await listMergeQueues(h.db)).map((entry) => entry.itemId)).toEqual(ids);
 
     h.state.ci = () => undefined;
     for (const id of [...ids].reverse()) await h.pass(id, await openMergeJob(h, id));
@@ -136,7 +137,7 @@ describe("a Paws restart and the merge queue", () => {
   });
 
   test("a merge GitHub finished just before shutdown is recorded once after start", async () => {
-    const h = (harness = await mergeHarness());
+    const h = (harness = await mergeHarnessPg(await tempStore()));
     const item = await h.addItem("ENG-210");
     await enqueueMerges(h, [item.id]);
     h.state.dropMergeResponse = true;
@@ -145,35 +146,44 @@ describe("a Paws restart and the merge queue", () => {
       reason: "merge_outcome",
     });
     expect(h.github.merged).toHaveLength(1);
-    expect(await getConfirmedRemoteMerge(sqliteDb(h.db), item.id)).toBeNull();
-    expect(await mergeCallInFlight(sqliteDb(h.db), item.id)).toBe(true);
+    expect(await getConfirmedRemoteMerge(h.db, item.id)).toBeNull();
+    expect(await mergeCallInFlight(h.db, item.id)).toBe(true);
 
     await restart(h);
 
-    expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("merge_queue");
+    expect((await getWorkItem(h.db, item.id))?.state).toBe("merge_queue");
     expect(await reverifies(h)).toEqual([]);
     const payload = await openMergeJob(h, item.id);
     expect(payload.mergeCallInFlight).toBe(true);
     expect(await h.pass(item.id, payload)).toEqual({ kind: "merged" });
-    expect(await getConfirmedRemoteMerge(sqliteDb(h.db), item.id)).toMatchObject({
+    expect(await getConfirmedRemoteMerge(h.db, item.id)).toMatchObject({
       pullNumber: item.pull,
       mergeSha: `fake-merge-${item.accepted}`,
     });
     // The call stays fenced until local completion commits.
-    expect(await mergeCallInFlight(sqliteDb(h.db), item.id)).toBe(true);
+    expect(await mergeCallInFlight(h.db, item.id)).toBe(true);
 
     expect(await h.pass(item.id, payload)).toEqual({ kind: "obsolete" });
     expect(h.completed).toEqual([item.id]);
     expect(h.github.merged).toHaveLength(1);
     expect(
-      h.db.query("SELECT COUNT(*) AS n FROM remote_merge_fact WHERE item_id = ?").get(item.id),
-    ).toEqual({ n: 1 });
+      await h.db.run((q) =>
+        q.all(
+          q.orm
+            .select({ itemId: q.t.remoteMergeFact.itemId })
+            .from(q.t.remoteMergeFact)
+            .where(eq(q.t.remoteMergeFact.itemId, item.id)),
+        ),
+      ),
+    ).toEqual([{ itemId: item.id }]);
   });
 
   test.each(["timeout", "502"])(
     "%s: unknown reads retain a possibly successful merge until a positive read, without a payload flag",
     async (fault) => {
-      const h = (harness = await mergeHarness({ settings: { order: "queue" } }));
+      const h = (harness = await mergeHarnessPg(await tempStore(), {
+        settings: { order: "queue" },
+      }));
       const item = await h.addItem("ENG-215");
       await enqueueMerges(h, [item.id]);
       h.state.dropMergeResponse = fault === "timeout";
@@ -182,16 +192,16 @@ describe("a Paws restart and the merge queue", () => {
       await restart(h);
       h.state.mergeReadUnknown = true;
       const published = h.published.length;
-      const queue = await listMergeQueues(sqliteDb(h.db));
+      const queue = await listMergeQueues(h.db);
       for (let attempt = 0; attempt < 3; attempt++) {
         expect(await h.pass(item.id, { itemId: item.id })).toMatchObject({
           kind: "wait",
           reason: "merge_outcome",
         });
-        expect(await mergeCallInFlight(sqliteDb(h.db), item.id)).toBe(true);
-        expect(await listMergeQueues(sqliteDb(h.db))).toEqual(queue);
-        expect(await getConfirmedRemoteMerge(sqliteDb(h.db), item.id)).toBeNull();
-        expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("merge_queue");
+        expect(await mergeCallInFlight(h.db, item.id)).toBe(true);
+        expect(await listMergeQueues(h.db)).toEqual(queue);
+        expect(await getConfirmedRemoteMerge(h.db, item.id)).toBeNull();
+        expect((await getWorkItem(h.db, item.id))?.state).toBe("merge_queue");
         expect(await reverifies(h)).toEqual([]);
         expect(h.published).toHaveLength(published);
         h.clock.advance(300_000);
@@ -201,12 +211,12 @@ describe("a Paws restart and the merge queue", () => {
       expect(await h.pass(item.id, { itemId: item.id })).toEqual({ kind: "obsolete" });
       expect(h.completed).toEqual([item.id]);
       expect(h.github.merged).toHaveLength(1);
-      expect(await mergeCallInFlight(sqliteDb(h.db), item.id)).toBe(false);
+      expect(await mergeCallInFlight(h.db, item.id)).toBe(false);
     },
   );
 
   test("a merge call GitHub never saw re-verifies the task, which keeps its place", async () => {
-    const h = (harness = await mergeHarness({ settings: { order: "queue" } }));
+    const h = (harness = await mergeHarnessPg(await tempStore(), { settings: { order: "queue" } }));
     const first = await h.addItem("ENG-220");
     const second = await h.addItem("ENG-221");
     await enqueueMerges(h, [first.id, second.id]);
@@ -215,11 +225,7 @@ describe("a Paws restart and the merge queue", () => {
     h.clock.advance(1_000);
     await h.pass(second.id, await openMergeJob(h, second.id));
     // The process stopped while the merge call for the first task was in flight.
-    h.db.run("INSERT INTO merge_call(item_id, head_sha, started_at) VALUES (?, ?, ?)", [
-      first.id,
-      first.accepted,
-      h.clock.now(),
-    ]);
+    await beginMergeCall(h.db, first.id, first.accepted, h.clock.now());
 
     await restart(h);
 
@@ -228,15 +234,15 @@ describe("a Paws restart and the merge queue", () => {
       kind: "wait",
       reason: "merge_outcome",
     });
-    expect(await mergeCallInFlight(sqliteDb(h.db), first.id)).toBe(true);
+    expect(await mergeCallInFlight(h.db, first.id)).toBe(true);
     expect(await reverifies(h)).toEqual([]);
     h.state.mergeReadUnknown = false;
     expect(await h.pass(first.id, { itemId: first.id })).toEqual({ kind: "returned" });
-    expect((await getWorkItem(sqliteDb(h.db), first.id))?.state).toBe("verifying");
+    expect((await getWorkItem(h.db, first.id))?.state).toBe("verifying");
     expect((await reverifies(h)).map((job) => job.payload)).toEqual([{ itemId: first.id }]);
-    expect(await mergeCallInFlight(sqliteDb(h.db), first.id)).toBe(false);
-    expect((await getWorkItem(sqliteDb(h.db), second.id))?.state).toBe("merge_queue");
-    expect((await listMergeQueues(sqliteDb(h.db))).map((entry) => entry.itemId)).toEqual([
+    expect(await mergeCallInFlight(h.db, first.id)).toBe(false);
+    expect((await getWorkItem(h.db, second.id))?.state).toBe("merge_queue");
+    expect((await listMergeQueues(h.db)).map((entry) => entry.itemId)).toEqual([
       first.id,
       second.id,
     ]);
@@ -245,7 +251,7 @@ describe("a Paws restart and the merge queue", () => {
 });
 
 test("a stop after the last squash guard defers until the remote merge completes locally", async () => {
-  const h = (harness = await mergeHarness());
+  const h = (harness = await mergeHarnessPg(await tempStore()));
   const item = await h.addItem("ENG-230");
   let release = () => {};
   h.state.squashGate = new Promise<void>((resolve) => {
@@ -258,7 +264,7 @@ test("a stop after the last squash guard defers until the remote merge completes
   }
   expect(
     (
-      await applyLinearCommand(sqliteDb(h.db), {
+      await applyLinearCommand(h.db, {
         type: "stop",
         source: "linear",
         itemId: item.id,
@@ -266,30 +272,30 @@ test("a stop after the last squash guard defers until the remote merge completes
       })
     ).deferred,
   ).toBe(true);
-  expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("merge_queue");
+  expect((await getWorkItem(h.db, item.id))?.state).toBe("merge_queue");
   release();
   expect(await turn).toEqual({ kind: "merged" });
   expect(h.github.merged).toHaveLength(1);
-  expect(await mergeCallInFlight(sqliteDb(h.db), item.id)).toBe(true);
+  expect(await mergeCallInFlight(h.db, item.id)).toBe(true);
   // A retry in the gap between the remote response and local completion still waits.
   h.clock.advance(1_000);
-  await drainCommands(sqliteDb(h.db), new CommandBus(), h.clock.now());
-  expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("merge_queue");
-  expect(
-    (await completeMergedItem(sqliteDb(h.db), { itemId: item.id, now: h.clock.now() }))?.state,
-  ).toBe("merged");
+  await drainCommands(h.db, new CommandBus(), h.clock.now());
+  expect((await getWorkItem(h.db, item.id))?.state).toBe("merge_queue");
+  expect((await completeMergedItem(h.db, { itemId: item.id, now: h.clock.now() }))?.state).toBe(
+    "merged",
+  );
   h.clock.advance(1_000);
-  await drainCommands(sqliteDb(h.db), new CommandBus(), h.clock.now());
-  expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("merged");
+  await drainCommands(h.db, new CommandBus(), h.clock.now());
+  expect((await getWorkItem(h.db, item.id))?.state).toBe("merged");
   expect(
-    (await listOutbox(sqliteDb(h.db))).filter((row) =>
+    (await listOutbox(h.db)).filter((row) =>
       String((row.payload as { body?: string }).body).includes("was already merged"),
     ),
   ).toHaveLength(1);
 });
 
 test("a stop during the final squash reads still prevents the GitHub call", async () => {
-  const h = (harness = await mergeHarness());
+  const h = (harness = await mergeHarnessPg(await tempStore()));
   const item = await h.addItem("ENG-231");
   let stopped = false;
   let squashing = false;
@@ -302,7 +308,7 @@ test("a stop during the final squash reads still prevents the GitHub call", asyn
     if (squashing && !stopped) {
       stopped = true;
       stops.push(
-        sqliteDb(h.db).transaction((q) =>
+        h.db.transaction((q) =>
           applyLinearCommandSteps(q, {
             type: "stop",
             source: "linear",
@@ -319,6 +325,6 @@ test("a stop during the final squash reads still prevents the GitHub call", asyn
   expect(stopped).toBe(true);
   expect(h.github.merged).toEqual([]);
   h.clock.advance(1_000);
-  await drainCommands(sqliteDb(h.db), new CommandBus(), h.clock.now());
-  expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("paused");
+  await drainCommands(h.db, new CommandBus(), h.clock.now());
+  expect((await getWorkItem(h.db, item.id))?.state).toBe("paused");
 });
