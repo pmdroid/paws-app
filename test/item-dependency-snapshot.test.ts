@@ -1,141 +1,87 @@
 import { expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
-import { insertQueuedItem, legacyMigrate, migrations, openDatabase, sqliteDb } from "../src/db";
+import { insertQueuedItem, type Db } from "../src/db";
 import { delegationSnapshotsComplete, readExternalBlockerEvidence } from "../src/intake";
-import { tempDb } from "./helpers";
+import { jsonValue, seed } from "./dialects";
+import { tempStore } from "./pglite";
 
-function applyMigrationsUntil(db: Database, lastId: string): void {
-  db.run(
-    "CREATE TABLE IF NOT EXISTS schema_migration (id TEXT PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT",
+function item(db: Db, id: string, delegationId: string, state: string, position: number) {
+  return seed(db, (q) =>
+    q.orm.insert(q.t.workItem).values({
+      id,
+      delegationId,
+      linearIssueId: id,
+      linearIdentifier: `DEP-${position + 2}`,
+      title: id,
+      state,
+      branchName: `paws/${id}`,
+      position,
+      createdAt: 1,
+    }),
   );
-  const cutoff = migrations.findIndex((migration) => migration.id === lastId);
-  if (cutoff < 0) throw new Error(`missing migration ${lastId}`);
-  for (const migration of migrations.slice(0, cutoff + 1)) {
-    const foreignKeys =
-      db.query<{ foreign_keys: number }, []>("PRAGMA foreign_keys").get()?.foreign_keys ?? 1;
-    if (migration.foreignKeys === false) db.run("PRAGMA foreign_keys = OFF");
-    try {
-      const apply = db.transaction(() => {
-        db.run(migration.sql);
-        if (
-          migration.foreignKeys === false &&
-          db.query("PRAGMA foreign_key_check").all().length > 0
-        )
-          throw new Error("Identity migration would break foreign keys");
-        db.run("INSERT INTO schema_migration (id, applied_at) VALUES (?, ?)", [migration.id, 0]);
-      });
-      apply.immediate();
-    } finally {
-      if (migration.foreignKeys === false)
-        db.run(`PRAGMA foreign_keys = ${foreignKeys ? "ON" : "OFF"}`);
-    }
-  }
 }
 
-test("migration 062 starts items without a snapshot so startup resyncs them", () => {
-  const db = openDatabase(":memory:");
-  try {
-    applyMigrationsUntil(db, "060_session_link_on_item");
-    expect(
-      db.query("SELECT 1 FROM schema_migration WHERE id = '062_item_dependency_snapshot'").get(),
-    ).toBeNull();
-    db.run(
-      "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',1)",
-    );
-    db.run(
-      "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES('epic','parent','DEP','Parent','running',1)",
-    );
-    db.run(
-      "INSERT INTO epic_dependency_snapshot(epic_id,workspace_id,generation,scope,linear_states,external_evidence) VALUES('epic','workspace',4,'{\"kept\":true}','[[\"out\",\"completed\"]]','{\"out\":{\"satisfied\":true}}')",
-    );
-    for (const [id, state, position] of [
-      ["queued-item", "queued", 0],
-      ["running-item", "running", 1],
-      ["merged-item", "merged", 2],
-    ] as const)
-      db.run(
-        "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES(?,?,?,?,?,?,?,?,1)",
-        [id, "epic", id, id, id, state, `paws/${id}`, position],
-      );
-    legacyMigrate(db);
-    expect(db.query("SELECT item_id FROM item_dependency_snapshot").all()).toEqual([]);
-    expect(
-      db
-        .query(
-          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'epic_dependency_snapshot'",
-        )
-        .get(),
-    ).toBeNull();
-  } finally {
-    db.close();
-  }
-});
+function workspace(db: Db) {
+  return seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: "workspace", linearOrganizationId: "org", name: "Workspace", createdAt: 1 }),
+  );
+}
+
+function snapshot(db: Db, itemId: string, generation = 1, evidence?: object) {
+  return seed(db, (q) =>
+    q.orm.insert(q.t.itemDependencySnapshot).values({
+      itemId,
+      workspaceId: "workspace",
+      generation,
+      scope: jsonValue(q, []),
+      linearStates: jsonValue(q, []),
+      ...(evidence === undefined ? {} : { externalEvidence: jsonValue(q, evidence) }),
+    }),
+  );
+}
 
 test("a delegation is snapshot-ready only when every active item has a snapshot", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
     const first = await insertQueuedItem(db, { id: "first", now: 1 });
-    db.run(
-      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('second',?,'second','DEP-3','Second','queued','paws/second',1,1)",
-      [first.delegationId],
+    await item(db, "second", first.delegationId, "queued", 1);
+    await item(db, "done", first.delegationId, "merged", 2);
+    await workspace(db);
+    expect(await delegationSnapshotsComplete(db, first.delegationId)).toBe(false);
+    await snapshot(db, "first");
+    expect(await delegationSnapshotsComplete(db, first.delegationId)).toBe(false);
+    await snapshot(db, "second");
+    expect(await delegationSnapshotsComplete(db, first.delegationId)).toBe(true);
+    await item(db, "removed", first.delegationId, "queued", 3);
+    await seed(db, (q) =>
+      q.orm
+        .insert(q.t.workItemSpecification)
+        .values({ itemId: "removed", hash: "hash", revision: 1, present: 0 }),
     );
-    db.run(
-      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('done',?,'done','DEP-4','Done','merged','paws/done',2,1)",
-      [first.delegationId],
-    );
-    db.run(
-      "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',1)",
-    );
-    const snap = (itemId: string) =>
-      db.run(
-        "INSERT INTO item_dependency_snapshot(item_id,workspace_id,generation,scope,linear_states) VALUES(?,'workspace',1,'[]','[]')",
-        [itemId],
-      );
-    expect(await delegationSnapshotsComplete(sqliteDb(db), first.delegationId)).toBe(false);
-    snap("first");
-    expect(await delegationSnapshotsComplete(sqliteDb(db), first.delegationId)).toBe(false);
-    snap("second");
-    expect(await delegationSnapshotsComplete(sqliteDb(db), first.delegationId)).toBe(true);
-    db.run(
-      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('removed',?,'removed','DEP-5','Removed','queued','paws/removed',3,1)",
-      [first.delegationId],
-    );
-    db.run(
-      "INSERT INTO work_item_specification(item_id,hash,revision,present) VALUES('removed','hash',1,0)",
-    );
-    expect(await delegationSnapshotsComplete(sqliteDb(db), first.delegationId)).toBe(true);
+    expect(await delegationSnapshotsComplete(db, first.delegationId)).toBe(true);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("merged blocker evidence keeps the newest check", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
     const first = await insertQueuedItem(db, { id: "first", now: 1 });
-    db.run(
-      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('second',?,'second','DEP-3','Second','queued','paws/second',1,1)",
-      [first.delegationId],
-    );
-    db.run(
-      "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',1)",
-    );
-    const snap = (itemId: string, generation: number, evidence: object) =>
-      db.run(
-        "INSERT INTO item_dependency_snapshot(item_id,workspace_id,generation,scope,linear_states,external_evidence) VALUES(?,'workspace',?,'[]','[]',?)",
-        [itemId, generation, JSON.stringify(evidence)],
-      );
-    snap("first", 5, { out: { satisfied: false, reason: "old", checkedAt: 1 } });
-    snap("second", 1, { out: { satisfied: true, reason: "new", checkedAt: 9 } });
+    await item(db, "second", first.delegationId, "queued", 1);
+    await workspace(db);
+    await snapshot(db, "first", 5, { out: { satisfied: false, reason: "old", checkedAt: 1 } });
+    await snapshot(db, "second", 1, { out: { satisfied: true, reason: "new", checkedAt: 9 } });
     expect(
       (
-        await readExternalBlockerEvidence(sqliteDb(db), {
+        await readExternalBlockerEvidence(db, {
           workspaceId: "workspace",
           delegationId: first.delegationId,
         })
       ).out?.reason,
     ).toBe("new");
   } finally {
-    db.close();
+    await close();
   }
 });

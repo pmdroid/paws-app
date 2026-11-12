@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
+import { eq } from "drizzle-orm";
 import {
   JobLoop,
   OutboxDispatcher,
@@ -13,23 +13,35 @@ import {
   recordLinearInstallation,
   saveConversation,
   type Q,
+  type Db,
   type Steps,
-  sqliteDb,
 } from "../src/db";
 import { intakeDelegatedIssue, type IntakeResult } from "../src/intake";
 import { acknowledgeNewSession, createFakeTracker } from "../src/linear";
 import { systemClock } from "../src/core";
 import { attachOrchestrator } from "../src/loop";
-import { tempDb } from "./helpers";
+import { jsonValue, seed } from "./dialects";
+import { tempStore } from "./pglite";
 
-const databases: Database[] = [];
-afterEach(() => {
-  for (const db of databases.splice(0)) db.close();
+const closers: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of closers.splice(0)) await close();
 });
 
+function rows(db: Db, state?: string) {
+  return db.run((q) =>
+    q.all(
+      q.orm
+        .select({ id: q.t.workItem.id })
+        .from(q.t.workItem)
+        .where(state === undefined ? undefined : eq(q.t.workItem.state, state)),
+    ),
+  );
+}
+
 async function fixture() {
-  const db = tempDb();
-  databases.push(db);
+  const { db, close } = await tempStore();
+  closers.push(close);
   const tracker = createFakeTracker([
     {
       linearIssueId: "issue",
@@ -40,7 +52,7 @@ async function fixture() {
     },
   ]);
   for (const sessionId of ["old", "new", "other"])
-    await recordLinearInstallation(sqliteDb(db), {
+    await recordLinearInstallation(db, {
       sessionId,
       organizationId: "org",
       oauthClientId: "client",
@@ -53,7 +65,7 @@ async function fixture() {
     onAccepted?: (q: Q, result: IntakeResult) => Steps<void>,
     taskKey = sessionId,
   ) =>
-    intakeDelegatedIssue(sqliteDb(db), tracker, {
+    intakeDelegatedIssue(db, tracker, {
       linearIssueId: "issue",
       sessionId,
       taskKey,
@@ -67,11 +79,11 @@ async function failedAttempt() {
   const first = await admit("old");
   if (!first.ok) throw new Error("Expected admission");
   const id = first.items[0]!.id;
-  await enqueueJob(sqliteDb(db), { queue: "item.start", payload: { itemId: id } });
-  await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
+  await enqueueJob(db, { queue: "item.start", payload: { itemId: id } });
+  await applyWorkItemEvent(db, id, "dispatched");
   await failWorkItem(
-    sqliteDb(db),
-    (await getWorkItem(sqliteDb(db), id))!,
+    db,
+    (await getWorkItem(db, id))!,
     "no_repository",
     "No repository accessible",
     10,
@@ -87,20 +99,22 @@ test("a new session replaces an empty failed attempt and preserves its history",
   if (!replacement.ok) return;
   expect(replacement.items[0]?.id).not.toBe(id);
   expect(replacement.items[0]?.state).toBe("queued");
-  expect(await getWorkItem(sqliteDb(db), id)).toMatchObject({
+  expect(await getWorkItem(db, id)).toMatchObject({
     state: "cancelled",
     cancelRequested: true,
   });
-  expect(db.query("SELECT last_error FROM job").get()).toEqual({ last_error: "no_repository" });
-  expect(db.query("SELECT id FROM outbox").all()).toHaveLength(1);
-  expect(db.query("SELECT id FROM run").all()).toHaveLength(0);
+  expect(
+    await db.run((q) => q.all(q.orm.select({ lastError: q.t.job.lastError }).from(q.t.job))),
+  ).toEqual([{ lastError: "no_repository" }]);
+  expect(await db.run((q) => q.all(q.orm.select().from(q.t.outbox)))).toHaveLength(1);
+  expect(await db.run((q) => q.all(q.orm.select().from(q.t.run)))).toHaveLength(0);
   const replay = await admit("new");
   expect(replay.ok && replay.alreadyExisted).toBe(true);
   expect(replay.ok && replay.items[0]?.id).toBe(replacement.items[0]?.id);
   const oldReplay = await admit("old");
   expect(oldReplay.ok && oldReplay.alreadyExisted).toBe(true);
-  expect((await getWorkItem(sqliteDb(db), id))?.state).toBe("cancelled");
-  expect(db.query("SELECT id FROM work_item").all()).toHaveLength(2);
+  expect((await getWorkItem(db, id))?.state).toBe("cancelled");
+  expect(await rows(db)).toHaveLength(2);
 });
 
 test("replacement and retirement roll back together when admission fails", async () => {
@@ -111,8 +125,8 @@ test("replacement and retirement roll back together when admission fails", async
       throw new Error("Admission failed");
     }),
   ).rejects.toThrow("Admission failed");
-  expect((await getWorkItem(sqliteDb(db), id))?.state).toBe("failed");
-  expect(db.query("SELECT id FROM work_item").all()).toHaveLength(1);
+  expect((await getWorkItem(db, id))?.state).toBe("failed");
+  expect(await rows(db)).toHaveLength(1);
   expect((await admit("new")).ok).toBe(true);
 });
 
@@ -121,51 +135,75 @@ test("two new sessions racing to retry admit exactly one replacement", async () 
   const results = await Promise.allSettled([admit("new"), admit("other")]);
   expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
   expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
-  expect(db.query("SELECT id FROM work_item WHERE state = 'queued'").all()).toHaveLength(1);
+  expect(await rows(db, "queued")).toHaveLength(1);
 });
 
 test("the original session keeps its failed attempt for ordinary resume", async () => {
   const { db, id, admit } = await failedAttempt();
   expect((await admit("old")).ok).toBe(true);
   await expect(admit("old", undefined, "another-task")).rejects.toThrow("PAS-372");
-  expect((await getWorkItem(sqliteDb(db), id))?.state).toBe("failed");
+  expect((await getWorkItem(db, id))?.state).toBe("failed");
 });
 
 test.each(["run", "checkpoint", "job", "conversation", "cleanup", "parent", "sibling"])(
   "a failed attempt with %s ownership cannot be replaced",
   async (held) => {
     const { db, id, admit } = await failedAttempt();
-    if (held === "run") await insertRun(sqliteDb(db), { itemId: id, now: 1, status: "ended" });
+    if (held === "run") await insertRun(db, { itemId: id, now: 1, status: "ended" });
     if (held === "checkpoint")
-      db.run("UPDATE work_item SET checkpoint = ? WHERE id = ?", ['{"phase":"running"}', id]);
-    if (held === "job")
-      await enqueueJob(sqliteDb(db), { queue: "item.start", payload: { itemId: id } });
-    if (held === "conversation") await saveConversation(sqliteDb(db), id, "[]", null, true);
-    if (held === "cleanup") await blockLinearSessionCleanup(sqliteDb(db), "old");
+      await seed(db, (q) =>
+        q.orm
+          .update(q.t.workItem)
+          .set({ checkpoint: jsonValue(q, { phase: "running" }) })
+          .where(eq(q.t.workItem.id, id)),
+      );
+    if (held === "job") await enqueueJob(db, { queue: "item.start", payload: { itemId: id } });
+    if (held === "conversation") await saveConversation(db, id, "[]", null, true);
+    if (held === "cleanup") await blockLinearSessionCleanup(db, "old");
     if (held === "parent")
-      db.run("UPDATE work_item SET brief = json_set(brief, '$.epic', json(?)) WHERE id = ?", [
-        '{"issueId":"parent"}',
-        id,
-      ]);
+      await seed(db, async (q) =>
+        q.orm
+          .update(q.t.workItem)
+          .set({
+            brief: jsonValue(q, {
+              ...(await getWorkItem(db, id))!.brief,
+              epic: { issueId: "parent" },
+            }),
+          })
+          .where(eq(q.t.workItem.id, id)),
+      );
     if (held === "sibling")
-      db.run(
-        `INSERT INTO work_item (id,delegation_id,linear_issue_id,linear_identifier,title,state,position,version,branch_name,created_at)
-         SELECT 'sibling',delegation_id,'sibling','PAS-373','Sibling','queued',1,0,'paws/pas-373',1
-         FROM work_item WHERE id = ?`,
-        [id],
+      await seed(db, async (q) =>
+        q.orm.insert(q.t.workItem).values({
+          id: "sibling",
+          delegationId: (await getWorkItem(db, id))!.delegationId,
+          linearIssueId: "sibling",
+          linearIdentifier: "PAS-373",
+          title: "Sibling",
+          state: "queued",
+          position: 1,
+          version: 0,
+          branchName: "paws/pas-373",
+          createdAt: 1,
+        }),
       );
     await expect(admit("new")).rejects.toThrow("PAS-372");
-    expect((await getWorkItem(sqliteDb(db), id))?.state).toBe("failed");
+    expect((await getWorkItem(db, id))?.state).toBe("failed");
   },
 );
 
-test.each(["organization_id", "oauth_client_id", "app_user_id", "team_id"])(
+test.each(["organizationId", "oauthClientId", "appUserId", "teamId"])(
   "a new session from another %s cannot retire an attempt",
   async (column) => {
     const { db, id, admit } = await failedAttempt();
-    db.run(`UPDATE linear_session SET ${column} = 'different' WHERE session_id = 'new'`);
+    await seed(db, (q) =>
+      q.orm
+        .update(q.t.linearSession)
+        .set({ [column]: "different" })
+        .where(eq(q.t.linearSession.sessionId, "new")),
+    );
     await expect(admit("new")).rejects.toThrow("PAS-372");
-    expect((await getWorkItem(sqliteDb(db), id))?.state).toBe("failed");
+    expect((await getWorkItem(db, id))?.state).toBe("failed");
   },
 );
 
@@ -173,15 +211,17 @@ test.each(["queued", "running", "awaiting_input", "paused"])(
   "%s work still rejects another session",
   async (state) => {
     const { db, id, admit } = await failedAttempt();
-    db.run("UPDATE work_item SET state = ?, cancel_requested = 0 WHERE id = ?", [state, id]);
+    await seed(db, (q) =>
+      q.orm.update(q.t.workItem).set({ state, cancelRequested: 0 }).where(eq(q.t.workItem.id, id)),
+    );
     await expect(admit("new")).rejects.toThrow("PAS-372");
-    expect((await getWorkItem(sqliteDb(db), id))?.state).toBe(state);
+    expect((await getWorkItem(db, id))?.state).toBe(state);
   },
 );
 
 test("session conflicts report one actionable error without suggesting another retry", async () => {
   const { db, id, tracker, admit } = await failedAttempt();
-  await insertRun(sqliteDb(db), { itemId: id, now: 1, status: "ended" });
+  await insertRun(db, { itemId: id, now: 1, status: "ended" });
   await expect(
     acknowledgeNewSession(
       tracker,
@@ -215,7 +255,7 @@ test("session conflicts report one actionable error without suggesting another r
 test("created events replace a failed start, bind the new session and fence replies in the old one", async () => {
   const { db, tracker } = await fixture();
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     tracker,
     jobs: new JobLoop(db, systemClock),
     outbox: new OutboxDispatcher(db, systemClock),
@@ -240,23 +280,23 @@ test("created events replace a failed start, bind the new session and fence repl
   });
   try {
     await orchestrator.onLinearEvent(created("old"));
-    const originalId = (await getLinearSession(sqliteDb(db), "old"))!.activeItemId!;
-    await applyWorkItemEvent(sqliteDb(db), originalId, "dispatched");
+    const originalId = (await getLinearSession(db, "old"))!.activeItemId!;
+    await applyWorkItemEvent(db, originalId, "dispatched");
     await failWorkItem(
-      sqliteDb(db),
-      (await getWorkItem(sqliteDb(db), originalId))!,
+      db,
+      (await getWorkItem(db, originalId))!,
       "no_repository",
       "No repository accessible",
       10,
     );
     await orchestrator.onLinearEvent(created("new"));
-    const replacementId = (await getLinearSession(sqliteDb(db), "new"))!.activeItemId!;
+    const replacementId = (await getLinearSession(db, "new"))!.activeItemId!;
     expect(replacementId).not.toBe(originalId);
-    expect(await getWorkItem(sqliteDb(db), replacementId)).toMatchObject({
+    expect(await getWorkItem(db, replacementId)).toMatchObject({
       state: "queued",
       sessionKey: "new",
     });
-    expect((await getWorkItem(sqliteDb(db), originalId))?.state).toBe("cancelled");
+    expect((await getWorkItem(db, originalId))?.state).toBe("cancelled");
     await orchestrator.onLinearEvent(created("new"));
     await orchestrator.onLinearEvent(created("old"));
     await expect(
@@ -268,9 +308,9 @@ test("created events replace a failed start, bind the new session and fence repl
         body: "retry",
       }),
     ).rejects.toThrow("PAS-372");
-    expect((await getWorkItem(sqliteDb(db), originalId))?.state).toBe("cancelled");
-    expect((await getLinearSession(sqliteDb(db), "new"))!.activeItemId).toBe(replacementId);
-    expect(db.query("SELECT id FROM work_item").all()).toHaveLength(2);
+    expect((await getWorkItem(db, originalId))?.state).toBe("cancelled");
+    expect((await getLinearSession(db, "new"))!.activeItemId).toBe(replacementId);
+    expect(await rows(db)).toHaveLength(2);
   } finally {
     await orchestrator.shutdown();
   }
@@ -281,7 +321,7 @@ test("concurrent deliveries of the same task share admission after session recon
   const ready = Promise.withResolvers<void>();
   let arrivals = 0;
   const admit = () =>
-    intakeDelegatedIssue(sqliteDb(db), tracker, {
+    intakeDelegatedIssue(db, tracker, {
       linearIssueId: "issue",
       sessionId: "new",
       taskKey: "same-task",
@@ -293,5 +333,5 @@ test("concurrent deliveries of the same task share admission after session recon
   const results = await Promise.all([admit(), admit()]);
   expect(results.every((result) => result.ok)).toBe(true);
   expect(results.filter((result) => result.alreadyExisted)).toHaveLength(1);
-  expect(db.query("SELECT id FROM work_item").all()).toHaveLength(1);
+  expect(await rows(db)).toHaveLength(1);
 });

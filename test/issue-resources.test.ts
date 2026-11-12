@@ -3,22 +3,22 @@ import {
   applyWorkItemEvent,
   beginImplementRun,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   syncWorkspaceMember,
-  sqliteDb,
 } from "../src/db";
 import { startServer } from "../src/server";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 test("issue and question resources need a Paws session, show only the member's sessions and follow membership changes", async () => {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  db.run(
-    "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',0)",
+  const { db, close } = await tempStore();
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: "workspace", linearOrganizationId: "org", name: "Workspace", createdAt: 0 }),
   );
-  await putWorkspaceUser(sqliteDb(db), {
+  await putWorkspaceUser(db, {
     id: "member",
     linearUserId: "member",
     name: "member",
@@ -26,7 +26,7 @@ test("issue and question resources need a Paws session, show only the member's s
   });
   let teamIds = ["team"];
   const member = async () =>
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: "workspace",
       userId: "member",
       role: "member",
@@ -39,28 +39,40 @@ test("issue and question resources need a Paws session, show only the member's s
     ["session-mine", "team"],
     ["session-other", "other-team"],
   ])
-    db.run(
-      `INSERT INTO linear_session (session_id, organization_id, oauth_client_id, app_user_id, team_id,
-        installation_observed_at, created_at) VALUES (?, 'org', 'fixture', 'app', ?, 1, 0)`,
-      [session!, team!],
+    await seed(db, (q) =>
+      q.orm.insert(q.t.linearSession).values({
+        sessionId: session!,
+        organizationId: "org",
+        oauthClientId: "fixture",
+        appUserId: "app",
+        teamId: team!,
+        installationObservedAt: 1,
+        createdAt: 0,
+      }),
     );
   for (const [item, session] of [
     ["PAS-1", "session-mine"],
     ["PAS-2", "session-other"],
   ] as const) {
     await insertQueuedItem(db, { id: item, sessionKey: session });
-    await beginImplementRun(sqliteDb(db), item, Date.now());
-    await applyWorkItemEvent(sqliteDb(db), item, "blocking_question");
-    db.run(
-      "INSERT INTO question (id, item_id, session_id, body, status, created_at) VALUES (?, ?, ?, 'Which way?', 'open', 1)",
-      [`q-${item}`, item, session],
+    await beginImplementRun(db, item, Date.now());
+    await applyWorkItemEvent(db, item, "blocking_question");
+    await seed(db, (q) =>
+      q.orm.insert(q.t.question).values({
+        id: `q-${item}`,
+        itemId: item,
+        sessionId: session,
+        body: "Which way?",
+        status: "open",
+        createdAt: 1,
+      }),
     );
   }
   const reservation = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
   const port = reservation.port!;
   await reservation.stop(true);
   const access = createWorkspaceAccess({
-    store: sqliteDb(db),
+    store: db,
     publicUrl: `http://127.0.0.1:${port}`,
     clientId: "fixture",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -77,7 +89,7 @@ test("issue and question resources need a Paws session, show only the member's s
     },
   });
   const server = startServer({ port, hostname: "127.0.0.1", db, workspaceAccess: access });
-  const session = await issueWorkspaceSession(sqliteDb(db), {
+  const session = await issueWorkspaceSession(db, {
     workspaceId: "workspace",
     userId: "member",
     now: Date.now(),
@@ -141,6 +153,6 @@ test("issue and question resources need a Paws session, show only the member's s
     expect((await fetch(url("/PAS-2"), signedIn())).status).toBe(200);
   } finally {
     await server.stop(true);
-    db.close();
+    await close();
   }
 });
