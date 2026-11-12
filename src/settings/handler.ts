@@ -106,7 +106,7 @@ export async function handleAgentSettingsRequest(
     return json({ error: error instanceof Error ? error.message : "Invalid agent settings" }, 400);
   }
   // A malformed saved file is repaired by this write, so its merge values fall back to defaults.
-  let previous: StoredMerge = { projects: {}, rules: [] };
+  let previous: StoredMerge = {};
   let previousQueue: QueueSettings | null = null;
   try {
     const config = loadConfigFile(options.configPath);

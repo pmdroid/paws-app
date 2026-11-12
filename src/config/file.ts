@@ -29,9 +29,7 @@ import {
   type MainMoved,
   type MergeLane,
   type MergeOrder,
-  type MergeOverride,
   type MergeRepositories,
-  type MergeRule,
 } from "./merge";
 import { readConfigText } from "./settings-store";
 import { parseTimeLimitTables, type StoredTimeLimits } from "./time-limits";
@@ -107,10 +105,8 @@ export type PawsConfigFile = {
   mainMoved?: MainMoved;
   /** `[merge] lane`. Missing means `project`. */
   mergeLane?: MergeLane;
-  /** `[merge.projects."<Linear project id>"]`. */
-  mergeProjects?: Record<string, MergeOverride>;
-  /** `[[merge.rules]]`. */
-  mergeRules?: MergeRule[];
+  /** A choice under `[merge.projects."<Linear project id>"]` or a `[[merge.rules]]`, both ignored. */
+  ignoredMergeOverrides?: true;
   /** `[merge.projects."<Linear project id>"] lane`. */
   mergeProjectLanes?: Record<string, MergeLane>;
   mergeRepositories?: MergeRepositories;

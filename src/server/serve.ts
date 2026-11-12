@@ -59,7 +59,6 @@ import {
   type AgentSettingsOptions,
   type BriefSettingsOptions,
   type HighRiskFile,
-  type MergeChoices,
   type RepositoryCheckoutFacts,
 } from "../settings";
 import type { SkillResolver, SkillUpdates } from "../skills";
@@ -183,8 +182,6 @@ export type ServerOptions = {
   startLinearSession?: StartLinearSession;
   agentSettings?: Omit<AgentSettingsOptions, "csrfToken"> & {
     readIssue?: BriefSettingsOptions["readIssue"];
-    /** Linear projects and labels for Settings → Merging. */
-    mergeChoices?: (signal: AbortSignal) => Promise<MergeChoices>;
     /** Configured repositories whose main has a GitHub merge queue, for Settings → Merging. */
     githubQueues?: (signal: AbortSignal) => Promise<string[]>;
     upToDateRules?: (signal: AbortSignal) => Promise<string[]>;
@@ -671,15 +668,8 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     }))!;
   }
   if (secrets.agentSettings) {
-    const {
-      mergeChoices,
-      githubQueues,
-      upToDateRules,
-      riskGate,
-      checkoutFacts,
-      highRiskFile,
-      ...agentSettings
-    } = secrets.agentSettings;
+    const { githubQueues, upToDateRules, riskGate, checkoutFacts, highRiskFile, ...agentSettings } =
+      secrets.agentSettings;
     const repositoryNames = (store: Db) =>
       store.run((q) => listWorkspaceRepositoryNamesSteps(q, principal?.workspaceId));
     const shared = {
@@ -732,7 +722,6 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         ...(secrets.store
           ? { hotFiles: () => secrets.store!.run((q) => hotFilesSteps(q, Date.now())) }
           : {}),
-        ...(mergeChoices ? { choices: mergeChoices } : {}),
         ...(githubQueues ? { githubQueues } : {}),
         ...(upToDateRules ? { upToDateRules } : {}),
         ...(riskGate ? { riskGate } : {}),

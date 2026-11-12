@@ -14,7 +14,7 @@ import type {
 import type { LinearRepositoryAdapter } from "./repositories";
 import type { ProjectOverview } from "./project-scope";
 import type { IssuePullRequest } from "./issue-pulls";
-import type { LinearMergeChoices, LinearMergeContext } from "./merge-context";
+import type { LinearMergeContext } from "./merge-context";
 import type { SubIssueRequest } from "./sub-issues";
 import type { BriefIssueRead } from "./brief-issue";
 import type { LinearIssueClosed } from "./administration";
@@ -73,7 +73,6 @@ export interface TrackerAdapter {
   ): Promise<FiledFindingIssue>;
   /** The issue's project and labels, matched by Settings → Merging when a task starts. */
   issueMergeContext?(id: string, options?: TrackerRequestOptions): Promise<LinearMergeContext>;
-  mergeChoices?(options?: TrackerRequestOptions): Promise<LinearMergeChoices>;
   supportsActivityReconciliation?: true;
   loadEpic(linearIssueId: string): Promise<EpicSnapshot>;
   listDeps(linearIssueId: string): Promise<readonly DependencyEdge[]>;

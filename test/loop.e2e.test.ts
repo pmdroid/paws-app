@@ -2568,7 +2568,7 @@ test("by default a rebased head merges on green CI without running Closeout agai
   ]);
 }, 120_000);
 
-test("an issue rule for the task's Linear label runs Closeout again after a rebase", async () => {
+test("a Linear label that an old issue rule names merges with the [merge] default", async () => {
   const result = await withGitIdentity(() =>
     runRebaseConflict("clean", undefined, {
       toml: '[merge]\nmain_moved = "ci"\n\n[[merge.rules]]\nlabel = "Bug"\nmain_moved = "closeout"\n',
@@ -2576,8 +2576,9 @@ test("an issue rule for the task's Linear label runs Closeout again after a reba
     }),
   );
   expect(result.state, result.detail).toBe("merged");
-  expect(result.rounds, result.detail).toHaveLength(1);
-  expect(result.reviews, result.detail).toBeGreaterThan(result.reviewsBeforeUpdate);
+  expect(result.mergedOnMovedMain, result.detail).toBe(true);
+  expect(result.rounds, result.detail).toEqual([]);
+  expect(result.reviews, result.detail).toBe(result.reviewsBeforeUpdate);
   expect(afterPullRequest(result.summaries), result.detail).toEqual([
     "ENG-73: waiting to merge",
     "ENG-73: merged",
