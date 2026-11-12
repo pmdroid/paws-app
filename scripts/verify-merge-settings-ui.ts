@@ -14,8 +14,6 @@ const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");
 mkdirSync(directory, { recursive: true });
 const PAWS = "843abf82-7a05-4340-b47b-2c81fe6e6e16";
-const MONOREPO = "0b5c1d2e-3f40-4a51-8b62-7c83d94e05f6";
-const PAYMENTS = "4179d503-3ec3-4be7-a8ef-4415a2d9b5e9";
 const snapshot = fullStatusFixture();
 snapshot.source = "live";
 const queuedRun = snapshot.runs.find((run) => run.id === "r-102")!;
@@ -44,14 +42,6 @@ const server = Bun.serve({
         audit: (_action, subject) => audits.push(subject),
         upToDateRules: async () => ["acme/platform"],
         repos: ["acme/platform"],
-        choices: async () => ({
-          projects: [
-            { id: MONOREPO, name: "Monorepo" },
-            { id: PAWS, name: "Paws" },
-            { id: PAYMENTS, name: "Payments" },
-          ],
-          labels: ["Bug", "Chore", "Feature"],
-        }),
         githubQueues: async () => githubQueues,
       })) ??
       (await handleStatusRequest(request, {
@@ -75,49 +65,33 @@ try {
     githubQueues = ["acme/platform"];
     writeFileSync(
       configPath,
-      `[merge]\norder = "queue"\nmain_moved = "overlap"\n\n[merge.projects."${PAWS}"]\n\n[merge.projects."${MONOREPO}"]\norder = "github-queue"\nmain_moved = "overlap"\n\n[merge.repositories."acme/platform"]\npackages = ["apps/*", "packages/*"]\n`,
+      `[merge]\norder = "queue"\nmain_moved = "overlap"\n\n[merge.projects."${PAWS}"]\norder = "github-queue"\n\n[[merge.rules]]\nlabel = "Bug"\nmain_moved = "closeout"\n\n[merge.repositories."acme/platform"]\npackages = ["apps/*", "packages/*"]\n`,
     );
     const page = await browser.newPage({ viewport: { width, height: 1000 } });
     page.on("pageerror", (error) => errors.push(error.message));
     await page.emulateMedia({ colorScheme: "light" });
     await page.goto(`http://127.0.0.1:${server.port}/dashboard/settings/merging`);
-    await expect(page.getByRole("heading", { name: "Workspace default" })).toBeVisible();
-    await expect(page.locator("#project-0-main")).toBeDisabled();
-    await expect(page.locator("#project-1-order")).toHaveValue("github-queue");
-    await expect(page.locator("#project-1-order-help")).toHaveText(
-      "GitHub's merge queue on acme/platform. A repository without one merges each pull request when its CI is green.",
-    );
+    await expect(page.locator("#merge-settings-form h2").first()).toHaveText("Merging");
+    for (const gone of ["Workspace default", "Projects", "Issue rules"])
+      await expect(page.getByRole("heading", { name: gone, exact: true })).toHaveCount(0);
     await expect(page.locator('#default-order option[value="github-queue"]')).toHaveCount(1);
     await expect(page.locator("#default-main-help")).toHaveText(
       "GitHub requires branches to be up to date in acme/platform, so merges there always update the branch and wait for CI. Turn that rule off to merge without an update.",
     );
 
-    // Payments: run Closeout again after a branch update.
-    await page.locator("#merge-new-project").selectOption(PAYMENTS);
-    await page.getByRole("button", { name: "Add project" }).click();
-    await expect(page.getByRole("heading", { name: "Payments" })).toBeVisible();
-    await page.locator('[name="project-2-inherit"]').uncheck();
-    await page.locator("#project-2-main").selectOption("closeout");
-    // An issue rule for Paws bugs.
-    await page.locator("#merge-rule-project").selectOption(PAWS);
-    await page.locator("#merge-rule-label").selectOption("Bug");
-    await page.getByRole("button", { name: "Add rule" }).click();
-    await expect(page.getByRole("heading", { name: "Paws · label Bug" })).toBeVisible();
-    await page.locator('[name="rule-0-inherit"]').uncheck();
-    await page.locator("#rule-0-main").selectOption("closeout");
+    await page.locator("#default-main").selectOption("closeout");
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByText("Merging settings saved.")).toBeVisible();
 
     const saved = readMergeSettings(loadConfigFile(configPath));
-    expect(saved.projects[PAYMENTS]).toEqual({ order: "queue", mainMoved: "closeout" });
-    expect(saved.rules).toEqual([
-      { project: PAWS, label: "Bug", order: "queue", mainMoved: "closeout" },
-    ]);
-    expect(readFileSync(configPath, "utf8")).toContain("[[merge.rules]]");
+    expect(saved.default).toEqual({ order: "queue", mainMoved: "closeout" });
+    expect(readFileSync(configPath, "utf8")).not.toContain("[[merge.rules]]");
     expect(saved.repositories).toEqual({
       "acme/platform": { packages: ["apps/*", "packages/*"] },
     });
-    await expect(page.locator("#default-main-help")).toContainText("acme/platform");
+    await expect(page.locator("#default-main-help")).toHaveText(
+      "A Closeout re-check starts with a fresh retry budget.",
+    );
 
     await expect(page.getByRole("heading", { name: "Ignored PR comments" })).toBeVisible();
     await expect(page.locator("#ignore-bots-0")).toHaveValue(/codecov\[bot\]/);
@@ -151,12 +125,8 @@ try {
     // Without a merge queue in any repository, only a level that already uses it keeps the choice.
     githubQueues = [];
     await page.reload();
-    await expect(page.getByRole("heading", { name: "Workspace default" })).toBeVisible();
+    await expect(page.locator("#merge-settings-form h2").first()).toHaveText("Merging");
     await expect(page.locator('#default-order option[value="github-queue"]')).toHaveCount(0);
-    await expect(page.locator('#project-2-order option[value="github-queue"]')).toHaveCount(0);
-    await expect(page.locator("#project-1-order-help")).toContainText(
-      "No configured repository has a GitHub merge queue",
-    );
     await page.evaluate(() => scrollTo(0, 0));
     await page.screenshot({
       path: join(directory, `merging-no-github-queue-${width}.png`),
@@ -179,7 +149,9 @@ try {
     await page.close();
   }
   expect(errors).toEqual([]);
-  expect(audits).toContain(`Rule label Bug in project ${PAWS} added`);
+  expect(audits).toContain(
+    "Workspace default when main moved: Update and re-test only when main changed the same files or package → Always update the branch and run Closeout again",
+  );
   console.log(`Settings → Merging checks passed. Screenshots in ${directory}`);
 } finally {
   await browser.close();

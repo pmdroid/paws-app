@@ -12,12 +12,10 @@ import {
   readMergeSettings,
   highRiskPaths,
   repositoryPackages,
-  resolveMergeSettings,
   reviewApps,
   storedMerge,
   suggestedFindingsMode,
   writeMergePolicy,
-  type MergePolicy,
 } from "../src/config";
 import { createFakeMergeQueue, repositoriesWithMergeQueue, type GitHubClient } from "../src/github";
 import { handleMergeSettingsRequest, type MergeSettingsOptions } from "../src/settings";
@@ -26,61 +24,8 @@ import { tempHome } from "./helpers";
 const PAWS = "843abf82-7a05-4340-b47b-2c81fe6e6e16";
 const PAYMENTS = "4179d503-3ec3-4be7-a8ef-4415a2d9b5e9";
 
-const policy: MergePolicy = {
-  default: { order: "queue", mainMoved: "ci" },
-  projects: {
-    [PAWS]: {},
-    [PAYMENTS]: { order: "github-queue", mainMoved: "overlap" },
-  },
-  rules: [
-    { label: "Bug", mainMoved: "closeout" },
-    { project: PAYMENTS, label: "bug", order: "ci-green" },
-  ],
-};
-
-describe("resolveMergeSettings", () => {
-  test("an issue rule wins over the project, which wins over the workspace default", () => {
-    expect(resolveMergeSettings({ projectId: PAYMENTS, labels: ["Feature"] }, policy)).toEqual({
-      order: "github-queue",
-      mainMoved: "overlap",
-      sources: { order: "project", mainMoved: "project" },
-    });
-    // The project rule sets the order; its main-moved choice comes from the project.
-    expect(resolveMergeSettings({ projectId: PAYMENTS, labels: ["BUG"] }, policy)).toEqual({
-      order: "ci-green",
-      mainMoved: "overlap",
-      sources: { order: "rule", mainMoved: "project" },
-      rule: { project: PAYMENTS, label: "bug" },
-    });
-    expect(resolveMergeSettings({ projectId: null, labels: [] }, policy)).toEqual({
-      order: "queue",
-      mainMoved: "ci",
-      sources: { order: "default", mainMoved: "default" },
-    });
-  });
-
-  test("a rule without a project matches its label in any project", () => {
-    for (const projectId of [PAWS, "other-project", null])
-      expect(resolveMergeSettings({ projectId, labels: ["Feature", "Bug"] }, policy)).toEqual({
-        order: "queue",
-        mainMoved: "closeout",
-        sources: { order: "default", mainMoved: "rule" },
-        rule: { label: "Bug" },
-      });
-  });
-
-  test("a project that inherits the default uses the workspace default", () => {
-    const changed = { ...policy, default: { order: "ci-green", mainMoved: "closeout" } } as const;
-    expect(resolveMergeSettings({ projectId: PAWS, labels: [] }, changed)).toEqual({
-      order: "ci-green",
-      mainMoved: "closeout",
-      sources: { order: "default", mainMoved: "default" },
-    });
-  });
-});
-
 describe("config.toml [merge]", () => {
-  test("projects and rules round-trip next to the other settings", () => {
+  test("stored project choices and issue rules load and every item uses the default", () => {
     const text = `[caps]
 max_awake_ms = 40
 
@@ -109,11 +54,6 @@ packages = ["apps/*", "packages/*"]
     expect(config.maxAwakeMs).toBe(40);
     expect(readMergeSettings(config)).toEqual({
       default: { order: "ci-green", mainMoved: "overlap" },
-      projects: { [PAWS]: {}, [PAYMENTS]: { mainMoved: "closeout" } },
-      rules: [
-        { label: "Bug", order: "queue" },
-        { project: PAYMENTS, label: 'Needs "care"' },
-      ],
       repositories: { "acme/platform": { packages: ["apps/*", "packages/*"] } },
       lane: "project",
       projectLanes: {},
@@ -121,6 +61,8 @@ packages = ["apps/*", "packages/*"]
       ciFixAttempts: 2,
       commentWait: { quietSeconds: 60, maxWaitSeconds: 300, reviewWaitMaxSeconds: 900 },
     });
+    expect(config.ignoredMergeOverrides).toBe(true);
+    expect(parseConfigToml('[merge]\norder = "queue"\n').ignoredMergeOverrides).toBeUndefined();
     expect(repositoryPackages(readMergeSettings(config), "Acme/Platform")).toEqual([
       "apps/*",
       "packages/*",
@@ -154,7 +96,7 @@ packages = ["apps/*", "packages/*"]
     const path = join(home, "config.toml");
     writeMergePolicy(
       path,
-      { default: { order: "queue", mainMoved: "ci" }, projects: {}, rules: [] },
+      { default: { order: "queue", mainMoved: "ci" } },
       storedMerge(parseConfigToml(text)),
     );
     const saved = readMergeSettings(loadConfigFile(path));
@@ -176,8 +118,6 @@ packages = ["apps/*", "packages/*"]
       );
       const settings = readMergeSettings(config);
       expect(settings.default.mainMoved).toBe(value);
-      expect(settings.projects[PAWS]).toEqual({ mainMoved: value });
-      expect(settings.rules).toEqual([{ label: "Bug", mainMoved: value }]);
       const path = join(tempHome(), "config.toml");
       writeMergePolicy(path, settings, storedMerge(config));
       expect(readMergeSettings(loadConfigFile(path))).toEqual(settings);
@@ -197,22 +137,18 @@ packages = ["apps/*", "packages/*"]
     const settings = readMergeSettings(config);
     expect(settings.lane).toBe("repository");
     expect(settings.projectLanes).toEqual({ [PAWS]: "project" });
-    expect(settings.projects).toEqual({ [PAWS]: {}, [PAYMENTS]: { order: "ci-green" } });
     expect(mergeLaneKey(PAWS, settings)).toBe(PAWS);
     expect(mergeLaneKey(PAYMENTS, settings)).toBe("");
     expect(mergeLaneKey(null, settings)).toBe("");
 
-    // Saving the Merging settings keeps both lane keys.
+    // Saving the Merging settings keeps the project lane and drops the ignored project choice.
     const path = join(tempHome(), "config.toml");
     writeMergePolicy(path, settings, storedMerge(config));
     expect(readMergeSettings(loadConfigFile(path))).toEqual(settings);
+    expect(readFileSync(path, "utf8")).not.toContain("ci-green");
 
     expect(() => parseConfigToml('[merge]\nlane = "label"\n')).toThrow("merge.lane");
     expect(() => parseConfigToml(`[merge.projects."${PAWS}"]\nlane = "issue"\n`)).toThrow();
-    // No label rules for lanes.
-    expect(() =>
-      parseConfigToml('[[merge.rules]]\nlabel = "Bug"\nlane = "repository"\n'),
-    ).toThrow();
   });
 
   test("package roots must be relative paths in the repository", () => {
@@ -309,7 +245,6 @@ packages = ["apps/*", "packages/*"]
 
   test("unknown choices are rejected", () => {
     expect(() => parseConfigToml('[merge]\norder = "fast"\n')).toThrow("merge.order");
-    expect(() => parseConfigToml('[[merge.rules]]\nlabel = "Bug"\nmain_moved = "x"\n')).toThrow();
   });
 });
 
@@ -322,13 +257,6 @@ function fixture() {
     audit: async (action, subject) => {
       audits.push([action, subject]);
     },
-    choices: async () => ({
-      projects: [
-        { id: PAWS, name: "Paws" },
-        { id: PAYMENTS, name: "Payments" },
-      ],
-      labels: ["Bug", "Feature"],
-    }),
   };
   return { options, audits };
 }
@@ -342,7 +270,7 @@ function request(method = "GET", body?: unknown, csrf = "test-token") {
 }
 
 describe("Merging settings API", () => {
-  test("GET returns the defaults and the Linear choices", async () => {
+  test("GET returns the defaults", async () => {
     const { options } = fixture();
     const response = await handleMergeSettingsRequest(request(), options);
     expect(response?.status).toBe(200);
@@ -350,48 +278,31 @@ describe("Merging settings API", () => {
       autoApproveHighRisk: false,
       commentWait: { quietSeconds: 60, maxWaitSeconds: 300, reviewWaitMaxSeconds: 900 },
       default: { order: "queue", mainMoved: "ci" },
-      projects: [],
-      rules: [],
       highRiskPaths: [],
       highRiskRepositories: [],
       ignoredComments: [],
-      choices: {
-        projects: [
-          { id: PAWS, name: "Paws" },
-          { id: PAYMENTS, name: "Payments" },
-        ],
-        labels: ["Bug", "Feature"],
-      },
     });
   });
 
   test("each main_moved value saves and reads back, and saving the unchanged page succeeds", async () => {
     for (const value of MAIN_MOVED) {
       const { options } = fixture();
-      const body = {
-        default: { order: "queue", mainMoved: value },
-        projects: [{ id: PAWS, mainMoved: value }],
-        rules: [{ label: "Bug", mainMoved: value }],
-      };
+      const body = { default: { order: "queue", mainMoved: value } };
       expect((await handleMergeSettingsRequest(request("PUT", body), options))?.status).toBe(200);
       const read = (await (await handleMergeSettingsRequest(request(), options))!.json()) as {
         default: unknown;
-        projects: unknown;
-        rules: unknown;
       };
       expect(read).toMatchObject(body);
-      const again = { default: read.default, projects: read.projects, rules: read.rules };
+      const again = { default: read.default };
       expect((await handleMergeSettingsRequest(request("PUT", again), options))?.status).toBe(200);
     }
     // A fresh page shows the default and saves it unchanged.
     const { options } = fixture();
     const view = (await (await handleMergeSettingsRequest(request(), options))!.json()) as {
       default: unknown;
-      projects: unknown;
-      rules: unknown;
     };
     expect(view.default).toEqual({ order: "queue", mainMoved: "ci" });
-    const unchanged = { default: view.default, projects: view.projects, rules: view.rules };
+    const unchanged = { default: view.default };
     expect((await handleMergeSettingsRequest(request("PUT", unchanged), options))?.status).toBe(
       200,
     );
@@ -420,13 +331,15 @@ describe("Merging settings API", () => {
     const { options, audits } = fixture();
     writeFileSync(
       options.configPath,
-      '[caps]\nmax_turns = 31\n\n[merge]\nmain_moved = "closeout"\nci_fix_attempts = 5\n\n[merge.repositories."acme/platform"]\npackages = ["apps/*"]\n\n[agents.defaults.implementer]\nagent = "claude"\n',
+      `[caps]\nmax_turns = 31\n\n[merge]\nmain_moved = "closeout"\nci_fix_attempts = 5\n\n[merge.projects."${PAYMENTS}"]\norder = "github-queue"\n\n[[merge.rules]]\nlabel = "Bug"\nmain_moved = "overlap"\n\n[merge.repositories."acme/platform"]\npackages = ["apps/*"]\n\n[agents.defaults.implementer]\nagent = "claude"\n`,
     );
-    const body = {
-      default: { order: "queue", mainMoved: "ci" },
-      projects: [{ id: PAWS }, { id: PAYMENTS, order: "github-queue", mainMoved: "overlap" }],
-      rules: [{ label: "Bug", mainMoved: "closeout" }],
+    const stored = (await (await handleMergeSettingsRequest(request(), options))!.json()) as {
+      default: unknown;
     };
+    expect(stored.default).toEqual({ order: "queue", mainMoved: "closeout" });
+    expect(Object.keys(stored)).not.toContainEqual("projects");
+    expect(Object.keys(stored)).not.toContainEqual("rules");
+    const body = { default: { order: "queue", mainMoved: "ci" } };
     const saved = await handleMergeSettingsRequest(request("PUT", body), options);
     expect(saved?.status).toBe(200);
     expect(await saved!.json()).toEqual({
@@ -440,13 +353,11 @@ describe("Merging settings API", () => {
     const text = readFileSync(options.configPath, "utf8");
     expect(text).toContain("max_turns = 31");
     expect(text).toContain('[agents.defaults.implementer]\nagent = "claude"');
-    expect(text).toContain(`[merge.projects."${PAWS}"]\n`);
-    expect(text).toContain('[[merge.rules]]\nlabel = "Bug"\nmain_moved = "closeout"');
+    expect(text).not.toContain("[merge.projects.");
+    expect(text).not.toContain("[[merge.rules]]");
     const config = loadConfigFile(options.configPath);
     expect(readMergeSettings(config)).toEqual({
       default: { order: "queue", mainMoved: "ci" },
-      projects: { [PAWS]: {}, [PAYMENTS]: { order: "github-queue", mainMoved: "overlap" } },
-      rules: [{ label: "Bug", mainMoved: "closeout" }],
       repositories: { "acme/platform": { packages: ["apps/*"] } },
       lane: "project",
       projectLanes: {},
@@ -454,35 +365,16 @@ describe("Merging settings API", () => {
       ciFixAttempts: 5,
       commentWait: { quietSeconds: 60, maxWaitSeconds: 300, reviewWaitMaxSeconds: 900 },
     });
-    expect(
-      ((await (await handleMergeSettingsRequest(request(), options))!.json()) as { rules: unknown })
-        .rules,
-    ).toEqual(body.rules);
     expect(audits).toEqual([
       [
         "settings.merging",
         "Workspace default when main moved: Always update the branch and run Closeout again → Always update the branch and wait for CI",
       ],
-      ["settings.merging", `Project ${PAWS} added`],
-      ["settings.merging", `Project ${PAYMENTS} added`],
-      [
-        "settings.merging",
-        `Project ${PAYMENTS} merge order: inherited → Add to the GitHub merge queue`,
-      ],
-      [
-        "settings.merging",
-        `Project ${PAYMENTS} when main moved: inherited → Update and re-test only when main changed the same files or package`,
-      ],
-      ["settings.merging", "Rule label Bug in any project added"],
-      [
-        "settings.merging",
-        "Rule label Bug in any project when main moved: inherited → Always update the branch and run Closeout again",
-      ],
     ]);
 
     // Saving the same settings again is not a change.
     await handleMergeSettingsRequest(request("PUT", body), options);
-    expect(audits).toHaveLength(7);
+    expect(audits).toHaveLength(1);
   });
 
   test("PUT saves high-risk paths per repository and a body without them keeps them", async () => {
@@ -491,7 +383,7 @@ describe("Merging settings API", () => {
       options.configPath,
       '[merge.repositories."acme/platform"]\npackages = ["apps/*"]\nignore_comment_bots = ["codecov[bot]"]\n',
     );
-    const valid = { default: { order: "queue", mainMoved: "closeout" }, projects: [], rules: [] };
+    const valid = { default: { order: "queue", mainMoved: "closeout" } };
     const saved = await handleMergeSettingsRequest(
       request("PUT", {
         ...valid,
@@ -574,7 +466,7 @@ describe("Merging settings API", () => {
         return null;
       },
     };
-    const valid = { default: { order: "queue", mainMoved: "closeout" }, projects: [], rules: [] };
+    const valid = { default: { order: "queue", mainMoved: "closeout" } };
     const saved = await handleMergeSettingsRequest(
       request("PUT", {
         ...valid,
@@ -616,7 +508,7 @@ describe("Merging settings API", () => {
   test("PUT saves the comment wait, audits it, and a body without it keeps it", async () => {
     const { options, audits } = fixture();
     writeFileSync(options.configPath, "max_turns = 31\n");
-    const valid = { default: { order: "queue", mainMoved: "ci" }, projects: [], rules: [] };
+    const valid = { default: { order: "queue", mainMoved: "ci" } };
     const read = async () =>
       (
         (await (await handleMergeSettingsRequest(request(), options))!.json()) as {
@@ -684,13 +576,11 @@ describe("Merging settings API", () => {
 
   test("PUT rejects invalid settings and a missing CSRF token", async () => {
     const { options, audits } = fixture();
-    const valid = { default: { order: "queue", mainMoved: "ci" }, projects: [], rules: [] };
+    const valid = { default: { order: "queue", mainMoved: "ci" } };
     for (const body of [
       { ...valid, default: { order: "fast", mainMoved: "ci" } },
-      { ...valid, projects: [{ id: PAWS }, { id: PAWS }] },
-      { ...valid, rules: [{ label: " " }] },
-      { ...valid, rules: [{ label: "Bug" }, { label: "bug" }] },
-      { ...valid, projects: [{ id: "../x" }] },
+      { ...valid, projects: [{ id: PAWS }] },
+      { ...valid, rules: [{ label: "Bug" }] },
       { ...valid, extra: true },
     ])
       expect((await handleMergeSettingsRequest(request("PUT", body), options))?.status).toBe(400);
@@ -741,8 +631,6 @@ describe("Merging settings API", () => {
     expect(body.githubQueue).toEqual({ repositories: [] });
     const choice = {
       default: { order: "github-queue", mainMoved: "ci" },
-      projects: [],
-      rules: [],
     };
     const refused = await handleMergeSettingsRequest(request("PUT", choice), options);
     expect(refused?.status).toBe(400);
@@ -758,22 +646,13 @@ describe("Merging settings API", () => {
     const failed = await (await handleMergeSettingsRequest(request(), options))!.json();
     expect(failed).toMatchObject({ githubQueue: null, githubQueueError: expect.any(String) });
   });
-
-  test("GET still answers when Linear choices cannot be loaded", async () => {
-    const { options } = fixture();
-    options.choices = async () => {
-      throw new Error("offline");
-    };
-    const body = await (await handleMergeSettingsRequest(request(), options))!.json();
-    expect(body).toMatchObject({ choices: null, choicesError: expect.any(String) });
-  });
 });
 
 test("automatic high-risk approval defaults off, round-trips, and old clients preserve it", async () => {
   const { options, audits } = fixture();
   options.riskGate = { on: true };
   expect(readMergeSettings(parseConfigToml("")).autoApproveHighRisk).toBe(false);
-  const body = { default: { order: "queue", mainMoved: "ci" }, projects: [], rules: [] };
+  const body = { default: { order: "queue", mainMoved: "ci" } };
   for (const enabled of [true, false]) {
     const response = await handleMergeSettingsRequest(
       request("PUT", { ...body, autoApproveHighRisk: enabled }),
@@ -832,8 +711,6 @@ test("a failed display notification does not undo a settings write or its audit"
   const response = await handleMergeSettingsRequest(
     request("PUT", {
       default: { order: "queue", mainMoved: "ci" },
-      projects: [],
-      rules: [],
       autoApproveHighRisk: true,
     }),
     options,

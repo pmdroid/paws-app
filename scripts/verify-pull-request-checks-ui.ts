@@ -81,7 +81,7 @@ try {
       });
 
       await page.goto(`http://127.0.0.1:${server.port}/dashboard/settings/merging`);
-      await expect(page.getByRole("heading", { name: "Workspace default" })).toBeVisible();
+      await expect(page.locator("#merge-settings-form h2").first()).toHaveText("Merging");
       if (!before) {
         await expect(checks).toBeVisible();
         const order = await page

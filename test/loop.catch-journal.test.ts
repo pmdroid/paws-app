@@ -146,7 +146,7 @@ test("a Settings › Merging save reaches the next item without a restart; confi
         new Request("http://127.0.0.1:8787/api/settings/merging", {
           method: "PUT",
           headers: { "Content-Type": "application/json", "x-paws-csrf": "csrf" },
-          body: JSON.stringify({ default: { order: "queue", mainMoved }, projects: [], rules: [] }),
+          body: JSON.stringify({ default: { order: "queue", mainMoved } }),
         }),
         { configPath, csrfToken: "csrf" },
       );

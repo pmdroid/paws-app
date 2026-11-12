@@ -24,7 +24,7 @@ import { tempHome } from "./helpers";
 import { tempStore } from "./pglite";
 
 const MARKERS = ["<!-- add-pr-comment:todo-count -->", "<!-- deploy-security-proof -->"];
-const POLICY = { default: { order: "queue", mainMoved: "ci" }, projects: [], rules: [] } as const;
+const POLICY = { default: { order: "queue", mainMoved: "ci" } } as const;
 
 function fixture() {
   const configPath = join(tempHome(), "config.toml");
@@ -63,11 +63,7 @@ describe("ignore_comment_markers in config.toml", () => {
     expect(ignoredCommentMarkers(settings, "ACME/monorepo")).toEqual(MARKERS);
     expect(ignoredCommentMarkers(settings, "acme/web")).toEqual([]);
 
-    writeMergePolicy(
-      path,
-      { default: settings.default, projects: {}, rules: [] },
-      storedMerge(first),
-    );
+    writeMergePolicy(path, { default: settings.default }, storedMerge(first));
     expect(readFileSync(path, "utf8")).toContain(
       `ignore_comment_markers = ["<!-- add-pr-comment:todo-count -->", "<!-- deploy-security-proof -->"]`,
     );

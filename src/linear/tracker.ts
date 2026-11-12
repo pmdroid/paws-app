@@ -111,7 +111,6 @@ const TRACKER_CALLERS: Record<TrackerMethod, string> = {
   issueRepositoryHints: "repository-hints",
   addRepositoryLabel: "repository-label",
   issueMergeContext: "merge-context",
-  mergeChoices: "merge-choices",
   createIssueAttachment: "issue-attachment",
   deleteIssueAttachment: "issue-attachment",
   createSubIssues: "sub-issues",

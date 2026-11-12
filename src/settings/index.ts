@@ -10,7 +10,6 @@ export type {
   HighRiskFile,
   HighRiskRepositoryView,
   HotFileView,
-  MergeChoices,
   MergeSettingsOptions,
 } from "./merging";
 export { HOOK_SETTINGS_PATH, handleHookSettingsRequest } from "./hooks";

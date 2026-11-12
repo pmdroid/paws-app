@@ -170,7 +170,7 @@ describe("local agent settings API", () => {
     expect(readFileSync(options.configPath, "utf8")).toContain("max_turns = 31");
   });
 
-  test("agent settings carry only CI fix attempts and keep the Merging tables", async () => {
+  test("agent settings carry only CI fix attempts and keep the Merging default", async () => {
     const { options } = fixture();
     writeFileSync(
       options.configPath,
@@ -190,7 +190,7 @@ describe("local agent settings API", () => {
     expect(((await saved!.json()) as { merge: unknown }).merge).toEqual({ ciFixAttempts: 4 });
     const text = readFileSync(options.configPath, "utf8");
     expect(text).toContain('[merge]\nmain_moved = "closeout"\nci_fix_attempts = 4');
-    expect(text).toContain('[[merge.rules]]\nlabel = "Bug"\norder = "ci-green"');
+    expect(text).not.toContain("[[merge.rules]]");
     expect(text).toContain("max_turns = 31");
     expect(readAgentSettings(loadConfigFile(options.configPath))).toEqual(settings);
   });

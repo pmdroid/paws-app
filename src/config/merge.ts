@@ -47,15 +47,7 @@ export type MergeOrder = (typeof MERGE_ORDERS)[number];
 export type MergeLane = (typeof MERGE_LANES)[number];
 export type MainMoved = (typeof MAIN_MOVED)[number];
 export type MergeChoice = { order: MergeOrder; mainMoved: MainMoved };
-/** A missing choice inherits from the next level. */
-export type MergeOverride = Partial<MergeChoice>;
-export type MergeRule = MergeOverride & { project?: string; label: string };
-export type MergePolicy = {
-  default: MergeChoice;
-  /** Keyed by Linear project id. An empty override uses the workspace default. */
-  projects: Record<string, MergeOverride>;
-  rules: MergeRule[];
-};
+export type MergePolicy = { default: MergeChoice };
 /**
  * Per repository. `ignoreCommentBots` replaces `DEFAULT_IGNORED_COMMENT_BOTS` for the repository:
  * bot logins whose pull request comments only report status and never restart the item.
@@ -91,18 +83,13 @@ export type StoredMerge = Partial<MergeChoice> & {
   commentQuietSeconds?: number;
   commentMaxWaitSeconds?: number;
   reviewWaitMaxSeconds?: number;
-  projects: Record<string, MergeOverride>;
-  rules: MergeRule[];
   repositories?: MergeRepositories;
-};
-export type MergeLevel = "rule" | "project" | "default";
-export type ResolvedMergeSettings = MergeChoice & {
-  sources: Record<keyof MergeChoice, MergeLevel>;
-  rule?: { project?: string; label: string };
 };
 
 export const DEFAULT_MERGE_CHOICE: MergeChoice = { order: "queue", mainMoved: "ci" };
 export const DEFAULT_MERGE_LANE: MergeLane = "project";
+export const MERGE_OVERRIDES_IGNORED =
+  "config.toml merge choices under [merge.projects] and [[merge.rules]] are ignored; every item uses the [merge] default";
 
 /**
  * Bots that comment on pull requests with status, not findings: deploy previews, coverage
@@ -121,7 +108,6 @@ export const DEFAULT_IGNORED_COMMENT_BOTS = [
 const PROJECT_ID = /^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/;
 const REPOSITORY = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 const PACKAGE_ROOT = /^(?:[^/*\s\\]+|\*)(?:\/(?:[^/*\s\\]+|\*))*\/?$/;
-const LABEL_MAX = 200;
 const BOT_LOGIN = /^[A-Za-z0-9][A-Za-z0-9-]*(\[bot\])?$/;
 const APP_SLUG = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
 const IGNORED_COMMENTS_MAX = 100;
@@ -155,50 +141,15 @@ const highRiskGlobs = z
   .max(HIGH_RISK_GLOBS_MAX)
   .refine((list) => new Set(list).size === list.length, { message: "lists a path twice" });
 
-const override = {
-  order: z.enum(MERGE_ORDERS).optional(),
-  mainMoved: z.enum(MAIN_MOVED).optional(),
-};
 const projectId = z.string().regex(PROJECT_ID, "must be a Linear project id");
-const label = z
-  .string()
-  .trim()
-  .min(1)
-  .max(LABEL_MAX)
-  .refine(
-    (value) => [...value].every((char) => char.charCodeAt(0) > 31),
-    "has a control character",
-  );
 const policySchema = z.strictObject({
   default: z.strictObject({ order: z.enum(MERGE_ORDERS), mainMoved: z.enum(MAIN_MOVED) }),
-  projects: z
-    .array(z.strictObject({ id: projectId, ...override }))
-    .max(500)
-    .refine((list) => new Set(list.map((entry) => entry.id)).size === list.length, {
-      message: "lists a project twice",
-    }),
-  rules: z
-    .array(z.strictObject({ project: projectId.optional(), label, ...override }))
-    .max(500)
-    .refine(
-      (list) =>
-        new Set(list.map((rule) => `${rule.project ?? ""}\0${rule.label.toLowerCase()}`)).size ===
-        list.length,
-      { message: "lists a rule twice" },
-    ),
 });
 const tomlSchema = z.object({
   merge: z
     .object({
       projects: z
-        .record(
-          projectId,
-          z.strictObject({
-            order: override.order,
-            main_moved: override.mainMoved,
-            lane: z.enum(MERGE_LANES).optional(),
-          }),
-        )
+        .record(projectId, z.object({ lane: z.enum(MERGE_LANES).optional() }).catchall(z.unknown()))
         .optional(),
       repositories: z
         .record(
@@ -224,16 +175,7 @@ const tomlSchema = z.object({
           }),
         )
         .optional(),
-      rules: z
-        .array(
-          z.strictObject({
-            project: projectId.optional(),
-            label,
-            order: override.order,
-            main_moved: override.mainMoved,
-          }),
-        )
-        .optional(),
+      rules: z.array(z.unknown()).optional(),
     })
     .optional(),
 });
@@ -258,8 +200,6 @@ export function storedMerge(config: PawsConfigFile): StoredMerge {
     ...(config.reviewWaitMaxSeconds === undefined
       ? {}
       : { reviewWaitMaxSeconds: config.reviewWaitMaxSeconds }),
-    projects: config.mergeProjects ?? {},
-    rules: config.mergeRules ?? [],
     ...(config.mergeRepositories ? { repositories: config.mergeRepositories } : {}),
   };
 }
@@ -271,8 +211,6 @@ export function readMergeSettings(config: PawsConfigFile): MergeSettings {
       order: stored.order ?? DEFAULT_MERGE_CHOICE.order,
       mainMoved: stored.mainMoved ?? DEFAULT_MERGE_CHOICE.mainMoved,
     },
-    projects: stored.projects,
-    rules: stored.rules,
     lane: stored.lane ?? DEFAULT_MERGE_LANE,
     projectLanes: stored.projectLanes ?? {},
     repositories: stored.repositories ?? {},
@@ -331,46 +269,6 @@ export function parseCommentWait(value: unknown): CommentWaitInput {
   if (wait.maxWaitSeconds < wait.quietSeconds)
     throw new Error("commentWait.maxWaitSeconds must be at least the quiet time");
   return wait;
-}
-
-/**
- * The merge settings for one task: the first issue rule whose label is on the issue, then the
- * issue's Linear project, then the workspace default. A rule for the issue's project wins over a
- * rule for any project. Each choice inherits on its own.
- */
-export function resolveMergeSettings(
-  item: { projectId: string | null; labels: readonly string[] },
-  policy: MergePolicy,
-): ResolvedMergeSettings {
-  const labels = new Set(item.labels.map((name) => name.trim().toLowerCase()));
-  const matches = (rule: MergeRule) => labels.has(rule.label.trim().toLowerCase());
-  const rule =
-    policy.rules.find(
-      (entry) => entry.project !== undefined && entry.project === item.projectId && matches(entry),
-    ) ?? policy.rules.find((entry) => entry.project === undefined && matches(entry));
-  const project = item.projectId === null ? undefined : policy.projects[item.projectId];
-  const pick = <K extends keyof MergeChoice>(key: K): [MergeChoice[K], MergeLevel] => {
-    const fromRule: MergeOverride[K] = rule?.[key];
-    if (fromRule !== undefined) return [fromRule as MergeChoice[K], "rule"];
-    const fromProject: MergeOverride[K] = project?.[key];
-    if (fromProject !== undefined) return [fromProject as MergeChoice[K], "project"];
-    return [policy.default[key], "default"];
-  };
-  const [order, orderSource] = pick("order");
-  const [mainMoved, mainMovedSource] = pick("mainMoved");
-  return {
-    order,
-    mainMoved,
-    sources: { order: orderSource, mainMoved: mainMovedSource },
-    ...(rule
-      ? {
-          rule: {
-            ...(rule.project === undefined ? {} : { project: rule.project }),
-            label: rule.label,
-          },
-        }
-      : {}),
-  };
 }
 
 /**
@@ -557,13 +455,13 @@ export function repositoryPackages(settings: MergeSettings, repository: string):
   );
 }
 
-/** `[merge.projects."…"]` and `[[merge.rules]]`. The flat `[merge]` keys are read in `file.ts`. */
+/**
+ * `[merge.projects."…"] lane` and `[merge.repositories."…"]`. A choice under `[merge.projects."…"]`
+ * and `[[merge.rules]]` load and are ignored. The flat `[merge]` keys are read in `file.ts`.
+ */
 export function parseMergeTables(
   text: string,
-): Pick<
-  PawsConfigFile,
-  "mergeProjects" | "mergeProjectLanes" | "mergeRules" | "mergeRepositories"
-> {
+): Pick<PawsConfigFile, "mergeProjectLanes" | "mergeRepositories" | "ignoredMergeOverrides"> {
   if (!/^\s*\[\[?\s*merge\.(projects|rules|repositories)/m.test(text)) return {};
   const parsed = tomlSchema.safeParse(Bun.TOML.parse(text));
   if (!parsed.success) {
@@ -604,32 +502,15 @@ export function parseMergeTables(
           ),
         }
       : {}),
-    ...(projects.length
-      ? {
-          mergeProjects: Object.fromEntries(projects.map(([id, value]) => [id, fromToml(value)])),
-        }
-      : {}),
     ...(lanes.length ? { mergeProjectLanes: Object.fromEntries(lanes) } : {}),
-    ...(merge?.rules?.length
-      ? {
-          mergeRules: merge.rules.map(({ project, label: name, ...value }) => ({
-            ...(project === undefined ? {} : { project }),
-            label: name,
-            ...fromToml(value),
-          })),
-        }
+    ...(merge?.rules?.length ||
+    projects.some(([, value]) => Object.keys(value).some((key) => key !== "lane"))
+      ? { ignoredMergeOverrides: true }
       : {}),
   };
 }
 
-function fromToml(value: { order?: MergeOrder; main_moved?: MainMoved }): MergeOverride {
-  return {
-    ...(value.order === undefined ? {} : { order: value.order }),
-    ...(value.main_moved === undefined ? {} : { mainMoved: value.main_moved }),
-  };
-}
-
-/** The Merging settings body: `{ default, projects: [{ id, … }], rules }`. */
+/** The Merging settings body: `{ default }`. */
 export function parseMergePolicy(value: unknown): MergePolicy {
   const result = policySchema.safeParse(value);
   if (!result.success) {
@@ -638,11 +519,7 @@ export function parseMergePolicy(value: unknown): MergePolicy {
       `merge${issue?.path.length ? `.${issue.path.join(".")}` : ""} ${issue?.message ?? "is invalid"}`,
     );
   }
-  return {
-    default: result.data.default,
-    projects: Object.fromEntries(result.data.projects.map(({ id, ...rest }) => [id, rest])),
-    rules: result.data.rules.map((rule) => ({ ...rule, label: rule.label.trim() })),
-  };
+  return { default: result.data.default };
 }
 
 /** Agent settings carry only `ciFixAttempts`. A missing key keeps the stored value. */
@@ -663,7 +540,7 @@ export function parseMergeSettings(value: unknown): { ciFixAttempts?: number } {
   return ciFixAttempts === undefined ? {} : { ciFixAttempts };
 }
 
-function choiceLines(value: MergeOverride): string[] {
+function choiceLines(value: Partial<MergeChoice>): string[] {
   return [
     ...(value.order === undefined ? [] : [`order = ${JSON.stringify(value.order)}`]),
     ...(value.mainMoved === undefined ? [] : [`main_moved = ${JSON.stringify(value.mainMoved)}`]),
@@ -693,22 +570,8 @@ export function renderMergeSettings(settings: StoredMerge): string {
   ];
   return [
     lines.length === 0 ? "" : `\n[merge]\n${lines.join("\n")}\n`,
-    ...[...new Set([...Object.keys(settings.projects), ...Object.keys(projectLanes)])].map(
-      (id) =>
-        `\n[merge.projects.${JSON.stringify(id)}]\n${[
-          ...choiceLines(settings.projects[id] ?? {}),
-          ...(projectLanes[id] === undefined ? [] : [`lane = ${JSON.stringify(projectLanes[id])}`]),
-        ]
-          .map((line) => `${line}\n`)
-          .join("")}`,
-    ),
-    ...settings.rules.map(
-      (rule) =>
-        `\n[[merge.rules]]\n${[
-          ...(rule.project === undefined ? [] : [`project = ${JSON.stringify(rule.project)}`]),
-          `label = ${JSON.stringify(rule.label)}`,
-          ...choiceLines(rule),
-        ].join("\n")}\n`,
+    ...Object.entries(projectLanes).map(
+      ([id, lane]) => `\n[merge.projects.${JSON.stringify(id)}]\nlane = ${JSON.stringify(lane)}\n`,
     ),
     ...Object.entries(settings.repositories ?? {}).map(
       ([repository, value]) =>
@@ -798,8 +661,6 @@ export function writeMergePolicy(
               ? {}
               : { commentMaxWaitSeconds: current.commentMaxWaitSeconds }),
           }),
-      projects: policy.projects,
-      rules: policy.rules,
       ...(repositories && Object.keys(repositories).length ? { repositories } : {}),
     }),
   );
