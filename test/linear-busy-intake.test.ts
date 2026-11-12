@@ -3,26 +3,18 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { runAgent } from "../src/acp";
 import { RunnerSlotsBusyError, systemClock } from "../src/core";
-import {
-  JobLoop,
-  OutboxDispatcher,
-  getWorkItem,
-  getTaskMode,
-  migrate,
-  openDatabase,
-  sqliteDb,
-} from "../src/db";
+import { JobLoop, OutboxDispatcher, getWorkItem, getTaskMode } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator, type AgentLaunch } from "../src/loop";
 import { tempHome } from "./helpers";
 import { workspaceAdmission } from "./fake-workspace";
+import { tempStore } from "./pglite";
 
 test("a session delegated while every runner slot is busy is queued at once and classified when it starts", async () => {
   const home = tempHome();
   const root = join(home, "paws");
   mkdirSync(root);
-  const db = openDatabase(join(root, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const tracker = createFakeTracker([
     {
       linearIssueId: "issue",
@@ -82,7 +74,7 @@ test("a session delegated while every runner slot is busy is queued at once and 
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -114,23 +106,21 @@ test("a session delegated while every runner slot is busy is queued at once and 
   };
   try {
     await orchestrator.onLinearEvent(event);
-    const itemId = db.query<{ id: string }, []>("SELECT id FROM work_item").get()?.id;
+    const itemId = (
+      await db.run((q) => q.one(q.orm.select({ id: q.t.workItem.id }).from(q.t.workItem)))
+    )?.id;
     const atIntake = {
-      state: itemId ? (await getWorkItem(sqliteDb(db), itemId))?.state : null,
-      mode: itemId ? await getTaskMode(sqliteDb(db), itemId) : null,
+      state: itemId ? (await getWorkItem(db, itemId))?.state : null,
+      mode: itemId ? await getTaskMode(db, itemId) : null,
       purposes: [...purposes],
     };
     busy = false;
-    for (
-      let tick = 0;
-      tick < 5 && (await getWorkItem(sqliteDb(db), itemId!))?.state !== "completed";
-      tick++
-    )
+    for (let tick = 0; tick < 5 && (await getWorkItem(db, itemId!))?.state !== "completed"; tick++)
       await jobs.tick();
     expect({
       atIntake,
-      state: (await getWorkItem(sqliteDb(db), itemId!))?.state,
-      mode: await getTaskMode(sqliteDb(db), itemId!),
+      state: (await getWorkItem(db, itemId!))?.state,
+      mode: await getTaskMode(db, itemId!),
       purposes,
     }).toEqual({
       atIntake: { state: "queued", mode: null, purposes: [] },
@@ -141,6 +131,6 @@ test("a session delegated while every runner slot is busy is queued at once and 
   } finally {
     await orchestrator.shutdown().catch(() => undefined);
     await outbox.idle();
-    db.close();
+    await close();
   }
 }, 20_000);
