@@ -1,22 +1,22 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { JOB_KIND } from "../src/core";
-import { getWorkItem, listJobs, mergeCallInFlight, sqliteDb } from "../src/db";
+import { emitJobReady, getWorkItem, listJobs, mergeCallInFlight } from "../src/db";
 import { questionEffects } from "../src/loop";
-import { findOpenQuestion } from "../src/questions";
-import { answer } from "./questions";
-import { mergeHarness, type MergeHarness } from "../src/merge/advance-harness";
+import { answerSteps, findOpenQuestion } from "../src/questions";
+import { mergeHarnessPg, type MergeHarnessPg } from "../src/merge/advance-harness";
+import { tempStore } from "./pglite";
 import { RETRY_MERGE } from "../src/merge";
 
 const REFUSED = "At least 1 approving review is required by reviewers with write access.";
 
-let harness: MergeHarness | undefined;
+let harness: MergeHarnessPg | undefined;
 
 afterEach(async () => {
   await harness?.cleanup();
   harness = undefined;
 });
 
-function refuse(h: MergeHarness): void {
+function refuse(h: MergeHarnessPg): void {
   h.state.mergeDenial = async () => ({
     status: 405,
     body: { message: "Repository rule violations found", errors: [{ message: REFUSED }] },
@@ -25,17 +25,22 @@ function refuse(h: MergeHarness): void {
 
 let replies = 0;
 
-async function reply(h: MergeHarness, id: string, body: string): Promise<void> {
+async function reply(h: MergeHarnessPg, id: string, body: string): Promise<void> {
   const now = h.clock.now();
-  await answer(
-    h.db,
-    { sessionId: `ses-${id}`, deliveryId: `reply:${++replies}`, body, answeredBy: "acme-dev", now },
-    questionEffects(sqliteDb(h.db), { now }),
-  );
+  const message = {
+    sessionId: `ses-${id}`,
+    deliveryId: `reply:${++replies}`,
+    body,
+    answeredBy: "acme-dev",
+    now,
+  };
+  const effects = questionEffects(h.db, { now });
+  await h.db.transaction((q) => answerSteps(q, message, effects));
+  emitJobReady(h.db);
 }
 
-async function mergeJob(h: MergeHarness, id: string): Promise<Record<string, unknown>> {
-  const job = (await listJobs(sqliteDb(h.db))).find(
+async function mergeJob(h: MergeHarnessPg, id: string): Promise<Record<string, unknown>> {
+  const job = (await listJobs(h.db)).find(
     (row) =>
       row.queue === JOB_KIND.merge &&
       row.status === "pending" &&
@@ -45,21 +50,21 @@ async function mergeJob(h: MergeHarness, id: string): Promise<Record<string, unk
   return job!.payload as Record<string, unknown>;
 }
 
-async function agentJobs(h: MergeHarness) {
-  return (await listJobs(sqliteDb(h.db))).filter(
+async function agentJobs(h: MergeHarnessPg) {
+  return (await listJobs(h.db)).filter(
     (job) => job.queue === JOB_KIND.start || job.queue === JOB_KIND.resume,
   );
 }
 
 describe("a merge GitHub refuses", () => {
   test("asks with GitHub's status, reason and Retry merge instead of failing", async () => {
-    const h = (harness = await mergeHarness());
+    const h = (harness = await mergeHarnessPg(await tempStore()));
     const item = await h.addItem("ACME-1");
     refuse(h);
     expect(await h.pass(item.id)).toEqual({ kind: "asked" });
-    expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("awaiting_input");
-    expect(await mergeCallInFlight(sqliteDb(h.db), item.id)).toBe(false);
-    const question = (await findOpenQuestion(sqliteDb(h.db), `ses-${item.id}`))!;
+    expect((await getWorkItem(h.db, item.id))?.state).toBe("awaiting_input");
+    expect(await mergeCallInFlight(h.db, item.id)).toBe(false);
+    const question = (await findOpenQuestion(h.db, `ses-${item.id}`))!;
     expect(question.options).toEqual([RETRY_MERGE]);
     expect(question.body).toContain("status 405");
     expect(question.body).toContain("Repository rule violations found");
@@ -69,23 +74,21 @@ describe("a merge GitHub refuses", () => {
   });
 
   test("Retry merge queues the accepted head again without an agent, and a 200 merges it", async () => {
-    const h = (harness = await mergeHarness());
+    const h = (harness = await mergeHarnessPg(await tempStore()));
     const item = await h.addItem("ACME-2");
     refuse(h);
     await h.pass(item.id);
     await reply(h, item.id, RETRY_MERGE);
-    expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("merge_queue");
+    expect((await getWorkItem(h.db, item.id))?.state).toBe("merge_queue");
     expect(await agentJobs(h)).toEqual([]);
-    expect(
-      (await listJobs(sqliteDb(h.db))).filter((job) => job.queue === JOB_KIND.reverify),
-    ).toEqual([]);
+    expect((await listJobs(h.db)).filter((job) => job.queue === JOB_KIND.reverify)).toEqual([]);
     h.state.mergeDenial = null;
     expect(await h.pass(item.id, await mergeJob(h, item.id))).toEqual({ kind: "merged" });
     expect(h.github.merged).toHaveLength(1);
   });
 
   test("a reply with guidance sends the task back to its agent", async () => {
-    const h = (harness = await mergeHarness());
+    const h = (harness = await mergeHarnessPg(await tempStore()));
     const item = await h.addItem("ACME-3");
     refuse(h);
     await h.pass(item.id);
@@ -94,7 +97,7 @@ describe("a merge GitHub refuses", () => {
   });
 
   test("the third refusal of the same head fails the item with GitHub's reason", async () => {
-    const h = (harness = await mergeHarness());
+    const h = (harness = await mergeHarnessPg(await tempStore()));
     const item = await h.addItem("ACME-4");
     refuse(h);
     expect(await h.pass(item.id)).toEqual({ kind: "asked" });
@@ -109,7 +112,9 @@ describe("a merge GitHub refuses", () => {
   });
 
   test("a refusal because the branch is behind main rebases it without asking", async () => {
-    const h = (harness = await mergeHarness({ settings: { mainMoved: "ci" } }));
+    const h = (harness = await mergeHarnessPg(await tempStore(), {
+      settings: { mainMoved: "ci" },
+    }));
     const item = await h.addItem("ACME-5");
     h.state.mergeDenial = async () => {
       h.state.mergeDenial = null;
@@ -121,8 +126,8 @@ describe("a merge GitHub refuses", () => {
       };
     };
     expect(await h.pass(item.id)).toMatchObject({ kind: "wait", reason: "ci" });
-    expect(await findOpenQuestion(sqliteDb(h.db), `ses-${item.id}`)).toBeNull();
-    expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("merge_queue");
+    expect(await findOpenQuestion(h.db, `ses-${item.id}`)).toBeNull();
+    expect((await getWorkItem(h.db, item.id))?.state).toBe("merge_queue");
     h.state.mergeState = null;
     expect(await h.pass(item.id)).toMatchObject({ kind: "wait", reason: "ci" });
     expect(await h.remoteHead(item.id)).not.toBe(item.accepted);
@@ -131,13 +136,13 @@ describe("a merge GitHub refuses", () => {
   });
 
   test("a 403 keeps failing the item", async () => {
-    const h = (harness = await mergeHarness());
+    const h = (harness = await mergeHarnessPg(await tempStore()));
     const item = await h.addItem("ACME-6");
     h.state.mergeDenial = async () => ({
       status: 403,
       body: { message: "Resource not accessible by integration" },
     });
     expect(await h.pass(item.id)).toMatchObject({ kind: "failed", reason: "merge" });
-    expect(await findOpenQuestion(sqliteDb(h.db), `ses-${item.id}`)).toBeNull();
+    expect(await findOpenQuestion(h.db, `ses-${item.id}`)).toBeNull();
   });
 });
