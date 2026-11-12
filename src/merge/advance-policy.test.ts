@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { JOB_KIND } from "../core";
-import { sqliteDb, getWorkItem, listJobs } from "../db";
-import { mergeHarness, type MergeHarness } from "./advance-harness";
+import { getWorkItem, listJobs } from "../db";
+import { mergeHarnessPg, type MergeHarnessPg } from "./advance-harness";
+import { tempStore } from "../../test/pglite";
 
-let harness: MergeHarness | undefined;
+let harness: MergeHarnessPg | undefined;
 
 afterEach(async () => {
   await harness?.cleanup();
@@ -18,15 +19,15 @@ const BROKEN = {
   commit: "b".repeat(40),
 };
 
-async function reverifyJobs(h: MergeHarness): Promise<(string | null)[]> {
-  return (await listJobs(sqliteDb(h.db)))
+async function reverifyJobs(h: MergeHarnessPg): Promise<(string | null)[]> {
+  return (await listJobs(h.db))
     .filter((job) => job.queue === JOB_KIND.reverify)
     .map((job) => job.jobKey);
 }
 
 describe("advanceMerge when the Closeout policy on main does not load", () => {
   test("an accepted, approved head with green CI waits in the merge queue, with no Closeout", async () => {
-    const h = (harness = await mergeHarness());
+    const h = (harness = await mergeHarnessPg(await tempStore()));
     const item = await h.addItem("ENG-1");
     h.state.mainPolicy = BROKEN;
     const message = `held: ${BROKEN.message} (${BROKEN.commit})`;
@@ -38,7 +39,7 @@ describe("advanceMerge when the Closeout policy on main does not load", () => {
       base: item.base,
       head: item.accepted,
     });
-    expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("merge_queue");
+    expect((await getWorkItem(h.db, "ENG-1"))?.state).toBe("merge_queue");
     expect(await reverifyJobs(h)).toEqual([]);
     expect(h.verified).toEqual([]);
     expect(h.github.merged).toEqual([]);
@@ -47,7 +48,7 @@ describe("advanceMerge when the Closeout policy on main does not load", () => {
   });
 
   test("a head behind main is neither rebased nor sent back while main's policy does not load", async () => {
-    const h = (harness = await mergeHarness());
+    const h = (harness = await mergeHarnessPg(await tempStore()));
     const item = await h.addItem("ENG-1");
     await h.moveMain("side.txt", "side\n");
     h.state.mainPolicy = BROKEN;
@@ -57,7 +58,7 @@ describe("advanceMerge when the Closeout policy on main does not load", () => {
   });
 
   test("main fixed with the same recheck digest: the lane settles the hold and merges without Closeout", async () => {
-    const h = (harness = await mergeHarness());
+    const h = (harness = await mergeHarnessPg(await tempStore()));
     const item = await h.addItem("ENG-1");
     h.state.mainPolicy = BROKEN;
     await h.pass("ENG-1");
@@ -71,7 +72,7 @@ describe("advanceMerge when the Closeout policy on main does not load", () => {
   });
 
   test("main fixed but a `recheck: true` check changed: the head re-verifies as before", async () => {
-    const h = (harness = await mergeHarness());
+    const h = (harness = await mergeHarnessPg(await tempStore()));
     const item = await h.addItem("ENG-1");
     h.state.mainPolicy = BROKEN;
     await h.pass("ENG-1");
@@ -79,13 +80,13 @@ describe("advanceMerge when the Closeout policy on main does not load", () => {
     h.state.policyDigest = "sha256:fixed-policy";
     h.state.recheckDigest = "sha256:changed-recheck";
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
-    expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("verifying");
+    expect((await getWorkItem(h.db, "ENG-1"))?.state).toBe("verifying");
     expect(await reverifyJobs(h)).toEqual([`reverify:ENG-1:${item.accepted}:merge:2`]);
     expect(h.github.merged).toEqual([]);
   });
 
   test("an origin Paws cannot read still sends the head back, unlike a policy that does not load", async () => {
-    const h = (harness = await mergeHarness());
+    const h = (harness = await mergeHarnessPg(await tempStore()));
     await h.addItem("ENG-1");
     h.state.policyDigest = null;
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
