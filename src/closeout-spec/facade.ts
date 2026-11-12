@@ -190,14 +190,14 @@ export function createGitReader(
     async fetchOriginMain(repo) {
       const fetched = await gitNetwork(
         repo,
-        ["fetch", "--no-tags", "origin", "refs/heads/main"],
+        ["fetch", "--no-tags", "origin", `+refs/heads/main:${CLOSEOUT_ORIGIN_MAIN}`],
         options.fetchTimeoutMs ?? FETCH_TIMEOUT_MS,
         options.env,
       );
       if (!fetched.ok) return fetched;
       const head = gitSync(
         repo,
-        ["rev-parse", "--verify", "--end-of-options", "FETCH_HEAD^{commit}"],
+        ["rev-parse", "--verify", "--end-of-options", `${CLOSEOUT_ORIGIN_MAIN}^{commit}`],
         GIT_TIMEOUT_MS,
       );
       if (!head.ok) return { ok: false, stderr: head.stderr };
@@ -222,6 +222,8 @@ export function createGitReader(
     fetchOriginMain: (repo) => oneFetchAt(repo, () => reader.fetchOriginMain(repo)),
   };
 }
+
+const CLOSEOUT_ORIGIN_MAIN = "refs/paws/closeout/origin-main";
 
 const fetches = new Map<string, Promise<unknown>>();
 

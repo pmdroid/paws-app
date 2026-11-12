@@ -75,6 +75,42 @@ test("fetchOriginMain runs one fetch at a time in a repository", async () => {
   );
 });
 
+test("fetchOriginMain reads its own ref when another fetch runs before the read", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-fetch-own-ref-"));
+  temps.push(root);
+  const repo = join(root, "repo");
+  const run = (...args: string[]) => execFileSync("git", args, { stdio: "pipe" }).toString().trim();
+  const commit = (message: string) =>
+    run(
+      "-C",
+      repo,
+      "-c",
+      "user.name=A",
+      "-c",
+      "user.email=a@b.c",
+      "commit",
+      "--allow-empty",
+      "-qm",
+      message,
+    );
+  run("init", "-q", "--bare", "-b", "main", join(root, "origin.git"));
+  run("clone", "-q", join(root, "origin.git"), repo);
+  commit("a");
+  run("-C", repo, "push", "-q", "origin", "HEAD:main");
+  const head = run("-C", repo, "rev-parse", "HEAD");
+  commit("b");
+  run("-C", repo, "push", "-q", "origin", "HEAD:refs/heads/other");
+  expect(run("-C", repo, "rev-parse", "HEAD")).not.toBe(head);
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  const path = process.env.PATH ?? "";
+  const wrapper = `PATH="${path}" git "$@"; s=$?; PATH="${path}" git fetch -q --no-tags origin refs/heads/other; exit $s`;
+  writeFileSync(join(bin, "git"), `#!/bin/sh\n${wrapper}\n`);
+  chmodSync(join(bin, "git"), 0o755);
+  const git = createGitReader({ env: { ...process.env, PATH: `${bin}:${path}` } });
+  expect(await git.fetchOriginMain(repo)).toEqual({ ok: true, commit: head });
+});
+
 test("mainFixBudget reads the policy at the local origin/main without a fetch", () => {
   const repo = mkdtempSync(join(tmpdir(), "paws-fix-budget-"));
   temps.push(repo);
