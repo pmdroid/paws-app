@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { eq, sql } from "drizzle-orm";
 import { join } from "node:path";
 import { systemClock } from "../src/core";
 import {
@@ -11,12 +12,11 @@ import {
   getConversation,
   getLinearSession,
   getWorkItem,
-  migrate,
-  openDatabase,
+  openPawsStore,
   recordLinearInstallation,
   saveConversation,
-  sqliteDb,
   syncSteps,
+  type Db,
 } from "../src/db";
 import {
   createFakeTracker,
@@ -29,7 +29,19 @@ import {
 import { attachOrchestrator } from "../src/loop";
 import { remoteCommandsGoneSteps } from "../src/runner-backend";
 import { RUNNER_LIVE_GRACE_MS } from "../src/runner-work";
-import { tempHome } from "./helpers";
+import { pawsPaths } from "../src/config";
+import { seed, withoutForeignKeys } from "./dialects";
+import { migratedHome } from "./helpers";
+
+const workItems = (db: Db, state?: string) =>
+  db.run((q) =>
+    q.all(
+      q.orm
+        .select({ id: q.t.workItem.id })
+        .from(q.t.workItem)
+        .where(state === undefined ? undefined : eq(q.t.workItem.state, state)),
+    ),
+  );
 
 function created(sessionId: string): AcceptedLinearEvent {
   return {
@@ -52,10 +64,10 @@ function created(sessionId: string): AcceptedLinearEvent {
 }
 
 async function fixture() {
-  const home = tempHome();
-  const path = join(home, "paws.db");
-  let db = openDatabase(path);
-  migrate(db);
+  const home = await migratedHome();
+  const pgliteDir = pawsPaths(home).pgliteDir;
+  let database = await openPawsStore({ url: null, pgliteDir });
+  let db = database.store;
   const fake = createFakeTracker([
     {
       linearIssueId: "issue",
@@ -67,7 +79,7 @@ async function fixture() {
   ]);
   const tracker: TrackerAdapter = fake;
   for (const sessionId of ["old", "new", "other"])
-    await recordLinearInstallation(sqliteDb(db), {
+    await recordLinearInstallation(db, {
       sessionId,
       organizationId: "org",
       oauthClientId: "client",
@@ -79,7 +91,7 @@ async function fixture() {
   let authorized = true;
   const makeOrchestrator = () =>
     attachOrchestrator({
-      store: sqliteDb(db),
+      store: db,
       tracker,
       pawsRoot: home,
       jobs: new JobLoop(db, systemClock),
@@ -98,9 +110,9 @@ async function fixture() {
     });
   let orchestrator = makeOrchestrator();
   await orchestrator.onLinearEvent(created("old"));
-  const oldId = (await getLinearSession(sqliteDb(db), "old"))!.activeItemId!;
-  await beginImplementRun(sqliteDb(db), oldId, 11);
-  await applyWorkItemEvent(sqliteDb(db), oldId, "blocking_question");
+  const oldId = (await getLinearSession(db, "old"))!.activeItemId!;
+  await beginImplementRun(db, oldId, 11);
+  await applyWorkItemEvent(db, oldId, "blocking_question");
   const snapshot: LinearSessionSnapshot = {
     id: "old",
     status: "error",
@@ -123,7 +135,7 @@ async function fixture() {
   const runtime = async () =>
     await openLinear({
       db,
-      store: sqliteDb(db),
+      store: db,
       secretsDir: join(home, "secrets"),
       env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
       isAuthorized: async () => false,
@@ -153,13 +165,15 @@ async function fixture() {
     },
     async reopen() {
       await orchestrator.shutdown();
-      db.close();
-      db = openDatabase(path);
+      await database.close();
+      database = await openPawsStore({ url: null, pgliteDir });
+      db = database.store;
       orchestrator = makeOrchestrator();
     },
+    closeStore: () => database.close(),
     async close() {
       await orchestrator.shutdown();
-      db.close();
+      await database.close();
     },
   };
 }
@@ -173,14 +187,14 @@ test.each(["dismissed", "ended", "complete", "error", "stopping"])(
     f.snapshot.status = ["dismissed", "ended"].includes(state) ? "awaitingInput" : state;
     try {
       await f.orchestrator.onLinearEvent(created("new"));
-      expect((await getLinearSession(sqliteDb(f.db), "old"))?.stoppedAt).not.toBeNull();
-      expect((await getLinearSession(sqliteDb(f.db), "new"))!.activeItemId).toBe(f.oldId);
-      expect(await getWorkItem(sqliteDb(f.db), f.oldId)).toMatchObject({
+      expect((await getLinearSession(f.db, "old"))?.stoppedAt).not.toBeNull();
+      expect((await getLinearSession(f.db, "new"))!.activeItemId).toBe(f.oldId);
+      expect(await getWorkItem(f.db, f.oldId)).toMatchObject({
         state: "queued",
         sessionKey: "new",
       });
       await f.orchestrator.onLinearEvent(created("new"));
-      expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(1);
+      expect(await workItems(f.db)).toHaveLength(1);
     } finally {
       await f.close();
     }
@@ -197,14 +211,14 @@ test("re-delegating an issue a Linear Stop paused resumes the same item", async 
       signal: "stop",
       updatedAtMs: 15,
     });
-    expect((await getWorkItem(sqliteDb(f.db), f.oldId))?.state).toBe("paused");
+    expect((await getWorkItem(f.db, f.oldId))?.state).toBe("paused");
     await f.orchestrator.onLinearEvent(created("new"));
-    expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(1);
-    expect(await getWorkItem(sqliteDb(f.db), f.oldId)).toMatchObject({
+    expect(await workItems(f.db)).toHaveLength(1);
+    expect(await getWorkItem(f.db, f.oldId)).toMatchObject({
       state: "queued",
       sessionKey: "new",
     });
-    expect((await getLinearSession(sqliteDb(f.db), "new"))?.activeItemId).toBe(f.oldId);
+    expect((await getLinearSession(f.db, "new"))?.activeItemId).toBe(f.oldId);
   } finally {
     await f.close();
   }
@@ -220,8 +234,8 @@ test.each(["pending", "active", "awaitingInput", "stale", "unknown"])(
       await expect(f.orchestrator.onLinearEvent(created("new"))).rejects.toThrow(
         "unfinished attempt",
       );
-      expect((await getWorkItem(sqliteDb(f.db), f.oldId))?.state).toBe("awaiting_input");
-      expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(1);
+      expect((await getWorkItem(f.db, f.oldId))?.state).toBe("awaiting_input");
+      expect(await workItems(f.db)).toHaveLength(1);
     } finally {
       await f.close();
     }
@@ -232,10 +246,12 @@ test.each(["organization_id", "oauth_client_id", "app_user_id", "team_id"])(
   "another %s cannot cancel an old session",
   async (column) => {
     const f = await fixture();
-    f.db.run(`UPDATE linear_session SET ${column} = 'different' WHERE session_id = 'new'`);
+    await f.db.orm.execute(
+      sql`UPDATE linear_session SET ${sql.identifier(column)} = 'different' WHERE session_id = 'new'`,
+    );
     try {
       await expect(f.orchestrator.onLinearEvent(created("new"))).rejects.toThrow();
-      expect((await getWorkItem(sqliteDb(f.db), f.oldId))?.state).toBe("awaiting_input");
+      expect((await getWorkItem(f.db, f.oldId))?.state).toBe("awaiting_input");
     } finally {
       await f.close();
     }
@@ -248,7 +264,7 @@ test.each(["unavailable", "issue", "app", "id", "generation", "authorization"])(
     const f = await fixture();
     f.tracker.getSession = async () => {
       if (failure === "unavailable") throw new Error("Linear unavailable");
-      if (failure === "generation") await advanceLinearSessionGeneration(sqliteDb(f.db), "old");
+      if (failure === "generation") await advanceLinearSessionGeneration(f.db, "old");
       if (failure === "authorization") f.revoke();
       return {
         ...f.snapshot,
@@ -259,11 +275,11 @@ test.each(["unavailable", "issue", "app", "id", "generation", "authorization"])(
     };
     const linear = await f.runtime();
     const event = created("new");
-    const store = createInboxStore(sqliteDb(f.db));
+    const store = createInboxStore(f.db);
     await store.commit(event);
     try {
       await expect(linear.webhook.onEvent!(event)).rejects.toThrow("retry automatically");
-      expect((await getWorkItem(sqliteDb(f.db), f.oldId))?.state).toBe("awaiting_input");
+      expect((await getWorkItem(f.db, f.oldId))?.state).toBe("awaiting_input");
       expect(await store.listUnhandled()).toHaveLength(1);
       expect(
         f.fake.progress.filter((update) => update.sessionId === "new").map((update) => update.kind),
@@ -288,17 +304,17 @@ test("concurrent retries wait for old runner teardown and admit one replacement"
   const second = f.orchestrator.onLinearEvent(created("other"));
   const results = Promise.allSettled([first, second]);
   await Bun.sleep(5);
-  expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(1);
+  expect(await workItems(f.db)).toHaveLength(1);
   release.resolve();
   try {
     expect((await results).filter((result) => result.status === "fulfilled")).toHaveLength(1);
-    expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(1);
+    expect(await workItems(f.db)).toHaveLength(1);
   } finally {
     await f.close();
   }
 });
 
-test("failed cleanup remains fenced across SQLite reopen until teardown succeeds", async () => {
+test("failed cleanup remains fenced across reopen until teardown succeeds", async () => {
   const f = await fixture();
   f.setCancel(async () => {
     throw new Error("Runner has not stopped");
@@ -307,14 +323,14 @@ test("failed cleanup remains fenced across SQLite reopen until teardown succeeds
     await expect(f.orchestrator.onLinearEvent(created("new"))).rejects.toThrow(
       "retry automatically",
     );
-    expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(1);
+    expect(await workItems(f.db)).toHaveLength(1);
     await f.reopen();
     await expect(f.orchestrator.onLinearEvent(created("new"))).rejects.toThrow(
       "retry automatically",
     );
     f.setCancel(async () => {});
     await f.orchestrator.onLinearEvent(created("new"));
-    expect(f.db.query("SELECT id FROM work_item WHERE state = 'queued'").all()).toHaveLength(1);
+    expect(await workItems(f.db, "queued")).toHaveLength(1);
   } finally {
     await f.close();
   }
@@ -322,15 +338,15 @@ test("failed cleanup remains fenced across SQLite reopen until teardown succeeds
 
 test("an unverified ACP cleanup cannot release the old issue", async () => {
   const f = await fixture();
-  await saveConversation(sqliteDb(f.db), f.oldId, "[]", null, true);
+  await saveConversation(f.db, f.oldId, "[]", null, true);
   try {
     await expect(f.orchestrator.onLinearEvent(created("new"))).rejects.toThrow(
       "retry automatically",
     );
-    expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(1);
+    expect(await workItems(f.db)).toHaveLength(1);
   } finally {
     await expect(f.orchestrator.shutdown()).rejects.toThrow("cleanup could not be verified");
-    f.db.close();
+    await f.closeStore();
   }
 });
 
@@ -342,40 +358,66 @@ test.each([
   async (_case, gone) => {
     const f = await fixture();
     try {
-      const old = (await getWorkItem(sqliteDb(f.db), f.oldId))!;
+      const old = (await getWorkItem(f.db, f.oldId))!;
       const now = Date.now();
       // The run failed on agentbox with a cleanup error, then the item was cancelled.
-      await blockConversation(sqliteDb(f.db), f.oldId, now);
-      f.db.run("UPDATE work_item SET state = 'cancelled' WHERE id = ?", [f.oldId]);
+      await blockConversation(f.db, f.oldId, now);
+      await seed(f.db, (q) =>
+        q.orm.update(q.t.workItem).set({ state: "cancelled" }).where(eq(q.t.workItem.id, f.oldId)),
+      );
       // The runner's first heartbeat after its restart. Foreign keys are off only for its rows.
       const reported = now + RUNNER_LIVE_GRACE_MS;
-      f.db.run("PRAGMA foreign_keys = OFF");
-      f.db.run(
-        "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,live_reported_at) VALUES('agentbox','workspace','owner','agentbox','active',?,?)",
-        [now, reported],
+      await withoutForeignKeys(f.db);
+      await seed(
+        f.db,
+        (q) =>
+          q.orm.insert(q.t.runner).values({
+            id: "agentbox",
+            workspaceId: "workspace",
+            ownerUserId: "owner",
+            name: "agentbox",
+            status: "active",
+            createdAt: now,
+            liveReportedAt: reported,
+          }),
+        (q) =>
+          q.orm.insert(q.t.runnerCommand).values({
+            id: "command",
+            runnerId: "agentbox",
+            runId: old.currentRunId,
+            generation: 1,
+            kind: "run",
+            envelope: "{}",
+            expiresAt: now + 600_000,
+            acknowledgedAt: now,
+          }),
+        (q) =>
+          q.orm.insert(q.t.runnerWork).values({
+            runId: old.currentRunId!,
+            runnerId: "agentbox",
+            workspaceId: "workspace",
+            generation: 1,
+            runnerFence: 0,
+            commandId: "command",
+            leaseUntil: now + 60_000,
+            endedAt: now,
+            confirmedAt: gone ? null : reported,
+          }),
       );
-      f.db.run(
-        "INSERT INTO runner_command(id,runner_id,run_id,generation,kind,envelope,expires_at,acknowledged_at) VALUES('command','agentbox',?,1,'run','{}',?,?)",
-        [old.currentRunId, now + 600_000, now],
-      );
-      f.db.run(
-        "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at,confirmed_at) VALUES(?,'agentbox','workspace',1,0,'command',?,?,?)",
-        [old.currentRunId, now + 60_000, now, gone ? null : reported],
-      );
-      f.db.run("PRAGMA foreign_keys = ON");
+      await f.db.orm.execute(sql`SET session_replication_role = origin`);
       if (gone) {
         await f.orchestrator.onLinearEvent(created("new"));
-        expect((await getConversation(sqliteDb(f.db), f.oldId)).blocked).toBe(false);
-        expect(f.db.query("SELECT id FROM work_item WHERE state = 'queued'").all()).toHaveLength(1);
+        expect((await getConversation(f.db, f.oldId)).blocked).toBe(false);
+        expect(await workItems(f.db, "queued")).toHaveLength(1);
       } else {
         await expect(f.orchestrator.onLinearEvent(created("new"))).rejects.toThrow(
           "retry automatically",
         );
-        expect((await getConversation(sqliteDb(f.db), f.oldId)).blocked).toBe(true);
-        expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(1);
+        expect((await getConversation(f.db, f.oldId)).blocked).toBe(true);
+        expect(await workItems(f.db)).toHaveLength(1);
       }
     } finally {
-      f.db.run("UPDATE linear_conversation SET blocked = 0");
+      await seed(f.db, (q) => q.orm.update(q.t.linearConversation).set({ blocked: 0 }));
       await f.close();
     }
   },
