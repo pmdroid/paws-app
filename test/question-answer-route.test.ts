@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { asc, eq, like } from "drizzle-orm";
 import { FakeClock, JOB_KIND } from "../src/core";
 import {
   JobLoop,
@@ -11,7 +12,7 @@ import {
   enqueueOutboxOnce,
   listOutbox,
   syncWorkspaceMember,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import { createFakeTracker, parseAgentEvent } from "../src/linear";
 import { attachOrchestrator, deliverLinearOutbox } from "../src/loop";
@@ -22,37 +23,37 @@ import {
   openLinkAsk,
   openQuestion,
 } from "../src/questions";
-import { tempDb } from "./helpers";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const NOW = 1_700_000_000_000;
 const OPTIONS = ["Fix the policy", "Add script alias"];
 const principal = { workspaceId: "ws", userId: "user-1" };
 
 async function setup(active = true) {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const item = await insertQueuedItem(db, { id: "PAS-1003", sessionKey: "ses_1", title: "Policy" });
-  await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
-  await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
-  const question = await openQuestion(sqliteDb(db), {
+  await beginImplementRun(db, item.id, NOW - 10);
+  await applyWorkItemEvent(db, item.id, "blocking_question");
+  const question = await openQuestion(db, {
     itemId: item.id,
     sessionId: "ses_1",
     body: "Which way?",
     options: OPTIONS,
     now: NOW,
   });
-  db.run("INSERT INTO workspace (id, linear_organization_id, name, created_at) VALUES (?,?,?,?)", [
-    "ws",
-    "org",
-    "Kyku",
-    NOW,
-  ]);
-  db.run("INSERT INTO workspace_user (id, linear_user_id, name, email) VALUES (?,?,?,?)", [
-    "user-1",
-    "linear-1",
-    "Sam",
-    "sam@example.com",
-  ]);
-  await syncWorkspaceMember(sqliteDb(db), {
+  await seed(
+    db,
+    (q) =>
+      q.orm
+        .insert(q.t.workspace)
+        .values({ id: "ws", linearOrganizationId: "org", name: "Kyku", createdAt: NOW }),
+    (q) =>
+      q.orm
+        .insert(q.t.workspaceUser)
+        .values({ id: "user-1", linearUserId: "linear-1", name: "Sam", email: "sam@example.com" }),
+  );
+  await syncWorkspaceMember(db, {
     workspaceId: "ws",
     userId: "user-1",
     role: "member",
@@ -62,7 +63,7 @@ async function setup(active = true) {
   });
   const clock = new FakeClock(NOW + 1_000);
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     pawsRoot: "/tmp/paws-question-answer-route",
@@ -77,14 +78,14 @@ async function setup(active = true) {
         body: JSON.stringify(body),
       }),
       {
-        store: sqliteDb(db),
+        store: db,
         principal: sessionIds === null ? undefined : principal,
         sessionIds: sessionIds ?? undefined,
         submit: (input) => orchestrator.answerFromPaws(input),
         now: () => NOW + 5,
       },
     );
-  return { db, item, question, orchestrator, submit };
+  return { db, close, item, question, orchestrator, submit };
 }
 
 const linearReply = (body: string, id = "reply-1") =>
@@ -105,61 +106,80 @@ const linearReply = (body: string, id = "reply-1") =>
     NOW + 100,
   )!;
 
-const history = (db: ReturnType<typeof tempDb>, itemId: string) =>
-  db
-    .query(
-      "SELECT from_state, to_state, event FROM work_item_event WHERE item_id = ? ORDER BY version",
-    )
-    .all(itemId);
+const history = (db: Db, itemId: string) =>
+  db.run((q) =>
+    q.all(
+      q.orm
+        .select({
+          from_state: q.t.workItemEvent.fromState,
+          to_state: q.t.workItemEvent.toState,
+          event: q.t.workItemEvent.event,
+        })
+        .from(q.t.workItemEvent)
+        .where(eq(q.t.workItemEvent.itemId, itemId))
+        .orderBy(asc(q.t.workItemEvent.version)),
+    ),
+  );
 
-const resumes = async (db: ReturnType<typeof tempDb>) =>
-  (await listJobs(sqliteDb(db)))
+const answerQuestion = (db: Db, id: string) =>
+  seed(db, (q) =>
+    q.orm.update(q.t.question).set({ status: "answered" }).where(eq(q.t.question.id, id)),
+  );
+
+const resumes = async (db: Db) =>
+  (await listJobs(db))
     .filter((job) => job.queue === JOB_KIND.resume)
     .map((job) => ({ ...(job.payload as object), runId: undefined }));
 
-const pawsNotes = async (db: ReturnType<typeof tempDb>) =>
-  (await listOutbox(sqliteDb(db)))
+const pawsNotes = async (db: Db) =>
+  (await listOutbox(db))
     .map((row) => row.payload as { kind?: string; body?: string })
     .filter((payload) => payload.body?.startsWith("Answered in Paws by"));
 
 test("signed out, another session or an answered question are refused", async () => {
-  const { db, question, submit } = await setup();
+  const { db, close, question, submit } = await setup();
   try {
     const body = { questionId: question.id, answer: OPTIONS[0] };
     expect((await submit(body, null))?.status).toBe(401);
     const elsewhere = await submit(body, ["ses_other"]);
     expect(elsewhere?.status).toBe(409);
     expect(await elsewhere?.json()).toEqual({ error: "This question is no longer waiting" });
-    db.run("UPDATE question SET status = 'answered' WHERE id = ?", [question.id]);
+    await answerQuestion(db, question.id);
     expect((await submit(body))?.status).toBe(409);
     expect(await resumes(db)).toEqual([]);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("a non-member gets 403 and an audit row", async () => {
-  const { db, question, submit } = await setup(false);
+  const { db, close, question, submit } = await setup(false);
   try {
     expect((await submit({ questionId: question.id, answer: OPTIONS[0] }))?.status).toBe(403);
     expect(
-      db
-        .query(
-          "SELECT action, subject FROM workspace_access_audit WHERE action = 'question.refused'",
-        )
-        .all(),
+      await db.run((q) =>
+        q.all(
+          q.orm
+            .select({
+              action: q.t.workspaceAccessAudit.action,
+              subject: q.t.workspaceAccessAudit.subject,
+            })
+            .from(q.t.workspaceAccessAudit)
+            .where(eq(q.t.workspaceAccessAudit.action, "question.refused")),
+        ),
+      ),
     ).toEqual([{ action: "question.refused", subject: "PAS-1003 agent" }]);
-    expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
+    expect((await getQuestion(db, question.id))?.status).toBe("open");
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("a link ask is answered on the issue page", async () => {
-  const { db, question, submit } = await setup();
+  const { db, close, question, submit } = await setup();
   try {
-    db.run("UPDATE question SET status = 'answered' WHERE id = ?", [question.id]);
-    const { question: link } = await openLinkAsk(sqliteDb(db), {
+    await answerQuestion(db, question.id);
+    const { question: link } = await openLinkAsk(db, {
       asker: { itemId: "PAS-1003", runId: null, sessionId: "ses_1" },
       kind: "risk",
       head: "7f65200aa",
@@ -172,7 +192,7 @@ test("a link ask is answered on the issue page", async () => {
     expect(response?.status).toBe(400);
     expect(await response?.json()).toEqual({ error: "Answer this on the issue page" });
   } finally {
-    db.close();
+    await close();
   }
 });
 
@@ -182,19 +202,17 @@ test("an option answered in Paws restarts the item as a Linear reply does, once"
   try {
     const response = await paws.submit({ questionId: paws.question.id, answer: OPTIONS[0] });
     expect(response?.status).toBe(200);
-    expect(await getQuestion(sqliteDb(paws.db), paws.question.id)).toMatchObject({
+    expect(await getQuestion(paws.db, paws.question.id)).toMatchObject({
       status: "answered",
       answer: OPTIONS[0],
       answeredBy: "linear-1",
     });
 
     await linear.orchestrator.onLinearEvent(linearReply(OPTIONS[0]!));
-    expect((await getQuestion(sqliteDb(linear.db), linear.question.id))?.answeredBy).toBe(
-      "linear-1",
-    );
-    expect(history(paws.db, paws.item.id)).toEqual(history(linear.db, linear.item.id));
-    expect((await getWorkItem(sqliteDb(paws.db), paws.item.id))?.state).toBe(
-      (await getWorkItem(sqliteDb(linear.db), linear.item.id))!.state,
+    expect((await getQuestion(linear.db, linear.question.id))?.answeredBy).toBe("linear-1");
+    expect(await history(paws.db, paws.item.id)).toEqual(await history(linear.db, linear.item.id));
+    expect((await getWorkItem(paws.db, paws.item.id))?.state).toBe(
+      (await getWorkItem(linear.db, linear.item.id))!.state,
     );
     expect(await resumes(paws.db)).toHaveLength(1);
     expect(await resumes(paws.db)).toEqual(await resumes(linear.db));
@@ -210,7 +228,7 @@ test("an option answered in Paws restarts the item as a Linear reply does, once"
       }),
     ).toBe("rejected");
     expect(await resumes(paws.db)).toHaveLength(1);
-    expect(history(paws.db, paws.item.id)).toEqual(history(linear.db, linear.item.id));
+    expect(await history(paws.db, paws.item.id)).toEqual(await history(linear.db, linear.item.id));
 
     expect(await pawsNotes(paws.db)).toEqual([
       expect.objectContaining({
@@ -220,43 +238,52 @@ test("an option answered in Paws restarts the item as a Linear reply does, once"
     ]);
     expect(await pawsNotes(linear.db)).toEqual([]);
   } finally {
-    paws.db.close();
-    linear.db.close();
+    await paws.close();
+    await linear.close();
   }
 });
 
 test("a rejected answer leaves the question open and a corrected answer closes it", async () => {
-  const { db, question, submit } = await setup();
+  const { db, close, question, submit } = await setup();
   try {
     const rejected = await submit({ questionId: question.id, answer: "/paws decision expired" });
     expect(rejected?.status).toBe(409);
-    expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
+    expect((await getQuestion(db, question.id))?.status).toBe("open");
     expect(await resumes(db)).toEqual([]);
     expect((await submit({ questionId: question.id, answer: OPTIONS[0] }))?.status).toBe(200);
-    expect(await getQuestion(sqliteDb(db), question.id)).toMatchObject({
+    expect(await getQuestion(db, question.id)).toMatchObject({
       status: "answered",
       answer: OPTIONS[0],
     });
     expect(await resumes(db)).toHaveLength(1);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("a cancelled question is not answered and nothing restarts", async () => {
-  const { db, question, submit } = await setup();
+  const { db, close, question, submit } = await setup();
   try {
-    db.run("UPDATE question SET cancelled_at = ? WHERE id = ?", [NOW + 2, question.id]);
+    await seed(db, (q) =>
+      q.orm
+        .update(q.t.question)
+        .set({ cancelledAt: NOW + 2 })
+        .where(eq(q.t.question.id, question.id)),
+    );
     expect((await submit({ questionId: question.id, answer: OPTIONS[0] }))?.status).toBe(409);
     expect(await resumes(db)).toEqual([]);
-    expect(db.query("SELECT event_key FROM linear_turn").all()).toEqual([]);
+    expect(
+      await db.run((q) =>
+        q.all(q.orm.select({ eventKey: q.t.linearTurn.eventKey }).from(q.t.linearTurn)),
+      ),
+    ).toEqual([]);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("a Linear reply racing a Paws answer answers the question once", async () => {
-  const { db, question, orchestrator } = await setup();
+  const { db, close, question, orchestrator } = await setup();
   try {
     const [, paws] = await Promise.allSettled([
       orchestrator.onLinearEvent(linearReply(OPTIONS[1]!)),
@@ -268,27 +295,34 @@ test("a Linear reply racing a Paws answer answers the question once", async () =
       }),
     ]);
     const answered = paws.status === "fulfilled" && paws.value === "answered";
-    const stored = (await getQuestion(sqliteDb(db), question.id))!;
+    const stored = (await getQuestion(db, question.id))!;
     expect(stored.status).toBe("answered");
     expect(stored.answer).toBe(answered ? OPTIONS[0]! : OPTIONS[1]!);
     expect(await resumes(db)).toHaveLength(1);
     expect(await pawsNotes(db)).toHaveLength(answered ? 1 : 0);
     expect(
-      db.query("SELECT state FROM linear_turn WHERE event_key LIKE 'paws-answer:%'").all(),
+      await db.run((q) =>
+        q.all(
+          q.orm
+            .select({ state: q.t.linearTurn.state })
+            .from(q.t.linearTurn)
+            .where(like(q.t.linearTurn.eventKey, "paws-answer:%")),
+        ),
+      ),
     ).toHaveLength(answered ? 1 : 0);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("the answer record reaches Linear after the pull request response", async () => {
-  const { db, question, submit } = await setup();
+  const { db, close, question, submit } = await setup();
   try {
     for (const [key, kind] of [
       ["pull-request-ready:PAS-1003", "response"],
       ["late-thought", "thought"],
     ] as const)
-      await enqueueOutboxOnce(sqliteDb(db), {
+      await enqueueOutboxOnce(db, {
         target: "linear",
         op: "activity",
         orderingKey: "ses_1",
@@ -296,17 +330,20 @@ test("the answer record reaches Linear after the pull request response", async (
         payload: { id: key, sessionId: "ses_1", kind, body: key },
         now: NOW,
       });
-    db.run(
-      "UPDATE outbox SET status = 'sent' WHERE idempotency_key = 'pull-request-ready:PAS-1003'",
+    await seed(db, (q) =>
+      q.orm
+        .update(q.t.outbox)
+        .set({ status: "sent" })
+        .where(eq(q.t.outbox.idempotencyKey, "pull-request-ready:PAS-1003")),
     );
     expect((await submit({ questionId: question.id, answer: OPTIONS[0] }))?.status).toBe(200);
     const tracker = createFakeTracker();
-    for (const row of (await listOutbox(sqliteDb(db))).filter((entry) => entry.status !== "sent"))
-      await deliverLinearOutbox(row, tracker, async () => {}, undefined, sqliteDb(db));
+    for (const row of (await listOutbox(db)).filter((entry) => entry.status !== "sent"))
+      await deliverLinearOutbox(row, tracker, async () => {}, undefined, db);
     expect(tracker.progress.map((update) => update.body)).toEqual([
       "Answered in Paws by Sam: Fix the policy",
     ]);
   } finally {
-    db.close();
+    await close();
   }
 });

@@ -15,16 +15,14 @@ import {
   markRun,
   applyWorkItemEvent,
   saveCheckpoint,
-  migrate,
-  openDatabase,
   upsertCloseoutStep,
-  sqliteDb,
 } from "../src/db";
 import { createLiveStatusProvider } from "../src/dashboard/src/live/provider";
+import { tempStore } from "./pglite";
 
 test("remote session output survives result transport, persistence and the live status API", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-remote-output-"));
-  const db = openDatabase(":memory:");
+  const { db, close } = await tempStore();
   try {
     for (const args of [
       ["init", "-b", "main"],
@@ -68,16 +66,15 @@ test("remote session output survives result transport, persistence and the live 
     const path = join(root, "session.json");
     writeSessionCloseout(path, head, transported.closeoutReport);
     const saved = readSessionCloseout(path)!;
-    migrate(db);
     await insertQueuedItem(db, { id: "item", title: "Remote output", now: 1 });
-    const started = await beginImplementRun(sqliteDb(db), "item", 1, {
+    const started = await beginImplementRun(db, "item", 1, {
       phase: "verifying",
       baseSha: head,
       wipCommit: head,
     });
-    await markRun(sqliteDb(db), started.run.id, "ended", 2);
-    await applyWorkItemEvent(sqliteDb(db), "item", "turn_ended");
-    await saveCheckpoint(sqliteDb(db), "item", {
+    await markRun(db, started.run.id, "ended", 2);
+    await applyWorkItemEvent(db, "item", "turn_ended");
+    await saveCheckpoint(db, "item", {
       phase: "verifying",
       baseSha: head,
       wipCommit: head,
@@ -89,11 +86,11 @@ test("remote session output survives result transport, persistence and the live 
       policyDigest: "sha256:" + "a".repeat(64),
       policyPath: ".agents/closeout.yaml",
     };
-    await ensureCloseoutProgress(sqliteDb(db), "item", identity, 10, true);
+    await ensureCloseoutProgress(db, "item", identity, 10, true);
     const parsed = JSON.parse(saved.report);
     const command = parsed.required[0].result;
     await upsertCloseoutStep(
-      sqliteDb(db),
+      db,
       "item",
       identity,
       {
@@ -128,22 +125,13 @@ test("remote session output survives result transport, persistence and the live 
       logFile: join(root, "output.log"),
       onOutput: (stream, text, truncated) => {
         appends.push(
-          appendCloseoutOutput(
-            sqliteDb(db),
-            "item",
-            identity,
-            "output",
-            stream,
-            text,
-            truncated,
-            20,
-          ),
+          appendCloseoutOutput(db, "item", identity, "output", stream, text, truncated, 20),
         );
       },
     });
     await Promise.all(appends);
     await upsertCloseoutStep(
-      sqliteDb(db),
+      db,
       "item",
       identity,
       {
@@ -167,8 +155,8 @@ test("remote session output survives result transport, persistence and the live 
       },
       30,
     );
-    await finishCloseoutProgress(sqliteDb(db), "item", identity, "rejected", 40);
-    const provider = createLiveStatusProvider(sqliteDb(db));
+    await finishCloseoutProgress(db, "item", identity, "rejected", 40);
+    const provider = createLiveStatusProvider(db);
     const detail = (await provider.issue((await provider.issues()).issues[0]!.id))!;
     const verdict = detail.verdicts[0]!;
     const check = verdict.checks[0]!;
@@ -187,7 +175,7 @@ test("remote session output survives result transport, persistence and the live 
     expect(check.exitCode).toBe(1);
     expect(saved.head).toBe(head);
   } finally {
-    db.close();
+    await close();
     rmSync(root, { recursive: true, force: true });
   }
 });

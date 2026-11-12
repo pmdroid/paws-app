@@ -1,17 +1,16 @@
 import { expect, test } from "bun:test";
-import { join } from "node:path";
+import { count, sql } from "drizzle-orm";
 import {
   applyWorkItemEvent,
   getConfirmedRemoteMerge,
   getWorkItem,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   recordConfirmedRemoteMerge,
   type ConfirmedRemoteMerge,
-  sqliteDb,
 } from "../src/db";
-import { tempDb, tempHome } from "./helpers";
+import { seed } from "./dialects";
+import { tempHome, withHomeStore } from "./helpers";
+import { tempStore } from "./pglite";
 
 function fact(itemId = "item"): ConfirmedRemoteMerge {
   return {
@@ -28,85 +27,91 @@ function fact(itemId = "item"): ConfirmedRemoteMerge {
 test.each(["cancelled", "merged"] as const)(
   "a confirmed remote merge survives reopening without changing %s task history",
   async (state) => {
-    const path = join(tempHome(), "paws.db");
-    let db = openDatabase(path);
-    try {
-      migrate(db);
+    const home = tempHome();
+    const { id, before } = await withHomeStore(home, async (db) => {
       const item = await insertQueuedItem(db, { id: "item" });
-      if (state === "cancelled") await applyWorkItemEvent(sqliteDb(db), item.id, "cancel");
+      if (state === "cancelled") await applyWorkItemEvent(db, item.id, "cancel");
       else {
-        await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
-        await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
-        await applyWorkItemEvent(sqliteDb(db), item.id, "closeout_accepted");
-        await applyWorkItemEvent(sqliteDb(db), item.id, "merge_accepted");
+        await applyWorkItemEvent(db, item.id, "dispatched");
+        await applyWorkItemEvent(db, item.id, "turn_ended");
+        await applyWorkItemEvent(db, item.id, "closeout_accepted");
+        await applyWorkItemEvent(db, item.id, "merge_accepted");
       }
-      const before = await getWorkItem(sqliteDb(db), item.id);
-      await recordConfirmedRemoteMerge(sqliteDb(db), fact());
-      db.close();
-      db = openDatabase(path);
-      migrate(db);
-      expect(await getConfirmedRemoteMerge(sqliteDb(db), item.id)).toEqual(fact());
-      expect(await getWorkItem(sqliteDb(db), item.id)).toEqual(before);
-      expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe(state);
-      expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM job").get()?.n).toBe(0);
-      expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM outbox").get()?.n).toBe(0);
-    } finally {
-      db.close();
-    }
+      const stored = await getWorkItem(db, item.id);
+      await recordConfirmedRemoteMerge(db, fact());
+      return { id: item.id, before: stored };
+    });
+    await withHomeStore(home, async (db) => {
+      expect(await getConfirmedRemoteMerge(db, id)).toEqual(fact());
+      expect(await getWorkItem(db, id)).toEqual(before);
+      expect((await getWorkItem(db, id))?.state).toBe(state);
+      const jobs = await db.run((q) => q.one(q.orm.select({ n: count() }).from(q.t.job)));
+      const outbox = await db.run((q) => q.one(q.orm.select({ n: count() }).from(q.t.outbox)));
+      expect(jobs?.n).toBe(0);
+      expect(outbox?.n).toBe(0);
+    });
   },
 );
 
 test("replayed confirmation preserves its original observation and rejects conflicting PR history", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
     await insertQueuedItem(db, { id: "item" });
-    await recordConfirmedRemoteMerge(sqliteDb(db), fact());
-    expect(await recordConfirmedRemoteMerge(sqliteDb(db), { ...fact(), confirmedAt: 300 })).toEqual(
-      fact(),
+    await recordConfirmedRemoteMerge(db, fact());
+    expect(await recordConfirmedRemoteMerge(db, { ...fact(), confirmedAt: 300 })).toEqual(fact());
+    await expect(recordConfirmedRemoteMerge(db, { ...fact(), pullNumber: 43 })).rejects.toThrow(
+      "conflicts",
     );
     await expect(
-      recordConfirmedRemoteMerge(sqliteDb(db), { ...fact(), pullNumber: 43 }),
+      recordConfirmedRemoteMerge(db, { ...fact(), mergeSha: "b".repeat(40) }),
     ).rejects.toThrow("conflicts");
-    await expect(
-      recordConfirmedRemoteMerge(sqliteDb(db), { ...fact(), mergeSha: "b".repeat(40) }),
-    ).rejects.toThrow("conflicts");
-    expect(await getConfirmedRemoteMerge(sqliteDb(db), "item")).toEqual(fact());
-    expect((await getWorkItem(sqliteDb(db), "item"))?.state).toBe("queued");
+    expect(await getConfirmedRemoteMerge(db, "item")).toEqual(fact());
+    expect((await getWorkItem(db, "item"))?.state).toBe("queued");
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("confirmed success without a reported merge SHA retains the PR identity without inventing a SHA", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
     await insertQueuedItem(db, { id: "item" });
-    expect(await recordConfirmedRemoteMerge(sqliteDb(db), { ...fact(), mergeSha: null })).toEqual({
+    expect(await recordConfirmedRemoteMerge(db, { ...fact(), mergeSha: null })).toEqual({
       ...fact(),
       mergeSha: null,
     });
-    expect((await getConfirmedRemoteMerge(sqliteDb(db), "item"))?.mergeSha).toBeNull();
+    expect((await getConfirmedRemoteMerge(db, "item"))?.mergeSha).toBeNull();
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("a failed fact write leaves terminal task history and earlier confirmed merges untouched", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
     await insertQueuedItem(db, { id: "item" });
     await insertQueuedItem(db, { id: "second" });
-    await recordConfirmedRemoteMerge(sqliteDb(db), fact());
-    await applyWorkItemEvent(sqliteDb(db), "second", "cancel");
-    db.exec(`CREATE TRIGGER deny_fact BEFORE INSERT ON remote_merge_fact
-             WHEN NEW.item_id = 'second' BEGIN SELECT RAISE(ABORT, 'storage failure'); END`);
-    await expect(recordConfirmedRemoteMerge(sqliteDb(db), fact("second"))).rejects.toThrow(
-      "storage failure",
+    await recordConfirmedRemoteMerge(db, fact());
+    await applyWorkItemEvent(db, "second", "cancel");
+    await seed(
+      db,
+      (q) =>
+        q.orm.execute(
+          sql`CREATE FUNCTION deny_fact() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'storage failure'; END $$ LANGUAGE plpgsql`,
+        ),
+      (q) =>
+        q.orm.execute(
+          sql`CREATE TRIGGER deny_fact BEFORE INSERT ON remote_merge_fact FOR EACH ROW WHEN (NEW.item_id = 'second') EXECUTE FUNCTION deny_fact()`,
+        ),
     );
-    expect((await getWorkItem(sqliteDb(db), "second"))?.state).toBe("cancelled");
-    expect(await getConfirmedRemoteMerge(sqliteDb(db), "second")).toBeNull();
-    expect(await getConfirmedRemoteMerge(sqliteDb(db), "item")).toEqual(fact());
+    const error = (await recordConfirmedRemoteMerge(db, fact("second")).catch(
+      (e: unknown) => e,
+    )) as Error;
+    expect(String(error.cause)).toContain("storage failure");
+    expect((await getWorkItem(db, "second"))?.state).toBe("cancelled");
+    expect(await getConfirmedRemoteMerge(db, "second")).toBeNull();
+    expect(await getConfirmedRemoteMerge(db, "item")).toEqual(fact());
   } finally {
-    db.close();
+    await close();
   }
 });

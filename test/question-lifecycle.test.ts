@@ -1,39 +1,46 @@
-import { expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
+import { afterEach, expect, test } from "bun:test";
 import {
   beginImplementRun,
   ensureCloseoutProgress,
   insertQueuedItem,
   listOutbox,
-  migrations,
-  openDatabase,
   saveCheckpoint,
   saveCloseoutRecovery,
   setCurrentRun,
   setJournalSink,
   syncSteps,
+  type Db,
   type Q,
-  sqliteDb,
 } from "../src/db";
 import { findOpenQuestion, getQuestion, openQuestion } from "../src/questions";
-import { answer, ask, cancelItemQuestions } from "./questions";
-import { tempDb } from "./helpers";
+import {
+  answerPg as answer,
+  askPg as ask,
+  cancelItemQuestionsPg as cancelItemQuestions,
+} from "./questions";
+import { tempStore } from "./pglite";
 
 const NOW = 1_700_000_000_000;
 
+const stores: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of stores.splice(0)) await close();
+});
+
 async function setup() {
-  const db = tempDb();
+  const { db, close } = await tempStore();
+  stores.push(close);
   const item = await insertQueuedItem(db, {
     id: "ENG-7",
     sessionKey: "ses_1",
     title: "Export rows",
   });
-  const { run } = await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
+  const { run } = await beginImplementRun(db, item.id, NOW - 10);
   return { db, asker: { itemId: item.id, runId: run.id, sessionId: "ses_1" } };
 }
 
-const elicitations = async (db: Database) =>
-  (await listOutbox(sqliteDb(db)))
+const elicitations = async (db: Db) =>
+  (await listOutbox(db))
     .filter((row) => row.op === "elicitation")
     .map((row) => (row.payload as { questionId: string }).questionId);
 
@@ -55,13 +62,13 @@ test("a question asks at once when the session waits on nothing", async () => {
   expect(asked.status).toBe("asked");
   expect(asked.question).toMatchObject({ kind: "runner-wait", status: "open" });
   expect(await elicitations(db)).toEqual([asked.question.id]);
-  const payload = (await listOutbox(sqliteDb(db)))[0]?.payload as { body: string };
+  const payload = (await listOutbox(db))[0]?.payload as { body: string };
   expect(payload.body).toContain("Waiting: runner goldbox is paused.");
 });
 
 test("a second ask is queued and delivered in order once the open one is answered", async () => {
   const { db, asker } = await setup();
-  const first = await openQuestion(sqliteDb(db), {
+  const first = await openQuestion(db, {
     ...asker,
     body: "Include archived rows?",
     now: NOW,
@@ -75,21 +82,21 @@ test("a second ask is queued and delivered in order once the open one is answere
   const outcome = await answer(db, reply("answer-1", "Yes"));
   expect(outcome).toMatchObject({ status: "answered", question: { id: first.id } });
   expect(outcome.status === "answered" && outcome.next?.id).toBe(second.question.id);
-  expect(await getQuestion(sqliteDb(db), second.question.id)).toMatchObject({
+  expect(await getQuestion(db, second.question.id)).toMatchObject({
     status: "open",
     createdAt: NOW + 100,
   });
-  expect((await getQuestion(sqliteDb(db), third.question.id))?.status).toBe("queued");
+  expect((await getQuestion(db, third.question.id))?.status).toBe("queued");
   expect(await elicitations(db)).toEqual([second.question.id]);
 });
 
 test("a newer runner wait replaces a queued one of the same kind", async () => {
   const { db, asker } = await setup();
-  await openQuestion(sqliteDb(db), { ...asker, body: "Include archived rows?", now: NOW });
+  await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
   const older = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW + 1 });
   const newer = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW + 2 });
-  expect((await getQuestion(sqliteDb(db), older.question.id))?.status).toBe("cancelled");
-  expect((await getQuestion(sqliteDb(db), newer.question.id))?.status).toBe("queued");
+  expect((await getQuestion(db, older.question.id))?.status).toBe("cancelled");
+  expect((await getQuestion(db, newer.question.id))?.status).toBe("queued");
 });
 
 test("a newer CI help replaces only its own task's queued CI help", async () => {
@@ -99,7 +106,7 @@ test("a newer CI help replaces only its own task's queued CI help", async () => 
     sessionKey: "ses_1",
     title: "Import rows",
   });
-  await openQuestion(sqliteDb(db), { ...asker, body: "Include archived rows?", now: NOW });
+  await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
   const older = await ask(db, asker, "ci-help", "CI failed.", { now: NOW + 1 });
   const other = await ask(
     db,
@@ -111,28 +118,28 @@ test("a newer CI help replaces only its own task's queued CI help", async () => 
     },
   );
   const newer = await ask(db, asker, "ci-help", "CI failed again.", { now: NOW + 3 });
-  expect((await getQuestion(sqliteDb(db), older.question.id))?.status).toBe("cancelled");
-  expect((await getQuestion(sqliteDb(db), other.question.id))?.status).toBe("queued");
-  expect((await getQuestion(sqliteDb(db), newer.question.id))?.status).toBe("queued");
+  expect((await getQuestion(db, older.question.id))?.status).toBe("cancelled");
+  expect((await getQuestion(db, other.question.id))?.status).toBe("queued");
+  expect((await getQuestion(db, newer.question.id))?.status).toBe("queued");
 });
 
 async function queuedCloseoutHelp() {
   const { db, asker } = await setup();
-  await saveCheckpoint(sqliteDb(db), asker.itemId, {
+  await saveCheckpoint(db, asker.itemId, {
     phase: "awaiting_input",
     baseSha: "base",
     wipCommit: "head-1",
   });
   await ensureCloseoutProgress(
-    sqliteDb(db),
+    db,
     asker.itemId,
     { taskId: "ENG-7", base: "base", head: "head-1", policyDigest: "policy-1", policyPath: null },
     NOW,
     true,
   );
-  await openQuestion(sqliteDb(db), { ...asker, body: "Include archived rows?", now: NOW });
+  await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
   const help = await ask(db, asker, "closeout-help", "Closeout needs your help.", { now: NOW + 1 });
-  await saveCloseoutRecovery(sqliteDb(db), {
+  await saveCloseoutRecovery(db, {
     questionId: help.question.id,
     taskId: "ENG-7",
     itemId: asker.itemId,
@@ -146,7 +153,7 @@ async function queuedCloseoutHelp() {
   return { db, asker, help: help.question };
 }
 
-async function promote(db: Database): Promise<string[]> {
+async function promote(db: Db): Promise<string[]> {
   const lines: string[] = [];
   const restore = setJournalSink((line) => lines.push(line));
   try {
@@ -160,13 +167,13 @@ async function promote(db: Database): Promise<string[]> {
 test("a queued Closeout help for the same candidate and policy is delivered", async () => {
   const { db, help } = await queuedCloseoutHelp();
   expect(await promote(db)).toEqual([]);
-  expect((await findOpenQuestion(sqliteDb(db), "ses_1"))?.id).toBe(help.id);
+  expect((await findOpenQuestion(db, "ses_1"))?.id).toBe(help.id);
   expect(await elicitations(db)).toEqual([help.id]);
 });
 
 test("a queued Closeout help is dropped once its candidate moved", async () => {
   const { db, asker, help } = await queuedCloseoutHelp();
-  await saveCheckpoint(sqliteDb(db), asker.itemId, {
+  await saveCheckpoint(db, asker.itemId, {
     phase: "verifying",
     baseSha: "base",
     wipCommit: "head-2",
@@ -174,14 +181,14 @@ test("a queued Closeout help is dropped once its candidate moved", async () => {
   expect(await promote(db)).toEqual([
     `question ${help.id} dropped from the queue: its candidate moved`,
   ]);
-  expect((await getQuestion(sqliteDb(db), help.id))?.status).toBe("cancelled");
+  expect((await getQuestion(db, help.id))?.status).toBe("cancelled");
   expect(await elicitations(db)).toEqual([]);
 });
 
 test("a queued Closeout help is dropped once the Closeout policy changed", async () => {
   const { db, asker, help } = await queuedCloseoutHelp();
   await ensureCloseoutProgress(
-    sqliteDb(db),
+    db,
     asker.itemId,
     { taskId: "ENG-7", base: "base", head: "head-1", policyDigest: "policy-2", policyPath: null },
     NOW + 50,
@@ -207,7 +214,7 @@ test("the answer is idempotent on the delivery id and runs its kind's effect onc
   expect((await answer(db, reply("answer-1", "Keep waiting"), effects)).status).toBe("duplicate");
   expect((await answer(db, reply("answer-2", "Keep waiting"), effects)).status).toBe("unasked");
   expect(resumed).toEqual([asked.question.id]);
-  expect(await getQuestion(sqliteDb(db), asked.question.id)).toMatchObject({
+  expect(await getQuestion(db, asked.question.id)).toMatchObject({
     status: "answered",
     answer: "Keep waiting",
     answerEventKey: "answer-1",
@@ -216,9 +223,9 @@ test("the answer is idempotent on the delivery id and runs its kind's effect onc
 
 test("a queued question for a run that is no longer current is dropped with a journal entry", async () => {
   const { db, asker } = await setup();
-  await openQuestion(sqliteDb(db), { ...asker, body: "Include archived rows?", now: NOW });
+  await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
   const stale = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW + 1 });
-  await setCurrentRun(sqliteDb(db), asker.itemId, null);
+  await setCurrentRun(db, asker.itemId, null);
   const lines: string[] = [];
   const restore = setJournalSink((line) => lines.push(line));
   try {
@@ -226,8 +233,8 @@ test("a queued question for a run that is no longer current is dropped with a jo
   } finally {
     restore();
   }
-  expect((await getQuestion(sqliteDb(db), stale.question.id))?.status).toBe("cancelled");
-  expect(await findOpenQuestion(sqliteDb(db), "ses_1")).toBeNull();
+  expect((await getQuestion(db, stale.question.id))?.status).toBe("cancelled");
+  expect(await findOpenQuestion(db, "ses_1")).toBeNull();
   expect(lines).toEqual([
     `question ${stale.question.id} dropped from the queue: its run is no longer current`,
   ]);
@@ -236,112 +243,14 @@ test("a queued question for a run that is no longer current is dropped with a jo
 
 test("cancelling the task cancels its open and queued questions", async () => {
   const { db, asker } = await setup();
-  const open = await openQuestion(sqliteDb(db), {
+  const open = await openQuestion(db, {
     ...asker,
     body: "Include archived rows?",
     now: NOW,
   });
   const queued = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW + 1 });
   await cancelItemQuestions(db, asker.itemId, NOW + 2);
-  expect((await getQuestion(sqliteDb(db), open.id))?.status).toBe("cancelled");
-  expect((await getQuestion(sqliteDb(db), queued.question.id))?.status).toBe("cancelled");
+  expect((await getQuestion(db, open.id))?.status).toBe("cancelled");
+  expect((await getQuestion(db, queued.question.id))?.status).toBe("cancelled");
   expect(await elicitations(db)).toEqual([]);
-});
-
-test("the migration classifies an open runner wait and leaves every other row an agent question", () => {
-  const db = openDatabase(":memory:");
-  db.run("CREATE TABLE schema_migration (id TEXT PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT");
-  const cutoff = migrations.findIndex((migration) => migration.id === "113_question_kind_queue");
-  const run = (migration: (typeof migrations)[number]) => {
-    if (migration.foreignKeys === false) db.run("PRAGMA foreign_keys = OFF");
-    db.transaction(() => db.run(migration.sql)).immediate();
-    db.run("PRAGMA foreign_keys = ON");
-  };
-  for (const migration of migrations.slice(0, cutoff)) run(migration);
-  const insert = db.prepare(
-    `INSERT INTO question (id, item_id, session_id, body, options, status, created_at)
-     VALUES (?, 'ENG-7', ?, 'Body', ?, ?, 1)`,
-  );
-  const wait = JSON.stringify(["Move to another runner", "Keep waiting"]);
-  insert.run("wait-open", "ses_1", wait, "open");
-  insert.run("wait-answered", "ses_2", wait, "answered");
-  insert.run("agent-open", "ses_3", JSON.stringify(["Yes", "No"]), "open");
-  run(migrations[cutoff]!);
-  expect(db.query("SELECT id, kind, status FROM question ORDER BY id").all() as unknown[]).toEqual([
-    { id: "agent-open", kind: "agent", status: "open" },
-    { id: "wait-answered", kind: "agent", status: "answered" },
-    { id: "wait-open", kind: "runner-wait", status: "open" },
-  ]);
-  expect(() => insert.run("queued", "ses_1", null, "queued")).not.toThrow();
-});
-
-test("the migration classifies questions with a Closeout recovery as Closeout help", () => {
-  const db = openDatabase(":memory:");
-  db.run("CREATE TABLE schema_migration (id TEXT PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT");
-  const cutoff = migrations.findIndex(
-    (migration) => migration.id === "118_question_closeout_help_kind",
-  );
-  for (const migration of migrations.slice(0, cutoff)) {
-    if (migration.foreignKeys === false) db.run("PRAGMA foreign_keys = OFF");
-    db.transaction(() => db.run(migration.sql)).immediate();
-    db.run("PRAGMA foreign_keys = ON");
-  }
-  db.run("PRAGMA foreign_keys = OFF");
-  const insert = db.prepare(
-    `INSERT INTO question (id, item_id, session_id, body, status, created_at)
-     VALUES (?, 'ENG-7', ?, 'Body', 'open', 1)`,
-  );
-  insert.run("help", "ses_1");
-  insert.run("agent", "ses_2");
-  db.run(
-    `INSERT INTO closeout_recovery (question_id, task_id, item_id, base, head, policy_digest, failed_checks, retry_baseline, summary)
-     VALUES ('help', 'ENG-7', 'ENG-7', 'base', 'head', '', '[]', '[]', 'Closeout: rejected')`,
-  );
-  db.transaction(() => db.run(migrations[cutoff]!.sql)).immediate();
-  expect(db.query("SELECT id, kind FROM question ORDER BY id").all() as unknown[]).toEqual([
-    { id: "agent", kind: "agent" },
-    { id: "help", kind: "closeout-help" },
-  ]);
-});
-
-test("the migration classifies visual reviews and GitHub sign-in holds by kind", () => {
-  const db = openDatabase(":memory:");
-  db.run("CREATE TABLE schema_migration (id TEXT PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT");
-  const cutoff = migrations.findIndex(
-    (migration) => migration.id === "120_question_visual_review_github_auth_kind",
-  );
-  expect(cutoff).toBeGreaterThan(0);
-  for (const migration of migrations.slice(0, cutoff)) {
-    if (migration.foreignKeys === false) db.run("PRAGMA foreign_keys = OFF");
-    db.transaction(() => db.run(migration.sql)).immediate();
-    db.run("PRAGMA foreign_keys = ON");
-  }
-  db.run("PRAGMA foreign_keys = OFF");
-  const insert = db.prepare(
-    `INSERT INTO question (id, item_id, session_id, body, status, created_at)
-     VALUES (?, 'ENG-7', ?, 'Body', 'open', 1)`,
-  );
-  insert.run("agent", "ses_1");
-  insert.run("review", "ses_2");
-  insert.run("sign-in", "ses_3");
-  insert.run("hold", "ses_4");
-  db.run(
-    `INSERT INTO visual_review (question_id, item_id, check_id, evidence_ids, created_at)
-     VALUES ('review', 'ENG-7', 'visual-proof', '[]', 1)`,
-  );
-  db.run(
-    `INSERT INTO linear_github_auth (question_id, item_id, actor_id, phase, expires_at)
-     VALUES ('sign-in', 'ENG-7', 'owner', 'initial', 1)`,
-  );
-  db.run(
-    `INSERT INTO github_integration_hold (question_id, item_id, phase, item_version, session_generation, checkpoint, authority)
-     VALUES ('hold', 'ENG-7', 'initial', 1, 0, 'null', 'authority')`,
-  );
-  db.transaction(() => db.run(migrations[cutoff]!.sql)).immediate();
-  expect(db.query("SELECT id, kind FROM question ORDER BY id").all() as unknown[]).toEqual([
-    { id: "agent", kind: "agent" },
-    { id: "hold", kind: "github-auth" },
-    { id: "review", kind: "visual-review" },
-    { id: "sign-in", kind: "github-auth" },
-  ]);
 });
