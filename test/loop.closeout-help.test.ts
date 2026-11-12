@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { count, eq } from "drizzle-orm";
 import { JOB_KIND } from "../src/core";
 import {
@@ -22,8 +22,14 @@ import { tempStore } from "./pglite";
 
 const NOW = 1_700_000_000_000;
 
+const stores: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of stores.splice(0)) await close();
+});
+
 async function parked() {
-  const db = (await tempStore()).db;
+  const { db, close } = await tempStore();
+  stores.push(close);
   const item = await insertQueuedItem(db, {
     id: "ENG-2",
     sessionKey: "ses_1",
