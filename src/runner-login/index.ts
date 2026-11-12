@@ -33,7 +33,6 @@ import {
   type Db,
 } from "../db";
 import { journalCaught } from "../journal";
-import { randomUUID } from "node:crypto";
 import type { WorkspacePrincipal } from "../workspace";
 import type { RunnerWork } from "../runner-work";
 import {
@@ -237,7 +236,7 @@ export function createRunnerLogin(options: {
             "This runner already has four sign-ins waiting. Finish one first.",
             429,
           );
-        const id = randomUUID();
+        const id = Bun.randomUUIDv7();
         const expiresAt = at + SIGN_IN_MS;
         yield* work.enqueueSteps(q, {
           id,
