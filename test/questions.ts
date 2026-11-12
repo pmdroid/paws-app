@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { emitJobReady, sqliteDb } from "../src/db";
+import { emitJobReady, sqliteDb, type Db } from "../src/db";
 import {
   answerQuestionSteps,
   answerSteps,
@@ -39,10 +39,24 @@ export function answerQuestion(
   return sqliteDb(db).transaction((q) => answerQuestionSteps(q, id, input));
 }
 
+export async function answerPg(
+  db: Db,
+  reply: QuestionReply,
+  effects: AnswerEffects = {},
+): Promise<AnswerOutcome> {
+  const outcome = await db.transaction((q) => answerSteps(q, reply, effects));
+  emitJobReady(db);
+  return outcome;
+}
+
 type LoopAskArgs = Parameters<typeof loopAskSteps> extends [unknown, ...infer Rest] ? Rest : never;
 
 export function loopAsk(db: Database, ...args: LoopAskArgs) {
   return sqliteDb(db).transaction((q) => loopAskSteps(q, ...args));
+}
+
+export function loopAskPg(db: Db, ...args: LoopAskArgs) {
+  return db.transaction((q) => loopAskSteps(q, ...args));
 }
 
 export function cancelItemQuestions(
