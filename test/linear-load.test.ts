@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
+import { count as countRows, isNull, like } from "drizzle-orm";
 import type { RunAgentOptions, RunAgentResult } from "../src/acp";
 import { FakeClock } from "../src/core";
 import {
@@ -14,7 +14,7 @@ import {
   listWorkItems,
   putWorkspaceUser,
   syncWorkspaceMember,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import {
   createFakeTracker,
@@ -25,8 +25,9 @@ import {
 } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
 import { registerScheduler } from "../src/scheduler";
-import { tempDb, tempHome } from "./helpers";
+import { tempHome } from "./helpers";
 import { workspaceAdmission } from "./fake-workspace";
+import { tempStore } from "./pglite";
 
 const TASKS = 100;
 const QUESTIONS = 10;
@@ -50,12 +51,12 @@ test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes wh
   const home = tempHome();
   const root = join(home, "paws");
   mkdirSync(root);
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const clock = new FakeClock(Date.UTC(2026, 9, 23, 9));
   const ledger = createLinearLedger({
     now: () => clock.now(),
     log: () => {},
-    countItem: async (itemId, caller) => await countLinearRequest(sqliteDb(db), itemId, caller),
+    countItem: async (itemId, caller) => await countLinearRequest(db, itemId, caller),
   });
   const runner = await seedRunner(db, clock.now());
   let requests = 0;
@@ -122,7 +123,7 @@ test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes wh
   const outbox = new OutboxDispatcher(db, clock);
   await registerScheduler(jobs, () => orchestrator.reconcileExecution(), clock.now());
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -136,7 +137,7 @@ test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes wh
       throw new Error("Remote execution must not launch a local agent");
     },
     remoteExecution: {
-      slotFree: async () => !runner.full(),
+      slotFree: async () => !(await runner.full()),
       agentForSession: (_sessionId, purpose) => agent(purpose),
       agentForItem: () => agent("answer"),
     },
@@ -160,13 +161,13 @@ test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes wh
     payload: JSON.stringify({ agentSession: { creatorId: "human" } }),
   });
   const tasks = async () =>
-    (await listWorkItems(sqliteDb(db))).filter((item) => item.linearIdentifier.startsWith("ENG-"));
+    (await listWorkItems(db)).filter((item) => item.linearIdentifier.startsWith("ENG-"));
   const count = async (state: string) =>
     (await tasks()).filter((item) => item.state === state).length;
   const step = async (ms = STEP_MS) => {
     while ((await jobs.tick()) !== null || (await outbox.tick()).length > 0) await outbox.idle();
     clock.advance(ms);
-    runner.seen(clock.now());
+    await runner.seen(clock.now());
   };
   const settle = async (done: () => Promise<boolean>) => {
     for (let steps = 0; steps < 200 && !(await done()); steps++) await step();
@@ -186,9 +187,9 @@ test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes wh
       await orchestrator.onLinearEvent(event(index, "created"));
     await step();
     const queued = await count("queued");
-    const before = { requests, perTask: await linearRequestsByItem(sqliteDb(db)) };
+    const before = { requests, perTask: await linearRequestsByItem(db) };
     for (let waited = 0; waited < HOUR_MS; waited += WAIT_STEP_MS) await step(WAIT_STEP_MS);
-    const after = await linearRequestsByItem(sqliteDb(db));
+    const after = await linearRequestsByItem(db);
     const waiting = {
       queued: await count("queued"),
       requests: requests - before.requests,
@@ -197,11 +198,11 @@ test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes wh
         [...after].map(([itemId, spent]) => spent - (before.perTask.get(itemId) ?? 0)),
       ),
     };
-    runner.free();
+    await runner.free();
     for (let index = 0; index < QUESTIONS; index++)
       await orchestrator.onLinearEvent(event(index, "prompted", "A table."));
     await settle(async () => (await count("completed")) === TASKS);
-    const perTask = [...(await linearRequestsByItem(sqliteDb(db))).values()];
+    const perTask = [...(await linearRequestsByItem(db)).values()];
     expect({
       queued,
       waiting,
@@ -224,19 +225,25 @@ test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes wh
   } finally {
     await orchestrator.shutdown().catch(() => undefined);
     await outbox.idle();
-    db.close();
+    await close();
   }
-}, 60_000);
+}, 180_000);
 
-async function seedRunner(db: Database, now: number) {
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+async function seedRunner(db: Db, now: number) {
+  const userId = await putWorkspaceUser(db, {
     id: "user-1",
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  db.run("INSERT INTO workspace VALUES(?,?,?,?)", ["ws-1", "org-1", "Workspace", 0]);
-  await syncWorkspaceMember(sqliteDb(db), {
+  await db.run((q) =>
+    q.exec(
+      q.orm
+        .insert(q.t.workspace)
+        .values({ id: "ws-1", linearOrganizationId: "org-1", name: "Workspace", createdAt: 0 }),
+    ),
+  );
+  await syncWorkspaceMember(db, {
     workspaceId: "ws-1",
     userId,
     role: "admin",
@@ -244,32 +251,65 @@ async function seedRunner(db: Database, now: number) {
     teamIds: [],
     now: 0,
   });
-  db.run(
-    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('runner','ws-1',?,'runner','active',0,?)",
-    [userId, now],
-  );
-  db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES('runner',?)", [SLOTS]);
-  const busy = () =>
-    db
-      .query<{ n: number }, []>("SELECT count(*) AS n FROM runner_work WHERE ended_at IS NULL")
-      .get()!.n;
+  await db.run(function* (q) {
+    yield* q.exec(
+      q.orm.insert(q.t.runner).values({
+        id: "runner",
+        workspaceId: "ws-1",
+        ownerUserId: userId,
+        name: "runner",
+        status: "active",
+        createdAt: 0,
+        lastSeenAt: now,
+      }),
+    );
+    yield* q.exec(q.orm.insert(q.t.runnerCapacity).values({ runnerId: "runner", capacity: SLOTS }));
+  });
+  const busy = async () =>
+    (
+      await db.run((q) =>
+        q.all(
+          q.orm
+            .select({ n: countRows() })
+            .from(q.t.runnerWork)
+            .where(isNull(q.t.runnerWork.endedAt)),
+        ),
+      )
+    )[0]!.n;
   return {
-    full: () => busy() >= SLOTS,
-    seen: (at: number) => db.run("UPDATE runner SET last_seen_at=?", [at]),
+    full: async () => (await busy()) >= SLOTS,
+    seen: (at: number) => db.run((q) => q.exec(q.orm.update(q.t.runner).set({ lastSeenAt: at }))),
     async fill(at: number) {
       for (let slot = 0; slot < SLOTS; slot++) {
         const item = await insertQueuedItem(db, { id: `other-${slot}`, now: at });
-        const run = await insertRun(sqliteDb(db), { itemId: item.id, now: at, status: "active" });
-        db.run(
-          "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,'runner','ws-1',1,0,?,?)",
-          [run.id, `other-${slot}`, at + 10 * HOUR_MS],
+        const run = await insertRun(db, { itemId: item.id, now: at, status: "active" });
+        await db.run((q) =>
+          q.exec(
+            q.orm.insert(q.t.runnerWork).values({
+              runId: run.id,
+              runnerId: "runner",
+              workspaceId: "ws-1",
+              generation: 1,
+              runnerFence: 0,
+              commandId: `other-${slot}`,
+              leaseUntil: at + 10 * HOUR_MS,
+            }),
+          ),
         );
       }
     },
-    free() {
-      db.run("UPDATE runner_work SET ended_at=1,teardown_confirmed_at=1");
-      db.run("UPDATE run SET status='ended' WHERE item_id LIKE 'other-%'");
-      db.run("UPDATE work_item SET state='cancelled' WHERE id LIKE 'other-%'");
-    },
+    free: () =>
+      db.run(function* (q) {
+        yield* q.exec(q.orm.update(q.t.runnerWork).set({ endedAt: 1, teardownConfirmedAt: 1 }));
+        yield* q.exec(
+          q.orm.update(q.t.run).set({ status: "ended" }).where(like(q.t.run.itemId, "other-%")),
+        );
+        yield* q.exec(
+          q.orm
+            .update(q.t.workItem)
+            .set({ state: "cancelled" })
+            .where(like(q.t.workItem.id, "other-%")),
+        );
+      }),
   };
 }

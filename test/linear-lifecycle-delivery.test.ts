@@ -1,19 +1,21 @@
 import { expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { join } from "node:path";
 import { FakeClock, systemClock } from "../src/core";
 import {
   JobLoop,
   OutboxDispatcher,
   advanceLinearSessionGeneration,
+  getWorkItem,
   insertQueuedItem,
   listOutbox,
-  openDatabase,
-  migrate,
-  sqliteDb,
+  listWorkItems,
+  openPawsStore,
 } from "../src/db";
 import { attachOrchestrator } from "../src/loop";
 import { createFakeTracker, openLinear, type AcceptedLinearEvent } from "../src/linear";
-import { tempDb, tempHome } from "./helpers";
+import { tempHome } from "./helpers";
+import { copyMigratedPglite, tempStore } from "./pglite";
 
 function created(): AcceptedLinearEvent {
   return {
@@ -36,7 +38,7 @@ for (const [body, existing] of [
   ["Picked up this issue.", false],
 ] as const) {
   test(`Stop fences a deferred ${body} before the final activity, existing task: ${existing}`, async () => {
-    const db = tempDb();
+    const { db, close } = await tempStore();
     const home = tempHome();
     if (existing) await insertQueuedItem(db, { id: "existing", sessionKey: "session" });
     const tracker = createFakeTracker([
@@ -50,7 +52,7 @@ for (const [body, existing] of [
     ]);
     const outbox = new OutboxDispatcher(db, systemClock);
     const orchestrator = attachOrchestrator({
-      store: sqliteDb(db),
+      store: db,
       pawsRoot: home,
       tracker,
       outbox,
@@ -70,7 +72,7 @@ for (const [body, existing] of [
     };
     const linear = await openLinear({
       db,
-      store: sqliteDb(db),
+      store: db,
       secretsDir: join(home, "secrets"),
       env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
       fetch: async () => {
@@ -83,7 +85,7 @@ for (const [body, existing] of [
     try {
       intake = Promise.resolve(linear.webhook.onEvent!(created()));
       const signal = await ready.promise;
-      const row = (await listOutbox(sqliteDb(db))).find(
+      const row = (await listOutbox(db)).find(
         (entry) => (entry.payload as { body?: string }).body === body,
       )!;
       expect((row.payload as { id: string }).id).toMatch(
@@ -106,9 +108,7 @@ for (const [body, existing] of [
       await outbox.tick();
       await outbox.idle();
       expect(tracker.progress.some((update) => update.body === body)).toBe(false);
-      expect((await listOutbox(sqliteDb(db))).find((entry) => entry.id === row.id)?.status).toBe(
-        "dropped",
-      );
+      expect((await listOutbox(db)).find((entry) => entry.id === row.id)?.status).toBe("dropped");
       const terminal = tracker.progress.findIndex((update) => update.kind === "response");
       expect(terminal).toBeGreaterThanOrEqual(0);
       expect(tracker.progress.slice(terminal + 1)).toEqual([]);
@@ -119,18 +119,18 @@ for (const [body, existing] of [
       release.resolve();
       await intake;
       await outbox.idle();
-      db.close();
+      await close();
     }
   });
 }
 
 test("acknowledgement retry and duplicate replay preserve one activity UUID", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const clock = new FakeClock(1_000);
   const tracker = createFakeTracker();
   const outbox = new OutboxDispatcher(db, clock);
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     clock,
     tracker,
     outbox,
@@ -151,7 +151,7 @@ test("acknowledgement retry and duplicate replay preserve one activity UUID", as
     await orchestrator.sessionProgressReporter(created())(update);
     await orchestrator.sessionProgressReporter(created())(update);
     expect(ids).toHaveLength(0);
-    expect((await listOutbox(sqliteDb(db)))[0]?.notBefore).toBe(6_000);
+    expect((await listOutbox(db))[0]?.notBefore).toBe(6_000);
     clock.advance(5_000);
     await outbox.tick();
     await outbox.idle();
@@ -163,20 +163,20 @@ test("acknowledgement retry and duplicate replay preserve one activity UUID", as
     expect(ids).toHaveLength(2);
     expect(ids[0]).toBe(ids[1]);
     expect(ids[0]).toBeString();
-    expect(await listOutbox(sqliteDb(db))).toHaveLength(1);
-    expect((await listOutbox(sqliteDb(db)))[0]?.status).toBe("sent");
+    expect(await listOutbox(db)).toHaveLength(1);
+    expect((await listOutbox(db))[0]?.status).toBe("sent");
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("an old prompted intake failure cannot terminate a newer session generation", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const home = tempHome();
   const tracker = createFakeTracker();
   const outbox = new OutboxDispatcher(db, systemClock);
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     pawsRoot: home,
     tracker,
     outbox,
@@ -186,7 +186,7 @@ test("an old prompted intake failure cannot terminate a newer session generation
   const release = Promise.withResolvers<void>();
   const linear = await openLinear({
     db,
-    store: sqliteDb(db),
+    store: db,
     secretsDir: join(home, "secrets"),
     env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
     progressReporter: (event) => orchestrator.sessionProgressReporter(event),
@@ -201,11 +201,11 @@ test("an old prompted intake failure cannot terminate a newer session generation
   ).catch((error: unknown) => error);
   try {
     await ready.promise;
-    const generation = await advanceLinearSessionGeneration(sqliteDb(db), "session");
+    const generation = await advanceLinearSessionGeneration(db, "session");
     release.resolve();
     await old;
     expect(tracker.progress).toEqual([]);
-    const error = (await listOutbox(sqliteDb(db))).find(
+    const error = (await listOutbox(db)).find(
       (row) => (row.payload as { kind?: string }).kind === "error",
     );
     expect(error?.generation).toBe(generation - 1);
@@ -221,14 +221,14 @@ test("an old prompted intake failure cannot terminate a newer session generation
   } finally {
     release.resolve();
     await old;
-    db.close();
+    await close();
   }
 });
 
 test.each([false, true])(
   "prompted intake failure uses its own accepted generation, superseded: %s",
   async (superseded) => {
-    const db = tempDb();
+    const { db, close } = await tempStore();
     const home = tempHome();
     const tracker = createFakeTracker([
       {
@@ -241,7 +241,7 @@ test.each([false, true])(
     ]);
     const outbox = new OutboxDispatcher(db, systemClock);
     const orchestrator = attachOrchestrator({
-      store: sqliteDb(db),
+      store: db,
       pawsRoot: home,
       tracker,
       outbox,
@@ -261,7 +261,7 @@ test.each([false, true])(
     };
     const linear = await openLinear({
       db,
-      store: sqliteDb(db),
+      store: db,
       secretsDir: join(home, "secrets"),
       env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
       progressReporter: (event) => orchestrator.sessionProgressReporter(event),
@@ -291,7 +291,7 @@ test.each([false, true])(
       release.resolve();
       await old;
       await next;
-      const error = (await listOutbox(sqliteDb(db))).find(
+      const error = (await listOutbox(db)).find(
         (row) => (row.payload as { kind?: string }).kind === "error",
       );
       expect(error?.generation).toBe(1);
@@ -299,22 +299,21 @@ test.each([false, true])(
       expect(tracker.progress.filter((update) => update.kind === "error")).toHaveLength(
         superseded ? 0 : 1,
       );
-      if (superseded)
-        expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(1);
+      if (superseded) expect(await listWorkItems(db)).toHaveLength(1);
     } finally {
       release.resolve();
       await old;
       await next;
       await orchestrator.shutdown();
-      db.close();
+      await close();
     }
   },
 );
 
 test("item Stop delivery retains one UUID through failure, reopen and duplicate replay", async () => {
-  const path = join(tempHome(), "stop.db");
-  let db = openDatabase(path);
-  migrate(db);
+  const pgliteDir = join(tempHome(), "pglite");
+  await copyMigratedPglite(pgliteDir);
+  let open = await openPawsStore({ url: null, pgliteDir });
   const clock = new FakeClock(1_000);
   const tracker = createFakeTracker();
   const ids: (string | undefined)[] = [];
@@ -322,18 +321,18 @@ test("item Stop delivery retains one UUID through failure, reopen and duplicate 
     ids.push(update.id);
     if (ids.length === 1) throw new Error("retry Stop delivery");
   };
-  let outbox = new OutboxDispatcher(db, clock);
+  let outbox = new OutboxDispatcher(open.store, clock);
   const options = () => ({
-    store: sqliteDb(db),
+    store: open.store,
     clock,
     tracker,
     outbox,
-    jobs: new JobLoop(db, clock),
+    jobs: new JobLoop(open.store, clock),
     pawsRoot: tempHome(),
   });
   let orchestrator = attachOrchestrator(options());
   try {
-    await insertQueuedItem(db, { id: "stopped", sessionKey: "session" });
+    await insertQueuedItem(open.store, { id: "stopped", sessionKey: "session" });
     const stop = {
       ...created(),
       dedupeKey: "stop-retry",
@@ -342,39 +341,39 @@ test("item Stop delivery retains one UUID through failure, reopen and duplicate 
       updatedAtMs: 1_000,
     };
     await orchestrator.onLinearEvent(stop);
-    const row = (await listOutbox(sqliteDb(db))).find((entry) => entry.delivery === "stop")!;
+    const row = (await listOutbox(open.store)).find((entry) => entry.delivery === "stop")!;
     const id = (row.payload as { id: string }).id;
     expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(ids).toEqual([id]);
     await orchestrator.shutdown();
-    db.close();
-    db = openDatabase(path);
-    migrate(db);
+    await open.close();
+    open = await openPawsStore({ url: null, pgliteDir });
     clock.advance(60_000);
-    outbox = new OutboxDispatcher(db, clock);
+    outbox = new OutboxDispatcher(open.store, clock);
     orchestrator = attachOrchestrator(options());
     await orchestrator.onLinearEvent(stop);
     await outbox.tick();
     await outbox.idle();
     expect(ids).toEqual([id, id]);
-    expect((await listOutbox(sqliteDb(db))).find((entry) => entry.id === row.id)?.status).toBe(
+    expect((await listOutbox(open.store)).find((entry) => entry.id === row.id)?.status).toBe(
       "sent",
     );
     await orchestrator.onLinearEvent(stop);
     expect(ids).toEqual([id, id]);
-    expect((await listOutbox(sqliteDb(db))).map((entry) => entry.op)).toEqual(["activity"]);
+    expect((await listOutbox(open.store)).map((entry) => entry.op)).toEqual(["activity"]);
   } finally {
     await orchestrator.shutdown();
     await outbox.idle();
-    db.close();
+    await open.close();
   }
 });
 
 test("a merged item settles its delegation without a delegation summary", async () => {
-  const db = openDatabase(join(tempHome(), "completion.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-  db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [item.id]);
+  await db.run((q) =>
+    q.exec(q.orm.update(q.t.workItem).set({ state: "merged" }).where(eq(q.t.workItem.id, item.id))),
+  );
   const tracker = createFakeTracker([
     {
       linearIssueId: "lin-ENG-1",
@@ -384,26 +383,25 @@ test("a merged item settles its delegation without a delegation summary", async 
       subIssues: [{ linearIssueId: item.linearIssueId, identifier: "ENG-1", title: "Task" }],
     },
   ]);
+  const outbox = new OutboxDispatcher(db, systemClock);
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     pawsRoot: tempHome(),
     tracker,
     jobs: new JobLoop(db, systemClock),
-    outbox: new OutboxDispatcher(db, systemClock),
+    outbox,
   });
   try {
     await orchestrator.onLinearEvent({ ...created(), issueId: "lin-ENG-1" });
-    expect(
-      db.query<{ state: string }, [string]>("SELECT state FROM work_item WHERE id = ?").get(item.id)
-        ?.state,
-    ).toBe("merged");
-    expect(
-      (await listOutbox(sqliteDb(db))).some((row) => row.idempotencyKey.startsWith("epic-done:")),
-    ).toBe(false);
+    expect((await getWorkItem(db, item.id))?.state).toBe("merged");
+    expect((await listOutbox(db)).some((row) => row.idempotencyKey.startsWith("epic-done:"))).toBe(
+      false,
+    );
     expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(false);
     expect(tracker.progress.some((update) => update.body.includes("Epic abandoned"))).toBe(false);
   } finally {
     await orchestrator.shutdown();
-    db.close();
+    await outbox.idle();
+    await close();
   }
 });

@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { sql } from "drizzle-orm";
 import { FakeClock, JOB_KIND } from "../src/core";
 import {
   JobLoop,
@@ -10,7 +11,6 @@ import {
   insertQueuedItem,
   listJobs,
   listOutbox,
-  sqliteDb,
 } from "../src/db";
 import {
   createInboxStore,
@@ -22,9 +22,16 @@ import {
   type TrackerAdapter,
 } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
-import { findOpenQuestion, getQuestion, handoffNote, openQuestion } from "../src/questions";
-import { answerQuestion, ask } from "./questions";
-import { tempDb } from "./helpers";
+import {
+  answerQuestionSteps,
+  askSteps,
+  findOpenQuestion,
+  getQuestion,
+  handoffNote,
+  openQuestion,
+} from "../src/questions";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const NOW = 1_700_000_000_000;
 
@@ -41,15 +48,15 @@ test("question handoff preserves selection labels and their values for freeform 
 });
 
 async function setup(tracker: TrackerAdapter | null = null) {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const item = await insertQueuedItem(db, {
     id: "ENG-2",
     sessionKey: "ses_1",
     title: "Export rows",
   });
-  await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
-  await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
-  const question = await openQuestion(sqliteDb(db), {
+  await beginImplementRun(db, item.id, NOW - 10);
+  await applyWorkItemEvent(db, item.id, "blocking_question");
+  const question = await openQuestion(db, {
     itemId: item.id,
     sessionId: "ses_1",
     body: "Include archived rows?",
@@ -58,14 +65,14 @@ async function setup(tracker: TrackerAdapter | null = null) {
   const clock = new FakeClock(NOW + 1_000);
   const outbox = new OutboxDispatcher(db, clock);
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     jobs: new JobLoop(db, clock),
     outbox,
     pawsRoot: "/tmp/paws-question-lifecycle",
     tracker,
     clock,
   });
-  return { db, item, question, orchestrator, outbox };
+  return { db, close, item, question, orchestrator, outbox };
 }
 
 function prompt(createdAt = NOW + 1, id = "answer-1", userId: string | null = "human-1") {
@@ -88,47 +95,43 @@ function prompt(createdAt = NOW + 1, id = "answer-1", userId: string | null = "h
 }
 
 test("Linear answers preserve their human author through persisted inbox replay", async () => {
-  const { db, question, orchestrator } = await setup();
+  const { db, close, question, orchestrator } = await setup();
   try {
-    const inbox = createInboxStore(sqliteDb(db));
+    const inbox = createInboxStore(db);
     const event = prompt();
     expect(event.actorId).toBe("human-1");
     await inbox.commit(event);
-    const replayed = (await createInboxStore(sqliteDb(db)).listUnhandled())[0]!;
+    const replayed = (await createInboxStore(db).listUnhandled())[0]!;
     expect(replayed.actorId).toBe("human-1");
     expect(replayed.activityCreatedAtMs).toBe(NOW + 1);
     await orchestrator.onLinearEvent(replayed);
-    expect((await getQuestion(sqliteDb(db), question.id))?.answeredBy).toBe("human-1");
-    expect(
-      (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume),
-    ).toHaveLength(1);
+    expect((await getQuestion(db, question.id))?.answeredBy).toBe("human-1");
+    expect((await listJobs(db)).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(1);
     await orchestrator.onLinearEvent(replayed);
-    expect(
-      (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume),
-    ).toHaveLength(1);
+    expect((await listJobs(db)).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(1);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test.each([NOW - 1, NOW])(
   "an activity at %d cannot answer a question without later creation",
   async (at) => {
-    const { db, question, orchestrator } = await setup();
+    const { db, close, question, orchestrator } = await setup();
     try {
       await orchestrator.onLinearEvent(prompt(at));
-      expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
-      expect(await listJobs(sqliteDb(db))).toHaveLength(0);
+      expect((await getQuestion(db, question.id))?.status).toBe("open");
+      expect(await listJobs(db)).toHaveLength(0);
     } finally {
-      db.close();
+      await close();
     }
   },
 );
 
 test("an answer racing delivery suppresses the unsent elicitation", async () => {
-  const { db, question, orchestrator } = await setup();
+  const { db, close, question, orchestrator } = await setup();
   try {
-    await enqueueOutboxOnce(sqliteDb(db), {
+    await enqueueOutboxOnce(db, {
       target: "linear",
       op: "elicitation",
       orderingKey: "ses_1",
@@ -142,13 +145,11 @@ test("an answer racing delivery suppresses the unsent elicitation", async () => 
       now: NOW,
     });
     await orchestrator.onLinearEvent(prompt());
-    expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("answered");
-    expect((await listOutbox(sqliteDb(db)))[0]?.status).toBe("dropped");
-    expect(
-      (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume),
-    ).toHaveLength(1);
+    expect((await getQuestion(db, question.id))?.status).toBe("answered");
+    expect((await listOutbox(db))[0]?.status).toBe("dropped");
+    expect((await listJobs(db)).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(1);
   } finally {
-    db.close();
+    await close();
   }
 });
 
@@ -166,9 +167,9 @@ test("an answer aborts an elicitation currently being delivered", async () => {
         { once: true },
       );
     });
-  const { db, question, orchestrator, outbox } = await setup(tracker);
+  const { db, close, question, orchestrator, outbox } = await setup(tracker);
   try {
-    await enqueueOutboxOnce(sqliteDb(db), {
+    await enqueueOutboxOnce(db, {
       target: "linear",
       op: "elicitation",
       orderingKey: "ses_1",
@@ -184,111 +185,121 @@ test("an answer aborts an elicitation currently being delivered", async () => {
     await outbox.tick();
     await orchestrator.onLinearEvent(prompt());
     expect(aborted).toBe(true);
-    expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("answered");
-    expect((await listOutbox(sqliteDb(db)))[0]?.status).toBe("dropped");
+    expect((await getQuestion(db, question.id))?.status).toBe("answered");
+    expect((await listOutbox(db))[0]?.status).toBe("dropped");
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("an activity ID alone does not establish a human respondent", async () => {
-  const { db, question, orchestrator } = await setup();
+  const { db, close, question, orchestrator } = await setup();
   try {
     await orchestrator.onLinearEvent(prompt(NOW + 1, "anonymous-activity", null));
-    expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
-    expect(await listJobs(sqliteDb(db))).toHaveLength(0);
+    expect((await getQuestion(db, question.id))?.status).toBe("open");
+    expect(await listJobs(db)).toHaveLength(0);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("a webhook without an activity creation time cannot answer from delivery time", async () => {
-  const { db, question, orchestrator } = await setup();
+  const { db, close, question, orchestrator } = await setup();
   try {
     await orchestrator.onLinearEvent({ ...prompt(), activityCreatedAtMs: null });
-    expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
-    expect(await listJobs(sqliteDb(db))).toHaveLength(0);
+    expect((await getQuestion(db, question.id))?.status).toBe("open");
+    expect(await listJobs(db)).toHaveLength(0);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("a consumed activity cannot answer the next question in its session", async () => {
-  const { db, item, question, orchestrator } = await setup();
+  const { db, close, item, question, orchestrator } = await setup();
   try {
     const event = prompt(NOW + 100);
     await orchestrator.onLinearEvent(event);
-    await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
-    await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
-    const next = await openQuestion(sqliteDb(db), {
+    await applyWorkItemEvent(db, item.id, "dispatched");
+    await applyWorkItemEvent(db, item.id, "blocking_question");
+    const next = await openQuestion(db, {
       itemId: item.id,
       sessionId: "ses_1",
       body: "Use CSV?",
       now: NOW + 50,
     });
     await orchestrator.onLinearEvent(event);
-    expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("answered");
-    expect((await getQuestion(sqliteDb(db), next.id))?.status).toBe("open");
+    expect((await getQuestion(db, question.id))?.status).toBe("answered");
+    expect((await getQuestion(db, next.id))?.status).toBe("open");
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("only one blocking question may be open on a session", async () => {
-  const { db, item, question } = await setup();
+  const { db, close, item, question } = await setup();
   try {
     await expect(
-      openQuestion(sqliteDb(db), {
+      openQuestion(db, {
         itemId: item.id,
         sessionId: "ses_1",
         body: "Use CSV?",
         now: NOW + 1,
       }),
     ).rejects.toThrow("already has an unanswered question");
-    expect((await findOpenQuestion(sqliteDb(db), "ses_1"))?.id).toBe(question.id);
+    expect((await findOpenQuestion(db, "ses_1"))?.id).toBe(question.id);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("a continuation write failure rolls back the answer and state transition", async () => {
-  const { db, item, question, orchestrator } = await setup();
+  const { db, close, item, question, orchestrator } = await setup();
   try {
-    db.run(`CREATE TRIGGER reject_resume BEFORE INSERT ON job
-      WHEN NEW.queue = 'run.resume' BEGIN SELECT RAISE(ABORT, 'resume unavailable'); END`);
-    await expect(orchestrator.onLinearEvent(prompt())).rejects.toThrow("resume unavailable");
-    expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
-    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("awaiting_input");
-    db.run("DROP TRIGGER reject_resume");
+    await seed(
+      db,
+      (q) =>
+        q.orm.execute(
+          sql`CREATE FUNCTION reject_resume() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'resume unavailable'; END $$ LANGUAGE plpgsql`,
+        ),
+      (q) =>
+        q.orm.execute(
+          sql`CREATE TRIGGER reject_resume BEFORE INSERT ON job FOR EACH ROW WHEN (NEW.queue = 'run.resume') EXECUTE FUNCTION reject_resume()`,
+        ),
+    );
+    const error = await orchestrator.onLinearEvent(prompt()).catch((e: unknown) => e);
+    expect(String((error as Error).cause)).toContain("resume unavailable");
+    expect((await getQuestion(db, question.id))?.status).toBe("open");
+    expect((await getWorkItem(db, item.id))?.state).toBe("awaiting_input");
+    await seed(db, (q) => q.orm.execute(sql`DROP TRIGGER reject_resume ON job`));
     await orchestrator.onLinearEvent(prompt());
-    expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("answered");
+    expect((await getQuestion(db, question.id))?.status).toBe("answered");
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("a Linear Stop pauses the item with its question open, and a reply restarts it", async () => {
-  const { db, item, question, orchestrator } = await setup(createFakeTracker([]));
+  const { db, close, item, question, orchestrator } = await setup(createFakeTracker([]));
   try {
     await orchestrator.onLinearEvent({ ...prompt(), body: null, signal: "stop" });
-    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("paused");
-    expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
-    expect(
-      (await listOutbox(sqliteDb(db))).map((row) => (row.payload as { body?: string }).body),
-    ).toContain("Paused. Reply here or re-delegate to continue.");
+    expect((await getWorkItem(db, item.id))?.state).toBe("paused");
+    expect((await getQuestion(db, question.id))?.status).toBe("open");
+    expect((await listOutbox(db)).map((row) => (row.payload as { body?: string }).body)).toContain(
+      "Paused. Reply here or re-delegate to continue.",
+    );
 
     await orchestrator.onLinearEvent(prompt(NOW + 500, "reply-1"));
-    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("queued");
-    expect((await getQuestion(sqliteDb(db), question.id))?.answer).toBeNull();
-    expect(await findOpenQuestion(sqliteDb(db), "ses_1")).toBeNull();
-    const resume = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
+    expect((await getWorkItem(db, item.id))?.state).toBe("queued");
+    expect((await getQuestion(db, question.id))?.answer).toBeNull();
+    expect(await findOpenQuestion(db, "ses_1")).toBeNull();
+    const resume = (await listJobs(db)).filter((job) => job.queue === JOB_KIND.resume);
     expect(resume).toHaveLength(1);
     expect(resume[0]!.payload).toMatchObject({
       reason: "follow_up",
       handoff: expect.stringContaining("Yes, include the archived rows"),
     });
   } finally {
-    db.close();
+    await close();
   }
 });
 
@@ -331,8 +342,8 @@ test("polling keeps activity creation and human identity distinct from viewer an
 });
 
 test("a polled prompt reaches answer delivery with normalized actor and creation time", async () => {
-  const { db, question, orchestrator } = await setup();
-  const inbox = createInboxStore(sqliteDb(db));
+  const { db, close, question, orchestrator } = await setup();
+  const inbox = createInboxStore(db);
   const delivered = Promise.withResolvers<void>();
   let wake = () => {};
   const poller = startCatchUpPoller({
@@ -381,41 +392,40 @@ test("a polled prompt reaches answer delivery with normalized actor and creation
   });
   try {
     await delivered.promise;
-    expect((await getQuestion(sqliteDb(db), question.id))?.answeredBy).toBe("human-1");
-    expect((await getQuestion(sqliteDb(db), question.id))?.answer).toBe("Yes");
+    expect((await getQuestion(db, question.id))?.answeredBy).toBe("human-1");
+    expect((await getQuestion(db, question.id))?.answer).toBe("Yes");
   } finally {
     poller.stop();
     await poller.settled;
-    db.close();
+    await close();
   }
 });
 
 test("a runner wait asked before a restart is answered by the next process without a resume", async () => {
-  const { db, item, question, orchestrator } = await setup();
+  const { db, close, item, question, orchestrator } = await setup();
   try {
-    await answerQuestion(db, question.id, { answer: "No", answeredBy: "human-1", now: NOW });
-    await applyWorkItemEvent(sqliteDb(db), item.id, "answer_received");
-    const wait = await ask(
-      db,
-      {
-        itemId: item.id,
-        runId: (await getWorkItem(sqliteDb(db), item.id))!.currentRunId,
-        sessionId: "ses_1",
-      },
-      "runner-wait",
-      "Move the task to another runner, or keep waiting?",
-      { options: ["Move to another runner", "Keep waiting"], now: NOW },
+    await db.transaction((q) =>
+      answerQuestionSteps(q, question.id, { answer: "No", answeredBy: "human-1", now: NOW }),
+    );
+    await applyWorkItemEvent(db, item.id, "answer_received");
+    const runId = (await getWorkItem(db, item.id))!.currentRunId;
+    const wait = await db.transaction((q) =>
+      askSteps(
+        q,
+        { itemId: item.id, runId, sessionId: "ses_1" },
+        "runner-wait",
+        "Move the task to another runner, or keep waiting?",
+        { options: ["Move to another runner", "Keep waiting"], now: NOW },
+      ),
     );
     expect(wait.status).toBe("asked");
     await orchestrator.onLinearEvent(prompt(NOW + 1, "keep-waiting"));
-    expect(await getQuestion(sqliteDb(db), wait.question.id)).toMatchObject({
+    expect(await getQuestion(db, wait.question.id)).toMatchObject({
       status: "answered",
       answeredBy: "human-1",
     });
-    expect(
-      (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume),
-    ).toHaveLength(0);
+    expect((await listJobs(db)).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(0);
   } finally {
-    db.close();
+    await close();
   }
 });

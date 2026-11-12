@@ -4,22 +4,22 @@ import {
   advanceLinearSessionGeneration,
   bindLinearSessionTask,
   getLinearSessionContext,
-  migrate,
-  openDatabase,
+  openPawsStore,
   recordLinearInstallation,
-  sqliteDb,
 } from "../src/db";
 import { createFakeTracker } from "../src/linear";
 import { refreshLinearNotificationContext } from "../src/loop";
 import { intakeDelegatedIssue } from "../src/intake";
 import { tempHome, migratedHome } from "./helpers";
+import { copyMigratedPglite } from "./pglite";
 
 const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
 
 test("child notifications refresh only their installation sessions and retain context after restart", async () => {
-  const path = join(tempHome(), "paws.db");
-  const db = openDatabase(path);
-  migrate(db);
+  const pgliteDir = join(tempHome(), "pglite");
+  await copyMigratedPglite(pgliteDir);
+  const open = await openPawsStore({ url: null, pgliteDir });
+  const db = open.store;
   const tracker = createFakeTracker([
     {
       linearIssueId: "parent",
@@ -29,15 +29,15 @@ test("child notifications refresh only their installation sessions and retain co
       subIssues: [{ linearIssueId: "child", identifier: "ENG-2", title: "Child" }],
     },
   ]);
-  const task = await intakeDelegatedIssue(sqliteDb(db), tracker, { linearIssueId: "parent" });
+  const task = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent" });
   if (!task.ok) throw new Error("Unexpected intake cycle");
-  await recordLinearInstallation(sqliteDb(db), {
+  await recordLinearInstallation(db, {
     ...scope,
     sessionId: "session",
     teamId: "team",
     observedAtMs: 1,
   });
-  await bindLinearSessionTask(sqliteDb(db), "session", task.delegation.id);
+  await bindLinearSessionTask(db, "session", task.delegation.id);
   tracker.issueContexts.set("child", {
     id: "child",
     teamId: "team",
@@ -54,33 +54,38 @@ test("child notifications refresh only their installation sessions and retain co
     notificationId: "notice",
     createdAtMs: 10,
   };
-  await refreshLinearNotificationContext(sqliteDb(db), tracker, {
+  await refreshLinearNotificationContext(db, tracker, {
     ...notification,
     organizationId: "other",
   });
-  expect(await getLinearSessionContext(sqliteDb(db), "session")).toBe("");
-  await refreshLinearNotificationContext(sqliteDb(db), tracker, notification);
-  expect(await getLinearSessionContext(sqliteDb(db), "session")).toContain("Child clarification");
-  expect(await getLinearSessionContext(sqliteDb(db), "session")).toContain("thumbsup");
+  expect(await getLinearSessionContext(db, "session")).toBe("");
+  await refreshLinearNotificationContext(db, tracker, notification);
+  expect(await getLinearSessionContext(db, "session")).toContain("Child clarification");
+  expect(await getLinearSessionContext(db, "session")).toContain("thumbsup");
   tracker.issueContexts.set("child", {
     id: "child",
     teamId: "team",
     issue: {},
     comments: [{ body: "Stale event" }],
   });
-  await refreshLinearNotificationContext(sqliteDb(db), tracker, {
+  await refreshLinearNotificationContext(db, tracker, {
     ...notification,
     createdAtMs: 9,
   });
-  expect(await getLinearSessionContext(sqliteDb(db), "session")).not.toContain("Stale event");
-  const original = await getLinearSessionContext(sqliteDb(db), "session");
+  expect(await getLinearSessionContext(db, "session")).not.toContain("Stale event");
+  const original = await getLinearSessionContext(db, "session");
   const pending = Promise.withResolvers<ReturnType<typeof tracker.issueContexts.get>>();
-  tracker.getIssueContext = async () => (await pending.promise)!;
-  const refresh = refreshLinearNotificationContext(sqliteDb(db), tracker, {
+  const reading = Promise.withResolvers<void>();
+  tracker.getIssueContext = async () => {
+    reading.resolve();
+    return (await pending.promise)!;
+  };
+  const refresh = refreshLinearNotificationContext(db, tracker, {
     ...notification,
     createdAtMs: 11,
   });
-  await advanceLinearSessionGeneration(sqliteDb(db), "session");
+  await reading.promise;
+  await advanceLinearSessionGeneration(db, "session");
   pending.resolve({
     id: "child",
     teamId: "team",
@@ -88,11 +93,11 @@ test("child notifications refresh only their installation sessions and retain co
     comments: [{ body: "Obsolete generation" }],
   });
   await refresh;
-  expect(await getLinearSessionContext(sqliteDb(db), "session")).toBe(original);
-  db.close();
-  const reopened = openDatabase(path);
-  expect(await getLinearSessionContext(sqliteDb(reopened), "session")).toBe(original);
-  reopened.close();
+  expect(await getLinearSessionContext(db, "session")).toBe(original);
+  await open.close();
+  const reopened = await openPawsStore({ url: null, pgliteDir });
+  expect(await getLinearSessionContext(reopened.store, "session")).toBe(original);
+  await reopened.close();
 });
 
 test.each(["context", "github-auth"])(

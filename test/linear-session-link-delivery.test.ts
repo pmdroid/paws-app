@@ -1,22 +1,16 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { FakeClock } from "../src/core";
-import {
-  enqueueOutbox,
-  getOutboxSteps,
-  migrate,
-  openDatabase,
-  OutboxDispatcher,
-  sqliteDb,
-} from "../src/db";
+import { enqueueOutbox, getOutboxSteps, openPawsStore, OutboxDispatcher } from "../src/db";
 import { createLinearTracker } from "../src/linear";
 import { deliverLinearOutbox } from "../src/loop";
-import { tempDb, tempHome } from "./helpers";
+import { tempHome } from "./helpers";
+import { copyMigratedPglite, tempStore } from "./pglite";
 
 test("persisted session link replacement, incremental removal and clearing reach GraphQL after reopen", async () => {
-  const path = join(tempHome(), "paws.db");
-  let db = openDatabase(path);
-  migrate(db);
+  const pgliteDir = join(tempHome(), "pglite");
+  await copyMigratedPglite(pgliteDir);
+  let open = await openPawsStore({ url: null, pgliteDir });
   const changes = [
     { externalUrls: [{ label: "Paws", url: "http://127.0.0.1:8787/status" }] },
     {
@@ -26,7 +20,7 @@ test("persisted session link replacement, incremental removal and clearing reach
     { externalUrls: [] },
   ];
   for (const [index, change] of changes.entries())
-    await enqueueOutbox(sqliteDb(db), {
+    await enqueueOutbox(open.store, {
       target: "linear",
       op: "linear.session.links",
       orderingKey: "session",
@@ -34,8 +28,8 @@ test("persisted session link replacement, incremental removal and clearing reach
       now: 1,
       payload: { sessionId: "session", identifier: "ENG-1", ...change },
     });
-  db.close();
-  db = openDatabase(path);
+  await open.close();
+  open = await openPawsStore({ url: null, pgliteDir });
   const sent: unknown[] = [];
   const tracker = createLinearTracker({
     async query(_query, variables) {
@@ -43,7 +37,7 @@ test("persisted session link replacement, incremental removal and clearing reach
       return { agentSessionUpdate: { success: true, agentSession: { id: "session" } } };
     },
   });
-  const dispatcher = new OutboxDispatcher(db, new FakeClock(1));
+  const dispatcher = new OutboxDispatcher(open.store, new FakeClock(1));
   dispatcher.setHandler((row, context) =>
     deliverLinearOutbox(row, tracker, async () => {}, context),
   );
@@ -51,7 +45,7 @@ test("persisted session link replacement, incremental removal and clearing reach
     while ((await dispatcher.tick()).length) await dispatcher.idle();
     expect(sent).toEqual(changes.map((input) => ({ id: "session", input })));
   } finally {
-    db.close();
+    await open.close();
   }
 });
 
@@ -65,7 +59,7 @@ test.each([
   { externalUrls: [], addedExternalUrls: [] },
   { externalUrls: [], removedExternalUrls: [] },
 ])("invalid session URL operation fails before transport: %j", async (change) => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   let sent = 0;
   const tracker = createLinearTracker({
     async query() {
@@ -74,7 +68,7 @@ test.each([
     },
   });
   try {
-    const id = await enqueueOutbox(sqliteDb(db), {
+    const id = await enqueueOutbox(db, {
       target: "linear",
       op: "linear.session.links",
       orderingKey: "session",
@@ -82,14 +76,10 @@ test.each([
       payload: { sessionId: "session", ...change },
     });
     await expect(
-      deliverLinearOutbox(
-        (await sqliteDb(db).run((q) => getOutboxSteps(q, id)))!,
-        tracker,
-        async () => {},
-      ),
+      deliverLinearOutbox((await db.run((q) => getOutboxSteps(q, id)))!, tracker, async () => {}),
     ).rejects.toThrow();
     expect(sent).toBe(0);
   } finally {
-    db.close();
+    await close();
   }
 });
