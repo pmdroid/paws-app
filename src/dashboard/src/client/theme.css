@@ -11,28 +11,69 @@
   font-display: swap;
 }
 
+@font-face {
+  font-family: "DM Mono";
+  src: url("../fonts/dm-mono.woff2") format("woff2");
+  font-weight: 400 500;
+  font-display: swap;
+}
+
 :root {
   color-scheme: light;
-  --background: #c0b4f1;
-  --secondary-background: #fdfdfb;
-  --main: #ff793e;
-  --foreground: #101317;
-  --main-foreground: #101317;
-  --border: #101317;
-  --ring: #5b3198;
-  --overlay: rgb(16 19 23 / 72%);
-  --shadow: 4px 4px 0 0 var(--border);
+  --background: #fafafa;
+  --secondary-background: #ffffff;
+  --main: #18181b;
+  --foreground: #09090b;
+  --main-foreground: #fafafa;
+  --muted-foreground: #52525b;
+  --subtle-foreground: #71717a;
+  --accent: #f4f4f5;
+  --border: #e4e4e7;
+  --ring: #18181b;
+  --overlay: rgb(0 0 0 / 40%);
+  --shadow: 0 0 #0000;
+  --state-running: #0369a1;
+  --state-verifying: #6d28d9;
+  --state-awaiting: #a16207;
+  --state-ok: #15803d;
+  --state-failed: #b91c1c;
+  --state-recovering: #c2410c;
+  --state-live: #15803d;
+  --state-warn: #b45309;
+}
+
+@media (max-width: 767px) {
+  :root {
+    --spacing-control: 2.75rem;
+  }
 }
 
 .dark {
   color-scheme: dark;
-  --background: #241c38;
-  --secondary-background: #312848;
-  --main: #ff793e;
-  --foreground: #f8f6f2;
-  --main-foreground: #101317;
-  --border: #101317;
-  --ring: #c0b4f1;
+  --background: #09090b;
+  --secondary-background: #0c0c0e;
+  --main: #fafafa;
+  --foreground: #fafafa;
+  --main-foreground: #09090b;
+  --muted-foreground: #a1a1aa;
+  --subtle-foreground: #80808a;
+  --accent: #27272a;
+  --border: #27272a;
+  --ring: #a1a1aa;
+  --overlay: rgb(0 0 0 / 60%);
+  --shadow: 0 0 #0000;
+  --state-running: #7dd3fc;
+  --state-verifying: #c4b5fd;
+  --state-awaiting: #fcd34d;
+  --state-ok: #86efac;
+  --state-failed: #fca5a5;
+  --state-recovering: #fdba74;
+  --state-live: #4ade80;
+  --state-warn: #fbbf24;
+}
+
+@theme {
+  --spacing-control: 2.25rem;
 }
 
 @theme inline {
@@ -41,20 +82,31 @@
   --color-main: var(--main);
   --color-foreground: var(--foreground);
   --color-main-foreground: var(--main-foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-subtle-foreground: var(--subtle-foreground);
+  --color-accent: var(--accent);
   --color-border: var(--border);
   --color-ring: var(--ring);
   --color-overlay: var(--overlay);
-  --color-gauge: #c0b4f1;
-  --spacing-control: 2.75rem;
-  --spacing-sidebar: 16rem;
-  --spacing-boxShadowX: 4px;
-  --spacing-boxShadowY: 4px;
-  --spacing-reverseBoxShadowX: -4px;
-  --spacing-reverseBoxShadowY: -4px;
-  --radius-base: 5px;
-  --font-weight-base: 500;
-  --font-weight-heading: 700;
+  --color-state-running: var(--state-running);
+  --color-state-verifying: var(--state-verifying);
+  --color-state-awaiting: var(--state-awaiting);
+  --color-state-ok: var(--state-ok);
+  --color-state-failed: var(--state-failed);
+  --color-state-recovering: var(--state-recovering);
+  --color-state-live: var(--state-live);
+  --color-state-warn: var(--state-warn);
+  --color-gauge: var(--accent);
+  --spacing-sidebar: 14.5rem;
+  --spacing-boxShadowX: 0px;
+  --spacing-boxShadowY: 0px;
+  --spacing-reverseBoxShadowX: 0px;
+  --spacing-reverseBoxShadowY: 0px;
+  --radius-base: 6px;
+  --font-weight-base: 400;
+  --font-weight-heading: 600;
   --font-sans: "Bricolage", sans-serif;
+  --font-mono: "DM Mono", ui-monospace, monospace;
   --shadow-shadow: var(--shadow);
 }
 
@@ -77,16 +129,16 @@
     display: none !important;
   }
   [data-issue-filter][aria-pressed="true"] {
-    background: var(--main);
-    color: var(--main-foreground);
+    background: var(--accent);
+    color: var(--foreground);
   }
   :focus-visible {
     outline: 2px solid var(--ring);
-    outline-offset: 4px;
+    outline-offset: 2px;
   }
   ::selection {
-    background: var(--main);
-    color: var(--main-foreground);
+    background: var(--accent);
+    color: var(--foreground);
   }
 }
 
