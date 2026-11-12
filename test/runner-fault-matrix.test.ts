@@ -418,8 +418,10 @@ async function runRemoteFault(fault: Fault) {
       undefined,
       terminated,
     );
+  const clock = { held: null as number | null, skipped: 0 };
   const backend = createRemoteAgentRunner({
     store: sqliteDb(db),
+    now: () => (clock.held ?? Date.now()) - clock.skipped,
     work,
     results,
     health,
@@ -593,6 +595,15 @@ async function runRemoteFault(fault: Fault) {
     });
   }
   async function checkpointThenHang(command: Extract<RunnerCommand, { type: "run" }>) {
+    clock.held = Date.now();
+    try {
+      await checkpoint(command);
+    } finally {
+      clock.skipped += Date.now() - clock.held;
+      clock.held = null;
+    }
+  }
+  async function checkpoint(command: Extract<RunnerCommand, { type: "run" }>) {
     const branch = db
       .query<{ branch: string }, [string]>("SELECT branch_name AS branch FROM work_item WHERE id=?")
       .get(command.itemId)!.branch;
