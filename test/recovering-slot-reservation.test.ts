@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, test } from "bun:test";
+import { and, eq } from "drizzle-orm";
 import { FakeClock, JOB_KIND, systemClock, setJournalSink, type Clock } from "../src/core";
 import {
   JobLoop,
@@ -18,8 +19,8 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
   setCurrentRun,
+  type Db,
   type Job,
-  sqliteDb,
 } from "../src/db";
 import { syncItemDependencies } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
@@ -33,7 +34,8 @@ import type { RunnerCommand } from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { migratedDatabase } from "./helpers";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const GITHUB_URL = "https://github.com/acme/fixture.git";
 const gitConfig = ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"] as const;
@@ -60,18 +62,18 @@ test("twenty recovering items fill six free slots in one tick and do not fail fo
       clock,
       lines,
       async assert(started, db) {
-        const pending = (await listJobs(sqliteDb(db))).filter(
+        const pending = (await listJobs(db)).filter(
           (job) => job.queue === JOB_KIND.resume && job.status === "pending",
         );
         expect(pending).toHaveLength(14);
         expect(new Set(pending.map((job) => job.runAt)).size).toBeGreaterThan(1);
         expect(started.size, lines.join("\n")).toBe(6);
         expect(
-          (await listWorkItems(sqliteDb(db))).filter((item) =>
+          (await listWorkItems(db)).filter((item) =>
             ["failed", "awaiting_input"].includes(item.state),
           ),
         ).toHaveLength(0);
-        const running = (await listWorkItems(sqliteDb(db))).filter((item) =>
+        const running = (await listWorkItems(db)).filter((item) =>
           started.has(item.linearIdentifier),
         );
         for (const item of running)
@@ -83,7 +85,7 @@ test("twenty recovering items fill six free slots in one tick and do not fail fo
   } finally {
     restore();
   }
-}, 90_000);
+}, 150_000);
 
 test("a failed preparation releases its reservation and the next recovering item gets the slot", async () => {
   const lines: string[] = [];
@@ -100,7 +102,7 @@ test("a failed preparation releases its reservation and the next recovering item
       lines,
       ready: async (started, db) =>
         started.size === 1 &&
-        (await listWorkItems(sqliteDb(db))).some((item) => item.state === "awaiting_input"),
+        (await listWorkItems(db)).some((item) => item.state === "awaiting_input"),
       wrap(placement) {
         return {
           ...placement,
@@ -116,9 +118,7 @@ test("a failed preparation releases its reservation and the next recovering item
       async assert(started, db) {
         expect(started.size, lines.join("\n")).toBe(1);
         expect(lines.join("\n")).not.toContain("Waiting for a free slot");
-        const failed = (await listWorkItems(sqliteDb(db))).filter(
-          (item) => item.state === "awaiting_input",
-        );
+        const failed = (await listWorkItems(db)).filter((item) => item.state === "awaiting_input");
         expect(failed.map((item) => item.linearIdentifier)).toHaveLength(1);
         expect(started.has(failed[0]!.linearIdentifier)).toBe(false);
       },
@@ -126,7 +126,7 @@ test("a failed preparation releases its reservation and the next recovering item
   } finally {
     restore();
   }
-}, 60_000);
+}, 150_000);
 
 async function runRecovering(input: {
   count: number;
@@ -137,8 +137,8 @@ async function runRecovering(input: {
   placementPollMs?: number;
   random?: () => number;
   wrap?: (placement: RunnerPlacement) => RunnerPlacement;
-  ready?: (started: Set<string>, db: ReturnType<typeof migratedDatabase>) => Promise<boolean>;
-  assert: (started: Set<string>, db: ReturnType<typeof migratedDatabase>) => void | Promise<void>;
+  ready?: (started: Set<string>, db: Db) => Promise<boolean>;
+  assert: (started: Set<string>, db: Db) => void | Promise<void>;
 }) {
   const root = mkdtempSync(join(tmpdir(), "paws-recovering-slots-"));
   const source = join(root, "source");
@@ -174,26 +174,30 @@ async function runRecovering(input: {
     GIT_CONFIG_VALUE_0: GITHUB_URL,
   });
 
-  const db = migratedDatabase(join(root, "paws.db"));
+  const { db, close } = await tempStore();
   const now = input.clock.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
-  db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, "acme/fixture", "team"]);
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspaceRepository)
+      .values({ workspaceId: workspace.id, repository: "acme/fixture", teamId: "team" }),
+  );
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -210,23 +214,32 @@ async function runRecovering(input: {
     ...enrollment,
     token: (await control.createEnrollment(owner, enrollment)).token,
   });
-  db.run("UPDATE runner SET status='active', last_seen_at=? WHERE id=?", [Date.now(), runnerId]);
-  db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);
-  db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [runnerId]);
-
-  db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [runnerId]);
+  await seed(
+    db,
+    (q) =>
+      q.orm
+        .update(q.t.runner)
+        .set({ status: "active", lastSeenAt: Date.now() })
+        .where(eq(q.t.runner.id, runnerId)),
+    (q) => q.orm.insert(q.t.runnerPolicy).values({ runnerId }),
+    (q) =>
+      q.orm.insert(q.t.runnerAgentPolicy).values([
+        { runnerId, agent: "claude", ready: 1 },
+        { runnerId, agent: "codex", ready: 1 },
+      ]),
+  );
 
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
   await work.heartbeat(runnerId, input.capacity);
-  const results = createRunnerResults({ store: sqliteDb(db), work });
-  const health = createRunnerHealth({ store: sqliteDb(db), work });
+  const results = createRunnerResults({ store: db, work });
+  const health = createRunnerHealth({ store: db, work });
   const prepared = new Map<string, Set<string>>();
-  const basePlacement = createRunnerPlacement({ store: sqliteDb(db) });
+  const basePlacement = createRunnerPlacement({ store: db });
   const trackedPlacement: RunnerPlacement = {
     ...basePlacement,
     *startedSteps(q, value) {
@@ -240,7 +253,7 @@ async function runRecovering(input: {
   };
   const placement = input.wrap?.(trackedPlacement) ?? trackedPlacement;
   const backend = createRemoteAgentRunner({
-    store: sqliteDb(db),
+    store: db,
     work,
     results,
     health,
@@ -266,7 +279,7 @@ async function runRecovering(input: {
   const jobs = new JobLoop(db, input.clock, { concurrency: input.count, pollMs: 5 });
   const outbox = new OutboxDispatcher(db, input.clock);
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     jobs,
     outbox,
     clock: input.clock,
@@ -310,7 +323,12 @@ async function runRecovering(input: {
   const runner = (async () => {
     while (!sim.stopped) {
       for (const simulatedRunnerId of runnerIds) {
-        db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [Date.now(), simulatedRunnerId]);
+        await seed(db, (q) =>
+          q.orm
+            .update(q.t.runner)
+            .set({ lastSeenAt: Date.now() })
+            .where(eq(q.t.runner.id, simulatedRunnerId)),
+        );
         await work.heartbeat(simulatedRunnerId, input.capacity);
         for (const envelope of await work.commands(simulatedRunnerId)) {
           const command = JSON.parse(
@@ -330,7 +348,7 @@ async function runRecovering(input: {
               models: [{ id: "fixture-implement-model", name: "Fixture" }],
             });
           if (command.type === "run") {
-            const item = (await listWorkItems(sqliteDb(db))).find(
+            const item = (await listWorkItems(db)).find(
               (row) => row.currentRunId === command.runId,
             );
             if (item) started.add(item.linearIdentifier);
@@ -359,10 +377,8 @@ async function runRecovering(input: {
         updatedAtMs: Date.now(),
         payload: "{}",
       });
-      const item = (await listWorkItems(sqliteDb(db))).find(
-        (row) => row.sessionKey === `session-${index}`,
-      )!;
-      await recordLinearInstallation(sqliteDb(db), {
+      const item = (await listWorkItems(db)).find((row) => row.sessionKey === `session-${index}`)!;
+      await recordLinearInstallation(db, {
         organizationId: "org",
         oauthClientId: "app",
         appUserId: "app-user",
@@ -370,11 +386,13 @@ async function runRecovering(input: {
         teamId: "team",
         observedAtMs: now,
       });
-      await bindLinearSessionTask(sqliteDb(db), `session-${index}`, item.delegationId, {
+      await bindLinearSessionTask(db, `session-${index}`, item.delegationId, {
         actorId: "owner",
       });
-      db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, item.id]);
-      await syncItemDependencies(sqliteDb(db), {
+      await seed(db, (q) =>
+        q.orm.update(q.t.workItem).set({ ownerUserId: userId }).where(eq(q.t.workItem.id, item.id)),
+      );
+      await syncItemDependencies(db, {
         itemId: item.id,
         workspaceId: workspace.id,
         expectedGeneration: 0,
@@ -390,14 +408,16 @@ async function runRecovering(input: {
       });
       await recover(db, item.id, input.clock.now(), input.maxAttempts ?? 10);
     }
-    db.run("UPDATE job SET status='cancelled', finished_at=? WHERE queue=? AND status='pending'", [
-      input.clock.now(),
-      JOB_KIND.start,
-    ]);
+    await seed(db, (q) =>
+      q.orm
+        .update(q.t.job)
+        .set({ status: "cancelled", finishedAt: input.clock.now() })
+        .where(and(eq(q.t.job.queue, JOB_KIND.start), eq(q.t.job.status, "pending"))),
+    );
     loop = jobs.run(controller.signal, (ms) => Bun.sleep(ms));
-    const deadline = Date.now() + 45_000;
+    const deadline = Date.now() + 120_000;
     const parked = async () =>
-      (await listJobs(sqliteDb(db))).filter(
+      (await listJobs(db)).filter(
         (job) => job.queue === JOB_KIND.resume && job.status === "pending",
       ).length;
     const settled = async () =>
@@ -411,22 +431,18 @@ async function runRecovering(input: {
       started: [...started],
       parked: await parked(),
       jobs: await Promise.all(
-        (await listJobs(sqliteDb(db)))
+        (await listJobs(db))
           .filter((job) => job.queue === JOB_KIND.resume)
           .map((job) => resumeLine(db, job)),
       ),
-      items: (await listWorkItems(sqliteDb(db))).map(
-        (item) => `${item.linearIdentifier}:${item.state}`,
-      ),
+      items: (await listWorkItems(db)).map((item) => `${item.linearIdentifier}:${item.state}`),
       lines: input.lines,
     });
     expect(started.size, detail).toBe(Math.min(input.count, input.capacity));
     if (input.clock instanceof FakeClock) {
       expect(await parked(), detail).toBe(input.count - input.capacity);
     }
-    for (const item of (await listWorkItems(sqliteDb(db))).filter((row) =>
-      started.has(row.linearIdentifier),
-    ))
+    for (const item of (await listWorkItems(db)).filter((row) => started.has(row.linearIdentifier)))
       expect([...(prepared.get(item.id) ?? [])].sort()).toEqual(["implementer", "reviewer"]);
     await input.assert(started, db);
   } finally {
@@ -435,22 +451,17 @@ async function runRecovering(input: {
     await runner;
     await orchestrator.shutdown().catch(() => undefined);
     await loop;
-    db.close();
+    await close();
     rmSync(root, { recursive: true, force: true });
   }
 }
 
-async function recover(
-  db: ReturnType<typeof migratedDatabase>,
-  itemId: string,
-  now: number,
-  maxAttempts: number,
-) {
-  await applyWorkItemEvent(sqliteDb(db), itemId, "dispatched");
-  const run = await insertRun(sqliteDb(db), { itemId, now, status: "active" });
-  await setCurrentRun(sqliteDb(db), itemId, run.id);
-  await applyWorkItemEvent(sqliteDb(db), itemId, "lease_expired");
-  await enqueueJob(sqliteDb(db), {
+async function recover(db: Db, itemId: string, now: number, maxAttempts: number) {
+  await applyWorkItemEvent(db, itemId, "dispatched");
+  const run = await insertRun(db, { itemId, now, status: "active" });
+  await setCurrentRun(db, itemId, run.id);
+  await applyWorkItemEvent(db, itemId, "lease_expired");
+  await enqueueJob(db, {
     queue: JOB_KIND.resume,
     payload: { itemId, runId: run.id, reason: "transient_failure", retry: 0 },
     runAt: now,
@@ -459,9 +470,9 @@ async function recover(
   });
 }
 
-async function resumeLine(db: ReturnType<typeof migratedDatabase>, job: Job): Promise<string> {
+async function resumeLine(db: Db, job: Job): Promise<string> {
   const itemId = (job.payload as { itemId?: string }).itemId ?? "";
-  return `${(await getWorkItem(sqliteDb(db), itemId))?.linearIdentifier ?? itemId}:${job.status}`;
+  return `${(await getWorkItem(db, itemId))?.linearIdentifier ?? itemId}:${job.status}`;
 }
 
 function receipt(command: RunnerCommand) {
