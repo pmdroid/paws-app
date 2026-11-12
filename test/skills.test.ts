@@ -11,17 +11,14 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Database } from "bun:sqlite";
 import {
   getSkill,
   listHooks,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordRunnerSkills,
   saveHook,
   syncWorkspaceMember,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import { tarModes, withTarModes } from "../src/runner-protocol";
 import { handleSkillSettingsRequest, type SkillSettingsOptions } from "../src/settings";
@@ -39,6 +36,7 @@ import {
   updateSkill,
   type SkillRegistry,
 } from "../src/skills";
+import { tempStore } from "./pglite";
 
 const IMPECCABLE_SCRIPT = '"${CLAUDE_PROJECT_DIR}/.claude/skills/impeccable/scripts/impeccable"';
 const IMPECCABLE_HOOK = `[ ! -f ${IMPECCABLE_SCRIPT} ] || ${IMPECCABLE_SCRIPT} hook`;
@@ -47,16 +45,16 @@ const SKILL_HOOK =
 const SKILL = "---\nname: impeccable\ndescription: Design polish\n---\nUse care.\n";
 
 let root: string;
-let db: Database;
+let db: Db;
+let close: () => Promise<void>;
 
-beforeEach(() => {
+beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), "paws-skills-"));
-  db = openDatabase(join(root, "paws.db"));
-  migrate(db);
+  ({ db, close } = await tempStore());
 });
 
-afterEach(() => {
-  db.close();
+afterEach(async () => {
+  await close();
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -103,7 +101,7 @@ function npmRegistry(releases: Record<string, Uint8Array>) {
 }
 
 function registry(resolver: SkillRegistry["resolver"], patch: Partial<SkillRegistry> = {}) {
-  return { store: sqliteDb(db), root: join(root, "skills"), resolver, now: 1, ...patch };
+  return { store: db, root: join(root, "skills"), resolver, now: 1, ...patch };
 }
 
 async function bundleFiles(path: string): Promise<Record<string, string>> {
@@ -516,7 +514,7 @@ describe("skill sources", () => {
     expect(addSkill(registry(resolver), { kind: "npm", package: "impeccable" })).rejects.toThrow(
       "does not match its npm checksum",
     );
-    expect(await getSkill(sqliteDb(db), "impeccable")).toBeNull();
+    expect(await getSkill(db, "impeccable")).toBeNull();
   });
 
   test("a git URL with a ref and subfolder resolves to the commit", async () => {
@@ -668,7 +666,7 @@ describe("skill sources", () => {
       url: "https://example.test/skills.git",
     });
     expect(refused).rejects.toThrow("1000 files");
-    expect(await getSkill(sqliteDb(db), "impeccable")).toBeNull();
+    expect(await getSkill(db, "impeccable")).toBeNull();
   });
 
   test("a source without SKILL.md is refused", async () => {
@@ -677,7 +675,7 @@ describe("skill sources", () => {
     expect(addSkill(registry(resolver), { kind: "npm", package: "impeccable" })).rejects.toThrow(
       "no SKILL.md",
     );
-    expect(await getSkill(sqliteDb(db), "impeccable")).toBeNull();
+    expect(await getSkill(db, "impeccable")).toBeNull();
     expect(existsSync(join(root, "skills", "impeccable"))).toBe(false);
   });
 
@@ -692,7 +690,7 @@ describe("skill sources", () => {
     });
     expect(refused).rejects.toThrow("bundle limit");
     expect(refused).rejects.toMatchObject({ status: 413 });
-    expect(await getSkill(sqliteDb(db), "impeccable")).toBeNull();
+    expect(await getSkill(db, "impeccable")).toBeNull();
   });
 });
 
@@ -706,13 +704,13 @@ describe("skill pins", () => {
 
     // Nothing moves on its own: a newer release only lands through Update.
     releases["2.5.0"] = await tarball({ "SKILL.md": `${SKILL}\nNew rules.` });
-    expect((await getSkill(sqliteDb(db), "impeccable"))!.version).toBe("2.4.0");
+    expect((await getSkill(db, "impeccable"))!.version).toBe("2.4.0");
     const { before, after } = await updateSkill(registry(resolver, { now: 2 }), "impeccable");
 
     expect(before.version).toBe("2.4.0");
     expect(after).toMatchObject({ version: "2.5.0", createdAt: 1, updatedAt: 2 });
     expect(after.sha256).not.toBe(first.sha256);
-    expect(await getSkill(sqliteDb(db), "impeccable")).toEqual(after);
+    expect(await getSkill(db, "impeccable")).toEqual(after);
     expect(existsSync(join(root, "skills", "impeccable", "2.5.0", SKILL_BUNDLE_FILE))).toBe(true);
     expect(existsSync(join(root, "skills", "impeccable", "2.4.0"))).toBe(false);
 
@@ -722,23 +720,27 @@ describe("skill pins", () => {
 
   test("removing a skill marks it for removal on the runners", async () => {
     await addSkill(registry(fakeSkillResolver()), { kind: "npm", package: "impeccable" });
-    const removed = await removeSkill({ store: sqliteDb(db), now: 5 }, "fake");
+    const removed = await removeSkill({ store: db, now: 5 }, "fake");
     expect(removed.removedAt).toBe(5);
-    await expect(removeSkill({ store: sqliteDb(db), now: 6 }, "fake")).rejects.toThrow(
-      "No skill named fake",
-    );
+    await expect(removeSkill({ store: db, now: 6 }, "fake")).rejects.toThrow("No skill named fake");
   });
 
   test("a removed skill is forgotten once no runner reports it", async () => {
     await addSkill(registry(fakeSkillResolver()), { kind: "npm", package: "impeccable" });
-    const userId = await putWorkspaceUser(sqliteDb(db), {
+    const userId = await putWorkspaceUser(db, {
       id: "user-1",
       linearUserId: "user-linear",
       name: "Owner",
       email: "owner@example.invalid",
     });
-    db.run("INSERT INTO workspace VALUES('ws-1','org-1','Workspace',1)");
-    await syncWorkspaceMember(sqliteDb(db), {
+    await db.run((q) =>
+      q.exec(
+        q.orm
+          .insert(q.t.workspace)
+          .values({ id: "ws-1", linearOrganizationId: "org-1", name: "Workspace", createdAt: 1 }),
+      ),
+    );
+    await syncWorkspaceMember(db, {
       workspaceId: "ws-1",
       userId,
       role: "admin",
@@ -747,20 +749,29 @@ describe("skill pins", () => {
       now: 1,
     });
     for (const id of ["runner-1", "runner-2"])
-      db.run(
-        "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,'ws-1',?,?,'active',1,1)",
-        [id, userId, id],
+      await db.run((q) =>
+        q.exec(
+          q.orm.insert(q.t.runner).values({
+            id,
+            workspaceId: "ws-1",
+            ownerUserId: userId,
+            name: id,
+            status: "active",
+            createdAt: 1,
+            lastSeenAt: 1,
+          }),
+        ),
       );
     const installed = [
       { name: "fake", version: "1.0.0", sha256: "a", status: "installed" as const },
     ];
-    await recordRunnerSkills(sqliteDb(db), "runner-1", installed, 2);
-    await recordRunnerSkills(sqliteDb(db), "runner-2", installed, 2);
-    await removeSkill({ store: sqliteDb(db), now: 5 }, "fake");
-    await recordRunnerSkills(sqliteDb(db), "runner-1", [], 6);
-    expect((await getSkill(sqliteDb(db), "fake"))?.removedAt).toBe(5);
-    await recordRunnerSkills(sqliteDb(db), "runner-2", [], 7);
-    expect(await getSkill(sqliteDb(db), "fake")).toBeNull();
+    await recordRunnerSkills(db, "runner-1", installed, 2);
+    await recordRunnerSkills(db, "runner-2", installed, 2);
+    await removeSkill({ store: db, now: 5 }, "fake");
+    await recordRunnerSkills(db, "runner-1", [], 6);
+    expect((await getSkill(db, "fake"))?.removedAt).toBe(5);
+    await recordRunnerSkills(db, "runner-2", [], 7);
+    expect(await getSkill(db, "fake")).toBeNull();
   });
 });
 
@@ -781,7 +792,7 @@ type Listing = {
 describe("skill settings API", () => {
   const audit: [string, string][] = [];
   const options = (patch: Partial<SkillSettingsOptions> = {}): SkillSettingsOptions => ({
-    store: sqliteDb(db),
+    store: db,
     root: join(root, "skills"),
     resolver: fakeSkillResolver(),
     csrfToken: "csrf",
@@ -893,7 +904,7 @@ describe("skill settings API", () => {
       ),
     );
     expect(listing.error).toBeUndefined();
-    expect((await getSkill(sqliteDb(db), "fake"))!.source).toEqual({
+    expect((await getSkill(db, "fake"))!.source).toEqual({
       kind: "git",
       url: "https://github.com/pbakaus/impeccable",
       ref: "main",
@@ -944,7 +955,7 @@ describe("skill settings API", () => {
         hooks: [],
       },
     ]);
-    expect(await getSkill(sqliteDb(db), "lint")).toBeNull();
+    expect(await getSkill(db, "lint")).toBeNull();
 
     const added = await read(
       await handleSkillSettingsRequest(
@@ -953,7 +964,7 @@ describe("skill settings API", () => {
       ),
     );
     expect(added.notice).toBe(`Added lint ${"2".repeat(7)}, review ${"2".repeat(7)}.`);
-    expect((await getSkill(sqliteDb(db), "review"))!.source).toEqual({
+    expect((await getSkill(db, "review"))!.source).toEqual({
       kind: "git",
       url: "https://github.com/pbakaus/impeccable",
       subfolder: "skills/review",
@@ -993,7 +1004,11 @@ describe("skill settings API", () => {
 
     expect(added.error).toBeUndefined();
     expect(added.notice).toMatch(/^Added impeccable [0-9a-f]{7} and 2 hooks\.$/);
-    expect((await listHooks(sqliteDb(db))).map(({ id: _id, ...hook }) => hook)).toEqual([
+    expect(
+      (await listHooks(db))
+        .map(({ id: _id, ...hook }) => hook)
+        .sort((a, b) => a.event.localeCompare(b.event)),
+    ).toEqual([
       {
         event: "session_start",
         matcher: null,
@@ -1039,7 +1054,7 @@ describe("skill settings API", () => {
 
     for (let index = 0; index < 18; index += 1)
       await saveHook(
-        sqliteDb(db),
+        db,
         {
           id: `hook_${index}`,
           event: "stop",
@@ -1056,8 +1071,8 @@ describe("skill settings API", () => {
     expect((await read(full)).error).toBe(
       "Paws runs at most 20 hooks. Remove some, or add fewer of this skill's hooks.",
     );
-    expect(await getSkill(sqliteDb(db), "impeccable")).toBeNull();
-    expect(await listHooks(sqliteDb(db))).toHaveLength(18);
+    expect(await getSkill(db, "impeccable")).toBeNull();
+    expect(await listHooks(db)).toHaveLength(18);
     expect(audit).toEqual([]);
   });
 
@@ -1098,7 +1113,7 @@ describe("skill settings API", () => {
     });
     const listing = await read(await handleSkillSettingsRequest(request, options()));
     expect(listing.error).toBeUndefined();
-    const skill = (await getSkill(sqliteDb(db), "polish"))!;
+    const skill = (await getSkill(db, "polish"))!;
     expect(skill).toMatchObject({
       source: { kind: "upload", folder: "polish" },
       agents: ["codex"],

@@ -1,5 +1,4 @@
-import { expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
+import { afterEach, expect, test } from "bun:test";
 import { join } from "node:path";
 import { JOB_KIND, type Clock } from "../src/core";
 import {
@@ -15,34 +14,47 @@ import {
   insertQueuedItem,
   JobLoop,
   listJobs,
-  migrate,
-  openDatabase,
+  openPawsStore,
   OutboxDispatcher,
   registerInstance,
   submitCommand,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import { Orchestrator } from "../src/loop";
 import { tempHome } from "./helpers";
+import { pgliteServer } from "./pglite";
 
 type LiveTurn = { controller: AbortController; finish(): void };
 
 const clock: Clock = { now: () => Date.now(), mono: () => performance.now() };
 
-async function paws(path: string, root: string, name: string, poll = true) {
-  const db = openDatabase(path);
-  const self = await registerInstance(sqliteDb(db), {
+const cleanups: (() => Promise<void>)[] = [];
+
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+});
+
+async function store(url: string): Promise<Db> {
+  const opened = await openPawsStore({ url, pgliteDir: "" });
+  cleanups.push(opened.close);
+  return opened.store;
+}
+
+async function paws(url: string, root: string, name: string, poll = true) {
+  const raw = await store(url);
+  const db = { ...raw };
+  const self = await registerInstance(db, {
     role: "all",
     host: `acme-${name}`,
     version: null,
     now: Date.now(),
   });
-  bindInstance(sqliteDb(db), self.id);
+  bindInstance(db, self.id);
   const orchestrator = new Orchestrator({
-    store: sqliteDb(db),
+    store: db,
     jobs: new JobLoop(db, clock),
     clock,
-    outbox: new OutboxDispatcher(db, clock),
+    outbox: new OutboxDispatcher(raw, clock, { store: db }),
     pawsRoot: join(root, name),
     home: join(root, name),
     instanceId: self.id,
@@ -66,33 +78,34 @@ async function paws(path: string, root: string, name: string, poll = true) {
     },
     close() {
       clearInterval(timer);
-      db.close();
     },
   };
 }
 
 async function twoInstances(poll = true) {
   const root = tempHome();
-  const path = join(root, "paws.db");
-  const setup = openDatabase(path);
-  migrate(setup);
-  setup.close();
-  return { a: await paws(path, root, "a", poll), b: await paws(path, root, "b", poll) };
+  const server = await pgliteServer();
+  cleanups.push(server.close);
+  return {
+    url: server.url,
+    a: await paws(server.url, root, "a", poll),
+    b: await paws(server.url, root, "b", poll),
+  };
 }
 
-async function runningItem(db: Database, id: string, owner: string): Promise<void> {
+async function runningItem(db: Db, id: string, owner: string): Promise<void> {
   await insertQueuedItem(db, { id, sessionKey: `${id}-session`, now: Date.now() });
-  const { run } = await beginImplementRun(sqliteDb(db), id, Date.now());
-  await claimRun(sqliteDb(db), run.id, owner);
+  const { run } = await beginImplementRun(db, id, Date.now());
+  await claimRun(db, run.id, owner);
 }
 
 async function stop(
-  db: Database,
+  db: Db,
   orchestrator: Orchestrator,
   itemId: string,
   source: "dashboard" | "linear" = "dashboard",
 ) {
-  return submitCommand(sqliteDb(db), orchestrator.bus, {
+  return submitCommand(db, orchestrator.bus, {
     type: "stop",
     source,
     itemId,
@@ -108,20 +121,20 @@ test("a stop received by instance B aborts the turn on instance A, which owns th
     const started = performance.now();
 
     expect(await stop(b.db, b.orchestrator, "acme-1")).toEqual({ applied: true });
-    expect((await getWorkItem(sqliteDb(b.db), "acme-1"))?.state).toBe("cancelled");
+    expect((await getWorkItem(b.db, "acme-1"))?.state).toBe("cancelled");
     expect(turn.controller.signal.aborted).toBe(false);
 
     await new Promise<void>((resolve) =>
       turn.controller.signal.addEventListener("abort", () => resolve(), { once: true }),
     );
     expect(performance.now() - started).toBeLessThan(2_000);
-    const deliveries = (await listJobs(sqliteDb(a.db))).filter(
+    const deliveries = (await listJobs(a.db)).filter(
       (job) => job.queue === commandDeliveryQueue(a.id),
     );
     expect(deliveries.map((job) => job.status)).toEqual(["done"]);
-    expect(
-      (await listJobs(sqliteDb(a.db))).some((job) => job.queue === commandDeliveryQueue(b.id)),
-    ).toBe(false);
+    expect((await listJobs(a.db)).some((job) => job.queue === commandDeliveryQueue(b.id))).toBe(
+      false,
+    );
   } finally {
     a.close();
     b.close();
@@ -137,7 +150,7 @@ test("a stop for a run on the receiving instance aborts its turn at once and add
     expect(await stop(a.db, a.orchestrator, "acme-2")).toEqual({ applied: true });
     expect(turn.controller.signal.aborted).toBe(true);
     expect(
-      (await listJobs(sqliteDb(a.db))).filter(
+      (await listJobs(a.db)).filter(
         (job) =>
           job.queue === commandDeliveryQueue(a.id) || job.queue === commandDeliveryQueue(b.id),
       ),
@@ -158,14 +171,14 @@ test("the owner's delivery row commits with the stop itself, before any bus emit
       itemId: "acme-3",
       requestedAt: Date.now(),
     };
-    expect(await applyLinearCommand(sqliteDb(b.db), command)).toEqual({ applied: true });
-    const delivery = (await listJobs(sqliteDb(a.db))).filter(
+    expect(await applyLinearCommand(b.db, command)).toEqual({ applied: true });
+    const delivery = (await listJobs(a.db)).filter(
       (job) => job.queue === commandDeliveryQueue(a.id),
     );
     expect(delivery.map((job) => job.status)).toEqual(["pending"]);
     expect(delivery[0]?.payload).toEqual({
       command,
-      stoppedAtVersion: (await getWorkItem(sqliteDb(a.db), "acme-3"))!.version,
+      stoppedAtVersion: (await getWorkItem(a.db, "acme-3"))!.version,
     });
   } finally {
     a.close();
@@ -179,8 +192,8 @@ test("a delayed stop aborts the turn it stopped and leaves a turn started after 
     await runningItem(a.db, "acme-4", a.id);
     const stopped = await a.startTurn("acme-4", "acme-4-old");
     expect(await stop(b.db, b.orchestrator, "acme-4", "linear")).toEqual({ applied: true });
-    expect((await getWorkItem(sqliteDb(b.db), "acme-4"))?.state).toBe("paused");
-    await applyWorkItemEvent(sqliteDb(b.db), "acme-4", "resume");
+    expect((await getWorkItem(b.db, "acme-4"))?.state).toBe("paused");
+    await applyWorkItemEvent(b.db, "acme-4", "resume");
     const replacement = await a.startTurn("acme-4", "acme-4-new");
 
     expect(await a.orchestrator.deliverInstanceCommands()).toBe(1);
@@ -193,23 +206,23 @@ test("a delayed stop aborts the turn it stopped and leaves a turn started after 
 });
 
 test("a queued stop forwards to the run's owner through the store the orchestrator is bound to", async () => {
-  const { a } = await twoInstances(false);
+  const { a, url } = await twoInstances(false);
   const root = tempHome();
-  const db = openDatabase(join(a.db.filename));
-  const store = { ...sqliteDb(db) };
-  const self = await registerInstance(store, {
+  const raw = await store(url);
+  const db = { ...raw };
+  const self = await registerInstance(db, {
     role: "all",
     host: "acme-store",
     version: null,
     now: Date.now(),
   });
-  bindInstance(store, self.id);
-  const jobs = new JobLoop(db, clock, { store });
+  bindInstance(db, self.id);
+  const jobs = new JobLoop(raw, clock, { store: db });
   const orchestrator = new Orchestrator({
-    store,
+    store: db,
     jobs,
     clock,
-    outbox: new OutboxDispatcher(db, clock, { store }),
+    outbox: new OutboxDispatcher(raw, clock, { store: db }),
     pawsRoot: join(root, "store"),
     home: join(root, "store"),
     instanceId: self.id,
@@ -219,21 +232,20 @@ test("a queued stop forwards to the run's owner through the store the orchestrat
   });
   try {
     await runningItem(a.db, "acme-5", a.id);
-    await enqueueCommand(sqliteDb(db), {
+    await enqueueCommand(db, {
       type: "stop",
       source: "dashboard",
       itemId: "acme-5",
       requestedAt: Date.now(),
     });
     expect((await jobs.tick([JOB_KIND.command]))?.queue).toBe(JOB_KIND.command);
-    expect(orchestrator.store).toBe(store);
-    expect((await getWorkItem(sqliteDb(db), "acme-5"))?.state).toBe("cancelled");
-    const deliveries = (await listJobs(sqliteDb(db))).filter(
+    expect(orchestrator.store).toBe(db);
+    expect((await getWorkItem(db, "acme-5"))?.state).toBe("cancelled");
+    const deliveries = (await listJobs(db)).filter(
       (job) => job.queue === commandDeliveryQueue(a.id),
     );
     expect(deliveries.map((job) => job.status)).toEqual(["pending"]);
   } finally {
     a.close();
-    db.close();
   }
 });

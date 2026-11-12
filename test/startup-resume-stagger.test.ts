@@ -13,12 +13,10 @@ import {
   getWorkItem,
   listJobs,
   listWorkItems,
-  migrate,
-  openDatabase,
   prepareShutdown,
   recoverOnStartup,
-  sqliteDb,
   syncSteps,
+  type Db,
 } from "../src/db";
 import {
   createFakeLinearAccessReads,
@@ -28,6 +26,7 @@ import {
 } from "../src/linear";
 import { LinearTaskAccess, attachOrchestrator } from "../src/loop";
 import { workspaceAdmission } from "./fake-workspace";
+import { tempStore } from "./pglite";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -36,8 +35,7 @@ const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app"
 
 test("a restart with four recovering tasks resumes them one at a time, oldest first", async () => {
   const layout = await repoLayout();
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const tracker = createFakeTracker(
     ISSUES.map((id, index) => ({
       linearIssueId: id,
@@ -70,7 +68,7 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
   const attach = (clock: Clock) => {
     const jobs = new JobLoop(db, clock, { concurrency: 4 });
     let orchestrator: ReturnType<typeof attachOrchestrator>;
-    const gate = new LinearTaskAccess(sqliteDb(db), {
+    const gate = new LinearTaskAccess(db, {
       access: access.adapter,
       lifecycle,
       oauthClientId: scope.oauthClientId,
@@ -79,7 +77,7 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
       interruptSession: (sessionId) => orchestrator.interruptLinearSession(sessionId),
     });
     orchestrator = attachOrchestrator({
-      store: sqliteDb(db),
+      store: db,
       admission: workspaceAdmission(db),
       jobs,
       outbox: new OutboxDispatcher(db, systemClock),
@@ -149,9 +147,9 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
     firstStop.abort();
     await first.orchestrator.shutdown().catch(() => undefined);
     await firstLoop;
-    await prepareShutdown(sqliteDb(db));
+    await prepareShutdown(db);
     expect(
-      (await listWorkItems(sqliteDb(db))).map((item) => item.state),
+      (await listWorkItems(db)).map((item) => item.state),
       await detail(db),
     ).toEqual(ISSUES.map(() => "recovering"));
 
@@ -171,11 +169,11 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
       }
     };
     const clock = new FakeClock(Date.now());
-    await recoverOnStartup(sqliteDb(db), clock.now());
+    await recoverOnStartup(db, clock.now());
     second = attach(clock);
     secondLoop = second.jobs.run(secondStop.signal, () => Bun.sleep(5));
     const claimed = async () =>
-      (await listJobs(sqliteDb(db))).filter(
+      (await listJobs(db)).filter(
         (job) => job.queue === JOB_KIND.resume && job.status !== "pending",
       ).length;
     await until(
@@ -190,9 +188,7 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
     expect(reads).toEqual(ISSUES.flatMap((id) => [`start:${id}`, `end:${id}`]));
     expect(
       await Promise.all(
-        (await listWorkItems(sqliteDb(db))).map(
-          async (item) => (await getWorkItem(sqliteDb(db), item.id))?.state,
-        ),
+        (await listWorkItems(db)).map(async (item) => (await getWorkItem(db, item.id))?.state),
       ),
       await detail(db),
     ).toEqual(ISSUES.map(() => "running"));
@@ -201,7 +197,7 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
     secondStop.abort();
     await second?.orchestrator.shutdown().catch(() => undefined);
     await secondLoop?.catch(() => undefined);
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }, 90_000);
@@ -217,12 +213,10 @@ async function until(
   }
 }
 
-async function detail(db: ReturnType<typeof openDatabase>): Promise<string> {
+async function detail(db: Db): Promise<string> {
   return JSON.stringify({
-    items: (await listWorkItems(sqliteDb(db))).map(
-      (item) => `${item.linearIdentifier}:${item.state}`,
-    ),
-    jobs: (await listJobs(sqliteDb(db))).map(
+    items: (await listWorkItems(db)).map((item) => `${item.linearIdentifier}:${item.state}`),
+    jobs: (await listJobs(db)).map(
       (job) => `${job.queue}:${job.status}:${job.runAt}:${job.lastError ?? ""}`,
     ),
   });

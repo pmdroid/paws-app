@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { formatEvidenceSummary } from "../src/closeout";
 import {
   applyWorkItemEvent,
@@ -10,12 +11,10 @@ import {
   joinMergeQueue,
   getWorkItem,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   saveTaskBlocks,
   saveWorkItemLinearProject,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import { elicitationBody, openQuestion } from "../src/questions";
 import {
@@ -27,15 +26,19 @@ import {
 } from "../src/dashboard/src/contract";
 import { render } from "../src/dashboard/src/client/render";
 import { handleStatusRequest } from "../src/dashboard";
+import { tempStore } from "./pglite";
 
 const BASE = "a".repeat(40);
 const HEAD = "b".repeat(40);
 const NOW = 1_700_000_000_000;
 
+function updateItem(db: Db, id: string, set: { linearIdentifier?: string; ownerUserId?: string }) {
+  return db.run((q) => q.exec(q.orm.update(q.t.workItem).set(set).where(eq(q.t.workItem.id, id))));
+}
+
 test("fake e2e rows show up on the issue, question and merge queue resources as live work", async () => {
-  const db = openDatabase(":memory:");
+  const { db, close } = await tempStore();
   try {
-    migrate(db);
     const waiting = await insertQueuedItem(db, {
       id: "01WAITINGITEM",
       title: "Export rows",
@@ -50,24 +53,28 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
       branchName: "paws/ENG-3",
       now: NOW,
     });
-    db.run("UPDATE work_item SET linear_identifier = ? WHERE id = ?", ["ENG-2", waiting.id]);
-    db.run("UPDATE work_item SET linear_identifier = ? WHERE id = ?", ["ENG-3", merging.id]);
-    db.run(
-      "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('ws','org','Workspace',0)",
+    await updateItem(db, waiting.id, { linearIdentifier: "ENG-2" });
+    await updateItem(db, merging.id, { linearIdentifier: "ENG-3" });
+    await db.run((q) =>
+      q.exec(
+        q.orm
+          .insert(q.t.workspace)
+          .values({ id: "ws", linearOrganizationId: "org", name: "Workspace", createdAt: 0 }),
+      ),
     );
-    const userId = await putWorkspaceUser(sqliteDb(db), {
+    const userId = await putWorkspaceUser(db, {
       id: "user",
       linearUserId: "linear-user",
       name: "Ada Owner",
       email: "ada@example.test",
     });
-    db.run("UPDATE work_item SET owner_user_id = ? WHERE id = ?", [userId, waiting.id]);
-    await saveWorkItemLinearProject(sqliteDb(db), waiting.id, {
+    await updateItem(db, waiting.id, { ownerUserId: userId });
+    await saveWorkItemLinearProject(db, waiting.id, {
       id: "linear-exports",
       name: "Exports",
     });
     await saveTaskBlocks(
-      sqliteDb(db),
+      db,
       [merging.linearIssueId],
       [
         {
@@ -77,22 +84,22 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
       ],
     );
 
-    const parked = await beginImplementRun(sqliteDb(db), waiting.id, NOW);
-    await applyWorkItemEvent(sqliteDb(db), waiting.id, "blocking_question");
-    await beginImplementRun(sqliteDb(db), merging.id, NOW);
-    await enterMergeQueue(sqliteDb(db), merging.id, {
+    const parked = await beginImplementRun(db, waiting.id, NOW);
+    await applyWorkItemEvent(db, waiting.id, "blocking_question");
+    await beginImplementRun(db, merging.id, NOW);
+    await enterMergeQueue(db, merging.id, {
       phase: "merge_queue",
       baseSha: BASE,
       wipCommit: HEAD,
     });
-    await joinMergeQueue(sqliteDb(db), {
+    await joinMergeQueue(db, {
       itemId: merging.id,
       repository: "pmdroid/paws-demo",
       now: 1,
     });
-    const open = await getWorkItem(sqliteDb(db), waiting.id);
+    const open = await getWorkItem(db, waiting.id);
     expect(open?.state).toBe("awaiting_input");
-    const question = await openQuestion(sqliteDb(db), {
+    const question = await openQuestion(db, {
       itemId: waiting.id,
       runId: parked.run.id,
       sessionId: "ses_1",
@@ -100,7 +107,7 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
       options: ["yes", "no"],
       now: NOW,
     });
-    await enqueueOutbox(sqliteDb(db), {
+    await enqueueOutbox(db, {
       target: "linear",
       op: "elicitation",
       orderingKey: "ses_1",
@@ -112,7 +119,7 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
       },
       now: NOW,
     });
-    await enqueueOutbox(sqliteDb(db), {
+    await enqueueOutbox(db, {
       target: "linear",
       op: "activity",
       orderingKey: "ses_1",
@@ -154,7 +161,7 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
         warnings: [],
       },
     });
-    await enqueueOutbox(sqliteDb(db), {
+    await enqueueOutbox(db, {
       target: "linear",
       op: "activity",
       orderingKey: "ses_1",
@@ -162,13 +169,13 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
       payload: { sessionId: "ses_1", kind: "response", body: summary },
       now: NOW,
     });
-    await enqueueJob(sqliteDb(db), {
+    await enqueueJob(db, {
       queue: "github.merge",
       jobKey: `merge:${merging.id}:${HEAD}`,
       payload: { itemId: merging.id, summary: `${summary}\nCaller attempt: 2`, head: HEAD },
       now: NOW,
     });
-    await enqueueOutbox(sqliteDb(db), {
+    await enqueueOutbox(db, {
       target: "linear",
       op: "activity",
       orderingKey: "ses_1",
@@ -183,7 +190,7 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
 
     const read = async (path: string) => {
       const response = await handleStatusRequest(new Request(`http://127.0.0.1${path}`), {
-        store: sqliteDb(db),
+        store: db,
         env: {},
       });
       expect(response?.status).toBe(200);
@@ -239,25 +246,23 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
 
     const hidden = await handleStatusRequest(
       new Request("http://127.0.0.1/api/issues?engine=demo"),
-      { store: sqliteDb(db), env: {} },
+      { store: db, env: {} },
     );
     const demo = (await hidden?.json()) as { source: string };
     expect(demo.source).toBe("live");
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("each task on /api/issues carries the Linear requests it made", async () => {
-  const db = openDatabase(":memory:");
+  const { db, close } = await tempStore();
   try {
-    migrate(db);
     await insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: NOW });
     await insertQueuedItem(db, { id: "item-2", sessionKey: "ses_2", now: NOW });
-    for (let request = 0; request < 3; request++)
-      await countLinearRequest(sqliteDb(db), "item-1", "outbox");
+    for (let request = 0; request < 3; request++) await countLinearRequest(db, "item-1", "outbox");
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-      store: sqliteDb(db),
+      store: db,
       env: {},
     });
     const parsed = parseIssueListResponse(await response?.json());
@@ -266,16 +271,15 @@ test("each task on /api/issues carries the Linear requests it made", async () =>
       Object.fromEntries(parsed.response.issues.map((item) => [item.id, item.linearRequests])),
     ).toEqual({ "item-1": 3, "item-2": 0 });
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("an empty live overview asks the operator to delegate a Linear issue", async () => {
-  const db = openDatabase(":memory:");
+  const { db, close } = await tempStore();
   try {
-    migrate(db);
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/overview"), {
-      store: sqliteDb(db),
+      store: db,
       env: {},
     });
     const parsed = parseOverviewResponse(await response?.json());
@@ -294,33 +298,32 @@ test("an empty live overview asks the operator to delegate a Linear issue", asyn
     expect(view.top).not.toContain("Demo data");
     expect(view.content).toContain("No issues yet. Delegate an issue to Paws in Linear.");
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("a merge-queue item whose re-verify waits for a runner slot says it is next in line", async () => {
-  const db = openDatabase(":memory:");
+  const { db, close } = await tempStore();
   try {
-    migrate(db);
     const merging = await insertQueuedItem(db, {
       id: "01MERGINGITEM",
       sessionKey: "ses_1",
       now: NOW,
     });
-    db.run("UPDATE work_item SET linear_identifier = ? WHERE id = ?", ["ENG-3", merging.id]);
-    await beginImplementRun(sqliteDb(db), merging.id, NOW);
-    await enterMergeQueue(sqliteDb(db), merging.id, {
+    await updateItem(db, merging.id, { linearIdentifier: "ENG-3" });
+    await beginImplementRun(db, merging.id, NOW);
+    await enterMergeQueue(db, merging.id, {
       phase: "merge_queue",
       baseSha: BASE,
       wipCommit: HEAD,
     });
-    await joinMergeQueue(sqliteDb(db), {
+    await joinMergeQueue(db, {
       itemId: merging.id,
       repository: "pmdroid/paws-demo",
       now: 1,
     });
-    await applyWorkItemEvent(sqliteDb(db), merging.id, "reverify_requested");
-    await enqueueJob(sqliteDb(db), {
+    await applyWorkItemEvent(db, merging.id, "reverify_requested");
+    await enqueueJob(db, {
       queue: "run.reverify",
       payload: {
         itemId: merging.id,
@@ -329,7 +332,7 @@ test("a merge-queue item whose re-verify waits for a runner slot says it is next
       now: NOW,
     });
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/merge-queue"), {
-      store: sqliteDb(db),
+      store: db,
       env: {},
     });
     const parsed = parseMergeQueueResponse(await response?.json());
@@ -338,6 +341,6 @@ test("a merge-queue item whose re-verify waits for a runner slot says it is next
       ["ENG-3", "Waiting for a runner slot (next in line)."],
     ]);
   } finally {
-    db.close();
+    await close();
   }
 });
