@@ -1,17 +1,17 @@
 import { expect, test } from "bun:test";
-import { enqueueOutbox, migrate, openDatabase, sqliteDb } from "../db";
+import { enqueueOutbox } from "../db";
 import { hostDiskFullThoughtKeySteps } from "./disk-full";
+import { tempStore } from "../../test/pglite";
 
 const HOUR = 60 * 60_000;
 
 test("an item gets at most one disk-full thought per hour", async () => {
-  const db = openDatabase(":memory:");
+  const { db, close } = await tempStore();
   try {
-    migrate(db);
     const post = async (itemId: string, now: number) => {
-      const key = await sqliteDb(db).run((q) => hostDiskFullThoughtKeySteps(q, itemId, now));
+      const key = await db.run((q) => hostDiskFullThoughtKeySteps(q, itemId, now));
       if (key !== null)
-        await enqueueOutbox(sqliteDb(db), {
+        await enqueueOutbox(db, {
           target: "linear",
           op: "activity",
           orderingKey: `ses-${itemId}`,
@@ -29,6 +29,6 @@ test("an item gets at most one disk-full thought per hour", async () => {
     expect(await post("item-a", start + HOUR)).toBe(true);
     expect(await post("item-a", start + HOUR + 1)).toBe(false);
   } finally {
-    db.close();
+    await close();
   }
 });

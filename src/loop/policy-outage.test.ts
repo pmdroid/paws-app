@@ -1,14 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
+import { asc, eq } from "drizzle-orm";
 import {
   beginImplementRun,
   enterMergeQueue,
   getPolicyOutage,
   getWorkItem,
   insertQueuedItem,
-  migrate,
-  openDatabase,
-  sqliteDb,
+  type Db,
 } from "../db";
 import { getQuestion } from "../questions";
 import {
@@ -18,6 +16,7 @@ import {
   policyOutageNote,
   type MainPolicyError,
 } from "./policy-outage";
+import { tempStore } from "../../test/pglite";
 
 const REPOSITORY = "acme/monorepo";
 const BROKEN: MainPolicyError = {
@@ -27,26 +26,25 @@ const BROKEN: MainPolicyError = {
   commit: "c0ffee".padEnd(40, "0"),
 };
 
-const open: Database[] = [];
-afterEach(() => {
-  for (const db of open.splice(0)) db.close();
+const open: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
 });
 
 async function queue(...ids: string[]) {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  open.push(db);
+  const { db, close } = await tempStore();
+  open.push(close);
   for (const id of ids) {
     await insertQueuedItem(db, { id, sessionKey: `ses-${id}`, now: 0 });
-    await beginImplementRun(sqliteDb(db), id, 1);
-    await enterMergeQueue(sqliteDb(db), id, { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
+    await beginImplementRun(db, id, 1);
+    await enterMergeQueue(db, id, { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
   }
   return db;
 }
 
-async function hold(db: Database, id: string, now = 10, unreadable = BROKEN) {
-  return holdForPolicyOutage(sqliteDb(db), {
-    item: (await getWorkItem(sqliteDb(db), id))!,
+async function hold(db: Db, id: string, now = 10, unreadable = BROKEN) {
+  return holdForPolicyOutage(db, {
+    item: (await getWorkItem(db, id))!,
     repository: REPOSITORY,
     unreadable,
     now,
@@ -54,12 +52,16 @@ async function hold(db: Database, id: string, now = 10, unreadable = BROKEN) {
   });
 }
 
-function questions(db: Database) {
-  return db
-    .query<{ id: string; item_id: string; body: string; status: string }, []>(
-      "SELECT id, item_id, body, status FROM question WHERE kind = 'policy-outage' ORDER BY rowid",
-    )
-    .all();
+async function questions(db: Db) {
+  return db.run((q) =>
+    q.all(
+      q.orm
+        .select()
+        .from(q.t.question)
+        .where(eq(q.t.question.kind, "policy-outage"))
+        .orderBy(asc(q.t.question.createdAt), asc(q.t.question.id)),
+    ),
+  );
 }
 
 describe("an unreadable Closeout policy on main", () => {
@@ -67,9 +69,9 @@ describe("an unreadable Closeout policy on main", () => {
     const db = await queue("ENG-1", "ENG-2");
     const first = await hold(db, "ENG-1");
     const second = await hold(db, "ENG-2", 20);
-    const asked = questions(db);
+    const asked = await questions(db);
     expect(asked).toHaveLength(1);
-    expect(asked[0]).toMatchObject({ item_id: "ENG-1", status: "open" });
+    expect(asked[0]).toMatchObject({ itemId: "ENG-1", status: "open" });
     expect(asked[0]!.body).toContain(".agents/closeout.yaml");
     expect(asked[0]!.body).toContain(BROKEN.message);
     expect(asked[0]!.body).toContain(BROKEN.commit!);
@@ -78,40 +80,40 @@ describe("an unreadable Closeout policy on main", () => {
     expect(second).toBe(
       `${wait} [Open question](https://paws.example/dashboard/questions/${asked[0]!.id}).`,
     );
-    expect((await getWorkItem(sqliteDb(db), "ENG-1"))?.state).toBe("merge_queue");
-    expect((await getWorkItem(sqliteDb(db), "ENG-2"))?.state).toBe("merge_queue");
+    expect((await getWorkItem(db, "ENG-1"))?.state).toBe("merge_queue");
+    expect((await getWorkItem(db, "ENG-2"))?.state).toBe("merge_queue");
   });
 
   test("main loading again settles the question and ends the outage", async () => {
     const db = await queue("ENG-1");
     await hold(db, "ENG-1");
-    const [question] = questions(db);
-    expect(await policyLoads(sqliteDb(db), REPOSITORY, 30)).toMatchObject({
+    const [question] = await questions(db);
+    expect(await policyLoads(db, REPOSITORY, 30)).toMatchObject({
       questionId: question!.id,
     });
-    expect((await getQuestion(sqliteDb(db), question!.id))?.status).toBe("cancelled");
-    expect(await getPolicyOutage(sqliteDb(db), REPOSITORY)).toBeNull();
-    expect(await policyLoads(sqliteDb(db), REPOSITORY, 40)).toBeNull();
+    expect((await getQuestion(db, question!.id))?.status).toBe("cancelled");
+    expect(await getPolicyOutage(db, REPOSITORY)).toBeNull();
+    expect(await policyLoads(db, REPOSITORY, 40)).toBeNull();
   });
 
   test("a different break on main replaces the question", async () => {
     const db = await queue("ENG-1", "ENG-2");
     await hold(db, "ENG-1");
     await hold(db, "ENG-2", 20, { ...BROKEN, message: "another error", commit: "d".repeat(40) });
-    const asked = questions(db);
+    const asked = await questions(db);
     expect(
       await Promise.all(
-        asked.map(async (question) => (await getQuestion(sqliteDb(db), question.id))?.status),
+        asked.map(async (question) => (await getQuestion(db, question.id))?.status),
       ),
     ).toEqual(["cancelled", "open"]);
-    expect(asked[1]).toMatchObject({ item_id: "ENG-2" });
+    expect(asked[1]).toMatchObject({ itemId: "ENG-2" });
   });
 
   test("Closeout's own question names the breaking commit and links the repository question", async () => {
     const db = await queue("ENG-1", "ENG-2");
     await hold(db, "ENG-1");
-    const [question] = questions(db);
-    const note = await policyOutageNote(sqliteDb(db), REPOSITORY, "ENG-2", "https://paws.example");
+    const [question] = await questions(db);
+    const note = await policyOutageNote(db, REPOSITORY, "ENG-2", "https://paws.example");
     expect(note).toContain(BROKEN.commit!);
     expect(note).toContain(`https://paws.example/dashboard/questions/${question!.id}`);
     expect(
