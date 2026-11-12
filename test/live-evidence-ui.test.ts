@@ -1,12 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  insertQueuedItem,
-  insertRun,
-  migrate,
-  openDatabase,
-  saveEvidence,
-  sqliteDb,
-} from "../src/db";
+import { insertQueuedItem, insertRun, saveEvidence } from "../src/db";
 import type { EvidenceMediaType } from "../src/db";
 import { handleStatusRequest } from "../src/dashboard";
 import {
@@ -23,6 +16,7 @@ import {
   sizeLabel,
   timeLabel,
 } from "../src/dashboard/src/client/evidence";
+import { tempStore } from "./pglite";
 
 const HEAD = "0123456789abcdef0123456789abcdef01234567";
 const VIDEO = "01JA0000000000000000000001";
@@ -31,8 +25,7 @@ const OTHER_RUN = "01JA0000000000000000000003";
 const HIDDEN = "01JA0000000000000000000004";
 
 async function seeded() {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const db = (await tempStore()).db;
   await insertQueuedItem(db, { id: "item", title: "Checkout flow", sessionKey: "visible", now: 1 });
   await insertQueuedItem(db, {
     id: "secret",
@@ -40,9 +33,9 @@ async function seeded() {
     sessionKey: "hidden",
     now: 2,
   });
-  const run = await insertRun(sqliteDb(db), { itemId: "item", now: 10, agent: "claude" });
-  const later = await insertRun(sqliteDb(db), { itemId: "item", now: 20, agent: "codex" });
-  const hidden = await insertRun(sqliteDb(db), { itemId: "secret", now: 30, agent: "claude" });
+  const run = await insertRun(db, { itemId: "item", now: 10, agent: "claude" });
+  const later = await insertRun(db, { itemId: "item", now: 20, agent: "codex" });
+  const hidden = await insertRun(db, { itemId: "secret", now: 30, agent: "claude" });
   const save = async (
     id: string,
     itemId: string,
@@ -51,7 +44,7 @@ async function seeded() {
     displayName: string,
     createdAt: number,
   ) =>
-    await saveEvidence(sqliteDb(db), {
+    await saveEvidence(db, {
       id,
       itemId,
       runId,
@@ -74,7 +67,7 @@ async function seeded() {
 async function galleryFor(
   db: Awaited<ReturnType<typeof seeded>>["db"],
 ): Promise<EvidenceListResponse> {
-  const raw = await createLiveStatusProvider(sqliteDb(db), {
+  const raw = await createLiveStatusProvider(db, {
     sessionIds: ["visible"],
     now: () => new Date(1_700_000_010_000),
   }).evidence();
@@ -88,7 +81,7 @@ async function runPage(
   db: Awaited<ReturnType<typeof seeded>>["db"],
   runId: string,
 ): Promise<string> {
-  const provider = createLiveStatusProvider(sqliteDb(db), {
+  const provider = createLiveStatusProvider(db, {
     sessionIds: ["visible"],
     now: () => new Date(1_700_000_010_000),
   });
@@ -102,7 +95,7 @@ async function evidencePage(
   db: Awaited<ReturnType<typeof seeded>>["db"],
   id: string,
 ): Promise<string> {
-  const response = await createLiveStatusProvider(sqliteDb(db), {
+  const response = await createLiveStatusProvider(db, {
     sessionIds: ["visible"],
     now: () => new Date(1_700_000_010_000),
   }).evidenceMetadata(id);
@@ -162,7 +155,7 @@ describe("live evidence", () => {
       sessionKey: "visible",
       now: 3,
     });
-    const bare = await insertRun(sqliteDb(db), { itemId: "bare-item", now: 40, agent: "claude" });
+    const bare = await insertRun(db, { itemId: "bare-item", now: 40, agent: "claude" });
     expect(await runPage(db, bare.id)).not.toContain("evidence-gallery");
   });
 

@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -9,7 +10,6 @@ import {
   insertQueuedItem,
   listOutbox,
   OutboxDispatcher,
-  sqliteDb,
 } from "../src/db";
 import { createEvidenceStore } from "../src/evidence";
 import { createFakeTracker } from "../src/linear";
@@ -21,19 +21,23 @@ import {
   evidenceSectionUrl,
   evidenceThoughts,
 } from "../src/loop";
-import { tempDb, tempHome } from "./helpers";
+import { tempHome } from "./helpers";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const PNG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
 async function setup() {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const home = tempHome();
   const item = await insertQueuedItem(db, { id: "item", sessionKey: "session" });
-  db.run("UPDATE work_item SET state='verifying' WHERE id='item'");
+  await seed(db, (q) =>
+    q.orm.update(q.t.workItem).set({ state: "verifying" }).where(eq(q.t.workItem.id, "item")),
+  );
   const tracker = createFakeTracker();
-  const store = createEvidenceStore({ store: sqliteDb(db), root: join(home, "evidence") });
+  const store = createEvidenceStore({ store: db, root: join(home, "evidence") });
   const publisher = createEvidenceArtifactPublisher({
-    store: sqliteDb(db),
+    store: db,
     itemId: "item",
     sessionId: "session",
     evidence: store,
@@ -42,7 +46,7 @@ async function setup() {
   });
   const dispatcher = new OutboxDispatcher(db, new FakeClock(Date.now()));
   dispatcher.setHandler((row, context) =>
-    deliverLinearOutbox(row, tracker, async () => {}, context, sqliteDb(db)),
+    deliverLinearOutbox(row, tracker, async () => {}, context, db),
   );
   const flush = async () => {
     while ((await dispatcher.tick()).length) await dispatcher.idle();
@@ -79,7 +83,7 @@ async function setup() {
     publish,
     link,
     async cleanup() {
-      db.close();
+      await close();
       await rm(home, { recursive: true, force: true });
     },
   };
@@ -90,15 +94,15 @@ test("16 screenshots of a check post one thought with the count and the link, on
   try {
     const head = "a".repeat(40);
     for (let index = 0; index < 16; index++) await f.publish(index, head);
-    expect(await listOutbox(sqliteDb(f.db))).toHaveLength(0);
+    expect(await listOutbox(f.db)).toHaveLength(0);
     for (let round = 0; round < 2; round++)
-      for (const { key, body } of await evidenceThoughts(sqliteDb(f.db), {
+      for (const { key, body } of await evidenceThoughts(f.db, {
         itemId: "item",
         checkIds: ["visual-proof", "no-files"],
         head,
         link: f.link,
       }))
-        await enqueueOutboxOnce(sqliteDb(f.db), {
+        await enqueueOutboxOnce(f.db, {
           target: "linear",
           op: "activity",
           orderingKey: "session",
@@ -123,7 +127,7 @@ test("16 screenshots of a check post one thought with the count and the link, on
 test("after the PR response the issue gets one evidence card, and a new head updates it", async () => {
   const f = await setup();
   try {
-    await enqueueOutbox(sqliteDb(f.db), {
+    await enqueueOutbox(f.db, {
       target: "linear",
       op: "activity",
       orderingKey: "session",
@@ -135,7 +139,7 @@ test("after the PR response the issue gets one evidence card, and a new head upd
     for (const head of ["a".repeat(40), "b".repeat(40)]) {
       for (let index = 0; index < 16; index++) await f.publish(index, head);
       for (let round = 0; round < 2; round++)
-        await enqueueEvidenceCard(sqliteDb(f.db), {
+        await enqueueEvidenceCard(f.db, {
           sessionId: "session",
           generation: 0,
           item: f.item,
@@ -154,7 +158,7 @@ test("after the PR response the issue gets one evidence card, and a new head upd
       ]);
     }
     expect(f.tracker.progress.map(({ kind }) => kind)).toEqual(["response"]);
-    await sqliteDb(f.db).transaction((q) =>
+    await f.db.transaction((q) =>
       askSteps(q, { itemId: "item", runId: null, sessionId: "session" }, "agent", "Which layout?", {
         options: ["Wide", "Narrow"],
       }),
@@ -167,18 +171,18 @@ test("after the PR response the issue gets one evidence card, and a new head upd
 });
 
 test("a closed response fences later activities even without a PR response in its generation", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
     const tracker = createFakeTracker();
     const dispatcher = new OutboxDispatcher(db, new FakeClock(Date.now()));
     dispatcher.setHandler((row, context) =>
-      deliverLinearOutbox(row, tracker, async () => {}, context, sqliteDb(db)),
+      deliverLinearOutbox(row, tracker, async () => {}, context, db),
     );
     for (const [key, kind] of [
       ["closed:item:0", "response"],
       ["late", "thought"],
     ])
-      await enqueueOutbox(sqliteDb(db), {
+      await enqueueOutbox(db, {
         target: "linear",
         op: "activity",
         orderingKey: "session",
@@ -189,6 +193,6 @@ test("a closed response fences later activities even without a PR response in it
     while ((await dispatcher.tick()).length) await dispatcher.idle();
     expect(tracker.progress.map((update) => update.kind)).toEqual(["response"]);
   } finally {
-    db.close();
+    await close();
   }
 });

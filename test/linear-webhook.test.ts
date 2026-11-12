@@ -1,4 +1,3 @@
-import { sqliteDb } from "../src/db";
 import { createHmac } from "node:crypto";
 import { describe, expect, test } from "bun:test";
 import { startPaws } from "../src/index";
@@ -10,14 +9,15 @@ import {
   sessionCreatedKey,
 } from "../src/linear";
 import { createInboxStore } from "../src/linear";
-import { migratedHome, tempDb } from "./helpers";
+import { migratedHome } from "./helpers";
+import { tempStore } from "./pglite";
 
 const SECRET = "webhook-secret";
 
 describe("linear webhooks", () => {
   test("rejects a bad signature and a stale timestamp before writing a row", async () => {
-    const db = tempDb();
-    const store = createInboxStore(sqliteDb(db));
+    const { db, close } = await tempStore();
+    const store = createInboxStore(db);
     const now = 1_700_000_000_000;
     const body = JSON.stringify({
       webhookTimestamp: now,
@@ -44,12 +44,12 @@ describe("linear webhooks", () => {
       ok: false,
       reason: "missing_signature",
     });
-    db.close();
+    await close();
   });
 
   test("commits a delivery before acknowledging and does not wait on the follow-up", async () => {
-    const db = tempDb();
-    const store = createInboxStore(sqliteDb(db));
+    const { db, close } = await tempStore();
+    const store = createInboxStore(db);
     const now = 1_700_000_000_000;
     const body = agentBody(now, "ses_1", "iss_1");
     let release = () => {};
@@ -91,12 +91,12 @@ describe("linear webhooks", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(await store.listUnhandled()).toHaveLength(0);
-    db.close();
+    await close();
   });
 
   test("a prompted /paws stop reply arrives as a stop signal, like the poller reads it", async () => {
-    const db = tempDb();
-    const store = createInboxStore(sqliteDb(db));
+    const { db, close } = await tempStore();
+    const store = createInboxStore(db);
     const now = 1_700_000_000_000;
     const prompted = (id: string, body: string) =>
       JSON.stringify({
@@ -130,7 +130,7 @@ describe("linear webhooks", () => {
       { body: "Please do not /paws stop yet", signal: null },
     ]);
     expect(isPawsStop(seen[0]!.body)).toBe(true);
-    db.close();
+    await close();
   });
 
   test("startPaws leaves webhook routes off unless LINEAR_WEBHOOKS is set", async () => {
