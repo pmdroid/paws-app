@@ -85,6 +85,17 @@ export function joinFakeWorkspace(db: Database, delegationId: string): Promise<v
   return sqliteDb(db).run((q) => joinFakeWorkspaceSteps(q, db, delegationId, false));
 }
 
+export function workspaceDispatchPg(
+  db: Db,
+  options: Omit<Parameters<typeof dispatch>[1], "admission">,
+): Promise<string[]> {
+  return dispatch(db, { ...options, admission: workspaceAdmission(db) });
+}
+
+export function joinFakeWorkspacePg(db: Db, delegationId: string): Promise<void> {
+  return db.run((q) => joinFakeWorkspaceSteps(q, null, delegationId, false));
+}
+
 const open = (q: Q) => notInArray(q.t.workItem.state, ["completed", "merged", "cancelled"]);
 
 const present = (q: Q) =>
@@ -272,8 +283,12 @@ function* readsSteps(q: Q, itemId: string) {
 }
 
 /** Record the evidence a real merge writes before a fixture enters merged. */
-export async function confirmFakeMerge(db: Database, itemId: string): Promise<void> {
-  await recordConfirmedRemoteMerge(sqliteDb(db), {
+export function confirmFakeMerge(db: Database, itemId: string): Promise<void> {
+  return confirmFakeMergePg(sqliteDb(db), itemId);
+}
+
+export async function confirmFakeMergePg(db: Db, itemId: string): Promise<void> {
+  await recordConfirmedRemoteMerge(db, {
     itemId,
     repositoryOwner: "owner",
     repositoryName: "repo",
