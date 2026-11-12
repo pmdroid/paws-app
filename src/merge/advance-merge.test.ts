@@ -14,51 +14,51 @@ import {
   listOutbox,
   listRebaseReturns,
   recordPullReview,
-  sqliteDb,
 } from "../db";
 import {
   CLOSEOUT_RECHECK_DIGEST,
   CLOSEOUT_DIGEST,
-  mergeHarness,
+  mergeHarnessPg,
   pendingCi,
-  type MergeHarness,
+  type MergeHarnessPg,
 } from "./advance-harness";
 import { REBASE_CONFLICT_INSTRUCTION, REBASE_CONFLICT_THOUGHT } from "./orders";
+import { tempStore } from "../../test/pglite";
 
-let harness: MergeHarness | undefined;
+let harness: MergeHarnessPg | undefined;
 
 afterEach(async () => {
   await harness?.cleanup();
   harness = undefined;
 });
 
-async function start(settings: Parameters<typeof mergeHarness>[0] = {}) {
-  harness = await mergeHarness(settings);
+async function start(settings: Parameters<typeof mergeHarnessPg>[1] = {}) {
+  harness = await mergeHarnessPg(await tempStore(), settings);
   return harness;
 }
 
-async function resumes(h: MergeHarness) {
-  return (await listJobs(sqliteDb(h.db)))
+async function resumes(h: MergeHarnessPg) {
+  return (await listJobs(h.db))
     .filter((job) => job.queue === JOB_KIND.resume)
     .map((job) => job.payload as { handoff: string; reason: string });
 }
 
-async function onMovedMain(h: MergeHarness, head: string, main: string): Promise<boolean> {
+async function onMovedMain(h: MergeHarnessPg, head: string, main: string): Promise<boolean> {
   return h
     .git(h.bare, "merge-base", "--is-ancestor", main, head)
     .then(() => true)
     .catch(() => false);
 }
 
-async function backInQueue(h: MergeHarness, id: string): Promise<void> {
-  const item = (await getWorkItem(sqliteDb(h.db), id))!;
-  if (item.state === "queued") await applyWorkItemEvent(sqliteDb(h.db), id, "dispatched");
-  await applyWorkItemEvent(sqliteDb(h.db), id, "turn_ended");
+async function backInQueue(h: MergeHarnessPg, id: string): Promise<void> {
+  const item = (await getWorkItem(h.db, id))!;
+  if (item.state === "queued") await applyWorkItemEvent(h.db, id, "dispatched");
+  await applyWorkItemEvent(h.db, id, "turn_ended");
   await h.closeout(id);
 }
 
-async function reverifyJobs(h: MergeHarness): Promise<string[]> {
-  return (await listJobs(sqliteDb(h.db)))
+async function reverifyJobs(h: MergeHarnessPg): Promise<string[]> {
+  return (await listJobs(h.db))
     .filter((job) => job.queue === JOB_KIND.reverify)
     .map((job) => job.jobKey ?? "");
 }
@@ -72,7 +72,7 @@ describe("advanceMerge and a changes-requested review", () => {
     h.state.ci = () => {
       if (recorded.length === 0)
         recorded.push(
-          recordPullReview(sqliteDb(h.db), {
+          recordPullReview(h.db, {
             reviewId: 41,
             itemId: "ENG-1",
             state: "changes_requested",
@@ -88,8 +88,8 @@ describe("advanceMerge and a changes-requested review", () => {
     expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "review" });
     expect(await recorded[0]).toBe(true);
     expect(h.github.merged).toEqual([]);
-    expect(await getConfirmedRemoteMerge(sqliteDb(h.db), "ENG-1")).toBeNull();
-    expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("merge_queue");
+    expect(await getConfirmedRemoteMerge(h.db, "ENG-1")).toBeNull();
+    expect((await getWorkItem(h.db, "ENG-1"))?.state).toBe("merge_queue");
   });
 });
 
@@ -101,7 +101,7 @@ describe("advanceMerge: the lane only merges mergeable(S)", () => {
     expect(h.github.merged).toEqual([
       { repository: "acme/app", number: 1, expectedHeadSha: item.accepted },
     ]);
-    expect(await getConfirmedRemoteMerge(sqliteDb(h.db), "ENG-1")).toMatchObject({
+    expect(await getConfirmedRemoteMerge(h.db, "ENG-1")).toMatchObject({
       pullNumber: 1,
       mergeSha: `fake-merge-${item.accepted}`,
     });
@@ -118,7 +118,7 @@ describe("advanceMerge: the lane only merges mergeable(S)", () => {
       base: item.base,
       head: item.accepted,
     });
-    expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("merge_queue");
+    expect((await getWorkItem(h.db, "ENG-1"))?.state).toBe("merge_queue");
     expect(h.github.merged).toEqual([]);
     h.state.ci = () => undefined;
     expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
@@ -133,7 +133,7 @@ describe("advanceMerge: the lane only merges mergeable(S)", () => {
     const rebased = await h.remoteHead("ENG-1");
     expect(rebased).not.toBe(item.accepted);
     expect(await onMovedMain(h, rebased, main)).toBe(true);
-    expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("verifying");
+    expect((await getWorkItem(h.db, "ENG-1"))?.state).toBe("verifying");
     expect(await reverifyJobs(h)).toEqual([`reverify:ENG-1:${rebased}:merge:1`]);
     expect(h.github.merged).toEqual([]);
     // After the pull request only the title moves.
@@ -155,7 +155,7 @@ describe("advanceMerge: the lane only merges mergeable(S)", () => {
     await h.git(item.worktree, "commit", "-qm", "late change");
     const head = await h.git(item.worktree, "rev-parse", "HEAD");
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
-    expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("verifying");
+    expect((await getWorkItem(h.db, "ENG-1"))?.state).toBe("verifying");
     expect(await reverifyJobs(h)).toEqual([`reverify:ENG-1:${head}:merge:1`]);
     expect(h.github.merged).toEqual([]);
     expect(h.bodies()).toEqual([]);
@@ -181,7 +181,7 @@ describe("advanceMerge: the lane only merges mergeable(S)", () => {
       h.state.policyDigest = change.digest;
       h.state.recheckDigest = change.recheck;
       expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
-      expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("verifying");
+      expect((await getWorkItem(h.db, "ENG-1"))?.state).toBe("verifying");
       expect(await reverifyJobs(h)).toEqual([`reverify:ENG-1:${item.accepted}:merge:1`]);
       expect(h.github.merged).toEqual([]);
       await h.cleanup();
@@ -199,7 +199,7 @@ describe("advanceMerge: the lane only merges mergeable(S)", () => {
       head: item.accepted,
       message: "The pull request head changed before the merge. Reading it again.",
     });
-    expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("merge_queue");
+    expect((await getWorkItem(h.db, "ENG-1"))?.state).toBe("merge_queue");
     expect(await h.remoteHead("ENG-1")).toBe(item.accepted);
     expect(await reverifyJobs(h)).toEqual([]);
     expect(h.github.merged).toEqual([]);
@@ -221,7 +221,7 @@ describe("advanceMerge and a pull request merged outside the lane", () => {
   test("a hand merge on GitHub merges the item without publishing or squashing again", async () => {
     const h = await start({ settings: { order: "queue" } });
     await h.addItem("ENG-1");
-    const later = await enqueueJob(sqliteDb(h.db), {
+    const later = await enqueueJob(h.db, {
       queue: JOB_KIND.merge,
       jobKey: "merge:ENG-1:later",
       payload: { itemId: "ENG-1" },
@@ -231,18 +231,20 @@ describe("advanceMerge and a pull request merged outside the lane", () => {
     expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
     expect(h.published).toEqual([]);
     expect(h.github.merged).toEqual([]);
-    expect(await getConfirmedRemoteMerge(sqliteDb(h.db), "ENG-1")).toMatchObject({
+    expect(await getConfirmedRemoteMerge(h.db, "ENG-1")).toMatchObject({
       pullNumber: 1,
       pullUrl: "https://github.com/acme/app/pull/1",
       mergeSha: "hand-merge-sha",
     });
-    expect(h.db.query("SELECT item_id FROM merge_queue_entry").all()).toEqual([]);
+    expect(
+      await h.db.run((q) =>
+        q.all(q.orm.select({ itemId: q.t.mergeQueueEntry.itemId }).from(q.t.mergeQueueEntry)),
+      ),
+    ).toEqual([]);
     // What the job runner does with a merged step: the item is merged and its merge work stops.
-    await completeMergedItem(sqliteDb(h.db), { itemId: "ENG-1", now: h.clock.now() });
-    expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("merged");
-    expect((await listJobs(sqliteDb(h.db))).find((job) => job.id === later)?.status).toBe(
-      "cancelled",
-    );
+    await completeMergedItem(h.db, { itemId: "ENG-1", now: h.clock.now() });
+    expect((await getWorkItem(h.db, "ENG-1"))?.state).toBe("merged");
+    expect((await listJobs(h.db)).find((job) => job.id === later)?.status).toBe("cancelled");
   });
 
   test("a hand merge during the turn merges the item instead of failing it", async () => {
@@ -253,9 +255,7 @@ describe("advanceMerge and a pull request merged outside the lane", () => {
     expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
     expect(h.published).toEqual(["ENG-1"]);
     expect(h.github.merged).toEqual([]);
-    expect((await getConfirmedRemoteMerge(sqliteDb(h.db), "ENG-1"))?.mergeSha).toBe(
-      "hand-merge-sha",
-    );
+    expect((await getConfirmedRemoteMerge(h.db, "ENG-1"))?.mergeSha).toBe("hand-merge-sha");
   });
 
   test("a stop after the hand merge is read completes the item and makes the pass obsolete", async () => {
@@ -264,7 +264,7 @@ describe("advanceMerge and a pull request merged outside the lane", () => {
     h.state.handMerged.set(1, "hand-merge-sha");
     h.state.stopped = true;
     expect(await h.pass("ENG-1")).toEqual({ kind: "obsolete" });
-    expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("merged");
+    expect((await getWorkItem(h.db, "ENG-1"))?.state).toBe("merged");
   });
 });
 
@@ -279,7 +279,7 @@ describe("advanceMerge on a rebase conflict", () => {
   test("a conflict goes back to the agent to rebase, and the resolved branch then merges", async () => {
     const { h, main, item: added } = await conflicting();
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
-    const item = (await getWorkItem(sqliteDb(h.db), "ENG-1"))!;
+    const item = (await getWorkItem(h.db, "ENG-1"))!;
     expect(item.state).toBe("queued");
     expect(item.checkpoint?.phase).toBe("running");
     expect(await resumes(h)).toEqual([
@@ -291,7 +291,7 @@ describe("advanceMerge on a rebase conflict", () => {
       },
     ] as never);
     expect(
-      (await listRebaseReturns(sqliteDb(h.db), "ENG-1", 0)).map((row) => ({
+      (await listRebaseReturns(h.db, "ENG-1", 0)).map((row) => ({
         base: row.base,
         files: row.files,
       })),
@@ -315,8 +315,8 @@ describe("advanceMerge on a rebase conflict", () => {
       await backInQueue(h, "ENG-1");
     }
     expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
-    expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("awaiting_input");
-    expect(await findOpenQuestion(sqliteDb(h.db), "ses-ENG-1")).toMatchObject({
+    expect((await getWorkItem(h.db, "ENG-1"))?.state).toBe("awaiting_input");
+    expect(await findOpenQuestion(h.db, "ses-ENG-1")).toMatchObject({
       reason: "rebase_budget_spent",
       body: expect.stringContaining(
         `Main commits: ${main.slice(0, 7)}. Conflicting files: ok.txt.`,
@@ -346,7 +346,7 @@ describe("advanceMerge on a rebase conflict", () => {
       await h.pass("ENG-1");
       await backInQueue(h, "ENG-1");
     }
-    await enqueueJob(sqliteDb(h.db), {
+    await enqueueJob(h.db, {
       queue: JOB_KIND.resume,
       jobKey: "linear-turn:ses-ENG-1:1",
       payload: { itemId: "ENG-1", handoff: "retry" },
@@ -387,7 +387,7 @@ describe('advanceMerge and "When main moved before the merge"', () => {
     expect(head).not.toBe(item.accepted);
     expect(await onMovedMain(h, head, main)).toBe(true);
     expect(rebased).toMatchObject({ kind: "wait", reason: "ci", base: main, head });
-    expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("merge_queue");
+    expect((await getWorkItem(h.db, "ENG-1"))?.state).toBe("merge_queue");
     expect(h.bodies("status")).toEqual([
       `Branch updated onto main ${main.slice(0, 7)}, waiting for CI. Closeout does not run again, because "When main moved before the merge" for this task is set to wait for CI in Settings → Merging.`,
     ]);
@@ -424,7 +424,7 @@ describe('advanceMerge and "When main moved before the merge"', () => {
     h.state.policyDigest = "sha256:changed-policy";
     h.state.recheckDigest = "sha256:changed-recheck";
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
-    expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("verifying");
+    expect((await getWorkItem(h.db, "ENG-1"))?.state).toBe("verifying");
     expect(await reverifyJobs(h)).toEqual([`reverify:ENG-1:${head}:merge:2`]);
     expect(h.github.merged).toEqual([]);
   });
@@ -509,7 +509,7 @@ for (const changedIdentity of [false, true]) {
     const h = await start();
     const item = await h.addItem("ENG-1");
     await finishCloseoutProgress(
-      sqliteDb(h.db),
+      h.db,
       item.id,
       {
         taskId: item.id,
@@ -523,10 +523,10 @@ for (const changedIdentity of [false, true]) {
       Date.now(),
     );
     // An old database can still contain the superseded accepted_head.
-    await markCloseoutAccepted(sqliteDb(h.db), item.id, item.accepted);
+    await markCloseoutAccepted(h.db, item.id, item.accepted);
     expect(await h.pass(item.id)).toEqual({ kind: "returned" });
     expect(h.github.merged).toEqual([]);
-    expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("verifying");
+    expect((await getWorkItem(h.db, item.id))?.state).toBe("verifying");
   });
 }
 
@@ -535,12 +535,12 @@ describe("advanceMerge on a conflicting pull request waiting for CI", () => {
     const h = await start({ settings: { order: "queue" } });
     for (const id of ["ENG-1", "ENG-2"]) {
       await h.addItem(id);
-      await enqueueJob(sqliteDb(h.db), {
+      await enqueueJob(h.db, {
         queue: JOB_KIND.merge,
         jobKey: `merge:${id}`,
         payload: {
           itemId: id,
-          head: (await getWorkItem(sqliteDb(h.db), id))!.checkpoint!.wipCommit,
+          head: (await getWorkItem(h.db, id))!.checkpoint!.wipCommit,
         },
         now: h.clock.now(),
       });
@@ -561,11 +561,9 @@ describe("advanceMerge on a conflicting pull request waiting for CI", () => {
       expect.objectContaining({ handoff: REBASE_CONFLICT_INSTRUCTION, reason: "conflict" }),
     ]);
     expect(
-      (await listOutbox(sqliteDb(h.db))).filter((row) =>
-        row.idempotencyKey.startsWith("merge-conflict:"),
-      ),
+      (await listOutbox(h.db)).filter((row) => row.idempotencyKey.startsWith("merge-conflict:")),
     ).toHaveLength(1);
-    expect((await listMergeQueues(sqliteDb(h.db))).map((entry) => entry.itemId)).toEqual(["ENG-2"]);
+    expect((await listMergeQueues(h.db)).map((entry) => entry.itemId)).toEqual(["ENG-2"]);
     h.state.mergeState = null;
     h.state.ci = () => undefined;
     expect(await h.pass("ENG-2")).toEqual({ kind: "merged" });
@@ -578,9 +576,6 @@ describe("advanceMerge on a conflicting pull request waiting for CI", () => {
     expect(await h.pass("ENG-2")).toMatchObject({ kind: "wait", reason: "ahead" });
     expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "ci" });
     expect(await resumes(h)).toEqual([]);
-    expect((await listMergeQueues(sqliteDb(h.db))).map((entry) => entry.itemId)).toEqual([
-      "ENG-1",
-      "ENG-2",
-    ]);
+    expect((await listMergeQueues(h.db)).map((entry) => entry.itemId)).toEqual(["ENG-1", "ENG-2"]);
   });
 });
