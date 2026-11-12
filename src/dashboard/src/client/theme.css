@@ -1235,6 +1235,19 @@ a.visual-review-frame:focus-visible {
 .risk-file code {
   overflow-wrap: anywhere;
 }
+.hot-file {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+}
+.hot-file p {
+  margin: 0;
+}
+.risk-file > .hot-file + .hot-file {
+  border-top: 1px solid var(--border);
+  padding-top: 0.375rem;
+}
 .risk-lists textarea {
   font-family: var(--font-mono, ui-monospace, monospace);
 }

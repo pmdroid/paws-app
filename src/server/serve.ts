@@ -59,6 +59,7 @@ import {
   type AgentSettingsOptions,
   type BriefSettingsOptions,
   type HighRiskFile,
+  type OverlapHoldView,
   type RepositoryCheckoutFacts,
 } from "../settings";
 import type { SkillResolver, SkillUpdates } from "../skills";
@@ -67,12 +68,16 @@ import {
   auditWorkspaceAccessSteps,
   firstWorkspaceIdSteps,
   getArtifactSteps,
+  getWorkItemRepositorySteps,
   getWorkItemSteps,
   hotFilesSteps,
+  listItemHoldsSteps,
   listWorkspaceRepositoryNamesSteps,
   storeOf,
   workspaceSessionIdsSteps,
   type Db,
+  type Q,
+  type Steps,
 } from "../db";
 import {
   handleWorkspaceGitHubIntegration,
@@ -720,7 +725,10 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
           : {}),
         ...(highRiskFile ? { highRiskFile } : {}),
         ...(secrets.store
-          ? { hotFiles: () => secrets.store!.run((q) => hotFilesSteps(q, Date.now())) }
+          ? {
+              hotFiles: () => secrets.store!.run((q) => hotFilesSteps(q, Date.now())),
+              overlapHolds: () => secrets.store!.run((q) => overlapHoldsSteps(q)),
+            }
           : {}),
         ...(githubQueues ? { githubQueues } : {}),
         ...(upToDateRules ? { upToDateRules } : {}),
@@ -791,4 +799,21 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     return new Response("not found", { status: 404 });
   }
   return new Response("not found", { status: 404 });
+}
+
+function* overlapHoldsSteps(q: Q): Steps<OverlapHoldView[]> {
+  const holds: OverlapHoldView[] = [];
+  for (const hold of yield* listItemHoldsSteps(q)) {
+    if (hold.reason !== "overlap" || !hold.blockers.length) continue;
+    const binding = yield* getWorkItemRepositorySteps(q, hold.itemId);
+    if (!binding) continue;
+    const item = yield* getWorkItemSteps(q, hold.itemId);
+    holds.push({
+      held: item?.linearIdentifier ?? hold.itemId,
+      holder: hold.blockers[0]!,
+      repository: `${binding.owner}/${binding.repo}`,
+      files: hold.files ?? [],
+    });
+  }
+  return holds;
 }
