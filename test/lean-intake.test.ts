@@ -2,14 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { systemClock } from "../src/core";
-import {
-  JobLoop,
-  OutboxDispatcher,
-  getLinearSession,
-  getTaskMode,
-  getWorkItem,
-  sqliteDb,
-} from "../src/db";
+import { JobLoop, OutboxDispatcher, getLinearSession, getTaskMode, getWorkItem } from "../src/db";
 import type { GitHubBinding } from "../src/github";
 import {
   acknowledgeNewSession,
@@ -19,8 +12,9 @@ import {
   type TrackerAdapter,
 } from "../src/linear";
 import { attachOrchestrator, type AgentLaunch } from "../src/loop";
-import { tempDb, tempHome } from "./helpers";
+import { tempHome } from "./helpers";
 import { workspaceAdmission } from "./fake-workspace";
+import { tempStore } from "./pglite";
 
 const created: AcceptedLinearEvent = {
   dedupeKey: "session:session:created",
@@ -52,8 +46,8 @@ function githubListing(pulls: PullList): GitHubBinding {
   };
 }
 
-function setup(epic: EpicSnapshot, pulls?: PullList) {
-  const db = tempDb();
+async function setup(epic: EpicSnapshot, pulls?: PullList) {
+  const { db, close } = await tempStore();
   const home = tempHome();
   const root = join(home, "paws");
   mkdirSync(root);
@@ -129,7 +123,7 @@ function setup(epic: EpicSnapshot, pulls?: PullList) {
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -151,7 +145,7 @@ function setup(epic: EpicSnapshot, pulls?: PullList) {
       await orchestrator.onLinearEvent(event);
       intakeCalls.push(...calls.slice(acknowledged));
     });
-  return { db, jobs, orchestrator, calls, intakeCalls, launches, intake };
+  return { db, close, jobs, orchestrator, calls, intakeCalls, launches, intake };
 }
 
 const solo: EpicSnapshot = {
@@ -163,27 +157,22 @@ const solo: EpicSnapshot = {
 };
 
 test("intake of a lone issue reads the issue and its relations after the first activity, posts nothing more and classifies nothing", async () => {
-  const f = setup(solo);
+  const f = await setup(solo);
   try {
     await f.intake();
     expect(f.calls[0]).toBe("postProgress");
     expect(f.intakeCalls).toEqual(["loadEpic", "listDeps"]);
     expect(f.launches).toEqual([]);
     expect(
-      (
-        await getWorkItem(
-          sqliteDb(f.db),
-          (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!,
-        )
-      )?.state,
+      (await getWorkItem(f.db, (await getLinearSession(f.db, "session"))!.activeItemId!))?.state,
     ).toBe("queued");
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
 test("a lone issue hydrates its session context and classifies at start", async () => {
-  const f = setup(solo);
+  const f = await setup(solo);
   try {
     await f.intake();
     const intakeCalls = f.calls.length;
@@ -198,18 +187,18 @@ test("a lone issue hydrates its session context and classifies at start", async 
     expect(Number(classify?.[1])).toBeGreaterThanOrEqual(hydrated);
     expect(answer?.[0]).toBe("answer");
     const item = (await getWorkItem(
-      sqliteDb(f.db),
-      (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!,
+      f.db,
+      (await getLinearSession(f.db, "session"))!.activeItemId!,
     ))!;
-    expect(await getTaskMode(sqliteDb(f.db), item.id)).toBe("answer");
+    expect(await getTaskMode(f.db, item.id)).toBe("answer");
     expect(item.state).toBe("completed");
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
 test("a parent with open sub-issues still classifies at intake", async () => {
-  const f = setup({
+  const f = await setup({
     ...solo,
     subIssues: [{ linearIssueId: "child", identifier: "ENG-2", title: "Implement a feature" }],
   });
@@ -217,13 +206,13 @@ test("a parent with open sub-issues still classifies at intake", async () => {
     await f.intake();
     expect(f.launches.map((launch) => launch.split("@")[0])).toEqual(["classify"]);
     const item = (await getWorkItem(
-      sqliteDb(f.db),
-      (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!,
+      f.db,
+      (await getLinearSession(f.db, "session"))!.activeItemId!,
     ))!;
     expect(item.linearIssueId).toBe("solo");
-    expect(await getTaskMode(sqliteDb(f.db), item.id)).toBe("answer");
+    expect(await getTaskMode(f.db, item.id)).toBe("answer");
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -232,22 +221,22 @@ const pull = (state: string, ref: string, repository = "acme/app") => ({
   head: { ref, repo: { full_name: repository } },
 });
 
-async function startedMode(f: ReturnType<typeof setup>) {
+async function startedMode(f: Awaited<ReturnType<typeof setup>>) {
   await f.intake();
   await f.jobs.tick();
-  return await getTaskMode(
-    sqliteDb(f.db),
-    (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!,
-  );
+  return await getTaskMode(f.db, (await getLinearSession(f.db, "session"))!.activeItemId!);
 }
 
 test("an open pull request on the issue's Paws branch saves code without classifying", async () => {
-  const f = setup(solo, () => ({ status: 200, body: [pull("open", "paws/eng-1-x", "Acme/App")] }));
+  const f = await setup(solo, () => ({
+    status: 200,
+    body: [pull("open", "paws/eng-1-x", "Acme/App")],
+  }));
   try {
     expect(await startedMode(f)).toBe("code");
     expect(f.launches.some((launch) => launch.startsWith("classify"))).toBe(false);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -257,11 +246,11 @@ test.each([
   ["a fork's branch", 200, [pull("open", "paws/eng-1-01m70th", "someone/app")]],
   ["a failing lookup", 502, { message: "Bad gateway" }],
 ])("%s leaves the item to the classifier", async (_name, status, body) => {
-  const f = setup(solo, () => ({ status, body }));
+  const f = await setup(solo, () => ({ status, body }));
   try {
     expect(await startedMode(f)).toBe("answer");
     expect(f.launches[0]).toStartWith("classify");
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
