@@ -2,16 +2,14 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { eq } from "drizzle-orm";
 import { FakeClock } from "../src/core";
 import {
   consumeWorkspaceBootstrap,
   JobLoop,
   listRunnerOverview,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   syncWorkspaceMember,
-  sqliteDb,
 } from "../src/db";
 import {
   createMemberVmHttp,
@@ -31,9 +29,13 @@ import {
   workspaceTokenHash,
   type WorkspacePrincipal,
 } from "../src/workspace";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const roots: string[] = [];
-afterEach(() => {
+const stores: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of stores.splice(0)) await close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -41,34 +43,32 @@ async function fixture(options: { size?: ExeDevVmSize } = {}) {
   const root = mkdtempSync(join(tmpdir(), "paws-member-vm-http-"));
   roots.push(root);
   const clock = new FakeClock(Date.UTC(2026, 9, 25));
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
+  stores.push(close);
   const authorityRoot = join(root, "issuer");
   const authority = await initializeRunnerAuthority(authorityRoot);
-  const ownerUserId = await putWorkspaceUser(sqliteDb(db), {
+  const ownerUserId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "vm-owner",
     name: "Workspace Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "vm-org",
     name: "vm-org",
     userId: ownerUserId,
-    tokenHash: workspaceTokenHash(
-      await issueWorkspaceBootstrap(sqliteDb(db), "vm-org", clock.now()),
-    ),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "vm-org", clock.now())),
     now: clock.now(),
   });
   const person = async (name: string, active = true): Promise<WorkspacePrincipal> => {
-    const userId = await putWorkspaceUser(sqliteDb(db), {
+    const userId = await putWorkspaceUser(db, {
       id: workspaceId(),
       linearUserId: `vm-${name}`,
       name,
       email: `${name.toLowerCase().replaceAll(" ", ".")}@example.invalid`,
     });
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: workspace.id,
       userId,
       role: "member",
@@ -87,7 +87,7 @@ async function fixture(options: { size?: ExeDevVmSize } = {}) {
   const member = await person("Ada Lovelace");
   const inactive = await person("Watcher", false);
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority,
     certificateRoot: authorityRoot,
     disconnect: () => {},
@@ -113,7 +113,7 @@ async function fixture(options: { size?: ExeDevVmSize } = {}) {
   });
   let available = true;
   const http = createMemberVmHttp({
-    store: sqliteDb(db),
+    store: db,
     available: () => available,
     exeDev,
     ...(options.size === undefined ? {} : { size: () => options.size! }),
@@ -139,7 +139,7 @@ async function fixture(options: { size?: ExeDevVmSize } = {}) {
   };
   const drive = async (until: (row: MemberVm) => boolean) => {
     for (let index = 0; index < 500; index++) {
-      const row = (await findMemberVm(sqliteDb(db), member))!;
+      const row = (await findMemberVm(db, member))!;
       if (until(row)) return row;
       if ((await loop.tick()) === null) clock.advance(MEMBER_VM_POLL_MS);
     }
@@ -169,7 +169,7 @@ describe("member VM routes", () => {
     f.setAvailable(false);
     expect(await f.call(f.member, "GET")).toEqual({ status: 200, body: { available: false } });
     expect(await f.call(f.member, "POST")).toEqual({ status: 200, body: { available: false } });
-    expect(await findMemberVm(sqliteDb(f.db), f.member)).toBeNull();
+    expect(await findMemberVm(f.db, f.member)).toBeNull();
   });
 
   test("inactive members are refused on every route", async () => {
@@ -180,12 +180,12 @@ describe("member VM routes", () => {
       ["POST", "/api/runners/vm/retry"],
     ] as const)
       expect((await f.call(f.inactive, method, path)).status).toBe(403);
-    expect(await findMemberVm(sqliteDb(f.db), f.inactive)).toBeNull();
+    expect(await findMemberVm(f.db, f.inactive)).toBeNull();
   });
 
   test("other paths fall through and wrong methods answer 405", async () => {
     const f = await fixture();
-    const http = createMemberVmHttp({ store: sqliteDb(f.db), available: () => true });
+    const http = createMemberVmHttp({ store: f.db, available: () => true });
     expect(await http(new Request("https://paws.test/api/runners"), f.member)).toBeNull();
     expect((await f.call(f.member, "DELETE")).status).toBe(405);
     expect((await f.call(f.member, "GET", "/api/runners/vm/retry")).status).toBe(405);
@@ -195,7 +195,7 @@ describe("member VM routes", () => {
     const f = await fixture();
     let size: () => { cpu?: number; memoryGb?: number } = () => ({ cpu: 8, memoryGb: 16 });
     const http = createMemberVmHttp({
-      store: sqliteDb(f.db),
+      store: f.db,
       available: () => true,
       size: () => size(),
     });
@@ -249,7 +249,7 @@ describe("member VM routes", () => {
       },
     });
     expect((await f.call(f.member, "POST", "/api/runners/vm", { pool: "a b" })).status).toBe(400);
-    expect(await findMemberVm(sqliteDb(f.db), f.member)).toBeNull();
+    expect(await findMemberVm(f.db, f.member)).toBeNull();
     const started = vmOf((await f.call(f.member, "POST", "/api/runners/vm", { pool: "gpu" })).body);
     expect(started.pool).toBe("gpu");
     await f.drive((row) => row.step !== "create");
@@ -350,14 +350,19 @@ describe("member VM routes", () => {
 
     const health = await f.drive((row) => row.step === "health" || row.failure !== null);
     expect(health.failure).toBeNull();
-    f.db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [f.clock.now(), health.runnerId]);
+    await seed(f.db, (q) =>
+      q.orm
+        .update(q.t.runner)
+        .set({ lastSeenAt: f.clock.now() })
+        .where(eq(q.t.runner.id, health.runnerId!)),
+    );
     await f.drive((row) => row.step === "ready");
     const ready = vmOf((await f.call(f.member, "GET")).body);
     expect(ready.step).toBe("ready");
     expect(states(ready)).toEqual(["create:done", "install:done", "enroll:done", "health:done"]);
     for (const entry of ready.steps) expect(entry.elapsedMs).not.toBeNull();
 
-    const [runner] = await listRunnerOverview(sqliteDb(f.db), f.workspace.id, f.clock.now());
+    const [runner] = await listRunnerOverview(f.db, f.workspace.id, f.clock.now());
     expect(runner).toMatchObject({
       id: ready.runnerId,
       ownerUserId: f.member.userId,

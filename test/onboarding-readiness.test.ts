@@ -1,15 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import type { Database } from "bun:sqlite";
+import { eq } from "drizzle-orm";
 import {
   consumeWorkspaceBootstrap,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   syncWorkspaceMember,
-  sqliteDb,
+  type Db,
+  type Q,
 } from "../src/db";
 import { createOnboardingReadiness } from "../src/onboarding-readiness";
 import {
@@ -21,21 +17,21 @@ import {
   type OnboardingReadiness,
   type OnboardingVmStep,
 } from "../src/workspace";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const NOW = 1_800_000_000_000;
-const roots: string[] = [];
+const stores: (() => Promise<void>)[] = [];
 
-afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+afterEach(async () => {
+  for (const close of stores.splice(0)) await close();
 });
 
 async function workspace() {
-  const root = mkdtempSync(join(tmpdir(), "paws-onboarding-readiness-"));
-  roots.push(root);
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
+  stores.push(close);
   const user = async (id: string) => {
-    await putWorkspaceUser(sqliteDb(db), {
+    await putWorkspaceUser(db, {
       id,
       linearUserId: id,
       name: id,
@@ -43,16 +39,16 @@ async function workspace() {
     });
     return id;
   };
-  await consumeWorkspaceBootstrap(sqliteDb(db), {
+  await consumeWorkspaceBootstrap(db, {
     id: "ws",
     organizationId: "org",
     name: "Test",
     userId: await user("owner"),
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", NOW)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", NOW)),
     now: NOW,
   });
   for (const id of ["me", "colleague", "lead"])
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: "ws",
       userId: await user(id),
       role: "member",
@@ -60,7 +56,7 @@ async function workspace() {
       teamIds: ["team"],
       now: NOW,
     });
-  const read = createOnboardingReadiness(sqliteDb(db));
+  const read = createOnboardingReadiness(db);
   return {
     db,
     read: (projectLeadIds: string[] = []) =>
@@ -69,7 +65,7 @@ async function workspace() {
 }
 
 function runner(
-  db: Database,
+  db: Db,
   id: string,
   input: {
     owner?: string;
@@ -79,34 +75,50 @@ function runner(
     agents?: Record<string, { ready: number; authExpired?: number }>;
   } = {},
 ) {
-  db.run(
-    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,?,?,?)",
-    [
-      id,
-      "ws",
-      input.owner ?? "me",
-      `${id}-host`,
-      input.status ?? "active",
-      NOW,
-      NOW - (input.seenAgoMs ?? 0),
-    ],
+  return seed(
+    db,
+    (q) =>
+      q.orm.insert(q.t.runner).values({
+        id,
+        workspaceId: "ws",
+        ownerUserId: input.owner ?? "me",
+        name: `${id}-host`,
+        status: input.status ?? "active",
+        createdAt: NOW,
+        lastSeenAt: NOW - (input.seenAgoMs ?? 0),
+      }),
+    ...(input.sharing === undefined
+      ? []
+      : [
+          (q: Q) =>
+            q.orm.insert(q.t.runnerPolicy).values({ runnerId: id, sharing: input.sharing! }),
+        ]),
+    ...Object.entries(input.agents ?? {}).map(
+      ([agent, policy]) =>
+        (q: Q) =>
+          q.orm.insert(q.t.runnerAgentPolicy).values({
+            runnerId: id,
+            agent,
+            ready: policy.ready,
+            authExpired: policy.authExpired ?? 0,
+          }),
+    ),
   );
-  if (input.sharing !== undefined)
-    db.run("INSERT INTO runner_policy(runner_id,sharing) VALUES(?,?)", [id, input.sharing]);
-  for (const [agent, policy] of Object.entries(input.agents ?? {}))
-    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?,?,?,?)", [
-      id,
-      agent,
-      policy.ready,
-      policy.authExpired ?? 0,
-    ]);
 }
 
-function vm(db: Database, step: string, failure: string | null = null) {
-  db.run(
-    `INSERT INTO member_vm(id,workspace_id,user_id,vm_name,step,failure,step_started_at,created_at,updated_at)
-    VALUES('vm','ws','me','me-paws',?,?,?,?,?)`,
-    [step, failure, NOW, NOW, NOW],
+function vm(db: Db, step: string, failure: string | null = null) {
+  return seed(db, (q) =>
+    q.orm.insert(q.t.memberVm).values({
+      id: "vm",
+      workspaceId: "ws",
+      userId: "me",
+      vmName: "me-paws",
+      step,
+      failure,
+      stepStartedAt: NOW,
+      createdAt: NOW,
+      updatedAt: NOW,
+    }),
   );
 }
 
@@ -124,15 +136,19 @@ const VM_STEPS = (states: OnboardingVmStep["state"][]): OnboardingVmStep[] =>
 
 test("a member with no runner needs one, and another member's runner does not count", async () => {
   const w = await workspace();
-  runner(w.db, "theirs", { owner: "colleague", agents: { claude: { ready: 1 } } });
+  await runner(w.db, "theirs", { owner: "colleague", agents: { claude: { ready: 1 } } });
   expect(await w.read()).toEqual(NEEDED);
 });
 
 test("another member's runner never counts, shared or not, unless they lead the issue's project", async () => {
   const w = await workspace();
-  runner(w.db, "theirs", { owner: "colleague", sharing: 1, agents: { claude: { ready: 1 } } });
-  runner(w.db, "private", { owner: "lead", agents: { claude: { ready: 1 } } });
-  runner(w.db, "stopped", { owner: "colleague", seenAgoMs: 10 * 60_000 });
+  await runner(w.db, "theirs", {
+    owner: "colleague",
+    sharing: 1,
+    agents: { claude: { ready: 1 } },
+  });
+  await runner(w.db, "private", { owner: "lead", agents: { claude: { ready: 1 } } });
+  await runner(w.db, "stopped", { owner: "colleague", seenAgoMs: 10 * 60_000 });
   expect(await w.read()).toEqual(NEEDED);
   // The lead's own unshared runner stays theirs, and the page says so.
   expect(await w.read(["lead"])).toEqual({
@@ -145,7 +161,7 @@ test("another member's runner never counts, shared or not, unless they lead the 
 
 test("a runner the issue's project lead shares makes the step ready, naming who shares it", async () => {
   const w = await workspace();
-  runner(w.db, "shared", {
+  await runner(w.db, "shared", {
     owner: "lead",
     sharing: 1,
     agents: { claude: { ready: 1 }, codex: { ready: 1 } },
@@ -156,7 +172,7 @@ test("a runner the issue's project lead shares makes the step ready, naming who 
     memberVm: false,
   });
   // The member's own runner wins when it is as far along.
-  runner(w.db, "mine", { agents: { claude: { ready: 1 }, codex: { ready: 1 } } });
+  await runner(w.db, "mine", { agents: { claude: { ready: 1 }, codex: { ready: 1 } } });
   expect(await w.read(["lead"])).toEqual({
     runner: { state: "ready", id: "mine", name: "mine-host" },
     agents: { claude: "connected", codex: "connected" },
@@ -166,7 +182,7 @@ test("a runner the issue's project lead shares makes the step ready, naming who 
 
 test("the lead's shared runner that is offline says so", async () => {
   const w = await workspace();
-  runner(w.db, "shared", { owner: "lead", sharing: 1, seenAgoMs: 10 * 60_000 });
+  await runner(w.db, "shared", { owner: "lead", sharing: 1, seenAgoMs: 10 * 60_000 });
   expect(await w.read(["lead"])).toEqual({
     ...NEEDED,
     runner: { state: "offline", name: "shared-host", sharedBy: "lead" },
@@ -175,7 +191,7 @@ test("the lead's shared runner that is offline says so", async () => {
 
 test("the step turns ready when the member's runner enrolls, with no restart", async () => {
   const w = await workspace();
-  vm(w.db, "enroll");
+  await vm(w.db, "enroll");
   expect(await w.read()).toEqual({
     runner: {
       state: "setting-up",
@@ -186,7 +202,7 @@ test("the step turns ready when the member's runner enrolls, with no restart", a
     memberVm: true,
   });
   // The VM's runner enrolls and reports in; the next read shows it.
-  runner(w.db, "vm-runner");
+  await runner(w.db, "vm-runner");
   expect(await w.read()).toEqual({
     runner: { state: "ready", id: "vm-runner", name: "vm-runner-host" },
     agents: WAITING,
@@ -196,7 +212,7 @@ test("the step turns ready when the member's runner enrolls, with no restart", a
 
 test("a VM being set up or failed shows as the runner step, with each setup step", async () => {
   const w = await workspace();
-  vm(w.db, "install");
+  await vm(w.db, "install");
   expect(await w.read()).toEqual({
     runner: {
       state: "setting-up",
@@ -206,7 +222,7 @@ test("a VM being set up or failed shows as the runner step, with each setup step
     agents: WAITING,
     memberVm: true,
   });
-  w.db.run("UPDATE member_vm SET failure='npm ci failed'");
+  await seed(w.db, (q) => q.orm.update(q.t.memberVm).set({ failure: "npm ci failed" }));
   expect(await w.read()).toEqual({
     runner: {
       state: "failed",
@@ -221,12 +237,17 @@ test("a VM being set up or failed shows as the runner step, with each setup step
 
 test("an offline or paused own runner says so", async () => {
   const w = await workspace();
-  runner(w.db, "old", { seenAgoMs: 10 * 60_000 });
+  await runner(w.db, "old", { seenAgoMs: 10 * 60_000 });
   expect(await w.read()).toEqual({
     ...NEEDED,
     runner: { state: "offline", id: "old", name: "old-host" },
   });
-  w.db.run("UPDATE runner SET status='paused',last_seen_at=?", [NOW]);
+  await seed(w.db, (q) =>
+    q.orm
+      .update(q.t.runner)
+      .set({ status: "paused", lastSeenAt: NOW })
+      .where(eq(q.t.runner.id, "old")),
+  );
   expect(await w.read()).toEqual({
     ...NEEDED,
     runner: { state: "paused", id: "old", name: "old-host" },
@@ -235,13 +256,15 @@ test("an offline or paused own runner says so", async () => {
 
 test("a ready runner reports each coding agent's sign-in, preferring the most connected", async () => {
   const w = await workspace();
-  runner(w.db, "a", { agents: { claude: { ready: 1 }, codex: { ready: 0, authExpired: 1 } } });
+  await runner(w.db, "a", {
+    agents: { claude: { ready: 1 }, codex: { ready: 0, authExpired: 1 } },
+  });
   expect(await w.read()).toEqual({
     runner: { state: "ready", id: "a", name: "a-host" },
     agents: { claude: "connected", codex: "expired" },
     memberVm: false,
   });
-  runner(w.db, "b", { agents: { claude: { ready: 1 }, codex: { ready: 1 } } });
+  await runner(w.db, "b", { agents: { claude: { ready: 1 }, codex: { ready: 1 } } });
   expect(await w.read()).toEqual({
     runner: { state: "ready", id: "b", name: "b-host" },
     agents: { claude: "connected", codex: "connected" },

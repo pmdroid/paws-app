@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
+import { eq, sql } from "drizzle-orm";
 import { isMergeWork, JOB_KIND } from "../src/core";
 import {
   cancelOpenJobs,
   countCiFixes,
   countRebaseReturns,
   enqueueJob,
+  insertQueuedItem,
   listJobs,
   listRebaseReturns,
   mergeLaneSql,
@@ -15,9 +17,12 @@ import {
   recordCiRound,
   recordRebaseReturn,
   sqliteDb,
+  type Db,
   type NewJob,
 } from "../src/db";
+import { seed } from "./dialects";
 import { legacyTempDb } from "./helpers";
+import { tempStore } from "./pglite";
 
 const samples = [
   "github.merge",
@@ -27,17 +32,19 @@ const samples = [
   "item.start",
 ];
 
-test("the merge-work SQL classifies every job as isMergeWork does", () => {
-  const db = openDatabase(":memory:");
+test("the merge-work SQL classifies every job as isMergeWork does", async () => {
+  const { db, close } = await tempStore();
   try {
-    db.run("CREATE TABLE sample (queue TEXT NOT NULL)");
-    for (const queue of samples) db.run("INSERT INTO sample VALUES (?)", [queue]);
-    const rows = db
-      .query<{ queue: string; merge: number }, []>(
-        `SELECT queue, ${mergeLaneSql("s")} AS merge FROM sample s`,
-      )
-      .all();
-    expect(rows.map((row) => [row.queue, row.merge === 1])).toEqual(
+    for (const queue of samples) await enqueueJob(db, { queue, payload: {}, now: 1 });
+    const rows = await db.run((q) =>
+      q.all(
+        q.orm
+          .select({ queue: q.t.job.queue, merge: sql<boolean>`${sql.raw(mergeLaneSql("job"))}` })
+          .from(q.t.job)
+          .orderBy(q.t.job.id),
+      ),
+    );
+    expect(rows.map((row) => [row.queue, row.merge])).toEqual(
       samples.map((queue) => [queue, isMergeWork(queue)]),
     );
     expect(samples.filter((queue) => isMergeWork(queue))).toEqual([
@@ -45,17 +52,17 @@ test("the merge-work SQL classifies every job as isMergeWork does", () => {
       "github.merge.close",
     ]);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("cancelling the merge lane cancels a merge job", async () => {
-  const db = legacyTempDb();
+  const { db, close } = await tempStore();
   try {
-    await enqueueJob(sqliteDb(db), { queue: JOB_KIND.merge, payload: {}, now: 1 });
-    expect(await cancelOpenJobs(sqliteDb(db), { reason: "stop", mergeLane: true, now: 2 })).toBe(1);
+    await enqueueJob(db, { queue: JOB_KIND.merge, payload: {}, now: 1 });
+    expect(await cancelOpenJobs(db, { reason: "stop", mergeLane: true, now: 2 })).toBe(1);
   } finally {
-    db.close();
+    await close();
   }
 });
 
@@ -63,6 +70,13 @@ function insertItem(db: Database, id: string): void {
   db.run(
     "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES(?,?,?,?,?,'merge_queue',?,0,1000,?)",
     [id, id, id, id, id, `paws/${id}`, id],
+  );
+}
+
+async function insertMergeQueueItem(db: Db, id: string): Promise<void> {
+  await insertQueuedItem(db, { id });
+  await seed(db, (q) =>
+    q.orm.update(q.t.workItem).set({ state: "merge_queue" }).where(eq(q.t.workItem.id, id)),
   );
 }
 
@@ -156,11 +170,11 @@ test("a rebase return keeps the main commit, files and time it conflicted on", a
 });
 
 test("CI fixes are counted from the CI rounds recorded after the latest user turn", async () => {
-  const db = legacyTempDb();
+  const { db, close } = await tempStore();
   try {
-    insertItem(db, "item");
+    await insertMergeQueueItem(db, "item");
     const round = async (head: string, fix: number | null, recordedAt: number) =>
-      await recordCiRound(sqliteDb(db), {
+      await recordCiRound(db, {
         itemId: "item",
         head,
         runId: null,
@@ -172,16 +186,21 @@ test("CI fixes are counted from the CI rounds recorded after the latest user tur
       });
     await round("h1", 1, 10);
     await round("h2", 2, 20);
-    expect(await countCiFixes(sqliteDb(db), "item", 0)).toBe(2);
+    expect(await countCiFixes(db, "item", 0)).toBe(2);
     await round("h2", 3, 30);
-    expect(await countCiFixes(sqliteDb(db), "item", 0)).toBe(3);
-    const turn = await userTurn(db, "item", 40);
-    expect(await countCiFixes(sqliteDb(db), "item", turn)).toBe(0);
+    expect(await countCiFixes(db, "item", 0)).toBe(3);
+    const turn = await enqueueJob(db, {
+      queue: JOB_KIND.resume,
+      jobKey: "linear-turn:item:40",
+      payload: { itemId: "item" },
+      now: 40,
+    });
+    expect(await countCiFixes(db, "item", turn)).toBe(0);
     await round("h3", 1, 50);
     await round("h4", null, 60);
-    expect(await countCiFixes(sqliteDb(db), "item", turn)).toBe(1);
+    expect(await countCiFixes(db, "item", turn)).toBe(1);
   } finally {
-    db.close();
+    await close();
   }
 });
 
