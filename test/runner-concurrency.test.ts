@@ -1,17 +1,15 @@
 import { afterEach, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
+import { and, count, eq, isNull } from "drizzle-orm";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   consumeWorkspaceBootstrap,
   insertRun,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   runnerHasCapacity,
   syncWorkspaceMember,
-  sqliteDb,
 } from "../src/db";
 import { createRunnerControl, createRunnerHttp } from "../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
@@ -22,9 +20,14 @@ import {
   workspaceTokenHash,
   type WorkspacePrincipal,
 } from "../src/workspace";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
+import { setRunnerStatus } from "./runner-rows";
 
 const roots: string[] = [];
-afterEach(() => {
+const open: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -36,17 +39,17 @@ type Listed = {
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "paws-runner-concurrency-"));
   roots.push(root);
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
+  open.push(close);
   const now = 1_800_000_000_000;
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "fixture-host", now);
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-host", now);
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "fixture-host",
     name: "Fixture",
@@ -62,13 +65,13 @@ async function fixture() {
     teamIds: [],
   });
   const admin = principal(userId, "admin");
-  const memberId = await putWorkspaceUser(sqliteDb(db), {
+  const memberId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "member",
     name: "member",
     email: "member@example.invalid",
   });
-  await syncWorkspaceMember(sqliteDb(db), {
+  await syncWorkspaceMember(db, {
     workspaceId: workspace.id,
     userId: memberId,
     role: "member",
@@ -79,7 +82,7 @@ async function fixture() {
   const member = principal(memberId, "member");
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -92,10 +95,10 @@ async function fixture() {
     ...pending,
     token: (await control.createEnrollment(admin, pending)).token,
   });
-  db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
+  await setRunnerStatus(db, runnerId, "active");
   const work = createRunnerWorkHttp(
     createRunnerWork({
-      store: sqliteDb(db),
+      store: db,
       keyId: "fixture",
       privateKey: generateKeyPairSync("ed25519").privateKey,
       eventKey: Buffer.alloc(32, 7),
@@ -189,9 +192,14 @@ test("admins change concurrency within one heartbeat and cannot exceed the ceili
   // A lowered host ceiling caps the stored value without editing it.
   expect((await runner.heartbeat({ capacity: 2, ceiling: 2 })).concurrency).toBe(2);
   expect(
-    runner.db
-      .query("SELECT action FROM workspace_access_audit WHERE action='runner.concurrency'")
-      .all(),
+    await runner.db.run((q) =>
+      q.all(
+        q.orm
+          .select({ action: q.t.workspaceAccessAudit.action })
+          .from(q.t.workspaceAccessAudit)
+          .where(eq(q.t.workspaceAccessAudit.action, "runner.concurrency")),
+      ),
+    ),
   ).toHaveLength(2);
 });
 
@@ -210,36 +218,49 @@ test("lowering concurrency below running work holds back new placement", async (
   const runner = await fixture();
   await runner.heartbeat({ capacity: 3, ceiling: 3 });
   for (const index of [0, 1]) {
-    runner.db.run(
-      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES(?,?,?,?,?,'running',?,0,?)",
-      [
-        `item-${index}`,
-        `epic-${index}`,
-        `issue-${index}`,
-        `ENG-${index}`,
-        "Task",
-        `paws/eng-${index}`,
-        runner.now,
-      ],
+    await seed(runner.db, (q) =>
+      q.orm.insert(q.t.workItem).values({
+        id: `item-${index}`,
+        delegationId: `epic-${index}`,
+        linearIssueId: `issue-${index}`,
+        linearIdentifier: `ENG-${index}`,
+        title: "Task",
+        state: "running",
+        branchName: `paws/eng-${index}`,
+        position: 0,
+        createdAt: runner.now,
+      }),
     );
-    const run = await insertRun(sqliteDb(runner.db), {
+    const run = await insertRun(runner.db, {
       itemId: `item-${index}`,
       now: runner.now,
       status: "active",
     });
-    runner.db.run(
-      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES(?,?,?,1,0,?,?,0)",
-      [run.id, runner.runnerId, runner.workspaceId, `cmd-${index}`, runner.now + 60_000],
+    await seed(runner.db, (q) =>
+      q.orm.insert(q.t.runnerWork).values({
+        runId: run.id,
+        runnerId: runner.runnerId,
+        workspaceId: runner.workspaceId,
+        generation: 1,
+        runnerFence: 0,
+        commandId: `cmd-${index}`,
+        leaseUntil: runner.now + 60_000,
+      }),
     );
   }
-  expect(await runnerHasCapacity(sqliteDb(runner.db), runner.runnerId, runner.now)).toBe(true);
+  expect(await runnerHasCapacity(runner.db, runner.runnerId, runner.now)).toBe(true);
   expect((await runner.set(1)).status).toBe(200);
-  expect(await runnerHasCapacity(sqliteDb(runner.db), runner.runnerId, runner.now)).toBe(false);
+  expect(await runnerHasCapacity(runner.db, runner.runnerId, runner.now)).toBe(false);
   expect((await runner.list()).slots).toEqual({ used: 2, total: 1 });
   expect(
-    runner.db
-      .query("SELECT count(*) AS open FROM runner_work WHERE runner_id=? AND ended_at IS NULL")
-      .get(runner.runnerId),
+    await runner.db.run((q) =>
+      q.one(
+        q.orm
+          .select({ open: count() })
+          .from(q.t.runnerWork)
+          .where(and(eq(q.t.runnerWork.runnerId, runner.runnerId), isNull(q.t.runnerWork.endedAt))),
+      ),
+    ),
   ).toEqual({ open: 2 });
 });
 
