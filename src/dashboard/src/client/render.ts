@@ -55,6 +55,7 @@ import {
 import { PAGES } from "./navigation";
 import { renderMergeQueue } from "./merge-queue";
 import { renderIntake } from "./intake";
+import { renderSetupChecklist } from "./setup-checklist";
 import { renderPushOutages } from "./push-outage";
 import { renderPolicyRunnerWarnings } from "./policy-runners";
 import { hoursLabel, itemAge, mergedTimesSection, stateTimeBar } from "./state-times";
@@ -372,10 +373,10 @@ function waitingCell(item: OverviewIssue, now: number): string {
 }
 
 function viewOverview(overview: OverviewResponse): string {
-  const warnings = `${renderPushOutages(overview)}${renderPolicyRunnerWarnings(overview)}`;
+  const warnings = `${renderSetupChecklist(overview.setup)}${renderPushOutages(overview)}${renderPolicyRunnerWarnings(overview)}`;
   const intake = renderIntake(overview);
   if (!overview.issues.length && !overview.questions.length)
-    return `${pageHeading("overview")}${warnings}${intake}<div class="empty">${esc(EMPTY_ISSUES)}</div>`;
+    return `${pageHeading("overview")}${warnings}${intake}<div class="empty">${esc(EMPTY_ISSUES)}<p class="muted">${esc(EMPTY_PAGES)}</p></div>`;
   const attention = needsYou(overview);
   const now = Date.parse(overview.generatedAt);
   const open = overview.issues.filter((item) => !CLOSED_STATES.includes(item.state));
@@ -423,6 +424,7 @@ function ageOf(overview: OverviewResponse, itemId: string): string {
 }
 
 const EMPTY_ISSUES = "No issues yet. Delegate an issue to Paws in Linear.";
+const EMPTY_PAGES = "Questions, the merge queue and findings fill as work moves through Paws.";
 
 function viewIssues(list: IssueListResponse, id: string | null): string {
   const selected = id ? list.issues.find((item) => item.id === id) : undefined;

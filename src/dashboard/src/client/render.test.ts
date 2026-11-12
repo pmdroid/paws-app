@@ -327,6 +327,26 @@ describe("status views", () => {
     expect(render(model({ snapshot })).content).toContain("Delegate an issue to Paws in Linear.");
   });
 
+  test("overview shows the setup checklist until every step is done", () => {
+    const snapshot = fullStatusFixture();
+    snapshot.items = [];
+    snapshot.questions = [];
+    const first = model({ snapshot });
+    first.overview!.setup = { github: true, runner: false, agent: false, delegated: false };
+    const html = render(first).content;
+    const steps = [...html.matchAll(/data-setup-step="(\w+)"/g)].map((match) => match[1]);
+    expect(steps).toEqual(["done", "done", "next", "todo", "todo"]);
+    expect(html).toContain("Set up Paws");
+    expect(html).toContain('href="/runners"');
+    expect(html).not.toContain('href="/settings/integrations"');
+    expect(html).toContain(
+      "Questions, the merge queue and findings fill as work moves through Paws.",
+    );
+    const done = model({ snapshot });
+    done.overview!.setup = { github: true, runner: true, agent: true, delegated: true };
+    expect(render(done).content).not.toContain("data-setup-checklist");
+  });
+
   test("overview lists every active issue with no cap", () => {
     const snapshot = fullStatusFixture();
     const item = snapshot.items[2]!;

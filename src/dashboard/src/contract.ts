@@ -973,6 +973,14 @@ export interface OverviewResponse {
   pushOutages: StatusPushOutage[];
   policyRunnerWarnings: StatusPolicyRunnerWarning[];
   mergeQueueCount: number;
+  setup: OverviewSetup;
+}
+
+export interface OverviewSetup {
+  github: boolean;
+  runner: boolean;
+  agent: boolean;
+  delegated: boolean;
 }
 
 export type OverviewParseResult =
@@ -1000,11 +1008,22 @@ export function parseOverviewResponse(input: unknown): OverviewParseResult {
         pushOutages: list("pushOutages", readPushOutage),
         policyRunnerWarnings: list("policyRunnerWarnings", readPolicyRunnerWarning),
         mergeQueueCount: count(body, "mergeQueueCount", path),
+        setup: readOverviewSetup(body.setup, `${path}.setup`),
       };
     },
     "contract.parseOverviewResponse",
     "Invalid overview",
   );
+}
+
+function readOverviewSetup(input: unknown, path: string): OverviewSetup {
+  const body = object(input, path);
+  return {
+    github: boolean(body, "github", path),
+    runner: boolean(body, "runner", path),
+    agent: boolean(body, "agent", path),
+    delegated: boolean(body, "delegated", path),
+  };
 }
 
 function readOverviewIssue(input: unknown, path: string): OverviewIssue {
