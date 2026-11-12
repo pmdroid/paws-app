@@ -104,6 +104,16 @@ forEachDialect((open) => {
         await db.run((q) => enqueueJobOnceSteps(q, { queue: "work", jobKey: "k", now: 0 })),
       ).toEqual({ id: first.id, inserted: false });
 
+      const reconcile = { queue: "linear.item.reconcile", jobKey: "linear.item.reconcile:a" };
+      const [one, two] = await Promise.all([
+        enqueueJobOnce(db, reconcile),
+        enqueueJobOnce(db, reconcile),
+      ]);
+      expect(one).toBe(two);
+      expect(
+        (await db.run(listJobsSteps)).filter((row) => row.jobKey === reconcile.jobKey),
+      ).toHaveLength(1);
+
       const job = { queue: "tick", jobKey: "tick", payload: { n: 1 }, now: 0 };
       const armed = await db.transaction((q) => reenqueueJobSteps(q, job));
       expect(armed).toEqual({ id: armed.id, pending: true, armed: true });

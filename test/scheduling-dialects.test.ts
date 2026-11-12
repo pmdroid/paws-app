@@ -73,9 +73,10 @@ forEachDialect((connect) => {
       }),
     );
     const row = { itemId: "item", jobId: 7, repositoryKey: "acme/app", sessionId: null, now: 9 };
-    await db.run((q) => saveSchedulerAdmissionSteps(q, row));
-    await db.run((q) => saveSchedulerAdmissionSteps(q, row, true));
-    await expect(db.run((q) => saveSchedulerAdmissionSteps(q, row))).rejects.toThrow();
+    await Promise.all([
+      db.transaction((q) => saveSchedulerAdmissionSteps(q, row)),
+      db.transaction((q) => saveSchedulerAdmissionSteps(q, row)),
+    ]);
 
     expect(await db.run(listSchedulerAdmissionsSteps)).toEqual([
       {
