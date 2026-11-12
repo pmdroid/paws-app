@@ -3,7 +3,13 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { postgresDb } from "../src/db";
-import { loadPublicTls, publicTlsProxy, type PublicTls } from "../src/deployment";
+import {
+  loadPublicTls,
+  publicTlsProxy,
+  PROXY_RUNNER_TLS_REQUIRED,
+  validateTlsRenewal,
+  type PublicTls,
+} from "../src/deployment";
 import { startPaws } from "../src/index";
 import { startServer } from "../src/server";
 import { createWorkspaceAccess, type WorkspaceAccess } from "../src/workspace";
@@ -84,13 +90,65 @@ describe("public HTTPS terminated by a proxy", () => {
       await expect(start({ [path]: "/etc/paws/tls" })).rejects.toThrow(
         "PAWS_PUBLIC_TLS=proxy does not use PAWS_TLS_KEY_PATH or PAWS_TLS_CERT_PATH",
       );
-    await expect(start({ PAWS_RUNNER_HOST: "127.0.0.1" })).rejects.toThrow(
-      "Runner control needs its own certificate; it is not available with PAWS_PUBLIC_TLS=proxy yet",
-    );
     await expect(start({ PAWS_PUBLIC_TLS: "yes" })).rejects.toThrow(
       "PAWS_PUBLIC_TLS must be proxy or unset",
     );
     expect(publicTlsProxy({})).toBe(false);
+  });
+
+  describe("runner URL and certificate", () => {
+    const files = createPublicTlsFixture(join(root, "runner"));
+    const other = createPublicTlsFixture(join(root, "runner-other"));
+    const runner = {
+      PAWS_RUNNER_HOST: "127.0.0.1",
+      PAWS_RUNNER_URL: "https://localhost:8788",
+      PAWS_RUNNER_TLS_KEY_PATH: files.PAWS_TLS_KEY_PATH,
+      PAWS_RUNNER_TLS_CERT_PATH: files.PAWS_TLS_CERT_PATH,
+    };
+    const start = (env: Record<string, string | undefined>) =>
+      startPaws({ ...proxied, PAWS_HOME: tempHome(), ...runner, ...env });
+
+    test("proxy mode refuses runner control without its URL and both certificate paths", async () => {
+      for (const missing of [
+        { PAWS_RUNNER_URL: undefined },
+        { PAWS_RUNNER_TLS_KEY_PATH: undefined, PAWS_RUNNER_TLS_CERT_PATH: undefined },
+        { PAWS_RUNNER_URL: undefined, PAWS_RUNNER_TLS_CERT_PATH: undefined },
+      ])
+        await expect(start(missing)).rejects.toThrow(PROXY_RUNNER_TLS_REQUIRED);
+    });
+
+    test("PAWS_RUNNER_URL must be an HTTPS origin and needs PAWS_RUNNER_HOST", async () => {
+      for (const url of [
+        "http://localhost:8788",
+        "https://localhost:8788/runner",
+        "https://user@localhost:8788",
+        "https://localhost:8788/?a=1",
+        "localhost:8788",
+      ])
+        await expect(start({ PAWS_RUNNER_URL: url })).rejects.toThrow(
+          "PAWS_RUNNER_URL must be an HTTPS origin.",
+        );
+      await expect(start({ PAWS_RUNNER_HOST: undefined })).rejects.toThrow(
+        "require PAWS_RUNNER_HOST",
+      );
+    });
+
+    test("a runner certificate that does not cover PAWS_RUNNER_URL fails startup", async () => {
+      await expect(start({ PAWS_RUNNER_URL: "https://paws.example.ts.net:8788" })).rejects.toThrow(
+        "Runner HTTPS certificate does not cover paws.example.ts.net",
+      );
+    });
+
+    test("certificate renewal validates the runner certificate", () => {
+      const env = { ...proxied, PAWS_HOME: tempHome(), ...runner };
+      expect(() => validateTlsRenewal(env)).not.toThrow();
+      expect(() =>
+        validateTlsRenewal({ ...env, PAWS_RUNNER_TLS_KEY_PATH: other.PAWS_TLS_KEY_PATH }),
+      ).toThrow("Runner TLS certificate and private key must be valid and match");
+      expect(() =>
+        validateTlsRenewal({ ...env, PAWS_RUNNER_URL: "https://paws.example.ts.net:8788" }),
+      ).toThrow("paws.example.ts.net");
+    });
   });
 
   test("certificate validation has nothing to check behind the proxy", async () => {

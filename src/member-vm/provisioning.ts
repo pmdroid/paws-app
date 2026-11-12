@@ -21,6 +21,7 @@ export type MemberVmProvisioningSource = {
   readToken: ExeDevTokenReader;
   installer: () => string | null;
   publicUrl: string | null;
+  runnerUrl?: string | null;
   serverCa?: string | null;
   repositories: () => Promise<readonly string[]>;
   runnerControl: () => Promise<MemberVmRunnerControl | null | undefined>;
@@ -42,9 +43,14 @@ export function createMemberVmProvisioning(
     if (source.publicUrl === null)
       throw new Error("Create VM needs PAWS_PUBLIC_URL so the VM can reach this Paws.");
     const authKey = source.tailscaleAuthKey ?? (() => null);
-    if (isTailnetUrl(source.publicUrl) && authKey() === null)
+    const tailnetUrl = isTailnetUrl(source.publicUrl)
+      ? "PAWS_PUBLIC_URL"
+      : isTailnetUrl(source.runnerUrl ?? null)
+        ? "PAWS_RUNNER_URL"
+        : null;
+    if (tailnetUrl !== null && authKey() === null)
       throw new Error(
-        "Create VM needs a Tailscale auth key in ~/.paws/secrets/tailscale-authkey: PAWS_PUBLIC_URL is on a tailnet (.ts.net), so the VM must join it to reach this Paws.",
+        `Create VM needs a Tailscale auth key in ~/.paws/secrets/tailscale-authkey: ${tailnetUrl} is on a tailnet (.ts.net), so the VM must join it to reach this Paws.`,
       );
     const control = await source.runnerControl();
     if (!control) throw new Error("Create VM needs runner control to be configured.");
@@ -59,8 +65,8 @@ export function createMemberVmProvisioning(
     const installer = source.installer();
     if (installer === null)
       throw new Error("Create VM needs deploy/linux/install-runner.sh next to Paws.");
-    const runnerApi = new URL(source.publicUrl);
-    runnerApi.port = String(control.port);
+    const runnerApi = new URL(source.runnerUrl ?? source.publicUrl);
+    if (!source.runnerUrl) runnerApi.port = String(control.port);
     const bootstrap = createExeDevBootstrap({
       exeDev,
       runnerVersion,
