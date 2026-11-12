@@ -1,14 +1,13 @@
+import { eq } from "drizzle-orm";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import {
   MEMBERSHIP_BACKSTOP_MS,
-  migrate,
-  openDatabase,
   syncWorkspaceMember,
   workspaceForOrganization,
   workspaceMember,
-  sqliteDb,
+  type Db,
 } from "../../src/db";
 import { createLinearMembershipReads } from "../../src/linear";
 import {
@@ -19,14 +18,19 @@ import {
   type WorkspaceAccessOptions,
   workspaceTokenHash,
 } from "../../src/workspace";
+import { tempStore } from "../pglite";
+
+const rows = (
+  db: Db,
+  table: "workspaceSession" | "workspaceOauthRequest" | "workspaceAccessAudit",
+) => db.run((q) => q.all(q.orm.select().from(q.t[table])));
 
 export async function probeWorkspaceBrowser(
   root: string,
   observe: (name: string, passed: boolean, observed: unknown) => void,
 ) {
   mkdirSync(root, { recursive: true });
-  const db = openDatabase(join(root, "browser.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
   let now = Date.now();
   let active = true;
   let guest = false;
@@ -86,7 +90,7 @@ export async function probeWorkspaceBrowser(
   });
   const origin = `http://127.0.0.1:${server.port}`;
   const accessOptions: WorkspaceAccessOptions = {
-    store: sqliteDb(db),
+    store: db,
     publicUrl: origin,
     clientId: "fixture-client",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -159,11 +163,11 @@ export async function probeWorkspaceBrowser(
     observe(
       "first Linear visitor cannot claim workspace ownership",
       withoutBootstrap.response.status === 403 &&
-        (await workspaceForOrganization(sqliteDb(db), "org")) === null,
+        (await workspaceForOrganization(db, "org")) === null,
       { status: withoutBootstrap.response.status },
     );
     membershipDelayMs = 1000;
-    const owner = await login("owner", await issueWorkspaceBootstrap(sqliteDb(db), "org", now));
+    const owner = await login("owner", await issueWorkspaceBootstrap(db, "org", now));
     const member = await login("member");
     const outsider = await login("outsider");
     const ownerSession = (await (
@@ -247,11 +251,14 @@ export async function probeWorkspaceBrowser(
     const pendingTarget = new URL(pendingStart.headers.get("location")!);
     const pendingCookie = pendingStart.headers.get("set-cookie")!.split(";")[0]!;
     const pendingState = pendingTarget.searchParams.get("state")!;
-    const pendingRow = db
-      .query<{ verifier: string }, [string]>(
-        "SELECT verifier FROM workspace_oauth_request WHERE state_hash = ?",
-      )
-      .get(workspaceTokenHash(pendingState));
+    const pendingRow = await db.run((q) =>
+      q.one(
+        q.orm
+          .select({ verifier: q.t.workspaceOauthRequest.verifier })
+          .from(q.t.workspaceOauthRequest)
+          .where(eq(q.t.workspaceOauthRequest.stateHash, workspaceTokenHash(pendingState))),
+      ),
+    );
     access = createWorkspaceAccess(accessOptions);
     const resumed = await fetch(`${origin}/auth/linear/callback?state=${pendingState}&code=owner`, {
       redirect: "manual",
@@ -298,11 +305,13 @@ export async function probeWorkspaceBrowser(
     now += 1;
     const guestLogin = await login("guest");
     const guestError = ((await guestLogin.response.json()) as { error: string }).error;
-    const guestRows = db
-      .query<{ count: number }, []>(
-        "SELECT count(*) AS count FROM workspace_user WHERE linear_user_id='guest'",
+    const guestRows = (
+      await db.run((q) =>
+        q.all(
+          q.orm.select().from(q.t.workspaceUser).where(eq(q.t.workspaceUser.linearUserId, "guest")),
+        ),
       )
-      .get()!.count;
+    ).length;
     observe(
       "a Linear guest's sign-in is refused and creates no row",
       guestLogin.response.status === 403 &&
@@ -312,11 +321,7 @@ export async function probeWorkspaceBrowser(
       { status: guestLogin.response.status, error: guestError, rows: guestRows },
     );
     const guestAdminLogin = await login("owner");
-    const guestAdmin = await workspaceMember(
-      sqliteDb(db),
-      ownerSession.workspaceId,
-      ownerSession.userId,
-    );
+    const guestAdmin = await workspaceMember(db, ownerSession.workspaceId, ownerSession.userId);
     const heldSession = await fetch(`${origin}/api/auth/session`, {
       headers: { cookie: heldLogin.cookie! },
     });
@@ -337,11 +342,7 @@ export async function probeWorkspaceBrowser(
     guest = false;
     now += 1;
     const restoredLogin = await login("owner");
-    const restoredMember = await workspaceMember(
-      sqliteDb(db),
-      ownerSession.workspaceId,
-      ownerSession.userId,
-    );
+    const restoredMember = await workspaceMember(db, ownerSession.workspaceId, ownerSession.userId);
     observe(
       "an admin who is no longer a Linear guest signs in again as admin",
       restoredLogin.response.status === 303 && restoredMember?.role === "admin",
@@ -372,7 +373,7 @@ export async function probeWorkspaceBrowser(
     const racedLogin = login("owner");
     await membershipStarted;
     now += 1;
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: ownerSession.workspaceId,
       userId: ownerSession.userId,
       role: "member",
@@ -383,19 +384,15 @@ export async function probeWorkspaceBrowser(
     now += 1;
     releaseMembership();
     const raced = await racedLogin;
-    const racedMember = await workspaceMember(
-      sqliteDb(db),
-      ownerSession.workspaceId,
-      ownerSession.userId,
-    );
+    const racedMember = await workspaceMember(db, ownerSession.workspaceId, ownerSession.userId);
     observe(
       "membership removal during browser sign-in cannot be undone by a delayed active response",
       raced.response.status === 400 && raced.cookie === undefined && racedMember?.active === false,
       { status: raced.response.status, active: racedMember?.active },
     );
     const persisted =
-      JSON.stringify(db.query("SELECT * FROM workspace_session").all()) +
-      JSON.stringify(db.query("SELECT * FROM workspace_oauth_request").all());
+      JSON.stringify(await rows(db, "workspaceSession")) +
+      JSON.stringify(await rows(db, "workspaceOauthRequest"));
     observe(
       "Linear browser tokens are discarded after identity verification",
       !persisted.includes("fixture-token") && !persisted.includes("discard-this-fixture-token"),
@@ -405,9 +402,9 @@ export async function probeWorkspaceBrowser(
     writeFileSync(join(root, "requests.json"), JSON.stringify(requests, null, 2));
     writeFileSync(
       join(root, "audit.json"),
-      JSON.stringify(db.query("SELECT * FROM workspace_access_audit").all(), null, 2),
+      JSON.stringify(await rows(db, "workspaceAccessAudit"), null, 2),
     );
     await server.stop(true);
-    db.close();
+    await close();
   }
 }

@@ -2,12 +2,11 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   consumeWorkspaceBootstrap,
-  migrate,
-  openDatabase,
+  openPawsStore,
   putWorkspaceUser,
   syncWorkspaceMember,
   workspaceMember,
-  sqliteDb,
+  type Db,
 } from "../../src/db";
 import {
   issueWorkspaceBootstrap,
@@ -18,17 +17,22 @@ import {
   workspaceTokenHash,
   WORKSPACE_COOKIE,
 } from "../../src/workspace";
+import { copyMigratedPglite } from "../pglite";
+
+const auditCount = async (db: Db) =>
+  (await db.run((q) => q.all(q.orm.select().from(q.t.workspaceAccessAudit)))).length;
 
 export async function probeWorkspaceAccess(
   root: string,
   observe: (name: string, passed: boolean, observed: unknown) => void,
 ) {
   mkdirSync(root, { recursive: true });
-  const path = join(root, "workspace.sqlite");
-  const db = openDatabase(path);
-  migrate(db);
+  const path = join(root, "pglite");
+  await copyMigratedPglite(path);
+  const opened = await openPawsStore({ url: null, pgliteDir: path });
+  const db = opened.store;
   const now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(now),
     linearUserId: "linear-owner",
     name: "Fixture owner",
@@ -39,10 +43,10 @@ export async function probeWorkspaceAccess(
     organizationId: "verified-linear-org",
     name: "Fixture workspace",
   };
-  const grant = await issueWorkspaceBootstrap(sqliteDb(db), workspace.organizationId, now);
+  const grant = await issueWorkspaceBootstrap(db, workspace.organizationId, now);
   let mismatchRejected = false;
   try {
-    await consumeWorkspaceBootstrap(sqliteDb(db), {
+    await consumeWorkspaceBootstrap(db, {
       ...workspace,
       organizationId: "unrelated-org",
       tokenHash: workspaceTokenHash(grant),
@@ -52,7 +56,7 @@ export async function probeWorkspaceAccess(
   } catch {
     mismatchRejected = true;
   }
-  await consumeWorkspaceBootstrap(sqliteDb(db), {
+  await consumeWorkspaceBootstrap(db, {
     ...workspace,
     tokenHash: workspaceTokenHash(grant),
     userId,
@@ -60,7 +64,7 @@ export async function probeWorkspaceAccess(
   });
   let replayError = "";
   try {
-    await consumeWorkspaceBootstrap(sqliteDb(db), {
+    await consumeWorkspaceBootstrap(db, {
       ...workspace,
       tokenHash: workspaceTokenHash(grant),
       userId,
@@ -77,7 +81,7 @@ export async function probeWorkspaceAccess(
       replayError,
     },
   );
-  await syncWorkspaceMember(sqliteDb(db), {
+  await syncWorkspaceMember(db, {
     workspaceId: workspace.id,
     userId,
     role: "member",
@@ -85,20 +89,22 @@ export async function probeWorkspaceAccess(
     teamIds: ["team-one"],
     now: now + 1,
   });
-  const member = await workspaceMember(sqliteDb(db), workspace.id, userId);
+  const member = await workspaceMember(db, workspace.id, userId);
   observe(
     "Linear membership sync preserves the manual owner and its verified teams",
     member?.role === "admin" && member.teamIds.join() === "team-one",
     member,
   );
-  const issued = await issueWorkspaceSession(sqliteDb(db), {
+  const issued = await issueWorkspaceSession(db, {
     userId,
     workspaceId: workspace.id,
     now,
   });
   const cookie = `${WORKSPACE_COOKIE}=${issued.token}`;
   const request = new Request("https://paws.example.invalid/api/issues", { headers: { cookie } });
-  const stored = JSON.stringify(db.query("SELECT * FROM workspace_session").all());
+  const stored = JSON.stringify(
+    await db.run((q) => q.all(q.orm.select().from(q.t.workspaceSession))),
+  );
   observe(
     "browser session is stored as a hash and uses secure cookie attributes",
     !stored.includes(issued.token) &&
@@ -111,7 +117,7 @@ export async function probeWorkspaceAccess(
     },
   );
   const fixture = resolve(import.meta.dir, "../fixtures/workspace-session-server.ts");
-  db.close();
+  await opened.close();
   const responses: unknown[] = [];
   for (let restart = 0; restart < 2; restart++) {
     const child = Bun.spawn([process.execPath, "--no-env-file", fixture, path], {
@@ -163,8 +169,9 @@ export async function probeWorkspaceAccess(
     }),
     responses,
   );
-  const restored = openDatabase(path);
-  const idle = await issueWorkspaceSession(sqliteDb(restored), {
+  const reopened = await openPawsStore({ url: null, pgliteDir: path });
+  const restored = reopened.store;
+  const idle = await issueWorkspaceSession(restored, {
     userId,
     workspaceId: workspace.id,
     now,
@@ -174,17 +181,17 @@ export async function probeWorkspaceAccess(
   });
   const day = 24 * 60 * 60_000;
   const liveBeforeIdleLimit =
-    (await requestWorkspaceSession(sqliteDb(restored), idleRequest, now + 30 * day - 1)) !== null;
+    (await requestWorkspaceSession(restored, idleRequest, now + 30 * day - 1)) !== null;
   const extendedByUse =
-    (await requestWorkspaceSession(sqliteDb(restored), idleRequest, now + 59 * day)) !== null;
+    (await requestWorkspaceSession(restored, idleRequest, now + 59 * day)) !== null;
   const idleExpiry =
-    (await requestWorkspaceSession(sqliteDb(restored), idleRequest, now + 90 * day)) === null;
+    (await requestWorkspaceSession(restored, idleRequest, now + 90 * day)) === null;
   observe(
     "browser sessions extend on each use and expire after thirty idle days",
     liveBeforeIdleLimit && extendedByUse && idleExpiry,
     { liveBeforeIdleLimit, extendedByUse, idleExpiry },
   );
-  await syncWorkspaceMember(sqliteDb(restored), {
+  await syncWorkspaceMember(restored, {
     workspaceId: workspace.id,
     userId,
     role: "member",
@@ -194,16 +201,16 @@ export async function probeWorkspaceAccess(
   });
   observe(
     "membership removal invalidates an existing browser session",
-    (await requestWorkspaceSession(sqliteDb(restored), request, now + 2)) === null,
+    (await requestWorkspaceSession(restored, request, now + 2)) === null,
     {
-      member: await workspaceMember(sqliteDb(restored), workspace.id, userId),
-      remainingSessions: restored.query("SELECT count(*) AS count FROM workspace_session").get(),
+      member: await workspaceMember(restored, workspace.id, userId),
+      remainingSessions: (
+        await restored.run((q) => q.all(q.orm.select().from(q.t.workspaceSession)))
+      ).length,
     },
   );
-  const audits = restored
-    .query<{ count: number }, []>("SELECT count(*) AS count FROM workspace_access_audit")
-    .get()!.count;
-  await syncWorkspaceMember(sqliteDb(restored), {
+  const audits = await auditCount(restored);
+  await syncWorkspaceMember(restored, {
     workspaceId: workspace.id,
     userId,
     role: "member",
@@ -211,7 +218,7 @@ export async function probeWorkspaceAccess(
     teamIds: ["stale-team"],
     now: now + 3,
   });
-  await syncWorkspaceMember(sqliteDb(restored), {
+  await syncWorkspaceMember(restored, {
     workspaceId: workspace.id,
     userId,
     role: "member",
@@ -219,21 +226,19 @@ export async function probeWorkspaceAccess(
     teamIds: ["stale-team"],
     now: now + 3,
   });
-  const tied = await workspaceMember(sqliteDb(restored), workspace.id, userId);
+  const tied = await workspaceMember(restored, workspace.id, userId);
   observe(
     "same-timestamp active observation cannot restore revoked membership or teams",
     tied?.active === false && tied.teamIds.length === 0,
     tied,
   );
-  const repeatedAudits = restored
-    .query<{ count: number }, []>("SELECT count(*) AS count FROM workspace_access_audit")
-    .get()!.count;
+  const repeatedAudits = await auditCount(restored);
   observe(
     "repeated membership revocation preserves an idempotent audit",
     audits === repeatedAudits,
     { audits, repeatedAudits },
   );
-  await syncWorkspaceMember(sqliteDb(restored), {
+  await syncWorkspaceMember(restored, {
     workspaceId: workspace.id,
     userId,
     role: "member",
@@ -241,7 +246,7 @@ export async function probeWorkspaceAccess(
     teamIds: ["team-one"],
     now: now + 4,
   });
-  const returned = await issueWorkspaceSession(sqliteDb(restored), {
+  const returned = await issueWorkspaceSession(restored, {
     userId,
     workspaceId: workspace.id,
     now: now + 4,
@@ -249,30 +254,31 @@ export async function probeWorkspaceAccess(
   const returnedRequest = new Request(request.url, {
     headers: { cookie: `${WORKSPACE_COOKIE}=${returned.token}` },
   });
-  const returnedPrincipal = (
-    await requestWorkspaceSession(sqliteDb(restored), returnedRequest, now + 4)
-  )?.principal;
+  const returnedPrincipal = (await requestWorkspaceSession(restored, returnedRequest, now + 4))
+    ?.principal;
   observe(
     "verified membership restoration retains the manually granted owner role",
     returnedPrincipal?.role === "admin" &&
-      (await requestWorkspaceSession(sqliteDb(restored), request, now + 4)) === null,
+      (await requestWorkspaceSession(restored, request, now + 4)) === null,
     {
       role: returnedPrincipal?.role,
-      oldSessionRevoked:
-        (await requestWorkspaceSession(sqliteDb(restored), request, now + 4)) === null,
+      oldSessionRevoked: (await requestWorkspaceSession(restored, request, now + 4)) === null,
     },
   );
   let liveWhileUsed = true;
   for (let days = 20; days <= 120; days += 20)
     liveWhileUsed &&=
-      (await requestWorkspaceSession(sqliteDb(restored), returnedRequest, now + 4 + days * day)) !==
-      null;
+      (await requestWorkspaceSession(restored, returnedRequest, now + 4 + days * day)) !== null;
   observe("regularly used browser sessions stay signed in beyond thirty days", liveWhileUsed, {
     liveWhileUsed,
   });
   writeFileSync(
     join(root, "audit.json"),
-    JSON.stringify(restored.query("SELECT * FROM workspace_access_audit").all(), null, 2),
+    JSON.stringify(
+      await restored.run((q) => q.all(q.orm.select().from(q.t.workspaceAccessAudit))),
+      null,
+      2,
+    ),
   );
-  restored.close();
+  await reopened.close();
 }

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { eq } from "drizzle-orm";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   beginImplementRun,
@@ -8,11 +9,10 @@ import {
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
-  migrate,
-  openDatabase,
+  openPawsStore,
   putWorkspaceUser,
   recordLinearInstallation,
-  sqliteDb,
+  type Db,
 } from "../../src/db";
 import { createRunnerControl } from "../../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../../src/runner-identity";
@@ -26,6 +26,7 @@ import {
   type RunnerTranscriptObjects,
 } from "../../src/runner-transcripts";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
+import { copyMigratedPglite } from "../pglite";
 
 export async function probeRunnerTranscripts(
   root: string,
@@ -33,18 +34,26 @@ export async function probeRunnerTranscripts(
   providedObjects?: RunnerTranscriptObjects,
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const path = join(root, "paws.sqlite");
-  const db = openDatabase(path);
-  migrate(db);
+  const path = join(root, "pglite");
+  await copyMigratedPglite(path);
+  const { store: db, close } = await openPawsStore({ url: null, pgliteDir: path });
+  let unavailable = false;
+  const refuse = () =>
+    Promise.reject(Object.assign(new Error("Database unavailable"), { name: "TimeoutError" }));
+  const faultStore: Db = {
+    ...db,
+    run: (body) => (unavailable ? refuse() : db.run(body)),
+    transaction: (body) => (unavailable ? refuse() : db.transaction(body)),
+  } as Db;
   let now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "transcript-org", now);
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const bootstrap = await issueWorkspaceBootstrap(db, "transcript-org", now);
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "transcript-org",
     name: "Fixture",
@@ -55,7 +64,7 @@ export async function probeRunnerTranscripts(
   const authorityRoot = join(root, "issuer");
   const authority = await initializeRunnerAuthority(authorityRoot);
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority,
     certificateRoot: authorityRoot,
     disconnect() {},
@@ -74,10 +83,12 @@ export async function probeRunnerTranscripts(
     ...pending,
     token: (await control.createEnrollment(principal, pending)).token,
   });
-  db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
+  await db.run((q) =>
+    q.exec(q.orm.update(q.t.runner).set({ status: "active" }).where(eq(q.t.runner.id, runnerId))),
+  );
   const keys = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "fixture",
     privateKey: keys.privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -88,8 +99,8 @@ export async function probeRunnerTranscripts(
     now,
     sessionKey: "transcript-session",
   });
-  const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
-  await recordLinearInstallation(sqliteDb(db), {
+  const { run } = await beginImplementRun(db, item.id, now);
+  await recordLinearInstallation(db, {
     organizationId: "transcript-org",
     oauthClientId: "app",
     appUserId: "app-user",
@@ -97,7 +108,7 @@ export async function probeRunnerTranscripts(
     teamId: "team",
     observedAtMs: now,
   });
-  await bindLinearSessionTask(sqliteDb(db), "transcript-session", item.delegationId, {
+  await bindLinearSessionTask(db, "transcript-session", item.delegationId, {
     actorId: "owner",
   });
   const repository = {
@@ -106,12 +117,14 @@ export async function probeRunnerTranscripts(
     remoteUrl: "https://github.com/fixture/repository.git",
     baseSha: "a".repeat(40),
   };
-  await bindWorkItemRepository(sqliteDb(db), item.id, repository);
-  db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-    workspace.id,
-    "fixture/repository",
-    "team",
-  ]);
+  await bindWorkItemRepository(db, item.id, repository);
+  await db.run((q) =>
+    q.exec(
+      q.orm
+        .insert(q.t.workspaceRepository)
+        .values({ workspaceId: workspace.id, repository: "fixture/repository", teamId: "team" }),
+    ),
+  );
   const command: Extract<RunnerCommand, { type: "run" }> = {
     id: workspaceId(),
     runnerId,
@@ -151,7 +164,7 @@ export async function probeRunnerTranscripts(
   };
   const key = randomBytes(32);
   let transcripts = createRunnerTranscripts({
-    store: sqliteDb(db),
+    store: db,
     work,
     objects: faultObjects,
     key,
@@ -192,7 +205,7 @@ export async function probeRunnerTranscripts(
       }),
     );
     transcripts = createRunnerTranscripts({
-      store: sqliteDb(db),
+      store: faultStore,
       work,
       objects: faultObjects,
       key,
@@ -220,20 +233,16 @@ export async function probeRunnerTranscripts(
       faultStatuses.push({ fault, status: failed!.status });
     }
     readFault = undefined;
-    const lock = openDatabase(path);
-    lock.exec("BEGIN IMMEDIATE");
-    db.exec("PRAGMA busy_timeout=1");
+    unavailable = true;
     try {
       assert.equal((await storageHttp(storageRequest(), runnerId))!.status, 503);
     } finally {
-      lock.exec("ROLLBACK");
-      lock.close();
-      db.exec("PRAGMA busy_timeout=5000");
+      unavailable = false;
     }
     assert.equal((await storageHttp(storageRequest(), runnerId))!.status, 200);
-    observe("storage reads and SQLite busy failures preserve same-grant finish retry", true, {
+    observe("storage reads and database unavailability preserve same-grant finish retry", true, {
       faults: faultStatuses,
-      sqliteBusyStatus: 503,
+      databaseUnavailableStatus: 503,
       recoveredStatus: 200,
     });
     const result = await transcripts.finish(access, finish);
@@ -256,17 +265,25 @@ export async function probeRunnerTranscripts(
     assert.deepEqual(await transcripts.download(run.id, 1), bytes);
     await assert.rejects(transcripts.download(run.id, 1, workspaceId()));
     assert.deepEqual(readBack, bytes);
-    const rawDb = Buffer.concat([readFileSync(path), readFileSync(`${path}-wal`)]);
+    const rawDb = Buffer.concat(
+      readdirSync(path, { recursive: true, withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map((entry) => readFileSync(join(entry.parentPath, entry.name))),
+    );
     assert(!rawDb.includes(Buffer.from(marker)));
-    observe("a ten-megabyte raw transcript is retrievable while SQLite holds only metadata", true, {
-      transcriptBytes: bytes.length,
-      metadataChunks: Math.ceil(bytes.length / RUNNER_TRANSCRIPT_CHUNK_BYTES),
-      sha256,
-      rawMarkerAbsentFromDatabaseAndWal: true,
-      rawMarkerAbsentFromStoredChunk: true,
-      uri: result.uri,
-      storage: providedObjects ? "provided object storage" : "in-memory fake object storage",
-    });
+    observe(
+      "a ten-megabyte raw transcript is retrievable while the database holds only metadata",
+      true,
+      {
+        transcriptBytes: bytes.length,
+        metadataChunks: Math.ceil(bytes.length / RUNNER_TRANSCRIPT_CHUNK_BYTES),
+        sha256,
+        rawMarkerAbsentFromDatabaseAndWal: true,
+        rawMarkerAbsentFromStoredChunk: true,
+        uri: result.uri,
+        storage: providedObjects ? "provided object storage" : "in-memory fake object storage",
+      },
+    );
     await assert.rejects(transcripts.upload({ ...access, token: "A".repeat(43) }, lastChunk));
     await assert.rejects(transcripts.upload({ ...access, runnerId: "another-runner" }, lastChunk));
     await assert.rejects(transcripts.upload({ ...access, runId: "another-run" }, lastChunk));
@@ -371,7 +388,7 @@ export async function probeRunnerTranscripts(
       entered = resolve;
     });
     const interrupted = createRunnerTranscripts({
-      store: sqliteDb(db),
+      store: db,
       work,
       key,
       objects: {
@@ -407,6 +424,6 @@ export async function probeRunnerTranscripts(
       { acceptedBytes: 0, transcriptUri: null },
     );
   } finally {
-    db.close();
+    await close();
   }
 }
