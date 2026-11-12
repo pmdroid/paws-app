@@ -1,17 +1,10 @@
 import { expect, test } from "bun:test";
 import { systemClock } from "../src/core";
-import {
-  sqliteDb,
-  JobLoop,
-  OutboxDispatcher,
-  enqueueOutbox,
-  listOutbox,
-  migrate,
-  openDatabase,
-} from "../src/db";
+import { JobLoop, OutboxDispatcher, enqueueOutbox, listOutbox } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
 import { tempHome } from "./helpers";
+import { tempStore } from "./pglite";
 
 function prompted(sessionId: string): AcceptedLinearEvent {
   return {
@@ -29,9 +22,8 @@ function prompted(sessionId: string): AcceptedLinearEvent {
   };
 }
 
-function fixture(outboxWaitMs?: number) {
-  const db = openDatabase(":memory:");
-  migrate(db);
+async function fixture(outboxWaitMs?: number) {
+  const { db, close } = await tempStore();
   const tracker = createFakeTracker([]);
   const entered = Promise.withResolvers<void>();
   const held = Promise.withResolvers<void>();
@@ -45,7 +37,7 @@ function fixture(outboxWaitMs?: number) {
   };
   const outbox = new OutboxDispatcher(db, systemClock);
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     tracker,
     pawsRoot: tempHome(),
     jobs: new JobLoop(db, systemClock),
@@ -59,12 +51,12 @@ function fixture(outboxWaitMs?: number) {
       body: `Working on ${sessionId}.`,
     });
   const status = async (sessionId: string) =>
-    (await listOutbox(sqliteDb(db))).find((row) => row.orderingKey === sessionId)?.status;
-  return { db, tracker, outbox, orchestrator, entered, held, report, status };
+    (await listOutbox(db)).find((row) => row.orderingKey === sessionId)?.status;
+  return { db, close, tracker, outbox, orchestrator, entered, held, report, status };
 }
 
 test("a held Linear delivery for one session does not hold another session's progress", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const slow = f.report("slow");
     await f.entered.promise;
@@ -80,12 +72,12 @@ test("a held Linear delivery for one session does not hold another session's pro
     f.held.resolve();
     await f.outbox.idle();
     await f.orchestrator.shutdown();
-    f.db.close();
+    await f.close();
   }
 });
 
 test("a transport that ignores abort cannot hold its own workflow step past the wait bound", async () => {
-  const f = fixture(20);
+  const f = await fixture(20);
   try {
     const slow = f.report("slow").then(() => "returned");
     await f.entered.promise;
@@ -98,20 +90,19 @@ test("a transport that ignores abort cannot hold its own workflow step past the 
     f.held.resolve();
     await f.outbox.idle();
     await f.orchestrator.shutdown();
-    f.db.close();
+    await f.close();
   }
 });
 
 test("the dispatcher settles one session while another session's transport stays open", async () => {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   const dispatcher = new OutboxDispatcher(db, systemClock);
   const held = Promise.withResolvers<void>();
   dispatcher.setHandler(async (row) => {
     if (row.orderingKey === "A") await held.promise;
   });
   for (const key of ["A", "B"])
-    await enqueueOutbox(sqliteDb(db), {
+    await enqueueOutbox(db, {
       target: "linear",
       op: "activity",
       orderingKey: key,
@@ -119,7 +110,7 @@ test("the dispatcher settles one session while another session's transport stays
       payload: { sessionId: key, kind: "thought", body: key },
     });
   const status = async (key: string) =>
-    (await listOutbox(sqliteDb(db))).find((row) => row.orderingKey === key)?.status;
+    (await listOutbox(db)).find((row) => row.orderingKey === key)?.status;
   try {
     expect(await dispatcher.tick()).toHaveLength(2);
     await dispatcher.idle((row) => row.orderingKey === "B");
@@ -131,6 +122,6 @@ test("the dispatcher settles one session while another session's transport stays
   } finally {
     held.resolve();
     await dispatcher.idle();
-    db.close();
+    await close();
   }
 });
