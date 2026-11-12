@@ -1,25 +1,66 @@
 import { expect, test } from "bun:test";
-import { workItemForSession, sqliteDb } from "../src/db";
-import { tempDb } from "./helpers";
+import { workItemForSession } from "../src/db";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 test("workItemForSession prefers the in-flight item over a newer queued or failed sibling", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
-    db.run(
-      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('older-running','queue-epic','older-running','QR','Running','running','paws/older-running',0,1,'queue-session')",
+    await seed(db, (q) =>
+      q.orm.insert(q.t.workItem).values([
+        {
+          id: "older-running",
+          delegationId: "queue-epic",
+          linearIssueId: "older-running",
+          linearIdentifier: "QR",
+          title: "Running",
+          state: "running",
+          branchName: "paws/older-running",
+          position: 0,
+          createdAt: 1,
+          sessionKey: "queue-session",
+        },
+        {
+          id: "newer-queued",
+          delegationId: "queue-epic",
+          linearIssueId: "newer-queued",
+          linearIdentifier: "QQ",
+          title: "Queued",
+          state: "queued",
+          branchName: "paws/newer-queued",
+          position: 1,
+          createdAt: 2,
+          sessionKey: "queue-session",
+        },
+        {
+          id: "older-live",
+          delegationId: "fail-epic",
+          linearIssueId: "older-live",
+          linearIdentifier: "FR",
+          title: "Running",
+          state: "running",
+          branchName: "paws/older-live",
+          position: 0,
+          createdAt: 1,
+          sessionKey: "fail-session",
+        },
+        {
+          id: "newer-failed",
+          delegationId: "fail-epic",
+          linearIssueId: "newer-failed",
+          linearIdentifier: "FF",
+          title: "Failed",
+          state: "failed",
+          branchName: "paws/newer-failed",
+          position: 1,
+          createdAt: 2,
+          sessionKey: "fail-session",
+        },
+      ]),
     );
-    db.run(
-      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('newer-queued','queue-epic','newer-queued','QQ','Queued','queued','paws/newer-queued',1,2,'queue-session')",
-    );
-    db.run(
-      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('older-live','fail-epic','older-live','FR','Running','running','paws/older-live',0,1,'fail-session')",
-    );
-    db.run(
-      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('newer-failed','fail-epic','newer-failed','FF','Failed','failed','paws/newer-failed',1,2,'fail-session')",
-    );
-    expect((await workItemForSession(sqliteDb(db), "queue-session"))?.id).toBe("older-running");
-    expect((await workItemForSession(sqliteDb(db), "fail-session"))?.id).toBe("older-live");
+    expect((await workItemForSession(db, "queue-session"))?.id).toBe("older-running");
+    expect((await workItemForSession(db, "fail-session"))?.id).toBe("older-live");
   } finally {
-    db.close();
+    await close();
   }
 });

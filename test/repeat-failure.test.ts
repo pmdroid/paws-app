@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
+import { eq } from "drizzle-orm";
 import {
   accrueAwake,
   applyWorkItemEvent,
@@ -7,60 +7,50 @@ import {
   failWorkItem,
   getWorkItem,
   insertQueuedItem,
-  sqliteDb,
+  listOutbox,
+  type Db,
 } from "../src/db";
-import { tempDb } from "./helpers";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
-const databases: Database[] = [];
-afterEach(() => {
-  for (const db of databases.splice(0)) db.close();
+const closes: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of closes.splice(0)) await close();
 });
 
-function errorBodies(db: Database): string[] {
-  return db
-    .query<{ body: string }, []>(
-      "SELECT json_extract(payload,'$.body') AS body FROM outbox WHERE json_extract(payload,'$.kind')='error' ORDER BY id",
-    )
-    .all()
-    .map((row) => row.body);
+async function errorBodies(db: Db): Promise<string[]> {
+  return (await listOutbox(db))
+    .map((row) => row.payload as { kind?: string; body?: string })
+    .filter((payload) => payload.kind === "error")
+    .map((payload) => payload.body!);
 }
 
 test("a retried task that fails again with the same reason posts a second error", async () => {
-  const db = tempDb();
-  databases.push(db);
+  const { db, close } = await tempStore();
+  closes.push(close);
   const { id } = await insertQueuedItem(db, { sessionKey: "session" });
-  await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
-  await failWorkItem(
-    sqliteDb(db),
-    (await getWorkItem(sqliteDb(db), id))!,
-    "run_error",
-    "first failure",
-    1,
-  );
-  await applyWorkItemEvent(sqliteDb(db), id, "restart");
-  await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
-  await failWorkItem(
-    sqliteDb(db),
-    (await getWorkItem(sqliteDb(db), id))!,
-    "run_error",
-    "second failure",
-    2,
-  );
-  expect(errorBodies(db)).toEqual(["first failure", "second failure"]);
+  await applyWorkItemEvent(db, id, "dispatched");
+  await failWorkItem(db, (await getWorkItem(db, id))!, "run_error", "first failure", 1);
+  await applyWorkItemEvent(db, id, "restart");
+  await applyWorkItemEvent(db, id, "dispatched");
+  await failWorkItem(db, (await getWorkItem(db, id))!, "run_error", "second failure", 2);
+  expect(await errorBodies(db)).toEqual(["first failure", "second failure"]);
 });
 
 test("a retried task that hits the same cap again posts a second error", async () => {
-  const db = tempDb();
-  databases.push(db);
+  const { db, close } = await tempStore();
+  closes.push(close);
   const { id } = await insertQueuedItem(db, { maxAwakeMs: 10 });
-  db.run("UPDATE work_item SET session_key = NULL WHERE id = ?", [id]);
-  await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
-  await accrueAwake(sqliteDb(db), id, 0, 1, undefined, true);
-  expect((await accrueAwake(sqliteDb(db), id, 10, 2, undefined, true)).capped).toBe(true);
-  await applyWorkItemEvent(sqliteDb(db), id, "restart");
-  await configureWorkItem(sqliteDb(db), id, { maxAwakeMs: 20 });
-  await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
-  await accrueAwake(sqliteDb(db), id, 100, 3, undefined, true);
-  expect((await accrueAwake(sqliteDb(db), id, 110, 4, undefined, true)).capped).toBe(true);
-  expect(errorBodies(db)).toHaveLength(2);
+  await seed(db, (q) =>
+    q.orm.update(q.t.workItem).set({ sessionKey: null }).where(eq(q.t.workItem.id, id)),
+  );
+  await applyWorkItemEvent(db, id, "dispatched");
+  await accrueAwake(db, id, 0, 1, undefined, true);
+  expect((await accrueAwake(db, id, 10, 2, undefined, true)).capped).toBe(true);
+  await applyWorkItemEvent(db, id, "restart");
+  await configureWorkItem(db, id, { maxAwakeMs: 20 });
+  await applyWorkItemEvent(db, id, "dispatched");
+  await accrueAwake(db, id, 100, 3, undefined, true);
+  expect((await accrueAwake(db, id, 110, 4, undefined, true)).capped).toBe(true);
+  expect(await errorBodies(db)).toHaveLength(2);
 });

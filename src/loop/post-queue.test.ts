@@ -10,19 +10,16 @@ import {
   getWorkItem,
   insertQueuedItem,
   listOutbox,
-  migrate,
-  openDatabase,
-  sqliteDb,
   type Db,
 } from "../db";
 import { Orchestrator } from "./orchestrator";
+import { tempStore } from "../../test/pglite";
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "paws-post-queue-"));
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const db = (await tempStore()).db;
   const clock = new FakeClock(1_000);
-  const sqlite = sqliteDb(db);
+  const sqlite = db;
   const gate: { held: Promise<void> | null } = { held: null };
   const store = {
     ...sqlite,
@@ -41,11 +38,10 @@ async function fixture() {
     journal: (line) => journal.push(line),
   });
   await insertQueuedItem(db, { id: "ENG-7", sessionKey: "ses_1", now: clock.now() });
-  await beginImplementRun(sqliteDb(db), "ENG-7", clock.now());
-  const item = (await getWorkItem(sqliteDb(db), "ENG-7"))!;
+  await beginImplementRun(db, "ENG-7", clock.now());
+  const item = (await getWorkItem(db, "ENG-7"))!;
   const post = (key: string) => orchestrator["post"](item, "response", `Body ${key}.`, key);
-  const keys = async () =>
-    (await listOutbox(sqliteDb(db), "ses_1")).map((row) => row.idempotencyKey);
+  const keys = async () => (await listOutbox(db, "ses_1")).map((row) => row.idempotencyKey);
   return {
     orchestrator,
     gate,

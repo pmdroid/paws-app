@@ -1,11 +1,5 @@
 import { expect, test } from "bun:test";
-import {
-  applyLinearCommand,
-  insertQueuedItem,
-  listOutbox,
-  saveOpenFindings,
-  sqliteDb,
-} from "../src/db";
+import { applyLinearCommand, insertQueuedItem, listOutbox, saveOpenFindings } from "../src/db";
 import {
   inertMarkdown,
   openFindingsLine,
@@ -13,7 +7,7 @@ import {
   pawsIssueUrl,
   type OpenFinding,
 } from "../src/loop";
-import { tempDb } from "./helpers";
+import { tempStore } from "./pglite";
 
 const P1: OpenFinding = {
   reviewId: "independent-review",
@@ -102,14 +96,14 @@ test("the Paws link needs a public URL", () => {
 });
 
 test("the stopped and closed responses carry the open findings of the last published head", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
     for (const [id, response] of [
       ["stopped", undefined],
       ["closed", "Closed: the issue was canceled in Linear."],
     ] as const) {
       await insertQueuedItem(db, { id, sessionKey: `session-${id}`, now: 1 });
-      await saveOpenFindings(sqliteDb(db), {
+      await saveOpenFindings(db, {
         itemId: id,
         head: "a".repeat(40),
         line: "1 finding still open.",
@@ -118,20 +112,20 @@ test("the stopped and closed responses carry the open findings of the last publi
       expect(
         (
           await applyLinearCommand(
-            sqliteDb(db),
+            db,
             { type: "stop", source: "dashboard", itemId: id, requestedAt: 5 },
             5,
             response,
           )
         ).applied,
       ).toBe(true);
-      const body = (await listOutbox(sqliteDb(db)))
+      const body = (await listOutbox(db))
         .filter((row) => row.orderingKey === `session-${id}` && row.op === "activity")
         .map((row) => (row.payload as { body: string }).body)
         .at(-1);
       expect(body).toEndWith("\n\n1 finding still open.");
     }
   } finally {
-    db.close();
+    await close();
   }
 });

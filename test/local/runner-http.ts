@@ -2,14 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync } from "node:fs";
 import { request } from "node:https";
 import { join } from "node:path";
-import {
-  consumeWorkspaceBootstrap,
-  migrate,
-  openDatabase,
-  putWorkspaceUser,
-  syncWorkspaceMember,
-  sqliteDb,
-} from "../../src/db";
+import { consumeWorkspaceBootstrap, putWorkspaceUser, syncWorkspaceMember } from "../../src/db";
 import { createRunnerControl, createRunnerHttp } from "../../src/runner-control";
 import {
   createRunnerKey,
@@ -22,23 +15,23 @@ import {
   workspaceTokenHash,
   type WorkspacePrincipal,
 } from "../../src/workspace";
+import { tempStore } from "../pglite";
 
 export async function probeRunnerHttp(
   root: string,
   observe: (name: string, passed: boolean, observed: unknown) => void,
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "fixture-owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "fixture-http", now);
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-http", now);
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "fixture-http",
     name: "Fixture",
@@ -53,13 +46,13 @@ export async function probeRunnerHttp(
     authenticatedAt: now,
     teamIds: [],
   };
-  const memberId = await putWorkspaceUser(sqliteDb(db), {
+  const memberId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "fixture-member",
     name: "Member",
     email: "member@example.invalid",
   });
-  await syncWorkspaceMember(sqliteDb(db), {
+  await syncWorkspaceMember(db, {
     workspaceId: workspace.id,
     userId: memberId,
     role: "member",
@@ -107,7 +100,7 @@ export async function probeRunnerHttp(
   const tls = { key: readFileSync(serverKey, "utf8"), cert: readFileSync(serverCert, "utf8") };
   let listener: Awaited<ReturnType<typeof startRunnerListener>> | undefined;
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority,
     certificateRoot: authorityRoot,
     disconnect: (fingerprint) => listener?.revoke(fingerprint),
@@ -216,7 +209,7 @@ export async function probeRunnerHttp(
   } finally {
     browser.stop(true);
     await listener?.stop();
-    db.close();
+    await close();
   }
 }
 

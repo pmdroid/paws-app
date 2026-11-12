@@ -1,43 +1,39 @@
 import { afterEach, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
 import {
   applyWorkItemEvent,
   beginImplementRun,
   getWorkItem,
   insertQueuedItem,
   listWorkItemFacts,
-  migrate,
-  openDatabase,
   recordCiRerun,
-  sqliteDb,
 } from "../../../db";
 import { parseIssueListResponse } from "../contract";
 import { handleStatusRequest } from "../engine";
 import { historyOf } from "./provider";
+import { tempStore } from "../../../../test/pglite";
 
-const open: Database[] = [];
+const open: (() => Promise<void>)[] = [];
 
-afterEach(() => {
-  for (const db of open.splice(0)) db.close();
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
 });
 
 test("the timeline shows the agent's CI re-run with its reason and run id", async () => {
-  const db = openDatabase(":memory:");
-  open.push(db);
-  migrate(db);
+  const { db, close } = await tempStore();
+  open.push(close);
   await insertQueuedItem(db, { id: "item" });
-  await beginImplementRun(sqliteDb(db), "item", 1);
+  await beginImplementRun(db, "item", 1);
   const reason = "shard 3 hit its 12-minute limit in a test this change does not touch";
-  await recordCiRerun(sqliteDb(db), {
+  await recordCiRerun(db, {
     itemId: "item",
     head: "d".repeat(40),
     runIds: [41474224082],
     reason,
     at: Date.now() + 1,
   });
-  const record = (await getWorkItem(sqliteDb(db), "item"))!;
-  const facts = new Map((await listWorkItemFacts(sqliteDb(db))).map((fact) => [fact.itemId, fact]));
-  const { timeline } = await historyOf(sqliteDb(db), record, facts, Date.now() + 2);
+  const record = (await getWorkItem(db, "item"))!;
+  const facts = new Map((await listWorkItemFacts(db)).map((fact) => [fact.itemId, fact]));
+  const { timeline } = await historyOf(db, record, facts, Date.now() + 2);
   expect(timeline?.at(-1)).toMatchObject({
     kind: "ci_rerun",
     from: "running",
@@ -46,9 +42,9 @@ test("the timeline shows the agent's CI re-run with its reason and run id", asyn
     actor: "agent",
     runIds: [41474224082],
   });
-  await applyWorkItemEvent(sqliteDb(db), "item", "turn_ended");
+  await applyWorkItemEvent(db, "item", "turn_ended");
   const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-    store: sqliteDb(db),
+    store: db,
     env: {},
   });
   const body = parseIssueListResponse(await response!.json());

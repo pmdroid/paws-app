@@ -1,21 +1,24 @@
 import { expect, test } from "bun:test";
-import { migrate, openDatabase, putWorkspaceUser, syncWorkspaceMember, sqliteDb } from "../src/db";
+import { putWorkspaceUser, syncWorkspaceMember } from "../src/db";
 import { startServer } from "../src/server";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 test("the Projects page and /api/projects are gone for a signed-in member", async () => {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  db.run(
-    "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',0)",
+  const { db, close } = await tempStore();
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: "workspace", linearOrganizationId: "org", name: "Workspace", createdAt: 0 }),
   );
-  await putWorkspaceUser(sqliteDb(db), {
+  await putWorkspaceUser(db, {
     id: "member",
     linearUserId: "member",
     name: "member",
     email: "m@x.test",
   });
-  await syncWorkspaceMember(sqliteDb(db), {
+  await syncWorkspaceMember(db, {
     workspaceId: "workspace",
     userId: "member",
     role: "member",
@@ -27,7 +30,7 @@ test("the Projects page and /api/projects are gone for a signed-in member", asyn
   const port = reservation.port!;
   await reservation.stop(true);
   const access = createWorkspaceAccess({
-    store: sqliteDb(db),
+    store: db,
     publicUrl: `http://127.0.0.1:${port}`,
     clientId: "fixture",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -44,7 +47,7 @@ test("the Projects page and /api/projects are gone for a signed-in member", asyn
     },
   });
   const server = startServer({ port, hostname: "127.0.0.1", db, workspaceAccess: access });
-  const session = await issueWorkspaceSession(sqliteDb(db), {
+  const session = await issueWorkspaceSession(db, {
     workspaceId: "workspace",
     userId: "member",
     now: Date.now(),
@@ -66,6 +69,6 @@ test("the Projects page and /api/projects are gone for a signed-in member", asyn
     expect((await get("/api/projects")).status).toBe(404);
   } finally {
     await server.stop(true);
-    db.close();
+    await close();
   }
 });

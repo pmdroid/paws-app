@@ -78,7 +78,7 @@ const runner = () => ({
   running: sessions,
   agents: [{ agent: "claude", status: "signed_in", checkedAt: now }],
 });
-let role = "owner";
+let role = "admin";
 const moves: string[] = [];
 const server = Bun.serve({
   hostname: "127.0.0.1",
@@ -128,7 +128,7 @@ const noScroll = () => document.documentElement.scrollWidth <= innerWidth;
 try {
   for (const width of [1440, 390]) {
     sessions[0]!.move = null;
-    role = "owner";
+    role = "admin";
     const page = await browser.newPage({ viewport: { width, height: 1100 } });
     page.on("pageerror", (error) => errors.push(error.message));
     await page.emulateMedia({ colorScheme: "light" });

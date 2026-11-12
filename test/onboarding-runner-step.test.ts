@@ -3,19 +3,19 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Window } from "happy-dom";
+import { eq } from "drizzle-orm";
 import { FakeClock } from "../src/core";
 import {
   bindLinearSessionTask,
   consumeWorkspaceBootstrap,
   ensureLinearSession,
+  getRunner,
   insertQueuedItem,
   JobLoop,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
   syncWorkspaceMember,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import {
   createMemberVmHttp,
@@ -38,6 +38,8 @@ import {
   type OnboardingReadiness,
   type WorkspacePrincipal,
 } from "../src/workspace";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const ORIGIN = "https://paws.test";
 const CSRF = "csrf-token";
@@ -49,8 +51,10 @@ const HOST_CONFIG = {
 const roots: string[] = [];
 const windows: Window[] = [];
 
+const stores: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const window of windows.splice(0)) await window.happyDOM.close();
+  for (const close of stores.splice(0)) await close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -116,6 +120,12 @@ function load(html: string, fetch: (input: string, init?: RequestInit) => Promis
   };
 }
 
+function heartbeat(db: Db, runnerId: string, at: number) {
+  return seed(db, (q) =>
+    q.orm.update(q.t.runner).set({ lastSeenAt: at }).where(eq(q.t.runner.id, runnerId)),
+  );
+}
+
 async function fixture({
   active = true,
   available = true,
@@ -123,31 +133,31 @@ async function fixture({
   const root = mkdtempSync(join(tmpdir(), "paws-onboarding-runner-"));
   roots.push(root);
   const clock = new FakeClock(Date.UTC(2026, 9, 25));
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
+  stores.push(close);
   const authorityRoot = join(root, "issuer");
   const authority = await initializeRunnerAuthority(authorityRoot);
-  const ownerId = await putWorkspaceUser(sqliteDb(db), {
+  const ownerId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Workspace Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "org",
     userId: ownerId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", clock.now())),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", clock.now())),
     now: clock.now(),
   });
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "ada",
     name: "Ada Lovelace",
     email: "ada@example.invalid",
   });
-  await syncWorkspaceMember(sqliteDb(db), {
+  await syncWorkspaceMember(db, {
     workspaceId: workspace.id,
     userId,
     role: "member",
@@ -163,7 +173,7 @@ async function fixture({
     teamIds: ["team"],
   };
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority,
     certificateRoot: authorityRoot,
     disconnect: () => {},
@@ -185,11 +195,11 @@ async function fixture({
     now: () => clock.now(),
   });
   const vmHttp = createMemberVmHttp({
-    store: sqliteDb(db),
+    store: db,
     available: () => available,
     now: () => clock.now(),
   });
-  const read = createOnboardingReadiness(sqliteDb(db));
+  const read = createOnboardingReadiness(db);
   const page = async () =>
     onboardingPage({
       identifier: "TEST-1",
@@ -229,7 +239,7 @@ async function fixture({
   /** Runs the member VM job until `until` holds, as the job loop would in the background. */
   const drive = async (until: (row: MemberVm) => boolean) => {
     for (let index = 0; index < 500; index++) {
-      const row = (await findMemberVm(sqliteDb(db), member))!;
+      const row = (await findMemberVm(db, member))!;
       if (until(row)) return row;
       if ((await loop.tick()) === null) clock.advance(MEMBER_VM_POLL_MS);
     }
@@ -242,15 +252,17 @@ async function fixture({
       now: clock.now(),
       sessionKey: "session",
     });
-    db.run("UPDATE work_item SET owner_user_id=? WHERE id='held'", [userId]);
-    await ensureLinearSession(sqliteDb(db), {
+    await seed(db, (q) =>
+      q.orm.update(q.t.workItem).set({ ownerUserId: userId }).where(eq(q.t.workItem.id, "held")),
+    );
+    await ensureLinearSession(db, {
       sessionId: "session",
       issueId: item.linearIssueId,
       organizationId: "org",
       creatorId: "ada",
       now: clock.now(),
     });
-    await recordLinearInstallation(sqliteDb(db), {
+    await recordLinearInstallation(db, {
       sessionId: "session",
       organizationId: "org",
       oauthClientId: "client",
@@ -258,9 +270,9 @@ async function fixture({
       teamId: "team",
       observedAtMs: clock.now(),
     });
-    await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId);
+    await bindLinearSessionTask(db, "session", item.delegationId);
     return () =>
-      sqliteDb(db).run((q) =>
+      db.run((q) =>
         itemOwnerHasEligibleRunnerSteps(q, { itemId: "held", agent: "claude", now: clock.now() }),
       );
   };
@@ -397,7 +409,7 @@ test("Create VM creates the member's VM, its steps update without a reload, and 
   expect(page.buttons()).toEqual(["create-vm", "add-host"]);
   await page.click("create-vm");
   expect(f.requests).toContain("POST /api/runners/vm");
-  expect((await findMemberVm(sqliteDb(f.db), f.member))?.step).toBe("create");
+  expect((await findMemberVm(f.db, f.member))?.step).toBe("create");
   // The same document now shows the VM's steps; the page polls faster while it sets up.
   expect(page.runner()?.getAttribute("data-runner")).toBe("setting-up");
   const states = () =>
@@ -421,13 +433,11 @@ test("Create VM creates the member's VM, its steps update without a reload, and 
   await page.poll();
   expect(states()).toEqual(["create:done", "install:done", "enroll:done", "health:running"]);
   // The VM's runner sends its first heartbeat, and the job marks the VM ready.
-  f.db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [f.clock.now(), health.runnerId]);
+  await heartbeat(f.db, health.runnerId!, f.clock.now());
   const vm = await f.drive((row) => row.step === "ready");
-  f.db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [f.clock.now(), vm.runnerId]);
+  await heartbeat(f.db, vm.runnerId!, f.clock.now());
   await page.poll();
-  const name = f.db
-    .query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?")
-    .get(vm.runnerId!)!.name;
+  const { name } = (await getRunner(f.db, vm.runnerId!))!;
   expect(page.detail()).toBe(
     `${name} is paused. Sign in the coding agents this runner should use, then turn it on.`,
   );
@@ -437,12 +447,17 @@ test("Create VM creates the member's VM, its steps update without a reload, and 
   // the new runner, the held item may start.
   expect(await ready()).toBe(false);
   for (const agent of ["claude", "codex"])
-    f.db.run(
-      "INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,?,1) ON CONFLICT(runner_id,agent) DO UPDATE SET ready=1",
-      [vm.runnerId, agent],
+    await seed(f.db, (q) =>
+      q.orm
+        .insert(q.t.runnerAgentPolicy)
+        .values({ runnerId: vm.runnerId!, agent, ready: 1 })
+        .onConflictDoUpdate({
+          target: [q.t.runnerAgentPolicy.runnerId, q.t.runnerAgentPolicy.agent],
+          set: { ready: 1 },
+        }),
     );
   expect(await ready()).toBe(false);
-  const placement = createRunnerPlacement({ store: sqliteDb(f.db), now: () => f.clock.now() });
+  const placement = createRunnerPlacement({ store: f.db, now: () => f.clock.now() });
   const candidates = () =>
     placement.candidates({
       itemId: "held",
@@ -469,14 +484,14 @@ test("Create VM creates the member's VM, its steps update without a reload, and 
 test("a failed VM step shows its error and Retry resumes from it", async () => {
   const f = await fixture();
   await f.fetch("/api/runners/vm", { method: "POST", headers: { "x-paws-csrf": CSRF } });
-  f.db.run("UPDATE member_vm SET failure='npm ci failed'");
+  await seed(f.db, (q) => q.orm.update(q.t.memberVm).set({ failure: "npm ci failed" }));
   const page = await f.open();
   expect(page.runner()?.getAttribute("data-runner")).toBe("failed");
   expect(page.detail()).toContain("npm ci failed");
   expect(page.buttons()).toEqual(["retry-vm"]);
   await page.click("retry-vm");
   expect(f.requests).toContain("POST /api/runners/vm/retry");
-  expect((await findMemberVm(sqliteDb(f.db), f.member))?.failure).toBeNull();
+  expect((await findMemberVm(f.db, f.member))?.failure).toBeNull();
   expect(page.runner()?.getAttribute("data-runner")).toBe("setting-up");
 });
 
@@ -523,7 +538,7 @@ test("Add a host shows the one command with a single-use token that a reload nev
   const key = await createRunnerKey(join(roots[0]!, "host-a"));
   const enrolled = await f.control.enroll({ token: token!, name: "ada-host", csr: key.csr });
   // Its first heartbeat.
-  f.db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [f.clock.now(), enrolled.runnerId]);
+  await heartbeat(f.db, enrolled.runnerId!, f.clock.now());
   const other = await createRunnerKey(join(roots[0]!, "host-b"));
   expect(f.control.enroll({ token: token!, name: "ada-host", csr: other.csr })).rejects.toThrow();
   await page.poll();
@@ -549,7 +564,7 @@ test("an inactive member's Create VM and Add a host requests are refused", async
     });
     expect(response.status).toBe(403);
   }
-  expect(await findMemberVm(sqliteDb(f.db), f.member)).toBeNull();
+  expect(await findMemberVm(f.db, f.member)).toBeNull();
 });
 
 test("the page's inline script and style are the only ones its policy allows", async () => {
@@ -597,14 +612,14 @@ test("only active owners and workspace admins can turn on a member's runner", as
   const status = async () =>
     (await f.control.list(f.member, [])).find((runner) => runner.id === runnerId)?.status;
   expect(await status()).toBe("paused");
-  const otherId = await putWorkspaceUser(sqliteDb(f.db), {
+  const otherId = await putWorkspaceUser(f.db, {
     id: workspaceId(),
     linearUserId: "other",
     name: "Other",
     email: "other@example.invalid",
   });
   const other = { ...f.member, userId: otherId };
-  await syncWorkspaceMember(sqliteDb(f.db), {
+  await syncWorkspaceMember(f.db, {
     workspaceId: f.member.workspaceId,
     userId: otherId,
     role: "member",
@@ -622,7 +637,7 @@ test("only active owners and workspace admins can turn on a member's runner", as
   expect(response.status).toBe(200);
   expect(await status()).toBe("active");
   await f.control.setStatus(f.member, runnerId, "paused");
-  await syncWorkspaceMember(sqliteDb(f.db), {
+  await syncWorkspaceMember(f.db, {
     workspaceId: f.member.workspaceId,
     userId: f.member.userId,
     role: "member",

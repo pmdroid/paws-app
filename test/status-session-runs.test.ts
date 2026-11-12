@@ -6,23 +6,30 @@ import {
   insertQueuedItem,
   insertRun,
   markRun,
-  migrate,
-  openDatabase,
   recordLinearTurn,
   setCurrentRun,
-  sqliteDb,
+  type Db,
 } from "../src/db";
+import { eq } from "drizzle-orm";
 import { handleStatusRequest } from "../src/dashboard";
 import { render } from "../src/dashboard/src/client/render";
 import { parseIssueDetailResponse, parseIssueListResponse } from "../src/dashboard/src/contract";
 import { parseRoute } from "../src/dashboard/src/client/route";
 
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
+
 const NOW = 1_700_000_000_000;
 
+function identify(db: Db, id: string, linearIdentifier: string): Promise<void> {
+  return seed(db, (q) =>
+    q.orm.update(q.t.workItem).set({ linearIdentifier }).where(eq(q.t.workItem.id, id)),
+  );
+}
+
 test("one Linear session shows as one run with every attempt in its timeline", async () => {
-  const db = openDatabase(":memory:");
+  const { db, close } = await tempStore();
   try {
-    migrate(db);
     const item = await insertQueuedItem(db, {
       id: "01SESSIONITEM",
       title: "Runs list filters",
@@ -30,30 +37,30 @@ test("one Linear session shows as one run with every attempt in its timeline", a
       branchName: "paws/eng-7",
       now: NOW,
     });
-    db.run("UPDATE work_item SET linear_identifier = ? WHERE id = ?", ["ENG-7", item.id]);
-    const { run: first } = await beginImplementRun(sqliteDb(db), item.id, NOW);
-    await markRun(sqliteDb(db), first.id, "ended", NOW + 1_000);
-    const review = await insertRun(sqliteDb(db), {
+    await identify(db, item.id, "ENG-7");
+    const { run: first } = await beginImplementRun(db, item.id, NOW);
+    await markRun(db, first.id, "ended", NOW + 1_000);
+    const review = await insertRun(db, {
       itemId: item.id,
       kind: "review",
       agent: "grok",
       status: "ended",
       now: NOW + 2_000,
     });
-    const reply = await insertRun(sqliteDb(db), {
+    const reply = await insertRun(db, {
       itemId: item.id,
       kind: "implement",
       agent: "claude",
       status: "active",
       now: NOW + 3_000,
     });
-    await setCurrentRun(sqliteDb(db), item.id, reply.id);
+    await setCurrentRun(db, item.id, reply.id);
     for (const [runId, at, body] of [
       [first.id, NOW + 500, "Wrote the filters."],
       [review.id, NOW + 2_500, "Review found one issue."],
       [reply.id, NOW + 3_500, "Fixed the issue."],
     ] as const)
-      await enqueueOutbox(sqliteDb(db), {
+      await enqueueOutbox(db, {
         target: "linear",
         op: "activity",
         orderingKey: "ses_7",
@@ -63,7 +70,7 @@ test("one Linear session shows as one run with every attempt in its timeline", a
       });
 
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-      store: sqliteDb(db),
+      store: db,
       env: {},
     });
     const parsed = parseIssueListResponse(await response?.json());
@@ -89,14 +96,14 @@ test("one Linear session shows as one run with every attempt in its timeline", a
 
     const alias = await handleStatusRequest(
       new Request(`http://127.0.0.1/api/aliases/runs/${review.id}`),
-      { store: sqliteDb(db), env: {} },
+      { store: db, env: {} },
     );
     expect(await alias?.json()).toEqual({ issueId: "ENG-7" });
     const route = parseRoute("/issues/ENG-7");
     const itemResponse = await handleStatusRequest(
       new Request("http://127.0.0.1/api/issues/ENG-7"),
       {
-        store: sqliteDb(db),
+        store: db,
         env: {},
       },
     );
@@ -110,18 +117,20 @@ test("one Linear session shows as one run with every attempt in its timeline", a
       engineUrl: null,
     });
     // A run link opens the issue page, which names the task only as ENG-7.
-    expect(page.content).toContain('<span class="lin-id">ENG-7</span> Runs list filters</h1>');
+    expect(page.content).toContain('<span class="lin-id">ENG-7</span><span class="st');
+    expect(page.content).toContain(
+      '<h1 class="issue-title text-xl font-semibold">Runs list filters</h1>',
+    );
     expect(page.content).not.toContain("Run not found");
     expect(page.content.replace(/<[^>]*>/g, " ")).not.toContain(first.id);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("a reply in the Linear session shows in the run's timeline with its author, without its text", async () => {
-  const db = openDatabase(":memory:");
+  const { db, close } = await tempStore();
   try {
-    migrate(db);
     const item = await insertQueuedItem(db, {
       id: "01REPLYITEM",
       title: "Retry Closeout",
@@ -129,13 +138,13 @@ test("a reply in the Linear session shows in the run's timeline with its author,
       branchName: "paws/eng-8",
       now: NOW,
     });
-    db.run("UPDATE work_item SET linear_identifier = ? WHERE id = ?", ["ENG-8", item.id]);
-    const { run } = await beginImplementRun(sqliteDb(db), item.id, NOW);
+    await identify(db, item.id, "ENG-8");
+    const { run } = await beginImplementRun(db, item.id, NOW);
     for (const [at, body] of [
       [NOW + 500, "Closeout needs your help."],
       [NOW + 2_500, "Running Closeout again."],
     ] as const)
-      await enqueueOutbox(sqliteDb(db), {
+      await enqueueOutbox(db, {
         target: "linear",
         op: "activity",
         orderingKey: "ses_8",
@@ -143,7 +152,7 @@ test("a reply in the Linear session shows in the run's timeline with its author,
         payload: { sessionId: "ses_8", kind: "thought", body },
         now: at,
       });
-    await recordLinearTurn(sqliteDb(db), {
+    await recordLinearTurn(db, {
       eventKey: "reply-1",
       activityId: null,
       sessionId: "ses_8",
@@ -153,10 +162,10 @@ test("a reply in the Linear session shows in the run's timeline with its author,
       createdAtMs: NOW + 1_500,
       now: NOW + 1_500,
     });
-    await applyLinearTurns(sqliteDb(db), "ses_8", ["reply-1"], item.id);
+    await applyLinearTurns(db, "ses_8", ["reply-1"], item.id);
 
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-      store: sqliteDb(db),
+      store: db,
       env: {},
     });
     const parsed = parseIssueListResponse(await response?.json());
@@ -170,28 +179,27 @@ test("a reply in the Linear session shows in the run's timeline with its author,
       ["thought", "Running Closeout again."],
     ]);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("a Closeout re-check shows as a re-check, not as a review by the reviewer agent", async () => {
-  const db = openDatabase(":memory:");
+  const { db, close } = await tempStore();
   try {
-    migrate(db);
     const item = await insertQueuedItem(db, { id: "01RECHECKITEM", sessionKey: "ses_8", now: NOW });
-    db.run("UPDATE work_item SET linear_identifier = ? WHERE id = ?", ["ENG-8", item.id]);
-    const { run: first } = await beginImplementRun(sqliteDb(db), item.id, NOW);
-    await markRun(sqliteDb(db), first.id, "ended", NOW + 1_000);
-    const recheck = await insertRun(sqliteDb(db), {
+    await identify(db, item.id, "ENG-8");
+    const { run: first } = await beginImplementRun(db, item.id, NOW);
+    await markRun(db, first.id, "ended", NOW + 1_000);
+    const recheck = await insertRun(db, {
       itemId: item.id,
       kind: "recheck",
       agent: "claude",
       status: "active",
       now: NOW + 2_000,
     });
-    await setCurrentRun(sqliteDb(db), item.id, recheck.id);
+    await setCurrentRun(db, item.id, recheck.id);
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
-      store: sqliteDb(db),
+      store: db,
       env: {},
     });
     const parsed = parseIssueListResponse(await response?.json());
@@ -203,6 +211,6 @@ test("a Closeout re-check shows as a re-check, not as a review by the reviewer a
     expect(texts.some((text) => text.startsWith("Review started"))).toBe(false);
     expect(session.agent).toBe("Claude");
   } finally {
-    db.close();
+    await close();
   }
 });

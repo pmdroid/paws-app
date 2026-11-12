@@ -15,15 +15,13 @@ import {
   bindWorkItemRepository,
   enterMergeQueue,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   pendingPullComments,
   recordItemPullRequest,
-  sqliteDb,
 } from "../src/db";
 import { acceptGitHubDelivery, type PullCommentFilter } from "../src/loop";
 import { handleMergeSettingsRequest, type MergeSettingsOptions } from "../src/settings";
 import { tempHome } from "./helpers";
+import { tempStore } from "./pglite";
 
 const MARKERS = ["<!-- add-pr-comment:todo-count -->", "<!-- deploy-security-proof -->"];
 const POLICY = { default: { order: "queue", mainMoved: "ci" }, projects: [], rules: [] } as const;
@@ -197,21 +195,20 @@ describe("Settings › Merging › Ignored PR comments", () => {
 
   test("after a save the next comment delivery uses the new lists without a restart", async () => {
     const { options } = fixture();
-    const db = openDatabase(":memory:");
-    migrate(db);
+    const { db, close } = await tempStore();
     await insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
-    await bindWorkItemRepository(sqliteDb(db), "eng-1", {
+    await bindWorkItemRepository(db, "eng-1", {
       owner: "acme",
       repo: "monorepo",
       remoteUrl: "https://github.com/acme/monorepo.git",
     });
-    await beginImplementRun(sqliteDb(db), "eng-1", 1);
-    await enterMergeQueue(sqliteDb(db), "eng-1", {
+    await beginImplementRun(db, "eng-1", 1);
+    await enterMergeQueue(db, "eng-1", {
       phase: "merge_queue",
       baseSha: "b",
       wipCommit: "h",
     });
-    await recordItemPullRequest(sqliteDb(db), {
+    await recordItemPullRequest(db, {
       itemId: "eng-1",
       pullNumber: 7,
       pullUrl: null,
@@ -227,7 +224,7 @@ describe("Settings › Merging › Ignored PR comments", () => {
     let delivery = 0;
     const comment = (id: number, author: string, body: string) =>
       acceptGitHubDelivery(
-        sqliteDb(db),
+        db,
         {
           deliveryId: `d-${(delivery += 1)}`,
           event: "issue_comment",
@@ -242,7 +239,7 @@ describe("Settings › Merging › Ignored PR comments", () => {
         filter,
       );
     const recorded = async () =>
-      (await pendingPullComments(sqliteDb(db), "eng-1")).map((row) => row.commentId);
+      (await pendingPullComments(db, "eng-1")).map((row) => row.commentId);
     try {
       await comment(1, "github-actions[bot]", "<!-- deploy-security-proof -->\nResult: **PASS**");
       expect(await recorded()).toEqual([1]);
@@ -266,7 +263,7 @@ describe("Settings › Merging › Ignored PR comments", () => {
       await comment(4, "github-actions[bot]", "Result: **FAIL**");
       expect(await recorded()).toEqual([1, 4]);
     } finally {
-      db.close();
+      await close();
     }
   });
 });

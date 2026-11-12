@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
 import { FakeClock } from "../core";
-import { sqliteDb, enqueueJob, getJob, migrate, openDatabase, startLoops } from "./index";
+import { enqueueJob, getJob, startLoops } from "./index";
+import { tempStore } from "../../test/pglite";
 
 test("a running job survives a 45-second pause of the process", async () => {
   const clock = new FakeClock(1_000);
-  const db = openDatabase(":memory:");
-  migrate(db);
-  const id = await enqueueJob(sqliteDb(db), { queue: "work", now: clock.now() });
+  const { db, close } = await tempStore();
+  const id = await enqueueJob(db, { queue: "work", now: clock.now() });
   const controller = new AbortController();
   let started = () => {};
   let release = () => {};
@@ -26,14 +26,10 @@ test("a running job survives a 45-second pause of the process", async () => {
   await claimed;
   clock.advance(45_000);
   release();
-  for (
-    let attempt = 0;
-    attempt < 200 && (await getJob(sqliteDb(db), id))?.status !== "done";
-    attempt++
-  )
+  for (let attempt = 0; attempt < 200 && (await getJob(db, id))?.status !== "done"; attempt++)
     await Bun.sleep(5);
-  expect((await getJob(sqliteDb(db), id))?.status).toBe("done");
+  expect((await getJob(db, id))?.status).toBe("done");
   controller.abort();
   await loops.stop();
-  db.close();
+  await close();
 });

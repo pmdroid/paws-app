@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { join } from "node:path";
 import { accountAgentEnv } from "../src/acp";
 import {
   AgentAccountError,
@@ -15,7 +14,6 @@ import {
   listAgentAccounts,
   listAgentBindings,
   legacyMigrate,
-  openDatabase,
   putWorkspaceUser,
   recordCommandAccount,
   recordLinearInstallation,
@@ -31,30 +29,31 @@ import {
   type RunnerCommand,
 } from "../src/runner-protocol";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { tempHome } from "./helpers";
+import { eq, inArray } from "drizzle-orm";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const SECRET = "sk-ant-oat01-PAS1021-planted-secret";
 const HOUR = 3_600_000;
 
 async function fixture() {
-  const db = openDatabase(join(tempHome(), "paws.sqlite"));
-  legacyMigrate(db);
+  const { db, close } = await tempStore();
   let clock = Date.now();
-  const owner = await putWorkspaceUser(sqliteDb(db), {
+  const owner = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Test",
     userId: owner,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", clock)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", clock)),
     now: clock,
   });
-  await recordLinearInstallation(sqliteDb(db), {
+  await recordLinearInstallation(db, {
     organizationId: "org",
     oauthClientId: "app-client",
     appUserId: "app",
@@ -63,22 +62,33 @@ async function fixture() {
     observedAtMs: clock,
   });
   const item = await insertQueuedItem(db, { id: "item", now: clock, sessionKey: "session" });
-  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
-  db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [owner, item.id]);
-  for (const id of ["R1", "R2"]) {
-    db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
-      [id, workspace.id, owner, id, clock, clock],
+  await bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+  await seed(db, (q) =>
+    q.orm.update(q.t.workItem).set({ ownerUserId: owner }).where(eq(q.t.workItem.id, item.id)),
+  );
+  for (const id of ["R1", "R2"])
+    await seed(
+      db,
+      (q) =>
+        q.orm.insert(q.t.runner).values({
+          id,
+          workspaceId: workspace.id,
+          ownerUserId: owner,
+          name: id,
+          status: "active",
+          createdAt: clock,
+          lastSeenAt: clock,
+        }),
+      (q) =>
+        q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId: id, agent: "claude", ready: 1 }),
+      (q) =>
+        q.orm
+          .insert(q.t.runnerHostStatus)
+          .values({ runnerId: id, runnerVersion: "0.1.61", reportedAt: clock }),
     );
-    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [id]);
-    db.run(
-      "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.61',?)",
-      [id, clock],
-    );
-  }
   const named = async (label: string) =>
     (
-      await createAgentAccount(sqliteDb(db), {
+      await createAgentAccount(db, {
         workspaceId: workspace.id,
         agent: "claude",
         label,
@@ -92,7 +102,7 @@ async function fixture() {
   };
   const bind = async (accountId: string, runnerId: string) =>
     (
-      await bindAgentAccount(sqliteDb(db), {
+      await bindAgentAccount(db, {
         workspaceId: workspace.id,
         accountId,
         runnerId,
@@ -106,7 +116,7 @@ async function fixture() {
   };
   const report = async (runnerId: string, ids: string[]) =>
     await recordRunnerAccountCapability(
-      sqliteDb(db),
+      db,
       runnerId,
       { protocol: 1, bindings: ids.map((bindingId) => ({ bindingId, agent: "claude" })) },
       clock,
@@ -115,6 +125,7 @@ async function fixture() {
   await report("R2", [bindings.a2]);
   return {
     db,
+    close,
     workspaceId: workspace.id,
     accounts,
     bindings,
@@ -153,7 +164,7 @@ test("wrong-account use: a command, result or heartbeat that mixes identities is
     await code(
       async () =>
         await recordCommandAccount(
-          sqliteDb(f.db),
+          f.db,
           command("x1", "R1", { accountId: f.accounts.a, bindingId: f.bindings.b1 }),
           f.now(),
         ),
@@ -163,14 +174,21 @@ test("wrong-account use: a command, result or heartbeat that mixes identities is
     await code(
       async () =>
         await recordCommandAccount(
-          sqliteDb(f.db),
+          f.db,
           command("x2", "R1", { accountId: f.accounts.a, bindingId: f.bindings.a2 }),
           f.now(),
         ),
     ),
   ).toBe("binding_mismatch");
   expect(
-    f.db.query("SELECT 1 FROM runner_command_account WHERE command_id IN ('x1','x2')").all(),
+    await f.db.run((q) =>
+      q.all(
+        q.orm
+          .select({ id: q.t.runnerCommandAccount.commandId })
+          .from(q.t.runnerCommandAccount)
+          .where(inArray(q.t.runnerCommandAccount.commandId, ["x1", "x2"])),
+      ),
+    ),
   ).toEqual([]);
 
   const a = { accountId: f.accounts.a, bindingId: f.bindings.a1 };
@@ -193,6 +211,7 @@ test("wrong-account use: a command, result or heartbeat that mixes identities is
       bindings: [{ bindingId: f.bindings.a1, agent: "claude", home: "/x" }],
     }).success,
   ).toBe(false);
+  await f.close();
 });
 
 test("every advertised adapter isolates a binding's config, sessions and caches in its own home", () => {

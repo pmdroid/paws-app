@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
 import { systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, migrate, openDatabase, sqliteDb, startLoops } from "../src/db";
+import { JobLoop, OutboxDispatcher, startLoops } from "../src/db";
 import { startPaws } from "../src/index";
 import { attachOrchestrator } from "../src/loop";
 import { createRemoteAgentRunner } from "../src/runner-backend";
@@ -13,17 +13,20 @@ import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { serverStore } from "../src/server";
 import { migratedHome } from "./helpers";
+import { tempStore } from "./pglite";
 
 const roots: string[] = [];
-afterEach(() => {
+const open: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function database() {
+async function database() {
   const root = mkdtempSync(join(tmpdir(), "paws-store-"));
   roots.push(root);
-  const db = openDatabase(join(root, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
+  open.push(close);
   return { db, root };
 }
 
@@ -41,12 +44,11 @@ test("startup holds one store on Postgres", async () => {
 });
 
 test("the job loop and the outbox dispatcher hold the store they are given", async () => {
-  const { db } = database();
-  const store = sqliteDb(db);
+  const { db: store } = await database();
   const abort = new AbortController();
   abort.abort();
   const loops = await startLoops({
-    db,
+    db: store,
     store,
     instanceId: "store",
     role: "web",
@@ -54,46 +56,39 @@ test("the job loop and the outbox dispatcher hold the store they are given", asy
   });
   expect(loops.jobs.store).toBe(store);
   expect(loops.outbox.store).toBe(store);
-  expect(new JobLoop(db, systemClock).store).toBe(store);
-  expect(new OutboxDispatcher(db, systemClock).store).toBe(store);
-  db.close();
+  expect(new JobLoop(store, systemClock).store).toBe(store);
+  expect(new OutboxDispatcher(store, systemClock).store).toBe(store);
 });
 
-test("the orchestrator holds the store it is given", () => {
-  const { db, root } = database();
-  const store = sqliteDb(db);
-  const jobs = new JobLoop(db, systemClock, { store });
-  const outbox = new OutboxDispatcher(db, systemClock, { store });
+test("the orchestrator holds the store it is given", async () => {
+  const { db: store, root } = await database();
+  const jobs = new JobLoop(store, systemClock, { store });
+  const outbox = new OutboxDispatcher(store, systemClock, { store });
   expect(attachOrchestrator({ store, jobs, outbox, pawsRoot: root }).store).toBe(store);
-  db.close();
 });
 
-test("the server's routes reach the store it is given", () => {
-  const { db } = database();
-  const store = sqliteDb(db);
-  expect(serverStore({ db, store })).toBe(store);
-  expect(serverStore({ db })).toBe(store);
+test("the server's routes reach the store it is given", async () => {
+  const { db: store } = await database();
+  expect(serverStore({ db: store, store })).toBe(store);
+  expect(serverStore({ db: store })).toBe(store);
   expect(serverStore({})).toBeUndefined();
-  db.close();
 });
 
-test("the runner backend holds the store it is given", () => {
-  const { db } = database();
-  const store = sqliteDb(db);
+test("the runner backend holds the store it is given", async () => {
+  const { db: store } = await database();
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: store,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
   const options = {
     work,
-    results: createRunnerResults({ store: sqliteDb(db), work }),
-    health: createRunnerHealth({ store: sqliteDb(db), work }),
+    results: createRunnerResults({ store: store, work }),
+    health: createRunnerHealth({ store: store, work }),
     async fetchCandidate() {
       throw new Error("This fixture does not return a candidate");
     },
   };
   expect(createRemoteAgentRunner({ ...options, store }).store).toBe(store);
-  db.close();
 });

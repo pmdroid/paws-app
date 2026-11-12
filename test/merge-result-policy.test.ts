@@ -1,11 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mergeResultPolicyError, POLICY_SCHEMA_SUMMARY } from "../src/closeout-spec";
 import { JOB_KIND } from "../src/core";
-import { sqliteDb, getWorkItem, listJobs } from "../src/db";
+import { getWorkItem, listJobs } from "../src/db";
 import { createFakeMergeQueue } from "../src/github";
-import { mergeHarness, type HarnessItem, type MergeHarness } from "../src/merge/advance-harness";
+import {
+  mergeHarnessPg,
+  type HarnessItem,
+  type MergeHarnessPg,
+} from "../src/merge/advance-harness";
+import { tempStore } from "./pglite";
 
-let harness: MergeHarness | undefined;
+let harness: MergeHarnessPg | undefined;
 
 afterEach(async () => {
   await harness?.cleanup();
@@ -29,9 +34,9 @@ describe("advanceMerge when the pull request changes the Closeout policy", () =>
   });
 
   async function policyChange(
-    options: Parameters<typeof mergeHarness>[0] = { settings: { mainMoved: "ci" } },
-  ): Promise<{ h: MergeHarness; item: HarnessItem }> {
-    const h = (harness = await mergeHarness(options));
+    options: Parameters<typeof mergeHarnessPg>[1] = { settings: { mainMoved: "ci" } },
+  ): Promise<{ h: MergeHarnessPg; item: HarnessItem }> {
+    const h = (harness = await mergeHarnessPg(await tempStore(), options));
     h.state.mergeResultPolicy = (worktree, heads) => {
       const error = mergeResultPolicyError(worktree, heads.base, heads.head);
       return error === undefined ? undefined : { error, reference: POLICY_SCHEMA_SUMMARY };
@@ -51,8 +56,8 @@ describe("advanceMerge when the pull request changes the Closeout policy", () =>
 
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
     expect(h.github.merged).toEqual([]);
-    expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("queued");
-    const resume = (await listJobs(sqliteDb(h.db))).find((job) => job.queue === JOB_KIND.resume);
+    expect((await getWorkItem(h.db, "ENG-1"))?.state).toBe("queued");
+    const resume = (await listJobs(h.db)).find((job) => job.queue === JOB_KIND.resume);
     const payload = resume?.payload as { reason: string; handoff: string };
     expect(payload.reason).toBe("findings");
     expect(payload.handoff).toContain(
@@ -78,7 +83,7 @@ describe("advanceMerge when the pull request changes the Closeout policy", () =>
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
     expect(queue.enqueued).toEqual([]);
     expect(h.github.merged).toEqual([]);
-    const resume = (await listJobs(sqliteDb(h.db))).find((job) => job.queue === JOB_KIND.resume);
+    const resume = (await listJobs(h.db)).find((job) => job.queue === JOB_KIND.resume);
     expect((resume?.payload as { reason: string } | undefined)?.reason).toBe("findings");
   });
 
@@ -101,7 +106,7 @@ describe("advanceMerge when the pull request changes the Closeout policy", () =>
     await h.moveMain(skill("acme-reviewer"), "# Acme review\n", [skill("acme-review")]);
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
     expect(queue.calls).toContain("dequeue");
-    const resume = (await listJobs(sqliteDb(h.db))).find((job) => job.queue === JOB_KIND.resume);
+    const resume = (await listJobs(h.db)).find((job) => job.queue === JOB_KIND.resume);
     expect((resume?.payload as { reason: string } | undefined)?.reason).toBe("findings");
   });
 
@@ -128,10 +133,8 @@ describe("advanceMerge when the pull request changes the Closeout policy", () =>
     expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "policy", queued: true });
     expect(queue.enqueued).toEqual([]);
     expect(h.state.policyHolds.map((hold) => hold.id)).toEqual(["ENG-1"]);
-    expect((await listJobs(sqliteDb(h.db))).filter((job) => job.queue === JOB_KIND.resume)).toEqual(
-      [],
-    );
-    expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("merge_queue");
+    expect((await listJobs(h.db)).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
+    expect((await getWorkItem(h.db, "ENG-1"))?.state).toBe("merge_queue");
   });
 
   test("with GitHub's merge queue, main's policy breaking while queued takes the pull request out and holds it", async () => {
@@ -143,9 +146,7 @@ describe("advanceMerge when the pull request changes the Closeout policy", () =>
     h.state.mainPolicy = unreadableMain;
     expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "policy", queued: true });
     expect(queue.calls).toContain("dequeue");
-    expect((await listJobs(sqliteDb(h.db))).filter((job) => job.queue === JOB_KIND.resume)).toEqual(
-      [],
-    );
+    expect((await listJobs(h.db)).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
 
     h.state.mainPolicy = null;
     expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", githubQueue: { queued: true } });

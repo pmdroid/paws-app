@@ -568,17 +568,13 @@ async function admit(
           ["pending", "running"],
         );
         if (jobId !== null)
-          yield* saveSchedulerAdmissionSteps(
-            q,
-            {
-              itemId: item.id,
-              jobId,
-              repositoryKey: entry.repositoryKey,
-              sessionId: entry.sessionId,
-              now,
-            },
-            true,
-          );
+          yield* saveSchedulerAdmissionSteps(q, {
+            itemId: item.id,
+            jobId,
+            repositoryKey: entry.repositoryKey,
+            sessionId: entry.sessionId,
+            now,
+          });
         held.push(entry);
       }
     const depth = yield* depths(q, items);

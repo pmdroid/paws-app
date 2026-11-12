@@ -17,6 +17,8 @@ import {
   runnerDetailMarkup,
   runnerHistoryMarkup,
   runnerRowMarkup,
+  runnerTableMarkup,
+  runnerTilesMarkup,
   runnerRunningMarkup,
   runnerSlotsLabel,
   type Runner,
@@ -102,9 +104,11 @@ describe("runner list rows", () => {
   test("a row links to the runner and summarizes its state", () => {
     const html = runnerRowMarkup(runner, row);
     expect(html).toContain('href="/runners/01JRUNNER0000000000000000A"');
-    expect(html).toContain("<b>build-box</b>");
+    expect(html).toContain('data-focus="open:01JRUNNER0000000000000000A">build-box</a>');
     expect(html).toContain('<span class="tag ok">Idle</span>');
-    expect(html).toContain("Seen just now · ubuntu 24.04 · Runner 1.2.0 · Claude signed in");
+    expect(html).toContain("Seen just now · ubuntu 24.04");
+    expect(html).toContain('<span class="tag">Claude</span>');
+    expect(html).toContain('<span class="mono">1.2.0</span>');
     expect(html).not.toContain("Update available");
     expect(html).not.toContain("data-runner-seat");
     expect(html).not.toContain("<dl");
@@ -126,6 +130,40 @@ describe("runner list rows", () => {
     expect(html).toContain('<span class="tag bad">Codex signed out</span>');
     expect(html).toContain("Update available");
     expect(html).toContain("No agent signed in");
+  });
+
+  test("three runners render three table rows and tiles from the loaded list", () => {
+    const text = (html: string) => html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+    const slots = { used: 2, total: 4 };
+    const list: Runner[] = [
+      { ...runner, slots },
+      { ...runner, id: "01JRUNNER0000000000000000B", name: "box-b", slots },
+      {
+        ...runner,
+        id: "01JRUNNER0000000000000000C",
+        name: "box-c",
+        slots: { used: 0, total: 2 },
+        metrics: { ...runner.metrics!, reportedAt: now - 10 * 60_000 },
+      },
+    ];
+    const table = runnerTableMarkup(list, row);
+    expect(table).toStartWith('<div class="min-w-0 overflow-x-auto"><table');
+    expect(table.match(/<tr data-runner-row=/g)).toHaveLength(3);
+    expect(table.match(/<span class="mono">2\/4<\/span>/g)).toHaveLength(2);
+    expect(table).toContain(">Version</span></th>");
+    const tiles = text(runnerTilesMarkup(list, row));
+    expect(tiles).toContain("Online 2/3");
+    expect(tiles).toContain("Slots in use 4/10");
+    // The offline runner shows a bad tag.
+    expect(tiles).toContain("Needs attention 1");
+    expect(runnerTilesMarkup(list, row)).toContain("text-state-awaiting");
+    expect(runnerTilesMarkup(list.slice(0, 2), row)).not.toContain("text-state-awaiting");
+  });
+
+  test("host warnings sit in the Status cell", () => {
+    const html = runnerRowMarkup({ ...runner, hostWarnings: ["disk full"] }, row);
+    const status = /<\/td><td>(.*?)<\/td>/.exec(html)?.[1] ?? "";
+    expect(status).toContain('<span class="tag warn">disk full</span>');
   });
 
   test("the list leaves out revoked runners", () => {
@@ -275,7 +313,7 @@ describe("what a runner is running now", () => {
       ],
     };
     const slotsOf = (role: string) =>
-      /<section class="runner-block" aria-labelledby="[^"]+-slots">.*?<\/section>/.exec(
+      /<section class="[^"]*" aria-labelledby="[^"]+-slots">.*?<\/section>/.exec(
         runnerDetailMarkup(busy, { ...view, userId: "someone", role }),
       )?.[0] ?? "";
     const admin = slotsOf("admin");
@@ -335,9 +373,7 @@ describe("what a runner is running now", () => {
 
   describe("a draining runner", () => {
     const slotsOf = (html: string) =>
-      /<section class="runner-block" aria-labelledby="[^"]+-slots">.*?<\/section>/.exec(
-        html,
-      )?.[0] ?? "";
+      /<section class="[^"]*" aria-labelledby="[^"]+-slots">.*?<\/section>/.exec(html)?.[0] ?? "";
     const draining = (running: RunningSession[]) => ({
       ...runner,
       status: "draining" as const,
@@ -446,10 +482,9 @@ describe("what a runner is running now", () => {
     };
     for (const role of ["admin", "member"]) {
       const html = runnerDetailMarkup(busy, { ...view, userId: "someone", role });
-      const slots =
-        /<section class="runner-block" aria-labelledby="[^"]+-slots">.*?<\/section>/.exec(
-          html,
-        )?.[0];
+      const slots = /<section class="[^"]*" aria-labelledby="[^"]+-slots">.*?<\/section>/.exec(
+        html,
+      )?.[0];
       expect(slots?.match(/data-running-run=/g)).toHaveLength(2);
       expect(slots).toContain('<span class="lin-id">ENG-7</span>');
       expect(slots).toContain('href="/issues/ENG-7"><span class="lin-id">ENG-7</span>');
@@ -535,7 +570,7 @@ describe("runner details", () => {
     );
     expect(
       runnerRowMarkup({ ...runner, slots: { used: 2, total: 10 } }, { now, serverVersion: null }),
-    ).toContain("2 of 10 slots in use");
+    ).toContain('title="2 of 10 slots in use"');
     expect(html).toContain('<span class="tag ok">Signed in</span>');
     expect(html).toContain('<span class="tag ">Not checked</span>');
     expect(html).not.toContain("account type");
@@ -791,10 +826,10 @@ describe("live host metrics", () => {
     const fresh = card({ reportedAt: now - 30_000 });
     expect(fresh).toContain("<span>Seen 30 s ago</span>");
     expect(fresh).not.toContain("Stale");
-    expect(fresh).toContain('<dl class="runner-gauges">');
+    expect(fresh).toContain('<dl class="runner-gauges md:grid-cols-4">');
     const stale = card({ reportedAt: now - 31_000 });
     expect(statusLine(stale)).toBe('<span class="tag ok">Idle</span><span>Stale</span>');
-    expect(stale).toContain('<dl class="runner-gauges stale">');
+    expect(stale).toContain('<dl class="runner-gauges md:grid-cols-4 stale">');
     expect(stale).toContain('aria-label="Runner metrics" data-stale=""');
   });
 
@@ -844,7 +879,9 @@ describe("simpler runner card", () => {
 
   test("agents share one table row each, with sign-in, usage and extra usage", () => {
     const html = runnerDetailMarkup(runner, view);
-    expect(html).toContain(`<h3 id="runner-${runner.id}-agents">Agents</h3></div><table`);
+    expect(html).toContain(
+      `<h3 id="runner-${runner.id}-agents">Agents</h3></div><div class="flex min-w-0 flex-col gap-3 p-4"><table`,
+    );
     expect(agentRows(html).map((row) => row.agent)).toEqual(["claude", "codex"]);
     expect(agentRows(html)[0]!.html).toContain('<span class="tag ok">Signed in</span>');
     expect(agentRows(html)[0]!.html).toContain("Usage not reported");
@@ -1040,7 +1077,7 @@ test("updated labels count seconds, then minutes and hours", () => {
 test("pause sits in the card header and resumes a paused runner", () => {
   const html = runnerDetailMarkup({ ...runner, status: "paused" }, view);
   expect(html).toMatch(
-    /<\/div><button class="btn" data-runner-status="active"[^>]*>Resume<\/button><\/div>/,
+    /Copy ID<\/button><button class="btn" data-runner-status="active"[^>]*>Resume<\/button><\/div><\/div>/,
   );
   expect(html).not.toContain(">Pause<");
 });

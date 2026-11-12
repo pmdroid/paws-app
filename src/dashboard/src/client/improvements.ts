@@ -60,6 +60,12 @@ export type ImprovementsView = {
 
 const SOURCE_LABEL = { daily_finding: "Daily finding", retro_item: "Weekly retro" } as const;
 
+/** The review card's source badge: muted for daily findings, the verifying color for retros. */
+const SOURCE_BADGE = {
+  daily_finding: `<span class="st">daily findings</span>`,
+  retro_item: `<span class="st verifying">weekly retro</span>`,
+} as const;
+
 const LIFECYCLE_LABEL: Record<ImprovementLifecycle, string> = {
   needs_review: "Needs review",
   pending: "Accepted · filing",
@@ -235,10 +241,13 @@ function renderTabs(view: ImprovementsView): string {
       target === "review"
         ? listHref(view.filter)
         : routeHref({ view: "improvements", tab: target, id: null });
-    const badge = count && count > 0 ? ` <b aria-label="${count} need attention">${count}</b>` : "";
-    return `<a class="btn${current ? " on" : ""}" href="${esc(href)}"${current ? ' aria-current="page"' : ""}>${esc(label)}${badge}</a>`;
+    const badge =
+      count && count > 0
+        ? ` <b class="font-mono text-xs font-normal" aria-label="${count} need attention">${count}</b>`
+        : "";
+    return `<a class="btn seg" href="${esc(href)}"${current ? ' aria-current="page"' : ""}>${esc(label)}${badge}</a>`;
   };
-  return `<nav class="row" aria-label="Improvement pages">${tab("review", "Review", view.attention?.counts.total)}${tab("history", "History")}${tab("settings", "Settings")}</nav>`;
+  return `<nav class="segmented" aria-label="Improvement pages">${tab("review", "Review", view.attention?.counts.total)}${tab("history", "History")}${tab("settings", "Settings")}</nav>`;
 }
 
 function renderSources(view: ImprovementsView): string {
@@ -326,7 +335,7 @@ function emptyList(view: ImprovementsView): string {
   const filtered = view.filter.source || view.filter.repository || view.filter.state;
   if (filtered)
     return `No improvements match these filters. <a href="${esc(listHref({ source: "", repository: "", state: "" }))}">Clear filters</a>`;
-  return "Nothing to review yet. Daily findings and weekly retro patterns arrive here.";
+  return "Nothing to review. Daily findings and weekly retros appear here after some work has merged.";
 }
 
 function renderList(view: ImprovementsView): string {
@@ -384,16 +393,21 @@ function renderDetail(view: ImprovementsView): string {
   const stale = view.detailError
     ? `<p class="checkout-error" role="alert">${esc(view.detailError)} Showing what Paws read last.</p>`
     : "";
+  const span = evidencePeriod(detail);
+  const field = (id: string, label: string, body: string) =>
+    `<section class="improvement-field" aria-labelledby="improvement-${id}"><h3 class="improvement-label" id="improvement-${id}">${label}</h3>${body}</section>`;
   return `${back}${stale}<article class="improvement-detail" data-improvement="${esc(item.id)}">
-    <div class="row">${tag(SOURCE_LABEL[item.sourceKind])}${tag(item.proposal.actionStep)}<span class="muted">${esc(item.repository)}</span>${attention ? attentionTag(attention) : ""}</div>
-    <h2 id="improvement-heading" tabindex="-1">${esc(item.proposal.title)}</h2>
+    <header class="improvement-head">${SOURCE_BADGE[item.sourceKind]}<h2 id="improvement-heading" tabindex="-1">${esc(item.proposal.title)}</h2>${span ? `<span class="mono improvement-period">${esc(span)}</span>` : ""}</header>
+    <div class="row">${tag(item.proposal.actionStep)}<span class="muted">${esc(item.repository)}</span>${attention ? attentionTag(attention) : ""}</div>
     <p class="muted">${esc(attention ? NEXT_ACTION[attention] : improvementStage(item) === "findings" ? FINDINGS_NEXT : LIFECYCLE_LABEL[item.lifecycle])}</p>
-    <section class="improvement-part" aria-labelledby="improvement-problem"><h3 id="improvement-problem">Problem</h3><p>${esc(item.proposal.problem)}</p></section>
-    ${renderEvidence(view, detail)}
-    <section class="improvement-part" aria-labelledby="improvement-change"><h3 id="improvement-change">Intended change</h3><p>${esc(item.proposal.proposedChange)}</p></section>
-    <section class="improvement-part" aria-labelledby="improvement-criterion"><h3 id="improvement-criterion">Verification criterion</h3><p>${item.criterion ? esc(item.criterion) : improvementStage(item) === "review" ? "None recorded yet. Accepting asks for one." : "None recorded yet."}</p></section>
-    ${renderCandidates(view, detail)}
+    <div class="improvement-fields" data-improvement-fields="">
+      ${field("problem", "Problem", `<p>${esc(item.proposal.problem)}</p>`)}
+      ${field("change", "Intended change", `<p>${esc(item.proposal.proposedChange)}</p>`)}
+      ${field("evidence", "Evidence", renderEvidence(view, detail))}
+      ${field("criterion", "Verification criterion", `<p>${item.criterion ? esc(item.criterion) : improvementStage(item) === "review" ? "None recorded yet. Accepting asks for one." : "None recorded yet."}</p>`)}
+    </div>
     ${renderDecision(view, detail)}
+    ${renderCandidates(view, detail)}
     ${improvementStage(item) === "accepted" && follow?.followThrough.issue ? renderFollowThrough(view, follow, follow.followThrough.issue) : ""}
     ${renderHistoryOf(detail, follow)}
   </article>`;
@@ -401,22 +415,31 @@ function renderDetail(view: ImprovementsView): string {
 
 const EVIDENCE_SHOWN = 6;
 
+/** The days the item's evidence spans, the period the card header shows. */
+function evidencePeriod(detail: ImprovementDetail): string {
+  const times = detail.evidence
+    .map((source) => (source.kind === "review_finding" ? source.lastSeenAt : source.occurredAt))
+    .filter(Number.isFinite);
+  if (!times.length) return "";
+  const first = day(Math.min(...times));
+  const last = day(Math.max(...times));
+  return first === last ? first : `${first} – ${last}`;
+}
+
 function renderEvidence(view: ImprovementsView, detail: ImprovementDetail): string {
   const evidence = detail.evidence;
   const shown = view.expanded ? evidence : evidence.slice(0, EVIDENCE_SHOWN);
   const entry = (source: (typeof evidence)[number]) =>
     source.kind === "review_finding"
       ? `<li><code>${esc(source.location)}</code> <span class="muted">${esc(source.repository)} · ${esc(source.status)} · last seen ${esc(utcTime(source.lastSeenAt))}</span></li>`
-      : `<li><p>${esc(source.excerpt)}</p><span class="muted">${esc(source.repository)} · ${esc(source.sourceKind)} · ${esc(utcTime(source.occurredAt))}${source.retroId ? ` · <a href="${esc(routeHref({ view: "improvements", tab: "report", id: source.retroId }))}">retro report</a>` : ""}</span></li>`;
+      : `<li><code>${esc(source.ref)}</code><p>${esc(source.excerpt)}</p><span class="muted">${esc(source.repository)} · ${esc(source.sourceKind)} · ${esc(utcTime(source.occurredAt))}${source.retroId ? ` · <a href="${esc(routeHref({ view: "improvements", tab: "report", id: source.retroId }))}">retro report</a>` : ""}</span></li>`;
   const toggle =
     evidence.length > EVIDENCE_SHOWN
       ? `<button class="btn" type="button" data-improvement-action="evidence" aria-expanded="${view.expanded}" aria-controls="improvement-evidence-list">${view.expanded ? "Show fewer sources" : `Show all ${evidence.length} sources`}</button>`
       : "";
-  return `<section class="improvement-part" aria-labelledby="improvement-evidence"><h3 id="improvement-evidence">Evidence</h3>${
-    evidence.length
-      ? `<ul class="improvement-evidence" id="improvement-evidence-list">${shown.map(entry).join("")}</ul>${toggle}`
-      : `<p class="muted">No evidence you can read is attached.</p>`
-  }</section>`;
+  return evidence.length
+    ? `<ul class="improvement-evidence" id="improvement-evidence-list">${shown.map(entry).join("")}</ul>${toggle}`
+    : `<p class="muted">No evidence you can read is attached.</p>`;
 }
 
 function renderCandidates(view: ImprovementsView, detail: ImprovementDetail): string {
@@ -510,7 +533,7 @@ function renderChoices(view: ImprovementsView, detail: ImprovementDetail): strin
       ? `<form class="col" data-improvement-form="create"><label class="field"><span>Linear team</span><select name="team" data-improvement-draft="team">${teams.map((id) => `<option value="${esc(id)}"${id === team ? " selected" : ""}>${esc(id)}</option>`).join("")}</select></label>${criterion}<p class="muted">Paws files one issue in this team, in Triage, with the proposal and its evidence counts. It does not delegate it.</p>${submit("File the issue")}</form>`
       : `<p class="muted">No Linear team you belong to is mapped to ${esc(item.repository)}. Link an existing issue, or ask an admin to map a team.</p>`;
   }
-  return `<section class="improvement-part" aria-labelledby="improvement-decision"><h3 id="improvement-decision">Decide</h3><div class="row" role="group" aria-label="Decision">${button("create", "Create issue")}${button("link", "Link existing issue")}${button("reject", "Reject")}</div>${form}</section>`;
+  return `<section class="improvement-part" aria-labelledby="improvement-decision"><h3 class="sr-only" id="improvement-decision">Decide</h3><div class="row improvement-actions" role="group" aria-label="Decision">${button("create", "Create issue")}${button("link", "Link existing issue")}${button("reject", "Reject")}</div>${form}</section>`;
 }
 
 function renderDeliveries(view: ImprovementsView, detail: ImprovementDetail): string {

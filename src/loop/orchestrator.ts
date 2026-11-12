@@ -102,6 +102,8 @@ import { acceptedResumeNeedsTurn, mergeAcceptedWork, settleRejectedPush } from "
 import { restartForPushConflict } from "./push-conflict";
 import {
   saveHumanRetryWindowSteps,
+  checkTriggers,
+  type FixRound,
   type RestartHandoff,
   activateLinearItemSteps,
   bindLinearSessionTaskSteps,
@@ -185,7 +187,7 @@ import {
 } from "../config";
 import {
   fixAttemptLimit,
-  policyFixBudget,
+  mainFixBudget,
   approvalsAtHead,
   awaitsVisualReview,
   createCloseoutGate,
@@ -438,6 +440,7 @@ import {
   GitHubHttpError,
   type GitExec,
   type GitHubBinding,
+  type PullRequestMember,
   type GitHubTokenProvider,
   type PullMergeable,
 } from "../github";
@@ -783,6 +786,7 @@ export type OrchestratorOptions = {
   ) => Promise<string>;
   githubForRepository?: (repository: RepositoryBinding) => GitHubBinding | null;
   commitPolicyForItem?: (item: WorkItemRecord) => Promise<GitCommitPolicy | undefined>;
+  pullRequestMember?: (item: WorkItemRecord) => Promise<PullRequestMember | null>;
   launch?: AgentLaunch;
   remoteExecution?: {
     cancelItem?(itemId: string): Promise<void>;
@@ -2881,7 +2885,8 @@ export class Orchestrator {
     for (const hold of holds) {
       const item = await this.store.run((q) => getWorkItemSteps(q, hold.itemId));
       if (!item || item.state !== "queued" || item.cancelRequested) continue;
-      const runner = await eligibleRunner(item.id, await this.implementerAgent(item, config), now);
+      const agent = hold.agent ?? (await this.implementerAgent(item, config));
+      const runner = await eligibleRunner(item.id, agent, now);
       if (!runner) continue;
       resumed =
         (await this.store.transaction((q) =>
@@ -5024,7 +5029,7 @@ export class Orchestrator {
     const github = repository ? this.githubForRepository(repository) : null;
     if (!repository || !github) return null;
     const { home, policyRoot } = await this.closeoutHome(item);
-    const mappings = ciMappings(worktree, home, policyRoot);
+    const mappings = await ciMappings(worktree, home, policyRoot);
     if (mappings.length === 0) return null;
     const signal = await this.signalForItem(item.id);
     const short = head.slice(0, 7);
@@ -5118,6 +5123,7 @@ export class Orchestrator {
       sessionId: this.activitySession(current),
       now: this.now(),
       jobKey: `conflict:${item.id}:recheck:${head}`,
+      fix: { triggers: { base: conflict.base }, headBefore: head },
     });
     if (restarted === null) return null;
     yield* recordRebaseReturnSteps(q, {
@@ -5183,6 +5189,10 @@ export class Orchestrator {
       sessionId: this.activitySession(current),
       now: this.now(),
       jobKey: `ci-failed:${item.id}:recheck:${head}`,
+      fix: {
+        triggers: { checks: checkTriggers(checks) },
+        headBefore: head,
+      },
     });
     if (restarted === null) return null;
     this.options.journal?.(
@@ -5200,6 +5210,7 @@ export class Orchestrator {
       reads: FeedbackReads | null;
       limit: number;
       attempts: ReturnType<typeof fixAttemptLimit>;
+      fix: FixRound;
     },
   ): Steps<boolean> {
     const latest = yield* getWorkItemSteps(q, itemId);
@@ -5212,6 +5223,7 @@ export class Orchestrator {
       sessionId: this.activitySession(latest),
       now: this.now(),
       limit: input.attempts,
+      fix: input.fix,
     });
     return restarted?.armed ?? false;
   }
@@ -5226,6 +5238,7 @@ export class Orchestrator {
       now: handoff.now,
       ...(handoff.jobKey === undefined ? {} : { jobKey: handoff.jobKey }),
       ...(handoff.limit === undefined ? {} : { limit: handoff.limit }),
+      ...(handoff.fix === undefined ? {} : { fix: handoff.fix }),
       lead: [handoff.body],
       reads: yield* storedFeedbackReadsSteps(q, item, handoff.now),
       ci: false,
@@ -5302,6 +5315,15 @@ export class Orchestrator {
           reads,
           limit,
           attempts: fixAttemptLimit(limit, rounds + 1, result?.fixesLeft ?? null),
+          fix: {
+            triggers: {
+              closeoutChecks: free.filter((check) => check.state === "failed").map(({ id }) => id),
+              findings: reviews.flatMap((review) =>
+                review.findings.map((finding) => `${review.itemId}:${finding.location}`),
+              ),
+            },
+            headBefore: result?.head ?? null,
+          },
         }),
       );
       if (armed) emitJobReady(this.store);
@@ -6065,6 +6087,12 @@ export class Orchestrator {
       .filter(Boolean)
       .join("\n\n");
     const title = draft?.title ?? item.title;
+    const member = (await this.store.run((q) => getItemPullRequestSteps(q, item.id)))
+      ? null
+      : await this.options.pullRequestMember?.(item).catch((caught: unknown) => {
+          journalCaught(caught, "orchestrator.pullRequestMember", item.id, "opening as Paws");
+          return null;
+        });
     const published = await publishAccepted({
       accepted: true,
       evidence,
@@ -6078,11 +6106,20 @@ export class Orchestrator {
       ...(draft ? { description: draft.body } : {}),
       reviewer: (await this.store.run((q) => getItemRunCommitPolicySteps(q, item.id)))?.credit
         ?.login,
+      ...(member ? { member } : {}),
       client: github.client,
       gitExec: github.gitExec,
       remoteUrl: repository.remoteUrl,
       ...this.gitHubCredentials(github),
     });
+    const refused = published.published ? published.pull.memberRefused : undefined;
+    if (refused && published.published)
+      await this.post(
+        item,
+        "thought",
+        `Opened as Paws: GitHub refused ${refused.login}'s token (${refused.status}).`,
+        `${item.id}:pull-request-member-refused:${published.pull.number}`,
+      );
     await this.assertPublicationReady(
       item,
       "publish",
@@ -6476,8 +6513,8 @@ export class Orchestrator {
   }
 
   private *fixRoundLimitSteps(q: Q, item: WorkItemRecord): Steps<number> {
-    const { home, policyRoot } = yield* this.closeoutHomeSteps(q, item);
-    return policyFixBudget((yield* this.itemHeadSteps(q, item)).repo, home, policyRoot) ?? 3;
+    const { policyRoot } = yield* this.closeoutHomeSteps(q, item);
+    return mainFixBudget((yield* this.itemHeadSteps(q, item)).repo, policyRoot) ?? 3;
   }
 
   /**
@@ -9672,7 +9709,7 @@ export class Orchestrator {
   ): Promise<ResolvedEvidence[]> {
     const repository = await this.repositoryForItem(item);
     if (!repository) return [];
-    const required = visualReviewRequirements(
+    const required = await visualReviewRequirements(
       worktree,
       this.options.home,
       this.options.closeoutPolicyRoot?.(repository),
@@ -10532,7 +10569,7 @@ export class Orchestrator {
           ...placement,
           checkoutExclusions: (await this.runCheckout(item)).agent,
         }).then((created) => ({ path: created.path, repo: created.path }));
-    const required = (this.options.reviewRequirements ?? reviewRequirements)(
+    const required = await (this.options.reviewRequirements ?? reviewRequirements)(
       worktree.repo,
       this.options.home,
       this.options.closeoutPolicyRoot?.(repository),
@@ -10580,6 +10617,7 @@ export class Orchestrator {
         prompt: "",
         signal,
       }).catch((error: unknown) => {
+        if (error instanceof RunnerSetupRequired) throw error;
         throw new Error(
           `${role} preparation failed: ${error instanceof Error ? error.message : String(error)}`,
           { cause: error },
@@ -10677,7 +10715,7 @@ export class Orchestrator {
           }
         : {}),
       closeoutPolicy: async () => {
-        const load = trustedPolicyFiles(repo, home, policyRoot);
+        const load = await trustedPolicyFiles(repo, home, policyRoot);
         // The runner parses the policy with its own release: say which keys it would leave out.
         if (load.ok && !load.absent)
           await checkPolicyRunners(this.store, {

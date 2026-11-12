@@ -3,11 +3,13 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { runAgent } from "../src/acp";
 import { RunnerSlotsBusyError, systemClock } from "../src/core";
-import { sqliteDb, JobLoop, OutboxDispatcher, getWorkItem, migrate, openDatabase } from "../src/db";
+import { eq } from "drizzle-orm";
+import { JobLoop, OutboxDispatcher, getWorkItem, listJobs, listWorkItems } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
 import { tempHome } from "./helpers";
 import { workspaceAdmission } from "./fake-workspace";
+import { tempStore } from "./pglite";
 
 const event: AcceptedLinearEvent = {
   dedupeKey: "created",
@@ -27,8 +29,7 @@ test("a busy helper lane leaves the start attempts alone and a failing helper sp
   const home = tempHome();
   const root = join(home, "paws");
   mkdirSync(root);
-  const db = openDatabase(join(root, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const tracker = createFakeTracker([
     {
       linearIssueId: "issue",
@@ -50,7 +51,7 @@ test("a busy helper lane leaves the start attempts alone and a failing helper sp
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -67,34 +68,34 @@ test("a busy helper lane leaves the start attempts alone and a failing helper sp
       agentForItem: () => failing("work"),
     },
   });
-  const runnable = () => db.run("UPDATE job SET run_at=0 WHERE status='pending'");
-  const attempts = () =>
-    db
-      .query<{ attempts: number }, []>("SELECT attempts FROM job WHERE status='pending'")
-      .all()
-      .map((row) => row.attempts);
+  const runnable = () =>
+    db.run((q) =>
+      q.exec(q.orm.update(q.t.job).set({ runAt: 0 }).where(eq(q.t.job.status, "pending"))),
+    );
+  const attempts = async () =>
+    (await listJobs(db)).filter((job) => job.status === "pending").map((job) => job.attempts);
   try {
     await orchestrator.onLinearEvent(event);
     intake = false;
-    const itemId = db.query<{ id: string }, []>("SELECT id FROM work_item").get()!.id;
+    const itemId = (await listWorkItems(db))[0]!.id;
     for (let wait = 0; wait < 3; wait++) {
-      runnable();
+      await runnable();
       await jobs.tick();
     }
     expect(helperCalls).toEqual(["classify", "classify", "classify"]);
-    expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("recovering");
-    expect(attempts()).toEqual([0]);
+    expect((await getWorkItem(db, itemId))?.state).toBe("recovering");
+    expect(await attempts()).toEqual([0]);
 
     outcome = new Error("Remote session helper timed out");
     helperCalls.length = 0;
-    runnable();
+    await runnable();
     await jobs.tick();
     expect(helperCalls).toEqual(["classify"]);
-    expect(attempts()).toEqual([1]);
-    expect((await getWorkItem(sqliteDb(db), itemId))?.state).not.toBe("failed");
+    expect(await attempts()).toEqual([1]);
+    expect((await getWorkItem(db, itemId))?.state).not.toBe("failed");
   } finally {
     await orchestrator.shutdown().catch(() => undefined);
     await outbox.idle();
-    db.close();
+    await close();
   }
 }, 20_000);

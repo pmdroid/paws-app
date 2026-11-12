@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
@@ -7,9 +7,6 @@ import {
   insertQueuedItem,
   listJobs,
   listOutbox,
-  migrate,
-  openDatabase,
-  sqliteDb,
 } from "../db";
 import {
   answerSteps,
@@ -25,22 +22,31 @@ import {
 import { askSteps } from "./operations";
 import { questionEffects } from "./question-effects";
 import { askForVisualReviewSteps, VISUAL_REVIEW_NEEDS_LINK } from "./visual-review";
+import { and, eq } from "drizzle-orm";
+import { seed } from "../../test/dialects";
+import { tempStore } from "../../test/pglite";
+
+const open: (() => Promise<void>)[] = [];
+
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
+});
 
 const NOW = 1_700_000_000_000;
 
 async function verifying() {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
+  open.push(close);
   const item = await insertQueuedItem(db, { id: "ENG-3", sessionKey: "ses_1", title: "Hint" });
-  const { run } = await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
-  await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
+  const { run } = await beginImplementRun(db, item.id, NOW - 10);
+  await applyWorkItemEvent(db, item.id, "turn_ended");
   return { db, itemId: item.id, runId: run.id };
 }
 
 test("a Paws without an https dashboard link asks nothing in Linear and says why once", async () => {
   const { db, itemId, runId } = await verifying();
   const input = {
-    item: (await getWorkItem(sqliteDb(db), itemId))!,
+    item: (await getWorkItem(db, itemId))!,
     runId,
     sessionId: "ses_1",
     checkId: "visual-proof",
@@ -50,25 +56,25 @@ test("a Paws without an https dashboard link asks nothing in Linear and says why
     publicUrl: "http://127.0.0.1:8787/",
     now: NOW,
   };
-  const store = sqliteDb(db);
+  const store = db;
   expect(await store.transaction((q) => askForVisualReviewSteps(q, input))).toBe(false);
   expect(
     await store.transaction((q) => askForVisualReviewSteps(q, { ...input, now: NOW + 1 })),
   ).toBe(false);
-  expect(await findOpenQuestion(sqliteDb(db), "ses_1")).toBeNull();
-  expect((await listOutbox(sqliteDb(db))).filter((row) => row.op === "elicitation")).toEqual([]);
-  const notes = (await listOutbox(sqliteDb(db))).filter((row) => row.op === "activity");
+  expect(await findOpenQuestion(db, "ses_1")).toBeNull();
+  expect((await listOutbox(db)).filter((row) => row.op === "elicitation")).toEqual([]);
+  const notes = (await listOutbox(db)).filter((row) => row.op === "activity");
   expect(notes.map((row) => (row.payload as { body: string }).body)).toEqual([
     VISUAL_REVIEW_NEEDS_LINK,
   ]);
   // The check stays unapproved; the item keeps verifying.
-  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("verifying");
+  expect((await getWorkItem(db, itemId))?.state).toBe("verifying");
 });
 
 /** A review question Linear asked with options before the link ask, still open. */
 async function askedBefore() {
   const { db, itemId, runId } = await verifying();
-  const { question } = await sqliteDb(db).transaction((q) =>
+  const { question } = await db.transaction((q) =>
     openVisualReviewSteps(q, {
       ask: (reads, asker, ...rest) => askSteps(reads, { ...asker, pending: true }, ...rest),
       itemId,
@@ -93,75 +99,73 @@ const reply = (body: string) => ({
 
 test("Accept on a question asked before the link ask requests changes and never approves", async () => {
   const { db, itemId, question } = await askedBefore();
-  const outcome = await sqliteDb(db).transaction((q) =>
-    answerSteps(q, reply("Accept"), questionEffects(sqliteDb(db), { now: NOW + 100 })),
+  const outcome = await db.transaction((q) =>
+    answerSteps(q, reply("Accept"), questionEffects(db, { now: NOW + 100 })),
   );
   expect(outcome.status).toBe("answered");
-  expect(await getVisualReview(sqliteDb(db), question.id)).toMatchObject({
+  expect(await getVisualReview(db, question.id)).toMatchObject({
     outcome: "changes_requested",
     feedback: "Accept",
   });
-  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
-  const [resume] = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
+  expect((await getWorkItem(db, itemId))?.state).toBe("queued");
+  const [resume] = (await listJobs(db)).filter((job) => job.queue === JOB_KIND.resume);
   expect(resume).toMatchObject({ jobKey: `resume:answer:${question.id}` });
   expect((resume!.payload as { reason: string }).reason).toBe("review");
-  expect((await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.reverify)).toEqual(
-    [],
-  );
+  expect((await listJobs(db)).filter((job) => job.queue === JOB_KIND.reverify)).toEqual([]);
 });
 
 test("Request changes restarts the item for review with the feedback", async () => {
   const { db, itemId, question } = await askedBefore();
-  await sqliteDb(db).transaction((q) =>
-    answerSteps(
-      q,
-      reply("Make the hint shorter"),
-      questionEffects(sqliteDb(db), { now: NOW + 100 }),
-    ),
+  await db.transaction((q) =>
+    answerSteps(q, reply("Make the hint shorter"), questionEffects(db, { now: NOW + 100 })),
   );
-  expect((await getVisualReview(sqliteDb(db), question.id))?.outcome).toBe("changes_requested");
-  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
-  const [resume] = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
+  expect((await getVisualReview(db, question.id))?.outcome).toBe("changes_requested");
+  expect((await getWorkItem(db, itemId))?.state).toBe("queued");
+  const [resume] = (await listJobs(db)).filter((job) => job.queue === JOB_KIND.resume);
   expect((resume!.payload as { handoff: string }).handoff).toContain("Make the hint shorter");
 });
 
 test("the round-limit question waits behind a sibling's queued question", async () => {
   const { db, itemId, question } = await askedBefore();
   for (let round = 1; round < VISUAL_REVIEW_ROUNDS; round += 1)
-    db.run(
-      `INSERT INTO visual_review (question_id, item_id, check_id, evidence_ids, created_at, outcome)
-       VALUES (?, ?, 'visual-proof', '[]', ?, 'changes_requested')`,
-      [`old-${round}`, itemId, NOW - round],
+    await seed(db, (q) =>
+      q.orm.insert(q.t.visualReview).values({
+        questionId: `old-${round}`,
+        itemId,
+        checkId: "visual-proof",
+        evidenceIds: [],
+        createdAt: NOW - round,
+        outcome: "changes_requested",
+      }),
     );
   const sibling = await insertQueuedItem(db, { id: "ENG-4", sessionKey: "ses_1", title: "Other" });
-  const ci = await sqliteDb(db).transaction((q) =>
+  const ci = await db.transaction((q) =>
     askQuestionSteps(q, { itemId: sibling.id, runId: null, sessionId: "ses_1" }, "ci-help", "CI?", {
       now: NOW + 1,
     }),
   );
   expect(ci.status).toBe("queued");
 
-  await sqliteDb(db).transaction((q) =>
-    answerSteps(
-      q,
-      reply("Make the hint shorter"),
-      questionEffects(sqliteDb(db), { now: NOW + 100 }),
-    ),
+  await db.transaction((q) =>
+    answerSteps(q, reply("Make the hint shorter"), questionEffects(db, { now: NOW + 100 })),
   );
 
-  expect((await getVisualReview(sqliteDb(db), question.id))?.outcome).toBe("changes_requested");
-  expect((await findOpenQuestion(sqliteDb(db), "ses_1"))?.id).toBe(ci.question.id);
-  const queued = db
-    .query<{ id: string }, [string]>(
-      "SELECT question_id AS id FROM visual_review WHERE item_id = ? AND kind = 'continue'",
-    )
-    .get(itemId)!;
-  expect(await getQuestion(sqliteDb(db), queued.id)).toMatchObject({
+  expect((await getVisualReview(db, question.id))?.outcome).toBe("changes_requested");
+  expect((await findOpenQuestion(db, "ses_1"))?.id).toBe(ci.question.id);
+  const queued = (await db.run((q) =>
+    q.one(
+      q.orm
+        .select({ id: q.t.visualReview.questionId })
+        .from(q.t.visualReview)
+        .where(and(eq(q.t.visualReview.itemId, itemId), eq(q.t.visualReview.kind, "continue"))),
+    ),
+  ))!;
+  expect(await getQuestion(db, queued.id)).toMatchObject({
     kind: "visual-review",
     status: "queued",
     body: visualReviewContinueQuestion(VISUAL_REVIEW_ROUNDS),
     options: [...VISUAL_REVIEW_CONTINUE_OPTIONS],
   });
-  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
-  expect((await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
+  expect((await getWorkItem(db, itemId))?.state).toBe("awaiting_input");
+  expect((await listJobs(db)).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
 });

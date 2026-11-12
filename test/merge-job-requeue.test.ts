@@ -1,33 +1,37 @@
 import { expect, test } from "bun:test";
-import { cancelOpenJobs, getJob, sqliteDb } from "../src/db";
+import { eq } from "drizzle-orm";
+import { cancelOpenJobs, getJob } from "../src/db";
 import { enqueueVerifiedMerge } from "../src/loop";
-import { tempDb } from "./helpers";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 test.each(["done", "cancelled", "dead"] as const)(
   "a retried item revives a %s merge job for the same head",
   async (status) => {
-    const db = tempDb();
+    const { db, close } = await tempStore();
     try {
       const input = { itemId: "item", head: "a".repeat(40), summary: "accepted", now: 1_000 };
-      const first = await enqueueVerifiedMerge(sqliteDb(db), input);
-      await cancelOpenJobs(sqliteDb(db), { itemId: "item", reason: "merge", now: 2_000 });
-      db.run("UPDATE job SET status=?, attempts=5 WHERE id=?", [status, first]);
-      const again = await enqueueVerifiedMerge(sqliteDb(db), {
+      const first = await enqueueVerifiedMerge(db, input);
+      await cancelOpenJobs(db, { itemId: "item", reason: "merge", now: 2_000 });
+      await seed(db, (q) =>
+        q.orm.update(q.t.job).set({ status, attempts: 5 }).where(eq(q.t.job.id, first)),
+      );
+      const again = await enqueueVerifiedMerge(db, {
         ...input,
         summary: "accepted again",
         now: 3_000,
       });
       expect(again).toBe(first);
-      expect(await getJob(sqliteDb(db), again)).toMatchObject({
+      expect(await getJob(db, again)).toMatchObject({
         status: "pending",
         attempts: 0,
         runAt: 3_000,
       });
-      expect((await getJob(sqliteDb(db), again))?.payload).toMatchObject({
+      expect((await getJob(db, again))?.payload).toMatchObject({
         summary: "accepted again",
       });
     } finally {
-      db.close();
+      await close();
     }
   },
 );

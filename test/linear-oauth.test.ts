@@ -1,4 +1,3 @@
-import { sqliteDb } from "../src/db";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -14,7 +13,8 @@ import {
   writeStoredToken,
   type FetchLike,
 } from "../src/linear";
-import { tempDb, tempHome } from "./helpers";
+import { tempHome } from "./helpers";
+import { tempStore } from "./pglite";
 
 describe("linear oauth", () => {
   test("authorize url installs the app actor with agent scopes", () => {
@@ -33,7 +33,7 @@ describe("linear oauth", () => {
   });
 
   test("refresh rotates the stored token and keeps it sealed in the database", async () => {
-    const db = tempDb();
+    const db = (await tempStore()).db;
     const secretsDir = join(tempHome(), "secrets");
     const calls: string[] = [];
     const fetchImpl: FetchLike = async (input, init) => {
@@ -60,31 +60,31 @@ describe("linear oauth", () => {
       now: () => 1_000,
     });
     expect(await auth.hasToken()).toBe(true);
-    const sealed = () =>
-      db.query<{ ciphertext: string }, []>("SELECT ciphertext FROM credential").get()!.ciphertext;
-    for (const secret of ["access-1", "refresh-1"]) expect(sealed()).not.toContain(secret);
+    const sealed = async () =>
+      JSON.stringify(await db.run((q) => q.all(q.orm.select().from(q.t.credential))));
+    for (const secret of ["access-1", "refresh-1"]) expect(await sealed()).not.toContain(secret);
     const access = await auth.ensureFresh();
     expect(access).toBe("access-2");
-    expect(await readStoredToken(sqliteDb(db), secretsDir)).toMatchObject({
+    expect(await readStoredToken(db, secretsDir)).toMatchObject({
       accessToken: "access-2",
       refreshToken: "refresh-2",
       actor: "app",
       expiresAtMs: 1_000 + 3_600_000,
     });
-    for (const secret of ["access-2", "refresh-2"]) expect(sealed()).not.toContain(secret);
+    for (const secret of ["access-2", "refresh-2"]) expect(await sealed()).not.toContain(secret);
     const again = await auth.ensureFresh();
     expect(again).toBe("access-2");
     expect(calls).toHaveLength(1);
   });
 
   test("an imported access-only token file keeps the bootstrap lifetime", async () => {
-    const db = tempDb();
+    const db = (await tempStore()).db;
     const secretsDir = join(tempHome(), "secrets");
     mkdirSync(secretsDir, { recursive: true });
     const path = join(secretsDir, "acme-linear.json");
     writeFileSync(path, JSON.stringify({ accessToken: "acme-access" }), { mode: 0o600 });
-    expect(await importLinearTokenFile(sqliteDb(db), secretsDir, path, 1_000)).toBe(true);
-    expect(await readStoredToken(sqliteDb(db), secretsDir)).toMatchObject({
+    expect(await importLinearTokenFile(db, secretsDir, path, 1_000)).toBe(true);
+    expect(await readStoredToken(db, secretsDir)).toMatchObject({
       accessToken: "acme-access",
       refreshToken: null,
       expiresAtMs: 1_000 + 23 * 60 * 60 * 1000,
@@ -103,7 +103,7 @@ describe("linear oauth", () => {
   });
 
   test("a 401 refreshes once and retries the GraphQL call", async () => {
-    const db = tempDb();
+    const db = (await tempStore()).db;
     const secretsDir = join(tempHome(), "secrets");
     const graphql: string[] = [];
     const fetchImpl: FetchLike = async (input, init) => {
@@ -130,9 +130,9 @@ describe("linear oauth", () => {
       fetch: fetchImpl,
       now: () => 5_000,
     });
-    const stored = await readStoredToken(sqliteDb(db), secretsDir);
+    const stored = await readStoredToken(db, secretsDir);
     if (stored === null) throw new Error("missing token");
-    await writeStoredToken(sqliteDb(db), secretsDir, {
+    await writeStoredToken(db, secretsDir, {
       ...stored,
       expiresAtMs: 5_000 + 60 * 60 * 1000,
     });

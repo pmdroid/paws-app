@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
@@ -10,10 +11,8 @@ import {
   listCloseoutRecoveries,
   listJobs,
   listOutbox,
-  migrate,
-  openDatabase,
   saveCheckpoint,
-  sqliteDb,
+  type Db,
 } from "../db";
 import { bypassSummary } from "../closeout";
 import { findOpenQuestion, getQuestion } from "../questions";
@@ -27,44 +26,71 @@ import {
   reverifyBypassedSteps,
   type LinkAskEffects,
 } from "./link-ask";
+import { seed } from "../../test/dialects";
+import { tempStore } from "../../test/pglite";
 
 const NOW = 1_700_000_000_000;
 const HEAD = "7f65200aa1b2c3d4e5f6";
 const LINK = "https://paws.example/dashboard/issues/PAS-633#closeout";
 
+const open: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
+});
+
+function audit(db: Db) {
+  return db.run((q) =>
+    q.all(
+      q.orm
+        .select({
+          userId: q.t.workspaceAccessAudit.userId,
+          action: q.t.workspaceAccessAudit.action,
+          subject: q.t.workspaceAccessAudit.subject,
+        })
+        .from(q.t.workspaceAccessAudit),
+    ),
+  );
+}
+
 async function blocked(publicUrl: string | null = "https://paws.example") {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
+  open.push(close);
   const item = await insertQueuedItem(db, {
     id: "PAS-633",
     sessionKey: "ses_1",
     title: "Signed URLs",
   });
-  await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
-  await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
-  await saveCheckpoint(sqliteDb(db), item.id, {
+  await beginImplementRun(db, item.id, NOW - 10);
+  await applyWorkItemEvent(db, item.id, "turn_ended");
+  await saveCheckpoint(db, item.id, {
     phase: "verifying",
     baseSha: "base",
     wipCommit: HEAD,
   });
-  db.run("UPDATE work_item SET delegated_by = 'delegator' WHERE id = ?", [item.id]);
-  await sqliteDb(db).run((q) =>
+  await seed(
+    db,
+    (q) =>
+      q.orm
+        .update(q.t.workItem)
+        .set({ delegatedBy: "delegator" })
+        .where(eq(q.t.workItem.id, item.id)),
+    (q) =>
+      q.orm
+        .insert(q.t.workspace)
+        .values({ id: "ws", linearOrganizationId: "org", name: "Kyku", createdAt: NOW }),
+    (q) =>
+      q.orm.insert(q.t.workspaceUser).values({
+        id: "user-lead",
+        linearUserId: "lead",
+        name: "Lea Lead",
+        email: "lea@example.com",
+      }),
+  );
+  await db.run((q) =>
     saveSchedulingContextSteps(q, { itemId: item.id, projectId: "project", projectLeadId: "lead" }),
   );
-  db.run("INSERT INTO workspace (id, linear_organization_id, name, created_at) VALUES (?,?,?,?)", [
-    "ws",
-    "org",
-    "Kyku",
-    NOW,
-  ]);
-  db.run("INSERT INTO workspace_user (id, linear_user_id, name, email) VALUES (?,?,?,?)", [
-    "user-lead",
-    "lead",
-    "Lea Lead",
-    "lea@example.com",
-  ]);
   await askCloseoutHelp(
-    sqliteDb(db),
+    db,
     "ses_1",
     {
       itemId: item.id,
@@ -92,7 +118,7 @@ async function blocked(publicUrl: string | null = "https://paws.example") {
       ],
     },
   );
-  const question = (await findOpenQuestion(sqliteDb(db), "ses_1"))!;
+  const question = (await findOpenQuestion(db, "ses_1"))!;
   return { db, itemId: item.id, question };
 }
 
@@ -102,7 +128,7 @@ const effects: LinkAskEffects = { bypass: reverifyBypassedSteps };
 test("Closeout help is a bypass link ask with the failed checks of the head", async () => {
   const { db, itemId, question } = await blocked();
   expect(question.kind).toBe("link");
-  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
+  expect(await getLinkAsk(db, question.id)).toMatchObject({
     kind: "bypass",
     headCommit: HEAD,
     link: LINK,
@@ -111,28 +137,26 @@ test("Closeout help is a bypass link ask with the failed checks of the head", as
   expect(question.body).toContain(`Decide in Paws: ${LINK}`);
   expect(question.body).toContain("2 checks failed (independent-review, test)");
   expect(question.body).not.toContain("/paws bypass");
-  expect((await listCloseoutRecoveries(sqliteDb(db), itemId))[0]?.questionId).toBe(question.id);
+  expect((await listCloseoutRecoveries(db, itemId))[0]?.questionId).toBe(question.id);
   expect(
-    (await listCloseoutBypassChecks(sqliteDb(db), question.id)).map(
-      ({ checkId, kind, state, attempt }) => ({
-        checkId,
-        kind,
-        state,
-        attempt,
-      }),
-    ),
+    (await listCloseoutBypassChecks(db, question.id)).map(({ checkId, kind, state, attempt }) => ({
+      checkId,
+      kind,
+      state,
+      attempt,
+    })),
   ).toEqual([
     { checkId: "independent-review", kind: "review", state: "failed", attempt: 1 },
     { checkId: "test", kind: "command", state: "exhausted", attempt: 3 },
   ]);
-  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
+  expect((await getWorkItem(db, itemId))?.state).toBe("awaiting_input");
 });
 
 test("bypassing from the page writes the rows and verifies the same head again", async () => {
   const { db, itemId, question } = await blocked();
   expect(
     await decideLinkAsk(
-      sqliteDb(db),
+      db,
       {
         questionId: question.id,
         decision: "approve",
@@ -145,24 +169,24 @@ test("bypassing from the page writes the rows and verifies the same head again",
       effects,
     ),
   ).toBe("answered");
-  expect(await getWorkItem(sqliteDb(db), itemId)).toMatchObject({
+  expect(await getWorkItem(db, itemId)).toMatchObject({
     state: "verifying",
     checkpoint: { phase: "verifying", baseSha: "base", wipCommit: HEAD },
   });
-  expect((await listJobs(sqliteDb(db))).map((job) => [job.queue, job.jobKey])).toContainEqual([
+  expect((await listJobs(db)).map((job) => [job.queue, job.jobKey])).toContainEqual([
     JOB_KIND.reverify,
     `closeout-bypass:${question.id}`,
   ]);
-  expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
-  expect((await listCloseoutBypassChecks(sqliteDb(db), question.id))[0]).toMatchObject({
+  expect((await listJobs(db)).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
+  expect((await listCloseoutBypassChecks(db, question.id))[0]).toMatchObject({
     checkId: "independent-review",
     reason: "Smoke run moved to PAS-744.",
     approvedBy: "lead",
     approvedByName: "Lea Lead",
     approvedAt: NOW + 100,
   });
-  expect((await listCloseoutBypassChecks(sqliteDb(db), question.id))[1]?.approvedAt).toBeNull();
-  const { bypasses } = await recoveryOptions(sqliteDb(db), itemId);
+  expect((await listCloseoutBypassChecks(db, question.id))[1]?.approvedAt).toBeNull();
+  const { bypasses } = await recoveryOptions(db, itemId);
   expect(bypasses).toEqual([
     {
       questionId: question.id,
@@ -176,14 +200,13 @@ test("bypassing from the page writes the rows and verifies the same head again",
       reason: "Smoke run moved to PAS-744.",
     },
   ]);
-  expect(db.query("SELECT action, subject FROM workspace_access_audit").all() as unknown[]).toEqual(
-    [
-      {
-        action: "decision.bypass.approve",
-        subject: "PAS-633 · 7f65200 · independent-review: Smoke run moved to PAS-744.",
-      },
-    ],
-  );
+  expect(await audit(db)).toEqual([
+    {
+      userId: "user-lead",
+      action: "decision.bypass.approve",
+      subject: "PAS-633 · 7f65200 · independent-review: Smoke run moved to PAS-744.",
+    },
+  ]);
   expect(bypassSummary(bypasses)).toBe(
     [
       "Bypassed checks:",
@@ -205,7 +228,7 @@ test("a bypass needs offered checks, each once, each with a reason", async () =>
   ])
     expect(
       await decideLinkAsk(
-        sqliteDb(db),
+        db,
         {
           questionId: question.id,
           decision: "approve",
@@ -218,16 +241,16 @@ test("a bypass needs offered checks, each once, each with a reason", async () =>
         effects,
       ),
     ).toBe("rejected");
-  expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
-  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
-  expect((await recoveryOptions(sqliteDb(db), itemId)).bypasses).toEqual([]);
+  expect((await getQuestion(db, question.id))?.status).toBe("open");
+  expect((await getWorkItem(db, itemId))?.state).toBe("awaiting_input");
+  expect((await recoveryOptions(db, itemId)).bypasses).toEqual([]);
 });
 
 test("someone who did not delegate and does not lead the project cannot bypass", async () => {
   const { db, itemId, question } = await blocked();
   expect(
     await decideLinkAsk(
-      sqliteDb(db),
+      db,
       {
         questionId: question.id,
         decision: "approve",
@@ -240,17 +263,17 @@ test("someone who did not delegate and does not lead the project cannot bypass",
       effects,
     ),
   ).toBe("forbidden");
-  expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
+  expect((await getQuestion(db, question.id))?.status).toBe("open");
   expect(
-    (await listCloseoutBypassChecks(sqliteDb(db), question.id)).every((check) => !check.approvedBy),
+    (await listCloseoutBypassChecks(db, question.id)).every((check) => !check.approvedBy),
   ).toBe(true);
-  expect((await recoveryOptions(sqliteDb(db), itemId)).bypasses).toEqual([]);
+  expect((await recoveryOptions(db, itemId)).bypasses).toEqual([]);
 });
 
 test("a /paws bypass reply in Linear is guidance and gets the link back once", async () => {
   const { db, itemId, question } = await blocked();
   expect(
-    await guideLinkAsk(sqliteDb(db), {
+    await guideLinkAsk(db, {
       questionId: question.id,
       eventKey: "activity:bypass",
       body: "/paws bypass test -- Known fixture failure",
@@ -258,17 +281,17 @@ test("a /paws bypass reply in Linear is guidance and gets the link back once", a
       now: NOW + 100,
     }),
   ).toBe(true);
-  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
+  expect(await getLinkAsk(db, question.id)).toMatchObject({
     decision: null,
     closedReason: "guidance",
   });
-  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
-  expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.reverify)).toBe(false);
-  expect(await recoveryOptions(sqliteDb(db), itemId)).toEqual({
+  expect((await getWorkItem(db, itemId))?.state).toBe("queued");
+  expect((await listJobs(db)).some((job) => job.queue === JOB_KIND.reverify)).toBe(false);
+  expect(await recoveryOptions(db, itemId)).toEqual({
     retryBaseline: ["test:1"],
     bypasses: [],
   });
-  const notes = (await listOutbox(sqliteDb(db))).filter((row) =>
+  const notes = (await listOutbox(db)).filter((row) =>
     row.idempotencyKey.startsWith("link-ask-guidance:"),
   );
   expect(notes.map((row) => (row.payload as { body: string }).body)).toEqual([
@@ -280,7 +303,7 @@ test("guidance from the page restarts the agent and authorizes a new round", asy
   const { db, itemId, question } = await blocked();
   expect(
     await decideLinkAsk(
-      sqliteDb(db),
+      db,
       {
         questionId: question.id,
         decision: "changes",
@@ -292,12 +315,12 @@ test("guidance from the page restarts the agent and authorizes a new round", asy
       effects,
     ),
   ).toBe("answered");
-  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
-  const resume = (await listJobs(sqliteDb(db))).find((job) => job.queue === JOB_KIND.resume)!;
+  expect((await getWorkItem(db, itemId))?.state).toBe("queued");
+  const resume = (await listJobs(db)).find((job) => job.queue === JOB_KIND.resume)!;
   expect((resume.payload as { handoff: string }).handoff).toContain(
     "Record the smoke run instead.",
   );
-  expect(await recoveryOptions(sqliteDb(db), itemId)).toEqual({
+  expect(await recoveryOptions(db, itemId)).toEqual({
     retryBaseline: ["test:1"],
     bypasses: [],
   });
@@ -306,7 +329,7 @@ test("guidance from the page restarts the agent and authorizes a new round", asy
 test("without a public link, Closeout help is a Linear question that cannot bypass", async () => {
   const { db, question } = await blocked(null);
   expect(question.kind).toBe("closeout-help");
-  expect(await getLinkAsk(sqliteDb(db), question.id)).toBeNull();
+  expect(await getLinkAsk(db, question.id)).toBeNull();
   expect(question.body).toContain("A reply here cannot bypass a check.");
   expect(question.body).not.toContain("/paws bypass");
 });

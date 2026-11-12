@@ -1,6 +1,7 @@
 import { syncSteps } from "../src/runner-backend";
 import { expect, test } from "bun:test";
-import { bindLinearSessionTask, recordLinearInstallation, sqliteDb } from "../src/db";
+import { eq, sql } from "drizzle-orm";
+import { bindLinearSessionTask, recordLinearInstallation, type Db } from "../src/db";
 import {
   createItemReconciler,
   intakeDelegatedIssue,
@@ -8,8 +9,9 @@ import {
   syncItemDependencies,
 } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
-import { tempDb } from "./helpers";
-import { workspaceDispatch } from "./fake-workspace";
+import { seed } from "./dialects";
+import { workspaceDispatchPg } from "./fake-workspace";
+import { tempStore } from "./pglite";
 
 const issue = {
   linearIssueId: "only",
@@ -19,12 +21,35 @@ const issue = {
   subIssues: [],
 };
 
-async function install(db: ReturnType<typeof tempDb>, delegationId: string): Promise<void> {
-  db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-  db.run(
-    "INSERT INTO workspace_user VALUES('person','linear-person','Person','person@example.test')",
+const epicTables = (db: Db) =>
+  db.run((q) =>
+    q.all(
+      q.orm
+        .select({ name: sql<string>`table_name` })
+        .from(sql`information_schema.tables`)
+        .where(sql`table_name = 'epic'`),
+    ),
   );
-  await recordLinearInstallation(sqliteDb(db), {
+
+async function install(db: Db, delegationId: string): Promise<void> {
+  await seed(
+    db,
+    (q) =>
+      q.orm.insert(q.t.workspace).values({
+        id: "workspace",
+        linearOrganizationId: "org",
+        name: "Workspace",
+        createdAt: 1000,
+      }),
+    (q) =>
+      q.orm.insert(q.t.workspaceUser).values({
+        id: "person",
+        linearUserId: "linear-person",
+        name: "Person",
+        email: "person@example.test",
+      }),
+  );
+  await recordLinearInstallation(db, {
     organizationId: "org",
     oauthClientId: "client",
     appUserId: "app",
@@ -32,11 +57,11 @@ async function install(db: ReturnType<typeof tempDb>, delegationId: string): Pro
     teamId: "team",
     observedAtMs: 1000,
   });
-  await bindLinearSessionTask(sqliteDb(db), "session", delegationId, { actorId: "linear-person" });
+  await bindLinearSessionTask(db, "session", delegationId, { actorId: "linear-person" });
 }
 
 test("a delegation whose only item is cancelled is no longer treated as running by reconciliation and readiness", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const tracker = createFakeTracker([issue]);
   const lifecycle = createFakeLinearIssueLifecycle({
     id: "only",
@@ -46,13 +71,13 @@ test("a delegation whose only item is cancelled is no longer treated as running 
     delegateId: "app",
   });
   const reconciler = createItemReconciler({
-    store: sqliteDb(db),
+    store: db,
     tracker,
     lifecycle,
     onChanges: () => syncSteps(() => {}),
   });
   try {
-    const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    const intake = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "only",
       now: 1000,
     });
@@ -61,15 +86,13 @@ test("a delegation whose only item is cancelled is no longer treated as running 
     const itemId = intake.items[0]!.id;
     await install(db, intake.delegation.id);
     const target = { itemId, workspaceId: "workspace" };
-    expect((await sqliteDb(db).run((q) => readyItemsSteps(q, target))).heldItemIds).toEqual([
-      itemId,
-    ]);
+    expect((await db.run((q) => readyItemsSteps(q, target))).heldItemIds).toEqual([itemId]);
     await reconciler.reconcile(target);
-    db.run("UPDATE work_item SET state='cancelled' WHERE id=?", [itemId]);
-    expect(
-      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
-    ).toEqual([]);
-    await expect(sqliteDb(db).run((q) => readyItemsSteps(q, target))).rejects.toThrow(
+    await seed(db, (q) =>
+      q.orm.update(q.t.workItem).set({ state: "cancelled" }).where(eq(q.t.workItem.id, itemId)),
+    );
+    expect(await epicTables(db)).toEqual([]);
+    await expect(db.run((q) => readyItemsSteps(q, target))).rejects.toThrow(
       /Dependency workspace or task ownership changed/,
     );
     await expect(reconciler.reconcile(target)).rejects.toThrow(
@@ -77,12 +100,12 @@ test("a delegation whose only item is cancelled is no longer treated as running 
     );
   } finally {
     await reconciler.close();
-    db.close();
+    await close();
   }
 });
 
 test("a sub-issue of a delegated parent reads its parent issue from parent_delegation", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const tracker = createFakeTracker([
     {
       linearIssueId: "child-issue",
@@ -106,24 +129,41 @@ test("a sub-issue of a delegated parent reads its parent issue from parent_deleg
     return listDeps(id);
   };
   try {
-    const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    const intake = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "child-issue",
       now: 1000,
     });
     expect(intake.ok).toBe(true);
     if (!intake.ok) return;
     await install(db, intake.delegation.id);
-    db.run(
-      `INSERT INTO parent_delegation(delegation_id,workspace_id,organization_id,parent_issue_id,parent_identifier,title,session_id,owner_user_id,edges,created_at)
-       VALUES('adopted','workspace','org','parent-issue','PRJ-1','Parent','parent-session','person','[]',1000)`,
-    );
-    db.run(
-      `INSERT INTO parent_delegation_issue(parent_delegation_id,workspace_id,issue_id,identifier,title,position,delegation_id)
-       VALUES('adopted','workspace','child-issue','PRJ-2','Child',0,?)`,
-      [intake.delegation.id],
+    await seed(
+      db,
+      (q) =>
+        q.orm.insert(q.t.parentDelegation).values({
+          delegationId: "adopted",
+          workspaceId: "workspace",
+          organizationId: "org",
+          parentIssueId: "parent-issue",
+          parentIdentifier: "PRJ-1",
+          title: "Parent",
+          sessionId: "parent-session",
+          ownerUserId: "person",
+          edges: [],
+          createdAt: 1000,
+        }),
+      (q) =>
+        q.orm.insert(q.t.parentDelegationIssue).values({
+          parentDelegationId: "adopted",
+          workspaceId: "workspace",
+          issueId: "child-issue",
+          identifier: "PRJ-2",
+          title: "Child",
+          position: 0,
+          delegationId: intake.delegation.id,
+        }),
     );
     seen.length = 0;
-    await syncItemDependencies(sqliteDb(db), {
+    await syncItemDependencies(db, {
       itemId: intake.items[0]!.id,
       workspaceId: "workspace",
       expectedGeneration: 0,
@@ -132,29 +172,27 @@ test("a sub-issue of a delegated parent reads its parent issue from parent_deleg
     });
     expect(seen).toEqual(["parent-issue", "child-issue"]);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("the scheduler admits an item without reading the epic table", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const tracker = createFakeTracker([issue]);
   try {
-    const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+    const intake = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "only",
       now: 1,
     });
     expect(intake.ok).toBe(true);
     if (!intake.ok) return;
+    expect(await epicTables(db)).toEqual([]);
     expect(
-      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").get(),
-    ).toBeNull();
-    expect(
-      await workspaceDispatch(db, {
+      await workspaceDispatchPg(db, {
         now: 2,
       }),
     ).toEqual([intake.items[0]!.id]);
   } finally {
-    db.close();
+    await close();
   }
 });

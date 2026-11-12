@@ -28,6 +28,7 @@ import {
   lastRunResultSteps,
   leasedRunnerWorkCommandSteps,
   onlineMemberRunnersSteps,
+  runnerAgentPolicyStateSteps,
   runnerHostVersionSteps,
   runnerLastSeenSteps,
   runnerNameSteps,
@@ -53,6 +54,7 @@ import {
   releasePinnedSlotSteps,
   recordFallbackAttemptSteps,
   runnerHasCapacitySteps,
+  runnerOccupancySteps,
   runnerSlotsHeldBetweenCommandsSteps,
   saveCheckpoint,
   saveCheckpointSteps,
@@ -427,7 +429,7 @@ export function createRemoteAgentRunner(options: {
         rejected
           .filter(
             (reason) =>
-              reason.endsWith(NO_FREE_CAPACITY) || reason.endsWith(ACCOUNT_CONCURRENCY_LIMIT),
+              reason.includes(NO_FREE_CAPACITY) || reason.endsWith(ACCOUNT_CONCURRENCY_LIMIT),
           )
           .map((reason) => reason.slice(0, reason.indexOf(":"))),
       ),
@@ -622,20 +624,25 @@ export function createRemoteAgentRunner(options: {
         rejected.push(`${runner.id}: the run is already being placed`);
         continue;
       }
-      function* free(q: Q) {
-        const extra =
-          ((yield* unassignedSteps(q, item!.currentRunId!)).get(runner.id) ?? 0) +
-          (yield* runnerSlotsHeldBetweenCommandsSteps(q, runner.id, now(), item!.currentRunId!)) +
-          (yield* pinnedSlotsReservedSteps(q, runner.id, itemId, now()));
-        return yield* runnerHasCapacitySteps(q, runner.id, now(), item!.currentRunId!, extra);
+      function* full(q: Q) {
+        const runId = item!.currentRunId!;
+        const { capacity, occupied } = yield* runnerOccupancySteps(q, runner.id, now(), runId);
+        const pending = (yield* unassignedSteps(q, runId)).get(runner.id) ?? 0;
+        const between = yield* runnerSlotsHeldBetweenCommandsSteps(q, runner.id, now(), runId);
+        const pinned = yield* pinnedSlotsReservedSteps(q, runner.id, itemId, now());
+        return occupied + pending + between + pinned < capacity
+          ? null
+          : `${NO_FREE_CAPACITY} (work ${occupied}, unassigned ${pending}, between commands ${between}, pinned ${pinned} of ${capacity})`;
       }
-      if (!(await store.run(free))) {
-        rejected.push(`${runner.id}${NO_FREE_CAPACITY}`);
+      const filled = await store.run(full);
+      if (filled) {
+        rejected.push(`${runner.id}${filled}`);
         continue;
       }
       try {
         const taken = await store.transaction(function* (q) {
-          if (!(yield* free(q))) return NO_FREE_CAPACITY;
+          const filledNow = yield* full(q);
+          if (filledNow) return filledNow;
           if (
             !(yield* q.transaction((inner) =>
               reserveRunnerSlotSteps(inner, {
@@ -1015,6 +1022,19 @@ export function createRemoteAgentRunner(options: {
                     }))
                   );
                 });
+                const policy = await store.run((q) =>
+                  runnerAgentPolicyStateSteps(q, selected.id, profile.agent),
+                );
+                if (
+                  (result.authRequired || result.errorMessage || !result.identity) &&
+                  (policy?.ready !== 1 || policy.authExpired === 1)
+                )
+                  throw new RunnerSetupRequired({
+                    reason: "agent-not-signed-in",
+                    runnerId: selected.id,
+                    runnerName: await runnerName(selected.id),
+                    agent: profile.agent,
+                  });
                 if (
                   disposition?.retryable &&
                   result.agentExited &&
@@ -2855,7 +2875,7 @@ function handoverWaitReason(
   const message = error instanceof Error ? error.message : "";
   return /repository is outside workspace access/.test(message) && move.repository
     ? `No other runner allows ${move.repository}.`
-    : reasons.some((reason) => reason === NO_FREE_CAPACITY.slice(2))
+    : reasons.some((reason) => reason.startsWith(NO_FREE_CAPACITY.slice(2)))
       ? "Every other runner is busy."
       : reasons.some((reason) => reason === "agent-not-signed-in" || reason === "auth-expired")
         ? `Sign in to ${agent ? agentName(agent) : "the agent"} on another runner.`

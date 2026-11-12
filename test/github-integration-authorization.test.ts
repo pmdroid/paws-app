@@ -17,19 +17,20 @@ import {
   insertQueuedItem,
   listJobs,
   listOutbox,
-  migrate,
   syncSteps,
-  openDatabase,
+  openPglite,
+  postgresDb,
   recordLinearInstallation,
   revokeLinearInstallation,
-  sqliteDb,
 } from "../src/db";
+import { copyMigratedPglite, tempStore } from "./pglite";
 
 test("transient production authorization persists a wait, survives restart and recovers once alongside a sibling", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-integration-unavailable-"));
-  const path = join(root, "db.sqlite");
-  const db = openDatabase(path);
-  migrate(db);
+  const path = join(root, "pglite");
+  await copyMigratedPglite(path);
+  const pg = await openPglite(path);
+  const db = postgresDb(pg);
   const signal = new AbortController().signal;
   let unavailable = true;
   const env = { GITHUB_AUTH: "app", PAWS_HOME: root };
@@ -49,76 +50,72 @@ test("transient production authorization persists a wait, survives restart and r
   });
   host.check = async () => true;
   host.unavailableRetryMs = [];
-  const auth = new GitHubInstallationCheck(sqliteDb(db), host, () => 1000);
+  const auth = new GitHubInstallationCheck(db, host, () => 1000);
   await insertQueuedItem(db, {
     id: "unavailable",
     sessionKey: "unavailable",
     title: "unavailable",
   });
-  await beginImplementRun(sqliteDb(db), "unavailable", 1000);
-  const first = (await getWorkItem(sqliteDb(db), "unavailable"))!;
+  await beginImplementRun(db, "unavailable", 1000);
+  const first = (await getWorkItem(db, "unavailable"))!;
   try {
     expect(await auth.ensure(first, "initial", signal)).toBe(false);
-    expect((await getWorkItem(sqliteDb(db), first.id))?.state).toBe("awaiting_input");
+    expect((await getWorkItem(db, first.id))?.state).toBe("awaiting_input");
+    expect((await listOutbox(db)).filter((entry) => entry.op === "elicitation")).toHaveLength(0);
     expect(
-      (await listOutbox(sqliteDb(db))).filter((entry) => entry.op === "elicitation"),
-    ).toHaveLength(0);
-    expect(
-      (await listOutbox(sqliteDb(db))).some((entry) =>
+      (await listOutbox(db)).some((entry) =>
         JSON.stringify(entry.payload).includes("retry automatically"),
       ),
     ).toBe(true);
     await auth.recover();
-    expect((await getWorkItem(sqliteDb(db), first.id))?.state).toBe("awaiting_input");
+    expect((await getWorkItem(db, first.id))?.state).toBe("awaiting_input");
   } finally {
     auth.close();
-    db.close();
+    await pg.$client.close();
   }
-  const reopened = openDatabase(path);
+  const reopenedPg = await openPglite(path);
+  const reopened = postgresDb(reopenedPg);
   let denied = false;
   host.authorize = async (item) => {
     if (item.id === first.id && unavailable) throw new Error("Scripted Linear outage");
     return !denied;
   };
-  const recovered = new GitHubInstallationCheck(sqliteDb(reopened), host, () => 2000);
+  const recovered = new GitHubInstallationCheck(reopened, host, () => 2000);
   try {
     await insertQueuedItem(reopened, { id: "sibling", sessionKey: "sibling", title: "sibling" });
-    await beginImplementRun(sqliteDb(reopened), "sibling", 2000);
+    await beginImplementRun(reopened, "sibling", 2000);
     host.check = async (item) => item.id !== "sibling";
-    await recovered.ensure((await getWorkItem(sqliteDb(reopened), "sibling"))!, "initial", signal);
+    await recovered.ensure((await getWorkItem(reopened, "sibling"))!, "initial", signal);
     host.check = async () => true;
     host.unavailableRetryMs = [];
     await recovered.recover();
-    expect((await getWorkItem(sqliteDb(reopened), first.id))?.state).toBe("awaiting_input");
-    expect((await getWorkItem(sqliteDb(reopened), "sibling"))?.state).toBe("running");
+    expect((await getWorkItem(reopened, first.id))?.state).toBe("awaiting_input");
+    expect((await getWorkItem(reopened, "sibling"))?.state).toBe("running");
     unavailable = false;
     await Promise.all([recovered.recover(), recovered.recover()]);
     await recovered.recover();
-    expect((await getWorkItem(sqliteDb(reopened), first.id))?.state).toBe("running");
-    expect(
-      (await listJobs(sqliteDb(reopened))).filter((job) => job.queue === "run.resume"),
-    ).toHaveLength(2);
+    expect((await getWorkItem(reopened, first.id))?.state).toBe("running");
+    expect((await listJobs(reopened)).filter((job) => job.queue === "run.resume")).toHaveLength(2);
     await insertQueuedItem(reopened, { id: "revoked", sessionKey: "revoked", title: "revoked" });
-    await beginImplementRun(sqliteDb(reopened), "revoked", 2000);
+    await beginImplementRun(reopened, "revoked", 2000);
     host.check = async () => false;
-    await recovered.ensure((await getWorkItem(sqliteDb(reopened), "revoked"))!, "initial", signal);
+    await recovered.ensure((await getWorkItem(reopened, "revoked"))!, "initial", signal);
     denied = true;
     await recovered.recover();
-    expect((await getWorkItem(sqliteDb(reopened), "revoked"))?.state).toBe("cancelled");
+    expect((await getWorkItem(reopened, "revoked"))?.state).toBe("cancelled");
   } finally {
     recovered.close();
-    reopened.close();
+    await reopenedPg.$client.close();
     rmSync(root, { recursive: true, force: true });
   }
 });
 
 test("real LinearTaskAccess distinguishes revoked installation from unavailable reads without relying on stop callback", async () => {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
   const item = await insertQueuedItem(db, { id: "task", sessionKey: "session", title: "task" });
-  await beginImplementRun(sqliteDb(db), item.id, 1000);
-  await recordLinearInstallation(sqliteDb(db), {
+  await beginImplementRun(db, item.id, 1000);
+  await recordLinearInstallation(db, {
     ...scope,
     sessionId: "session",
     teamId: "team",
@@ -136,7 +133,7 @@ test("real LinearTaskAccess distinguishes revoked installation from unavailable 
     delegateId: "app",
     stateType: "started",
   });
-  const gate = new LinearTaskAccess(sqliteDb(db), {
+  const gate = new LinearTaskAccess(db, {
     access: reads.adapter,
     lifecycle,
     oauthClientId: "client",
@@ -163,34 +160,29 @@ test("real LinearTaskAccess distinguishes revoked installation from unavailable 
   });
   host.check = async () => true;
   host.unavailableRetryMs = [];
-  const auth = new GitHubInstallationCheck(sqliteDb(db), host, () => 1000);
+  const auth = new GitHubInstallationCheck(db, host, () => 1000);
   try {
-    await auth.ensure(
-      (await getWorkItem(sqliteDb(db), item.id))!,
-      "initial",
-      new AbortController().signal,
-    );
-    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("awaiting_input");
+    await auth.ensure((await getWorkItem(db, item.id))!, "initial", new AbortController().signal);
+    expect((await getWorkItem(db, item.id))?.state).toBe("awaiting_input");
     unavailable = false;
-    await revokeLinearInstallation(sqliteDb(db), {
+    await revokeLinearInstallation(db, {
       ...scope,
       eventKey: "revoked",
       createdAtMs: 20,
     });
     await auth.recover();
-    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("cancelled");
+    expect((await getWorkItem(db, item.id))?.state).toBe("cancelled");
     expect(
-      db.query<{ status: string }, []>("SELECT status FROM github_integration_hold").get()?.status,
+      (await db.run((q) => q.all(q.orm.select().from(q.t.githubIntegrationHold))))[0]?.status,
     ).toBe("revoked");
   } finally {
     auth.close();
-    db.close();
+    await close();
   }
 });
 
 test("an App task with a selected repository starts without an attribution wait", async () => {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   const env = { GITHUB_AUTH: "app" };
   const host = createGitHubIntegration({
     runtime: loadRuntime(env),
@@ -205,33 +197,28 @@ test("an App task with a selected repository starts without an attribution wait"
   expect(Object.keys(host!)).not.toContain("attributionReady");
   host.check = async () => true;
   host.unavailableRetryMs = [];
-  const auth = new GitHubInstallationCheck(sqliteDb(db), host, () => 1000);
+  const auth = new GitHubInstallationCheck(db, host, () => 1000);
   const item = await insertQueuedItem(db, { id: "unlinked", sessionKey: "session" });
-  await beginImplementRun(sqliteDb(db), item.id, 1000);
+  await beginImplementRun(db, item.id, 1000);
   try {
     expect(
-      await auth.ensure(
-        (await getWorkItem(sqliteDb(db), item.id))!,
-        "initial",
-        new AbortController().signal,
-      ),
+      await auth.ensure((await getWorkItem(db, item.id))!, "initial", new AbortController().signal),
     ).toBe(true);
-    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("running");
+    expect((await getWorkItem(db, item.id))?.state).toBe("running");
     expect(
-      (await listOutbox(sqliteDb(db))).some((entry) =>
+      (await listOutbox(db)).some((entry) =>
         JSON.stringify(entry.payload).includes("commit policy"),
       ),
     ).toBe(false);
   } finally {
     auth.close();
-    db.close();
+    await close();
   }
 });
 
 for (const later of [60_000, 11 * 60_000]) {
   test(`a GitHub 502 ${later / 60_000} min after a pass keeps the task running without a question`, async () => {
-    const db = openDatabase(":memory:");
-    migrate(db);
+    const { db, close } = await tempStore();
     const env = { GITHUB_AUTH: "app" };
     const host = createGitHubIntegration({
       runtime: loadRuntime(env),
@@ -247,14 +234,12 @@ for (const later of [60_000, 11 * 60_000]) {
     host.check = async () => true;
     host.unavailableRetryMs = [];
     let now = 1_000;
-    const auth = new GitHubInstallationCheck(sqliteDb(db), host, () => now);
+    const auth = new GitHubInstallationCheck(db, host, () => now);
     await insertQueuedItem(db, { id: "cached", sessionKey: "cached", title: "cached" });
-    await beginImplementRun(sqliteDb(db), "cached", now);
+    await beginImplementRun(db, "cached", now);
     const signal = new AbortController().signal;
     try {
-      expect(
-        await auth.ensure((await getWorkItem(sqliteDb(db), "cached"))!, "initial", signal),
-      ).toBe(true);
+      expect(await auth.ensure((await getWorkItem(db, "cached"))!, "initial", signal)).toBe(true);
       let failures = 2;
       host.unavailableRetryMs = [0];
       host.check = async () => {
@@ -262,21 +247,18 @@ for (const later of [60_000, 11 * 60_000]) {
         return true;
       };
       now += later;
-      expect(
-        await auth.ensure((await getWorkItem(sqliteDb(db), "cached"))!, "initial", signal),
-      ).toBe(true);
-      expect((await getWorkItem(sqliteDb(db), "cached"))?.state).toBe("running");
-      expect(db.query("SELECT * FROM question").all()).toHaveLength(0);
+      expect(await auth.ensure((await getWorkItem(db, "cached"))!, "initial", signal)).toBe(true);
+      expect((await getWorkItem(db, "cached"))?.state).toBe("running");
+      expect(await db.run((q) => q.all(q.orm.select().from(q.t.question)))).toHaveLength(0);
     } finally {
       auth.close();
-      db.close();
+      await close();
     }
   });
 }
 
 test("a denied authorization after an issue change still stops the task", async () => {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   const env = { GITHUB_AUTH: "app" };
   let allowed = true;
   const host = createGitHubIntegration({
@@ -292,23 +274,19 @@ test("a denied authorization after an issue change still stops the task", async 
   });
   host.check = async () => true;
   host.unavailableRetryMs = [];
-  const auth = new GitHubInstallationCheck(sqliteDb(db), host, () => 1_000);
+  const auth = new GitHubInstallationCheck(db, host, () => 1_000);
   await insertQueuedItem(db, { id: "revoked", sessionKey: "revoked", title: "revoked" });
-  await beginImplementRun(sqliteDb(db), "revoked", 1_000);
+  await beginImplementRun(db, "revoked", 1_000);
   const signal = new AbortController().signal;
   try {
-    expect(
-      await auth.ensure((await getWorkItem(sqliteDb(db), "revoked"))!, "initial", signal),
-    ).toBe(true);
+    expect(await auth.ensure((await getWorkItem(db, "revoked"))!, "initial", signal)).toBe(true);
     allowed = false;
     await auth.invalidate({ issueId: "lin-item-revoked" });
-    expect(
-      await auth.ensure((await getWorkItem(sqliteDb(db), "revoked"))!, "initial", signal),
-    ).toBe(false);
-    expect((await getWorkItem(sqliteDb(db), "revoked"))?.state).not.toBe("running");
+    expect(await auth.ensure((await getWorkItem(db, "revoked"))!, "initial", signal)).toBe(false);
+    expect((await getWorkItem(db, "revoked"))?.state).not.toBe("running");
   } finally {
     auth.close();
-    db.close();
+    await close();
   }
 });
 
@@ -326,8 +304,7 @@ test("production App authorization retries an unavailable check for about a minu
 });
 
 async function cachedAuthorization() {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   const env = { GITHUB_AUTH: "app" };
   const reads = { membership: 0, installation: 0 };
   let ready = true;
@@ -351,16 +328,11 @@ async function cachedAuthorization() {
   };
   host.unavailableRetryMs = [];
   const clock = { now: 1_000 };
-  const auth = new GitHubInstallationCheck(sqliteDb(db), host, () => clock.now);
+  const auth = new GitHubInstallationCheck(db, host, () => clock.now);
   await insertQueuedItem(db, { id: "task", sessionKey: "session", title: "task" });
-  await beginImplementRun(sqliteDb(db), "task", clock.now);
+  await beginImplementRun(db, "task", clock.now);
   const ensure = async (options?: { fresh?: boolean }) =>
-    auth.ensure(
-      (await getWorkItem(sqliteDb(db), "task"))!,
-      "initial",
-      new AbortController().signal,
-      options,
-    );
+    auth.ensure((await getWorkItem(db, "task"))!, "initial", new AbortController().signal, options);
   return {
     db,
     auth,
@@ -371,9 +343,9 @@ async function cachedAuthorization() {
     blockInstallation: (blocked: boolean) => {
       ready = !blocked;
     },
-    close: () => {
+    close: async () => {
       auth.close();
-      db.close();
+      await close();
     },
   };
 }
@@ -387,7 +359,7 @@ test("ten git operations in one task read membership and installation once", asy
     expect(await f.ensure()).toBe(true);
     expect(f.reads).toEqual({ membership: 2, installation: 2 });
   } finally {
-    f.close();
+    await f.close();
   }
 });
 
@@ -404,7 +376,7 @@ for (const scope of [{ issueId: "lin-item-task" }, { sessionId: "session" }, {}]
       await f.ensure();
       expect(f.reads).toEqual({ membership: 2, installation: 2 });
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -417,7 +389,7 @@ test("a check that is not ready is never reused", async () => {
     expect(await f.ensure()).toBe(true);
     expect(f.reads).toEqual({ membership: 2, installation: 2 });
   } finally {
-    f.close();
+    await f.close();
   }
 });
 
@@ -431,7 +403,7 @@ test("a fresh check before publication always reads Linear and refreshes the cac
     await f.ensure();
     expect(f.reads.membership).toBe(3);
   } finally {
-    f.close();
+    await f.close();
   }
 });
 
@@ -444,8 +416,8 @@ test("an invalidation still keeps the recent ready check as a fallback for a tra
       throw new Error("GitHub API request failed with 502");
     };
     expect(await f.ensure()).toBe(true);
-    expect((await getWorkItem(sqliteDb(f.db), "task"))?.state).toBe("running");
+    expect((await getWorkItem(f.db, "task"))?.state).toBe("running");
   } finally {
-    f.close();
+    await f.close();
   }
 });

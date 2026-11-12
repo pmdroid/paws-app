@@ -70,7 +70,7 @@ describe("policy keys a parser does not know", () => {
     expect(olderParser()(`specVersion: "0.2"\nlater: true\n`)).toMatchObject({ ok: false });
   });
 
-  test("an unknown key is journaled once per policy digest", () => {
+  test("an unknown key is journaled once per policy digest", async () => {
     const lines: string[] = [];
     const restore = setJournalSink((line) => lines.push(line));
     try {
@@ -81,7 +81,7 @@ describe("policy keys a parser does not know", () => {
         ),
       );
       for (let run = 0; run < 3; run++) {
-        const loaded = loadPolicy({ repo: "/nonexistent", git, env: {} });
+        const loaded = await loadPolicy({ repo: "/nonexistent", git, env: {} });
         expect(loaded.ok && loaded.warnings.map((warning) => warning.code)).toEqual([
           "unknown-policy-keys",
         ]);

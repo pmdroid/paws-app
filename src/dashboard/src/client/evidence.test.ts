@@ -68,7 +68,12 @@ test("the page names its issue, check and repository and lists the issue's other
   };
   const html = renderEvidencePage(page, new Map(), null);
   expect(html).toContain('id="evidence-player" data-evidence="shown"');
-  expect(html).toContain("visual-proof · attempt 2");
+  const header = html.slice(html.indexOf('class="evidence-context'), html.indexOf("</p>"));
+  expect(header).toContain(">PAS-7</a>");
+  expect(header).toContain("Closeout attempt 2");
+  expect(header).toContain("check <span");
+  expect(header).toContain("visual-proof");
+  expect(html).toContain(`href="${closeoutOutputHref(shown)}"`);
   expect(html).toContain("pmdroid/paws-app");
   expect(html).toContain(`href="${evidencePageHref("before")}"`);
   expect(html).not.toContain(`href="${evidencePageHref("shown")}"`);

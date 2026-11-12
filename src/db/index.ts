@@ -202,3 +202,5 @@ export * from "./visual-review-rows";
 export * from "./github-oauth";
 export * from "./runner-health-reads";
 export * from "./member-vm-delete";
+export * from "./fix-records";
+export * from "./setup-facts";

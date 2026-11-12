@@ -19,9 +19,28 @@ type Load =
 
 const KIND_LABEL: Partial<Record<StatusActivity["kind"], string>> = {
   system: "agent",
+  ok: "result",
   err: "error",
   elicitation: "question",
+  prompt: "handoff",
 };
+
+const KIND_COLOR: Partial<Record<string, string>> = {
+  agent: "text-state-running",
+  result: "text-state-ok",
+  handoff: "text-state-recovering",
+  turn: "text-state-verifying",
+  error: "text-state-failed",
+};
+
+/** The short label and color class of a transcript line. */
+export function entryKind(entry: StatusActivity): { label: string; color: string } {
+  const label =
+    entry.kind === "system" && entry.text.startsWith("Agent turn ended")
+      ? "turn"
+      : (KIND_LABEL[entry.kind] ?? entry.kind);
+  return { label, color: KIND_COLOR[label] ?? "text-muted-foreground" };
+}
 
 const time = new Intl.DateTimeFormat(undefined, {
   hour: "numeric",
@@ -101,25 +120,19 @@ function Entry({ entry }: { entry: StatusActivity }) {
   const split = entry.text.indexOf("\n");
   const title = code && split > 0 ? entry.text.slice(0, split) : code ? entry.text : null;
   const body = title === null ? entry.text : entry.text.slice(title.length + 1);
+  const kind = entryKind(entry);
   return (
-    <li className="min-w-0 space-y-2 px-3 py-3 sm:px-5 sm:py-4">
-      <div className="flex items-baseline justify-between gap-4 text-xs">
-        <span
-          className={cn(
-            "font-semibold capitalize",
-            entry.kind === "err" && "text-red-700 dark:text-red-300",
-          )}
-        >
-          {KIND_LABEL[entry.kind] ?? entry.kind}
-        </span>
-        <time dateTime={entry.at} className="shrink-0 tabular-nums opacity-70">
-          {Number.isNaN(Date.parse(entry.at)) ? "" : time.format(new Date(entry.at))}
-        </time>
-      </div>
-      <div className="flex min-w-0 flex-col gap-2">
+    <li className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 px-3 py-1.5 font-mono text-[13px] leading-relaxed sm:grid-cols-[auto_4.5rem_minmax(0,1fr)] sm:px-4">
+      <time dateTime={entry.at} className="tabular-nums text-muted-foreground">
+        {Number.isNaN(Date.parse(entry.at)) ? "" : time.format(new Date(entry.at))}
+      </time>
+      <span data-kind={kind.label} className={cn("truncate", kind.color)}>
+        {kind.label}
+      </span>
+      <div className="col-span-full flex min-w-0 flex-col gap-1 sm:col-span-1">
         {title !== null && (
           <div
-            className="min-w-0 font-mono text-[13px] font-semibold leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]"
+            className="min-w-0 whitespace-pre-wrap [overflow-wrap:anywhere]"
             dangerouslySetInnerHTML={{ __html: ansiToHtml(title) }}
           />
         )}
@@ -128,8 +141,8 @@ function Entry({ entry }: { entry: StatusActivity }) {
             className={cn(
               "min-w-0 whitespace-pre-wrap [overflow-wrap:anywhere]",
               code
-                ? "rounded-base bg-background/25 p-2.5 font-mono text-[13px] leading-relaxed sm:p-3"
-                : "max-w-[72ch] text-sm leading-6",
+                ? "rounded-md border border-border bg-background p-2 text-muted-foreground"
+                : "max-w-[96ch]",
             )}
             dangerouslySetInnerHTML={{ __html: ansiToHtml(body) }}
           />
@@ -143,14 +156,14 @@ function Session({ session, latest }: { session: TranscriptSession; latest: bool
   const at = session.entries[0]!.at;
   return (
     <section aria-label={`Session ${session.session}`} className="flex flex-col gap-2">
-      <h2 className="text-sm font-heading">
+      <h2 className="font-mono text-xs text-muted-foreground">
         Session {session.session}
         {Number.isNaN(Date.parse(at)) ? "" : `, started ${startTime.format(new Date(at))}`}
       </h2>
       <ol
         role={latest ? "log" : undefined}
         aria-label={latest ? "Agent transcript" : `Session ${session.session} transcript`}
-        className="m-0 list-none divide-y divide-foreground/15 rounded-base border-2 border-border bg-secondary-background p-0 shadow-shadow"
+        className="m-0 list-none rounded-md border border-border bg-card py-2"
       >
         {session.entries.map((entry, index) => (
           <Entry key={index} entry={entry} />
@@ -190,7 +203,7 @@ export function TranscriptSessions({ entries }: { entries: TranscriptEntry[] }) 
 
 function Notice({ children }: { children: ReactNode }) {
   return (
-    <div className="rounded-base border-2 border-border bg-secondary-background p-4 text-sm leading-relaxed shadow-shadow">
+    <div className="rounded-md border border-border bg-card p-4 text-sm leading-relaxed">
       {children}
     </div>
   );
@@ -288,31 +301,38 @@ function TranscriptPage({ runId }: { runId: string | null }) {
 
   const fresh = Math.max(0, (entries?.length ?? 0) - seen);
   const live = load.state === "ready";
+  const sessionCount = entries?.at(-1)?.session ?? 0;
 
   return (
     <div className="min-h-dvh bg-background text-foreground">
-      <header className="sticky top-0 z-20 border-b-2 border-border bg-secondary-background">
-        <div className="mx-auto flex w-full max-w-4xl items-center justify-between gap-4 px-3 py-2 sm:px-4">
-          <div className="min-w-0 space-y-1">
-            <h1 className="text-base font-heading tracking-tight">Agent transcript</h1>
-            {runId && (
-              <p className="truncate font-mono text-[11px] opacity-70" title={runId}>
-                {runId}
+      <header className="sticky top-0 z-20 border-b border-border bg-background">
+        <div className="mx-auto flex w-full max-w-5xl flex-col gap-2 px-3 py-3 sm:px-4">
+          <h1 className="text-base font-heading tracking-tight">Agent transcript</h1>
+          {runId && (
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              {load.state !== "loading" && (
+                <span
+                  role="status"
+                  className={cn(
+                    "inline-flex shrink-0 items-center gap-1.5 rounded-md border border-current/40 px-2 py-0.5 font-mono text-xs",
+                    live ? "text-state-running" : "text-state-warn",
+                  )}
+                >
+                  <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />
+                  {live ? "live" : "reconnecting"}
+                </span>
+              )}
+              <p className="min-w-0 truncate font-mono text-xs text-muted-foreground" title={runId}>
+                run {runId}
+                {sessionCount > 0 &&
+                  ` · ${sessionCount} ${sessionCount === 1 ? "session" : "sessions"}`}
+                {entries && ` · ${entries.length} ${entries.length === 1 ? "line" : "lines"}`}
               </p>
-            )}
-          </div>
-          {runId && load.state !== "loading" && (
-            <span role="status" className="flex shrink-0 items-center gap-2 text-xs">
-              <span
-                aria-hidden="true"
-                className={cn("size-2 rounded-full", live ? "bg-foreground" : "bg-main")}
-              />
-              {live ? "Auto-updating" : "Reconnecting"}
-            </span>
+            </div>
           )}
         </div>
       </header>
-      <main className="mx-auto flex w-full max-w-4xl flex-col gap-3 px-3 pb-20 pt-3 sm:px-4 sm:pt-4">
+      <main className="mx-auto flex w-full max-w-5xl flex-col gap-3 px-3 pb-20 pt-3 sm:px-4 sm:pt-4">
         {!runId && (
           <Notice>This link does not name a run. Open the transcript from a run in Paws.</Notice>
         )}
@@ -321,10 +341,7 @@ function TranscriptPage({ runId }: { runId: string | null }) {
           <Notice>
             {load.message}{" "}
             {load.message.startsWith("Sign in") && (
-              <a
-                href={dashboardPath()}
-                className="font-semibold underline decoration-2 underline-offset-4 hover:decoration-main"
-              >
+              <a href={dashboardPath()} className="font-semibold underline underline-offset-4">
                 Open Paws
               </a>
             )}

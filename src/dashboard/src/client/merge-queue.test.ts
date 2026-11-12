@@ -144,6 +144,27 @@ function rowText(html: string, itemId: string): string {
     .trim();
 }
 
+/** The text of one head card, tags stripped. */
+function cardText(html: string, itemId: string): string {
+  const card =
+    new RegExp(`<section class="card merge-head" data-merge-head="${itemId}"(.*?)</section>`).exec(
+      html,
+    )?.[1] ?? "";
+  return card
+    .replace(/^[^>]*>/, "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function steps(...states: StatusMergeEntry["steps"][number]["state"][]): StatusMergeEntry["steps"] {
+  return states.map((state, index) => ({
+    name: `step ${index + 1}`,
+    state,
+    detail: `detail ${index + 1}`,
+  }));
+}
+
 describe("merge queue page", () => {
   test("is a Work page at /merge-queue with a count badge of the waiting tasks", () => {
     expect(NAVIGATION[0].views).toContain("mergeQueue");
@@ -166,8 +187,9 @@ describe("merge queue page", () => {
     expect(queued).toContain("Re-check: CI only");
     expect(queued.indexOf("ENG-101")).toBeLessThan(queued.indexOf("ENG-102"));
     expect(queued.indexOf("ENG-102")).toBeLessThan(queued.indexOf("ENG-107"));
-    expect(rowText(html, "ENG-101")).toBe(
-      "1 ENG-101 Audit log model Audit log export Aisha Khan #412 50m Waiting for CI Branch updated onto main 9f1c2ab. CI 4 of 6 checks done",
+    expect(rowText(html, "ENG-101")).toBe("");
+    expect(cardText(html, "ENG-101")).toBe(
+      "ENG-101 Audit log model #412 mergeable(ENG-101) = false · waiting on ci Merge queue on Re-check: CI only Branch updated onto main 9f1c2ab. CI 4 of 6 checks done.",
     );
     expect(rowText(html, "ENG-102")).toBe(
       "2 ENG-102 CSV / JSON formatters Audit log export Aisha Khan #415 35m Queued Starts when #412 merges",
@@ -181,6 +203,41 @@ describe("merge queue page", () => {
     expect(green).not.toContain('<th class="run-cell">#</th>');
     expect(rowText(html, "ENG-120")).toStartWith("ENG-120 Landing copy");
     expect(html).toContain('href="https://github.com/acme/web/pull/31"');
+  });
+
+  test("the head of a queue is a card with one tile per step, the rest a table", () => {
+    const snapshot = twoRepositories();
+    snapshot.mergeQueue[0]!.steps = steps("done", "run", "wait");
+    const html = page(snapshot);
+    const platform = html.slice(
+      html.indexOf(">acme/platform</h2>"),
+      html.indexOf(">acme/web</h2>"),
+    );
+    expect(platform.match(/data-merge-head=/g)).toHaveLength(1);
+    expect(platform.match(/data-merge-step=/g)).toHaveLength(3);
+    expect(platform).toContain('<span class="text-state-ok" aria-hidden="true">✓</span>');
+    expect(platform.match(/aria-hidden="true">◌</g)).toHaveLength(2);
+    expect(platform.match(/<tr data-merge-item=/g)).toHaveLength(2);
+    expect(cardText(html, "ENG-101")).toContain("step 2 detail 2");
+    expect(cardText(html, "ENG-101")).toContain("= false · waiting on ci");
+  });
+
+  test("a head whose steps are all done is merging", () => {
+    const snapshot = twoRepositories();
+    snapshot.mergeQueue[0]!.steps = steps("done", "done");
+    expect(cardText(page(snapshot), "ENG-101")).toContain("mergeable(ENG-101) = true · merging");
+  });
+
+  test("a repository with no queue and one entry shows its card and no table", () => {
+    const snapshot = twoRepositories();
+    snapshot.mergeQueue = snapshot.mergeQueue.filter((waiting) => waiting.itemId !== "ENG-121");
+    const html = page(snapshot);
+    const web = html.slice(html.indexOf(">acme/web</h2>"));
+    expect(cardText(html, "ENG-120")).toStartWith(
+      "ENG-120 Landing copy #31 mergeable(ENG-120) = false",
+    );
+    expect(web).not.toContain("<table");
+    expect(web).not.toContain("No pull requests waiting.");
   });
 
   test("an issue waiting on review approval holds no place and says why", () => {
@@ -239,7 +296,9 @@ describe("merge queue page", () => {
     const snapshot = twoRepositories();
     snapshot.mergeQueue = [];
     snapshot.mergeHistory = [];
-    expect(page(snapshot)).toContain("Nothing is waiting to merge.");
+    expect(page(snapshot)).toContain(
+      '<p>Nothing is waiting to merge.</p><p class="muted">Pull requests appear here once Closeout accepts them.</p>',
+    );
     expect(resource(snapshot).entries).toHaveLength(0);
   });
 

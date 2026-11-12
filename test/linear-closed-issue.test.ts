@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, syncSteps, sqliteDb } from "../src/db";
+import { JobLoop, OutboxDispatcher, syncSteps } from "../src/db";
 import {
   acknowledgeNewSession,
   createFakeLinearAccessReads,
@@ -9,13 +9,14 @@ import {
   createFakeTracker,
 } from "../src/linear";
 import { attachOrchestrator, LinearTaskAccess } from "../src/loop";
-import { tempDb, tempHome } from "./helpers";
+import { tempHome } from "./helpers";
+import { tempStore } from "./pglite";
 
 test.each([
   ["prompted", "completed"],
   ["created", "canceled"],
 ] as const)("a %s event on a %s issue is refused once in Linear", async (action, stateType) => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const home = tempHome();
   const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
   const tracker = createFakeTracker([
@@ -40,7 +41,7 @@ test.each([
     sessions: [{ ...scope, sessionId: "session", issueId: "issue", teamId: "team" }],
     teams: ["team"],
   });
-  const gate = new LinearTaskAccess(sqliteDb(db), {
+  const gate = new LinearTaskAccess(db, {
     access: access.adapter,
     lifecycle,
     oauthClientId: "client",
@@ -49,7 +50,7 @@ test.each([
   });
   let launches = 0;
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     jobs: new JobLoop(db, systemClock),
     outbox: new OutboxDispatcher(db, systemClock),
     pawsRoot: join(home, "paws"),
@@ -85,8 +86,9 @@ test.each([
       tracker.progress.filter((update) => update.kind === "error").map((update) => update.body),
     ).toEqual(["PAS-372 is closed, so Paws won't start work on it. Reopen the issue to continue."]);
     expect(launches).toBe(0);
-    expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(0);
+    expect(await db.run((q) => q.all(q.orm.select().from(q.t.workItem)))).toEqual([]);
   } finally {
     await orchestrator.shutdown();
+    await close();
   }
 });

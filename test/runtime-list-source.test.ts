@@ -12,15 +12,13 @@ import {
   bindWorkItemRepository,
   getWorkItem,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   saveTaskMode,
   type WorkItemRecord,
-  sqliteDb,
 } from "../src/db";
 import { createFakeTracker } from "../src/linear";
 import { Orchestrator } from "../src/loop";
 import type { RuntimeList } from "../src/runtimes";
+import { tempStore } from "./pglite";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -67,11 +65,10 @@ async function runtimesFor(
   fixture: Awaited<ReturnType<typeof repositoryWithStaleMirror>>,
   options: { mode: TaskMode; remote: boolean; worktreePath: string },
 ): Promise<RuntimeList | undefined> {
-  const db = openDatabase(join(fixture.root, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const clock = new FakeClock(1_000);
   const orchestrator = new Orchestrator({
-    store: sqliteDb(db),
+    store: db,
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     clock,
@@ -84,8 +81,8 @@ async function runtimesFor(
   });
   try {
     await insertQueuedItem(db, { id: "task", sessionKey: "session", now: 1_000 });
-    await bindWorkItemRepository(sqliteDb(db), "task", fixture.repository);
-    await saveTaskMode(sqliteDb(db), "task", options.mode);
+    await bindWorkItemRepository(db, "task", fixture.repository);
+    await saveTaskMode(db, "task", options.mode);
     const inputs = await (
       orchestrator as unknown as {
         trustedRunInputs(
@@ -93,7 +90,7 @@ async function runtimesFor(
           input: { role: string; worktreePath: string; readOnly: boolean },
         ): Promise<{ runtimes?: () => Promise<RuntimeList> }>;
       }
-    ).trustedRunInputs((await getWorkItem(sqliteDb(db), "task"))!, {
+    ).trustedRunInputs((await getWorkItem(db, "task"))!, {
       role: "implementer",
       worktreePath: options.worktreePath,
       readOnly: options.mode !== "code",
@@ -101,7 +98,7 @@ async function runtimesFor(
     return await inputs.runtimes?.();
   } finally {
     await orchestrator.shutdown();
-    db.close();
+    await close();
   }
 }
 

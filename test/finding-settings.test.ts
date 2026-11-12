@@ -1,23 +1,28 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
-import { findingGroupingEnabled, sqliteDb } from "../src/db";
+import { findingGroupingEnabled, type Db } from "../src/db";
 import { handleFindingSettingsRequest, type FindingSettingsOptions } from "../src/settings";
-import { tempDb } from "./helpers";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
-let db: Database;
+let db: Db;
+let close: () => Promise<void>;
 let audits: [string, string][];
 
-beforeEach(() => {
-  db = tempDb();
-  db.run("INSERT INTO workspace VALUES('ws','org','Workspace',1)");
+beforeEach(async () => {
+  ({ db, close } = await tempStore());
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: "ws", linearOrganizationId: "org", name: "Workspace", createdAt: 1 }),
+  );
   audits = [];
 });
 
-afterEach(() => db.close());
+afterEach(() => close());
 
 function options(role?: string): FindingSettingsOptions {
   return {
-    store: sqliteDb(db),
+    store: db,
     csrfToken: "csrf",
     workspaceId: "ws",
     groupingTime: "07:30",
@@ -43,9 +48,9 @@ test("grouping starts on and an admin can switch it off and on", async () => {
   const off = await handleFindingSettingsRequest(post({ grouping: false }), options("admin"));
   expect(off!.status).toBe(200);
   expect(await off!.json()).toMatchObject({ grouping: false });
-  expect(await findingGroupingEnabled(sqliteDb(db), "ws")).toBe(false);
+  expect(await findingGroupingEnabled(db, "ws")).toBe(false);
   await handleFindingSettingsRequest(post({ grouping: true }), options("admin"));
-  expect(await findingGroupingEnabled(sqliteDb(db), "ws")).toBe(true);
+  expect(await findingGroupingEnabled(db, "ws")).toBe(true);
   expect(audits).toEqual([
     ["settings.findings.grouping", "Turned daily finding grouping off"],
     ["settings.findings.grouping", "Turned daily finding grouping on"],
@@ -63,6 +68,6 @@ test("members, missing CSRF and malformed bodies cannot change grouping", async 
   expect(
     (await handleFindingSettingsRequest(post({ grouping: "no" }), options("admin")))!.status,
   ).toBe(400);
-  expect(await findingGroupingEnabled(sqliteDb(db), "ws")).toBe(true);
+  expect(await findingGroupingEnabled(db, "ws")).toBe(true);
   expect(audits).toEqual([]);
 });

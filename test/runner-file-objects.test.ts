@@ -1,28 +1,42 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sqliteDb, beginImplementRun, insertQueuedItem, migrate, openDatabase } from "../src/db";
+import { beginImplementRun, insertQueuedItem, type Db } from "../src/db";
 import { createFakeRunFileObjects, createSealedRunnerFiles } from "../src/run-files";
 import { createRunnerArtifactStore, RUNNER_ARTIFACT_CHUNK_BYTES } from "../src/runner-artifacts";
 import { createRunnerInputStore } from "../src/runner-inputs";
 import type { RunnerArtifact, RunnerCommand } from "../src/runner-protocol";
 import type { RunnerWork } from "../src/runner-work";
+import { eq } from "drizzle-orm";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const DAY = 24 * 60 * 60 * 1000;
 const KEY = Buffer.alloc(32, 9);
 
+const stores: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  await Promise.all(stores.splice(0).map((close) => close()));
+});
+
+function objectRows(db: Db) {
+  return db.run((q) =>
+    q.all(q.orm.select({ sha256: q.t.runnerFileObject.sha256 }).from(q.t.runnerFileObject)),
+  );
+}
+
 async function fixture() {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
+  stores.push(close);
   let clock = Date.parse("2026-11-07T06:00:00Z");
   const item = await insertQueuedItem(db, {
     id: "acme-item",
     now: clock,
     sessionKey: "acme-session",
   });
-  const { run } = await beginImplementRun(sqliteDb(db), item.id, clock);
+  const { run } = await beginImplementRun(db, item.id, clock);
   const command = { type: "run", id: "acme-command", runId: run.id } as Extract<
     RunnerCommand,
     { type: "run" }
@@ -34,7 +48,7 @@ async function fixture() {
   const objects = createFakeRunFileObjects();
   const instance = (root = mkdtempSync(join(tmpdir(), "paws-acme-instance-"))) => {
     const files = createSealedRunnerFiles({
-      store: sqliteDb(db),
+      store: db,
       objects,
       key: KEY,
       now: () => clock,
@@ -188,14 +202,19 @@ describe("runner inputs and artifacts in the shared store", () => {
     );
     advance(30 * DAY);
     expect(await a.files.prune()).toBe(0);
-    db.run("UPDATE run SET status='ended', updated_at=? WHERE id=?", [now(), run.id]);
+    await seed(db, (q) =>
+      q.orm
+        .update(q.t.run)
+        .set({ status: "ended", updatedAt: now() })
+        .where(eq(q.t.run.id, run.id)),
+    );
     advance(7 * DAY - 1);
     expect(await a.files.prune()).toBe(0);
     expect(objects.objects.size).toBe(1);
     advance(2);
     expect(await a.files.prune()).toBe(1);
     expect(objects.objects.size).toBe(0);
-    expect(db.query("SELECT count(*) AS n FROM runner_file_object").get()).toEqual({ n: 0 });
+    expect(await objectRows(db)).toEqual([]);
   });
 
   test("without the shared store, inputs and artifacts stay on local disk as before", async () => {
@@ -324,9 +343,9 @@ describe("runner inputs and artifacts in the shared store", () => {
       [{ path: "acme.txt", mimeType: "text/plain", bytes: secret }],
       access.runId,
     );
-    const row = db.query("SELECT sha256 FROM runner_file_object").get() as { sha256: string };
-    expect(row.sha256).not.toBe(createHash("sha256").update(secret).digest("hex"));
-    expect(row.sha256).toMatch(/^[a-f0-9]{64}$/);
+    const [row] = await objectRows(db);
+    expect(row!.sha256).not.toBe(createHash("sha256").update(secret).digest("hex"));
+    expect(row!.sha256).toMatch(/^[a-f0-9]{64}$/);
   });
 
   test("an artifact upload during a storage outage answers 503, not a refusal", async () => {
@@ -339,7 +358,7 @@ describe("runner inputs and artifacts in the shared store", () => {
     const artifacts = createRunnerArtifactStore({
       root: join(root, "artifacts"),
       work,
-      remote: { files: createSealedRunnerFiles({ store: sqliteDb(db), objects, key: KEY }) },
+      remote: { files: createSealedRunnerFiles({ store: db, objects, key: KEY }) },
     });
     const bytes = Buffer.from("acme evidence");
     const artifact: RunnerArtifact = {

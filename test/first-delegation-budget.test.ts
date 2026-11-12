@@ -2,21 +2,21 @@ import { createHmac, generateKeyPairSync } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
+import { sql, type SQL } from "drizzle-orm";
 import type { FakeScript } from "../src/acp/testing/script";
 import { FakeClock } from "../src/core";
 import {
   JobLoop,
   OutboxDispatcher,
   consumeWorkspaceBootstrap,
+  enqueueRunnerSetupCheck,
   getRunnerSetupHold,
   listOutbox,
   listWorkItems,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
-  sqliteDb,
   syncSteps,
+  type Db,
+  type PgDb,
 } from "../src/db";
 import { createFakeGitHub } from "../src/github";
 import {
@@ -40,6 +40,7 @@ import {
 } from "../src/workspace";
 import { emptyReview, githubClient, repoLayout } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
+import { tempStore } from "./pglite";
 
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
 const { privateKey } = generateKeyPairSync("rsa", {
@@ -270,41 +271,50 @@ function signed(body: Record<string, unknown>, delivery: string): Request {
 }
 
 /** One online runner owned by `ownerId`, with both agents signed in. */
-function addRunner(db: Database, id: string, ownerId: string, now: number) {
-  db.run(
-    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,'workspace',?,?,'active',?,?)",
-    [id, ownerId, id, now, now],
+type Rows = Record<string, unknown>[];
+const rows = async (db: Db, query: SQL) => {
+  const result = (await (db as PgDb).orm.execute(query)) as Rows | { rows: Rows };
+  return Array.isArray(result) ? result : result.rows;
+};
+
+async function addRunner(db: Db, id: string, ownerId: string, now: number) {
+  await rows(
+    db,
+    sql`INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(${id},'workspace',${ownerId},${id},'active',${now},${now})`,
   );
-  db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,1)", [id]);
+  await rows(db, sql`INSERT INTO runner_capacity(runner_id,capacity) VALUES(${id},1)`);
   for (const agent of ["claude", "codex"])
-    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,?,1)", [id, agent]);
+    await rows(
+      db,
+      sql`INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(${id},${agent},1)`,
+    );
+  await enqueueRunnerSetupCheck(db, ownerId, now);
 }
 
 async function firstDelegation(
   options: { afterSignIn?: (linear: ReturnType<typeof countingLinear>) => void } = {},
 ) {
   const layout = await repoLayout("paws-first-delegation-");
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const clock = new FakeClock(Date.now());
   const now = () => clock.now();
   const server = countingLinear();
-  const owner = await putWorkspaceUser(sqliteDb(db), {
+  const owner = await putWorkspaceUser(db, {
     id: "owner",
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  await consumeWorkspaceBootstrap(sqliteDb(db), {
+  await consumeWorkspaceBootstrap(db, {
     id: "workspace",
     organizationId: "org",
     name: "Workspace",
     userId: owner,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now())),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now())),
     now: now(),
   });
   // The owner's runner is online and free the whole time. Nova may not use it.
-  addRunner(db, "owners", owner, now());
+  await addRunner(db, "owners", owner, now());
   const jobs = new JobLoop(db, clock);
   const outbox = new OutboxDispatcher(db, clock);
   const github = createFakeGitHub();
@@ -312,7 +322,7 @@ async function firstDelegation(
   let orchestrator: ReturnType<typeof attachOrchestrator> | undefined;
   const linear = await openLinear({
     db,
-    store: sqliteDb(db),
+    store: db,
     secretsDir: path.join(layout.pawsRoot, "secrets"),
     env: { LINEAR_ACCESS_TOKEN: "fixture-token", LINEAR_CLIENT_ID: "client" },
     fetch: server.fetch.bind(server),
@@ -320,7 +330,7 @@ async function firstDelegation(
     followUp: (event) => orchestrator!.onLinearEvent(event),
     progressReporter: (event) => orchestrator!.sessionProgressReporter(event),
   });
-  gate = new LinearTaskAccess(sqliteDb(db), {
+  gate = new LinearTaskAccess(db, {
     access: linearCallerFor(linear.access!, "task-access"),
     lifecycle: linearCallerFor(linear.issueLifecycle!, "task-access"),
     oauthClientId: "client",
@@ -329,7 +339,7 @@ async function firstDelegation(
   });
   // As `src/index.ts` wires them for a public dashboard.
   const assignments = createWorkspaceAssignments({
-    store: sqliteDb(db),
+    store: db,
     origin: ORIGIN,
     clientId: "client",
     memberships: cacheLinearMemberships(linear.memberships!, now),
@@ -342,7 +352,7 @@ async function firstDelegation(
   });
   assignments.register(jobs);
   const access = createWorkspaceAccess({
-    store: sqliteDb(db),
+    store: db,
     assignments,
     publicUrl: ORIGIN,
     clientId: "client",
@@ -390,7 +400,7 @@ async function firstDelegation(
     };
   };
   orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -413,9 +423,9 @@ async function firstDelegation(
     ownerHasRunner: (q, itemId, agent, at) =>
       itemOwnerHasEligibleRunnerSteps(q, { itemId, agent, now: at }),
     runnerSetupNeed: async (itemId, agent, at) =>
-      sqliteDb(db).run((q) => itemOwnerRunnerSetupNeedSteps(q, { itemId, agent, now: at })),
+      db.run((q) => itemOwnerRunnerSetupNeedSteps(q, { itemId, agent, now: at })),
     eligibleRunner: async (itemId, agent, at) =>
-      sqliteDb(db).run((q) => itemOwnerEligibleRunnerSteps(q, { itemId, agent, now: at })),
+      db.run((q) => itemOwnerEligibleRunnerSteps(q, { itemId, agent, now: at })),
     authorizeLinearEvent: async (event) =>
       (await access.authorizeLinearEvent(event))
         ? assignments.authorize(event)
@@ -425,12 +435,12 @@ async function firstDelegation(
     authorizeLinearIntake: (q, sessionId, spec) =>
       assignments.authorizeIntakeSteps(q, sessionId, spec),
   });
-  const state = async () => (await listWorkItems(sqliteDb(db)))[0]?.state ?? null;
+  const state = async () => (await listWorkItems(db))[0]?.state ?? null;
   /** Runs every due job and outbox row, then lets `minutes` of fake time pass with nothing due. */
   const settle = async (minutes = 1) => {
     for (let minute = 0; minute < minutes; minute++) {
       // Runners heartbeat on their own; that is a database write, not a Linear request.
-      db.run("UPDATE runner SET last_seen_at=?", [clock.now()]);
+      await rows(db, sql`UPDATE runner SET last_seen_at=${clock.now()}`);
       for (;;) {
         while ((await outbox.tick()).length > 0) await outbox.idle();
         if ((await jobs.tick()) === null) break;
@@ -470,7 +480,7 @@ async function firstDelegation(
     expect(response.status).toBe(200);
     await linear.webhook.intake!.idle();
     await settle();
-    const elicitation = (await listOutbox(sqliteDb(db))).find((row) => row.op === "elicitation");
+    const elicitation = (await listOutbox(db)).find((row) => row.op === "elicitation");
     expect(elicitation, server.operations.join(", ")).toBeDefined();
     const held = server.total;
 
@@ -498,28 +508,22 @@ async function firstDelegation(
     // 4. The hold resumes and intake runs. Nova has no runner yet.
     await settle(2);
     const resumed = server.total;
-    const item = (await listWorkItems(sqliteDb(db)))[0];
+    const item = (await listWorkItems(db))[0];
     if (item === undefined)
       return {
         server,
         refused: true as const,
         resume: resumed - signedIn,
-        errors: (await listOutbox(sqliteDb(db)))
+        errors: (await listOutbox(db))
           .map((row) => row.payload as { kind?: string; body?: string })
           .filter((payload) => payload.kind === "error")
           .map((payload) => payload.body),
-        hold: db.query("SELECT status FROM workspace_assignment").get(),
-        delivered: db
-          .query<{ status: string }, []>(
-            "SELECT status FROM outbox WHERE json_extract(payload,'$.kind')='error'",
-          )
-          .all()
-          .map((row) => row.status),
+        hold: (await rows(db, sql`SELECT status FROM workspace_assignment`))[0] ?? null,
+        delivered: (
+          await rows(db, sql`SELECT status FROM outbox WHERE payload->>'kind'='error'`)
+        ).map((row) => row.status),
       };
-    expect(
-      await getRunnerSetupHold(sqliteDb(db), item.id),
-      server.operations.join(", "),
-    ).toMatchObject({
+    expect(await getRunnerSetupHold(db, item.id), server.operations.join(", ")).toMatchObject({
       reason: "no-runner",
     });
 
@@ -530,14 +534,13 @@ async function firstDelegation(
     const waitingForRunner = server.total - resumed;
 
     // 6. Nova's runner comes online; the task starts, runs, opens its PR and merges.
-    addRunner(
+    await addRunner(
       db,
       "novas",
-      db
-        .query<{ owner: string }, [string]>(
-          "SELECT owner_user_id AS owner FROM work_item WHERE id=?",
-        )
-        .get(item.id)!.owner,
+      String(
+        (await rows(db, sql`SELECT owner_user_id AS owner FROM work_item WHERE id=${item.id}`))[0]!
+          .owner,
+      ),
       clock.now(),
     );
     const deadline = Date.now() + 20_000;
@@ -565,7 +568,7 @@ async function firstDelegation(
     await access.stop();
     await orchestrator.shutdown();
     await outbox.idle();
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }

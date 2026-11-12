@@ -15,6 +15,7 @@ import {
 } from "drizzle-orm";
 import { JOB_KIND, type RestartReason } from "../core";
 import { type Db, type Q, type Steps } from "./db";
+import { fixRecordSteps, type FixRound } from "./fix-records";
 import { haltSteps } from "./halt";
 import { applyWorkItemEventSteps, saveCheckpointSteps, type WorkItemRecord } from "./items";
 import { emitJobReady, reenqueueJobSteps } from "./jobs";
@@ -29,6 +30,7 @@ export type RestartHandoff = {
   /** The fix-attempt limit this round's lines name, when it differs from the fix rounds. */
   limit?: number;
   fixRound?: boolean;
+  fix?: FixRound;
 };
 
 export async function restart(
@@ -66,6 +68,14 @@ export function* restartSteps(
   const queued = yield* applyWorkItemEventSteps(q, item.id, "restart", record);
   if (item.checkpoint)
     yield* saveCheckpointSteps(q, item.id, { ...item.checkpoint, phase: "running" });
+  const fixReason = handoff.fix?.reason ?? (handoff.reason === "answer" ? null : handoff.reason);
+  if (fixReason !== null)
+    yield* fixRecordSteps(q, item, {
+      reason: fixReason,
+      triggers: handoff.fix?.triggers ?? {},
+      headBefore: handoff.fix?.headBefore ?? item.checkpoint?.wipCommit ?? item.acceptedHead,
+      now: handoff.now,
+    });
   const jobKey = handoff.jobKey ?? `restart:${item.id}:${queued.version}`;
   const after = yield* latestHumanTurnSteps(q, item.id);
   const payload = {

@@ -1,1 +1,6 @@
-export { trackHostOperation, sampleHostOperations, measureHostOperation } from "./operation";
+export {
+  activeHostOperations,
+  trackHostOperation,
+  sampleHostOperations,
+  measureHostOperation,
+} from "./operation";

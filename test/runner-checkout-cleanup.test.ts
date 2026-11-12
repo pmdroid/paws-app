@@ -3,58 +3,65 @@ import { generateKeyPairSync } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { eq } from "drizzle-orm";
 import {
   beginImplementRun,
   bindLinearSessionTask,
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
-  sqliteDb,
 } from "../src/db";
 import { createRunnerWorkCleaner } from "../src/runner-execution";
 import { WORK_ROOT_CLEANUP_RUNNER_VERSION, type RunnerCommand } from "../src/runner-protocol";
 import { openRunnerRuntime } from "../src/runner-runtime";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceTokenHash } from "../src/workspace";
+import { tempStore } from "./pglite";
 
 const CURRENT = WORK_ROOT_CLEANUP_RUNNER_VERSION.join(".");
 
 async function tornDownRun(state: string, runnerVersion = CURRENT) {
   const root = mkdtempSync(join(tmpdir(), "paws-checkout-cleanup-"));
-  const db = openDatabase(join(root, "paws.sqlite"));
+  const { db, close } = await tempStore();
   const now = Date.now();
   try {
-    migrate(db);
-    const userId = await putWorkspaceUser(sqliteDb(db), {
+    const userId = await putWorkspaceUser(db, {
       id: "me",
       linearUserId: "owner",
       name: "Owner",
       email: "owner@example.invalid",
     });
-    const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+    const workspace = await consumeWorkspaceBootstrap(db, {
       id: "ws",
       organizationId: "org",
       name: "Test",
       userId,
-      tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+      tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
       now,
     });
-    db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('box',?,?,'box','active',?,?)",
-      [workspace.id, userId, now, now],
-    );
-    db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-      workspace.id,
-      "fixture/repository",
-      "team",
-    ]);
+    await db.run(function* (q) {
+      yield* q.exec(
+        q.orm.insert(q.t.runner).values({
+          id: "box",
+          workspaceId: workspace.id,
+          ownerUserId: userId,
+          name: "box",
+          status: "active",
+          createdAt: now,
+          lastSeenAt: now,
+        }),
+      );
+      yield* q.exec(
+        q.orm
+          .insert(q.t.workspaceRepository)
+          .values({ workspaceId: workspace.id, repository: "fixture/repository", teamId: "team" }),
+      );
+    });
     const item = await insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
-    const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
-    await recordLinearInstallation(sqliteDb(db), {
+    const { run } = await beginImplementRun(db, item.id, now);
+    await recordLinearInstallation(db, {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -62,14 +69,14 @@ async function tornDownRun(state: string, runnerVersion = CURRENT) {
       teamId: "team",
       observedAtMs: now,
     });
-    await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
+    await bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
     const repository = {
       owner: "fixture",
       repo: "repository",
       remoteUrl: "https://github.com/fixture/repository.git",
       baseSha: "a".repeat(40),
     };
-    await bindWorkItemRepository(sqliteDb(db), item.id, repository);
+    await bindWorkItemRepository(db, item.id, repository);
     const command: Extract<RunnerCommand, { type: "run" }> = {
       id: "work-1",
       type: "run",
@@ -86,7 +93,7 @@ async function tornDownRun(state: string, runnerVersion = CURRENT) {
     };
     const keys = generateKeyPairSync("ed25519");
     const work = createRunnerWork({
-      store: sqliteDb(db),
+      store: db,
       keyId: "fixture",
       privateKey: keys.privateKey,
       eventKey: Buffer.alloc(32, 7),
@@ -94,7 +101,9 @@ async function tornDownRun(state: string, runnerVersion = CURRENT) {
     });
     await work.assign(command);
     await work.acknowledge("box", command.id);
-    db.run("UPDATE work_item SET state=? WHERE id=?", [state, item.id]);
+    await db.run((q) =>
+      q.exec(q.orm.update(q.t.workItem).set({ state }).where(eq(q.t.workItem.id, item.id))),
+    );
     const reply = await work.heartbeat(
       "box",
       1,
@@ -115,7 +124,7 @@ async function tornDownRun(state: string, runnerVersion = CURRENT) {
     );
     return { reply, kept: existsSync(checkout) };
   } finally {
-    db.close();
+    await close();
     rmSync(root, { recursive: true, force: true });
   }
 }

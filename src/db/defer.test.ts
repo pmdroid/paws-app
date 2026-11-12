@@ -9,21 +9,18 @@ import {
   insertQueuedItem,
   listJobs,
   listOutbox,
-  migrate,
-  openDatabase,
   saveCheckpoint,
   setJournalSink,
-  sqliteDb,
 } from "./index";
+import { tempStore } from "../../test/pglite";
 
 test("deferring a running item loses its run, moves it to recovering, and schedules a resume", async () => {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const db = (await tempStore()).db;
   await insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: 1_000 });
-  const { item, run } = await beginImplementRun(sqliteDb(db), "item-1", 1_000);
+  const { item, run } = await beginImplementRun(db, "item-1", 1_000);
   const lines: string[] = [];
   const restore = setJournalSink((line) => lines.push(line));
-  await deferWorkItem(sqliteDb(db), item, {
+  await deferWorkItem(db, item, {
     retry: 2,
     delayMs: 5_000,
     handoff: "keep going",
@@ -32,11 +29,9 @@ test("deferring a running item loses its run, moves it to recovering, and schedu
   });
   restore();
   expect(lines).toContain("item item-1 deferred: retry 2 in 5000 ms");
-  expect((await getWorkItem(sqliteDb(db), "item-1"))?.state).toBe("recovering");
-  expect((await getRun(sqliteDb(db), run.id))?.status).toBe("lost");
-  expect(
-    (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume),
-  ).toMatchObject([
+  expect((await getWorkItem(db, "item-1"))?.state).toBe("recovering");
+  expect((await getRun(db, run.id))?.status).toBe("lost");
+  expect((await listJobs(db)).filter((job) => job.queue === JOB_KIND.resume)).toMatchObject([
     {
       status: "pending",
       runAt: 7_000,
@@ -49,7 +44,7 @@ test("deferring a running item loses its run, moves it to recovering, and schedu
       },
     },
   ]);
-  expect((await listOutbox(sqliteDb(db))).map((row) => row.payload)).toContainEqual(
+  expect((await listOutbox(db)).map((row) => row.payload)).toContainEqual(
     expect.objectContaining({
       sessionId: "ses_1",
       kind: "thought",
@@ -59,48 +54,44 @@ test("deferring a running item loses its run, moves it to recovering, and schedu
 });
 
 test("deferring the same item version twice schedules one resume", async () => {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const db = (await tempStore()).db;
   await insertQueuedItem(db, { id: "item-1", now: 1_000 });
-  const { item } = await beginImplementRun(sqliteDb(db), "item-1", 1_000);
+  const { item } = await beginImplementRun(db, "item-1", 1_000);
   const input = { retry: 1, delayMs: 10, handoff: null, message: "Retrying.", now: 2_000 };
-  await deferWorkItem(sqliteDb(db), item, input);
-  await deferWorkItem(sqliteDb(db), (await getWorkItem(sqliteDb(db), "item-1"))!, {
+  await deferWorkItem(db, item, input);
+  await deferWorkItem(db, (await getWorkItem(db, "item-1"))!, {
     ...input,
     retry: 2,
   });
-  expect(
-    (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume),
-  ).toHaveLength(1);
-  expect((await getWorkItem(sqliteDb(db), "item-1"))?.state).toBe("recovering");
+  expect((await listJobs(db)).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(1);
+  expect((await getWorkItem(db, "item-1"))?.state).toBe("recovering");
 });
 
 test("deferring verification of a recorded candidate keeps it verifying and re-verifies that head", async () => {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const db = (await tempStore()).db;
   await insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: 1_000 });
-  const { run } = await beginImplementRun(sqliteDb(db), "item-1", 1_000);
-  await applyWorkItemEvent(sqliteDb(db), "item-1", "turn_ended");
-  await saveCheckpoint(sqliteDb(db), "item-1", {
+  const { run } = await beginImplementRun(db, "item-1", 1_000);
+  await applyWorkItemEvent(db, "item-1", "turn_ended");
+  await saveCheckpoint(db, "item-1", {
     phase: "verifying",
     baseSha: "base",
     wipCommit: "head",
   });
-  const verifying = (await getWorkItem(sqliteDb(db), "item-1"))!;
-  await deferWorkItem(sqliteDb(db), verifying, {
+  const verifying = (await getWorkItem(db, "item-1"))!;
+  await deferWorkItem(db, verifying, {
     retry: 2,
     delayMs: 5_000,
     handoff: "keep going",
     message: "Closeout: the review timed out. Paws tries again in 5 s.",
     now: 2_000,
   });
-  expect(await getWorkItem(sqliteDb(db), "item-1")).toMatchObject({
+  expect(await getWorkItem(db, "item-1")).toMatchObject({
     state: "verifying",
     version: verifying.version,
     checkpoint: { phase: "verifying", wipCommit: "head" },
   });
-  expect((await getRun(sqliteDb(db), run.id))?.status).toBe("lost");
-  const jobs = (await listJobs(sqliteDb(db))).filter((job) => job.status === "pending");
+  expect((await getRun(db, run.id))?.status).toBe("lost");
+  const jobs = (await listJobs(db)).filter((job) => job.status === "pending");
   expect(jobs).toMatchObject([
     {
       queue: JOB_KIND.reverify,
@@ -110,7 +101,7 @@ test("deferring verification of a recorded candidate keeps it verifying and re-v
     },
   ]);
   expect(jobs[0]!.payload).not.toHaveProperty("handoff");
-  await deferWorkItem(sqliteDb(db), (await getWorkItem(sqliteDb(db), "item-1"))!, {
+  await deferWorkItem(db, (await getWorkItem(db, "item-1"))!, {
     retry: MAX_TRANSIENT_RETRIES,
     delayMs: 10,
     handoff: null,
@@ -118,42 +109,40 @@ test("deferring verification of a recorded candidate keeps it verifying and re-v
     now: 3_000,
   });
   expect(
-    (await listJobs(sqliteDb(db)))
+    (await listJobs(db))
       .filter((job) => job.queue === JOB_KIND.reverify)
       .map((job) => job.maxAttempts),
   ).toEqual([MAX_TRANSIENT_RETRIES - 1, 1]);
 });
 
 test("deferring verification without a recorded candidate falls back to a resume", async () => {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const db = (await tempStore()).db;
   await insertQueuedItem(db, { id: "item-1", now: 1_000 });
-  await beginImplementRun(sqliteDb(db), "item-1", 1_000);
-  await applyWorkItemEvent(sqliteDb(db), "item-1", "turn_ended");
-  await deferWorkItem(sqliteDb(db), (await getWorkItem(sqliteDb(db), "item-1"))!, {
+  await beginImplementRun(db, "item-1", 1_000);
+  await applyWorkItemEvent(db, "item-1", "turn_ended");
+  await deferWorkItem(db, (await getWorkItem(db, "item-1"))!, {
     retry: 1,
     delayMs: 10,
     handoff: null,
     message: null,
     now: 2_000,
   });
-  expect((await getWorkItem(sqliteDb(db), "item-1"))?.state).toBe("recovering");
-  expect((await listJobs(sqliteDb(db))).map((job) => job.queue)).toEqual([JOB_KIND.resume]);
+  expect((await getWorkItem(db, "item-1"))?.state).toBe("recovering");
+  expect((await listJobs(db)).map((job) => job.queue)).toEqual([JOB_KIND.resume]);
 });
 
 test("a Closeout fault re-verifies the same version once per faulted job and carries the faults", async () => {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const db = (await tempStore()).db;
   await insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: 1_000 });
-  await beginImplementRun(sqliteDb(db), "item-1", 1_000);
-  await applyWorkItemEvent(sqliteDb(db), "item-1", "turn_ended");
-  await saveCheckpoint(sqliteDb(db), "item-1", {
+  await beginImplementRun(db, "item-1", 1_000);
+  await applyWorkItemEvent(db, "item-1", "turn_ended");
+  await saveCheckpoint(db, "item-1", {
     phase: "verifying",
     baseSha: "base",
     wipCommit: "head",
   });
   const fault = async (jobId: number, reasons: string[], now: number) =>
-    await deferWorkItem(sqliteDb(db), (await getWorkItem(sqliteDb(db), "item-1"))!, {
+    await deferWorkItem(db, (await getWorkItem(db, "item-1"))!, {
       retry: reasons.length,
       delayMs: 60_000,
       handoff: null,
@@ -164,15 +153,13 @@ test("a Closeout fault re-verifies the same version once per faulted job and car
   await fault(7, ["lost"], 2_000);
   await fault(7, ["lost"], 2_500);
   await fault(8, ["lost", "lost again"], 3_000);
-  expect((await getWorkItem(sqliteDb(db), "item-1"))?.state).toBe("verifying");
-  expect(
-    (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.reverify),
-  ).toMatchObject([
+  expect((await getWorkItem(db, "item-1"))?.state).toBe("verifying");
+  expect((await listJobs(db)).filter((job) => job.queue === JOB_KIND.reverify)).toMatchObject([
     { runAt: 62_000, payload: { reason: "closeout_fault", closeoutFaults: { reasons: ["lost"] } } },
     {
       runAt: 63_000,
       payload: { closeoutFaults: { head: "head", reasons: ["lost", "lost again"] } },
     },
   ]);
-  expect(await listOutbox(sqliteDb(db))).toHaveLength(2);
+  expect(await listOutbox(db)).toHaveLength(2);
 });

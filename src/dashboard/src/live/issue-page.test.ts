@@ -1,16 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
+import { eq, inArray, sql } from "drizzle-orm";
 import {
-  sqliteDb,
   applyWorkItemEvent,
   beginImplementRun,
   enqueueJob,
   enqueueOutbox,
   insertQueuedItem,
   insertRun,
-  migrate,
-  openDatabase,
   setCurrentRun,
+  type Db,
 } from "../../../db";
 import {
   parseIssueDetailResponse,
@@ -25,6 +23,8 @@ import { openedView } from "../../test/fixtures";
 import { render } from "../client/render";
 import { issueListRedirect, parseRoute } from "../client/route";
 import { createLiveStatusProvider } from "./provider";
+import { seed } from "../../../../test/dialects";
+import { tempStore } from "../../../../test/pglite";
 
 const ITEM = "01M5NDWPQZ0JQ91E1MFMVEY6EP";
 const EARLIER = "01M5NAAAAZ0JQ91E1MFMVEY6EP";
@@ -33,34 +33,40 @@ const ULID = /\b[0-9A-HJKMNP-TV-Z]{26}\b/;
 const UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i;
 const T0 = Date.parse("2026-10-24T20:00:00.000Z");
 
-const open: Database[] = [];
-afterEach(() => {
-  for (const db of open.splice(0)) db.close();
+const open: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
 });
 
-function database(): Database {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  open.push(db);
+async function database() {
+  const { db, close } = await tempStore();
+  open.push(close);
   return db;
 }
 
-function identify(db: Database, id: string, identifier: string, issueId = "lin-367"): void {
-  db.run("UPDATE work_item SET linear_identifier = ?, linear_issue_id = ? WHERE id = ?", [
-    identifier,
-    issueId,
-    id,
-  ]);
+function identify(db: Db, id: string, identifier: string, issueId = "lin-367") {
+  return seed(db, (q) =>
+    q.orm
+      .update(q.t.workItem)
+      .set({ linearIdentifier: identifier, linearIssueId: issueId })
+      .where(eq(q.t.workItem.id, id)),
+  );
+}
+
+function cancelled(db: Db, id: string) {
+  return seed(db, (q) =>
+    q.orm.update(q.t.workItem).set({ state: "cancelled" }).where(eq(q.t.workItem.id, id)),
+  );
 }
 
 async function activity(
-  db: Database,
+  db: Db,
   runId: string,
   sessionId: string,
   body: string,
   at: number,
 ): Promise<void> {
-  await enqueueOutbox(sqliteDb(db), {
+  await enqueueOutbox(db, {
     target: "linear",
     op: "activity",
     orderingKey: sessionId,
@@ -71,18 +77,18 @@ async function activity(
 }
 
 /** PAS-367 after a restart and a reply: three engine runs, each with one agent turn. */
-async function threeRuns(db: Database): Promise<string[]> {
+async function threeRuns(db: Db): Promise<string[]> {
   await insertQueuedItem(db, {
     id: ITEM,
     title: "Keep runs across restart",
     sessionKey: SESSION,
     now: T0,
   });
-  identify(db, ITEM, "PAS-367");
-  const first = (await beginImplementRun(sqliteDb(db), ITEM, T0 + 1_000)).run;
-  const second = await insertRun(sqliteDb(db), { itemId: ITEM, now: T0 + 60_000, agent: "claude" });
-  const third = await insertRun(sqliteDb(db), { itemId: ITEM, now: T0 + 120_000, agent: "claude" });
-  await setCurrentRun(sqliteDb(db), ITEM, third.id);
+  await identify(db, ITEM, "PAS-367");
+  const first = (await beginImplementRun(db, ITEM, T0 + 1_000)).run;
+  const second = await insertRun(db, { itemId: ITEM, now: T0 + 60_000, agent: "claude" });
+  const third = await insertRun(db, { itemId: ITEM, now: T0 + 120_000, agent: "claude" });
+  await setCurrentRun(db, ITEM, third.id);
   await activity(db, first.id, SESSION, "First turn read the issue.", T0 + 2_000);
   await activity(db, second.id, SESSION, "Second turn after the restart.", T0 + 61_000);
   await activity(
@@ -106,8 +112,8 @@ type Status = {
   details: Map<string, IssueDetailResponse>;
 };
 
-async function snapshotOf(db: Database): Promise<Status> {
-  const provider = createLiveStatusProvider(sqliteDb(db), {
+async function snapshotOf(db: Db): Promise<Status> {
+  const provider = createLiveStatusProvider(db, {
     now: () => new Date(T0 + 300_000),
     env: {},
   });
@@ -158,7 +164,7 @@ function visibleText(html: string): string {
 
 describe("one page per issue", () => {
   test("a task with three engine runs renders one issue page with one timeline holding all three in order", async () => {
-    const db = database();
+    const db = await database();
     await threeRuns(db);
     const snapshot = await snapshotOf(db);
     expect(snapshot.runs).toHaveLength(1);
@@ -177,9 +183,9 @@ describe("one page per issue", () => {
   });
 
   test("an old Conversations URL resolves to the issue page from stored records", async () => {
-    const db = database();
+    const db = await database();
     await threeRuns(db);
-    const provider = createLiveStatusProvider(sqliteDb(db), { env: {} });
+    const provider = createLiveStatusProvider(db, { env: {} });
     expect(parseRoute(`/sessions/${encodeURIComponent(SESSION)}`)).toEqual({
       view: "alias",
       kind: "sessions",
@@ -192,9 +198,9 @@ describe("one page per issue", () => {
   });
 
   test("run, session and verdict links resolve to PAS-367", async () => {
-    const db = database();
+    const db = await database();
     const runIds = await threeRuns(db);
-    const provider = createLiveStatusProvider(sqliteDb(db), { env: {} });
+    const provider = createLiveStatusProvider(db, { env: {} });
     for (const id of runIds) expect(await provider.alias("runs", id)).toBe("PAS-367");
     expect(await provider.alias("verdicts", "PAS-367")).toBe("PAS-367");
     expect(await provider.alias("verdicts", runIds[0]!)).toBe("PAS-367");
@@ -206,21 +212,23 @@ describe("one page per issue", () => {
   });
 
   test("a re-delegated issue shows only the current Linear session on its page", async () => {
-    const db = database();
+    const db = await database();
     await insertQueuedItem(db, {
       id: EARLIER,
       title: "Keep runs",
       sessionKey: "earlier-session",
       now: 0,
     });
-    identify(db, EARLIER, "PAS-367");
-    const old = (await beginImplementRun(sqliteDb(db), EARLIER, T0 - 7_200_000)).run;
+    await identify(db, EARLIER, "PAS-367");
+    const old = (await beginImplementRun(db, EARLIER, T0 - 7_200_000)).run;
     await activity(db, old.id, "earlier-session", "Earlier session turn.", T0 - 7_100_000);
-    db.run("UPDATE work_item SET state = 'cancelled' WHERE id = ?", [EARLIER]);
-    db.run("UPDATE run SET status = 'ended', updated_at = ? WHERE id = ?", [
-      T0 - 3_600_000,
-      old.id,
-    ]);
+    await cancelled(db, EARLIER);
+    await seed(db, (q) =>
+      q.orm
+        .update(q.t.run)
+        .set({ status: "ended", updatedAt: T0 - 3_600_000 })
+        .where(eq(q.t.run.id, old.id)),
+    );
     await threeRuns(db);
     const snapshot = await snapshotOf(db);
     const earlier = snapshot.items.find((item) => item.session?.id === "earlier-session");
@@ -233,13 +241,13 @@ describe("one page per issue", () => {
     expect(html).not.toContain("earlier-attempt");
     expect(html).not.toContain("Earlier attempt");
     expect(html).not.toContain("Earlier session turn.");
-    const provider = createLiveStatusProvider(sqliteDb(db), { env: {} });
+    const provider = createLiveStatusProvider(db, { env: {} });
     expect(await provider.alias("sessions", "earlier-session")).toBe("PAS-367");
     expect(await provider.alias("runs", old.id)).toBe("PAS-367");
   });
 
   test("sibling sub-issues that share one Linear session keep one page each, naming the session", async () => {
-    const db = database();
+    const db = await database();
     await threeRuns(db);
     await insertQueuedItem(db, {
       id: "sibling",
@@ -247,30 +255,32 @@ describe("one page per issue", () => {
       sessionKey: SESSION,
       now: T0 + 10,
     });
-    identify(db, "sibling", "PAS-368", "lin-368");
+    await identify(db, "sibling", "PAS-368", "lin-368");
     const snapshot = await snapshotOf(db);
     const own = issuePage(snapshot);
     const sibling = issuePage(snapshot, "PAS-368");
-    expect(own).toContain('<dt>Session</dt><dd><a href="https://linear.app/issue/PAS-367"');
+    expect(own).toContain(
+      'session <span class="text-foreground"><a href="https://linear.app/issue/PAS-367"',
+    );
     expect(own).toContain('shared with <a class="lin-id" href="/issues/PAS-368">PAS-368</a>');
     expect(sibling).toContain('shared with <a class="lin-id" href="/issues/PAS-367">PAS-367</a>');
     expect(sibling).not.toContain("First turn read the issue.");
-    expect(
-      await createLiveStatusProvider(sqliteDb(db), { env: {} }).alias("sessions", SESSION),
-    ).toBe("PAS-367");
+    expect(await createLiveStatusProvider(db, { env: {} }).alias("sessions", SESSION)).toBe(
+      "PAS-367",
+    );
   });
 
   test("the page names the task only as PAS-367, with no internal id in visible text", async () => {
-    const db = database();
+    const db = await database();
     await insertQueuedItem(db, {
       id: EARLIER,
       title: "Keep runs",
       sessionKey: "earlier-session",
       now: 0,
     });
-    identify(db, EARLIER, "PAS-367");
-    await beginImplementRun(sqliteDb(db), EARLIER, T0 - 7_200_000);
-    db.run("UPDATE work_item SET state = 'cancelled' WHERE id = ?", [EARLIER]);
+    await identify(db, EARLIER, "PAS-367");
+    await beginImplementRun(db, EARLIER, T0 - 7_200_000);
+    await cancelled(db, EARLIER);
     await threeRuns(db);
     const snapshot = await snapshotOf(db);
     const text = visibleText(issuePage(snapshot));
@@ -281,9 +291,9 @@ describe("one page per issue", () => {
   });
 
   test("the item timeline reads work_item_event, a restart with its reason", async () => {
-    const db = database();
+    const db = await database();
     await threeRuns(db);
-    await applyWorkItemEvent(sqliteDb(db), ITEM, "restart", {
+    await applyWorkItemEvent(db, ITEM, "restart", {
       kind: "restart",
       reason: "follow_up",
       actor: "Jonas Berg",
@@ -314,7 +324,7 @@ describe("one page per issue", () => {
   });
 
   test("dead outbox rows and dead jobs of the issue are listed with a retry", async () => {
-    const db = database();
+    const db = await database();
     await threeRuns(db);
     await insertQueuedItem(db, {
       id: "other",
@@ -322,8 +332,8 @@ describe("one page per issue", () => {
       sessionKey: "other-session",
       now: T0,
     });
-    identify(db, "other", "PAS-368", "lin-368");
-    const elicitation = await enqueueOutbox(sqliteDb(db), {
+    await identify(db, "other", "PAS-368", "lin-368");
+    const elicitation = await enqueueOutbox(db, {
       target: "linear",
       op: "elicitation",
       orderingKey: SESSION,
@@ -331,23 +341,28 @@ describe("one page per issue", () => {
       payload: { sessionId: SESSION, body: "Which repository?" },
       now: T0 + 130_000,
     });
-    const job = await enqueueJob(sqliteDb(db), {
+    const job = await enqueueJob(db, {
       queue: "run.resume",
       payload: { itemId: ITEM },
       now: T0 + 140_000,
     });
-    const otherJob = await enqueueJob(sqliteDb(db), {
+    const otherJob = await enqueueJob(db, {
       queue: "run.resume",
       payload: { itemId: "other" },
       now: T0,
     });
-    db.run(
-      "UPDATE outbox SET status = 'dead', attempts = 5, error = 'Linear is down' WHERE id = ?",
-      [elicitation],
-    );
-    db.run(
-      "UPDATE job SET status = 'dead', attempts = 10, last_error = 'runner lost', finished_at = ? WHERE id IN (?, ?)",
-      [T0 + 150_000, job, otherJob],
+    await seed(
+      db,
+      (q) =>
+        q.orm
+          .update(q.t.outbox)
+          .set({ status: "dead", attempts: 5, error: "Linear is down" })
+          .where(eq(q.t.outbox.id, elicitation)),
+      (q) =>
+        q.orm
+          .update(q.t.job)
+          .set({ status: "dead", attempts: 10, lastError: "runner lost", finishedAt: T0 + 150_000 })
+          .where(inArray(q.t.job.id, [job, otherJob])),
     );
 
     const snapshot = await snapshotOf(db);
@@ -401,7 +416,12 @@ describe("one page per issue", () => {
     expect(text).not.toContain("Paws will not retry it");
 
     // After the item moves on, its dead job is still listed, but without a retry.
-    db.run("UPDATE work_item SET version = version + 1 WHERE id = ?", [ITEM]);
+    await seed(db, (q) =>
+      q.orm
+        .update(q.t.workItem)
+        .set({ version: sql`${q.t.workItem.version} + 1` })
+        .where(eq(q.t.workItem.id, ITEM)),
+    );
     const moved = await snapshotOf(db);
     expect(moved.dead?.find((entry) => entry.target === `job:${job}`)?.retryable).toBe(false);
     const after = issuePage(moved);

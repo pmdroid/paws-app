@@ -12,9 +12,8 @@ import {
   hasLinearSessionSnapshotContext,
   saveLinearActivitySnapshot,
   listLinearActivitySnapshots,
-  sqliteDb,
 } from "../src/db";
-import { tempDb } from "./helpers";
+import { tempStore } from "./pglite";
 
 const date = "2026-10-11T00:00:00.000Z";
 const activity = (id: string, type = "prompt", body = "Request") => ({
@@ -57,42 +56,38 @@ test("preserves initiating comment, earlier thread and guidance provenance with 
 });
 
 test("thin polling context cannot erase richer webhook context and activity snapshots are immutable", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
-    await saveLinearSessionContext(sqliteDb(db), "session", "poll issue", 0);
-    await saveLinearSessionContext(sqliteDb(db), "session", "rich mention", 2);
-    await saveLinearSessionContext(sqliteDb(db), "session", "later thin poll", 0);
-    expect(await hasLinearSessionSnapshotContext(sqliteDb(db), "session")).toBe(false);
-    await saveLinearSessionSnapshotContext(
-      sqliteDb(db),
-      "session",
-      "API source thread and issue details",
-    );
-    expect(await hasLinearSessionSnapshotContext(sqliteDb(db), "session")).toBe(true);
-    expect(await getLinearSessionContext(sqliteDb(db), "session")).toBe(
+    await saveLinearSessionContext(db, "session", "poll issue", 0);
+    await saveLinearSessionContext(db, "session", "rich mention", 2);
+    await saveLinearSessionContext(db, "session", "later thin poll", 0);
+    expect(await hasLinearSessionSnapshotContext(db, "session")).toBe(false);
+    await saveLinearSessionSnapshotContext(db, "session", "API source thread and issue details");
+    expect(await hasLinearSessionSnapshotContext(db, "session")).toBe(true);
+    expect(await getLinearSessionContext(db, "session")).toBe(
       "rich mention\n\nAPI source thread and issue details",
     );
-    await saveLinearSessionContext(sqliteDb(db), "session", "sparse webhook", 1);
-    expect(await getLinearSessionContext(sqliteDb(db), "session")).toContain(
+    await saveLinearSessionContext(db, "session", "sparse webhook", 1);
+    expect(await getLinearSessionContext(db, "session")).toContain(
       "API source thread and issue details",
     );
-    await saveLinearActivitySnapshot(sqliteDb(db), {
+    await saveLinearActivitySnapshot(db, {
       id: "a",
       sessionId: "session",
       createdAt: date,
       snapshot: JSON.stringify(activity("a")),
     });
-    await saveLinearActivitySnapshot(sqliteDb(db), {
+    await saveLinearActivitySnapshot(db, {
       id: "a",
       sessionId: "session",
       createdAt: date,
       snapshot: JSON.stringify(activity("a", "prompt", "Edited comment")),
     });
-    expect(JSON.parse((await listLinearActivitySnapshots(sqliteDb(db), "session"))[0]!)).toEqual(
+    expect(JSON.parse((await listLinearActivitySnapshots(db, "session"))[0]!)).toEqual(
       activity("a"),
     );
   } finally {
-    db.close();
+    await close();
   }
 });
 

@@ -1,5 +1,5 @@
-import { asc, eq, isNotNull } from "drizzle-orm";
-import { type Q, type Db } from "./db";
+import { asc, eq, isNotNull, sql } from "drizzle-orm";
+import { type Q, type Db, type Steps } from "./db";
 import { jsonText, jsonValue } from "./json-text";
 
 export type ItemHoldReason =
@@ -70,8 +70,18 @@ export async function listOverlapHoldAges(store: Db): Promise<Map<string, number
   return store.run((q) => listOverlapHoldAgesSteps(q));
 }
 
+function* lockItemHoldsSteps(q: Q): Steps<void> {
+  if (q.dialect === "postgres")
+    yield* q.exec(
+      q.orm
+        .select({ lock: sql`pg_advisory_xact_lock(hashtextextended(${"item-hold"}, 0))` })
+        .from(sql`(SELECT 1) AS lock_scope`),
+    );
+}
+
 export function* saveItemHoldsSteps(q: Q, holds: readonly ItemHold[], now = Date.now()) {
   const { itemHold, workItem } = q.t;
+  yield* lockItemHoldsSteps(q);
   const before = new Map((yield* listItemHoldsSteps(q)).map((hold) => [hold.itemId, hold]));
   const ages = yield* listOverlapHoldAgesSteps(q);
   const kept = new Set(holds.map((hold) => hold.itemId));
@@ -132,5 +142,5 @@ export async function saveItemHolds(
   holds: readonly ItemHold[],
   now?: number,
 ): Promise<ItemHoldChange[]> {
-  return store.run((q) => saveItemHoldsSteps(q, holds, now));
+  return store.transaction((q) => saveItemHoldsSteps(q, holds, now));
 }

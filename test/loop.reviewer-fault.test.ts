@@ -6,18 +6,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { runDir } from "../src/acp";
 import { writeAgentSettings, type AgentProfiles } from "../src/config";
 import { JOB_KIND, type Clock } from "../src/core";
-import {
-  sqliteDb,
-  JobLoop,
-  OutboxDispatcher,
-  listJobs,
-  listWorkItems,
-  migrate,
-  openDatabase,
-} from "../src/db";
+import { JobLoop, OutboxDispatcher, listJobs, listWorkItems } from "../src/db";
 import { createFakeCloseoutGate, type CloseoutVerdict } from "../src/closeout";
 import { createFakeGitHub } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
@@ -25,6 +18,7 @@ import { attachOrchestrator, type AgentLaunch } from "../src/loop";
 import { findOpenQuestion } from "../src/questions";
 import { gitIdentity, githubClient } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
+import { tempStore } from "./pglite";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -68,8 +62,7 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
     })),
   );
   const clock: Clock = { now: () => Date.now(), mono: () => performance.now() };
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const jobs = new JobLoop(db, clock);
   const outbox = new OutboxDispatcher(db, clock);
   const gate = createFakeCloseoutGate();
@@ -90,7 +83,7 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
   };
   const github = createFakeGitHub();
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -117,7 +110,7 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
     }
   };
   const holds = async () =>
-    (await listJobs(sqliteDb(db))).filter(
+    (await listJobs(db)).filter(
       (job) =>
         job.queue === JOB_KIND.reverify &&
         job.status === "pending" &&
@@ -126,17 +119,17 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
   try {
     for (const identifier of ["ENG-1", "ENG-2"])
       await orchestrator.onLinearEvent(created(identifier));
-    db.run("UPDATE work_item SET delegated_by = 'delegator-1'");
+    await db.run((q) => q.exec(q.orm.update(q.t.workItem).set({ delegatedBy: "delegator-1" })));
     await drain();
 
-    const items = await listWorkItems(sqliteDb(db));
+    const items = await listWorkItems(db);
     expect(items.map((item) => item.state)).toEqual(["verifying", "verifying"]);
     expect((await holds()).map((job) => (job.payload as { itemId: string }).itemId).sort()).toEqual(
       items.map((item) => item.id).sort(),
     );
     for (const hold of await holds()) expect(hold.runAt - hold.createdAt).toBe(60_000);
     for (const session of ["ses_ENG-1", "ses_ENG-2"])
-      expect(await findOpenQuestion(sqliteDb(db), session)).toBeNull();
+      expect(await findOpenQuestion(db, session)).toBeNull();
     expect(tracker.questions).toEqual([]);
     const alerts = tracker.progress.filter((update) =>
       update.body.includes("can't run its review"),
@@ -154,7 +147,9 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
       const hold = (await holds()).find(
         (job) => (job.payload as { itemId: string }).itemId === first,
       )!;
-      db.run("UPDATE job SET run_at = 0 WHERE id = ?", [hold.id]);
+      await db.run((q) =>
+        q.exec(q.orm.update(q.t.job).set({ runAt: 0 }).where(eq(q.t.job.id, hold.id))),
+      );
       await jobs.tick([JOB_KIND.reverify]);
       const next = (await holds()).find(
         (job) => (job.payload as { itemId: string }).itemId === first,
@@ -163,10 +158,7 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
     }
     expect(delays).toEqual([5 * 60_000, 15 * 60_000, 15 * 60_000, 15 * 60_000]);
     await drain();
-    expect((await listWorkItems(sqliteDb(db))).map((item) => item.state)).toEqual([
-      "verifying",
-      "verifying",
-    ]);
+    expect((await listWorkItems(db)).map((item) => item.state)).toEqual(["verifying", "verifying"]);
     expect(tracker.questions).toEqual([]);
     expect(
       tracker.progress.filter((update) => update.body.includes("can't run its review")),
@@ -185,7 +177,7 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
     await (
       orchestrator as unknown as { reconcileAgentSettings(): Promise<void> }
     ).reconcileAgentSettings();
-    const released = (await listJobs(sqliteDb(db))).filter(
+    const released = (await listJobs(db)).filter(
       (job) => job.queue === JOB_KIND.reverify && job.status === "pending",
     );
     expect(released).toHaveLength(2);
@@ -196,14 +188,14 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
     }
     for (const _ of released) await jobs.tick([JOB_KIND.reverify]);
 
-    expect((await listWorkItems(sqliteDb(db))).map((item) => item.state)).toEqual([
+    expect((await listWorkItems(db)).map((item) => item.state)).toEqual([
       "merge_queue",
       "merge_queue",
     ]);
     expect(tracker.questions).toEqual([]);
   } finally {
     await orchestrator.shutdown();
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }, 90_000);

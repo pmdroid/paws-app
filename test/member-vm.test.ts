@@ -1,19 +1,17 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { eq } from "drizzle-orm";
 import { FakeClock } from "../src/core";
 import {
   consumeWorkspaceBootstrap,
   getRunner,
   JobLoop,
   listJobs,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   syncWorkspaceMember,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import {
   findMemberVm,
@@ -44,12 +42,16 @@ import {
   workspaceTokenHash,
   type WorkspacePrincipal,
 } from "../src/workspace";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const EXE_DEV_TOKEN = "fake_exe_dev_token_for_tests_ABCDEFGHIJKLMNOP";
 const LEASE_MS = 60_000;
 
 const roots: string[] = [];
-afterEach(() => {
+const stores: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of stores.splice(0)) await close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -59,18 +61,18 @@ async function fixture(input: { exeDev?: ExeDev; installPolls?: number } = {}) {
   const root = mkdtempSync(join(tmpdir(), "paws-member-vm-"));
   roots.push(root);
   const clock = new FakeClock(Date.UTC(2026, 9, 25));
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
+  stores.push(close);
   const authorityRoot = join(root, "issuer");
   const authority = await initializeRunnerAuthority(authorityRoot);
-  const ownerUserId = await putWorkspaceUser(sqliteDb(db), {
+  const ownerUserId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "vm-owner",
     name: "Workspace Owner",
     email: "owner@example.invalid",
   });
-  const issued = await issueWorkspaceBootstrap(sqliteDb(db), "vm-org", clock.now());
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const issued = await issueWorkspaceBootstrap(db, "vm-org", clock.now());
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "vm-org",
     name: "vm-org",
@@ -86,13 +88,13 @@ async function fixture(input: { exeDev?: ExeDev; installPolls?: number } = {}) {
     teamIds: [],
   });
   const person = async (name: string, email: string, active = true) => {
-    const userId = await putWorkspaceUser(sqliteDb(db), {
+    const userId = await putWorkspaceUser(db, {
       id: workspaceId(),
       linearUserId: `vm-${email}`,
       name,
       email,
     });
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: workspace.id,
       userId,
       role: "member",
@@ -105,7 +107,7 @@ async function fixture(input: { exeDev?: ExeDev; installPolls?: number } = {}) {
   const member = await person("Ada Lovelace", "ada@example.invalid");
   const admin = principal(ownerUserId, "admin");
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority,
     certificateRoot: authorityRoot,
     disconnect: () => {},
@@ -139,54 +141,54 @@ async function fixture(input: { exeDev?: ExeDev; installPolls?: number } = {}) {
 
 async function drive(f: Fixture, loop: JobLoop, until: (row: MemberVm) => boolean, limit = 2_000) {
   for (let index = 0; index < limit; index++) {
-    const row = (await findMemberVm(sqliteDb(f.db), f.member))!;
+    const row = (await findMemberVm(f.db, f.member))!;
     if (until(row)) return row;
     const job = await loop.tick();
     if (job === null) f.clock.advance(MEMBER_VM_POLL_MS);
   }
   throw new Error(
-    `member VM did not settle: ${JSON.stringify(await findMemberVm(sqliteDb(f.db), f.member))}`,
+    `member VM did not settle: ${JSON.stringify(await findMemberVm(f.db, f.member))}`,
   );
 }
 
 const settled = (row: MemberVm) => row.step === "ready" || row.failure !== null;
 
-async function openJobs(db: Database) {
-  return (await listJobs(sqliteDb(db))).filter(
+async function openJobs(db: Db) {
+  return (await listJobs(db)).filter(
     (job) =>
       job.queue === MEMBER_VM_QUEUE && (job.status === "pending" || job.status === "running"),
   );
 }
 
-function heartbeat(db: Database, runnerId: string, at: number) {
-  db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [at, runnerId]);
+function heartbeat(db: Db, runnerId: string, at: number) {
+  return seed(db, (q) =>
+    q.orm.update(q.t.runner).set({ lastSeenAt: at }).where(eq(q.t.runner.id, runnerId)),
+  );
 }
 
 describe("member VM", () => {
   test("startMemberVm inserts the row at create once and enqueues one job", async () => {
     const f = await fixture();
-    const first = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    const first = await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     expect(first.step).toBe("create");
     expect(first.vmName).toBe("ada-lovelace-paws");
-    const again = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    const again = await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     expect(again.id).toBe(first.id);
     expect(await openJobs(f.db)).toHaveLength(1);
     const inactive = await f.person("Watcher", "watch@example.invalid", false);
-    await expect(startMemberVm(sqliteDb(f.db), inactive)).rejects.toThrow(
-      /Active workspace membership/,
-    );
+    await expect(startMemberVm(f.db, inactive)).rejects.toThrow(/Active workspace membership/);
     const namesake = await f.person("Ada Lovelace", "ada2@example.invalid");
-    expect((await startMemberVm(sqliteDb(f.db), namesake)).vmName).toBe("ada-lovelace-paws-2");
+    expect((await startMemberVm(f.db, namesake)).vmName).toBe("ada-lovelace-paws-2");
   });
 
   test("the whole chain creates, installs, enrolls and turns ready on the first heartbeat", async () => {
     const f = await fixture();
-    await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const loop = f.jobs();
     const health = await drive(f, loop, (row) => row.step === "health" || row.failure !== null);
     expect(health.failure).toBeNull();
     expect(health.runnerId).not.toBeNull();
-    const runner = (await getRunner(sqliteDb(f.db), health.runnerId!))!;
+    const runner = (await getRunner(f.db, health.runnerId!))!;
     expect(runner.ownerUserId).toBe(f.member.userId);
     expect(runner.workspaceId).toBe(f.workspace.id);
     expect(runner.name).toBe("ada-lovelace-paws");
@@ -205,19 +207,19 @@ describe("member VM", () => {
 
     f.clock.advance(MEMBER_VM_POLL_MS);
     await loop.tick();
-    expect((await findMemberVm(sqliteDb(f.db), f.member))!.step).toBe("health");
-    heartbeat(f.db, health.runnerId!, f.clock.now());
+    expect((await findMemberVm(f.db, f.member))!.step).toBe("health");
+    await heartbeat(f.db, health.runnerId!, f.clock.now());
     const ready = await drive(f, loop, settled);
     expect(ready.step).toBe("ready");
     expect(ready.failure).toBeNull();
     expect(await openJobs(f.db)).toHaveLength(0);
-    expect((await startMemberVm(sqliteDb(f.db), f.member)).id).toBe(ready.id);
+    expect((await startMemberVm(f.db, f.member)).id).toBe(ready.id);
     expect(await openJobs(f.db)).toHaveLength(0);
   });
 
   test("a restart mid-step resumes the recorded step without a second VM", async () => {
     const f = await fixture();
-    await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const dying: ExeDev = {
       ...f.exeDev,
       async createVm(name) {
@@ -227,7 +229,7 @@ describe("member VM", () => {
     };
     void f.jobs(dying).tick();
     await Bun.sleep(5);
-    expect((await findMemberVm(sqliteDb(f.db), f.member))!.step).toBe("create");
+    expect((await findMemberVm(f.db, f.member))!.step).toBe("create");
     expect(f.exeDev.vms.size).toBe(1);
 
     f.clock.advance(LEASE_MS + 1);
@@ -242,13 +244,13 @@ describe("member VM", () => {
   test("a conflict on a name Paws never asked for is a failure", async () => {
     const f = await fixture();
     f.exeDev.addVm("ada-lovelace-paws");
-    await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const loop = f.jobs();
     const row = await drive(f, loop, settled);
     expect(row.step).toBe("create");
     expect(row.failure).toMatch(/conflict/);
     expect(row.createRequestedAt).toBeNull();
-    await retryMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await retryMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const again = await drive(f, loop, settled);
     expect(again.step).toBe("create");
     expect(again.failure).toMatch(/did not create/);
@@ -260,7 +262,7 @@ describe("member VM", () => {
     const exeDev = createFakeExeDev();
     exeDev.fail("createVm", "name_unavailable", { vm: "ada-lovelace-paws" });
     const f = await fixture({ exeDev });
-    await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const row = await drive(f, f.jobs(), (value) => value.step !== "create" || !!value.failure);
     expect(row.failure).toBeNull();
     expect(row.step).toBe("install");
@@ -276,12 +278,12 @@ describe("member VM", () => {
     exeDev.addVm("ada-lovelace-paws");
     exeDev.fail("createVm", "rate_limited");
     const f = await fixture({ exeDev });
-    await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const loop = f.jobs();
     const limited = await drive(f, loop, settled);
     expect(limited.failure).toMatch(/rate_limited/);
     expect(limited.createRequestedAt).toBeNull();
-    await retryMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await retryMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const refused = await drive(f, loop, settled);
     expect(refused.step).toBe("create");
     expect(refused.failure).toMatch(/did not create/);
@@ -302,12 +304,12 @@ describe("member VM", () => {
         },
       },
     });
-    await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const loop = f.jobs();
     const timedOut = await drive(f, loop, settled);
     expect(timedOut.failure).toMatch(/timed out/);
     expect(timedOut.createRequestedAt).not.toBeNull();
-    await retryMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await retryMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const row = await drive(f, loop, (value) => value.step === "install" || !!value.failure);
     expect(row.failure).toBeNull();
   });
@@ -329,21 +331,21 @@ describe("member VM", () => {
       secrets: async () => [EXE_DEV_TOKEN],
       now: () => f.clock.now(),
     });
-    await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const failed = await drive(f, loop, settled);
     expect(failed.step).toBe("create");
     expect(failed.failure).toMatch(/runner control/);
     expect(f.exeDev.calls).toHaveLength(0);
     ready = true;
-    await retryMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await retryMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const row = await drive(f, loop, (value) => value.step === "health" || !!value.failure);
     expect(row.failure).toBeNull();
-    expect((await getRunner(sqliteDb(f.db), row.runnerId!))!.ownerUserId).toBe(f.member.userId);
+    expect((await getRunner(f.db, row.runnerId!))!.ownerUserId).toBe(f.member.userId);
   });
 
   test("the runner's enroll cause reaches the Runners page", async () => {
     const f = await fixture();
-    await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const loop = f.jobs();
     const cause = "Cause: DNS lookup failed for paws.example.com (ENOTFOUND).";
     f.bootstrap.enroll = async (vm) => {
@@ -362,7 +364,7 @@ describe("member VM", () => {
 
   test("a failed step keeps the row and VM, hides secrets, and retry reruns it", async () => {
     const f = await fixture();
-    await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const loop = f.jobs();
     let leaked = "";
     const original = f.bootstrap.startInstall;
@@ -377,11 +379,11 @@ describe("member VM", () => {
     expect(failed.failure).not.toContain(EXE_DEV_TOKEN);
     expect(f.exeDev.vms.has(failed.vmName)).toBe(true);
     expect(await openJobs(f.db)).toHaveLength(0);
-    expect((await startMemberVm(sqliteDb(f.db), f.member)).failure).not.toBeNull();
+    expect((await startMemberVm(f.db, f.member)).failure).not.toBeNull();
     expect(await openJobs(f.db)).toHaveLength(0);
 
     f.bootstrap.startInstall = original;
-    const retried = await retryMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    const retried = await retryMemberVm(f.db, { ...f.member, now: f.clock.now() });
     expect(retried.failure).toBeNull();
     expect(retried.step).toBe("install");
     const health = await drive(f, loop, (row) => row.step === "health" || !!row.failure);
@@ -391,7 +393,7 @@ describe("member VM", () => {
 
   test("a token that expired during a long install is replaced by staging only", async () => {
     const f = await fixture({ installPolls: 200 });
-    await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const row = await drive(f, f.jobs(), (value) => value.step === "health" || !!value.failure);
     expect(row.failure).toBeNull();
     const steps = f.bootstrap.calls.map((call) => call.step);
@@ -399,12 +401,12 @@ describe("member VM", () => {
     expect(steps.filter((step) => step === "stageToken")).toHaveLength(1);
     expect(steps.indexOf("stageToken")).toBeLessThan(steps.indexOf("enroll"));
     expect(f.bootstrap.tokens).toHaveLength(2);
-    expect((await getRunner(sqliteDb(f.db), row.runnerId!))!.ownerUserId).toBe(f.member.userId);
+    expect((await getRunner(f.db, row.runnerId!))!.ownerUserId).toBe(f.member.userId);
   });
 
   test("a VM that cannot join the tailnet fails before enrollment with a tailnet message", async () => {
     const f = await fixture();
-    await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const loop = f.jobs();
     f.bootstrap.fail("joinTailnet", "tailnet: the VM cannot reach this Paws (exit 2)");
     const failed = await drive(f, loop, settled);
@@ -413,7 +415,7 @@ describe("member VM", () => {
     const steps = f.bootstrap.calls.map((call) => call.step);
     expect(steps.at(-1)).toBe("joinTailnet");
     expect(steps).not.toContain("enroll");
-    await retryMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await retryMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const row = await drive(f, loop, (value) => value.step === "health" || !!value.failure);
     expect(row.failure).toBeNull();
     expect(f.bootstrap.calls.filter((call) => call.step === "startInstall")).toHaveLength(1);
@@ -421,13 +423,13 @@ describe("member VM", () => {
 
   test("a failed enroll restages a fresh token on retry", async () => {
     const f = await fixture();
-    await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const loop = f.jobs();
     f.bootstrap.fail("enroll", "enrollment failed (exit 1)");
     const failed = await drive(f, loop, settled);
     expect(failed.step).toBe("enroll");
     expect(failed.tokenExpiresAt).toBeNull();
-    await retryMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await retryMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const row = await drive(f, loop, (value) => value.step === "health" || !!value.failure);
     expect(row.failure).toBeNull();
     expect(f.bootstrap.calls.filter((call) => call.step === "stageToken")).toHaveLength(1);
@@ -435,37 +437,37 @@ describe("member VM", () => {
 
   test("health fails after ten minutes without a heartbeat, and retry waits again", async () => {
     const f = await fixture();
-    await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const loop = f.jobs();
     const health = await drive(f, loop, (row) => row.step === "health");
     const failed = await drive(f, loop, settled);
     expect(failed.step).toBe("health");
     expect(failed.failure).toMatch(/no heartbeat within ten minutes/);
     expect(f.clock.now() - health.stepStartedAt).toBeGreaterThanOrEqual(10 * 60_000);
-    await retryMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
-    heartbeat(f.db, failed.runnerId!, f.clock.now());
+    await retryMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    await heartbeat(f.db, failed.runnerId!, f.clock.now());
     expect((await drive(f, loop, settled)).step).toBe("ready");
   });
 
   test("removing the runner clears runner_id and the next Create VM enrolls the same VM", async () => {
     const f = await fixture();
-    await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const loop = f.jobs();
     const health = await drive(f, loop, (row) => row.step === "health");
-    heartbeat(f.db, health.runnerId!, f.clock.now());
+    await heartbeat(f.db, health.runnerId!, f.clock.now());
     const ready = await drive(f, loop, settled);
     expect(ready.step).toBe("ready");
 
     await f.control.setStatus(f.admin, ready.runnerId!, "revoked");
-    expect((await findMemberVm(sqliteDb(f.db), f.member))!.runnerId).toBeNull();
+    expect((await findMemberVm(f.db, f.member))!.runnerId).toBeNull();
 
-    const stale = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    const stale = await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     expect(stale.step).toBe("enroll");
     const before = f.bootstrap.calls.length;
     const again = await drive(f, loop, (row) => row.step === "health" || !!row.failure);
     expect(again.failure).toBeNull();
     expect(again.runnerId).not.toBe(ready.runnerId);
-    expect((await getRunner(sqliteDb(f.db), again.runnerId!))!.ownerUserId).toBe(f.member.userId);
+    expect((await getRunner(f.db, again.runnerId!))!.ownerUserId).toBe(f.member.userId);
     expect(f.exeDev.calls.filter((call) => call.operation === "createVm")).toHaveLength(1);
     expect(f.bootstrap.calls.filter((call) => call.step === "startInstall")).toHaveLength(1);
     expect(f.bootstrap.calls.slice(before).map((call) => call.step)).toEqual([
@@ -481,14 +483,14 @@ describe("member VM", () => {
 
   test("a VM that keeps a removed runner's identity after a reset fails the enroll step", async () => {
     const f = await fixture();
-    await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const loop = f.jobs();
     const health = await drive(f, loop, (row) => row.step === "health");
-    heartbeat(f.db, health.runnerId!, f.clock.now());
+    await heartbeat(f.db, health.runnerId!, f.clock.now());
     await drive(f, loop, settled);
     await f.control.setStatus(f.admin, health.runnerId!, "revoked");
     f.bootstrap.resetIdentity = async () => {};
-    await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const failed = await drive(f, loop, settled);
     expect(failed.step).toBe("enroll");
     expect(failed.failure).toMatch(/kept the identity of a removed runner/);
@@ -514,14 +516,14 @@ describe("member VM", () => {
       secrets: () => [EXE_DEV_TOKEN],
       now: () => f.clock.now(),
     });
-    await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const failed = await drive(f, loop, settled);
     expect(failed.step).toBe("create");
     expect(failed.failure).toBe(
       "exe.dev refused Create VM for ada-lovelace-paws with --cpu=64 --memory=16GB: cpu 64 exceeds your plan limit of 16. Change [member_vm] in config.toml.",
     );
     exeDev = f.exeDev;
-    await retryMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await retryMemberVm(f.db, { ...f.member, now: f.clock.now() });
     expect((await drive(f, loop, (row) => row.step !== "create")).step).toBe("install");
     expect(f.exeDev.calls).toContainEqual({
       operation: "createVm",
@@ -534,11 +536,11 @@ describe("member VM", () => {
     const exeDev: FakeExeDev = createFakeExeDev();
     exeDev.fail("createVm", "rate_limited");
     const f = await fixture({ exeDev });
-    await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await startMemberVm(f.db, { ...f.member, now: f.clock.now() });
     const row = await drive(f, f.jobs(), settled);
     expect(row.step).toBe("create");
     expect(row.failure).toMatch(/rate_limited/);
-    await retryMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
+    await retryMemberVm(f.db, { ...f.member, now: f.clock.now() });
     expect((await drive(f, f.jobs(), (value) => value.step !== "create")).step).toBe("install");
   });
 });

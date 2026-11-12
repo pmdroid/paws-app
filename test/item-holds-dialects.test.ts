@@ -9,6 +9,7 @@ import {
   listOverlapHoldAgesSteps,
   recordBlockerChecksSteps,
   recordItemCandidateSteps,
+  saveItemHolds,
   saveItemHoldsSteps,
   type Db,
 } from "../src/db";
@@ -52,6 +53,16 @@ forEachDialect((open) => {
       { itemId: "a", held: null },
     ]);
     expect(await db.run((q) => listItemHoldsSteps(q))).toEqual([overlap]);
+  });
+
+  test("concurrent hold writes in opposite orders both complete", async () => {
+    const db = await connect(open, "a", "b", "c");
+    const hold = (itemId: string) => ({ itemId, reason: "blocked" as const, blockers: ["PAS-1"] });
+    await Promise.all([
+      saveItemHolds(db, [hold("a"), hold("b"), hold("c")]),
+      saveItemHolds(db, [hold("c"), hold("b"), hold("a")]),
+    ]);
+    expect(await db.run((q) => listItemHoldsSteps(q))).toEqual([hold("a"), hold("b"), hold("c")]);
   });
 
   test("an overlap hold age outlives the hold until the item is cancelled", async () => {

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { and, eq, sql } from "drizzle-orm";
 import { createWorkspaceGitHubActivation } from "../src/auth";
 import {
   ensureLinearSession,
@@ -9,7 +10,6 @@ import {
   listRepositoryCandidates,
   listRepositoryCatalog,
   refreshRepositoryCatalog,
-  sqliteDb,
 } from "../src/db";
 import {
   listAppRepositories,
@@ -17,7 +17,9 @@ import {
   type CatalogRepository,
   type GitHubClient,
 } from "../src/github";
-import { tempDb, tempHome } from "./helpers";
+import { tempHome } from "./helpers";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const PEM = generateKeyPairSync("rsa", { modulusLength: 2048 })
   .privateKey.export({ type: "pkcs1", format: "pem" })
@@ -137,7 +139,7 @@ test("a signed-in user lists only repositories they can push to", async () => {
 });
 
 test("the catalog is replaced on refresh and kept when a refresh fails", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
     const paws: CatalogRepository = {
       owner: "pmdroid",
@@ -145,33 +147,35 @@ test("the catalog is replaced on refresh and kept when a refresh fails", async (
       remoteUrl: "https://github.com/pmdroid/paws-app.git",
       defaultBranch: "main",
     };
-    expect(await refreshRepositoryCatalog(sqliteDb(db), async () => [paws], 1)).toBe(true);
-    expect(await listRepositoryCatalog(sqliteDb(db))).toEqual([paws]);
+    expect(await refreshRepositoryCatalog(db, async () => [paws], 1)).toBe(true);
+    expect(await listRepositoryCatalog(db)).toEqual([paws]);
     expect(
       await refreshRepositoryCatalog(
-        sqliteDb(db),
+        db,
         async () => {
           throw new Error("GitHub is down");
         },
         2,
       ),
     ).toBe(false);
-    expect(await listRepositoryCatalog(sqliteDb(db))).toEqual([paws]);
-    expect(await refreshRepositoryCatalog(sqliteDb(db), async () => [], 3)).toBe(true);
-    expect(await listRepositoryCatalog(sqliteDb(db))).toEqual([]);
+    expect(await listRepositoryCatalog(db)).toEqual([paws]);
+    expect(await refreshRepositoryCatalog(db, async () => [], 3)).toBe(true);
+    expect(await listRepositoryCatalog(db)).toEqual([]);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("app installations come from the workspace GitHub connections", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const home = tempHome();
   try {
     mkdirSync(join(home, "secrets"), { recursive: true, mode: 0o700 });
-    const activation = createWorkspaceGitHubActivation(sqliteDb(db), home, {});
-    db.run(
-      "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('ws','org','Workspace',0)",
+    const activation = createWorkspaceGitHubActivation(db, home, {});
+    await seed(db, (q) =>
+      q.orm
+        .insert(q.t.workspace)
+        .values({ id: "ws", linearOrganizationId: "org", name: "Workspace", createdAt: 0 }),
     );
     expect(await activation.installations()).toEqual([]);
     activation.save("secret-1", {
@@ -182,28 +186,42 @@ test("app installations come from the workspace GitHub connections", async () =>
       installationId: "42",
       generation: 0,
     });
-    db.run(
-      "INSERT INTO workspace_github_connection(workspace_id,generation,secret_id,installation_id) VALUES('ws',3,'secret-1','42')",
+    await seed(db, (q) =>
+      q.orm.insert(q.t.workspaceGithubConnection).values({
+        workspaceId: "ws",
+        generation: 3,
+        secretId: "secret-1",
+        installationId: "42",
+      }),
     );
     expect(await activation.installations()).toEqual([
       expect.objectContaining({ appId: "1", installationId: "42", generation: 3 }),
     ]);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("fresh workspace repository choices are available before catalog refresh and follow current team mappings", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
-    db.run(
-      "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('ws','org','Workspace',0),('other','other-org','Other workspace',0)",
+    await seed(
+      db,
+      (q) =>
+        q.orm.insert(q.t.workspace).values([
+          { id: "ws", linearOrganizationId: "org", name: "Workspace", createdAt: 0 },
+          { id: "other", linearOrganizationId: "other-org", name: "Other workspace", createdAt: 0 },
+        ]),
+      (q) =>
+        q.orm.insert(q.t.workspaceRepository).values([
+          { workspaceId: "ws", repository: "Acme/One", teamId: "team" },
+          { workspaceId: "ws", repository: "acme/two", teamId: "team" },
+          { workspaceId: "ws", repository: "acme/other-team", teamId: "another-team" },
+          { workspaceId: "other", repository: "acme/other-workspace", teamId: "team" },
+        ]),
     );
-    db.run(
-      "INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES('ws','Acme/One','team'),('ws','acme/two','team'),('ws','acme/other-team','another-team'),('other','acme/other-workspace','team')",
-    );
-    await ensureLinearSession(sqliteDb(db), { sessionId: "session", issueId: "issue" });
-    await recordLinearInstallation(sqliteDb(db), {
+    await ensureLinearSession(db, { sessionId: "session", issueId: "issue" });
+    await recordLinearInstallation(db, {
       sessionId: "session",
       organizationId: "org",
       oauthClientId: "client",
@@ -213,11 +231,11 @@ test("fresh workspace repository choices are available before catalog refresh an
     });
     const one = { owner: "acme", repo: "one", remoteUrl: "https://github.com/acme/one.git" };
     const two = { owner: "acme", repo: "two", remoteUrl: "https://github.com/acme/two.git" };
-    expect(await listRepositoryCatalog(sqliteDb(db))).toEqual([]);
-    expect(await listRepositoryCandidates(sqliteDb(db), "session", [])).toEqual([one, two]);
-    expect(await listRepositoryCandidates(sqliteDb(db), "unrelated-session", [])).toEqual([]);
-    expect(await listRepositoryCandidates(sqliteDb(db), null, [])).toEqual([]);
-    await refreshRepositoryCatalog(sqliteDb(db), async () => [
+    expect(await listRepositoryCatalog(db)).toEqual([]);
+    expect(await listRepositoryCandidates(db, "session", [])).toEqual([one, two]);
+    expect(await listRepositoryCandidates(db, "unrelated-session", [])).toEqual([]);
+    expect(await listRepositoryCandidates(db, null, [])).toEqual([]);
+    await refreshRepositoryCatalog(db, async () => [
       { ...one, defaultBranch: "main" },
       {
         owner: "acme",
@@ -226,21 +244,28 @@ test("fresh workspace repository choices are available before catalog refresh an
         defaultBranch: "main",
       },
     ]);
-    expect(await listRepositoryCandidates(sqliteDb(db), "session", [])).toEqual([one, two]);
-    db.run(
-      "DELETE FROM workspace_repository WHERE workspace_id='ws' AND lower(repository)='acme/one'",
+    expect(await listRepositoryCandidates(db, "session", [])).toEqual([one, two]);
+    await seed(db, (q) =>
+      q.orm
+        .delete(q.t.workspaceRepository)
+        .where(
+          and(
+            eq(q.t.workspaceRepository.workspaceId, "ws"),
+            eq(sql`lower(${q.t.workspaceRepository.repository})`, "acme/one"),
+          ),
+        ),
     );
-    expect(await listRepositoryCandidates(sqliteDb(db), "session", [one])).toEqual([two]);
+    expect(await listRepositoryCandidates(db, "session", [one])).toEqual([two]);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("repository candidates preserve configured clone URLs and deduplicate catalog entries", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   try {
     const configured = { owner: "Acme", repo: "One", remoteUrl: "/synthetic-paws-remotes/one.git" };
-    await refreshRepositoryCatalog(sqliteDb(db), async () => [
+    await refreshRepositoryCatalog(db, async () => [
       {
         owner: "acme",
         repo: "one",
@@ -254,11 +279,11 @@ test("repository candidates preserve configured clone URLs and deduplicate catal
         defaultBranch: "main",
       },
     ]);
-    expect(await listRepositoryCandidates(sqliteDb(db), null, [configured, configured])).toEqual([
+    expect(await listRepositoryCandidates(db, null, [configured, configured])).toEqual([
       configured,
       { owner: "acme", repo: "two", remoteUrl: "https://github.com/acme/two.git" },
     ]);
   } finally {
-    db.close();
+    await close();
   }
 });

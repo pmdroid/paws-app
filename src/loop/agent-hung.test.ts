@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { FakeClock, HANG_ASK_AFTER, JOB_KIND } from "../core";
 import {
   beginImplementRun,
@@ -6,68 +6,79 @@ import {
   getWorkItem,
   insertQueuedItem,
   listJobs,
-  migrate,
-  openDatabase,
   recordRunHangSteps,
   saveRunResult,
-  sqliteDb,
+  type Db,
 } from "../db";
 import { answerSteps } from "../questions";
 import { askSteps } from "./operations";
 import { questionEffects } from "./question-effects";
 import { AGENT_HUNG_REASON, AGENT_HUNG_RETRY, AGENT_HUNG_STOP } from "./runner-wait";
+import { seed } from "../../test/dialects";
+import { tempStore } from "../../test/pglite";
+
+const open: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
+});
 
 async function hungItem(clock: FakeClock) {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
+  open.push(close);
   const item = await insertQueuedItem(db, { id: "acme-7", sessionKey: "ses", now: clock.now() });
   return { db, item };
 }
 
-function addRun(db: ReturnType<typeof openDatabase>, itemId: string, id: string, at: number) {
-  db.run(
-    "INSERT INTO run(id,item_id,kind,agent,status,created_at,updated_at) VALUES(?,?,'implement','claude','lost',?,?)",
-    [id, itemId, at, at],
+function addRun(db: Db, itemId: string, id: string, at: number) {
+  return seed(db, (q) =>
+    q.orm.insert(q.t.run).values({
+      id,
+      itemId,
+      kind: "implement",
+      agent: "claude",
+      status: "lost",
+      createdAt: at,
+      updatedAt: at,
+    }),
   );
 }
 
 test("hang losses count across runs until a turn completes", async () => {
   const clock = new FakeClock(20_000);
   const { db, item } = await hungItem(clock);
-  const store = sqliteDb(db);
   const hang = (runId: string) =>
-    store.transaction((q) => recordRunHangSteps(q, runId, "runner-1", clock.now()));
-  addRun(db, item.id, "run-a", 1);
+    db.transaction((q) => recordRunHangSteps(q, runId, "runner-1", clock.now()));
+  await addRun(db, item.id, "run-a", 1);
   await hang("run-a");
   expect((await hang("run-a"))?.count).toBe(2);
-  addRun(db, item.id, "run-b", 2);
+  await addRun(db, item.id, "run-b", 2);
   expect(await hang("run-b")).toEqual({
     count: HANG_ASK_AFTER,
     runIds: ["run-a", "run-b"],
     runnerId: "runner-1",
   });
-  addRun(db, item.id, "run-c", 3);
-  await saveRunResult(store, "run-c", "Done.", clock.now());
-  addRun(db, item.id, "run-d", 4);
+  await addRun(db, item.id, "run-c", 3);
+  await saveRunResult(db, "run-c", "Done.", clock.now());
+  await addRun(db, item.id, "run-d", 4);
   expect(await hang("run-d")).toEqual({ count: 1, runIds: ["run-d"], runnerId: "runner-1" });
-  expect(await store.run((q) => consecutiveHangsSteps(q, item.id))).toMatchObject({ count: 1 });
+  expect(await db.run((q) => consecutiveHangsSteps(q, item.id))).toMatchObject({ count: 1 });
 });
 
 async function askHung(answer: string) {
   const clock = new FakeClock(20_000);
   const { db, item } = await hungItem(clock);
-  const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now());
-  await sqliteDb(db).transaction((q) =>
+  const { run } = await beginImplementRun(db, item.id, clock.now());
+  await db.transaction((q) =>
     askSteps(q, { itemId: item.id, runId: run.id, sessionId: "ses" }, "runner-wait", "Hung.", {
       options: [AGENT_HUNG_RETRY, AGENT_HUNG_STOP],
       reason: AGENT_HUNG_REASON,
       now: clock.now(),
     }),
   );
-  expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("awaiting_input");
-  expect((await listJobs(sqliteDb(db))).filter((job) => job.status === "pending")).toEqual([]);
+  expect((await getWorkItem(db, item.id))?.state).toBe("awaiting_input");
+  expect((await listJobs(db)).filter((job) => job.status === "pending")).toEqual([]);
   clock.advance(60_000);
-  const outcome = await sqliteDb(db).transaction((q) =>
+  const outcome = await db.transaction((q) =>
     answerSteps(
       q,
       {
@@ -77,13 +88,13 @@ async function askHung(answer: string) {
         answeredBy: "pascal",
         now: clock.now(),
       },
-      questionEffects(sqliteDb(db), { now: clock.now() }),
+      questionEffects(db, { now: clock.now() }),
     ),
   );
   expect(outcome.status).toBe("answered");
   return {
-    state: (await getWorkItem(sqliteDb(db), item.id))?.state,
-    jobs: await listJobs(sqliteDb(db)),
+    state: (await getWorkItem(db, item.id))?.state,
+    jobs: await listJobs(db),
   };
 }
 

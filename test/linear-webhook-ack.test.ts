@@ -1,4 +1,3 @@
-import { sqliteDb } from "../src/db";
 import { createHmac } from "node:crypto";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -11,7 +10,8 @@ import {
   type IntakeQueue,
 } from "../src/linear";
 import { startServer } from "../src/server";
-import { tempDb, tempHome } from "./helpers";
+import { tempHome } from "./helpers";
+import { tempStore } from "./pglite";
 
 const SECRET = "webhook-secret";
 const LINEAR_DEADLINE_MS = 5_000;
@@ -63,13 +63,13 @@ function bodies(now: number): Record<string, unknown>[] {
 
 describe("Linear webhook acknowledgement", () => {
   test("every Linear webhook answers 200 within 5 seconds while the Linear client is stalled", async () => {
-    const db = tempDb();
+    const { db, close } = await tempStore();
     const home = tempHome();
     const stall = Promise.withResolvers<void>();
     const stalled: string[] = [];
     const linear = await openLinear({
       db,
-      store: sqliteDb(db),
+      store: db,
       secretsDir: join(home, "secrets"),
       env: { LINEAR_ACCESS_TOKEN: "fixture-token", LINEAR_CLIENT_ID: "client" },
       followUp: async () => {
@@ -111,13 +111,13 @@ describe("Linear webhook acknowledgement", () => {
       await linear.webhook.intake?.idle();
       await Bun.sleep(10);
       await server.stop(true);
-      db.close();
+      await close();
     }
   });
 
   test("a repeated Linear-Delivery is processed once", async () => {
-    const db = tempDb();
-    const store = createInboxStore(sqliteDb(db));
+    const { db, close } = await tempStore();
+    const store = createInboxStore(db);
     const arrived: string[] = [];
     const followed: string[] = [];
     const release = Promise.withResolvers<void>();
@@ -169,7 +169,7 @@ describe("Linear webhook acknowledgement", () => {
     expect(arrived).toEqual(["session:session:created"]);
     expect(followed).toHaveLength(1);
     expect((await store.get(followed[0]!))?.deliveryId).toBe(deliveries[1]!.id);
-    db.close();
+    await close();
   });
 });
 

@@ -1,20 +1,12 @@
 import { expect, test } from "bun:test";
 import { FakeClock } from "../src/core";
-import {
-  enqueueOutbox,
-  getOutboxSteps,
-  migrate,
-  openDatabase,
-  OutboxDispatcher,
-  stopOutboxSession,
-  sqliteDb,
-} from "../src/db";
+import { enqueueOutbox, getOutboxSteps, OutboxDispatcher, stopOutboxSession } from "../src/db";
 import { createLinearClient, createLinearTracker } from "../src/linear";
 import { deliverLinearOutbox } from "../src/loop";
+import { tempStore } from "./pglite";
 
 test("Stop aborts active Linear HTTP delivery before its final acknowledgement starts", async () => {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   const dispatcher = new OutboxDispatcher(db, new FakeClock(5000));
   const calls: string[] = [];
   let started = () => {};
@@ -52,7 +44,7 @@ test("Stop aborts active Linear HTTP delivery before its final acknowledgement s
   dispatcher.setHandler((message, context) =>
     deliverLinearOutbox(message, tracker, async () => {}, context),
   );
-  const progress = await enqueueOutbox(sqliteDb(db), {
+  const progress = await enqueueOutbox(db, {
     target: "linear",
     op: "activity",
     orderingKey: "session",
@@ -62,8 +54,8 @@ test("Stop aborts active Linear HTTP delivery before its final acknowledgement s
   try {
     await dispatcher.tick();
     await active;
-    const generation = await stopOutboxSession(sqliteDb(db), "linear", "session");
-    const ack = await enqueueOutbox(sqliteDb(db), {
+    const generation = await stopOutboxSession(db, "linear", "session");
+    const ack = await enqueueOutbox(db, {
       target: "linear",
       op: "activity",
       orderingKey: "session",
@@ -78,9 +70,9 @@ test("Stop aborts active Linear HTTP delivery before its final acknowledgement s
     await dispatcher.tick();
     await dispatcher.idle();
     expect(calls).toEqual(["Working", "aborted", "Stopped"]);
-    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, progress)))?.status).toBe("dropped");
-    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, ack)))?.status).toBe("sent");
+    expect((await db.run((q) => getOutboxSteps(q, progress)))?.status).toBe("dropped");
+    expect((await db.run((q) => getOutboxSteps(q, ack)))?.status).toBe("sent");
   } finally {
-    db.close();
+    await close();
   }
 });

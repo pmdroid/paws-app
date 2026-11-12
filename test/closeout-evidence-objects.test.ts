@@ -1,9 +1,8 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Database } from "bun:sqlite";
 import { handleStatusRequest, itemReviews } from "../src/dashboard";
-import { finishCloseoutProgress, insertQueuedItem, upsertCloseoutStep, sqliteDb } from "../src/db";
+import { finishCloseoutProgress, insertQueuedItem, upsertCloseoutStep, type Db } from "../src/db";
 import {
   hydrateCloseoutEvidence,
   hydrateItemCloseoutEvidence,
@@ -12,7 +11,20 @@ import {
 } from "../src/evidence";
 import { publishingCloseoutProgress } from "../src/loop";
 import { createFakeRunFileObjects, withSealedRunFileObjects } from "../src/run-files";
-import { tempDb, tempHome } from "./helpers";
+import { tempHome } from "./helpers";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
+
+const openStores: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of openStores.splice(0)) await close();
+});
+
+async function openStore() {
+  const { db, close } = await tempStore();
+  openStores.push(close);
+  return db;
+}
 
 const ITEM = "item-acme";
 const BASE = "b".repeat(40);
@@ -22,7 +34,7 @@ const DIGEST = `sha256:${HEX}`;
 const RECORD = `evidence/${HEX}/${HEAD}/independent-review/1.json`;
 const LOG = `logs/${HEX}/${HEAD}/test/1.log`;
 
-async function closeoutRun(db: Database, home: string, item = ITEM): Promise<string> {
+async function closeoutRun(db: Db, home: string, item = ITEM): Promise<string> {
   const root = join(home, "closeout", "evidence");
   const write = (path: string, body: string) => {
     const file = join(root, item, ...path.split("/"));
@@ -46,7 +58,7 @@ async function closeoutRun(db: Database, home: string, item = ITEM): Promise<str
   write("retry.lock", "");
   const identity = { taskId: item, base: BASE, head: HEAD, policyDigest: DIGEST, policyPath: null };
   await upsertCloseoutStep(
-    sqliteDb(db),
+    db,
     item,
     identity,
     {
@@ -72,12 +84,12 @@ async function closeoutRun(db: Database, home: string, item = ITEM): Promise<str
     },
     1,
   );
-  await finishCloseoutProgress(sqliteDb(db), item, identity, "rejected", 1);
+  await finishCloseoutProgress(db, item, identity, "rejected", 1);
   return root;
 }
 
 async function setup() {
-  const db = tempDb();
+  const db = await openStore();
   await insertQueuedItem(db, { id: ITEM, sessionKey: "session-acme", now: 1 });
   const s3 = createFakeRunFileObjects();
   const objects = () => withSealedRunFileObjects(s3, Buffer.alloc(32, 9));
@@ -90,15 +102,15 @@ async function setup() {
 
 test("Closeout records written by instance A are shown by instance B's dashboard", async () => {
   const { db, s3, homeB, storageA, storageB } = await setup();
-  expect(await publishCloseoutEvidence(sqliteDb(db), storageA, ITEM)).toBe(2);
+  expect(await publishCloseoutEvidence(db, storageA, ITEM)).toBe(2);
   expect([...s3.objects.keys()].every((key) => key.startsWith(`closeout-evidence/${ITEM}/`))).toBe(
     true,
   );
-  expect(await publishCloseoutEvidence(sqliteDb(db), storageA, ITEM)).toBe(0);
+  expect(await publishCloseoutEvidence(db, storageA, ITEM)).toBe(0);
 
-  expect(await itemReviews(sqliteDb(db), ITEM, homeB, {})).toEqual([]);
-  expect(await hydrateItemCloseoutEvidence(sqliteDb(db), storageB, ITEM, ["session-acme"])).toBe(2);
-  const reviews = await itemReviews(sqliteDb(db), ITEM, homeB, {});
+  expect(await itemReviews(db, ITEM, homeB, {})).toEqual([]);
+  expect(await hydrateItemCloseoutEvidence(db, storageB, ITEM, ["session-acme"])).toBe(2);
+  const reviews = await itemReviews(db, ITEM, homeB, {});
   expect(reviews.map((review) => review.id)).toEqual(["independent-review"]);
   expect(reviews[0]!.rounds[0]!.findings[0]).toMatchObject({ explanation: "acme breaks" });
 
@@ -106,7 +118,7 @@ test("Closeout records written by instance A are shown by instance B's dashboard
     new Request(
       `http://acme.test/api/closeout-artifact?item=${ITEM}&check=independent-review&kind=evidence&head=${HEAD}&policy=${DIGEST}`,
     ),
-    { store: sqliteDb(db), closeoutHome: homeB },
+    { store: db, closeoutHome: homeB },
   );
   expect(artifact!.status).toBe(200);
   expect(await artifact!.text()).toContain("acme breaks");
@@ -115,27 +127,25 @@ test("Closeout records written by instance A are shown by instance B's dashboard
 
 test("an item the session can't see is not restored", async () => {
   const { db, storageA, storageB } = await setup();
-  await publishCloseoutEvidence(sqliteDb(db), storageA, ITEM);
-  expect(await hydrateItemCloseoutEvidence(sqliteDb(db), storageB, ITEM, ["session-other"])).toBe(
-    0,
-  );
+  await publishCloseoutEvidence(db, storageA, ITEM);
+  expect(await hydrateItemCloseoutEvidence(db, storageB, ITEM, ["session-other"])).toBe(0);
   expect(existsSync(join(storageB.root, ITEM))).toBe(false);
 });
 
 test("a changed object is not restored, and a changed local file replaces its copy", async () => {
   const { db, s3, storageA, storageB } = await setup();
-  await publishCloseoutEvidence(sqliteDb(db), storageA, ITEM);
+  await publishCloseoutEvidence(db, storageA, ITEM);
   const [first, second] = [...s3.objects.keys()];
   const original = s3.objects.get(first!)!;
   s3.objects.set(first!, s3.objects.get(second!)!);
-  expect(await hydrateCloseoutEvidence(sqliteDb(db), storageB, [ITEM])).toBe(1);
+  expect(await hydrateCloseoutEvidence(db, storageB, [ITEM])).toBe(1);
   s3.objects.set(first!, original);
 
   writeFileSync(join(storageA.root, ITEM, ...LOG.split("/")), "acme test output, again\n");
-  expect(await publishCloseoutEvidence(sqliteDb(db), storageA, ITEM)).toBe(1);
+  expect(await publishCloseoutEvidence(db, storageA, ITEM)).toBe(1);
   expect(s3.deletes.length).toBe(1);
   const storageC = { ...storageB, root: join(tempHome(), "closeout", "evidence") };
-  expect(await hydrateCloseoutEvidence(sqliteDb(db), storageC, [ITEM])).toBe(2);
+  expect(await hydrateCloseoutEvidence(db, storageC, [ITEM])).toBe(2);
   expect(readFileSync(join(storageC.root, ITEM, ...LOG.split("/")), "utf8")).toBe(
     "acme test output, again\n",
   );
@@ -143,19 +153,19 @@ test("a changed object is not restored, and a changed local file replaces its co
 
 test("with S3 off, Closeout records stay local", async () => {
   const { db, s3, storageA, storageB } = await setup();
-  expect(await publishCloseoutEvidence(sqliteDb(db), { root: storageA.root }, ITEM)).toBe(0);
-  expect(await uploadLocalCloseoutEvidence(sqliteDb(db), { root: storageA.root })).toBe(0);
-  expect(await hydrateCloseoutEvidence(sqliteDb(db), { root: storageB.root }, [ITEM])).toBe(0);
+  expect(await publishCloseoutEvidence(db, { root: storageA.root }, ITEM)).toBe(0);
+  expect(await uploadLocalCloseoutEvidence(db, { root: storageA.root })).toBe(0);
+  expect(await hydrateCloseoutEvidence(db, { root: storageB.root }, [ITEM])).toBe(0);
   expect(s3.writes).toEqual([]);
   expect(existsSync(join(storageA.root, ITEM, ...RECORD.split("/")))).toBe(true);
 });
 
 test("existing Closeout records are uploaded once on startup and read from S3 afterwards", async () => {
   const { db, homeB, storageA, storageB } = await setup();
-  expect(await uploadLocalCloseoutEvidence(sqliteDb(db), storageA)).toBe(2);
-  expect(await uploadLocalCloseoutEvidence(sqliteDb(db), storageA)).toBe(0);
-  expect(await hydrateItemCloseoutEvidence(sqliteDb(db), storageB, ITEM)).toBe(2);
-  expect(await itemReviews(sqliteDb(db), ITEM, homeB, {})).toHaveLength(1);
+  expect(await uploadLocalCloseoutEvidence(db, storageA)).toBe(2);
+  expect(await uploadLocalCloseoutEvidence(db, storageA)).toBe(0);
+  expect(await hydrateItemCloseoutEvidence(db, storageB, ITEM)).toBe(2);
+  expect(await itemReviews(db, ITEM, homeB, {})).toHaveLength(1);
 });
 
 test("a finished check's files are stored before its step is recorded, while the gate still runs", async () => {
@@ -178,7 +188,7 @@ test("a finished check's files are stored before its step is recorded, while the
     },
     async () => {
       calls.push("publish");
-      await publishCloseoutEvidence(sqliteDb(db), storageA, ITEM);
+      await publishCloseoutEvidence(db, storageA, ITEM);
     },
   );
   const identity = { taskId: ITEM, base: BASE, head: HEAD, policyDigest: DIGEST, policyPath: null };
@@ -207,8 +217,8 @@ test("a finished check's files are stored before its step is recorded, while the
   progress.step(identity, step("passed"));
   await progress.settled();
   expect(calls).toEqual(["begin", "step running", "output", "publish", "step passed"]);
-  expect(await hydrateItemCloseoutEvidence(sqliteDb(db), storageB, ITEM)).toBe(2);
-  expect(await itemReviews(sqliteDb(db), ITEM, homeB, {})).toHaveLength(1);
+  expect(await hydrateItemCloseoutEvidence(db, storageB, ITEM)).toBe(2);
+  expect(await itemReviews(db, ITEM, homeB, {})).toHaveLength(1);
 });
 
 test("a failed step write is raised once the queued steps settle", async () => {
@@ -231,23 +241,23 @@ test("restored records keep their modification times, and a newer stored copy re
   const { db, storageA, storageB } = await setup();
   const record = join(storageA.root, ITEM, ...RECORD.split("/"));
   utimesSync(record, 1_700_000_000, 1_700_000_000);
-  await publishCloseoutEvidence(sqliteDb(db), storageA, ITEM);
-  await hydrateCloseoutEvidence(sqliteDb(db), storageB, [ITEM]);
+  await publishCloseoutEvidence(db, storageA, ITEM);
+  await hydrateCloseoutEvidence(db, storageB, [ITEM]);
   const restored = join(storageB.root, ITEM, ...RECORD.split("/"));
   expect(Math.floor(statSync(restored).mtimeMs)).toBe(1_700_000_000_000);
 
   const log = join(storageA.root, ITEM, ...LOG.split("/"));
   await Bun.sleep(5);
   writeFileSync(log, "acme partial\nacme done\n");
-  expect(await publishCloseoutEvidence(sqliteDb(db), storageA, ITEM)).toBe(1);
-  expect(await hydrateCloseoutEvidence(sqliteDb(db), storageB, [ITEM])).toBe(1);
+  expect(await publishCloseoutEvidence(db, storageA, ITEM)).toBe(1);
+  expect(await hydrateCloseoutEvidence(db, storageB, [ITEM])).toBe(1);
   expect(readFileSync(join(storageB.root, ITEM, ...LOG.split("/")), "utf8")).toBe(
     "acme partial\nacme done\n",
   );
-  expect(await hydrateCloseoutEvidence(sqliteDb(db), storageA, [ITEM])).toBe(0);
+  expect(await hydrateCloseoutEvidence(db, storageA, [ITEM])).toBe(0);
   await Bun.sleep(5);
   writeFileSync(log, "acme unpublished\n");
-  expect(await hydrateCloseoutEvidence(sqliteDb(db), storageA, [ITEM])).toBe(1);
+  expect(await hydrateCloseoutEvidence(db, storageA, [ITEM])).toBe(1);
   expect(readFileSync(log, "utf8")).toBe("acme partial\nacme done\n");
 });
 
@@ -255,13 +265,11 @@ test("every visible item with the issue's identifier has its Closeout records re
   const { db, homeA, storageA, storageB } = await setup();
   await insertQueuedItem(db, { id: "item-acme-2", sessionKey: "session-acme", now: 1 });
   await insertQueuedItem(db, { id: "item-acme-3", sessionKey: "session-other", now: 1 });
-  db.run("UPDATE work_item SET linear_identifier = 'ACME-1'");
+  await seed(db, (q) => q.orm.update(q.t.workItem).set({ linearIdentifier: "ACME-1" }));
   await closeoutRun(db, homeA, "item-acme-2");
   await closeoutRun(db, homeA, "item-acme-3");
-  await uploadLocalCloseoutEvidence(sqliteDb(db), storageA);
-  expect(
-    await hydrateItemCloseoutEvidence(sqliteDb(db), storageB, "ACME-1", ["session-acme"]),
-  ).toBe(4);
+  await uploadLocalCloseoutEvidence(db, storageA);
+  expect(await hydrateItemCloseoutEvidence(db, storageB, "ACME-1", ["session-acme"])).toBe(4);
   expect(existsSync(join(storageB.root, "item-acme-2", ...RECORD.split("/")))).toBe(true);
   expect(existsSync(join(storageB.root, "item-acme-3"))).toBe(false);
 });
@@ -325,15 +333,15 @@ test("a check whose evidence can't be stored is recorded as failed, never as pas
 
 test("the startup upload keeps a path already in the store instead of replacing it", async () => {
   const { db, storageA, storageB } = await setup();
-  await publishCloseoutEvidence(sqliteDb(db), storageA, ITEM);
+  await publishCloseoutEvidence(db, storageA, ITEM);
   await Bun.sleep(5);
   writeFileSync(join(storageA.root, ITEM, ...LOG.split("/")), "acme stale local copy\n");
-  expect(await uploadLocalCloseoutEvidence(sqliteDb(db), storageA)).toBe(0);
-  await hydrateCloseoutEvidence(sqliteDb(db), storageB, [ITEM]);
+  expect(await uploadLocalCloseoutEvidence(db, storageA)).toBe(0);
+  await hydrateCloseoutEvidence(db, storageB, [ITEM]);
   expect(readFileSync(join(storageB.root, ITEM, ...LOG.split("/")), "utf8")).toBe(
     "acme test output\n",
   );
-  expect(await hydrateCloseoutEvidence(sqliteDb(db), storageA, [ITEM], { strict: true })).toBe(1);
+  expect(await hydrateCloseoutEvidence(db, storageA, [ITEM], { strict: true })).toBe(1);
   expect(readFileSync(join(storageA.root, ITEM, ...LOG.split("/")), "utf8")).toBe(
     "acme test output\n",
   );
@@ -351,15 +359,15 @@ test("a startup upload that loses to a concurrent publish keeps the published co
       async write(key: string, bytes: Uint8Array) {
         if (!raced) {
           raced = true;
-          await publishCloseoutEvidence(sqliteDb(db), publisher, ITEM);
+          await publishCloseoutEvidence(db, publisher, ITEM);
         }
         await sealed.write(key, bytes);
       },
     };
   };
-  await uploadLocalCloseoutEvidence(sqliteDb(db), { root: storageA.root, objects: racing });
+  await uploadLocalCloseoutEvidence(db, { root: storageA.root, objects: racing });
   const storageC = { ...storageB, root: join(tempHome(), "closeout", "evidence") };
-  await hydrateCloseoutEvidence(sqliteDb(db), storageC, [ITEM], { strict: true });
+  await hydrateCloseoutEvidence(db, storageC, [ITEM], { strict: true });
   expect(readFileSync(join(storageC.root, ITEM, ...LOG.split("/")), "utf8")).toBe(
     "acme published meanwhile\n",
   );
@@ -369,7 +377,7 @@ test("a startup upload that loses to a concurrent publish keeps the published co
 
 test("a restore that started before a file was replaced reads the replacement", async () => {
   const { db, objects, storageA, storageB } = await setup();
-  await publishCloseoutEvidence(sqliteDb(db), storageA, ITEM);
+  await publishCloseoutEvidence(db, storageA, ITEM);
   await Bun.sleep(5);
   writeFileSync(join(storageA.root, ITEM, ...LOG.split("/")), "acme replaced\n");
   let replaced = false;
@@ -380,14 +388,14 @@ test("a restore that started before a file was replaced reads the replacement", 
       async read(key: string) {
         if (!replaced) {
           replaced = true;
-          await publishCloseoutEvidence(sqliteDb(db), storageA, ITEM);
+          await publishCloseoutEvidence(db, storageA, ITEM);
         }
         return sealed.read(key);
       },
     };
   };
   expect(
-    await hydrateCloseoutEvidence(sqliteDb(db), { root: storageB.root, objects: racing }, [ITEM], {
+    await hydrateCloseoutEvidence(db, { root: storageB.root, objects: racing }, [ITEM], {
       strict: true,
     }),
   ).toBe(2);
@@ -398,12 +406,10 @@ test("a restore that started before a file was replaced reads the replacement", 
 
 test("a strict restore fails when a file can't be restored; a lenient one carries on", async () => {
   const { db, s3, storageA, storageB } = await setup();
-  await publishCloseoutEvidence(sqliteDb(db), storageA, ITEM);
+  await publishCloseoutEvidence(db, storageA, ITEM);
   const [first] = [...s3.objects.keys()];
   s3.objects.set(first!, new Uint8Array(64));
-  await expect(
-    hydrateCloseoutEvidence(sqliteDb(db), storageB, [ITEM], { strict: true }),
-  ).rejects.toThrow();
+  await expect(hydrateCloseoutEvidence(db, storageB, [ITEM], { strict: true })).rejects.toThrow();
   const storageC = { ...storageB, root: join(tempHome(), "closeout", "evidence") };
-  expect(await hydrateCloseoutEvidence(sqliteDb(db), storageC, [ITEM])).toBe(1);
+  expect(await hydrateCloseoutEvidence(db, storageC, [ITEM])).toBe(1);
 });

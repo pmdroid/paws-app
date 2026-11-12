@@ -22,10 +22,13 @@ import {
 } from "../db";
 import type { ReviewThread } from "../github";
 import { REBASE_CONFLICT_INSTRUCTION, rebaseBudgetForSteps } from "../merge";
+import { feedbackSeenSteps } from "./feedback-seen";
+import { seenReactionSteps } from "./fix-round-notice";
 import { askSteps } from "./operations";
 import {
   authors,
   deliverFeedbackSteps,
+  feedbackFix,
   feedbackHandoff,
   hasFeedback,
   pendingFeedbackSteps,
@@ -166,7 +169,7 @@ export async function prepareCommentDelivery(
       // which also leaves out every fork.
       const item = yield* itemForPullSteps(q, owner, repo, pullNumber);
       if (item === null) return NOT_RECORDED;
-      return yield* recordPullCommentSteps(
+      return yield* recordAndReactSteps(
         q,
         {
           source: "conversation",
@@ -204,7 +207,7 @@ export async function prepareCommentDelivery(
     if (opened !== null && opened.pullNumber !== pullNumber) return NOT_RECORDED;
     const reviewId = inline ? comment.pull_request_review_id : commentId;
     const line = comment.line ?? comment.original_line;
-    return yield* recordPullCommentSteps(
+    return yield* recordAndReactSteps(
       q,
       {
         source: inline ? "inline" : "review",
@@ -226,6 +229,19 @@ export async function prepareCommentDelivery(
 export type CommentReceipt = { recorded: boolean; enqueued: boolean };
 
 const NOT_RECORDED: CommentReceipt = { recorded: false, enqueued: false };
+
+/** Record the comment and, the first time, queue 👀 on it and tell the Linear session. */
+function* recordAndReactSteps(
+  q: Q,
+  comment: Parameters<typeof recordPullCommentSteps>[1],
+  wait: PullFeedbackWait | undefined,
+): Steps<CommentReceipt> {
+  const receipt = yield* recordPullCommentSteps(q, comment, wait);
+  if (!receipt.recorded) return receipt;
+  yield* seenReactionSteps(q, comment, comment.receivedAt);
+  yield* feedbackSeenSteps(q, comment.itemId, comment.receivedAt);
+  return receipt;
+}
 
 function* itemForPullSteps(
   q: Q,
@@ -327,6 +343,7 @@ export async function handlePullComments(
         body: feedbackHandoff(rebase ? [REBASE_CONFLICT_INSTRUCTION] : [], feedback),
         jobKey,
         now,
+        fix: feedbackFix(rebase?.base ? { triggers: { base: rebase.base } } : undefined, feedback),
       });
       if (restarted === null) return "wait";
       job.ready = restarted.armed;

@@ -8,10 +8,7 @@ import {
   OutboxDispatcher,
   listJobs,
   listWorkItemsByStates,
-  migrate,
-  openDatabase,
   submitCommand,
-  sqliteDb,
 } from "../../src/db";
 import { createFakeTracker } from "../../src/linear";
 import {
@@ -29,6 +26,7 @@ import { probeBoundaries } from "./probes";
 import { probeRunnerProtocol } from "./runner-protocol";
 import { probeRunnerDaemon } from "./runner-daemon";
 import { probeRunnerRepositoryAccess } from "./runner-repository-access";
+import { tempStore } from "../pglite";
 
 const root = process.env.PAWS_VERIFY_ROOT;
 assert(root && realpathSync(root) === root && basename(root).startsWith("paws-verify-"));
@@ -169,8 +167,7 @@ async function scenario(
       throw new Error(`Unexpected fake GitHub request: ${request.method} ${request.path}`);
     },
   };
-  const db = openDatabase(join(pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const launches: Parameters<AgentLaunch>[0][] = [];
@@ -247,7 +244,7 @@ async function scenario(
     };
   };
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     jobs,
     outbox,
     pawsRoot,
@@ -266,9 +263,9 @@ async function scenario(
   let interrupted = false;
   const interrupt = async () => {
     interrupted = true;
-    for (const item of await listWorkItemsByStates(sqliteDb(db), WORK_ITEM_STATES)) {
+    for (const item of await listWorkItemsByStates(db, WORK_ITEM_STATES)) {
       if (["merged", "cancelled", "failed"].includes(item.state)) continue;
-      await submitCommand(sqliteDb(db), orchestrator.bus, {
+      await submitCommand(db, orchestrator.bus, {
         type: "stop",
         itemId: item.id,
         source: "linear",
@@ -303,7 +300,7 @@ async function scenario(
           merged: pulls.merged,
         });
       return (
-        (await handleStatusRequest(request, { store: sqliteDb(db), env: {} })) ??
+        (await handleStatusRequest(request, { store: db, env: {} })) ??
         new Response("Not found", { status: 404 })
       );
     },
@@ -318,9 +315,7 @@ async function scenario(
       const question = linear.questions.at(-1);
       if (question && !answered) {
         answered = true;
-        parked = (await listWorkItemsByStates(sqliteDb(db), WORK_ITEM_STATES)).map(
-          (item) => item.state,
-        );
+        parked = (await listWorkItemsByStates(db, WORK_ITEM_STATES)).map((item) => item.state);
         const parkedQuestions = await (await fetch(`${origin}/api/questions`)).json();
         save(`${name}-parked.json`, parkedQuestions);
         const parsed = parseQuestionListResponse(parkedQuestions);
@@ -353,13 +348,13 @@ async function scenario(
   try {
     const deadline = Date.now() + 60_000;
     while (
-      (await listWorkItemsByStates(sqliteDb(db), WORK_ITEM_STATES)).length === 0 &&
+      (await listWorkItemsByStates(db, WORK_ITEM_STATES)).length === 0 &&
       Date.now() < deadline
     )
       await Bun.sleep(20);
     while (Date.now() < deadline) {
       if (interrupted) break;
-      const items = await listWorkItemsByStates(sqliteDb(db), WORK_ITEM_STATES);
+      const items = await listWorkItemsByStates(db, WORK_ITEM_STATES);
       if (
         items.some((item) => ["failed"].includes(item.state)) ||
         (name !== "happy" && items.some((item) => item.state === "awaiting_input") && answered) ||
@@ -373,9 +368,7 @@ async function scenario(
     await answerer;
     const issues = await (await fetch(`${origin}/api/issues`)).json();
     assert(parseIssueListResponse(issues).ok);
-    const states = (await listWorkItemsByStates(sqliteDb(db), WORK_ITEM_STATES)).map(
-      (item) => item.state,
-    );
+    const states = (await listWorkItemsByStates(db, WORK_ITEM_STATES)).map((item) => item.state);
     const finalHead = await git("--git-dir", bare, "rev-parse", "main");
     const finalContent = await git("--git-dir", bare, "show", "main:result.txt").catch(() => null);
     const result = {
@@ -389,7 +382,7 @@ async function scenario(
       pulls: pulls.opened,
       merged: pulls.merged,
       requests,
-      jobs: await listJobs(sqliteDb(db)),
+      jobs: await listJobs(db),
       issues,
     };
     save(`${name}.json`, result);
@@ -416,7 +409,7 @@ async function scenario(
     await server.stop(true);
     process.off("SIGINT", interrupt);
     process.off("SIGTERM", interrupt);
-    db.close();
+    await close();
   }
 }
 

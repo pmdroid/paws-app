@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 
 const SRC = new URL("../src/", import.meta.url).pathname;
+const TEST_HELPERS = new URL("./", import.meta.url).pathname;
 
 const MODULES = [
   "webhook-body",
@@ -383,6 +384,7 @@ describe("module boundaries", () => {
       for (const spec of imports(text)) {
         if (!spec.startsWith(".")) continue;
         const resolved = resolve(dirname(file), spec);
+        if (file.endsWith(".test.ts") && resolved.startsWith(TEST_HELPERS)) continue;
         const target = moduleOf(resolved);
         if (target === importer) continue;
         const rel = relative(SRC, resolved);

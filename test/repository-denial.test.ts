@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import {
   beginImplementRun,
   getWorkItem,
@@ -6,7 +7,8 @@ import {
   listOutbox,
   refreshRepositoryCatalog,
   type WorkItemRecord,
-  sqliteDb,
+  type Db,
+  type Q,
 } from "../src/db";
 import {
   FakeGitHubIntegration,
@@ -15,7 +17,8 @@ import {
   teamMemberDenialSteps,
   teamRepositoryDenial,
 } from "../src/loop";
-import { tempDb } from "./helpers";
+import { seed as insertRows } from "./dialects";
+import { tempStore } from "./pglite";
 
 const MAPPED = { workspaceId: "ws", teamId: "mapped" };
 const UNMAPPED = { workspaceId: "ws", teamId: "unmapped" };
@@ -23,31 +26,41 @@ const NO_REPOSITORY =
   "Pascal has no repository in Paws yet. Ask Ada Admin or Grace Admin to map one in Integrations, then delegate again.";
 
 async function seed() {
-  const db = tempDb();
-  db.run(
-    "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('ws','org','Workspace',0)",
+  const { db, close } = await tempStore();
+  await insertRows(
+    db,
+    (q) =>
+      q.orm
+        .insert(q.t.workspace)
+        .values({ id: "ws", linearOrganizationId: "org", name: "Workspace", createdAt: 0 }),
+    ...(
+      [
+        ["ada", "Ada Admin", "admin", 1],
+        ["admin", "Grace Admin", "admin", 1],
+        ["former", "Old Admin", "admin", 0],
+        ["member", "Lin Member", "member", 1],
+      ] as const
+    ).flatMap(([id, name, role, active]) => [
+      (q: Q) =>
+        q.orm
+          .insert(q.t.workspaceUser)
+          .values({ id, linearUserId: `linear-${id}`, name, email: `${id}@example.com` }),
+      (q: Q) =>
+        q.orm.insert(q.t.workspaceMember).values({
+          workspaceId: "ws",
+          userId: id,
+          role,
+          source: "linear",
+          active,
+          checkedAt: 0,
+        }),
+    ]),
+    (q) =>
+      q.orm
+        .insert(q.t.workspaceRepository)
+        .values({ workspaceId: "ws", repository: "acme/linked", teamId: "mapped" }),
   );
-  for (const [id, name, role, active] of [
-    ["ada", "Ada Admin", "admin", 1],
-    ["admin", "Grace Admin", "admin", 1],
-    ["former", "Old Admin", "admin", 0],
-    ["member", "Lin Member", "member", 1],
-  ] as const) {
-    db.run("INSERT INTO workspace_user(id,linear_user_id,name,email) VALUES(?,?,?,?)", [
-      id,
-      `linear-${id}`,
-      name,
-      `${id}@example.com`,
-    ]);
-    db.run(
-      "INSERT INTO workspace_member(workspace_id,user_id,role,source,active,checked_at) VALUES('ws',?,?,'linear',?,0)",
-      [id, role, active],
-    );
-  }
-  db.run(
-    "INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES('ws','acme/linked','mapped')",
-  );
-  await refreshRepositoryCatalog(sqliteDb(db), async () =>
+  await refreshRepositoryCatalog(db, async () =>
     ["linked", "catalog"].map((repo) => ({
       owner: "acme",
       repo,
@@ -57,82 +70,91 @@ async function seed() {
   );
   const item = async (id = "PAS-677", team: string | null = "Pascal"): Promise<WorkItemRecord> => {
     await insertQueuedItem(db, { id, sessionKey: `session-${id}`, title: id });
-    await beginImplementRun(sqliteDb(db), id, 1000);
+    await beginImplementRun(db, id, 1000);
     if (team !== null)
-      db.run(
-        `INSERT INTO inbox_event(dedupe_key,source,action,session_id,issue_id,updated_at_ms,payload,received_at)
-         VALUES(?,'webhook','created',?,?,0,?,0)`,
-        [
-          `created:${id}`,
-          `session-${id}`,
-          `lin-item-${id}`,
-          JSON.stringify({
+      await insertRows(db, (q) =>
+        q.orm.insert(q.t.inboxEvent).values({
+          dedupeKey: `created:${id}`,
+          source: "webhook",
+          action: "created",
+          sessionId: `session-${id}`,
+          issueId: `lin-item-${id}`,
+          updatedAtMs: 0,
+          payload: {
             type: "AgentSessionEvent",
             action: "created",
             agentSession: {
               issue: { id: `lin-item-${id}`, team: { id: "t", key: "PAS", name: team } },
             },
-          }),
-        ],
+          },
+          receivedAt: 0,
+        }),
       );
-    return (await getWorkItem(sqliteDb(db), id))!;
+    return (await getWorkItem(db, id))!;
   };
-  return { db, item };
+  return { db, close, item };
 }
 
-async function stopResponses(db: ReturnType<typeof tempDb>): Promise<string[]> {
-  return (await listOutbox(sqliteDb(db)))
+async function stopResponses(db: Db): Promise<string[]> {
+  return (await listOutbox(db))
     .filter((entry) => entry.delivery === "stop" && entry.op === "activity")
     .map((entry) => (entry.payload as { body: string }).body);
 }
 
+async function count(db: Db, table: "githubIntegrationHold" | "question"): Promise<number> {
+  return (await db.run((q) => q.all(q.orm.select().from(q.t[table])))).length;
+}
+
 test("a mapped team may use only its linked repositories, and is told which one is not", async () => {
-  const { db, item } = await seed();
+  const { db, close, item } = await seed();
   try {
     const current = await item();
     expect(
-      await teamRepositoryDenial(sqliteDb(db), current, MAPPED, { owner: "acme", repo: "linked" }),
+      await teamRepositoryDenial(db, current, MAPPED, { owner: "acme", repo: "linked" }),
     ).toBeNull();
     expect(
-      await teamRepositoryDenial(sqliteDb(db), current, MAPPED, { owner: "ACME", repo: "Linked" }),
+      await teamRepositoryDenial(db, current, MAPPED, { owner: "ACME", repo: "Linked" }),
     ).toBeNull();
     expect(
-      await teamRepositoryDenial(sqliteDb(db), current, MAPPED, { owner: "acme", repo: "catalog" }),
+      await teamRepositoryDenial(db, current, MAPPED, { owner: "acme", repo: "catalog" }),
     ).toEqual({
       denied: true,
       reason: "acme/catalog isn't mapped to Pascal in Paws.",
     });
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("an unmapped team may use any catalog repository, as placement does", async () => {
-  const { db, item } = await seed();
+  const { db, close, item } = await seed();
   try {
     const current = await item();
     for (const repo of ["catalog", "linked"])
-      expect(
-        await teamRepositoryDenial(sqliteDb(db), current, UNMAPPED, { owner: "acme", repo }),
-      ).toBeNull();
+      expect(await teamRepositoryDenial(db, current, UNMAPPED, { owner: "acme", repo })).toBeNull();
     expect(
-      await teamRepositoryDenial(sqliteDb(db), current, UNMAPPED, {
+      await teamRepositoryDenial(db, current, UNMAPPED, {
         owner: "acme",
         repo: "elsewhere",
       }),
     ).toEqual({ denied: true, reason: NO_REPOSITORY });
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("a workspace without active admins names the role instead of a person", async () => {
-  const { db, item } = await seed();
+  const { db, close, item } = await seed();
   try {
-    db.run("UPDATE workspace_member SET active=0 WHERE role='admin'");
+    await insertRows(db, (q) =>
+      q.orm
+        .update(q.t.workspaceMember)
+        .set({ active: 0 })
+        .where(eq(q.t.workspaceMember.role, "admin")),
+    );
     expect(
       (
-        await teamRepositoryDenial(sqliteDb(db), await item(), UNMAPPED, {
+        await teamRepositoryDenial(db, await item(), UNMAPPED, {
           owner: "acme",
           repo: "elsewhere",
         })
@@ -141,33 +163,32 @@ test("a workspace without active admins names the role instead of a person", asy
       "Pascal has no repository in Paws yet. Ask a Paws admin to map one in Integrations, then delegate again.",
     );
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("the team name comes from the stored webhook, else the issue key, never from Linear", async () => {
-  const { db, item } = await seed();
+  const { db, close, item } = await seed();
   try {
-    const store = sqliteDb(db);
     const pascal = await item("PAS-1", "Pascal");
     const eng = await item("ENG-2", null);
     const unmapped = await item("PAS-3");
-    expect(await store.run((q) => issueTeamNameSteps(q, pascal))).toBe("Pascal");
-    expect(await store.run((q) => issueTeamNameSteps(q, eng))).toBe("ENG");
-    expect(await store.run((q) => teamMemberDenialSteps(q, unmapped))).toEqual({
+    expect(await db.run((q) => issueTeamNameSteps(q, pascal))).toBe("Pascal");
+    expect(await db.run((q) => issueTeamNameSteps(q, eng))).toBe("ENG");
+    expect(await db.run((q) => teamMemberDenialSteps(q, unmapped))).toEqual({
       denied: true,
       reason: "You're not a member of Pascal in Paws.",
     });
   } finally {
-    db.close();
+    await close();
   }
 });
 
 for (const [name, decide, response] of [
   [
     "an unmapped team's repository outside the catalog",
-    async (db: ReturnType<typeof tempDb>, item: WorkItemRecord) =>
-      (await teamRepositoryDenial(sqliteDb(db), item, UNMAPPED, {
+    async (db: Db, item: WorkItemRecord) =>
+      (await teamRepositoryDenial(db, item, UNMAPPED, {
         owner: "acme",
         repo: "elsewhere",
       }))!,
@@ -175,33 +196,32 @@ for (const [name, decide, response] of [
   ],
   [
     "a repository outside the team's links",
-    async (db: ReturnType<typeof tempDb>, item: WorkItemRecord) =>
-      (await teamRepositoryDenial(sqliteDb(db), item, MAPPED, { owner: "acme", repo: "catalog" }))!,
+    async (db: Db, item: WorkItemRecord) =>
+      (await teamRepositoryDenial(db, item, MAPPED, { owner: "acme", repo: "catalog" }))!,
     "acme/catalog isn't mapped to Pascal in Paws.",
   ],
   [
     "a delegator outside the team",
-    (db: ReturnType<typeof tempDb>, item: WorkItemRecord) =>
-      sqliteDb(db).run((q) => teamMemberDenialSteps(q, item)),
+    (db: Db, item: WorkItemRecord) => db.run((q) => teamMemberDenialSteps(q, item)),
     "You're not a member of Pascal in Paws.",
   ],
 ] as const) {
   test(`${name} cancels the item once and ends the session with its reason`, async () => {
-    const { db, item } = await seed();
+    const { db, close, item } = await seed();
     const current = await item();
     const integration = new FakeGitHubIntegration();
     integration.permitted = await decide(db, current);
-    const check = new GitHubInstallationCheck(sqliteDb(db), integration, () => 1000);
+    const check = new GitHubInstallationCheck(db, integration, () => 1000);
     try {
       expect(await check.ensure(current, "initial", new AbortController().signal)).toBe(false);
-      expect((await getWorkItem(sqliteDb(db), current.id))?.state).toBe("cancelled");
+      expect((await getWorkItem(db, current.id))?.state).toBe("cancelled");
       expect(await stopResponses(db)).toEqual([response]);
       expect(integration.checks.map((entry) => entry.kind)).toEqual(["installation", "member"]);
-      expect(db.query("SELECT * FROM github_integration_hold").all()).toHaveLength(0);
-      expect(db.query("SELECT * FROM question").all()).toHaveLength(0);
+      expect(await count(db, "githubIntegrationHold")).toBe(0);
+      expect(await count(db, "question")).toBe(0);
       expect(
         await check.ensure(
-          (await getWorkItem(sqliteDb(db), current.id))!,
+          (await getWorkItem(db, current.id))!,
           "initial",
           new AbortController().signal,
         ),
@@ -209,62 +229,62 @@ for (const [name, decide, response] of [
       expect(await stopResponses(db)).toEqual([response]);
     } finally {
       check.close();
-      db.close();
+      await close();
     }
   });
 }
 
 test("a denial without a reason still ends with the default response", async () => {
-  const { db, item } = await seed();
+  const { db, close, item } = await seed();
   const current = await item();
   const integration = new FakeGitHubIntegration();
   integration.permitted = false;
-  const check = new GitHubInstallationCheck(sqliteDb(db), integration, () => 1000);
+  const check = new GitHubInstallationCheck(db, integration, () => 1000);
   try {
     expect(await check.ensure(current, "initial", new AbortController().signal)).toBe(false);
-    expect((await getWorkItem(sqliteDb(db), current.id))?.state).toBe("cancelled");
+    expect((await getWorkItem(db, current.id))?.state).toBe("cancelled");
     expect(await stopResponses(db)).toEqual([
       "Cancelled from Linear. Branch paws/PAS-677 has no commits; no PR was opened. Re-delegate to continue.",
     ]);
   } finally {
     check.close();
-    db.close();
+    await close();
   }
 });
 
 test("a membership lost while held cancels on recovery with the member reason", async () => {
-  const { db, item } = await seed();
+  const { db, close, item } = await seed();
   const current = await item();
   const integration = new FakeGitHubIntegration();
   integration.installed = false;
-  const check = new GitHubInstallationCheck(sqliteDb(db), integration, () => 1000);
+  const check = new GitHubInstallationCheck(db, integration, () => 1000);
   try {
     expect(await check.ensure(current, "initial", new AbortController().signal)).toBe(false);
-    expect((await getWorkItem(sqliteDb(db), current.id))?.state).toBe("awaiting_input");
+    expect((await getWorkItem(db, current.id))?.state).toBe("awaiting_input");
     integration.installed = true;
-    integration.permitted = await sqliteDb(db).run((q) => teamMemberDenialSteps(q, current));
+    integration.permitted = await db.run((q) => teamMemberDenialSteps(q, current));
     await check.recover();
-    expect((await getWorkItem(sqliteDb(db), current.id))?.state).toBe("cancelled");
+    expect((await getWorkItem(db, current.id))?.state).toBe("cancelled");
     expect(await stopResponses(db)).toEqual(["You're not a member of Pascal in Paws."]);
   } finally {
     check.close();
-    db.close();
+    await close();
   }
 });
 
 test("a local membership check that fails explains without reading GitHub or Linear", async () => {
-  const { db, item } = await seed();
+  const { db, close, item } = await seed();
   const current = await item();
   const integration = new FakeGitHubIntegration({
     current: (q, subject) => teamMemberDenialSteps(q, subject),
   });
-  const check = new GitHubInstallationCheck(sqliteDb(db), integration, () => 1000);
+  const check = new GitHubInstallationCheck(db, integration, () => 1000);
   try {
     expect(await check.ensure(current, "initial", new AbortController().signal)).toBe(false);
     expect(await stopResponses(db)).toEqual(["You're not a member of Pascal in Paws."]);
     expect(integration.checks).toEqual([]);
   } finally {
     check.close();
-    db.close();
+    await close();
   }
 });

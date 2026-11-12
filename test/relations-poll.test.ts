@@ -1,19 +1,13 @@
 import { syncSteps } from "../src/runner-backend";
 import { expect, test } from "bun:test";
-import {
-  bindLinearSessionTask,
-  listTaskBlockers,
-  migrate,
-  openDatabase,
-  recordLinearInstallation,
-  sqliteDb,
-} from "../src/db";
+import { bindLinearSessionTask, listTaskBlockers, recordLinearInstallation } from "../src/db";
 import { createItemReconciler, intakeDelegatedIssue } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 async function relationsFixture(options: { batched?: boolean } = {}) {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   const tracker = createFakeTracker([
     {
       linearIssueId: "parent",
@@ -32,13 +26,17 @@ async function relationsFixture(options: { batched?: boolean } = {}) {
   });
   lifecycle.issues.set("child", { ...lifecycle.issue, id: "child" });
   lifecycle.issues.set("outside", { ...lifecycle.issue, id: "outside", stateType: "started" });
-  const intake = await intakeDelegatedIssue(sqliteDb(db), tracker, {
+  const intake = await intakeDelegatedIssue(db, tracker, {
     linearIssueId: "parent",
     now: 1000,
   });
   if (!intake.ok) throw new Error("intake failed");
-  db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-  await recordLinearInstallation(sqliteDb(db), {
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: "workspace", linearOrganizationId: "org", name: "Workspace", createdAt: 1000 }),
+  );
+  await recordLinearInstallation(db, {
     organizationId: "org",
     oauthClientId: "client",
     appUserId: "app",
@@ -46,11 +44,11 @@ async function relationsFixture(options: { batched?: boolean } = {}) {
     teamId: "team",
     observedAtMs: 1000,
   });
-  await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, { actorId: "human" });
+  await bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "human" });
   let epicReads = 0;
   const depReads: string[] = [];
   const reconciler = createItemReconciler({
-    store: sqliteDb(db),
+    store: db,
     tracker: {
       ...tracker,
       ...(options.batched === false ? { listBlockers: undefined } : {}),
@@ -76,7 +74,7 @@ async function relationsFixture(options: { batched?: boolean } = {}) {
     depReads,
     async [Symbol.asyncDispose]() {
       await reconciler.close();
-      db.close();
+      await close();
     },
   };
 }
@@ -100,14 +98,14 @@ test("a tracker without batched reads reads each item's relations", async () => 
 
 test("a relations poll picks up a blocker added in Linear and reconciles its delegation", async () => {
   await using fixture = await relationsFixture();
-  expect(await listTaskBlockers(sqliteDb(fixture.db), "child")).toEqual([]);
+  expect(await listTaskBlockers(fixture.db, "child")).toEqual([]);
   fixture.tracker.deps.set("child", [
     { blockerLinearIssueId: "outside", blockedLinearIssueId: "child" },
   ]);
   const changed = await fixture.reconciler.pollRelations();
   expect(changed).toHaveLength(1);
   expect(fixture.epicReads()).toBe(2);
-  expect(await listTaskBlockers(sqliteDb(fixture.db), "child")).toEqual(["outside"]);
+  expect(await listTaskBlockers(fixture.db, "child")).toEqual(["outside"]);
   expect(await fixture.reconciler.pollRelations()).toEqual([]);
   expect(fixture.epicReads()).toBe(2);
 });
@@ -118,10 +116,10 @@ test("a relations poll picks up a blocker removed in Linear", async () => {
     { blockerLinearIssueId: "outside", blockedLinearIssueId: "child" },
   ]);
   await fixture.reconciler.pollRelations();
-  expect(await listTaskBlockers(sqliteDb(fixture.db), "child")).toEqual(["outside"]);
+  expect(await listTaskBlockers(fixture.db, "child")).toEqual(["outside"]);
   fixture.tracker.deps.set("child", []);
   expect(await fixture.reconciler.pollRelations()).toHaveLength(1);
-  expect(await listTaskBlockers(sqliteDb(fixture.db), "child")).toEqual([]);
+  expect(await listTaskBlockers(fixture.db, "child")).toEqual([]);
 });
 
 test("a relation where the item blocks another issue does not count as its blocker", async () => {

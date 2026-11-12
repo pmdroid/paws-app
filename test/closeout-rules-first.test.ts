@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
 import { runAgent, type RunAgentOptions, type RunAgentResult } from "../src/acp";
 import { createCloseoutSession, workspacePolicyFiles } from "../src/closeout-spec";
 import { JOB_KIND, type Clock } from "../src/core";
@@ -17,19 +16,19 @@ import {
   getRun,
   getWorkItem,
   listWorkItems,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   syncWorkspaceMember,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import { createFakeGitHub } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator, type AgentLaunch } from "../src/loop";
 import { findOpenQuestion } from "../src/questions";
-import { githubClient } from "./e2e-harness";
+import { cloneRunnerPg, githubClient } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
-import { cloneRunner, runnerCheckout } from "./helpers";
+import { runnerCheckout } from "./helpers";
+import { seed as seedRows } from "./dialects";
+import { tempStore } from "./pglite";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -48,8 +47,7 @@ test("a checks run whose rule breaks asks the rule question before the checks, a
   const home = path.join(root, "home");
   await mkdir(pawsRoot, { recursive: true });
   await mkdir(home, { recursive: true });
-  const db = openDatabase(path.join(pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const clock: Clock = { now: () => Date.now(), mono: () => performance.now() };
   const jobs = new JobLoop(db, clock);
   const outbox = new OutboxDispatcher(db, clock);
@@ -64,7 +62,7 @@ test("a checks run whose rule breaks asks the rule question before the checks, a
   ]);
   const checksRuns: Array<boolean | undefined> = [];
   const repository = { owner: "pmdroid", repo: "paws-demo" };
-  const runner = cloneRunner(
+  const runner = cloneRunnerPg(
     repository,
     async (options: RunAgentOptions): Promise<RunAgentResult> => {
       if (options.checkpoint !== false) return runAgent(options);
@@ -106,7 +104,7 @@ test("a checks run whose rule breaks asks the rule question before the checks, a
   };
   const github = createFakeGitHub();
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -134,18 +132,18 @@ test("a checks run whose rule breaks asks the rule question before the checks, a
   };
   try {
     await orchestrator.onLinearEvent(created());
-    db.run("UPDATE work_item SET delegated_by = 'delegator-1'");
+    await seedRows(db, (q) => q.orm.update(q.t.workItem).set({ delegatedBy: "delegator-1" }));
     const turn = jobs.tick();
     await attachRunnerLease(db);
     await turn;
     await flush();
 
-    const item = (await listWorkItems(sqliteDb(db)))[0]!;
-    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("awaiting_input");
+    const item = (await listWorkItems(db))[0]!;
+    expect((await getWorkItem(db, item.id))?.state).toBe("awaiting_input");
     expect(checksRuns).toEqual([true]);
     expect(existsSync(checkMark)).toBe(false);
-    const question = (await findOpenQuestion(sqliteDb(db), "ses_1"))!;
-    expect((await getLinkAsk(sqliteDb(db), question.id))?.kind).toBe("rule");
+    const question = (await findOpenQuestion(db, "ses_1"))!;
+    expect((await getLinkAsk(db, question.id))?.kind).toBe("rule");
     expect(tracker.questions.at(-1)?.body).toContain("Rule api-contract broke");
 
     expect(
@@ -162,12 +160,12 @@ test("a checks run whose rule breaks asks the rule question before the checks, a
 
     expect(checksRuns).toEqual([true, undefined]);
     expect(existsSync(checkMark)).toBe(true);
-    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("merge_queue");
+    expect((await getWorkItem(db, item.id))?.state).toBe("merge_queue");
     // A runner-backed item reaches the merge queue with no worktree on the control plane.
     expect(existsSync(path.join(pawsRoot, "worktrees"))).toBe(false);
   } finally {
     await orchestrator.shutdown();
-    db.close();
+    await close();
     await rm(root, { recursive: true, force: true });
   }
 }, 90_000);
@@ -213,20 +211,24 @@ async function originWithPolicy(root: string, checkMark: string): Promise<string
   return bare;
 }
 
-async function attachRunnerLease(db: Database): Promise<void> {
+async function attachRunnerLease(db: Db): Promise<void> {
   for (let attempt = 0; attempt < 2000; attempt += 1) {
-    const item = (await listWorkItems(sqliteDb(db)))[0];
-    const run = item?.currentRunId ? await getRun(sqliteDb(db), item.currentRunId) : null;
+    const item = (await listWorkItems(db))[0];
+    const run = item?.currentRunId ? await getRun(db, item.currentRunId) : null;
     if (run?.status === "active") {
       const now = Date.now();
-      const userId = await putWorkspaceUser(sqliteDb(db), {
+      const userId = await putWorkspaceUser(db, {
         id: "user-1",
         linearUserId: "user-linear",
         name: "Owner",
         email: "owner@example.invalid",
       });
-      db.run("INSERT INTO workspace VALUES(?,?,?,?)", ["ws-1", "org-1", "Workspace", now]);
-      await syncWorkspaceMember(sqliteDb(db), {
+      await seedRows(db, (q) =>
+        q.orm
+          .insert(q.t.workspace)
+          .values({ id: "ws-1", linearOrganizationId: "org-1", name: "Workspace", createdAt: now }),
+      );
+      await syncWorkspaceMember(db, {
         workspaceId: "ws-1",
         userId,
         role: "admin",
@@ -234,14 +236,29 @@ async function attachRunnerLease(db: Database): Promise<void> {
         teamIds: [],
         now,
       });
-      db.run(
-        "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
-        ["runner-1", "ws-1", userId, "Runner", now, now],
-      );
-      db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,1)", ["runner-1"]);
-      db.run(
-        "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES(?,?,?,1,0,?,?,0)",
-        [run.id, "runner-1", "ws-1", `cmd-${run.id}`, now + 60_000],
+      await seedRows(
+        db,
+        (q) =>
+          q.orm.insert(q.t.runner).values({
+            id: "runner-1",
+            workspaceId: "ws-1",
+            ownerUserId: userId,
+            name: "Runner",
+            status: "active",
+            createdAt: now,
+            lastSeenAt: now,
+          }),
+        (q) => q.orm.insert(q.t.runnerCapacity).values({ runnerId: "runner-1", capacity: 1 }),
+        (q) =>
+          q.orm.insert(q.t.runnerWork).values({
+            runId: run.id,
+            runnerId: "runner-1",
+            workspaceId: "ws-1",
+            generation: 1,
+            runnerFence: 0,
+            commandId: `cmd-${run.id}`,
+            leaseUntil: now + 60_000,
+          }),
       );
       return;
     }

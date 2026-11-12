@@ -3,17 +3,17 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { and, count, eq, sql } from "drizzle-orm";
 import {
   bindAgentAccount,
   bindingAccountHealth,
   consumeWorkspaceBootstrap,
   createAgentAccount,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordAccountObservation,
   setAgentAccountEnabled,
-  sqliteDb,
+  type Db,
+  type PgDb,
 } from "../src/db";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerHealth } from "../src/runner-health";
@@ -26,26 +26,30 @@ import {
   workspaceTokenHash,
   type WorkspacePrincipal,
 } from "../src/workspace";
+import { withoutForeignKeys } from "./dialects";
+import { tempStore } from "./pglite";
 
 const roots: string[] = [];
-afterEach(() => {
+const stores: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of stores.splice(0)) await close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 async function fixture(runnerVersion = "0.1.61") {
   const root = mkdtempSync(join(tmpdir(), "paws-account-sign-in-"));
   roots.push(root);
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
+  stores.push(close);
   const now = 1_800_000_000_000;
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "fixture-host", now);
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-host", now);
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "fixture-host",
     name: "Fixture",
@@ -62,7 +66,7 @@ async function fixture(runnerVersion = "0.1.61") {
   };
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -82,7 +86,7 @@ async function fixture(runnerVersion = "0.1.61") {
   const runnerId = await enroll("goldbox");
   const otherRunner = await enroll("silverbox");
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -101,19 +105,19 @@ async function fixture(runnerVersion = "0.1.61") {
   expect(await heartbeat([])).toBe(200);
   const signedIn: string[] = [];
   const login = createRunnerLogin({
-    store: sqliteDb(db),
+    store: db,
     work,
     now: () => now,
     onSignedIn: ({ agent }) => signedIn.push(agent),
   });
-  const health = createRunnerHealth({ store: sqliteDb(db), work, now: () => now });
-  const account = await createAgentAccount(sqliteDb(db), {
+  const health = createRunnerHealth({ store: db, work, now: () => now });
+  const account = await createAgentAccount(db, {
     workspaceId: workspace.id,
     agent: "codex",
     label: "Second",
     now,
   });
-  const binding = await bindAgentAccount(sqliteDb(db), {
+  const binding = await bindAgentAccount(db, {
     workspaceId: workspace.id,
     accountId: account.id,
     runnerId,
@@ -154,12 +158,20 @@ async function fixture(runnerVersion = "0.1.61") {
   };
 }
 
-const policy = (db: ReturnType<typeof openDatabase>, runnerId: string) =>
-  db
-    .query<{ ready: number }, [string]>(
-      "SELECT ready FROM runner_agent_policy WHERE runner_id=? AND agent='codex'",
-    )
-    .get(runnerId);
+const policy = async (db: Db, runnerId: string) =>
+  (await db.run((q) =>
+    q.one(
+      q.orm
+        .select({ ready: q.t.runnerAgentPolicy.ready })
+        .from(q.t.runnerAgentPolicy)
+        .where(
+          and(
+            eq(q.t.runnerAgentPolicy.runnerId, runnerId),
+            eq(q.t.runnerAgentPolicy.agent, "codex"),
+          ),
+        ),
+    ),
+  )) ?? null;
 
 test("a named sign-in targets only its binding and leaves the default sign-in alone", async () => {
   const { db, runnerId, principal, login, account, binding, queued, signedIn } = await fixture();
@@ -184,7 +196,7 @@ test("a named sign-in targets only its binding and leaves the default sign-in al
     authorization: null,
     inputId: null,
   });
-  expect(policy(db, runnerId)).toBeNull();
+  expect(await policy(db, runnerId)).toBeNull();
   expect(signedIn).toEqual([]);
   await login.exchange(runnerId, legacy.id, {
     state: "connected",
@@ -192,7 +204,7 @@ test("a named sign-in targets only its binding and leaves the default sign-in al
     authorization: null,
     inputId: null,
   });
-  expect(policy(db, runnerId)?.ready).toBe(1);
+  expect((await policy(db, runnerId))?.ready).toBe(1);
   expect(signedIn).toEqual(["codex"]);
 
   const again = await login.start(principal, runnerId, "codex", binding.id);
@@ -213,20 +225,19 @@ test("a named sign-in targets only its binding and leaves the default sign-in al
       session: expect.objectContaining({ id: again.id, bindingId: binding.id, state: "starting" }),
     },
   ]);
-  db.close();
 });
 
 test("a completed named sign-in repairs only its binding's sign-in failure", async () => {
   const { db, now, runnerId, otherRunner, workspace, principal, login, account, binding } =
     await fixture();
-  const other = await bindAgentAccount(sqliteDb(db), {
+  const other = await bindAgentAccount(db, {
     workspaceId: workspace,
     accountId: account.id,
     runnerId: otherRunner,
     now,
   });
   for (const bindingId of [binding.id, other.id])
-    await recordAccountObservation(sqliteDb(db), {
+    await recordAccountObservation(db, {
       bindingId,
       source: "result",
       sourceId: `failed-${bindingId}`,
@@ -242,17 +253,16 @@ test("a completed named sign-in repairs only its binding's sign-in failure", asy
     inputId: null,
   });
   const auth = async (bindingId: string) =>
-    (await bindingAccountHealth(sqliteDb(db), bindingId)).find((row) => row.kind === "auth")?.state;
+    (await bindingAccountHealth(db, bindingId)).find((row) => row.kind === "auth")?.state;
   expect(await auth(binding.id)).toBe("ok");
   expect(await auth(other.id)).toBe("auth_required");
-  expect(policy(db, runnerId)).toBeNull();
-  db.close();
+  expect(await policy(db, runnerId)).toBeNull();
 });
 
 test("a disabled account can still sign in; a foreign or removed binding cannot", async () => {
   const { db, now, runnerId, otherRunner, workspace, principal, login, account, binding, browser } =
     await fixture();
-  await setAgentAccountEnabled(sqliteDb(db), {
+  await setAgentAccountEnabled(db, {
     workspaceId: workspace,
     accountId: account.id,
     enabled: false,
@@ -262,7 +272,7 @@ test("a disabled account can still sign in; a foreign or removed binding cannot"
   await expect(login.start(principal, runnerId, "claude", binding.id)).rejects.toThrow(
     /not available/,
   );
-  const elsewhere = await bindAgentAccount(sqliteDb(db), {
+  const elsewhere = await bindAgentAccount(db, {
     workspaceId: workspace,
     accountId: account.id,
     runnerId: otherRunner,
@@ -274,38 +284,56 @@ test("a disabled account can still sign in; a foreign or removed binding cannot"
   expect((await browser(`codex/login?binding=${elsewhere.id}`))!.status).toBe(409);
   expect((await browser("codex/login?binding=..%2Fx"))!.status).toBe(400);
   expect((await browser("codex/login?binding=01JMISSING0000000000000000"))!.status).toBe(403);
-  db.close();
 });
 
 test("a runner without account sign-in keeps refusing a named sign-in", async () => {
-  const { db, runnerId, principal, login, binding, queued, browser } = await fixture("0.1.59");
+  const { runnerId, principal, login, binding, queued, browser } = await fixture("0.1.59");
   await expect(login.start(principal, runnerId, "codex", binding.id)).rejects.toThrow(/0\.1\.61/);
   const response = (await browser(`codex/login?binding=${binding.id}`))!;
   expect(response.status).toBe(409);
   expect(((await response.json()) as { error: string }).error).toMatch(/0\.1\.61/);
   expect(await queued()).toEqual([]);
-  db.close();
 });
 
 test("re-signing in a binding waits until its running work drains", async () => {
   const { db, now, runnerId, workspace, principal, login, account, binding } = await fixture();
-  db.run("PRAGMA foreign_keys=OFF");
-  db.run(
-    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES('run-1',?,?,1,0,'command-1',?)",
-    [runnerId, workspace, now + 60_000],
-  );
-  db.run(
-    "INSERT INTO runner_command_account(command_id,workspace_id,runner_id,agent,account_id,binding_id,named,recorded_at) VALUES('command-1',?,?,'codex',?,?,1,?)",
-    [workspace, runnerId, account.id, binding.id, now],
-  );
-  db.run("PRAGMA foreign_keys=ON");
+  await withoutForeignKeys(db);
+  await db.run(function* (q) {
+    yield* q.exec(
+      q.orm.insert(q.t.runnerWork).values({
+        runId: "run-1",
+        runnerId,
+        workspaceId: workspace,
+        generation: 1,
+        runnerFence: 0,
+        commandId: "command-1",
+        leaseUntil: now + 60_000,
+      }),
+    );
+    yield* q.exec(
+      q.orm.insert(q.t.runnerCommandAccount).values({
+        commandId: "command-1",
+        workspaceId: workspace,
+        runnerId,
+        agent: "codex",
+        accountId: account.id,
+        bindingId: binding.id,
+        named: 1,
+        recordedAt: now,
+      }),
+    );
+  });
+  await (db as PgDb).orm.execute(sql`SET session_replication_role = origin`);
   await expect(login.start(principal, runnerId, "codex", binding.id)).rejects.toThrow(
     /still running/,
   );
   expect((await login.start(principal, runnerId, "codex")).bindingId).toBeNull();
-  db.run("UPDATE runner_work SET ended_at=? WHERE run_id='run-1'", [now]);
+  await db.run((q) =>
+    q.exec(
+      q.orm.update(q.t.runnerWork).set({ endedAt: now }).where(eq(q.t.runnerWork.runId, "run-1")),
+    ),
+  );
   expect((await login.start(principal, runnerId, "codex", binding.id)).bindingId).toBe(binding.id);
-  db.close();
 });
 
 test("a named sign-in check does not change the default sign-in's readiness or usage", async () => {
@@ -343,9 +371,15 @@ test("a named sign-in check does not change the default sign-in's readiness or u
   expect(await health.submit(runnerId, { ...result, account: target })).toEqual({
     duplicate: false,
   });
-  expect(policy(db, runnerId)).toBeNull();
+  expect(await policy(db, runnerId)).toBeNull();
   expect(
-    db.query("SELECT COUNT(*) AS count FROM runner_agent_usage WHERE runner_id=?").get(runnerId),
+    await db.run((q) =>
+      q.one(
+        q.orm
+          .select({ count: count() })
+          .from(q.t.runnerAgentUsage)
+          .where(eq(q.t.runnerAgentUsage.runnerId, runnerId)),
+      ),
+    ),
   ).toEqual({ count: 0 });
-  db.close();
 });

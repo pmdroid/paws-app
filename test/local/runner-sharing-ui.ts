@@ -1,13 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  consumeWorkspaceBootstrap,
-  migrate,
-  openDatabase,
-  putWorkspaceUser,
-  syncWorkspaceMember,
-  sqliteDb,
-} from "../../src/db";
+import { consumeWorkspaceBootstrap, putWorkspaceUser, syncWorkspaceMember } from "../../src/db";
 import { createRunnerPlacementBrowser } from "../../src/runner-placement";
 import {
   issueWorkspaceBootstrap,
@@ -15,21 +8,22 @@ import {
   workspaceTokenHash,
   type WorkspacePrincipal,
 } from "../../src/workspace";
+import { seed } from "../dialects";
+import { tempStore } from "../pglite";
 
 const root = process.argv[2];
 if (!root) throw new Error("Provide a disposable evidence directory");
 mkdirSync(root, { recursive: true });
-const db = openDatabase(join(root, "ui.sqlite"));
-migrate(db);
+const { db, close } = await tempStore();
 const now = Date.now();
-const owner = await putWorkspaceUser(sqliteDb(db), {
+const owner = await putWorkspaceUser(db, {
   id: workspaceId(),
   linearUserId: "owner",
   name: "Owner",
   email: "owner@example.invalid",
 });
-const token = await issueWorkspaceBootstrap(sqliteDb(db), "org", now);
-const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+const token = await issueWorkspaceBootstrap(db, "org", now);
+const workspace = await consumeWorkspaceBootstrap(db, {
   id: workspaceId(),
   organizationId: "org",
   name: "Test",
@@ -37,13 +31,13 @@ const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
   tokenHash: workspaceTokenHash(token),
   now,
 });
-const member = await putWorkspaceUser(sqliteDb(db), {
+const member = await putWorkspaceUser(db, {
   id: workspaceId(),
   linearUserId: "member",
   name: "Member",
   email: "member@example.invalid",
 });
-await syncWorkspaceMember(sqliteDb(db), {
+await syncWorkspaceMember(db, {
   workspaceId: workspace.id,
   userId: member,
   role: "member",
@@ -55,22 +49,45 @@ const runners = [
   { id: workspaceId(), name: "Pascal’s Linux host", ownerUserId: owner, status: "active" },
   { id: workspaceId(), name: "Design team host", ownerUserId: member, status: "active" },
 ];
-for (const runner of runners) {
-  db.run(
-    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
-    [runner.id, workspace.id, runner.ownerUserId, runner.name, now, now],
+for (const runner of runners)
+  await seed(
+    db,
+    (q) =>
+      q.orm.insert(q.t.runner).values({
+        id: runner.id,
+        workspaceId: workspace.id,
+        ownerUserId: runner.ownerUserId,
+        name: runner.name,
+        status: "active",
+        createdAt: now,
+        lastSeenAt: now,
+      }),
+    (q) => q.orm.insert(q.t.runnerPolicy).values({ runnerId: runner.id }),
+    (q) =>
+      q.orm.insert(q.t.runnerAgentPolicy).values({
+        runnerId: runner.id,
+        agent: "claude",
+        ready: 1,
+        quotaState: "exhausted",
+        resetsAt: now + 3600000,
+        cooldownUntil: now + 3600000,
+      }),
+    (q) =>
+      q.orm.insert(q.t.runnerExecutionUsage).values({
+        commandId: workspaceId(),
+        runnerId: runner.id,
+        ownerUserId: runner.ownerUserId,
+        agent: "claude",
+        model: "fixture-model",
+        resolvedModel: "fixture-model",
+        role: "implementer",
+        purpose: "work",
+        startedAt: now - 60000,
+        endedAt: now - 1000,
+        outcome: "quota_exhausted",
+      }),
   );
-  db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runner.id]);
-  db.run(
-    "INSERT INTO runner_agent_policy(runner_id,agent,ready,quota_state,resets_at,cooldown_until) VALUES(?,'claude',1,'exhausted',?,?)",
-    [runner.id, now + 3600000, now + 3600000],
-  );
-  db.run(
-    "INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,agent,model,resolved_model,role,purpose,started_at,ended_at,outcome) VALUES(?,?,?,'claude','fixture-model','fixture-model','implementer','work',?,?,'quota_exhausted')",
-    [workspaceId(), runner.id, runner.ownerUserId, now - 60000, now - 1000],
-  );
-}
-const browser = createRunnerPlacementBrowser({ store: sqliteDb(db) });
+const browser = createRunnerPlacementBrowser({ store: db });
 const built = await Bun.build({
   entrypoints: [new URL("../../src/dashboard/src/client/runners.ts", import.meta.url).pathname],
   target: "browser",
@@ -127,7 +144,7 @@ writeFileSync(
 console.log(`http://127.0.0.1:${server.port}`);
 async function stop() {
   await server.stop(true);
-  db.close();
+  await close();
   process.exit(0);
 }
 process.on("SIGTERM", stop);

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { count, like } from "drizzle-orm";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash, createHmac } from "node:crypto";
@@ -9,31 +10,36 @@ import {
   consumeGitHubAttributionRequest,
   deleteWorkspaceSession,
   githubAttribution,
-  migrate,
-  openDatabase,
+  openPawsStore,
   putWorkspaceUser,
   syncWorkspaceMember,
-  sqliteDb,
 } from "../src/db";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
 import { setJournalSink } from "../src/journal";
+import { seed } from "./dialects";
+import { copyMigratedPglite } from "./pglite";
 
 async function fixture(configured = true) {
   const root = mkdtempSync(join(tmpdir(), "paws-attribution-"));
-  const path = join(root, "db.sqlite");
-  let db = openDatabase(path);
-  migrate(db);
+  const path = join(root, "pglite");
+  await copyMigratedPglite(path);
+  let database = await openPawsStore({ url: null, pgliteDir: path });
+  let db = database.store;
   const now = Date.now();
-  db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',?)", [now]);
-  db.run("INSERT INTO workspace VALUES('other','other-org','Other',?)", [now]);
+  await seed(db, (q) =>
+    q.orm.insert(q.t.workspace).values([
+      { id: "workspace", linearOrganizationId: "org", name: "Workspace", createdAt: now },
+      { id: "other", linearOrganizationId: "other-org", name: "Other", createdAt: now },
+    ]),
+  );
   for (const id of ["alice", "bob"]) {
-    await putWorkspaceUser(sqliteDb(db), {
+    await putWorkspaceUser(db, {
       id,
       linearUserId: `linear-${id}`,
       name: id,
       email: `${id}@example.invalid`,
     });
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: "workspace",
       userId: id,
       role: "member",
@@ -42,7 +48,7 @@ async function fixture(configured = true) {
       now,
     });
   }
-  await syncWorkspaceMember(sqliteDb(db), {
+  await syncWorkspaceMember(db, {
     workspaceId: "other",
     userId: "alice",
     role: "member",
@@ -50,17 +56,17 @@ async function fixture(configured = true) {
     teamIds: ["team"],
     now,
   });
-  const alice = await issueWorkspaceSession(sqliteDb(db), {
+  const alice = await issueWorkspaceSession(db, {
     workspaceId: "workspace",
     userId: "alice",
     now,
   });
-  const bob = await issueWorkspaceSession(sqliteDb(db), {
+  const bob = await issueWorkspaceSession(db, {
     workspaceId: "workspace",
     userId: "bob",
     now,
   });
-  const other = await issueWorkspaceSession(sqliteDb(db), {
+  const other = await issueWorkspaceSession(db, {
     workspaceId: "other",
     userId: "alice",
     now,
@@ -119,7 +125,7 @@ async function fixture(configured = true) {
   const origin = `http://127.0.0.1:${server.port}`;
   function reconstruct() {
     access = createWorkspaceAccess({
-      store: sqliteDb(db),
+      store: db,
       publicUrl: origin,
       clientId: "linear-client",
       installedOrganization: { id: "org", name: "Workspace" },
@@ -228,21 +234,22 @@ async function fixture(configured = true) {
     async restart(nextConfigured = configured) {
       configured = nextConfigured;
       await access.stop();
-      db.close();
-      db = openDatabase(path);
+      await database.close();
+      database = await openPawsStore({ url: null, pgliteDir: path });
+      db = database.store;
       reconstruct();
     },
     async close() {
       await server.stop(true);
       await provider.stop(true);
       await access.stop();
-      db.close();
+      await database.close();
       rmSync(root, { recursive: true, force: true });
     },
   };
 }
 
-test("self-link persists verified consent over HTTP and SQLite restart with single-use PKCE and no token storage", async () => {
+test("self-link persists verified consent over HTTP and a database restart with single-use PKCE and no token storage", async () => {
   const f = await fixture();
   try {
     expect((await f.request("POST", f.alice, { consent: false })).status).toBe(400);
@@ -258,7 +265,7 @@ test("self-link persists verified consent over HTTP and SQLite restart with sing
         .update(pending.target.searchParams.get("state")!)
         .digest("base64url"),
     );
-    expect(await githubAttribution(sqliteDb(f.db), "workspace", "alice")).toEqual({
+    expect(await githubAttribution(f.db, "workspace", "alice")).toEqual({
       id: 12345,
       login: "verified-human",
       name: "Human Injected",
@@ -267,20 +274,28 @@ test("self-link persists verified consent over HTTP and SQLite restart with sing
     expect((await f.callback(pending)).status).toBe(403);
     expect(f.calls).toBe(2);
     await f.restart();
-    expect((await githubAttribution(sqliteDb(f.db), "workspace", "alice"))?.id).toBe(12345);
+    expect((await githubAttribution(f.db, "workspace", "alice"))?.id).toBe(12345);
     expect((await f.request("DELETE")).status).toBe(200);
-    expect(await githubAttribution(sqliteDb(f.db), "workspace", "alice")).toBeNull();
-    const audit = f.db
-      .query<{ action: string }, []>(
-        "SELECT action FROM workspace_access_audit WHERE action LIKE 'github.%'",
-      )
-      .all();
+    expect(await githubAttribution(f.db, "workspace", "alice")).toBeNull();
+    const audit = await f.db.run((q) =>
+      q.all(
+        q.orm
+          .select({ action: q.t.workspaceAccessAudit.action })
+          .from(q.t.workspaceAccessAudit)
+          .where(like(q.t.workspaceAccessAudit.action, "github.%")),
+      ),
+    );
     expect(audit.map((row) => row.action)).toEqual([
       "github.attribution.consented",
       "github.attribution.revoked",
     ]);
-    expect(readFileSync(f.path).includes(Buffer.from("ghu_fixtureIdentityOnly"))).toBe(false);
-    expect(readFileSync(f.path).includes(Buffer.from("fixture-client-secret"))).toBe(false);
+    await f.restart();
+    const stored = readdirSync(f.path, { recursive: true, withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => readFileSync(join(entry.parentPath, entry.name)).toString("latin1"));
+    expect(stored.length).toBeGreaterThan(0);
+    expect(stored.some((text) => text.includes("ghu_fixtureIdentityOnly"))).toBe(false);
+    expect(stored.some((text) => text.includes("fixture-client-secret"))).toBe(false);
   } finally {
     await f.close();
   }
@@ -311,7 +326,7 @@ for (const scenario of [
       let session = f.alice;
       let overrides = "";
       if (scenario === "stale-inactive" || scenario === "stale-guest") {
-        f.db.run("UPDATE workspace_member SET checked_at=?", [f.now + 1]);
+        await seed(f.db, (q) => q.orm.update(q.t.workspaceMember).set({ checkedAt: f.now + 1 }));
         if (scenario === "stale-inactive") f.active = false;
         else f.guest = true;
       }
@@ -321,11 +336,12 @@ for (const scenario of [
       if (scenario === "wrong-browser")
         pending.cookie = `__Host-paws-attribution=${"b".repeat(43)}`;
       if (scenario === "expired-state")
-        f.db.run("UPDATE github_attribution_request SET expires_at=?", [f.now]);
+        await seed(f.db, (q) =>
+          q.orm.update(q.t.githubAttributionRequest).set({ expiresAt: f.now }),
+        );
       if (scenario === "expired-session")
-        f.db.run("UPDATE workspace_session SET expires_at=?", [f.now]);
-      if (scenario === "logout")
-        await deleteWorkspaceSession(sqliteDb(f.db), f.alice.session.tokenHash);
+        await seed(f.db, (q) => q.orm.update(q.t.workspaceSession).set({ expiresAt: f.now }));
+      if (scenario === "logout") await deleteWorkspaceSession(f.db, f.alice.session.tokenHash);
       if (scenario === "demotion") f.guest = true;
       if (scenario === "removed") f.active = false;
       if (scenario === "personal-scope") f.scope = "repo";
@@ -336,7 +352,7 @@ for (const scenario of [
         };
       if (scenario === "logout-inflight")
         f.beforeUser = async () => {
-          await deleteWorkspaceSession(sqliteDb(f.db), f.alice.session.tokenHash);
+          await deleteWorkspaceSession(f.db, f.alice.session.tokenHash);
         };
       if (scenario === "demote-inflight")
         f.beforeUser = async () => {
@@ -344,7 +360,7 @@ for (const scenario of [
         };
       if (scenario === "wrong-state") pending.target.searchParams.set("state", "a".repeat(43));
       expect([401, 403]).toContain((await f.callback(pending, session, overrides)).status);
-      expect(await githubAttribution(sqliteDb(f.db), "workspace", "alice")).toBeNull();
+      expect(await githubAttribution(f.db, "workspace", "alice")).toBeNull();
       if (
         ["wrong-user", "wrong-workspace", "wrong-state", "logout", "demotion", "removed"].includes(
           scenario,
@@ -376,9 +392,9 @@ test("missing App credentials keep attribution readable and revocable without st
     expect((await f.request("GET", f.other)).status).toBe(403);
     expect((await f.request("GET", { ...f.alice, token: "invalid" })).status).toBe(401);
     expect(f.calls).toBe(0);
-    expect(f.db.query("SELECT count(*) AS n FROM github_attribution_request").get()).toEqual({
-      n: 0,
-    });
+    expect(
+      await f.db.run((q) => q.one(q.orm.select({ n: count() }).from(q.t.githubAttributionRequest))),
+    ).toEqual({ n: 0 });
     await f.restart(true);
     const interrupted = await f.begin();
     await f.restart(false);
@@ -394,7 +410,7 @@ test("missing App credentials keep attribution readable and revocable without st
       identity: { login: "verified-human" },
     });
     expect((await f.request("DELETE")).status).toBe(200);
-    expect(await githubAttribution(sqliteDb(f.db), "workspace", "alice")).toBeNull();
+    expect(await githubAttribution(f.db, "workspace", "alice")).toBeNull();
     expect((await f.callback(pending)).status).toBe(403);
   } finally {
     await f.close();
@@ -406,14 +422,16 @@ test("an older sign-in can still change its own attribution while the session is
   try {
     const pending = await f.begin();
     expect((await f.callback(pending)).status).toBe(303);
-    f.db.run("UPDATE workspace_session SET authenticated_at=?", [f.now - 2 * 24 * 60 * 60_000]);
+    await seed(f.db, (q) =>
+      q.orm.update(q.t.workspaceSession).set({ authenticatedAt: f.now - 2 * 24 * 60 * 60_000 }),
+    );
     const status = await f.request("GET");
     expect(status.status).toBe(200);
     const body = await status.json();
     expect(body).toMatchObject({ configured: true, identity: { login: "verified-human" } });
     expect(body).not.toHaveProperty("requiresSignIn");
     expect((await f.request("DELETE")).status).toBe(200);
-    expect(await githubAttribution(sqliteDb(f.db), "workspace", "alice")).toBeNull();
+    expect(await githubAttribution(f.db, "workspace", "alice")).toBeNull();
     expect((await f.request("GET", f.other)).status).toBe(403);
     f.guest = true;
     expect((await f.request("GET")).status).toBe(403);
@@ -427,7 +445,13 @@ test("the Settings link returns to Settings, and a forged return_path never leav
   try {
     const pending = await f.begin();
     expect(
-      f.db.query("SELECT return_path AS returnPath FROM github_attribution_request").get(),
+      await f.db.run((q) =>
+        q.one(
+          q.orm
+            .select({ returnPath: q.t.githubAttributionRequest.returnPath })
+            .from(q.t.githubAttributionRequest),
+        ),
+      ),
     ).toEqual({ returnPath: null });
     const back = await f.callback(
       pending,
@@ -454,7 +478,7 @@ test("the Settings link returns to Settings, and a forged return_path never leav
     ]) {
       expect(attributionReturnPath(forged)).toBe("/dashboard/settings/account");
       await expect(
-        beginGitHubAttribution(sqliteDb(f.db), binding(f), {
+        beginGitHubAttribution(f.db, binding(f), {
           stateHash: "s".repeat(43),
           browserHash: "b".repeat(43),
           now: f.now,
@@ -468,19 +492,21 @@ test("the Settings link returns to Settings, and a forged return_path never leav
     );
     expect(attributionReturnPath(null)).toBe("/dashboard/settings/account");
 
-    // SQLite refuses a forged path written past the helpers, and a damaged row reads as Settings.
-    await beginGitHubAttribution(sqliteDb(f.db), binding(f), {
+    // The database refuses a forged path written past the helpers, and a damaged row reads as Settings.
+    await beginGitHubAttribution(f.db, binding(f), {
       stateHash: "s".repeat(43),
       browserHash: "b".repeat(43),
       now: f.now,
       returnPath: onboarding,
     });
-    expect(() =>
-      f.db.run("UPDATE github_attribution_request SET return_path='https://evil.example/'"),
-    ).toThrow();
+    await expect(
+      seed(f.db, (q) =>
+        q.orm.update(q.t.githubAttributionRequest).set({ returnPath: "https://evil.example/" }),
+      ),
+    ).rejects.toThrow();
     expect(
       (
-        await consumeGitHubAttributionRequest(sqliteDb(f.db), binding(f), {
+        await consumeGitHubAttributionRequest(f.db, binding(f), {
           stateHash: "s".repeat(43),
           browserHash: "b".repeat(43),
           now: f.now,
@@ -570,7 +596,7 @@ test("opting out and revoking delete the grant; re-linking without the opt-in ke
     expect((await f.request("POST", f.alice, { pullRequestsAsMember: false })).status).toBe(200);
     expect(grantFiles(f.root)).toEqual([]);
     expect(await f.access.githubUserToken("workspace", "alice")).toBeNull();
-    expect((await githubAttribution(sqliteDb(f.db), "workspace", "alice"))?.id).toBe(12345);
+    expect((await githubAttribution(f.db, "workspace", "alice"))?.id).toBe(12345);
 
     await optIn();
     expect((await f.callback(await f.begin())).status).toBe(303);
@@ -592,7 +618,7 @@ test("opting out and revoking delete the grant; re-linking without the opt-in ke
     const unkept = await f.begin({ consent: true, pullRequestsAsMember: true });
     expect((await f.callback(unkept)).status).toBe(303);
     expect(grantFiles(f.root)).toEqual([]);
-    expect((await githubAttribution(sqliteDb(f.db), "workspace", "alice"))?.id).toBe(12345);
+    expect((await githubAttribution(f.db, "workspace", "alice"))?.id).toBe(12345);
   } finally {
     await f.close();
   }

@@ -4,18 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeClock, type GitCommitPolicy } from "../src/core";
 import {
-  sqliteDb,
   JobLoop,
   OutboxDispatcher,
   beginImplementRun,
   getWorkItem,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   type WorkItemRecord,
 } from "../src/db";
 import { createFakeTracker } from "../src/linear";
 import { Orchestrator } from "../src/loop";
+import { tempStore } from "./pglite";
 
 const BOT = { appId: "5306145", login: "paws-helper[bot]", id: 342190309 };
 const BOT_ONLY: GitCommitPolicy = { bot: BOT, credit: null };
@@ -31,13 +29,12 @@ const WITH_CREDIT: GitCommitPolicy = {
 
 test("a task keeps the commit policy it started with when credit changes mid-flight", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-run-commit-policy-"));
-  const db = openDatabase(join(root, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const clock = new FakeClock(1_000);
   let current = BOT_ONLY;
   let resolutions = 0;
   const orchestrator = new Orchestrator({
-    store: sqliteDb(db),
+    store: db,
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     clock,
@@ -63,14 +60,14 @@ test("a task keeps the commit policy it started with when credit changes mid-fli
     ).commitPolicy(item);
   try {
     await insertQueuedItem(db, { id: "task", sessionKey: "session", now: 1_000 });
-    await beginImplementRun(sqliteDb(db), "task", 1_000);
-    expect(await policyFor((await getWorkItem(sqliteDb(db), "task"))!)).toEqual(BOT_ONLY);
+    await beginImplementRun(db, "task", 1_000);
+    expect(await policyFor((await getWorkItem(db, "task"))!)).toEqual(BOT_ONLY);
     current = WITH_CREDIT;
-    expect(await policyFor((await getWorkItem(sqliteDb(db), "task"))!)).toEqual(BOT_ONLY);
+    expect(await policyFor((await getWorkItem(db, "task"))!)).toEqual(BOT_ONLY);
     expect(resolutions).toBe(1);
   } finally {
     await orchestrator.shutdown();
-    db.close();
+    await close();
     rmSync(root, { recursive: true, force: true });
   }
 });

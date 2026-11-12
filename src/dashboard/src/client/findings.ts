@@ -1,4 +1,10 @@
-import { renderFindingGroups, findingGroupsRequest } from "./finding-groups";
+import {
+  FINDING_LIST,
+  FINDING_ROW,
+  findingGroupsRequest,
+  renderFindingGroups,
+  severityBadge,
+} from "./finding-groups";
 import type { FindingGroupAction, FindingGroupsResponse } from "../finding-groups";
 import { journalCaught } from "../journal";
 import {
@@ -41,7 +47,7 @@ const STATUS_LABEL: Record<FindingStatus, string> = {
   gone: "Gone",
 };
 
-/** The Findings page: counts per severity, the filters, then one row per finding. */
+/** The Findings page: the severity control and filters in one row, then one row per finding. */
 export function renderFindings(view: FindingsView): string {
   const tabs = `<div class="row" role="group" aria-label="Findings view"><button class="btn${view.mode !== "groups" ? " on" : ""}" type="button" data-findings-mode="findings" aria-pressed="${view.mode !== "groups"}">Findings</button><button class="btn${view.mode === "groups" ? " on" : ""}" type="button" data-findings-mode="groups" aria-pressed="${view.mode === "groups"}">Groups</button></div>`;
   if (view.mode === "groups")
@@ -54,20 +60,22 @@ export function renderFindings(view: FindingsView): string {
   const data = view.data;
   const error = view.error ? `<p class="checkout-error" role="alert">${esc(view.error)}</p>` : "";
   const list = data.findings.length
-    ? `<ul class="issue-list finding-list" role="list" aria-label="Findings">${data.findings.map((finding) => row(finding, view.local)).join("")}</ul>`
+    ? `<ul class="${FINDING_LIST}" role="list" aria-label="Findings">${data.findings.map((finding) => row(finding, view.local)).join("")}</ul>`
     : `<div class="empty" role="status">${emptyLine(view.filter)}</div>`;
   const cut =
     data.total > data.findings.length
       ? `<p class="muted">Showing the ${data.findings.length} seen last of ${data.total}. Narrow the filters to see the rest.</p>`
       : "";
-  return `${tabs}${intro}${counts(data, view.filter)}${filters(data, view.filter)}${error}${message}${list}${cut}`;
+  return `${tabs}${intro}${filters(data, view.filter)}${error}${message}${list}${cut}`;
 }
 
 function counts(data: FindingsResponse, filter: FindingFilter): string {
   const label = filter.status === "all" ? "" : `${STATUS_LABEL[filter.status].toLowerCase()} `;
-  return `<div class="row findings-counts" role="group" aria-label="Findings per severity">${FINDING_SEVERITIES.map(
-    (severity) =>
-      `<button type="button" class="btn sm${filter.severity === severity ? " on" : ""}" data-findings-severity="${severity}" aria-pressed="${filter.severity === severity}"><span>${severity}</span> <b>${data.counts[severity]}</b><span class="sr-only"> ${label}finding${data.counts[severity] === 1 ? "" : "s"}</span></button>`,
+  const total = FINDING_SEVERITIES.reduce((sum, severity) => sum + data.counts[severity], 0);
+  const segment = (value: FindingFilter["severity"], name: string, count: number) =>
+    `<button type="button" class="btn sm seg" data-findings-severity="${value}" aria-pressed="${filter.severity === value}"><span>${name}</span> <span class="font-mono tabular-nums">${count}</span><span class="sr-only"> ${label}finding${count === 1 ? "" : "s"}</span></button>`;
+  return `<div class="flex flex-wrap gap-0.5 rounded-base border border-border p-0.5" role="group" aria-label="Findings per severity">${segment("", "All", total)}${FINDING_SEVERITIES.map(
+    (severity) => segment(severity, severity, data.counts[severity]),
   ).join("")}</div>`;
 }
 
@@ -78,7 +86,7 @@ function filters(data: FindingsResponse, filter: FindingFilter): string {
     any: string | null,
     choices: readonly { value: string; label: string }[],
   ) =>
-    `<label class="field"><span>${label}</span><select name="${name}" data-findings-filter="${name}">${any === null ? "" : `<option value="">${esc(any)}</option>`}${choices
+    `<label><span class="sr-only">${label}</span><select name="${name}" data-findings-filter="${name}">${any === null ? "" : `<option value="">${esc(any)}</option>`}${choices
       .map(
         (choice) =>
           `<option value="${esc(choice.value)}"${choice.value === filter[name] ? " selected" : ""}>${esc(choice.label)}</option>`,
@@ -87,16 +95,17 @@ function filters(data: FindingsResponse, filter: FindingFilter): string {
   const plain = (values: readonly string[]) => values.map((value) => ({ value, label: value }));
   const repositories = withSelected(data.repositories, filter.repository);
   const reviews = withSelected(data.reviews, filter.review);
-  return `<form class="settings-controls findings-filters" role="search" aria-label="Filter findings" data-findings-filters="">
-    ${select("repository", "Repository", "Any repository", plain(repositories))}
-    ${select("severity", "Severity", "Any severity", plain(FINDING_SEVERITIES))}
-    ${select("review", "Review", "Any review", plain(reviews))}
+  return `<form class="row findings-filters" role="search" aria-label="Filter findings" data-findings-filters="">
+    ${counts(data, filter)}
+    <input type="hidden" name="severity" value="${esc(filter.severity)}" />
     ${select("status", "Status", null, [
       ...FINDING_STATUSES.map((status) => ({ value: status, label: STATUS_LABEL[status] })),
       { value: "all", label: "Any status" },
     ])}
-    <label class="field"><span>Path starts with</span><input name="path" type="search" value="${esc(filter.path)}" placeholder="src/auth/" autocomplete="off" spellcheck="false" data-findings-filter="path" /></label>
-    <button class="btn" type="submit">Apply</button>
+    ${select("repository", "Repository", "Any repository", plain(repositories))}
+    ${select("review", "Review", "Any review", plain(reviews))}
+    <label><span class="sr-only">Path starts with</span><input name="path" type="search" value="${esc(filter.path)}" placeholder="Path starts with" autocomplete="off" spellcheck="false" data-findings-filter="path" /></label>
+    <button class="btn sm" type="submit">Apply</button>
   </form>`;
 }
 
@@ -110,32 +119,34 @@ function emptyLine(filter: FindingFilter): string {
     ([key, value]) => value !== DEFAULT_FINDING_FILTER[key as keyof FindingFilter],
   );
   if (filtered) return "No findings match these filters.";
-  return "No open findings. Closeout records them here when it accepts a head.";
+  return "No open findings. They appear when Closeout accepts a change whose review found something minor or pre-existing.";
 }
 
 function row(finding: FindingView, local: boolean): string {
   const place = finding.lines ? `${finding.path}:${finding.lines}` : finding.path;
-  const severity = `<span class="tag ${finding.severity === "P0" || finding.severity === "P1" ? "err" : finding.severity === "P2" ? "warn" : ""}">${esc(finding.severity)}</span>`;
   const status =
     finding.status === "open"
       ? ""
-      : `<span class="tag ${finding.status === "gone" ? "done" : ""}">${esc(STATUS_LABEL[finding.status])}</span>`;
+      : ` <span class="tag ${finding.status === "gone" ? "done" : ""}">${esc(STATUS_LABEL[finding.status])}</span>`;
   const items = finding.items
     .map(
       (item) =>
         `<a href="${routeHref({ view: "issues", id: item.id })}" title="${esc(item.title)}"><span class="lin-id">${esc(item.id)}</span></a>`,
     )
     .join(", ");
-  const reported = `Reported by ${finding.itemCount} issue${finding.itemCount === 1 ? "" : "s"}${items ? `: ${items}` : ""}`;
-  const seen =
-    finding.firstSeenAt === finding.lastSeenAt
-      ? `Seen ${esc(utcDate(finding.firstSeenAt))} UTC`
-      : `First seen ${esc(utcDate(finding.firstSeenAt))} UTC, last seen ${esc(utcDate(finding.lastSeenAt))} UTC`;
-  return `<li class="finding" id="finding-${finding.id}" data-finding="${finding.id}" data-finding-status="${finding.status}">
-    <div class="issue-row"><div class="min-w-0"><div class="row">${severity}<code>${esc(place)}</code>${status}</div><p class="finding-text">${esc(finding.text)}</p></div>${actions(finding, local)}
-    <div class="issue-facts finding-facts"><span>${esc(finding.repository)}</span><span>${esc(finding.review)}</span><span>${esc(finding.bugClass)}</span><span>${esc(finding.why)}</span><span>${reported}</span><span>${seen}</span></div></div>
-    ${statusLine(finding)}
+  const seen = `seen in ${finding.itemCount} issue${finding.itemCount === 1 ? "" : "s"}${items ? `: ${items}` : ""}`;
+  const last = `last ${esc(utcDate(finding.lastSeenAt))} UTC`;
+  return `<li class="${FINDING_ROW}" id="finding-${finding.id}" data-finding="${finding.id}" data-finding-status="${finding.status}">
+    ${severityBadge(finding.severity)}
+    <div class="min-w-0 space-y-0.5"><div><code>${esc(place)}</code>${status}</div><p class="[overflow-wrap:anywhere]">${esc(finding.text)}</p>
+    <p class="muted text-muted-foreground"><span>${esc(capitalize(finding.why))}</span> · ${seen} · ${last} · <span>${esc(finding.review)}</span> · <span>${esc(finding.repository)}</span></p>
+    ${statusLine(finding)}</div>
+    <div class="row col-span-full sm:col-span-1 sm:justify-end">${actions(finding, local)}</div>
   </li>`;
+}
+
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function statusLine(finding: FindingView): string {

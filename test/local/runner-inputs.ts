@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import {
@@ -21,11 +20,8 @@ import {
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
-  sqliteDb,
 } from "../../src/db";
 import { createRunnerControl } from "../../src/runner-control";
 import {
@@ -42,6 +38,9 @@ import {
 } from "../../src/runner-protocol";
 import { createRunnerInputStore } from "../../src/runner-inputs";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
+import { pgliteServer } from "../pglite";
+import { and, eq } from "drizzle-orm";
+import { seed } from "../dialects";
 
 export async function probeRunnerInputs(
   root: string,
@@ -50,18 +49,17 @@ export async function probeRunnerInputs(
   initializeAuthority = initializeRunnerAuthority,
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const path = join(root, "paws.sqlite");
-  const db = openDatabase(path);
-  migrate(db);
+  const postgres = await pgliteServer();
+  const db = postgres.store;
   let now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "transcript-org", now);
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const bootstrap = await issueWorkspaceBootstrap(db, "transcript-org", now);
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "transcript-org",
     name: "Fixture",
@@ -73,7 +71,7 @@ export async function probeRunnerInputs(
   const authority = await initializeAuthority(authorityRoot);
   now = Date.now();
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority,
     certificateRoot: authorityRoot,
     disconnect() {},
@@ -94,12 +92,16 @@ export async function probeRunnerInputs(
   });
   const { runnerId } = identity;
 
-  db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
+  await db.run(function* (q) {
+    yield* q.exec(
+      q.orm.update(q.t.runner).set({ status: "active" }).where(eq(q.t.runner.id, runnerId)),
+    );
+  });
   assert.equal(identity.status, "approved");
   if (identity.status !== "approved") throw new Error("Enrollment must be approved");
   const keys = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store: db,
     keyId: "fixture",
     privateKey: keys.privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -110,8 +112,8 @@ export async function probeRunnerInputs(
     now,
     sessionKey: "transcript-session",
   });
-  const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
-  await recordLinearInstallation(sqliteDb(db), {
+  const { run } = await beginImplementRun(db, item.id, now);
+  await recordLinearInstallation(db, {
     organizationId: "transcript-org",
     oauthClientId: "app",
     appUserId: "app-user",
@@ -119,7 +121,7 @@ export async function probeRunnerInputs(
     teamId: "team",
     observedAtMs: now,
   });
-  await bindLinearSessionTask(sqliteDb(db), "transcript-session", item.delegationId, {
+  await bindLinearSessionTask(db, "transcript-session", item.delegationId, {
     actorId: "owner",
   });
   const repository = {
@@ -128,12 +130,12 @@ export async function probeRunnerInputs(
     remoteUrl: "https://github.com/fixture/repository.git",
     baseSha: "a".repeat(40),
   };
-  await bindWorkItemRepository(sqliteDb(db), item.id, repository);
-  db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-    workspace.id,
-    "fixture/repository",
-    "team",
-  ]);
+  await bindWorkItemRepository(db, item.id, repository);
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspaceRepository)
+      .values({ workspaceId: workspace.id, repository: "fixture/repository", teamId: "team" }),
+  );
   const command: Extract<RunnerCommand, { type: "run" }> = {
     id: workspaceId(),
     runnerId,
@@ -385,13 +387,12 @@ export async function probeRunnerInputs(
         contextChunks.push(part);
       }
       assert.deepEqual(Buffer.concat(contextChunks), expected);
-      const restarted = JSON.parse(
-        execFileSync(
-          process.execPath,
-          ["--no-env-file", "test/local/runner-prompt-context-restart.ts"],
-          {
-            input: JSON.stringify({
-              dbPath: path,
+      const child = Bun.spawn(
+        [process.execPath, "--no-env-file", "test/local/runner-prompt-context-restart.ts"],
+        {
+          stdin: Buffer.from(
+            JSON.stringify({
+              url: postgres.url,
               root: storageRoot,
               runnerId,
               runId: run.id,
@@ -401,10 +402,13 @@ export async function probeRunnerInputs(
               now,
               sizeBytes: expected.length,
             }),
-            encoding: "utf8",
-          },
-        ),
+          ),
+          stdout: "pipe",
+        },
       );
+      const [exit, stdout] = await Promise.all([child.exited, new Response(child.stdout).text()]);
+      assert.equal(exit, 0);
+      const restarted = JSON.parse(stdout);
       assert.deepEqual(restarted, command.promptContext);
       observe(
         "restored large UTF-8 prompt transfers exactly over real mTLS and survives fresh-process store/database reopen",
@@ -471,10 +475,19 @@ export async function probeRunnerInputs(
       runnerId,
     );
     await Promise.resolve();
-    db.run("UPDATE workspace_member SET active=0 WHERE workspace_id=? AND user_id=?", [
-      workspace.id,
-      userId,
-    ]);
+    await db.run(function* (q) {
+      yield* q.exec(
+        q.orm
+          .update(q.t.workspaceMember)
+          .set({ active: 0 })
+          .where(
+            and(
+              eq(q.t.workspaceMember.workspaceId, workspace.id),
+              eq(q.t.workspaceMember.userId, userId),
+            ),
+          ),
+      );
+    });
     if (contextPrompt !== undefined) {
       const deniedContext = await send(
         { commandId: command.id, generation: 1, offset: 0 },
@@ -492,7 +505,7 @@ export async function probeRunnerInputs(
     );
   } finally {
     await listener.stop();
-    db.close();
+    await postgres.close();
   }
 }
 if (import.meta.main) {

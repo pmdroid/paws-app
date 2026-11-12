@@ -311,6 +311,7 @@ import {
   isWorkspaceAdmin,
   startWorkspaceAccess,
   delegatorCommitCredit,
+  delegatorPullRequestToken,
   createWorkspaceAssignments,
   type WorkspacePrincipal,
 } from "./workspace";
@@ -388,6 +389,7 @@ export type StartOptions = {
   refreshAgentCatalog?: boolean;
   /** Replaces the exe.dev client and VM bootstrap behind Create VM. Tests pass the fakes. */
   memberVm?: { exeDev: ExeDev; bootstrap: ExeDevBootstrap; pollMs?: number };
+  healthStatfs?: (path: string) => { bavail: number; blocks: number; bsize: number };
 };
 
 const LOOPBACK = "127.0.0.1";
@@ -1315,7 +1317,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       store,
       jobLoop: roleRunsJobs(runtime.role) ? () => jobLoop?.liveness() ?? null : undefined,
       instanceId: instance.id,
-      healthDisk: { paths: { tmpdir: tmpdir(), pawsHome: paths.home } },
+      healthDisk: {
+        paths: { tmpdir: tmpdir(), pawsHome: paths.home },
+        statfs: options?.healthStatfs,
+      },
       statusEnv: envSource,
       closeoutHome: paths.home,
       evidenceDir: paths.evidenceDir,
@@ -1809,6 +1814,10 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           },
         }),
         commitPolicyForItem,
+        pullRequestMember: async (item) =>
+          commentAccess
+            ? delegatorPullRequestToken(store, item.id, commentAccess.githubUserToken)
+            : null,
         files: linear?.files,
         secretsDir: paths.secretsDir,
         closeoutEvidenceObjects: evidenceObjects,

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import type { StoredReviewFinding } from "../closeout";
 import { JOB_KIND } from "../core";
 import {
@@ -16,9 +17,6 @@ import {
   recordItemPullRequest,
   listJobs,
   listOutbox,
-  migrate,
-  openDatabase,
-  sqliteDb,
   syncSteps,
 } from "../db";
 import {
@@ -39,6 +37,8 @@ import {
   type PullReviewCapabilities,
 } from "./pull-reviews";
 import { worktreeBranch } from "./sources";
+import { seed } from "../../test/dialects";
+import { tempStore } from "../../test/pglite";
 
 const THREADS: FakeReviewThread[] = [
   {
@@ -54,16 +54,15 @@ const THREADS: FakeReviewThread[] = [
 ];
 
 async function setup(threads = THREADS, options: { commentsPerPage?: number } = {}) {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const db = (await tempStore()).db;
   await insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
-  await bindWorkItemRepository(sqliteDb(db), "eng-1", {
+  await bindWorkItemRepository(db, "eng-1", {
     owner: "acme",
     repo: "one",
     remoteUrl: "https://github.com/acme/one.git",
   });
-  await beginImplementRun(sqliteDb(db), "eng-1", 1);
-  await enterMergeQueue(sqliteDb(db), "eng-1", {
+  await beginImplementRun(db, "eng-1", 1);
+  await enterMergeQueue(db, "eng-1", {
     phase: "merge_queue",
     baseSha: "b",
     wipCommit: "h",
@@ -114,7 +113,7 @@ async function setup(threads = THREADS, options: { commentsPerPage?: number } = 
     pull?: number;
   }) =>
     acceptGitHubDelivery(
-      sqliteDb(db),
+      db,
       {
         deliveryId: `d-${(delivery += 1)}`,
         event: "pull_request_review",
@@ -130,7 +129,7 @@ async function setup(threads = THREADS, options: { commentsPerPage?: number } = 
           pull_request: {
             number: review.pull ?? 7,
             head: {
-              ref: review.branch ?? worktreeBranch((await getWorkItem(sqliteDb(db), "eng-1"))!),
+              ref: review.branch ?? worktreeBranch((await getWorkItem(db, "eng-1"))!),
               sha: "h",
               repo: review.headRepository === null ? null : { id: review.headRepository ?? 11 },
             },
@@ -153,11 +152,11 @@ async function setup(threads = THREADS, options: { commentsPerPage?: number } = 
 }
 
 const reviewJobs = async (db: Awaited<ReturnType<typeof setup>>["db"]) =>
-  (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.pullReview);
+  (await listJobs(db)).filter((job) => job.queue === JOB_KIND.pullReview);
 const resumeJobs = async (db: Awaited<ReturnType<typeof setup>>["db"]) =>
-  (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
+  (await listJobs(db)).filter((job) => job.queue === JOB_KIND.resume);
 const feedbackActivities = async (db: Awaited<ReturnType<typeof setup>>["db"]) =>
-  (await listOutbox(sqliteDb(db)))
+  (await listOutbox(db))
     .filter((row) => row.op === "activity" && row.idempotencyKey.startsWith("pull-feedback:"))
     .map((row) => {
       const payload = row.payload as { kind: string; body: string };
@@ -173,9 +172,9 @@ describe("changes-requested reviews", () => {
       ["pull-review:501", { reviewId: 501 }],
     ]);
 
-    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("restarted");
-    expect((await getWorkItem(sqliteDb(db), "eng-1"))?.state).toBe("queued");
-    expect(await fixRounds(sqliteDb(db), "eng-1")).toBe(1);
+    expect(await handlePullReview(db, 501, caps)).toBe("restarted");
+    expect((await getWorkItem(db, "eng-1"))?.state).toBe("queued");
+    expect(await fixRounds(db, "eng-1")).toBe(1);
     const [resume] = await resumeJobs(db);
     expect(resume?.jobKey).toBe("review:eng-1:501");
     const payload = resume?.payload as { reason: string; handoff: string };
@@ -188,7 +187,7 @@ describe("changes-requested reviews", () => {
     expect(payload.handoff).toContain("Typo here.");
     expect(payload.handoff).not.toContain("Done already.");
     expect(payload.handoff).toContain(`${REVIEW_FIX_INSTRUCTION}\n\nReply list.`);
-    expect((await getPullReview(sqliteDb(db), 501))?.outcome).toBe("restarted");
+    expect((await getPullReview(db, 501))?.outcome).toBe("restarted");
     // The Linear session wakes with a thought the post-PR activity gate lets through.
     expect(await feedbackActivities(db)).toEqual([
       {
@@ -200,7 +199,7 @@ describe("changes-requested reviews", () => {
 
     // A redelivered webhook after the restart does nothing.
     expect(await deliver({ id: 501, state: "changes_requested" })).toBe(true);
-    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("done");
+    expect(await handlePullReview(db, 501, caps)).toBe("done");
     expect(await reviewJobs(db)).toHaveLength(1);
     expect(await resumeJobs(db)).toHaveLength(1);
     expect(await feedbackActivities(db)).toHaveLength(1);
@@ -220,7 +219,7 @@ describe("changes-requested reviews", () => {
       },
     ]);
     await deliver({ id: 501, state: "changes_requested", body: "Please fix the ranking." });
-    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("restarted");
+    expect(await handlePullReview(db, 501, caps)).toBe("restarted");
     const { handoff } = (await resumeJobs(db))[0]!.payload as { handoff: string };
     expect(handoff).toContain("- open, P2 at `src/rank.ts:14`: Ties must keep insertion order.");
     expect(handoff).toContain(
@@ -233,14 +232,14 @@ describe("changes-requested reviews", () => {
 
   test("a review fix on an accepted head is one candidate review escape, even redelivered", async () => {
     const { db, caps, deliver } = await setup();
-    await markCloseoutAccepted(sqliteDb(db), "eng-1", "h");
+    await markCloseoutAccepted(db, "eng-1", "h");
     await deliver({ id: 501, state: "changes_requested", body: "The ranking is reversed." });
     await deliver({ id: 501, state: "changes_requested", body: "The ranking is reversed." });
-    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("restarted");
-    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("done");
+    expect(await handlePullReview(db, 501, caps)).toBe("restarted");
+    expect(await handlePullReview(db, 501, caps)).toBe("done");
     await deliver({ id: 501, state: "changes_requested", body: "The ranking is reversed." });
-    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("done");
-    expect(await listReviewEscapes(sqliteDb(db))).toEqual([
+    expect(await handlePullReview(db, 501, caps)).toBe("done");
+    expect(await listReviewEscapes(db)).toEqual([
       expect.objectContaining({
         triggerKey: "review:eng-1:501",
         trigger: "review",
@@ -253,23 +252,25 @@ describe("changes-requested reviews", () => {
 
   test("wait for a running turn or evaluation, and hold the merge until the restart", async () => {
     const { db, caps, deliver, setBusy } = await setup();
-    db.run("UPDATE work_item SET state='verifying' WHERE id='eng-1'");
+    await seed(db, (q) =>
+      q.orm.update(q.t.workItem).set({ state: "verifying" }).where(eq(q.t.workItem.id, "eng-1")),
+    );
     await deliver({ id: 501, state: "changes_requested" });
-    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("wait");
+    expect(await handlePullReview(db, 501, caps)).toBe("wait");
 
-    await applyWorkItemEvent(sqliteDb(db), "eng-1", "closeout_accepted");
-    expect((await getWorkItem(sqliteDb(db), "eng-1"))?.state).toBe("merge_queue");
+    await applyWorkItemEvent(db, "eng-1", "closeout_accepted");
+    expect((await getWorkItem(db, "eng-1"))?.state).toBe("merge_queue");
     setBusy(true);
-    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("wait");
+    expect(await handlePullReview(db, 501, caps)).toBe("wait");
     const step = await advanceMerge(
-      sqliteDb(db),
+      db,
       { itemId: "eng-1", payload: {}, jobId: 1 },
       laneCapabilities(),
     );
     expect(step).toMatchObject({ kind: "wait", reason: "review", queued: true });
 
     setBusy(false);
-    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("restarted");
+    expect(await handlePullReview(db, 501, caps)).toBe("restarted");
     expect(await resumeJobs(db)).toHaveLength(1);
   });
 
@@ -280,20 +281,20 @@ describe("changes-requested reviews", () => {
     queue.calls.length = 0;
     setBusy(true);
     await deliver({ id: 501, state: "changes_requested" });
-    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("wait");
+    expect(await handlePullReview(db, 501, caps)).toBe("wait");
     expect(queue.calls).toEqual(["entry", "dequeue"]);
     expect(queue.isQueued(7)).toBe(false);
 
     // The merge step that finds the pull request gone waits for the review instead.
     const step = await advanceMerge(
-      sqliteDb(db),
+      db,
       { itemId: "eng-1", payload: {}, jobId: 1 },
       laneCapabilities(),
     );
     expect(step).toMatchObject({ kind: "wait", reason: "review" });
 
     setBusy(false);
-    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("restarted");
+    expect(await handlePullReview(db, 501, caps)).toBe("restarted");
     expect(queue.calls).toEqual(["entry", "dequeue", "entry"]);
   });
 
@@ -301,7 +302,7 @@ describe("changes-requested reviews", () => {
     const { db, caps, deliver, queue } = await setup();
     queue.merge(7);
     await deliver({ id: 501, state: "changes_requested" });
-    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("dropped");
+    expect(await handlePullReview(db, 501, caps)).toBe("dropped");
     expect(await resumeJobs(db)).toHaveLength(0);
   });
 
@@ -309,22 +310,24 @@ describe("changes-requested reviews", () => {
     const { db, caps, deliver, setLimit } = await setup();
     setLimit(0);
     await deliver({ id: 501, state: "changes_requested", body: "Rename it." });
-    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("asked");
+    expect(await handlePullReview(db, 501, caps)).toBe("asked");
     expect(await feedbackActivities(db)).toEqual([]);
-    expect((await getWorkItem(sqliteDb(db), "eng-1"))?.state).toBe("awaiting_input");
+    expect((await getWorkItem(db, "eng-1"))?.state).toBe("awaiting_input");
     expect(await resumeJobs(db)).toHaveLength(0);
-    const question = await findOpenQuestion(sqliteDb(db), "s-1");
+    const question = await findOpenQuestion(db, "s-1");
     expect(question?.kind).toBe("ci-help");
     expect(question?.body).toContain("all 0 fix rounds are spent");
     expect(question?.body).toContain("Rename it.");
-    expect((await getPullReview(sqliteDb(db), 501))?.outcome).toBe("asked");
+    expect((await getPullReview(db, 501))?.outcome).toBe("asked");
   });
 
   test("a review of an ended item is dropped", async () => {
     const { db, caps, deliver } = await setup();
     await deliver({ id: 501, state: "changes_requested" });
-    db.run("UPDATE work_item SET state='cancelled' WHERE id='eng-1'");
-    expect(await handlePullReview(sqliteDb(db), 501, caps)).toBe("dropped");
+    await seed(db, (q) =>
+      q.orm.update(q.t.workItem).set({ state: "cancelled" }).where(eq(q.t.workItem.id, "eng-1")),
+    );
+    expect(await handlePullReview(db, 501, caps)).toBe("dropped");
     expect(await resumeJobs(db)).toHaveLength(0);
   });
 });
@@ -333,11 +336,11 @@ describe("other reviews", () => {
   test("a comment-only review is a comment, not a change request", async () => {
     const { db, deliver } = await setup();
     await deliver({ id: 777, state: "commented" });
-    expect(await getPullReview(sqliteDb(db), 777)).toBeNull();
+    expect(await getPullReview(db, 777)).toBeNull();
     expect(await reviewJobs(db)).toHaveLength(0);
-    expect(
-      (await pendingPullComments(sqliteDb(db), "eng-1")).map((comment) => comment.commentId),
-    ).toEqual([777]);
+    expect((await pendingPullComments(db, "eng-1")).map((comment) => comment.commentId)).toEqual([
+      777,
+    ]);
   });
 
   test("approvals, edits and other branches record nothing", async () => {
@@ -352,7 +355,7 @@ describe("other reviews", () => {
     const { db, deliver } = await setup();
     await deliver({ id: 4, state: "changes_requested", headRepository: 99 });
     await deliver({ id: 5, state: "changes_requested", headRepository: null });
-    await recordItemPullRequest(sqliteDb(db), {
+    await recordItemPullRequest(db, {
       itemId: "eng-1",
       pullNumber: 7,
       pullUrl: null,
@@ -361,7 +364,7 @@ describe("other reviews", () => {
     await deliver({ id: 6, state: "changes_requested", pull: 8 });
     expect(await reviewJobs(db)).toHaveLength(0);
     await deliver({ id: 7, state: "changes_requested" });
-    expect(await getPullReview(sqliteDb(db), 7)).toMatchObject({ itemId: "eng-1", pullNumber: 7 });
+    expect(await getPullReview(db, 7)).toMatchObject({ itemId: "eng-1", pullNumber: 7 });
   });
 });
 

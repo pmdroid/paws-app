@@ -36,7 +36,7 @@ test("sidebar exposes every page exactly once and all page links round-trip", ()
     const route: Route = { view: "settings", page: page.id };
     expect(parseRoute(routeHref(route))).toEqual(route);
     const result = render({ ...model, route });
-    expect(result.content).toContain(`<h1 class="sr-only">${page.name}</h1>`);
+    expect(result.content).toContain(`<h1 class="settings-title">${page.name}</h1>`);
     expect(result.content).not.toContain("settings-navigation");
     expect(result.title).toContain(page.name);
   }
