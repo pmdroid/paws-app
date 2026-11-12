@@ -1,13 +1,6 @@
+import { eq } from "drizzle-orm";
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
-import {
-  consumeWorkspaceBootstrap,
-  migrate,
-  openDatabase,
-  putWorkspaceUser,
-  workspaceMember,
-  sqliteDb,
-} from "../../src/db";
+import { consumeWorkspaceBootstrap, putWorkspaceUser, workspaceMember } from "../../src/db";
 import {
   issueWorkspaceBootstrap,
   issueWorkspaceSession,
@@ -16,25 +9,25 @@ import {
   workspaceTokenHash,
   WORKSPACE_COOKIE,
 } from "../../src/workspace";
+import { tempStore } from "../pglite";
 
 type Observe = (name: string, passed: boolean, observed: unknown) => void;
 
 export async function probeWorkspaceRefresh(root: string, observe: Observe) {
   mkdirSync(root, { recursive: true });
-  const db = openDatabase(join(root, "lifecycle.sqlite"));
-  migrate(db);
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const { db, close } = await tempStore();
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "member",
     name: "Member",
     email: "member@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Workspace",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org")),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org")),
     now: Date.now(),
   });
   let reads = 0;
@@ -43,7 +36,7 @@ export async function probeWorkspaceRefresh(root: string, observe: Observe) {
   let maxActiveReads = 0;
   const secondGate = Promise.withResolvers<void>();
   const secondStarted = Promise.withResolvers<void>();
-  const sessionBeforeRefresh = await issueWorkspaceSession(sqliteDb(db), {
+  const sessionBeforeRefresh = await issueWorkspaceSession(db, {
     userId,
     workspaceId: workspace.id,
     now: Date.now(),
@@ -51,7 +44,7 @@ export async function probeWorkspaceRefresh(root: string, observe: Observe) {
   const gate = Promise.withResolvers<void>();
   const started = Promise.withResolvers<void>();
   const runtime = startWorkspaceAccess({
-    store: sqliteDb(db),
+    store: db,
     publicUrl: "https://paws.example",
     clientId: "client",
     refreshIntervalMs: 50,
@@ -111,7 +104,7 @@ export async function probeWorkspaceRefresh(root: string, observe: Observe) {
   const rejectedDuringDrain = rejectedBeforeDrain.every(Boolean);
   secondGate.resolve();
   await Promise.all([stopping, ...attempts]);
-  const member = await workspaceMember(sqliteDb(db), workspace.id, userId);
+  const member = await workspaceMember(db, workspace.id, userId);
   await runtime.refresh();
   observe(
     "permission invalidations during a refresh coalesce into a nonoverlapping follow-up joined by shutdown",
@@ -129,11 +122,16 @@ export async function probeWorkspaceRefresh(root: string, observe: Observe) {
     rejectedDuringDrain,
     { rejectedBeforeDrain },
   );
-  const remainingSession = db
-    .query<{ count: number }, [string]>(
-      "SELECT count(*) AS count FROM workspace_session WHERE token_hash=?",
+  const remainingSession = (
+    await db.run((q) =>
+      q.all(
+        q.orm
+          .select({ tokenHash: q.t.workspaceSession.tokenHash })
+          .from(q.t.workspaceSession)
+          .where(eq(q.t.workspaceSession.tokenHash, sessionBeforeRefresh.session.tokenHash)),
+      ),
     )
-    .get(sessionBeforeRefresh.session.tokenHash)!.count;
+  ).length;
   observe(
     "the later revocation deletes a persistent session after an earlier active snapshot",
     remainingSession === 0,
@@ -146,25 +144,24 @@ export async function probeWorkspaceRefresh(root: string, observe: Observe) {
     rejected = true;
   }
   observe("closed workspace access rejects new async operations", rejected, rejected);
-  db.close();
+  await close();
 
-  const draining = openDatabase(join(root, "request-drain.sqlite"));
-  migrate(draining);
-  const memberId = await putWorkspaceUser(sqliteDb(draining), {
+  const { db: draining, close: closeDraining } = await tempStore();
+  const memberId = await putWorkspaceUser(draining, {
     id: workspaceId(),
     linearUserId: "request-member",
     name: "Member",
     email: "member@example.invalid",
   });
-  const selected = await consumeWorkspaceBootstrap(sqliteDb(draining), {
+  const selected = await consumeWorkspaceBootstrap(draining, {
     id: workspaceId(),
     organizationId: "org",
     name: "Workspace",
     userId: memberId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(draining), "org", 0)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(draining, "org", 0)),
     now: 0,
   });
-  const session = await issueWorkspaceSession(sqliteDb(draining), {
+  const session = await issueWorkspaceSession(draining, {
     userId: memberId,
     workspaceId: selected.id,
     now: Date.now(),
@@ -173,7 +170,7 @@ export async function probeWorkspaceRefresh(root: string, observe: Observe) {
   const requestStarted = Promise.withResolvers<void>();
   let requestReads = 0;
   const owner = startWorkspaceAccess({
-    store: sqliteDb(draining),
+    store: draining,
     publicUrl: "https://paws.example",
     clientId: "client",
     onError: () => errors++,
@@ -214,7 +211,7 @@ export async function probeWorkspaceRefresh(root: string, observe: Observe) {
   await authenticated;
   await forcedRefresh;
   await stop;
-  const current = await workspaceMember(sqliteDb(draining), selected.id, memberId);
+  const current = await workspaceMember(draining, selected.id, memberId);
   observe(
     "shutdown joins the HTTP lookup and a fresh forced read after a later invalidation",
     requestWaited && requestStopped && requestReads === 2 && current?.active === false,
@@ -222,7 +219,7 @@ export async function probeWorkspaceRefresh(root: string, observe: Observe) {
   );
   let boundaryReads = 0;
   const boundary = startWorkspaceAccess({
-    store: sqliteDb(draining),
+    store: draining,
     publicUrl: "https://paws.example",
     clientId: "client",
     onError: () => errors++,
@@ -265,5 +262,5 @@ export async function probeWorkspaceRefresh(root: string, observe: Observe) {
     boundaryReads === 2 && late !== undefined && late !== initial,
     { boundaryReads, newOperation: late !== initial },
   );
-  draining.close();
+  await closeDraining();
 }

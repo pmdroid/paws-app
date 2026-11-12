@@ -9,18 +9,19 @@ import {
   bindLinearSessionTask,
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
+  getRun,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
   syncWorkspaceMember,
-  sqliteDb,
 } from "../../src/db";
 import { createRunnerKey } from "../../src/runner-identity";
 import { initializeRunnerCoordinator, openRunnerCoordinator } from "../../src/runner-coordinator";
 import { verifyRunnerCommand, type SignedRunnerCommand } from "../../src/runner-protocol";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
+import { tempStore } from "../pglite";
+import { eq } from "drizzle-orm";
+import { seed } from "../dialects";
 
 export async function probeRunnerCoordinator(
   root: string,
@@ -45,17 +46,16 @@ export async function probeRunnerCoordinator(
       duplicateInitializationDenied: true,
     },
   );
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const now = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "coordinator-owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = await issueWorkspaceBootstrap(sqliteDb(db), "coordinator-org", now);
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const bootstrap = await issueWorkspaceBootstrap(db, "coordinator-org", now);
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "coordinator-org",
     name: "Fixture",
@@ -106,13 +106,13 @@ export async function probeRunnerCoordinator(
   assert.equal(await openssl.exited, 0);
   const tls = { key: readFileSync(serverKey, "utf8"), cert: readFileSync(serverCert, "utf8") };
   const errors: unknown[] = [];
-  const memberId = await putWorkspaceUser(sqliteDb(db), {
+  const memberId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "member",
     name: "Member",
     email: "member@example.invalid",
   });
-  await syncWorkspaceMember(sqliteDb(db), {
+  await syncWorkspaceMember(db, {
     workspaceId: workspace.id,
     userId: memberId,
     role: "member",
@@ -185,8 +185,8 @@ export async function probeRunnerCoordinator(
       now,
       sessionKey: "coordinator-session",
     });
-    const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
-    await recordLinearInstallation(sqliteDb(db), {
+    const { run } = await beginImplementRun(db, item.id, now);
+    await recordLinearInstallation(db, {
       organizationId: "coordinator-org",
       oauthClientId: "fixture-app",
       appUserId: "fixture-app-user",
@@ -194,19 +194,21 @@ export async function probeRunnerCoordinator(
       teamId: "fixture-team",
       observedAtMs: now,
     });
-    await bindLinearSessionTask(sqliteDb(db), "coordinator-session", item.delegationId);
+    await bindLinearSessionTask(db, "coordinator-session", item.delegationId);
     const repository = {
       owner: "fixture",
       repo: "repository",
       remoteUrl: "https://github.com/fixture/repository.git",
       baseSha: "a".repeat(40),
     };
-    await bindWorkItemRepository(sqliteDb(db), item.id, repository);
-    db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-      workspace.id,
-      "fixture/repository",
-      "fixture-team",
-    ]);
+    await bindWorkItemRepository(db, item.id, repository);
+    await seed(db, (q) =>
+      q.orm.insert(q.t.workspaceRepository).values({
+        workspaceId: workspace.id,
+        repository: "fixture/repository",
+        teamId: "fixture-team",
+      }),
+    );
     await coordinator.work.assign({
       id: workspaceId(),
       type: "run",
@@ -334,11 +336,7 @@ export async function probeRunnerCoordinator(
       ).duplicate,
       true,
     );
-    assert.equal(
-      db.query<{ status: string }, [string]>("SELECT status FROM run WHERE id=?").get(run.id)!
-        .status,
-      "active",
-    );
+    assert.equal((await getRun(db, run.id))?.status, "active");
     observe(
       "mTLS heartbeat and result routes preserve grants, generations and untrusted-result status",
       true,
@@ -442,7 +440,14 @@ export async function probeRunnerCoordinator(
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert(retained && !retained.destroyed);
     const at = Date.now();
-    db.run("UPDATE runner SET revoked_at=?,status='revoked' WHERE id=?", [at, identity.runnerId]);
+    await db.run(function* (q) {
+      yield* q.exec(
+        q.orm
+          .update(q.t.runner)
+          .set({ revokedAt: at, status: "revoked" })
+          .where(eq(q.t.runner.id, identity.runnerId)),
+      );
+    });
     while (!retained.destroyed && Date.now() - at < 4500) await Bun.sleep(25);
     assert(retained.destroyed);
     await assert.rejects(exchange(coordinator.port, "/v1/commands", tls.cert, undefined, peer));
@@ -460,7 +465,7 @@ export async function probeRunnerCoordinator(
     keepAlive?.destroy();
     await browser.stop(true);
     await coordinator.stop();
-    db.close();
+    await close();
   }
 }
 

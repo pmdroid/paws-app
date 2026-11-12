@@ -1,4 +1,5 @@
 import "../quiet-journal";
+import { eq } from "drizzle-orm";
 import assert from "node:assert/strict";
 import { FakeClock } from "../../src/core";
 import {
@@ -11,6 +12,7 @@ import {
   recordLinearInstallation,
   syncWorkspaceMember,
   sqliteDb,
+  type Db,
 } from "../../src/db";
 import {
   createFakeTracker,
@@ -19,27 +21,54 @@ import {
 } from "../../src/linear";
 import { createParentDelegations } from "../../src/intake";
 import { Orchestrator } from "../../src/loop";
+import { seed } from "../dialects";
+import { tempStore } from "../pglite";
+
+type ParentFixtureOptions = { authorizeEvents?: boolean; startSessions?: boolean };
 
 /** A workspace, a fake Linear tracker and an orchestrator that adopts delegated parents. */
 export async function createParentFixture(
   filename = ":memory:",
-  { authorizeEvents = false, startSessions = true } = {},
+  options: ParentFixtureOptions = {},
 ) {
   const db = openDatabase(filename);
   migrate(db);
+  return { db, ...(await parentFixture(sqliteDb(db), options, async () => db.close())) };
+}
+
+export async function createParentFixturePg(options: ParentFixtureOptions = {}) {
+  const { db, close } = await tempStore();
+  return { db, ...(await parentFixture(db, options, close)) };
+}
+
+async function parentFixture(
+  db: Db,
+  { authorizeEvents = false, startSessions = true }: ParentFixtureOptions,
+  closeDb: () => Promise<void>,
+) {
   const clock = new FakeClock(Date.now());
-  if (!db.query("SELECT 1 FROM workspace WHERE id='workspace'").get()) {
-    db.run(
-      "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',0)",
+  const existing = await db.run((q) =>
+    q.one(
+      q.orm
+        .select({ id: q.t.workspace.id })
+        .from(q.t.workspace)
+        .where(eq(q.t.workspace.id, "workspace")),
+    ),
+  );
+  if (!existing) {
+    await seed(db, (q) =>
+      q.orm
+        .insert(q.t.workspace)
+        .values({ id: "workspace", linearOrganizationId: "org", name: "Workspace", createdAt: 0 }),
     );
     for (const id of ["actor", "lead"]) {
-      await putWorkspaceUser(sqliteDb(db), {
+      await putWorkspaceUser(db, {
         id,
         linearUserId: id,
         name: id,
         email: `${id}@example.test`,
       });
-      await syncWorkspaceMember(sqliteDb(db), {
+      await syncWorkspaceMember(db, {
         workspaceId: "workspace",
         userId: id,
         role: "member",
@@ -48,8 +77,10 @@ export async function createParentFixture(
         now: clock.now(),
       });
     }
-    db.run(
-      "INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES('workspace','owner/repo','team')",
+    await seed(db, (q) =>
+      q.orm
+        .insert(q.t.workspaceRepository)
+        .values({ workspaceId: "workspace", repository: "owner/repo", teamId: "team" }),
     );
   }
   const tracker = createFakeTracker([]);
@@ -60,7 +91,7 @@ export async function createParentFixture(
   const started: string[] = [];
   const intake = { delayed: false };
   const parents = createParentDelegations({
-    store: sqliteDb(db),
+    store: db,
     tracker,
     lifecycle: {
       inspect: async (id) =>
@@ -103,8 +134,8 @@ export async function createParentFixture(
       payload: "{}",
     };
     await accept!(event);
-    await ensureLinearSession(sqliteDb(db), { sessionId, issueId: target.id, creatorId: "app" });
-    await recordLinearInstallation(sqliteDb(db), {
+    await ensureLinearSession(db, { sessionId, issueId: target.id, creatorId: "app" });
+    await recordLinearInstallation(db, {
       sessionId,
       organizationId: "org",
       teamId: "team",
@@ -120,7 +151,7 @@ export async function createParentFixture(
   }
   const outbox = new OutboxDispatcher(db, clock);
   orchestrator = new Orchestrator({
-    store: sqliteDb(db),
+    store: db,
     clock,
     jobs: new JobLoop(db, clock),
     outbox,
@@ -140,7 +171,6 @@ export async function createParentFixture(
       : {}),
   });
   return {
-    db,
     clock,
     parents,
     orchestrator,
@@ -152,7 +182,7 @@ export async function createParentFixture(
     outbox,
     async close() {
       await orchestrator.shutdown();
-      db.close();
+      await closeDb();
     },
   };
 }

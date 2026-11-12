@@ -1,22 +1,20 @@
 import { generateKeyPairSync } from "node:crypto";
-import { migrate, openDatabase, sqliteDb } from "../../src/db";
+import { openPawsStore } from "../../src/db";
 import { createRunnerHealth } from "../../src/runner-health";
 import { createRunnerWork } from "../../src/runner-work";
 
-const [path, runnerId, commandId, timestamp] = process.argv.slice(2);
-if (!path || !runnerId || !commandId || !timestamp)
-  throw new Error("Missing health recovery input");
-const db = openDatabase(path);
+const [url, runnerId, commandId, timestamp] = process.argv.slice(2);
+if (!url || !runnerId || !commandId || !timestamp) throw new Error("Missing health recovery input");
+const { store, close } = await openPawsStore({ url, pgliteDir: "" });
 try {
-  migrate(db);
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store,
     keyId: "read-only-fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
-  const health = createRunnerHealth({ store: sqliteDb(db), work, now: () => Number(timestamp) });
+  const health = createRunnerHealth({ store, work, now: () => Number(timestamp) });
   console.log(JSON.stringify({ pid: process.pid, result: await health.read(runnerId, commandId) }));
 } finally {
-  db.close();
+  await close();
 }
