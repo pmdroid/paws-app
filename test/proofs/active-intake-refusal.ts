@@ -1,7 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { migrate, openDatabase, sqliteDb } from "../../src/db";
+import type { Db } from "../../src/db";
 import { intakeDelegatedIssue } from "../../src/intake";
 import {
   createFakeTracker,
@@ -10,7 +7,12 @@ import {
   INTAKE_RETRY_MS,
   type AcceptedLinearEvent,
 } from "../../src/linear";
+import { seed } from "../dialects";
+import { tempStore } from "../pglite";
 import type { Proof } from "./harness";
+
+const items = async (db: Db) =>
+  (await db.run((q) => q.all(q.orm.select().from(q.t.workItem)))).length;
 
 export default {
   covers: ["src/intake/intake.ts", "src/linear/acknowledge.ts", "src/linear/intake-queue.ts"],
@@ -19,9 +21,7 @@ export default {
   agent: () => [],
   async run(proof) {
     for (const failTransport of [false, true]) {
-      const dir = mkdtempSync(join(tmpdir(), "paws-refusal-"));
-      const db = openDatabase(join(dir, "paws.db"));
-      migrate(db);
+      const { db, close } = await tempStore();
       const tracker = createFakeTracker([
         {
           linearIssueId: "issue",
@@ -31,7 +31,7 @@ export default {
           subIssues: [],
         },
       ]);
-      await intakeDelegatedIssue(sqliteDb(db), tracker, {
+      await intakeDelegatedIssue(db, tracker, {
         linearIssueId: "issue",
         sessionId: "original",
         taskKey: "original",
@@ -66,7 +66,7 @@ export default {
       const refused = event("refused", "new", "created");
       const later = event("later", "new", "prompted");
       const independent = event("independent", "other", "prompted");
-      const store = createInboxStore(sqliteDb(db));
+      const store = createInboxStore(db);
       const delivered: string[] = [];
       const intake = createLinearIntake({
         store,
@@ -76,7 +76,7 @@ export default {
         log: () => {},
         followUp: async (input) => {
           if (input.dedupeKey === "refused") {
-            await intakeDelegatedIssue(sqliteDb(db), tracker, {
+            await intakeDelegatedIssue(db, tracker, {
               linearIssueId: "issue",
               sessionId: "new",
               taskKey: "refused",
@@ -117,32 +117,25 @@ export default {
             1,
           tracker.progress,
         );
-        proof.expect(
-          "no second item exists",
-          db.query("SELECT id FROM work_item").all().length === 1,
-        );
-        db.run("UPDATE work_item SET state = 'cancelled'");
+        proof.expect("no second item exists", (await items(db)) === 1);
+        await seed(db, (q) => q.orm.update(q.t.workItem).set({ state: "cancelled" }));
         now += 1_000_000;
         intake.queue.wake();
         await intake.queue.idle();
         proof.expect(
           "settled delegation never starts when original work ends",
-          db.query("SELECT id FROM work_item").all().length === 1,
+          (await items(db)) === 1,
         );
-        await intakeDelegatedIssue(sqliteDb(db), tracker, {
+        await intakeDelegatedIssue(db, tracker, {
           linearIssueId: "issue",
           sessionId: "new",
           taskKey: "fresh-input",
         });
-        proof.expect(
-          "new input can start after original work ends",
-          db.query("SELECT id FROM work_item").all().length === 2,
-        );
+        proof.expect("new input can start after original work ends", (await items(db)) === 2);
       } finally {
         await intake.queue.stop();
         await intake.onEvent.close();
-        db.close();
-        rmSync(dir, { recursive: true, force: true });
+        await close();
       }
     }
   },

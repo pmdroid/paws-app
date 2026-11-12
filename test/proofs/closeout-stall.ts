@@ -1,6 +1,5 @@
 import { FakeClock, JOB_KIND } from "../../src/core";
 import {
-  sqliteDb,
   applyWorkItemEvent,
   beginImplementRun,
   claimNextJob,
@@ -10,13 +9,12 @@ import {
   insertQueuedItem,
   insertRun,
   listJobs,
-  migrate,
-  openDatabase,
   saveCheckpoint,
   setCurrentRun,
 } from "../../src/db";
 import { findOpenQuestion } from "../../src/questions";
-import { answer } from "../questions";
+import { answerPg } from "../questions";
+import { tempStore } from "../pglite";
 import { recoverStalledCloseout } from "../../src/loop/closeout-stall";
 import { questionEffects } from "../../src/loop/question-effects";
 import type { Proof } from "./harness";
@@ -27,41 +25,34 @@ export default {
     "Quiet verification retries once, then asks a person whose Retry Closeout answer verifies the same head.",
   agent: () => [],
   async run(proof) {
-    const db = openDatabase(":memory:");
+    const { db, close } = await tempStore();
     try {
-      migrate(db);
       const clock = new FakeClock(Date.now() + 1000);
       await insertQueuedItem(db, { id: "quiet", sessionKey: "quiet-session", now: clock.now() });
-      await beginImplementRun(sqliteDb(db), "quiet", clock.now());
-      await applyWorkItemEvent(sqliteDb(db), "quiet", "turn_ended", { now: clock.now() });
-      await saveCheckpoint(sqliteDb(db), "quiet", {
+      await beginImplementRun(db, "quiet", clock.now());
+      await applyWorkItemEvent(db, "quiet", "turn_ended", { now: clock.now() });
+      await saveCheckpoint(db, "quiet", {
         phase: "verifying",
         baseSha: "base",
         wipCommit: "head",
       });
-      const oldJob = await enqueueJob(sqliteDb(db), {
+      const oldJob = await enqueueJob(db, {
         queue: JOB_KIND.reverify,
         payload: { itemId: "quiet" },
         now: clock.now(),
       });
-      await claimNextJob(sqliteDb(db), { now: clock.now(), leaseMs: 60 * 60_000 });
+      await claimNextJob(db, { now: clock.now(), leaseMs: 60 * 60_000 });
       const lines: string[] = [];
       for (let attempt = 0; attempt < 2; attempt++) {
         clock.advance(31 * 60_000);
-        await recoverStalledCloseout(sqliteDb(db), {
+        await recoverStalledCloseout(db, {
           now: clock.now(),
           cancel: async () => {},
           journal: (line) => lines.push(line),
         });
         if (attempt === 0) {
-          // The real re-verify closes the quiet run and opens a new one on the same head.
-          await markRun(
-            sqliteDb(db),
-            (await getWorkItem(sqliteDb(db), "quiet"))!.currentRunId!,
-            "lost",
-            clock.now(),
-          );
-          const rerun = await insertRun(sqliteDb(db), {
+          await markRun(db, (await getWorkItem(db, "quiet"))!.currentRunId!, "lost", clock.now());
+          const rerun = await insertRun(db, {
             itemId: "quiet",
             kind: "recheck",
             agent: "cursor",
@@ -69,26 +60,25 @@ export default {
             freshSession: true,
             now: clock.now(),
           });
-          await setCurrentRun(sqliteDb(db), "quiet", rerun.id);
+          await setCurrentRun(db, "quiet", rerun.id);
         }
       }
       proof.expect(
         "only one automatic retry was queued",
-        (await listJobs(sqliteDb(db))).filter(
-          (j) => j.queue === JOB_KIND.reverify && j.id !== oldJob,
-        ).length === 1,
+        (await listJobs(db)).filter((j) => j.queue === JOB_KIND.reverify && j.id !== oldJob)
+          .length === 1,
       );
       proof.expect(
         "the leased quiet job was cancelled",
-        (await listJobs(sqliteDb(db))).find((job) => job.id === oldJob)?.status === "cancelled",
+        (await listJobs(db)).find((job) => job.id === oldJob)?.status === "cancelled",
       );
       proof.expect("one retry journal line", lines.length === 1, lines);
       proof.expect(
         "second stall asks a person",
-        (await getWorkItem(sqliteDb(db), "quiet"))?.state === "awaiting_input",
-        await findOpenQuestion(sqliteDb(db), "quiet-session"),
+        (await getWorkItem(db, "quiet"))?.state === "awaiting_input",
+        await findOpenQuestion(db, "quiet-session"),
       );
-      await answer(
+      await answerPg(
         db,
         {
           sessionId: "quiet-session",
@@ -97,15 +87,15 @@ export default {
           answeredBy: "pascal",
           now: clock.now(),
         },
-        questionEffects(sqliteDb(db), { now: clock.now() }),
+        questionEffects(db, { now: clock.now() }),
       );
       proof.expect(
         "person retries verification on the same head",
-        (await getWorkItem(sqliteDb(db), "quiet"))?.state === "verifying" &&
-          (await getWorkItem(sqliteDb(db), "quiet"))?.checkpoint?.wipCommit === "head",
+        (await getWorkItem(db, "quiet"))?.state === "verifying" &&
+          (await getWorkItem(db, "quiet"))?.checkpoint?.wipCommit === "head",
       );
     } finally {
-      db.close();
+      await close();
     }
   },
 } satisfies Proof;

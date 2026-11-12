@@ -1,14 +1,14 @@
 import { createPrivateKey } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
-import { openDatabase, sqliteDb } from "../../src/db";
+import { openPawsStore } from "../../src/db";
 import { createRunnerWork } from "../../src/runner-work";
 
-const [path, keyPath, commandPath, barrier, at] = process.argv.slice(2);
-const db = openDatabase(path!);
+const [url, keyPath, commandPath, barrier, at] = process.argv.slice(2);
+const { store, close } = await openPawsStore({ url: url!, pgliteDir: "" });
 try {
   const work = createRunnerWork({
-    store: sqliteDb(db),
+    store,
     keyId: "fixture",
     privateKey: createPrivateKey(readFileSync(keyPath!)),
     eventKey: Buffer.alloc(32, 7),
@@ -24,5 +24,5 @@ try {
     console.log(JSON.stringify({ accepted: false, commandId: command.id, error: String(error) }));
   }
 } finally {
-  db.close();
+  await close();
 }

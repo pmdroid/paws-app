@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const repository = resolve(import.meta.dir, "../..");
 const root = mkdtempSync(join(tmpdir(), "paws-runner-cli-"));
+const pglite = dirname(Bun.resolveSync("@electric-sql/pglite", repository));
 const env = {
   PATH: "/usr/bin:/bin",
   HOME: root,
@@ -104,6 +105,12 @@ const child = Bun.spawn(
       [join(repository, "src/closeout-spec/schema"), "/schema"],
       [join(root, "paws.js"), "/proof/paws.js"],
       [join(root, "instance.js"), "/proof/instance.js"],
+      [join(repository, "src/db/drizzle-pg"), "/proof/drizzle-pg"],
+      ...["pglite.wasm", "initdb.wasm", "pglite.data"].map((file) => [
+        join(pglite, file),
+        `/proof/${file}`,
+      ]),
+      [join(pglite, "citext.tar.gz"), "/citext.tar.gz"],
       [join(root, "fake-agent.js"), "/proof/fake-agent.js"],
       [join(root, "script.json"), "/proof/script.json"],
       [join(repository, "src/process/process-anchor.ts"), "/proof/process-anchor.ts"],
