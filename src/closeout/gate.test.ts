@@ -1533,7 +1533,19 @@ describe("closeout gate", () => {
             },
           },
         });
-        expect(evaluation.outcome).toBe(parallel ? "accepted" : "rejected");
+        expect(
+          evaluation.outcome,
+          JSON.stringify({
+            error: evaluation.error,
+            message: evaluation.decision?.message,
+            items: evaluation.decision?.items.map(({ id, state, message }) => ({
+              id,
+              state,
+              message,
+            })),
+            states,
+          }),
+        ).toBe(parallel ? "accepted" : "rejected");
         if (parallel) {
           expect(states[0]).toBe("running");
           expect(states).not.toContain("pending");
