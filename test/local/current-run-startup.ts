@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { eq } from "drizzle-orm";
 import { FakeClock, JOB_KIND } from "../../src/core";
 import {
   bindWorkItemRepository,
@@ -14,11 +15,10 @@ import {
   OutboxDispatcher,
   saveTaskMode,
   syncSteps,
-  sqliteDb,
 } from "../../src/db";
 import { Orchestrator } from "../../src/loop";
-import { migratedDatabase } from "../helpers";
-import { workspaceAdmission, workspaceDispatch } from "../fake-workspace";
+import { workspaceAdmission, workspaceDispatchPg } from "../fake-workspace";
+import { tempStore } from "../pglite";
 
 export async function probeCurrentRunStartup(root: string) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -26,30 +26,34 @@ export async function probeCurrentRunStartup(root: string) {
   for (const mode of ["code", "artifact", "clarified-artifact"] as const) {
     const home = join(root, mode);
     mkdirSync(home, { mode: 0o700 });
-    const db = migratedDatabase(join(home, "paws.db"));
+    const store = await tempStore();
+    const db = store.db;
     const clock = new FakeClock(1000);
     const jobs = new JobLoop(db, clock);
     const item = await insertQueuedItem(db, { id: `item-${mode}`, sessionKey: `session-${mode}` });
     if (mode === "clarified-artifact") {
       const taskKey = "clarification-task";
-      db.run("UPDATE work_item SET task_key=? WHERE id=?", [
-        `${taskKey}:item:${item.linearIssueId}`,
-        item.id,
-      ]);
-      await saveTaskClassification(sqliteDb(db), taskKey, {
+      await db.run((q) =>
+        q.exec(
+          q.orm
+            .update(q.t.workItem)
+            .set({ taskKey: `${taskKey}:item:${item.linearIssueId}` })
+            .where(eq(q.t.workItem.id, item.id)),
+        ),
+      );
+      await saveTaskClassification(db, taskKey, {
         mode: "clarify",
         question: "Which page?",
       });
-      const previous = await beginImplementRun(sqliteDb(db), item.id, clock.now());
-      await markRun(sqliteDb(db), previous.run.id, "ended", clock.now());
-    } else await saveTaskMode(sqliteDb(db), item.id, mode, 0, mode === "artifact");
+      const previous = await beginImplementRun(db, item.id, clock.now());
+      await markRun(db, previous.run.id, "ended", clock.now());
+    } else await saveTaskMode(db, item.id, mode, 0, mode === "artifact");
     const repository = {
       owner: "fixture",
       repo: "repository",
       remoteUrl: "/unused-fixture-repository",
     };
-    if (mode !== "clarified-artifact")
-      await bindWorkItemRepository(sqliteDb(db), item.id, repository);
+    if (mode !== "clarified-artifact") await bindWorkItemRepository(db, item.id, repository);
     let probes = 0;
     let launches = 0;
     const host = {
@@ -59,7 +63,7 @@ export async function probeCurrentRunStartup(root: string) {
       recoveryUrl: "https://paws.example/status/#/settings/integrations",
     };
     const orchestrator = new Orchestrator({
-      store: sqliteDb(db),
+      store: db,
       admission: workspaceAdmission(db),
       jobs,
       clock,
@@ -105,9 +109,9 @@ export async function probeCurrentRunStartup(root: string) {
       },
     });
     try {
-      if (mode !== "clarified-artifact") await workspaceDispatch(db, { now: clock.now() });
+      if (mode !== "clarified-artifact") await workspaceDispatchPg(db, { now: clock.now() });
       else
-        await enqueueJob(sqliteDb(db), {
+        await enqueueJob(db, {
           queue: mode === "clarified-artifact" ? JOB_KIND.resume : JOB_KIND.start,
           payload: {
             itemId: item.id,
@@ -116,21 +120,26 @@ export async function probeCurrentRunStartup(root: string) {
           now: clock.now(),
         });
       await jobs.tick();
-      const current = (await getWorkItem(sqliteDb(db), item.id))!;
-      const hold = db
-        .query<{ current_run_id: string; status: string }, []>(
-          "SELECT current_run_id,status FROM github_integration_hold",
-        )
-        .get();
+      const current = (await getWorkItem(db, item.id))!;
+      const hold = await db.run((q) =>
+        q.one(
+          q.orm
+            .select({
+              currentRunId: q.t.githubIntegrationHold.currentRunId,
+              status: q.t.githubIntegrationHold.status,
+            })
+            .from(q.t.githubIntegrationHold),
+        ),
+      );
       assert.equal(current.state, "awaiting_input");
       assert.ok(current.currentRunId);
-      assert.equal(hold?.current_run_id, current.currentRunId);
+      assert.equal(hold?.currentRunId, current.currentRunId);
       assert.equal(hold?.status, "pending");
       assert.equal(launches, 0);
       observations.push({ mode, passed: true, state: current.state, probes, launches });
     } finally {
       await orchestrator.shutdown();
-      db.close();
+      await store.close();
     }
   }
   writeFileSync(join(root, "observations.json"), JSON.stringify(observations, null, 2));

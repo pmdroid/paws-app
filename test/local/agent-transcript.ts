@@ -1,14 +1,17 @@
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { sqliteDb, openDatabase, migrate, insertQueuedItem, beginImplementRun } from "../../src/db";
+import { openPawsStore, insertQueuedItem, beginImplementRun } from "../../src/db";
 import { createLiveStatusProvider, handleStatusRequest } from "../../src/dashboard";
+import { copyMigratedPglite } from "../pglite";
 
 const root = process.argv[2]!;
 mkdirSync(root, { recursive: true, mode: 0o700 });
-const db = openDatabase(join(root, "paws.db"));
-migrate(db);
+const pgliteDir = join(root, "pglite");
+await copyMigratedPglite(pgliteDir);
+const open = await openPawsStore({ url: null, pgliteDir });
+const db = open.store;
 const item = await insertQueuedItem(db, { id: "PAS-306", sessionKey: "transcript-session" });
-const { run } = await beginImplementRun(sqliteDb(db), item.id, Date.now());
+const { run } = await beginImplementRun(db, item.id, Date.now());
 const directory = join(root, "runs", run.id);
 mkdirSync(directory, { recursive: true, mode: 0o700 });
 const file = join(directory, "acp.jsonl");
@@ -87,7 +90,7 @@ writeFileSync(
       )
       .join(""),
 );
-const provider = createLiveStatusProvider(sqliteDb(db), {
+const provider = createLiveStatusProvider(db, {
   pawsHome: root,
   sessionIds: ["transcript-session"],
 });
@@ -115,7 +118,7 @@ const server = Bun.serve({
     return (
       (await handleStatusRequest(request, {
         provider,
-        store: sqliteDb(db),
+        store: db,
         closeoutHome: root,
         sessionIds: ["transcript-session"],
       })) ?? new Response("Not found", { status: 404 })
@@ -125,7 +128,7 @@ const server = Bun.serve({
 console.log(JSON.stringify({ origin: server.url.origin, runId: run.id }));
 process.on("SIGTERM", async () => {
   await server.stop(true);
-  db.close();
+  await open.close();
   process.exit(0);
 });
 await new Promise(() => {});
