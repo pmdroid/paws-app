@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { join } from "node:path";
-import { migrate, openDatabase, sqliteDb } from "../src/db";
+import { pawsPaths } from "../src/config";
+import { openPawsStore } from "../src/db";
 import { intakeDelegatedIssue } from "../src/intake";
 import {
   acknowledgeNewSession,
@@ -11,14 +11,15 @@ import {
   type AcceptedLinearEvent,
   type Sleeper,
 } from "../src/linear";
-import { tempHome } from "./helpers";
+import { migratedHome } from "./helpers";
 
 test.each(["session", null])(
-  "replays failed intake after reopening SQLite for %s",
+  "replays failed intake after reopening the store for %s",
   async (sessionId) => {
-    const path = join(tempHome(), "paws.db");
-    let db = openDatabase(path);
-    migrate(db);
+    const home = await migratedHome();
+    const reopen = () => openPawsStore({ url: null, pgliteDir: pawsPaths(home).pgliteDir });
+    let database = await reopen();
+    let db = database.store;
     const event: AcceptedLinearEvent = {
       dedupeKey: "created:retry",
       deliveryId: null,
@@ -41,9 +42,11 @@ test.each(["session", null])(
         subIssues: [],
       },
     ]);
-    let store = createInboxStore(sqliteDb(db));
+    let store = createInboxStore(db);
     await store.commit(event);
     let attempts = 0;
+    const items = () =>
+      db.run((q) => q.all(q.orm.select({ id: q.t.workItem.id }).from(q.t.workItem)));
     async function tick(fail: boolean) {
       let release: (() => void) | undefined;
       let sleeping: (() => void) | undefined;
@@ -59,7 +62,7 @@ test.each(["session", null])(
         wake: () => release?.(),
       };
       const poller = startCatchUpPoller({
-        db: sqliteDb(db),
+        db: db,
         store,
         sleeper,
         source: {
@@ -77,7 +80,7 @@ test.each(["session", null])(
           acknowledgeNewSession(tracker, accepted, async () => {
             attempts += 1;
             if (fail) throw new Error("scripted intake failure");
-            await intakeDelegatedIssue(sqliteDb(db), tracker, {
+            await intakeDelegatedIssue(db, tracker, {
               linearIssueId: "issue",
               sessionId,
             });
@@ -93,19 +96,20 @@ test.each(["session", null])(
       expect((await store.listUnhandled()).map((pending) => pending.dedupeKey)).toEqual([
         event.dedupeKey,
       ]);
-      expect(db.query("SELECT id FROM work_item").all()).toHaveLength(0);
+      expect(await items()).toHaveLength(0);
       if (sessionId) expect(tracker.progress.at(-1)?.kind).toBe("error");
-      db.close();
-      db = openDatabase(path);
-      store = createInboxStore(sqliteDb(db));
+      await database.close();
+      database = await reopen();
+      db = database.store;
+      store = createInboxStore(db);
       await tick(false);
       expect(attempts).toBe(2);
       expect(await store.listUnhandled()).toHaveLength(0);
-      expect(db.query("SELECT id FROM work_item").all()).toHaveLength(1);
+      expect(await items()).toHaveLength(1);
       await tick(false);
       expect(attempts).toBe(2);
     } finally {
-      db.close();
+      await database.close();
     }
   },
 );

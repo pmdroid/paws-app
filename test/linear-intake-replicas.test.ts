@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
-import { join } from "node:path";
-import { migrate, openDatabase, sqliteDb } from "../src/db";
+import { count, eq } from "drizzle-orm";
+import { openPawsStore } from "../src/db";
 import {
   INTAKE_LEASE_MS,
   POLL_INTERVAL_FAILING_MS,
@@ -15,13 +14,19 @@ import {
   type InboxStore,
   type IntakeQueue,
 } from "../src/linear";
-import { tempHome } from "./helpers";
+import { pgliteServer } from "./pglite";
 
-function replicas(): [Database, Database] {
-  const path = join(tempHome(), "paws.db");
-  const first = openDatabase(path);
-  migrate(first);
-  return [first, openDatabase(path)];
+async function replicas() {
+  const server = await pgliteServer();
+  const other = await openPawsStore({ url: server.url, pgliteDir: "" });
+  return {
+    first: server.store,
+    second: other.store,
+    async close() {
+      await other.close();
+      await server.close();
+    },
+  };
 }
 
 function linearEvent(
@@ -68,8 +73,8 @@ function instance(
 }
 
 test("two instances receiving the same events handle each one once, in session order", async () => {
-  const [first, second] = replicas();
-  const stores = [createInboxStore(sqliteDb(first)), createInboxStore(sqliteDb(second))] as const;
+  const { first, second, close } = await replicas();
+  const stores = [createInboxStore(first), createInboxStore(second)] as const;
   const delivered: string[] = [];
   const queues = [
     instance("acme-a", stores[0], Date.now, delivered),
@@ -90,11 +95,13 @@ test("two instances receiving the same events handle each one once, in session o
       }
       await Bun.sleep(1);
     }
-    while (
-      first
-        .query<{ n: number }, []>("SELECT COUNT(*) AS n FROM inbox_event WHERE handled = 0")
-        .get()!.n > 0
-    ) {
+    const unhandled = async () =>
+      (await first.run((q) =>
+        q.one(
+          q.orm.select({ n: count() }).from(q.t.inboxEvent).where(eq(q.t.inboxEvent.handled, 0)),
+        ),
+      ))!.n;
+    while ((await unhandled()) > 0) {
       await Promise.all(queues.map((queue) => queue.idle()));
       for (const queue of queues) queue.wake();
       await Bun.sleep(5);
@@ -114,19 +121,18 @@ test("two instances receiving the same events handle each one once, in session o
     });
   } finally {
     await Promise.all(queues.map((queue) => queue.stop()));
-    first.close();
-    second.close();
+    await close();
   }
 });
 
 test("an instance that dies mid-intake loses its lease, and the other takes the event after two minutes", async () => {
-  const [first, second] = replicas();
+  const { first, second, close } = await replicas();
   let clock = 1_000_000;
   const delivered: string[] = [];
   let die: (reason: Error) => void = () => {};
   const dying = instance(
     "acme-a",
-    createInboxStore(sqliteDb(first)),
+    createInboxStore(first),
     () => clock,
     delivered,
     () =>
@@ -134,9 +140,9 @@ test("an instance that dies mid-intake loses its lease, and the other takes the 
         die = reject;
       }),
   );
-  const surviving = instance("acme-b", createInboxStore(sqliteDb(second)), () => clock, delivered);
+  const surviving = instance("acme-b", createInboxStore(second), () => clock, delivered);
   try {
-    await createInboxStore(sqliteDb(first)).commit(linearEvent("acme-s1", "created"));
+    await createInboxStore(first).commit(linearEvent("acme-s1", "created"));
     dying.wake();
     while (delivered.length === 0) await Bun.sleep(1);
     clock += INTAKE_LEASE_MS - 1;
@@ -149,29 +155,30 @@ test("an instance that dies mid-intake loses its lease, and the other takes the 
     expect({
       whileLeased,
       delivered,
-      handled: second
-        .query<{ handled: number; locked_by: string | null }, []>(
-          "SELECT handled, locked_by FROM inbox_event",
-        )
-        .get(),
+      handled: await second.run((q) =>
+        q.one(
+          q.orm
+            .select({ handled: q.t.inboxEvent.handled, lockedBy: q.t.inboxEvent.lockedBy })
+            .from(q.t.inboxEvent),
+        ),
+      ),
     }).toEqual({
       whileLeased: ["acme-a session:acme-s1:created"],
       delivered: ["acme-a session:acme-s1:created", "acme-b session:acme-s1:created"],
-      handled: { handled: 1, locked_by: null },
+      handled: { handled: 1, lockedBy: null },
     });
   } finally {
     const stopping = dying.stop();
     die(new Error("acme-a is gone"));
     await Promise.all([stopping, surviving.stop()]);
-    first.close();
-    second.close();
+    await close();
   }
 });
 
 test("the poller on one instance reads verification failures another instance's webhook counted", async () => {
-  const [first, second] = replicas();
-  const receiving = createInboxStore(sqliteDb(first));
-  const polling = createInboxStore(sqliteDb(second));
+  const { first, second, close } = await replicas();
+  const receiving = createInboxStore(first);
+  const polling = createInboxStore(second);
   await receiving.setCursor("linear:webhook", 1_000);
   const reject = () =>
     handleLinearWebhook(
@@ -202,7 +209,6 @@ test("the poller on one instance reads verification failures another instance's 
       after: POLL_INTERVAL_FAILING_MS,
     });
   } finally {
-    first.close();
-    second.close();
+    await close();
   }
 });

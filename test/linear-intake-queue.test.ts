@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { asc, count, eq } from "drizzle-orm";
 import { RunnerSlotsBusyError, systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, migrate, openDatabase, sqliteDb } from "../src/db";
+import { JobLoop, OutboxDispatcher, type Db } from "../src/db";
 import {
   INTAKE_RETRY_MS,
   createFakeTracker,
@@ -15,7 +16,8 @@ import {
   type TrackerAdapter,
 } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
-import { tempDb, tempHome } from "./helpers";
+import { tempHome } from "./helpers";
+import { tempStore } from "./pglite";
 
 function created(n: number, receivedAt = 1): AcceptedLinearEvent {
   return {
@@ -33,18 +35,33 @@ function created(n: number, receivedAt = 1): AcceptedLinearEvent {
   };
 }
 
-function unhandled(db: ReturnType<typeof tempDb>): number {
-  return db
-    .query<{ n: number }, []>("SELECT COUNT(*) AS n FROM inbox_event WHERE handled = 0")
-    .get()!.n;
+async function unhandled(db: Db): Promise<number> {
+  const [row] = await db.run((q) =>
+    q.all(q.orm.select({ n: count() }).from(q.t.inboxEvent).where(eq(q.t.inboxEvent.handled, 0))),
+  );
+  return row!.n;
+}
+
+async function inboxRow(db: Db, sessionId: string) {
+  return (await db.run((q) =>
+    q.one(
+      q.orm
+        .select({
+          attempts: q.t.inboxEvent.attempts,
+          nextAttemptAt: q.t.inboxEvent.nextAttemptAt,
+          lastError: q.t.inboxEvent.lastError,
+        })
+        .from(q.t.inboxEvent)
+        .where(eq(q.t.inboxEvent.sessionId, sessionId)),
+    ),
+  ))!;
 }
 
 test("a burst of 20 sessions while every runner slot is busy and Linear rate-limits is queued two at a time", async () => {
   const home = tempHome();
   const root = join(home, "paws");
   mkdirSync(root);
-  const db = openDatabase(join(root, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   let clock = Date.parse("2026-10-22T03:55:00Z");
   const ledger = createLinearLedger({ now: () => clock, random: () => 0, log: () => {} });
   const fake = createFakeTracker(
@@ -96,7 +113,7 @@ test("a burst of 20 sessions while every runner slot is busy and Linear rate-lim
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     jobs,
     outbox,
     home,
@@ -112,7 +129,7 @@ test("a burst of 20 sessions while every runner slot is busy and Linear rate-lim
       agentForItem: remote,
     },
   });
-  const store = createInboxStore(sqliteDb(db));
+  const store = createInboxStore(db);
   let active = 0;
   let mostActive = 0;
   const { onEvent, queue } = createLinearIntake({
@@ -139,18 +156,23 @@ test("a burst of 20 sessions while every runner slot is busy and Linear rate-lim
       await store.commit(event);
       queue.arrive(event);
     }
-    for (let round = 0; round < 20 && unhandled(db) > 0; round++) {
+    for (let round = 0; round < 20 && (await unhandled(db)) > 0; round++) {
       await queue.idle();
-      if (unhandled(db) === 0) break;
+      if ((await unhandled(db)) === 0) break;
       clock += 60_000;
       queue.wake();
     }
     await queue.idle();
-    const items = db
-      .query<{ state: string }, []>("SELECT state FROM work_item ORDER BY linear_issue_id")
-      .all();
+    const items = await db.run((q) =>
+      q.all(
+        q.orm
+          .select({ state: q.t.workItem.state })
+          .from(q.t.workItem)
+          .orderBy(asc(q.t.workItem.linearIssueId)),
+      ),
+    );
     expect({
-      unhandled: unhandled(db),
+      unhandled: await unhandled(db),
       items: items.length,
       states: [...new Set(items.map((item) => item.state))],
       errors: fake.progress.filter((update) => update.kind === "error"),
@@ -171,13 +193,13 @@ test("a burst of 20 sessions while every runner slot is busy and Linear rate-lim
     await onEvent.close();
     await orchestrator.shutdown().catch(() => undefined);
     await outbox.idle();
-    db.close();
+    await close();
   }
 }, 20_000);
 
 test("a session that keeps failing retries on its own schedule while later sessions are admitted", async () => {
-  const db = tempDb();
-  const store = createInboxStore(sqliteDb(db));
+  const { db, close } = await tempStore();
+  const store = createInboxStore(db);
   let clock = 1_000_000;
   const delivered: string[] = [];
   const queue = createIntakeQueue({
@@ -190,12 +212,7 @@ test("a session that keeps failing retries on its own schedule while later sessi
       if (event.sessionId === "s0") throw new Error("Linear is unreachable for this session");
     },
   });
-  const failing = () =>
-    db
-      .query<{ attempts: number; next_attempt_at: number; last_error: string }, []>(
-        "SELECT attempts, next_attempt_at, last_error FROM inbox_event WHERE session_id = 's0'",
-      )
-      .get()!;
+  const failing = () => inboxRow(db, "s0");
   try {
     await store.commit(created(0));
     await store.commit(created(1));
@@ -203,7 +220,7 @@ test("a session that keeps failing retries on its own schedule while later sessi
     await queue.idle();
     const waits: number[] = [];
     for (let n = 2; n < 8; n++) {
-      const due = failing().next_attempt_at;
+      const due = (await failing()).nextAttemptAt!;
       waits.push(due - clock);
       // Not due yet: a wake admits the newer session and leaves the failing one alone.
       clock = due - 1;
@@ -216,12 +233,17 @@ test("a session that keeps failing retries on its own schedule while later sessi
     }
     expect({
       waits,
-      attempts: failing().attempts,
-      lastError: failing().last_error,
+      attempts: (await failing()).attempts,
+      lastError: (await failing()).lastError,
       delivered,
-      unhandled: db
-        .query<{ session_id: string }, []>("SELECT session_id FROM inbox_event WHERE handled = 0")
-        .all(),
+      unhandled: await db.run((q) =>
+        q.all(
+          q.orm
+            .select({ sessionId: q.t.inboxEvent.sessionId })
+            .from(q.t.inboxEvent)
+            .where(eq(q.t.inboxEvent.handled, 0)),
+        ),
+      ),
     }).toEqual({
       waits: [30_000, 60_000, 120_000, 300_000, 600_000, 600_000],
       attempts: 7,
@@ -242,18 +264,18 @@ test("a session that keeps failing retries on its own schedule while later sessi
         "s7",
         "s0",
       ],
-      unhandled: [{ session_id: "s0" }],
+      unhandled: [{ sessionId: "s0" }],
     });
     expect(INTAKE_RETRY_MS).toEqual([30_000, 60_000, 120_000, 300_000, 600_000]);
   } finally {
     await queue.stop();
-    db.close();
+    await close();
   }
 });
 
 test("the queue starts nothing during a Linear rate-limit hold and resumes after it", async () => {
-  const db = tempDb();
-  const store = createInboxStore(sqliteDb(db));
+  const { db, close } = await tempStore();
+  const store = createInboxStore(db);
   let clock = 1_000_000;
   const ledger = createLinearLedger({ now: () => clock, random: () => 0, log: () => {} });
   const delivered: string[] = [];
@@ -290,13 +312,13 @@ test("the queue starts nothing during a Linear rate-limit hold and resumes after
     expect({ held, delivered }).toEqual({ held: [], delivered: ["s0"] });
   } finally {
     await queue.stop();
-    db.close();
+    await close();
   }
 });
 
 test("a rate limit that asks for no wait still does not restart the intake at once", async () => {
-  const db = tempDb();
-  const store = createInboxStore(sqliteDb(db));
+  const { db, close } = await tempStore();
+  const store = createInboxStore(db);
   const clock = 1_000_000;
   let attempts = 0;
   const queue = createIntakeQueue({
@@ -322,25 +344,21 @@ test("a rate limit that asks for no wait still does not restart the intake at on
     await store.commit(created(0));
     queue.wake();
     await queue.idle();
-    const row = db
-      .query<{ attempts: number; next_attempt_at: number }, []>(
-        "SELECT attempts, next_attempt_at FROM inbox_event WHERE session_id = 's0'",
-      )
-      .get()!;
-    expect({ attempts, counted: row.attempts, wait: row.next_attempt_at - clock }).toEqual({
+    const row = await inboxRow(db, "s0");
+    expect({ attempts, counted: row.attempts, wait: row.nextAttemptAt! - clock }).toEqual({
       attempts: 1,
       counted: 0,
       wait: INTAKE_RETRY_MS[0],
     });
   } finally {
     await queue.stop();
-    db.close();
+    await close();
   }
 });
 
 test("every arrival posts its first activity at once while both intake slots are busy", async () => {
-  const db = tempDb();
-  const store = createInboxStore(sqliteDb(db));
+  const { db, close } = await tempStore();
+  const store = createInboxStore(db);
   const fake = createFakeTracker([]);
   let release = () => {};
   const blocked = new Promise<void>((resolve) => {
@@ -370,7 +388,7 @@ test("every arrival posts its first activity at once while both intake slots are
     const whileBusy = [...started];
     release();
     await queue.idle();
-    expect({ acknowledged, whileBusy, started, unhandled: unhandled(db) }).toEqual({
+    expect({ acknowledged, whileBusy, started, unhandled: await unhandled(db) }).toEqual({
       acknowledged: ["s0", "s1", "s2", "s3", "s4"],
       whileBusy: ["s0", "s1"],
       started: ["s0", "s1", "s2", "s3", "s4"],
@@ -380,6 +398,6 @@ test("every arrival posts its first activity at once while both intake slots are
     release();
     await queue.stop();
     await onEvent.close();
-    db.close();
+    await close();
   }
 });
