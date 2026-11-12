@@ -192,10 +192,11 @@ export class JobLoop {
     });
     try {
       while (!signal.aborted) {
+        const generation = this.readyGeneration;
         await this.fill(signal, concurrency);
         if (signal.aborted) break;
         const waitMs = await this.nextWaitMs(concurrency);
-        await this.pause(waitMs > 0 ? waitMs : this.pollMs, signal, sleeper);
+        await this.pause(waitMs > 0 ? waitMs : this.pollMs, generation, signal, sleeper);
       }
       await Promise.all(this.inflight);
     } finally {
@@ -382,9 +383,8 @@ export class JobLoop {
     for (const waker of pending) waker();
   }
 
-  private pause(ms: number, signal: AbortSignal, sleeper: Sleeper): Promise<void> {
+  private pause(ms: number, started: number, signal: AbortSignal, sleeper: Sleeper): Promise<void> {
     if (signal.aborted || ms <= 0) return Promise.resolve();
-    const started = this.readyGeneration;
     const child = new AbortController();
     return new Promise((resolve) => {
       let settled = false;
