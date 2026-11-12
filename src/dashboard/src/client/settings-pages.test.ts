@@ -15,7 +15,7 @@ test("the settings navigation has no Decisions page and opens on Agents", () => 
   expect(SETTINGS_PAGES[0]?.id).toBe("agents");
   expect(parseRoute("/settings")).toEqual({ view: "settings" });
   expect(parseRoute("/settings/decisions")).toEqual({ view: "settings" });
-  expect(renderSettingsPage()).toContain('<h1 class="settings-title">Agents</h1>');
+  expect(renderSettingsPage()).toContain('aria-current="page" class="settings-link">Agents</a>');
 });
 
 test("Agent instructions holds the brief, then skills, then hooks", () => {
@@ -23,33 +23,48 @@ test("Agent instructions holds the brief, then skills, then hooks", () => {
     id: "brief",
     name: "Agent instructions",
     description: "What coding agents are told: the brief, skills and hooks.",
-    when: "When agents keep missing a house rule. Your repository's AGENTS.md already reaches them.",
   });
   const html = renderSettingsPage("brief");
-  expect(html).toContain('<h1 class="settings-title">Agent instructions</h1>');
+  expect(html).toContain(
+    '<p class="sub">What coding agents are told: the brief, skills and hooks.</p>',
+  );
   const order = MOVED.map((id) => html.indexOf(`id="${id}"`));
   expect(order.every((at) => at >= 0)).toBe(true);
   expect(order).toEqual([...order].sort((a, b) => a - b));
 });
 
-test("every settings page says when to touch it, beside a page list that marks the current one", () => {
-  for (const page of SETTINGS_PAGES) expect(page.when.trim()).not.toBe("");
-  const html = renderSettingsPage("merging");
+test("settings shows one tab bar of nine pages in order, marking the current one", () => {
   const doc = new Window().document;
-  doc.body.innerHTML = html;
-  const nav = doc.querySelector('nav[aria-label="Settings pages"]');
-  const links = [...(nav?.querySelectorAll("a") ?? [])];
-  expect(links.map((link) => link.querySelector("span")?.textContent)).toEqual(
-    SETTINGS_PAGES.map((page) => page.name),
-  );
+  doc.body.innerHTML = renderSettingsPage("merging");
+  const navs = doc.querySelectorAll("nav");
+  expect(navs.length).toBe(1);
+  expect(navs[0]?.getAttribute("aria-label")).toBe("Settings pages");
+  const links = [...navs[0]!.querySelectorAll("a")];
+  expect(links.map((link) => link.textContent)).toEqual([
+    "Agents",
+    "Merging",
+    "Queue and limits",
+    "Agent instructions",
+    "Integrations",
+    "Members",
+    "Workspace access",
+    "Your account",
+    "Audit history",
+  ]);
+  for (const [index, link] of links.entries()) {
+    const id = SETTINGS_PAGES[index]!.id;
+    expect(link.getAttribute("href")?.endsWith(`/settings/${id}`)).toBe(true);
+    expect(parseRoute(new URL(link.getAttribute("href")!, ENGINE).pathname)).toEqual({
+      view: "settings",
+      page: id,
+    });
+  }
   const current = links.filter((link) => link.getAttribute("aria-current") === "page");
-  expect(current.map((link) => link.textContent)).toEqual(["Mergingadmin"]);
-  expect(links.find((link) => link.getAttribute("href")?.endsWith("/account"))?.textContent).toBe(
-    "Your accountyou",
-  );
-  expect(doc.querySelector("h1")?.textContent).toBe("Merging");
-  expect(doc.querySelector(".settings-when")?.textContent).toBe(
-    "When to touch this: Before your first merge if you want approvals on risky paths. Otherwise later.",
+  expect(current.map((link) => link.textContent)).toEqual(["Merging"]);
+  expect(doc.body.textContent).not.toMatch(/\badmin\b|\byou\b|When to touch this/);
+  expect(doc.querySelector(".settings-when, h1")).toBeNull();
+  expect(doc.querySelector(".settings-body > p.sub")?.textContent).toBe(
+    SETTINGS_PAGES[1]!.description,
   );
 });
 
