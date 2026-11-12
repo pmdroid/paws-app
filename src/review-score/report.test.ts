@@ -7,14 +7,12 @@ import {
   enterMergeQueue,
   insertQueuedItem,
   listReviewEscapes,
-  migrate,
-  openDatabase,
   recordReviewEscape,
   settleReviewEscape,
   type ReviewEscapeTrigger,
-  sqliteDb,
 } from "../db";
 import { formatReviewScore, readReviewEscapesFile, scoreReview } from "./report";
+import { tempStore } from "../../test/pglite";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -22,11 +20,10 @@ afterEach(() => {
 });
 
 async function candidates() {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const db = (await tempStore()).db;
   await insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
-  await beginImplementRun(sqliteDb(db), "eng-1", 1);
-  await enterMergeQueue(sqliteDb(db), "eng-1", {
+  await beginImplementRun(db, "eng-1", 1);
+  await enterMergeQueue(db, "eng-1", {
     phase: "merge_queue",
     baseSha: "b",
     wipCommit: "h",
@@ -36,7 +33,7 @@ async function candidates() {
     trigger: ReviewEscapeTrigger,
     settled?: { escape: boolean; reason?: "flake" | "tests_docs_format" },
   ) => {
-    await recordReviewEscape(sqliteDb(db), {
+    await recordReviewEscape(db, {
       triggerKey: `k-${(key += 1)}`,
       itemId: "eng-1",
       trigger,
@@ -46,7 +43,7 @@ async function candidates() {
       recordedAt: key * 10,
     });
     if (settled)
-      await settleReviewEscape(sqliteDb(db), key, {
+      await settleReviewEscape(db, key, {
         fixHead: "f",
         files: ["src/a.ts"],
         escape: settled.escape,
@@ -68,7 +65,7 @@ describe("the reviewer score report", () => {
     await add("comment");
     // Recording the same trigger key again changes nothing.
     expect(
-      await recordReviewEscape(sqliteDb(db), {
+      await recordReviewEscape(db, {
         triggerKey: "k-1",
         itemId: "eng-1",
         trigger: "ci",
@@ -79,7 +76,7 @@ describe("the reviewer score report", () => {
       }),
     ).toBe(false);
 
-    const score = scoreReview(await listReviewEscapes(sqliteDb(db)), [{ pr: 1 }, { pr: 2 }]);
+    const score = scoreReview(await listReviewEscapes(db), [{ pr: 1 }, { pr: 2 }]);
     expect(score).toEqual({
       afterMerge: 2,
       afterPullRequest: [
@@ -100,9 +97,7 @@ describe("the reviewer score report", () => {
       ].join("\n"),
     );
     // `since` leaves out the three CI candidates recorded before it.
-    expect(
-      scoreReview(await listReviewEscapes(sqliteDb(db), 40), null).afterPullRequest[0],
-    ).toEqual({
+    expect(scoreReview(await listReviewEscapes(db, 40), null).afterPullRequest[0]).toEqual({
       trigger: "ci",
       escapes: 0,
       notEscapes: {},

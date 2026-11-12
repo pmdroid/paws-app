@@ -1,18 +1,18 @@
 import { expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import {
   bindWorkItemRepository,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   syncWorkspaceMember,
   type WorkspaceRole,
-  sqliteDb,
 } from "../db";
 import { createFakeTracker, REVIEW_FINDING_LABEL } from "../linear";
 import type { StatusReview, StatusReviewFinding } from "../dashboard";
 import { issueWorkspaceSession } from "../workspace";
 import { createFindingIssueRoute } from "./route";
+import { seed } from "../../test/dialects";
+import { tempStore } from "../../test/pglite";
 
 const NOW = 1_700_000_000_000;
 const ORIGIN = "https://paws.example";
@@ -56,30 +56,28 @@ function review(id = "independent-review"): StatusReview {
 
 /** `null` leaves the signed-in user out of the workspace, the way a Linear guest never becomes a member. */
 async function setup(role: WorkspaceRole | null = "member") {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const db = (await tempStore()).db;
   for (const id of ["PAS-633", "PAS-700"]) {
     await insertQueuedItem(db, { id, sessionKey: `ses_${id}` });
-    await bindWorkItemRepository(sqliteDb(db), id, {
+    await bindWorkItemRepository(db, id, {
       owner: "acme",
       repo: "widgets",
       remoteUrl: "https://github.com/acme/widgets.git",
     });
   }
-  db.run("INSERT INTO workspace (id, linear_organization_id, name, created_at) VALUES (?,?,?,?)", [
-    "ws",
-    "org",
-    "Kyku",
-    NOW,
-  ]);
-  await putWorkspaceUser(sqliteDb(db), {
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: "ws", linearOrganizationId: "org", name: "Kyku", createdAt: NOW }),
+  );
+  await putWorkspaceUser(db, {
     id: "user-1",
     linearUserId: "linear-1",
     name: "Sam",
     email: "sam@example.com",
   });
   if (role !== null)
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: "ws",
       userId: "user-1",
       role,
@@ -87,7 +85,7 @@ async function setup(role: WorkspaceRole | null = "member") {
       teamIds: [],
       now: NOW,
     });
-  const { session } = await issueWorkspaceSession(sqliteDb(db), {
+  const { session } = await issueWorkspaceSession(db, {
     workspaceId: "ws",
     userId: "user-1",
     now: NOW,
@@ -129,7 +127,7 @@ async function setup(role: WorkspaceRole | null = "member") {
       }),
       access,
     );
-  const stored = () => db.query("SELECT * FROM review_finding_issue").all();
+  const stored = () => db.run((q) => q.all(q.orm.select().from(q.t.reviewFindingIssue)));
   return { db, tracker, post, stored };
 }
 
@@ -179,15 +177,15 @@ test("filing creates one issue in the item's team and project, in Triage, labell
     "relatedIssueId",
     "title",
   ]);
-  expect(stored()).toEqual([
+  expect(await stored()).toEqual([
     expect.objectContaining({
       repository: "acme/widgets",
       path: "src/retention/legacy.ts",
       lines: "7-9",
       identifier: "FAKE-1",
-      item_id: "PAS-633",
-      filed_by: "user-1",
-      filed_at: NOW + 5,
+      itemId: "PAS-633",
+      filedBy: "user-1",
+      filedAt: NOW + 5,
     }),
   ]);
 });
@@ -218,7 +216,7 @@ test("a second click, or the same finding on another item, returns the issue and
   const other = await post(fileOld("PAS-700"));
   expect(await other!.json()).toMatchObject({ identifier: "FAKE-1", filed: false });
   expect(tracker.findingIssueRequests).toHaveLength(1);
-  expect(stored()).toHaveLength(1);
+  expect(await stored()).toHaveLength(1);
 });
 
 test("two clicks at once file one issue", async () => {
@@ -232,7 +230,7 @@ test("two clicks at once file one issue", async () => {
 // A Linear guest never gets a workspace session, so the route only has to refuse a revoked member.
 test("a revoked member gets 403 and nothing is filed", async () => {
   const revoked = await setup();
-  await syncWorkspaceMember(sqliteDb(revoked.db), {
+  await syncWorkspaceMember(revoked.db, {
     workspaceId: "ws",
     userId: "user-1",
     role: "member",
@@ -243,9 +241,17 @@ test("a revoked member gets 403 and nothing is filed", async () => {
   expect((await revoked.post(fileOld()))?.status).toBe(403);
   expect(revoked.tracker.findingIssueRequests).toEqual([]);
   expect(
-    revoked.db
-      .query("SELECT action, subject FROM workspace_access_audit WHERE subject = ?")
-      .all(PATH),
+    await revoked.db.run((q) =>
+      q.all(
+        q.orm
+          .select({
+            action: q.t.workspaceAccessAudit.action,
+            subject: q.t.workspaceAccessAudit.subject,
+          })
+          .from(q.t.workspaceAccessAudit)
+          .where(eq(q.t.workspaceAccessAudit.subject, PATH)),
+      ),
+    ),
   ).toEqual([{ action: "access.denied", subject: PATH }]);
 });
 
@@ -254,7 +260,7 @@ test("a missing CSRF token or another origin is refused", async () => {
   expect((await post(fileOld(), { "x-paws-csrf": "" }))?.status).toBe(403);
   expect((await post(fileOld(), { origin: "https://evil.example" }))?.status).toBe(403);
   expect(tracker.findingIssueRequests).toEqual([]);
-  expect(stored()).toEqual([]);
+  expect(await stored()).toEqual([]);
 });
 
 test("a Linear error shows its message and stores nothing", async () => {
@@ -265,7 +271,7 @@ test("a Linear error shows its message and stores nothing", async () => {
   expect(await response!.json()).toEqual({
     error: "Linear did not file the issue: Linear rate limit reached",
   });
-  expect(stored()).toEqual([]);
+  expect(await stored()).toEqual([]);
   expect(tracker.findingIssues).toEqual([]);
 });
 
@@ -286,7 +292,7 @@ test("only a pre-existing finding of a visible item can be filed", async () => {
 
 test("signed out is 401, and other paths are not this route's", async () => {
   const handle = createFindingIssueRoute({
-    db: openDatabase(":memory:"),
+    db: (await tempStore()).db,
     reviews: async () => [],
     file: undefined,
   });

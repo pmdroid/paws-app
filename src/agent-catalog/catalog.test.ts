@@ -1,12 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  agentCatalogSummary,
-  listAgentVersions,
-  migrate,
-  openDatabase,
-  readAgentVersion,
-  sqliteDb,
-} from "../db";
+import { agentCatalogSummary, listAgentVersions, readAgentVersion } from "../db";
 import {
   AGENT_CATALOG_REFRESH_MS,
   createAgentCatalog,
@@ -14,6 +7,7 @@ import {
   parsePackageDocument,
   type AgentPackage,
 } from "./index";
+import { tempStore } from "../../test/pglite";
 
 const HOUR = 60 * 60 * 1000;
 const NOW = Date.parse("2026-10-24T12:00:00Z");
@@ -21,14 +15,13 @@ const DEMO: Record<string, AgentPackage> = {
   demo: { package: "demo-agent", native: "demo-agent" },
 };
 
-function setup(agents: Record<string, AgentPackage> = DEMO) {
-  const db = openDatabase(":memory:");
-  migrate(db);
+async function setup(agents: Record<string, AgentPackage> = DEMO) {
+  const db = (await tempStore()).db;
   const npm = createFakeNpmRegistry();
   let clock = NOW;
   const errors: unknown[] = [];
   const catalog = createAgentCatalog({
-    store: sqliteDb(db),
+    store: db,
     registry: npm.registry,
     agents,
     now: () => clock,
@@ -41,9 +34,8 @@ function setup(agents: Record<string, AgentPackage> = DEMO) {
     errors,
     advance: (ms: number) => (clock += ms),
     status: async (agent: string, version: string) =>
-      (await readAgentVersion(sqliteDb(db), agent, version))?.status,
-    row: async (agent: string, version: string) =>
-      await readAgentVersion(sqliteDb(db), agent, version),
+      (await readAgentVersion(db, agent, version))?.status,
+    row: async (agent: string, version: string) => await readAgentVersion(db, agent, version),
   };
 }
 
@@ -51,7 +43,7 @@ const sha = (n: number) => `sha512-${String(n).padStart(4, "0")}`;
 
 describe("agent version catalog", () => {
   test("a version is eligible once it has been on npm for 48 hours", async () => {
-    const { npm, catalog, status, row } = setup();
+    const { npm, catalog, status, row } = await setup();
     npm.publish("demo-agent", "1.0.0", { publishedAt: NOW - 47 * HOUR, integrity: sha(1) });
     npm.publish("demo-agent", "0.9.0", { publishedAt: NOW - 49 * HOUR, integrity: sha(2) });
     await catalog.refresh();
@@ -68,7 +60,7 @@ describe("agent version catalog", () => {
   });
 
   test("deprecated versions and prereleases are not eligible", async () => {
-    const { npm, catalog, status, row } = setup();
+    const { npm, catalog, status, row } = await setup();
     const old = NOW - 100 * HOUR;
     npm.publish("demo-agent", "1.0.0", { publishedAt: old, integrity: sha(1), deprecated: "bad" });
     npm.publish("demo-agent", "1.1.0-beta.1", { publishedAt: old, integrity: sha(2) });
@@ -86,7 +78,7 @@ describe("agent version catalog", () => {
   });
 
   test("an integrity change after first sight refuses the version for good", async () => {
-    const { npm, catalog, status, row } = setup();
+    const { npm, catalog, status, row } = await setup();
     npm.publish("demo-agent", "1.0.0", { publishedAt: NOW - 72 * HOUR, integrity: sha(1) });
     await catalog.refresh();
     expect(await status("demo", "1.0.0")).toBe("eligible");
@@ -104,7 +96,7 @@ describe("agent version catalog", () => {
   });
 
   test("an unchanged package costs one conditional request", async () => {
-    const { npm, catalog, status, advance } = setup();
+    const { npm, catalog, status, advance } = await setup();
     npm.publish("demo-agent", "1.0.0", { publishedAt: NOW - 47 * HOUR, integrity: sha(1) });
     await catalog.refresh();
     expect(npm.requests).toEqual([{ package: "demo-agent", ifNoneMatch: null, status: 200 }]);
@@ -119,7 +111,7 @@ describe("agent version catalog", () => {
   });
 
   test("native platform packages must be eligible at the same version", async () => {
-    const { npm, catalog, status, row } = setup();
+    const { npm, catalog, status, row } = await setup();
     const old = NOW - 72 * HOUR;
     const platforms = (version: string) => ({
       "demo-agent-linux-x64": version,
@@ -159,7 +151,7 @@ describe("agent version catalog", () => {
 
   test("an adapter takes the newest eligible native version its range allows", async () => {
     const agents = { wrap: { package: "wrap-acp", native: "core-cli" } };
-    const { npm, catalog, status, row } = setup(agents);
+    const { npm, catalog, status, row } = await setup(agents);
     const old = NOW - 72 * HOUR;
     npm.publish("wrap-acp", "1.0.0", {
       publishedAt: old,
@@ -189,7 +181,7 @@ describe("agent version catalog", () => {
   });
 
   test("a version npm no longer lists is kept but not offered", async () => {
-    const { npm, catalog, status } = setup();
+    const { npm, catalog, status } = await setup();
     npm.publish("demo-agent", "1.0.0", { publishedAt: NOW - 72 * HOUR, integrity: sha(1) });
     await catalog.refresh();
     npm.unpublish("demo-agent", "1.0.0");
@@ -198,14 +190,14 @@ describe("agent version catalog", () => {
   });
 
   test("a failed read never lets a waiting version pass on stored metadata", async () => {
-    const { db, npm, catalog, errors, status, row } = setup();
+    const { db, npm, catalog, errors, status, row } = await setup();
     npm.publish("demo-agent", "1.0.0", { publishedAt: NOW - 47 * HOUR, integrity: sha(1) });
     await catalog.refresh();
     expect(await status("demo", "1.0.0")).toBe("waiting");
     // npm pulls the version, but the next read fails, so only the old document is at hand.
     npm.unpublish("demo-agent", "1.0.0");
     const failing = createAgentCatalog({
-      store: sqliteDb(db),
+      store: db,
       agents: DEMO,
       now: () => NOW + 24 * HOUR,
       registry: {
@@ -221,7 +213,7 @@ describe("agent version catalog", () => {
   });
 
   test("a version first seen during a failed platform read waits for a fresh read", async () => {
-    const { db, npm, catalog, errors, status, row } = setup();
+    const { db, npm, catalog, errors, status, row } = await setup();
     const old = NOW - 72 * HOUR;
     npm.publish("demo-agent-linux-x64", "3.0.0", { publishedAt: old, integrity: sha(1) });
     npm.publish("demo-agent-linux-x64", "2.9.0", { publishedAt: old, integrity: sha(3) });
@@ -238,7 +230,7 @@ describe("agent version catalog", () => {
       optionalDependencies: { "demo-agent-linux-x64": "3.0.0" },
     });
     const flaky = createAgentCatalog({
-      store: sqliteDb(db),
+      store: db,
       agents: DEMO,
       now: () => NOW + HOUR,
       registry: {
@@ -258,7 +250,7 @@ describe("agent version catalog", () => {
 
   test("a failed native read keeps the validated native version when a platform package ages in", async () => {
     const agents = { wrap: { package: "wrap-acp", native: "core-cli" } };
-    const { db, npm, catalog, errors, row } = setup(agents);
+    const { db, npm, catalog, errors, row } = await setup(agents);
     const old = NOW - 72 * HOUR;
     npm.publish("wrap-acp", "1.0.0", {
       publishedAt: old,
@@ -283,7 +275,7 @@ describe("agent version catalog", () => {
     // its package is now old enough, so only the cached core-cli document still lists 0.5.1.
     npm.unpublish("core-cli", "0.5.1");
     const flaky = createAgentCatalog({
-      store: sqliteDb(db),
+      store: db,
       agents,
       now: () => NOW + 24 * HOUR,
       registry: {
@@ -303,7 +295,7 @@ describe("agent version catalog", () => {
 
   test("a failed read revalidates the kept native version", async () => {
     const agents = { wrap: { package: "wrap-acp", native: "core-cli" } };
-    const { db, npm, catalog, errors, row } = setup(agents);
+    const { db, npm, catalog, errors, row } = await setup(agents);
     const old = NOW - 72 * HOUR;
     npm.publish("wrap-acp", "1.0.0", {
       publishedAt: old,
@@ -326,7 +318,7 @@ describe("agent version catalog", () => {
     // 0.5.1's tarball is replaced while its platform package cannot be read.
     npm.replaceIntegrity("core-cli", "0.5.1", sha(9));
     const flaky = createAgentCatalog({
-      store: sqliteDb(db),
+      store: db,
       agents,
       now: () => NOW + HOUR,
       registry: {
@@ -343,7 +335,7 @@ describe("agent version catalog", () => {
 
     // With every read fresh again, the adapter moves to the native version that still passes.
     await createAgentCatalog({
-      store: sqliteDb(db),
+      store: db,
       agents,
       now: () => NOW + 2 * HOUR,
       registry: npm.registry,
@@ -356,7 +348,7 @@ describe("agent version catalog", () => {
 
   test("a failed read still lets a fresh refusal through", async () => {
     const agents = { wrap: { package: "wrap-acp", native: "core-cli" } };
-    const { db, npm, catalog, errors, row } = setup(agents);
+    const { db, npm, catalog, errors, row } = await setup(agents);
     const old = NOW - 72 * HOUR;
     npm.publish("wrap-acp", "1.0.0", {
       publishedAt: old,
@@ -370,7 +362,7 @@ describe("agent version catalog", () => {
     // The adapter's tarball is replaced while the core-cli read fails.
     npm.replaceIntegrity("wrap-acp", "1.0.0", sha(9));
     const flaky = createAgentCatalog({
-      store: sqliteDb(db),
+      store: db,
       agents,
       now: () => NOW + HOUR,
       registry: {
@@ -387,7 +379,7 @@ describe("agent version catalog", () => {
 
   test("a failed native read never moves an eligible adapter to a newer native version", async () => {
     const agents = { wrap: { package: "wrap-acp", native: "core-cli" } };
-    const { db, npm, catalog, errors, row } = setup(agents);
+    const { db, npm, catalog, errors, row } = await setup(agents);
     const old = NOW - 72 * HOUR;
     npm.publish("wrap-acp", "1.0.0", {
       publishedAt: old,
@@ -405,7 +397,7 @@ describe("agent version catalog", () => {
     // npm pulls 0.5.1, but a day later the core-cli read fails and only the cached document is left.
     npm.unpublish("core-cli", "0.5.1");
     const flaky = createAgentCatalog({
-      store: sqliteDb(db),
+      store: db,
       agents,
       now: () => NOW + 24 * HOUR,
       registry: {
@@ -424,7 +416,7 @@ describe("agent version catalog", () => {
 
     // A fresh read sees that 0.5.1 is gone, so 0.5.0 stays the native version.
     await createAgentCatalog({
-      store: sqliteDb(db),
+      store: db,
       agents,
       now: () => NOW + 25 * HOUR,
       registry: npm.registry,
@@ -437,7 +429,7 @@ describe("agent version catalog", () => {
 
   test("a prerelease platform pin is not a platform build", async () => {
     const agents = { core: { package: "core-cli", native: "core-cli" } };
-    const { npm, catalog, status, row } = setup(agents);
+    const { npm, catalog, status, row } = await setup(agents);
     const old = NOW - 72 * HOUR;
     npm.publish("core-cli", "2.0.0", {
       publishedAt: old,
@@ -464,11 +456,11 @@ describe("agent version catalog", () => {
   });
 
   test("a failed read keeps the last catalog and reports the error", async () => {
-    const { db, npm, catalog, errors } = setup();
+    const { db, npm, catalog, errors } = await setup();
     npm.publish("demo-agent", "1.0.0", { publishedAt: NOW - 72 * HOUR, integrity: sha(1) });
     await catalog.refresh();
     const failing = createAgentCatalog({
-      store: sqliteDb(db),
+      store: db,
       agents: DEMO,
       now: () => NOW + HOUR,
       registry: {
@@ -480,9 +472,9 @@ describe("agent version catalog", () => {
     });
     await failing.refresh();
     expect(errors.map(String)).toEqual(["Error: reading demo-agent from npm failed: offline"]);
-    expect((await listAgentVersions(sqliteDb(db))).map((row) => [row.version, row.status])).toEqual(
-      [["1.0.0", "eligible"]],
-    );
+    expect((await listAgentVersions(db)).map((row) => [row.version, row.status])).toEqual([
+      ["1.0.0", "eligible"],
+    ]);
   });
 
   test("a refresh that did not finish on fresh reads stays due", async () => {
@@ -490,14 +482,14 @@ describe("agent version catalog", () => {
       first: { package: "first-agent", native: "first-agent" },
       second: { package: "second-agent", native: "second-agent" },
     };
-    const { db, npm, errors } = setup(agents);
+    const { db, npm, errors } = await setup(agents);
     const old = NOW - 72 * HOUR;
     npm.publish("first-agent", "1.0.0", { publishedAt: old, integrity: sha(1) });
     npm.publish("second-agent", "1.0.0", { publishedAt: old, integrity: sha(2) });
     let clock = NOW;
     let failSecond = true;
     const catalog = createAgentCatalog({
-      store: sqliteDb(db),
+      store: db,
       agents,
       now: () => clock,
       registry: {
@@ -510,20 +502,17 @@ describe("agent version catalog", () => {
     });
     // The first agent is saved, but the second could not be read: the day's refresh is not done.
     expect(await catalog.refreshIfDue()).toBe(true);
-    expect((await listAgentVersions(sqliteDb(db))).map((entry) => entry.agent)).toEqual(["first"]);
+    expect((await listAgentVersions(db)).map((entry) => entry.agent)).toEqual(["first"]);
     clock += HOUR;
     failSecond = false;
     expect(await catalog.refreshIfDue()).toBe(true);
-    expect((await listAgentVersions(sqliteDb(db))).map((entry) => entry.agent)).toEqual([
-      "first",
-      "second",
-    ]);
+    expect((await listAgentVersions(db)).map((entry) => entry.agent)).toEqual(["first", "second"]);
     clock += HOUR;
     expect(await catalog.refreshIfDue()).toBe(false);
   });
 
   test("refreshIfDue reads the registry once a day", async () => {
-    const { npm, catalog, advance } = setup();
+    const { npm, catalog, advance } = await setup();
     npm.publish("demo-agent", "1.0.0", { publishedAt: NOW - 72 * HOUR, integrity: sha(1) });
     expect(await catalog.refreshIfDue()).toBe(true);
     advance(AGENT_CATALOG_REFRESH_MS - 1);
@@ -568,7 +557,7 @@ describe("agent version catalog", () => {
 
 describe("agent catalog summary", () => {
   test("lists the newest eligible version and each refusal", async () => {
-    const { db, npm, catalog } = setup();
+    const { db, npm, catalog } = await setup();
     const old = NOW - 72 * HOUR;
     npm.publish("demo-agent", "1.2.0", { publishedAt: old, integrity: sha(1) });
     npm.publish("demo-agent", "1.10.0", { publishedAt: old, integrity: sha(2) });
@@ -576,7 +565,7 @@ describe("agent catalog summary", () => {
     await catalog.refresh();
     npm.replaceIntegrity("demo-agent", "1.2.0", sha(4));
     await catalog.refresh();
-    expect(await agentCatalogSummary(sqliteDb(db))).toEqual([
+    expect(await agentCatalogSummary(db)).toEqual([
       {
         agent: "demo",
         offered: "1.10.0",

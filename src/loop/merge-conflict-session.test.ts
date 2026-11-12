@@ -1,32 +1,22 @@
 import { expect, test } from "bun:test";
 import { FakeClock } from "../core";
-import {
-  OutboxDispatcher,
-  enqueueOutboxOnce,
-  getWorkItem,
-  insertQueuedItem,
-  migrate,
-  openDatabase,
-  sqliteDb,
-} from "../db";
+import { OutboxDispatcher, enqueueOutboxOnce, getWorkItem, insertQueuedItem } from "../db";
 import { createFakeTracker } from "../linear";
 import { postMergeConflictSteps } from "../merge";
 import { deliverLinearOutbox } from "./dispatch";
+import { tempStore } from "../../test/pglite";
 
 const NOTICE = { sessionId: "ses_1", pullNumber: 988, head: "1bf8429" };
 
 async function fixture() {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   const clock = new FakeClock(1_000);
   await insertQueuedItem(db, { id: "ACME-7", sessionKey: "ses_1", now: clock.now() });
   const tracker = createFakeTracker();
   const delivery = new OutboxDispatcher(db, clock);
-  delivery.setHandler((row) =>
-    deliverLinearOutbox(row, tracker, async () => {}, undefined, sqliteDb(db)),
-  );
+  delivery.setHandler((row) => deliverLinearOutbox(row, tracker, async () => {}, undefined, db));
   const enqueue = (key: string, kind: string, body: string) =>
-    enqueueOutboxOnce(sqliteDb(db), {
+    enqueueOutboxOnce(db, {
       target: "linear",
       op: "activity",
       orderingKey: "ses_1",
@@ -43,10 +33,10 @@ async function fixture() {
     }
   };
   const announce = async () => {
-    const item = (await getWorkItem(sqliteDb(db), "ACME-7"))!;
-    return sqliteDb(db).transaction((q) => postMergeConflictSteps(q, item, NOTICE, clock.now()));
+    const item = (await getWorkItem(db, "ACME-7"))!;
+    return db.transaction((q) => postMergeConflictSteps(q, item, NOTICE, clock.now()));
   };
-  return { db, tracker, enqueue, deliver, announce };
+  return { close, tracker, enqueue, deliver, announce };
 }
 
 test("a conflict after the pull request response wakes the session once per head", async () => {
@@ -66,7 +56,7 @@ test("a conflict after the pull request response wakes the session once per head
       }),
     ]);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });
 
@@ -86,6 +76,6 @@ test("the gate still drops other progress after the pull request response", asyn
       "Main moved and #988 now conflicts with it. Rebasing onto main.",
     ]);
   } finally {
-    f.db.close();
+    await f.close();
   }
 });

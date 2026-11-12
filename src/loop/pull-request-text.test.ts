@@ -1,20 +1,20 @@
 import { expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { JOB_KIND } from "../core";
 import {
   enqueueJob,
   getPullRequestDraft,
   getPullRequestText,
-  migrate,
-  openDatabase,
   recordItemPullRequest,
   savePullRequestDraft,
   savePullRequestText,
-  sqliteDb,
 } from "../db";
 import { openPullRequest, publishedPullRequestBody, type GitHubBinding } from "../github";
 import { intakeDelegatedIssue } from "../intake";
 import { createFakeTracker } from "../linear";
 import { applyPullRequestDraft } from "./pull-request-text";
+import { seed } from "../../test/dialects";
+import { tempStore } from "../../test/pglite";
 
 const EVIDENCE = "## Closeout\n\nAll checks passed at 474f2d1b.";
 
@@ -28,8 +28,7 @@ async function fixture(
     savedDescription?: string;
   } = {},
 ) {
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const db = (await tempStore()).db;
   const tracker = createFakeTracker([
     {
       linearIssueId: "issue",
@@ -39,17 +38,19 @@ async function fixture(
       subIssues: [],
     },
   ]);
-  const task = await intakeDelegatedIssue(sqliteDb(db), tracker, { linearIssueId: "issue" });
+  const task = await intakeDelegatedIssue(db, tracker, { linearIssueId: "issue" });
   if (!task.ok) throw new Error("Unexpected dependency cycle");
   const itemId = task.items[0]!.id;
-  db.run("UPDATE work_item SET state = 'running' WHERE id = ?", [itemId]);
+  await seed(db, (q) =>
+    q.orm.update(q.t.workItem).set({ state: "running" }).where(eq(q.t.workItem.id, itemId)),
+  );
   const published = publishedPullRequestBody({
     issue: "DEP-686",
     description: "Old",
     evidence: EVIDENCE,
   });
   if (options.pull !== false)
-    await recordItemPullRequest(sqliteDb(db), {
+    await recordItemPullRequest(db, {
       itemId,
       pullNumber: 12,
       pullUrl: null,
@@ -57,7 +58,7 @@ async function fixture(
     });
   if (options.pull !== false && options.stored !== false) {
     await savePullRequestText(
-      sqliteDb(db),
+      db,
       itemId,
       {
         title: "Grade release races",
@@ -104,22 +105,22 @@ async function fixture(
   const controller = new AbortController();
   if (options.stored === false)
     await savePullRequestDraft(
-      sqliteDb(db),
+      db,
       itemId,
       { title: "x", body: options.savedDescription ?? "Old" },
       1,
     );
   if (options.savedDescription)
-    await enqueueJob(sqliteDb(db), {
+    await enqueueJob(db, {
       queue: JOB_KIND.merge,
       payload: { itemId, summary: "## Closeout", head: "474f2d1b" },
       now: 1,
     });
   const apply = async (draft: { title: string; body: string }) => {
-    const previous = await getPullRequestDraft(sqliteDb(db), itemId);
-    await savePullRequestDraft(sqliteDb(db), itemId, draft, 2);
+    const previous = await getPullRequestDraft(db, itemId);
+    await savePullRequestDraft(db, itemId, draft, 2);
     return applyPullRequestDraft({
-      store: sqliteDb(db),
+      store: db,
       itemId,
       issue: "DEP-686",
       draft,
@@ -152,7 +153,7 @@ test("a saved title reaches the open pull request without a push", async () => {
   expect(sent.title).toBe(draft.title);
   expect(sent.body.startsWith("Fixes DEP-686\n\nNew description\n\n")).toBe(true);
   expect(sent.body).toContain(EVIDENCE);
-  expect(await getPullRequestText(sqliteDb(f.db), f.itemId)).toMatchObject({ title: draft.title });
+  expect(await getPullRequestText(f.db, f.itemId)).toMatchObject({ title: draft.title });
 });
 
 test("saving the same title and body again sends nothing", async () => {
@@ -194,7 +195,7 @@ test("a refused update keeps the tool's success and records one status line", as
     "Couldn't update the pull request title: GitHub answered 422: Validation Failed",
   ]);
   expect(f.journal).toHaveLength(1);
-  expect((await getPullRequestText(sqliteDb(f.db), f.itemId))?.title).toBe("Grade release races");
+  expect((await getPullRequestText(f.db, f.itemId))?.title).toBe("Grade release races");
 });
 
 test("a pull request published before Paws stored its text is updated from GitHub's copy", async () => {
@@ -212,7 +213,7 @@ test("a pull request published before Paws stored its text is updated from GitHu
       evidence: EVIDENCE,
     }),
   });
-  expect((await getPullRequestText(sqliteDb(f.db), f.itemId))?.evidence).toBe(EVIDENCE);
+  expect((await getPullRequestText(f.db, f.itemId))?.evidence).toBe(EVIDENCE);
 });
 
 test("stopping the run during the update records nothing", async () => {
@@ -224,7 +225,7 @@ test("stopping the run during the update records nothing", async () => {
   patch.resolve();
   expect(await work).toBe("stopped");
   expect(f.status).toEqual([]);
-  expect((await getPullRequestText(sqliteDb(f.db), f.itemId))?.title).toBe("Grade release races");
+  expect((await getPullRequestText(f.db, f.itemId))?.title).toBe("Grade release races");
 });
 
 test("a stopped run sends nothing", async () => {
@@ -244,5 +245,5 @@ test("recovery finds the evidence from the Closeout summary when a later draft w
   const f = await fixture({ stored: false, savedDescription: "Unpublished description" });
   expect(await f.apply(draft)).toBe("updated");
   expect(f.requests.map((request) => request.method)).toEqual(["GET", "PATCH"]);
-  expect((await getPullRequestText(sqliteDb(f.db), f.itemId))?.evidence).toBe(EVIDENCE);
+  expect((await getPullRequestText(f.db, f.itemId))?.evidence).toBe(EVIDENCE);
 });
