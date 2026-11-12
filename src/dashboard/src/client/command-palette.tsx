@@ -36,7 +36,7 @@ export function paletteItems(query: string): PaletteItem[] {
   ];
 }
 
-function shortcutLabel(): string {
+export function shortcutLabel(): string {
   return typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform)
     ? "⌘K"
     : "Ctrl K";
