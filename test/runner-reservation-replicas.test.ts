@@ -3,6 +3,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { eq } from "drizzle-orm";
 import { RunnerCapacityWait } from "../src/core";
 import {
   RUNNER_RESERVATION_MS,
@@ -11,11 +12,9 @@ import {
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerControl } from "../src/runner-control";
@@ -26,41 +25,50 @@ import type { RunnerCommand } from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+async function holders(db: Db): Promise<string[]> {
+  const rows = await db.run((q) =>
+    q.all(
+      q.orm.select({ instanceId: q.t.runnerReservation.instanceId }).from(q.t.runnerReservation),
+    ),
+  );
+  return rows.map((row) => row.instanceId);
+}
+
 async function replicas() {
   const root = mkdtempSync(join(tmpdir(), "paws-reservation-replicas-"));
   roots.push(root);
-  const path = join(root, "paws.sqlite");
-  const db = openDatabase(path);
-  migrate(db);
+  const { db, close } = await tempStore();
   let clock = Date.now();
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "acme-owner",
     name: "Acme Owner",
     email: "owner@acme.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "acme",
     name: "Acme",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "acme", clock)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "acme", clock)),
     now: clock,
   });
-  db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-    workspace.id,
-    "acme/fixture",
-    "acme-team",
-  ]);
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspaceRepository)
+      .values({ workspaceId: workspace.id, repository: "acme/fixture", teamId: "acme-team" }),
+  );
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -77,35 +85,37 @@ async function replicas() {
     ...enrollment,
     token: (await control.createEnrollment(owner, enrollment)).token,
   });
-  db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
-  db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);
-  db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [runnerId]);
-  db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,1)", [runnerId]);
+  await seed(
+    db,
+    (q) => q.orm.update(q.t.runner).set({ status: "active" }).where(eq(q.t.runner.id, runnerId)),
+    (q) => q.orm.insert(q.t.runnerPolicy).values({ runnerId }),
+    (q) => q.orm.insert(q.t.runnerAgentPolicy).values({ runnerId, agent: "claude", ready: 1 }),
+    (q) => q.orm.insert(q.t.runnerCapacity).values({ runnerId, capacity: 1 }),
+  );
 
   const privateKey = generateKeyPairSync("ed25519").privateKey;
   const instance = (instanceId: string) => {
-    const own = openDatabase(path);
     const work = createRunnerWork({
-      store: sqliteDb(own),
+      store: db,
       keyId: "acme",
       privateKey,
       eventKey: Buffer.alloc(32, 7),
       now: () => clock,
     });
     const backend = createRemoteAgentRunner({
-      store: sqliteDb(own),
+      store: db,
       work,
-      results: createRunnerResults({ store: sqliteDb(own), work }),
-      health: createRunnerHealth({ store: sqliteDb(own), work }),
+      results: createRunnerResults({ store: db, work }),
+      health: createRunnerHealth({ store: db, work }),
       now: () => clock,
       pollIntervalMs: 5,
       instanceId,
-      placement: createRunnerPlacement({ store: sqliteDb(own), now: () => clock }),
+      placement: createRunnerPlacement({ store: db, now: () => clock }),
       async fetchCandidate() {
         throw new Error("This fixture does not return a candidate");
       },
     });
-    return { db: own, work, backend };
+    return { work, backend };
   };
   const first = instance("acme-a");
   const second = instance("acme-b");
@@ -116,8 +126,8 @@ async function replicas() {
     const id = `acme-${++sequence}`;
     const sessionId = `acme-session-${sequence}`;
     const record = await insertQueuedItem(db, { id, now: clock, sessionKey: sessionId });
-    const { run } = await beginImplementRun(sqliteDb(db), id, clock);
-    await recordLinearInstallation(sqliteDb(db), {
+    const { run } = await beginImplementRun(db, id, clock);
+    await recordLinearInstallation(db, {
       organizationId: "acme",
       oauthClientId: "acme-app",
       appUserId: "acme-app-user",
@@ -125,11 +135,13 @@ async function replicas() {
       teamId: "acme-team",
       observedAtMs: clock,
     });
-    await bindLinearSessionTask(sqliteDb(db), sessionId, record.delegationId, {
+    await bindLinearSessionTask(db, sessionId, record.delegationId, {
       actorId: "acme-owner",
     });
-    db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
-    await bindWorkItemRepository(sqliteDb(db), id, {
+    await seed(db, (q) =>
+      q.orm.update(q.t.workItem).set({ ownerUserId: userId }).where(eq(q.t.workItem.id, id)),
+    );
+    await bindWorkItemRepository(db, id, {
       owner: "acme",
       repo: "fixture",
       remoteUrl: "https://github.com/acme/fixture.git",
@@ -178,9 +190,7 @@ async function replicas() {
       clock += ms;
       await first.work.heartbeat(runnerId, 1);
     },
-    close() {
-      for (const handle of [first.db, second.db, db]) handle.close();
-    },
+    close,
   };
 }
 
@@ -210,13 +220,11 @@ test("two instances placing on a one-slot runner at once: only one wins", async 
       "Waiting for a free slot",
     );
     expect(await fixture.probes()).toHaveLength(1);
-    expect(
-      fixture.db.query("SELECT instance_id AS instanceId FROM runner_reservation").all(),
-    ).toHaveLength(1);
+    expect(await holders(fixture.db)).toHaveLength(1);
   } finally {
     stop.abort();
     await Bun.sleep(20);
-    fixture.close();
+    await fixture.close();
   }
 });
 
@@ -225,9 +233,13 @@ test("a crashed instance's reservation expires after two minutes and frees the s
   const stop = new AbortController();
   try {
     const crashed = await fixture.item();
-    fixture.db.run(
-      "INSERT INTO runner_reservation(run_id,runner_id,instance_id,expires_at) VALUES(?,?,'acme-crashed',?)",
-      [crashed.runId, fixture.runnerId, fixture.now() + RUNNER_RESERVATION_MS],
+    await seed(fixture.db, (q) =>
+      q.orm.insert(q.t.runnerReservation).values({
+        runId: crashed.runId,
+        runnerId: fixture.runnerId,
+        instanceId: "acme-crashed",
+        expiresAt: fixture.now() + RUNNER_RESERVATION_MS,
+      }),
     );
     const waiting = await fixture.item();
     await expect(fixture.prepare(fixture.second, waiting, stop.signal)).rejects.toBeInstanceOf(
@@ -242,15 +254,10 @@ test("a crashed instance's reservation expires after two minutes and frees the s
     const until = performance.now() + 5_000;
     while (!(await fixture.probes()).length && performance.now() < until) await Bun.sleep(5);
     expect(await fixture.probes()).toHaveLength(1);
-    expect(
-      fixture.db
-        .query("SELECT instance_id AS instanceId FROM runner_reservation")
-        .all()
-        .map((row) => (row as { instanceId: string }).instanceId),
-    ).toEqual(["acme-b"]);
+    expect(await holders(fixture.db)).toEqual(["acme-b"]);
   } finally {
     stop.abort();
     await Bun.sleep(20);
-    fixture.close();
+    await fixture.close();
   }
 });
