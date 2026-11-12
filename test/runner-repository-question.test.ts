@@ -165,7 +165,7 @@ test("the only runner's host list lacks the repository: one question names the r
     expect(rest).toEqual([]);
     expect(question!.body).toContain("No runner can run acme/cli.");
     expect(question!.body).toContain(
-      "runner-1 allows only acme/monorepo in its host config (`/etc/paws-runner/config.json`, `allowedRepositories`). Add acme/cli there and restart `paws-runner.service`",
+      "runner-1 allows only acme/monorepo in its host config (`/etc/paws-runner/config.json`, `allowedRepositories`). Add acme/cli there, or remove `allowedRepositories` so the [runner's page]",
     );
     expect(question!.body).toContain(`${RUNNERS_URL}/runner-1`);
     const asked = await elicitations(db);

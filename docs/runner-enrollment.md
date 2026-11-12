@@ -88,22 +88,21 @@ With `"agentUser": "runner"`, use `sudo -u paws-runner`, `/run/paws-docker/docke
 
 ## Configure the runner
 
-On the VM, replace the example hostname and repository names, then create the protected configuration:
+On the VM, replace the example hostname, then create the protected configuration:
 
 ```sh
 sudo install -o root -g paws-runner -m 0640 /dev/stdin /etc/paws-runner/config.json <<'JSON'
 {
   "controlPlaneUrl": "https://paws.example.com:8787",
   "runnerApiUrl": "https://paws.example.com:8788",
-  "allowedRepositories": ["your-org/your-repo"],
   "concurrency": 2
 }
 JSON
 ```
 
-`controlPlaneUrl` is the dashboard's HTTPS origin. `runnerApiUrl` is the same control plane's runner listener. Each URL contains only the scheme, hostname and optional port. `allowedRepositories` lists the exact GitHub `owner/repository` names this host may execute. `runner enroll` refuses an empty list, because a runner with one refuses every run.
+`controlPlaneUrl` is the dashboard's HTTPS origin. `runnerApiUrl` is the same control plane's runner listener. Each URL contains only the scheme, hostname and optional port. Workspace admins choose a runner's repositories on its runner page: All repositories, or a list of the workspace's repositories. A runner added with **Add a runner** starts with an empty list and takes no work until an admin chooses its repositories there. A runner from **Create VM**, or one enrolled with another token, starts with All repositories. Paws keeps that choice; heartbeats never change it.
 
-Workspace admins also choose a runner's repositories on its runner page: All repositories, the default, or a list of the workspace's repositories. Paws keeps that choice; heartbeats never change it. A runner takes an item only when both its page setting and its host config allow the item's repository, matched case-insensitively. The runner page shows the host config's list when the host reports one.
+The host may also limit itself with an optional `allowedRepositories` list of exact GitHub `owner/repository` names in its config. The runner refuses any other repository, and `runner enroll` refuses an empty list, because a runner with one refuses every run. A runner takes an item only when its page setting and, when the host has one, its host config allow the item's repository, matched case-insensitively. The runner page shows the host config's list when the host reports one.
 
 When no runner the delegator may use allows an item's repository, by either list, Paws asks in the item's Linear session which list to fix instead of waiting: the question names the runner, the list that refuses and the fix, with **Retry** and **Stop**. Fixing either list answers it as Retry on its own. See [Linear agent sessions](linear-agent-sessions.md#no-runner-may-take-the-repository).
 
@@ -234,10 +233,10 @@ A turn that continues on another account starts a fresh agent session. It keeps 
 ## Add the host
 
 1. Open your Paws dashboard at `https://paws.example.com:8787/dashboard/runners` and sign in. Any workspace member can add a host and owns the runner it adds.
-2. Select **Add a runner**, enter the name you want to see in Paws, leave **Docker for agent jobs** ticked or untick it, and select **Create command**. The command runs the installer with `PAWS_RUNNER_DOCKER_ACCESS=grant` or `deny`, so it never depends on a terminal to ask. Until the workspace has a repository, Paws answers "Connect GitHub and add a repository before adding a runner." and creates no command.
+2. Select **Add a runner**, enter the name you want to see in Paws, leave **Docker for agent jobs** ticked or untick it, and select **Create command**. The command runs the installer with `PAWS_RUNNER_DOCKER_ACCESS=grant` or `deny`, so it never depends on a terminal to ask.
 3. Copy the command and run it on the VM. It installs the runner, writes `/etc/paws-runner/config.json` for this Paws, stores a single-use enrollment token in a root-owned mode 0600 file, enrolls, and starts `paws-runner.service`.
 
-The token expires after ten minutes and works once. The runner appears under **Runners**, owned by you, as soon as the command prints `"paired":true`. Running the command again on an enrolled host that Paws still accepts changes nothing and leaves the token unused. If the token expires, create a new command.
+The token expires after ten minutes and works once. The runner appears under **Runners**, owned by you, as soon as the command prints `"paired":true`. It takes work once a workspace admin chooses its repositories on its runner page. Running the command again on an enrolled host that Paws still accepts changes nothing and leaves the token unused. If the token expires, create a new command.
 
 When Paws no longer knows a runner, because its database was reset or the runner was revoked, every request from that runner gets 403 "Runner identity is revoked or expired" or "Runner is revoked; its work is fenced". The runner logs `This runner's identity is no longer known to <controlPlaneUrl>. Add it again from Runners and run the command there.` once, and tries again once a minute. To pair it again, add it from **Runners** and run the new command on the host. `runner enroll` asks Paws about the current identity before it uses the token. If Paws refuses it, the command moves `/var/lib/paws-runner/identity` to `identity.replaced-<time>`, drops the commands stored for the old identity, enrolls with the token and keeps `/etc/paws-runner/config.json`. A runner service that is still running exits when the new identity appears, and systemd restarts it. If Paws can't be reached or answers anything else, the identity stays and the token is unused.
 

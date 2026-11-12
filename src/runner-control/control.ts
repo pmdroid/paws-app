@@ -72,7 +72,10 @@ export function createRunnerControl(options: {
      * Mint a single-use enrollment token for ten minutes. Any active member may mint one, and owns the runner it produces. The token is returned once; only
      * its hash is stored.
      */
-    async createEnrollment(principal: WorkspacePrincipal, input: { name: string }) {
+    async createEnrollment(
+      principal: WorkspacePrincipal,
+      input: { name: string; adminRepositories?: readonly string[] },
+    ) {
       const name = runnerName(input.name);
       const at = now();
       const id = workspaceId(at);
@@ -88,6 +91,7 @@ export function createRunnerControl(options: {
           name,
           expiresAt,
           now: at,
+          ...(input.adminRepositories ? { adminRepositories: input.adminRepositories } : {}),
         });
         yield* auditWorkspaceAccessSteps(q, {
           workspaceId: principal.workspaceId,
