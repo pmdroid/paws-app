@@ -346,6 +346,7 @@ test("item Stop delivery retains one UUID through failure, reopen and duplicate 
     expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(ids).toEqual([id]);
     await orchestrator.shutdown();
+    await outbox.idle();
     await open.close();
     open = await openPawsStore({ url: null, pgliteDir });
     clock.advance(60_000);
