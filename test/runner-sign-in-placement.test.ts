@@ -1,5 +1,5 @@
-import { expect, test } from "bun:test";
-import { join } from "node:path";
+import { afterEach, expect, test } from "bun:test";
+import { and, eq } from "drizzle-orm";
 import {
   bindAgentAccount,
   bindLinearSessionTask,
@@ -8,12 +8,10 @@ import {
   insertQueuedItem,
   legacyAgentAccountId,
   legacyAgentBindingId,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
   recordRunnerAccountCapability,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import {
   createRunnerPlacement,
@@ -21,29 +19,49 @@ import {
   type PlacementRequest,
 } from "../src/runner-placement";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { tempHome } from "./helpers";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
+
+const open: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
+});
+
+function setPolicy(db: Db, runnerId: string, set: Record<string, unknown>) {
+  return seed(db, (q) =>
+    q.orm
+      .update(q.t.runnerAgentPolicy)
+      .set(set)
+      .where(
+        and(
+          eq(q.t.runnerAgentPolicy.runnerId, runnerId),
+          eq(q.t.runnerAgentPolicy.agent, "claude"),
+        ),
+      ),
+  );
+}
 
 const HOUR = 3_600_000;
 
 async function acme() {
-  const db = openDatabase(join(tempHome(), "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
+  open.push(close);
   const now = Date.now();
-  const ada = await putWorkspaceUser(sqliteDb(db), {
+  const ada = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "ada",
     name: "Ada",
     email: "ada@acme.test",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "acme-org",
     name: "Acme",
     userId: ada,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "acme-org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "acme-org", now)),
     now,
   });
-  await recordLinearInstallation(sqliteDb(db), {
+  await recordLinearInstallation(db, {
     organizationId: "acme-org",
     oauthClientId: "app-client",
     appUserId: "app",
@@ -52,17 +70,30 @@ async function acme() {
     observedAtMs: now,
   });
   const item = await insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
-  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "ada" });
-  db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [ada, item.id]);
-  for (const id of ["acme-1", "acme-2"]) {
-    db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
-      [id, workspace.id, ada, id, now, now],
+  await bindLinearSessionTask(db, "session", item.delegationId, { actorId: "ada" });
+  await seed(db, (q) =>
+    q.orm.update(q.t.workItem).set({ ownerUserId: ada }).where(eq(q.t.workItem.id, item.id)),
+  );
+  for (const id of ["acme-1", "acme-2"])
+    await seed(
+      db,
+      (q) =>
+        q.orm.insert(q.t.runner).values({
+          id,
+          workspaceId: workspace.id,
+          ownerUserId: ada,
+          name: id,
+          status: "active",
+          createdAt: now,
+          lastSeenAt: now,
+        }),
+      (q) =>
+        q.orm.insert(q.t.runnerAgentPolicy).values([
+          { runnerId: id, agent: "claude", ready: 1 },
+          { runnerId: id, agent: "codex", ready: 0 },
+        ]),
     );
-    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [id]);
-    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',0)", [id]);
-  }
-  const placement = createRunnerPlacement({ store: sqliteDb(db), now: () => now });
+  const placement = createRunnerPlacement({ store: db, now: () => now });
   const place = async (request: Partial<PlacementRequest> = {}) => {
     const rejected: { runnerId: string; reason: string; until?: number }[] = [];
     const placed = await placement.candidates({
@@ -82,10 +113,11 @@ async function acme() {
 test("two runners signed in to Claude, one with its 5-hour window spent: the implementer goes to the other", async () => {
   const f = await acme();
   const reset = f.now + 5 * HOUR;
-  f.db.run(
-    "UPDATE runner_agent_policy SET quota_state='exhausted',resets_at=?,cooldown_until=? WHERE runner_id='acme-1' AND agent='claude'",
-    [reset, reset],
-  );
+  await setPolicy(f.db, "acme-1", {
+    quotaState: "exhausted",
+    resetsAt: reset,
+    cooldownUntil: reset,
+  });
   const { placed, rejected } = await f.place();
   expect(placed).toEqual([
     {
@@ -99,11 +131,16 @@ test("two runners signed in to Claude, one with its 5-hour window spent: the imp
     },
   ]);
   expect(rejected).toEqual([{ runnerId: "acme-1", reason: "agent quota cooldown", until: reset }]);
-  f.db.run(
-    "INSERT INTO runner_command(id,runner_id,kind,envelope,expires_at) VALUES('cmd','acme-2','run','{}',?)",
-    [f.now + HOUR],
+  await seed(f.db, (q) =>
+    q.orm.insert(q.t.runnerCommand).values({
+      id: "cmd",
+      runnerId: "acme-2",
+      kind: "run",
+      envelope: {},
+      expiresAt: f.now + HOUR,
+    }),
   );
-  await sqliteDb(f.db).transaction((q) =>
+  await f.db.transaction((q) =>
     f.placement.startedSteps(q, {
       commandId: "cmd",
       runnerId: "acme-2",
@@ -116,11 +153,17 @@ test("two runners signed in to Claude, one with its 5-hour window spent: the imp
     }),
   );
   expect(
-    f.db
-      .query(
-        "SELECT runner_id AS runnerId,account_policy_revision AS revision,account_fallback AS fallback FROM runner_execution_usage",
-      )
-      .all(),
+    await f.db.run((q) =>
+      q.all(
+        q.orm
+          .select({
+            runnerId: q.t.runnerExecutionUsage.runnerId,
+            revision: q.t.runnerExecutionUsage.accountPolicyRevision,
+            fallback: q.t.runnerExecutionUsage.accountFallback,
+          })
+          .from(q.t.runnerExecutionUsage),
+      ),
+    ),
   ).toEqual([{ runnerId: "acme-2", revision: null, fallback: null }]);
 });
 
@@ -140,7 +183,7 @@ test("no runner signed in to the reviewer's agent: placement offers none and wai
     await f.placement.setupNeed!({ itemId: f.item.id, purpose: "work", ...reviewer }),
   ).toMatchObject({ reason: "agent-not-signed-in", runnerId: "acme-1", agent: "codex" });
   expect(
-    await sqliteDb(f.db).run((q) =>
+    await f.db.run((q) =>
       itemOwnerHasEligibleRunnerSteps(q, { itemId: f.item.id, agent: "codex", now: f.now }),
     ),
   ).toBe(false);
@@ -148,35 +191,36 @@ test("no runner signed in to the reviewer's agent: placement offers none and wai
 
 test("a named account bound to a runner no longer stands in for that runner's own sign-in", async () => {
   const f = await acme();
-  const named = await createAgentAccount(sqliteDb(f.db), {
+  const named = await createAgentAccount(f.db, {
     workspaceId: f.workspaceId,
     agent: "claude",
     label: "Acme team Claude",
     now: f.now,
   });
-  const binding = await bindAgentAccount(sqliteDb(f.db), {
+  const binding = await bindAgentAccount(f.db, {
     workspaceId: f.workspaceId,
     accountId: named.id,
     runnerId: "acme-1",
     now: f.now,
   });
-  f.db.run(
-    "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('acme-1','0.1.61',?)",
-    [f.now],
+  await seed(f.db, (q) =>
+    q.orm
+      .insert(q.t.runnerHostStatus)
+      .values({ runnerId: "acme-1", runnerVersion: "0.1.61", reportedAt: f.now }),
   );
   await recordRunnerAccountCapability(
-    sqliteDb(f.db),
+    f.db,
     "acme-1",
     { protocol: 1, bindings: [{ bindingId: binding.id, agent: "claude" }] },
     f.now,
   );
-  f.db.run("UPDATE runner_agent_policy SET ready=0 WHERE runner_id='acme-1' AND agent='claude'");
+  await setPolicy(f.db, "acme-1", { ready: 0 });
   const { placed, rejected } = await f.place();
   expect(placed.map((entry) => entry.id)).toEqual(["acme-2"]);
   expect(rejected).toEqual([{ runnerId: "acme-1", reason: "agent-not-signed-in" }]);
-  f.db.run("UPDATE runner_agent_policy SET ready=0 WHERE runner_id='acme-2' AND agent='claude'");
+  await setPolicy(f.db, "acme-2", { ready: 0 });
   expect(
-    await sqliteDb(f.db).run((q) =>
+    await f.db.run((q) =>
       itemOwnerHasEligibleRunnerSteps(q, { itemId: f.item.id, agent: "claude", now: f.now }),
     ),
   ).toBe(false);

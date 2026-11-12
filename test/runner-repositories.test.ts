@@ -3,16 +3,14 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { eq } from "drizzle-orm";
 import {
   consumeWorkspaceBootstrap,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   recordRunnerRepositories,
   runnerAllowsRepository,
   setRunnerAdminRepositories,
   syncWorkspaceMember,
-  sqliteDb,
 } from "../src/db";
 import { createRunnerControl, createRunnerHttp } from "../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
@@ -23,9 +21,12 @@ import {
   workspaceTokenHash,
   type WorkspacePrincipal,
 } from "../src/workspace";
+import { tempStore } from "./pglite";
 
 const roots: string[] = [];
-afterEach(() => {
+const stores: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of stores.splice(0)) await close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -34,21 +35,21 @@ type Lists = { admin: string[] | null; host: string[] | null };
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "paws-runner-repositories-"));
   roots.push(root);
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
+  stores.push(close);
   const now = 1_800_000_000_000;
-  const userId = await putWorkspaceUser(sqliteDb(db), {
+  const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+  const workspace = await consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "fixture-host",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "fixture-host", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "fixture-host", now)),
     now,
   });
   const principal = (id: string, role: WorkspacePrincipal["role"]): WorkspacePrincipal => ({
@@ -59,13 +60,13 @@ async function fixture() {
     teamIds: [],
   });
   const admin = principal(userId, "admin");
-  const memberId = await putWorkspaceUser(sqliteDb(db), {
+  const memberId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "member",
     name: "member",
     email: "member@example.invalid",
   });
-  await syncWorkspaceMember(sqliteDb(db), {
+  await syncWorkspaceMember(db, {
     workspaceId: workspace.id,
     userId: memberId,
     role: "member",
@@ -75,7 +76,7 @@ async function fixture() {
   });
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    store: sqliteDb(db),
+    store: db,
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -90,7 +91,7 @@ async function fixture() {
   });
   const work = createRunnerWorkHttp(
     createRunnerWork({
-      store: sqliteDb(db),
+      store: db,
       keyId: "fixture",
       privateKey: generateKeyPairSync("ed25519").privateKey,
       eventKey: Buffer.alloc(32, 7),
@@ -143,40 +144,30 @@ async function fixture() {
 
 test("a runner with no admin list and no host list allows any repository", async () => {
   const runner = await fixture();
-  expect(await runnerAllowsRepository(sqliteDb(runner.db), runner.runnerId, "acme/anything")).toBe(
-    true,
-  );
-  await recordRunnerRepositories(sqliteDb(runner.db), runner.runnerId, null, runner.now);
-  expect(await runnerAllowsRepository(sqliteDb(runner.db), runner.runnerId, "acme/anything")).toBe(
-    true,
-  );
+  expect(await runnerAllowsRepository(runner.db, runner.runnerId, "acme/anything")).toBe(true);
+  await recordRunnerRepositories(runner.db, runner.runnerId, null, runner.now);
+  expect(await runnerAllowsRepository(runner.db, runner.runnerId, "acme/anything")).toBe(true);
   expect(await runner.list()).toEqual({ admin: null, host: null });
 });
 
 test("an admin list excludes a repository the host allows, matching case-insensitively", async () => {
   const runner = await fixture();
   await recordRunnerRepositories(
-    sqliteDb(runner.db),
+    runner.db,
     runner.runnerId,
     ["acme/looky", "acme/paws"],
     runner.now,
   );
-  await setRunnerAdminRepositories(sqliteDb(runner.db), {
+  await setRunnerAdminRepositories(runner.db, {
     runnerId: runner.runnerId,
     workspaceId: runner.workspaceId,
     userId: runner.userId,
     repositories: ["ACME/Paws"],
     now: runner.now,
   });
-  expect(await runnerAllowsRepository(sqliteDb(runner.db), runner.runnerId, "acme/paws")).toBe(
-    true,
-  );
-  expect(await runnerAllowsRepository(sqliteDb(runner.db), runner.runnerId, "acme/looky")).toBe(
-    false,
-  );
-  expect(await runnerAllowsRepository(sqliteDb(runner.db), runner.runnerId, "acme/other")).toBe(
-    false,
-  );
+  expect(await runnerAllowsRepository(runner.db, runner.runnerId, "acme/paws")).toBe(true);
+  expect(await runnerAllowsRepository(runner.db, runner.runnerId, "acme/looky")).toBe(false);
+  expect(await runnerAllowsRepository(runner.db, runner.runnerId, "acme/other")).toBe(false);
 });
 
 test("a heartbeat does not change the admin list", async () => {
@@ -198,17 +189,18 @@ test("only admins save valid owner/repo names, and null restores all repositorie
     400,
   );
   expect(await runner.save(["acme/paws"])).toBe(200);
-  expect(await runnerAllowsRepository(sqliteDb(runner.db), runner.runnerId, "acme/looky")).toBe(
-    false,
-  );
+  expect(await runnerAllowsRepository(runner.db, runner.runnerId, "acme/looky")).toBe(false);
   expect(await runner.save(null)).toBe(200);
   expect(await runner.list()).toEqual({ admin: null, host: null });
-  expect(await runnerAllowsRepository(sqliteDb(runner.db), runner.runnerId, "acme/looky")).toBe(
-    true,
-  );
+  expect(await runnerAllowsRepository(runner.db, runner.runnerId, "acme/looky")).toBe(true);
   expect(
-    runner.db
-      .query("SELECT action FROM workspace_access_audit WHERE action='runner.repositories'")
-      .all(),
+    await runner.db.run((q) =>
+      q.all(
+        q.orm
+          .select({ action: q.t.workspaceAccessAudit.action })
+          .from(q.t.workspaceAccessAudit)
+          .where(eq(q.t.workspaceAccessAudit.action, "runner.repositories")),
+      ),
+    ),
   ).toHaveLength(2);
 });
