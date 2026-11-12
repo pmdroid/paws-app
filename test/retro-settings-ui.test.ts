@@ -8,7 +8,8 @@ import {
   type HTMLSelectElement as SelectEl,
   type HTMLTextAreaElement as TextAreaEl,
 } from "happy-dom";
-import { migrate, openDatabase, putWorkspaceUser, syncWorkspaceMember, sqliteDb } from "../src/db";
+import { and, eq } from "drizzle-orm";
+import { putWorkspaceUser, syncWorkspaceMember, type Db } from "../src/db";
 import type { AgentModelCatalog } from "../src/runner-models";
 import {
   createFakeRetroCatalog,
@@ -17,7 +18,8 @@ import {
   DEFAULT_RETRO_PROMPT,
 } from "../src/retros";
 import type { WorkspacePrincipal } from "../src/workspace";
-import { ALL, world } from "./improvement-fixtures";
+import { ALL, worldPg } from "./improvement-fixtures";
+import { tempStore } from "./pglite";
 
 const client = (path: string) => import(path);
 const { createRetroSettings } = await client("../src/dashboard/src/client/retro-settings.ts");
@@ -85,33 +87,51 @@ beforeEach(() => {
   }
 });
 
-afterEach(() => {
+const stores: (() => Promise<void>)[] = [];
+
+afterEach(async () => {
   for (const name of DOM_GLOBALS) (globalThis as Record<string, unknown>)[name] = saved.get(name);
   window.close();
+  for (const close of stores.splice(0)) await close();
 });
+
+const repository = (db: Db, repository: string) =>
+  db.run((q) =>
+    q.exec(
+      q.orm
+        .insert(q.t.workspaceRepository)
+        .values({ workspaceId: "ws", repository, teamId: "team-1" }),
+    ),
+  );
 
 const settle = async () => {
   for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
 async function harness(catalogs: AgentModelCatalog[] | null = CATALOGS) {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  db.run("INSERT INTO workspace VALUES ('ws', 'org', 'Kyku', 0)");
-  db.run("INSERT INTO workspace_repository VALUES ('ws', ?, 'team-1')", [APP]);
+  const { db, close } = await tempStore();
+  stores.push(close);
+  await db.run((q) =>
+    q.exec(
+      q.orm
+        .insert(q.t.workspace)
+        .values({ id: "ws", linearOrganizationId: "org", name: "Kyku", createdAt: 0 }),
+    ),
+  );
+  await repository(db, APP);
   const people: Record<string, WorkspacePrincipal> = {};
   for (const [name, role] of [
     ["admin", "admin"],
     ["other", "admin"],
     ["member", "member"],
   ] as const) {
-    const userId = await putWorkspaceUser(sqliteDb(db), {
+    const userId = await putWorkspaceUser(db, {
       id: `user-${name}`,
       linearUserId: name,
       name,
       email: `${name}@example.invalid`,
     });
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: "ws",
       userId,
       role,
@@ -123,12 +143,12 @@ async function harness(catalogs: AgentModelCatalog[] | null = CATALOGS) {
   }
   const catalog = createFakeRetroCatalog(catalogs);
   const settings = createRetroSettingsHttp({
-    store: sqliteDb(db),
+    store: db,
     catalog: catalog.read,
     now: () => 5,
   });
   const preview = createRetroPreviewHttp({
-    store: sqliteDb(db),
+    store: db,
     artifactRoot: "/nonexistent",
     now: () => 5,
   });
@@ -424,10 +444,21 @@ test("invalid limits and provider unavailability are reported separately", async
 
 test("a repository Paws can no longer access is denied beside the list", async () => {
   const t = await harness();
-  t.db.run("INSERT INTO workspace_repository VALUES ('ws', ?, 'team-1')", [OLD]);
+  await repository(t.db, OLD);
   await t.open();
   await t.submit();
-  t.db.run("DELETE FROM workspace_repository WHERE repository = ?", [OLD]);
+  await t.db.run((q) =>
+    q.exec(
+      q.orm
+        .delete(q.t.workspaceRepository)
+        .where(
+          and(
+            eq(q.t.workspaceRepository.workspaceId, "ws"),
+            eq(q.t.workspaceRepository.repository, OLD),
+          ),
+        ),
+    ),
+  );
   await t.open("ws:user-admin:reload");
   expect(t.text()).toContain("Paws cannot access this repository");
   await t.submit();
@@ -470,8 +501,9 @@ test("a workspace switch or lost permission clears the draft and preview", async
 });
 
 test("a report shows the prompt and profile its retro froze", async () => {
-  const w = await world();
-  const handle = createRetroPreviewHttp({ store: sqliteDb(w.db), artifactRoot: w.root });
+  const w = await worldPg();
+  stores.push(w.close);
+  const handle = createRetroPreviewHttp({ store: w.db, artifactRoot: w.root });
   const controller = createRetroSettings({
     fetch: async (url: string) =>
       (await handle(new Request(String(url)), w.people.admin!, ALL)) ??

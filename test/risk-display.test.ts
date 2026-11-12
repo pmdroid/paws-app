@@ -2,6 +2,7 @@ import { afterEach, expect, spyOn, test } from "bun:test";
 import { writeFileSync, rmSync } from "node:fs";
 import * as fs from "node:fs";
 import { join } from "node:path";
+import { count, eq, sql } from "drizzle-orm";
 import { RiskDisplayReader, riskApprovalFor } from "../src/loop";
 import { createLiveStatusProvider } from "../src/dashboard";
 import { loadConfigFile, readMergeSettings, type MergeSettings } from "../src/config";
@@ -15,20 +16,27 @@ import {
   recordLinkAskDecision,
   recordReviewFindings,
   saveCheckpoint,
-  sqliteDb,
+  type Db,
+  type PgDb,
 } from "../src/db";
-import { tempDb, tempHome } from "./helpers";
+import { tempHome } from "./helpers";
+import { tempStore } from "./pglite";
 
-const cleanup: Array<() => void> = [];
-afterEach(() => {
-  for (const close of cleanup.splice(0).reverse()) close();
+const cleanup: Array<() => void | Promise<void>> = [];
+afterEach(async () => {
+  for (const close of cleanup.splice(0).reverse()) await close();
 });
+
+const execute = (db: Db, query: ReturnType<typeof sql>) => (db as PgDb).orm.execute(query);
+
+const contextRows = async (db: Db) =>
+  (await execute(db, sql`SELECT xmin::text, * FROM risk_auto_context ORDER BY item_id, head`)).rows;
 const scenarios = ["clean", "P2", "missing security", "rules change", "off", "unreadable"] as const;
 async function fixture(
   scenario: (typeof scenarios)[number] = "clean",
   publicUrl: string | null = "https://paws.example",
 ) {
-  const db = tempDb();
+  const { db, close: closeDb } = await tempStore();
   const now = 1_700_000_000_000;
   const item = await insertQueuedItem(db, { id: "risk-item", sessionKey: "risk-session", now });
   const identity = {
@@ -38,7 +46,7 @@ async function fixture(
     policyDigest: "policy",
     policyPath: null,
   };
-  await saveCandidateRisk(sqliteDb(db), {
+  await saveCandidateRisk(db, {
     itemId: item.id,
     head: "head",
     base: "base",
@@ -46,7 +54,7 @@ async function fixture(
     paths: ["auth.ts"],
     classifiedAt: now,
   });
-  await saveCandidatePaths(sqliteDb(db), {
+  await saveCandidatePaths(db, {
     itemId: item.id,
     head: "head",
     paths: scenario === "rules change" ? ["rules.ts"] : ["auth.ts"],
@@ -59,7 +67,7 @@ async function fixture(
   };
   const lines: string[] = [];
   const reader = new RiskDisplayReader({
-    store: sqliteDb(db),
+    store: db,
     configPath: "/tmp/pas934-no-config",
     readSettings: () => {
       settingsReads++;
@@ -68,9 +76,9 @@ async function fixture(
     publicUrl,
     journal: (line) => lines.push(line),
   });
-  cleanup.push(() => {
+  cleanup.push(async () => {
     reader.close();
-    db.close();
+    await closeDb();
   });
   const context = {
     ...reader.inputs(),
@@ -81,7 +89,7 @@ async function fixture(
   for (const id of ["security-review", "independent-review"]) {
     if (id === "security-review" && scenario === "missing security") continue;
     await upsertCloseoutStep(
-      sqliteDb(db),
+      db,
       item.id,
       identity,
       {
@@ -107,10 +115,17 @@ async function fixture(
       now,
     );
   }
-  await finishCloseoutProgress(sqliteDb(db), item.id, identity, "accepted", now);
+  await finishCloseoutProgress(db, item.id, identity, "accepted", now);
   if (scenario === "unreadable")
-    db.run("UPDATE candidate_paths SET paths = '{}' WHERE item_id = ?", [item.id]);
-  const provider = createLiveStatusProvider(sqliteDb(db), {
+    await db.run((q) =>
+      q.exec(
+        q.orm
+          .update(q.t.candidatePaths)
+          .set({ paths: {} })
+          .where(eq(q.t.candidatePaths.itemId, item.id)),
+      ),
+    );
+  const provider = createLiveStatusProvider(db, {
     env: {},
     riskApproval: async (id) => reader.read(id),
   });
@@ -158,7 +173,7 @@ test("unrelated settings writes retain the reason and status reads do not reload
   const f = await fixture("P2");
   f.reader.refreshSettings();
   const reads = f.settingsReads();
-  const changes = f.db.query<{ n: number }, []>("SELECT total_changes() AS n").get()!.n;
+  const rows = await contextRows(f.db);
   for (let i = 0; i < 3; i++) {
     expect((await f.provider.issue(f.item.id))?.risk?.automaticApproval).toContain(
       "security review has a P2 finding",
@@ -166,7 +181,7 @@ test("unrelated settings writes retain the reason and status reads do not reload
     await f.reader.remember(f.item.id, "head", f.context);
   }
   expect(f.settingsReads()).toBe(reads);
-  expect(f.db.query<{ n: number }, []>("SELECT total_changes() AS n").get()!.n).toBe(changes);
+  expect(await contextRows(f.db)).toEqual(rows);
 });
 
 test("changed risk settings invalidate older policy evidence", async () => {
@@ -179,14 +194,25 @@ test("changed risk settings invalidate older policy evidence", async () => {
 
 test("failed display persistence cannot reject the merge gate", async () => {
   const f = await fixture();
-  f.db.run("DELETE FROM risk_auto_context");
-  f.db.run(
-    "CREATE TRIGGER fail_display_insert BEFORE INSERT ON risk_auto_context BEGIN SELECT RAISE(FAIL, 'display write failed'); END",
+  await f.db.run((q) => q.exec(q.orm.delete(q.t.riskAutoContext)));
+  await execute(
+    f.db,
+    sql`CREATE FUNCTION fail_display_insert() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'display write failed'; END $$ LANGUAGE plpgsql`,
+  );
+  await execute(
+    f.db,
+    sql`CREATE TRIGGER fail_display_insert BEFORE INSERT ON risk_auto_context FOR EACH ROW EXECUTE FUNCTION fail_display_insert()`,
   );
   await expect(f.reader.remember(f.item.id, "head", f.context)).resolves.toBeUndefined();
-  expect(f.lines.some((line) => line.includes("display write failed"))).toBe(true);
   expect(
-    await riskApprovalFor(sqliteDb(f.db), {
+    f.lines.some(
+      (line) =>
+        line.includes("operation=risk-display.remember") &&
+        line.includes('insert into "risk_auto_context"'),
+    ),
+  ).toBe(true);
+  expect(
+    await riskApprovalFor(f.db, {
       itemId: f.item.id,
       head: "head",
       publicUrl: "https://paws.example",
@@ -199,8 +225,14 @@ test("failed display persistence cannot reject the merge gate", async () => {
 
 test("a corrupt classified-risk row does not fail the item page", async () => {
   const f = await fixture();
-  f.db.run("PRAGMA ignore_check_constraints=ON");
-  f.db.run("UPDATE candidate_risk SET paths = '{' WHERE item_id = ?", [f.item.id]);
+  await f.db.run((q) =>
+    q.exec(
+      q.orm
+        .update(q.t.candidateRisk)
+        .set({ paths: "{" })
+        .where(eq(q.t.candidateRisk.itemId, f.item.id)),
+    ),
+  );
   const detail = (await f.provider.issue(f.item.id))!;
   expect(detail.issue.id).toBe(f.item.id);
   expect(detail.risk?.automaticApproval).toBe("Manual approval required");
@@ -208,7 +240,7 @@ test("a corrupt classified-risk row does not fail the item page", async () => {
 
 test("display follows the lane's rebased head even while the checkpoint still names the old head", async () => {
   const f = await fixture();
-  await saveCheckpoint(sqliteDb(f.db), f.item.id, {
+  await saveCheckpoint(f.db, f.item.id, {
     phase: "merge_queue",
     wipCommit: "head",
     baseSha: "base",
@@ -218,8 +250,8 @@ test("display follows the lane's rebased head even while the checkpoint still na
   expect(detail.risk?.head).toBe("rebased-head");
   expect(detail.risk?.automaticApproval).toBe("Manual approval required");
   expect(
-    f.db.query<{ n: number }, []>("SELECT count(*) AS n FROM risk_auto_context").get()!.n,
-  ).toBe(1);
+    await f.db.run((q) => q.one(q.orm.select({ n: count() }).from(q.t.riskAutoContext))),
+  ).toEqual({ n: 1 });
 });
 
 test("the disabled risk gate does not claim manual approval is required", async () => {
@@ -228,7 +260,7 @@ test("the disabled risk gate does not claim manual approval is required", async 
     "Risk gate is off: approval is not required",
   );
   expect(
-    await riskApprovalFor(sqliteDb(f.db), {
+    await riskApprovalFor(f.db, {
       itemId: f.item.id,
       head: "head",
       publicUrl: null,
@@ -238,11 +270,20 @@ test("the disabled risk gate does not claim manual approval is required", async 
 });
 
 async function approve(f: Awaited<ReturnType<typeof fixture>>, head: string) {
-  f.db.run(
-    "INSERT INTO question (id, item_id, session_id, kind, body, status, created_at) VALUES ('q-risk', ?, 'risk-session', 'link', 'Risk', 'open', 1)",
-    [f.item.id],
+  await f.db.run((q) =>
+    q.exec(
+      q.orm.insert(q.t.question).values({
+        id: "q-risk",
+        itemId: f.item.id,
+        sessionId: "risk-session",
+        kind: "link",
+        body: "Risk",
+        status: "open",
+        createdAt: 1,
+      }),
+    ),
   );
-  await insertLinkAsk(sqliteDb(f.db), {
+  await insertLinkAsk(f.db, {
     questionId: "q-risk",
     itemId: f.item.id,
     kind: "risk",
@@ -253,7 +294,7 @@ async function approve(f: Awaited<ReturnType<typeof fixture>>, head: string) {
     answerers: ["person"],
     createdAt: 1,
   });
-  await recordLinkAskDecision(sqliteDb(f.db), "q-risk", {
+  await recordLinkAskDecision(f.db, "q-risk", {
     decision: "approve",
     note: null,
     decidedBy: "person",
@@ -274,7 +315,7 @@ test("a human approval carried over by the lane is displayed as approved", async
   await approve(f, "earlier-head");
   let approvedHead: string | undefined;
   let approvalKind: "exact" | "same_patch" | "fix" | undefined;
-  const result = await riskApprovalFor(sqliteDb(f.db), {
+  const result = await riskApprovalFor(f.db, {
     onHumanApproval: (head, kind) => {
       approvedHead = head;
       approvalKind = kind;
@@ -299,7 +340,7 @@ test("a human approval carried over by the lane is displayed as approved", async
 
 test("custom review findings name the actual review", async () => {
   const f = await fixture();
-  await recordReviewFindings(sqliteDb(f.db), {
+  await recordReviewFindings(f.db, {
     itemId: f.item.id,
     repository: "acme/repo",
     head: "head",
@@ -329,7 +370,7 @@ test("hand edits to config are observed outside the status read path", async () 
   writeFileSync(path, "[merge]\nauto_approve_high_risk = true\n");
   let reads = 0;
   const reader = new RiskDisplayReader({
-    store: sqliteDb(f.db),
+    store: f.db,
     configPath: path,
     publicUrl: "https://paws.example",
     readSettings: () => {
@@ -368,7 +409,7 @@ test("policy file edits invalidate display evidence, including across a reader r
   );
   f.reader.close();
   const restarted = new RiskDisplayReader({
-    store: sqliteDb(f.db),
+    store: f.db,
     configPath: "/tmp/pas934-no-config",
     publicUrl: "https://paws.example",
     readSettings: () => f.settings,
@@ -414,7 +455,7 @@ test("a failing human-approval display observer cannot reject an approved head",
   const f = await fixture("off");
   await approve(f, "head");
   expect(
-    await riskApprovalFor(sqliteDb(f.db), {
+    await riskApprovalFor(f.db, {
       itemId: f.item.id,
       head: "head",
       publicUrl: "https://paws.example",
