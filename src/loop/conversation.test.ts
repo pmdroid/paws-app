@@ -3,20 +3,28 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
-import { getConversation, migrate, openDatabase, saveConversation, sqliteDb } from "../db";
+import {
+  beginImplementRun,
+  getConversation,
+  insertQueuedItem,
+  saveConversation,
+  type Db,
+} from "../db";
 import { executeItem, FOLLOW_UP_INTERRUPTION } from "../acp";
 import { createAcpFixRunner } from "./agents";
 import { durableConversation } from "./conversation";
+import { tempStore } from "../../test/pglite";
+
+async function insertRunningItem(db: Db) {
+  await insertQueuedItem(db, { id: "item", now: 1 });
+  await beginImplementRun(db, "item", 1);
+}
 
 test("recovery consumes only new public transcript observations once after an interrupted append", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-transcript-recovery-"));
-  const dbPath = join(root, "paws.db");
-  let db = openDatabase(dbPath);
-  migrate(db);
+  const { db, close } = await tempStore();
   try {
-    db.run(
-      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('item','epic','issue','ENG-1','Task','running','paws/eng-1',0,1)",
-    );
+    await insertRunningItem(db);
     const line = (update: unknown) =>
       JSON.stringify({ event: { type: "session_update", update } }) + "\n";
     const text = (sessionUpdate: string, value: string) =>
@@ -37,29 +45,25 @@ test("recovery consumes only new public transcript observations once after an in
         '{"event":',
     );
     await saveConversation(
-      sqliteDb(db),
+      db,
       "item",
       JSON.stringify([{ kind: "request", body: "INITIAL_REQUEST" }]),
       path,
       false,
       Buffer.byteLength(prior),
     );
-    db.close();
-    db = openDatabase(dbPath);
-    await durableConversation(sqliteDb(db), "item");
-    const recovered = await getConversation(sqliteDb(db), "item");
+    await durableConversation(db, "item");
+    const recovered = await getConversation(db, "item");
     expect(recovered.transcript).toBeNull();
     expect(recovered.entries).toContain("INITIAL_REQUEST");
     expect(recovered.entries).toContain("PUBLIC_OBSERVATION");
     expect(recovered.entries).toContain("PUBLIC_EFFECT");
     expect(recovered.entries).not.toContain("PRIVATE_HIDDEN");
     expect(recovered.entries).not.toContain("ALREADY_SAVED");
-    db.close();
-    db = openDatabase(dbPath);
-    await durableConversation(sqliteDb(db), "item");
-    expect((await getConversation(sqliteDb(db), "item")).entries).toBe(recovered.entries);
+    await durableConversation(db, "item");
+    expect((await getConversation(db, "item")).entries).toBe(recovered.entries);
   } finally {
-    db.close();
+    await close();
     rmSync(root, { recursive: true, force: true });
   }
 });
@@ -68,8 +72,7 @@ test("executor and Closeout fixer share the durable ACP conversation through rea
   const root = mkdtempSync(join(tmpdir(), "paws-conversation-callers-"));
   const source = join(root, "source");
   const evidence = join(root, "prompts.jsonl");
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   const git = (...args: string[]) => execFileSync("git", args).toString().trim();
   try {
     mkdirSync(source);
@@ -86,10 +89,8 @@ test("executor and Closeout fixer share the durable ACP conversation through rea
       "-m",
       "Seed",
     );
-    db.run(
-      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('item','epic','issue','ENG-1','Task','running','paws/eng-1',0,1)",
-    );
-    const runner = await durableConversation(sqliteDb(db), "item");
+    await insertRunningItem(db);
+    const runner = await durableConversation(db, "item");
     const agent = new URL("../../test/fixtures/brief-agent.ts", import.meta.url).pathname;
     const launch = (purpose: string) => ({
       command: process.execPath,
@@ -135,10 +136,10 @@ test("executor and Closeout fixer share the durable ACP conversation through rea
       .map((line) => JSON.parse(line) as { purpose: string; prompt: string });
     expect(prompts.map((row) => row.purpose)).toEqual(["implement", "fix"]);
     expect(prompts[1]!.prompt).toContain('"kind":"request","body":"Required output: `ALPHA`"');
-    expect(JSON.parse((await getConversation(sqliteDb(db), "item")).entries)).toHaveLength(2);
-    expect((await getConversation(sqliteDb(db), "item")).transcript).toBeNull();
+    expect(JSON.parse((await getConversation(db, "item")).entries)).toHaveLength(2);
+    expect((await getConversation(db, "item")).transcript).toBeNull();
   } finally {
-    db.close();
+    await close();
     rmSync(root, { recursive: true, force: true });
   }
 }, 15000);
@@ -146,10 +147,9 @@ test("executor and Closeout fixer share the durable ACP conversation through rea
 test("a failed pending snapshot cannot start an ACP process", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-conversation-save-failure-"));
   const marker = join(root, "spawned");
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   try {
-    const runner = await durableConversation(sqliteDb(db), "missing-item");
+    const runner = await durableConversation(db, "missing-item");
     await expect(
       runner({
         role: "implementer",
@@ -163,25 +163,24 @@ test("a failed pending snapshot cannot start an ACP process", async () => {
         args: ["-e", `require("fs").writeFileSync(${JSON.stringify(marker)},"spawned")`],
         env: { PATH: process.env.PATH!, HOME: root },
       }),
-    ).rejects.toThrow("FOREIGN KEY");
+    ).rejects.toMatchObject({
+      cause: { message: expect.stringContaining("violates foreign key constraint") },
+    });
     await Bun.sleep(150);
     expect(existsSync(marker)).toBe(false);
   } finally {
-    db.close();
+    await close();
     rmSync(root, { recursive: true, force: true });
   }
 });
 
 test("a concurrent prompt rejects without replacing the active transcript snapshot", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-conversation-concurrent-"));
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   const controller = new AbortController();
   let running: Promise<unknown> | undefined;
   try {
-    db.run(
-      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('item','epic','issue','ENG-1','Task','running','paws/eng-1',0,1)",
-    );
+    await insertRunningItem(db);
     const script = join(root, "script.json");
     writeFileSync(
       script,
@@ -200,7 +199,7 @@ test("a concurrent prompt rejects without replacing the active transcript snapsh
     );
     let ready!: () => void;
     const started = new Promise<void>((resolve) => (ready = resolve));
-    const runner = await durableConversation(sqliteDb(db), "item");
+    const runner = await durableConversation(db, "item");
     const options = {
       role: "implementer" as const,
       itemId: "item",
@@ -226,20 +225,20 @@ test("a concurrent prompt rejects without replacing the active transcript snapsh
     };
     running = runner(options);
     await started;
-    const active = await getConversation(sqliteDb(db), "item");
+    const active = await getConversation(db, "item");
     expect(active.transcript).toContain("/first/acp.jsonl");
     await expect(runner({ ...options, runId: "second", prompt: "SECOND_REQUEST" })).rejects.toThrow(
       "ACP prompt already running",
     );
-    expect(await getConversation(sqliteDb(db), "item")).toEqual(active);
+    expect(await getConversation(db, "item")).toEqual(active);
     controller.abort(FOLLOW_UP_INTERRUPTION);
     await running;
-    expect((await getConversation(sqliteDb(db), "item")).transcript).toBeNull();
-    expect((await getConversation(sqliteDb(db), "item")).entries).not.toContain("SECOND_REQUEST");
+    expect((await getConversation(db, "item")).transcript).toBeNull();
+    expect((await getConversation(db, "item")).entries).not.toContain("SECOND_REQUEST");
   } finally {
     controller.abort();
     await running;
-    db.close();
+    await close();
     rmSync(root, { recursive: true, force: true });
   }
 }, 15000);

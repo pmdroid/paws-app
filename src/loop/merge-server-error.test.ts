@@ -13,30 +13,27 @@ import {
   insertQueuedItem,
   listJobs,
   listRebaseReturns,
-  migrate,
-  openDatabase,
   recordItemPullRequest,
   recordRebaseReturn,
-  sqliteDb,
   syncSteps,
 } from "../db";
 import { GitHubHttpError, type GitHubClient } from "../github";
 import { REBASE_CONFLICT_INSTRUCTION } from "../merge";
 import { findOpenQuestion } from "../questions";
 import { Orchestrator } from "./orchestrator";
+import { tempStore } from "../../test/pglite";
 
 const HEAD = "6496aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const MAIN = "c0ffee0000000000000000000000000000000000";
 
 async function fixture(mergeable: boolean | null) {
   const root = await mkdtemp(join(tmpdir(), "paws-merge-server-error-"));
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   const clock = new FakeClock(1_000);
   const reads: string[] = [];
   const lines: string[] = [];
   const orchestrator = new Orchestrator({
-    store: sqliteDb(db),
+    store: db,
     clock,
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
@@ -65,18 +62,18 @@ async function fixture(mergeable: boolean | null) {
   });
   orchestrator["fetchUpstreamMain"] = async () => MAIN;
   await insertQueuedItem(db, { id: "DEP-661", sessionKey: "ses-1", now: clock.now() });
-  await bindWorkItemRepository(sqliteDb(db), "DEP-661", {
+  await bindWorkItemRepository(db, "DEP-661", {
     owner: "acme",
     repo: "monorepo",
     remoteUrl: "https://github.com/acme/monorepo.git",
   });
-  await beginImplementRun(sqliteDb(db), "DEP-661", clock.now());
-  await enterMergeQueue(sqliteDb(db), "DEP-661", {
+  await beginImplementRun(db, "DEP-661", clock.now());
+  await enterMergeQueue(db, "DEP-661", {
     phase: "merge_queue",
     baseSha: MAIN,
     wipCommit: HEAD,
   });
-  await recordItemPullRequest(sqliteDb(db), {
+  await recordItemPullRequest(db, {
     itemId: "DEP-661",
     pullNumber: 6496,
     pullUrl: "https://github.com/acme/monorepo/pull/6496",
@@ -98,11 +95,10 @@ async function fixture(mergeable: boolean | null) {
         new GitHubHttpError({ status, body: {} }),
         context,
       ),
-    resumes: async () =>
-      (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume),
+    resumes: async () => (await listJobs(db)).filter((job) => job.queue === JOB_KIND.resume),
     cleanup: async () => {
       await orchestrator.shutdown();
-      db.close();
+      await close();
       await rm(root, { recursive: true, force: true });
     },
   };
@@ -113,13 +109,13 @@ test("a merge attempt that gets HTTP 500 on a conflicting pull request goes back
   try {
     expect(await f.failed(500)).toBe(true);
     expect(f.reads).toEqual(["GET /repos/acme/monorepo/pulls/6496"]);
-    expect((await getWorkItem(sqliteDb(f.db), "DEP-661"))?.state).not.toBe("merge_queue");
+    expect((await getWorkItem(f.db, "DEP-661"))?.state).not.toBe("merge_queue");
     const [resume] = await f.resumes();
     const payload = resume?.payload as { reason: string; handoff: string };
     expect(payload.reason).toBe("conflict");
     expect(payload.handoff.startsWith(REBASE_CONFLICT_INSTRUCTION)).toBe(true);
     expect(payload.handoff).toContain("git reset --soft $(git merge-base HEAD origin/main)");
-    expect(await listRebaseReturns(sqliteDb(f.db), "DEP-661", 0)).toMatchObject([
+    expect(await listRebaseReturns(f.db, "DEP-661", 0)).toMatchObject([
       { base: MAIN, reason: "merge" },
     ]);
     expect(f.lines.filter((line) => line.includes("conflicts with main"))).toEqual([
@@ -134,7 +130,7 @@ test("an HTTP 500 on a conflicting pull request with the rebase budget spent ask
   const f = await fixture(false);
   try {
     for (let spent = 0; spent < 3; spent++)
-      await recordRebaseReturn(sqliteDb(f.db), {
+      await recordRebaseReturn(f.db, {
         itemId: "DEP-661",
         jobId: 900 + spent,
         candidate: `earlier-${spent}`,
@@ -145,8 +141,8 @@ test("an HTTP 500 on a conflicting pull request with the rebase budget spent ask
       });
     expect(await f.failed(500)).toBe(true);
     expect(await f.resumes()).toEqual([]);
-    expect((await getWorkItem(sqliteDb(f.db), "DEP-661"))?.state).toBe("awaiting_input");
-    expect(await findOpenQuestion(sqliteDb(f.db), "ses-1")).toMatchObject({
+    expect((await getWorkItem(f.db, "DEP-661"))?.state).toBe("awaiting_input");
+    expect(await findOpenQuestion(f.db, "ses-1")).toMatchObject({
       reason: "rebase_budget_spent",
     });
   } finally {
@@ -162,7 +158,7 @@ test.each([true, null])(
       expect(await f.failed(502)).toBe(false);
       expect(f.reads).toHaveLength(1);
       expect(await f.resumes()).toEqual([]);
-      expect((await getWorkItem(sqliteDb(f.db), "DEP-661"))?.state).toBe("merge_queue");
+      expect((await getWorkItem(f.db, "DEP-661"))?.state).toBe("merge_queue");
     } finally {
       await f.cleanup();
     }
