@@ -31,10 +31,10 @@ import {
   OutboxDispatcher,
   saveTaskMode,
   recordLinearInstallation,
-  sqliteDb,
 } from "../src/db";
-import { tempDb, tempHome } from "./helpers";
-import { workspaceAdmission, workspaceDispatch } from "./fake-workspace";
+import { tempHome } from "./helpers";
+import { workspaceAdmission, workspaceDispatchPg } from "./fake-workspace";
+import { tempStore } from "./pglite";
 
 const token = "synthetic-host-git-token";
 
@@ -211,23 +211,23 @@ test("host credentials reach real host clone and fetch without reaching reposito
       "Updated source\n",
     );
     expect(JSON.parse(await readFile(leaked, "utf8"))).toEqual({ leaked: false });
-    const db = tempDb();
+    const { db, close } = await tempStore();
     const orchestratedRoot = join(home, "orchestrated-paws");
     const item = await insertQueuedItem(db, {
       id: "repository-answer",
       sessionKey: "host-git-session",
     });
-    await ensureLinearSession(sqliteDb(db), {
+    await ensureLinearSession(db, {
       sessionId: item.sessionKey!,
       issueId: item.linearIssueId,
       now: Date.now(),
     });
-    await bindLinearSessionTask(sqliteDb(db), item.sessionKey!, item.delegationId, {
+    await bindLinearSessionTask(db, item.sessionKey!, item.delegationId, {
       actorId: "human",
     });
-    await saveTaskMode(sqliteDb(db), item.id, "answer", 0, true);
+    await saveTaskMode(db, item.id, "answer", 0, true);
     const installation = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
-    await recordLinearInstallation(sqliteDb(db), {
+    await recordLinearInstallation(db, {
       ...installation,
       sessionId: item.sessionKey!,
       teamId: "team",
@@ -259,7 +259,7 @@ test("host credentials reach real host clone and fetch without reaching reposito
     const priorCa = process.env.GIT_SSL_CAINFO;
     process.env.GIT_SSL_CAINFO = cert;
     const orchestrator = attachOrchestrator({
-      store: sqliteDb(db),
+      store: db,
       admission: workspaceAdmission(db),
       jobs,
       outbox,
@@ -268,7 +268,7 @@ test("host credentials reach real host clone and fetch without reaching reposito
       home,
       linearTaskModes: true,
       repositories: [{ owner: "acme", repo: "private", remoteUrl }],
-      linearAccess: new LinearTaskAccess(sqliteDb(db), {
+      linearAccess: new LinearTaskAccess(db, {
         access: access.adapter,
         lifecycle,
         ...installation,
@@ -313,9 +313,9 @@ test("host credentials reach real host clone and fetch without reaching reposito
           ],
         }),
       );
-      await workspaceDispatch(db, { now: Date.now() });
+      await workspaceDispatchPg(db, { now: Date.now() });
       await jobs.tick();
-      expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("completed");
+      expect((await getWorkItem(db, item.id))?.state).toBe("completed");
       expect(checkedReads).toBe(1);
       expect(lifecycle.started).toEqual([]);
       expect(lifecycle.issue.assigneeId).toBe("human");
@@ -329,7 +329,7 @@ test("host credentials reach real host clone and fetch without reaching reposito
       expect(JSON.parse(await readFile(leaked, "utf8"))).toEqual({ leaked: false });
     } finally {
       await orchestrator.shutdown();
-      db.close();
+      await close();
       if (priorCa === undefined) delete process.env.GIT_SSL_CAINFO;
       else process.env.GIT_SSL_CAINFO = priorCa;
     }
