@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 describe("rules in the Closeout policy", () => {
-  test("parsing and resolving accept rules with their defaults", () => {
+  test("parsing and resolving accept rules with their defaults", async () => {
     const git = createFakeGitReader({
       [PUBLIC_POLICY_PATH]: policy(
         rule("api-contract", PROBE, ['paths: ["src/server/**"]', "failOn: P1", "onFail: approve"]),
@@ -35,7 +35,7 @@ describe("rules in the Closeout policy", () => {
       [PROBE]: "process.exit(0);\n",
       ".agents/probes/loop.ts": "process.exit(1);\n",
     });
-    const loaded = present(loadPolicy({ repo: tempDir(), git, env: {} }));
+    const loaded = present(await loadPolicy({ repo: tempDir(), git, env: {} }));
     expect(loaded.rules).toEqual([
       {
         id: "api-contract",
@@ -65,36 +65,36 @@ describe("rules in the Closeout policy", () => {
     ]);
   });
 
-  test("a local policy root resolves rules from its own files", () => {
+  test("a local policy root resolves rules from its own files", async () => {
     const root = tempDir();
     writeFile(root, PUBLIC_POLICY_PATH, policy(rule("api-contract", PROBE, ["failOn: P1"])));
     writeFile(root, PROBE, "local probe\n");
     const loaded = present(
-      loadPolicy({ policyRoot: root, repo: tempDir(), git: unused(), env: {} }),
+      await loadPolicy({ policyRoot: root, repo: tempDir(), git: unused(), env: {} }),
     );
     expect(loaded.rules?.map((entry) => entry.probeSha256)).toEqual([sha256("local probe\n")]);
   });
 
-  test("changing a probe's bytes changes the digest", () => {
+  test("changing a probe's bytes changes the digest", async () => {
     const git = createFakeGitReader({
       [PUBLIC_POLICY_PATH]: policy(rule("api-contract", PROBE, ["failOn: P1"])),
       [PROBE]: "process.exit(0);\n",
     });
     const repo = tempDir();
-    const first = present(loadPolicy({ repo, git, env: {} }));
-    expect(present(loadPolicy({ repo, git, env: {} })).digest).toBe(first.digest);
+    const first = present(await loadPolicy({ repo, git, env: {} }));
+    expect(present(await loadPolicy({ repo, git, env: {} })).digest).toBe(first.digest);
     git.put(PROBE, "process.exit(0); \n");
-    expect(present(loadPolicy({ repo, git, env: {} })).digest).not.toBe(first.digest);
+    expect(present(await loadPolicy({ repo, git, env: {} })).digest).not.toBe(first.digest);
   });
 
-  test("the worktree copy of a probe is not the digested file", () => {
+  test("the worktree copy of a probe is not the digested file", async () => {
     const committed = "committed probe\n";
     const git = createFakeGitReader({
       [PUBLIC_POLICY_PATH]: policy(rule("api-contract", PROBE, ["failOn: P1"])),
       [PROBE]: committed,
     });
     const repo = tempDir();
-    const before = present(loadPolicy({ repo, git, env: {} }));
+    const before = present(await loadPolicy({ repo, git, env: {} }));
     writeFile(repo, PROBE, "process.exit(0); // edited on the branch\n");
     writeFile(
       repo,
@@ -104,16 +104,16 @@ describe("rules in the Closeout policy", () => {
         rule("branch-rule", PROBE, ["failOn: P1"]),
       ),
     );
-    const after = present(loadPolicy({ repo, git, env: {} }));
+    const after = present(await loadPolicy({ repo, git, env: {} }));
     expect(after.digest).toBe(before.digest);
     expect(after.rules?.map((entry) => entry.id)).toEqual(["api-contract"]);
     expect(after.files.find((file) => file.path === PROBE)?.sha256).toBe(sha256(committed));
   });
 
-  test("a policy without rules keeps the digest it had before rules existed", () => {
+  test("a policy without rules keeps the digest it had before rules existed", async () => {
     const bare = 'specVersion: "0.1"\nitems: []\n';
     const loaded = present(
-      loadPolicy({
+      await loadPolicy({
         repo: tempDir(),
         git: createFakeGitReader({ [PUBLIC_POLICY_PATH]: bare }),
         env: {},
@@ -124,9 +124,9 @@ describe("rules in the Closeout policy", () => {
     expect(loaded.digest).toBe(`sha256:${sha256(identity)}`);
   });
 
-  test("a duplicate id is rejected, against another rule or a check", () => {
+  test("a duplicate id is rejected, against another rule or a check", async () => {
     expectBlocked(
-      origin({
+      await origin({
         [PUBLIC_POLICY_PATH]: policy(
           rule("api-contract", PROBE, ["failOn: P1"]),
           rule("api-contract", PROBE, ["failOn: P2"]),
@@ -136,7 +136,7 @@ describe("rules in the Closeout policy", () => {
       "duplicate requirement id api-contract",
     );
     expectBlocked(
-      origin({
+      await origin({
         [PUBLIC_POLICY_PATH]: `${policy(rule("lint", PROBE, ["failOn: P1"]))}items:\n  - id: lint\n    kind: command\n    gate: beforePR\n    exec: ["true"]\n    timeoutSeconds: 30\n`,
         [PROBE]: "probe\n",
       }),
@@ -144,23 +144,23 @@ describe("rules in the Closeout policy", () => {
     );
   });
 
-  test("a missing probe is rejected", () => {
+  test("a missing probe is rejected", async () => {
     expectBlocked(
-      origin({ [PUBLIC_POLICY_PATH]: policy(rule("api-contract", PROBE, ["failOn: P1"])) }),
+      await origin({ [PUBLIC_POLICY_PATH]: policy(rule("api-contract", PROBE, ["failOn: P1"])) }),
       `probe is missing: ${PROBE}`,
     );
     const root = tempDir();
     writeFile(root, PUBLIC_POLICY_PATH, policy(rule("api-contract", PROBE, ["failOn: P1"])));
     mkdirSync(join(root, PROBE), { recursive: true });
-    expect(loadLocal(root)).toEqual({
+    expect(await loadLocal(root)).toEqual({
       ok: false,
       source: "local",
       message: `probe is missing: ${PROBE}`,
     });
   });
 
-  test("an unknown field is left out; missing fields and bad values are rejected", () => {
-    const unknown = origin({
+  test("an unknown field is left out; missing fields and bad values are rejected", async () => {
+    const unknown = await origin({
       [PUBLIC_POLICY_PATH]: policy(
         rule("api-contract", PROBE, ["failOn: P1", "timeoutSeconds: 30"]),
       ),
@@ -179,14 +179,14 @@ describe("rules in the Closeout policy", () => {
       [["failOn: P1", "exec: []"], "/rules/0/exec must NOT have fewer than 1 items"],
     ];
     for (const [fields, message] of cases) {
-      const result = origin({
+      const result = await origin({
         [PUBLIC_POLICY_PATH]: policy(rule("api-contract", PROBE, fields)),
         [PROBE]: "probe\n",
       });
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.message).toContain(message);
     }
-    const multiline = origin({
+    const multiline = await origin({
       [PUBLIC_POLICY_PATH]: `specVersion: "0.1"\nrules:\n  - id: api-contract\n    probe: ${PROBE}\n    summary: "two\\nlines"\n    failOn: P1\n`,
       [PROBE]: "probe\n",
     });
@@ -194,9 +194,9 @@ describe("rules in the Closeout policy", () => {
     if (!multiline.ok) expect(multiline.message).toContain("/rules/0/summary must match pattern");
   });
 
-  test("rules are only allowed on the entry policy", () => {
+  test("rules are only allowed on the entry policy", async () => {
     expectBlocked(
-      origin({
+      await origin({
         [PUBLIC_POLICY_PATH]:
           'specVersion: "0.1"\nimports:\n  - path: .agents/shared.yaml\n    as: shared\n',
         ".agents/shared.yaml": policy(rule("api-contract", PROBE, ["failOn: P1"])),
@@ -206,10 +206,10 @@ describe("rules in the Closeout policy", () => {
     );
   });
 
-  test("a probe path that escapes the policy root is rejected", () => {
+  test("a probe path that escapes the policy root is rejected", async () => {
     for (const probe of ["../outside.ts", "/etc/passwd", "~/probe.ts", ".agents/../../x.ts"]) {
       expectBlocked(
-        origin({ [PUBLIC_POLICY_PATH]: policy(rule("api-contract", probe, ["failOn: P1"])) }),
+        await origin({ [PUBLIC_POLICY_PATH]: policy(rule("api-contract", probe, ["failOn: P1"])) }),
         `probe path is not repository-relative: ${probe}`,
       );
     }
@@ -221,19 +221,22 @@ describe("rules in the Closeout policy", () => {
       PUBLIC_POLICY_PATH,
       policy(rule("api-contract", "../outside.ts", ["failOn: P1"])),
     );
-    expect(loadLocal(root)).toEqual({
+    expect(await loadLocal(root)).toEqual({
       ok: false,
       source: "local",
       message: "probe path is not repository-relative: ../outside.ts",
     });
   });
 
-  test("a symlinked probe is rejected in git and on disk", () => {
+  test("a symlinked probe is rejected in git and on disk", async () => {
     const git = createFakeGitReader({
       [PUBLIC_POLICY_PATH]: policy(rule("api-contract", PROBE, ["failOn: P1"])),
     });
     git.put(PROBE, "../../outside.ts", "120000");
-    expectBlocked(loadPolicy({ repo: tempDir(), git, env: {} }), `probe is a symlink: ${PROBE}`);
+    expectBlocked(
+      await loadPolicy({ repo: tempDir(), git, env: {} }),
+      `probe is a symlink: ${PROBE}`,
+    );
 
     const parent = tempDir();
     const root = join(parent, "policy");
@@ -241,7 +244,7 @@ describe("rules in the Closeout policy", () => {
     writeFile(root, PUBLIC_POLICY_PATH, policy(rule("api-contract", PROBE, ["failOn: P1"])));
     mkdirSync(join(root, ".agents", "probes"), { recursive: true });
     symlinkSync(join(parent, "outside.ts"), join(root, PROBE));
-    expect(loadLocal(root)).toEqual({
+    expect(await loadLocal(root)).toEqual({
       ok: false,
       source: "local",
       message: `probe is a symlink: ${PROBE}`,
@@ -252,17 +255,17 @@ describe("rules in the Closeout policy", () => {
     mkdirSync(join(parent, "elsewhere"));
     writeFile(parent, "elsewhere/api-contract.ts", "outside\n");
     symlinkSync(join(parent, "elsewhere"), join(linkedDir, ".agents", "probes"));
-    expect(loadLocal(linkedDir)).toEqual({
+    expect(await loadLocal(linkedDir)).toEqual({
       ok: false,
       source: "local",
       message: `probe is a symlink: ${PROBE}`,
     });
   });
 
-  test("a probe larger than a policy file may be is rejected", () => {
+  test("a probe larger than a policy file may be is rejected", async () => {
     const large = "x".repeat(POLICY_MAX_BYTES + 1);
     expectBlocked(
-      origin({
+      await origin({
         [PUBLIC_POLICY_PATH]: policy(rule("api-contract", PROBE, ["failOn: P1"])),
         [PROBE]: large,
       }),
@@ -271,7 +274,7 @@ describe("rules in the Closeout policy", () => {
     const root = tempDir();
     writeFile(root, PUBLIC_POLICY_PATH, policy(rule("api-contract", PROBE, ["failOn: P1"])));
     writeFile(root, PROBE, large);
-    expect(loadLocal(root)).toEqual({
+    expect(await loadLocal(root)).toEqual({
       ok: false,
       source: "local",
       message: `probe is larger than ${POLICY_MAX_BYTES} bytes: ${PROBE}`,
@@ -337,12 +340,12 @@ function rule(id: string, probe: string, fields: string[]): string {
     .join("\n");
 }
 
-function origin(files: Record<string, string>): PolicyLoadOutcome {
-  return loadPolicy({ repo: tempDir(), git: createFakeGitReader(files), env: {} });
+async function origin(files: Record<string, string>): Promise<PolicyLoadOutcome> {
+  return await loadPolicy({ repo: tempDir(), git: createFakeGitReader(files), env: {} });
 }
 
-function loadLocal(root: string): PolicyLoadOutcome {
-  return loadPolicy({ policyRoot: root, repo: tempDir(), git: unused(), env: {} });
+async function loadLocal(root: string): Promise<PolicyLoadOutcome> {
+  return await loadPolicy({ policyRoot: root, repo: tempDir(), git: unused(), env: {} });
 }
 
 function unused() {

@@ -19,8 +19,8 @@ export type GitFailure = { ok: false; stderr: string };
  * `lsRemoteOriginMain` is the second answer from `git ls-remote origin refs/heads/main`.
  */
 export type GitReader = {
-  fetchOriginMain(repo: string): { ok: true; commit: string } | GitFailure;
-  lsRemoteOriginMain(repo: string): { ok: true; stdout: string } | GitFailure;
+  fetchOriginMain(repo: string): Promise<{ ok: true; commit: string } | GitFailure>;
+  lsRemoteOriginMain(repo: string): Promise<{ ok: true; stdout: string } | GitFailure>;
   listBlobs(
     repo: string,
     commit: string,
@@ -68,12 +68,12 @@ export function createFakeGitReader(
       const bytes = typeof contents === "string" ? encoder.encode(contents) : contents;
       stored.set(path, { path, mode, bytes, object: sha256Hex(bytes) });
     },
-    fetchOriginMain(repo) {
+    async fetchOriginMain(repo) {
       git.calls.push(`fetch ${repo}`);
       if (git.fetchError !== undefined) return { ok: false, stderr: git.fetchError };
       return { ok: true, commit: git.commit };
     },
-    lsRemoteOriginMain(repo) {
+    async lsRemoteOriginMain(repo) {
       git.calls.push(`ls-remote ${repo}`);
       if (git.remoteError !== undefined) return { ok: false, stderr: git.remoteError };
       const stdout = git.remoteStdout ?? `${git.commit}\trefs/heads/main\n`;

@@ -412,12 +412,13 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
     }
 
     maxFixAttempts ??=
-      policyFixBudget(decisionRepo(input), input.home, input.policyRoot) ?? MAX_FIX_ATTEMPTS;
+      (await policyFixBudget(decisionRepo(input), input.home, input.policyRoot)) ??
+      MAX_FIX_ATTEMPTS;
     if (fixAttempts >= maxFixAttempts) {
       return finalResult(input, "exhausted", fixAttempts, evaluations, head, evaluation);
     }
     // A rule set to approve waits for a person; it is not the agent's to fix and uses no attempt.
-    const held = heldRules(input, evaluation);
+    const held = await heldRules(input, evaluation);
     if (
       held.size > 0 &&
       (evaluation.decision?.items ?? []).every(
@@ -557,7 +558,7 @@ async function loadReviewFindings(
     records = await reviewRecordsSince(evidenceDir, []);
   } catch (error) {
     journalCaught(error, "run.reviewOutputUnreadable", input.taskId);
-    const required = reviewRequirements(decisionRepo(input), input.home, input.policyRoot);
+    const required = await reviewRequirements(decisionRepo(input), input.home, input.policyRoot);
     const setAside = required.ok
       ? await setAsideUnreadableReviews(
           evidenceDir,
@@ -739,14 +740,14 @@ function waivedIds(evaluation: Evaluation): Set<string> {
  * One whose attempts ran out still waits for a person: its failures were never the agent's to
  * fix. A bypass a person approved for this head no longer holds anything.
  */
-function heldRules(input: GateInput, evaluation: Evaluation): Map<string, string> {
+async function heldRules(input: GateInput, evaluation: Evaluation): Promise<Map<string, string>> {
   const failed = (evaluation.decision?.items ?? []).filter(
     (item) => item.kind === "rule" && (item.state === "failed" || item.state === "exhausted"),
   );
   if (failed.length === 0) return new Map();
   let rules;
   try {
-    rules = approvalRules(decisionRepo(input), input.home, input.policyRoot);
+    rules = await approvalRules(decisionRepo(input), input.home, input.policyRoot);
   } catch (error) {
     journalCaught(error, "run.heldRules.approvalRules", input.taskId);
     return new Map();
@@ -834,7 +835,7 @@ async function startParallelReviews(
   reviewAttempts: Map<string, number>,
   metrics: ReviewMetrics,
 ): Promise<{ gaps: CloseoutItem[]; done: Promise<Evaluation | null> } | undefined> {
-  const required = reviewRequirements(decisionRepo(input), input.home, input.policyRoot);
+  const required = await reviewRequirements(decisionRepo(input), input.home, input.policyRoot);
   if (!required.ok) return undefined;
   const parallel = new Set(required.items.filter((item) => item.parallel).map((item) => item.id));
   if (parallel.size === 0) return undefined;
@@ -1126,7 +1127,7 @@ async function publishReviews(
   metrics: ReviewMetrics,
 ): Promise<void> {
   const identity = progressIdentity(input.taskId, decision);
-  const required = reviewRequirements(decisionRepo(input), input.home, input.policyRoot);
+  const required = await reviewRequirements(decisionRepo(input), input.home, input.policyRoot);
   const failOn = new Map(required.ok ? required.items.map((item) => [item.id, item.failOn]) : []);
   for (const item of decision.items) {
     if (item.kind !== "review") continue;
@@ -1386,7 +1387,9 @@ async function finalResult(
   if (error) summaryParts.push(error);
   if (evaluation?.error && evaluation.error !== error) summaryParts.push(evaluation.error);
   const held =
-    evaluation && outcome !== "accepted" ? heldRules(input, evaluation) : new Map<string, string>();
+    evaluation && outcome !== "accepted"
+      ? await heldRules(input, evaluation)
+      : new Map<string, string>();
   const handoff =
     input.maxFixAttempts === 0 && evaluation?.decision?.decision === "rejected"
       ? await repairFeedback(input, evaluation, (id) => !held.has(id))

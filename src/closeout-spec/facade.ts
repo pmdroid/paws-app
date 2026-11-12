@@ -21,6 +21,7 @@ import { evidenceAttemptKey } from "./retry";
 import { approvalsAtHead, publishedAtHead } from "./published";
 import {
   loadCommitPolicy,
+  loadLocalPolicy,
   confirmedOriginMain,
   loadOriginMainRootFiles,
   loadRootFilesAt,
@@ -49,6 +50,7 @@ import {
   changedPaths as diffPaths,
   git,
   resolveCommit,
+  spawnArgv,
 } from "./run/exec";
 import { withRetryLock } from "./run/lock";
 import type { CloseoutProgress } from "./run/progress";
@@ -181,32 +183,43 @@ export type AddReviewInput = {
 
 export type AddReviewResult = { ok: true; record: ReviewRecord } | { ok: false; message: string };
 
-const gitReader: GitReader = {
-  fetchOriginMain(repo) {
-    const fetched = gitSync(
-      repo,
-      ["fetch", "--no-tags", "origin", "refs/heads/main"],
-      FETCH_TIMEOUT_MS,
-    );
-    if (!fetched.ok) return { ok: false, stderr: fetched.stderr };
-    const head = gitSync(
-      repo,
-      ["rev-parse", "--verify", "--end-of-options", "FETCH_HEAD^{commit}"],
-      GIT_TIMEOUT_MS,
-    );
-    if (!head.ok) return { ok: false, stderr: head.stderr };
-    const commit = head.stdout.toString("utf8").trim().toLowerCase();
-    return { ok: true, commit };
-  },
-  lsRemoteOriginMain(repo) {
-    const listed = gitSync(
-      repo,
-      ["ls-remote", "--exit-code", "origin", "refs/heads/main"],
-      REMOTE_TIMEOUT_MS,
-    );
-    if (!listed.ok) return { ok: false, stderr: listed.stderr };
-    return { ok: true, stdout: listed.stdout.toString("utf8") };
-  },
+export function createGitReader(
+  options: { env?: NodeJS.ProcessEnv; fetchTimeoutMs?: number; remoteTimeoutMs?: number } = {},
+): GitReader {
+  return {
+    async fetchOriginMain(repo) {
+      const fetched = await gitNetwork(
+        repo,
+        ["fetch", "--no-tags", "origin", "refs/heads/main"],
+        options.fetchTimeoutMs ?? FETCH_TIMEOUT_MS,
+        options.env,
+      );
+      if (!fetched.ok) return fetched;
+      const head = gitSync(
+        repo,
+        ["rev-parse", "--verify", "--end-of-options", "FETCH_HEAD^{commit}"],
+        GIT_TIMEOUT_MS,
+      );
+      if (!head.ok) return { ok: false, stderr: head.stderr };
+      const commit = head.stdout.toString("utf8").trim().toLowerCase();
+      return { ok: true, commit };
+    },
+    async lsRemoteOriginMain(repo) {
+      const listed = await gitNetwork(
+        repo,
+        ["ls-remote", "--exit-code", "origin", "refs/heads/main"],
+        options.remoteTimeoutMs ?? REMOTE_TIMEOUT_MS,
+        options.env,
+      );
+      if (!listed.ok) return listed;
+      return { ok: true, stdout: listed.stdout };
+    },
+    listBlobs: localGitReader.listBlobs,
+    readBlob: localGitReader.readBlob,
+  };
+}
+
+const localGitReader: Pick<GitReader, "listBlobs" | "readBlob"> = {
   listBlobs(repo, commit, prefix) {
     const listed = gitSync(
       repo,
@@ -225,11 +238,13 @@ const gitReader: GitReader = {
   },
 };
 
-export function trustedPolicyFiles(
+const gitReader = createGitReader();
+
+export async function trustedPolicyFiles(
   repo: string,
   home?: string,
   policyRoot?: string,
-): PolicyFilesLoad {
+): Promise<PolicyFilesLoad> {
   return loadPolicyFiles({
     repo,
     git: gitReader,
@@ -242,13 +257,16 @@ export function trustedPolicyFiles(
  * Read the named repository-root files from `origin/main` on the trusted path
  * that serves `.agents/closeout.yaml`. The work tree is never read.
  */
-export function trustedRootFiles(repo: string, names: readonly string[]): RootFilesLoad {
+export async function trustedRootFiles(
+  repo: string,
+  names: readonly string[],
+): Promise<RootFilesLoad> {
   return loadOriginMainRootFiles({ repo, git: gitReader }, names);
 }
 
-export function trustedOriginMain(
+export async function trustedOriginMain(
   repo: string,
-): { ok: true; commit: string } | { ok: false; message: string } {
+): Promise<{ ok: true; commit: string } | { ok: false; message: string }> {
   return confirmedOriginMain({ repo, git: gitReader });
 }
 
@@ -279,17 +297,21 @@ export function workspacePolicyFiles(root: string): PolicyFilesLoad {
 }
 
 /** Load `.agents/closeout.yaml` from `origin/main`, or the home file when that commit has none. */
-export function validate(repo: string, home?: string, policyRoot?: string): ValidateResult {
-  const loaded = loadOrigin(repo, home, policyRoot);
+export async function validate(
+  repo: string,
+  home?: string,
+  policyRoot?: string,
+): Promise<ValidateResult> {
+  const loaded = await loadOrigin(repo, home, policyRoot);
   if (!loaded.ok) return { ok: false, message: loaded.message };
   return presentValidate(loaded.policy, loaded.warnings);
 }
 
-export function reviewRequirements(
+export async function reviewRequirements(
   repo: string,
   home?: string,
   policyRoot?: string,
-):
+): Promise<
   | {
       ok: true;
       items: Array<{
@@ -302,8 +324,9 @@ export function reviewRequirements(
         minChangedLines?: number;
       }>;
     }
-  | { ok: false; message: string } {
-  const loaded = loadOrigin(repo, home, policyRoot);
+  | { ok: false; message: string }
+> {
+  const loaded = await loadOrigin(repo, home, policyRoot);
   if (!loaded.ok) return { ok: false, message: loaded.message };
   return {
     ok: true,
@@ -325,12 +348,12 @@ export function reviewRequirements(
  * The command checks of the trusted policy that declare `ci:`, each with its CI check pattern.
  * Empty when the policy cannot be read.
  */
-export function ciMappings(
+export async function ciMappings(
   repo: string,
   home?: string,
   policyRoot?: string,
-): Array<{ id: string; ci: string }> {
-  const loaded = loadOrigin(repo, home, policyRoot);
+): Promise<Array<{ id: string; ci: string }>> {
+  const loaded = await loadOrigin(repo, home, policyRoot);
   if (!loaded.ok) return [];
   return loaded.policy.items.flatMap((item) =>
     item.kind === "command" && !("supported" in item) && item.ci !== undefined
@@ -379,12 +402,12 @@ function repositoryArgument(arg: string): boolean {
 }
 
 /** Evidence requirements with `approval: human`, from the same trusted policy as Closeout. */
-export function visualReviewRequirements(
+export async function visualReviewRequirements(
   repo: string,
   home?: string,
   policyRoot?: string,
-): { ok: true; items: ResolvedEvidence[] } | { ok: false; message: string } {
-  const loaded = loadOrigin(repo, home, policyRoot);
+): Promise<{ ok: true; items: ResolvedEvidence[] } | { ok: false; message: string }> {
+  const loaded = await loadOrigin(repo, home, policyRoot);
   if (!loaded.ok) return { ok: false, message: loaded.message };
   return {
     ok: true,
@@ -399,16 +422,37 @@ export function visualReviewRequirements(
  * Rules with `onFail: approve`, from the same trusted policy as Closeout. Their findings wait for
  * a person instead of going back to the agent.
  */
-export function approvalRules(repo: string, home?: string, policyRoot?: string): ResolvedRule[] {
-  const loaded = loadOrigin(repo, home, policyRoot);
+export async function approvalRules(
+  repo: string,
+  home?: string,
+  policyRoot?: string,
+): Promise<ResolvedRule[]> {
+  const loaded = await loadOrigin(repo, home, policyRoot);
   if (!loaded.ok || loaded.policy.source === "none") return [];
   return (loaded.policy.rules ?? []).filter((rule) => rule.onFail === "approve");
 }
 
-export function policyFixBudget(repo: string, home?: string, policyRoot?: string): number | null {
-  const loaded = loadOrigin(repo, home, policyRoot);
+export async function policyFixBudget(
+  repo: string,
+  home?: string,
+  policyRoot?: string,
+): Promise<number | null> {
+  const loaded = await loadOrigin(repo, home, policyRoot);
   if (!loaded.ok) return null;
   return loaded.policy.source === "none" ? 3 : (loaded.policy.retry?.fix_rounds_per_item ?? 3);
+}
+
+export function mainFixBudget(repo: string, policyRoot?: string): number | null {
+  if (policyRoot !== undefined) {
+    const local = loadLocalPolicy(policyRoot);
+    if (!local.ok) return null;
+    return local.policy.source === "none" ? 3 : (local.policy.retry?.fix_rounds_per_item ?? 3);
+  }
+  const main = trustedMirrorMain(repo);
+  if (!main.ok) return null;
+  const loaded = loadCommitPolicy({ repo, git: gitReader }, main.commit);
+  if (!loaded.ok) return null;
+  return loaded.policy?.retry?.fix_rounds_per_item ?? 3;
 }
 
 /**
@@ -421,7 +465,12 @@ export async function fixesLeft(
   input: DecisionInput,
   failed: readonly string[],
 ): Promise<number | null> {
-  const loaded = loadOrigin(input.repo, input.home, input.policyRoot, input.checkoutExclusions);
+  const loaded = await loadOrigin(
+    input.repo,
+    input.home,
+    input.policyRoot,
+    input.checkoutExclusions,
+  );
   if (!loaded.ok || loaded.policy.source === "none") return null;
   const policy = loaded.policy;
   const items = policy.items.filter((item) => item.kind !== "evidence" && failed.includes(item.id));
@@ -557,13 +606,13 @@ export function digest(repo: string): DigestResult {
  * The digest Closeout records for a candidate, resolved the way a Closeout run resolves its
  * policy. `""` when there is no policy; null when the policy cannot be read.
  */
-export function candidatePolicyDigest(
+export async function candidatePolicyDigest(
   repo: string,
   home?: string,
   policyRoot?: string,
   checkoutExclusions: readonly string[] = [],
-): string | null {
-  const loaded = loadOrigin(repo, home, policyRoot, checkoutExclusions);
+): Promise<string | null> {
+  const loaded = await loadOrigin(repo, home, policyRoot, checkoutExclusions);
   return loaded.ok ? (loaded.policy.digest ?? "") : null;
 }
 
@@ -572,13 +621,13 @@ export function candidatePolicyDigest(
  * `""` when none is. {@link PolicyUnreadable} when main was read and its policy does not load;
  * null when the policy cannot be read for another reason, such as an unreachable origin.
  */
-export function candidatePolicyDigests(
+export async function candidatePolicyDigests(
   repo: string,
   home?: string,
   policyRoot?: string,
   checkoutExclusions: readonly string[] = [],
-): PolicyDigests | PolicyUnreadable | null {
-  const loaded = loadOrigin(repo, home, policyRoot, checkoutExclusions);
+): Promise<PolicyDigests | PolicyUnreadable | null> {
+  const loaded = await loadOrigin(repo, home, policyRoot, checkoutExclusions);
   if (!loaded.ok) {
     if (loaded.main === undefined) return null;
     return {
@@ -621,7 +670,12 @@ function lastPolicyChange(repo: string, main: string): string | null {
 
 /** Judge the evidence already stored for this candidate. Does not run commands. */
 export async function decision(input: DecisionInput): Promise<DecisionDocument> {
-  const loaded = loadOrigin(input.repo, input.home, input.policyRoot, input.checkoutExclusions);
+  const loaded = await loadOrigin(
+    input.repo,
+    input.home,
+    input.policyRoot,
+    input.checkoutExclusions,
+  );
   const candidate = input.candidate ?? blankCandidate();
   if (!loaded.ok) {
     return evaluate(
@@ -639,7 +693,12 @@ export async function decision(input: DecisionInput): Promise<DecisionDocument> 
  * Review requirements stay missing until {@link addReview}.
  */
 export async function run(input: RunRequest): Promise<DecisionDocument> {
-  const loaded = loadOrigin(input.repo, input.home, input.policyRoot, input.checkoutExclusions);
+  const loaded = await loadOrigin(
+    input.repo,
+    input.home,
+    input.policyRoot,
+    input.checkoutExclusions,
+  );
   const candidate = withTask(input.candidate, input.task);
   if (!loaded.ok) {
     return evaluate(
@@ -717,7 +776,12 @@ export async function preExistingFindings<T extends Finding>(
 
 /** Run the reviewer and store the next review record. Does not decide acceptance. */
 export async function addReview(input: AddReviewInput): Promise<AddReviewResult> {
-  const loaded = loadOrigin(input.repo, input.home, input.policyRoot, input.checkoutExclusions);
+  const loaded = await loadOrigin(
+    input.repo,
+    input.home,
+    input.policyRoot,
+    input.checkoutExclusions,
+  );
   if (!loaded.ok) return { ok: false, message: loaded.message };
   if (loaded.policy.source === "none" || loaded.policy.digest === null) {
     return { ok: false, message: "no closeout policy" };
@@ -1133,13 +1197,13 @@ async function resolvePair(
   return { ok: true, base, head };
 }
 
-function loadOrigin(
+async function loadOrigin(
   repo: string,
   home: string | undefined,
   policyRoot?: string,
   checkoutExclusions: readonly string[] = [],
 ): ReturnType<typeof loadPolicy> {
-  const loaded = loadPolicy({
+  const loaded = await loadPolicy({
     repo,
     git: gitReader,
     ...(home !== undefined ? { home } : {}),
@@ -1161,7 +1225,7 @@ function loadOrigin(
   return loaded;
 }
 
-function loadTree(repo: string): ReturnType<typeof loadPolicy> {
+function loadTree(repo: string): Awaited<ReturnType<typeof loadPolicy>> {
   if (!isDirectory(repo))
     return { ok: false, source: "repo", message: "policy root is not a directory" };
   const loaded = loadHomePolicy(repo);
@@ -1256,6 +1320,29 @@ function isDirectory(path: string): boolean {
     journalCaught(caughtError1, "facade.isDirectory", null);
     return false;
   }
+}
+
+async function gitNetwork(
+  repo: string,
+  args: string[],
+  timeoutMs: number,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ ok: true; stdout: string } | { ok: false; stderr: string }> {
+  const spawned = await spawnArgv(
+    ["git", ...args],
+    repo,
+    { ...definedEnv(env), GIT_TERMINAL_PROMPT: "0" },
+    timeoutMs / 1000,
+  );
+  if (spawned.timedOut) return { ok: false, stderr: "spawn git ETIMEDOUT" };
+  if (!spawned.started || spawned.exitCode !== 0) return { ok: false, stderr: spawned.stderr };
+  return { ok: true, stdout: spawned.stdout };
+}
+
+function definedEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+  );
 }
 
 function gitSync(

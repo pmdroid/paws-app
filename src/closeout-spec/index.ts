@@ -99,6 +99,7 @@ export {
   candidatePolicyDigests,
   policyCheckPaths,
   policyFixBudget,
+  mainFixBudget,
   preExistingFindings,
   fixAttemptLimit,
   fixesLeft,

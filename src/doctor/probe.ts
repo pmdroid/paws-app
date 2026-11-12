@@ -145,7 +145,7 @@ export async function realProbeFacts(env: EnvSource, saved: SavedStore): Promise
     codexAdapter: agents.has("codex") ? adapterFact("reviewer") : unused,
     claudeLogin,
     codexLogin,
-    closeout: closeoutPolicyFact(runtime, repos),
+    closeout: await closeoutPolicyFact(runtime, repos),
     linear,
     exeDevToken: exeDevTokenStatus(runtime.env.home),
     tailscaleAuthKey: tailscaleAuthKeyStatus(runtime.env.home),
@@ -216,17 +216,17 @@ function adapterFact(role: "implementer" | "reviewer"): { ok: boolean; detail: s
  * Repositories are checked out on the runner, so Closeout reads each policy from the repository's
  * origin/main there. Doctor can only load the local policy roots `config.toml` names.
  */
-function closeoutPolicyFact(
+async function closeoutPolicyFact(
   runtime: RuntimeConfig,
   repos: readonly string[],
-): ProbeFacts["closeout"] {
+): Promise<ProbeFacts["closeout"]> {
   const home = runtime.env.home;
   const local = repos.flatMap((repo) => {
     const root = closeoutPolicyRoot(runtime.file, home, repo);
     return root === undefined ? [] : [{ repo, root }];
   });
   for (const { repo, root } of local) {
-    const loaded = validate(root, home, root);
+    const loaded = await validate(root, home, root);
     if (!loaded.ok)
       return {
         ok: false,

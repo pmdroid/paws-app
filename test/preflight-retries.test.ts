@@ -145,7 +145,7 @@ async function runPreflight(fault: {
     execFileSync("git", ["-C", seed, "add", "."]);
     execFileSync("git", ["-C", seed, "commit", "-m", "scope review"]);
     execFileSync("git", ["-C", seed, "push", "origin", "HEAD:main"], { stdio: "pipe" });
-    const requirements = reviewRequirements(seed, layout.home);
+    const requirements = await reviewRequirements(seed, layout.home);
     expect(requirements.ok).toBe(true);
     if (requirements.ok)
       expect(requirements.items[0]).toMatchObject(
@@ -193,7 +193,7 @@ async function runPreflight(fault: {
     repositories: [{ owner: "acme", repo: "widgets", remoteUrl: mirror?.remoteUrl ?? layout.bare }],
     ...(mirror ? { repositoryToken: async () => "acme-token" } : {}),
     retryBaseMs: 10,
-    reviewRequirements(...args) {
+    async reviewRequirements(...args) {
       if (fault.policy !== undefined && remaining > 0) {
         remaining -= 1;
         return { ok: false, message: fault.policy };
