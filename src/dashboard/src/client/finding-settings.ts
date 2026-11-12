@@ -21,7 +21,7 @@ export function renderGroupingRow(
   const note = groups.canChange
     ? ""
     : '<span class="muted">Only workspace admins can change this.</span>';
-  return `<div class="row wrap" data-finding-grouping=""><label class="settings-inherit"><input type="checkbox" role="switch" name="finding-grouping" ${groups.enabled ? "checked" : ""} ${editable ? "" : "disabled"}>Group similar findings into suggested fixes once a day</label><span class="muted">${run}</span>${note}</div>`;
+  return `<div class="row wrap" data-finding-grouping=""><label class="settings-inherit"><input type="checkbox" role="switch" name="finding-grouping" ${groups.enabled ? "checked" : ""} ${editable ? "" : "disabled"}><span class="min-w-0 flex-1">Group similar findings into suggested fixes once a day</span></label><span class="muted">${run}</span>${note}</div>`;
 }
 
 export async function findingSettingsRequest(
