@@ -24,7 +24,7 @@ import {
   type Db,
 } from "../db";
 import { journalCaught } from "../journal";
-import { randomUUID, type KeyObject } from "node:crypto";
+import type { KeyObject } from "node:crypto";
 import { z } from "zod";
 import {
   RunnerCommandSchema,
@@ -162,7 +162,7 @@ export function createRunnerHelpers(options: {
     const at = now();
     const command = RunnerCommandSchema.parse({
       ...input,
-      id: randomUUID(),
+      id: Bun.randomUUIDv7(),
       type: "helper",
       workspaceId: runner.workspaceId,
       sessionGeneration: session.generation,
