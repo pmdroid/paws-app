@@ -133,7 +133,6 @@ export * from "./workspace-auth";
 export * from "./workspace-scope";
 export * from "./dashboard-aliases";
 export * from "./linear-issue-context";
-export * from "./workspace-links";
 export * from "./github-attribution";
 export * from "./browser-installation";
 export * from "./queue-wait";

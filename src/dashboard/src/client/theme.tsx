@@ -677,10 +677,6 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (has("opts")) return styled("flex min-w-0 flex-col gap-1");
   if (has("opt"))
     return styled("grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 py-1");
-  if (has("identity-link"))
-    return styled(
-      "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 sm:grid-cols-[minmax(0,1fr)_9.5rem_auto] [&_label]:col-span-full [&_input]:col-span-full sm:[&_input]:col-span-1",
-    );
   if (has("settings-roles")) return styled("flex min-w-0 flex-col gap-6");
   if (
     has(

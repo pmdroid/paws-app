@@ -86,8 +86,6 @@ beforeEach(() => {
         })),
       });
     }
-    if (path === "/api/workspaces/identity-links")
-      return json({ slackTeamId: null, links: [], members: [] });
     return json({ error: "Not in this test." }, 500);
   }) as typeof fetch;
 });
@@ -116,12 +114,7 @@ test("Workspace access shows Repository checkout after repository access", async
   const root = window.document.querySelector("#checkout-settings") as unknown as HTMLElement;
   createCheckoutSettings().mount(root, "http://127.0.0.1:8787");
   await settle();
-  expect(sectionHeadings()).toEqual([
-    "Members",
-    "Repositories",
-    "Repository checkout",
-    "Member account links",
-  ]);
+  expect(sectionHeadings()).toEqual(["Members", "Repositories", "Repository checkout"]);
   showWorkspaceSettingsPage("agents");
   expect(root.hidden).toBe(true);
 });

@@ -140,43 +140,6 @@ export const workspaceAccessAudit = pgTable("workspace_access_audit", {
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 
-export const workspaceIdentityLink = pgTable(
-  "workspace_identity_link",
-  {
-    workspaceId: text("workspace_id")
-      .notNull()
-      .references(() => workspace.id),
-    userId: text("user_id")
-      .notNull()
-      .references(() => workspaceUser.id),
-    provider: text().notNull(),
-    externalId: text("external_id"),
-    installationId: text("installation_id"),
-    method: text().notNull(),
-    status: text().notNull(),
-    checkedAt: bigint("checked_at", { mode: "number" }).notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.workspaceId, table.userId, table.provider],
-      name: "workspace_identity_link_workspace_id_user_id_provider_pk",
-    }),
-    unique().on(table.workspaceId, table.provider, table.externalId),
-    foreignKey({
-      columns: [table.workspaceId, table.userId],
-      foreignColumns: [workspaceMember.workspaceId, workspaceMember.userId],
-      name: "workspace_identity_link_workspace_id_user_id_workspace_member_workspace_id_user_id_fk",
-    }),
-    check("workspace_identity_link_check_1", sql`provider IN ('slack','github')`),
-    check("workspace_identity_link_check_2", sql`method IN ('email','manual')`),
-    check("workspace_identity_link_check_3", sql`status IN ('linked','unmatched','error')`),
-    check(
-      "workspace_identity_link_check_4",
-      sql`(status='linked' AND external_id IS NOT NULL) OR (status!='linked' AND external_id IS NULL)`,
-    ),
-  ],
-);
-
 export const workspaceAssignment = pgTable(
   "workspace_assignment",
   {

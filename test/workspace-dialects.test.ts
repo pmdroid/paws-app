@@ -11,18 +11,14 @@ import {
   listWorkspaceAuditSteps,
   putWorkspaceUserSteps,
   readWorkspaceSessionSteps,
-  saveWorkspaceIdentityLinkSteps,
   saveWorkspaceSessionSteps,
   sessionRepositoriesAllowedSteps,
   syncWorkspaceMemberSteps,
   workspaceForOrganizationSteps,
-  workspaceIdentityCandidatesSteps,
-  workspaceIdentityLinksSteps,
   workspaceLinearMemberSteps,
   workspaceMemberSteps,
   workspaceSessionCandidatesSteps,
   type Db,
-  type WorkspaceIdentityLink,
 } from "../src/db";
 import { forEachDialect, insertWorkItemSteps, seed, type DialectDb } from "./dialects";
 
@@ -79,18 +75,6 @@ async function connect(open: () => Promise<DialectDb>): Promise<Db> {
   );
   return db;
 }
-
-const link = (input: Partial<WorkspaceIdentityLink & { actorId: string }>) => ({
-  workspaceId: "w",
-  userId: "u2",
-  provider: "slack" as const,
-  externalId: "S2",
-  installationId: "T1",
-  method: "email" as const,
-  status: "linked" as const,
-  checkedAt: 10,
-  ...input,
-});
 
 function seedWorkspace(db: Db) {
   return seed(
@@ -153,63 +137,6 @@ forEachDialect((open) => {
     );
     expect(audit.map(({ id: _, ...row }) => row)).toEqual([
       { workspaceId: "w", userId: null, action: "a", subject: "s", createdAt: 3 },
-    ]);
-  });
-
-  test("identity links save, keep a manual choice and refuse non-admins", async () => {
-    const db = await connect(open);
-    const save = (input: Parameters<typeof link>[0]) =>
-      db.transaction((q) => saveWorkspaceIdentityLinkSteps(q, link(input)));
-    const audits = () =>
-      db.run((q) =>
-        q.all(
-          q.orm
-            .select({ subject: q.t.workspaceAccessAudit.subject })
-            .from(q.t.workspaceAccessAudit),
-        ),
-      );
-    expect(await db.run((q) => workspaceIdentityCandidatesSteps(q, "w"))).toEqual([
-      { userId: "u1", email: "u1@acme.test" },
-      { userId: "u2", email: "u2@acme.test" },
-    ]);
-    await save({});
-    await save({ method: "manual", externalId: "S9", actorId: "u1", checkedAt: 11 });
-    await save({ externalId: "S3", checkedAt: 12 });
-    await save({ userId: "u1", provider: "github", externalId: "G1", checkedAt: 4 });
-    await save({ userId: "u1", provider: "github", externalId: "G0", checkedAt: 3 });
-    await expect(save({ userId: "u3" })).rejects.toThrow("Choose an active workspace member.");
-    await expect(save({ actorId: "u2" })).rejects.toThrow("Workspace administration is required.");
-    expect(await db.run((q) => workspaceIdentityLinksSteps(q, "w"))).toEqual([
-      {
-        userId: "u1",
-        name: "Ada",
-        email: "u1@acme.test",
-        provider: "github",
-        externalId: "G1",
-        installationId: "T1",
-        method: "email",
-        status: "linked",
-        checkedAt: 4,
-      },
-      {
-        userId: "u2",
-        name: "Bob",
-        email: "u2@acme.test",
-        provider: "slack",
-        externalId: "S9",
-        installationId: "T1",
-        method: "manual",
-        status: "linked",
-        checkedAt: 11,
-      },
-    ]);
-    expect((await audits()).map((a) => a.subject)).toEqual([
-      "u2:slack:email:linked:S2",
-      "u2:slack:manual:linked:S9",
-      "u1:github:email:linked:G1",
-    ]);
-    expect(await db.run((q) => workspaceIdentityCandidatesSteps(q, "w"))).toEqual([
-      { userId: "u1", email: "u1@acme.test" },
     ]);
   });
 

@@ -198,12 +198,6 @@ ready.resolve(
       { id: "fixture-team", name: "Engineering", key: "ENG" },
       { id: "fixture-quality", name: "Quality", key: "QA" },
     ],
-    slackIdentities: {
-      teamId: "T123",
-      async lookup(email) {
-        return email.startsWith("owner@") ? "U123" : null;
-      },
-    },
     fetch: (async (input, init) => {
       if (["https://github.com", "https://api.github.com"].includes(new URL(String(input)).origin))
         return globalThis.fetch(input, init);

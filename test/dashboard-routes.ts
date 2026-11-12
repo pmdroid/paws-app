@@ -334,7 +334,6 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
     ["GET PUT", "/api/workspaces/repositories", 401],
     ["GET", "/api/workspaces/audit", 401],
     ["GET POST", "/api/workspaces/decisions", 401],
-    ["GET POST", "/api/workspaces/identity-links", 401],
     ["GET POST", "/api/workspaces/github-attribution", 401],
     ["GET POST", "/api/workspaces/github-integration", 401],
     ["GET POST", "/api/workspaces/github-connect", null],

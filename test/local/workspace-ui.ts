@@ -64,12 +64,6 @@ ready.resolve(
       },
     }),
     verifyTeam: async (id) => id === "fixture-team",
-    slackIdentities: {
-      teamId: "T123",
-      async lookup(email) {
-        return email.startsWith("owner@") ? "U123" : null;
-      },
-    },
     fetch: (async (input, init) => {
       if (String(input) === "https://github.com/login/oauth/access_token")
         return Response.json({ access_token: "ghu_syntheticidentity", scope: "" });
