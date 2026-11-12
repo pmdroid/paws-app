@@ -1,9 +1,10 @@
 import { migratedHome } from "../helpers";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:https";
 import { createConnection } from "node:net";
+import { connect as tlsConnect } from "node:tls";
 import { join } from "node:path";
 import {
   consumeWorkspaceBootstrap,
@@ -19,6 +20,7 @@ import {
 import type { EnvSource } from "../../src/config";
 import { startPaws } from "../../src/index";
 import { createRunnerKey } from "../../src/runner-identity";
+import { initializeRunnerCoordinator } from "../../src/runner-coordinator";
 import { createFakeGitHub } from "../../src/github";
 import { createFakeRunnerTranscriptObjects } from "../../src/runner-transcripts";
 import {
@@ -109,6 +111,71 @@ if (mode === "transcripts-later") {
     "runner and GitHub App configuration serves the dashboard with default local transcripts",
     { health: 200 },
   );
+  console.log(JSON.stringify(observations));
+  process.exit(0);
+}
+if (mode === "proxy") {
+  await browserServer.stop(true);
+  const runnerKey = join(root, "runner.key");
+  const runnerCert = join(root, "runner.pem");
+  const generated = Bun.spawnSync(
+    ["/usr/bin/openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256"]
+      .concat(["-nodes", "-keyout", runnerKey, "-out", runnerCert, "-days", "1"])
+      .concat(["-subj", "/CN=paws-runner", "-config", "/dev/null"])
+      .concat(["-addext", "subjectAltName=DNS:localhost"]),
+    { env: { PATH: "/usr/bin:/bin", HOME: root } },
+  );
+  assert.equal(generated.exitCode, 0, generated.stderr.toString());
+  chmodSync(runnerKey, 0o600);
+  delete source.PAWS_TLS_KEY_PATH;
+  delete source.PAWS_TLS_CERT_PATH;
+  Object.assign(source, {
+    PAWS_PORT: "0",
+    PAWS_PUBLIC_TLS: "proxy",
+    PAWS_PUBLIC_URL: "https://paws.example.invalid",
+    PAWS_RUNNER_URL: "https://localhost:8788",
+    PAWS_RUNNER_TLS_KEY_PATH: runnerKey,
+    PAWS_RUNNER_TLS_CERT_PATH: runnerCert,
+  });
+  mkdirSync(join(root, "secrets"), { recursive: true, mode: 0o700 });
+  await initializeRunnerCoordinator(join(root, "secrets", "runner-identity"));
+  await migratedHome(root);
+  const paws = await startPaws(source, {
+    runnerRepositoryAccess: {
+      github: createFakeGitHub(),
+      installationForRepository: async () => "fixture-installation",
+    },
+    runnerTranscriptObjects: createFakeRunnerTranscriptObjects(),
+  });
+  try {
+    await paws.ready;
+    const health = await runtimeNativeFetch(`http://127.0.0.1:${paws.server.port}/health`, {
+      headers: { host: "paws.example.invalid" },
+    });
+    assert.equal(health.status, 200);
+    const subject = await new Promise<string>((resolve, reject) => {
+      const socket = tlsConnect(
+        {
+          host: "127.0.0.1",
+          port: runnerPort,
+          servername: "localhost",
+          ca: readFileSync(runnerCert),
+        },
+        () => {
+          resolve(String(socket.getPeerCertificate().subject.CN));
+          socket.destroy();
+        },
+      );
+      socket.once("error", reject);
+    });
+    assert.equal(subject, "paws-runner");
+    observe("proxy mode serves plain HTTP and runner TLS with the runner certificate", {
+      health: health.status,
+      subject,
+    });
+  } finally {
+    await paws.stop();
+  }
   console.log(JSON.stringify(observations));
   process.exit(0);
 }

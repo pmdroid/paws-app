@@ -18,7 +18,7 @@ exe.dev VM names are global, so another account may already hold `<name>-paws`. 
 
 ## Paws reachable only on Tailscale
 
-The VM must reach Paws on both ports: 8787 for enrollment and 8788 for the runner's mTLS connection. When `PAWS_PUBLIC_URL` is a Tailscale hostname such as `https://agentbox.tailnet-name.ts.net:8787`, an exe.dev VM cannot reach it from the internet. Paws stays private, and the VM joins your tailnet instead.
+The VM must reach Paws on both ports: 8787 for enrollment and 8788 for the runner's mTLS connection. When `PAWS_PUBLIC_URL` or `PAWS_RUNNER_URL` is a Tailscale hostname such as `https://agentbox.tailnet-name.ts.net:8787`, an exe.dev VM cannot reach it from the internet. Paws stays private, and the VM joins your tailnet instead.
 
 1. In the Tailscale admin console, under **Settings > Keys**, generate an auth key that is:
 
@@ -55,6 +55,6 @@ With the key saved, Create VM adds a `tailnet` step after the install and before
 
 The auth key never appears on a command line. The VM makes a fresh RSA key in its root-only stage directory, Paws sends the auth key encrypted to it, and the VM decrypts it into a root-only mode 0600 file. That file is deleted right after `tailscale up`, whether the join succeeded or failed. The key is not logged and not put in the agent environment.
 
-Without `~/.paws/secrets/tailscale-authkey`, the step is skipped and a Paws on a public URL provisions as before. When `PAWS_PUBLIC_URL` ends in `.ts.net` and the key is missing, Create VM refuses before it calls exe.dev and names the missing file.
+Without `~/.paws/secrets/tailscale-authkey`, the step is skipped and a Paws on a public URL provisions as before. When `PAWS_PUBLIC_URL` or `PAWS_RUNNER_URL` ends in `.ts.net` and the key is missing, Create VM refuses before it calls exe.dev and names the missing file and the URL that needs it. With `PAWS_RUNNER_URL` set, the VM's runner connects to that origin instead of the `PAWS_PUBLIC_URL` host.
 
 If the step fails, the Runners page shows a `tailnet:` message. `cannot resolve <host>` usually means MagicDNS is off for the tailnet. `<url> did not answer` usually means the ACL does not let `tag:paws-runner` reach port 8787.

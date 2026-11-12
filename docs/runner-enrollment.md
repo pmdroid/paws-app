@@ -16,6 +16,27 @@ bun run paws runner-authority init
 
 Add `PAWS_RUNNER_HOST` with the interface address Paws should listen on and `PAWS_RUNNER_PORT=8788` to the HTTPS service's environment, then restart Paws. On Tailscale, use the Paws machine's Tailscale IP as the listener address and its Tailscale DNS hostname in the HTTPS URLs below.
 
+### A separate runner address and certificate
+
+By default runners connect to the `PAWS_PUBLIC_URL` host on the listener's port, and the listener serves the dashboard certificate. To give runners their own address, set `PAWS_RUNNER_URL` to the HTTPS origin they connect to, for example `https://paws.example.ts.net:8788`. It must be an `https:` origin with no path, query or credentials, and it requires `PAWS_RUNNER_HOST`. `PAWS_RUNNER_HOST` and `PAWS_RUNNER_PORT` stay the bind address and port; the port runners use comes from `PAWS_RUNNER_URL` and may differ. Leaving `PAWS_RUNNER_URL` unset keeps the derived address, so paired runners keep working.
+
+`PAWS_RUNNER_TLS_KEY_PATH` and `PAWS_RUNNER_TLS_CERT_PATH` give the listener its own certificate. They take the same checks as the public pair: absolute paths, a key with mode `0400` or `0600`, a key that matches, server purpose and a current validity period. Without them the listener serves the dashboard certificate. Either certificate must cover the `PAWS_RUNNER_URL` host, or Paws refuses to start and names the host. A `SIGHUP` reloads and checks the runner certificate too; a rejected one is journalled and Paws keeps running.
+
+With `PAWS_PUBLIC_TLS=proxy` there is no dashboard certificate, so runner control needs all three: `PAWS_RUNNER_URL`, `PAWS_RUNNER_TLS_KEY_PATH` and `PAWS_RUNNER_TLS_CERT_PATH`. For example, with the dashboard on Render and runners on the tailnet through `tailscaled` in userspace mode on the same host:
+
+```sh
+PAWS_PUBLIC_DASHBOARD=1
+PAWS_PUBLIC_TLS=proxy
+PAWS_PUBLIC_URL=https://paws.onrender.com
+PAWS_RUNNER_HOST=127.0.0.1
+PAWS_RUNNER_PORT=8788
+PAWS_RUNNER_URL=https://paws.example.ts.net:8788
+PAWS_RUNNER_TLS_KEY_PATH=/etc/paws/runner.key
+PAWS_RUNNER_TLS_CERT_PATH=/etc/paws/runner.crt
+```
+
+Serve port 8788 on the tailnet name to `127.0.0.1:8788` as plain TCP, so the mTLS handshake reaches Paws, and use `tailscale cert paws.example.ts.net` for the runner certificate. A VM made by Create VM then needs the Tailscale auth key ([Create VM](create-vm.md)).
+
 Paws stores transcripts locally by default in `~/.paws/runner-transcripts` with owner-only directory and file permissions. With a custom `PAWS_HOME`, it uses that home's `runner-transcripts` directory. With runner HTTPS and GitHub App access configured, Paws sends agent work to enrolled hosts and keeps their transcripts on the Paws machine.
 
 To use S3, pipe a JSON object containing `bucket`, `endpoint` (HTTPS), `region`, `accessKeyId`, `secretAccessKey`, and optionally `sessionToken` into `bun run paws runner-storage configure` using the same Paws home as its service, then restart Paws. Settings are encrypted in the protected secrets directory. New transcripts and agent session snapshots go to S3; existing local transcripts and snapshots in `~/.paws/agent-sessions` remain readable. Snapshot chunks are encrypted by Paws before upload, and the key stays in `~/.paws/secrets`. Runner inputs (attachments and long conversation context) and the artifacts runners upload go to the same bucket, under `runner-inputs/<run>/…` and `runner-artifacts/<run>/…`, so any Paws instance on the same database can serve or publish them. Each chunk is encrypted with the runner file key, `~/.paws/secrets/runner-file.key`, created on first use (every instance on the same database needs the same key file), and the chunks are deleted 7 days after their run ends. Inputs and artifacts already in the runner authority folder are uploaded once when Paws starts with S3 configured, then removed locally. Without S3 they stay in the runner authority folder as before. To select local storage again, configure `{"kind":"local"}` and restart Paws.

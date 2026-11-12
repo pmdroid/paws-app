@@ -423,6 +423,44 @@ export async function probeRunnerCoordinator(
         reopenReceiptPreserved: true,
       },
     );
+    const advertised = async (runnerUrl?: string) => {
+      await coordinator.stop();
+      coordinator = await openRunnerCoordinator({
+        ...options,
+        port: firstPort,
+        publicUrl: "https://paws.example.invalid",
+        runnerUrl,
+      });
+      const response = await coordinator.browser(
+        new Request("https://localhost/api/runners/enrollments", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: "Advertised" }),
+        }),
+        principal,
+        [],
+      );
+      const { config } = (await response!.json()) as {
+        config: { controlPlaneUrl: string; runnerApiUrl: string };
+      };
+      return { controlPlaneUrl: config.controlPlaneUrl, runnerApiUrl: config.runnerApiUrl };
+    };
+    const derived = await advertised();
+    const separate = await advertised("https://paws.example.ts.net:8788");
+    assert.deepEqual(derived, {
+      controlPlaneUrl: "https://paws.example.invalid",
+      runnerApiUrl: `https://paws.example.invalid:${firstPort}`,
+    });
+    assert.deepEqual(separate, {
+      controlPlaneUrl: "https://paws.example.invalid",
+      runnerApiUrl: "https://paws.example.ts.net:8788",
+    });
+    await coordinator.stop();
+    coordinator = await openRunnerCoordinator({ ...options, port: firstPort });
+    observe("Add a host advertises PAWS_RUNNER_URL when set and the public host otherwise", true, {
+      derived,
+      separate,
+    });
     keepAlive = new Agent({ keepAlive: true, maxSockets: 1, ca: tls.cert, ...peer });
     let retained: Socket | undefined;
     keepAlive.on("free", (socket: Socket) => {

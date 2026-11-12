@@ -1,7 +1,11 @@
-import { X509Certificate } from "node:crypto";
-import { isIP } from "node:net";
-import { loadRuntime, type EnvSource } from "../config";
-import { loadPublicTls, type PublicTls } from "./tls";
+import { loadRunnerControl, loadRuntime, type EnvSource } from "../config";
+import {
+  certificateCovers,
+  loadPublicTls,
+  loadRunnerTls,
+  publicTlsProxy,
+  type PublicTls,
+} from "./tls";
 
 export const PUBLIC_TLS_RESTART_EXIT = 75;
 
@@ -27,10 +31,14 @@ export function validatePublicTlsFiles(source: EnvSource): PublicTls {
   )
     throw new Error("Public HTTPS configuration is invalid.");
   const tls = loadPublicTls(source)!;
-  const certificate = new X509Certificate(tls.cert);
-  const hostname = url.hostname.replace(/^\[|\]$/g, "");
-  const matched = isIP(hostname) ? certificate.checkIP(hostname) : certificate.checkHost(hostname);
-  if (matched === undefined)
+  if (!certificateCovers(tls.cert, url.href))
     throw new Error("Public HTTPS certificate does not match its hostname.");
   return tls;
+}
+
+export function validateTlsRenewal(source: EnvSource): void {
+  const proxy = publicTlsProxy(source);
+  const publicTls = proxy ? undefined : validatePublicTls(source);
+  const control = loadRunnerControl(source, loadRuntime(source).env);
+  if (control !== null) loadRunnerTls(control, publicTls, proxy);
 }

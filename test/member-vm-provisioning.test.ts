@@ -154,3 +154,24 @@ test("with an auth key the bootstrap joins the VM to the tailnet with the pinned
   expect(commands.some((command) => command.includes(PINNED_TAILSCALE.amd64.sha256))).toBe(true);
   expect(commands.some((command) => command.includes("tskey-"))).toBe(false);
 });
+
+test("a .ts.net PAWS_RUNNER_URL needs an auth key and becomes the runner API URL", async () => {
+  const runnerUrl = "https://paws.example.ts.net:8788";
+  const refused = source({ runnerUrl, tailscaleAuthKey: () => null });
+  await expect(createMemberVmProvisioning(refused.value)()).rejects.toThrow(
+    /PAWS_RUNNER_URL is on a tailnet/,
+  );
+  expect(refused.exeDev.calls).toHaveLength(0);
+  const { value, exeDev } = source({
+    runnerUrl,
+    tailscaleAuthKey: () => "tskey-auth-kAbCdEf1CNTRL-0123456789",
+  });
+  const provisioning = await createMemberVmProvisioning(value)();
+  await provisioning.bootstrap.startInstall(VM, "t".repeat(43)).catch(() => undefined);
+  await provisioning.bootstrap.joinTailnet(VM).catch(() => undefined);
+  const commands = exeDev.calls.map((call) => (call.operation === "execVm" ? call.command : ""));
+  const staged = commands.find((command) => command.includes("controlPlaneUrl"));
+  expect(staged).toContain('"controlPlaneUrl":"https://paws.example.invalid"');
+  expect(staged).toContain(`"runnerApiUrl":"${runnerUrl}"`);
+  expect(commands.some((command) => command.includes(PINNED_TAILSCALE.amd64.sha256))).toBe(true);
+});

@@ -307,8 +307,10 @@ import { createSkillResolver, createSkillUpdates, SKILL_UPDATE_INTERVAL } from "
 import { createAgentCatalog, createNpmRegistry } from "./agent-catalog";
 import {
   loadPublicTls,
+  loadRunnerTls,
   publicTlsProxy,
   validatePublicTls,
+  validateTlsRenewal,
   PUBLIC_TLS_RESTART_EXIT,
 } from "./deployment";
 import {
@@ -422,8 +424,9 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const remotePlacementReady = runnerConfig !== null;
   if (execution === "remote" && !remotePlacementReady)
     throw new Error("Remote execution requires runner HTTPS and GitHub App repository access.");
-  if (runnerConfig !== null && (!publicDashboard || tls === undefined))
+  if (runnerConfig !== null && !publicDashboard)
     throw new Error("Runner control requires the public HTTPS dashboard.");
+  const runnerTls = runnerConfig === null ? undefined : loadRunnerTls(runnerConfig, tls, proxy);
   if (publicDashboard) {
     const origin = runtime.publicUrl === null ? null : new URL(runtime.publicUrl);
     if (
@@ -995,7 +998,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           root: runnerConfig.root,
           hostname: runnerConfig.hostname,
           port: runnerConfig.port,
-          tls: tls!,
+          tls: runnerTls!,
           repositoryAccess,
           transcripts: transcriptObjects && {
             objects: transcriptObjects,
@@ -1011,6 +1014,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             : undefined,
           skillsRoot: paths.skillsDir,
           publicUrl: runtime.publicUrl,
+          runnerUrl: runnerConfig.url,
           onError: () => console.error("Paws runner connection failed."),
           retros: () => retroDispatcher?.fetch,
         }).then(async (value) => {
@@ -1056,6 +1060,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       }
     },
     publicUrl: runtime.publicUrl,
+    runnerUrl: runnerConfig?.url ?? null,
     repositories: catalogRepositories,
     latestRelease: () => latestRunnerRelease(),
     runnerControl: async () => {
@@ -2830,7 +2835,7 @@ if (import.meta.main) {
     process.on("SIGHUP", () => {
       if (exiting) return;
       try {
-        validatePublicTls(process.env);
+        validateTlsRenewal(process.env);
       } catch (caughtError4) {
         journalCaught(caughtError4, "public TLS certificate renewal rejected", null);
 
