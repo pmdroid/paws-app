@@ -63,8 +63,8 @@ function page(snapshot: FullStatus, id = "ENG-101"): string {
 describe("issue page", () => {
   test("desktop: state, project, runner and agent, then the timeline and the pull request", () => {
     const html = page(redelegated());
-    for (const term of ["Project", "Runner", "Agent", "Session"])
-      expect(html).toContain(`<dt>${term}</dt>`);
+    for (const term of ["project", "runner", "agent", "session", "repository"])
+      expect(html).toContain(`<span class="min-w-0">${term} <span class="text-foreground">`);
     expect(html).toContain('id="activity-heading">Timeline</h2>');
     expect(html).toContain('id="merge-heading">Pull request and merge</h2>');
     expect(html).toContain('shared with <a class="lin-id" href="/issues/ENG-102">ENG-102</a>');
@@ -75,7 +75,7 @@ describe("issue page", () => {
     const html = renderToStaticMarkup(
       createElement(Fragment, null, themedMarkup(page(redelegated()))),
     );
-    expect(html).toContain("issue-facts-grid");
+    expect(html).toMatch(/class="issue-facts [^"]*flex-wrap/);
     expect(html).not.toMatch(/(?:^|[\s"])(?:min-)?w-\[\d/);
     expect(html).not.toMatch(/style="[^"]*width:\s*\d{3,}px/);
   });
@@ -108,14 +108,15 @@ describe("issue page", () => {
     const entries = section.slice(0, section.indexOf("</ol>")).match(/<li /g);
     expect(entries).toHaveLength(6);
     expect(section).toContain(
-      '<strong>queued</strong></p><p class="timeline-why">Back to the agent for Closeout findings.</p>',
+      'restart <span class="text-muted-foreground"><span aria-hidden="true">→</span><span class="sr-only">to</span> queued</span></p>',
     );
-    expect(section).toContain('<li data-kind="restart">');
-    expect(section).toContain("<strong>merge queue</strong>");
+    expect(section).toContain("Back to the agent for Closeout findings.");
     expect(section).toContain(
-      'verifying <span aria-hidden="true">→</span><span class="sr-only">to</span> <strong>merge queue</strong>',
+      '<li data-kind="restart"><span class="timeline-dot" data-state="queued"',
     );
-    expect(section).toContain('<p class="muted">closeout accepted</p>');
+    expect(section).toContain(
+      'closeout_accepted <span class="text-muted-foreground"><span aria-hidden="true">→</span><span class="sr-only">to</span> merge_queue</span>',
+    );
     expect(html.indexOf('id="merge-heading"')).toBeLessThan(html.indexOf("item-timeline-heading"));
   });
 
@@ -159,12 +160,47 @@ describe("issue page", () => {
     expect(body.indexOf("item-timeline")).toBeLessThan(body.indexOf('class="run-setup"'));
     expect(body).toContain('<span class="timeline-dot" data-state="running" aria-hidden="true">');
     expect(body).toContain(
-      '<li data-kind="loop"><span class="timeline-time"><time datetime="2026-10-09T21:01:00.000Z"',
+      '<li data-kind="loop"><span class="timeline-dot" data-state="recovering" aria-hidden="true">',
     );
+    expect(body).toContain('<span class="tag">2 times</span>');
     expect(body).toContain(
-      '<strong>recovering</strong> and back to running <span class="tag">2 times</span>',
+      '<p class="timeline-meta mono muted text-muted-foreground"><time datetime="2026-10-09T21:01:00.000Z"',
     );
-    expect(body).toContain('<p class="muted">runner lost · recovered</p>');
+    expect(body).toMatch(/runner_lost .*recovering.* · recovered .*running/);
+  });
+
+  test("the header shows the state badge and project chip, and opens Linear and GitHub", () => {
+    const snapshot = fullStatusFixture();
+    const item = snapshot.items.find((entry) => entry.id === "ENG-101")!;
+    item.project = { id: "p1", name: "Exports" };
+    item.links = [
+      { label: "Docs", href: "https://docs.example.com/exports" },
+      { label: "Linear", href: "https://linear.app/acme/issue/ENG-101" },
+    ];
+    item.pr = { number: 479, url: "https://github.com/acme/platform/pull/479" };
+    const html = page(snapshot);
+    const header = html.slice(
+      html.indexOf('<header class="issue-heading'),
+      html.indexOf("</header>"),
+    );
+    expect(header).toContain(`<span class="st ${item.state}">${item.state}</span>`);
+    expect(header).toContain('<span class="tag">project: Exports</span>');
+    expect(header).toMatch(
+      /<a class="btn" href="https:\/\/linear\.app\/acme\/issue\/ENG-101"[^>]*>Open in Linear <svg/,
+    );
+    expect(header).toMatch(
+      /<a class="btn" href="https:\/\/github\.com\/acme\/platform\/pull\/479"[^>]*>Open GitHub <svg/,
+    );
+    expect(header).toContain(">Docs</a>");
+    expect(html).toMatch(
+      /id="merge-heading">Pull request and merge<\/h2><span class="lin-id">#479</,
+    );
+
+    item.links = [{ label: "Docs", href: "https://docs.example.com/exports" }];
+    item.pr = null;
+    const bare = page(snapshot);
+    expect(bare).not.toContain("Open in Linear");
+    expect(bare).not.toContain("Open GitHub");
   });
 
   test("an item without recorded state changes has no item timeline", () => {
@@ -212,7 +248,7 @@ describe("issue page", () => {
     expect(html).toContain('id="activity-heading">Timeline</h2>');
     expect(html).not.toContain("Earlier attempt");
     expect(html).toContain(
-      '<dt>Blocks</dt><dd><div class="row wrap"><a href="/issues/ENG-105">ENG-105</a>',
+      'blocks <span class="text-foreground"><a href="/issues/ENG-105">ENG-105</a>',
     );
     expect(html).toContain('aria-label="Closeout"');
     const other = render({

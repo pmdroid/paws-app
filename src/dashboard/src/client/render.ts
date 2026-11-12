@@ -23,6 +23,7 @@ import {
   clock24,
   esc,
   linkButtons,
+  safeHref,
   linkList,
   mergeQueueLine,
   queueLine,
@@ -65,7 +66,7 @@ import {
   itemTime,
   PREPARING_LABEL,
 } from "./doing";
-import { journey, journeyPill, journeyStepper } from "./journey";
+import { journey, journeyStepper } from "./journey";
 import { deadDeliveriesSection } from "./dead-deliveries";
 import { visualReviewSection } from "./visual-review";
 import { LINK_ASK_ACTIONS, LINK_ASK_ANCHORS, linkAskCard, riskCarryOverCard } from "./link-ask";
@@ -502,7 +503,13 @@ function issueBucket(item: StatusItem): "needs" | "done" | "active" {
 }
 
 function relatedIssues(ids: readonly string[]): string {
-  return `<div class="row wrap">${ids.map((id) => `<a href="${routeHref({ view: "issues", id })}">${esc(id)}</a>`).join("")}</div>`;
+  return `<div class="row wrap">${issueLinks(ids)}</div>`;
+}
+
+function issueLinks(ids: readonly string[], separator = ""): string {
+  return ids
+    .map((id) => `<a href="${routeHref({ view: "issues", id })}">${esc(id)}</a>`)
+    .join(separator);
 }
 
 function viewRuns(list: IssueListResponse, id: string | null): string {
@@ -550,10 +557,11 @@ function issuePage(
   const activity = run?.activity?.length ?? 0;
   return `${pageHeading("issues")}<article class="run-page issue-page">
     <nav class="crumbs" aria-label="Breadcrumb"><a href="${routeHref({ view: "issues", id: null })}">Issues</a><span>/</span><span class="lin-id">${esc(item.id)}</span></nav>
-    <header class="run-heading"><div class="row wrap">${journeyPill(now)}<span class="mono muted min-w-0"${item.branch ? ` title="${esc(`Branch ${item.branch}`)}"` : ""}>${esc(snapshot.project.repo)}</span>${time ? `<span class="muted" data-item-now>${esc(time)}</span>` : ""}</div>
-      <h1><span class="lin-id">${esc(item.id)}</span> ${esc(item.title)}</h1>
-      ${issueFacts(snapshot, item, run, blocked)}
-      ${item.links.length ? `<div class="row wrap">${linkButtons(item.links)}</div>` : ""}
+    <header class="issue-heading flex min-w-0 flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+      <div class="flex min-w-0 flex-col gap-2"><div class="flex flex-wrap gap-2 items-center"><span class="lin-id">${esc(item.id)}</span>${statePill(item.state, item.state)}${item.project ? `<span class="tag">project: ${esc(item.project.name)}</span>` : ""}<span class="tag">agent: ${esc(run?.agent ?? item.agent)}</span>${time ? `<span class="muted" data-item-now>${esc(time)}</span>` : ""}</div>
+      <h1 class="issue-title text-xl font-semibold">${esc(item.title)}</h1>
+      ${factLine([...issueFacts(snapshot, item, run, blocked), ["Repository", `<span${item.branch ? ` title="${esc(`Branch ${item.branch}`)}"` : ""}>${esc(snapshot.project.repo)}</span>`]])}</div>
+      ${issueActions(item, run)}
     </header>
     ${journeyStepper(now, {
       ...(item.doing?.phase === "preparing"
@@ -568,7 +576,7 @@ function issuePage(
     ${hostDiskFullNotice(item)}
     ${queueNotice(item, snapshot.generatedAt)}
     ${deadDeliveriesSection(snapshot, item.id)}
-    ${run ? (run.usagePause ? usagePauseSection(item, run, run.usagePause) : executionControls(item, run)) : ""}
+    ${run?.usagePause ? usagePauseSection(item, run, run.usagePause) : ""}
     ${snapshot.questions
       .filter(
         (question) =>
@@ -681,7 +689,7 @@ function issueFacts(
   item: StatusItem,
   run: StatusRun | undefined,
   blocked: readonly string[],
-): string {
+): Array<[string, string]> {
   const facts: Array<[string, string]> = [
     ["Project", esc(item.project?.name ?? "No project")],
     ["Runner", esc(run?.runner ?? "Not placed yet")],
@@ -694,8 +702,8 @@ function issueFacts(
       "Pull request",
       `<a href="${esc(item.pr.url)}" target="_blank" rel="noopener noreferrer">#${item.pr.number}</a>${item.state === "merged" ? " · merged" : ""}`,
     ]);
-  if (item.blockers.length) facts.push(["Blocked by", relatedIssues(item.blockers)]);
-  if (blocked.length) facts.push(["Blocks", relatedIssues(blocked)]);
+  if (item.blockers.length) facts.push(["Blocked by", issueLinks(item.blockers, ", ")]);
+  if (blocked.length) facts.push(["Blocks", issueLinks(blocked, ", ")]);
   if (item.session) {
     const link = `<a href="${esc(item.session.url)}" target="_blank" rel="noopener noreferrer">Linear session</a>`;
     facts.push([
@@ -705,7 +713,41 @@ function issueFacts(
         : link,
     ]);
   }
-  return factList(facts);
+  return facts;
+}
+
+/** The header's facts as one mono line of `key value` pairs that wraps at any width. */
+function factLine(facts: ReadonlyArray<[string, string]>): string {
+  return `<div class="issue-facts flex flex-wrap gap-x-4 gap-y-1 font-mono text-[11px] text-muted-foreground [overflow-wrap:anywhere]">${facts.map(([term, value]) => `<span class="min-w-0">${esc(term.toLowerCase())} <span class="text-foreground">${value}</span></span>`).join("")}</div>`;
+}
+
+const EXTERNAL_LINK =
+  '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"></path><path d="M10 14 21 3"></path><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3"></path></svg>';
+
+function isLinear(href: string): boolean {
+  try {
+    return new URL(href).hostname === "linear.app";
+  } catch {
+    return false;
+  }
+}
+
+/** Execution controls, then Open in Linear and Open GitHub when their URLs exist, then other links. */
+function issueActions(item: StatusItem, run: StatusRun | undefined): string {
+  const linear = item.links.find((link) => isLinear(link.href) && safeHref(link.href));
+  const github = item.pr ? safeHref(item.pr.url) : null;
+  const open = (href: string, label: string) =>
+    `<a class="btn" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(label)} ${EXTERNAL_LINK}</a>`;
+  const rest = item.links.filter((link) => link !== linear && link.href !== item.pr?.url);
+  const actions = [
+    run && !run.usagePause ? executionControls(item, run) : "",
+    linear ? open(safeHref(linear.href)!, "Open in Linear") : "",
+    github ? open(github, "Open GitHub") : "",
+    linkButtons(rest),
+  ].join("");
+  return actions
+    ? `<div class="issue-actions flex flex-wrap gap-2 items-center lg:shrink-0 lg:justify-end">${actions}</div>`
+    : "";
 }
 
 function factList(facts: ReadonlyArray<[string, string]>): string {
@@ -787,25 +829,48 @@ export function timelineGroups(entries: readonly StatusItemEvent[]): StatusItemE
 
 const plainWords = (value: string) => esc(value.replaceAll("_", " "));
 
-function timelineMove(from: string, to: string): string {
-  return `<p class="timeline-move">${plainWords(from)} <span aria-hidden="true">→</span><span class="sr-only">to</span> <strong>${plainWords(to)}</strong></p>`;
+/** `event → state` in mono: what happened and the state it led to. */
+function timelineMove(event: string, to: string, extra = ""): string {
+  return `<p class="timeline-move font-mono text-xs">${esc(event)} <span class="text-muted-foreground"><span aria-hidden="true">→</span><span class="sr-only">to</span> ${esc(to)}</span>${extra}</p>`;
 }
 
 function timelineTime(at: string): string {
   return `<time datetime="${esc(at)}" title="${esc(at)}">${esc(clock24(at))}</time>`;
 }
 
+/** The dot takes its `to` state's color in the theme, as the state badge does. */
+function timelineDot(to: string): string {
+  return `<span class="timeline-dot" data-state="${esc(to)}" aria-hidden="true"></span>`;
+}
+
+function timelineEntry(kind: string, to: string, move: string, meta: string[]): string {
+  return `<li data-kind="${esc(kind)}">${timelineDot(to)}<div class="timeline-body">${move}<p class="timeline-meta mono muted text-muted-foreground">${meta.filter(Boolean).join(" · ")}</p></div></li>`;
+}
+
 function timelineLoop(group: readonly StatusItemEvent[]): string {
   const [first, second] = group as [StatusItemEvent, StatusItemEvent];
   const last = group.at(-1)!;
-  return `<li data-kind="loop"><span class="timeline-time">${timelineTime(first.at)}–${timelineTime(last.at)}</span><span class="timeline-dot" data-state="${esc(first.to)}" aria-hidden="true"></span><div class="timeline-body"><p class="timeline-move"><strong>${plainWords(first.to)}</strong> and back to ${plainWords(second.to)} <span class="tag">${group.length / 2} times</span></p><p class="muted">${plainWords(first.event)} · ${plainWords(second.event)}</p></div></li>`;
+  return timelineEntry(
+    "loop",
+    first.to,
+    timelineMove(
+      first.event,
+      first.to,
+      ` · ${esc(second.event)} <span class="text-muted-foreground"><span aria-hidden="true">→</span><span class="sr-only">to</span> ${esc(second.to)}</span> <span class="tag">${group.length / 2} times</span>`,
+    ),
+    [`${timelineTime(first.at)}–${timelineTime(last.at)}`],
+  );
 }
 
 function ciRerunEntry(entry: StatusItemEvent): string {
   const runs = entry.runIds?.length
     ? `workflow run ${entry.runIds.map((id) => esc(String(id))).join(", ")}`
     : "";
-  return `<li data-kind="ci_rerun"><span class="timeline-time">${timelineTime(entry.at)}</span><span class="timeline-dot" data-state="${esc(entry.to)}" aria-hidden="true"></span><div class="timeline-body"><p class="timeline-move"><strong>CI re-run</strong></p><p class="timeline-why">CI re-run requested by the agent: ${esc(entry.reason ?? "")}</p>${runs ? `<p class="muted">${runs}</p>` : ""}</div></li>`;
+  return timelineEntry("ci_rerun", entry.to, timelineMove("ci_rerun", entry.to), [
+    timelineTime(entry.at),
+    `CI re-run requested by the agent: ${esc(entry.reason ?? "")}`,
+    runs,
+  ]);
 }
 
 function itemTimelineEntry(entry: StatusItemEvent): string {
@@ -815,11 +880,14 @@ function itemTimelineEntry(entry: StatusItemEvent): string {
       ? `Back to the agent for ${esc(RESTART_REASON_LABELS[entry.reason ?? ""] ?? (entry.reason ?? "a restart").replaceAll("_", " "))}.`
       : entry.kind === "ask"
         ? `Asked a person: ${plainWords(entry.reason ?? "a question")}.`
-        : "";
-  const detail = [plainWords(entry.event), entry.actor ? `by ${esc(entry.actor)}` : ""]
-    .filter(Boolean)
-    .join(" · ");
-  return `<li data-kind="${entry.kind}"><span class="timeline-time">${timelineTime(entry.at)}</span><span class="timeline-dot" data-state="${esc(entry.to)}" aria-hidden="true"></span><div class="timeline-body">${timelineMove(entry.from, entry.to)}${why ? `<p class="timeline-why">${why}</p>` : ""}<p class="muted">${detail}</p></div></li>`;
+        : entry.reason
+          ? plainWords(entry.reason)
+          : "";
+  return timelineEntry(entry.kind, entry.to, timelineMove(entry.event, entry.to), [
+    timelineTime(entry.at),
+    why,
+    entry.actor ? `by ${esc(entry.actor)}` : "",
+  ]);
 }
 
 /** The pull request and where its merge stands. */
@@ -848,7 +916,7 @@ function pullRequestSection(snapshot: IssueDetailResponse, item: StatusItem): st
     : "";
   const notices = mergeQueueNotice(item) + githubQueueNotice(item) + steps;
   if (!notices && (item.state === "merged" || !item.pr)) return "";
-  return `<section class="issue-merge" aria-labelledby="merge-heading"><h2 id="merge-heading">Pull request and merge</h2>
+  return `<section class="issue-merge" aria-labelledby="merge-heading"><div class="flex flex-wrap items-center gap-2"><h2 id="merge-heading">Pull request and merge</h2>${item.pr ? `<span class="lin-id">#${item.pr.number}</span>` : ""}</div>
     ${pr || state ? `<p>${pr}${pr && state ? " · " : ""}${esc(state)}</p>` : ""}
     ${notices}</section>`;
 }
