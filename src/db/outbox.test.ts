@@ -1,5 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
+import { is } from "drizzle-orm";
+import { PgUpdateBase } from "drizzle-orm/pg-core";
 import { FakeClock, OUTBOX_ACTIVITY } from "../core";
 import {
   OutboxDispatcher,
@@ -7,28 +8,28 @@ import {
   enqueueOutbox,
   enqueueOutboxOnce,
   enqueueOutboxSteps,
+  getWorkItem,
   insertQueuedItem,
   listOutbox,
-  migrate,
-  openDatabase,
   setJournalSink,
-  sqliteDb,
+  type Q,
+  type Steps,
 } from "./index";
+import { tempStore } from "../../test/pglite";
 
-function harness(batchSize = 32) {
+async function harness(batchSize = 32) {
   const clock = new FakeClock(5_000);
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const db = (await tempStore()).db;
   const dispatcher = new OutboxDispatcher(db, clock, { batchSize, backoffBaseMs: 1_000 });
   return { clock, db, dispatcher };
 }
 
 describe("transactional outbox", () => {
   test("a state change and its activity commit or roll back together", async () => {
-    const { db } = harness();
+    const { db } = await harness();
     const item = await insertQueuedItem(db, { sessionKey: "ses" });
     await expect(
-      sqliteDb(db).transaction(function* (q) {
+      db.transaction(function* (q) {
         yield* applyWorkItemEventSteps(q, item.id, "dispatched");
         yield* enqueueOutboxSteps(q, {
           target: OUTBOX_ACTIVITY.target,
@@ -40,13 +41,10 @@ describe("transactional outbox", () => {
         throw new Error("boom");
       }),
     ).rejects.toThrow("boom");
-    const rolled = db
-      .query<{ state: string }, [string]>("SELECT state FROM work_item WHERE id = ?")
-      .get(item.id);
-    expect(rolled?.state).toBe("queued");
-    expect(await listOutbox(sqliteDb(db))).toHaveLength(0);
+    expect((await getWorkItem(db, item.id))?.state).toBe("queued");
+    expect(await listOutbox(db)).toHaveLength(0);
 
-    await sqliteDb(db).transaction(function* (q) {
+    await db.transaction(function* (q) {
       yield* applyWorkItemEventSteps(q, item.id, "dispatched");
       yield* enqueueOutboxSteps(q, {
         target: OUTBOX_ACTIVITY.target,
@@ -56,25 +54,22 @@ describe("transactional outbox", () => {
         idempotencyKey: "start",
       });
     });
-    const kept = db
-      .query<{ state: string }, [string]>("SELECT state FROM work_item WHERE id = ?")
-      .get(item.id);
-    expect(kept?.state).toBe("running");
-    expect((await listOutbox(sqliteDb(db), "ses")).map((message) => message.payload)).toEqual([
+    expect((await getWorkItem(db, item.id))?.state).toBe("running");
+    expect((await listOutbox(db, "ses")).map((message) => message.payload)).toEqual([
       { text: "Started." },
     ]);
   });
 
   test("the same idempotency key is stored once", async () => {
-    const { db } = harness();
-    const first = await enqueueOutboxOnce(sqliteDb(db), {
+    const { db } = await harness();
+    const first = await enqueueOutboxOnce(db, {
       target: "linear",
       op: "activity",
       orderingKey: "ses",
       idempotencyKey: "wake:1",
       payload: { text: "a" },
     });
-    const second = await enqueueOutboxOnce(sqliteDb(db), {
+    const second = await enqueueOutboxOnce(db, {
       target: "linear",
       op: "activity",
       orderingKey: "ses",
@@ -82,12 +77,12 @@ describe("transactional outbox", () => {
       payload: { text: "b" },
     });
     expect(second).toBe(first);
-    expect(await listOutbox(sqliteDb(db))).toHaveLength(1);
+    expect(await listOutbox(db)).toHaveLength(1);
   });
 
   test("sessions stay ordered, and a stuck session does not block the others", async () => {
-    const { clock, db, dispatcher } = harness(1);
-    await enqueueOutbox(sqliteDb(db), {
+    const { clock, db, dispatcher } = await harness(1);
+    await enqueueOutbox(db, {
       target: "linear",
       op: "activity",
       orderingKey: "A",
@@ -95,7 +90,7 @@ describe("transactional outbox", () => {
       payload: { n: "A1" },
       now: clock.now(),
     });
-    await enqueueOutbox(sqliteDb(db), {
+    await enqueueOutbox(db, {
       target: "linear",
       op: "activity",
       orderingKey: "A",
@@ -104,7 +99,7 @@ describe("transactional outbox", () => {
       now: clock.now(),
     });
     clock.advance(1);
-    await enqueueOutbox(sqliteDb(db), {
+    await enqueueOutbox(db, {
       target: "linear",
       op: "activity",
       orderingKey: "B",
@@ -132,25 +127,22 @@ describe("transactional outbox", () => {
     await Bun.sleep(0);
     expect(seen).toEqual(["A1", "B1"]);
     expect(
-      (await listOutbox(sqliteDb(db), "A")).find(
-        (message) => (message.payload as { n: string }).n === "A2",
-      )?.status,
+      (await listOutbox(db, "A")).find((message) => (message.payload as { n: string }).n === "A2")
+        ?.status,
     ).toBe("pending");
-    expect((await listOutbox(sqliteDb(db), "B"))[0]?.status).toBe("sent");
+    expect((await listOutbox(db, "B"))[0]?.status).toBe("sent");
 
     releaseA();
     await dispatcher.idle();
     await dispatcher.tick();
     await dispatcher.idle();
     expect(seen).toEqual(["A1", "B1", "A2"]);
-    expect(
-      (await listOutbox(sqliteDb(db), "A")).every((message) => message.status === "sent"),
-    ).toBe(true);
+    expect((await listOutbox(db, "A")).every((message) => message.status === "sent")).toBe(true);
   });
 
   test("a failed head holds only its own session", async () => {
-    const { db, dispatcher } = harness();
-    await enqueueOutbox(sqliteDb(db), {
+    const { db, dispatcher } = await harness();
+    await enqueueOutbox(db, {
       target: "linear",
       op: "activity",
       orderingKey: "A",
@@ -158,21 +150,21 @@ describe("transactional outbox", () => {
       payload: { n: "A1" },
       maxAttempts: 1,
     });
-    await enqueueOutbox(sqliteDb(db), {
+    await enqueueOutbox(db, {
       target: "linear",
       op: "activity",
       orderingKey: "A",
       idempotencyKey: "A2",
       payload: { n: "A2" },
     });
-    await enqueueOutbox(sqliteDb(db), {
+    await enqueueOutbox(db, {
       target: "linear",
       op: "activity",
       orderingKey: "B",
       idempotencyKey: "B1",
       payload: { n: "B1" },
     });
-    await enqueueOutbox(sqliteDb(db), {
+    await enqueueOutbox(db, {
       target: "linear",
       op: "activity",
       orderingKey: "B",
@@ -185,20 +177,20 @@ describe("transactional outbox", () => {
 
     await dispatcher.tick();
     await dispatcher.idle();
-    expect((await listOutbox(sqliteDb(db), "A"))[0]?.status).toBe("dead");
-    expect((await listOutbox(sqliteDb(db), "A"))[1]?.status).toBe("pending");
-    expect((await listOutbox(sqliteDb(db), "B"))[0]?.status).toBe("sent");
-    expect((await listOutbox(sqliteDb(db), "B"))[1]?.status).toBe("pending");
+    expect((await listOutbox(db, "A"))[0]?.status).toBe("dead");
+    expect((await listOutbox(db, "A"))[1]?.status).toBe("pending");
+    expect((await listOutbox(db, "B"))[0]?.status).toBe("sent");
+    expect((await listOutbox(db, "B"))[1]?.status).toBe("pending");
 
     await dispatcher.tick();
     await dispatcher.idle();
-    expect((await listOutbox(sqliteDb(db), "A"))[1]?.status).toBe("pending");
-    expect((await listOutbox(sqliteDb(db), "B"))[1]?.status).toBe("sent");
+    expect((await listOutbox(db, "A"))[1]?.status).toBe("pending");
+    expect((await listOutbox(db, "B"))[1]?.status).toBe("sent");
   });
 
   test("a retry waits out its backoff and then keeps session order", async () => {
-    const { clock, db, dispatcher } = harness();
-    await enqueueOutbox(sqliteDb(db), {
+    const { clock, db, dispatcher } = await harness();
+    await enqueueOutbox(db, {
       target: "linear",
       op: "activity",
       orderingKey: "A",
@@ -206,7 +198,7 @@ describe("transactional outbox", () => {
       payload: { n: "A1" },
       now: clock.now(),
     });
-    await enqueueOutbox(sqliteDb(db), {
+    await enqueueOutbox(db, {
       target: "linear",
       op: "activity",
       orderingKey: "A",
@@ -214,7 +206,7 @@ describe("transactional outbox", () => {
       payload: { n: "A2" },
       now: clock.now(),
     });
-    await enqueueOutbox(sqliteDb(db), {
+    await enqueueOutbox(db, {
       target: "linear",
       op: "activity",
       orderingKey: "B",
@@ -231,58 +223,50 @@ describe("transactional outbox", () => {
 
     await dispatcher.tick();
     await dispatcher.idle();
-    expect((await listOutbox(sqliteDb(db), "B"))[0]?.status).toBe("sent");
-    expect((await listOutbox(sqliteDb(db), "A"))[0]?.status).toBe("pending");
-    expect((await listOutbox(sqliteDb(db), "A"))[1]?.status).toBe("pending");
+    expect((await listOutbox(db, "B"))[0]?.status).toBe("sent");
+    expect((await listOutbox(db, "A"))[0]?.status).toBe("pending");
+    expect((await listOutbox(db, "A"))[1]?.status).toBe("pending");
 
     await dispatcher.tick();
     await dispatcher.idle();
-    expect((await listOutbox(sqliteDb(db), "A"))[0]?.status).toBe("pending");
+    expect((await listOutbox(db, "A"))[0]?.status).toBe("pending");
 
     clock.advance(1_000);
     await dispatcher.tick();
     await dispatcher.idle();
-    expect((await listOutbox(sqliteDb(db), "A"))[0]?.status).toBe("sent");
-    expect((await listOutbox(sqliteDb(db), "A"))[1]?.status).toBe("pending");
+    expect((await listOutbox(db, "A"))[0]?.status).toBe("sent");
+    expect((await listOutbox(db, "A"))[1]?.status).toBe("pending");
     await dispatcher.tick();
     await dispatcher.idle();
-    expect((await listOutbox(sqliteDb(db), "A"))[1]?.status).toBe("sent");
+    expect((await listOutbox(db, "A"))[1]?.status).toBe("sent");
   });
 
   test("a claim error does not stop later delivery", async () => {
     const clock = new FakeClock(5_000);
-    const real = openDatabase(":memory:");
-    migrate(real);
+    const { db: real, close: closeReal } = await tempStore();
     let fail = true;
+    const failing = (q: Q): Q => ({
+      ...q,
+      all: (query) => {
+        if (fail && is(query, PgUpdateBase) && query.toSQL().sql.includes('"attempts" + 1')) {
+          fail = false;
+          throw new Error("claim failed: database is locked");
+        }
+        return q.all(query);
+      },
+    });
     const db = new Proxy(real, {
       get(target, property) {
-        if (property === "prepare") {
-          return (sql: string) => {
-            const statement = target.prepare(sql);
-            if (!fail || !sql.includes('update "outbox" set "attempts" = "outbox"."attempts" + 1'))
-              return statement;
-            return new Proxy(statement, {
-              get(statementTarget, statementProperty, statementReceiver) {
-                if (statementProperty === "all" || statementProperty === "values") {
-                  return () => {
-                    fail = false;
-                    throw new Error("SQLITE_BUSY: database is locked");
-                  };
-                }
-                const value = Reflect.get(statementTarget, statementProperty, statementReceiver);
-                return typeof value === "function" ? value.bind(statementTarget) : value;
-              },
-            });
-          };
-        }
+        if (property === "run")
+          return (body: (q: Q) => Steps<unknown>) => target.run((q) => body(failing(q)));
         const value = Reflect.get(target, property);
         return typeof value === "function" ? value.bind(target) : value;
       },
-    }) as Database;
+    });
     const lines: string[] = [];
     const restore = setJournalSink((line) => lines.push(line));
     const dispatcher = new OutboxDispatcher(db, clock);
-    await enqueueOutbox(sqliteDb(real), {
+    await enqueueOutbox(real, {
       target: "linear",
       op: "activity",
       orderingKey: "ses",
@@ -302,13 +286,13 @@ describe("transactional outbox", () => {
         if (seen.length > 0 || steps > 3) controller.abort();
       });
       expect(seen).toHaveLength(1);
-      expect((await listOutbox(sqliteDb(real)))[0]?.status).toBe("sent");
+      expect((await listOutbox(real))[0]?.status).toBe("sent");
       expect(
-        lines.some((line) => line.includes("dispatcher.run.tick") && line.includes("SQLITE_BUSY")),
+        lines.some((line) => line.includes("dispatcher.run.tick") && line.includes("claim failed")),
       ).toBe(true);
     } finally {
       restore();
-      real.close();
+      await closeReal();
     }
   });
 });
