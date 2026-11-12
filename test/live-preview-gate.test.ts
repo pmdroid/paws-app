@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,14 +12,14 @@ import {
   insertQueuedItem,
   putWorkspaceUser,
   recordLinearInstallation,
-  sqliteDb,
 } from "../src/db";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
 import { LIVE_PREVIEW_RUNNER_VERSION, type RunnerCommand } from "../src/runner-protocol";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { migratedDatabase } from "./helpers";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const repository = {
   owner: "fixture",
@@ -30,30 +31,30 @@ const repository = {
 async function assignedPreview(runnerVersion: string) {
   const root = mkdtempSync(join(tmpdir(), "paws-preview-gate-"));
   const now = () => 1_800_000_000_000;
-  const db = migratedDatabase(join(root, "paws.db"));
+  const { db, close } = await tempStore();
   try {
-    const userId = await putWorkspaceUser(sqliteDb(db), {
+    const userId = await putWorkspaceUser(db, {
       id: workspaceId(),
       linearUserId: "owner",
       name: "Owner",
       email: "owner@example.invalid",
     });
-    const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
+    const workspace = await consumeWorkspaceBootstrap(db, {
       id: workspaceId(),
       organizationId: "org",
       name: "Fixture",
       userId,
-      tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now())),
+      tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now())),
       now: now(),
     });
-    db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
-      workspace.id,
-      "fixture/repository",
-      "team",
-    ]);
+    await seed(db, (q) =>
+      q.orm
+        .insert(q.t.workspaceRepository)
+        .values({ workspaceId: workspace.id, repository: "fixture/repository", teamId: "team" }),
+    );
     const issuer = join(root, "issuer");
     const control = createRunnerControl({
-      store: sqliteDb(db),
+      store: db,
       authority: await initializeRunnerAuthority(issuer),
       certificateRoot: issuer,
       disconnect() {},
@@ -69,15 +70,15 @@ async function assignedPreview(runnerVersion: string) {
         )
       ).token,
     });
-    db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
-    db.run("INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?)", [
-      runnerId,
-      runnerVersion,
-      now(),
-    ]);
+    await seed(
+      db,
+      (q) => q.orm.update(q.t.runner).set({ status: "active" }).where(eq(q.t.runner.id, runnerId)),
+      (q) =>
+        q.orm.insert(q.t.runnerHostStatus).values({ runnerId, runnerVersion, reportedAt: now() }),
+    );
     const item = await insertQueuedItem(db, { id: "item", now: now(), sessionKey: "session" });
-    const { run } = await beginImplementRun(sqliteDb(db), item.id, now());
-    await recordLinearInstallation(sqliteDb(db), {
+    const { run } = await beginImplementRun(db, item.id, now());
+    await recordLinearInstallation(db, {
       organizationId: "org",
       oauthClientId: "app",
       appUserId: "app-user",
@@ -85,10 +86,10 @@ async function assignedPreview(runnerVersion: string) {
       teamId: "team",
       observedAtMs: now(),
     });
-    await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
-    await bindWorkItemRepository(sqliteDb(db), item.id, repository);
+    await bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+    await bindWorkItemRepository(db, item.id, repository);
     const work = createRunnerWork({
-      store: sqliteDb(db),
+      store: db,
       keyId: "fixture",
       privateKey: generateKeyPairSync("ed25519").privateKey,
       eventKey: Buffer.alloc(32, 7),
@@ -113,7 +114,7 @@ async function assignedPreview(runnerVersion: string) {
     const sent = (await work.currentAsync(run.id, 1)).command;
     return sent.type === "run" ? sent.livePreview : undefined;
   } finally {
-    db.close();
+    await close();
     rmSync(root, { recursive: true, force: true });
   }
 }
