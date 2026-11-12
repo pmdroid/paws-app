@@ -149,3 +149,22 @@ test("Add a runner shows the 409 message instead of a command", async () => {
   expect(root.querySelector("#runner-enroll-command")).toBeNull();
   expect(dialog.textContent).not.toContain("tok_en-123");
 });
+
+test("with no runners the list explains what a runner is and offers Add a runner", async () => {
+  const fallback = globalThis.fetch;
+  globalThis.fetch = (async (url: URL | string, init?: RequestInit) =>
+    new URL(String(url), ORIGIN).pathname === "/api/runners"
+      ? Response.json({ runners: [], serverVersion: null })
+      : fallback(url as string, init)) as unknown as typeof fetch;
+  const root = window.document.createElement("div") as unknown as HTMLElement;
+  window.document.body.append(root as unknown as Parameters<typeof window.document.body.append>[0]);
+  createRunners().mount(root, ORIGIN, "live", null);
+  await settle();
+  const empty = root.querySelector('[aria-labelledby="runners-empty-heading"]');
+  expect(empty?.textContent).toContain("No runners are enrolled");
+  expect(empty?.textContent).toContain("A runner is a Linux machine that runs the coding agents.");
+  expect(empty?.querySelectorAll("ol > li")).toHaveLength(3);
+  expect(root.querySelectorAll("[data-runner-add]")).toHaveLength(1);
+  expect(empty?.querySelector("[data-runner-add]")).not.toBeNull();
+  expect(root.querySelector("table")).toBeNull();
+});
