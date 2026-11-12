@@ -110,7 +110,10 @@ test("one Linear session shows as one run with every attempt in its timeline", a
       engineUrl: null,
     });
     // A run link opens the issue page, which names the task only as ENG-7.
-    expect(page.content).toContain('<span class="lin-id">ENG-7</span> Runs list filters</h1>');
+    expect(page.content).toContain('<span class="lin-id">ENG-7</span><span class="st');
+    expect(page.content).toContain(
+      '<h1 class="issue-title text-xl font-semibold">Runs list filters</h1>',
+    );
     expect(page.content).not.toContain("Run not found");
     expect(page.content.replace(/<[^>]*>/g, " ")).not.toContain(first.id);
   } finally {
