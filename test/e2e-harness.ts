@@ -4,7 +4,20 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { Database } from "bun:sqlite";
+import { cloneRunner } from "./helpers";
+import { candidateRef, mirrorPath, type RunAgentOptions, type RunAgentResult } from "../src/acp";
 import type { FakeScript } from "../src/acp/testing/script";
+import {
+  getRun,
+  getWorkItem,
+  listJobs,
+  listWorkItems,
+  recordItemCandidate,
+  type Db,
+  type Job,
+  type JobLoop,
+} from "../src/db";
+import type { Orchestrator } from "../src/loop";
 import {
   INSTALLATION_PERMISSIONS,
   fakeMergeReadiness,
@@ -109,6 +122,66 @@ export function stateOf(db: Database, identifier: string): string | null {
     .query<{ state: string }, [string]>("SELECT state FROM work_item WHERE linear_identifier = ?")
     .get(identifier);
   return row?.state ?? null;
+}
+
+export async function stateOfPg(db: Db, identifier: string): Promise<string | null> {
+  const items = await listWorkItems(db);
+  return items.find((item) => item.linearIdentifier === identifier)?.state ?? null;
+}
+
+const RESTART_REASONS = new Set(["findings", "ci", "review", "conflict"]);
+
+async function pendingRestart(db: Db): Promise<boolean> {
+  const jobs = (await listJobs(db))
+    .filter((job) => job.queue === "run.resume" && job.status === "pending")
+    .sort((a, b) => a.id - b.id);
+  for (const job of jobs) {
+    const payload = job.payload as { itemId?: string; reason?: string } | null;
+    if (!payload?.itemId || !RESTART_REASONS.has(payload.reason ?? "")) continue;
+    if ((await getWorkItem(db, payload.itemId))?.state === "queued") return true;
+  }
+  return false;
+}
+
+export async function tickWithRestartsPg(
+  jobs: JobLoop,
+  orchestrator: Orchestrator,
+  db: Db,
+): Promise<Job | null> {
+  const first = await jobs.tick();
+  for (let turn = 0; turn < 4; turn++) {
+    if (!(await pendingRestart(db))) break;
+    await orchestrator.reconcileExecution();
+    await jobs.tick(["run.resume"]);
+    if (first?.queue === "github.merge") await jobs.tick(["github.merge"]);
+  }
+  return first;
+}
+
+export function cloneRunnerPg(
+  repository: { owner: string; repo: string },
+  agent: (options: RunAgentOptions) => Promise<RunAgentResult>,
+  db: Db,
+) {
+  const run = cloneRunner(repository, agent);
+  return async (options: RunAgentOptions): Promise<RunAgentResult> => {
+    const mirror = mirrorPath(options.pawsRoot, repository.owner, repository.repo);
+    const ref = candidateRef(options.itemId);
+    const sha = () =>
+      Bun.spawnSync(["/usr/bin/git", "--git-dir", mirror, "rev-parse", "--verify", "-q", ref]);
+    const held = sha().exitCode === 0;
+    const result = await run(options);
+    if (!held || options.role !== "implementer") return result;
+    const item = await getWorkItem(db, (await getRun(db, options.runId))?.itemId ?? "");
+    if (item)
+      await recordItemCandidate(db, {
+        itemId: item.id,
+        sha: sha().stdout.toString().trim(),
+        branch: item.branchName,
+        recordedAt: Date.now(),
+      });
+    return result;
+  };
 }
 
 export function emptyReview(): FakeScript {
