@@ -21,8 +21,6 @@ import { createGitHubAttributionLink } from "./github-attribution";
 import { LINEAR_GUEST_REFUSAL } from "./eligibility";
 import type { WorkspaceAssignments } from "./assignments";
 import { linearItem, type LinearMembershipReads } from "../linear";
-import type { SlackIdentityReads } from "../slack";
-import { createWorkspaceIdentityLinks } from "./identity-links";
 import { createWorkspaceLinearActions } from "./linear-actions";
 import { beginWorkspaceOAuth, completeWorkspaceOAuth } from "./oauth";
 import { onboardingPage, type OnboardingReadinessReader } from "./onboarding-page";
@@ -56,7 +54,6 @@ export type WorkspaceAccessOptions = {
   memberships: LinearMembershipReads;
   fetch?: typeof fetch;
   now?: () => number;
-  slackIdentities?: SlackIdentityReads | null;
   githubAttributionClient?: { clientId: string; clientSecret: string };
   secretsDir?: string;
   interruptItem?: (itemId: string) => Promise<void>;
@@ -102,11 +99,6 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     organizationId: options.installedOrganization.id,
     clientId: options.clientId,
     memberships: options.memberships,
-    now,
-  });
-  const links = createWorkspaceIdentityLinks({
-    store: options.store,
-    slack: options.slackIdentities,
     now,
   });
   const log = options.log ?? ((line: string) => console.warn(line));
@@ -194,7 +186,6 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     if (workspace === null) return;
     for (const member of await store.run((q) => listWorkspaceMembersSteps(q, workspace.id)))
       await refresh(workspace.id, member.id, true);
-    await links.syncWorkspace(workspace.id);
   }
   async function authenticate(request: Request) {
     if (new URL(request.url).origin !== origin) return null;
@@ -223,7 +214,6 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         "/auth/linear",
         "/auth/linear/callback",
         "/api/auth/session",
-        "/api/workspaces/identity-links",
         "/api/workspaces/audit",
         "/api/workspaces/decisions",
         "/api/auth/logout",
@@ -487,7 +477,6 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
             ? dashboardIssuePath(completion.identifier)
             : `/onboard/${completion.linkId}`;
       } else await options.assignments?.releaseFor(workspace.id, result.identity.userId);
-      await links.syncUser(workspace.id, userId);
       const previous = await requestWorkspaceSession(store, request, now());
       if (previous !== null) await deleteSession(previous.session.tokenHash);
       const issued = await issueWorkspaceSession(options.store, {
@@ -561,8 +550,6 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       now,
     });
     if (decisionResponse !== null) return decisionResponse;
-    const identityAdministration = await links.handle(request, { ...access, origin, now: now() });
-    if (identityAdministration !== null) return identityAdministration;
     const administration = await handleWorkspaceAdministration(request, {
       store: options.store,
       ...access,

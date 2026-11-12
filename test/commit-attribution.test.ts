@@ -115,19 +115,6 @@ test("a delegator who did not link GitHub gets no credit", async () => {
   try {
     await revokeGitHubAttribution(f.db, f.bindings.get("steerer")!, f.now);
     expect(await delegatorCommitCredit(f.db, f.item.id)).toBeNull();
-    await seed(f.db, (q) =>
-      q.orm.insert(q.t.workspaceIdentityLink).values({
-        workspaceId: "workspace",
-        userId: "steerer",
-        provider: "github",
-        externalId: "steerer",
-        installationId: null,
-        method: "manual",
-        status: "linked",
-        checkedAt: f.now,
-      }),
-    );
-    expect(await delegatorCommitCredit(f.db, f.item.id)).toBeNull();
     expect(fetchSpy).not.toHaveBeenCalled();
   } finally {
     await f.close();

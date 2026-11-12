@@ -138,43 +138,6 @@ export const workspaceAccessAudit = sqliteTable("workspace_access_audit", {
   createdAt: integer("created_at").notNull(),
 });
 
-export const workspaceIdentityLink = sqliteTable(
-  "workspace_identity_link",
-  {
-    workspaceId: text("workspace_id")
-      .notNull()
-      .references(() => workspace.id),
-    userId: text("user_id")
-      .notNull()
-      .references(() => workspaceUser.id),
-    provider: text().notNull(),
-    externalId: text("external_id"),
-    installationId: text("installation_id"),
-    method: text().notNull(),
-    status: text().notNull(),
-    checkedAt: integer("checked_at").notNull(),
-  },
-  (table) => [
-    foreignKey(() => ({
-      columns: [table.workspaceId, table.userId],
-      foreignColumns: [workspaceMember.workspaceId, workspaceMember.userId],
-      name: "workspace_identity_link_workspace_id_user_id_workspace_member_workspace_id_user_id_fk",
-    })),
-    primaryKey({
-      columns: [table.workspaceId, table.userId, table.provider],
-      name: "workspace_identity_link_workspace_id_user_id_provider_pk",
-    }),
-    unique().on(table.workspaceId, table.provider, table.externalId),
-    check("workspace_identity_link_check_1", sql`provider IN ('slack','github')`),
-    check("workspace_identity_link_check_2", sql`method IN ('email','manual')`),
-    check("workspace_identity_link_check_3", sql`status IN ('linked','unmatched','error')`),
-    check(
-      "workspace_identity_link_check_4",
-      sql`(status='linked' AND external_id IS NOT NULL) OR (status!='linked' AND external_id IS NULL)`,
-    ),
-  ],
-);
-
 export const workspaceAssignment = sqliteTable(
   "workspace_assignment",
   {

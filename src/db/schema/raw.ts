@@ -192,7 +192,6 @@ export const rawSchema = {
     "workspace_bootstrap",
     "workspace_github_connection",
     "workspace_github_oauth",
-    "workspace_identity_link",
     "workspace_member",
     "workspace_oauth_request",
     "workspace_repository",

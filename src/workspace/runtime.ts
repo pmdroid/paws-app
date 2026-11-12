@@ -3,7 +3,6 @@ import { MEMBERSHIP_BACKSTOP_MS, type Db } from "../db";
 import type { WorkspaceAssignments } from "./assignments";
 import type { OnboardingReadinessReader } from "./onboarding-page";
 import type { LinearMembershipReads } from "../linear";
-import type { SlackIdentityReads } from "../slack";
 import { createWorkspaceAccess, type WorkspaceClient } from "./access";
 
 export async function createWorkspaceAccessFromLinear(options: {
@@ -14,7 +13,6 @@ export async function createWorkspaceAccessFromLinear(options: {
   publicUrl: string;
   clientId: string;
   memberships: LinearMembershipReads;
-  slackIdentities?: SlackIdentityReads | null;
   githubAttributionClient?: { clientId: string; clientSecret: string };
   secretsDir?: string;
   interruptItem?: (itemId: string) => Promise<void>;

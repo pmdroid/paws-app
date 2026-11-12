@@ -3,7 +3,6 @@ export const runtimeNativeFetch = fetch;
 export const runtimeLinear = {
   active: true,
   reads: 0,
-  slackReads: 0,
   installation: undefined as Promise<void> | undefined,
   graph: undefined as
     | ((query: string, variables: Record<string, unknown>) => Response | Promise<Response>)
@@ -12,26 +11,6 @@ export const runtimeLinear = {
 
 globalThis.fetch = Object.assign(
   async (input: unknown, init?: RequestInit) => {
-    const url = new URL(String(input));
-    if (url.origin === "https://slack.com" && url.pathname === "/api/users.lookupByEmail") {
-      if (
-        url.searchParams.get("email") !== "owner@example.invalid" ||
-        new Headers(init?.headers).get("authorization") !== "Bearer fixture-slack-identity-token"
-      )
-        throw new Error("Unexpected scripted Slack lookup.");
-      runtimeLinear.slackReads++;
-      return Response.json({
-        ok: true,
-        user: {
-          id: "U456",
-          team_id: "T123",
-          deleted: false,
-          is_bot: false,
-          is_app_user: false,
-          profile: { email: "owner@example.invalid" },
-        },
-      });
-    }
     if (String(input) === "https://api.linear.app/oauth/token")
       return Response.json({ access_token: "fixture-browser-token" });
     if (String(input) !== "https://api.linear.app/graphql")

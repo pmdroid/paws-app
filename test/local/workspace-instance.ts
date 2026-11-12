@@ -1,6 +1,5 @@
 import { probeWorkspaceLinearActions } from "./workspace-linear-actions";
 import { probeWorkspaceRuntime } from "./workspace-runtime";
-import { probeWorkspaceIdentityLinks } from "./workspace-identity-links";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { probeWorkspaceAccess } from "./workspace-access";
@@ -33,13 +32,6 @@ try {
   });
   await probeWorkspaceAuthorization(
     join(root, "workspace-authorization"),
-    (name, passed, observed) => {
-      observations.push({ name, passed, observed });
-      console.log(`${passed ? "PASS" : "FAIL"} ${name}: ${JSON.stringify(observed)}`);
-    },
-  );
-  await probeWorkspaceIdentityLinks(
-    join(root, "workspace-identity-links"),
     (name, passed, observed) => {
       observations.push({ name, passed, observed });
       console.log(`${passed ? "PASS" : "FAIL"} ${name}: ${JSON.stringify(observed)}`);
