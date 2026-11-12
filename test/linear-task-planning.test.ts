@@ -5,22 +5,20 @@ import {
   advanceLinearSessionGeneration,
   ensureLinearSession,
   getTaskClassification,
-  migrate,
-  openDatabase,
   resolveTaskClassification,
   saveTaskClassification,
-  sqliteDb,
 } from "../src/db";
 import { runAgent } from "../src/acp";
 import { createTaskPlanner, type AgentLaunch } from "../src/loop";
-import { tempDb, tempHome } from "./helpers";
+import { tempHome, withHomeStore } from "./helpers";
+import { tempStore } from "./pglite";
 
 async function fixture(remote: boolean) {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const home = tempHome();
   const pawsRoot = join(home, "paws");
   mkdirSync(pawsRoot);
-  await ensureLinearSession(sqliteDb(db), { sessionId: "session" });
+  await ensureLinearSession(db, { sessionId: "session" });
   const traces: string[] = [];
   const launch: AgentLaunch = () => {
     const first = traces.length === 0;
@@ -51,7 +49,7 @@ async function fixture(remote: boolean) {
     };
   };
   const planner = createTaskPlanner({
-    store: sqliteDb(db),
+    store: db,
     home,
     pawsRoot,
     launch: remote
@@ -89,7 +87,7 @@ async function fixture(remote: boolean) {
     }
     throw new Error("The classifier did not start");
   };
-  return { db, planner, traces, plan, waitForFirst };
+  return { db, close, planner, traces, plan, waitForFirst };
 }
 
 test.each([false, true])(
@@ -99,19 +97,19 @@ test.each([false, true])(
     try {
       const first = f.plan("first").catch((error: unknown) => error);
       await f.waitForFirst();
-      await advanceLinearSessionGeneration(sqliteDb(f.db), "session");
+      await advanceLinearSessionGeneration(f.db, "session");
       expect(await Promise.all([f.plan("replacement"), f.plan("replacement")])).toEqual([
         { mode: "answer" },
         { mode: "answer" },
       ]);
       expect(await first).toBeInstanceOf(Error);
       expect(f.traces).toHaveLength(2);
-      expect(await getTaskClassification(sqliteDb(f.db), "first")).toBeNull();
+      expect(await getTaskClassification(f.db, "first")).toBeNull();
       expect(await f.plan("replacement")).toEqual({ mode: "answer" });
       expect(f.traces).toHaveLength(2);
     } finally {
       await f.planner.stop();
-      f.db.close();
+      await f.close();
     }
   },
   15000,
@@ -124,62 +122,54 @@ test.each([false, true])(
     try {
       const first = f.plan("first").catch((error: unknown) => error);
       await f.waitForFirst();
-      await advanceLinearSessionGeneration(sqliteDb(f.db), "session");
+      await advanceLinearSessionGeneration(f.db, "session");
       const next = f.plan("replacement").catch((error: unknown) => error);
       await f.planner.stop("session");
       expect(await first).toBeInstanceOf(Error);
       expect(await next).toBeInstanceOf(Error);
       expect(f.traces).toHaveLength(1);
-      expect(await getTaskClassification(sqliteDb(f.db), "first")).toBeNull();
-      expect(await getTaskClassification(sqliteDb(f.db), "replacement")).toBeNull();
+      expect(await getTaskClassification(f.db, "first")).toBeNull();
+      expect(await getTaskClassification(f.db, "replacement")).toBeNull();
     } finally {
       await f.planner.stop();
-      f.db.close();
+      await f.close();
     }
   },
   15000,
 );
 
 test("a clarification resolution preserves its child-task redirect and guidance across restart", async () => {
-  const path = join(tempHome(), "planning.db");
-  const db = openDatabase(path);
-  migrate(db);
-  await saveTaskClassification(sqliteDb(db), "request", {
-    mode: "clarify",
-    question: "Which outcome?",
+  const home = tempHome();
+  await withHomeStore(home, async (db) => {
+    await saveTaskClassification(db, "request", { mode: "clarify", question: "Which outcome?" });
+    await saveTaskClassification(db, "request", { mode: "artifact" });
+    expect((await getTaskClassification(db, "request"))?.mode).toBe("clarify");
+    await resolveTaskClassification(db, {
+      taskKey: "request",
+      itemId: "placeholder",
+      context: "Change both children.",
+    });
   });
-  await saveTaskClassification(sqliteDb(db), "request", { mode: "artifact" });
-  expect((await getTaskClassification(sqliteDb(db), "request"))?.mode).toBe("clarify");
-  await resolveTaskClassification(sqliteDb(db), {
-    taskKey: "request",
-    itemId: "placeholder",
-    context: "Change both children.",
-  });
-  db.close();
-  const reopened = openDatabase(path);
-  try {
-    migrate(reopened);
-    expect(await getTaskClassification(sqliteDb(reopened), "request")).toEqual({
+  await withHomeStore(home, async (reopened) => {
+    expect(await getTaskClassification(reopened, "request")).toEqual({
       mode: "code",
       redirect: { taskKey: "resolved:request", itemId: "placeholder" },
     });
-    expect(await getTaskClassification(sqliteDb(reopened), "resolved:request")).toEqual({
+    expect(await getTaskClassification(reopened, "resolved:request")).toEqual({
       mode: "code",
       context: "Change both children.",
       sourceItemId: "placeholder",
     });
-  } finally {
-    reopened.close();
-  }
+  });
 });
 
 test("unavailable selected helper fails before local launch or classification persistence", async () => {
-  const db = tempDb();
+  const { db, close } = await tempStore();
   const home = tempHome();
-  await ensureLinearSession(sqliteDb(db), { sessionId: "session" });
+  await ensureLinearSession(db, { sessionId: "session" });
   let localLaunches = 0;
   const planner = createTaskPlanner({
-    store: sqliteDb(db),
+    store: db,
     pawsRoot: home,
     home,
     profile: () => ({ agent: "codex", model: null }),
@@ -202,9 +192,9 @@ test("unavailable selected helper fails before local launch or classification pe
       }),
     ).rejects.toThrow("Remote helper transport is unavailable");
     expect(localLaunches).toBe(0);
-    expect(await getTaskClassification(sqliteDb(db), "remote-unavailable")).toBeNull();
+    expect(await getTaskClassification(db, "remote-unavailable")).toBeNull();
   } finally {
     await planner.stop();
-    db.close();
+    await close();
   }
 });

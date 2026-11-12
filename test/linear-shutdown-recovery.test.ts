@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, listOutbox, migrate, openDatabase, sqliteDb } from "../src/db";
+import { pawsPaths } from "../src/config";
+import { JobLoop, OutboxDispatcher, listOutbox, openPawsStore } from "../src/db";
 import { attachOrchestrator } from "../src/loop";
 import {
   createFakeTracker,
@@ -9,17 +10,17 @@ import {
   openLinear,
   type AcceptedLinearEvent,
 } from "../src/linear";
-import { tempHome } from "./helpers";
+import { migratedHome } from "./helpers";
 import { workspaceAdmission } from "./fake-workspace";
 
 for (const shutdown of ["application", "linear"] as const) {
   test.each(["throw", "false", "return"])(
     `${shutdown} shutdown preserves interrupted %s intake for recovery`,
     async (outcome) => {
-      const home = tempHome();
-      const path = join(home, "paws.db");
-      let db = openDatabase(path);
-      migrate(db);
+      const home = await migratedHome();
+      const pgliteDir = pawsPaths(home).pgliteDir;
+      let database = await openPawsStore({ url: null, pgliteDir });
+      let db = database.store;
       const event: AcceptedLinearEvent = {
         dedupeKey: "session:session:created",
         deliveryId: null,
@@ -45,7 +46,7 @@ for (const shutdown of ["application", "linear"] as const) {
       let jobs = new JobLoop(db, systemClock);
       const makeOrchestrator = () =>
         attachOrchestrator({
-          store: sqliteDb(db),
+          store: db,
           admission: workspaceAdmission(db),
           tracker,
           pawsRoot: home,
@@ -66,7 +67,7 @@ for (const shutdown of ["application", "linear"] as const) {
       const release = Promise.withResolvers<void>();
       const linear = await openLinear({
         db,
-        store: sqliteDb(db),
+        store: db,
         secretsDir: join(home, "secrets"),
         env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
         signal: controller.signal,
@@ -83,7 +84,7 @@ for (const shutdown of ["application", "linear"] as const) {
         },
       });
       const running = await linear.start();
-      let store = createInboxStore(sqliteDb(db));
+      let store = createInboxStore(db);
       await store.commit(event);
       const delivery = Promise.resolve(linear.webhook.onEvent!(event)).then(() =>
         store.markHandled(event.dedupeKey),
@@ -103,25 +104,26 @@ for (const shutdown of ["application", "linear"] as const) {
       expect(await store.listUnhandled()).toHaveLength(1);
       expect(tracker.progress).toEqual([]);
       expect(
-        (await listOutbox(sqliteDb(db))).filter(
+        (await listOutbox(db)).filter(
           (entry) =>
             entry.status === "pending" &&
             (entry.payload as { body?: string }).body === "Picked up this issue.",
         ),
       ).toHaveLength(1);
       expect(
-        (await listOutbox(sqliteDb(db))).some(
+        (await listOutbox(db)).some(
           (entry) => (entry.payload as { kind?: string }).kind === "error",
         ),
       ).toBe(false);
-      db.close();
-      db = openDatabase(path);
-      store = createInboxStore(sqliteDb(db));
+      await database.close();
+      database = await openPawsStore({ url: null, pgliteDir });
+      db = database.store;
+      store = createInboxStore(db);
       jobs = new JobLoop(db, systemClock);
       orchestrator = makeOrchestrator();
       const recovered = await openLinear({
         db,
-        store: sqliteDb(db),
+        store: db,
         secretsDir: join(home, "secrets"),
         env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
         isAuthorized: async () => false,
@@ -140,17 +142,19 @@ for (const shutdown of ["application", "linear"] as const) {
         expect(tracker.questions).toHaveLength(1);
         expect(tracker.questions[0]?.body).toContain("Which repository");
         expect(await store.listUnhandled()).toHaveLength(0);
-        expect(db.query("SELECT id FROM work_item").all()).toHaveLength(1);
+        expect(
+          await db.run((q) => q.all(q.orm.select({ id: q.t.workItem.id }).from(q.t.workItem))),
+        ).toHaveLength(1);
         expect(
           tracker.progress.filter((update) => update.body.startsWith("Picked up")),
         ).toHaveLength(1);
-        expect(
-          (await listOutbox(sqliteDb(db))).filter((entry) => entry.status === "dropped"),
-        ).toHaveLength(0);
+        expect((await listOutbox(db)).filter((entry) => entry.status === "dropped")).toHaveLength(
+          0,
+        );
       } finally {
         await (await recovered.start()).stop();
         await orchestrator.shutdown();
-        db.close();
+        await database.close();
       }
     },
   );
