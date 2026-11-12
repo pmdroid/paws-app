@@ -14,7 +14,11 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setJournalSink } from "../journal";
-import { createRunnerWorkCleaner, openRunnerCheckoutToGroup } from "./work-root";
+import {
+  createRunnerWorkCleaner,
+  openRunnerCheckoutToGroup,
+  openRunnerRunStatesToGroup,
+} from "./work-root";
 
 const RUN = "2a9fbb49-c286-44d3-83dc-32dffc766b31";
 const OTHER_RUN = "0087b90c-d150-4694-a84a-c9642805aa4e";
@@ -157,6 +161,85 @@ test("a folder that cannot be deleted is reported once, and the rest still go", 
   expect(existsSync(stuck)).toBe(true);
   expect(existsSync(next)).toBe(false);
   expect(lines.at(-1)).toContain("failed=1");
+});
+
+function runState(root: string, name: string, ageHours: number) {
+  mkdirSync(join(root, ".paws", "runs"), { recursive: true });
+  return checkout(join(root, ".paws", "runs"), name, ageHours);
+}
+
+test("the sweep removes run state idle for over three days, unless its execution is held", async () => {
+  const { root, cleaner, lines } = fixture([OTHER_RUN, EXECUTION]);
+  const finished = runState(root, "01M5G3S6DC4RPESGCXGNMK9ZCY", 4 * 24);
+  const recent = runState(root, "01M5G3S8FR2T339ZX2RTA5K2MZ", 24);
+  const active = runState(root, EXECUTION, 30 * 24);
+  const helper = runState(root, OTHER_RUN, 30 * 24);
+  await cleaner.sweep();
+  expect(existsSync(finished)).toBe(false);
+  expect([recent, active, helper].map((path) => existsSync(path))).toEqual([true, true, true]);
+  expect(lines).toContainEqual(
+    expect.stringContaining("removed name=.paws/runs/01M5G3S6DC4RPESGCXGNMK9ZCY reason=sweep"),
+  );
+});
+
+test("the sweep does not follow .paws or .paws/runs when either is a symbolic link", async () => {
+  const { root, cleaner } = fixture();
+  const outside = mkdtempSync(join(tmpdir(), "paws-outside-"));
+  roots.push(outside);
+  const kept = checkout(outside, EXECUTION, 30 * 24);
+  mkdirSync(join(root, ".paws"));
+  symlinkSync(outside, join(root, ".paws", "runs"));
+  await cleaner.sweep();
+  rmSync(join(root, ".paws"), { recursive: true });
+  symlinkSync(join(outside, ".."), join(root, ".paws"));
+  mkdirSync(join(outside, "..", "runs"), { recursive: true });
+  await cleaner.sweep();
+  expect(existsSync(kept)).toBe(true);
+});
+
+test("a run state folder that cannot be removed is tried again only once its access changes", async () => {
+  const { root, cleaner, lines } = fixture();
+  const stuck = runState(root, EXECUTION, 30 * 24);
+  chmodSync(join(stuck, "src"), 0o500);
+  const uid = spyOn(process, "getuid").mockReturnValue(process.getuid!() + 1);
+  try {
+    await cleaner.sweep();
+    expect(lines.at(-1)).toContain("failed=1");
+    await cleaner.sweep();
+    expect(lines.at(-1)).toContain("failed=0");
+  } finally {
+    uid.mockRestore();
+    chmodSync(join(stuck, "src"), 0o700);
+  }
+  chmodSync(stuck, 0o770);
+  await cleaner.sweep();
+  expect(existsSync(stuck)).toBe(false);
+});
+
+test("a worker opens the private run state folders it owns to the group, not other entries", () => {
+  const { root } = fixture();
+  const own = runState(root, EXECUTION, 30 * 24);
+  const other = runState(root, "not-a-run", 30 * 24);
+  for (const path of [join(own, "src"), own, other]) chmodSync(path, 0o700);
+  openRunnerRunStatesToGroup(root);
+  const mode = (path: string) => statSync(path).mode & 0o777;
+  expect([mode(own), mode(join(own, "src")), mode(other)]).toEqual([0o770, 0o770, 0o700]);
+});
+
+test("one sweep removes at most 5,000 run state folders, and the next removes the rest", async () => {
+  const { root, cleaner } = fixture();
+  const runs = join(root, ".paws", "runs");
+  mkdirSync(runs, { recursive: true });
+  const at = new Date(NOW - 4 * 24 * HOUR);
+  for (let index = 0; index < 5_003; index++) {
+    const path = join(runs, `01M5G3S6DC4RPESGCXG${index.toString().padStart(7, "0")}`);
+    mkdirSync(path);
+    utimesSync(path, at, at);
+  }
+  await cleaner.sweep();
+  expect(readdirSync(runs)).toHaveLength(3);
+  await cleaner.sweep();
+  expect(readdirSync(runs)).toHaveLength(0);
 });
 
 function largeCheckout(root: string, name: string) {

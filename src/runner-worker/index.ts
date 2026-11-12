@@ -88,6 +88,7 @@ import {
   markRunnerAccountSignedIn,
   openRunnerAccountHome,
   openRunnerCheckoutToGroup,
+  openRunnerRunStatesToGroup,
   publishRunnerAccountHome,
   readRunnerJob,
   readRunnerJobInputs,
@@ -2445,8 +2446,10 @@ export async function executeRunnerCommand(
     previewStart.abort();
     await (await preview)?.stop("run_ended");
     if (skillsRoot) rmSync(skillsRoot, { recursive: true, force: true });
-    if (checkout && options.owners && process.getuid?.() !== options.owners.runnerUid)
-      openRunnerCheckoutToGroup(checkout);
+    if (options.owners && process.getuid?.() !== options.owners.runnerUid) {
+      if (checkout) openRunnerCheckoutToGroup(checkout);
+      openRunnerRunStatesToGroup(options.workRoot);
+    }
     closeSync(eventJournal);
   }
 }
