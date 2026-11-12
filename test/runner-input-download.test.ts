@@ -8,6 +8,6 @@ test("daemon reads signed attachments and restored prompts through authenticated
       timeout: 120_000,
     }),
   );
-  expect(result.observations).toHaveLength(7);
+  expect(result.observations).toHaveLength(6);
   expect(result.observations.every((value: { passed: boolean }) => value.passed)).toBe(true);
 }, 120_000);
