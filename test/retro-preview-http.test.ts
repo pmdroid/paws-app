@@ -1,12 +1,19 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
+import { asc, eq } from "drizzle-orm";
 import { createRetroPreviewHttp, DEFAULT_RETRO_PROMPT } from "../src/retros";
-import { sqliteDb } from "../src/db";
-import { ALL, ONLY_A, world } from "./improvement-fixtures";
+import { ALL, ONLY_A, worldPg } from "./improvement-fixtures";
+
+const open: (() => Promise<void>)[] = [];
+
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
+});
 
 async function fixture() {
-  const w = await world();
+  const w = await worldPg();
+  open.push(w.close);
   const handle = createRetroPreviewHttp({
-    store: sqliteDb(w.db),
+    store: w.db,
     artifactRoot: w.root,
     now: () => 9,
   });
@@ -27,13 +34,18 @@ async function fixture() {
     if (response === null) return null;
     return { status: response.status, body: (await response.json()) as Record<string, unknown> };
   };
-  const denials = () =>
-    w.db
-      .query<{ subject: string }, []>(
-        "SELECT subject FROM workspace_access_audit WHERE action = 'access.denied' ORDER BY id",
+  const denials = async () =>
+    (
+      await w.db.run((q) =>
+        q.all(
+          q.orm
+            .select({ subject: q.t.workspaceAccessAudit.subject })
+            .from(q.t.workspaceAccessAudit)
+            .where(eq(q.t.workspaceAccessAudit.action, "access.denied"))
+            .orderBy(asc(q.t.workspaceAccessAudit.id)),
+        ),
       )
-      .all()
-      .map((row) => row.subject);
+    ).map((row) => row.subject);
   return { w, call, denials };
 }
 
@@ -70,7 +82,7 @@ test("preview reports a malformed draft beside the editor and refuses members", 
     outputLimits: { maxItems: 5, workedWell: 3 },
   });
   expect(member!.status).toBe(403);
-  expect(denials()).toEqual(["/api/retros/preview"]);
+  expect(await denials()).toEqual(["/api/retros/preview"]);
   expect((await call("admin", "/api/retros/preview"))!.status).toBe(405);
 });
 
@@ -93,7 +105,7 @@ test("frozen settings need full access and stay hidden outside the workspace", a
   const partial = await call("ada", "/api/retros/reports/r1/settings");
   expect(partial!.status).toBe(403);
   expect(partial!.body.reason).toBe("partial_access");
-  expect(denials()).toEqual(["/api/retros/reports/r1/settings"]);
+  expect(await denials()).toEqual(["/api/retros/reports/r1/settings"]);
   expect((await call("admin", "/api/retros/reports/nope/settings"))!.status).toBe(404);
   expect(await call("admin", "/api/retros/reports/r1/prompt")).toBeNull();
 });

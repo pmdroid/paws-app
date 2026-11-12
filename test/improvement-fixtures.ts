@@ -19,6 +19,7 @@ import {
   syncWorkspaceMember,
   writeRetroArtifact,
   sqliteDb,
+  type Db,
 } from "../src/db";
 import {
   createFakeIssueLookup,
@@ -27,6 +28,7 @@ import {
 } from "../src/improvements";
 import { createRetroReviewHttp, retroReaderAccessSteps } from "../src/retros";
 import { type WorkspacePrincipal } from "../src/workspace";
+import { tempStore } from "./pglite";
 
 export type Json = ReturnType<typeof JSON.parse>;
 
@@ -37,27 +39,49 @@ export const END = Date.UTC(2026, 9, 29);
 export const ALL = ["session-a", "session-b"];
 export const ONLY_A = ["session-a"];
 
-export async function world(extra: Partial<Parameters<typeof createImprovementsHttp>[0]> = {}) {
+type Extra = Partial<Parameters<typeof createImprovementsHttp>[0]>;
+
+export async function world(extra: Extra = {}) {
   const root = mkdtempSync(join(tmpdir(), "paws-improvement-review-"));
   const db = openDatabase(join(root, "paws.db"));
   migrate(db);
-  db.run("INSERT INTO workspace VALUES ('ws', 'org', 'Kyku', 0)");
-  db.run("INSERT INTO workspace VALUES ('other', 'org-2', 'Other', 0)");
-  db.run("INSERT INTO workspace_repository VALUES ('ws', ?, 'team-a')", [A]);
-  db.run("INSERT INTO workspace_repository VALUES ('ws', ?, 'team-b')", [B]);
+  return { ...(await worldOn(sqliteDb(db), root, extra)), db };
+}
+
+export async function worldPg(extra: Extra = {}) {
+  const root = mkdtempSync(join(tmpdir(), "paws-improvement-review-"));
+  const { db, close } = await tempStore();
+  return { ...(await worldOn(db, root, extra)), db, close };
+}
+
+async function worldOn(db: Db, root: string, extra: Extra) {
+  await db.run(function* (q) {
+    yield* q.exec(
+      q.orm.insert(q.t.workspace).values([
+        { id: "ws", linearOrganizationId: "org", name: "Kyku", createdAt: 0 },
+        { id: "other", linearOrganizationId: "org-2", name: "Other", createdAt: 0 },
+      ]),
+    );
+    yield* q.exec(
+      q.orm.insert(q.t.workspaceRepository).values([
+        { workspaceId: "ws", repository: A, teamId: "team-a" },
+        { workspaceId: "ws", repository: B, teamId: "team-b" },
+      ]),
+    );
+  });
   const people: Record<string, WorkspacePrincipal> = {};
   for (const [name, role, teams] of [
     ["admin", "admin", ["team-a", "team-b"]],
     ["ada", "member", ["team-a"]],
     ["bea", "member", ["team-a"]],
   ] as const) {
-    const userId = await putWorkspaceUser(sqliteDb(db), {
+    const userId = await putWorkspaceUser(db, {
       id: `user-${name}`,
       linearUserId: `linear-${name}`,
       name,
       email: `${name}@example.invalid`,
     });
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: "ws",
       userId,
       role,
@@ -71,10 +95,18 @@ export async function world(extra: Partial<Parameters<typeof createImprovementsH
     ["a", A, "team-a"],
     ["b", B, "team-b"],
   ] as const) {
-    db.run(
-      `INSERT INTO linear_session (session_id, organization_id, oauth_client_id, app_user_id, team_id,
-         installation_observed_at, created_at) VALUES (?, 'org', 'client', 'app', ?, 1, 0)`,
-      [`session-${suffix}`, team],
+    await db.run((q) =>
+      q.exec(
+        q.orm.insert(q.t.linearSession).values({
+          sessionId: `session-${suffix}`,
+          organizationId: "org",
+          oauthClientId: "client",
+          appUserId: "app",
+          teamId: team,
+          installationObservedAt: 1,
+          createdAt: 0,
+        }),
+      ),
     );
     await insertQueuedItem(db, {
       id: `item-${suffix}`,
@@ -82,11 +114,13 @@ export async function world(extra: Partial<Parameters<typeof createImprovementsH
       now: START + 1,
     });
     const [owner, repo] = repository.split("/");
-    db.run("INSERT INTO work_item_repository VALUES (?, ?, ?, 'git@x')", [
-      `item-${suffix}`,
-      owner!,
-      repo!,
-    ]);
+    await db.run((q) =>
+      q.exec(
+        q.orm
+          .insert(q.t.workItemRepository)
+          .values({ itemId: `item-${suffix}`, owner: owner!, repo: repo!, remoteUrl: "git@x" }),
+      ),
+    );
   }
   const retro = await publishTwoRepositoryRetro(db, root);
   const lookup = createFakeIssueLookup([
@@ -97,7 +131,7 @@ export async function world(extra: Partial<Parameters<typeof createImprovementsH
   let clock = END + 1_000;
   const now = () => ++clock;
   const improvements = createImprovementsHttp({
-    store: sqliteDb(db),
+    store: db,
     lookup: lookup.lookup,
     retroEvidence: function* (q, principal, sessionIds, retroId) {
       return (
@@ -107,7 +141,7 @@ export async function world(extra: Partial<Parameters<typeof createImprovementsH
     now,
     ...extra,
   });
-  const retros = createRetroReviewHttp({ store: sqliteDb(db), artifactRoot: root, now });
+  const retros = createRetroReviewHttp({ store: db, artifactRoot: root, now });
   const call = async (
     handler: typeof improvements,
     who: string,
@@ -131,11 +165,11 @@ export async function world(extra: Partial<Parameters<typeof createImprovementsH
   };
   const retroApi = (who: string, path: string, sessions?: readonly string[]) =>
     call(retros, who, path, undefined, sessions);
-  return { db, root, people, lookup, api, retroApi, retro, now, improvements };
+  return { root, people, lookup, api, retroApi, retro, now, improvements };
 }
 
-async function publishTwoRepositoryRetro(db: ReturnType<typeof openDatabase>, root: string) {
-  const { revision } = await saveRetroSettingsRevision(sqliteDb(db), {
+async function publishTwoRepositoryRetro(db: Db, root: string) {
+  const { revision } = await saveRetroSettingsRevision(db, {
     workspaceId: "ws",
     prompt: "Review {{period}}.\n\n{{digest}}",
     agentProfile: { agent: "codex" },
@@ -146,7 +180,7 @@ async function publishTwoRepositoryRetro(db: ReturnType<typeof openDatabase>, ro
     createdBy: "user-admin",
     now: 1,
   });
-  await createRetro(sqliteDb(db), {
+  await createRetro(db, {
     id: "r1",
     workspaceId: "ws",
     windowStart: START,
@@ -155,7 +189,7 @@ async function publishTwoRepositoryRetro(db: ReturnType<typeof openDatabase>, ro
     settingsRevision: revision,
     now: END,
   });
-  await beginRetroCollection(sqliteDb(db), { retroId: "r1", now: END });
+  await beginRetroCollection(db, { retroId: "r1", now: END });
   const records = [
     ["ev-a1", "item-a", "PAS-1", A],
     ["ev-a2", "item-a", "PAS-1", A],
@@ -163,7 +197,7 @@ async function publishTwoRepositoryRetro(db: ReturnType<typeof openDatabase>, ro
     ["ev-b2", "item-b", "OPS-1", B],
   ] as const;
   await recordRetroEvidence(
-    sqliteDb(db),
+    db,
     "r1",
     records.map(([evidenceId, itemId, , repository]) => ({
       evidenceId,
@@ -186,30 +220,30 @@ async function publishTwoRepositoryRetro(db: ReturnType<typeof openDatabase>, ro
     })),
   };
   const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
-  const digestRecord = await writeRetroArtifact(sqliteDb(db), root, {
+  const digestRecord = await writeRetroArtifact(db, root, {
     retroId: "r1",
     kind: "digest",
     bytes: encode(digest),
     now: END,
   });
-  await writeRetroArtifact(sqliteDb(db), root, {
+  await writeRetroArtifact(db, root, {
     retroId: "r1",
     kind: "manifest",
     bytes: encode({}),
     now: END,
   });
-  await writeRetroArtifact(sqliteDb(db), root, {
+  await writeRetroArtifact(db, root, {
     retroId: "r1",
     kind: "prompt",
     bytes: new TextEncoder().encode(`Review.\n${JSON.stringify(digest)}`),
     now: END,
   });
-  await freezeRetroInput(sqliteDb(db), {
+  await freezeRetroInput(db, {
     retroId: "r1",
     endCursors: { [A]: 10, [B]: 10 },
     now: END,
   });
-  const { attempt } = (await startRetroAttempt(sqliteDb(db), {
+  const { attempt } = (await startRetroAttempt(db, {
     retroId: "r1",
     owner: "o",
     now: END,
@@ -262,7 +296,7 @@ async function publishTwoRepositoryRetro(db: ReturnType<typeof openDatabase>, ro
     ],
     notes: [],
   };
-  const published = await publishRetro(sqliteDb(db), {
+  const published = await publishRetro(db, {
     retroId: "r1",
     attempt,
     owner: "o",
