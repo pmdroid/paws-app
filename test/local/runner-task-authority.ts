@@ -56,6 +56,7 @@ export async function probeRunnerTaskAuthority(
   // This upgrade fixture starts before task commands existed. Enrollment needs only the
   // workspace and runner tables already present, so install its table before enrolling.
   applyMigration(migrations.find((value) => value.id === "134_runner_enrollment")!);
+  db.run("ALTER TABLE runner_enrollment ADD COLUMN admin_repositories TEXT");
   // Enrollment uses current membership authorization while task tables stay at the old version.
   applyMigration(
     migrations.find((value) => value.id === "20261028T1929_workspace_member_revocation")!,
@@ -244,6 +245,7 @@ export async function probeRunnerTaskAuthority(
         pendingDeliveries: legacyOutbox.length,
       },
     );
+    db.run("ALTER TABLE runner_enrollment DROP COLUMN admin_repositories");
     for (const tag of migrationTags().slice(1))
       for (const statement of readFileSync(join(MIGRATIONS_FOLDER, `${tag}.sql`), "utf8").split(
         "--> statement-breakpoint",

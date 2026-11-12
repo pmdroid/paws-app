@@ -94,8 +94,8 @@ test("the extra usage switch posts the runner agent's extra-usage route", async 
   expect(new Headers(post!.init!.headers).get("x-paws-csrf")).toBe("token-1");
 });
 
-test("Add a runner shows the 409 message instead of a command", async () => {
-  const message = "Connect GitHub and add a repository before adding a runner.";
+test("Add a runner shows the server's refusal instead of a command", async () => {
+  const message = "Too many runner enrollments. Try again shortly.";
   let refused = false;
   const fallback = globalThis.fetch;
   globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
@@ -111,7 +111,6 @@ test("Add a runner shows the 409 message instead of a command", async () => {
           config: {
             controlPlaneUrl: "https://paws.example.com",
             runnerApiUrl: "https://paws.example.com:8788",
-            allowedRepositories: ["owner/repo"],
           },
         });
   }) as unknown as typeof fetch;

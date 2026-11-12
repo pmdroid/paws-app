@@ -96,8 +96,6 @@ export async function openRunnerCoordinator(options: {
   skillsRoot?: string;
   /** The dashboard's public HTTPS origin, written into a new host's config on Add a host. */
   publicUrl?: string | null;
-  /** The repositories a new host may run, written into its config on Add a host. */
-  repositories?: () => Promise<readonly string[]>;
   retros?: () => ((request: Request, runnerId: string) => Promise<Response | null>) | undefined;
   hostWarnings?: (runnerId: string) => readonly string[];
 }) {
@@ -161,7 +159,6 @@ export async function openRunnerCoordinator(options: {
       return {
         controlPlaneUrl: new URL(options.publicUrl).origin,
         runnerApiUrl: runnerApi.origin,
-        allowedRepositories: ((await options.repositories?.()) ?? []).slice(0, 256),
       };
     },
   });
