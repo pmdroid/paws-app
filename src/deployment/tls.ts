@@ -43,3 +43,16 @@ export function loadPublicTls(source: EnvSource): PublicTls | undefined {
   }
   return { key, cert };
 }
+
+export function publicTlsProxy(source: EnvSource): boolean {
+  const mode = source.PAWS_PUBLIC_TLS?.trim();
+  if (!mode) return false;
+  if (mode !== "proxy") throw new Error("PAWS_PUBLIC_TLS must be proxy or unset");
+  if (source.PAWS_TLS_KEY_PATH?.trim() || source.PAWS_TLS_CERT_PATH?.trim())
+    throw new Error("PAWS_PUBLIC_TLS=proxy does not use PAWS_TLS_KEY_PATH or PAWS_TLS_CERT_PATH");
+  if (source.PAWS_RUNNER_HOST?.trim())
+    throw new Error(
+      "Runner control needs its own certificate; it is not available with PAWS_PUBLIC_TLS=proxy yet",
+    );
+  return true;
+}

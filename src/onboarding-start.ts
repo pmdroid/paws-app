@@ -4,14 +4,14 @@ import { initializeRunnerCoordinator } from "./runner-coordinator";
 import type { PawsProcess } from "./index";
 import { ensureLayout, loadRunnerControl, pawsPaths, type RuntimeConfig } from "./config";
 import type { PawsStore } from "./db";
-import type { PublicTls } from "./deployment";
+import { publicTlsProxy, type PublicTls } from "./deployment";
 import { createBrowserOnboarding } from "./onboarding";
 import { startServer } from "./server";
 import { isDashboardPage } from "./dashboard-links";
 
 export function startBrowserOnboarding(
   runtime: RuntimeConfig,
-  tls: PublicTls,
+  tls: PublicTls | undefined,
   start: (server: Bun.Server<undefined>) => Promise<PawsProcess>,
   source: Record<string, string | undefined>,
   database: PawsStore,
@@ -62,7 +62,8 @@ export function startBrowserOnboarding(
   const server = startServer({
     hostname: runtime.env.host,
     port: runtime.env.port,
-    tls,
+    ...(tls ? { tls } : {}),
+    ...(publicTlsProxy(source) ? { proxy: true } : {}),
     onboarding(request, client) {
       const path = new URL(request.url).pathname;
       const page = isDashboardPage(path);
