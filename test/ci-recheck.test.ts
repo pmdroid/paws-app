@@ -10,15 +10,7 @@ import { worktreePath } from "../src/acp";
 import type { FakeScript } from "../src/acp/testing/script";
 import * as closeoutCommands from "../src/closeout-spec/run/exec";
 import { systemClock } from "../src/core";
-import {
-  sqliteDb,
-  JobLoop,
-  OutboxDispatcher,
-  getWorkItem,
-  listJobs,
-  migrate,
-  openDatabase,
-} from "../src/db";
+import { JobLoop, OutboxDispatcher, getWorkItem, listJobs, listWorkItems } from "../src/db";
 import {
   createFakeGitHub,
   fakeMergeReadiness,
@@ -34,11 +26,12 @@ import {
   githubClient,
   isMergeReadiness,
   repoLayout,
-  stateOf,
+  stateOfPg,
+  tickWithRestartsPg,
   writeOk,
 } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
-import { tickWithRestarts } from "./helpers";
+import { tempStore } from "./pglite";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -80,8 +73,7 @@ test("a merge-queue re-check waits for CI, sends red CI to a fix, a conflict to 
       subIssues: [],
     },
   ]);
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const jobs = new JobLoop(db, systemClock, { backoffBaseMs: 10 });
   const outbox = new OutboxDispatcher(db, systemClock);
   const client = githubClient(layout.bare, createFakeGitHub());
@@ -105,11 +97,8 @@ test("a merge-queue re-check waits for CI, sends red CI to a fix, a conflict to 
   // The local head: this harness pushes only after Closeout accepts it.
   const pull = async (): Promise<GitHubResponse | null> => {
     if (conflicted !== null || heads.length !== 2) return null;
-    const row = db.query<{ id: string }, []>("SELECT id FROM work_item").get()!;
-    const worktree = worktreePath(
-      layout.pawsRoot,
-      itemPathId((await getWorkItem(sqliteDb(db), row.id))!),
-    );
+    const [row] = await listWorkItems(db);
+    const worktree = worktreePath(layout.pawsRoot, itemPathId((await getWorkItem(db, row!.id))!));
     const head = (await git(worktree, ["rev-parse", "HEAD"])).trim();
     if (heads.includes(head)) return null;
     conflicted = head;
@@ -132,7 +121,7 @@ test("a merge-queue re-check waits for CI, sends red CI to a fix, a conflict to 
   let reviews = 0;
   let sequence = 0;
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -188,9 +177,9 @@ test("a merge-queue re-check waits for CI, sends red CI to a fix, a conflict to 
     const deadline = Date.now() + 120_000;
     while (
       Date.now() < deadline &&
-      !["failed", "merged", "awaiting_input"].includes(stateOf(db, "ENG-8") ?? "")
+      !["failed", "merged", "awaiting_input"].includes((await stateOfPg(db, "ENG-8")) ?? "")
     ) {
-      if ((await tickWithRestarts(jobs, orchestrator, db)) === null) {
+      if ((await tickWithRestartsPg(jobs, orchestrator, db)) === null) {
         await outbox.tick();
         await Bun.sleep(25);
       }
@@ -199,19 +188,17 @@ test("a merge-queue re-check waits for CI, sends red CI to a fix, a conflict to 
     const detail = JSON.stringify({
       heads,
       ran,
-      jobs: (await listJobs(sqliteDb(db))).map(
-        (job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`,
-      ),
+      jobs: (await listJobs(db)).map((job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`),
       progress: tracker.progress.map((update) => `${update.kind}: ${update.body}`),
     });
-    expect(stateOf(db, "ENG-8"), detail).toBe("merged");
+    expect(await stateOfPg(db, "ENG-8"), detail).toBe("merged");
     // The conflicting head went back before any CI read, so CI saw three heads in four turns.
     expect(heads.length, detail).toBe(3);
     const [first, second, third] = heads as [string, string, string];
     expect(conflicted, detail).not.toBeNull();
     expect(heads, detail).not.toContain(conflicted);
     expect(turns, detail).toBe(4);
-    const returned = (await listJobs(sqliteDb(db))).find(
+    const returned = (await listJobs(db)).find(
       (job) => job.jobKey?.startsWith("conflict:") && job.jobKey.endsWith(`:recheck:${conflicted}`),
     );
     expect(returned?.payload, detail).toMatchObject({ reason: "conflict" });
@@ -240,7 +227,7 @@ test("a merge-queue re-check waits for CI, sends red CI to a fix, a conflict to 
   } finally {
     commands.mockRestore();
     await orchestrator.shutdown().catch(() => undefined);
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }, 180_000);

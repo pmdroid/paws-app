@@ -2,6 +2,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { expect, spyOn, test } from "bun:test";
+import { and, eq } from "drizzle-orm";
 import type { FakeScript } from "../src/acp/testing/script";
 import { JOB_KIND, systemClock } from "../src/core";
 import {
@@ -12,15 +13,14 @@ import {
   listJobs,
   listWorkItems,
   markRun,
-  migrate,
-  openDatabase,
-  sqliteDb,
 } from "../src/db";
 import { createFakeGitHub, type GitHubResponse } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
-import { emptyReview, githubClient, repoLayout, stateOf, writeOk } from "./e2e-harness";
+import { emptyReview, githubClient, repoLayout, stateOfPg, writeOk } from "./e2e-harness";
+import { seed } from "./dialects";
 import { workspaceAdmission } from "./fake-workspace";
+import { tempStore } from "./pglite";
 
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
 const { privateKey } = generateKeyPairSync("rsa", {
@@ -86,8 +86,7 @@ async function runAccepted(options: {
       subIssues: [],
     },
   ]);
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const jobs = new JobLoop(db, systemClock, { backoffBaseMs: 10 });
   const outbox = new OutboxDispatcher(db, systemClock);
   const github = createFakeGitHub();
@@ -103,7 +102,7 @@ async function runAccepted(options: {
     ms?: number,
   ) => realSetTimeout(handler, ms === 10_000 ? 1 : ms)) as unknown as typeof setTimeout);
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -150,23 +149,30 @@ async function runAccepted(options: {
   try {
     await orchestrator.onLinearEvent(linearEvent());
     const deadline = Date.now() + 90_000;
-    while (Date.now() < deadline && !["failed", "merged"].includes(stateOf(db, "ENG-8") ?? "")) {
-      db.run("UPDATE job SET max_attempts = 3 WHERE queue = ? AND status = 'pending'", [
-        JOB_KIND.merge,
-      ]);
-      const item = (await listWorkItems(sqliteDb(db))).find(
-        (entry) => entry.linearIdentifier === "ENG-8",
+    while (
+      Date.now() < deadline &&
+      !["failed", "merged"].includes((await stateOfPg(db, "ENG-8")) ?? "")
+    ) {
+      await seed(db, (q) =>
+        q.orm
+          .update(q.t.job)
+          .set({ maxAttempts: 3 })
+          .where(and(eq(q.t.job.queue, JOB_KIND.merge), eq(q.t.job.status, "pending"))),
       );
+      const item = (await listWorkItems(db)).find((entry) => entry.linearIdentifier === "ENG-8");
       if (options.capAfterAcceptance && !capChecked && item?.state === "merge_queue") {
-        expect((await getWorkItem(sqliteDb(db), item.id))?.acceptedHead).toMatch(/^[0-9a-f]{40}$/);
+        expect((await getWorkItem(db, item.id))?.acceptedHead).toMatch(/^[0-9a-f]{40}$/);
         const runId = item.currentRunId;
-        if (runId) await markRun(sqliteDb(db), runId, "active", Date.now());
-        db.run("UPDATE work_item SET max_awake_ms = 1, awake_ms = 60000 WHERE id = ?", [item.id]);
-        await accrueAwake(sqliteDb(db), item.id, 0, Date.now());
-        expect((await accrueAwake(sqliteDb(db), item.id, 4 * 60 * 60_000, Date.now())).capped).toBe(
-          false,
+        if (runId) await markRun(db, runId, "active", Date.now());
+        await seed(db, (q) =>
+          q.orm
+            .update(q.t.workItem)
+            .set({ maxAwakeMs: 1, awakeMs: 60000 })
+            .where(eq(q.t.workItem.id, item.id)),
         );
-        if (runId) await markRun(sqliteDb(db), runId, "ended", Date.now());
+        await accrueAwake(db, item.id, 0, Date.now());
+        expect((await accrueAwake(db, item.id, 4 * 60 * 60_000, Date.now())).capped).toBe(false);
+        if (runId) await markRun(db, runId, "ended", Date.now());
         capChecked = true;
       }
       if ((await jobs.tick()) === null) {
@@ -177,12 +183,10 @@ async function runAccepted(options: {
     while ((await outbox.tick()).length > 0) await outbox.idle();
     const progress = (kind: string) =>
       tracker.progress.filter((update) => update.kind === kind).map((update) => update.body);
-    const item = (await listWorkItems(sqliteDb(db))).find(
-      (entry) => entry.linearIdentifier === "ENG-8",
-    );
-    const merges = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.merge);
+    const item = (await listWorkItems(db)).find((entry) => entry.linearIdentifier === "ENG-8");
+    const merges = (await listJobs(db)).filter((job) => job.queue === JOB_KIND.merge);
     return {
-      state: stateOf(db, "ENG-8"),
+      state: await stateOfPg(db, "ENG-8"),
       implementRuns,
       pullRequestPosts,
       pullRequests: pullRequestPosts - Math.min(pullRequestPosts, options.failedPullRequests),
@@ -191,8 +195,8 @@ async function runAccepted(options: {
       errors: progress("error"),
       questions: progress("elicitation"),
       detail: JSON.stringify({
-        state: item ? (await getWorkItem(sqliteDb(db), item.id))?.state : null,
-        jobs: (await listJobs(sqliteDb(db))).map(
+        state: item ? (await getWorkItem(db, item.id))?.state : null,
+        jobs: (await listJobs(db)).map(
           (job) => `${job.queue}:${job.status}:${job.attempts}:${job.lastError ?? ""}`,
         ),
         progress: tracker.progress.map((update) => `${update.kind}: ${update.body}`),
@@ -201,7 +205,7 @@ async function runAccepted(options: {
   } finally {
     quickReadRetries.mockRestore();
     await orchestrator.shutdown().catch(() => undefined);
-    db.close();
+    await close();
     await layout.cleanup();
   }
 }

@@ -22,6 +22,7 @@ import {
   sqliteDb,
 } from "../src/db";
 import type { RunnerCommand } from "../src/runner-protocol";
+import { tempHome, withHomeStore } from "./helpers";
 
 const credit = {
   id: 8,
@@ -243,26 +244,22 @@ test("protected helper rejects a bad intermediate commit even with a valid final
 });
 
 test("run attribution snapshot persists across reopen and cannot switch repair identities", async () => {
-  const root = mkdtempSync(join(tmpdir(), "paws-policy-db-"));
-  roots.push(root);
-  const path = join(root, "paws.sqlite");
-  let db = openDatabase(path);
-  migrate(db);
-  const item = await insertQueuedItem(db, { id: "item", now: 1 });
-  const { run } = await beginImplementRun(sqliteDb(db), item.id, 1);
-  await saveRunCommitPolicy(sqliteDb(db), run.id, policy);
-  db.close();
-  db = openDatabase(path);
-  try {
-    expect((await getRun(sqliteDb(db), run.id))?.checkpoint?.commitPolicy).toEqual(policy);
-    await insertRun(sqliteDb(db), { itemId: item.id, now: 2 });
-    expect(await getItemRunCommitPolicy(sqliteDb(db), item.id)).toEqual(policy);
+  const home = tempHome();
+  roots.push(home);
+  const { item, run } = await withHomeStore(home, async (db) => {
+    const queued = await insertQueuedItem(db, { id: "item", now: 1 });
+    const begun = await beginImplementRun(db, queued.id, 1);
+    await saveRunCommitPolicy(db, begun.run.id, policy);
+    return { item: queued, run: begun.run };
+  });
+  await withHomeStore(home, async (db) => {
+    expect((await getRun(db, run.id))?.checkpoint?.commitPolicy).toEqual(policy);
+    await insertRun(db, { itemId: item.id, now: 2 });
+    expect(await getItemRunCommitPolicy(db, item.id)).toEqual(policy);
     await expect(
-      saveRunCommitPolicy(sqliteDb(db), run.id, { ...policy, credit: { ...credit, id: 9 } }),
+      saveRunCommitPolicy(db, run.id, { ...policy, credit: { ...credit, id: 9 } }),
     ).rejects.toThrow("cannot change");
-  } finally {
-    db.close();
-  }
+  });
 });
 
 test("a run stored with the old lead and steerer policy keeps crediting only the steerer", async () => {
