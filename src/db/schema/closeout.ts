@@ -701,3 +701,35 @@ export const closeoutPolicyBlock = sqliteTable(
     check("closeout_policy_block_check_1", sql`cause = 'policy_unreadable'`),
   ],
 );
+
+export const fixRecord = sqliteTable(
+  "fix_record",
+  {
+    id: text().primaryKey().notNull(),
+    itemId: text("item_id").notNull(),
+    runId: text("run_id"),
+    linearIdentifier: text("linear_identifier").notNull(),
+    repository: text(),
+    reason: text().notNull(),
+    triggers: text().notNull(),
+    round: integer().notNull(),
+    startedAt: integer("started_at").notNull(),
+    endedAt: integer("ended_at"),
+    outcome: text(),
+    headBefore: text("head_before"),
+    headAfter: text("head_after"),
+    agent: text(),
+    model: text(),
+    durationMs: integer("duration_ms"),
+  },
+  (table) => [
+    index("fix_record_item_open").on(table.itemId, table.endedAt),
+    index("fix_record_started").on(table.startedAt),
+    check(
+      "fix_record_check_1",
+      sql`reason IN ('ci', 'review', 'conflict', 'findings', 'suggested', 'follow_up')`,
+    ),
+    check("fix_record_check_2", sql`json_valid(triggers)`),
+    check("fix_record_check_3", sql`outcome IN ('fixed', 'not_fixed', 'asked', 'abandoned')`),
+  ],
+);

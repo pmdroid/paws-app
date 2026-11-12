@@ -684,3 +684,34 @@ export const closeoutPolicyBlock = pgTable(
     check("closeout_policy_block_check_1", sql`cause = 'policy_unreadable'`),
   ],
 );
+
+export const fixRecord = pgTable(
+  "fix_record",
+  {
+    id: text().primaryKey().notNull(),
+    itemId: text("item_id").notNull(),
+    runId: text("run_id"),
+    linearIdentifier: text("linear_identifier").notNull(),
+    repository: text(),
+    reason: text().notNull(),
+    triggers: jsonb().notNull(),
+    round: bigint({ mode: "number" }).notNull(),
+    startedAt: bigint("started_at", { mode: "number" }).notNull(),
+    endedAt: bigint("ended_at", { mode: "number" }),
+    outcome: text(),
+    headBefore: text("head_before"),
+    headAfter: text("head_after"),
+    agent: text(),
+    model: text(),
+    durationMs: bigint("duration_ms", { mode: "number" }),
+  },
+  (table) => [
+    index("fix_record_item_open").on(table.itemId, table.endedAt),
+    index("fix_record_started").on(table.startedAt),
+    check(
+      "fix_record_check_1",
+      sql`reason IN ('ci', 'review', 'conflict', 'findings', 'suggested', 'follow_up')`,
+    ),
+    check("fix_record_check_3", sql`outcome IN ('fixed', 'not_fixed', 'asked', 'abandoned')`),
+  ],
+);
