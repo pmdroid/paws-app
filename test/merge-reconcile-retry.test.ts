@@ -5,7 +5,8 @@ import path from "node:path";
 import { expect, test } from "bun:test";
 import type { FakeScript } from "../src/acp/testing/script";
 import { JOB_KIND, systemClock } from "../src/core";
-import { sqliteDb, JobLoop, OutboxDispatcher, listJobs, migrate, openDatabase } from "../src/db";
+import { and, count, eq } from "drizzle-orm";
+import { JobLoop, OutboxDispatcher, listJobs } from "../src/db";
 import { createFakeGitHub } from "../src/github";
 import {
   createItemReconciler,
@@ -18,8 +19,10 @@ import {
   type AcceptedLinearEvent,
 } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
-import { emptyReview, githubClient, repoLayout, stateOf, writeOk } from "./e2e-harness";
+import { emptyReview, githubClient, repoLayout, stateOfPg, writeOk } from "./e2e-harness";
+import { seed } from "./dialects";
 import { workspaceAdmission } from "./fake-workspace";
+import { tempStore } from "./pglite";
 
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
 const { privateKey } = generateKeyPairSync("rsa", {
@@ -31,9 +34,9 @@ const { privateKey } = generateKeyPairSync("rsa", {
 test("a merge attempt reconciles a request a Linear 503 left pending and merges", async () => {
   const run = await delegate(1);
   try {
-    await run.until(() => stateOf(run.db, "ACME-1") === "merged");
+    await run.until(async () => (await stateOfPg(run.db, "ACME-1")) === "merged");
     expect(run.failedReads(), await run.detail()).toBe(1);
-    expect(run.implementRuns(), await run.detail()).toBe(1);
+    expect(await run.implementRuns(), await run.detail()).toBe(1);
     expect(run.github.merged).toHaveLength(1);
     expect(run.lines.filter((line) => line.includes("reconciles pending Linear changes"))).toEqual([
       "item ACME-1: a merge attempt reconciles pending Linear changes",
@@ -46,20 +49,19 @@ test("a merge attempt reconciles a request a Linear 503 left pending and merges"
 test("a reconcile that keeps failing holds the item in the merge queue without merging", async () => {
   const run = await delegate(Number.POSITIVE_INFINITY);
   try {
-    await run.until(() => run.failedReads() >= 3);
-    expect(stateOf(run.db, "ACME-1"), await run.detail()).toBe("merge_queue");
+    await run.until(async () => run.failedReads() >= 3);
+    expect(await stateOfPg(run.db, "ACME-1"), await run.detail()).toBe("merge_queue");
+    expect(await hasPendingDelegationChanges(run.db, run.delegationId), await run.detail()).toBe(
+      true,
+    );
     expect(
-      await hasPendingDelegationChanges(sqliteDb(run.db), run.delegationId),
-      await run.detail(),
-    ).toBe(true);
-    expect(
-      (await listJobs(sqliteDb(run.db))).some(
+      (await listJobs(run.db)).some(
         (job) => job.queue === JOB_KIND.merge && job.status === "pending",
       ),
       await run.detail(),
     ).toBe(true);
     expect(run.github.merged).toEqual([]);
-    expect(run.implementRuns(), await run.detail()).toBe(1);
+    expect(await run.implementRuns(), await run.detail()).toBe(1);
   } finally {
     await run.cleanup();
   }
@@ -76,8 +78,7 @@ async function delegate(failures: number) {
       subIssues: [],
     },
   ]);
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const jobs = new JobLoop(db, systemClock, { backoffBaseMs: 10 });
   const outbox = new OutboxDispatcher(db, systemClock);
   const github = createFakeGitHub();
@@ -85,10 +86,10 @@ async function delegate(failures: number) {
   let left = failures;
   let failed = 0;
   const reconciler = createItemReconciler({
-    store: sqliteDb(db),
+    store: db,
     tracker: {
       async loadEpic(id) {
-        if (stateOf(db, "ACME-1") === "merge_queue" && left > 0) {
+        if ((await stateOfPg(db, "ACME-1")) === "merge_queue" && left > 0) {
           left -= 1;
           failed += 1;
           throw new Error("Linear GraphQL HTTP 503");
@@ -108,14 +109,14 @@ async function delegate(failures: number) {
     onChanges: () => syncSteps(() => {}),
   });
   const publication = createPublicationReadiness({
-    store: sqliteDb(db),
+    store: db,
     reconciler,
     canMerge: async (itemId) => (await admission.canMerge(itemId)).ok,
   });
   const lines: string[] = [];
   let sequence = 0;
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission,
     jobs,
     outbox,
@@ -151,18 +152,30 @@ async function delegate(failures: number) {
   });
   await orchestrator.onLinearEvent(linearEvent());
   // Intake's first reconcile, which records the item's specification.
-  const item = db
-    .query<{ id: string; delegationId: string }, []>(
-      "SELECT id,delegation_id AS delegationId FROM work_item WHERE linear_identifier='ACME-1'",
-    )
-    .get()!;
+  const [item] = await db.run((q) =>
+    q.all(
+      q.orm
+        .select({ id: q.t.workItem.id, delegationId: q.t.workItem.delegationId })
+        .from(q.t.workItem)
+        .where(eq(q.t.workItem.linearIdentifier, "ACME-1")),
+    ),
+  );
+  if (!item) throw new Error("ACME-1 was not taken in");
   await admission.canDispatchDelegation(item.delegationId);
-  const workspaceId = db
-    .query<{ id: string }, [string]>(
-      `SELECT w.id FROM work_item i JOIN linear_session s ON s.session_id=i.session_key
-       JOIN workspace w ON w.linear_organization_id=s.organization_id WHERE i.id=?`,
-    )
-    .get(item.id)!.id;
+  const [workspace] = await db.run((q) =>
+    q.all(
+      q.orm
+        .select({ id: q.t.workspace.id })
+        .from(q.t.workItem)
+        .innerJoin(q.t.linearSession, eq(q.t.linearSession.sessionId, q.t.workItem.sessionKey))
+        .innerJoin(
+          q.t.workspace,
+          eq(q.t.workspace.linearOrganizationId, q.t.linearSession.organizationId),
+        )
+        .where(eq(q.t.workItem.id, item.id)),
+    ),
+  );
+  const workspaceId = workspace!.id;
   await reconciler.reconcile({ itemId: item.id, workspaceId });
   return {
     db,
@@ -170,27 +183,34 @@ async function delegate(failures: number) {
     lines,
     failedReads: () => failed,
     delegationId: item.delegationId,
-    implementRuns: () =>
-      db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM run WHERE kind='implement'").get()!.n,
-    async until(done: () => boolean) {
+    implementRuns: async () =>
+      (
+        await db.run((q) =>
+          q.all(q.orm.select({ n: count() }).from(q.t.run).where(eq(q.t.run.kind, "implement"))),
+        )
+      )[0]!.n,
+    async until(done: () => Promise<boolean>) {
       const deadline = Date.now() + 90_000;
-      while (Date.now() < deadline && !done()) {
-        db.run("UPDATE job SET run_at = 0 WHERE queue = ? AND status = 'pending'", [
-          JOB_KIND.merge,
-        ]);
+      while (Date.now() < deadline && !(await done())) {
+        await seed(db, (q) =>
+          q.orm
+            .update(q.t.job)
+            .set({ runAt: 0 })
+            .where(and(eq(q.t.job.queue, JOB_KIND.merge), eq(q.t.job.status, "pending"))),
+        );
         if ((await jobs.tick()) === null) {
           await outbox.tick();
           await Bun.sleep(25);
         }
       }
       while ((await outbox.tick()).length > 0) await outbox.idle();
-      expect(done(), await this.detail()).toBe(true);
+      expect(await done(), await this.detail()).toBe(true);
     },
     detail: async () =>
       JSON.stringify({
-        state: stateOf(db, "ACME-1"),
+        state: await stateOfPg(db, "ACME-1"),
         failed,
-        jobs: (await listJobs(sqliteDb(db))).map(
+        jobs: (await listJobs(db)).map(
           (job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`,
         ),
         lines: lines.slice(-20),
@@ -198,7 +218,7 @@ async function delegate(failures: number) {
     async cleanup() {
       await orchestrator.shutdown().catch(() => undefined);
       await reconciler.close();
-      db.close();
+      await close();
       await layout.cleanup();
     },
   };
