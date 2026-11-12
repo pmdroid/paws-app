@@ -446,7 +446,7 @@ function viewIssues(list: IssueListResponse, id: string | null): string {
       <button type="button" class="btn" data-action="issue-filter" data-issue-filter="done" aria-pressed="false">Done</button>
     </div>
     ${projectFilter(list.issues)}
-    <ul class="issue-list" role="list">${list.issues.map((item) => issueRow(list.generatedAt, item)).join("")}</ul>
+    <div class="overflow-x-auto [&_td]:[overflow-wrap:normal] [&_th]:whitespace-nowrap [&_.lin-id]:whitespace-nowrap [&_.st]:whitespace-nowrap"><table class="run-table issues-table"><thead><tr><th>Item</th><th>Title</th><th>State</th><th class="hide-phone">Project</th><th class="hide-phone">Waiting</th><th>Age</th></tr></thead><tbody>${list.issues.map((item) => issueRow(list.generatedAt, item)).join("")}</tbody></table></div>
     <p class="empty issue-filter-empty" hidden>No issues match this filter.</p>`;
 }
 
@@ -489,12 +489,10 @@ function projectFilter(items: readonly StatusItem[]): string {
 function issueRow(generatedAt: string, item: StatusItem): string {
   const blockers = item.blockers;
   const reason = waitReason(item) ?? (blockers.length ? `Blocked by ${blockers.join(", ")}` : null);
-  return `<li class="issue-row" data-issue-state="${issueBucket(item)}" data-issue-id="${esc(item.id)}" data-issue-project="${esc(item.project?.id ?? NO_PROJECT_FILTER)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${itemPill(item)}<div class="issue-facts">${issueMeta(item)}${itemTime(item, Date.parse(generatedAt))}${reason ? `<span class="muted" data-wait-reason>${esc(reason)}</span>` : ""}</div></li>`;
-}
-
-function issueMeta(item: StatusItem): string {
-  const facts = [item.owner, item.project?.name ?? "Solo"].filter(Boolean);
-  return `<span class="muted">${esc(facts.join(" · "))}</span>`;
+  const blocked = blockers.length
+    ? `<div class="text-xs text-muted-foreground" data-blockers>${relatedIssues(blockers)}</div>`
+    : "";
+  return `<tr class="issue-row" data-issue-state="${issueBucket(item)}" data-issue-id="${esc(item.id)}" data-issue-project="${esc(item.project?.id ?? NO_PROJECT_FILTER)}"><td><a href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span></a></td><td>${esc(item.title)}${blocked}</td><td>${itemPill(item)}</td><td class="hide-phone">${esc(item.project?.name ?? "—")}</td><td class="hide-phone">${reason ? `<span class="muted" data-wait-reason>${esc(reason)}</span>` : "—"}</td><td>${itemTime(item, Date.parse(generatedAt)) || "—"}</td></tr>`;
 }
 
 function issueBucket(item: StatusItem): "needs" | "done" | "active" {
