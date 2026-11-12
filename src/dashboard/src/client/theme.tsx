@@ -179,9 +179,14 @@ function replace(node: DOMNode): ReactElement | undefined {
         className: cn(
           attribs.class,
           buttonVariants({
-            variant: has("primary") || attribs["aria-pressed"] === "true" ? "default" : "neutral",
+            variant: has("seg")
+              ? "ghost"
+              : has("primary") || attribs["aria-pressed"] === "true"
+                ? "default"
+                : "neutral",
             size: has("btn") ? (has("sm") ? "xs" : "sm") : "default",
           }),
+          has("seg") && "text-muted-foreground aria-pressed:bg-accent aria-pressed:text-foreground",
         ),
       },
       children(),
