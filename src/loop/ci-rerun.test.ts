@@ -1,27 +1,19 @@
 import { afterEach, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
-import {
-  getWorkItem,
-  insertQueuedItem,
-  listCiReruns,
-  migrate,
-  openDatabase,
-  sqliteDb,
-} from "../db";
+import { getWorkItem, insertQueuedItem, listCiReruns, type Db } from "../db";
 import { CI_ALREADY_RERUN, CI_RERUN_PERMISSION_MISSING, type GitHubClient } from "../github";
 import { rerunItemCi } from "./ci-rerun";
+import { tempStore } from "../../test/pglite";
 
 const head = "c".repeat(40);
-const open: Database[] = [];
+const open: (() => Promise<void>)[] = [];
 
-afterEach(() => {
-  for (const db of open.splice(0)) db.close();
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
 });
 
-function database(): Database {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  open.push(db);
+async function database() {
+  const { db, close } = await tempStore();
+  open.push(close);
   return db;
 }
 
@@ -58,14 +50,14 @@ function fakeGitHub(rerunStatus = 201) {
 }
 
 function rerun(
-  db: Database,
+  db: Db,
   client: GitHubClient,
   journal: string[],
   reason: string,
   requestedBy?: string,
 ) {
   return rerunItemCi({
-    store: sqliteDb(db),
+    store: db,
     itemId: "item",
     label: "PAS-1",
     reason,
@@ -83,7 +75,7 @@ function rerun(
 }
 
 test("the item records the agent's reason and refuses a second re-run of the same commit", async () => {
-  const db = database();
+  const db = await database();
   await insertQueuedItem(db, { id: "item" });
   const github = fakeGitHub();
   const journal: string[] = [];
@@ -91,7 +83,7 @@ test("the item records the agent's reason and refuses a second re-run of the sam
   expect(await rerun(db, github.client, journal, reason)).toContain("41545628595");
   expect(await rerun(db, github.client, journal, "again")).toBe(CI_ALREADY_RERUN);
   expect(github.posts).toEqual(["/repos/owner/repo/actions/runs/41545628595/rerun-failed-jobs"]);
-  expect(await listCiReruns(sqliteDb(db), "item")).toEqual([
+  expect(await listCiReruns(db, "item")).toEqual([
     { itemId: "item", head, runIds: [41545628595], reason, at: 1_000 },
   ]);
   expect(journal).toEqual([
@@ -100,21 +92,21 @@ test("the item records the agent's reason and refuses a second re-run of the sam
 });
 
 test("a 403 from GitHub answers with the permission message and leaves the item alone", async () => {
-  const db = database();
+  const db = await database();
   const before = await insertQueuedItem(db, { id: "item" });
   const journal: string[] = [];
   const answer = await rerun(db, fakeGitHub(403).client, journal, "flaky shard");
   expect(answer.startsWith(CI_RERUN_PERMISSION_MISSING)).toBe(true);
   expect(answer).toContain("with status 403");
-  expect(await listCiReruns(sqliteDb(db), "item")).toEqual([]);
+  expect(await listCiReruns(db, "item")).toEqual([]);
   expect(journal).toEqual([]);
-  const after = await getWorkItem(sqliteDb(db), "item");
+  const after = await getWorkItem(db, "item");
   expect(after?.state).toBe(before.state);
   expect(after?.version).toBe(before.version);
 });
 
 test("Paws's own re-run names Paws in the journal", async () => {
-  const db = database();
+  const db = await database();
   await insertQueuedItem(db, { id: "item" });
   const journal: string[] = [];
   await rerun(db, fakeGitHub().client, journal, "cancelled or timed-out CI job", "Paws");

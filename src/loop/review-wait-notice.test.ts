@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,35 +15,33 @@ import {
   getWorkItemSteps,
   insertQueuedItem,
   listOutbox,
-  migrate,
-  openDatabase,
-  sqliteDb,
 } from "../db";
 import type { GitHubBinding } from "../github";
 import { createFakeTracker } from "../linear";
 import { mergeQueueTurn } from "../merge";
 import { deliverLinearOutbox } from "./dispatch";
 import { Orchestrator } from "./orchestrator";
+import { seed } from "../../test/dialects";
+import { tempStore } from "../../test/pglite";
 
 const PULL_URL = "https://github.com/acme/app/pull/7";
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "paws-review-wait-"));
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const { db, close } = await tempStore();
   const clock = new FakeClock(1_000);
   const orchestrator = new Orchestrator({
-    store: sqliteDb(db),
+    store: db,
     clock,
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     pawsRoot: root,
   });
   await insertQueuedItem(db, { id: "ENG-7", sessionKey: "ses_1", now: clock.now() });
-  await beginImplementRun(sqliteDb(db), "ENG-7", clock.now());
-  await applyWorkItemEvent(sqliteDb(db), "ENG-7", "turn_ended");
-  await applyWorkItemEvent(sqliteDb(db), "ENG-7", "closeout_accepted");
-  await enqueueOutboxOnce(sqliteDb(db), {
+  await beginImplementRun(db, "ENG-7", clock.now());
+  await applyWorkItemEvent(db, "ENG-7", "turn_ended");
+  await applyWorkItemEvent(db, "ENG-7", "closeout_accepted");
+  await enqueueOutboxOnce(db, {
     target: "linear",
     op: "activity",
     orderingKey: "ses_1",
@@ -70,7 +69,7 @@ async function fixture() {
   delivery.setHandler(async (row) => {
     const failure = failures.shift();
     if (failure) throw failure;
-    await deliverLinearOutbox(row, tracker, async () => {}, undefined, sqliteDb(db));
+    await deliverLinearOutbox(row, tracker, async () => {}, undefined, db);
   });
   const caps = orchestrator["orderCapabilities"]("ENG-7");
   return {
@@ -84,7 +83,7 @@ async function fixture() {
     },
     wake: async (head: string) =>
       mergeQueueTurn(
-        { store: sqliteDb(db), item: (await getWorkItem(sqliteDb(db), "ENG-7"))!, caps },
+        { store: db, item: (await getWorkItem(db, "ENG-7"))!, caps },
         { owner: "acme", repo: "app" },
         github,
         { number: 7, url: PULL_URL, head },
@@ -96,13 +95,13 @@ async function fixture() {
       }
     },
     notices: async () =>
-      (await listOutbox(sqliteDb(db), "ses_1")).filter((row) =>
+      (await listOutbox(db, "ses_1")).filter((row) =>
         row.idempotencyKey.startsWith("merge-review:"),
       ),
     posted: () => tracker.progress.map((update) => update.body),
     cleanup: async () => {
       await orchestrator.shutdown();
-      db.close();
+      await close();
       await rm(root, { recursive: true, force: true });
     },
   };
@@ -165,13 +164,13 @@ test("changes requested and a new head each post their own notice, in order", as
 test("other progress after the pull request response stays quiet", async () => {
   const f = await fixture();
   try {
-    await sqliteDb(f.db).run(function* (q) {
+    await f.db.run(function* (q) {
       const item = (yield* getWorkItemSteps(q, "ENG-7"))!;
       return yield* f.caps.voice.thought(q, item, "Checking reviews.", "merge-thought:1");
     });
     await f.wake("h1");
     await f.deliver();
-    expect((await listOutbox(sqliteDb(f.db), "ses_1")).map((row) => row.idempotencyKey)).toEqual([
+    expect((await listOutbox(f.db, "ses_1")).map((row) => row.idempotencyKey)).toEqual([
       "pull-request-ready:ENG-7:0",
       "merge-review:ENG-7:0:required:h1",
     ]);
@@ -186,11 +185,13 @@ test("a cancelled item or a superseded generation hears no stale notice", async 
   try {
     await f.deliver();
     await f.wake("h1");
-    await advanceLinearSessionGeneration(sqliteDb(f.db), "ses_1");
+    await advanceLinearSessionGeneration(f.db, "ses_1");
     await f.deliver();
     expect(f.posted()).toEqual(["Opened #7."]);
 
-    f.db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", ["ENG-7"]);
+    await seed(f.db, (q) =>
+      q.orm.update(q.t.workItem).set({ cancelRequested: 1 }).where(eq(q.t.workItem.id, "ENG-7")),
+    );
     await f.wake("h2");
     expect((await f.notices()).map((row) => row.idempotencyKey)).toEqual([
       "merge-review:ENG-7:0:required:h1",

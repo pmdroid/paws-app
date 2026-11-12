@@ -3,15 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import {
-  beginImplementRun,
-  insertQueuedItem,
-  migrate,
-  openDatabase,
-  saveEvidence,
-  type EvidenceMediaType,
-  sqliteDb,
-} from "../db";
+import { beginImplementRun, insertQueuedItem, saveEvidence, type EvidenceMediaType } from "../db";
 import {
   createFakeGitData,
   storeEvidenceFiles,
@@ -20,6 +12,8 @@ import {
 } from "../github";
 import { EVIDENCE_INLINE_LIMITS } from "./artifacts";
 import { pullRequestScreenshots } from "./pull-screenshots";
+import { seed } from "../../test/dialects";
+import { tempStore } from "../../test/pglite";
 
 const NOW = 1_700_000_000_000;
 const HEAD = "a".repeat(40);
@@ -32,14 +26,13 @@ afterEach(() => {
 async function setup() {
   const root = mkdtempSync(path.join(tmpdir(), "paws-pull-screenshots-"));
   roots.push(root);
-  const db = openDatabase(":memory:");
-  migrate(db);
+  const db = (await tempStore()).db;
   const item = await insertQueuedItem(db, {
     id: "ENG-1129",
     sessionKey: "ses_1",
     title: "Screens",
   });
-  const { run } = await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
+  const { run } = await beginImplementRun(db, item.id, NOW - 10);
   let created = 0;
   const add = async (
     displayName: string,
@@ -49,7 +42,7 @@ async function setup() {
     const id = options.id ?? `ev-${++created}`;
     const bytes = new TextEncoder().encode(content);
     writeFileSync(path.join(root, id), bytes);
-    await saveEvidence(sqliteDb(db), {
+    await saveEvidence(db, {
       id,
       itemId: item.id,
       runId: run.id,
@@ -76,7 +69,7 @@ function publish(
     request: async (request) => git.respond(request) ?? { status: 404, body: null },
   };
   return pullRequestScreenshots({
-    db: sqliteDb(s.db),
+    db: s.db,
     itemId: s.itemId,
     storage: { root: s.root },
     owner: "acme",
@@ -174,17 +167,16 @@ test("videos, large images and rejected evidence are not uploaded, and only 20 i
   await s.add("Recording", "video", { mediaType: "video/webm" });
   await s.add("Huge", "huge", { sizeBytes: EVIDENCE_INLINE_LIMITS.image + 1 });
   await s.add("Rejected", "rejected", { id: "ev-rejected" });
-  s.db.run(
-    "INSERT INTO visual_review (question_id, item_id, check_id, evidence_ids, created_at, kind, outcome) VALUES (?,?,?,?,?,?,?)",
-    [
-      "q-1",
-      s.itemId,
-      "visual-proof",
-      JSON.stringify(["ev-rejected"]),
-      NOW,
-      "review",
-      "changes_requested",
-    ],
+  await seed(s.db, (q) =>
+    q.orm.insert(q.t.visualReview).values({
+      questionId: "q-1",
+      itemId: s.itemId,
+      checkId: "visual-proof",
+      evidenceIds: ["ev-rejected"],
+      createdAt: NOW,
+      kind: "review",
+      outcome: "changes_requested",
+    }),
   );
   for (let index = 0; index < 22; index++) await s.add(`Screen ${index}`, `screen ${index}`);
   const git = createFakeGitData();
