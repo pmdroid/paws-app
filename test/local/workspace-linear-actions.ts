@@ -7,8 +7,6 @@ import { request } from "node:https";
 import { startPaws } from "../../src/index";
 import { FakeClock, JOB_KIND } from "../../src/core";
 import {
-  migrate,
-  openDatabase,
   putWorkspaceUser,
   consumeWorkspaceBootstrap,
   syncWorkspaceMember,
@@ -24,7 +22,6 @@ import {
   recordLinearInstallation,
   listPendingLinearTurns,
   saveDependencySnapshot,
-  sqliteDb,
 } from "../../src/db";
 import {
   createWorkspaceAccess,
@@ -40,27 +37,27 @@ import {
 } from "../../src/linear";
 import { attachOrchestrator } from "../../src/loop";
 import { openQuestion, getQuestion } from "../../src/questions";
-import { answerQuestion } from "../questions";
+import { tempStore } from "../pglite";
+import { answerQuestionPg } from "../questions";
 
 type Observe = (name: string, passed: boolean, observed: unknown) => void;
 
 export async function probeWorkspaceLinearActions(root: string, observe: Observe) {
   mkdirSync(root, { recursive: true });
-  const db = openDatabase(join(root, "actions.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
   let now = Date.now();
-  const ownerId = await putWorkspaceUser(sqliteDb(db), {
+  const ownerId = await putWorkspaceUser(db, {
     id: "owner",
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  await consumeWorkspaceBootstrap(sqliteDb(db), {
+  await consumeWorkspaceBootstrap(db, {
     id: "workspace",
     organizationId: "org",
     name: "Workspace",
     userId: ownerId,
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   for (const [id, role, active, teams] of [
@@ -68,13 +65,13 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     ["member", "member", true, ["team"]],
     ["owner", "member", true, ["team"]],
   ] as const) {
-    await putWorkspaceUser(sqliteDb(db), {
+    await putWorkspaceUser(db, {
       id,
       linearUserId: id,
       name: id,
       email: `${id}@example.invalid`,
     });
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: "workspace",
       userId: id,
       active,
@@ -110,7 +107,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
   let delayed: { entered(): void; wait: Promise<void> } | undefined;
   let lookupFails = false;
   const access = createWorkspaceAccess({
-    store: sqliteDb(db),
+    store: db,
     publicUrl: "http://127.0.0.1",
     clientId: "client",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -135,8 +132,8 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     const id = `item-${++serial}`,
       sessionId = `session-${serial}`;
     const item = await insertQueuedItem(db, { id, sessionKey: sessionId, title: "Export rows" });
-    await ensureLinearSession(sqliteDb(db), { sessionId, issueId: id, now });
-    await recordLinearInstallation(sqliteDb(db), {
+    await ensureLinearSession(db, { sessionId, issueId: id, now });
+    await recordLinearInstallation(db, {
       sessionId,
       organizationId: "org",
       oauthClientId: "client",
@@ -144,9 +141,9 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       teamId: "team",
       observedAtMs: now,
     });
-    await beginImplementRun(sqliteDb(db), item.id, now - 10);
-    await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
-    const question = await openQuestion(sqliteDb(db), {
+    await beginImplementRun(db, item.id, now - 10);
+    await applyWorkItemEvent(db, item.id, "blocking_question");
+    const question = await openQuestion(db, {
       itemId: item.id,
       sessionId,
       body: "Include archived rows?",
@@ -176,7 +173,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
   }
   const clock = new FakeClock(now);
   const loop = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     pawsRoot: root,
@@ -186,27 +183,32 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     recheckLinearEvent: access.recheckLinearEvent,
   });
   const resumes = async () =>
-    (await listJobs(sqliteDb(db))).filter((j) => j.queue === JOB_KIND.resume).length;
-  const audits = () =>
-    db
-      .query<{ count: number }, []>(
-        "SELECT count(*) AS count FROM workspace_access_audit WHERE action='access.denied'",
+    (await listJobs(db)).filter((j) => j.queue === JOB_KIND.resume).length;
+  const audits = async () =>
+    (
+      await db.run((q) =>
+        q.all(
+          q.orm
+            .select()
+            .from(q.t.workspaceAccessAudit)
+            .where(eq(q.t.workspaceAccessAudit.action, "access.denied")),
+        ),
       )
-      .get()!.count;
+    ).length;
   try {
     for (const actor of ["inactive", "guest", "outside", "wrong-org", "wrong-user", null]) {
       const t = await task(actor),
-        before = audits();
+        before = await audits();
       await loop.onLinearEvent(t.event);
       observe(
         `Linear actor ${actor ?? "missing"} cannot answer or resume`,
-        (await getQuestion(sqliteDb(db), t.question.id))?.status === "open" &&
+        (await getQuestion(db, t.question.id))?.status === "open" &&
           (await resumes()) === 0 &&
-          audits() === before + 1,
+          (await audits()) === before + 1,
         {
-          question: (await getQuestion(sqliteDb(db), t.question.id))?.status,
+          question: (await getQuestion(db, t.question.id))?.status,
           resumes: await resumes(),
-          audits: audits() - before,
+          audits: (await audits()) - before,
         },
       );
     }
@@ -215,9 +217,9 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     await loop.onLinearEvent(outsideOwner.event);
     observe(
       "workspace ownership cannot bypass mapped Linear team membership",
-      (await getQuestion(sqliteDb(db), outsideOwner.question.id))?.status === "open" &&
+      (await getQuestion(db, outsideOwner.question.id))?.status === "open" &&
         (await resumes()) === 0,
-      { role: (await workspaceMember(sqliteDb(db), "workspace", "owner"))?.role },
+      { role: (await workspaceMember(db, "workspace", "owner"))?.role },
     );
     identities.get("owner")!.teamIds = ["team"];
     const positive = await task("new-member");
@@ -225,22 +227,22 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     await loop.onLinearEvent(positive.event);
     observe(
       "verified in-team Linear actor answers once without a Paws browser identity",
-      (await getQuestion(sqliteDb(db), positive.question.id))?.answeredBy === "new-member" &&
+      (await getQuestion(db, positive.question.id))?.answeredBy === "new-member" &&
         (await resumes()) === 1 &&
-        (await workspaceMember(sqliteDb(db), "workspace", "new-member")) === null,
+        (await workspaceMember(db, "workspace", "new-member")) === null,
       {
-        answer: (await getQuestion(sqliteDb(db), positive.question.id))?.answeredBy,
+        answer: (await getQuestion(db, positive.question.id))?.answeredBy,
         resumes: await resumes(),
       },
     );
     const stop = await task("inactive", "stop"),
-      beforeStop = audits();
+      beforeStop = await audits();
     await loop.onLinearEvent(stop.event);
     observe(
       "an inactive member's stop signal cannot cancel canonical work",
-      (await getQuestion(sqliteDb(db), stop.question.id))?.status === "open" &&
-        audits() === beforeStop + 1,
-      { question: (await getQuestion(sqliteDb(db), stop.question.id))?.status },
+      (await getQuestion(db, stop.question.id))?.status === "open" &&
+        (await audits()) === beforeStop + 1,
+      { question: (await getQuestion(db, stop.question.id))?.status },
     );
     const entered = Promise.withResolvers<void>(),
       release = Promise.withResolvers<void>();
@@ -249,7 +251,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       pending = loop.onLinearEvent(changed.event);
     await entered.promise;
     now++;
-    await syncWorkspaceMember(sqliteDb(db), {
+    await syncWorkspaceMember(db, {
       workspaceId: "workspace",
       userId: "member",
       active: false,
@@ -261,15 +263,14 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     await pending;
     observe(
       "membership demotion during verified actor lookup prevents answer",
-      (await getQuestion(sqliteDb(db), changed.question.id))?.status === "open" &&
-        (await resumes()) === 1,
+      (await getQuestion(db, changed.question.id))?.status === "open" && (await resumes()) === 1,
       {
-        question: (await getQuestion(sqliteDb(db), changed.question.id))?.status,
-        role: (await workspaceMember(sqliteDb(db), "workspace", "member"))?.role,
+        question: (await getQuestion(db, changed.question.id))?.status,
+        role: (await workspaceMember(db, "workspace", "member"))?.role,
       },
     );
     const unavailable = await task("new-member"),
-      beforeUnavailable = audits();
+      beforeUnavailable = await audits();
     lookupFails = true;
     let rejected = false;
     try {
@@ -281,20 +282,20 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     observe(
       "transient membership failure leaves the same answer retryable",
       rejected &&
-        (await getQuestion(sqliteDb(db), unavailable.question.id))?.status === "open" &&
-        audits() === beforeUnavailable,
+        (await getQuestion(db, unavailable.question.id))?.status === "open" &&
+        (await audits()) === beforeUnavailable,
       { rejected },
     );
     await loop.onLinearEvent(unavailable.event);
     observe(
       "repaired membership lookup accepts exact retry once",
-      (await getQuestion(sqliteDb(db), unavailable.question.id))?.status === "answered" &&
+      (await getQuestion(db, unavailable.question.id))?.status === "answered" &&
         (await resumes()) === 2,
       { resumes: await resumes() },
     );
     const removeOwnerTeam = async () => {
       now++;
-      await syncWorkspaceMember(sqliteDb(db), {
+      await syncWorkspaceMember(db, {
         workspaceId: "workspace",
         userId: "owner",
         active: true,
@@ -304,7 +305,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       });
     };
     const restoreOwnerTeam = async () =>
-      await syncWorkspaceMember(sqliteDb(db), {
+      await syncWorkspaceMember(db, {
         workspaceId: "workspace",
         userId: "owner",
         active: true,
@@ -315,7 +316,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     const queued = await task("owner");
     let calls = 0;
     const queueLoop = attachOrchestrator({
-      store: sqliteDb(db),
+      store: db,
       jobs: new JobLoop(db, clock),
       outbox: new OutboxDispatcher(db, clock),
       pawsRoot: root,
@@ -333,19 +334,19 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     observe(
       "queued execution rechecks stored membership after one Linear authorization",
       calls === 1 &&
-        (await getQuestion(sqliteDb(db), queued.question.id))?.status === "open" &&
+        (await getQuestion(db, queued.question.id))?.status === "open" &&
         (await resumes()) === 2 &&
-        (await listPendingLinearTurns(sqliteDb(db), queued.event.sessionId!)).length === 0,
+        (await listPendingLinearTurns(db, queued.event.sessionId!)).length === 0,
       {
         calls,
-        question: (await getQuestion(sqliteDb(db), queued.question.id))?.status,
+        question: (await getQuestion(db, queued.question.id))?.status,
         resumes: await resumes(),
       },
     );
     await queueLoop.shutdown();
     await restoreOwnerTeam();
     const followup = await task("owner");
-    await answerQuestion(db, followup.question.id, {
+    await answerQuestionPg(db, followup.question.id, {
       answer: "Earlier answer",
       answeredBy: "owner",
       eventKey: "earlier-answer",
@@ -353,7 +354,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     });
     let followupCalls = 0;
     const followupLoop = attachOrchestrator({
-      store: sqliteDb(db),
+      store: db,
       jobs: new JobLoop(db, clock),
       outbox: new OutboxDispatcher(db, clock),
       pawsRoot: root,
@@ -368,25 +369,34 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       recheckLinearEvent: access.recheckLinearEvent,
     });
     await followupLoop.onLinearEvent(followup.event);
-    const turn = db
-      .query<{ state: string }, [string]>("SELECT state FROM linear_turn WHERE event_key=?")
-      .get(followup.event.dedupeKey);
+    const turn = await db.run((q) =>
+      q.one(
+        q.orm
+          .select({ state: q.t.linearTurn.state })
+          .from(q.t.linearTurn)
+          .where(eq(q.t.linearTurn.eventKey, followup.event.dedupeKey)),
+      ),
+    );
     observe(
       "a follow-up revoked before queued execution cannot survive as pending steering",
       followupCalls === 1 &&
         turn?.state === "cancelled" &&
-        (await listPendingLinearTurns(sqliteDb(db), followup.event.sessionId!)).length === 0,
+        (await listPendingLinearTurns(db, followup.event.sessionId!)).length === 0,
       { calls: followupCalls, turn },
     );
     await followupLoop.shutdown();
   } finally {
     writeFileSync(
       join(root, "audit.json"),
-      JSON.stringify(db.query("SELECT * FROM workspace_access_audit").all(), null, 2),
+      JSON.stringify(
+        await db.run((q) => q.all(q.orm.select().from(q.t.workspaceAccessAudit))),
+        null,
+        2,
+      ),
     );
     await loop.shutdown();
     await access.stop();
-    db.close();
+    await close();
   }
   await probeWorkspaceLinearHttps(join(root, "https"), observe);
 }
