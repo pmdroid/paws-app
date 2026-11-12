@@ -172,7 +172,7 @@ async function capture(page: Page, name: string, selector: string, width: number
 }
 
 try {
-  for (const width of [1440, 375]) {
+  for (const width of [1440, 390, 375]) {
     stage = "before";
     const page = await browser.newPage({ viewport: { width, height: 1000 } });
     const errors: string[] = [];
@@ -181,16 +181,17 @@ try {
     await capture(page, "1-runner", block, width);
     const list = async () => {
       await page.goto(`http://127.0.0.1:${server.port}/dashboard/runners`);
+      if (stage === "before") await capture(page, "2-list", "main", width);
       await page.locator("[data-agents-open]").click();
     };
     await list();
-    await capture(page, "2-before", "#agents-dialog", width);
+    await capture(page, "3-before", "#agents-dialog", width);
     await page.getByRole("button", { name: "Update all runners" }).click();
     await page.getByText("Sent 1 coding agent update to your runners.").waitFor();
-    await capture(page, "3-installing", "#agents-dialog", width);
+    await capture(page, "4-installing", "#agents-dialog", width);
     for (stage of ["waiting", "failed", "after"] as const) {
       await list();
-      await capture(page, `4-${stage}`, "#agents-dialog", width);
+      await capture(page, `5-${stage}`, "#agents-dialog", width);
     }
     await page.keyboard.press("Escape");
     await page.locator("#agents-dialog").waitFor({ state: "detached" });
