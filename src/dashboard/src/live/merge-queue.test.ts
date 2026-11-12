@@ -102,16 +102,7 @@ async function queued(db: Db, id: string, session: string, at: number) {
     },
     at,
   );
-  await appendCloseoutOutput(
-    db,
-    item.id,
-    identity,
-    "test",
-    "stderr",
-    "check output",
-    false,
-    at,
-  );
+  await appendCloseoutOutput(db, item.id, identity, "test", "stderr", "check output", false, at);
   await finishCloseoutProgress(db, item.id, identity, "accepted", at);
 }
 

@@ -108,7 +108,8 @@ describe("issue resources", () => {
     await beginImplementRun(db, "OLD", NOW - 7_200_000);
     await seed(
       db,
-      (q) => q.orm.update(q.t.workItem).set({ state: "cancelled" }).where(eq(q.t.workItem.id, "OLD")),
+      (q) =>
+        q.orm.update(q.t.workItem).set({ state: "cancelled" }).where(eq(q.t.workItem.id, "OLD")),
       (q) =>
         q.orm
           .update(q.t.run)
