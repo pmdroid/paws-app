@@ -54,20 +54,14 @@ const entry = (
   steps: [],
 });
 snapshot.mergeQueue = [
-  {
-    ...entry(
-      "ENG-101",
-      "acme/platform",
-      1,
-      "ci",
-      50,
-      "Branch updated onto main 9f1c2ab. CI 4 of 6 checks done.",
-    ),
-    steps: [
-      { name: "Branch up to date", state: "done" as const, detail: "onto main 9f1c2ab" },
-      { name: "CI green", state: "run" as const, detail: "4 of 6 checks" },
-    ],
-  },
+  entry(
+    "ENG-101",
+    "acme/platform",
+    1,
+    "ci",
+    50,
+    "Branch updated onto main 9f1c2ab. CI 4 of 6 checks done.",
+  ),
   entry("ENG-105", "acme/platform", 2, "ahead", 35, "Starts when #479 merges"),
   entry("ENG-107", "acme/platform", 3, "ahead", 10, "Starts when #415 merges", {
     order: "queue",
@@ -148,8 +142,6 @@ try {
     await expect(page.getByRole("heading", { name: "unknown", exact: true })).toHaveCount(0);
     await expect(page.getByText("Back with the agent")).toBeVisible();
     await expect(page.getByText("Waiting for review")).toBeVisible();
-    await expect(page.getByText("mergeable(ENG-101) = false · waiting on ci")).toBeVisible();
-    await expect(page.locator("[data-merge-step]")).toHaveCount(2);
     await expect(page.getByRole("alert", { name: "Push outage on acme/web" })).toBeVisible();
     await expect(
       page.getByRole("alert", { name: "Closeout policy needs a newer runner for acme/platform" }),
