@@ -175,20 +175,6 @@ html.dark
   appearance: none;
 }
 
-.workspace-identities {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-.workspace-identities > h3 {
-  font-size: 1rem;
-  font-weight: var(--font-weight-heading);
-}
-.workspace-identities > h3:not(:first-child) {
-  margin-top: 2rem;
-}
-
 /* ANSI SGR output in Closeout check logs (src/dashboard/src/client/ansi.ts). */
 .ansi-bold {
   font-weight: 700;

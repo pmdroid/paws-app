@@ -42,7 +42,7 @@ describe("repository checkout section", () => {
   test("is not on the Agents page", () => {
     expect(renderSettingsPage("agents")).not.toContain("checkout-settings");
     expect(renderSettingsPage("workspace")).toContain(
-      "Manage repository access, what agents see of each repository, and member account links.",
+      "Manage repository access and what agents see of each repository.",
     );
   });
 

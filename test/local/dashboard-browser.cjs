@@ -160,7 +160,6 @@ async function inspect(page, name) {
       await account.getByRole("button", { name: "Sign out" }).waitFor();
       await account.locator('#tabbar a[href="#/settings"]').click();
       assert.equal(await account.locator("#workspace-members").count(), 0);
-      assert.equal(await account.locator(".workspace-identities").count(), 0);
       observe("Member sign-in excludes admin controls", "member");
       await workspace.close();
     }

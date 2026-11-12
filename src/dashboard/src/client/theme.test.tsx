@@ -13,7 +13,6 @@ import { themedMarkup } from "./theme";
 import { statePill } from "./format";
 import { render } from "./render";
 import { checkListKey } from "./closeout";
-import { identityLinkMarkup } from "./workspace-identities";
 import { linearConnectionMarkup } from "./workspace";
 import { runnerDetailMarkup, type Runner } from "./runners";
 
@@ -146,20 +145,7 @@ test("run checks, transcripts, and stop controls keep their columns aligned", ()
   expect(details).toContain("self-start");
 });
 
-test("account links and the Linear connection line up in columns", () => {
-  const link = identityLinkMarkup({
-    id: "identity-jonas-github",
-    label: "GitHub username",
-    value: "jonas",
-    maxLength: 39,
-    status: "linked · manual",
-    disabled: false,
-  });
-  expect(link).toContain('for="identity-jonas-github"');
-  expect(link.indexOf("GitHub username")).toBeLessThan(link.indexOf("<input"));
-  const linked = markup(link);
-  expect(classNames(linked, "identity-link")[0]).toContain("grid-cols-[minmax(0,1fr)_9.5rem_auto]");
-  expect(classNames(linked, "identity-link")[0]).toContain("[&amp;_label]:col-span-full");
+test("the Linear connection lines up in columns", () => {
   const linear = linearConnectionMarkup("Acme");
   expect(linear).toContain('class="settings-account"');
   expect(linear).toContain('class="row"');

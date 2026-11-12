@@ -1,5 +1,4 @@
 import { eq, sql } from "drizzle-orm";
-import { writeSecretFile } from "../../src/credentials";
 import { createHmac } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { get, request } from "node:https";
@@ -9,7 +8,6 @@ import {
   type WorkspaceMember,
   putWorkspaceUser,
   workspaceMember,
-  workspaceIdentityLinks,
   type PgDb,
 } from "../../src/db";
 import type { HealthReport } from "../../src/server";
@@ -65,18 +63,6 @@ if (mode === "public") {
 }
 const readiness = Promise.withResolvers<void>();
 if (mode === "pending" || mode === "pending-stop") runtimeLinear.installation = readiness.promise;
-if (mode === "public")
-  writeSecretFile(
-    join(source.PAWS_HOME!, "secrets", "slack-oauth.json"),
-    JSON.stringify({
-      accessToken: "fixture-slack-identity-token",
-      refreshToken: null,
-      expiresAtMs: null,
-      scope: "users:read.email",
-      teamId: "T123",
-      botUserId: "U123",
-    }),
-  );
 await migratedHome(source.PAWS_HOME!);
 const paws = await startPaws(source, {
   healthStatfs: () => ({ bavail: 100 * 1024 ** 3, blocks: 200 * 1024 ** 3, bsize: 1 }),
@@ -345,18 +331,6 @@ try {
       "manual public startup hides route error details and recovers after a database fault",
       failedRoute.status === 500 && !detailsVisible && recovered.status === 200,
       { failed: failedRoute.status, detailsVisible, recovered: recovered.status },
-    );
-    const link = (await workspaceIdentityLinks(paws.store, workspace.id)).find(
-      (value) => value.userId === userId && value.provider === "slack",
-    );
-    observe(
-      "production startup resolves installed Slack identity after browser sign-in",
-      runtimeLinear.slackReads === 1 &&
-        link?.externalId === "U456" &&
-        link.installationId === "T123" &&
-        link.method === "email" &&
-        link.status === "linked",
-      { reads: runtimeLinear.slackReads, link },
     );
     runtimeLinear.active = false;
     const payload = permissionPayload();

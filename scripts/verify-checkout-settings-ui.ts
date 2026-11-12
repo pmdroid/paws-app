@@ -26,8 +26,6 @@ const server = Bun.serve({
         csrfToken: "ui-fixture",
         workspaces: [{ id: "ws-1", name: "Acme", role: "admin" }],
       });
-    if (path === "/api/workspaces/identity-links")
-      return Response.json({ slackTeamId: null, links: [], members: [] });
     if (path === "/api/settings/skills")
       return Response.json({
         skills: [],
@@ -88,9 +86,7 @@ try {
 
       await page.goto(`http://127.0.0.1:${server.port}/dashboard/settings/workspace`);
       await expect(
-        page.getByText(
-          "Manage repository access, what agents see of each repository, and member account links.",
-        ),
+        page.getByText("Manage repository access and what agents see of each repository."),
       ).toBeVisible();
       const section = page.locator("#checkout-settings");
       await expect(section.getByRole("heading", { name: "Repository checkout" })).toBeVisible();
@@ -98,12 +94,7 @@ try {
       const headings = await page
         .locator('#workspace-access [data-settings-page="workspace"]:not([hidden]) h2')
         .allTextContents();
-      expect(headings).toEqual([
-        "Members",
-        "Repositories",
-        "Repository checkout",
-        "Member account links",
-      ]);
+      expect(headings).toEqual(["Members", "Repositories", "Repository checkout"]);
       await expect
         .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
         .toBe(true);

@@ -48,8 +48,7 @@ export const SETTINGS_PAGES = [
   {
     id: "workspace",
     name: "Workspace access",
-    description:
-      "Manage repository access, what agents see of each repository, and member account links.",
+    description: "Manage repository access and what agents see of each repository.",
     when: "When you add a repository, or must hide a folder from agents.",
   },
   {

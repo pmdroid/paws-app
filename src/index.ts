@@ -27,7 +27,7 @@ import {
   type ExeDev,
   type ExeDevBootstrap,
 } from "./provisioning";
-import { createSlackIdentityReads, loginSlack, readSlackApp } from "./slack";
+import { loginSlack, readSlackApp } from "./slack";
 import {
   collectProbes,
   keepCandidates,
@@ -878,7 +878,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             return undefined;
           }
         })(),
-        slackIdentities: await createSlackIdentityReads({ home: paths.home, db: store }),
         store,
         publicUrl: runtime.publicUrl!,
         clientId: runtime.linearClientId!,

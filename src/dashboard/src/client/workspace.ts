@@ -1,7 +1,6 @@
 import { journalCaught } from "../journal";
 import type { SettingsPage } from "./settings-pages";
 import { renderMarkup } from "./theme";
-import { initializeWorkspaceIdentities } from "./workspace-identities";
 import { initializeWorkspaceAudit } from "./workspace-audit";
 import { initializeWorkspaceGitHub } from "./workspace-github";
 import { initializeWorkspaceAttribution } from "./workspace-attribution";
@@ -190,7 +189,6 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
   initializeWorkspaceAttribution(root, session.csrfToken);
   initializeWorkspaceGitHub(root, session.csrfToken, session.role === "admin");
   if (session.role === "admin") {
-    initializeWorkspaceIdentities(root, session.csrfToken);
     initializeWorkspaceAudit(root);
   }
   showWorkspaceSettingsPage(page());
