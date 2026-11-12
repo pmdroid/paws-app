@@ -219,6 +219,14 @@ function replace(node: DOMNode): ReactElement | undefined {
     );
   }
   if (name === "h1" && has("sr-only")) return styled("sr-only");
+  if (name === "h1" && has("issue-title")) return styled("text-xl font-semibold tracking-tight");
+  if (has("timeline-dot"))
+    return styled(
+      cn(
+        "bg-current",
+        stateColor((...names) => names.includes(attribs["data-state"] ?? "")),
+      ),
+    );
   if (/^h[1-6]$/.test(name))
     return styled(
       name === "h1"

@@ -184,7 +184,7 @@ describe("visual review on the run page", () => {
       "wait Done",
     ]);
     expect(html).toContain('class="run-stepper journey-stepper with-review"');
-    expect(html).toContain('<span class="st awaiting_input">Waiting for visual review</span>');
+    expect(html).toContain('<span class="st awaiting_input">awaiting_input</span>');
     expect(html).toContain("Waiting for Ada Reviewer or the project lead · round 1");
     expect(html).toContain(`href="${LINK}"`);
     expect(html).toContain("Answer in Linear");
