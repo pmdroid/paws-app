@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pawsPaths } from "../src/config";
 import { systemClock } from "../src/core";
 import {
   JobLoop,
@@ -13,15 +14,14 @@ import {
   getConversation,
   getWorkItem,
   insertQueuedItem,
-  migrate,
-  openDatabase,
+  openPawsStore,
   type WorkItemRecord,
-  sqliteDb,
 } from "../src/db";
 import { createFakeTracker } from "../src/linear";
 import { attachOrchestrator, type Orchestrator } from "../src/loop";
 import { findOpenQuestion } from "../src/questions";
-import { answerQuestion } from "./questions";
+import { migratedHome } from "./helpers";
+import { answerQuestionPg as answerQuestion } from "./questions";
 
 type PreflightRunner = { runItem(item: WorkItemRecord, handoff?: string): Promise<void> };
 
@@ -32,12 +32,14 @@ test.each(["implementer", "reviewer"] as const)(
     const seed = join(root, "seed");
     const bare = join(root, "origin.git");
     const pawsRoot = join(root, "paws");
-    const databasePath = join(root, "paws.db");
     const families = join(root, "families.jsonl");
     const writes = join(root, "writes");
     const script = join(root, "preflight.ts");
     const git = (...args: string[]) => execFileSync("git", args, { stdio: "pipe" });
-    let db = openDatabase(databasePath);
+    const reopen = async () =>
+      openPawsStore({ url: null, pgliteDir: pawsPaths(await migratedHome(root)).pgliteDir });
+    let database = await reopen();
+    let db = database.store;
     let orchestrator: Orchestrator | undefined;
     let launches = 0;
     try {
@@ -76,17 +78,16 @@ for await (const line of createInterface({ input: process.stdin })) {
 }
 `,
       );
-      migrate(db);
       const item = await insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-      await beginImplementRun(sqliteDb(db), item.id, 1);
-      await bindWorkItemRepository(sqliteDb(db), item.id, {
+      await beginImplementRun(db, item.id, 1);
+      await bindWorkItemRepository(db, item.id, {
         owner: "acme",
         repo: "app",
         remoteUrl: bare,
       });
       const create = () =>
         attachOrchestrator({
-          store: sqliteDb(db),
+          store: db,
           jobs: new JobLoop(db, systemClock),
           outbox: new OutboxDispatcher(db, systemClock),
           pawsRoot,
@@ -105,33 +106,32 @@ for await (const line of createInterface({ input: process.stdin })) {
           },
         });
       orchestrator = create();
-      await (orchestrator as unknown as PreflightRunner).runItem(
-        (await getWorkItem(sqliteDb(db), item.id))!,
-      );
-      const question = await findOpenQuestion(sqliteDb(db), "session");
+      await (orchestrator as unknown as PreflightRunner).runItem((await getWorkItem(db, item.id))!);
+      const question = await findOpenQuestion(db, "session");
       expect(question).not.toBeNull();
-      expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("awaiting_input");
+      expect((await getWorkItem(db, item.id))?.state).toBe("awaiting_input");
       const before = existsSync(writes) ? readFileSync(writes, "utf8").length : 0;
       for (let i = 0; i < 100; i++) {
         if (existsSync(writes) && readFileSync(writes, "utf8").length > before) break;
         await Bun.sleep(5);
       }
       expect(readFileSync(writes, "utf8").length).toBeGreaterThan(before);
-      expect((await getConversation(sqliteDb(db), item.id)).blocked).toBe(true);
+      expect((await getConversation(db, item.id)).blocked).toBe(true);
       await expect(orchestrator.shutdown()).rejects.toThrow("cleanup could not be verified");
-      db.close();
-      db = openDatabase(databasePath);
-      expect((await getConversation(sqliteDb(db), item.id)).blocked).toBe(true);
+      await database.close();
+      database = await reopen();
+      db = database.store;
+      expect((await getConversation(db, item.id)).blocked).toBe(true);
       await answerQuestion(db, question!.id, { answer: "Retry", answeredBy: "human" });
-      await applyWorkItemEvent(sqliteDb(db), item.id, "answer_received");
+      await applyWorkItemEvent(db, item.id, "answer_received");
       orchestrator = create();
       const priorLaunches = launches;
       await (orchestrator as unknown as PreflightRunner).runItem(
-        (await getWorkItem(sqliteDb(db), item.id))!,
+        (await getWorkItem(db, item.id))!,
         "Retry",
       );
       expect(launches).toBe(priorLaunches);
-      expect((await getConversation(sqliteDb(db), item.id)).blocked).toBe(true);
+      expect((await getConversation(db, item.id)).blocked).toBe(true);
       expect(readFileSync(families, "utf8").trim().split("\n")).toHaveLength(1);
       await expect(orchestrator.shutdown()).rejects.toThrow("cleanup could not be verified");
     } finally {
@@ -146,7 +146,7 @@ for await (const line of createInterface({ input: process.stdin })) {
         }
       }
       await orchestrator?.shutdown().catch(() => {});
-      db.close();
+      await database.close();
       rmSync(root, { recursive: true, force: true });
     }
   },

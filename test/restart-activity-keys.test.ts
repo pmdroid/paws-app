@@ -1,6 +1,5 @@
 import path from "node:path";
 import { expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
 import {
   runAgent,
   type AcpEvent,
@@ -8,22 +7,23 @@ import {
   type RunAgentOptions,
   type RunAgentResult,
 } from "../src/acp";
+import { pawsPaths } from "../src/config";
 import { systemClock } from "../src/core";
 import {
   JobLoop,
   OutboxDispatcher,
   listOutbox,
   listWorkItems,
-  migrate,
-  openDatabase,
+  openPawsStore,
   prepareShutdown,
   recoverOnStartup,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
 import { emptyReview, repoLayout } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
+import { migratedHome } from "./helpers";
 import { writeFileSync } from "node:fs";
 
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -32,9 +32,11 @@ type Update = { text: string; origin?: AcpEventOrigin };
 
 test("updates from a run that Paws resumes after a restart all land in the outbox once", async () => {
   const layout = await repoLayout("paws-restart-activity-");
-  const file = path.join(layout.pawsRoot, "paws.db");
-  let db = openDatabase(file);
-  migrate(db);
+  await migratedHome(layout.pawsRoot);
+  const reopen = () =>
+    openPawsStore({ url: null, pgliteDir: pawsPaths(layout.pawsRoot).pgliteDir });
+  let opened = await reopen();
+  let db = opened.store;
   const tracker = createFakeTracker([
     {
       linearIssueId: "issue",
@@ -52,12 +54,12 @@ test("updates from a run that Paws resumes after a restart all land in the outbo
   let turn: Update[] = [];
   let sent = 0;
   let sequence = 0;
-  const open = (database: Database) => {
+  const open = (database: Db) => {
     // The stopped process leaves its job leased. A short lease lets the next process claim it soon.
     const jobs = new JobLoop(database, systemClock, { leaseMs: 1_000 });
     const outbox = new OutboxDispatcher(database, systemClock);
     const orchestrator = attachOrchestrator({
-      store: sqliteDb(database),
+      store: database,
       admission: workspaceAdmission(database),
       jobs,
       outbox,
@@ -124,13 +126,14 @@ test("updates from a run that Paws resumes after a restart all land in the outbo
     await paws.orchestrator.onLinearEvent(createdEvent());
     await until(paws, 3);
     expect(sent).toBe(3);
-    const runId = (await listWorkItems(sqliteDb(db)))[0]!.currentRunId!;
+    const runId = (await listWorkItems(db))[0]!.currentRunId!;
 
     await paws.orchestrator.shutdown();
-    await prepareShutdown(sqliteDb(db));
-    db.close();
-    db = openDatabase(file);
-    await recoverOnStartup(sqliteDb(db), Date.now() - 60_000);
+    await prepareShutdown(db);
+    await opened.close();
+    opened = await reopen();
+    db = opened.store;
+    await recoverOnStartup(db, Date.now() - 60_000);
     paws = open(db);
     // The runner sends the event that was in flight again, then goes on.
     turn = [
@@ -141,9 +144,9 @@ test("updates from a run that Paws resumes after a restart all land in the outbo
     ];
     await until(paws, 7);
     expect(sent).toBe(7);
-    expect((await listWorkItems(sqliteDb(db)))[0]!.currentRunId).toBe(runId);
+    expect((await listWorkItems(db))[0]!.currentRunId).toBe(runId);
 
-    const bodies = (await listOutbox(sqliteDb(db)))
+    const bodies = (await listOutbox(db))
       .filter((row) => row.idempotencyKey.startsWith(`${runId}:acp:`))
       .map((row) => (row.payload as { body: string }).body);
     expect(bodies).toEqual([
@@ -156,7 +159,7 @@ test("updates from a run that Paws resumes after a restart all land in the outbo
     ]);
   } finally {
     await paws.orchestrator.shutdown().catch(() => undefined);
-    db.close();
+    await opened.close();
     await layout.cleanup();
   }
 }, 90_000);
