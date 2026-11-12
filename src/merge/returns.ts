@@ -141,6 +141,12 @@ function* returnToAgentSteps(q: Q, input: MergeReturn): Steps<{ armed: boolean }
     body: input.handoff,
     jobKey,
     now: input.now,
+    fix: {
+      triggers: input.failedChecks
+        ? { checks: input.failedChecks.map(({ name, url }) => ({ name, url })) }
+        : {},
+      ...(input.conflict ? { headBefore: input.conflict.head } : {}),
+    },
   };
   const restarted = (yield* (input.restart ?? restartSteps)(q, current, handoff)) ?? {
     id: null,

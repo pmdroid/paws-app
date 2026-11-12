@@ -8,7 +8,9 @@ import {
   getWorkItem,
   getWorkItemSteps,
   insertQueuedItem,
+  listFixRecords,
   listJobs,
+  markCloseoutAccepted,
   migrate,
   openDatabase,
   recordRebaseReturnSteps,
@@ -50,6 +52,41 @@ async function sendBack(db: Awaited<ReturnType<typeof queued>>, limit = 3) {
 }
 
 describe("merge returns", () => {
+  test("a CI return opens a fix round naming the failing check, and acceptance closes it fixed", async () => {
+    const db = await queued();
+    const store = sqliteDb(db);
+    expect(
+      await returnToAgent(store, {
+        itemId: "eng-1",
+        reason: "ci-failed",
+        admit: () => syncSteps(() => true),
+        handoff: "fix ci",
+        now: 2,
+        record: () => syncSteps(() => undefined),
+        announce: () => syncSteps(() => undefined),
+        failedChecks: [{ name: "test", url: "https://ci.example/runs/1", logTail: "boom" }],
+      }),
+    ).toBe(true);
+    const [opened, ...rest] = await listFixRecords(store);
+    expect(rest).toEqual([]);
+    expect(opened).toMatchObject({
+      itemId: "eng-1",
+      reason: "ci",
+      round: 1,
+      triggers: { checks: [{ name: "test", url: "https://ci.example/runs/1" }] },
+      startedAt: 2,
+      headBefore: "h",
+      outcome: null,
+    });
+    await markCloseoutAccepted(store, "eng-1", "h2", 10);
+    expect((await listFixRecords(store))[0]).toMatchObject({
+      outcome: "fixed",
+      headAfter: "h2",
+      endedAt: 10,
+      durationMs: 8,
+    });
+  });
+
   test("a return sends the item back to the agent with a resume job and counts it", async () => {
     const db = await queued();
     const { sent, announced } = await sendBack(db);

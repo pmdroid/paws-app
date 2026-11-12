@@ -203,6 +203,9 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   api("POST", "/api/blocker-checks", "preserved", "src/intake", {
     sample: "/api/blocker-checks",
   }),
+  api("GET", "/api/fix-records", "preserved", "src/server", {
+    sample: "/api/fix-records?reason=ci",
+  }),
   api("GET POST", "/api/findings", "preserved", "src/dashboard", { sample: "/api/findings" }),
   api("GET POST", "/api/finding-groups", "preserved", "src/dashboard", {
     sample: "/api/finding-groups",
