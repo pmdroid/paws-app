@@ -1,8 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { linearBudgetStore, migrate, openDatabase, postgresDb, sqliteDb, type Db } from "../src/db";
+import { linearBudgetStore, postgresDb, type Db } from "../src/db";
 import { pgliteDb } from "./pglite";
 import { createLinearClient, createLinearLedger, LinearRateLimitError } from "../src/linear";
 
@@ -26,7 +23,6 @@ function headers({ remaining, reset }: Seen): Record<string, string> {
   };
 }
 
-type Dialect = Db["dialect"];
 type Shared = { connect(): Db };
 
 const closing: (() => Promise<void> | void)[] = [];
@@ -37,25 +33,10 @@ afterEach(async () => {
   for (const close of closing.splice(0)) await close();
 });
 
-async function acmeDatabase(dialect: Dialect): Promise<Shared> {
-  if (dialect === "postgres") {
-    const pg = await pgliteDb();
-    closing.push(() => pg.$client.close());
-    return { connect: () => postgresDb(pg) };
-  }
-  const dir = mkdtempSync(join(tmpdir(), "paws-acme-budget-"));
-  closing.push(() => rmSync(dir, { recursive: true, force: true }));
-  const path = join(dir, "paws.sqlite");
-  const setup = openDatabase(path);
-  migrate(setup);
-  setup.close();
-  return {
-    connect() {
-      const database = openDatabase(path);
-      closing.unshift(() => database.close());
-      return sqliteDb(database);
-    },
-  };
+async function acmeDatabase(): Promise<Shared> {
+  const pg = await pgliteDb();
+  closing.push(() => pg.$client.close());
+  return { connect: () => postgresDb(pg) };
 }
 
 function instance(
@@ -94,10 +75,10 @@ const ask = (client: { query(query: string): Promise<unknown> }) =>
     (error: unknown) => (error instanceof LinearRateLimitError ? "held" : "failed"),
   );
 
-for (const dialect of ["sqlite", "postgres"] as const)
+for (const dialect of ["postgres"] as const)
   describe(`shared Linear request budget on ${dialect}`, () => {
     test("two instances together stay within one budget in a burst", async () => {
-      const path = await acmeDatabase(dialect);
+      const path = await acmeDatabase();
       const now = () => START;
       const web = instance(path, now);
       const worker = instance(path, now);
@@ -118,7 +99,7 @@ for (const dialect of ["sqlite", "postgres"] as const)
     });
 
     test("a new window lets both instances spend again", async () => {
-      const path = await acmeDatabase(dialect);
+      const path = await acmeDatabase();
       let clock = START;
       const web = instance(path, () => clock);
       const worker = instance(path, () => clock);
@@ -132,7 +113,7 @@ for (const dialect of ["sqlite", "postgres"] as const)
     });
 
     test("a hold set by one instance is honoured by the other", async () => {
-      const path = await acmeDatabase(dialect);
+      const path = await acmeDatabase();
       let clock = START;
       let rateLimited = true;
       const web = instance(
@@ -161,7 +142,7 @@ for (const dialect of ["sqlite", "postgres"] as const)
     });
 
     test("a replica that has not heard from Linear yet spends within the learned cap", async () => {
-      const path = await acmeDatabase(dialect);
+      const path = await acmeDatabase();
       const now = () => START;
       const web = instance(path, now);
       expect(await ask(web.client)).toBe("sent");
@@ -176,7 +157,7 @@ for (const dialect of ["sqlite", "postgres"] as const)
     });
 
     test("the shared window ends at Linear's reset, not an hour after the first request", async () => {
-      const path = await acmeDatabase(dialect);
+      const path = await acmeDatabase();
       let clock = START;
       const reset = START + 10 * 60_000;
       const web = instance(
@@ -200,7 +181,7 @@ for (const dialect of ["sqlite", "postgres"] as const)
     });
 
     test("a late response from a window that already ended does not reset the shared count", async () => {
-      const path = await acmeDatabase(dialect);
+      const path = await acmeDatabase();
       let stale = false;
       const now = () => START;
       const web = instance(
@@ -220,7 +201,7 @@ for (const dialect of ["sqlite", "postgres"] as const)
     });
 
     test("a reset that moves with each response follows Linear's count instead of keeping old spending", async () => {
-      const path = await acmeDatabase(dialect);
+      const path = await acmeDatabase();
       let responses = 0;
       let clock = START;
       const moving = () => ({ remaining: 90, reset: clock + 3_600_000 + ++responses });
@@ -254,7 +235,7 @@ for (const dialect of ["sqlite", "postgres"] as const)
     });
 
     test("requests still in flight count when a response moves the window or arrives late", async () => {
-      const path = await acmeDatabase(dialect);
+      const path = await acmeDatabase();
       const now = () => START;
       let answer = () => {};
       const gate = new Promise<void>((resolve) => (answer = resolve));

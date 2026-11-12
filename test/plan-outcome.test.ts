@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { git } from "../src/acp";
@@ -10,15 +11,14 @@ import {
   getTaskMode,
   getWorkItem,
   listOutbox,
-  migrate,
-  openDatabase,
-  sqliteDb,
+  type Db,
 } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator, parsePlanResult, planDecision, type AgentLaunch } from "../src/loop";
 import { findOpenQuestion } from "../src/questions";
 import { workspaceAdmission } from "./fake-workspace";
 import { tempHome } from "./helpers";
+import { tempStore } from "./pglite";
 
 const drafts: SubIssueDraft[] = [
   {
@@ -75,6 +75,13 @@ test("a plan turn's message yields its summary and validated drafts", () => {
     expect([reply, planDecision(reply, 3)]).toEqual([reply, decision]);
 });
 
+async function onlyItem(db: Db): Promise<string> {
+  const [item] = await db.run((q) =>
+    q.all(q.orm.select({ id: q.t.workItem.id }).from(q.t.workItem)),
+  );
+  return item!.id;
+}
+
 async function setupPlan() {
   const home = tempHome();
   const root = join(home, "paws");
@@ -94,8 +101,7 @@ async function setupPlan() {
     "-m",
     "Seed",
   ]);
-  const db = openDatabase(join(root, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const tracker = createFakeTracker([
     {
       linearIssueId: "parent",
@@ -150,7 +156,7 @@ async function setupPlan() {
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -182,7 +188,7 @@ async function setupPlan() {
   };
   let at = Date.now();
   const reply = async (key: string, body: string) => {
-    at = Math.max(at + 1, ((await findOpenQuestion(sqliteDb(db), "session"))?.createdAt ?? 0) + 1);
+    at = Math.max(at + 1, ((await findOpenQuestion(db, "session"))?.createdAt ?? 0) + 1);
     return orchestrator.onLinearEvent({
       ...created,
       dedupeKey: key,
@@ -196,6 +202,7 @@ async function setupPlan() {
   };
   return {
     db,
+    close,
     home,
     source,
     tracker,
@@ -212,6 +219,7 @@ async function setupPlan() {
 test("a planning request proposes sub-issues, takes an edit, and files them once on Create", async () => {
   const {
     db,
+    close,
     home,
     source,
     tracker,
@@ -225,13 +233,13 @@ test("a planning request proposes sub-issues, takes an edit, and files them once
   } = await setupPlan();
   try {
     await orchestrator.onLinearEvent(created);
-    const itemId = db.query<{ id: string }, []>("SELECT id FROM work_item").get()!.id;
+    const itemId = await onlyItem(db);
     await jobs.tick();
-    expect(await getTaskMode(sqliteDb(db), itemId)).toBe("plan");
+    expect(await getTaskMode(db, itemId)).toBe("plan");
 
     // The proposal arrives as one select elicitation, and the run wrote nothing.
-    expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
-    const first = (await findOpenQuestion(sqliteDb(db), "session"))!;
+    expect((await getWorkItem(db, itemId))?.state).toBe("awaiting_input");
+    const first = (await findOpenQuestion(db, "session"))!;
     expect(first).toMatchObject({
       kind: "plan-approval",
       options: ["Create 3 sub-issues", "Edit", "Discard"],
@@ -239,7 +247,7 @@ test("a planning request proposes sub-issues, takes an edit, and files them once
     expect(first.body).toContain("**2. File approved sub-issues**");
     expect(first.body).toContain("Blocked by 1.");
     expect(first.body).toContain("- [ ] Screenshot of the filed sub-issues in Linear");
-    expect((await getPlanProposal(sqliteDb(db), first.id))?.drafts).toEqual(drafts);
+    expect((await getPlanProposal(db, first.id))?.drafts).toEqual(drafts);
     expect(prompts.at(-1)).toContain("read-only");
     expect(prompts.at(-1)).toContain(".agents/closeout.yaml");
     const trace = JSON.parse(readFileSync(join(home, `${purposes.length}.trace.json`), "utf8"));
@@ -250,24 +258,24 @@ test("a planning request proposes sub-issues, takes an edit, and files them once
 
     // A bare Edit asks what to change; the reply is the next planning turn.
     await reply("edit", "Edit");
-    const edit = (await findOpenQuestion(sqliteDb(db), "session"))!;
+    const edit = (await findOpenQuestion(db, "session"))!;
     expect(edit.kind).toBe("plan-approval");
     expect(edit.body).toContain("What should change");
-    expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
+    expect((await getWorkItem(db, itemId))?.state).toBe("awaiting_input");
     await reply("change", "Create smaller sub-issues: drop the smoke-run one.");
-    expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
+    expect((await getWorkItem(db, itemId))?.state).toBe("queued");
     await jobs.tick();
     expect(purposes).toEqual(["classify", "plan", "plan"]);
     expect(prompts.at(-1)).toContain(
       "Requested change: Create smaller sub-issues: drop the smoke-run one.",
     );
-    const second = (await findOpenQuestion(sqliteDb(db), "session"))!;
+    const second = (await findOpenQuestion(db, "session"))!;
     expect(second.options).toEqual(["Create 2 sub-issues", "Edit", "Discard"]);
     expect(tracker.subIssueRequests).toEqual([]);
 
     // Create files both under the parent in blocks order, with the repository label.
     await reply("create", "Create 2 sub-issues");
-    expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("completed");
+    expect((await getWorkItem(db, itemId))?.state).toBe("completed");
     await outbox.idle();
     await outbox.idle();
     expect(tracker.subIssueRequests).toHaveLength(1);
@@ -292,33 +300,38 @@ test("a planning request proposes sub-issues, takes an edit, and files them once
 
     // A redelivered answer and a retried filing row file nothing twice.
     await reply("create", "Create 2 sub-issues");
-    db.run("UPDATE outbox SET status='pending', attempts=0 WHERE op='linear.sub_issues'");
+    await db.run((q) =>
+      q.exec(
+        q.orm
+          .update(q.t.outbox)
+          .set({ status: "pending", attempts: 0 })
+          .where(eq(q.t.outbox.op, "linear.sub_issues")),
+      ),
+    );
     await outbox.idle();
     expect(tracker.subIssueRequests).toHaveLength(1);
     expect(tracker.subIssues.get("parent")).toHaveLength(2);
     expect(responses()).toHaveLength(1);
     expect(
-      (await listOutbox(sqliteDb(db))).filter((row) =>
-        row.idempotencyKey.startsWith("plan-create:"),
-      ),
+      (await listOutbox(db)).filter((row) => row.idempotencyKey.startsWith("plan-create:")),
     ).toHaveLength(1);
   } finally {
     await orchestrator.shutdown();
     await outbox.idle();
-    db.close();
+    await close();
   }
 }, 30_000);
 
 test("Discard completes the plan with one response and files nothing", async () => {
-  const { db, tracker, jobs, outbox, orchestrator, created, reply } = await setupPlan();
+  const { db, close, tracker, jobs, outbox, orchestrator, created, reply } = await setupPlan();
   try {
     await orchestrator.onLinearEvent(created);
-    const itemId = db.query<{ id: string }, []>("SELECT id FROM work_item").get()!.id;
+    const itemId = await onlyItem(db);
     await jobs.tick();
-    expect((await findOpenQuestion(sqliteDb(db), "session"))?.kind).toBe("plan-approval");
+    expect((await findOpenQuestion(db, "session"))?.kind).toBe("plan-approval");
     await reply("discard", "Discard");
     await outbox.idle();
-    expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("completed");
+    expect((await getWorkItem(db, itemId))?.state).toBe("completed");
     expect(tracker.subIssueRequests).toEqual([]);
     expect(
       tracker.progress.filter((update) => update.kind === "response").map((update) => update.body),
@@ -326,6 +339,6 @@ test("Discard completes the plan with one response and files nothing", async () 
   } finally {
     await orchestrator.shutdown();
     await outbox.idle();
-    db.close();
+    await close();
   }
 }, 30_000);

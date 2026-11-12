@@ -1,16 +1,11 @@
 import { expect, test } from "bun:test";
-import {
-  ensureLinearSession,
-  legacyMigrate,
-  openDatabase,
-  recordLinearInstallation,
-  sqliteDb,
-} from "../src/db";
-import { parentIssueIdSql } from "../src/core";
+import { eq } from "drizzle-orm";
+import { ensureLinearSession, recordLinearInstallation } from "../src/db";
 import type { AcceptedLinearEvent, EpicSnapshot } from "../src/linear";
-import { createParentFixture } from "./local/parent-fixture";
+import { json, seed } from "./dialects";
+import { createParentFixturePg } from "./local/parent-fixture";
 
-type Fixture = Awaited<ReturnType<typeof createParentFixture>>;
+type Fixture = Awaited<ReturnType<typeof createParentFixturePg>>;
 
 async function delegate(f: Fixture, blocked = false) {
   const parent: EpicSnapshot = {
@@ -27,23 +22,24 @@ async function delegate(f: Fixture, blocked = false) {
     f.tracker.deps.set("a", [{ blockerLinearIssueId: "outside", blockedLinearIssueId: "a" }]);
     // Linear reports the outside blocker as still in progress.
     const at = f.clock.now();
-    f.db.run(
-      `INSERT INTO inbox_event(dedupe_key,source,action,updated_at_ms,payload,received_at,handled)
-       VALUES(?,'webhook','other',?,?,?,1)`,
-      [
-        `issue:outside:${at}`,
-        at,
-        JSON.stringify({
+    await seed(f.db, (q) =>
+      q.orm.insert(q.t.inboxEvent).values({
+        dedupeKey: `issue:outside:${at}`,
+        source: "webhook",
+        action: "other",
+        updatedAtMs: at,
+        payload: json(f.db, {
           type: "Issue",
           action: "update",
           organizationId: "org",
           data: { id: "outside", identifier: "OUT-1", state: { type: "started" } },
-        }),
-        at,
-      ],
+        }) as string,
+        receivedAt: at,
+        handled: 1,
+      }),
     );
   }
-  await ensureLinearSession(sqliteDb(f.db), {
+  await ensureLinearSession(f.db, {
     sessionId: "parent-session",
     issueId: "parent",
     organizationId: "org",
@@ -56,11 +52,33 @@ async function delegate(f: Fixture, blocked = false) {
   await f.jobs.tick();
 }
 
+function issueA(f: Fixture) {
+  return f.db.run((q) =>
+    q.one(
+      q.orm
+        .select({
+          sessionId: q.t.parentDelegationIssue.sessionId,
+          delegationId: q.t.parentDelegationIssue.delegationId,
+        })
+        .from(q.t.parentDelegationIssue)
+        .where(eq(q.t.parentDelegationIssue.issueId, "a")),
+    ),
+  );
+}
+
 /** Someone delegates the sub-issue again in Linear, which opens another session on it. */
 async function created(f: Fixture, sessionId: string): Promise<AcceptedLinearEvent> {
-  if (!f.db.query("SELECT 1 FROM linear_session WHERE session_id=?").get(sessionId)) {
-    await ensureLinearSession(sqliteDb(f.db), { sessionId, issueId: "a", creatorId: "actor" });
-    await recordLinearInstallation(sqliteDb(f.db), {
+  const known = await f.db.run((q) =>
+    q.one(
+      q.orm
+        .select({ id: q.t.linearSession.sessionId })
+        .from(q.t.linearSession)
+        .where(eq(q.t.linearSession.sessionId, sessionId)),
+    ),
+  );
+  if (!known) {
+    await ensureLinearSession(f.db, { sessionId, issueId: "a", creatorId: "actor" });
+    await recordLinearInstallation(f.db, {
       sessionId,
       organizationId: "org",
       teamId: "team",
@@ -85,7 +103,7 @@ async function created(f: Fixture, sessionId: string): Promise<AcceptedLinearEve
 }
 
 test("a second session on a running sub-issue is refused and the first keeps it", async () => {
-  const f = await createParentFixture();
+  const f = await createParentFixturePg();
   try {
     await delegate(f);
     expect(f.started).toEqual(["a"]);
@@ -97,38 +115,43 @@ test("a second session on a running sub-issue is refused and the first keeps it"
     });
     expect(await f.parents.recheckEvent(await created(f, "again"))).toBe(false);
     expect(await f.parents.recheckEvent(await created(f, "session-a"))).toBe(true);
-    expect(
-      f.db.query("SELECT session_id FROM parent_delegation_issue WHERE issue_id='a'").get(),
-    ).toEqual({ session_id: "session-a" });
+    expect((await issueA(f))?.sessionId).toBe("session-a");
   } finally {
     await f.close();
   }
 });
 
 test("a failed sub-issue starts again in a new session", async () => {
-  const f = await createParentFixture();
+  const f = await createParentFixturePg();
   try {
     await delegate(f);
-    f.db.run("UPDATE work_item SET state='failed' WHERE linear_issue_id='a'");
+    await seed(f.db, (q) =>
+      q.orm
+        .update(q.t.workItem)
+        .set({ state: "failed" })
+        .where(eq(q.t.workItem.linearIssueId, "a")),
+    );
     expect(await f.parents.authorizeEvent(await created(f, "again"))).toEqual({
       outcome: "accepted",
     });
-    expect(
-      f.db
-        .query("SELECT session_id,delegation_id FROM parent_delegation_issue WHERE issue_id='a'")
-        .get(),
-    ).toEqual({ session_id: "again", delegation_id: null });
-    expect(f.db.query("SELECT state FROM work_item WHERE linear_issue_id='a'").get()).toEqual({
-      state: "cancelled",
-    });
-    expect(await sqliteDb(f.db).run((q) => f.parents.actorSteps(q, "again"))).toBe("lead");
+    expect(await issueA(f)).toEqual({ sessionId: "again", delegationId: null });
+    const [item] = await f.db.run((q) =>
+      q.all(
+        q.orm
+          .select({ state: q.t.workItem.state })
+          .from(q.t.workItem)
+          .where(eq(q.t.workItem.linearIssueId, "a")),
+      ),
+    );
+    expect(item).toEqual({ state: "cancelled" });
+    expect(await f.db.run((q) => f.parents.actorSteps(q, "again"))).toBe("lead");
   } finally {
     await f.close();
   }
 });
 
 test("a sub-issue still waiting for its blockers refuses a session of its own", async () => {
-  const f = await createParentFixture();
+  const f = await createParentFixturePg();
   try {
     await delegate(f, true);
     expect(f.started).toEqual([]);
@@ -139,100 +162,5 @@ test("a sub-issue still waiting for its blockers refuses a session of its own", 
     });
   } finally {
     await f.close();
-  }
-});
-
-test("the migration carries an active parent adoption over from project_approval", () => {
-  const db = openDatabase(":memory:");
-  try {
-    legacyMigrate(db, { until: "129_parent_delegation" });
-    db.run("DROP TABLE parent_delegation_issue");
-    db.run("DROP TABLE parent_delegation");
-    db.run("DELETE FROM schema_migration WHERE id='129_parent_delegation'");
-    db.run(
-      "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',0)",
-    );
-    db.run(
-      "INSERT INTO workspace_user(id,linear_user_id,name,email) VALUES('lead','lead','Lead','lead@example.test')",
-    );
-    const preview = {
-      project: {
-        name: "Parent",
-        organizationId: "org",
-        issues: [
-          { linearIssueId: "a", identifier: "CH-1", title: "First", url: "https://l/CH-1" },
-          { linearIssueId: "b", identifier: "CH-2", title: "Second" },
-        ],
-      },
-      order: ["a", "b"],
-      edges: [{ blockerLinearIssueId: "a", blockedLinearIssueId: "b" }],
-    };
-    db.run(
-      `INSERT INTO project_approval(id,workspace_id,project_id,actor_id,lead_user_id,generation,preview,created_at,expires_at,approved_at,source)
-       VALUES('approval','workspace','parent','lead','lead','parent:parent-session',?,5,5,5,'parent')`,
-      [JSON.stringify(preview)],
-    );
-    db.run(
-      `INSERT INTO project_approval(id,workspace_id,project_id,actor_id,lead_user_id,generation,preview,created_at,expires_at,approved_at)
-       VALUES('started','workspace','linear-project','lead','lead','gen','{}',5,5,5)`,
-    );
-    db.run(
-      "INSERT INTO project_approval_issue(workspace_id,issue_id,approval_id,session_id,delegation_id) VALUES('workspace','a','approval','session-a','child-delegation')",
-    );
-    db.run(
-      "INSERT INTO project_approval_issue(workspace_id,issue_id,approval_id) VALUES('workspace','b','approval')",
-    );
-    db.run(
-      `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,project_approval_id)
-       VALUES('item-a','child-delegation','a','CH-1','First','running','paws/ch-1',0,0,'approval')`,
-    );
-    legacyMigrate(db, { until: "129_parent_delegation" });
-    expect(db.query("SELECT * FROM parent_delegation").all()).toEqual([
-      {
-        delegation_id: "approval",
-        workspace_id: "workspace",
-        organization_id: "org",
-        parent_issue_id: "parent",
-        parent_identifier: "parent",
-        title: "Parent",
-        session_id: "parent-session",
-        owner_user_id: "lead",
-        edges: JSON.stringify(preview.edges),
-        created_at: 5,
-        stopped_at: null,
-        last_error: null,
-      },
-    ]);
-    expect(
-      db
-        .query(
-          "SELECT issue_id,identifier,title,url,position,session_id,delegation_id FROM parent_delegation_issue ORDER BY position",
-        )
-        .all(),
-    ).toEqual([
-      {
-        issue_id: "a",
-        identifier: "CH-1",
-        title: "First",
-        url: "https://l/CH-1",
-        position: 0,
-        session_id: "session-a",
-        delegation_id: "child-delegation",
-      },
-      {
-        issue_id: "b",
-        identifier: "CH-2",
-        title: "Second",
-        url: null,
-        position: 1,
-        session_id: null,
-        delegation_id: null,
-      },
-    ]);
-    expect(
-      db.query(`SELECT ${parentIssueIdSql("work_item", "sqlite")} AS parent FROM work_item`).get(),
-    ).toEqual({ parent: "parent" });
-  } finally {
-    db.close();
   }
 });

@@ -1,4 +1,3 @@
-import { tickWithRestarts } from "./helpers";
 import { readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
@@ -7,20 +6,13 @@ import { runAgent, runDir, type RunAgentOptions } from "../src/acp";
 import { reviewRequirements } from "../src/closeout";
 import { writeAgentSettings } from "../src/config";
 import { JOB_KIND, MAX_TRANSIENT_RETRIES, systemClock } from "../src/core";
-import {
-  sqliteDb,
-  JobLoop,
-  OutboxDispatcher,
-  listJobs,
-  listOutbox,
-  migrate,
-  openDatabase,
-} from "../src/db";
+import { JobLoop, OutboxDispatcher, listJobs, listOutbox, listWorkItems } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
 import { RemotePreparationTimeout } from "../src/runner-backend";
-import { emptyReview, repoLayout, stateOf, writeOk } from "./e2e-harness";
+import { emptyReview, repoLayout, stateOfPg, tickWithRestartsPg, writeOk } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
+import { tempStore } from "./pglite";
 
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
 
@@ -164,8 +156,7 @@ async function runPreflight(fault: {
   const mirror =
     fault.mirror === undefined ? null : await serveMirror(layout, fault.mirror, fault.times);
   const preparations: Array<Pick<RunAgentOptions, "role" | "fallbackProfile">> = [];
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const tracker = createFakeTracker([
     {
       linearIssueId: "issue",
@@ -183,7 +174,7 @@ async function runPreflight(fault: {
   let onStarted = () => {};
   const started = new Promise<void>((resolve) => (onStarted = resolve));
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     admission: workspaceAdmission(db),
     jobs,
     outbox,
@@ -268,10 +259,10 @@ async function runPreflight(fault: {
     while (
       Date.now() < deadline &&
       !["merge_queue", "merged", "failed", "cancelled", "awaiting_input"].includes(
-        stateOf(db, "ENG-7") ?? "",
+        (await stateOfPg(db, "ENG-7")) ?? "",
       )
     ) {
-      ticking = tickWithRestarts(jobs, orchestrator, db);
+      ticking = tickWithRestartsPg(jobs, orchestrator, db);
       const job = await Promise.race([ticking, started]);
       if (implemented) break;
       ticking = undefined;
@@ -281,41 +272,35 @@ async function runPreflight(fault: {
       }
     }
     const drainBy = Date.now() + 10_000;
-    while (
-      Date.now() < drainBy &&
-      (await listOutbox(sqliteDb(db))).some((row) => row.status === "pending")
-    ) {
+    while (Date.now() < drainBy && (await listOutbox(db)).some((row) => row.status === "pending")) {
       await outbox.tick();
       await outbox.idle();
       await Bun.sleep(10);
     }
-    const run = db
-      .query<{ id: string }, []>(
-        "SELECT current_run_id AS id FROM work_item WHERE linear_identifier = 'ENG-7'",
-      )
-      .get();
+    const items = await listWorkItems(db);
+    const runId = items.find((item) => item.linearIdentifier === "ENG-7")?.currentRunId;
     return {
-      ...(run?.id
+      ...(runId
         ? {
             snapshot: JSON.parse(
-              readFileSync(
-                path.join(runDir(layout.pawsRoot, run.id), "agent-profile.json"),
-                "utf8",
-              ),
+              readFileSync(path.join(runDir(layout.pawsRoot, runId), "agent-profile.json"), "utf8"),
             ),
           }
         : {}),
-      state: stateOf(db, "ENG-7"),
+      state: await stateOfPg(db, "ENG-7"),
       implemented,
       preparations,
-      retries: (await listJobs(sqliteDb(db)))
+      retries: (await listJobs(db))
         .filter((job) => job.queue === JOB_KIND.resume)
         .map((job) => (job.payload as { retry?: number }).retry ?? 0)
         .filter((retry) => retry > 0),
       questions: tracker.questions.map((question) => question.body),
       detail: JSON.stringify({
-        items: db.query("SELECT linear_identifier, state FROM work_item").all(),
-        jobs: (await listJobs(sqliteDb(db))).map(
+        items: items.map((item) => ({
+          linear_identifier: item.linearIdentifier,
+          state: item.state,
+        })),
+        jobs: (await listJobs(db)).map(
           (job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`,
         ),
         progress: tracker.progress.map((update) => `${update.kind}: ${update.body}`),
@@ -324,7 +309,7 @@ async function runPreflight(fault: {
   } finally {
     await orchestrator.shutdown().catch(() => undefined);
     await ticking?.catch(() => undefined);
-    db.close();
+    await close();
     mirror?.close();
     await layout.cleanup();
   }
