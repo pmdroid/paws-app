@@ -6,38 +6,44 @@ import { createWorkspaceGitHubActivation } from "../src/auth";
 import {
   listTeamRepositories,
   refreshRepositoryCatalog,
-  teamRepositoryAllowedSql,
-  sqliteDb,
+  teamRepositoryAllowed,
+  type Db,
 } from "../src/db";
-import { tempDb, tempHome } from "./helpers";
+import { seed as insert } from "./dialects";
+import { tempHome } from "./helpers";
+import { tempStore } from "./pglite";
 
 const PEM = generateKeyPairSync("rsa", { modulusLength: 2048 })
   .privateKey.export({ type: "pkcs1", format: "pem" })
   .toString();
 
-function seed() {
-  const db = tempDb();
-  db.run(
-    "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('ws','org','Workspace',0)",
-  );
-  db.run(
-    "INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES('ws','acme/linked','limited')",
+const closers = new Map<Db, () => Promise<void>>();
+
+async function seed() {
+  const { db, close } = await tempStore();
+  closers.set(db, close);
+  await insert(
+    db,
+    (q) =>
+      q.orm
+        .insert(q.t.workspace)
+        .values({ id: "ws", linearOrganizationId: "org", name: "Workspace", createdAt: 0 }),
+    (q) =>
+      q.orm
+        .insert(q.t.workspaceRepository)
+        .values({ workspaceId: "ws", repository: "acme/linked", teamId: "limited" }),
   );
   return db;
 }
 
-function allowed(db: ReturnType<typeof tempDb>, team: string, repository: string): boolean {
-  return (
-    db
-      .query(`SELECT 1 WHERE ${teamRepositoryAllowedSql("?1", "?2", "lower(?3)")}`)
-      .get("ws", team, repository) !== null
-  );
+function allowed(db: Db, team: string, repository: string): Promise<boolean> {
+  return teamRepositoryAllowed(db, "ws", team, repository.toLowerCase());
 }
 
 test("a team with linked repositories may only use those", async () => {
-  const db = seed();
+  const db = await seed();
   try {
-    await refreshRepositoryCatalog(sqliteDb(db), async () => [
+    await refreshRepositoryCatalog(db, async () => [
       {
         owner: "acme",
         repo: "other",
@@ -45,18 +51,18 @@ test("a team with linked repositories may only use those", async () => {
         defaultBranch: "main",
       },
     ]);
-    expect(allowed(db, "limited", "acme/linked")).toBe(true);
-    expect(allowed(db, "limited", "ACME/Linked")).toBe(true);
-    expect(allowed(db, "limited", "acme/other")).toBe(false);
+    expect(await allowed(db, "limited", "acme/linked")).toBe(true);
+    expect(await allowed(db, "limited", "ACME/Linked")).toBe(true);
+    expect(await allowed(db, "limited", "acme/other")).toBe(false);
   } finally {
-    db.close();
+    await closers.get(db)!();
   }
 });
 
 test("a team without linked repositories may use any repository Paws can access", async () => {
-  const db = seed();
+  const db = await seed();
   try {
-    await refreshRepositoryCatalog(sqliteDb(db), async () => [
+    await refreshRepositoryCatalog(db, async () => [
       {
         owner: "acme",
         repo: "paws-app",
@@ -64,20 +70,20 @@ test("a team without linked repositories may use any repository Paws can access"
         defaultBranch: "main",
       },
     ]);
-    expect(allowed(db, "open", "acme/paws-app")).toBe(true);
-    expect(allowed(db, "open", "acme/unknown")).toBe(false);
-    expect(allowed(db, "open", "acme/linked")).toBe(false);
+    expect(await allowed(db, "open", "acme/paws-app")).toBe(true);
+    expect(await allowed(db, "open", "acme/unknown")).toBe(false);
+    expect(await allowed(db, "open", "acme/linked")).toBe(false);
   } finally {
-    db.close();
+    await closers.get(db)!();
   }
 });
 
 test("the workspace GitHub App resolves a repository found in the access catalog", async () => {
-  const db = seed();
+  const db = await seed();
   const home = tempHome();
   try {
     mkdirSync(join(home, "secrets"), { recursive: true, mode: 0o700 });
-    const activation = createWorkspaceGitHubActivation(sqliteDb(db), home, {});
+    const activation = createWorkspaceGitHubActivation(db, home, {});
     activation.save("secret-1", {
       appId: "1",
       clientId: "client",
@@ -86,11 +92,16 @@ test("the workspace GitHub App resolves a repository found in the access catalog
       installationId: "42",
       generation: 0,
     });
-    db.run(
-      `INSERT INTO workspace_github_connection(workspace_id,generation,secret_id,installation_id,repositories)
-       VALUES('ws',1,'secret-1','42','["acme/linked"]')`,
+    await insert(db, (q) =>
+      q.orm.insert(q.t.workspaceGithubConnection).values({
+        workspaceId: "ws",
+        generation: 1,
+        secretId: "secret-1",
+        installationId: "42",
+        repositories: JSON.stringify(["acme/linked"]),
+      }),
     );
-    await refreshRepositoryCatalog(sqliteDb(db), async () => [
+    await refreshRepositoryCatalog(db, async () => [
       {
         owner: "acme",
         repo: "paws-app",
@@ -102,19 +113,22 @@ test("the workspace GitHub App resolves a repository found in the access catalog
     expect(await activation.resolve("acme/linked")).toMatchObject({ installationId: "42" });
     await expect(activation.resolve("acme/unknown")).rejects.toThrow();
   } finally {
-    db.close();
+    await closers.get(db)!();
   }
 });
 
 test("a session's team links are the repositories it may choose from", async () => {
-  const db = seed();
+  const db = await seed();
   try {
-    db.run(
-      "INSERT INTO linear_session(session_id,organization_id,team_id,created_at) VALUES('limited-session','org','limited',0),('open-session','org','open',0)",
+    await insert(db, (q) =>
+      q.orm.insert(q.t.linearSession).values([
+        { sessionId: "limited-session", organizationId: "org", teamId: "limited", createdAt: 0 },
+        { sessionId: "open-session", organizationId: "org", teamId: "open", createdAt: 0 },
+      ]),
     );
-    expect(await listTeamRepositories(sqliteDb(db), "limited-session")).toEqual(["acme/linked"]);
-    expect(await listTeamRepositories(sqliteDb(db), "open-session")).toEqual([]);
+    expect(await listTeamRepositories(db, "limited-session")).toEqual(["acme/linked"]);
+    expect(await listTeamRepositories(db, "open-session")).toEqual([]);
   } finally {
-    db.close();
+    await closers.get(db)!();
   }
 });

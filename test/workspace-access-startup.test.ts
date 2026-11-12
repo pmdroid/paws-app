@@ -1,10 +1,7 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { isTransient } from "../src/core";
-import { migrate, openDatabase, sqliteDb } from "../src/db";
 import { startWorkspaceAccess } from "../src/workspace";
+import { tempStore } from "./pglite";
 
 function timeoutError() {
   return new DOMException("The operation timed out.", "TimeoutError");
@@ -14,12 +11,10 @@ async function withRuntime(
   installation: () => Promise<{ id: string; name: string }>,
   run: (runtime: ReturnType<typeof startWorkspaceAccess>, errors: () => number) => Promise<void>,
 ) {
-  const root = mkdtempSync(join(tmpdir(), "paws-workspace-startup-"));
-  const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  const { db, close } = await tempStore();
   let errors = 0;
   const runtime = startWorkspaceAccess({
-    store: sqliteDb(db),
+    store: db,
     publicUrl: "https://paws.example",
     clientId: "client",
     accessRetryBaseMs: 5,
@@ -36,8 +31,7 @@ async function withRuntime(
     await run(runtime, () => errors);
   } finally {
     await runtime.stop();
-    db.close();
-    rmSync(root, { recursive: true, force: true });
+    await close();
   }
 }
 

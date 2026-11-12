@@ -1,7 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import { readFileSync, rmSync } from "node:fs";
-import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import {
   authorizeSlack,
@@ -14,18 +13,19 @@ import {
 } from "../src/slack";
 import { writeCredential } from "../src/credentials";
 import { startServer } from "../src/server";
-import { sqliteDb, listJobs } from "../src/db";
-import { tempDb, tempHome } from "./helpers";
+import { listJobs } from "../src/db";
+import { tempHome } from "./helpers";
+import { tempStore } from "./pglite";
 
 const homes: string[] = [];
-const dbs: Database[] = [];
-afterEach(() => {
-  for (const db of dbs.splice(0)) db.close();
+const stores: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of stores.splice(0)) await close();
   for (const directory of homes.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
-function database(): Database {
-  const db = tempDb();
-  dbs.push(db);
+async function database() {
+  const { db, close } = await tempStore();
+  stores.push(close);
   return db;
 }
 function home(): string {
@@ -58,7 +58,7 @@ async function approve(link: string, port: number): Promise<void> {
 
 test("Slack OAuth uses bot scopes, exact HTTPS redirect and single-use state, then encrypts its installation", async () => {
   const dir = home();
-  const db = database();
+  const db = await database();
   let exchanges = 0;
   let port = 0;
   const token = await loginSlack({
@@ -105,7 +105,7 @@ test("Slack OAuth uses bot scopes, exact HTTPS redirect and single-use state, th
     botUserId: "U1",
     refreshToken: null,
   });
-  expect(await readSlackToken(sqliteDb(db), dir)).toEqual(token);
+  expect(await readSlackToken(db, dir)).toEqual(token);
   expect(readSlackApp(dir)).toEqual({
     clientId: env.SLACK_CLIENT_ID,
     clientSecret: env.SLACK_CLIENT_SECRET,
@@ -113,7 +113,7 @@ test("Slack OAuth uses bot scopes, exact HTTPS redirect and single-use state, th
   });
   const sealed = [
     readFileSync(join(dir, "secrets", "slack-app.json"), "utf8"),
-    JSON.stringify(db.query("SELECT * FROM credential").all()),
+    JSON.stringify(await db.run((q) => q.all(q.orm.select().from(q.t.credential)))),
   ];
   for (const bytes of sealed) {
     for (const secret of [grant.access_token, env.SLACK_CLIENT_SECRET, env.SLACK_SIGNING_SECRET])
@@ -125,7 +125,7 @@ test("Slack OAuth uses bot scopes, exact HTTPS redirect and single-use state, th
 test("Slack rejects denial and provider errors without saving or reflecting credentials", async () => {
   for (const mode of ["deny", "error", "scopes"]) {
     const dir = home();
-    const db = database();
+    const db = await database();
     await expect(
       loginSlack({
         db,
@@ -151,7 +151,7 @@ test("Slack rejects denial and provider errors without saving or reflecting cred
         },
       }),
     ).rejects.toThrow(mode === "deny" ? "Slack authorization was denied" : "Could not exchange");
-    expect(await readSlackToken(sqliteDb(db), dir)).toBeNull();
+    expect(await readSlackToken(db, dir)).toBeNull();
     expect(readSlackApp(dir)).toBeNull();
   }
 });
@@ -169,7 +169,7 @@ test("Slack OAuth requires HTTPS and aborts an outstanding exchange on timeout",
   let signal: AbortSignal | undefined;
   await expect(
     loginSlack({
-      db: database(),
+      db: await database(),
       home: home(),
       env,
       port: 0,
@@ -193,7 +193,7 @@ test("Slack OAuth requires HTTPS and aborts an outstanding exchange on timeout",
 
 test("rotating Slack bot tokens use one durable refresh job and retain installation identity", async () => {
   const dir = home();
-  const db = database();
+  const db = await database();
   const token = await loginSlack({
     db,
     home: dir,
@@ -204,7 +204,7 @@ test("rotating Slack bot tokens use one durable refresh job and retain installat
     onAuthorize: approve,
   });
   await writeCredential(
-    sqliteDb(db),
+    db,
     join(dir, "secrets"),
     "slack",
     JSON.stringify({ ...token, expiresAtMs: 0 }),
@@ -235,13 +235,13 @@ test("rotating Slack bot tokens use one durable refresh job and retain installat
     ]),
   ).toEqual(["synthetic-slack-token-next", "synthetic-slack-token-next"]);
   expect(requests).toBe(1);
-  expect(await readSlackToken(sqliteDb(db), dir)).toMatchObject({
+  expect(await readSlackToken(db, dir)).toMatchObject({
     teamId: "T1",
     botUserId: "U1",
     scope: SLACK_BOT_SCOPES,
     refreshToken: "synthetic-slack-refresh-next",
   });
-  expect((await listJobs(sqliteDb(db))).map((job) => job.status)).toEqual(["done"]);
+  expect((await listJobs(db)).map((job) => job.status)).toEqual(["done"]);
 });
 
 test("Slack front door verifies raw-body HMAC and a five-minute timestamp window before returning its challenge", async () => {

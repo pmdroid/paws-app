@@ -1,16 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Database } from "bun:sqlite";
 import {
-  sqliteDb,
   beginImplementRun,
   enqueueOutbox,
   enqueueOutboxOnce,
   getWorkItem,
   insertQueuedItem,
   listOutbox,
-  migrate,
-  openDatabase,
+  type Db,
 } from "../src/db";
+import { eq } from "drizzle-orm";
 import {
   acknowledgeNewSession,
   createFakeTracker,
@@ -19,26 +17,28 @@ import {
   type AcceptedLinearEvent,
 } from "../src/linear";
 import { askSteps } from "../src/loop";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
-const open: Database[] = [];
-afterEach(() => {
-  for (const db of open.splice(0)) db.close();
+const open: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of open.splice(0)) await close();
 });
 
-function database(): Database {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  open.push(db);
+async function database() {
+  const { db, close } = await tempStore();
+  open.push(close);
   return db;
 }
 
-async function thought(
-  db: Database,
-  key: string,
-  body: string,
-  ephemeral = false,
-): Promise<number> {
-  return enqueueOutboxOnce(sqliteDb(db), {
+function markSent(db: Db, id: number): Promise<void> {
+  return seed(db, (q) =>
+    q.orm.update(q.t.outbox).set({ status: "sent", sentAt: 1 }).where(eq(q.t.outbox.id, id)),
+  );
+}
+
+async function thought(db: Db, key: string, body: string, ephemeral = false): Promise<number> {
+  return enqueueOutboxOnce(db, {
     target: "linear",
     op: "activity",
     orderingKey: "ses-1",
@@ -47,20 +47,20 @@ async function thought(
   });
 }
 
-const bodies = async (db: Database) =>
-  (await listOutbox(sqliteDb(db), "ses-1"))
+const bodies = async (db: Db) =>
+  (await listOutbox(db, "ses-1"))
     .filter((row) => row.status !== "dropped")
     .map((row) => (row.payload as { body?: string }).body);
 
 describe("lifecycle lines", () => {
   test("a thought that repeats the last sent or pending thought is not enqueued", async () => {
-    const db = database();
+    const db = await database();
     const fix = "Fixing Closeout findings for PAS-619 (1 of 3).";
     const first = await thought(db, "fix:1", fix);
     // The resumed fix path and the keepalive say the same line again.
     expect(await thought(db, "fix:2", fix)).toBe(first);
     expect(await thought(db, "keep:1", fix, true)).toBe(first);
-    db.run("UPDATE outbox SET status = 'sent', sent_at = 1 WHERE id = ?", [first]);
+    await markSent(db, first);
     expect(await thought(db, "fix:3", fix)).toBe(first);
     // A repeated idempotency key still returns its own row.
     expect(await thought(db, "fix:1", fix)).toBe(first);
@@ -78,9 +78,9 @@ describe("lifecycle lines", () => {
   });
 
   test("a response starts a new phase, and an ephemeral line Linear already shows may repeat", async () => {
-    const db = database();
+    const db = await database();
     await thought(db, "a", "Verifying PAS-1.");
-    await enqueueOutbox(sqliteDb(db), {
+    await enqueueOutbox(db, {
       target: "linear",
       op: "activity",
       orderingKey: "ses-1",
@@ -90,7 +90,7 @@ describe("lifecycle lines", () => {
     });
     await thought(db, "b", "Verifying PAS-1.");
     const keep = await thought(db, "keep:1", "Step 2 of 5: rank runners.", true);
-    db.run("UPDATE outbox SET status = 'sent', sent_at = 1 WHERE id = ?", [keep]);
+    await markSent(db, keep);
     expect(await thought(db, "keep:2", "Step 2 of 5: rank runners.", true)).not.toBe(keep);
     expect(await bodies(db)).toEqual([
       "Verifying PAS-1.",
@@ -103,11 +103,11 @@ describe("lifecycle lines", () => {
 });
 
 describe("a waiting question", () => {
-  async function waiting(db: Database) {
+  async function waiting(db: Db) {
     await insertQueuedItem(db, { id: "item-q", sessionKey: "ses-1", now: 0 });
-    await beginImplementRun(sqliteDb(db), "item-q", 1_000);
-    const item = (await getWorkItem(sqliteDb(db), "item-q"))!;
-    await sqliteDb(db).transaction((q) =>
+    await beginImplementRun(db, "item-q", 1_000);
+    const item = (await getWorkItem(db, "item-q"))!;
+    await db.transaction((q) =>
       askSteps(
         q,
         { itemId: item.id, runId: item.currentRunId, sessionId: "ses-1", version: item.version },
@@ -116,11 +116,11 @@ describe("a waiting question", () => {
         { options: ["paws-app", "paws-runner"], now: 2_000 },
       ),
     );
-    expect((await getWorkItem(sqliteDb(db), "item-q"))?.state).toBe("awaiting_input");
+    expect((await getWorkItem(db, "item-q"))?.state).toBe("awaiting_input");
   }
 
-  const errorActivity = async (db: Database, key: string) =>
-    await enqueueOutbox(sqliteDb(db), {
+  const errorActivity = async (db: Db, key: string) =>
+    await enqueueOutbox(db, {
       target: "linear",
       op: "activity",
       orderingKey: "ses-1",
@@ -129,23 +129,23 @@ describe("a waiting question", () => {
     });
 
   test("a critical error does not drop its elicitation while the item still waits", async () => {
-    const db = database();
+    const db = await database();
     await waiting(db);
     await errorActivity(db, "error:1");
-    const elicitation = (await listOutbox(sqliteDb(db), "ses-1")).find(
-      (row) => row.op === "elicitation",
-    );
+    const elicitation = (await listOutbox(db, "ses-1")).find((row) => row.op === "elicitation");
     expect(elicitation?.status).toBe("pending");
   });
 
   test("an elicitation whose item stopped waiting is still superseded", async () => {
-    const db = database();
+    const db = await database();
     await waiting(db);
-    db.run("UPDATE work_item SET state = 'failed' WHERE id = 'item-q'");
+    await seed(db, (q) =>
+      q.orm.update(q.t.workItem).set({ state: "failed" }).where(eq(q.t.workItem.id, "item-q")),
+    );
     await errorActivity(db, "error:1");
-    expect(
-      (await listOutbox(sqliteDb(db), "ses-1")).find((row) => row.op === "elicitation")?.status,
-    ).toBe("dropped");
+    expect((await listOutbox(db, "ses-1")).find((row) => row.op === "elicitation")?.status).toBe(
+      "dropped",
+    );
   });
 });
 
@@ -165,10 +165,10 @@ describe("acknowledgeNewSession on a session with a running item", () => {
   };
 
   test("posts no terminal error and leaves the retry to the queue", async () => {
-    const db = database();
+    const db = await database();
     await insertQueuedItem(db, { id: "item-1", sessionKey: "ses-1", now: 0 });
-    await beginImplementRun(sqliteDb(db), "item-1", 1_000);
-    expect(await sessionHasItemInFlight(sqliteDb(db), "ses-1")).toBe(true);
+    await beginImplementRun(db, "item-1", 1_000);
+    expect(await sessionHasItemInFlight(db, "ses-1")).toBe(true);
     const tracker = createFakeTracker();
     await expect(
       acknowledgeNewSession(
@@ -178,14 +178,14 @@ describe("acknowledgeNewSession on a session with a running item", () => {
           throw new Error("Linear refused the follow-up read");
         },
         undefined,
-        { sessionBusy: (sessionId) => sessionHasItemInFlight(sqliteDb(db), sessionId) },
+        { sessionBusy: (sessionId) => sessionHasItemInFlight(db, sessionId) },
       ),
     ).rejects.toThrow("Linear refused the follow-up read");
     expect(tracker.progress).toEqual([]);
   });
 
   test("still reports the failure on a session with nothing running", async () => {
-    const db = database();
+    const db = await database();
     const tracker = createFakeTracker();
     await expect(
       acknowledgeNewSession(
@@ -195,7 +195,7 @@ describe("acknowledgeNewSession on a session with a running item", () => {
           throw new Error("Linear refused the follow-up read");
         },
         undefined,
-        { sessionBusy: (sessionId) => sessionHasItemInFlight(sqliteDb(db), sessionId) },
+        { sessionBusy: (sessionId) => sessionHasItemInFlight(db, sessionId) },
       ),
     ).rejects.toThrow();
     expect(tracker.progress.map((update) => [update.kind, update.body])).toEqual([

@@ -1,29 +1,29 @@
 import { expect, test } from "bun:test";
 import {
   insertQueuedItem,
-  migrate,
-  openDatabase,
   putWorkspaceUser,
-  sqliteDb,
   syncWorkspaceMember,
   workspaceSessionIds,
 } from "../src/db";
 import { startServer } from "../src/server";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 test("the issue endpoint needs a Paws session and shows only the member's sessions", async () => {
-  const db = openDatabase(":memory:");
-  migrate(db);
-  db.run(
-    "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',0)",
+  const { db, close } = await tempStore();
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: "workspace", linearOrganizationId: "org", name: "Workspace", createdAt: 0 }),
   );
-  await putWorkspaceUser(sqliteDb(db), {
+  await putWorkspaceUser(db, {
     id: "member",
     linearUserId: "member",
     name: "member",
     email: "m@x.test",
   });
-  await syncWorkspaceMember(sqliteDb(db), {
+  await syncWorkspaceMember(db, {
     workspaceId: "workspace",
     userId: "member",
     role: "member",
@@ -31,25 +31,30 @@ test("the issue endpoint needs a Paws session and shows only the member's sessio
     teamIds: ["team"],
     now: Date.now(),
   });
-  for (const [session, team] of [
-    ["session-mine", "team"],
-    ["session-other", "other-team"],
-  ])
-    db.run(
-      `INSERT INTO linear_session (session_id, organization_id, oauth_client_id, app_user_id, team_id,
-        installation_observed_at, created_at) VALUES (?, 'org', 'fixture', 'app', ?, 1, 0)`,
-      [session!, team!],
-    );
-  expect(await workspaceSessionIds(sqliteDb(db), "workspace", "member", "fixture")).toEqual([
-    "session-mine",
-  ]);
+  await seed(db, (q) =>
+    q.orm.insert(q.t.linearSession).values(
+      [
+        ["session-mine", "team"],
+        ["session-other", "other-team"],
+      ].map(([sessionId, teamId]) => ({
+        sessionId: sessionId!,
+        organizationId: "org",
+        oauthClientId: "fixture",
+        appUserId: "app",
+        teamId: teamId!,
+        installationObservedAt: 1,
+        createdAt: 0,
+      })),
+    ),
+  );
+  expect(await workspaceSessionIds(db, "workspace", "member", "fixture")).toEqual(["session-mine"]);
   await insertQueuedItem(db, { id: "PAS-1", sessionKey: "session-mine" });
   await insertQueuedItem(db, { id: "PAS-2", sessionKey: "session-other" });
   const reservation = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
   const port = reservation.port!;
   await reservation.stop(true);
   const access = createWorkspaceAccess({
-    store: sqliteDb(db),
+    store: db,
     publicUrl: `http://127.0.0.1:${port}`,
     clientId: "fixture",
     installedOrganization: { id: "org", name: "Workspace" },
@@ -66,7 +71,7 @@ test("the issue endpoint needs a Paws session and shows only the member's sessio
     },
   });
   const server = startServer({ port, hostname: "127.0.0.1", db, workspaceAccess: access });
-  const session = await issueWorkspaceSession(sqliteDb(db), {
+  const session = await issueWorkspaceSession(db, {
     workspaceId: "workspace",
     userId: "member",
     now: Date.now(),
@@ -90,6 +95,6 @@ test("the issue endpoint needs a Paws session and shows only the member's sessio
     expect(await other.text()).toBe(await unknown.text());
   } finally {
     await server.stop(true);
-    db.close();
+    await close();
   }
 });
