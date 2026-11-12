@@ -1,26 +1,23 @@
 import { expect, spyOn, test } from "bun:test";
-import { join } from "node:path";
 import { systemClock } from "../src/core";
 import {
   JobLoop,
   OutboxDispatcher,
   getWorkItem,
-  migrate,
-  openDatabase,
+  listWorkItems,
   saveTaskMode,
   setJournalSink,
-  sqliteDb,
 } from "../src/db";
 import { unavailableRemoteExecution } from "../src/index";
 import { createFakeTracker } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
 import { workspaceAdmission } from "./fake-workspace";
 import { tempHome } from "./helpers";
+import { tempStore } from "./pglite";
 
 test("with a workspace and no paired runner a delegated task fails because a remote runner is required", async () => {
   const home = tempHome();
-  const db = openDatabase(join(home, "paws.db"));
-  migrate(db);
+  const { db, close } = await tempStore();
   const tracker = createFakeTracker([
     {
       linearIssueId: "issue",
@@ -36,7 +33,7 @@ test("with a workspace and no paired runner a delegated task fails because a rem
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     jobs,
     outbox,
     home,
@@ -63,17 +60,13 @@ test("with a workspace and no paired runner a delegated task fails because a rem
       updatedAtMs: 1,
       payload: JSON.stringify({ agentSession: { creatorId: "human" } }),
     });
-    const itemId = db.query<{ id: string }, []>("SELECT id FROM work_item").get()!.id;
-    await saveTaskMode(sqliteDb(db), itemId, "answer");
+    const itemId = (await listWorkItems(db))[0]!.id;
+    await saveTaskMode(db, itemId, "answer");
     await orchestrator.reconcileExecution();
-    for (
-      let tick = 0;
-      tick < 5 && (await getWorkItem(sqliteDb(db), itemId))?.state !== "failed";
-      tick++
-    )
+    for (let tick = 0; tick < 5 && (await getWorkItem(db, itemId))?.state !== "failed"; tick++)
       await jobs.tick();
     await outbox.idle();
-    expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("failed");
+    expect((await getWorkItem(db, itemId))?.state).toBe("failed");
     expect(stderr.mock.calls.map(([line]) => line)).toContain(
       "ENG-1 failed (answer_error): A remote runner is required.",
     );
@@ -86,6 +79,6 @@ test("with a workspace and no paired runner a delegated task fails because a rem
     await outbox.idle();
     stderr.mockRestore();
     restore();
-    db.close();
+    await close();
   }
 });

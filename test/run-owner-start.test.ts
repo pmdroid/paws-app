@@ -7,22 +7,14 @@ import { promisify } from "node:util";
 import { expect, test } from "bun:test";
 import { runAgent, type RunAgentResult } from "../src/acp";
 import type { Clock } from "../src/core";
-import {
-  JobLoop,
-  OutboxDispatcher,
-  listRuns,
-  migrate,
-  openDatabase,
-  registerInstance,
-  runOwner,
-  sqliteDb,
-} from "../src/db";
+import { JobLoop, OutboxDispatcher, listRuns, registerInstance, runOwner } from "../src/db";
 import { createFakeGitHub } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
 import { githubClient } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
 import { cloneRunner } from "./helpers";
+import { tempStore } from "./pglite";
 
 const exec = promisify(execFile);
 const { privateKey } = generateKeyPairSync("rsa", {
@@ -46,9 +38,8 @@ test("a run the orchestrator starts records the instance that started it", async
   await exec("git", ["-C", seed, "push", "origin", "HEAD:main"]);
   const pawsRoot = path.join(root, "paws");
   await mkdir(pawsRoot, { recursive: true });
-  const db = openDatabase(path.join(pawsRoot, "paws.db"));
-  migrate(db);
-  const instance = await registerInstance(sqliteDb(db), {
+  const { db, close } = await tempStore();
+  const instance = await registerInstance(db, {
     role: "all",
     host: "acme",
     version: null,
@@ -74,7 +65,7 @@ test("a run the orchestrator starts records the instance that started it", async
   });
   const github = createFakeGitHub();
   const orchestrator = attachOrchestrator({
-    store: sqliteDb(db),
+    store: db,
     instanceId: instance.id,
     admission: workspaceAdmission(db),
     jobs,
@@ -96,15 +87,15 @@ test("a run the orchestrator starts records the instance that started it", async
   });
   try {
     await orchestrator.onLinearEvent(created());
-    db.run("UPDATE work_item SET delegated_by = 'delegator-1'");
+    await db.run((q) => q.exec(q.orm.update(q.t.workItem).set({ delegatedBy: "delegator-1" })));
     await jobs.tick();
     expect(dispatched).toBe(1);
-    const runs = await listRuns(sqliteDb(db));
+    const runs = await listRuns(db);
     expect(runs).toHaveLength(1);
-    expect(await runOwner(sqliteDb(db), runs[0]!.id)).toBe(instance.id);
+    expect(await runOwner(db, runs[0]!.id)).toBe(instance.id);
   } finally {
     await orchestrator.shutdown();
-    db.close();
+    await close();
     await rm(root, { recursive: true, force: true });
   }
 }, 60_000);

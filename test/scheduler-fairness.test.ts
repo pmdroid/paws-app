@@ -1,27 +1,32 @@
 import { expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import {
   getQueuePosition,
   insertQueuedItem,
   putWorkspaceUser,
   syncWorkspaceMember,
-  sqliteDb,
 } from "../src/db";
-import { tempDb } from "./helpers";
-import { workspaceDispatch } from "./fake-workspace";
+import { workspaceDispatchPg } from "./fake-workspace";
+import { seed } from "./dialects";
+import { tempStore } from "./pglite";
 
 const NOW = 1_000;
 
 async function fixture(capacity: number) {
-  const db = tempDb();
-  db.run("INSERT INTO workspace VALUES(?,?,?,?)", ["ws-1", "org-1", "Workspace", 0]);
+  const { db, close } = await tempStore();
+  await seed(db, (q) =>
+    q.orm
+      .insert(q.t.workspace)
+      .values({ id: "ws-1", linearOrganizationId: "org-1", name: "Workspace", createdAt: 0 }),
+  );
   for (const name of ["ada", "ben"])
-    await putWorkspaceUser(sqliteDb(db), {
+    await putWorkspaceUser(db, {
       id: name,
       linearUserId: `${name}-linear`,
       name,
       email: `${name}@example.invalid`,
     });
-  await syncWorkspaceMember(sqliteDb(db), {
+  await syncWorkspaceMember(db, {
     workspaceId: "ws-1",
     userId: "ada",
     role: "admin",
@@ -29,73 +34,94 @@ async function fixture(capacity: number) {
     teamIds: [],
     now: 0,
   });
-  db.run(
-    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('box','ws-1','ada','box','active',0,?)",
-    [NOW],
+  await seed(
+    db,
+    (q) =>
+      q.orm.insert(q.t.runner).values({
+        id: "box",
+        workspaceId: "ws-1",
+        ownerUserId: "ada",
+        name: "box",
+        status: "active",
+        createdAt: 0,
+        lastSeenAt: NOW,
+      }),
+    (q) => q.orm.insert(q.t.runnerCapacity).values({ runnerId: "box", capacity }),
   );
-  db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES('box',?)", [capacity]);
   const queue = async (id: string, owner: string, createdAt: number) => {
     await insertQueuedItem(db, { id, now: createdAt });
-    db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [owner, id]);
+    await seed(db, (q) =>
+      q.orm.update(q.t.workItem).set({ ownerUserId: owner }).where(eq(q.t.workItem.id, id)),
+    );
   };
-  return { db, queue };
+  return { db, close, queue };
 }
 
 test("a second person's single task starts in the first round beside a large batch", async () => {
-  const { db, queue } = await fixture(2);
+  const { db, close, queue } = await fixture(2);
   try {
     for (let index = 1; index <= 20; index += 1) await queue(`ada-${index}`, "ada", index);
     await queue("ben-1", "ben", 100);
-    expect(await workspaceDispatch(db, { now: NOW })).toEqual(["ada-1", "ben-1"]);
-    expect(await getQueuePosition(sqliteDb(db), "ada-2")).toMatchObject({
+    expect(await workspaceDispatchPg(db, { now: NOW })).toEqual(["ada-1", "ben-1"]);
+    expect(await getQueuePosition(db, "ada-2")).toMatchObject({
       position: 1,
       ownerCap: null,
     });
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("two owners' tasks take turns", async () => {
-  const { db, queue } = await fixture(4);
+  const { db, close, queue } = await fixture(4);
   try {
     for (let index = 1; index <= 3; index += 1) await queue(`ada-${index}`, "ada", index);
     for (let index = 1; index <= 3; index += 1) await queue(`ben-${index}`, "ben", 10 + index);
-    expect(await workspaceDispatch(db, { now: NOW })).toEqual(["ada-1", "ben-1", "ada-2", "ben-2"]);
+    expect(await workspaceDispatchPg(db, { now: NOW })).toEqual([
+      "ada-1",
+      "ben-1",
+      "ada-2",
+      "ben-2",
+    ]);
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("with a cap of 3 one owner never runs more than 3 tasks while others wait", async () => {
-  const { db, queue } = await fixture(10);
+  const { db, close, queue } = await fixture(10);
   try {
     for (let index = 1; index <= 10; index += 1) await queue(`ada-${index}`, "ada", index);
     await queue("ben-1", "ben", 100);
     await queue("ben-2", "ben", 101);
-    expect(await workspaceDispatch(db, { now: NOW, ownerCap: 3 })).toEqual([
+    expect(await workspaceDispatchPg(db, { now: NOW, ownerCap: 3 })).toEqual([
       "ada-1",
       "ben-1",
       "ada-2",
       "ben-2",
       "ada-3",
     ]);
-    expect(await workspaceDispatch(db, { now: NOW + 1, ownerCap: 3 })).toEqual([]);
-    expect(await getQueuePosition(sqliteDb(db), "ada-4")).toMatchObject({
+    expect(await workspaceDispatchPg(db, { now: NOW + 1, ownerCap: 3 })).toEqual([]);
+    expect(await getQueuePosition(db, "ada-4")).toMatchObject({
       position: 1,
       ownerCap: 3,
     });
   } finally {
-    db.close();
+    await close();
   }
 });
 
 test("without a cap one owner gets every free runner slot", async () => {
-  const { db, queue } = await fixture(4);
+  const { db, close, queue } = await fixture(4);
   try {
     for (let index = 1; index <= 6; index += 1) await queue(`ada-${index}`, "ada", index);
-    expect(await workspaceDispatch(db, { now: NOW })).toEqual(["ada-1", "ada-2", "ada-3", "ada-4"]);
+    expect(await workspaceDispatchPg(db, { now: NOW })).toEqual([
+      "ada-1",
+      "ada-2",
+      "ada-3",
+      "ada-4",
+    ]);
   } finally {
-    db.close();
+    await close();
   }
 });
