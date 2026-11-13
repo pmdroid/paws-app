@@ -91,6 +91,8 @@ export { readReviewThreads } from "./review-threads";
 export {
   commentOnPullRequest,
   createFakeReviewReplies,
+  editPullRequestComment,
+  listPullRequestComments,
   reactToComment,
   replyToReviewComment,
   resolveReviewThread,
