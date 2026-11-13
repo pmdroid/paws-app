@@ -54,6 +54,11 @@ export function createMemberVmProvisioning(
       );
     const control = await source.runnerControl();
     if (!control) throw new Error("Create VM needs runner control to be configured.");
+    const repositories = await source.repositories();
+    if (repositories.length === 0)
+      throw new Error(
+        "Create VM needs at least one repository. Connect GitHub and choose repositories in Settings › Repositories first.",
+      );
     const size = source.size?.() ?? {};
     if (source.bootstrap)
       return { exeDev, bootstrap: source.bootstrap, mintEnrollment: control.mintEnrollment, size };
@@ -75,7 +80,7 @@ export function createMemberVmProvisioning(
       runnerApiUrl: runnerApi.origin,
       controlPlaneUrl: new URL(source.publicUrl).origin,
       serverCa: source.serverCa ?? null,
-      allowedRepositories: (await source.repositories()).slice(0, 256),
+      allowedRepositories: repositories.slice(0, 256),
       tailnet: { authKey, release: PINNED_TAILSCALE.amd64 },
     });
     return { exeDev, bootstrap, mintEnrollment: control.mintEnrollment, size };
