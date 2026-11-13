@@ -1,7 +1,6 @@
 import { journalCaught } from "../journal";
-import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { readSecretFile } from "../credentials";
+import { readSecretFile, secretFileExists } from "../credentials";
 import { pawsPaths } from "./paths";
 
 /** The Tailscale auth key a Create VM VM joins the Paws tailnet with. */
@@ -21,7 +20,7 @@ export function readTailscaleAuthKey(home: string, migrate = true): string | nul
 export type TailscaleAuthKeyStatus = "absent" | "empty" | "readable" | "unreadable";
 
 export function tailscaleAuthKeyStatus(home: string): TailscaleAuthKeyStatus {
-  if (!existsSync(tailscaleAuthKeyPath(home))) return "absent";
+  if (!secretFileExists(tailscaleAuthKeyPath(home))) return "absent";
   try {
     return readTailscaleAuthKey(home, false) === null ? "empty" : "readable";
   } catch (caughtError1) {

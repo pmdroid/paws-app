@@ -169,6 +169,13 @@
       "when": 1794549525954,
       "tag": "0023_member_vm_many_per_member",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1794569731316,
+      "tag": "0024_secret_table",
+      "breakpoints": true
     }
   ]
 }

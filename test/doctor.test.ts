@@ -86,6 +86,20 @@ test("doctor reports the local prerequisites and skips webhook checks", () => {
   expect(text).not.toContain("\n  fix:");
 });
 
+test("doctor reports where secrets are read from and fails when the key does not decrypt them", () => {
+  const ready = probe(true);
+  ready.facts.secrets = { where: "the database secret table", count: 3, failed: [], stored: [] };
+  expect(doctorChecks(ready).find((item) => item.name === "secrets")).toMatchObject({
+    ok: true,
+    detail: expect.stringContaining("3 read from the database secret table"),
+  });
+  ready.facts.secrets.failed = ["github-app.pem"];
+  expect(doctorChecks(ready).find((item) => item.name === "secrets")).toMatchObject({
+    ok: false,
+    detail: expect.stringContaining("does not decrypt github-app.pem"),
+  });
+});
+
 test("doctor notes config.toml sections the database overrides, naming them", () => {
   const ready = probe(true);
   expect(doctorChecks(ready).find((item) => item.name === "settings-overrides")).toBeUndefined();

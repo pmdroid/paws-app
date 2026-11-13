@@ -1,6 +1,6 @@
 import { journalCaught } from "../journal";
 import { existsSync } from "node:fs";
-import { readSecretFile } from "../credentials";
+import { readSecretFile, secretFileExists } from "../credentials";
 import { isAbsolute, join } from "node:path";
 import { DEFAULT_MAX_AWAKE_MS } from "../core";
 import { loadEnv, type EnvSource, type PawsEnv } from "./env";
@@ -52,6 +52,23 @@ export type RuntimeConfig = {
   webhooks: boolean;
   databaseUrl: string | null;
 };
+
+export function startupSettings(source: EnvSource = process.env) {
+  const env = loadEnv(source);
+  const path = pawsPaths(env.home).configFile;
+  const file = existsSync(path) ? loadConfigFile(path) : null;
+  const url = optional(source, "PAWS_DATABASE_URL");
+  return {
+    env,
+    publicUrl: env.publicUrl ?? file?.publicUrl ?? null,
+    databaseUrl:
+      url === null ? (file?.databaseUrl ?? null) : checkDatabaseUrl(url, "PAWS_DATABASE_URL"),
+  };
+}
+
+export function databaseUrlOf(source: EnvSource = process.env): string | null {
+  return startupSettings(source).databaseUrl;
+}
 
 export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
   const env = loadEnv(source);
@@ -149,7 +166,7 @@ function readLinearClient(
 
 function readText(home: string, relative: string | null): string | null {
   const path = secretPath(home, relative);
-  if (path === null || !existsSync(path)) return null;
+  if (path === null || !secretFileExists(path)) return null;
   const text = readSecretFile(path)!.trim();
   return text.length > 0 ? text : null;
 }

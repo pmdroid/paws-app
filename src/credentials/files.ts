@@ -13,25 +13,93 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
-const PREFIX = "paws-envelope-v1\n";
+export const SECRET_PREFIX = "paws-envelope-v1\n";
+const PREFIX = SECRET_PREFIX;
 const KEY_FILE = ".envelope-key";
 
+export type SecretTable = {
+  dir: string;
+  rows: Map<string, string>;
+  write(name: string, ciphertext: string | null, exclusive: boolean): Promise<void>;
+};
+
+let table: SecretTable | null = null;
+
+export function useSecretTable(next: SecretTable | null): void {
+  table = next;
+}
+
+export function storedSecrets(): { name: string; ciphertext: string }[] | null {
+  return table && [...table.rows].map(([name, ciphertext]) => ({ name, ciphertext }));
+}
+
+function tableName(path: string): string | null {
+  if (table === null) return null;
+  const name = relative(resolve(table.dir), resolve(path));
+  return name === "" || name.startsWith("..") || isAbsolute(name) ? null : name;
+}
+
+export function secretFileExists(path: string): boolean {
+  const name = tableName(path);
+  return name === null ? existsSync(path) : table!.rows.has(name);
+}
+
+export async function saveSecret(path: string, value: string, exclusive = false): Promise<boolean> {
+  const name = tableName(path);
+  if (name === null) return writeSecretFile(path, value, exclusive);
+  const store = table!;
+  if (store.rows.has(name)) {
+    if (exclusive) throw new Error("Paws credential file already exists.");
+    if (readSecretFile(path, false) === value) return false;
+  }
+  const ciphertext = sealSecret(dirname(path), basename(path), value);
+  await store.write(name, ciphertext, exclusive);
+  store.rows.set(name, ciphertext);
+  return true;
+}
+
+export async function removeSecret(path: string): Promise<void> {
+  const name = tableName(path);
+  if (name === null) return rmSync(path, { force: true });
+  const store = table!;
+  await store.write(name, null, false);
+  store.rows.delete(name);
+}
+
+export function openSecretAt(path: string, text: string): string {
+  try {
+    return decodeSecretEnvelope(basename(path), text, secretKey(dirname(path)));
+  } catch {
+    throw new Error(
+      "Could not decrypt Paws credentials. Restore the envelope key and secret together.",
+    );
+  }
+}
+
+function secretKey(dir: string): Buffer {
+  const text = process.env.PAWS_SECRET_KEY;
+  if (text === undefined || text === "") return readFileSync(join(dir, KEY_FILE));
+  const key = Buffer.from(text, "base64");
+  if (key.length !== 32 || key.toString("base64") !== text.trim())
+    throw new Error("PAWS_SECRET_KEY must be 32 bytes in base64.");
+  return key;
+}
+
 export function readSecretFile(path: string, migrate = true): string | null {
+  const name = tableName(path);
+  if (name !== null) {
+    const stored = table!.rows.get(name);
+    return stored === undefined ? null : openSecretAt(path, stored);
+  }
   if (!existsSync(path)) return null;
   const text = readFileSync(path, "utf8");
   if (!text.startsWith(PREFIX)) {
     if (migrate) writeSecretFile(path, text);
     return text;
   }
-  try {
-    return decodeSecretEnvelope(basename(path), text, readFileSync(join(dirname(path), KEY_FILE)));
-  } catch {
-    throw new Error(
-      "Could not decrypt Paws credentials. Restore the envelope key and secret together.",
-    );
-  }
+  return openSecretAt(path, text);
 }
 
 export function decodeSecretEnvelope(name: string, text: string, key: Buffer): string {
@@ -49,6 +117,8 @@ export function decodeSecretEnvelope(name: string, text: string, key: Buffer): s
 }
 
 export function writeSecretFile(path: string, value: string, exclusive = false): boolean {
+  if (tableName(path) !== null)
+    throw new Error("Paws keeps this secret in the database; write it with saveSecret.");
   if (existsSync(path)) {
     if (exclusive) throw new Error("Paws credential file already exists.");
     const current = readFileSync(path, "utf8");
@@ -82,6 +152,7 @@ export function envelopeSubkey(secretsDir: string, purpose: string): Buffer {
 function envelopeKey(dir: string): Buffer {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
+  if (process.env.PAWS_SECRET_KEY) return secretKey(dir);
   const path = join(dir, KEY_FILE);
   if (!existsSync(path)) {
     const temporary = join(dir, `.key-${randomBytes(16).toString("hex")}`);

@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
+import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getWorkItem, insertQueuedItem, migrate, openDatabase, setJournalSink } from "../src/db";
+import { saveSecret, useDatabaseSecrets } from "../src/credentials";
 import { startPaws } from "../src/index";
 import { tempHome } from "./helpers";
 import { pgliteServer } from "./pglite";
@@ -92,6 +94,29 @@ test("with [database] url Paws migrates that Postgres and runs on it", async () 
     expect((await getWorkItem(server.store, "remote"))?.state).toBe("queued");
     expect(existsSync(join(home, "pglite"))).toBe(false);
   } finally {
+    await server.close();
+  }
+});
+
+test("with [database] url the runtime reads secrets kept only in the database", async () => {
+  const server = await pgliteServer();
+  const home = tempHome();
+  const previous = process.env.PAWS_SECRET_KEY;
+  process.env.PAWS_SECRET_KEY = randomBytes(32).toString("base64");
+  try {
+    const secrets = await useDatabaseSecrets(server.store, join(home, "secrets"));
+    await saveSecret(join(home, "secrets", "github-webhook"), "whsec-from-database");
+    await secrets.close();
+    const paws = await start(home, { PAWS_DATABASE_URL: server.url });
+    try {
+      expect(paws.env.githubWebhookSecret).toBe("whsec-from-database");
+    } finally {
+      await paws.stop();
+    }
+    expect(existsSync(join(home, "secrets", "github-webhook"))).toBe(false);
+  } finally {
+    if (previous === undefined) delete process.env.PAWS_SECRET_KEY;
+    else process.env.PAWS_SECRET_KEY = previous;
     await server.close();
   }
 });

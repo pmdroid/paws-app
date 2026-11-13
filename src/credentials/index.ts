@@ -1,6 +1,17 @@
-export { readSecretFile, writeSecretFile, decodeSecretEnvelope, envelopeSubkey } from "./files";
+export {
+  readSecretFile,
+  writeSecretFile,
+  saveSecret,
+  removeSecret,
+  secretFileExists,
+  storedSecrets,
+  openSecretAt,
+  decodeSecretEnvelope,
+  envelopeSubkey,
+} from "./files";
+export { checkSecrets, useDatabaseSecrets } from "./secret-table";
 export { refreshCredential } from "./refresh";
-export { loadSecretKey } from "./key";
+export { loadSecretKey, storeSecretKeys } from "./key";
 export {
   importCredentialFile,
   readCredential,

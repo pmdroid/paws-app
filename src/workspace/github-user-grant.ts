@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
-import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { readSecretFile, writeSecretFile } from "../credentials";
+import { readSecretFile, removeSecret, saveSecret } from "../credentials";
 import { githubAttribution, type Db } from "../db";
 import { journalCaught } from "../journal";
 
@@ -26,7 +25,6 @@ export function createGitHubUserGrants(options: {
   const now = options.now ?? Date.now;
   const http = options.fetch ?? fetch;
   const queues = new Map<string, Promise<void>>();
-  const unsaved = new Map<string, string>();
   function serial<T>(workspaceId: string, userId: string, run: () => Promise<T>): Promise<T> {
     const key = `${workspaceId}\0${userId}`;
     const next = (queues.get(key) ?? Promise.resolve()).then(run);
@@ -41,27 +39,17 @@ export function createGitHubUserGrants(options: {
       options.secretsDir,
       `github-user-grant-${createHash("sha256").update(`${workspaceId}\0${userId}`).digest("hex")}.grant`,
     );
-  function save(workspaceId: string, userId: string, grant: StoredGrant) {
-    const key = `${workspaceId}\0${userId}`;
-    unsaved.set(key, JSON.stringify(grant));
-    try {
-      writeSecretFile(file(workspaceId, userId), unsaved.get(key)!);
-      unsaved.delete(key);
-    } catch (caught) {
-      journalCaught(caught, "github-user-grant.save", null, "kept in memory until the next save");
-    }
+  async function save(workspaceId: string, userId: string, grant: StoredGrant) {
+    await saveSecret(file(workspaceId, userId), JSON.stringify(grant));
     return grant.accessToken;
   }
-  function clear(workspaceId: string, userId: string) {
-    unsaved.delete(`${workspaceId}\0${userId}`);
-    rmSync(file(workspaceId, userId), { force: true });
+  async function clear(workspaceId: string, userId: string) {
+    await removeSecret(file(workspaceId, userId));
   }
   async function usable(workspaceId: string, userId: string) {
     let grant: StoredGrant | null;
     try {
-      const text =
-        unsaved.get(`${workspaceId}\0${userId}`) ??
-        readSecretFile(file(workspaceId, userId), false);
+      const text = readSecretFile(file(workspaceId, userId), false);
       if (text === null) return null;
       grant = storedGrant(JSON.parse(text) as StoredGrant);
     } catch (caught) {
@@ -72,7 +60,7 @@ export function createGitHubUserGrants(options: {
     const fresh =
       grant?.accessExpiresAt === null || (grant?.accessExpiresAt ?? 0) - now() >= REFRESH_MARGIN_MS;
     if (!grant || identity?.id !== grant.githubId || (!fresh && !grant.refreshToken)) {
-      clear(workspaceId, userId);
+      await clear(workspaceId, userId);
       return null;
     }
     return { grant, fresh };
@@ -108,7 +96,7 @@ export function createGitHubUserGrants(options: {
     const refreshed = refused ? null : parseGrant(grant.githubId, body, now());
     if (refreshed !== null) return save(workspaceId, userId, refreshed);
     if (!refused) journalCaught(new Error(UNKEPT), "github-user-grant.refresh", null);
-    clear(workspaceId, userId);
+    await clear(workspaceId, userId);
     return null;
   }
   return {
@@ -123,11 +111,11 @@ export function createGitHubUserGrants(options: {
       if (grant === null) journalCaught(new Error(UNKEPT), "github-user-grant.link", null);
       return serial(workspaceId, userId, async () => {
         await saveIdentity();
-        if (grant !== null) save(workspaceId, userId, grant);
+        if (grant !== null) await save(workspaceId, userId, grant);
       });
     },
     clear: (workspaceId: string, userId: string) =>
-      serial(workspaceId, userId, async () => clear(workspaceId, userId)),
+      serial(workspaceId, userId, () => clear(workspaceId, userId)),
     enabled: (workspaceId: string, userId: string) =>
       serial(workspaceId, userId, async () => (await usable(workspaceId, userId)) !== null),
     token: (workspaceId: string, userId: string) =>

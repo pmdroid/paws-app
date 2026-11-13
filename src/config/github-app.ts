@@ -1,5 +1,4 @@
-import { existsSync } from "node:fs";
-import { readSecretFile, writeSecretFile } from "../credentials";
+import { readSecretFile, saveSecret, secretFileExists } from "../credentials";
 import { join } from "node:path";
 import type { EnvSource } from "./env";
 import { pawsPaths } from "./paths";
@@ -18,7 +17,7 @@ export function loadGitHubAppCredentials(
 ): GitHubAppCredentials | null {
   const path = join(pawsPaths(home).secretsDir, "github-app.json");
   let saved: Partial<GitHubAppCredentials> = {};
-  if (existsSync(path)) {
+  if (secretFileExists(path)) {
     try {
       const parsed: unknown = JSON.parse(readSecretFile(path)!);
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error();
@@ -53,9 +52,12 @@ export function loadGitHubAppCredentials(
   };
 }
 
-export function saveGitHubAppCredentials(home: string, app: GitHubAppCredentials): void {
+export async function saveGitHubAppCredentials(
+  home: string,
+  app: GitHubAppCredentials,
+): Promise<void> {
   const dir = pawsPaths(home).secretsDir;
   const privateKeyPath = join(dir, "github-app.pem");
-  writeSecretFile(privateKeyPath, readSecretFile(app.privateKeyPath, false)!);
-  writeSecretFile(join(dir, "github-app.json"), `${JSON.stringify({ ...app, privateKeyPath })}\n`);
+  await saveSecret(privateKeyPath, readSecretFile(app.privateKeyPath, false)!);
+  await saveSecret(join(dir, "github-app.json"), `${JSON.stringify({ ...app, privateKeyPath })}\n`);
 }

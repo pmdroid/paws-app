@@ -14,3 +14,9 @@ export const credential = sqliteTable(
     check("credential_kind", sql`kind IN ('linear', 'slack')`),
   ],
 );
+
+export const secret = sqliteTable("secret", {
+  name: text().primaryKey(),
+  ciphertext: text().notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});

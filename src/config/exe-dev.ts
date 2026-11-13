@@ -1,7 +1,6 @@
 import { journalCaught } from "../journal";
-import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { readSecretFile } from "../credentials";
+import { readSecretFile, secretFileExists } from "../credentials";
 import { pawsPaths } from "./paths";
 
 export const EXE_DEV_TOKEN_FILE = "exe-dev-token";
@@ -20,7 +19,7 @@ export function readExeDevToken(home: string, migrate = true): string | null {
 export type ExeDevTokenStatus = "absent" | "empty" | "readable" | "unreadable";
 
 export function exeDevTokenStatus(home: string): ExeDevTokenStatus {
-  if (!existsSync(exeDevTokenPath(home))) return "absent";
+  if (!secretFileExists(exeDevTokenPath(home))) return "absent";
   try {
     return readExeDevToken(home, false) === null ? "empty" : "readable";
   } catch (caughtError1) {

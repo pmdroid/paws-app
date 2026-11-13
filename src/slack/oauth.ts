@@ -6,7 +6,7 @@ import {
   readSecretFile,
   refreshCredential,
   writeCredentialSteps,
-  writeSecretFile,
+  saveSecret,
 } from "../credentials";
 import { storeOf, type Db, type Q, type Steps } from "../db";
 import { authorizeSlack } from "./authorize";
@@ -72,7 +72,7 @@ export async function loginSlack(input: {
     ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
     ...(input.fetch ? { fetch: input.fetch } : {}),
   });
-  writeSecretFile(join(pawsPaths(input.home).secretsDir, "slack-app.json"), JSON.stringify(app));
+  await saveSecret(join(pawsPaths(input.home).secretsDir, "slack-app.json"), JSON.stringify(app));
   await storeOf(input.db).run((q) => writeSlackTokenSteps(q, input.home, token));
   return token;
 }

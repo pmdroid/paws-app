@@ -159,7 +159,7 @@ export function createGitHubRepositorySetup(options: {
       for (const expired of await store.run((q) =>
         expiredGithubOAuthSteps(q, workspaceId, KIND, now()),
       )) {
-        activation.remove(expired.secret_id);
+        await activation.remove(expired.secret_id);
         await store.run((q) => deleteGithubOAuthSteps(q, expired.state_hash));
       }
       if (url.pathname === CALLBACK) {
@@ -190,7 +190,7 @@ export function createGitHubRepositorySetup(options: {
           )
             return denied();
           grantId = randomUUID();
-          activation.save(grantId, { ...secret, user });
+          await activation.save(grantId, { ...secret, user });
           const granted = grantId;
           if (!(await store.run((q) => completeGithubOAuthSteps(q, pending.state_hash, granted))))
             throw new Error("GitHub setup changed. Start again.");
@@ -203,8 +203,8 @@ export function createGitHubRepositorySetup(options: {
             },
           });
         } finally {
-          activation.remove(pending.secret_id);
-          if (grantId) activation.remove(grantId);
+          await activation.remove(pending.secret_id);
+          if (grantId) await activation.remove(grantId);
           await store.run((q) => failGithubOAuthSteps(q, pending.state_hash, true));
         }
       }
@@ -214,7 +214,7 @@ export function createGitHubRepositorySetup(options: {
           return reply({ error: "Invalid GitHub sign-in request." }, 400);
         const app = activation.template();
         const secret = newGitHubOAuthSecret();
-        activation.save(secret.id, { app, verifier: secret.verifier });
+        await activation.save(secret.id, { app, verifier: secret.verifier });
         try {
           await store.transaction(function* (q) {
             if (!(yield* permittedSteps(q)))
@@ -229,7 +229,7 @@ export function createGitHubRepositorySetup(options: {
             });
           });
         } catch (error) {
-          activation.remove(secret.id);
+          await activation.remove(secret.id);
           throw error;
         }
         return reply({
@@ -337,7 +337,7 @@ export function createGitHubRepositorySetup(options: {
         return reply({ error: "Linear team access changed. Refresh and try again." }, 409);
       signal.throwIfAborted();
       const activeId = randomUUID();
-      activation.save(activeId, { ...secret.app, installationId: choices.installationId });
+      await activation.save(activeId, { ...secret.app, installationId: choices.installationId });
       let committed = false;
       try {
         const job = { ready: false };
@@ -384,7 +384,7 @@ export function createGitHubRepositorySetup(options: {
         committed = result.status === 200;
         return result;
       } finally {
-        if (!committed) activation.remove(activeId);
+        if (!committed) await activation.remove(activeId);
       }
     } catch (caughtError1) {
       journalCaught(caughtError1, "github-repository-setup.createGitHubRepositorySetup.all", null);

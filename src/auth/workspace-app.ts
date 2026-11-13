@@ -1,7 +1,7 @@
 import { join } from "node:path";
-import { rmSync } from "node:fs";
-import { readSecretFile, writeSecretFile } from "../credentials";
+import { readSecretFile, removeSecret, saveSecret } from "../credentials";
 import { loadGitHubAppCredentials } from "../config";
+import { journalCaught } from "../journal";
 import {
   activeGithubConnections,
   anyWorkspace,
@@ -34,11 +34,13 @@ export function createWorkspaceGitHubActivation(
   }
   return {
     template,
-    save(id: string, value: unknown) {
-      writeSecretFile(path(id), JSON.stringify(value), true);
+    async save(id: string, value: unknown) {
+      await saveSecret(path(id), JSON.stringify(value), true);
     },
-    remove(id: string) {
-      rmSync(path(id), { force: true });
+    async remove(id: string) {
+      await removeSecret(path(id)).catch((error: unknown) =>
+        journalCaught(error, "workspace-app.remove", null, "the unused secret stays stored"),
+      );
     },
     read<T>(id: string): T {
       const value = readSecretFile(path(id), false);

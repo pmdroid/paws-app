@@ -219,7 +219,7 @@ export function createAgentReadTokens(options: {
   github: GitHubApp;
   installationForRepository(repository: string): Promise<string | null>;
   revoke(token: string): Promise<void>;
-  store?: { read(): readonly string[]; write(tokens: readonly string[]): void };
+  store?: { read(): readonly string[]; write(tokens: readonly string[]): void | Promise<void> };
   now?: () => number;
 }) {
   const now = options.now ?? Date.now;
@@ -232,13 +232,18 @@ export function createAgentReadTokens(options: {
       return [];
     }
   })();
-  const save = () => {
-    try {
-      options.store?.write([...leftover, ...[...leases.values()].flatMap((lease) => lease.minted)]);
-    } catch (error) {
-      journalCaught(error, "runner-repository-access.agentRead.write", null);
-    }
-  };
+  let saving = Promise.resolve();
+  const save = () =>
+    (saving = saving.then(async () => {
+      try {
+        await options.store?.write([
+          ...leftover,
+          ...[...leases.values()].flatMap((lease) => lease.minted),
+        ]);
+      } catch (error) {
+        journalCaught(error, "runner-repository-access.agentRead.write", null);
+      }
+    }));
   const label = (lease: { itemId: string; runId: string; repository: string }) =>
     `agent-read item=${lease.itemId} run=${lease.runId} repositories=${lease.repository}`;
   async function mint(repository: string, installationId: string) {
@@ -276,7 +281,7 @@ export function createAgentReadTokens(options: {
           minted: [current.token],
           refreshes: 0,
         });
-        save();
+        await save();
         journal(`${label(lease)} minted expires=${new Date(current.expiresAt).toISOString()}`);
         return true;
       } catch (error) {
@@ -291,7 +296,7 @@ export function createAgentReadTokens(options: {
       if (!lease) return null;
       if (lease.current.expiresAt - now() > AGENT_READ_REFRESH_MS + 60_000) return lease.current;
       lease.refreshing ??= mint(lease.repository, lease.installationId)
-        .then((next) => {
+        .then(async (next) => {
           if (leases.get(commandId) !== lease) {
             void options.revoke(next.token).catch((caught) => {
               journalCaught(caught, "runner-repository-access.agentRead.lateRevoke", lease.itemId);
@@ -301,7 +306,7 @@ export function createAgentReadTokens(options: {
           lease.current = next;
           lease.minted.push(next.token);
           lease.refreshes += 1;
-          save();
+          await save();
           journal(
             `${label(lease)} refreshed refresh=${lease.refreshes} expires=${new Date(next.expiresAt).toISOString()}`,
           );
@@ -331,7 +336,7 @@ export function createAgentReadTokens(options: {
           ? `agent-read revoke failed for ${failed} of ${tokens.length} tokens left from before a restart`
           : `agent-read revoked ${tokens.length} tokens left from before a restart`,
       );
-      save();
+      await save();
     },
     tokens(commandId: string): readonly string[] {
       return leases.get(commandId)?.minted ?? [];
@@ -341,7 +346,7 @@ export function createAgentReadTokens(options: {
       if (!lease) return;
       leases.delete(commandId);
       const results = await Promise.allSettled(lease.minted.map((token) => options.revoke(token)));
-      save();
+      await save();
       const failed = results.find((result) => result.status === "rejected");
       if (failed)
         journal(
