@@ -196,6 +196,7 @@ async function harness(store: Db, options: HarnessOptions, close: () => Promise<
     riskAsked: [] as string[],
     /** Each task's merge-queue lane; the repository-wide lane unless a test says otherwise. */
     lanes: new Map<string, string>(),
+    parallel: 1,
     /** Each task's Linear blockers; a blocker releases it once its merge is confirmed. */
     blockedBy: new Map<string, string[]>(),
     /** Pull requests a person merged on GitHub, by number, with the merge commit. */
@@ -533,6 +534,7 @@ async function harness(store: Db, options: HarnessOptions, close: () => Promise<
       },
       readPull: (_, prNumber) => readPull(prNumber),
       mergeLane: async (current) => state.lanes.get(current.id) ?? "",
+      mergeParallel: () => state.parallel,
       dependencyHold: function* (q, itemId) {
         const open: string[] = [];
         for (const blocker of state.blockedBy.get(itemId) ?? [])

@@ -65,6 +65,7 @@ import {
   type OrderCapabilities,
 } from "./orders";
 import type { RebaseConflict } from "./budget";
+import { recordLaneMerge } from "./batch";
 import { mainMoved as checkQueueBehind } from "./queue-conflicts";
 import { rebaseBudgetForSteps } from "./returns";
 import {
@@ -407,6 +408,13 @@ export async function advanceMerge(
     return returned;
   }
   if (turn.kind === "merged") {
+    if (queued && (caps.mergeParallel?.() ?? 1) > 1)
+      await recordLaneMerge(
+        store,
+        { repository: queueName(repository), lane: await caps.mergeLane(item) },
+        pull.number,
+        caps.now(),
+      );
     await checkQueueBehind(store, {
       repository: queueName(repository),
       main: turn.result.sha ?? null,
