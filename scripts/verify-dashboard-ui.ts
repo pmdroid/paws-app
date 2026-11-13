@@ -84,13 +84,15 @@ async function follow(page: Page, from: string, expected: string, text?: string)
 const REFUSAL =
   "Connecting GitHub for the first time needs an admin of the acme GitHub organization. Ask one to connect GitHub; after that any Paws admin can add repositories.";
 try {
-  for (const [name, cookie, text] of [
-    ["setup-admin", f.adminCookie, "Choose repositories"],
-    ["setup-member", f.cookie, "An admin is still setting up Paws."],
-    ["sign-in", "", "After setup, other people only need to sign in with Linear."],
-  ] as const) {
-    current = name;
-    const page = await open(1440, cookie);
+  for (const [name, cookie, text, width] of (
+    [
+      ["setup-admin", f.adminCookie, "Choose repositories"],
+      ["setup-member", f.cookie, "An admin is still setting up Paws."],
+      ["sign-in", "", "After setup, other people only need to sign in with Linear."],
+    ] as const
+  ).flatMap((screen) => [1440, 390].map((width) => [...screen, width] as const))) {
+    current = `${name}@${width}`;
+    const page = await open(width, cookie);
     await page.route("**/api/workspaces/github-connect", (route) =>
       route.fulfill({
         json: { status: "needs_repositories", canManage: true, requiresSignIn: false },
@@ -125,7 +127,7 @@ try {
       await expect(page.locator("[data-setup-github] [data-feedback]")).toHaveText(REFUSAL);
     }
     await page.evaluate(() => scrollTo(0, 0));
-    await page.screenshot({ path: join(out, `${name}-1440.png`), fullPage: true });
+    await page.screenshot({ path: join(out, `${name}-${width}.png`), fullPage: true });
     await page.context().close();
   }
   await replaceWorkspaceRepositories(f.db, {

@@ -55,8 +55,8 @@ test("an admin of an unfinished setup sees only the setup steps with the Integra
   ]);
   expect(content.querySelector('[data-setup-step="done"] b')?.textContent).toBe("Linear connected");
   expect(content.querySelector("[data-setup-github] #workspace-github-integration")).not.toBeNull();
-  expect(window.document.querySelector<HTMLElement>("#top")!.hidden).toBe(true);
-  expect(window.document.querySelector<HTMLElement>("#workspace-access")!.hidden).toBe(true);
+  expect(window.document.querySelector("#top")!.hasAttribute("hidden")).toBe(true);
+  expect(window.document.querySelector("#workspace-access")!.hasAttribute("hidden")).toBe(true);
 });
 
 test("a member of an unfinished setup sees only the waiting message and sign-out", async () => {
