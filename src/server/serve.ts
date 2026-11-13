@@ -195,6 +195,7 @@ export type ServerOptions = {
   };
   /** Registered agent skills: bundles under `root` (`~/.paws/skills`), pins in `db`. */
   skillSettings?: {
+    configPath?: string;
     root: string;
     resolver: SkillResolver;
     updates?: SkillUpdates;
