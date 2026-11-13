@@ -98,6 +98,7 @@ export {
   writeTimeLimits,
 } from "./time-limits";
 export type { StoredTimeLimits, TimeLimitMinutes, TimeLimitSettings } from "./time-limits";
+export { journalRetiredProjectSettings } from "./retired-projects";
 
 export {
   DEFAULT_QUEUE_START_TIMEOUT_HOURS,
@@ -131,7 +132,6 @@ export {
   writeCheckoutProjects,
 } from "./checkout";
 export {
-  emptyBriefTemplates,
   parseBriefTemplates,
   renderBriefTemplates,
   resolveBriefTemplate,

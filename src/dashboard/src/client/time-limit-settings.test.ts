@@ -12,7 +12,6 @@ import { settleReactWork } from "./settle-react";
 const DEFAULTS: TimeLimitSettings = {
   configured: false,
   default: { implementationMinutes: 180, fixesMinutes: 0, closeoutMinutes: 0 },
-  projects: [],
 };
 const view = (data: TimeLimitSettings) => ({
   draft: timeLimitDraft(data),
@@ -39,20 +38,8 @@ test("the section shows the defaults and the not-counted state", () => {
     expect(html).not.toContain(`name="time-default-${stage}" `);
   }
   expect(html).toContain("Fix rounds");
-  expect(html).toContain("No project overrides.");
-});
-
-test("project overrides list under the global values and inherit what they leave out", () => {
-  const html = renderTimeLimitSettings(
-    view({ ...DEFAULTS, projects: [{ id: "paws-fixes", fixesMinutes: 45 }] }),
-  );
-  expect(html.indexOf("time-default-closeout")).toBeLessThan(html.indexOf("<h3>paws-fixes</h3>"));
-  expect(html).toContain('name="time-project-0-fixes" type="number"');
-  expect(html).toContain('value="45"');
-  const implementation = html
-    .slice(html.indexOf('name="time-project-0-implementation-mode"'))
-    .split("</select>")[0]!;
-  expect(implementation).toContain('<option value="inherit" selected>Workspace default</option>');
+  expect(html).not.toContain("project");
+  expect(html).not.toContain("Workspace default");
 });
 
 let window: Window;
@@ -100,10 +87,6 @@ test("editing and saving calls the Settings API with the right values", async ()
   setValue(root, "time-default-implementation", "240");
   setValue(root, "time-default-closeout-mode", "limit");
   setValue(root, "time-default-closeout", "30");
-  setValue(root, "time-new-project", "paws-fixes");
-  root.querySelector<HTMLButtonElement>('[data-time-limits="add-project"]')!.click();
-  setValue(root, "time-project-0-fixes-mode", "limit");
-  setValue(root, "time-project-0-fixes", "60");
   const form = () => root.querySelector("#time-limit-form")!;
   form().dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }) as never);
   await settle();
@@ -113,7 +96,6 @@ test("editing and saving calls the Settings API with the right values", async ()
   expect((put.init.headers as Record<string, string>)["x-paws-csrf"]).toBe("token-1");
   expect(JSON.parse(String(put.init.body))).toEqual({
     default: { implementationMinutes: 240, fixesMinutes: 0, closeoutMinutes: 30 },
-    projects: [{ id: "paws-fixes", fixesMinutes: 60 }],
   });
   expect(root.innerHTML).toContain("Saved");
 });

@@ -1,8 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfigFile, resolveBriefTemplate, writeBriefTemplates } from "../src/config";
+import {
+  journalRetiredProjectSettings,
+  loadConfigFile,
+  resolveBriefTemplate,
+  writeBriefTemplates,
+} from "../src/config";
 import {
   previewBriefValues,
   defaultBriefTemplate,
@@ -49,20 +54,22 @@ describe("brief templates", () => {
       ),
     ).toBe("Text {{conversation}}\n\nEnd");
   });
-  test("saved workspace and repository templates resolve on each read", () => {
+  test("the saved workspace template resolves on each read and old repository tables are ignored", async () => {
     const dir = mkdtempSync(join(tmpdir(), "brief-test-"));
     try {
       const path = join(dir, "config.toml");
-      writeBriefTemplates(path, { template: "First", projects: {} });
-      expect(resolveBriefTemplate(loadConfigFile(path), "a/b")).toBe("First");
-      writeBriefTemplates(path, { template: "Second", projects: { "a/b": "Override" } });
-      expect(resolveBriefTemplate(loadConfigFile(path), "a/b")).toBe("Override");
-      expect(resolveBriefTemplate(loadConfigFile(path), "a/c")).toBe("Second");
-      writeBriefTemplates(path, {
-        template: "Second",
-        projects: { "a/b": defaultBriefTemplate() },
-      });
-      expect(resolveBriefTemplate(loadConfigFile(path), "a/b")).toBe(defaultBriefTemplate());
+      await writeBriefTemplates(path, { template: "First" });
+      expect(resolveBriefTemplate(loadConfigFile(path))).toBe("First");
+      appendFileSync(path, '\n[brief.projects."a/b"]\ntemplate = "Override"\n');
+      expect(resolveBriefTemplate(loadConfigFile(path))).toBe("First");
+      const lines: string[] = [];
+      journalRetiredProjectSettings(path, (line) => lines.push(line));
+      expect(lines).toEqual([
+        "brief.projects is no longer supported; using the global brief template",
+      ]);
+      await writeBriefTemplates(path, { template: "Second" });
+      expect(readFileSync(path, "utf8")).not.toContain("brief.projects");
+      expect(resolveBriefTemplate(loadConfigFile(path))).toBe("Second");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -103,7 +110,6 @@ describe("brief templates", () => {
       const invalid = await handleBriefSettingsRequest(
         request("/api/settings/brief/preview", {
           template: "{{bad}}",
-          repository: "a/b",
           identifier: "PAS-1",
         }),
         options,
@@ -114,7 +120,6 @@ describe("brief templates", () => {
         request("/api/settings/brief/preview", {
           template:
             "{{issue.description}}\n\n{{parent}}\n\n{{project_overview}}\n\n{{user_updates}}",
-          repository: "a/b",
           identifier: "PAS-1",
         }),
         options,
@@ -136,7 +141,6 @@ describe("brief templates", () => {
       const missing = await handleBriefSettingsRequest(
         request("/api/settings/brief/preview", {
           template: "{{issue.title}}",
-          repository: "a/b",
           identifier: "PAS-3",
         }),
         options,
@@ -174,16 +178,17 @@ describe("brief templates", () => {
       );
       expect((await put({ template: "{{unknown}}" }))?.status).toBe(400);
       expect((await put({ template: "" }))?.status).toBe(400);
-      expect((await put({ template: "Workspace" }))?.status).toBe(200);
-      expect((await put({ repo: "a/b", template: defaultBriefTemplate() }))?.status).toBe(200);
-      expect(resolveBriefTemplate(loadConfigFile(options.configPath), "a/b")).toBe(
-        defaultBriefTemplate(),
-      );
-      expect((await put({ repo: "a/b", template: null }))?.status).toBe(200);
-      expect(resolveBriefTemplate(loadConfigFile(options.configPath), "a/b")).toBe("Workspace");
+      const saved = await put({ template: "Workspace" });
+      expect(saved?.status).toBe(200);
+      expect(Object.keys((await saved!.json()) as object).sort()).toEqual([
+        "defaultTemplate",
+        "placeholders",
+        "template",
+      ]);
+      expect(resolveBriefTemplate(loadConfigFile(options.configPath))).toBe("Workspace");
       expect((await put({ template: null }))?.status).toBe(200);
-      expect(resolveBriefTemplate(loadConfigFile(options.configPath), "a/b")).toBeNull();
-      expect(audit).toHaveLength(4);
+      expect(resolveBriefTemplate(loadConfigFile(options.configPath))).toBeNull();
+      expect(audit).toHaveLength(2);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

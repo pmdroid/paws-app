@@ -130,8 +130,6 @@ export type PawsConfigFile = {
   memberVm?: MemberVmSize;
   /** `[brief] template`. Missing means the built-in brief. */
   briefTemplate?: string | null;
-  /** `[brief.projects."owner/repo"] template`. */
-  briefProjects?: Record<string, string>;
   timeLimits?: StoredTimeLimits;
   databaseUrl?: string;
 };
@@ -226,7 +224,6 @@ export function parseConfigToml(text: string): PawsConfigFile {
   if (settings !== null) config.agentSettings = settings;
   const brief = parseBriefTemplates(text);
   if (brief.template !== null) config.briefTemplate = brief.template;
-  if (Object.keys(brief.projects).length) config.briefProjects = brief.projects;
   Object.assign(config, parseMergeTables(text));
   Object.assign(config, parseTimeLimitTables(text));
   return config;

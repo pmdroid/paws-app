@@ -6,28 +6,13 @@ type Settings = {
   template: string | null;
   defaultTemplate: string;
   placeholders: string[];
-  projects: { repo: string; template: string | null }[];
 };
 type Preview = { text: string; total: number; sections: { name: string; characters: number }[] };
-
-/** Resolve the selected repository with the current unsaved scope applied. */
-export function briefPreviewTemplate(
-  settings: Settings,
-  scope: string,
-  draft: string,
-  repository: string,
-): string {
-  if (scope === repository && scope !== "") return draft;
-  const override = settings.projects.find((project) => project.repo === repository)?.template;
-  return override ?? (scope === "" ? draft : (settings.template ?? settings.defaultTemplate));
-}
 
 export function createBriefSettings() {
   let root: HTMLElement | null = null;
   let engine: string | null = null;
   let data: Settings | null = null;
-  let scope = "";
-  let repository = "";
   let identifier = "";
   let template = "";
   let error = "";
@@ -35,13 +20,7 @@ export function createBriefSettings() {
   let preview: Preview | null = null;
   let busy = false;
   let generation = 0;
-  const effective = () =>
-    scope
-      ? (data?.projects.find((p) => p.repo === scope)?.template ??
-        data?.template ??
-        data?.defaultTemplate ??
-        "")
-      : (data?.template ?? data?.defaultTemplate ?? "");
+  const effective = () => data?.template ?? data?.defaultTemplate ?? "";
   const paint = () => {
     if (!root) return;
     if (!data) {
@@ -51,27 +30,14 @@ export function createBriefSettings() {
       );
       return;
     }
-    const options = data.projects
-      .map(
-        (p) =>
-          `<option value="${esc(p.repo)}" ${p.repo === scope ? "selected" : ""}>${esc(p.repo)}</option>`,
-      )
-      .join("");
-    const repositories = data.projects
-      .map(
-        (p) =>
-          `<option value="${esc(p.repo)}" ${p.repo === repository ? "selected" : ""}>${esc(p.repo)}</option>`,
-      )
-      .join("");
     renderMarkup(
       root,
-      `<section class="settings-section"><div class="settings-label"><h2>Agent brief</h2><p class="sub">Edit the instructions given to the coding agent. Repository templates override the workspace template.</p></div><div class="col">
-      <label>Template scope <select name="brief-scope"><option value="">Workspace</option>${options}</select></label>
+      `<section class="settings-section"><div class="settings-label"><h2>Agent brief</h2><p class="sub">Edit the instructions given to the coding agent in every repository.</p></div><div class="col">
       <label for="brief-template">Template</label><textarea id="brief-template" name="brief-template" rows="18">${esc(template)}</textarea>
       <small class="sub">Placeholders: ${data.placeholders.map((p) => esc(`{{${p}}}`)).join(", ")}</small>
-      <div class="row"><button class="btn" data-brief="save" ${busy ? "disabled" : ""}>Save</button><button class="btn" data-brief="reset" ${busy ? "disabled" : ""}>${scope ? "Reset to workspace default" : "Reset to default"}</button></div>
-      <small class="sub">${scope ? "Reset clears this repository override and uses the workspace template." : "Reset clears the workspace template and uses the built-in default."}</small>
-      <h3>Preview</h3><p class="sub">Shows the selected repository’s effective template, including applicable unsaved edits. Run-only sections use marked samples.</p><label>Repository <select name="brief-repository"><option value="">Choose a repository</option>${repositories}</select></label><label>Linear issue identifier <input name="brief-identifier" value="${esc(identifier)}" placeholder="PAS-864"></label><div><button class="btn" data-brief="preview" ${busy ? "disabled" : ""}>Preview</button></div>
+      <div class="row"><button class="btn" data-brief="save" ${busy ? "disabled" : ""}>Save</button><button class="btn" data-brief="reset" ${busy ? "disabled" : ""}>Reset to default</button></div>
+      <small class="sub">Reset clears the workspace template and uses the built-in default.</small>
+      <h3>Preview</h3><p class="sub">Shows the template with unsaved edits. Run-only sections use marked samples.</p><label>Linear issue identifier <input name="brief-identifier" value="${esc(identifier)}" placeholder="PAS-864"></label><div><button class="btn" data-brief="preview" ${busy ? "disabled" : ""}>Preview</button></div>
       ${error ? `<p role="alert" class="err">${esc(error)}</p>` : message ? `<p role="status">${esc(message)}</p>` : ""}
       ${preview ? `<p>Total: ${preview.total} characters</p><ul>${preview.sections.map((s) => `<li>${esc(s.name)}: ${s.characters} characters</li>`).join("")}</ul><pre>${esc(preview.text)}</pre>` : ""}</div></section>`,
     );
@@ -105,22 +71,18 @@ export function createBriefSettings() {
         template = effective();
       } else if (action === "preview") {
         preview = await request("/api/settings/brief/preview", "POST", {
-          template: briefPreviewTemplate(data!, scope, template, repository),
-          repository,
+          template,
           identifier,
         });
       } else {
         data = await request("/api/settings/brief", "PUT", {
-          repo: scope || null,
           template: action === "reset" ? null : template,
         });
         template = effective();
         preview = null;
         message =
           action === "reset"
-            ? scope
-              ? "Repository override cleared. Using the workspace template."
-              : "Workspace template cleared. Using the built-in default."
+            ? "Workspace template cleared. Using the built-in default."
             : "Template saved.";
       }
     } catch (e) {
@@ -135,20 +97,6 @@ export function createBriefSettings() {
     if (target.name === "brief-template") template = target.value;
     if (target.name === "brief-identifier") identifier = target.value;
   };
-  const change = (event: Event) => {
-    const target = event.target as HTMLSelectElement;
-    if (target.name === "brief-scope") {
-      scope = target.value;
-      template = effective();
-      preview = null;
-      error = "";
-      paint();
-    } else if (target.name === "brief-repository") {
-      repository = target.value;
-      preview = null;
-      paint();
-    }
-  };
   const click = (event: Event) => {
     const action = (event.target as Element).closest<HTMLElement>("[data-brief]")?.dataset.brief;
     if (action) void run(action);
@@ -157,7 +105,6 @@ export function createBriefSettings() {
     mount(next: HTMLElement, nextEngine: string | null) {
       if (root === next && engine === nextEngine) return;
       root?.removeEventListener("input", input);
-      root?.removeEventListener("change", change);
       root?.removeEventListener("click", click);
       if (engine !== nextEngine) {
         generation++;
@@ -167,7 +114,6 @@ export function createBriefSettings() {
       root = next;
       engine = nextEngine;
       root.addEventListener("input", input);
-      root.addEventListener("change", change);
       root.addEventListener("click", click);
       if (!engine) {
         error = "Connect to your Paws dashboard to manage brief settings.";

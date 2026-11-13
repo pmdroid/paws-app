@@ -82,6 +82,7 @@ import {
   MERGE_OVERRIDES_IGNORED,
   describeOverriddenSections,
   journalRetiredAgentProjects,
+  journalRetiredProjectSettings,
   overriddenConfigSections,
   useSettingsStore,
   type EnvSource,
@@ -527,6 +528,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   try {
     if (loadConfigFile(paths.configFile).ignoredMergeOverrides) journal(MERGE_OVERRIDES_IGNORED);
     journalRetiredAgentProjects(paths.configFile, journal);
+    journalRetiredProjectSettings(paths.configFile, journal);
   } catch (error) {
     journalCaught(error, "index.startPaws.ignoredMergeOverrides", null);
   }
@@ -1878,8 +1880,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           githubBinding(authProvider(runtime, selected, "write", resolveApp)),
         caps: {
           maxAwakeMs: runtime.maxAwakeMs,
-          limits: (projectId) =>
-            resolveTimeLimits(loadConfigFile(paths.configFile), projectId, runtime.maxAwakeMs),
+          limits: () => resolveTimeLimits(loadConfigFile(paths.configFile), runtime.maxAwakeMs),
         },
       });
       orchestrator = attached;

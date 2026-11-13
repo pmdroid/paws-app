@@ -53,10 +53,10 @@ test.each([
     expected: "Workspace marker",
   },
   {
-    name: "repository",
+    name: "workspace, ignoring an old repository table,",
     workspace: "Workspace marker",
     override: "Repository marker",
-    expected: "Repository marker",
+    expected: "Workspace marker",
   },
 ])(
   "queued turns use the current $name template",
@@ -187,10 +187,14 @@ test.each([
         home: process.env.HOME,
         launch,
       });
-      writeBriefTemplates(join(pawsRoot, "config.toml"), {
+      await writeBriefTemplates(join(pawsRoot, "config.toml"), {
         template: `${workspace}\n\n${defaultBriefTemplate()}`,
-        projects: override ? { "acme/widgets": `${override}\n\n${defaultBriefTemplate()}` } : {},
       });
+      if (override)
+        appendFileSync(
+          join(pawsRoot, "config.toml"),
+          `\n[brief.projects."acme/widgets"]\ntemplate = ${JSON.stringify(override)}\n`,
+        );
       await tickWithRestartsPg(jobs, orchestrator, db);
       const item = await getWorkItem(db, itemId!);
       const prompts = readFileSync(evidence, "utf8")
@@ -204,7 +208,7 @@ test.each([
         );
       for (const { prompt } of prompts.filter((entry) => entry.purpose !== "review")) {
         expect(prompt).toContain(expected);
-        if (override) expect(prompt).not.toContain(workspace);
+        if (override) expect(prompt).not.toContain(override);
         for (const requirement of [
           "Initial mention request",
           "Comment instruction",

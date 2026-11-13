@@ -852,7 +852,7 @@ export type OrchestratorOptions = {
   clock?: Clock;
   caps?: {
     maxAwakeMs: number;
-    limits?: (projectId: string | null) => StageLimits;
+    limits?: () => StageLimits;
   };
   retryBaseMs?: number;
   placementPollMs?: number;
@@ -1473,7 +1473,7 @@ export class Orchestrator {
       const caps = this.options.caps;
       if (caps !== undefined) {
         for (const saved of result.items) {
-          const limits = await this.store.run((q) => this.timeLimitsSteps(q, saved.id));
+          const limits = this.timeLimits();
           await this.store.run((q) =>
             configureWorkItemSteps(q, saved.id, { maxAwakeMs: caps.maxAwakeMs, limits }),
           );
@@ -1705,7 +1705,7 @@ export class Orchestrator {
     const settings = this.options;
     const assignSessionSteps = (q: Q, delegationId: string, session: string) =>
       this.assignSessionSteps(q, delegationId, session);
-    const timeLimitsSteps = (q: Q, itemId: string) => this.timeLimitsSteps(q, itemId);
+    const timeLimits = () => this.timeLimits();
     const intakeCurrent = async () => {
       if (!(await isCurrent())) return false;
       const authorized: EpicSnapshot | null = authorizedSnapshot;
@@ -1756,7 +1756,7 @@ export class Orchestrator {
           for (const child of accepted.items)
             yield* configureWorkItemSteps(q, child.id, {
               maxAwakeMs: caps.maxAwakeMs,
-              limits: yield* timeLimitsSteps(q, child.id),
+              limits: timeLimits(),
             });
       },
       ...(taskKey ? { taskKey } : {}),
@@ -6633,10 +6633,8 @@ export class Orchestrator {
     );
   }
 
-  private *timeLimitsSteps(q: Q, itemId: string): Steps<StageLimits | undefined> {
-    const limits = this.options.caps?.limits;
-    if (limits === undefined) return undefined;
-    return limits((yield* getWorkItemSteps(q, itemId))?.linearProjectId ?? null);
+  private timeLimits(): StageLimits | undefined {
+    return this.options.caps?.limits?.();
   }
 
   private readMergePolicy(): MergeSettings {
@@ -9000,7 +8998,7 @@ export class Orchestrator {
     const target = item;
     const now = this.now();
     const caps = this.options.caps;
-    const timeLimitsSteps = (q: Q, itemId: string) => this.timeLimitsSteps(q, itemId);
+    const timeLimits = () => this.timeLimits();
     const restarted = await this.store.transaction(function* (q) {
       const current = yield* getWorkItemSteps(q, target.id);
       if (
@@ -9037,7 +9035,7 @@ export class Orchestrator {
         sessionId,
         key: jobKey,
         maxAwakeMs: caps?.maxAwakeMs,
-        limits: yield* timeLimitsSteps(q, target.id),
+        limits: timeLimits(),
         now,
       });
       const restartedJob = yield* restartSteps(q, (yield* getWorkItemSteps(q, target.id))!, {
@@ -9615,7 +9613,6 @@ export class Orchestrator {
           .map((snapshot) => JSON.parse(snapshot) as LinearActivitySnapshot)
           .filter((activity) => activity.content.type !== "thought" && !activity.ephemeral)
       : [];
-    const repository = yield* getWorkItemRepositorySteps(q, item.id);
     const projectOverview =
       ((yield* getTaskLinearReadSteps(q, item.id, "project_overview")) as string | undefined) ?? "";
     const userUpdates = (yield* listLinearTurnsForItemSteps(q, item.id)).map((turn) => turn.body);
@@ -9624,7 +9621,6 @@ export class Orchestrator {
       : "";
     const template = resolveBriefTemplate(
       loadConfigFile(join(this.options.pawsRoot, "config.toml")),
-      repository ? `${repository.owner}/${repository.repo}` : null,
     );
     return renderWorkContext(template, {
       brief: item.brief,

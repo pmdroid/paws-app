@@ -10,14 +10,12 @@ export type TimeLimitMinutes = {
   fixesMinutes?: number;
   closeoutMinutes?: number;
 };
-export type StoredTimeLimits = TimeLimitMinutes & { projects: Record<string, TimeLimitMinutes> };
+export type StoredTimeLimits = TimeLimitMinutes;
 export type TimeLimitSettings = {
   configured: boolean;
   default: Required<TimeLimitMinutes>;
-  projects: (TimeLimitMinutes & { id: string })[];
 };
 
-const PROJECT_ID = /^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/;
 const minutes = z
   .number()
   .int()
@@ -32,34 +30,16 @@ const tomlSchema = z.object({
   time_limits: z
     .strictObject({
       ...tomlLevel,
-      projects: z
-        .record(
-          z.string().regex(PROJECT_ID, "must be a Linear project id"),
-          z.strictObject(tomlLevel),
-        )
-        .optional(),
+      projects: z.unknown().optional(),
     })
     .optional(),
 });
-const level = {
-  implementationMinutes: minutes.optional(),
-  fixesMinutes: minutes.optional(),
-  closeoutMinutes: minutes.optional(),
-};
 const settingsSchema = z.strictObject({
   default: z.strictObject({
     implementationMinutes: minutes,
     fixesMinutes: minutes,
     closeoutMinutes: minutes,
   }),
-  projects: z
-    .array(
-      z.strictObject({ id: z.string().regex(PROJECT_ID, "must be a Linear project id"), ...level }),
-    )
-    .max(500)
-    .refine((list) => new Set(list.map((entry) => entry.id)).size === list.length, {
-      message: "lists a project twice",
-    }),
 });
 
 function fromToml(value: {
@@ -85,25 +65,15 @@ export function parseTimeLimitTables(text: string): Pick<PawsConfigFile, "timeLi
       `config.toml ${issue?.path.join(".") ?? "time_limits"} ${issue?.message ?? "is invalid"}`,
     );
   }
-  const table = parsed.data.time_limits ?? {};
-  return {
-    timeLimits: {
-      ...fromToml(table),
-      projects: Object.fromEntries(
-        Object.entries(table.projects ?? {}).map(([id, value]) => [id, fromToml(value)]),
-      ),
-    },
-  };
+  return { timeLimits: fromToml(parsed.data.time_limits ?? {}) };
 }
 
 export function resolveTimeLimits(
   config: Pick<PawsConfigFile, "timeLimits">,
-  projectId: string | null,
   maxAwakeMs: number,
 ): StageLimits {
   const stored = config.timeLimits;
-  const project = projectId === null ? undefined : stored?.projects[projectId];
-  const pick = (key: keyof TimeLimitMinutes): number | undefined => project?.[key] ?? stored?.[key];
+  const pick = (key: keyof TimeLimitMinutes): number | undefined => stored?.[key];
   const ms = (value: number | undefined, fallback: number) =>
     value === undefined ? fallback : value * 60_000;
   return {
@@ -117,7 +87,7 @@ export function readTimeLimitSettings(
   config: Pick<PawsConfigFile, "timeLimits">,
   maxAwakeMs: number,
 ): TimeLimitSettings {
-  const limits = resolveTimeLimits(config, null, maxAwakeMs);
+  const limits = resolveTimeLimits(config, maxAwakeMs);
   return {
     configured: config.timeLimits !== undefined,
     default: {
@@ -125,10 +95,6 @@ export function readTimeLimitSettings(
       fixesMinutes: Math.round(limits.fixes / 60_000),
       closeoutMinutes: Math.round(limits.closeout / 60_000),
     },
-    projects: Object.entries(config.timeLimits?.projects ?? {}).map(([id, value]) => ({
-      id,
-      ...value,
-    })),
   };
 }
 
@@ -140,15 +106,7 @@ export function parseTimeLimitSettings(value: unknown): StoredTimeLimits {
       `timeLimits${issue?.path.length ? `.${issue.path.join(".")}` : ""} ${issue?.message ?? "is invalid"}`,
     );
   }
-  return {
-    ...result.data.default,
-    projects: Object.fromEntries(
-      result.data.projects.map(({ id, ...rest }) => [
-        id,
-        Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined)),
-      ]),
-    ),
-  };
+  return result.data.default;
 }
 
 function levelLines(value: TimeLimitMinutes): string {
@@ -165,12 +123,7 @@ function levelLines(value: TimeLimitMinutes): string {
 }
 
 export function renderTimeLimits(settings: StoredTimeLimits): string {
-  return [
-    `\n[time_limits]\n${levelLines(settings)}`,
-    ...Object.entries(settings.projects).map(
-      ([id, value]) => `\n[time_limits.projects.${JSON.stringify(id)}]\n${levelLines(value)}`,
-    ),
-  ].join("");
+  return `\n[time_limits]\n${levelLines(settings)}`;
 }
 
 export function setTimeLimitsText(current: string, settings: StoredTimeLimits): string {

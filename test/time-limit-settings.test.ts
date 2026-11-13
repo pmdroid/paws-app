@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfigFile, resolveTimeLimits } from "../src/config";
+import { journalRetiredProjectSettings, loadConfigFile, resolveTimeLimits } from "../src/config";
 import { handleTimeLimitSettingsRequest, type TimeLimitSettingsOptions } from "../src/settings";
 
 let dir: string;
@@ -43,14 +43,12 @@ test("without [time_limits] the settings show max_awake_ms as the implementation
   expect(await response!.json()).toEqual({
     configured: false,
     default: { implementationMinutes: 90, fixesMinutes: 0, closeoutMinutes: 0 },
-    projects: [],
   });
 });
 
 test("a write replaces [time_limits] and keeps every other table", async () => {
   const body = {
     default: { implementationMinutes: 180, fixesMinutes: 60, closeoutMinutes: 0 },
-    projects: [{ id: "proj-1", fixesMinutes: 0 }],
   };
   const response = await handleTimeLimitSettingsRequest(put(body), options("admin"));
   expect(response!.status).toBe(200);
@@ -58,12 +56,12 @@ test("a write replaces [time_limits] and keeps every other table", async () => {
   const text = readFileSync(configPath, "utf8");
   expect(text).toContain('[merge]\norder = "queue"');
   expect(text).toContain(
-    '[time_limits]\nimplementation_minutes = 180\nfixes_minutes = 60\ncloseout_minutes = 0\n\n[time_limits.projects."proj-1"]\nfixes_minutes = 0\n',
+    "[time_limits]\nimplementation_minutes = 180\nfixes_minutes = 60\ncloseout_minutes = 0\n",
   );
-  const config = loadConfigFile(configPath);
-  expect(resolveTimeLimits(config, "proj-1", 1)).toEqual({
+  expect(text).not.toContain("projects");
+  expect(resolveTimeLimits(loadConfigFile(configPath), 1)).toEqual({
     implementation: 180 * 60_000,
-    fixes: 0,
+    fixes: 60 * 60_000,
     closeout: 0,
   });
   expect(audits.map(([action]) => action)).toEqual(["settings.time_limits"]);
@@ -72,11 +70,31 @@ test("a write replaces [time_limits] and keeps every other table", async () => {
 test("a member, a missing CSRF token or an invalid limit cannot write", async () => {
   const body = {
     default: { implementationMinutes: 180, fixesMinutes: 0, closeoutMinutes: 0 },
-    projects: [],
   };
   expect((await handleTimeLimitSettingsRequest(put(body), options("member")))!.status).toBe(403);
   expect((await handleTimeLimitSettingsRequest(put(body, "wrong"), options()))!.status).toBe(403);
   const invalid = { ...body, default: { ...body.default, fixesMinutes: -1 } };
   expect((await handleTimeLimitSettingsRequest(put(invalid), options()))!.status).toBe(400);
   expect(readFileSync(configPath, "utf8")).not.toContain("time_limits");
+});
+
+test("an old project table loads, is ignored and journals once; the next save drops it", async () => {
+  writeFileSync(
+    configPath,
+    '[time_limits]\nimplementation_minutes = 60\n\n[time_limits.projects."proj-1"]\nimplementation_minutes = 5\n',
+  );
+  const response = await handleTimeLimitSettingsRequest(new Request(url), options());
+  expect(await response!.json()).toEqual({
+    configured: true,
+    default: { implementationMinutes: 60, fixesMinutes: 0, closeoutMinutes: 0 },
+  });
+  expect(resolveTimeLimits(loadConfigFile(configPath), 1).implementation).toBe(60 * 60_000);
+  const lines: string[] = [];
+  journalRetiredProjectSettings(configPath, (line) => lines.push(line));
+  expect(lines).toEqual([
+    "time_limits.projects is no longer supported; using the global time limits",
+  ]);
+  const body = { default: { implementationMinutes: 60, fixesMinutes: 0, closeoutMinutes: 0 } };
+  expect((await handleTimeLimitSettingsRequest(put(body), options("admin")))!.status).toBe(200);
+  expect(readFileSync(configPath, "utf8")).not.toContain("projects");
 });

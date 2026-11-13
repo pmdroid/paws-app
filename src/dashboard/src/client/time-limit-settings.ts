@@ -8,14 +8,10 @@ type Minutes = { implementationMinutes?: number; fixesMinutes?: number; closeout
 export type TimeLimitSettings = {
   configured: boolean;
   default: Required<Minutes>;
-  projects: (Minutes & { id: string })[];
 };
-type Mode = "limit" | "off" | "inherit";
+type Mode = "limit" | "off";
 type StageDraft = Record<TimeStage, { mode: Mode; minutes: string }>;
-export type TimeLimitDraft = {
-  default: StageDraft;
-  projects: { id: string; stages: StageDraft }[];
-};
+export type TimeLimitDraft = { default: StageDraft };
 export type TimeLimitView = {
   draft: TimeLimitDraft | null;
   busy: string | null;
@@ -23,12 +19,10 @@ export type TimeLimitView = {
   saved: boolean;
   fieldErrors: Record<string, string>;
   denied?: boolean;
-  projectDraft?: string;
 };
 
 const PATH = "/api/settings/time-limits";
 const MAX_MINUTES = 7 * 24 * 60;
-const PROJECT_ID = /^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/;
 const KEY: Record<TimeStage, keyof Minutes> = {
   implementation: "implementationMinutes",
   fixes: "fixesMinutes",
@@ -40,10 +34,9 @@ const LABEL: Record<TimeStage, [string, string]> = {
   closeout: ["Closeout", "Checks and reviews of each head."],
 };
 
-function stagesDraft(minutes: Minutes, inherit: boolean): StageDraft {
+function stagesDraft(minutes: Required<Minutes>): StageDraft {
   const stage = (key: keyof Minutes) => {
     const value = minutes[key];
-    if (value === undefined) return { mode: inherit ? "inherit" : "off", minutes: "" } as const;
     return value === 0
       ? ({ mode: "off", minutes: "" } as const)
       : ({ mode: "limit", minutes: String(value) } as const);
@@ -56,26 +49,17 @@ function stagesDraft(minutes: Minutes, inherit: boolean): StageDraft {
 }
 
 export function timeLimitDraft(data: TimeLimitSettings): TimeLimitDraft {
-  return {
-    default: stagesDraft(data.default, false),
-    projects: data.projects.map(({ id, ...minutes }) => ({
-      id,
-      stages: stagesDraft(minutes, true),
-    })),
-  };
+  return { default: stagesDraft(data.default) };
 }
 
-export function timeLimitBody(draft: TimeLimitDraft):
-  | { body: { default: Required<Minutes>; projects: (Minutes & { id: string })[] } }
-  | {
-      errors: Record<string, string>;
-    } {
+export function timeLimitBody(
+  draft: TimeLimitDraft,
+): { body: { default: Required<Minutes> } } | { errors: Record<string, string> } {
   const errors: Record<string, string> = {};
   const read = (scope: string, stages: StageDraft): Minutes =>
     Object.fromEntries(
       TIME_STAGES.flatMap((stage) => {
         const { mode, minutes } = stages[stage];
-        if (mode === "inherit") return [];
         if (mode === "off") return [[KEY[stage], 0]];
         const value = Number(minutes.trim());
         if (!/^\d+$/.test(minutes.trim()) || value < 1 || value > MAX_MINUTES)
@@ -83,13 +67,7 @@ export function timeLimitBody(draft: TimeLimitDraft):
         return [[KEY[stage], value]];
       }),
     );
-  const body = {
-    default: read("default", draft.default) as Required<Minutes>,
-    projects: draft.projects.map((project, index) => ({
-      id: project.id,
-      ...read(`project-${index}`, project.stages),
-    })),
-  };
+  const body = { default: read("default", draft.default) as Required<Minutes> };
   return Object.keys(errors).length ? { errors } : { body };
 }
 
@@ -99,7 +77,6 @@ function stageField(scope: string, stage: TimeStage, draft: StageDraft, view: Ti
   const [label, help] = LABEL[stage];
   const error = view.fieldErrors[`${scope}-${stage}`];
   const modes: [Mode, string][] = [
-    ...(scope === "default" ? [] : [["inherit", "Workspace default"] as [Mode, string]]),
     ["limit", "Minutes"],
     ["off", "Not counted"],
   ];
@@ -126,21 +103,11 @@ export function renderTimeLimitSettings(view: TimeLimitView): string {
       : view.saved
         ? '<p class="settings-message" role="status">Saved</p>'
         : "";
-  const fields = (scope: string, stages: StageDraft) =>
-    TIME_STAGES.map((stage) => stageField(scope, stage, stages, view)).join("");
-  const projects = draft.projects.length
-    ? draft.projects
-        .map(
-          (project, index) =>
-            `<section class="settings-project"><div class="between"><h3>${esc(project.id)}</h3><button class="btn" type="button" data-time-limits="remove-project" data-index="${index}" aria-label="Remove ${esc(project.id)}">Remove</button></div>${fields(`project-${index}`, project.stages)}</section>`,
-        )
-        .join("")
-    : '<p class="sub">No project overrides.</p>';
-  const projectError = view.fieldErrors["new-project"];
+  const fields = TIME_STAGES.map((stage) => stageField("default", stage, draft.default, view)).join(
+    "",
+  );
   return `<section class="settings-section">${intro}<form id="time-limit-form" class="col" novalidate>
-    ${fields("default", draft.default)}
-    <h3>Projects</h3><p class="sub">Override a stage for one Linear project.</p>${projects}
-    <div class="settings-add"><label for="time-new-project">Project</label><input id="time-new-project" name="time-new-project" value="${esc(view.projectDraft ?? "")}" placeholder="Linear project id" autocapitalize="none" spellcheck="false"${projectError ? ' aria-invalid="true" aria-describedby="time-new-project-error"' : ""}>${projectError ? `<p class="time-limit-error" id="time-new-project-error" role="alert">${esc(projectError)}</p>` : ""}<div class="row"><button class="btn" type="button" data-time-limits="add-project">Add project</button></div></div>
+    ${fields}
     ${feedback}<div class="row"><button class="btn" type="submit" ${view.busy ? "disabled" : ""}>Save time limits</button></div></form></section>`;
 }
 
@@ -212,22 +179,14 @@ export function createTimeLimitSettings(): {
     if (!root || !draft) return;
     const value = (name: string) =>
       root?.querySelector<HTMLInputElement | HTMLSelectElement>(`[name="${name}"]`)?.value;
-    const scopes: [string, StageDraft][] = [
-      ["default", draft.default],
-      ...draft.projects.map((project, index): [string, StageDraft] => [
-        `project-${index}`,
-        project.stages,
-      ]),
-    ];
-    for (const [scope, stages] of scopes)
-      for (const stage of TIME_STAGES) {
-        const id = `time-${scope}-${stage}`;
-        stages[stage] = {
-          mode: (value(`${id}-mode`) as Mode | undefined) ?? stages[stage].mode,
-          minutes: value(id) ?? stages[stage].minutes,
-        };
-      }
-    view.projectDraft = value("time-new-project") ?? "";
+    const stages = draft.default;
+    for (const stage of TIME_STAGES) {
+      const id = `time-default-${stage}`;
+      stages[stage] = {
+        mode: (value(`${id}-mode`) as Mode | undefined) ?? stages[stage].mode,
+        minutes: value(id) ?? stages[stage].minutes,
+      };
+    }
   };
   const change = (event: Event) => {
     if (!(event.target as Element).closest("#time-limit-form")) return;
@@ -238,27 +197,7 @@ export function createTimeLimitSettings(): {
   const click = (event: Event) => {
     const button = (event.target as Element).closest<HTMLButtonElement>("[data-time-limits]");
     if (!button || view.busy) return;
-    const action = button.dataset.timeLimits;
-    if (action === "reload") return void run("Loading time limits…");
-    readForm();
-    const draft = view.draft;
-    if (!draft) return;
-    if (action === "remove-project") draft.projects.splice(Number(button.dataset.index), 1);
-    if (action === "add-project") {
-      const id = view.projectDraft?.trim() ?? "";
-      const problem = !PROJECT_ID.test(id)
-        ? "Enter a Linear project id."
-        : draft.projects.some((project) => project.id === id)
-          ? "This project already has an override."
-          : null;
-      view.fieldErrors = problem ? { "new-project": problem } : {};
-      if (!problem) {
-        draft.projects.push({ id, stages: stagesDraft({}, true) });
-        view.projectDraft = "";
-      }
-    }
-    view.saved = false;
-    paint();
+    if (button.dataset.timeLimits === "reload") void run("Loading time limits…");
   };
   const submit = (event: Event) => {
     if ((event.target as Element).id !== "time-limit-form") return;
