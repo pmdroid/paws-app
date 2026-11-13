@@ -32,6 +32,7 @@ import {
 } from "../db";
 import { readWorkspaceJson, requestWorkspaceSessionSteps, validWorkspaceCsrf } from "../workspace";
 import { discoverGitHubInstallation } from "./github-connect-status";
+import type { GitHubStatusCache } from "./github-status-cache";
 import { githubRepositoryChoices } from "./github-repository-choices";
 import { dashboardUrl } from "../dashboard-links";
 
@@ -63,6 +64,7 @@ export function createGitHubRepositorySetup(options: {
   ) => Promise<{ id: string; name: string; key: string }[]>;
   fetch?: typeof fetch;
   now?: () => number;
+  cache?: GitHubStatusCache;
 }) {
   const { store } = options;
   const now = options.now ?? Date.now;
@@ -111,6 +113,7 @@ export function createGitHubRepositorySetup(options: {
       (selected !== null && selected !== access!.principal.workspaceId)
     )
       return denied();
+    if (request.method !== "GET") options.cache?.clear(access!.principal.workspaceId);
     if (
       (url.pathname === CALLBACK && request.method !== "GET") ||
       (url.pathname === START && !["GET", "POST", "PUT"].includes(request.method))

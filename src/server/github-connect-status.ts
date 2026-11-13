@@ -1,5 +1,6 @@
 import type { ActiveGitHubApp } from "../auth";
 import { createFetchGitHubClient, INSTALLATION_PERMISSIONS, signAppJwt } from "../github";
+import { mapLimited } from "./github-status-cache";
 
 export async function discoverGitHubInstallation(
   app: ActiveGitHubApp,
@@ -31,12 +32,14 @@ export async function discoverGitHubInstallation(
   let installationId: string | null = null;
   let installed = repositories.length > 0;
   let permissions = true;
-  for (const repository of repositories) {
-    const response = await client.request({
+  const responses = await mapLimited(repositories, 8, (repository) =>
+    client.request({
       method: "GET",
       path: `/repos/${repository.split("/").map(encodeURIComponent).join("/")}/installation`,
       token,
-    });
+    }),
+  );
+  for (const response of responses) {
     if (response.status === 404) {
       installed = false;
       continue;

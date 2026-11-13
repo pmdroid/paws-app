@@ -4,6 +4,7 @@ import type { JobLoopLiveness } from "../db";
 import { journalCaught } from "../journal";
 import { createGitHubRepositorySetup } from "./github-repository-setup";
 import { createHostedGitHubConnect } from "./github-connect";
+import { createGitHubStatusCache, type GitHubStatusCache } from "./github-status-cache";
 import { handleSlackWebhook } from "../slack";
 import type { Database } from "bun:sqlite";
 import type { PublicTls } from "../deployment";
@@ -232,6 +233,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
     ...(options.instanceId === undefined ? {} : { instanceId: options.instanceId }),
   });
   const statusEnv = options.statusEnv;
+  const githubStatus = createGitHubStatusCache();
   const closeoutHome = options.closeoutHome;
   const evidenceRoot = options.evidenceRoot;
   const csrfToken = crypto.randomUUID();
@@ -297,6 +299,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           ...(db ? { db } : {}),
           ...(store ? { store } : {}),
           ...(statusEnv ? { statusEnv } : {}),
+          githubStatus,
           ...(closeoutHome ? { closeoutHome } : {}),
           ...(evidenceRoot ? { evidenceRoot } : {}),
           ...(options.evidenceDir ? { evidenceDir: options.evidenceDir } : {}),
@@ -360,6 +363,7 @@ type Secrets = {
   db?: Database | Db;
   store?: Db;
   statusEnv?: Record<string, string | undefined>;
+  githubStatus?: GitHubStatusCache;
   closeoutHome?: string;
   evidenceRoot?: string;
   evidenceDir?: string;
@@ -422,6 +426,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         env,
         origin: workspace.origin,
         teams: (setupRequest, signal) => workspace.repositoryTeams(setupRequest, signal),
+        cache: secrets.githubStatus,
       })(request);
       if (setup) return setup;
       return (await createHostedGitHubConnect({
@@ -429,6 +434,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         home: runtime.env.home,
         env,
         origin: workspace.origin,
+        cache: secrets.githubStatus,
       })(request))!;
     }
     if (path.startsWith("/api/")) {
