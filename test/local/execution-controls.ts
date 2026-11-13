@@ -524,7 +524,7 @@ export async function probeExecutionControls(root: string) {
 if (import.meta.main) {
   const root = mkdtempSync(join(tmpdir(), "paws-execution-controls-"));
   if (process.argv.includes("--serve")) {
-    const fixture = await createExecutionControlsFixture(root);
+    const fixture = await createExecutionControlsFixturePg(root);
     console.log(
       JSON.stringify({
         root,

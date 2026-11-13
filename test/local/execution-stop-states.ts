@@ -1,3 +1,4 @@
+import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -11,7 +12,8 @@ import {
   getWorkItem,
   JobLoop,
   OutboxDispatcher,
-  sqliteDb,
+  type Db,
+  type Q,
 } from "../../src/db";
 import { createExecutionControls } from "../../src/execution-controls";
 import { createLinearMembershipReads } from "../../src/linear";
@@ -22,7 +24,11 @@ import { initializeRunnerCoordinator, openRunnerCoordinator } from "../../src/ru
 import { openRunnerDaemon } from "../../src/runner-daemon";
 import { startServer } from "../../src/server";
 import { createWorkspaceAccess, type WorkspaceAccess } from "../../src/workspace";
-import { createExecutionControlsFixture } from "./execution-controls";
+import { createExecutionControlsFixturePg } from "./execution-controls";
+
+function write(db: Db, query: (q: Q) => PromiseLike<unknown>) {
+  return db.run((q) => q.exec(query(q)));
+}
 
 async function until(predicate: () => boolean | Promise<boolean>, message: string, timeout = 5000) {
   const deadline = performance.now() + timeout;
@@ -33,7 +39,7 @@ async function until(predicate: () => boolean | Promise<boolean>, message: strin
 }
 
 async function remoteFixture(
-  fixture: Awaited<ReturnType<typeof createExecutionControlsFixture>>,
+  fixture: Awaited<ReturnType<typeof createExecutionControlsFixturePg>>,
   root: string,
   state: "running" | "awaiting_input" | "verifying",
 ) {
@@ -114,7 +120,9 @@ async function remoteFixture(
     const enrolled = await daemon.enroll(`Stop ${state}`, enrollmentGrant.token);
     if (enrolled.phase !== "paired") throw new Error("Runner enrollment failed");
     const { runnerId } = enrolled;
-    db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
+    await write(db, (q) =>
+      q.orm.update(q.t.runner).set({ status: "active" }).where(eq(q.t.runner.id, runnerId)),
+    );
     await daemon.heartbeat();
     const repository = {
       owner: "fixture",
@@ -122,8 +130,11 @@ async function remoteFixture(
       remoteUrl: "https://github.com/fixture/allowed.git",
       baseSha: "a".repeat(40),
     };
-    await bindWorkItemRepository(sqliteDb(db), "controlled", repository);
-    if (state === "verifying") db.run("UPDATE run SET kind='review' WHERE id=?", [runId]);
+    await bindWorkItemRepository(db, "controlled", repository);
+    if (state === "verifying")
+      await write(db, (q) =>
+        q.orm.update(q.t.run).set({ kind: "review" }).where(eq(q.t.run.id, runId)),
+      );
     await coordinator.work.assign({
       id: randomUUID(),
       type: state === "verifying" ? "review" : "run",
@@ -186,8 +197,8 @@ async function remoteFixture(
               },
               askTeam: {
                 async ask(request, context) {
-                  await applyWorkItemEvent(sqliteDb(db), "controlled", "blocking_question");
-                  await openQuestion(sqliteDb(db), {
+                  await applyWorkItemEvent(db, "controlled", "blocking_question");
+                  await openQuestion(db, {
                     itemId: "controlled",
                     runId,
                     sessionId: "session-controlled",
@@ -219,15 +230,18 @@ async function remoteFixture(
             await Bun.sleep(40);
             beforeAck?.();
             await daemon.acknowledgeCommand(command.id);
-            const row = db
-              .query<{ acknowledgedAt: number }, [string]>(
-                "SELECT acknowledged_at AS acknowledgedAt FROM runner_command WHERE id=?",
-              )
-              .get(command.id);
+            const row = await db.run((q) =>
+              q.one(
+                q.orm
+                  .select({ acknowledgedAt: q.t.runnerCommand.acknowledgedAt })
+                  .from(q.t.runnerCommand)
+                  .where(eq(q.t.runnerCommand.id, command.id)),
+              ),
+            );
             assert.equal(typeof row?.acknowledgedAt, "number");
             acknowledgements.push({
               id: command.id,
-              acknowledgedAt: row!.acknowledgedAt,
+              acknowledgedAt: row!.acknowledgedAt!,
               joinedBeforeAck: joined,
             });
           }
@@ -240,11 +254,11 @@ async function remoteFixture(
       async () =>
         ready &&
         (state !== "awaiting_input" ||
-          (await getWorkItem(sqliteDb(db), "controlled"))!.state === "awaiting_input"),
+          (await getWorkItem(db, "controlled"))!.state === "awaiting_input"),
       "Remote ACP did not become ready",
     );
     const backend = createRemoteAgentRunner({
-      store: sqliteDb(db),
+      store: db,
       work: coordinator.work,
       results: coordinator.results,
       health: coordinator.health,
@@ -289,22 +303,27 @@ export async function probeExecutionStopStates(root: string) {
   );
   for (const state of states) {
     const directory = join(root, state);
-    const fixture = await createExecutionControlsFixture(directory);
+    const fixture = await createExecutionControlsFixturePg(directory);
     const { db } = fixture;
     let remote: Awaited<ReturnType<typeof remoteFixture>> | undefined;
     let orchestrator: Orchestrator | undefined;
     let server: Awaited<ReturnType<typeof startServer>> | undefined;
     let access: WorkspaceAccess | undefined;
     try {
-      db.run("UPDATE work_item SET state=? WHERE id='controlled'", [
-        state === "awaiting_input" ? "running" : state,
-      ]);
+      await write(db, (q) =>
+        q.orm
+          .update(q.t.workItem)
+          .set({ state: state === "awaiting_input" ? "running" : state })
+          .where(eq(q.t.workItem.id, "controlled")),
+      );
       if (!["running", "verifying", "awaiting_input"].includes(state))
-        db.run("UPDATE run SET status='ended' WHERE id=?", [fixture.runId]);
+        await write(db, (q) =>
+          q.orm.update(q.t.run).set({ status: "ended" }).where(eq(q.t.run.id, fixture.runId)),
+        );
       if (state === "running" || state === "awaiting_input" || state === "verifying")
         remote = await remoteFixture(fixture, directory, state);
       const options: OrchestratorOptions = {
-        store: sqliteDb(db),
+        store: db,
         clock: systemClock,
         jobs: new JobLoop(db, systemClock),
         outbox: new OutboxDispatcher(db, systemClock),
@@ -342,7 +361,7 @@ export async function probeExecutionStopStates(root: string) {
       });
       const origin = `http://127.0.0.1:${server.port}`;
       access = createWorkspaceAccess({
-        store: sqliteDb(db),
+        store: db,
         publicUrl: origin,
         clientId: "client",
         installedOrganization: { id: "org", name: "Stop states" },
@@ -353,24 +372,29 @@ export async function probeExecutionStopStates(root: string) {
         }),
       });
       ready.resolve(access);
-      const pending = await enqueueJob(sqliteDb(db), {
+      const pending = await enqueueJob(db, {
         queue: state === "merge_queue" ? "github.merge" : "run.resume",
         payload: { itemId: "controlled" },
       });
-      const unrelated = (await getWorkItem(sqliteDb(db), "other"))!;
-      const branch = (await getWorkItem(sqliteDb(db), "controlled"))!.branchName;
-      const initialQuestions = db
-        .query<{ id: string }, []>(
-          "SELECT id FROM question WHERE item_id='controlled' AND cancelled_at IS NULL",
-        )
-        .all();
+      const unrelated = (await getWorkItem(db, "other"))!;
+      const branch = (await getWorkItem(db, "controlled"))!.branchName;
+      const openQuestions = () =>
+        db.run((q) =>
+          q.all(
+            q.orm
+              .select({ id: q.t.question.id })
+              .from(q.t.question)
+              .where(and(eq(q.t.question.itemId, "controlled"), isNull(q.t.question.cancelledAt))),
+          ),
+        );
+      const initialQuestions = await openQuestions();
       if (state === "awaiting_input")
         assert(initialQuestions.length > 0, "The waiting state must own its canonical question");
       let returned = false;
       remote?.beforeAck(() =>
         assert.equal(returned, false, "HTTP Stop returned before persisted remote ACK"),
       );
-      const initialState = (await getWorkItem(sqliteDb(db), "controlled"))!.state;
+      const initialState = (await getWorkItem(db, "controlled"))!.state;
       assert.equal(initialState, state, "Stop must begin in the claimed canonical state");
       const started = performance.now();
       const response = await fetch(`${origin}/api/execution-controls`, {
@@ -385,45 +409,58 @@ export async function probeExecutionStopStates(root: string) {
       const elapsedMs = performance.now() - started;
       assert.equal(response.status, 200, await response.text());
       assert(elapsedMs < 10_000);
-      assert.equal((await getWorkItem(sqliteDb(db), "controlled"))!.state, "cancelled");
-      assert.equal((await getWorkItem(sqliteDb(db), "controlled"))!.branchName, branch);
-      assert.deepEqual(await getWorkItem(sqliteDb(db), "other"), unrelated);
-      assert.equal(
-        db
-          .query<{ n: number }, []>(
-            "SELECT COUNT(*) AS n FROM question WHERE item_id='controlled' AND cancelled_at IS NULL",
-          )
-          .get()!.n,
-        0,
+      assert.equal((await getWorkItem(db, "controlled"))!.state, "cancelled");
+      assert.equal((await getWorkItem(db, "controlled"))!.branchName, branch);
+      assert.deepEqual(await getWorkItem(db, "other"), unrelated);
+      assert.deepEqual(await openQuestions(), []);
+      const job = await db.run((q) =>
+        q.one(
+          q.orm.select({ status: q.t.job.status }).from(q.t.job).where(eq(q.t.job.id, pending)),
+        ),
       );
-      assert.equal(
-        db.query<{ status: string }, [number]>("SELECT status FROM job WHERE id=?").get(pending)!
-          .status,
-        "cancelled",
-      );
+      assert.equal(job!.status, "cancelled");
       if (state === "merge_queue")
         assert(
-          db
-            .query("SELECT 1 FROM job WHERE queue='github.close_stopped' AND status='pending'")
-            .get(),
+          await db.run((q) =>
+            q.one(
+              q.orm
+                .select({ id: q.t.job.id })
+                .from(q.t.job)
+                .where(
+                  and(eq(q.t.job.queue, "github.close_stopped"), eq(q.t.job.status, "pending")),
+                ),
+            ),
+          ),
         );
-      const questionWithdrawn = initialQuestions.every(({ id }) =>
-        Number.isInteger(
-          db
-            .query<{ cancelled_at: number | null }, [string]>(
-              "SELECT cancelled_at FROM question WHERE id=?",
-            )
-            .get(id)?.cancelled_at,
+      const withdrawn = await db.run((q) =>
+        q.all(
+          q.orm
+            .select({ id: q.t.question.id, cancelledAt: q.t.question.cancelledAt })
+            .from(q.t.question)
+            .where(eq(q.t.question.itemId, "controlled")),
         ),
+      );
+      const questionWithdrawn = initialQuestions.every(({ id }) =>
+        Number.isInteger(withdrawn.find((row) => row.id === id)?.cancelledAt),
       );
       assert(questionWithdrawn, "Stop must withdraw those same canonical question rows");
       if (remote)
         assert(
-          db
-            .query(
-              "SELECT 1 FROM runner_command c JOIN run r ON r.id=c.run_id WHERE r.item_id='controlled' AND c.kind='cancel' AND c.acknowledged_at IS NOT NULL",
-            )
-            .get() !== null,
+          (await db.run((q) =>
+            q.one(
+              q.orm
+                .select({ id: q.t.runnerCommand.id })
+                .from(q.t.runnerCommand)
+                .innerJoin(q.t.run, eq(q.t.run.id, q.t.runnerCommand.runId))
+                .where(
+                  and(
+                    eq(q.t.run.itemId, "controlled"),
+                    eq(q.t.runnerCommand.kind, "cancel"),
+                    isNotNull(q.t.runnerCommand.acknowledgedAt),
+                  ),
+                ),
+            ),
+          )) !== undefined,
           "Stop must return after the persisted remote cancel acknowledgement",
         );
       observations.push({
