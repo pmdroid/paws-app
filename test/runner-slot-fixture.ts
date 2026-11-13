@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   bindLinearSessionTask,
   bindWorkItemRepository,
@@ -10,7 +9,6 @@ import {
   recordRunnerCapacity,
   recordRunnerRepositories,
   type RunnerHostRefusal,
-  storeOf,
   type Db,
 } from "../src/db";
 import { eq } from "drizzle-orm";
@@ -22,8 +20,7 @@ import { workspaceAdmission } from "./fake-workspace";
 export const REPOSITORY = "pmdroid/paws-app";
 export const NOW = 1_800_000_000_000;
 
-export async function workspaceWithRunners(source: Database | Db) {
-  const db = storeOf(source);
+export async function workspaceWithRunners(db: Db) {
   const userId = await putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
@@ -91,7 +88,7 @@ export async function workspaceWithRunners(source: Database | Db) {
   const pass = (reported: RunnerHostRefusal[][] = []) =>
     dispatch(db, {
       now: NOW,
-      admission: workspaceAdmission(source),
+      admission: workspaceAdmission(db),
       itemRunners: (q, itemId) =>
         itemRunnerVerdictsSteps(q, db, { itemId, agent: "claude", now: NOW }),
       onRunnerHostRefusals: (refusals) => reported.push([...refusals]),
