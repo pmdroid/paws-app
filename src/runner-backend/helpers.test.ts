@@ -33,9 +33,9 @@ import {
 import { createRunnerPlacement, quotaSignal, type RunnerPlacement } from "../runner-placement";
 import { sqlRows, sqlRun, tempStore } from "../../test/pglite";
 
-const cleanup: Array<() => void> = [];
-afterEach(() => {
-  for (const close of cleanup.splice(0)) close();
+const cleanup: Array<() => Promise<void>> = [];
+afterEach(async () => {
+  for (const close of cleanup.splice(0)) await close();
 });
 
 async function fixture(
